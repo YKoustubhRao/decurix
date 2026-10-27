@@ -387,7 +387,7 @@ def recent_outputs(roots=None):
 # ============================================================
 # What a bill charges, against what a result says is payable on it
 #
-# Found live (2026-10-20, round 5): every bill's "amount payable" was its taxable value without GST - the vendor is
+# Found live (2026-10-20, round 5): every bill's "amount payable" was its taxable value without tax - the vendor is
 # paid what the bill charges, tax included - and the room under the cash cap let one more bill in. Given to the check
 # as evidence (a payable equal to a bill's taxable value, beside the bill's total), never decided in code: a line short
 # received, disputed or capped is rightly paid less.

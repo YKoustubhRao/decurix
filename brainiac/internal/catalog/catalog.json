@@ -1,0 +1,1904 @@
+{
+  "version": "2026.10.24-5",
+  "updated": "2026-10-24",
+  "runtime": {
+    "llamacpp_repo": "ggml-org/llama.cpp",
+    "llamacpp_tag": "b11541"
+  },
+  "roles": [
+    {
+      "id": "brain",
+      "title": "reasoning and writing the answer",
+      "weight": 10,
+      "min_quality": 20,
+      "speed_floor": 3,
+      "speed_unit": "tok/s"
+    },
+    {
+      "id": "vision",
+      "title": "understanding pictures",
+      "weight": 4,
+      "min_quality": 40,
+      "speed_floor": 3,
+      "speed_unit": "tok/s"
+    },
+    {
+      "id": "ground",
+      "title": "finding things on a screen",
+      "weight": 2,
+      "min_quality": 30,
+      "speed_floor": 3,
+      "speed_unit": "tok/s"
+    },
+    {
+      "id": "ocr",
+      "title": "reading text in pictures",
+      "weight": 4,
+      "min_quality": 40,
+      "speed_floor": 5,
+      "speed_unit": "s/page"
+    },
+    {
+      "id": "asr",
+      "title": "speech to text",
+      "weight": 4,
+      "min_quality": 40,
+      "speed_floor": 0.5,
+      "speed_unit": "rtf"
+    },
+    {
+      "id": "vad",
+      "title": "finding speech in audio",
+      "weight": 1,
+      "min_quality": 50,
+      "speed_floor": 0.1,
+      "speed_unit": "rtf"
+    },
+    {
+      "id": "embed",
+      "title": "text to vectors for search",
+      "weight": 2,
+      "min_quality": 40,
+      "speed_floor": 0,
+      "speed_unit": ""
+    },
+    {
+      "id": "math",
+      "title": "mathematics",
+      "kind": "domain",
+      "weight": 3,
+      "min_quality": 30,
+      "speed_floor": 3,
+      "speed_unit": "tok/s",
+      "description": "Solving, proving or checking mathematics: arithmetic word problems, algebra, calculus, probability, number theory, geometry, proofs.",
+      "examples": [
+        "Solve for x: 3x^2 - 12x + 9 = 0",
+        "Prove that the square root of 2 is irrational",
+        "What is the integral of x e^x dx?",
+        "Find the derivative of sin(x) * ln(x)",
+        "How many ways can 8 people sit around a round table?",
+        "Compute the determinant of the matrix [[2,1],[5,3]]",
+        "If a train travels 180 km in 2.5 hours, what is its average speed?",
+        "What is the probability of getting exactly two heads in five coin tosses?",
+        "Show that the sum of the first n odd numbers is n squared",
+        "Find all integer solutions of x^2 - y^2 = 15",
+        "Evaluate the limit of (1 + 1/n)^n as n goes to infinity",
+        "Factorise x^3 - 6x^2 + 11x - 6",
+        "Find the eigenvalues of [[4,1],[2,3]]",
+        "A sum of money doubles in 8 years at simple interest. What is the rate?",
+        "Prove by induction that 2^n > n for all natural n",
+        "What is the area of a triangle with sides 7, 8 and 9?",
+        "Solve the system: 2x + 3y = 13, x - y = -1",
+        "How many prime numbers are there below 100?"
+      ]
+    },
+    {
+      "id": "code",
+      "title": "programming",
+      "kind": "domain",
+      "weight": 3,
+      "min_quality": 30,
+      "speed_floor": 3,
+      "speed_unit": "tok/s",
+      "description": "Writing, explaining, reviewing or fixing source code and scripts in any programming language.",
+      "examples": [
+        "Write a Python function that checks whether a string is a palindrome",
+        "Why does this JavaScript give undefined? const x = arr.map(i => { i * 2 })",
+        "Fix the bug in this Go code: for i := 0; i <= len(s); i++ { fmt.Println(s[i]) }",
+        "Implement binary search in C++",
+        "Explain what this regex does: ^(?=.*\\d)(?=.*[a-z]).{8,}$",
+        "Write a bash script that renames all .jpeg files to .jpg",
+        "Refactor this class to use dependency injection",
+        "How do I read a CSV file with pandas and group by a column?",
+        "Write unit tests for this function",
+        "Convert this Java loop to a Java stream",
+        "What is the time complexity of quicksort and why?",
+        "My React component re-renders forever, here is the code",
+        "Write a Dockerfile for a Flask app",
+        "TypeError: 'NoneType' object is not subscriptable, how do I fix it?",
+        "Write a Rust function to reverse a linked list",
+        "Add error handling to this Node.js fetch call"
+      ],
+      "note": "On small machines no code chat model beats Qwen3.5 of the same size; the specialists start at 9B (Ornith)."
+    },
+    {
+      "id": "sql",
+      "title": "databases and SQL",
+      "kind": "domain",
+      "weight": 3,
+      "min_quality": 30,
+      "speed_floor": 3,
+      "speed_unit": "tok/s",
+      "description": "Writing or fixing database queries (SQL), schema design, and questions answered from tables.",
+      "examples": [
+        "Write a SQL query to find the top 5 customers by total order value",
+        "SELECT name FROM users WHERE created_at > '2026-01-01' GROUP BY city - why does this fail?",
+        "Join the orders and customers tables and show customers with no orders",
+        "Write a query for month-wise revenue from the invoices table",
+        "How do I find duplicate rows in PostgreSQL?",
+        "Create a table for employees with a foreign key to departments",
+        "Rewrite this subquery as a JOIN",
+        "Write a window function to rank salesmen by sales within each region",
+        "What index would speed up this query?",
+        "Count invoices per GSTIN where the tax amount is above 10000",
+        "Convert this SQLite query to MySQL",
+        "Get the second highest salary from the employee table"
+      ]
+    },
+    {
+      "id": "law",
+      "title": "law",
+      "kind": "domain",
+      "weight": 3,
+      "min_quality": 30,
+      "speed_floor": 3,
+      "speed_unit": "tok/s",
+      "description": "Legal questions: statutes, contracts, case law, rights and obligations, compliance, legal drafting (including Indian law).",
+      "examples": [
+        "Is a verbal agreement legally binding in India?",
+        "What does section 138 of the Negotiable Instruments Act say about bounced cheques?",
+        "Draft a simple non-disclosure agreement between two companies",
+        "What are the grounds for divorce under the Hindu Marriage Act?",
+        "Can my landlord evict me without notice?",
+        "Explain the difference between a breach of contract and a tort",
+        "What is anticipatory bail and who can grant it?",
+        "Review this clause: the vendor shall not be liable for any indirect damages",
+        "What are the penalties for late filing under the Companies Act?",
+        "What rights does a consumer have under the Consumer Protection Act 2019?",
+        "Is a non-compete clause enforceable after employment ends in India?",
+        "What is the limitation period for filing a civil suit for recovery of money?",
+        "Explain force majeure in a commercial contract",
+        "What does the IT Act say about data breaches?"
+      ],
+      "note": "No open law specialist beats a same-size general model (2026-10): SaulLM, Aalap, InLegalLLaMA and nyaya are below today's Qwen3.5; on Vals LegalBench the frontier leads (Claude Fable 5 88.6, GPT-5.4 86.0, Qwen3.8-27B 82.4). The brain answers, best with the statute text given to it."
+    },
+    {
+      "id": "medicine",
+      "title": "medicine and health",
+      "kind": "domain",
+      "weight": 3,
+      "min_quality": 30,
+      "speed_floor": 3,
+      "speed_unit": "tok/s",
+      "description": "Health and medicine: symptoms, conditions, medicines and doses, lab reports, clinical questions.",
+      "examples": [
+        "What are the common side effects of metformin?",
+        "My blood test shows HbA1c 7.2, what does that mean?",
+        "What is the normal dose of paracetamol for an adult?",
+        "Difference between viral and bacterial fever symptoms",
+        "Can I take ibuprofen with high blood pressure?",
+        "Explain this ECG finding: ST elevation in leads II, III and aVF",
+        "What causes iron deficiency anaemia and how is it treated?",
+        "What is the first aid for a snake bite?",
+        "Explain my thyroid report: TSH 6.8",
+        "What vaccines does a newborn need in the first year?",
+        "What are the warning signs of a stroke?",
+        "Is it safe to take amoxicillin during pregnancy?",
+        "How is dengue different from malaria?"
+      ],
+      "note": "Small medical models (MedGemma 4B, II-Medical 8B, HuatuoGPT) are beaten by Qwen3.5-4B/9B; open specialists only pull ahead at 27B and up."
+    },
+    {
+      "id": "finance",
+      "title": "finance, accounting and tax",
+      "kind": "domain",
+      "weight": 3,
+      "min_quality": 30,
+      "speed_floor": 3,
+      "speed_unit": "tok/s",
+      "description": "Accounting, bookkeeping, tax (GST, income tax), financial statements, investing and business finance.",
+      "examples": [
+        "How do I calculate input tax credit under GST?",
+        "Prepare a journal entry for goods purchased on credit for 50,000 plus 18% GST",
+        "What is the difference between old and new income tax regime?",
+        "Explain depreciation by the written down value method",
+        "How do I read a balance sheet?",
+        "What is the due date for GSTR-3B filing?",
+        "Calculate the EMI on a 20 lakh loan at 9% for 15 years",
+        "What is TDS on rent payments?",
+        "Explain the difference between cash and accrual accounting",
+        "How is capital gains tax calculated on selling shares held for 2 years?",
+        "Reconcile these bank entries with the ledger",
+        "What is working capital and how is it calculated?",
+        "Should reverse charge apply to legal services from an advocate?",
+        "What is a debit note in GST?"
+      ],
+      "note": "No open finance or tax specialist beats a same-size general model, and none exists for Indian GST or income tax (2026-10). The brain answers; figures are checked in code."
+    },
+    {
+      "id": "science",
+      "title": "natural sciences",
+      "kind": "domain",
+      "weight": 3,
+      "min_quality": 30,
+      "speed_floor": 3,
+      "speed_unit": "tok/s",
+      "description": "Physics, chemistry, biology and other natural sciences: concepts, reactions, mechanisms, experiments.",
+      "examples": [
+        "Balance this equation: Fe + O2 -> Fe2O3",
+        "Explain how photosynthesis works",
+        "What is the SMILES string for aspirin?",
+        "Why does ice float on water?",
+        "Explain the Krebs cycle",
+        "What is the half-life of carbon-14 and how is carbon dating done?",
+        "Describe the mechanism of an SN2 reaction",
+        "What is the difference between DNA and RNA?",
+        "Calculate the pH of a 0.01 M HCl solution",
+        "Explain quantum tunnelling simply",
+        "What happens in mitosis?",
+        "How does a transistor amplify a signal?",
+        "Predict the product of ethanol with acidified potassium dichromate"
+      ],
+      "note": "For general science Qwen3.5-9B (GPQA 81.7) beats every open specialist; chemistry specialists (Intern-S1, ether0) win only on narrow structured tasks. The brain answers."
+    },
+    {
+      "id": "translate",
+      "title": "translation",
+      "kind": "domain",
+      "weight": 3,
+      "min_quality": 30,
+      "speed_floor": 3,
+      "speed_unit": "tok/s",
+      "description": "Translating text between languages, including Indian languages and English.",
+      "examples": [
+        "Translate to Hindi: Please submit the documents by Friday",
+        "Translate this to English: मुझे कल बैंक जाना है",
+        "Translate into Tamil: Your payment has been received",
+        "What does kripya dhyan dein mean in English?",
+        "Translate this paragraph from Marathi to English",
+        "Translate to French: The meeting is postponed to next week",
+        "Convert this Hinglish message to formal English: bhai invoice bhej do jaldi",
+        "Translate into Bengali: Thank you for your order",
+        "Translate this Gujarati text into Hindi",
+        "How do you say where is the railway station in Kannada?",
+        "Translate the following legal notice into Telugu",
+        "Translate to Spanish: Our office will be closed on Monday"
+      ]
+    }
+  ],
+  "models": [
+    {
+      "id": "qwen3.5-2b",
+      "title": "Qwen3.5 2B",
+      "family": "qwen3.5",
+      "roles": {
+        "brain": 34,
+        "vision": 62,
+        "ground": 54,
+        "math": 30,
+        "code": 25,
+        "sql": 40,
+        "medicine": 30,
+        "translate": 35
+      },
+      "basis": "Qwen3.5 model card (2026-02): natively multimodal, hybrid DeltaNet attention; ScreenSpot-Pro 54.5; Artificial Analysis v4.3.2: 7.",
+      "params_b": 2.3,
+      "kv_per_token_mb": 0.0117,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "unsloth/Qwen3.5-2B-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Qwen3.5-2B-Q4_K_M.gguf",
+              "role": "model"
+            },
+            {
+              "path": "mmproj-F16.gguf",
+              "role": "mmproj"
+            }
+          ],
+          "size_gb": 1.949,
+          "weights_gb": 1.281
+        },
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "qwen3.5:2b",
+          "size_gb": 2.683,
+          "weights_gb": 2.0
+        }
+      ]
+    },
+    {
+      "id": "qwen3.5-4b",
+      "title": "Qwen3.5 4B",
+      "family": "qwen3.5",
+      "roles": {
+        "brain": 46,
+        "vision": 72,
+        "ground": 60,
+        "math": 60,
+        "code": 35,
+        "sql": 48,
+        "medicine": 40,
+        "translate": 42
+      },
+      "basis": "Qwen3.5 model card (2026-02): MMMU 77.6, ScreenSpot-Pro 60.3, TAU2 79.9 (NVIDIA measured 61.7 at Q4_K_M); Artificial Analysis v4.3.2: 13 (est.).",
+      "params_b": 4.66,
+      "kv_per_token_mb": 0.0313,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "unsloth/Qwen3.5-4B-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Qwen3.5-4B-Q4_K_M.gguf",
+              "role": "model"
+            },
+            {
+              "path": "mmproj-F16.gguf",
+              "role": "mmproj"
+            }
+          ],
+          "size_gb": 3.413,
+          "weights_gb": 2.741
+        },
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "qwen3.5:4b",
+          "size_gb": 3.324,
+          "weights_gb": 2.65
+        }
+      ]
+    },
+    {
+      "id": "qwen3.5-9b",
+      "title": "Qwen3.5 9B",
+      "family": "qwen3.5",
+      "roles": {
+        "brain": 48,
+        "vision": 76,
+        "ground": 65,
+        "math": 66,
+        "code": 50,
+        "sql": 56,
+        "medicine": 46,
+        "translate": 50
+      },
+      "basis": "Qwen3.5 model card (2026-03): MMMU 78.4, OCRBench 89.2, ScreenSpot-Pro 65.2, BFCL-v4 66.1; Artificial Analysis v4.3.2: 11 (brain prior set above the 4B on tool-use results).",
+      "params_b": 9.65,
+      "kv_per_token_mb": 0.0313,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "qwen3.5:9b",
+          "size_gb": 6.551,
+          "weights_gb": 5.9
+        }
+      ]
+    },
+    {
+      "id": "gemma-4-e2b",
+      "title": "Gemma 4 E2B",
+      "family": "gemma4",
+      "roles": {
+        "brain": 32,
+        "vision": 52,
+        "ground": 30,
+        "math": 25,
+        "code": 20,
+        "translate": 40
+      },
+      "basis": "Gemma 4 model card (2026-04): Apache-2.0; text, image and audio (30 s clips); weak at small-model grounding.",
+      "params_b": 5.1,
+      "kv_per_token_mb": 0.05,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "ggml-org/gemma-4-E2B-it-GGUF",
+          "quant": "Q4_0",
+          "files": [
+            {
+              "path": "gemma-4-E2B-it-Q4_0.gguf",
+              "role": "model"
+            },
+            {
+              "path": "mmproj-gemma-4-E2B-it-Q8_0.gguf",
+              "role": "mmproj"
+            }
+          ],
+          "size_gb": 3.398,
+          "weights_gb": 2.841
+        },
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "gemma4:e2b",
+          "size_gb": 4.587,
+          "weights_gb": 2.85
+        }
+      ],
+      "active_b": 2.0
+    },
+    {
+      "id": "gemma-4-e4b",
+      "title": "Gemma 4 E4B",
+      "family": "gemma4",
+      "roles": {
+        "brain": 38,
+        "vision": 60,
+        "ground": 35,
+        "math": 40,
+        "code": 30,
+        "translate": 48
+      },
+      "basis": "Gemma 4 model card (2026-04): Tau2 42.2, MMLU-Pro 69.4; Artificial Analysis v4.3.2: 9; E4B ScreenSpot-v2 50.9.",
+      "params_b": 8.0,
+      "kv_per_token_mb": 0.05,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "ggml-org/gemma-4-E4B-it-GGUF",
+          "quant": "Q4_0",
+          "files": [
+            {
+              "path": "gemma-4-E4B-it-Q4_0.gguf",
+              "role": "model"
+            },
+            {
+              "path": "mmproj-gemma-4-E4B-it-Q8_0.gguf",
+              "role": "mmproj"
+            }
+          ],
+          "size_gb": 5.151,
+          "weights_gb": 4.591
+        },
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "gemma4:e4b",
+          "size_gb": 6.584,
+          "weights_gb": 4.6
+        }
+      ],
+      "active_b": 4.5
+    },
+    {
+      "id": "qwen3.6-35b-a3b",
+      "title": "Qwen3.6 35B-A3B",
+      "family": "qwen3.6",
+      "roles": {
+        "brain": 56,
+        "vision": 82,
+        "ground": 68,
+        "math": 72,
+        "code": 70,
+        "sql": 62,
+        "medicine": 52,
+        "translate": 58
+      },
+      "basis": "Qwen3.6 model card (2026-04): SWE-V 73.4 (NVIDIA measured 70.1), MMMU 81.7, OCRBench 90.0; Artificial Analysis v4.3.2: 18.",
+      "params_b": 36,
+      "kv_per_token_mb": 0.06,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "ggml-org/Qwen3.6-35B-A3B-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Qwen3.6-35B-A3B-Q4_K_M.gguf",
+              "role": "model"
+            },
+            {
+              "path": "mmproj-Qwen3.6-35B-A3B-Q8_0.gguf",
+              "role": "mmproj"
+            }
+          ],
+          "size_gb": 21.034,
+          "weights_gb": 20.42
+        },
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "qwen3.6:35b-a3b",
+          "size_gb": 22.621,
+          "weights_gb": 20.4
+        }
+      ],
+      "active_b": 3.0
+    },
+    {
+      "id": "qwen3.8-27b",
+      "title": "Qwen3.8 27B",
+      "family": "qwen3.8",
+      "roles": {
+        "brain": 88,
+        "vision": 86,
+        "ground": 72,
+        "math": 85,
+        "code": 82,
+        "sql": 68,
+        "medicine": 60,
+        "translate": 65
+      },
+      "basis": "Qwen3.8 model card (2026-08): TB2.1 73.0, GPQA 89.2, OSWorld-Verified 84.3 (self-reported); Artificial Analysis v4.3.2: 34, the best open model that fits one 24 GB GPU.",
+      "params_b": 27.8,
+      "kv_per_token_mb": 0.0625,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "ggml-org/Qwen3.8-27B-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Qwen3.8-27B-Q4_K_M.gguf",
+              "role": "model"
+            },
+            {
+              "path": "mmproj-Qwen3.8-27B-Q8_0.gguf",
+              "role": "mmproj"
+            }
+          ],
+          "size_gb": 19.603,
+          "weights_gb": 18.974
+        },
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "qwen3.8:27b",
+          "size_gb": 17.742,
+          "weights_gb": 17.1
+        }
+      ]
+    },
+    {
+      "id": "embeddinggemma-2",
+      "title": "EmbeddingGemma 2",
+      "family": "embeddinggemma",
+      "roles": {
+        "embed": 67
+      },
+      "basis": "Model card (2026-09): Apache-2.0; text, image, video and audio; MMTEB 61.4.",
+      "params_b": 0.74,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "embeddinggemma-2",
+          "size_gb": 1.285
+        }
+      ]
+    },
+    {
+      "id": "qwen3-vl-2b-instruct",
+      "title": "Qwen3-VL 2B Instruct",
+      "family": "qwen3-vl",
+      "roles": {
+        "brain": 24,
+        "vision": 55,
+        "ground": 40,
+        "math": 20,
+        "code": 15
+      },
+      "basis": "Qwen3-VL technical report (2025-10) and model card; ground prior from ScreenSpot-Pro-class results; brain from its text benchmarks vs Qwen3-1.7B. Decurix measured 17 of 18 click targets on its own screens with the Ollama build. Superseded by Qwen3.5 (2026-02), which has vision built in.",
+      "params_b": 2.1,
+      "kv_per_token_mb": 0.1094,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "Qwen/Qwen3-VL-2B-Instruct-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Qwen3VL-2B-Instruct-Q4_K_M.gguf",
+              "role": "model"
+            },
+            {
+              "path": "mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
+              "role": "mmproj"
+            }
+          ],
+          "size_gb": 1.552,
+          "weights_gb": 1.107
+        },
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "qwen3-vl:2b-instruct",
+          "quant": "Q4_K_M",
+          "size_gb": 1.931,
+          "weights_gb": 1.11
+        }
+      ]
+    },
+    {
+      "id": "qwen3-vl-4b-instruct",
+      "title": "Qwen3-VL 4B Instruct",
+      "family": "qwen3-vl",
+      "roles": {
+        "brain": 30,
+        "vision": 64,
+        "ground": 48,
+        "math": 35,
+        "code": 25
+      },
+      "basis": "Qwen3-VL technical report (2025-10) and model card. Superseded by Qwen3.5 (2026-02), which has vision built in.",
+      "params_b": 4.4,
+      "kv_per_token_mb": 0.1406,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "Qwen/Qwen3-VL-4B-Instruct-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+              "role": "model"
+            },
+            {
+              "path": "mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf",
+              "role": "mmproj"
+            }
+          ],
+          "size_gb": 2.951,
+          "weights_gb": 2.497
+        },
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "qwen3-vl:4b-instruct",
+          "quant": "Q4_K_M",
+          "size_gb": 3.337,
+          "weights_gb": 2.5
+        }
+      ]
+    },
+    {
+      "id": "qwen3-vl-8b-instruct",
+      "title": "Qwen3-VL 8B Instruct",
+      "family": "qwen3-vl",
+      "roles": {
+        "brain": 36,
+        "vision": 70,
+        "ground": 54,
+        "math": 45,
+        "code": 35
+      },
+      "basis": "Qwen3-VL technical report (2025-10) and model card. Superseded by Qwen3.5 (2026-02), which has vision built in.",
+      "params_b": 8.8,
+      "kv_per_token_mb": 0.1406,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "Qwen/Qwen3-VL-8B-Instruct-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+              "role": "model"
+            },
+            {
+              "path": "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf",
+              "role": "mmproj"
+            }
+          ],
+          "size_gb": 5.78,
+          "weights_gb": 5.028
+        },
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "qwen3-vl:8b-instruct",
+          "quant": "Q4_K_M",
+          "size_gb": 6.191,
+          "weights_gb": 5.03
+        }
+      ]
+    },
+    {
+      "id": "qwen3-vl-30b-a3b-instruct",
+      "title": "Qwen3-VL 30B-A3B Instruct",
+      "family": "qwen3-vl",
+      "roles": {
+        "brain": 40,
+        "vision": 76,
+        "ground": 58,
+        "math": 55,
+        "code": 45
+      },
+      "basis": "Qwen3-VL technical report (2025-10) and model card. Superseded by Qwen3.5 (2026-02), which has vision built in.",
+      "params_b": 31,
+      "active_b": 3.3,
+      "kv_per_token_mb": 0.0938,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "Qwen/Qwen3-VL-30B-A3B-Instruct-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Qwen3VL-30B-A3B-Instruct-Q4_K_M.gguf",
+              "role": "model"
+            },
+            {
+              "path": "mmproj-Qwen3VL-30B-A3B-Instruct-Q8_0.gguf",
+              "role": "mmproj"
+            }
+          ],
+          "size_gb": 19.269,
+          "weights_gb": 18.557
+        },
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "qwen3-vl:30b-a3b-instruct",
+          "quant": "Q4_K_M",
+          "size_gb": 19.644,
+          "weights_gb": 18.56
+        }
+      ]
+    },
+    {
+      "id": "qwen3-4b-instruct-2507",
+      "title": "Qwen3 4B Instruct 2507",
+      "family": "qwen3",
+      "roles": {
+        "brain": 34,
+        "math": 45,
+        "code": 30
+      },
+      "basis": "Qwen3-2507 model card (2025-08): instruct update of Qwen3-4B, non-thinking.",
+      "params_b": 4.0,
+      "kv_per_token_mb": 0.1406,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+              "role": "model"
+            }
+          ],
+          "size_gb": 2.497
+        },
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "qwen3:4b-instruct-2507-q4_K_M",
+          "quant": "Q4_K_M",
+          "size_gb": 2.497
+        }
+      ]
+    },
+    {
+      "id": "qwen3-8b",
+      "title": "Qwen3 8B",
+      "family": "qwen3",
+      "roles": {
+        "brain": 36,
+        "math": 50,
+        "code": 35
+      },
+      "basis": "Qwen3 technical report (2025-05); hybrid thinking model.",
+      "params_b": 8.2,
+      "kv_per_token_mb": 0.1406,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "qwen3:8b",
+          "quant": "Q4_K_M",
+          "size_gb": 5.225
+        }
+      ]
+    },
+    {
+      "id": "qwen3-30b-a3b-instruct-2507",
+      "title": "Qwen3 30B-A3B Instruct 2507",
+      "family": "qwen3",
+      "roles": {
+        "brain": 40,
+        "math": 60,
+        "code": 45
+      },
+      "basis": "Qwen3-2507 model card (2025-07).",
+      "params_b": 30.5,
+      "active_b": 3.3,
+      "kv_per_token_mb": 0.0938,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf",
+              "role": "model"
+            }
+          ],
+          "size_gb": 18.557
+        },
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "qwen3:30b-a3b-instruct-2507-q4_K_M",
+          "quant": "Q4_K_M",
+          "size_gb": 18.557
+        }
+      ]
+    },
+    {
+      "id": "gpt-oss-20b",
+      "title": "gpt-oss 20B",
+      "family": "gpt-oss",
+      "roles": {
+        "brain": 38,
+        "math": 70,
+        "code": 55
+      },
+      "basis": "Artificial Analysis Intelligence Index v4.3.2 (2026-10): 9; o3-mini class on the 2025 scale.",
+      "params_b": 21,
+      "active_b": 3.6,
+      "kv_per_token_mb": 0.0469,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "ggml-org/gpt-oss-20b-GGUF",
+          "quant": "MXFP4",
+          "files": [
+            {
+              "path": "gpt-oss-20b-MXFP4.gguf",
+              "role": "model"
+            }
+          ],
+          "size_gb": 12.11
+        },
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "gpt-oss:20b",
+          "quant": "MXFP4",
+          "size_gb": 13.793
+        }
+      ]
+    },
+    {
+      "id": "gpt-oss-120b",
+      "title": "gpt-oss 120B",
+      "family": "gpt-oss",
+      "roles": {
+        "brain": 44,
+        "math": 78,
+        "code": 62
+      },
+      "basis": "Artificial Analysis Intelligence Index v4.3.2 (2026-10): 12.",
+      "params_b": 117,
+      "active_b": 5.1,
+      "kv_per_token_mb": 0.0703,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "ggml-org/gpt-oss-120b-GGUF",
+          "quant": "MXFP4",
+          "files": [
+            {
+              "path": "gpt-oss-120b-MXFP4.gguf",
+              "role": "model"
+            }
+          ],
+          "size_gb": 63.387
+        },
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "gpt-oss:120b",
+          "quant": "MXFP4",
+          "size_gb": 65.37
+        }
+      ]
+    },
+    {
+      "id": "glm-4.5-air",
+      "title": "GLM-4.5-Air",
+      "family": "glm",
+      "roles": {
+        "brain": 44,
+        "math": 65,
+        "code": 60
+      },
+      "basis": "Z.ai GLM-4.5 report (2025-07): 106B-A12B, strong on agentic benchmarks.",
+      "params_b": 106,
+      "active_b": 12,
+      "kv_per_token_mb": 0.1797,
+      "license": "MIT",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "unsloth/GLM-4.5-Air-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Q4_K_M/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf",
+              "role": "model"
+            },
+            {
+              "path": "Q4_K_M/GLM-4.5-Air-Q4_K_M-00002-of-00002.gguf",
+              "role": "model-part"
+            }
+          ],
+          "size_gb": 72.976
+        }
+      ]
+    },
+    {
+      "id": "qwen2.5-coder-3b",
+      "title": "Qwen2.5-Coder 3B",
+      "family": "qwen2.5-coder",
+      "roles": {
+        "brain": 20
+      },
+      "basis": "Decurix's old default small brain on CPU hosts; weak outside code. Qwen Research licence: non-commercial.",
+      "params_b": 3.1,
+      "kv_per_token_mb": 0.0352,
+      "license": "Qwen Research",
+      "license_class": "noncommercial",
+      "sources": [
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "qwen2.5-coder:3b",
+          "quant": "Q4_K_M",
+          "size_gb": 1.93
+        }
+      ]
+    },
+    {
+      "id": "qwen3-embedding-0.6b",
+      "title": "Qwen3-Embedding 0.6B",
+      "family": "qwen3-embedding",
+      "roles": {
+        "embed": 70
+      },
+      "basis": "MTEB multilingual (2025-06): best open model under 1B at release.",
+      "params_b": 0.6,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "qwen3-embedding:0.6b",
+          "quant": "Q8_0",
+          "size_gb": 0.639
+        },
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "Qwen/Qwen3-Embedding-0.6B-GGUF",
+          "quant": "Q8_0",
+          "files": [
+            {
+              "path": "Qwen3-Embedding-0.6B-Q8_0.gguf",
+              "role": "model"
+            }
+          ],
+          "size_gb": 0.639
+        }
+      ]
+    },
+    {
+      "id": "nomic-embed-text",
+      "title": "nomic-embed-text v1.5",
+      "family": "nomic",
+      "roles": {
+        "embed": 55
+      },
+      "basis": "MTEB English (2024); what Decurix desktops already embed with.",
+      "params_b": 0.14,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "ollama",
+          "runtime": "ollama",
+          "tag": "nomic-embed-text",
+          "quant": "F16",
+          "size_gb": 0.274
+        }
+      ]
+    },
+    {
+      "id": "rapidocr-ppocr",
+      "title": "PP-OCRv6 small (RapidOCR 3, ONNX)",
+      "family": "pp-ocr",
+      "roles": {
+        "ocr": 70
+      },
+      "basis": "PaddleOCR PP-OCRv6 small det/rec as bundled in rapidocr 3.10 (no runtime download); Chinese and English, no Indic scripts. Measured here: every line of a 1280x720 invoice correct, 2.6-4.1 s warm on 4 cores under load, ~0.3 GB.",
+      "params_b": 0.01,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "pip",
+          "runtime": "worker",
+          "worker": "rapidocr",
+          "pip": [
+            "ocr"
+          ],
+          "size_gb": 0.1,
+          "mem_gb": 0.32,
+          "speed": 3.0,
+          "ref_cores": 4
+        }
+      ]
+    },
+    {
+      "id": "tesseract",
+      "title": "Tesseract 5",
+      "family": "tesseract",
+      "roles": {
+        "ocr": 45
+      },
+      "basis": "Classic OCR; what Decurix uses today. Loses light-on-dark text.",
+      "params_b": 0,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "system",
+          "runtime": "worker",
+          "worker": "tesseract",
+          "program": "tesseract",
+          "size_gb": 0,
+          "mem_gb": 0.1,
+          "speed": 1.3,
+          "ref_cores": 6
+        }
+      ]
+    },
+    {
+      "id": "parakeet-tdt-0.6b-v3",
+      "title": "NVIDIA Parakeet TDT 0.6B v3 (int8)",
+      "family": "parakeet",
+      "roles": {
+        "asr": 85
+      },
+      "basis": "Open ASR Leaderboard (2025-08): ~6% average English WER; 25 European languages; no Hindi.",
+      "params_b": 0.6,
+      "languages": [
+        "en",
+        "de",
+        "fr",
+        "es",
+        "it",
+        "pt",
+        "nl",
+        "pl",
+        "ru",
+        "uk",
+        "sv",
+        "da",
+        "fi",
+        "cs",
+        "sk",
+        "sl",
+        "hr",
+        "bg",
+        "ro",
+        "hu",
+        "el",
+        "et",
+        "lv",
+        "lt",
+        "mt"
+      ],
+      "license": "CC-BY-4.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "github",
+          "runtime": "worker",
+          "worker": "transducer",
+          "repo": "k2-fsa/sherpa-onnx",
+          "tag": "asr-models",
+          "asset": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2",
+          "unpack": true,
+          "pip": [
+            "asr"
+          ],
+          "files": [
+            {
+              "path": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/encoder.int8.onnx",
+              "role": "encoder"
+            },
+            {
+              "path": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/decoder.int8.onnx",
+              "role": "decoder"
+            },
+            {
+              "path": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/joiner.int8.onnx",
+              "role": "joiner"
+            },
+            {
+              "path": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/tokens.txt",
+              "role": "tokens"
+            }
+          ],
+          "size_gb": 0.487,
+          "mem_gb": 0.95,
+          "speed": 0.12,
+          "ref_cores": 4
+        }
+      ]
+    },
+    {
+      "id": "whisper-turbo",
+      "title": "Whisper large-v3-turbo (int8)",
+      "family": "whisper",
+      "roles": {
+        "asr": 79
+      },
+      "basis": "Open ASR Leaderboard: ~7.8% average English WER; 99 languages incl. Hindi.",
+      "params_b": 0.81,
+      "languages": [
+        "*"
+      ],
+      "license": "MIT",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "github",
+          "runtime": "worker",
+          "worker": "whisper",
+          "repo": "k2-fsa/sherpa-onnx",
+          "tag": "asr-models",
+          "asset": "sherpa-onnx-whisper-turbo.tar.bz2",
+          "unpack": true,
+          "pip": [
+            "asr"
+          ],
+          "files": [
+            {
+              "path": "sherpa-onnx-whisper-turbo/turbo-encoder.int8.onnx",
+              "role": "encoder"
+            },
+            {
+              "path": "sherpa-onnx-whisper-turbo/turbo-decoder.int8.onnx",
+              "role": "decoder"
+            },
+            {
+              "path": "sherpa-onnx-whisper-turbo/turbo-tokens.txt",
+              "role": "tokens"
+            }
+          ],
+          "size_gb": 0.564,
+          "mem_gb": 1.4,
+          "speed": 0.45,
+          "ref_cores": 4
+        }
+      ]
+    },
+    {
+      "id": "whisper-small",
+      "title": "Whisper small (int8)",
+      "family": "whisper",
+      "roles": {
+        "asr": 62
+      },
+      "basis": "Whisper paper (2022): multilingual incl. Hindi; ~10% English WER.",
+      "params_b": 0.24,
+      "languages": [
+        "*"
+      ],
+      "license": "MIT",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "github",
+          "runtime": "worker",
+          "worker": "whisper",
+          "repo": "k2-fsa/sherpa-onnx",
+          "tag": "asr-models",
+          "asset": "sherpa-onnx-whisper-small.tar.bz2",
+          "unpack": true,
+          "pip": [
+            "asr"
+          ],
+          "files": [
+            {
+              "path": "sherpa-onnx-whisper-small/small-encoder.int8.onnx",
+              "role": "encoder"
+            },
+            {
+              "path": "sherpa-onnx-whisper-small/small-decoder.int8.onnx",
+              "role": "decoder"
+            },
+            {
+              "path": "sherpa-onnx-whisper-small/small-tokens.txt",
+              "role": "tokens"
+            }
+          ],
+          "size_gb": 0.639,
+          "mem_gb": 0.7,
+          "speed": 0.2,
+          "ref_cores": 4
+        }
+      ]
+    },
+    {
+      "id": "moonshine-base-en",
+      "title": "Moonshine base v2 (English, quantized)",
+      "family": "moonshine",
+      "roles": {
+        "asr": 60
+      },
+      "basis": "Useful Sensors Moonshine (Open ASR Leaderboard, May 2026: 10.6% English WER); English only, very fast on CPU.",
+      "params_b": 0.06,
+      "languages": [
+        "en"
+      ],
+      "license": "MIT",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "github",
+          "runtime": "worker",
+          "worker": "moonshine_v2",
+          "repo": "k2-fsa/sherpa-onnx",
+          "tag": "asr-models",
+          "asset": "sherpa-onnx-moonshine-base-en-quantized-2026-02-27.tar.bz2",
+          "unpack": true,
+          "pip": [
+            "asr"
+          ],
+          "files": [
+            {
+              "path": "sherpa-onnx-moonshine-base-en-quantized-2026-02-27/encoder_model.ort",
+              "role": "encoder"
+            },
+            {
+              "path": "sherpa-onnx-moonshine-base-en-quantized-2026-02-27/decoder_model_merged.ort",
+              "role": "decoder"
+            },
+            {
+              "path": "sherpa-onnx-moonshine-base-en-quantized-2026-02-27/tokens.txt",
+              "role": "tokens"
+            }
+          ],
+          "size_gb": 0.111,
+          "mem_gb": 0.3,
+          "speed": 0.06,
+          "ref_cores": 4
+        }
+      ]
+    },
+    {
+      "id": "moonshine-tiny-en",
+      "title": "Moonshine tiny v2 (English, quantized)",
+      "family": "moonshine",
+      "roles": {
+        "asr": 50
+      },
+      "basis": "Open ASR Leaderboard (May 2026): 13.7% English WER. Measured here: a 12.7 s clip exact in 1.3 s with VAD, ~0.15 GB.",
+      "params_b": 0.06,
+      "languages": [
+        "en"
+      ],
+      "license": "MIT",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "github",
+          "runtime": "worker",
+          "worker": "moonshine_v2",
+          "repo": "k2-fsa/sherpa-onnx",
+          "tag": "asr-models",
+          "asset": "sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27.tar.bz2",
+          "unpack": true,
+          "pip": [
+            "asr"
+          ],
+          "files": [
+            {
+              "path": "sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27/encoder_model.ort",
+              "role": "encoder"
+            },
+            {
+              "path": "sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27/decoder_model_merged.ort",
+              "role": "decoder"
+            },
+            {
+              "path": "sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27/tokens.txt",
+              "role": "tokens"
+            }
+          ],
+          "size_gb": 0.03,
+          "mem_gb": 0.2,
+          "speed": 0.1,
+          "ref_cores": 4
+        }
+      ]
+    },
+    {
+      "id": "whisper-tiny-en",
+      "title": "Whisper tiny.en (int8)",
+      "family": "whisper",
+      "roles": {
+        "asr": 45
+      },
+      "basis": "Whisper paper (2022): ~15% English WER; the smallest usable recogniser.",
+      "params_b": 0.04,
+      "languages": [
+        "en"
+      ],
+      "license": "MIT",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "github",
+          "runtime": "worker",
+          "worker": "whisper",
+          "repo": "k2-fsa/sherpa-onnx",
+          "tag": "asr-models",
+          "asset": "sherpa-onnx-whisper-tiny.en.tar.bz2",
+          "unpack": true,
+          "pip": [
+            "asr"
+          ],
+          "files": [
+            {
+              "path": "sherpa-onnx-whisper-tiny.en/tiny.en-encoder.int8.onnx",
+              "role": "encoder"
+            },
+            {
+              "path": "sherpa-onnx-whisper-tiny.en/tiny.en-decoder.int8.onnx",
+              "role": "decoder"
+            },
+            {
+              "path": "sherpa-onnx-whisper-tiny.en/tiny.en-tokens.txt",
+              "role": "tokens"
+            }
+          ],
+          "size_gb": 0.118,
+          "mem_gb": 0.25,
+          "speed": 0.03,
+          "ref_cores": 4
+        }
+      ]
+    },
+    {
+      "id": "silero-vad",
+      "title": "Silero VAD v5",
+      "family": "silero",
+      "roles": {
+        "vad": 90
+      },
+      "basis": "The standard open voice-activity detector (MIT).",
+      "params_b": 0.002,
+      "license": "MIT",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "github",
+          "runtime": "worker",
+          "worker": "silero",
+          "repo": "k2-fsa/sherpa-onnx",
+          "tag": "asr-models",
+          "asset": "silero_vad.onnx",
+          "pip": [
+            "asr"
+          ],
+          "files": [
+            {
+              "path": "silero_vad.onnx",
+              "role": "vad"
+            }
+          ],
+          "size_gb": 0.001,
+          "mem_gb": 0.02,
+          "speed": 0.005,
+          "ref_cores": 4
+        }
+      ]
+    },
+    {
+      "id": "vibethinker-1.5b",
+      "title": "VibeThinker 1.5B",
+      "family": "vibethinker",
+      "roles": {
+        "math": 70
+      },
+      "basis": "Field research of 2026-10-24 (HF API checked; vendor numbers unless marked independent). AIME25 74.4, HMMT25 50.4 (vendor) vs Qwen3.5-2B HMMT25 22.9: far better than the same-size general model, nowhere near the frontier (GPT-5.5 AIME26 100). A reasoning model: long thoughts, slow on a CPU. Not for tools or agents.",
+      "params_b": 1.78,
+      "license": "MIT",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "mradermacher/VibeThinker-1.5B-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "VibeThinker-1.5B.Q4_K_M.gguf",
+              "role": "model"
+            }
+          ],
+          "size_gb": 1.117,
+          "weights_gb": 1.117
+        }
+      ],
+      "kv_per_token_mb": 0.0273,
+      "thinks": true,
+      "think_tokens": 6000,
+      "ctx": 16384
+    },
+    {
+      "id": "nanbeige4.2-3b",
+      "title": "Nanbeige 4.2 3B",
+      "family": "nanbeige",
+      "roles": {
+        "math": 80
+      },
+      "basis": "Field research of 2026-10-24 (HF API checked; vendor numbers unless marked independent). HMMT Feb26 82.8 vs Qwen3.5-9B 69.6 (vendor run; MathArena has Qwen3.5-9B at 71.2), GPQA-D 87.4 (vendor). New looped architecture, in llama.cpp since 2026-07-27. A reasoning model.",
+      "params_b": 4.17,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "bartowski/Nanbeige_Nanbeige4.2-3B-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Nanbeige_Nanbeige4.2-3B-Q4_K_M.gguf",
+              "role": "model"
+            }
+          ],
+          "size_gb": 2.684,
+          "weights_gb": 2.684
+        }
+      ],
+      "kv_per_token_mb": 0.07,
+      "thinks": true,
+      "think_tokens": 8000,
+      "ctx": 16384
+    },
+    {
+      "id": "flash-sqlite",
+      "title": "flash-sqlite (Qwen3.5-2B for SQL)",
+      "family": "qwen3.5",
+      "roles": {
+        "sql": 60
+      },
+      "basis": "Field research of 2026-10-24 (HF API checked; vendor numbers unless marked independent). BIRD test 73.73 (independent leaderboard; with 32 candidates and self-judging; greedy dev 57.05) - above single-shot Opus 4.6 (70.15) and GPT-5.5 (72.55) on BIRD, but SQLite with the schema given; weak on enterprise SQL (Spider 2.0).",
+      "params_b": 2.2,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "mradermacher/flash-sqlite-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "flash-sqlite.Q4_K_M.gguf",
+              "role": "model"
+            }
+          ],
+          "size_gb": 1.274,
+          "weights_gb": 1.274
+        }
+      ],
+      "kv_per_token_mb": 0.0117
+    },
+    {
+      "id": "slm-sql-1.5b",
+      "title": "SLM-SQL 1.5B",
+      "family": "qwen2.5-coder",
+      "roles": {
+        "sql": 57
+      },
+      "basis": "Field research of 2026-10-24 (HF API checked; vendor numbers unless marked independent). BIRD test 70.49 (independent leaderboard). Apache-2.0 (the 0.5B sibling is CC-BY-NC).",
+      "params_b": 1.5,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "mradermacher/SLM-SQL-1.5B-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "SLM-SQL-1.5B.Q4_K_M.gguf",
+              "role": "model"
+            }
+          ],
+          "size_gb": 1.117,
+          "weights_gb": 1.117
+        }
+      ],
+      "kv_per_token_mb": 0.0273
+    },
+    {
+      "id": "arctic-text2sql-r1-7b",
+      "title": "Arctic-Text2SQL-R1 7B",
+      "family": "qwen2.5-coder",
+      "roles": {
+        "sql": 66
+      },
+      "basis": "Field research of 2026-10-24 (HF API checked; vendor numbers unless marked independent). BIRD test 70.43 (independent leaderboard).",
+      "params_b": 7.6,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "mradermacher/Arctic-Text2SQL-R1-7B-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Arctic-Text2SQL-R1-7B.Q4_K_M.gguf",
+              "role": "model"
+            }
+          ],
+          "size_gb": 4.683,
+          "weights_gb": 4.683
+        }
+      ],
+      "kv_per_token_mb": 0.0547
+    },
+    {
+      "id": "omnisql-32b",
+      "title": "OmniSQL 32B",
+      "family": "qwen2.5-coder",
+      "roles": {
+        "sql": 72
+      },
+      "basis": "Field research of 2026-10-24 (HF API checked; vendor numbers unless marked independent). BIRD test 72.05 (independent leaderboard); Spider2-SQLite only 11.9.",
+      "params_b": 32.8,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "mradermacher/OmniSQL-32B-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "OmniSQL-32B.Q4_K_M.gguf",
+              "role": "model"
+            }
+          ],
+          "size_gb": 19.851,
+          "weights_gb": 19.851
+        }
+      ],
+      "kv_per_token_mb": 0.25
+    },
+    {
+      "id": "ornith-1.5-9b",
+      "title": "Ornith 1.5 9B (code)",
+      "family": "qwen3.5",
+      "roles": {
+        "code": 68
+      },
+      "basis": "Field research of 2026-10-24 (HF API checked; vendor numbers unless marked independent). SWE-bench Verified 70.6 / Pro 47.5 vs Qwen3.5-9B 53.2 / 31.3 (vendor, 5-run mean); frontier SWE-bench Pro is ~90 (Opus 5.5). A reasoning model. Text only here (its vision projector is left out).",
+      "params_b": 9.65,
+      "license": "MIT",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "ornith-ai/Ornith-1.5-9B-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Ornith-1.5-9B-Q4_K_M.gguf",
+              "role": "model"
+            }
+          ],
+          "size_gb": 5.78,
+          "weights_gb": 5.78
+        }
+      ],
+      "kv_per_token_mb": 0.0313,
+      "thinks": true,
+      "think_tokens": 4000,
+      "ctx": 16384
+    },
+    {
+      "id": "ornith-1.5-35b-a3b",
+      "title": "Ornith 1.5 35B-A3B (code)",
+      "family": "qwen3.6",
+      "roles": {
+        "code": 78
+      },
+      "basis": "Field research of 2026-10-24 (HF API checked; vendor numbers unless marked independent). SWE-bench Verified 79.0 / Pro 59.6 vs Qwen3.6-35B-A3B 73.4 / 49.5 (vendor). A reasoning model.",
+      "params_b": 36,
+      "license": "MIT",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Ornith-1.5-35B-Q4_K_M.gguf",
+              "role": "model"
+            }
+          ],
+          "size_gb": 21.713,
+          "weights_gb": 21.713
+        }
+      ],
+      "kv_per_token_mb": 0.06,
+      "active_b": 3.0,
+      "thinks": true,
+      "think_tokens": 4000,
+      "ctx": 16384
+    },
+    {
+      "id": "hulu-med-27b",
+      "title": "Hulu-Med Flash Preview 27B",
+      "family": "qwen3.8",
+      "roles": {
+        "medicine": 68
+      },
+      "basis": "Field research of 2026-10-24 (HF API checked; vendor numbers unless marked independent). HealthBench Hard 43.7 (vendor) vs GPT-5.2-High ~42 and GPT-5-thinking 46.2; MedXpertQA still favours the frontier. Reads medical images.",
+      "params_b": 27.8,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "mradermacher/Hulu-Med-Flash-Preview-27B-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Hulu-Med-Flash-Preview-27B.Q4_K_M.gguf",
+              "role": "model"
+            },
+            {
+              "path": "Hulu-Med-Flash-Preview-27B.mmproj-Q8_0.gguf",
+              "role": "mmproj"
+            }
+          ],
+          "size_gb": 17.177,
+          "weights_gb": 16.547
+        }
+      ],
+      "kv_per_token_mb": 0.0625
+    },
+    {
+      "id": "hy-mt2-1.8b",
+      "title": "Hy-MT2 1.8B (translation)",
+      "family": "hunyuan",
+      "roles": {
+        "translate": 62
+      },
+      "basis": "Field research of 2026-10-24 (HF API checked; vendor numbers unless marked independent). FLORES XCOMET 90.0 vs Gemini 3.1 Pro 94.4 (vendor). Apache-2.0 (unlike Hunyuan-MT 1.x). Indian languages covered: hi, bn, ta, te, mr, gu, ur only. WMT25 human raters ranked Hunyuan-MT systems well below their automatic scores.",
+      "params_b": 1.8,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "tencent/Hy-MT2-1.8B-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Hy-MT2-1.8B-Q4_K_M.gguf",
+              "role": "model"
+            }
+          ],
+          "size_gb": 1.133,
+          "weights_gb": 1.133
+        }
+      ],
+      "kv_per_token_mb": 0.0313,
+      "languages": [
+        "en",
+        "hi",
+        "bn",
+        "ta",
+        "te",
+        "mr",
+        "gu",
+        "ur",
+        "zh",
+        "fr",
+        "de",
+        "es"
+      ]
+    },
+    {
+      "id": "hy-mt2-7b",
+      "title": "Hy-MT2 7B (translation)",
+      "family": "hunyuan",
+      "roles": {
+        "translate": 72
+      },
+      "basis": "Field research of 2026-10-24 (HF API checked; vendor numbers unless marked independent). WMT25 XCOMET 63.86 vs Gemini 3.1 Pro 57.58 and GPT-5.5 56.68 (vendor table; the LLM-judge score ties). Indian languages: hi, bn, ta, te, mr, gu, ur.",
+      "params_b": 7.5,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "tencent/Hy-MT2-7B-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Hy-MT2-7B-Q4_K_M.gguf",
+              "role": "model"
+            }
+          ],
+          "size_gb": 4.625,
+          "weights_gb": 4.625
+        }
+      ],
+      "kv_per_token_mb": 0.0625,
+      "languages": [
+        "en",
+        "hi",
+        "bn",
+        "ta",
+        "te",
+        "mr",
+        "gu",
+        "ur",
+        "zh",
+        "fr",
+        "de",
+        "es"
+      ]
+    },
+    {
+      "id": "hy-mt2-30b-a3b",
+      "title": "Hy-MT2 30B-A3B (translation)",
+      "family": "hunyuan",
+      "roles": {
+        "translate": 78
+      },
+      "basis": "Field research of 2026-10-24 (HF API checked; vendor numbers unless marked independent). Top of Tencent's WMT25 table. New hy_v3 architecture (llama.cpp since 2026-07-13). Indian languages: hi, bn, ta, te, mr, gu, ur.",
+      "params_b": 30,
+      "license": "Apache-2.0",
+      "license_class": "permissive",
+      "sources": [
+        {
+          "kind": "hf",
+          "runtime": "llamacpp",
+          "repo": "tencent/Hy-MT2-30B-A3B-GGUF",
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Hy-MT2-30B-A3B-Q4_K_M.gguf",
+              "role": "model"
+            }
+          ],
+          "size_gb": 18.237,
+          "weights_gb": 18.237
+        }
+      ],
+      "kv_per_token_mb": 0.06,
+      "active_b": 3.0,
+      "languages": [
+        "en",
+        "hi",
+        "bn",
+        "ta",
+        "te",
+        "mr",
+        "gu",
+        "ur",
+        "zh",
+        "fr",
+        "de",
+        "es"
+      ]
+    }
+  ],
+  "general_examples": [
+    "hello",
+    "hi, how are you?",
+    "what can you do?",
+    "tell me a joke",
+    "write a short poem about the monsoon",
+    "summarise this email for me",
+    "draft a polite reply declining the meeting",
+    "what is the capital of Australia?",
+    "give me ideas for a birthday party",
+    "rewrite this paragraph to sound more professional",
+    "what's the weather like on Mars?",
+    "who wrote Pride and Prejudice?",
+    "make a to-do list for moving house",
+    "what is in this picture?",
+    "describe this screenshot",
+    "transcribe this recording",
+    "thanks, that helped",
+    "explain the plot of Hamlet",
+    "write a product description for a steel water bottle",
+    "recommend some books on habits"
+  ]
+}

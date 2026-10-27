@@ -340,7 +340,7 @@ def derived(value, operands, pool):
                       (v * a, lambda b: b / a)]
         if a != 100:
             steps.append((v * 100 / a, lambda b: a * b / 100))
-        # A figure with a percentage added or taken off ("12,000 with 18% GST is 14,160", "10% off").
+        # A figure with a percentage added or taken off ("12,000 with 18% tax is 14,160", "10% off").
         steps += [((v / a - 1) * 100, lambda b: a * (1 + b / 100)), ((1 - v / a) * 100, lambda b: a * (1 - b / 100))]
         for candidate, forward in steps:
             if candidate is None or candidate <= 0:
@@ -410,9 +410,9 @@ class Sources:
             return len(digits) >= 7 and self._held_digits(digits)
         return True
 
-    def _missing(self, text):
+    def _missing(self, text, operands=()):
         facts = facts_in(text)
-        operands = _figures(text)
+        operands = _figures(text) + list(operands)
         pool = sorted(set(self.pool) | set(operands))
         out = []
         for kind, written in facts:
@@ -425,14 +425,15 @@ class Sources:
             out.append((kind, written))
         return out
 
-    def unsourced(self, text):
+    def unsourced(self, text, operands=()):
         """
         The facts a text states that no source holds and no single arithmetic step explains, as written, each once -
         only the kinds that block (BLOCKING_KINDS: an address, an identifier, an amount). "Billed 44,100.00, accepted
         35,280.00, under dispute 8,820.00" and "Total 13,500 for 3 nights" are the text's own arithmetic, and held.
+        operands: more figures the step may start from - for a value typed into a form, the other values typed with it.
         """
 
-        return list(dict.fromkeys(w for kind, w in self._missing(text) if kind in BLOCKING_KINDS))
+        return list(dict.fromkeys(w for kind, w in self._missing(text, operands) if kind in BLOCKING_KINDS))
 
     def doubtful(self, text):
         """The dates and letter-and-digit codes a text states that no source holds: evidence for the judge, never a

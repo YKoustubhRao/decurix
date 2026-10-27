@@ -459,7 +459,9 @@ def answer_waiting(path, content, already_marked=False):
     # the action finds the grant already in place.
     outcome = None
     try:
-        outcome = approval.resolve_reply(content)
+        approval.note_reply(content, asked=state.last_query_text)  # (the latest reply: the next gated action's yes when it says so)
+        outcome = approval.resolve_reply(content, asked=state.last_query_text if state.last_query_kind == "approval"
+                                         else "")
         if outcome:
             log(f"On-screen approval {outcome} by the human's reply.")
     except OSError as exc:
@@ -502,13 +504,14 @@ def answer_waiting(path, content, already_marked=False):
         # also ends the workflow, before that report is written, so the
         # report is shown rather than taken for the stage's result and
         # the next stage started.
-        if guidance.STOP_ONLY.match(content or "") and workflow_task.has_active():
+        if guidance.calls_off(content, guidance.open_question()) and workflow_task.has_active():
             workflow_task.cancel_active()
         if state.paused_replay is not None:
             target, args = replay_task.resume, (content, outcome)
         else:
             target, args = skill_task.resume, (content, outcome)
     else:
+        guidance.note_exchange(guidance.open_question() or getattr(state, "last_query_text", ""), content)
         guidance.note_reply(content, outcome)
         # An answer to a question a taught task's engine asked
         # (not a yes or no to an approval) is kept on the skill.
@@ -525,7 +528,7 @@ def answer_waiting(path, content, already_marked=False):
         # record with the entry the person had just been asked
         # about. (The engine's own paused job is dropped when the
         # next request starts.)
-        if guidance.STOP_ONLY.match(content or ""):
+        if guidance.calls_off(content, guidance.open_question()):
             target, args = _called_off, (content,)
 
     if workflow_task.has_active():
@@ -562,7 +565,7 @@ def _start_request(path, content):
     # A bare "stop" with nothing running or waiting has nothing to stop. Found live (2026-10-15): sent after the
     # desktop restarted under an open question, it went to TheBot as a task, the engine answered "Stopped.", and
     # the final check asked the person what to do about a task that could not be finished.
-    if guidance.STOP_ONLY.match(content or "") and not workflow_task.has_active():
+    if guidance.calls_off(content) and not workflow_task.has_active():
         task_id = task_context.task_id_from_filename(path.name)
         task_context.start(task_id, request=content)
         _mark_handled(path)
@@ -595,6 +598,11 @@ def _start_request(path, content):
         log(f"Could not note the shared folder's files before the task: {exc}")
     usage.reset()
     playbooks.begin()
+    try:
+        from decurix_agent import methods
+        methods.begin()
+    except Exception as exc:  # what is learned for later must never cost this task
+        log(f"Could not start the task's method record: {exc}")
 
     _mark_handled(path)
 

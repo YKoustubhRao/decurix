@@ -726,7 +726,7 @@ def continue_after_query(query_response):
     reply = (query_response or "").strip()
 
     if paused.get("command"):
-        if approval.is_approval(reply) and not _qualified(reply):
+        if approval.says_yes(reply, paused["command"]) and not _qualified(reply):
             result = "The person said yes. " + _shell(paused["command"])
         else:
             result = f"The person did not approve running it. Their reply: {reply}"

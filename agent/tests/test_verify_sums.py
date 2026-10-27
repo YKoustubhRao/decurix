@@ -58,3 +58,10 @@ class NumbersAsAProgramPrintsThem(unittest.TestCase):
         from decurix_agent.verify import program_numbers
         for text in ("Total 7,183.00", "rate 1.0823", "INV-2026-0094", "E101.pdf", "PO 1E5A", "x3E+1y", "version 2.10.3"):
             self.assertEqual(program_numbers(text), [], text)
+
+    def test_a_bullet_dash_on_the_next_line_is_not_a_minus(self):
+        # Found live (2026-10-27): a list of vouchers and their totals, one per line, read as subtractions.
+        text = "Vouchers seen in the Day Book:\n- 1190 = 56,994.00\n- 1191 = 55,802.60\n- 1193 = 25,711.02"
+        self.assertEqual(false_sums(text), [])
+        self.assertEqual(false_sums("Total 750.00 + 300.00 + 84.00 = 1143.00"),
+                         ["750.00 + 300.00 + 84.00 = 1143.00 is wrong: it comes to 1,134.00"])

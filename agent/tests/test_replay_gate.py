@@ -31,7 +31,7 @@ from unittest import mock
 import test_recordings  # noqa: F401
 import fixture_paths  # noqa: E402 - live-run fixtures live outside the repo
 
-from decurix_agent import config, long_task, workflow_task
+from decurix_agent import config, long_task, workflow_runner, workflow_task
 from decurix_agent.tools import office, table_quality
 from decurix_agent.workflow_runner import WorkflowRunner
 
@@ -60,6 +60,24 @@ def _stored_pdf_text(fixture, work, read):
     return read_document
 
 
+def _stored_pdf_check_text(fixture, work, extract):
+    """
+    workflow_runner._pdf_text with each fixture PDF's stored text, for the same reason as above - and because a Windows
+    host often has no pdftotext at all, where every PDF stage would fail to hand in for a tool, not for its work.
+    """
+
+    def pdf_text(path):
+        p = Path(path)
+        try:
+            stored = fixture / "pdf_text" / (p.resolve().relative_to(work.resolve()).as_posix() + ".txt")
+        except ValueError:
+            stored = None
+        if stored is not None and stored.is_file():
+            return stored.read_text(encoding="utf-8")
+        return extract(path)
+    return pdf_text
+
+
 def replay(fixture, root, crosscheck=(), seen=None):
     """
     Every code finding the saved run's stages meet now: [(stage title, finding)].
@@ -86,7 +104,10 @@ def replay(fixture, root, crosscheck=(), seen=None):
     runner = WorkflowRunner(root / "workflows")
     found = []
     seen = seen if seen is not None else {}
-    with mock.patch.object(workflow_task, "runner", return_value=runner),             mock.patch.object(office, "read_document", _stored_pdf_text(fixture, work, office.read_document)),             mock.patch.object(table_quality, "_ranges_file", lambda: root / "table-ranges.json"):
+    with mock.patch.object(workflow_task, "runner", return_value=runner), \
+            mock.patch.object(office, "read_document", _stored_pdf_text(fixture, work, office.read_document)), \
+            mock.patch.object(workflow_runner, "_pdf_text", _stored_pdf_check_text(fixture, work, workflow_runner._pdf_text)), \
+            mock.patch.object(table_quality, "_ranges_file", lambda: root / "table-ranges.json"):
         run_id = runner.create(spec, work_dir=str(work))["run_id"]
         # The inputs are there from the start; each stage's files arrive once it runs, as it made them (the runner
         # counts a file already there, unchanged, as no stage's work).

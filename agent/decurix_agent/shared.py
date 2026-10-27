@@ -24,7 +24,10 @@ ENV_LINK = "DECURIX_SHARED_LINK"  # where ~/PC is, for tests
 
 # How much of a shared folder is looked through for files a task made or was given.
 MAX_ENTRIES = 4000
-MAX_DEPTH = 3
+# A person's folders run deep: "Returns/<client>/2026-27/06. SEPTEMBER/invoice.pdf" is four levels down. At 3, every
+# file of a month folder was invisible to the final check (a workbook just made there was "not made") and to the copy of
+# the person's files taken before a task (2026-10-21). MAX_ENTRIES is what bounds a big folder.
+MAX_DEPTH = 8
 
 _WINDOWS = re.compile(r"^[A-Za-z]:(?:/|$)")
 _WSL_DRIVE = re.compile(r"^/mnt/([A-Za-z])(?=/|$)")
@@ -102,6 +105,25 @@ def plan_path(path):
             rest = "/".join(parts[k:])
             return f"{WORK_LINK}/{rest}" if rest and ".." not in parts[k:] else None
     return None
+
+
+def copy_file(src, dst):
+    """
+    Copy a file's contents to `dst`, then its times and permission bits where the filesystem allows. shutil.copy2 does
+    both and fails on the person's shared folder: every file of a Windows drive mount shows as owned by root, so setting
+    its mode as this desktop's user is refused (EPERM) - after the contents were written. Found live
+    (2026-10-21): the first `office update` of a person's workbook failed "Operation not permitted" while keeping its
+    .orig backup, the engine worked in a copy instead, and the restore of a person's file would have failed the same way.
+    """
+
+    import shutil
+
+    shutil.copyfile(src, dst)
+    try:
+        shutil.copystat(src, dst)
+    except OSError:
+        pass
+    return dst
 
 
 def ensure_link():
@@ -283,9 +305,26 @@ def walk_files(root, skip=()):
     """Files under root, at most MAX_DEPTH levels and MAX_ENTRIES entries deep, hidden ones and folders named in `skip`
     left out."""
 
-    seen, stack = 0, [(Path(root), 0)]
+    return (p for p, is_folder in _walk(root, skip) if not is_folder)
+
+
+def walk_folders(root, skip=()):
+    """Folders under root (an empty one too), with walk_files' depth and entry budget, breadth first; hidden ones, links
+    and folders named in `skip` left out."""
+
+    return (p for p, is_folder in _walk(root, skip) if is_folder)
+
+
+def _walk(root, skip=()):
+    """(path, is_folder) for what is under root, breadth first, at most MAX_DEPTH levels and MAX_ENTRIES entries; a
+    link is never followed or listed as a folder."""
+
+    from collections import deque
+
+    # Breadth first, so the entry budget is spent on the folders nearest the top before the deepest.
+    seen, stack = 0, deque([(Path(root), 0)])
     while stack:
-        folder_path, depth = stack.pop()
+        folder_path, depth = stack.popleft()
         try:
             children = list(os.scandir(folder_path))
         except OSError:
@@ -298,10 +337,12 @@ def walk_files(root, skip=()):
                 continue
             try:
                 if child.is_dir(follow_symlinks=False):
-                    if depth < MAX_DEPTH and child.name not in skip:
-                        stack.append((Path(child.path), depth + 1))
+                    if child.name not in skip:
+                        yield Path(child.path), True
+                        if depth < MAX_DEPTH:
+                            stack.append((Path(child.path), depth + 1))
                 elif child.is_file(follow_symlinks=False):
-                    yield Path(child.path)
+                    yield Path(child.path), False
             except OSError:
                 continue
 

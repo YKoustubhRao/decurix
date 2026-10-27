@@ -60,7 +60,8 @@ var (
 		regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
 		regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{30,}`),
 		regexp.MustCompile(`\bxox[abpr]-[A-Za-z0-9-]{10,}`),
-		regexp.MustCompile(`(?i)\b(?:password|passwd|api[_ -]?key|secret|token)\s*[:=]\s*\S{6,}`),
+		// The key and value may be quoted, as in a JSON fixture.
+		regexp.MustCompile(`(?i)\b(?:password|passwd|api[_ -]?key|secret|token)["']?\s*[:=]\s*["']?\S{6,}`),
 	}
 	cardPattern = regexp.MustCompile(`\b(?:\d[ -]?){13,19}\b`)
 )
@@ -371,8 +372,11 @@ func ValidatePracticeSuite(src PracticeSource, cases []PracticeCase) []string {
 		total += caseBytes
 		if len(c.Fixture) > 0 {
 			var v any
-			if json.Unmarshal(c.Fixture, &v) != nil {
-				add("Case %s's fixture is not JSON.", label)
+			if len(c.Fixture) > MaxFileBytes || json.Unmarshal(c.Fixture, &v) != nil {
+				add("Case %s's fixture is not JSON of at most %d bytes.", label, MaxFileBytes)
+			}
+			if CredentialLike(string(c.Fixture)) {
+				add("Case %s's fixture looks like it holds a credential.", label)
 			}
 		}
 		problems = append(problems, validateChecks(src, c)...)

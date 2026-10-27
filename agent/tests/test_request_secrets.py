@@ -37,7 +37,10 @@ class RequestSecrets(unittest.TestCase):
         self.assertNotIn("Northwind", kept)
         for text, found in (('the PIN: 4821 for the door', ["4821"]), ('api key=sk_live_abc123', ["sk_live_abc123"]),
                             ('the password "Ttlh"', ["Ttlh"]), ("Pass the file on to the team.", []),
-                            ("a token of thanks", [])):
+                            ("a token of thanks", []),
+                            # Found live (2026-10-22): "has" was kept as a secret and withheld from every later reply.
+                            ("No OTP has come to the client's phone yet.", []), ("the PIN has changed", []),
+                            ("OTP 529749", ["529749"]), ("the password is sunshine", ["sunshine"])):
             self.assertEqual(privacy.request_secrets(text), found, text)
 
     def test_the_live_question_never_shows_it(self):

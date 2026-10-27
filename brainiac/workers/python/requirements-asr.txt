@@ -1,0 +1,5 @@
+# Speech for brainiac_worker.py: sherpa-onnx (VAD + offline ASR) on its own
+# bundled ONNX Runtime, no torch. numpy is left to pip: 2.5 needs Python 3.12+,
+# so a 3.11 interpreter gets the newest numpy that still supports it.
+sherpa-onnx==2.0.0
+numpy>=1.24,<3

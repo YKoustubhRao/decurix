@@ -52,6 +52,35 @@ class TheSaveGuard(unittest.TestCase):
                                                               typed("Khan"), typed("arif.khan95@example.com")]
         self.assertIsNone(core.already_entered(events))
 
+    def test_a_new_record_page_visited_earlier_does_not_make_an_existing_one_new(self):
+        # Found live (2026-10-21): after a portal's "add invoice" page, saving an existing return on another page
+        # (the same login and period typed again) was refused as a second record.
+        login = [opened("http://h:8703/login"), typed("udupiagro"), typed("September")]
+        add = [opened("http://h:8703/gstr1/b2b/add?period=092026"), typed("451")]
+        ret = [opened("http://h:8703/gstr3b?period=092026"), typed("275650")]
+        save = {"kind": "click", "outcome": "done", "change": "page is now http://h:8703/gstr3b?period=092026&msg=saved"}
+        events = login + ret + [save] + add + login + ret
+        self.assertIsNone(core.already_entered(events))
+
+    def test_a_save_the_application_refused_is_no_save(self):
+        # Found live (2026-10-25): a form posted to ".../voucher/save" answered "ledger 'IGST' does not exist"; the
+        # "/save" in the address was taken for a save, and the bill was then refused as "already saved".
+        bill = [opened("http://h:8704/books/voucher/new"), typed("Sales"), typed("Kasaragod Arecanut Processors")]
+        failed = {"kind": "click", "outcome": "done", "change": "page is now http://h:8704/books/voucher/save; "
+                  "1 element(s) appeared: alert \"ledger 'IGST' does not exist\""}
+        self.assertIsNone(core.already_entered(bill + [failed] + bill))
+
+    def test_a_second_bill_to_the_same_customer_is_another_record(self):
+        # Found live (2026-10-25): voucher type and party were the "identity", so a month's second bill for one
+        # customer was refused as the first one again. Two records whose own numbers differ are two records.
+        def bill(no):
+            return [opened("http://h:8704/books/voucher/new"), typed("Sales"), typed("Hebri Agro Industries"),
+                    {"kind": "type", "outcome": "done", "text": no, "change": "", "element": {"name": "No."}}]
+        ok = {"kind": "click", "outcome": "done", "change": 'page is now http://h:8704/books/voucher/12; 1 element(s) '
+              'appeared: status "Sales voucher saved."'}
+        self.assertIsNone(core.already_entered(bill("1190") + [ok] + bill("1194")))
+        self.assertEqual(core.already_entered(bill("1190") + [ok] + bill("1190")), ("Sales Hebri Agro Industries", ""))
+
     def test_an_edit_form_is_never_refused(self):
         edit = [opened("http://h:8701/people/EMP-2043/edit"), typed("Rohit"), typed("Kulkarni"),
                 typed("rohit.kulkarni@example.com")]
