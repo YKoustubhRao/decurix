@@ -44,6 +44,8 @@ SKIP_DIRS = {"node_modules", "__pycache__", "venv", "site-packages", "target", "
 # A file a request asks for by name ("make contract_changes.docx in my work folder").
 REQUESTED_FILE = re.compile(r"\b[\w-][\w.-]*\.(?:xlsx|xlsm|docx|pptx|pdf|csv|tsv|txt|md|json|xml|html?|eml|ods|odt|odp|svg|png|jpe?g|gif|webp|bmp|tiff?)\b", re.I)
 NAMED_PATH = re.compile(r"(?:~|/|\b[a-z]:[\\/])[\w.~/\\-]*[\w-]\.[a-z0-9]{2,5}\b", re.I)
+# A path written in quotes or backticks, which may hold spaces ("/home/headless/PC/Tax Returns/x.xlsx").
+QUOTED_PATH = re.compile(r"[`'\"]((?:~|/|[a-z]:[\\/])[^`'\"\n]*?[\w-]\.[a-z0-9]{2,5})[`'\"]", re.I)
 
 
 def since():
@@ -103,6 +105,30 @@ def files(report="", started=None, root=None, request=""):
             made.append((path.suffix.lower() in DELIVERABLES or path.name.lower() in named, stat.st_mtime, str(path)))
 
     return [path for _, _, path in sorted(made, reverse=True)[:MAX_FILES]]
+
+
+def named_sources(report="", request="", made=()):
+    """
+    Files the report or the request names by path that exist and can be read, other than those in `made`: what the
+    work read, for a judge that asks to look closer. Found live (2026-10-21): the report compared a
+    portal's ledger with "Closing credit carried forward" in the workbook it named, read off the wrong month's row; the
+    check could look only in files the task made, so it could neither confirm nor catch it.
+    """
+
+    seen = {str(m) for m in made or ()}
+    out = []
+    text = "\n".join((report or "", attachments.text(request or "")))
+    for raw in QUOTED_PATH.findall(text) + NAMED_PATH.findall(text):
+        path = Path(os.path.expanduser(raw.strip()))
+        if str(path) in seen or path.suffix.lower() not in READABLE:
+            continue
+        try:
+            if path.is_file() and path.stat().st_size > 0:
+                seen.add(str(path))
+                out.append(str(path))
+        except OSError:
+            continue
+    return out[:MAX_FILES]
 
 
 # ============================================================
@@ -508,13 +534,23 @@ class FileFacts:
       unknown_recipients an email draft addressed to an address that is in no input (payees.unknown_recipients)
       draft_facts   a fact an email draft states that no source and no recorded work holds (provenance)
       draft_fields  a draft's fact against its recipient's own row of the request's table (evidence)
+      duplicates    files made under different names that are byte for byte the same (evidence: a copy may be meant)
+      pattern_breaks a row of a sheet of repeated blocks whose formula reads a differently labelled row than the same row
+                    of the other blocks (evidence: office.reference_pattern_breaks), or formulas that moved with rows put
+                    in this task while their references stayed behind (office.moved_formula_breaks)
+      code_notes    a long reference code a file holds that differs in a few characters from one the task was shown
+                    (evidence: sequential references and sibling ids look the same - independent review, 2026-10-22)
     notes() is the evidence: what reads the request or needs judgement. The judge weighs it and the person sees it under
     "Please check"; it never fails the work by itself (harness audit, 2026-10-21).
     """
 
     def __init__(self, unstored=(), typed_totals=(), totals_note=(), missing_files="", file_faults=(), gaps=(), layout=(),
                  source_mismatch=(), disclosures=(), payee_mismatch=(), unknown_recipients=(), draft_facts=(),
-                 request_faults=(), draft_fields=(), gap_notes=(), unchecked=()):
+                 request_faults=(), draft_fields=(), gap_notes=(), unchecked=(), duplicates=(), pattern_breaks=(),
+                 code_notes=()):
+        self.code_notes = list(code_notes)
+        self.duplicates = list(duplicates)
+        self.pattern_breaks = list(pattern_breaks)
         self.unknown_recipients = list(unknown_recipients)
         self.draft_facts = list(draft_facts)
         self.request_faults = list(request_faults)
@@ -536,10 +572,60 @@ class FileFacts:
         """The evidence among these facts (never a verdict): what reads the request, or needs judgement."""
 
         return (list(self.gap_notes) + list(self.unchecked) + list(self.layout) + list(self.typed_totals) + list(self.request_faults)
-                + list(self.disclosures) + list(self.draft_fields))
+                + list(self.disclosures) + list(self.draft_fields) + list(self.duplicates)
+                + list(self.pattern_breaks) + list(self.code_notes))
 
 
 OFFICE_KINDS = {".xlsx", ".xlsm", ".xltx", ".xltm", ".docx", ".docm", ".dotx", ".pptx", ".pptm", ".potx"}
+
+# What the first bytes of a file of each kind are (PDF allows a little before its header).
+_KIND_MAGIC = {".pdf": ("a PDF", (b"%PDF",), 1024), ".png": ("a PNG picture", (b"\x89PNG",), 0),
+               ".jpg": ("a JPEG picture", (b"\xff\xd8\xff",), 0), ".jpeg": ("a JPEG picture", (b"\xff\xd8\xff",), 0),
+               ".gif": ("a GIF picture", (b"GIF87a", b"GIF89a"), 0)}
+
+
+# What a file whose bytes are not the kind its name says is to be done with (named_kind_faults): it is not finished
+# work to correct in place - it was never the document. Found live (2026-10-24): told "the saved file is not finished,
+# correct it in the file itself", the worker re-saved a sign-in page three times and never clicked the attachment.
+WRONG_KIND_MARK = " is named as "
+WRONG_KIND_REMEDY = ("A file that is not what its name says was never the document: delete it and get the document "
+                     "again where it is offered - in the browser, from the page or message it is attached to (a link "
+                     "fetched outside the browser can bring back the page that asks to sign in) - then open it to "
+                     "check it is the document before you copy it where it belongs.")
+
+
+def wrong_kind(faults):
+    """The faults among `faults` that are files not of the kind their name says (named_kind_faults)."""
+
+    return [f for f in faults or () if WRONG_KIND_MARK in f and " but holds " in f]
+
+
+def named_kind_faults(paths):
+    """
+    A sentence for each file among `paths` whose name says one kind (a PDF, a picture) and whose bytes are not that
+    kind - decided from the bytes, no model. Found live (2026-10-24): a browser's aborted download left a web page
+    saved as "197_sales_invoice_Anil_Rego.pdf"; the report said both invoices were in the folder.
+    """
+
+    out = []
+    for path in dict.fromkeys(str(p) for p in paths or ()):
+        p = Path(path)
+        kind = _KIND_MAGIC.get(p.suffix.lower())
+        if not kind or not p.is_file():
+            continue
+        name, magics, window = kind
+        try:
+            head = p.read_bytes()[:max(window, 16) + 16]
+        except OSError:
+            continue
+        found = head[:window + 8] if window else head[:8]
+        if any((m in found) if window else head.startswith(m) for m in magics):
+            continue
+        text = head.lstrip()[:64].lower()
+        what = ("nothing (it is empty)" if not head else "a web page" if text.startswith((b"<!doctype", b"<html", b"<"))
+                else "text" if all(32 <= c < 127 or c in (9, 10, 13) for c in head[:32]) else "something else")
+        out.append(f"{p.name} is named as {name} but holds {what} - not {name}: get it again and check what it holds")
+    return out
 
 
 def open_statuses(paths):
@@ -642,17 +728,131 @@ def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_m
         totals_note=[] if wrong_totals else found_totals,
         missing_files=missing_requested(named, every, root=root,
                                         **({"only": own_outputs} if own_outputs is not None else {})),
-        file_faults=[s for st, s in opened.values() if st == "broken"] + document_findings(named, every),
+        file_faults=[s for st, s in opened.values() if st == "broken"] + document_findings(named, every)
+        + named_kind_faults(every),
         unchecked=[s for st, s in opened.values() if st in ("protected", "unchecked") and s],
         request_faults=image_findings(named, every, source_images(named, every, **({"root": root} if root else {})))
         + page_break_findings(named, every),
         # Needs the formula results stored too: the figure checked is the value the file holds (sources.py).
         source_mismatch=_source_mismatch(request, every) if not unstored else [],
+        code_notes=miscopied_codes(every, request),
         disclosures=draft_disclosures(drafts_made, request) if drafts_made else [],
         payee_mismatch=_payee_mismatch(request, every),
+        duplicates=identical_files(every),
+        pattern_breaks=reference_breaks(every) + moved_breaks(every) + layout_breaks(every),
         unknown_recipients=(_unknown_recipients(request, every, drafts_made) if drafts_made else [])
         + _unknown_in_files(request, every),
         **(_draft_facts(request, every, drafts_made) if drafts_made else {}))
+
+
+def reference_breaks(paths):
+    """A sentence for each row of a workbook among `paths` whose formula reads another row than the same row of the
+    sheet's other blocks (office.reference_pattern_breaks) - evidence for the judge."""
+
+    from decurix_agent.tools import office
+
+    return _per_file(paths, office.reference_pattern_breaks, "compare the blocks of")
+
+
+def moved_breaks(paths):
+    """A sentence for each workbook among `paths` whose formulas moved with rows put in or taken out this task while
+    their references stayed behind (office.moved_formula_breaks, against the copy kept when the task began) - evidence."""
+
+    from decurix_agent import source_guard
+    from decurix_agent.tools import office
+
+    def check(path):
+        before = source_guard.before_copy(path)
+        return office.moved_formula_breaks(before, path) if before else []
+
+    return _per_file(paths, check, "compare with its copy from before the task")
+
+
+# A reference code: twelve or more letters and digits with both in it (a filing receipt, a tax id, an IBAN, an order reference).
+_LONG_CODE = re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{12,}(?![A-Za-z0-9])")
+
+
+def _shown_codes(request=""):
+    """The long reference codes the task was shown: the request, and what the system's pages showed (the tools' page
+    notes and the screen actions' results) - never what the work itself wrote or printed."""
+
+    texts = [request or ""]
+    try:
+        from decurix_agent import long_task
+        from decurix_agent.computer import evidence
+        # Every screen action's whole result, not the last few as the judge is shown: a long task's first filing,
+        # whose confirmation the code was copied from, is far back by its end (found live, 2026-10-22).
+        events = evidence._task_events(None)
+        texts += long_task._page_notes() + list(evidence.observed()) + [
+            f"{e.get('summary') or ''} {e.get('change') or ''}" for e in events]
+    except Exception as exc:  # noqa: BLE001 - nothing read is nothing held
+        log(f"produced: could not gather what the screens showed: {exc}")
+    return {c.upper() for t in texts for c in _LONG_CODE.findall(str(t))}
+
+
+def miscopied_codes(paths, request=""):
+    """
+    Evidence for the judge, never a verdict: a sentence for each long reference code a file the work wrote holds that
+    nothing the task was shown holds, while exactly one code it was shown differs from it in one to three characters.
+    Found live (2026-10-22): the portal showed the filing's receipt code as AA2909267663712A and the workbook was
+    given AA2909267663796A; the report read the workbook back and called it verified. But "a few characters apart" is
+    a judgement, not a certainty (independent review, 2026-10-22): order numbers in a run (SO2026000121..125, read from
+    an input, with ...124 on the screen) and sibling ids (one company's tax ids in two regions) are near twins too - so
+    it is worded as a difference to check, never "copied wrong". Short codes are left out: twelve characters or more.
+    """
+
+    shown = _shown_codes(request)
+    if not shown:
+        return []
+    asked = {c.upper() for c in _LONG_CODE.findall(request or "")}
+    from decurix_agent.tools import office
+    out = []
+    for path in dict.fromkeys(str(p) for p in paths or ()):
+        try:
+            changed = changed_rows_text(path) if Path(path).suffix.lower() in (".xlsx", ".xlsm") else ""
+            text = changed or office.read_document(path).get("text") or ""
+        except Exception as exc:  # noqa: BLE001 - a file that cannot be read decides nothing here
+            log(f"produced: could not read {path} for its codes: {exc}")
+            continue
+        for code in dict.fromkeys(_LONG_CODE.findall(text)):
+            upper = code.upper()
+            if upper in shown:
+                continue
+            twins = [k for k in shown if len(k) == len(upper) and 1 <= sum(a != b for a, b in zip(k, upper)) <= 3]
+            if len(twins) == 1:
+                apart = sum(a != b for a, b in zip(twins[0], upper))
+                where = "in the request" if twins[0] in asked else "on the screen"
+                out.append(f"{code} in {Path(path).name} differs in {apart} character(s) from {twins[0]} shown {where}; "
+                           "check which is right.")
+    return out
+
+
+def identical_files(paths):
+    """
+    Sentences naming files among `paths` with different names and the same bytes. Found live
+    (2026-10-21): two invoices downloaded from a chat were saved as 197_....pdf and 198_....pdf, and 198 was a second
+    download of 197; the report said both were "verified PDFs" and the check, shown only their names, could not tell.
+    Evidence for the judge, never a verdict: a copy can be what was asked.
+    """
+
+    import hashlib
+
+    groups = {}
+    for path in dict.fromkeys(str(p) for p in paths or ()):
+        try:
+            if not Path(path).is_file() or Path(path).stat().st_size == 0:
+                continue
+            digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        except OSError:
+            continue
+        groups.setdefault(digest, []).append(path)
+    out = []
+    for same in groups.values():
+        names = sorted({Path(p).name for p in same})
+        if len(names) > 1:
+            out.append(" and ".join(names[:4]) + " are byte for byte the same file - if they should be different "
+                       "documents, one of them is a copy of the other.")
+    return out
 
 
 def _unknown_in_files(request, every):
@@ -820,7 +1020,7 @@ def parties(paths):
     for path in paths or ():
         match = _CHAT_WITH.search(Path(str(path)).name)
         if match:
-            # "Chat with Rohan Kulkarni (Cafe Bloom)": the person and the business are one party - they share one set,
+            # "Chat with <person> (<business>)": the person and the business are one party - they share one set,
             # so writing to either is writing to both.
             inner = re.findall(r"\(([^)]+)\)", match.group(1))
             names = [n.strip() for n in inner + [re.sub(r"\s*\([^)]*\)", "", match.group(1))] if len(n.strip()) >= 3]
@@ -948,20 +1148,44 @@ def focus_tokens(findings):
     return out[:60]
 
 
-def sample_table(body, budget, focus=()):
+# A sheet's heading in office read's text ("=== Sheet 'Returns': used range ...") and a cell's address as it writes
+# one ("C97=..."), on a lowered line: a whole address, never the end of a longer one ("ac97=").
+_SHEET_HEADING = re.compile(r"^=== Sheet (['\"])(.*?)\1: used range")
+_CELL_AT = re.compile(r"(?:^|(?<=\s))([a-z]{1,3}\d+)=")
+
+
+def sample_table(body, budget, focus=(), cells=()):
     """
     A long table's text cut to `budget` characters so the judge sees what matters (independent review, 2026-10-21 -
-    not the first N characters): its first lines (the header), every line naming what a finding points at, its total
-    lines, then an even sample of the rest; each gap marked with how many lines it leaves out.
+    not the first N characters): its first lines (the header), every line naming what a finding points at, every row
+    holding one of `cells` ((sheet, address) pairs, matched on that sheet only and by whole address), its total lines,
+    then an even sample of the rest; each gap marked with how many lines it leaves out.
     """
 
     lines = body.splitlines()
     if len(body) <= budget or len(lines) <= HEAD_LINES:
         return body[:budget]
     focus = [str(f).lower() for f in focus or ()]
+    wanted = {}
+    for sheet, ref in cells or ():
+        wanted.setdefault(str(sheet), set()).add(str(ref).lower())
+    sheet_of, current = [], None
+    for line in lines:
+        heading = _SHEET_HEADING.match(line)
+        if heading:
+            current = heading.group(2)
+        sheet_of.append(current)
     keep = set(range(min(HEAD_LINES, len(lines))))
     flat = [line.lower().replace(",", "") for line in lines]
-    keep |= {i for i, line in enumerate(flat) if any(f in line for f in focus)}
+
+    def named(i):
+        """Whether line i names what a finding points at, or holds a changed cell of its own sheet."""
+        if any(f in flat[i] for f in focus):
+            return True
+        refs = wanted.get(sheet_of[i])
+        return bool(refs) and any(ref in refs for ref in _CELL_AT.findall(lines[i].lower()))
+
+    keep |= {i for i in range(len(lines)) if named(i)}
     keep |= {i for i, line in enumerate(flat) if re.search(r"\b(?:grand\s+)?(?:sub)?totals?\b", line)}
     marker = 32  # ("[... N line(s) not shown ...]" between kept lines)
     used = sum(len(lines[i]) + 1 + marker for i in keep)
@@ -975,7 +1199,7 @@ def sample_table(body, budget, focus=()):
     out, last = [], -1
     # (The header, the named rows and the totals first, then the sample, each in file order, within the budget.)
     first = set(range(min(HEAD_LINES, len(lines)))) | {i for i in keep if i in range(len(lines)) and (
-        any(f in flat[i] for f in focus) or re.search(r"\b(?:grand\s+)?(?:sub)?totals?\b", flat[i]))}
+        named(i) or re.search(r"\b(?:grand\s+)?(?:sub)?totals?\b", flat[i]))}
     chosen, size = set(), 0
     for i in sorted(first) + sorted(keep - first):
         cost = len(lines[i]) + 1 + marker
@@ -997,6 +1221,42 @@ LOOK_CHARS = 8000
 LOOK_LINES = 40
 
 
+_CELL_TERM = re.compile(r"^(?:.*!)?\$?([a-z]{1,3})\$?(\d{1,6})(?::\$?([a-z]{1,3})\$?(\d{1,6}))?$")
+
+
+def _col_index(col):
+    """A column's number (a=1, z=26, aa=27)."""
+    n = 0
+    for ch in col:
+        n = n * 26 + ord(ch) - 96
+    return n
+
+
+def _col_name(n):
+    """A column's letters from its number."""
+    out = ""
+    while n:
+        n, rem = divmod(n - 1, 26)
+        out = chr(97 + rem) + out
+    return out
+
+
+def _cells_pattern(term):
+    """A regex for the lines of an office read listing that hold a cell or range term (lower case), or None."""
+    m = _CELL_TERM.match(term.replace(" ", ""))
+    if not m:
+        return None
+    c1, r1 = m.group(1), int(m.group(2))
+    c2, r2 = (m.group(3) or c1), int(m.group(4) or r1)
+    r1, r2 = min(r1, r2), max(r1, r2)
+    a, b = sorted((_col_index(c1), _col_index(c2)))
+    if r2 - r1 > 200 or b - a > 52:
+        return None
+    rows = "|".join(str(r) for r in range(r1, r2 + 1))
+    cols = "|".join(_col_name(n) for n in range(a, b + 1))
+    return re.compile(rf"(?:^\s*(?:{rows})\s*\[|(?<![a-z0-9])(?:{cols})(?:{rows})\s*=)")
+
+
 def lines_with(paths, terms, budget=LOOK_CHARS):
     """The lines of those files that hold any of `terms` (case and spacing ignored), each file's first lines with them
     (a table's header), for a judge that asked to look closer (verify.judge's `look`). "" when none holds one."""
@@ -1006,6 +1266,11 @@ def lines_with(paths, terms, budget=LOOK_CHARS):
     wanted = [" ".join(str(t).lower().split()) for t in terms or () if str(t).strip()]
     if not wanted:
         return ""
+    # A cell or range the judge names ("A79:E81", "Sheet!B12") is found as office read prints its rows - "79 [...]" or
+    # "A79=..." - never as the literal text: found live (2026-10-23), asked to see A79:E81, the look-up
+    # found nothing and the right figures went unseen twice.
+    cells = [_cells_pattern(t) for t in wanted]
+    cells = [c for c in cells if c is not None]
     parts, size = [], 0
     for path in paths or ():
         if Path(path).suffix.lower() in IMAGES:
@@ -1017,7 +1282,8 @@ def lines_with(paths, terms, budget=LOOK_CHARS):
             continue
         flat = [" ".join(line.lower().replace(",", "").split()) for line in lines]
         hits = [i for i, line in enumerate(flat)
-                if any(w in line or w.replace(",", "") in line for w in wanted)][:LOOK_LINES]
+                if any(w in line or w.replace(",", "") in line for w in wanted)
+                or any(c.search(line) for c in cells)][:LOOK_LINES]
         if not hits:
             continue
         head = [i for i in range(min(3, len(lines))) if i not in hits]
@@ -1031,6 +1297,143 @@ def lines_with(paths, terms, budget=LOOK_CHARS):
         if size >= budget:
             break
     return "\n".join(parts)
+
+
+MAX_CHANGED_CELLS = 150
+# How much of a workbook the judge's view reads before sampling it to MAX_FILE_CHARS.
+JUDGE_SHEET_ROWS = 5000
+JUDGE_SHEET_CHARS = 400_000
+
+
+_CHANGES = {}
+_CHANGES_KEPT = 32
+
+
+def _stamp(path):
+    """A file's (size, modification time): what tells one saved version of it from another."""
+
+    info = os.stat(path)
+    return info.st_size, info.st_mtime_ns
+
+
+def workbook_changes(path):
+    """
+    {sheet: {row: [cell addresses]}} of a workbook's cells that differ from the copy kept before the task
+    (source_guard.before_copy); None without a copy or when either cannot be read. Read once per saved version of the
+    two files: the final check asks it of the same workbook several times (changed rows, layout, codes, the judge's view).
+    """
+
+    if Path(path).suffix.lower() not in (".xlsx", ".xlsm"):
+        return None
+    try:
+        from decurix_agent import source_guard
+        before = source_guard.before_copy(path)
+        if before is None:
+            return None
+        key = (str(path), _stamp(path), str(before), _stamp(before))
+        if key in _CHANGES:
+            return _CHANGES[key]
+        import openpyxl
+        old, new = openpyxl.load_workbook(str(before)), openpyxl.load_workbook(str(path))
+    except Exception as exc:  # noqa: BLE001 - extra focus, never a reason to fail the read
+        log(f"produced: could not compare {path} with its copy from before the task: {exc}")
+        return None
+    out = {}
+    for ws in new.worksheets:
+        was = old[ws.title] if ws.title in old.sheetnames else None
+        for row in ws.iter_rows():
+            for c in row:
+                if c.value is not None and (was is None or was[c.coordinate].value != c.value):
+                    out.setdefault(ws.title, {}).setdefault(c.row, []).append(c.coordinate)
+    if len(_CHANGES) >= _CHANGES_KEPT:
+        _CHANGES.clear()
+    _CHANGES[key] = out
+    return out
+
+
+def changed_cells(path):
+    """
+    [(sheet, "C97"), ...]: the cells of a workbook that differ from the copy kept before the task, each with its sheet
+    - so a long sheet the judge is shown a sample of shows what the task changed (sample_table's `cells`). Found live
+    (2026-10-22): the report gave a credit carried forward the saved workbook contradicted, and the judge,
+    shown a sample of the sheet without the new month's rows, passed it. [] when there is no copy.
+    """
+
+    out = []
+    for sheet, rows in (workbook_changes(path) or {}).items():
+        for r in sorted(rows):
+            for ref in rows[r]:
+                out.append((sheet, ref))
+                if len(out) >= MAX_CHANGED_CELLS:
+                    return out
+    return out
+
+
+def changed_rows_by_sheet(path):
+    """{sheet: {row numbers}} of a workbook's rows that differ from its copy from before the task; None without a copy."""
+
+    changes = workbook_changes(path)
+    if changes is None:
+        return None
+    return {sheet: set(rows) for sheet, rows in changes.items()}
+
+
+def layout_breaks(paths):
+    """A sentence for each block a workbook's task added or changed that does not follow the layout of the sheet's other
+    blocks (office.block_layout_breaks) - evidence for the judge."""
+
+    from decurix_agent.tools import office
+
+    def check(path):
+        if Path(path).suffix.lower() not in (".xlsx", ".xlsm"):
+            return []
+        return office.block_layout_breaks(path, rows=changed_rows_by_sheet(path))
+
+    return _per_file(paths, check, "compare the layout of the blocks of")
+
+
+MAX_CHANGED_ROWS_CHARS = 5000
+
+
+def changed_rows_text(path):
+    """
+    The rows of a workbook that differ from the copy kept before the task, each as its saved values (no formulas) with
+    the block it belongs to - what the task changed, compact enough to be shown whole beside a long sheet's sample. ""
+    when there is no copy or nothing changed.
+    """
+
+    # Each sheet's own changed rows: a row number alone matched the same row of every sheet, and the judge was shown
+    # other sheets' untouched rows as "what this task changed" (independent review, 2026-10-22).
+    by_sheet = changed_rows_by_sheet(path)
+    if not by_sheet:
+        return ""
+    try:
+        import openpyxl
+        from decurix_agent.tools import office
+        values = openpyxl.load_workbook(str(path), data_only=True)
+        formulas = openpyxl.load_workbook(str(path))
+    except Exception as exc:  # noqa: BLE001
+        log(f"produced: could not read the changed rows of {path}: {exc}")
+        return ""
+    lines = []
+    for ws in formulas.worksheets:
+        if not by_sheet.get(ws.title):
+            continue
+        try:
+            blocks = office.sheet_blocks(ws)
+        except Exception:  # noqa: BLE001
+            blocks = []
+        wv = values[ws.title]
+        for r in sorted(by_sheet[ws.title]):
+            tag = next((t for a, b, t in blocks if a <= r <= b), "")
+            shown = [f"{wv.cell(r, c).coordinate}={office._cell_shown(wv.cell(r, c).value)}"
+                     for c in range(1, ws.max_column + 1) if wv.cell(r, c).value is not None]
+            if shown:
+                lines.append(f"{ws.title}{(' [' + tag + ']') if tag else ''}  " + "  ".join(shown))
+    text = "\n".join(lines)
+    if len(text) > MAX_CHANGED_ROWS_CHARS:
+        text = text[:MAX_CHANGED_ROWS_CHARS] + "\n[... more changed rows not shown]"
+    return text
 
 
 def text(paths, focus=()):
@@ -1047,13 +1450,19 @@ def text(paths, focus=()):
             parts.append(f"--- {label}\n{_picture(path)}")
             continue
         try:
-            body = (office.read_document(path).get("text") or "").strip()
+            if Path(path).suffix.lower() in (".xlsx", ".xlsm"):
+                # Every row, then sampled below: office read's own view stops at its first rows, and what a task adds
+                # to a sheet is usually at its end (2026-10-22: the new month, rows 86-99, was never shown).
+                body = (office._data_check_workbook(Path(path)) + office.read_workbook(
+                    path, max_rows=JUDGE_SHEET_ROWS, limit=JUDGE_SHEET_CHARS)).strip()
+            else:
+                body = (office.read_document(path).get("text") or "").strip()
         except Exception as exc:  # a file the reader cannot open is reported as such, not left out
             log(f"produced: could not read {path}: {exc}")
             parts.append(f"--- {label}\n(could not be read: {str(exc)[:200]})")
             continue
         if len(body) > MAX_FILE_CHARS and Path(path).suffix.lower() in TABLE_KINDS:
-            body = sample_table(body, MAX_FILE_CHARS, tokens)
+            body = sample_table(body, MAX_FILE_CHARS, tokens, cells=changed_cells(path))
         elif len(body) > MAX_FILE_CHARS:
             body = body[:MAX_FILE_CHARS] + f"\n[cut here: {len(body) - MAX_FILE_CHARS} more characters not shown]"
         # The end of a sheet is where a fill that stopped short and a Total row show, and the text above is cut before
@@ -1063,7 +1472,11 @@ def text(paths, focus=()):
         except Exception as exc:  # noqa: BLE001 - extra evidence, never a reason to fail the read
             log(f"produced: no tail of {path}: {exc}")
             tail = ""
-        parts.append(f"--- {label}\n{body or '(empty)'}" + (f"\n{tail}" if tail else ""))
+        changed = changed_rows_text(path) if Path(path).suffix.lower() in (".xlsx", ".xlsm") else ""
+        if changed:
+            # Every row the task changed, with its saved values: what a report about the file is compared with.
+            changed = "\n[What this task changed in it - every row that differs from before the task, as saved now:]\n" + changed
+        parts.append(f"--- {label}\n{body or '(empty)'}" + (f"\n{tail}" if tail else "") + changed)
     return "\n".join(parts)
 
 

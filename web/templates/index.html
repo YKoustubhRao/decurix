@@ -612,6 +612,31 @@
 .dcard-actions .spacer{flex:1}
 .action-icon{width:31px;height:31px;padding:0}
 
+/* ---------- task trace picker ----------
+   One row above the actions: the desktop's tasks as a dropdown, newest
+   first, and the Trace button that opens the one picked. The select is
+   the theme's own, sized to the card's small buttons. */
+.dcard-trace{
+  display:flex;
+  align-items:center;
+  gap:6px;
+  padding:9px 12px 0;
+  background:var(--surface-2);
+  border-top:1px solid var(--line)
+}
+.dcard-trace-select{
+  flex:1;
+  min-width:0;
+  height:29px;
+  padding:0 26px 0 9px;
+  font-size:12px;
+  text-overflow:ellipsis;
+  background-position:calc(100% - 13px) 12px,calc(100% - 9px) 12px
+}
+.dcard-trace-select:disabled{color:var(--text-3);cursor:default}
+.dcard-trace .btn{flex:none}
+.dcard-trace .btn[aria-disabled="true"]{opacity:.5;pointer-events:none}
+
 /* ---------- create dialog ---------- */
 
 .create-grid{display:grid;gap:15px}
@@ -1210,6 +1235,22 @@
         </div>
       </details>
       {{end}}
+
+      {{/* Every task this desktop was given, newest first, and the full trace of
+           the one picked (/tasks/<id>/trace). Kept current by pollTaskPicks
+           below, like the rest of the card: a new task appears here without a
+           reload. The worker's history outlives its container (the task
+           store keeps it), so a stopped desktop lists its tasks too. */}}
+      {{$id := .ID}}{{$picks := index $.TasksByDesktop .ID}}
+      <div class="dcard-trace" data-task-pick="{{.ID}}">
+        <select class="select dcard-trace-select" data-task-select aria-label="Tasks given to {{.Name}}"{{if not $picks}} disabled{{end}}>
+          {{range $picks}}<option value="{{.ID}}">{{shortTitle .Request}} · {{statusLabel .Status}} · {{clock .CreatedAt}}</option>{{else}}<option value="">No tasks yet</option>{{end}}
+        </select>
+        <a class="btn btn-default btn-sm" data-task-trace {{with $picks}}href="/tasks/{{(index . 0).ID}}/trace"{{else}}aria-disabled="true" tabindex="-1"{{end}} target="_blank" rel="noopener" title="Open the full trace of the task picked: every step, question, answer and the final report">
+          <svg width="14" height="14"><use href="#i-clock"/></svg>
+          Trace
+        </a>
+      </div>
 
       <div class="dcard-actions">
         {{if eq .Status "running"}}
@@ -2346,6 +2387,12 @@
           '</div>' +
         '</details>' +
       '</div>' +
+      '<div class="dcard-trace" data-task-pick="' + escapeHTML(info.id) + '">' +
+        '<select class="select dcard-trace-select" data-task-select aria-label="Tasks given to ' + escapeHTML(info.name) + '" disabled><option value="">No tasks yet</option></select>' +
+        '<a class="btn btn-default btn-sm" data-task-trace aria-disabled="true" tabindex="-1" target="_blank" rel="noopener" title="Open the full trace of the task picked">' +
+          '<svg width="14" height="14"><use href="#i-clock"/></svg>Trace' +
+        '</a>' +
+      '</div>' +
       '<div class="dcard-actions">' +
         '<button class="btn btn-default btn-sm" disabled style="opacity:0.85; cursor:wait;">' +
           '<svg class="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/></svg>' +
@@ -2848,6 +2895,107 @@
 
   setInterval(pollMemory, 4000);
   document.addEventListener("visibilitychange", pollMemory);
+
+  /* ---------------- task trace picker ----------------
+     Each card's dropdown lists the desktop's tasks newest first; the Trace
+     button opens /tasks/<id>/trace for the one picked. Polled like the rest
+     of the card, so a task just sent shows up without a reload. The options
+     are rebuilt only when the list actually changed (a signature of ids,
+     statuses and titles), and a choice the person made is kept across
+     rebuilds - a poll must never snap the dropdown back under their hand. */
+
+  function traceHref(pick){
+    var select = pick.querySelector("[data-task-select]");
+    var link = pick.querySelector("[data-task-trace]");
+    if(!select || !link){ return; }
+    var id = select.value;
+    if(id){
+      link.href = "/tasks/" + encodeURIComponent(id) + "/trace";
+      link.removeAttribute("aria-disabled");
+      link.removeAttribute("tabindex");
+    }else{
+      link.removeAttribute("href");
+      link.setAttribute("aria-disabled", "true");
+      link.setAttribute("tabindex", "-1");
+    }
+  }
+
+  document.addEventListener("change", function(event){
+    var select = event.target.closest("[data-task-select]");
+    if(!select){ return; }
+    var pick = select.closest("[data-task-pick]");
+    if(pick){ pick.dataset.chosen = select.value; traceHref(pick); }
+  });
+
+  function paintTaskPicks(pick, list){
+    var select = pick.querySelector("[data-task-select]");
+    if(!select){ return; }
+
+    var signature = list.map(function(t){ return t.id + "|" + t.status + "|" + t.title; }).join("\n");
+    if(pick.dataset.signature === signature){
+      // Only the "when" column ages between polls.
+      Array.prototype.forEach.call(select.options, function(option, i){
+        if(list[i]){ option.textContent = taskOptionLabel(list[i]); }
+      });
+      return;
+    }
+    pick.dataset.signature = signature;
+
+    var chosen = pick.dataset.chosen || "";
+    select.textContent = "";
+    if(!list.length){
+      var none = document.createElement("option");
+      none.value = "";
+      none.textContent = "No tasks yet";
+      select.appendChild(none);
+      select.disabled = true;
+      traceHref(pick);
+      return;
+    }
+    list.forEach(function(t){
+      var option = document.createElement("option");
+      option.value = t.id;
+      option.textContent = taskOptionLabel(t);
+      option.title = t.request || "";
+      select.appendChild(option);
+    });
+    select.disabled = false;
+    // The newest task is the default; a task the person picked stays picked
+    // while it is still listed.
+    var keep = chosen && list.some(function(t){ return t.id === chosen; });
+    select.value = keep ? chosen : list[0].id;
+    traceHref(pick);
+  }
+
+  function taskOptionLabel(t){
+    var date = new Date(t.created_at);
+    var when = isNaN(date.getTime()) ? "" : relative(date);
+    return [t.title, t.status_label, when].filter(Boolean).join(" · ");
+  }
+
+  var taskPicksPolling = false;
+  async function pollTaskPicks(){
+    if(taskPicksPolling){ return; }
+    var picks = document.querySelectorAll("[data-task-pick]");
+    if(!picks.length){ return; }
+    var ids = Array.prototype.map.call(picks, function(el){ return el.dataset.taskPick; });
+
+    taskPicksPolling = true;
+    try{
+      var response = await fetch("/api/desktops/tasks?" + new URLSearchParams({ids: ids.join(",")}), {cache: "no-store"});
+      if(!response.ok){ return; }
+      var byDesktop = await response.json() || {};
+      picks.forEach(function(pick){ paintTaskPicks(pick, byDesktop[pick.dataset.taskPick] || []); });
+    }catch(e){ /* keep what the cards show */ }
+    finally{ taskPicksPolling = false; }
+  }
+
+  document.querySelectorAll("[data-task-pick]").forEach(traceHref);
+  pollTaskPicks();
+  setInterval(pollTaskPicks, 4000);
+  document.addEventListener("visibilitychange", function(){
+    if(document.visibilityState === "visible"){ pollTaskPicks(); }
+  });
 
   memoryForm("[data-link-memory-form]", "/api/desktops/memory/link", "Sharing…", "Share memory");
 

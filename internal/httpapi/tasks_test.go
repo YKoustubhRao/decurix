@@ -173,3 +173,112 @@ func TestForgedTaskIDFallsBackToTheLiveTask(t *testing.T) {
 		t.Fatalf("got %d steps", len(detail.Executions[0].Steps))
 	}
 }
+
+// The trace page and its plain-text twin show everything the store holds for
+// a task - steps in order, the question and the answer, the final report -
+// and the dashboard's task dropdown API lists the desktop's tasks newest
+// first. A task that does not exist, or an ID that is not one, is a 404.
+func TestTaskTracePageAndDesktopTasksAPI(t *testing.T) {
+	s := chatServer(t)
+	s.Web = webui.NewRenderer()
+
+	first := deliver(t, s, "box", "tidy up /work")
+	postJSON(t, s.agentEventHandler, "/api/agent/events", `{"desktop_id":"box","task_id":"`+first.TaskID+`","text":"$ ls /work"}`)
+	postJSON(t, s.agentEventHandler, "/api/agent/events", `{"desktop_id":"box","task_id":"`+first.TaskID+`","text":"Output: a.txt\nb.txt"}`)
+	postJSON(t, s.queryTextHandler, "/api/querytext",
+		`{"desktop_id":"box","task_id":"`+first.TaskID+`","content":"DECURIX QUERY REQUEST","kind":"query","reply":"Delete b.txt too?","engine":"claude"}`)
+	deliver(t, s, "box", "yes, delete it")
+	postJSON(t, s.queryTextHandler, "/api/querytext",
+		`{"desktop_id":"box","task_id":"`+first.TaskID+`","content":"DECURIX TASK COMPLETED","kind":"final","reply":"Tidied /work.","input_tokens":100,"output_tokens":20}`)
+
+	second := deliver(t, s, "box", "second request, still running")
+
+	get := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		s.taskPageHandler(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		return rec
+	}
+
+	page := get("/tasks/" + first.TaskID + "/trace")
+	if page.Code != http.StatusOK {
+		t.Fatalf("trace page: status %d %s", page.Code, page.Body)
+	}
+	for _, want := range []string{"tidy up /work", "$ ls /work", "a.txt\nb.txt", "Delete b.txt too?", "yes, delete it", "Tidied /work.", "100 in / 20 out tokens", "/trace.txt?download=1"} {
+		if !strings.Contains(page.Body.String(), want) {
+			t.Errorf("the trace page is missing %q", want)
+		}
+	}
+
+	text := get("/tasks/" + first.TaskID + "/trace.txt")
+	if text.Code != http.StatusOK || !strings.HasPrefix(text.Header().Get("Content-Type"), "text/plain") {
+		t.Fatalf("trace.txt: status %d, type %q", text.Code, text.Header().Get("Content-Type"))
+	}
+	body := text.Body.String()
+	for _, want := range []string{"Request:\ntidy up /work", "[1] ", "Command\n    $ ls /work", "[2] ", "Output\n    Output: a.txt\n    b.txt", "[?] ", "Query asked", "    Delete b.txt too?", "    yes, delete it", "Final report (Done) --\nTidied /work."} {
+		if !strings.Contains(body, want) {
+			t.Errorf("trace.txt is missing %q in:\n%s", want, body)
+		}
+	}
+	if strings.Index(body, "[1] ") > strings.Index(body, "[2] ") || strings.Index(body, "[2] ") > strings.Index(body, "[?] ") {
+		t.Error("trace.txt is out of order")
+	}
+	if download := get("/tasks/" + first.TaskID + "/trace.txt?download=1"); !strings.Contains(download.Header().Get("Content-Disposition"), "attachment") {
+		t.Error("?download=1 does not download")
+	}
+
+	for _, path := range []string{"/tasks/t0123456789abcdef/trace", "/tasks/t0123456789abcdef/trace.txt", "/tasks/not-an-id/trace", "/tasks/" + first.TaskID + "/other", "/tasks/../trace"} {
+		if rec := get(path); rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s: status %d, want 404", path, rec.Code)
+		}
+	}
+
+	// The dropdown API: the desktop's tasks newest first with a short title,
+	// keyed by desktop; an unknown desktop is an empty list, not an error.
+	req := httptest.NewRequest(http.MethodGet, "/api/desktops/tasks?ids=box,nobody", nil)
+	rec := httptest.NewRecorder()
+	s.desktopTasksHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("desktop tasks: status %d %s", rec.Code, rec.Body)
+	}
+	var out map[string][]TaskPick
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := out["box"]; len(got) != 2 || got[0].ID != second.TaskID || got[1].ID != first.TaskID ||
+		got[0].Title != "second request, still running" || got[0].StatusLabel == "" || got[1].Status != tasks.StatusDone {
+		t.Fatalf("box's tasks = %+v", got)
+	}
+	if got, ok := out["nobody"]; !ok || len(got) != 0 {
+		t.Fatalf("an unknown desktop's tasks = %+v (listed: %v)", got, ok)
+	}
+}
+
+// A store failure behind the trace routes is a fixed message, never the
+// database's own words.
+func TestTaskTraceNeverEchoesTheStoreError(t *testing.T) {
+	db := testDB(t)
+	store, err := tasks.NewStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	s := &Server{Tasks: store, Web: webui.NewRenderer()}
+
+	for _, path := range []string{"/tasks/t0123456789abcdef/trace", "/tasks/t0123456789abcdef/trace.txt", "/tasks/t0123456789abcdef"} {
+		rec := httptest.NewRecorder()
+		s.taskPageHandler(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusInternalServerError {
+			t.Errorf("GET %s with a closed store: status %d, want 500", path, rec.Code)
+		}
+		if body := rec.Body.String(); strings.Contains(body, "sql") || strings.Contains(body, "closed") || strings.Contains(body, "tasks:") {
+			t.Errorf("GET %s echoed the store error: %s", path, body)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	s.desktopTasksHandler(rec, httptest.NewRequest(http.MethodGet, "/api/desktops/tasks?ids=box", nil))
+	if body := rec.Body.String(); rec.Code != http.StatusInternalServerError || strings.Contains(body, "sql") || strings.Contains(body, "closed") {
+		t.Errorf("desktop tasks with a closed store: status %d body %s", rec.Code, body)
+	}
+}

@@ -388,3 +388,24 @@ class TestANoAtAnApprovalEndsTheTask(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ============================================================
+# A person's browser zoom (2026-10-21): at 75% the page reports 1707 CSS
+# pixels of width in a 1280 pixel window, and every box was placed 427 pixels
+# left and 200 up of where it was drawn.
+# ============================================================
+
+class TestThePageOriginUnderBrowserZoom(unittest.TestCase):
+
+    def test_without_zoom_the_origin_is_the_window_plus_its_bars(self):
+        self.assertEqual(cdp._viewport({"sx": 0, "sy": 0, "ow": 1280, "oh": 690, "iw": 1280, "ih": 605, "dpr": 1}),
+                         (0, 85, 1))
+
+    def test_zoomed_out_the_origin_stays_below_the_bars(self):
+        m = {"sx": 0, "sy": 0, "ow": 1280, "oh": 690, "iw": 1706.67, "ih": 806.67, "dpr": 0.75}
+        self.assertEqual(cdp._viewport(m), (0, 85, 0.75))
+
+    def test_zoomed_in_too(self):
+        m = {"sx": 10, "sy": 20, "ow": 1280, "oh": 690, "iw": 1024, "ih": 484, "dpr": 1.25}
+        self.assertEqual(cdp._viewport(m), (10, 20 + 85, 1.25))

@@ -8,16 +8,28 @@ from decurix_agent.computer import core, launchers
 
 
 class AReplyThatExplainsThenConfirms(unittest.TestCase):
-    def test_it_is_a_confirmation_when_its_last_sentence_says_so(self):
-        for reply in ("done", "That is correct", "Looks good", "The entry looks fine.", "Use Partnership. It is done.",
-                      "An LLP is a partnership firm, not a company - keep Supplier Type as Partnership for an LLP "
-                      "even when a form says Company. The record is done."):
+    def test_a_plain_confirmation_needs_no_model(self):
+        for reply in ("done", "That is correct", "Looks good", "Done, thanks!", "it worked"):
             self.assertTrue(skill_task._confirms(reply), reply)
 
-    def test_a_correction_a_question_or_a_bare_yes_is_not(self):
+    def test_any_other_reply_is_its_one_reading(self):
+        # Found live (2026-10-13): "An LLP is ... not a company - ... The record is done." taken for "what is wrong" by
+        # a word list; (2026-10-24) "done. ... typed earlier but ... replaced, nothing wrong left" refused on "but".
+        # And the same lists read "correct except the total, fix that" as done (audit). One reading decides.
+        for reply, choice, done in (
+                ("An LLP is a partnership firm, not a company - keep Supplier Type as Partnership. The record is done.",
+                 "done", True),
+                ("done. 26,750 / 8,750 were typed earlier but they got replaced, nothing wrong left. good work", "done", True),
+                ("correct except the total, fix that", "correction", False),
+                ("2 invoices still pending, will send tomorrow. the rest is done", "correction", False)):
+            with mock.patch.object(skill_task.approval, "read_choice",
+                                   return_value={"choice": choice, "instruction": ""}) as read:
+                self.assertEqual(skill_task._confirms(reply), done, reply)
+            self.assertEqual(read.call_args[0][0], reply)
+
+    def test_with_no_model_a_reply_it_cannot_settle_is_never_a_confirmation(self):
         for reply in ("The supplier type is wrong. Fix it.", "done but the date is wrong", "It is not done.",
-                      "Keep it. The rate is not right.", "the total is fine but the date is not. it is done?",
-                      "Set the type to Company. Then it is done.", "ok", "yes", "good"):
+                      "correct except the total, fix that", "the rest is done, 2 still pending", "ok", "yes", "good"):
             self.assertFalse(skill_task._confirms(reply), reply)
 
 

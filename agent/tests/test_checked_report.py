@@ -38,6 +38,16 @@ class CheckedReports(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
+    # Found live (2026-10-24): a local import added to the report's path made task_context a local name, and every
+    # ending that skipped it - a /command, a quiet one, an interrupted one - failed before the task was closed.
+    def test_every_kind_of_ending_reports(self):
+        from decurix_agent import state
+        with mock.patch.object(state, "current_task", '/learn demo-1 name="x"'):
+            messaging.write_final_reply('Learned "x".')
+        messaging.write_final_reply("Recording kept.", quiet=True)
+        messaging.write_final_reply("Stopped.", interrupted=True)
+        self.assertTrue(self.sent, "nothing was reported")
+
     def test_a_checked_report_says_so(self):
         messaging.write_final_reply("Filed INV-7.", checked=True)
         self.assertIs(self.sent[-1]["checked"], True)

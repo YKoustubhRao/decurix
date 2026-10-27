@@ -714,3 +714,43 @@ func TestAQuestionAboutAnUnopenedAppSaysWhatWasTried(t *testing.T) {
 		t.Fatalf("a guess: %q", got)
 	}
 }
+
+// Found live (2026-10-21): asked to "send Suresh a message on ClientChat asking him about the differences", every
+// wording was refused as untraced and the person was asked for the exact text.
+func TestAMessageTheRequestAsksToSendIsAuthored(t *testing.T) {
+	st := &operatorState{Request: "Reconcile the register against the invoices. Then send Suresh a message on ClientChat asking him about the differences."}
+	st.noteSeen(st.Request + "\nInvoice 789 taxable 25,423.72\nRegister 789 24423.72\nInvoice 793 taxable 12,711.86")
+	if n := groundingNudge(st, `gui type e7 "Hi Suresh, invoice 789 shows 25,423.72 but the register has 24,423.72, and 793 (12,711.86) is not in the register. Please check."`); n != "" {
+		t.Fatalf("the asked-for message was refused: %s", n)
+	}
+	if n := groundingNudge(st, `gui type e7 "Hi Suresh, invoice 790 shows 9,999.00 in the register."`); n == "" {
+		t.Fatal("a figure nobody gave was let through in the message")
+	}
+}
+
+// Found live (2026-10-21): "Lift$2026" typed in double quotes reached the form as "Lift026".
+func TestADollarBeforeADigitIsSentToStdin(t *testing.T) {
+	if n := quotesNudge(`gui type e6 "Lift$2026"`); !strings.Contains(n, "verbatim on stdin") {
+		t.Fatalf("a $ before a digit was let through: %q", n)
+	}
+	for _, ok := range []string{`gui type e6 'Lift$2026'`, `gui type e6 "Price 5 $"`, `gui type e6 "US$ 5"`} {
+		if n := quotesNudge(ok); n != "" {
+			t.Fatalf("%s was sent back: %q", ok, n)
+		}
+	}
+}
+
+// Found live (2026-10-25): the first and last day of the month a bill is dated in - a day book's from and to - were
+// refused as guesses and the person was asked for "the exact dates". They are the period's edges; other days are not.
+func TestAMonthsFirstAndLastDayAreTracedByADateInIt(t *testing.T) {
+	set := datesIn("Bill VAI-3306 Date: 02-11-2026 Total 98,700.00")
+	for v, want := range map[string]bool{"1-11-2026": true, "30-11-2026": true, "15-11-2026": false, "31-10-2026": false, "1-12-2026": false} {
+		d, ok := canonicalDate(v)
+		if !ok {
+			t.Fatalf("%s is no date", v)
+		}
+		if got := set.holds(d) || set.boundsAMonth(d); got != want {
+			t.Errorf("%s traced = %v, want %v", v, got, want)
+		}
+	}
+}

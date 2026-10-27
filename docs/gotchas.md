@@ -543,3 +543,231 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): A refused stage asked only try again / skip / stop: it now asks the person to settle the disputed points, and that answer binds the check
 - [part-5.md](gotchas/part-5.md): A follow-up's checks read every file of the desktop, and its new drafts sat beside the old ones: whole request kept, continues the reported task
 - [part-5.md](gotchas/part-5.md): An outbox email with no attachments went out with an empty body: bytes taken before the body was written
+- [part-5.md](gotchas/part-5.md): A zoomed browser put every page control in the wrong place: the page origin now converts CSS pixels by devicePixelRatio
+- [part-5.md](gotchas/part-5.md): Files to save from a web app went to the web skill, which saves nothing: a web request that involves this machine's files is the operator's
+- [part-5.md](gotchas/part-5.md): A click that downloaded said only that a link was focused: gui now names the file that arrived and says when it is the same file again
+- [part-5.md](gotchas/part-5.md): Two files saved under different names were the same file, and the check was shown only their names: identical files are evidence now
+- [part-5.md](gotchas/part-5.md): The final check asked the same 'cannot confirm' question nine times: three rounds a task, then NOT confirmed
+- [part-5.md](gotchas/part-5.md): find over the shared folder's link printed the link and nothing in it: a find from ~/PC now starts inside it, and the contract says so
+- [part-5.md](gotchas/part-5.md): The office command printed the agent's own log lines ahead of its error: they go to decurix-office.log, as gui's do
+- [part-5.md](gotchas/part-5.md): The safety copies of the person's files looked like the person's files: snapshots keep numbered names
+- [part-5.md](gotchas/part-5.md): What office read read was invisible to the final check: it is noted as evidence, and the check can look in files the report names
+- [part-5.md](gotchas/part-5.md): 'Never save a source' kept the engine from updating the very workbook it was asked to update: a file the request asks to change is the result
+- [part-5.md](gotchas/part-5.md): The first office update of a person's file failed 'Operation not permitted': copies into the shared folder no longer copy the mode
+- [part-5.md](gotchas/part-5.md): A month copied from the one above read last month's wrong row, and the check passed it: a block's references are compared with its sibling blocks'
+- [part-5.md](gotchas/part-5.md): The engine typed a client's password into a real site it remembered, not the one it was taught on: a secret to a site nobody named needs a yes
+- [part-5.md](gotchas/part-5.md): A replay whose first page was not open stopped at step 1: it opens the page the recording began on
+- [part-5.md](gotchas/part-5.md): Filing a return and offsetting a liability passed the approval gate unasked: file ... with EVC/DSC, e-file, submit return, offset liability now stop
+- [part-5.md](gotchas/part-5.md): A message the request asked the worker to send was refused word by word as untraced: send/tell/ask/inform/notify/remind/message are authoring too
+- [part-5.md](gotchas/part-5.md): A password with $2026 in it reached the form as 026: a $ before a digit or special parameter goes to stdin too
+- [part-5.md](gotchas/part-5.md): The worker's report printed a client's portal password: a value typed into a secret field is remembered as a secret, and password: x is withheld
+- [part-5.md](gotchas/part-5.md): Files four folders down the shared folder were invisible: walked eight levels, nearest first
+- [part-5.md](gotchas/part-5.md): 'I could not finish this' came back nine times: the per-task question limit covers it too
+- [part-5.md](gotchas/part-5.md): Values read from a workbook the request did not name by file were called invented: a file the work read is one of its sources
+- [part-5.md](gotchas/part-5.md): office read wrote dates as datetime.datetime(2026, 7, 4, 0, 0): written as 2026-07-04
+- [part-5.md](gotchas/part-5.md): Files read by a python script were not known as read: soul notes the files (and folders' files) every command names
+- [part-5.md](gotchas/part-5.md): Sent back to use stdin, the model retyped "Lift$2026" until the nudges ran out: a gui type's double-quoted text with $ runs single-quoted
+- [part-5.md](gotchas/part-5.md): Values printed on invoices a script had read were refused as never read: before refusing, the operator reads the files the work named
+- [part-5.md](gotchas/part-5.md): An ordinary task that ran out of steps asked the person to start a new run: it carries on by itself, three times a task
+- [part-5.md](gotchas/part-5.md): Re-saving an existing return was refused as a second record: whether a form makes a new record is the page it is on now
+- [part-5.md](gotchas/part-5.md): The person's answer to 'where does 900 come from?' never settled it: a reply that does not say no makes the asked values theirs
+- [part-5.md](gotchas/part-5.md): An application's own option KGS-KILOGRAMS for a source's KGS was refused as never read: a CODE-Description option traces by its code or description
+- [part-5.md](gotchas/part-5.md): A password typed while recording was paused left no manual step, and the learned skill logged in with no password: typing while paused is a private step
+- [part-5.md](gotchas/part-5.md): Totals a script summed and printed were refused at the final check as held by no source: what the work's commands print is its recorded working
+- [part-5.md](gotchas/part-5.md): A run for another client typed the teaching client's own values: an example value is this run's only when this run's text holds it
+- [part-5.md](gotchas/part-5.md): A taught Return after a drop-down choice put the drop-down back to "Select": gui select closes the native list before setting the value
+- [part-5.md](gotchas/part-5.md): An approved chain ran whole again and undid its own first steps: after an on-screen approval only the stopped action and what follows run
+- [part-5.md](gotchas/part-5.md): Rows put into a workbook with openpyxl's insert_rows left every formula below reading the old rows: compared with the copy kept before the task
+- [part-5.md](gotchas/part-5.md): A six-part request ran as one job and ran out of turns twice: filing on a portal is entering records there
+- [part-5.md](gotchas/part-5.md): "No OTP has come yet" kept "has" as a secret, and every "has" after it read [withheld]: a word straight after a secret's name is one only with a digit or a mark
+- [part-5.md](gotchas/part-5.md): A plan made a new workbook in the work folder instead of updating the client's own: the planner is shown the shared folder
+- [part-5.md](gotchas/part-5.md): A workbook the request names by what it is was neither guarded nor checked: is_source now means what the guard guards
+- [part-5.md](gotchas/part-5.md): With no way to put rows into a workbook the worker used openpyxl's insert_rows: office update now has insert_rows, and soul sends such a script back once
+- [part-5.md](gotchas/part-5.md): A long goal told "you have 8 turns left - do not begin anything new" wrapped up half checked: a goal that makes progress is compacted and given another budget
+- [part-5.md](gotchas/part-5.md): A strong model's misses were judgement calls it never noticed it made: before DONE and before a gated action it lists them, and code checks each quoted backing
+- [part-5.md](gotchas/part-5.md): A sheet of month blocks read as one list of cells let the worker take another month's figure: office read maps a repeated layout and tags each row with its block
+- [part-5.md](gotchas/part-5.md): The check was shown a workbook's first 60 rows, and the new month was rows 86-99: the judge reads whole sheets and every row the task changed
+- [part-5.md](gotchas/part-5.md): A second attempt was told to correct the record its first attempt made, and there was none: an attempt kept something only if a Save/Add/Submit went through
+- [part-5.md](gotchas/part-5.md): The value reading made up a client's portal username from its name: a text value no document of the run holds is left out
+- [part-5.md](gotchas/part-5.md): A cell quoted as backing ("O62='Karnataka'") was taken as unbacked: a short quote is backed when its words stand close together in what was seen
+- [part-5.md](gotchas/part-5.md): Five invoices saved, the phone photo never read, and a mismatch the report itself noted reported as done: gathered documents are read, and a disagreement settled, before DONE
+- [part-5.md](gotchas/part-5.md): Told "use your judgement" at a step done by hand (typing the password), the replay carried on with the field empty: resuming after one, an empty secret field means it was not done
+- [part-5.md](gotchas/part-5.md): The worker asked in the chat to approve clicks the gate then asked about again - 15 questions for one task: such a question is sent back to run the command
+- [part-5.md](gotchas/part-5.md): Calls quoted real words that did not establish them: an independent look says whether each quote settles its call; what it does not goes back to be settled (a source, the web, the person), and a web page counts only once the person vouches for it
+- [part-5.md](gotchas/part-5.md): Told "a cancelled invoice still counts", the operator filed 16 seconds later with "0 cancelled": the answer to a question about the calls is applied before anything else, and the calls are weighed again
+- [part-5.md](gotchas/part-5.md): The workbook was given the return's ARN two characters off what the portal showed, and the read-back called it verified: a long code a few characters off a code the screens showed is a reference copied wrong
+- [part-5.md](gotchas/part-5.md): Asked to file on "the GST portal", the operator opened the real government site from memory: a web address nothing given or taught names is sent back once
+- [part-5.md](gotchas/part-5.md): A new month's block had no header row, its dates were text and its codes numbers, reported as laid out like the others: a block the task changed is compared with the sheet's other blocks
+- [part-5.md](gotchas/part-5.md): Asked for its judgement calls, the model sent the list alone and the report with the month's figures was lost: a DONE of the list alone keeps the last report
+- [part-5.md](gotchas/part-5.md): The client's chat offered eight files, seven were saved, and the report said all were saved and read: a document a screen offered that no command named is sent back once at DONE
+- [part-5.md](gotchas/part-5.md): The month's folder was there and empty, and the plan saved the invoices in a new folder of its own: the planner's listing shows folders too
+- [part-5.md](gotchas/part-5.md): Each failure answered with a rule of its own, and the rules came to fight the work: one independent reviewer over code-gathered facts replaces the pattern nudges; code blocks only on certainties
+- [part-5.md](gotchas/part-5.md): The reviewer asked the person whether figures the worker had read were ever shown: it is shown the passage each cited quote comes from in the full output
+- [part-5.md](gotchas/part-5.md): The answer to a parked question was held as a new request, and then run as one: only files or the same request resent are code's call; the rest is the model's
+- [part-5.md](gotchas/part-5.md): The person's rules, sent as the answer, were read as a separate request and then as a change, twelve times: the reader sees the whole question; the reviewer knows a gated action is not done by design
+- [part-5.md](gotchas/part-5.md): The same reply, sent again to the question asked again, was read the same wrong way each time: the reader is told it is the same message again
+- [part-5.md](gotchas/part-5.md): The reviewer of a stage asked for the next stage's part, and the stage did it: a stage is reviewed on its own part
+- [part-5.md](gotchas/part-5.md): "'module' object is not iterable" stopped a run after its stage had sent a message: an import shadowed the evidence argument
+- [part-5.md](gotchas/part-5.md): A file named .jpg that was not a picture stopped the task at its first step: pictures are checked by their bytes and a refused one is left out
+- [part-5.md](gotchas/part-5.md): The worker asked in the chat to approve a send, then the gate asked again: the contract no longer tells it to ask before a click the gate stops
+- [part-5.md](gotchas/part-5.md): An independent review of the harness found the review flow could drop what it raised and still report success: per-round send-back, capped questions, then carried with the result
+- [part-5.md](gotchas/part-5.md): A near-twin code is not a copying error: it is evidence for the judge, never a block
+- [part-5.md](gotchas/part-5.md): A cell address without its sheet points at every sheet: changed rows are kept by sheet
+- [part-5.md](gotchas/part-5.md): A reply to "is this your answer?" is about the earlier message: it is the one held, and the reader is told what the person said
+- [part-5.md](gotchas/part-5.md): A by-hand check that can never pass is a deadlock: only visible fields no later step fills, once per step
+- [part-5.md](gotchas/part-5.md): "Kept nothing" must not come from a word list: only no screen action at all is blank; else look in the app first
+- [part-5.md](gotchas/part-5.md): Not word for word is not wrong: derived values are kept, flagged; only the taught example is left out
+- [part-5.md](gotchas/part-5.md): Smaller review findings: repeat fact only after a misreading, salted; layout check on changed sheets; bounded folder walk; tests isolated
+- [part-5.md](gotchas/part-5.md): The reviewer asked again what the person had answered: settled answers stay settled; raise only what is named wrong or missing
+- [part-5.md](gotchas/part-5.md): The reviewer could not see the screen the worker read its figures from: it is sent the last pictures
+- [part-5.md](gotchas/part-5.md): Every gated click cost the person two questions: what stays open goes into the approval itself
+- [part-5.md](gotchas/part-5.md): A question the model asked was labelled an approval by a word list: only a gate's stop is an approval
+- [part-5.md](gotchas/part-5.md): Asked to look at A79:E81, the final check was shown nothing: cell and range terms find their rows
+- [part-5.md](gotchas/part-5.md): Carrying the review's unsettled points silently, to ask fewer questions, left a month's work wrong: never keep a doubt from the person
+- [part-5.md](gotchas/part-5.md): The review passed a return filed against what the person taught: the taught task and guides are shown to the reviewer whole
+- [part-5.md](gotchas/part-5.md): A new month's block went in with no header row, and the worker was never told: office update says how a changed block differs
+- [part-5.md](gotchas/part-5.md): Answered "use your judgement", the same review point came back reworded: answered points are shown to later reviews as settled
+- [part-5.md](gotchas/part-5.md): "Never typed" sent the worker out of a signed-in portal and back, seven times: an untyped run value is a note for the judge
+- [part-5.md](gotchas/part-5.md): A taught task run straight away left the review without its teaching: the soul reads it for the reviewer
+- [part-5.md](gotchas/part-5.md): After the person answered, a review with nothing new to look at asked three more questions: a report review looks at what changed
+- [part-5.md](gotchas/part-5.md): A no to an approval meant "not yet", and the worker was told to go on without the action: the refusal advice follows the reply
+- [part-5.md](gotchas/part-5.md): One model call past its deadline ended a half-filed month: a timed-out chat call is asked again with a fresh deadline
+- [part-5.md](gotchas/part-5.md): "No - don't file yet, do this first" ended the task: a no ends it only when the work stopped there
+- [part-5.md](gotchas/part-5.md): Invoice lines written from memory into a script passed as "seen" because the script printed them back: a command's output never vouches for its own literals
+- [part-5.md](gotchas/part-5.md): Once any page came as a picture, nothing typed was traced at all; and the values of one record were never checked to come from one record: evidence units, OCR layer, record integrity, coverage, commit-gate verifier
+- [part-5.md](gotchas/part-5.md): "No - fix the workbook first" still closed the task: file work counts as the work going on; the host's recorded working no longer holds echoed literals
+- [part-5.md](gotchas/part-5.md): "Yes, provided you checked ClientChat" filed at once, and the check was never made: a conditional yes grants nothing; the person's instructions are obligations
+- [part-5.md](gotchas/part-5.md): A model call that met an outage ended the task: a failed response is a typed HTTPError, retried by its type (408/429/5xx, deadline, network) with growing waits
+- [part-5.md](gotchas/part-5.md): The practice suite's names and data spread into the harness code through its comments: lessons in domain-free words; each suite's leak_terms.txt and test_no_suite_terms.py keep them out
+- [part-5.md](gotchas/part-5.md): A person's reply in their own words ("haan fine", "31200 for which field?") was read two ways or wrongly by word lists: one reading of each reply, model-read unless plainly yes or no, sent to soul and used everywhere
+- [part-5.md](gotchas/part-5.md): The pre-commit verifier checked an image viewer's zoom figures before a filing on another window: it checks the window the action acts on, never the last listing
+- [part-5.md](gotchas/part-5.md): Eleven iterations of one task alone on an empty memory did not converge: dependent tasks run as a series; facts sources stated are kept; a case matrix, a plan once, and methods learned per kind
+- [part-5.md](gotchas/part-5.md): Both checks before a commit skipped silently when the action's window left the last three listings: listings per window; the soul looks at the screen at the gate; a check that cannot run says so
+- [part-5.md](gotchas/part-5.md): A goal working without questions was stopped by a 25-minute job limit that answers reset: the job limit is 2 hours; loops are bounded by turns and progress, not the clock
+- [part-5.md](gotchas/part-5.md): What one task learned did not carry to the next: facts are what others said (not the person's instructions); where sources are is kept; absent only from a source that lists records
+- [part-5.md](gotchas/part-5.md): A local import of a module-level name inside an `if` broke every report ending that skipped it (UnboundLocalError): never re-import a module's own name inside a function
+- [part-5.md](gotchas/part-5.md): "No, not done - do it again this way" closed the task as a failure: a reply that begins like a stop and says more is read for whether it calls the task off
+- [part-5.md](gotchas/part-5.md): Every stage attempt of a planned run put its own plan to the person again: stages carry the plan-agreed marker and soul asks no plan question
+- [part-5.md](gotchas/part-5.md): "You know how we treat X" was taken as settling it: what a reply relies on unsaid is found in memory, teaching or precedent and quoted - or asked for, never guessed
+- [part-5.md](gotchas/part-5.md): A web page saved as a .pdf passed the final check: a PDF or picture whose bytes are not its kind is a file fault, decided in code
+- [part-5.md](gotchas/part-5.md): A saved document never entered went unnoticed by the review: a document nothing written reflects, that the report never names, is a recheck point decided in code
+- [part-5.md](gotchas/part-5.md): A download from a plain-http page sat held as "Unconfirmed": the desktop policy lets an http page download; the bubble's Keep takes one press in two, chrome://downloads' menu works
+- [part-5.md](gotchas/part-5.md): A guessed value handed to the engine as the run's read as the person's, was typed, and the check held the work to it over the person's correction: strict filling for model runs; this run's answers decide
+- [part-5.md](gotchas/part-5.md): A retry within a request put the agreed plan to the person again: the plan and their answer are carried into every later job of the request, marked agreed
+- [part-5.md](gotchas/part-5.md): A reply opening with "done" and explaining was refused on "but"/"wrong" and the task sent back: such a reply is decided by its one reading
+- [part-5.md](gotchas/part-5.md): Replies to questions with set answers were read by first-word word lists ("retry but use file 2", "correct except the total"): one helper, approval.read_choice - plain phrase in code, else one model reading with the rest kept
+- [part-5.md](gotchas/part-5.md): Reported done with none of the plan's filings done: a plan's commits with none let through is a recheck point at the report, once a goal
+- [part-5.md](gotchas/part-5.md): A yes answering an approval's listed points was read against the bare action and became "if": the gate reads a reply against the question the person was shown
+- [part-5.md](gotchas/part-5.md): The commit check worked out a file manager's status bar behind the browser: a listing is cut to the action's own window
+- [part-5.md](gotchas/part-5.md): Files read in one chained command were "never read" to the record and the review asked the person: each read in a chain is credited with its own part of the output
+- [part-5.md](gotchas/part-5.md): A sign-in page saved as an invoice got the remedy for an unfinished document: a wrong-kind file is got again in the browser, and soul flags it the moment a command writes it
+- [part-5.md](gotchas/part-5.md): A new period block with another month's row and two codes in one cell passed: the layout check says both, and the review holds new rows to the record's precedent
+- [part-5.md](gotchas/part-5.md): An approved --checked click listed the form again instead of pressing: the form-check note is used up only when the click passes the gate
+- [part-5.md](gotchas/part-5.md): The default read of a block-per-month sheet hid its newest month and July was reported as August: a long sheet of blocks shows its newest blocks whole
+- [part-5.md](gotchas/part-5.md): A photo bill named only in the report's folder listing counted as accounted for and was never entered: a document is accounted for only by a sentence saying why it is left out
+- [part-5.md](gotchas/part-5.md): A LAN forward of 0.0.0.0 looped into itself and filled every ephemeral port: unspecified and loopback addresses are never forwarded
+- [part-5.md](gotchas/part-5.md): A line's tax typed beside its amount and rate was refused as held by no source: a typed figure one step from other typed values and a source is held
+- [part-5.md](gotchas/part-5.md): A new month's block retyped by hand went wrong four ways: office update copy_rows makes it from the last block, facts of the old period left to fill
+- [part-5.md](gotchas/part-5.md): A planned step for the person's OK never carried out went unseen by the review: it is shown the actions the OK let through beside the plan's steps
+- [part-5.md](gotchas/part-5.md): The soul spun silently for half an hour: a command-text scanner made no progress on "find )" - every scanner must advance; kill -QUIT dumps the stacks
+- [part-5.md](gotchas/part-5.md): The final check of an untaught task never saw what the person said during it: each question and reply now go with the request
+- [part-5.md](gotchas/part-5.md): A task that stops before filing never had its screen figures worked out again: the independent verifier also runs at a report, on the window's own figures
+- [part-5.md](gotchas/part-5.md): Sign-in pages a script saved under built paths were not flagged at once: files changed in the folders a command names are checked too
+- [part-5.md](gotchas/part-5.md): Points the review found in work done after its one send-back went straight to the person: new work that changed something is sent back again (bounded)
+- [part-5.md](gotchas/part-5.md): At a report only the last page typed into was worked out again: every window typed into, and the screen left when of the same site, is now
+- [part-5.md](gotchas/part-5.md): The figure check put a page address, a clock time and form section numbers to the person as figures: only an element's quoted text (a field's value) is worked out
+- [part-5.md](gotchas/part-5.md): A message quoting acknowledgement numbers was withheld from its approval as a card number: a card number now stands alone, never glued to letters
+- [part-5.md](gotchas/part-5.md): A chat list's preview of another client's invoice counted as a document offered to the work: only a document shown as its own element (or downloaded, opened) is
+- [part-5.md](gotchas/part-5.md): The worker opened the real public site it remembered instead of the one the desktop uses: a site named without an address is found in what is here, else asked
+- [part-5.md](gotchas/part-5.md): A worked-out total went to the person because earlier, fixed refusals had used the goal's two send-backs: the count starts again once traced values are typed
+- [part-5.md](gotchas/part-5.md): The figure check worked the same unchanged screen out again every report round: its working is kept by the input's hash and set against the figures now
+- [part-5.md](gotchas/part-5.md): A filing's date was written from the computer's clock: the date or number an application gives a record is read from the record
+- [part-5.md](gotchas/part-5.md): Kept lessons named one run's cells and invoice numbers: a lesson holding the run's own values is asked for again as the rule, else not kept
+- [part-5.md](gotchas/part-5.md): An answer the query gate found in earlier words ended a planned run after stage one: the gate steps aside in planned runs
+- [part-5.md](gotchas/part-5.md): A downloaded file's name with spaces was cut to its last word ("2).jpg"): paths and Download links give the whole name
+- [part-5.md](gotchas/part-5.md): The figure check read a summary table from rows cut at 80 characters and without its header: rows run to 200, the header goes with its rows
+- [part-5.md](gotchas/part-5.md): An approval to send quoted the message cut at 80 characters: a filled field is quoted to 600
+- [part-5.md](gotchas/part-5.md): Rows typed after a page's last look were never checked: a window typed in since its last look is looked at again before the report
+- [part-5.md](gotchas/part-5.md): A photo's two lines were written as one row coded "MIXED": a one-word cell value no source holds is a point at the report
+- [part-5.md](gotchas/part-5.md): A cancelled bill was left out of the folder: a called-off document is kept with the others, out of the totals only
+- [part-5.md](gotchas/part-5.md): The review's points were answered from an earlier run's lessons and nobody was asked: a check of this run's work goes to the person only
+- [part-5.md](gotchas/part-5.md): A taught task's entries went into the demonstrated client's books: open the request's company, read its name, name it in the report
+- [part-5.md](gotchas/part-5.md): A month's first and last day were refused as guesses: traced when a source dates something in that month
+- [part-5.md](gotchas/part-5.md): A host bridge outlived the app (held the dead app's handle) and the next build could not clear dist\electron: stop the bridges first; open fix
+- [part-5.md](gotchas/part-5.md): A failed save counted as a save, and a customer's second bill as a duplicate: proof of save, record numbers decide
+- [part-5.md](gotchas/part-5.md): Files read in a loop were "never read": credited by the header each read prints
+- [part-5.md](gotchas/part-5.md): The review read a listing by its first line: short outputs kept whole in the ledger
+- [part-5.md](gotchas/part-5.md): Drop-down options were clicked by looking, 32 s each: gui click on a native select answers with gui select and its options
+- [part-5.md](gotchas/part-5.md): A taught task's request ("only gui do") and the engine's hand entry fought for three review rounds: gui do offered, hand entry allowed
+- [part-5.md](gotchas/part-5.md): A chain that failed late lost the credit for what it typed: its output's "Typed" lines credit it
+- [part-5.md](gotchas/part-5.md): The report's figure check worked out a form's defaults: stale looks skipped, only values the work typed
+- [part-5.md](gotchas/part-5.md): The review nagged about steps whose outcome was right: a procedure rule is judged by its outcome when readable
+- [part-5.md](gotchas/part-5.md): Existing customers got second ledgers: identifier first, titles and trade names never make another party
+- [part-5.md](gotchas/part-5.md): The identifier rule did not land twice: a new party's record holding a code or email is stopped until it was looked up
+- [part-5.md](gotchas/part-5.md): The accounting app's save is "Accept": the save checks had never run in it
+- [part-5.md](gotchas/part-5.md): Two screens opened in turn 45 times: a short round of commands is shown whole once, then the person is asked
+- [part-5.md](gotchas/part-5.md): No clean iteration in four days, by arithmetic: per-task rates, not rules, are the thing to raise
+- [part-5.md](gotchas/part-5.md): The record ledger: a record declared from its document, the form checked against it, the page read back
+- [part-5.md](gotchas/part-5.md): A question the screen answers is sent back once with the lines that show it
+- [part-5.md](gotchas/part-5.md): Teaching ran on the image's agent code: deploy before teaching, verify the hash
+- [part-5.md](gotchas/part-5.md): The scripted practitioner leaked a figure: never reads expected files; replies scanned; silence is not yes
+- [part-5.md](gotchas/part-5.md): Party resolution is a tool, not a rule: gui select --id searches by the identifier, writes a fact, the save gate reads it
+- [part-5.md](gotchas/part-5.md): A browser-drawn list offers nothing to search: read the datalist's entries through the page, type the one asked for
+- [part-5.md](gotchas/part-5.md): The scope was held to every word: a run of its words (the name) on the window is enough
+- [part-5.md](gotchas/part-5.md): The read-back called every line of a saved record absent: rows are the page's words too
+- [part-5.md](gotchas/part-5.md): A link named by a file with spaces was kept as its last word: the whole link text is the document
+- [part-5.md](gotchas/part-5.md): Files a loop named were "never read" because their numbers were masked: credit the loop's own list
+- [part-5.md](gotchas/part-5.md): A party found by its identifier could be declared under neither name: a chosen entry is a source; the app's spelling is advisory
+- [part-5.md](gotchas/part-5.md): A photographed bill has no text to declare against: OCR is its text; unconfirmed values are kept as read off a picture
+- [part-5.md](gotchas/part-5.md): Agent code changed under a running iteration: queue agent-Python changes for the boundary
+- [part-5.md](gotchas/part-5.md): A revised bill in a second message was never opened: read every message from the client; the reviewer sees the listings
+- [part-5.md](gotchas/part-5.md): A stale port-proxy rule forwarded the gated port to itself: 15,700 loopback sockets in TIME_WAIT, runner calls fail with 10048/10055
+- [part-5.md](gotchas/part-5.md): A file name holding a digit was masked as a command's value: names are never masked; headers credit reads
+- [part-5.md](gotchas/part-5.md): A table row read without its link cell: a row keeps a link cell's text
+- [part-5.md](gotchas/part-5.md): The picker shows names, the identifier was resolved elsewhere: the resolution fact names the entry
+- [part-5.md](gotchas/part-5.md): The read-back looked for the document's spelling: the application's entry is what the page shows
+- [part-5.md](gotchas/part-5.md): A JSON fixture hid a credential from the shape check: the key and the value may each be quoted; the practice store validates its own drafts
+- [part-5.md](gotchas/part-5.md): A picture read then dropped left no trace: a picture read must be named in the report with what was entered, or why it is left out
+- [part-5.md](gotchas/part-5.md): The trace kept a command's first output line and a review's point count: a run could not be followed from it
+- [part-5.md](gotchas/part-5.md): A content-filter refusal was filed as a product failure: an HTTP 400 from the model is an LLM-side row, learned nothing is rolled back
+- [part-5.md](gotchas/part-5.md): A checker raised where a block's header row was missing: a missing header is a FAIL item, not a crash that hides the rest
+- [part-5.md](gotchas/part-5.md): The declaration refusal named the application's label as a sample: a guardrail's wording is read as an instruction
+- [part-5.md](gotchas/part-5.md): Records declared and never saved were put to the person as choices, twice: a point decided in code that is the worker's to do goes back to the worker, never to the person
+- [part-5.md](gotchas/part-5.md): A point the person answered was asked again two minutes later: an answered point goes back with their answer, never into another question
+- [part-5.md](gotchas/part-5.md): A failed chain's trace held the first steps and never the reason: a failed command keeps its tail
+- [part-5.md](gotchas/part-5.md): A part of a document number was declared and accepted: a code is the document's only whole, as the document writes it
+- [part-5.md](gotchas/part-5.md): A ledger list's yearly balances were set against the month's bills, eight points to the person: a verifier disagreement on a screen the work did not type into is advisory
+- [part-5.md](gotchas/part-5.md): A login typed into on the way was raised on every review batch: the unseen-typing point is told once a goal
+- [part-5.md](gotchas/part-5.md): A bill's row was written over by the next bill's and nothing noticed: an update says which filled cells it wrote over, and a value written over is no longer written
+- [part-5.md](gotchas/part-5.md): A block copied short of its total row: copy_rows refuses when the row after the range still belongs to the block
+- [part-5.md](gotchas/part-5.md): Dates typed as serials worked out in the head and as text in a column of dates: a date cell takes a year-first text date and makes it a date; a number is refused
+- [part-5.md](gotchas/part-5.md): A copied block's label row was blanked with the figures: emptying a text cell is refused unless clear_text
+- [part-5.md](gotchas/part-5.md): A summed parameter was filled from one document: a total, count or quantity is added up over every document of the task
+- [part-5.md](gotchas/part-5.md): The confirmed press after 'Not pressed yet' was called a repeat: a command a check stopped before acting is the next step when sent again
+- [part-5.md](gotchas/part-5.md): Tab and Enter saved a form listed for checking: Enter is held while the listing is unconfirmed
+- [part-5.md](gotchas/part-5.md): An approved click came back 'no longer on the screen' after the review walked away: a gone ref resolves to the one element with its role and name
+- [part-5.md](gotchas/part-5.md): A bill number typed over the form's default '1' drew 'a number field takes digits only': a code with letters joined to its digits is not a decorated number
+- [part-5.md](gotchas/part-5.md): The gate asked for the click the person had just said yes to: the latest reply that plainly says yes to the very action it names is that action's yes, once
+- [part-5.md](gotchas/part-5.md): The worker asked the person for the exact ledger names its chart of accounts listed: a question for names the application holds is pushed back once
+- [part-5.md](gotchas/part-5.md): Two summaries of the same records disagreed in the filing approval: the rules say they are set side by side and settled from the documents first
+- [part-5.md](gotchas/part-5.md): A review point saying a bill was not entered went to the person as a judgement: a point that says work is not done is the worker's to do
+- [part-5.md](gotchas/part-5.md): The worker asked the person to be allowed to continue with commands: a HELP asking to go on is pushed back, never sent
+- [part-5.md](gotchas/part-5.md): The revised bill's mail stood two rows under the one opened and was never read, twice: a listed message from an opened sender, or one that revises a document of the task, is a point until opened or named
+- [part-5.md](gotchas/part-5.md): A list of vouchers and their totals, one per line, was read as subtractions and the final check refused right work: an operator stands on the same line as its terms
+- [part-5.md](gotchas/part-5.md): Another client's figure in a chat preview beside the message box was set against this task's sources: a window the work typed only prose into carries none of its figures
+- [part-5.md](gotchas/part-5.md): A refusal of one send ended the whole filing: a refusal is one action's; what the rest needs is asked for directly
+- [part-5.md](gotchas/part-5.md): 'No - do the check first, then ask again' closed the task as stopped once the check was done: a not-yet refusal is one action's, never a call-off
+- [part-5.md](gotchas/part-5.md): 'It was my answer to your question. Yes - show me the draft first' was read as a new instruction and the held question asked twice: a reply opening with 'it was my answer' is the answer
+- [part-5.md](gotchas/part-5.md): Other clients' chat previews went into two send approvals as disagreements: the pre-action verifier skips a window the work typed only prose into
+- [part-5.md](gotchas/part-5.md): Refused once for a matched identifier, the worker saved again and the customer got a second ledger: a matched identifier refuses every time; only the person's word creates a second record
+- [part-5.md](gotchas/part-5.md): A party saved with its identifier field empty slipped past every guard: a declared identifier must be on the form
+- [part-5.md](gotchas/part-5.md): The books held a customer, the bill wrote the name with a title, the worker saw the row and made a second record: a new party under a listed name, titles aside, is refused
+- [part-5.md](gotchas/part-5.md): A voucher's save was refused as 'a new party' because its party field held a listed name: the name guard reads only a party record's own Name field
+- [part-5.md](gotchas/part-5.md): The same 'going back and forth' question went to the person twice in four minutes: the cycle guard asks once a goal, then gives the answer back
+- [part-5.md](gotchas/part-5.md): Every entry was right and every folder check failed: a new month folder named 'November' beside 'APR 2026' ... 'OCT 2026'; a new month folder takes its siblings' shape
+- [part-5.md](gotchas/part-5.md): A photographed bill's figures, declared from the photo, were refused as invented at every save: a value a declared record holds is sourced
+- [part-5.md](gotchas/part-5.md): A customer form was held against a bill's declared record and could not be saved: the record for a form must fit its labels
+- [part-5.md](gotchas/part-5.md): Three 'open it and look' points went to the person, who answered each 'open it and look': a point the worker settles by looking stays the worker's while send-backs remain
+- [part-5.md](gotchas/part-5.md): A photographed bill's date was unreadable at the size the whole photo is shown, and the worker had no way to look closer: office read PHOTO PART crops and enlarges a part
+- [part-5.md](gotchas/part-5.md): The chat said a bill was cancelled, the worker read it and saved the bill anyway: a saved record whose number a line the task read calls off is a work point
+- [part-5.md](gotchas/part-5.md): The lesson asked about clicks and never about the rules of the work, and every run met them unready: a lesson settles a workflow brief of nine topics, each seen, confirmed or asked

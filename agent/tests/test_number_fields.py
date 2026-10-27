@@ -132,6 +132,14 @@ class AFormIsListedBeforeItIsSent(unittest.TestCase):
                                                     for f in self.FORM["fields"]]}
         self.assertIn("Quantity line 1: 24", self.check(changed, checked=True))
 
+    def test_a_checked_click_the_gate_stops_is_still_checked_after_the_yes(self):
+        # Found live (2026-10-24): the checked click the approval gate stopped used the note up; after the person's
+        # yes the same click listed the form again instead of pressing, and the filing was asked for five more times.
+        self.check(self.FORM)
+        self.assertEqual(self.check(self.FORM, checked=True), "")   # passes; then the gate stops it for a yes
+        self.assertEqual(self.check(self.FORM, checked=True), "")   # the approved repeat still passes
+        self.assertTrue(core.FORM_CHECK_FILE.exists())               # used up only when the click is let through (act)
+
     def test_a_small_form_or_a_non_submit_click_is_sent_at_once(self):
         self.assertEqual(self.check(None), "")
 

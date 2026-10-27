@@ -78,7 +78,13 @@ function elevated(script) {
 // version took any failure for a no, and that PC never asked again.
 // log(line) says each step, for desktop.log. Returns whether the link works.
 async function ensureLanForward(dataDir, address, port, log = () => {}) {
-  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(address) || !Number.isInteger(port) || port <= 0 || port >= 65536) {
+  // 0.0.0.0 (what a socket reports with no network) or a loopback address
+  // would make the rule listen on 127.0.0.1 too and forward there - to itself:
+  // found live (2026-10-24), one `0.0.0.0:8090 -> 127.0.0.1:8090` rule turned
+  // every local connection to the gated port into a loop that filled all
+  // 16,384 ephemeral ports with TIME_WAIT sockets every few minutes.
+  const unroutable = /^(0|127)\./.test(address) || address === '255.255.255.255';
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(address) || unroutable || !Number.isInteger(port) || port <= 0 || port >= 65536) {
     log(`LAN link: no usable address (${address}:${port})`);
     return false;
   }

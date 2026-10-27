@@ -12,5 +12,8 @@
   "RemoteDebuggingAllowed": true,
   "DeveloperToolsAvailability": 1,
   "PasswordManagerEnabled": false,
-  "PasswordLeakDetectionEnabled": false
+  "PasswordLeakDetectionEnabled": false,
+  "InsecureContentAllowedForUrls": [
+    "http://*"
+  ]
 }

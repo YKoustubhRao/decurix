@@ -8,6 +8,7 @@ benchmark's oracle run (bench/gui/run.py --engine oracle).
 """
 
 import json
+import os
 import tempfile
 import sys
 import unittest
@@ -16,6 +17,24 @@ from pathlib import Path
 
 from decurix_agent.computer import approval
 from decurix_agent.computer import elements as el
+
+
+_state = {}
+
+
+def setUpModule():
+    """Keep what these tests store (a value typed into a password field is remembered as a secret) out of the real home."""
+
+    _state["tmp"] = tempfile.TemporaryDirectory()
+    _state["env"] = patch.dict(os.environ, {"DECURIX_DIR": _state["tmp"].name})
+    _state["env"].start()
+
+
+def tearDownModule():
+    """Put the environment back and drop what the tests stored."""
+
+    _state["env"].stop()
+    _state["tmp"].cleanup()
 
 
 def element(role, name, **extra):
@@ -33,6 +52,18 @@ class ApprovalRules(unittest.TestCase):
         for name in ("Send newsletter", "Pay now INV-1042", "Buy now", "Place order", "Publish", "Checkout", "Send"):
             with self.subTest(name=name):
                 self.assertIsNotNone(approval.assess("click", element("button", name)))
+
+    def test_filing_with_an_authority_needs_approval(self):
+        # Found live (2026-10-21): a tax portal's filing and offset buttons passed unasked.
+        for name in ("FILE WITH EVC", "File with DSC", "FILE GSTR-3B WITH EVC", "E-File", "Submit return",
+                     "OFFSET LIABILITY", "Set off liability"):
+            with self.subTest(name=name):
+                self.assertIsNotNone(approval.assess("click", element("button", name)))
+        # The way to the filing page is not the filing (a live run was stopped at its dashboard's FILE RETURNS).
+        for name in ("File", "File Manager", "Files", "Filed returns", "Submit", "Return Dashboard", "Liability ledger",
+                     "FILE RETURNS", "FILE STATEMENT", "PROCEED TO FILE"):
+            with self.subTest(name=name):
+                self.assertIsNone(approval.assess("click", element("button", name)))
 
     def test_ordinary_controls_do_not(self):
         for name in ("Save settings", "Sign in", "Create user", "Sending options", "Posts", "Check out our blog", "Delete user"):

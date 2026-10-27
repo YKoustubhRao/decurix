@@ -34,8 +34,33 @@ from decurix_agent.logging_utils import log
 # fails, is the rule-based lesson it always was.
 # ============================================================
 
-MAX_QUESTIONS = 5
-MAX_FOLLOW_UPS = 3
+MAX_QUESTIONS = 8
+MAX_FOLLOW_UPS = 4
+
+# The workflow brief (2026-10-27): what every run of a kind of work turns on, beyond its clicks. A lesson that asked only
+# what the recording could not show about its steps left these to luck, and each was a live failure: bills filed in a
+# folder named unlike the others, a second record made for an existing customer, a cancelled bill entered, a revised
+# bill never opened, a report of "done" with nothing on screen to show it. The study must settle every topic - from
+# the recording (with where it saw it), as an assumption the person confirms, or by asking - before the lesson is saved.
+BRIEF_TOPICS = [
+    ("sources", "Where the work comes from and how to find all of it: which messages, mails or folders, from whom, "
+                "for which period; every attachment kind (scans and photos too); later messages that add to it."),
+    ("changes", "What to do with a document that was revised, cancelled, sent twice, or belongs to someone or some "
+                "period other than this task's."),
+    ("filing", "Where the files are kept, and how a folder or file is named (like the ones already there?); reuse or "
+               "create."),
+    ("matching", "How an existing record (a customer, an account, an item) is found - by an identifier first, then by "
+                 "name - when a new one is made, and that an existing one is used as it is."),
+    ("fields", "Where each value typed comes from and in what form; how one document becomes records or lines (several "
+               "rates, several items, totals)."),
+    ("prechecks", "What to look at before entering anything (already entered? the right entity and period open?)."),
+    ("approvals", "Which steps need the person's OK each time, and what must never be done (send, delete, alter earlier "
+                  "work)."),
+    ("done", "The proof to look at on the screen before reporting done, and what the report must say."),
+    ("exceptions", "What to do when a value cannot be read or found, or something is not where it should be: ask, "
+                   "leave it out and say so, or stop."),
+]
+BRIEF_IDS = [t for t, _ in BRIEF_TOPICS]
 # Every press of the demonstration is shown, ringed (see _pictures), plus the
 # screen it began on and the one it ended on - up to this many pictures.
 MAX_PICTURES = 14
@@ -52,11 +77,31 @@ Study the recording you are given - the numbered steps (what was clicked, typed,
 - done_when: what must be visible on the screen, or true, when the task is finished - concrete enough to check from a screenshot, and true of EVERY run, not only this demonstration. Write an input as its parameter in braces ("a profile page for {typed_text} is open"), never as the value the person happened to use, and leave out details that only this demonstration's result has (this person's city, this order's total, today's date): another run's result will not show them. The same goes for the summary.
 - incidental: step numbers that look accidental or not needed (a stray click, scrolling around, closing a popup that may not appear).
 - rules: leave empty unless the notes already state one; each rule is one imperative sentence.
+- brief: the rules of this kind of work, one entry for EACH of these topics - every future run turns on them, so none is
+  left out:
+  - sources: where the work comes from and how to find all of it (which messages, mails or folders, from whom, which period; every attachment kind; later messages)
+  - changes: what to do with a document that was revised, cancelled, sent twice, or belongs to another person or period
+  - filing: where files are kept and how a folder or file is named (look at the names already there), reuse or create
+  - matching: how an existing record is found (an identifier first, then the name), when a new one is made, and that an existing one is used as it is
+  - fields: where each typed value comes from and its form; how one document becomes records or lines
+  - prechecks: what to look at before entering anything
+  - approvals: what needs the person's OK each time and what is never done
+  - done: the proof to look at before reporting done, and what the report says
+  - exceptions: what to do when a value cannot be read or found
+  Each entry is {"topic": "...", "rule": "one or two imperative sentences, with no value from this demonstration",
+  "basis": "seen" | "assumed" | "unknown", "evidence": "the step numbers, document or screen that show it"}. "seen": the
+  recording or the documents show it plainly (say where). "assumed": your best reading, not shown for certain - the
+  person will be asked to confirm it. "unknown": you cannot tell - rule is "" and you MUST ask about it in questions. For approvals and exceptions, when the
+  recording does not show them, write the cautious default as "assumed" rather than "unknown" (approvals: stop for the
+  person's OK before anything that sends, pays, files, deletes or alters earlier work; exceptions: leave an item that
+  cannot be read or found out, say so in the report, and ask) - the person confirms or corrects it at the read-back.
+  For matching, an identifier on the document (a tax or registration number, an account number, an email) comes before
+  the name.
 - research: up to 3 searches that would tell you how the app or a term on its screens works, when you are not sure ("<app> <screen> <field> meaning"). Only about the app or the kind of work - never about this person's choices, and never containing a value, a name or a number from their documents. Leave it empty when you understand the screens.
-- questions: what you must ask the person, because you cannot work it out and getting it wrong would make a future run fail or do the wrong thing. Think about: what the request will look like next time (one item or a list? done once per item?), decisions (what if the record is not found, already exists, or the page differs?), which values come from where, preconditions (signed in, which account, which page to start from), steps that send, pay, submit or delete and what to check before them, and anything in the notes you do not understand. Most important first, at most 5. Each is one short, concrete question that can be answered in a line, naming steps by number and what is on the screen. Do not ask what you can see or work out, about passwords, about screen coordinates, whether a value that is in the person's request changes (it does), or whether to save the task - those are handled separately. Never ask the person to confirm something you already wrote in the summary.
+- questions: what you must ask the person, because you cannot work it out and getting it wrong would make a future run fail or do the wrong thing. Ask about every brief topic you marked "unknown", and about every doubt the recording left you: a step whose purpose you cannot tell, a value you could not find in the documents, a choice made with no visible reason, a screen you did not understand. Think about: what the request will look like next time (one item or a list? done once per item?), decisions (what if the record is not found, already exists, or the page differs?), which values come from where, preconditions (signed in, which account, which page to start from), steps that send, pay, submit or delete and what to check before them, and anything in the notes you do not understand. Most important first, at most 8. Each is one short, concrete question that can be answered in a line, naming steps by number and what is on the screen. Do not ask what you can see or work out, about passwords, about screen coordinates, whether a value that is in the person's request changes (it does), or whether to save the task - those are handled separately. Never ask the person to confirm something you already wrote in the summary.
 
 Reply with JSON only:
-{"name": "...", "names": {"param": "contact"}, "summary": "...", "steps": {"1": "..."}, "inputs": {"param": "..."}, "varies": {"param": true}, "done_when": "...", "incidental": [5], "rules": [], "research": ["..."], "questions": [{"id": "q1", "text": "...", "why": "..."}]}"""
+{"name": "...", "names": {"param": "contact"}, "summary": "...", "steps": {"1": "..."}, "inputs": {"param": "..."}, "varies": {"param": true}, "done_when": "...", "incidental": [5], "rules": [], "brief": [{"topic": "filing", "rule": "...", "basis": "seen", "evidence": "..."}], "research": ["..."], "questions": [{"id": "q1", "text": "...", "why": "...", "topic": "filing"}]}"""
 
 MAX_RESEARCH = 3
 RESEARCH_CHARS = 2500
@@ -72,7 +117,7 @@ ABSORB_SYSTEM = """You are an apprentice learning a computer task from a person 
 
 Fold their answer into your understanding: correct the summary, step purposes, inputs, varies and done_when where it changes them, and add rules - each one plain imperative sentence a future run can follow ("Ask each question in a new chat, one at a time, and report every answer." / "If the customer does not exist, create it before the order."). Keep what the answer does not touch. Never drop an earlier rule unless the person contradicts it.
 
-Rules is the whole list, rewritten: each rule once, merged with the earlier ones - no two rules saying the same thing. Only state what the person said or what the demonstration shows; do not invent requirements (for example, do not require "the same conversation" unless the person said so).
+Rules is the whole list, rewritten: each rule once, merged with the earlier ones - no two rules saying the same thing. A rule that begins with a topic in brackets ("[filing] ...") keeps its topic. A rule marked "(my assumption)" that the person confirmed, or left uncorrected when asked whether the understanding is right, loses the mark; one they corrected is rewritten as they said. Only state what the person said or what the demonstration shows; do not invent requirements (for example, do not require "the same conversation" unless the person said so).
 
 If the answer is unclear, or opens something you must know to do the task right, write ONE short follow_up question; otherwise follow_up is "". Do not ask again what was answered.
 
@@ -311,6 +356,53 @@ def _researched(skill, data):
     return revised if isinstance(revised, dict) and revised.get("summary") else data
 
 
+def _brief(raw):
+    """The study's workflow brief, one entry per topic in BRIEF_TOPICS order; a topic the model left out is unknown."""
+
+    def text(value, limit):
+        return " ".join(str(value or "").split())[:limit]
+
+    if not isinstance(raw, list) or not raw:
+        return []  # (a study that gave no brief at all: the lesson asks what it asked before, not nine questions)
+    given = {}
+    for item in raw:
+        topic = text((item or {}).get("topic"), 20).lower()
+        if topic in BRIEF_IDS and topic not in given:
+            basis = text(item.get("basis"), 10).lower()
+            rule = text(item.get("rule"), 400)
+            if basis not in ("seen", "assumed", "unknown") or not rule:
+                basis = "unknown" if not rule else "assumed"
+            given[topic] = {"topic": topic, "rule": rule if basis != "unknown" else "", "basis": basis,
+                            "evidence": text(item.get("evidence"), 200)}
+    return [given.get(t) or {"topic": t, "rule": "", "basis": "unknown", "evidence": ""} for t in BRIEF_IDS]
+
+
+def _brief_rules(brief):
+    """The brief as rules a run follows and its check is held to: "[topic] rule", an assumption marked as such until the
+    person confirms it (study.absorb)."""
+
+    out = []
+    for item in brief:
+        if item["rule"]:
+            out.append(f"[{item['topic']}] {item['rule']}" + (" (my assumption)" if item["basis"] == "assumed" else ""))
+    return out
+
+
+def _brief_questions(brief, questions):
+    """The study's questions, with one for every brief topic still unknown that none of them covers - asked first, as
+    nothing a run needs may be left to luck."""
+
+    covered = {str(q.get("topic") or "").lower() for q in questions}
+    asked = []
+    for item in brief:
+        if item["basis"] == "unknown" and item["topic"] not in covered:
+            what = dict(BRIEF_TOPICS)[item["topic"]]
+            asked.append({"id": f"b_{item['topic']}", "topic": item["topic"],
+                          "text": f"I could not tell this from the recording - {what} How is it done?",
+                          "why": "a rule of the work every run needs"})
+    return asked + questions
+
+
 def study(skill):
     """
     The model's first understanding of a draft skill, with the questions it
@@ -338,7 +430,12 @@ def study(skill):
     for n, q in enumerate(data.get("questions") or [], 1):
         words = " ".join(str((q or {}).get("text") or "").split())
         if words:
-            questions.append({"id": f"q{n}", "text": words[:400], "why": " ".join(str(q.get("why") or "").split())[:300]})
+            questions.append({"id": f"q{n}", "text": words[:400], "why": " ".join(str(q.get("why") or "").split())[:300],
+                              "topic": " ".join(str(q.get("topic") or "").split())[:20].lower()})
+    understanding["brief"] = _brief(data.get("brief"))
+    understanding["rules"] = _brief_rules(understanding["brief"]) + [
+        r for r in understanding.get("rules") or [] if not r.startswith("[")]
+    questions = _brief_questions(understanding["brief"], questions)
     understanding["questions"] = questions[:MAX_QUESTIONS]
     understanding["follow_ups"] = 0
     understanding["dialogue"] = []
@@ -393,12 +490,54 @@ def absorb(skill, question, answer):
 
     # Questions the answers so far already settle are not asked.
     settled = {str(i) for i in data.get("settled") or []}
+    asked = next((q for q in understanding.get("questions") or [] if q.get("text") == question), None)
+    topics = {str(q.get("topic") or "") for q in understanding.get("questions") or [] if q["id"] in settled}
+    if asked and asked.get("topic"):
+        topics.add(asked["topic"])
     if settled:
         understanding["questions"] = [q for q in understanding.get("questions") or []
                                       if q["id"] not in settled or f"study:{q['id']}" in answers]
+    _settle_topics(understanding, topics - {""}, question, answer)
 
     follow_up = " ".join(str(data.get("follow_up") or "").split())[:400]
     if follow_up and understanding.get("follow_ups", 0) < MAX_FOLLOW_UPS:
         understanding["follow_ups"] = understanding.get("follow_ups", 0) + 1
         return follow_up
     return ""
+
+
+def confirm(skill):
+    """
+    The person said the understanding is right as it stands (a plain yes to it): every guess in the brief is now their
+    word - its mark is dropped and it counts as confirmed. Without this, a bare "yes" left every "(my assumption)" on the
+    rules a run is held to.
+    """
+
+    understanding = skill.get("understanding")
+    if not understanding:
+        return
+    understanding["rules"] = [r.replace(" (my assumption)", "") for r in understanding.get("rules") or []]
+    for item in understanding.get("brief") or []:
+        if item.get("basis") == "assumed":
+            item["basis"] = "confirmed"
+
+
+def _settle_topics(understanding, topics, question, answer):
+    """
+    The brief topics a person's answer settled are settled: a topic still unknown takes the rule the answer gave it
+    ([topic] in the merged rules) or, failing that, the person's words as its rule - and is marked "answered". Found live
+    (2026-10-27): the exceptions question was settled by the person's first answer and dropped, while the brief still
+    called the topic unknown and the save question said it would be "asked next".
+    """
+
+    for item in understanding.get("brief") or []:
+        if item["topic"] not in topics or item.get("basis") not in ("unknown", "assumed"):
+            continue
+        tagged = [r for r in understanding.get("rules") or [] if r.startswith(f"[{item['topic']}]")]
+        if not tagged:
+            rule = f"[{item['topic']}] {' '.join(str(answer).split())[:400]}"
+            understanding.setdefault("rules", []).append(rule)
+            tagged = [rule]
+        item["rule"] = tagged[0][len(item["topic"]) + 3:].replace(" (my assumption)", "")
+        item["basis"] = "answered"
+        item["evidence"] = f"the person's answer to: {' '.join(str(question).split())[:120]}"

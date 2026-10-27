@@ -18,6 +18,7 @@ to recalculate when opened.
 import json
 import os
 import re
+from collections import Counter
 import shutil
 import subprocess
 import sys
@@ -53,6 +54,12 @@ SCANNED_CHARS_PER_PAGE = 40
 DEFAULT_ROWS = 60
 
 IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+def _is_picture(head):
+    """Whether a file's first bytes are a PNG, JPEG, GIF or WebP picture (what the models are shown)."""
+    return (head.startswith(b"\x89PNG\r\n\x1a\n") or head.startswith(b"\xff\xd8\xff")
+            or head[:6] in (b"GIF87a", b"GIF89a") or (head[:4] == b"RIFF" and head[8:12] == b"WEBP"))
 TEXT_TYPES = {".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".html", ".htm", ".log"}
 
 
@@ -115,7 +122,21 @@ def read_document(path, pages=None, as_images=False):
     if ext == ".pdf":
         return _read_pdf(p, pages, as_images)
     if ext in IMAGE_TYPES:
-        return {"text": f"{p.name}: an image, shown below.", "images": [str(p)]}
+        with open(p, "rb") as f:
+            head = f.read(400)  # (only the start says what it is: a large picture is not read whole)
+        if not _is_picture(head):
+            # Found live (2026-10-22): a ".jpg" that was not a picture went to the model as one and the
+            # task stopped. What the file holds is said instead - often a web page a failed download saved.
+            shown = " ".join(head.decode("utf-8", errors="replace").split())[:200]
+            return {"text": f"{p.name} is named as a picture but is not one (not a PNG, JPEG, GIF or WebP file). It "
+                            f"begins: {shown!r} - if it was downloaded, the download did not bring the picture.",
+                    "images": []}
+        if pages:
+            return _zoom_picture(p, pages)
+        return {"text": f"{p.name}: an image, shown below. To read a small or faint part closer: office read "
+                        f"'{p}' PART - PART is top, bottom, left, right, top-left, top-right, bottom-left, "
+                        "bottom-right, center, or x0,y0,x1,y1 in percent of the picture (e.g. 50,0,100,30).",
+                "images": [str(p)]}
     if ext in (".xlsx", ".xlsm"):
         return {"text": _data_check_workbook(p) + read_workbook(p), "images": []}
     if ext in (".docx", ".pptx"):
@@ -608,7 +629,275 @@ def _openpyxl():
     return openpyxl
 
 
-def read_workbook(path, sheet=None, cells=None, max_rows=DEFAULT_ROWS):
+MAX_BLOCK_TITLE = 40
+
+
+def _row_labels(ws):
+    """{row: the row's first text, stripped} for the rows of a sheet that have one."""
+
+    labels = {}
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
+        for c in row:
+            if isinstance(c.value, str) and c.value.strip() and not c.value.startswith("="):
+                labels[c.row] = " ".join(c.value.split())
+                break
+    return labels
+
+
+def sheet_blocks(ws):
+    """
+    [(first row, last row, title)] when a sheet repeats one layout block after block (a month per block, a client per
+    block): the label that recurs most marks each block, and the block's title is the topmost row above it, within the
+    gap from the block before, whose label occurs nowhere else. [] for a sheet that does not repeat a layout. Found live
+    (2026-10-21): "Closing credit carried forward" stood in six blocks of a workbook read as one list of
+    cells, and the worker took August's figure from another month's block. Decided from the sheet's labels alone.
+    """
+
+    labels = _row_labels(ws)
+    rows_of = {}
+    for r, label in labels.items():
+        rows_of.setdefault(label.casefold(), []).append(r)
+    repeated = {k: v for k, v in rows_of.items() if len(v) >= 2}
+    if len(repeated) < 2:
+        return []
+    anchor = max(repeated.values(), key=lambda rows: (len(rows), -rows[0]))
+    # A layout, not a table whose names come again: another label stands at the same distance from the marker in
+    # every block ("Date" two rows below the client's name in each month).
+    by_row = {r: label.casefold() for r, label in labels.items()}
+    shared = None
+    for at in anchor:
+        here = {(r - at, by_row[r]) for r in by_row if at < r <= at + 6 and by_row[r] != by_row[anchor[0]]}
+        shared = here if shared is None else shared & here
+    if not shared:
+        return []
+    # The rows right above each block's marker whose labels occur once: its title rows. Every block has as many; a
+    # block that shows more has the notes of the block before glued on (no blank row between), so the fewest counts.
+    filled = {c.row for row in ws.iter_rows(min_row=1, max_row=ws.max_row) for c in row if c.value not in (None, "")}
+    ups = []  # per block, the title rows above its marker, nearest first (blank rows between are passed over)
+    for i, at in enumerate(anchor):
+        floor = anchor[i - 1] + 1 if i else 1
+        found, r = [], at - 1
+        while r >= floor:
+            if r not in filled:
+                r -= 1
+                continue
+            if labels.get(r) is None or len(rows_of[labels[r].casefold()]) != 1:
+                break
+            found.append(r)
+            r -= 1
+        ups.append(found)
+    above = min(len(u) for u in ups)
+    starts = []
+    for i, at in enumerate(anchor):
+        if above:
+            start = ups[i][above - 1]
+            starts.append((start, labels[start]))
+            continue
+        # No title above the marker: the block's first line of its own below it names it.
+        nxt = anchor[i + 1] if i + 1 < len(anchor) else ws.max_row + 1
+        own = next((labels[r] for r in range(at + 1, nxt) if r in labels and len(rows_of[labels[r].casefold()]) == 1), labels[at])
+        starts.append((at, own))
+    blocks = []
+    for i, (start, title) in enumerate(starts):
+        end = starts[i + 1][0] - 1 if i + 1 < len(starts) else ws.max_row
+        blocks.append((start, end, title[:MAX_BLOCK_TITLE]))
+    # A layout is repeated only when its blocks have titles of their own.
+    return blocks if len({t.casefold() for _, _, t in blocks}) == len(blocks) else []
+
+
+def _value_kind(v):
+    """What a cell holds, as a layout sees it: a date, a number, text that reads as a date or a number, or text."""
+
+    import datetime
+    if isinstance(v, (datetime.date, datetime.datetime)):
+        return "date"
+    if isinstance(v, bool):
+        return "flag"
+    if isinstance(v, (int, float)):
+        return "number"
+    if isinstance(v, str) and not v.startswith("="):
+        s = v.strip()
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:[ T][\d:]+)?|\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}", s):
+            return "date as text"
+        if re.fullmatch(r"-?[\d,]+(?:\.\d+)?", s):
+            return "number as text"
+        return "text"
+    return None
+
+
+# A cell's kind against its column's: a date written as text, a figure written as text, a code written as a figure.
+_MIXED_KINDS = {("date as text", "date"), ("number as text", "number"), ("number", "number as text")}
+_KIND_NAMES = {"date": "dates", "number": "numbers", "number as text": "numbers written as text"}
+
+
+def block_layout_breaks(path, rows=None):
+    """
+    Where a block of a sheet that repeats one layout (sheet_blocks, a month per block) does not follow it, as sentences:
+    a label every other block has that this one lacks (a header row left out), and a cell whose kind - a date, a number,
+    text - differs from what the same column holds in every other block (a date typed as text, a code typed as a number).
+    `rows`: {sheet: set of row numbers} - only blocks holding one of them are looked at (what the task changed); None
+    looks at the last block of each sheet. Found live (2026-10-22): a September block added below August's
+    had no header row, its dates were text and its codes numbers; the report said "laid out like the earlier months".
+    Decided from the sheet alone; evidence for the judge.
+    """
+
+    books = _formula_books(path, with_values=False)
+    if books is None:
+        return []
+    out = []
+    for ws in books[0].worksheets:
+        blocks = _loose_blocks(ws)
+        if len(blocks) < 3:
+            continue
+        if rows is not None and not rows.get(ws.title):
+            continue  # (the task changed nothing on this sheet: its last block is not this task's to answer for)
+        labels = _row_labels(ws)
+        wanted = rows.get(ws.title) if rows is not None else None
+        for i, (a, b, title) in enumerate(blocks):
+            if wanted is not None and not any(a <= r <= b for r in wanted):
+                continue
+            if wanted is None and i != len(blocks) - 1:
+                continue
+            others = [blk for j, blk in enumerate(blocks) if j != i]
+            mine = {labels[r].casefold() for r in range(a, b + 1) if r in labels}
+            # The layout's own rows: a label at the same distance from its block's start in every other block (a header
+            # row) - not a name that happens to come back in several (a regular customer).
+            common = None
+            for oa, ob, _ in others:
+                theirs = {(r - oa, labels[r].casefold()) for r in range(oa, ob + 1) if r in labels}
+                common = theirs if common is None else common & theirs
+            missing = sorted({label for _, label in common or ()} - mine)
+            if missing:
+                out.append(f"{ws.title}: the block {title!r} (rows {a}-{b}) has no row {', '.join(repr(m) for m in missing[:4])}, "
+                           f"which each of the other {len(others)} blocks has - it does not follow their layout.")
+            out += _period_breaks(ws, a, b, title) + _joined_breaks(ws, a, b, others)
+            for column in range(1, ws.max_column + 1):
+                # The column's kind in the other blocks: what at least four in five of its dates and figures are.
+                seen = [k for oa, ob, _ in others for r in range(oa, ob + 1)
+                        if (k := _value_kind(ws.cell(r, column).value)) not in (None, "text", "flag")]
+                if len(seen) < 4:
+                    continue
+                main, n = Counter(seen).most_common(1)[0]
+                if n * 5 < len(seen) * 4:
+                    continue
+                for r in range(a, b + 1):
+                    v = ws.cell(r, column).value
+                    kind = _value_kind(v)
+                    if (kind, main) in _MIXED_KINDS:
+                        out.append(f"{ws.title}!{_col_letter(column)}{r} holds {v!r} as {kind}, where the column holds "
+                                   f"{_KIND_NAMES[main]} in the other blocks.")
+                        break
+    return out[:12]
+
+
+_MONTHS = {name: n for n, names in enumerate(
+    (("january", "jan"), ("february", "feb"), ("march", "mar"), ("april", "apr"), ("may",), ("june", "jun"),
+     ("july", "jul"), ("august", "aug"), ("september", "sep", "sept"), ("october", "oct"), ("november", "nov"),
+     ("december", "dec")), start=1) for name in names}
+# Two values in one cell: "4410/7208", "12%/5%" - each side a code or a figure (it holds a digit). Words joined by a
+# slash ("Source / Use", "Debit/Credit") are a label, not two entries.
+_JOINED = re.compile(r"\s*([\w.%-]*\d[\w.%-]*)\s*/\s*([\w.%-]*\d[\w.%-]*)\s*")
+
+
+def _cell_date(v):
+    """A cell's date - a date, or text written year first (2026-09-02) - else None. A day-or-month-first text date is
+    left alone: which is which is not the cell's to say."""
+
+    import datetime
+    if isinstance(v, datetime.datetime):
+        return v.date()
+    if isinstance(v, datetime.date):
+        return v
+    if isinstance(v, str):
+        m = re.fullmatch(r"\s*(\d{4})-(\d{2})-(\d{2})(?:[ T][\d:]+)?\s*", v)
+        if m:
+            try:
+                return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            except ValueError:
+                return None
+    return None
+
+
+def _period_breaks(ws, a, b, title):
+    """
+    A row of a block whose title names a month (a month per block) dated in another month. Found live (2026-10-24): a
+    row of August was copied into September's new block and counted in its total; nothing said so.
+    """
+
+    def month_of(text):
+        found = {_MONTHS[w] for w in re.findall(r"[a-z]+", (text or "").lower()) if w in _MONTHS}
+        return found.pop() if len(found) == 1 else None
+
+    # The block's period: its title, else the nearest label above it, else one near its top, that names one month.
+    labels = _row_labels(ws)
+    month = month_of(title)
+    for r in [*range(a - 1, max(0, a - 4), -1), *range(a, min(b, a + 3) + 1)]:
+        if month is None and r in labels:
+            month = month_of(labels[r])
+    if month is None:
+        return []
+    for r in range(a, b + 1):
+        for column in range(1, min(ws.max_column, 40) + 1):
+            d = _cell_date(ws.cell(r, column).value)
+            if d is not None and d.month != month:
+                name = next(n for n, m in _MONTHS.items() if m == month and len(n) > 3 or (m == month == 5)).title()
+                return [f"{ws.title} row {r} is dated {d:%Y-%m-%d}, inside the block of {name} (rows {a}-{b}) - a row of "
+                        "another period inside this one."]
+    return []
+
+
+def _joined_breaks(ws, a, b, others):
+    """
+    A cell holding two values joined ("4410/7208") in a column that holds one value per row in every other block - a
+    document with two parts recorded as one row. Found live (2026-10-24): two bills at two tax rates each went in as
+    one row each, two codes joined in the code cell, rate blank, where every earlier row held one code and one rate.
+    """
+
+    out = []
+    for column in range(1, min(ws.max_column, 40) + 1):
+        per_block = [cells for oa, ob, _ in others
+                     if (cells := {(r - oa, str(v)) for r in range(oa, ob + 1)
+                                   if (v := ws.cell(r, column).value) not in (None, "")})]
+        # A value at the same place in every block that fills the column is the layout's own (a header such as "Code/Ref").
+        layout = {v for _, v in set.intersection(*per_block)} if len(per_block) >= 2 else set()
+        theirs = [v for cells in per_block for _, v in cells if v not in layout]
+        if len(theirs) < 3 or any("/" in v and _value_kind(v) == "text" for v in theirs):
+            continue
+        for r in range(a, b + 1):
+            v = ws.cell(r, column).value
+            if isinstance(v, str) and v not in layout and _value_kind(v) == "text" and _JOINED.fullmatch(v):
+                out.append(f"{ws.title}!{_col_letter(column)}{r} holds {v!r} - two values in one cell, where the column "
+                           "holds one per row in the other blocks: a document with two parts goes in as one row per part.")
+                break
+    return out
+
+
+def _loose_blocks(ws):
+    """sheet_blocks without its demand that every block share the marker's layout - so a block that breaks it is still
+    a block, to be told it does."""
+
+    labels = _row_labels(ws)
+    rows_of = {}
+    for r, label in labels.items():
+        rows_of.setdefault(label.casefold(), []).append(r)
+    repeated = {k: v for k, v in rows_of.items() if len(v) >= 3}
+    if not repeated:
+        return []
+    anchor = max(repeated.values(), key=lambda rows: (len(rows), -rows[0]))
+    starts = []
+    for i, at in enumerate(anchor):
+        floor = anchor[i - 1] + 1 if i else 1
+        start = at
+        r = at - 1
+        while r >= floor and labels.get(r) is not None and len(rows_of[labels[r].casefold()]) == 1:
+            start = r
+            r -= 1
+        starts.append((start, labels[start]))
+    return [(s, (starts[i + 1][0] - 1 if i + 1 < len(starts) else ws.max_row), t[:MAX_BLOCK_TITLE])
+            for i, (s, t) in enumerate(starts)]
+
+
+def read_workbook(path, sheet=None, cells=None, max_rows=DEFAULT_ROWS, limit=MAX_TEXT_CHARS):
     """
     A workbook as text: every sheet (or one) with its size, then its cells as
     a grid with their addresses. A formula shows as `=SUM(B2:B9) -> 1200`
@@ -669,10 +958,41 @@ def read_workbook(path, sheet=None, cells=None, max_rows=DEFAULT_ROWS):
         except Exception as exc:  # noqa: BLE001 - the values are still worth reading when this cannot be
             out.append(f"(formatting could not be read: {str(exc)[:120]})")
 
+        try:
+            blocks = sheet_blocks(ws_f)
+        except Exception:  # noqa: BLE001 - the cells are still worth reading when the layout cannot be told
+            blocks = []
+        if blocks:
+            # First, so a reply cut short still says where each block is; each row below carries its block's title.
+            out.append("Blocks (this sheet repeats one layout; each row below is tagged with its block): "
+                       + "; ".join(f"rows {a}-{b} {t!r}" for a, b, t in blocks)
+                       + f". Read one block with its range, e.g. 'A{blocks[-1][0]}:{_col_letter(ws_f.max_column)}{blocks[-1][1]}'.")
+
+        def block_of(r):
+            for a, b, t in blocks:
+                if a <= r <= b:
+                    return t
+            return None
+
         if cells:
             rows = ws_f[cells]
             if not isinstance(rows, tuple) or (rows and not isinstance(rows[0], tuple)):
                 rows = (rows if isinstance(rows, tuple) else (rows,),)
+        elif blocks and ws_f.max_row > max_rows:
+            # A sheet that repeats a block per period grows at its end: its newest blocks are what a task goes on from,
+            # shown whole. Found live (2026-10-24): the first 60 rows of a computation sheet ended inside July, the
+            # August block's closing figures were never shown, and the worker reported July's as August's.
+            first = blocks[-1][0]
+            for a, _, _ in reversed(blocks):
+                if ws_f.max_row - a + 1 > max_rows:
+                    break
+                first = a
+            rows = ws_f.iter_rows(min_row=first, max_row=ws_f.max_row)
+            earlier = [(a, b, t) for a, b, t in blocks if b < first]
+            if earlier:
+                out.append(f"(the newest blocks are shown whole, rows {first}-{ws_f.max_row}; earlier blocks not shown: "
+                           + ", ".join(repr(t) for _, _, t in earlier)
+                           + f" - read one with its range, e.g. 'A{earlier[-1][0]}:{_col_letter(ws_f.max_column)}{earlier[-1][1]}')")
         else:
             last = min(ws_f.max_row, max_rows)
             rows = ws_f.iter_rows(min_row=1, max_row=last)
@@ -681,20 +1001,23 @@ def read_workbook(path, sheet=None, cells=None, max_rows=DEFAULT_ROWS):
 
         for row in rows:
             shown = []
+            tag = block_of(row[0].row) if blocks and row else None
+            if tag:
+                shown.append(f"[{tag}]")
             for c in row:
                 if c.value is None:
                     continue
                 v = c.value
                 if isinstance(v, str) and v.startswith("="):
                     cached = ws_v[c.coordinate].value
-                    shown.append(f"{c.coordinate}={v} -> {cached!r}")
+                    shown.append(f"{c.coordinate}={v} -> {_cell_shown(cached)}")
                 else:
-                    shown.append(f"{c.coordinate}={v!r}")
-            if shown:
+                    shown.append(f"{c.coordinate}={_cell_shown(v)}")
+            if len(shown) > (1 if tag else 0):
                 out.append("  ".join(shown))
 
     out.extend(_workbook_objects(p))
-    return _clip("\n".join(out))
+    return _clip("\n".join(out), limit)
 
 
 # ============================================================
@@ -880,6 +1203,21 @@ def nothing_highlighted(path):
         if not facts["checked_all"]:
             return None
     return True
+
+
+def _cell_shown(value):
+    """A cell's value as office read writes it: text and numbers as Python writes them ('Total', 1240.0), a date as a
+    date (2026-07-04, with its time when it has one). Found live (2026-10-21): dates came out as
+    datetime.datetime(2026, 7, 4, 0, 0), which the check that a typed date was read did not know as a date - the
+    invoice dates typed into a portal were refused as guesses."""
+
+    import datetime as _dt
+
+    if isinstance(value, _dt.datetime):
+        return value.date().isoformat() if value.time() == _dt.time(0, 0) else value.isoformat(sep=" ")
+    if isinstance(value, (_dt.date, _dt.time)):
+        return value.isoformat()
+    return repr(value)
 
 
 def _workbook_objects(p):
@@ -1228,7 +1566,93 @@ def _cell_value(v):
 # Workbooks: updating in place (charts survive)
 # ------------------------------------------------------------------
 
-def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_sheets=None):
+def copy_rows_touches(copy_rows, sheet, cell):
+    """Whether a copy_rows of this update writes the cell: its text is then the copy's, not the sheet's (an edit may
+    blank what the copy brought)."""
+    _, row = _split(cell)
+    for spec in copy_rows or []:
+        if (spec.get("sheet") or "") != sheet:
+            continue
+        try:
+            a, b = (int(x) for x in str(spec.get("rows", "")).split(":"))
+            to = int(spec.get("to"))
+        except (TypeError, ValueError):
+            continue
+        if to <= int(row) <= to + (b - a):
+            return True
+    return False
+
+
+_HELD = {}
+
+
+def _held_value(path, sheet, cell):
+    """What a saved cell holds (None when empty), read with openpyxl from the file as saved; the workbook is read once
+    per path and kept for the update."""
+    wb = _held_workbook(path)
+    if wb is None:
+        return None
+    try:
+        if sheet not in wb.sheetnames:
+            return None
+        v = wb[sheet][cell].value
+    except Exception:
+        return None
+    return None if v in (None, "") else v
+
+
+def _date_cell(path, sheet, cell):
+    """Whether a saved cell is formatted as a date (its own format, or the format of the filled cell above it when it
+    is new): a column of dates takes dates."""
+    wb = _held_workbook(path)
+    if wb is None or sheet not in wb.sheetnames:
+        return False
+    try:
+        ws = wb[sheet]
+        c = ws[cell]
+        if c.value not in (None, "") or c.has_style:
+            return bool(c.is_date) or _date_format(c.number_format)
+        col, row = _split(cell)
+        for r in range(int(row) - 1, max(int(row) - 6, 0), -1):
+            above = ws[f"{col}{r}"]
+            if above.value not in (None, ""):
+                return bool(above.is_date) or _date_format(above.number_format)
+    except Exception:
+        return False
+    return False
+
+
+def _date_format(fmt):
+    f = str(fmt or "").lower()
+    return "general" not in f and any(ch in f for ch in "dy") and "m" in f
+
+
+def _date_serial(d):
+    import datetime
+    return (d - datetime.date(1899, 12, 30)).days
+
+
+def _held_workbook(path):
+    key = (str(path), os.path.getmtime(str(path)) if os.path.exists(str(path)) else 0)
+    wb = _HELD.get(key)
+    if wb is None:
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(str(path), data_only=False)
+        except Exception:
+            return None
+        _HELD.clear()
+        _HELD[key] = wb
+    return wb
+
+
+def _short_value(v):
+    t = str(v)
+    return repr(t[:30] + ("..." if len(t) > 30 else "")) if isinstance(v, str) else t[:30]
+
+
+def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_sheets=None, insert_rows=None,
+                    copy_rows=None, clear_text=False):
     """
     Change cells of an existing workbook without touching anything else.
 
@@ -1237,6 +1661,16 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
     `replace_refs`: [{"from": "Data!$B$2:$B$13", "to": "Data!$B$2:$B$14"}] -
     rewritten wherever charts, tables and defined names refer to them, so a
     chart takes in a month that was appended.
+    `insert_rows`: [{"sheet": "Data", "before": 54, "count": 12}] - empty rows
+    put in above row 54, every reference below them moved with them (as a
+    spreadsheet app's Insert rows); done before the edits, which address the
+    rows as they are after it.
+    `copy_rows`: [{"sheet": "Calc", "rows": "69:84", "to": 86, "replace": {"AUGUST": "SEPTEMBER"}}] - a block of
+    rows copied to start at row `to`, as a spreadsheet's copy and paste (_copy_rows): the next period's block made
+    from the last one, then filled with edits in the same update.
+    `clear_text`: an edit that empties a cell holding text (a label, a heading, a name) is refused unless this is
+    true - found live (2026-10-26): a block copied like the earlier ones had its label row blanked along with the
+    figures, and the sheet lost the row that names its columns.
 
     Writes `output_path` (default: the file itself, after keeping the
     original as <name>.orig.xlsx the first time). Excel and LibreOffice
@@ -1259,12 +1693,47 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
     sheet_files = _sheet_files(entries)
     changed = []
 
+    inserted = [_insert_rows(entries, sheet_files, spec) for spec in insert_rows or []]
+
+    if copy_rows and insert_rows:
+        raise OfficeError("insert_rows and copy_rows go in separate updates (the copy reads the rows as saved) - "
+                          "nothing was written")
+    copied = []
+    for spec in copy_rows or []:
+        words, refs, outside, cleared = _copy_rows(src, entries, sheet_files, spec)
+        changed += refs
+        copied.append(words + (("; formulas that read another sheet moved with the copy - check each reads the new "
+                                "period's rows there: " + ", ".join(outside[:8])) if outside else "")
+                      + (("; typed figures left empty to fill: " + ", ".join(cleared[:12])
+                          + (" ..." if len(cleared) > 12 else "")) if cleared else ""))
+
     by_sheet = {}
+    labels, replaced = [], []
     for e in edits or []:
         sheet = e.get("sheet") or next(iter(sheet_files))
         if sheet not in sheet_files:
             raise OfficeError(f"no sheet {sheet!r}; the sheets are {list(sheet_files)}")
         cell = _cell_address(e.get("cell"))
+        if "value" in e and _date_cell(src, sheet, cell):
+            # A date cell takes a date: text written year first becomes the cell's own date (never "date as text"), and
+            # a bare number is refused - found live (2026-10-26): serials worked out in the head gave 2025 dates, and
+            # text dates in a column of dates drew four questions.
+            v = e.get("value")
+            if isinstance(v, str) and _cell_date(v) is not None:
+                e = dict(e, value=_date_serial(_cell_date(v)))
+            elif isinstance(v, (int, float)) and not isinstance(v, bool) and not copy_rows_touches(copy_rows, sheet, cell):
+                raise OfficeError(f"not updated - {sheet}!{cell} is a date cell: give the date as text, year first "
+                                  f"(2026-09-26), not a number ({v}) - nothing was written")
+        if "value" in e and not copy_rows_touches(copy_rows, sheet, cell):
+            held = _held_value(src, sheet, cell)
+            if held is not None and e.get("value") in (None, ""):
+                if not clear_text and isinstance(held, str) and not held.startswith("=") and re.search(r"[A-Za-z]", held):
+                    labels.append(f"{sheet}!{cell} {held.strip()[:40]!r}")
+            elif held is not None and str(held).strip() != str(e.get("value")).strip():
+                # Written over: said in the update's words, so what was in the cell (another record's figure, an
+                # earlier value) is known to be gone. Found live (2026-10-26): a bill's row was written over by the
+                # next bill's and the first bill left the file unnoticed.
+                replaced.append(f"{sheet}!{cell} {_short_value(held)} -> {_short_value(e.get('value'))}")
         # "formula" is how a model naturally names a formula's edit; taken as
         # the value (with its "="). An edit with neither key is refused, never
         # read as "empty the cell": live, {"cell": "D2", "formula": "=SUM(..)"}
@@ -1272,6 +1741,11 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
         value = _given_value(e, f"the edit of {sheet}!{cell} has no value: give \"value\" (a number, text, \"=FORMULA\", "
                                 "or null to empty the cell)")
         by_sheet.setdefault(sheet, []).append((cell, value))
+    if labels:
+        raise OfficeError("not updated - these cells hold text (labels, headings, names), not figures, and the update "
+                          "would empty them: " + ", ".join(labels[:10]) + (" ..." if len(labels) > 10 else "")
+                          + ". A block made like the earlier ones keeps their labels; empty only the figures. To clear "
+                          "text on purpose, put \"clear_text\": true in the update.")
 
     for sheet, cell_edits in by_sheet.items():
         name = sheet_files[sheet]
@@ -1333,14 +1807,164 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
     _write_zip(dst, order, entries)
     stored = _store_results(dst)
 
-    msg = f"Updated {dst}: " + (f"added sheet(s) {', '.join(added)}; " if added else "") + f"{len(changed)} cell(s)"
+    msg = (f"Updated {dst}: " + (f"added sheet(s) {', '.join(added)}; " if added else "")
+           + "".join(f"{words}; " for words in inserted) + "".join(f"{words}; " for words in copied)
+           + f"{len(changed)} cell(s)")
     if changed:
         msg += " (" + ", ".join(changed[:20]) + (" ..." if len(changed) > 20 else "") + ")"
+    if replaced:
+        msg += (f"; replaced {len(replaced)} filled cell(s): " + ", ".join(replaced[:20])
+                + (" ..." if len(replaced) > 20 else "")
+                + " - what those cells held is gone from the file: if it was another record's, put it back in its own row")
     if replace_refs:
         msg += f"; {swaps} range reference(s) rewritten"
         if not swaps:
             msg += " - none matched: read the workbook to see the exact ranges its charts use"
-    return msg + (". Formula results are recalculated and saved in it." if stored else ". Formulas recalculate when the file is opened.")
+    msg += (". Formula results are recalculated and saved in it." if stored else ". Formulas recalculate when the file is opened.")
+    return msg + _layout_note(dst, changed)
+
+
+MAX_COPIED_ROWS = 200
+
+
+def _cell_style(row_xml, ref):
+    """The format index of a cell in its row's XML, or None."""
+
+    found = re.search(_CELL_RE.format(ref=ref), row_xml, re.S) if row_xml else None
+    own = re.search(r'\bs="(\d+)"', found.group(0)) if found else None
+    return own.group(1) if own else None
+# A fact a label of one period holds: a date, a long number, a reference of letters and digits (copy_rows).
+_PERIOD_FACT = re.compile(r"\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}-\d{2}-\d{2}|\d{5,}|\b(?=\w*\d)(?=\w*[A-Za-z])\w{8,}\b")
+
+
+def _copy_rows(src, entries, sheet_files, spec):
+    """
+    One copy_rows entry: {"sheet": "Calc", "rows": "69:84", "to": 86, "replace": {"AUGUST": "SEPTEMBER"},
+    "keep_figures": false}. The rows are copied to start at row `to` as a spreadsheet's copy and paste does: each
+    formula's relative references move with it (a block's "previous closing" then reads the block it was copied from),
+    labels take the replacements, each cell keeps its format, and figures typed as values (not formulas) are left empty
+    to fill - unless keep_figures. Nothing is written over a cell that holds something. Found live (2026-10-23/24): a
+    new month's block typed by hand into a register of monthly blocks came out with another month's row in it, and its
+    labels and totals pointing at the wrong rows. Merged cells are not copied. Returns (sentence, changed cells,
+    formulas that read another sheet, cells left to fill).
+    """
+
+    import datetime
+    from openpyxl.formula.translate import Translator
+
+    sheet = spec.get("sheet") or next(iter(sheet_files))
+    if sheet not in sheet_files:
+        raise OfficeError(f"copy_rows: no sheet {sheet!r}; the sheets are {list(sheet_files)} - nothing was written")
+    m = re.fullmatch(r"\s*(\d+)\s*[:-]\s*(\d+)\s*", str(spec.get("rows") or ""))
+    to = spec.get("to")
+    if not m or not isinstance(to, int) or isinstance(to, bool):
+        raise OfficeError('each of copy_rows is {"sheet": "Calc", "rows": "69:84", "to": 86, "replace": {"OLD": "NEW"}}'
+                          " - nothing was written")
+    a, b = int(m.group(1)), int(m.group(2))
+    end = to + (b - a)
+    if a < 1 or a > b or b - a + 1 > MAX_COPIED_ROWS or to < 1 or not (end < a or to > b):
+        raise OfficeError(f"copy_rows: rows {a}-{b} to row {to} - give the first and last row of the block (at most "
+                          f"{MAX_COPIED_ROWS}) and a row the copy does not overlap it from - nothing was written")
+    replace = spec.get("replace") or {}
+    if not isinstance(replace, dict):
+        raise OfficeError('copy_rows: "replace" is {"OLD": "NEW"} - nothing was written')
+    keep = bool(spec.get("keep_figures"))
+    offset = to - a
+
+    wb = _openpyxl().load_workbook(str(src), data_only=False)
+    ws = wb[sheet]
+    taken = [c.coordinate for r in range(to, end + 1) for c in ws[r] if c.value not in (None, "")]
+    if taken:
+        raise OfficeError(f"copy_rows would write over {', '.join(taken[:6])} - nothing was written: copy the block to "
+                          "empty rows (below the last block)")
+    # A block copied short of its end: the row after the range still belongs to it (a total, a closing line - more
+    # than one cell filled, or a figure or formula in it). Found live (2026-10-26): rows 29-33 copied where the block
+    # ran to 35, and the new block had no total; the next run copied 29-35 and passed.
+    if not spec.get("partial_block") and b + 1 <= ws.max_row:
+        after = [c for c in ws[b + 1] if c.value not in (None, "")]
+        figures = [c for c in after if not isinstance(c.value, str) or c.value.startswith("=")]
+        if len(after) >= 2 or figures:
+            shown = ", ".join(f"{c.coordinate}={_short_value(c.value)}" for c in after[:4])
+            raise OfficeError(f"copy_rows: the block seems to go on past row {b} - row {b + 1} holds {shown} - nothing "
+                              f"was written: copy the whole block (its total rows too), or say \"partial_block\": true "
+                              "if that row is not part of it")
+
+    name = sheet_files[sheet]
+    xml = entries[name].decode("utf-8")
+    changed, outside, cleared = [], [], []
+    for r in range(a, b + 1):
+        row_m = re.search(_ROW_RE.format(n=r), xml, re.S)
+        row_xml = row_m.group(0) if row_m else ""
+        # A dated row is an entry of its period (a bill's line: its date, party, number), not the layout: none of what
+        # was typed in it is copied - its formulas are.
+        entry = not keep and any(isinstance(c.value, (datetime.date, datetime.datetime)) or
+                                 (isinstance(c.value, str) and _cell_date(c.value) is not None) for c in ws[r])
+        for c in ws[r]:
+            if c.value is None:
+                continue
+            dest = f"{c.column_letter}{r + offset}"
+            if entry and not (isinstance(c.value, str) and c.value.startswith("=")):
+                cleared.append(dest)
+                xml = _set_cell(xml, dest, None, style=_cell_style(row_xml, c.coordinate))
+                changed.append(f"{sheet}!{dest}")
+                continue
+            found = re.search(_CELL_RE.format(ref=c.coordinate), row_xml, re.S) if row_xml else None
+            own = re.search(r'\bs="(\d+)"', found.group(0)) if found else None
+            value = c.value
+            if isinstance(value, str) and value.startswith("="):
+                value = Translator(value, origin=c.coordinate).translate_formula(dest)
+                if "!" in value:
+                    outside.append(f"{dest} {value}")
+            elif isinstance(value, str) and not keep and _PERIOD_FACT.search(value):
+                # A label that carries a date or a reference ("filed on 11/09/2026. Ref AB29082600...") is a fact of
+                # the period it was written for: copied with the period's name replaced it would state the old date
+                # and reference as the new period's. Left to fill, like a typed figure.
+                cleared.append(dest)
+                value = None
+            elif isinstance(value, str):
+                for old, new in replace.items():
+                    value = value.replace(str(old), str(new))
+            elif isinstance(value, bool):
+                pass
+            elif isinstance(value, (int, float)):
+                if not keep:
+                    cleared.append(dest)
+                    value = None
+            elif isinstance(value, (datetime.date, datetime.time)):
+                cleared.append(dest)  # (a date is the period's own: typed, never copied)
+                value = None
+            else:
+                value = str(value)
+            xml = _set_cell(xml, dest, value, style=own.group(1) if own else None)
+            changed.append(f"{sheet}!{dest}")
+    entries[name] = _fix_dimension(xml).encode("utf-8")
+    return (f"copied rows {a}-{b} of {sheet} to rows {to}-{end} (formulas moved {offset:+d} rows, as a copy and "
+            "paste)", changed, outside, cleared)
+
+
+def _layout_note(path, changed):
+    """
+    What the blocks this write changed do differently from the sheet's other blocks (block_layout_breaks), told to
+    the worker as it writes - facts to check, never a refusal. Found live (2026-10-23): a new period's
+    block went in with no header row; the layout check saw it only as evidence for the final judge, after the work.
+    """
+
+    rows = {}
+    for ref in changed:
+        m = re.match(r"^'?(.+?)'?!\$?[A-Za-z]{1,3}\$?(\d+)$", str(ref))
+        if m:
+            rows.setdefault(m.group(1), set()).add(int(m.group(2)))
+    if not rows:
+        return ""
+    try:
+        breaks = block_layout_breaks(path, rows=rows)
+    except Exception as exc:  # noqa: BLE001 - a note, never a reason the write fails
+        print(f"office: could not compare the changed blocks with the others: {exc}", file=sys.stderr)
+        return ""
+    if not breaks:
+        return ""
+    return ("\nCompared with the sheet's other blocks (check it, and change it if the layout should match):\n- "
+            + "\n- ".join(breaks[:12]))
 
 
 def _keep_original(src, suffix=None):
@@ -1349,7 +1973,8 @@ def _keep_original(src, suffix=None):
 
     backup = src.with_name(src.stem + ".orig" + (suffix or src.suffix))
     if not backup.exists() and not _task_made(src):
-        shutil.copy2(src, backup)
+        from decurix_agent import shared
+        shared.copy_file(src, backup)
 
 
 def _zip_parts(p):
@@ -1374,6 +1999,277 @@ def _other_sheet_quoting(ref):
     if sheet.startswith("'") and sheet.endswith("'") and len(sheet) > 1:
         return sheet[1:-1] + "!" + rest
     return f"'{sheet}'!" + rest
+
+
+# ------------------------------------------------------------------
+# Workbooks: putting rows in, references following them (as a spreadsheet app's "Insert rows")
+#
+# Found live (2026-10-22): with no way to put rows into a workbook, the worker used openpyxl's
+# insert_rows, which moves cells but not the references that point at them - the month above the new rows went on
+# reading rows the new month had taken, and its closing credit came out wrong. Here every reference to a row at or below
+# the insertion moves with it: formulas on every sheet, conditional formats and validations, merged cells, defined
+# names, chart ranges, tables, pivot sources, comments and pictures anchored there.
+# ------------------------------------------------------------------
+
+MAX_SHEET_ROWS = 1048576
+MAX_INSERTED_ROWS = 10000
+
+# A cell or range reference of a formula, or a whole-row range ("5:10"), with the sheet it names, if any.
+_REF_TOKEN = re.compile(
+    r"(?<![\w.$'!:])"
+    r"(?P<sheet>(?:'(?:[^']|'')+'|[A-Za-z_À-￿][\w.À-￿]*)!)?"
+    r"(?:(?P<c1>\$?[A-Z]{1,3})(?P<r1>\$?\d{1,7})(?::(?P<c2>\$?[A-Z]{1,3})(?P<r2>\$?\d{1,7}))?"
+    r"|(?P<w1>\$?\d{1,7}):(?P<w2>\$?\d{1,7}))"
+    r"(?![\w(!])")
+# Attributes that hold references to the sheet they are on.
+_REF_ATTR = re.compile(r'(\s(?:ref|sqref|topLeftCell|activeCell)=")([^"]*)(")')
+# A formula element of a sheet, a conditional format or a validation: <f ...>...</f>, <formula>, <formula1/2>.
+_FORMULA_EL = re.compile(r"(<(f|formula[12]?)\b[^>]*>)(.*?)(</\2>)", re.S)
+
+
+def _unquote_sheet(name):
+    return name[1:-1].replace("''", "'") if len(name) > 1 and name.startswith("'") and name.endswith("'") else name
+
+
+def _shift_refs(text, sheet, own, before, count):
+    """(text, how many references moved): each reference in `text` to a row of `sheet` at or below `before` moved down
+    `count` rows. `own`: `text` is on that sheet, so a reference with no sheet name is to it. Text in quotes is left."""
+
+    moved = 0
+
+    def row(value):
+        nonlocal moved
+        n = int(value.lstrip("$"))
+        if n >= before:
+            n += count
+            moved += 1
+        return ("$" if value.startswith("$") else "") + str(n)
+
+    def fix(m):
+        named = m.group("sheet")
+        target = _unquote_sheet(named[:-1]) if named else None
+        if not ((target is None and own) or (target is not None and target.casefold() == sheet.casefold())):
+            return m.group(0)
+        if m.group("w1"):
+            return (named or "") + row(m.group("w1")) + ":" + row(m.group("w2"))
+        out = (named or "") + m.group("c1") + row(m.group("r1"))
+        if m.group("c2"):
+            out += ":" + m.group("c2") + row(m.group("r2"))
+        return out
+
+    parts = re.split(r'("(?:[^"]|"")*")', text)
+    shifted = "".join(part if i % 2 else _REF_TOKEN.sub(fix, part) for i, part in enumerate(parts))
+    return shifted, moved
+
+
+def _shift_formulas(xml, sheet, own, before, count):
+    """(xml, references moved) for every formula element of a part's XML (escaped as XML text)."""
+
+    total = 0
+
+    def fix(m):
+        nonlocal total
+        text, moved = _shift_refs(_unescape(m.group(3)), sheet, own, before, count)
+        total += moved
+        return m.group(1) + _escape(text) + m.group(4)
+
+    return _FORMULA_EL.sub(fix, xml), total
+
+
+def _shift_ref_attrs(xml, sheet, before, count):
+    """(xml, references moved) for the ref/sqref/topLeftCell/activeCell attributes of a part on `sheet`."""
+
+    total = 0
+
+    def fix(m):
+        nonlocal total
+        text, moved = _shift_refs(m.group(2), sheet, True, before, count)
+        total += moved
+        return m.group(1) + text + m.group(3)
+
+    return _REF_ATTR.sub(fix, xml), total
+
+
+def _expand_shared(xml):
+    """A sheet's shared formulas written out cell by cell (each follower's own formula, as the app works it out from the
+    first): a row put in among them would otherwise change what every follower reads."""
+
+    if 't="shared"' not in xml:
+        return xml
+    from openpyxl.formula.translate import Translator
+    cell_re = re.compile(r'<c\b[^>]*?\br="([A-Z]+\d+)"[^>]*?(?:/>|>.*?</c>)', re.S)
+    f_re = re.compile(r'<f\b([^>]*)(?:/>|>(.*?)</f>)', re.S)
+    masters = {}
+    for cell in cell_re.finditer(xml):
+        f = f_re.search(cell.group(0))
+        if f and 't="shared"' in f.group(1) and f.group(2):
+            si = re.search(r'\bsi="(\d+)"', f.group(1))
+            if si:
+                masters[si.group(1)] = (cell.group(1), _unescape(f.group(2)))
+
+    def fix(cell):
+        body = cell.group(0)
+        f = f_re.search(body)
+        if not f or 't="shared"' not in f.group(1):
+            return body
+        si = re.search(r'\bsi="(\d+)"', f.group(1))
+        if not si or si.group(1) not in masters:
+            raise OfficeError(f"{cell.group(1)} holds a shared formula whose first cell cannot be found - nothing was written")
+        origin, text = masters[si.group(1)]
+        own = text if origin == cell.group(1) else Translator("=" + text, origin=origin).translate_formula(cell.group(1))[1:]
+        return body[:f.start()] + f"<f>{_escape(own)}</f>" + body[f.end():]
+
+    return cell_re.sub(fix, xml)
+
+
+def _move_rows(xml, before, count):
+    """A sheet's rows at or below `before` (and their cells) numbered `count` lower."""
+
+    start, end = xml.find("<sheetData"), xml.find("</sheetData>")
+    if start < 0 or end < 0:
+        return xml
+
+    def row(m):
+        n = int(m.group(2))
+        return m.group(1) + str(n + count if n >= before else n) + m.group(3)
+
+    def cell(m):
+        n = int(m.group(3))
+        return m.group(1) + m.group(2) + str(n + count if n >= before else n) + m.group(4)
+
+    body = xml[start:end]
+    body = re.sub(r'(<row\b[^>]*?\br=")(\d+)(")', row, body)
+    body = re.sub(r'(<c\b[^>]*?\br=")([A-Z]+)(\d+)(")', cell, body)
+    return xml[:start] + body + xml[end:]
+
+
+def _sheet_related(entries, part):
+    """The parts a sheet's relationships point at (tables, comments, drawings, legacy drawings), by kind."""
+
+    import posixpath
+    rels = posixpath.join(posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels")
+    out = {}
+    if rels not in entries:
+        return out
+    for rel in re.findall(r"<Relationship\b[^>]*/>", entries[rels].decode("utf-8")):
+        target = re.search(r'\bTarget="([^"]+)"', rel)
+        kind = re.search(r'\bType="[^"]*/([^"/]+)"', rel)
+        if not target or not kind or 'TargetMode="External"' in rel:
+            continue
+        path = posixpath.normpath(posixpath.join(posixpath.dirname(part), target.group(1)))
+        if path in entries:
+            out.setdefault(kind.group(1), []).append(path)
+    return out
+
+
+def _insert_rows(entries, sheet_files, spec):
+    """Put `count` empty rows into a sheet before row `before`; returns what was done, as words."""
+
+    if not isinstance(spec, dict) or set(spec) - {"sheet", "before", "count"}:
+        raise OfficeError('each of insert_rows is {"sheet": "Data", "before": 54, "count": 12} - nothing was written')
+    sheet = spec.get("sheet") or next(iter(sheet_files))
+    if sheet not in sheet_files:
+        raise OfficeError(f"no sheet {sheet!r}; the sheets are {list(sheet_files)} - nothing was written")
+    try:
+        before, count = int(spec.get("before")), int(spec["count"] if "count" in spec else 1)
+    except (TypeError, ValueError):
+        raise OfficeError("insert_rows needs \"before\" (the row number the new rows go above) and \"count\" - nothing was written")
+    if before < 1 or not 1 <= count <= MAX_INSERTED_ROWS:
+        raise OfficeError(f"insert_rows: before must be a row number and count 1 to {MAX_INSERTED_ROWS} - nothing was written")
+
+    part = sheet_files[sheet]
+    xml = _expand_shared(entries[part].decode("utf-8"))
+    for f in re.finditer(r'<f\b[^>]*\bt="array"[^>]*\bref="[A-Z]+(\d+)(?::[A-Z]+(\d+))?"', xml):
+        first, last = int(f.group(1)), int(f.group(2) or f.group(1))
+        if first < before <= last:
+            raise OfficeError(f"{sheet} has an array formula over rows {first}-{last}; rows cannot go in the middle of it "
+                              "- nothing was written")
+    last_row = max([int(n) for n in re.findall(r'<row\b[^>]*?\br="(\d+)"', xml)] + [0])
+    if last_row >= before and last_row + count > MAX_SHEET_ROWS:
+        raise OfficeError(f"{sheet} would run past row {MAX_SHEET_ROWS} - nothing was written")
+
+    moved = 0
+    xml, n = _shift_formulas(xml, sheet, True, before, count)
+    moved += n
+    xml, n = _shift_ref_attrs(xml, sheet, before, count)
+    moved += n
+    xml = re.sub(r'(<brk\b[^>]*?\bid=")(\d+)(")',
+                 lambda m: m.group(1) + str(int(m.group(2)) + count if int(m.group(2)) >= before else int(m.group(2))) + m.group(3),
+                 xml) if "<rowBreaks" in xml else xml
+    entries[part] = _move_rows(xml, before, count).encode("utf-8")
+
+    for other, other_part in sheet_files.items():
+        if other_part == part:
+            continue
+        text = entries[other_part].decode("utf-8")
+        if "!" not in text:
+            continue
+        text = _expand_shared(text)
+        text, n = _shift_formulas(text, sheet, False, before, count)
+        if n:
+            moved += n
+            entries[other_part] = text.encode("utf-8")
+
+    workbook = entries["xl/workbook.xml"].decode("utf-8")
+
+    def name(m):
+        nonlocal moved
+        text, n = _shift_refs(_unescape(m.group(2)), sheet, False, before, count)
+        moved += n
+        return m.group(1) + _escape(text) + m.group(3)
+    entries["xl/workbook.xml"] = re.sub(r"(<definedName\b[^>]*>)(.*?)(</definedName>)", name, workbook, flags=re.S).encode("utf-8")
+
+    for path in list(entries):
+        if re.match(r"xl/charts/chart\w*\.xml$", path):
+            text = entries[path].decode("utf-8")
+
+            def chart_ref(m):
+                nonlocal moved
+                shifted, n = _shift_refs(_unescape(m.group(2)), sheet, False, before, count)
+                moved += n
+                return m.group(1) + _escape(shifted) + m.group(3)
+            entries[path] = re.sub(r"(<(?:\w+:)?f>)(.*?)(</(?:\w+:)?f>)", chart_ref, text, flags=re.S).encode("utf-8")
+        elif re.match(r"xl/pivotCache/pivotCacheDefinition\d+\.xml$", path):
+            text = entries[path].decode("utf-8")
+
+            def source(m):
+                nonlocal moved
+                tag = m.group(0)
+                where = re.search(r'\bsheet="([^"]*)"', tag)
+                if not where or _unescape(where.group(1)).casefold() != sheet.casefold():
+                    return tag
+                shifted, n = _shift_ref_attrs(tag, sheet, before, count)
+                moved += n
+                return shifted
+            entries[path] = re.sub(r"<worksheetSource\b[^>]*/>", source, text).encode("utf-8")
+
+    related = _sheet_related(entries, part)
+    for path in related.get("table", []) + related.get("comments", []):
+        text, n = _shift_ref_attrs(entries[path].decode("utf-8"), sheet, before, count)
+        moved += n
+        entries[path] = text.encode("utf-8")
+    for path in related.get("drawing", []):
+        # Anchors count rows from 0: row index before-1 is the first row that moves.
+        text = re.sub(r"(<xdr:row>)(\d+)(</xdr:row>)",
+                      lambda m: m.group(1) + str(int(m.group(2)) + count if int(m.group(2)) >= before - 1 else int(m.group(2)))
+                      + m.group(3), entries[path].decode("utf-8"))
+        entries[path] = text.encode("utf-8")
+    for path in related.get("vmlDrawing", []):
+        text = entries[path].decode("utf-8", "replace")
+        text = re.sub(r"(<x:Row>)(\d+)(</x:Row>)",
+                      lambda m: m.group(1) + str(int(m.group(2)) + count if int(m.group(2)) >= before - 1 else int(m.group(2)))
+                      + m.group(3), text)
+
+        def anchor(m):
+            values = [v.strip() for v in m.group(2).split(",")]
+            if len(values) == 8:
+                for i in (2, 6):
+                    if values[i].isdigit() and int(values[i]) >= before - 1:
+                        values[i] = str(int(values[i]) + count)
+            return m.group(1) + ", ".join(values) + m.group(3)
+        entries[path] = re.sub(r"(<x:Anchor>)(.*?)(</x:Anchor>)", anchor, text, flags=re.S).encode("utf-8")
+
+    return f"put {count} empty row(s) into {sheet} above row {before} ({moved} reference(s) moved with them)"
 
 
 def _sheet_files(entries):
@@ -1506,7 +2402,9 @@ _ROW_RE = r'<row\b[^>]*?\br="{n}"[^>]*?(?:/>|>.*?</row>)'
 _CELL_RE = r'<c\b[^>]*?\br="{ref}"[^>]*?(?:/>|>.*?</c>)'
 
 
-def _set_cell(xml, ref, value):
+def _set_cell(xml, ref, value, style=None):
+    """Write one cell into a sheet's XML; style: the format index to give it (copy_rows), else the cell's own or the
+    one above it."""
     col, row = _split(ref)
 
     if "<sheetData/>" in xml:
@@ -1514,7 +2412,7 @@ def _set_cell(xml, ref, value):
 
     m = re.search(_ROW_RE.format(n=row), xml, re.S)
     if not m:
-        new_row = f'<row r="{row}">{_new_cell(ref, value, None)}</row>'
+        new_row = f'<row r="{row}">{_new_cell(ref, value, style)}</row>'
         return _insert_row(xml, row, new_row)
 
     row_xml = m.group(0)
@@ -1527,14 +2425,14 @@ def _set_cell(xml, ref, value):
         old = cm.group(0)
         if re.search(r'<f\b[^>]*\bt="shared"[^>]*\bref=', old):
             raise OfficeError(f"{ref} holds a formula shared with other cells - change those cells too, or edit it on the screen")
-        style = re.search(r'\bs="(\d+)"', old)
-        row_xml = row_xml.replace(old, _new_cell(ref, value, style.group(1) if style else None), 1)
+        own = re.search(r'\bs="(\d+)"', old)
+        row_xml = row_xml.replace(old, _new_cell(ref, value, style if style is not None else
+                                                 (own.group(1) if own else None)), 1)
     else:
         # Keep the cells of a row in column order; a new one takes the style
         # of the cell above it when there is one.
         cells = list(re.finditer(r'<c\b[^>]*?\br="([A-Z]+)\d+"[^>]*?(?:/>|>.*?</c>)', row_xml, re.S))
-        style = _style_above(xml, col, row)
-        new = _new_cell(ref, value, style)
+        new = _new_cell(ref, value, style if style is not None else _style_above(xml, col, row))
         pos = None
         for c in cells:
             if _col_num(c.group(1)) > _col_num(col):
@@ -1588,7 +2486,7 @@ def _fix_dimension(xml):
 def combine_pdf(output_path, inputs):
     """
     One PDF from PDFs and images, in the order given - a customer's
-    onboarding file assembled from its PAN card scan, GST certificate, ...
+    onboarding file assembled from its id card scan, registration certificate, ...
     """
 
     p = _path(output_path)
@@ -1725,7 +2623,7 @@ def typed_totals(path):
     The cells of a row labelled Total that hold a typed number equal to the sum of the column above them, as
     "Sheet!E14 (2603800 = the sum of E2:E13)" - a total that will not follow its rows when one changes. Read with no
     model; needs the file's formula results (store them first). Empty for anything else.
-    Found live (2026-10-19): a GST register asked for "with formulas" had every total of its Total row typed in.
+    Found live (2026-10-19): a tax register asked for "with formulas" had every total of its Total row typed in.
     """
 
     books = _formula_books(path)
@@ -1850,6 +2748,181 @@ def coverage_gaps(path):
         out.extend(_column_gaps(ws.title, grid, shown, total_rows, ws.max_row, ws.max_column))
         out.extend(_total_gaps(ws.title, grid, total_rows))
     return out
+
+
+# A single cell a formula reads: an optional sheet ('My sheet'! or Sheet1!), a column and a row - not one end of a range
+# (A1:B9), not a function's name (LOG10(), and not inside a quoted string (removed first).
+_FORMULA_REF = re.compile(r"(?<![\w:$.])(?:(?:'((?:[^']|'')+)'|([A-Za-z_][\w.]*))!)?\$?([A-Z]{1,3})\$?(\d{1,7})(?![\w(:!])")
+_FORMULA_STRING = re.compile(r'"(?:[^"]|"")*"')
+PATTERN_MIN_BLOCKS = 3
+
+
+def _row_label(grid, row):
+    """The first text of a row (its label: "Closing credit carried forward", "TOTAL"), lower case, or ""."""
+
+    for column in range(1, 5):
+        value = grid.get((row, column))
+        if isinstance(value, str) and value.strip() and not value.startswith("="):
+            return " ".join(value.lower().split())[:80]
+    return ""
+
+
+def reference_pattern_breaks(path):
+    """
+    Rows of a sheet laid out as repeated blocks (a month per block) whose formula reads a differently labelled row than
+    the same row of the other blocks does, as sentences. Found live (2026-10-21): a September block copied
+    from August's took its "Opening credit balance (previous month's closing)" from August's "Output tax paid from credit"
+    - one row off - while the five earlier blocks took it from "Closing credit carried forward"; the figures looked
+    plausible and the check passed them. Decided from labels and references only (no subject knowledge); evidence for
+    the judge, never a verdict: a block can be meant to work differently. Only single-cell references are compared (a
+    range's coverage is coverage_gaps'), and only rows that appear in at least PATTERN_MIN_BLOCKS blocks.
+    """
+
+    books = _formula_books(path, with_values=False)
+    if books is None:
+        return []
+    grids = {ws.title: grid for ws, grid in _table_grids(books[0])}
+    out = []
+    for sheet, grid in grids.items():
+        groups = {}
+        for (row, column), value in grid.items():
+            if not (isinstance(value, str) and value.startswith("=")):
+                continue
+            label = _row_label(grid, row)
+            if not label:
+                continue
+            reads = []
+            for m in _FORMULA_REF.finditer(_FORMULA_STRING.sub('""', value)):
+                other = (m.group(1) or m.group(2) or "").replace("''", "'") or sheet
+                target_row = int(m.group(4))
+                if other == sheet and target_row == row:
+                    reads.append((other, m.group(3), "(its own row)"))
+                    continue
+                target = grids.get(other)
+                reads.append((other, m.group(3), _row_label(target, target_row) if target is not None else "?"))
+            if reads:
+                groups.setdefault((column, label), []).append((row, value, tuple(reads)))
+        for (column, label), cells in groups.items():
+            if len(cells) < PATTERN_MIN_BLOCKS:
+                continue
+            counts = {}
+            for _, _, reads in cells:
+                counts[reads] = counts.get(reads, 0) + 1
+            usual, seen = max(counts.items(), key=lambda kv: kv[1])
+            if seen < 2 or seen * 5 < len(cells) * 3:  # no pattern at least 60% of the blocks follow
+                continue
+            for row, value, reads in cells:
+                if reads == usual:
+                    continue
+                differs = [(got, want) for got, want in zip(reads, usual) if got != want] or [(reads[0], usual[0])]
+                got, want = differs[0]
+                cell = f"{sheet}!{_col_letter(column)}{row}"
+                where = f" of {got[0]}" if got[0] != sheet else ""
+                out.append(f"{cell} (row \"{label}\") is {value}: it reads the row \"{got[2]}\"{where}, but the same row "
+                           f"in {seen} other blocks reads the row \"{want[2]}\" - if this block was copied from another, "
+                           "a reference may be a row off.")
+    return out[:12]
+
+
+# Any cell reference of a formula, range ends included: an optional sheet, the column, "$" before the row, the row.
+_ANY_REF = re.compile(r"(?<![\w.$])(?:('(?:[^']|'')+'|[A-Za-z_][\w.]*)!)?\$?[A-Z]{1,3}(\$?)(\d{1,7})(?![\w(!])")
+
+
+def _row_refs(formula):
+    """[(sheet or None, row, row is absolute)] for every cell reference of a formula; the end of a range "Sheet!A1:B2"
+    belongs to the start's sheet. Text in quotes is not a reference."""
+
+    text = _FORMULA_STRING.sub('""', formula)
+    out, last_sheet, last_end = [], None, -1
+    for m in _ANY_REF.finditer(text):
+        sheet = m.group(1)
+        if sheet:
+            sheet = sheet.strip("'").replace("''", "'")
+        elif m.start() == last_end + 1 and text[last_end:m.start()] == ":":
+            sheet = last_sheet
+        out.append((sheet, int(m.group(3)), bool(m.group(2))))
+        last_sheet, last_end = sheet, m.end()
+    return out
+
+
+def moved_formula_breaks(before, after):
+    """
+    Formulas of a workbook (`after`) that changed cells this task and are, word for word, a formula that sat elsewhere
+    in the same column before it (`before`, the copy kept when the task began), and that still read rows of the stretch
+    they moved with - as sentences. Rows put in (or taken out) by a tool that moves cells but not the references that
+    point at them leave exactly this: found live (2026-10-22), openpyxl's insert_rows put a September
+    block above August's, and August's block, now 17 rows lower, went on reading the rows September had taken, its
+    opening and closing credit with them. A real insert, and a copy-and-paste, move such a reference; a formula that
+    only reads rows above the change rightly keeps its words, and an absolute row ($72) is left out (a copy keeps it).
+    Decided from the files alone; evidence for the judge.
+    """
+
+    old_books, new_books = _formula_books(before, with_values=False), _formula_books(after, with_values=False)
+    if old_books is None or new_books is None:
+        return []
+    old_wb, new_wb = old_books[0], new_books[0]
+    out = []
+    olds, moved = {}, {}  # per sheet: its formulas before; where rows moved ({sheet: (first moved row, shift)})
+    for ws in new_wb.worksheets:
+        if ws.title not in old_wb.sheetnames:
+            continue
+        old = olds[ws.title] = {(c.row, c.column): c.value for row in old_wb[ws.title].iter_rows() for c in row
+                                if isinstance(c.value, str) and c.value.startswith("=")}
+        rows_of = {}
+        for (r, column), formula in old.items():
+            rows_of.setdefault((column, formula), []).append(r)
+        by_shift = {}
+        for row in ws.iter_rows():
+            for c in row:
+                formula = c.value
+                if not (isinstance(formula, str) and formula.startswith("=")) or old.get((c.row, c.column)) == formula:
+                    continue
+                was = rows_of.get((c.column, formula)) or []
+                if len(was) == 1 and was[0] != c.row:
+                    by_shift.setdefault(c.row - was[0], []).append((c.row, c.column, was[0], formula))
+        for shift, cells in sorted(by_shift.items()):
+            start = min(was for _, _, was, _ in cells)  # the moved stretch begins at or above its first formula
+            if ws.title not in moved or start < moved[ws.title][0]:
+                moved[ws.title] = (start, shift)
+            stale = [cell for cell in cells
+                     if any(sheet in (None, ws.title) and not absolute and r >= start for sheet, r, absolute in _row_refs(cell[3]))]
+            if not stale:
+                continue
+            r, column, was, formula = stale[0]
+            letter = _col_letter(column)
+            out.append(f"{ws.title}: {len(stale)} formula(s) are {abs(shift)} rows {'lower' if shift > 0 else 'higher'} than "
+                       "before this task and written word for word as they were there, so they still read the rows they "
+                       f"read there - e.g. {letter}{r} {formula[:80]} was at {letter}{was}. Rows were added or removed "
+                       "without moving the references that point at them: the figures of that part of the sheet now come "
+                       "from the wrong rows.")
+    # A formula the task did not touch (same cell, same words, above any stretch of its own sheet that moved) that reads
+    # rows of a sheet at or below where its rows moved: found live (a second run), 12 rows put into SALES
+    # at row 54 left COMPUTATION's untouched "=SALES!I54" - August's sales total - reading a September row.
+    for ws in new_wb.worksheets:
+        old = olds.get(ws.title)
+        if old is None:
+            continue
+        own = moved.get(ws.title, (None, 0))[0]
+        stale = []
+        for row in ws.iter_rows():
+            for c in row:
+                formula = c.value
+                if (not isinstance(formula, str) or old.get((c.row, c.column)) != formula
+                        or (own is not None and c.row >= own)):
+                    continue
+                for sheet, r, _ in _row_refs(formula):
+                    target = sheet or ws.title
+                    if target in moved and r >= moved[target][0]:
+                        stale.append((c.row, c.column, formula, target))
+                        break
+        if stale:
+            r, column, formula, target = stale[0]
+            start, shift = moved[target]
+            out.append(f"{ws.title}: {len(stale)} formula(s) this task did not change read rows of {target} from row "
+                       f"{start} down, where its rows moved {abs(shift)} {'down' if shift > 0 else 'up'} - e.g. "
+                       f"{_col_letter(column)}{r} {formula[:80]} now reads what moved into that row. Rows were added "
+                       "or removed without moving the references that point at them.")
+    return out[:12]
 
 
 def _table_grids(formulas):
@@ -2778,9 +3851,21 @@ USAGE = """office - documents, spreadsheets and email drafts, from the shell
                                         {"edits": [{"sheet": "Data", "cell": "B14", "value": 1250.5}],
                                          "replace_refs": [{"from": "Data!$B$2:$B$13", "to": "Data!$B$2:$B$14"}],
                                          "add_sheets": [{"name": "Exceptions", "rows": [[...]], "cells": {...}}],
+                                         "insert_rows": [{"sheet": "Data", "before": 54, "count": 12}],
+                                         "copy_rows": [{"sheet": "Calc", "rows": "69:84", "to": 86,
+                                                        "replace": {"AUGUST": "SEPTEMBER"}}],
                                          "output_path": "optional.xlsx"}
                                         a value is a number, text, null (empties the cell) or "=FORMULA";
-                                        replace_refs extends what charts, tables and names read.
+                                        replace_refs extends what charts, tables and names read;
+                                        insert_rows puts empty rows in above a row, every formula, name, chart
+                                        and format that reads the rows below moving with them (a script's
+                                        insert_rows does not: formulas below then read the wrong rows) - done
+                                        first, so edits address the rows as they are after it.
+                                        copy_rows makes the next period's block of a register from the last
+                                        one, as a copy and paste: formulas move with it (its opening then reads
+                                        the block above), labels take the replacements, formats come along, and
+                                        typed figures are left empty - fill them with edits in the same update.
+                                        It names every copied formula that reads another sheet: check those.
                                         To add a column (its header in row 1, a value per row), rename one (its
                                         header cell), append rows (cells below the last) or add sheets, use office
                                         update - never edit an Office file's XML with a script: a file that no longer
@@ -2914,7 +3999,94 @@ def _email(argv):
         raise OfficeError(f"not drafted: {exc}") from exc
 
 
+READ_NOTE_CHARS = 1200
+
+
+def _note_read(path, text):
+    """
+    What `office read` read, kept with the task's evidence for the final check beside what was read off the screen.
+    Found live (2026-10-21): asked whether a portal's credit ledger agreed with a workbook's closing
+    credit, the check saw the portal on the screen and nothing of the workbook the worker had read, and asked the person
+    three times. Never raises.
+    """
+
+    try:
+        from decurix_agent.computer import evidence
+        text = (text or "").strip()
+        if text:
+            cut = text[:READ_NOTE_CHARS] + (" ..." if len(text) > READ_NOTE_CHARS else "")
+            evidence.note(f"{evidence.FILE_READ_LEAD}{path}: {cut}")
+            evidence.note_file_read(str(_path(path)))
+    except Exception:  # noqa: BLE001 - evidence that cannot be kept decides nothing
+        pass
+
+
 def main(argv=None):
+    """The `office` command. Its output is what an engine reads as the command's result, so the agent's own log lines
+    (the helpers it calls log as they go) go to a file meanwhile, as the gui command's do. Found live
+    (2026-10-21): "tool_made: could not release ..." was the first line of a failed `office update`'s output, ahead of
+    the real error; the engine took the person's workbook for locked and worked in a copy instead."""
+
+    from decurix_agent import logging_utils
+
+    before = logging_utils._log_path
+    logging_utils.log_to_file(logging_utils.log_file("decurix-office.log"))
+    try:
+        return _main(argv)
+    finally:
+        logging_utils._log_path = before
+
+
+# The parts of a picture a reader can ask for by name, as (x0, y0, x1, y1) in percent.
+_PICTURE_PARTS = {
+    "top": (0, 0, 100, 50), "bottom": (0, 50, 100, 100), "left": (0, 0, 50, 100), "right": (50, 0, 100, 100),
+    "top-left": (0, 0, 55, 55), "top-right": (45, 0, 100, 55), "bottom-left": (0, 45, 55, 100),
+    "bottom-right": (45, 45, 100, 100), "center": (20, 20, 80, 80), "middle": (20, 20, 80, 80),
+}
+
+
+def _zoom_picture(p, part):
+    """
+    A part of a picture, cropped and enlarged to be read closer: {"text", "images"} like read_document. Found live
+    (2026-10-27): a photographed bill's date could not be read at the size the whole photo is shown; the worker had no
+    way to look closer and asked the person, who did not have the bill either.
+    """
+
+    spec = str(part).strip().lower()
+    box = _PICTURE_PARTS.get(spec)
+    if box is None:
+        try:
+            box = tuple(float(v) for v in spec.replace("%", "").split(","))
+        except ValueError:
+            box = ()
+        if len(box) != 4 or not (0 <= box[0] < box[2] <= 100 and 0 <= box[1] < box[3] <= 100):
+            raise OfficeError(f"a part of a picture is one of {', '.join(_PICTURE_PARTS)} or x0,y0,x1,y1 in percent "
+                              f"(0-100, x0 < x1, y0 < y1) - not {part!r}")
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - the desktop image has Pillow
+        raise OfficeError(f"cannot crop a picture here: {exc}")
+    with Image.open(p) as im:
+        im = im.convert("RGB")
+        w, h = im.size
+        x0, y0, x1, y1 = (int(round(box[0] * w / 100)), int(round(box[1] * h / 100)),
+                          int(round(box[2] * w / 100)), int(round(box[3] * h / 100)))
+        piece = im.crop((x0, y0, max(x1, x0 + 1), max(y1, y0 + 1)))
+        # Enlarged to at least 1600 pixels on its long side (at most 4x): what the model is shown is scaled down to
+        # its own limit, and a small part sent small stays unreadable.
+        scale = min(4.0, max(1.0, 1600 / max(piece.size)))
+        if scale > 1:
+            piece = piece.resize((int(piece.size[0] * scale), int(piece.size[1] * scale)), Image.LANCZOS)
+        out_dir = Path(tempfile.gettempdir()) / "decurix-zoom"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        tag = spec.replace(",", "_").replace(".", "p")
+        out = out_dir / f"{p.stem}-{tag}.png"
+        piece.save(out, "PNG")
+    return {"text": f"{p.name}, part {part} (x {box[0]:g}-{box[2]:g}%, y {box[1]:g}-{box[3]:g}% of the picture), "
+                    f"enlarged {scale:.1f}x: shown below.", "images": [str(out)]}
+
+
+def _main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(USAGE)
@@ -2931,6 +4103,7 @@ def main(argv=None):
         if cmd == "read":
             r = read_document(argv[0], pages=argv[1] if len(argv) > 1 else None)
             print(r["text"])
+            _note_read(argv[0], r["text"])
             # How pictures reach the engine depends on its model (TheBot's
             # operator sets DECURIX_OFFICE_IMAGES): "attach" - a model that
             # reads images is shown each [page image: ...] itself; "ocr" - a
@@ -2954,9 +4127,10 @@ def main(argv=None):
                 _only(spec, {"replace", "output_path"})
                 print(update_document(argv[0], spec.get("replace"), spec.get("output_path")))
             else:
-                _only(spec, {"edits", "replace_refs", "output_path", "add_sheets"})
+                _only(spec, {"edits", "replace_refs", "output_path", "add_sheets", "insert_rows", "copy_rows", "clear_text"})
                 print(update_workbook(argv[0], spec.get("edits"), spec.get("replace_refs"), spec.get("output_path"),
-                                      spec.get("add_sheets")))
+                                      spec.get("add_sheets"), spec.get("insert_rows"), spec.get("copy_rows"),
+                                      bool(spec.get("clear_text"))))
         elif cmd == "create":
             if len(argv) < 2:
                 raise OfficeError("usage: office create BOOK.xlsx|DOC.docx|DOC.pdf|DECK.pptx SPEC (JSON, or - to read it from stdin)")
