@@ -911,15 +911,20 @@ def observe():
         "source": "cdp",
     }
 
-    def text_of(node, depth=0):
+    def text_of(node, depth=0, links=False):
         """
         The plain text beneath a node, for rows and paragraphs - leaving out
         links, buttons and fields, which are listed as elements of their own.
+        With `links`, a link's text is kept: a table's row reads as all its
+        cells, the one that is a link included (found live 2026-10-26: a
+        ledger's row read without its name, and the group was taken for it).
         """
         if depth > 8:
             return ""
         role = ((node.get("role") or {}).get("value", "") or "").lower()
         if depth > 0 and role in INTERACTIVE:
+            if links and role == "link":
+                return " ".join(((node.get("name") or {}).get("value", "") or "").split())
             return ""
         name = (node.get("name") or {}).get("value", "") or ""
         if role in ("statictext", "inlinetextbox"):
@@ -928,7 +933,7 @@ def observe():
         for child_id in node.get("childIds", []):
             child = by_id.get(child_id)
             if child:
-                text = text_of(child, depth + 1)
+                text = text_of(child, depth + 1, links)
                 if text:
                     parts.append(text)
         return " ".join(parts)
@@ -939,7 +944,11 @@ def observe():
             child = by_id.get(child_id)
             if child is None:
                 continue
-            text = text_of(child, 1) if ((child.get("role") or {}).get("value", "").lower() not in INTERACTIVE) else ""
+            child_role = (child.get("role") or {}).get("value", "").lower()
+            if child_role == "link":
+                text = text_of(child, 1, links=True)
+            else:
+                text = text_of(child, 1, links=True) if child_role not in INTERACTIVE else ""
             if text:
                 texts.append(text)
         return texts
@@ -1959,6 +1968,39 @@ def close_list(element):
         page.close()
 
 
+def submit_query(element):
+    """
+    Press Enter in a field whose form only asks the page something - a form sent by GET (a search, a filter), or a
+    search box outside any form - and return True. A field of a form that would change something (sent by POST) is
+    never submitted this way: False, nothing pressed. False too when the field cannot be read.
+    """
+
+    try:
+        page = _page_for(element)
+    except (ComputerError, KeyError, TypeError):
+        return False
+    try:
+        object_id = _object(page, element["handle"]["backend_id"])
+        asks = page.call("Runtime.callFunctionOn", {
+            "objectId": object_id,
+            "returnByValue": True,
+            "functionDeclaration": """function() {
+                const f = this.form;
+                if (!f) { return (this.type || '').toLowerCase() === 'search'; }
+                return (f.getAttribute('method') || 'get').toLowerCase() === 'get';
+            }""",
+        }).get("result", {}).get("value")
+        if asks is not True:
+            return False
+        page.call("DOM.focus", {"backendNodeId": element["handle"]["backend_id"]})
+        press_key(page, "Enter")
+        return True
+    except (ComputerError, KeyError, TypeError):
+        return False
+    finally:
+        page.close()
+
+
 def native_options(element):
     """The options of a native drop-down (<select>) as its labels, or None when the element is not one - a list that
     opens in the page (its entries then become elements of their own) is not."""
@@ -1971,6 +2013,26 @@ def native_options(element):
             "functionDeclaration": """function() {
                 if (this.tagName !== 'SELECT' || !this.options) { return null; }
                 return Array.from(this.options).map(o => o.label.trim()).filter(Boolean);
+            }""",
+        }).get("result", {}).get("value")
+    finally:
+        page.close()
+    return result if isinstance(result, list) else None
+
+
+def datalist_options(element):
+    """The entries of a field's <datalist> (an <input list=...>: a list the browser draws itself, outside the page's
+    tree), as their values, or None when the field has none."""
+    page = _page_for(element)
+    try:
+        object_id = _object(page, element["handle"]["backend_id"])
+        result = page.call("Runtime.callFunctionOn", {
+            "objectId": object_id,
+            "returnByValue": True,
+            "functionDeclaration": """function() {
+                const l = this.list;
+                if (!l || !l.options) { return null; }
+                return Array.from(l.options).map(o => (o.value || o.label || o.textContent || '').trim()).filter(Boolean);
             }""",
         }).get("result", {}).get("value")
     finally:

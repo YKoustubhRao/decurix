@@ -131,7 +131,12 @@ def read_document(path, pages=None, as_images=False):
             return {"text": f"{p.name} is named as a picture but is not one (not a PNG, JPEG, GIF or WebP file). It "
                             f"begins: {shown!r} - if it was downloaded, the download did not bring the picture.",
                     "images": []}
-        return {"text": f"{p.name}: an image, shown below.", "images": [str(p)]}
+        if pages:
+            return _zoom_picture(p, pages)
+        return {"text": f"{p.name}: an image, shown below. To read a small or faint part closer: office read "
+                        f"'{p}' PART - PART is top, bottom, left, right, top-left, top-right, bottom-left, "
+                        "bottom-right, center, or x0,y0,x1,y1 in percent of the picture (e.g. 50,0,100,30).",
+                "images": [str(p)]}
     if ext in (".xlsx", ".xlsm"):
         return {"text": _data_check_workbook(p) + read_workbook(p), "images": []}
     if ext in (".docx", ".pptx"):
@@ -1561,8 +1566,93 @@ def _cell_value(v):
 # Workbooks: updating in place (charts survive)
 # ------------------------------------------------------------------
 
+def copy_rows_touches(copy_rows, sheet, cell):
+    """Whether a copy_rows of this update writes the cell: its text is then the copy's, not the sheet's (an edit may
+    blank what the copy brought)."""
+    _, row = _split(cell)
+    for spec in copy_rows or []:
+        if (spec.get("sheet") or "") != sheet:
+            continue
+        try:
+            a, b = (int(x) for x in str(spec.get("rows", "")).split(":"))
+            to = int(spec.get("to"))
+        except (TypeError, ValueError):
+            continue
+        if to <= int(row) <= to + (b - a):
+            return True
+    return False
+
+
+_HELD = {}
+
+
+def _held_value(path, sheet, cell):
+    """What a saved cell holds (None when empty), read with openpyxl from the file as saved; the workbook is read once
+    per path and kept for the update."""
+    wb = _held_workbook(path)
+    if wb is None:
+        return None
+    try:
+        if sheet not in wb.sheetnames:
+            return None
+        v = wb[sheet][cell].value
+    except Exception:
+        return None
+    return None if v in (None, "") else v
+
+
+def _date_cell(path, sheet, cell):
+    """Whether a saved cell is formatted as a date (its own format, or the format of the filled cell above it when it
+    is new): a column of dates takes dates."""
+    wb = _held_workbook(path)
+    if wb is None or sheet not in wb.sheetnames:
+        return False
+    try:
+        ws = wb[sheet]
+        c = ws[cell]
+        if c.value not in (None, "") or c.has_style:
+            return bool(c.is_date) or _date_format(c.number_format)
+        col, row = _split(cell)
+        for r in range(int(row) - 1, max(int(row) - 6, 0), -1):
+            above = ws[f"{col}{r}"]
+            if above.value not in (None, ""):
+                return bool(above.is_date) or _date_format(above.number_format)
+    except Exception:
+        return False
+    return False
+
+
+def _date_format(fmt):
+    f = str(fmt or "").lower()
+    return "general" not in f and any(ch in f for ch in "dy") and "m" in f
+
+
+def _date_serial(d):
+    import datetime
+    return (d - datetime.date(1899, 12, 30)).days
+
+
+def _held_workbook(path):
+    key = (str(path), os.path.getmtime(str(path)) if os.path.exists(str(path)) else 0)
+    wb = _HELD.get(key)
+    if wb is None:
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(str(path), data_only=False)
+        except Exception:
+            return None
+        _HELD.clear()
+        _HELD[key] = wb
+    return wb
+
+
+def _short_value(v):
+    t = str(v)
+    return repr(t[:30] + ("..." if len(t) > 30 else "")) if isinstance(v, str) else t[:30]
+
+
 def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_sheets=None, insert_rows=None,
-                    copy_rows=None):
+                    copy_rows=None, clear_text=False):
     """
     Change cells of an existing workbook without touching anything else.
 
@@ -1578,6 +1668,9 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
     `copy_rows`: [{"sheet": "Calc", "rows": "69:84", "to": 86, "replace": {"AUGUST": "SEPTEMBER"}}] - a block of
     rows copied to start at row `to`, as a spreadsheet's copy and paste (_copy_rows): the next period's block made
     from the last one, then filled with edits in the same update.
+    `clear_text`: an edit that empties a cell holding text (a label, a heading, a name) is refused unless this is
+    true - found live (2026-10-26): a block copied like the earlier ones had its label row blanked along with the
+    figures, and the sheet lost the row that names its columns.
 
     Writes `output_path` (default: the file itself, after keeping the
     original as <name>.orig.xlsx the first time). Excel and LibreOffice
@@ -1615,11 +1708,32 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
                           + (" ..." if len(cleared) > 12 else "")) if cleared else ""))
 
     by_sheet = {}
+    labels, replaced = [], []
     for e in edits or []:
         sheet = e.get("sheet") or next(iter(sheet_files))
         if sheet not in sheet_files:
             raise OfficeError(f"no sheet {sheet!r}; the sheets are {list(sheet_files)}")
         cell = _cell_address(e.get("cell"))
+        if "value" in e and _date_cell(src, sheet, cell):
+            # A date cell takes a date: text written year first becomes the cell's own date (never "date as text"), and
+            # a bare number is refused - found live (2026-10-26): serials worked out in the head gave 2025 dates, and
+            # text dates in a column of dates drew four questions.
+            v = e.get("value")
+            if isinstance(v, str) and _cell_date(v) is not None:
+                e = dict(e, value=_date_serial(_cell_date(v)))
+            elif isinstance(v, (int, float)) and not isinstance(v, bool) and not copy_rows_touches(copy_rows, sheet, cell):
+                raise OfficeError(f"not updated - {sheet}!{cell} is a date cell: give the date as text, year first "
+                                  f"(2026-09-26), not a number ({v}) - nothing was written")
+        if "value" in e and not copy_rows_touches(copy_rows, sheet, cell):
+            held = _held_value(src, sheet, cell)
+            if held is not None and e.get("value") in (None, ""):
+                if not clear_text and isinstance(held, str) and not held.startswith("=") and re.search(r"[A-Za-z]", held):
+                    labels.append(f"{sheet}!{cell} {held.strip()[:40]!r}")
+            elif held is not None and str(held).strip() != str(e.get("value")).strip():
+                # Written over: said in the update's words, so what was in the cell (another record's figure, an
+                # earlier value) is known to be gone. Found live (2026-10-26): a bill's row was written over by the
+                # next bill's and the first bill left the file unnoticed.
+                replaced.append(f"{sheet}!{cell} {_short_value(held)} -> {_short_value(e.get('value'))}")
         # "formula" is how a model naturally names a formula's edit; taken as
         # the value (with its "="). An edit with neither key is refused, never
         # read as "empty the cell": live, {"cell": "D2", "formula": "=SUM(..)"}
@@ -1627,6 +1741,11 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
         value = _given_value(e, f"the edit of {sheet}!{cell} has no value: give \"value\" (a number, text, \"=FORMULA\", "
                                 "or null to empty the cell)")
         by_sheet.setdefault(sheet, []).append((cell, value))
+    if labels:
+        raise OfficeError("not updated - these cells hold text (labels, headings, names), not figures, and the update "
+                          "would empty them: " + ", ".join(labels[:10]) + (" ..." if len(labels) > 10 else "")
+                          + ". A block made like the earlier ones keeps their labels; empty only the figures. To clear "
+                          "text on purpose, put \"clear_text\": true in the update.")
 
     for sheet, cell_edits in by_sheet.items():
         name = sheet_files[sheet]
@@ -1693,6 +1812,10 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
            + f"{len(changed)} cell(s)")
     if changed:
         msg += " (" + ", ".join(changed[:20]) + (" ..." if len(changed) > 20 else "") + ")"
+    if replaced:
+        msg += (f"; replaced {len(replaced)} filled cell(s): " + ", ".join(replaced[:20])
+                + (" ..." if len(replaced) > 20 else "")
+                + " - what those cells held is gone from the file: if it was another record's, put it back in its own row")
     if replace_refs:
         msg += f"; {swaps} range reference(s) rewritten"
         if not swaps:
@@ -1754,6 +1877,17 @@ def _copy_rows(src, entries, sheet_files, spec):
     if taken:
         raise OfficeError(f"copy_rows would write over {', '.join(taken[:6])} - nothing was written: copy the block to "
                           "empty rows (below the last block)")
+    # A block copied short of its end: the row after the range still belongs to it (a total, a closing line - more
+    # than one cell filled, or a figure or formula in it). Found live (2026-10-26): rows 29-33 copied where the block
+    # ran to 35, and the new block had no total; the next run copied 29-35 and passed.
+    if not spec.get("partial_block") and b + 1 <= ws.max_row:
+        after = [c for c in ws[b + 1] if c.value not in (None, "")]
+        figures = [c for c in after if not isinstance(c.value, str) or c.value.startswith("=")]
+        if len(after) >= 2 or figures:
+            shown = ", ".join(f"{c.coordinate}={_short_value(c.value)}" for c in after[:4])
+            raise OfficeError(f"copy_rows: the block seems to go on past row {b} - row {b + 1} holds {shown} - nothing "
+                              f"was written: copy the whole block (its total rows too), or say \"partial_block\": true "
+                              "if that row is not part of it")
 
     name = sheet_files[sheet]
     xml = entries[name].decode("utf-8")
@@ -3903,6 +4037,55 @@ def main(argv=None):
         logging_utils._log_path = before
 
 
+# The parts of a picture a reader can ask for by name, as (x0, y0, x1, y1) in percent.
+_PICTURE_PARTS = {
+    "top": (0, 0, 100, 50), "bottom": (0, 50, 100, 100), "left": (0, 0, 50, 100), "right": (50, 0, 100, 100),
+    "top-left": (0, 0, 55, 55), "top-right": (45, 0, 100, 55), "bottom-left": (0, 45, 55, 100),
+    "bottom-right": (45, 45, 100, 100), "center": (20, 20, 80, 80), "middle": (20, 20, 80, 80),
+}
+
+
+def _zoom_picture(p, part):
+    """
+    A part of a picture, cropped and enlarged to be read closer: {"text", "images"} like read_document. Found live
+    (2026-10-27): a photographed bill's date could not be read at the size the whole photo is shown; the worker had no
+    way to look closer and asked the person, who did not have the bill either.
+    """
+
+    spec = str(part).strip().lower()
+    box = _PICTURE_PARTS.get(spec)
+    if box is None:
+        try:
+            box = tuple(float(v) for v in spec.replace("%", "").split(","))
+        except ValueError:
+            box = ()
+        if len(box) != 4 or not (0 <= box[0] < box[2] <= 100 and 0 <= box[1] < box[3] <= 100):
+            raise OfficeError(f"a part of a picture is one of {', '.join(_PICTURE_PARTS)} or x0,y0,x1,y1 in percent "
+                              f"(0-100, x0 < x1, y0 < y1) - not {part!r}")
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - the desktop image has Pillow
+        raise OfficeError(f"cannot crop a picture here: {exc}")
+    with Image.open(p) as im:
+        im = im.convert("RGB")
+        w, h = im.size
+        x0, y0, x1, y1 = (int(round(box[0] * w / 100)), int(round(box[1] * h / 100)),
+                          int(round(box[2] * w / 100)), int(round(box[3] * h / 100)))
+        piece = im.crop((x0, y0, max(x1, x0 + 1), max(y1, y0 + 1)))
+        # Enlarged to at least 1600 pixels on its long side (at most 4x): what the model is shown is scaled down to
+        # its own limit, and a small part sent small stays unreadable.
+        scale = min(4.0, max(1.0, 1600 / max(piece.size)))
+        if scale > 1:
+            piece = piece.resize((int(piece.size[0] * scale), int(piece.size[1] * scale)), Image.LANCZOS)
+        out_dir = Path(tempfile.gettempdir()) / "decurix-zoom"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        tag = spec.replace(",", "_").replace(".", "p")
+        out = out_dir / f"{p.stem}-{tag}.png"
+        piece.save(out, "PNG")
+    return {"text": f"{p.name}, part {part} (x {box[0]:g}-{box[2]:g}%, y {box[1]:g}-{box[3]:g}% of the picture), "
+                    f"enlarged {scale:.1f}x: shown below.", "images": [str(out)]}
+
+
 def _main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] in ("-h", "--help", "help"):
@@ -3944,9 +4127,10 @@ def _main(argv=None):
                 _only(spec, {"replace", "output_path"})
                 print(update_document(argv[0], spec.get("replace"), spec.get("output_path")))
             else:
-                _only(spec, {"edits", "replace_refs", "output_path", "add_sheets", "insert_rows", "copy_rows"})
+                _only(spec, {"edits", "replace_refs", "output_path", "add_sheets", "insert_rows", "copy_rows", "clear_text"})
                 print(update_workbook(argv[0], spec.get("edits"), spec.get("replace_refs"), spec.get("output_path"),
-                                      spec.get("add_sheets"), spec.get("insert_rows"), spec.get("copy_rows")))
+                                      spec.get("add_sheets"), spec.get("insert_rows"), spec.get("copy_rows"),
+                                      bool(spec.get("clear_text"))))
         elif cmd == "create":
             if len(argv) < 2:
                 raise OfficeError("usage: office create BOOK.xlsx|DOC.docx|DOC.pdf|DECK.pptx SPEC (JSON, or - to read it from stdin)")

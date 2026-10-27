@@ -3,7 +3,9 @@ Found live (eval F1, 2026-10-26, takes 7 and 8): a bill named its customer other
 for the firm the books held under another, a title before a person's name. The worker searched the books' ledgers by
 the bill's name only, found nothing, and made a second ledger holding the same tax number; a taught rule (match by the
 identifier first) did not land twice. A save of a new party's record holding an identifier is now stopped in code -
-once per identifier and reason - until the task has looked the identifier up in the application.
+once per identifier and reason - until the task has resolved the identifier with gui select --id (resolve.py; the
+facts it writes are tested in test_resolve.py). What is tested here: which forms are a party's record, which typed
+values are its identifiers, and that a look which showed the identifier beside another name is a trigger too.
 """
 
 import json
@@ -55,17 +57,22 @@ class TheCheck(unittest.TestCase):
         self.assertEqual(found[0][0], GSTIN)
         self.assertIn("Coastal Builders | Sundry Debtors | 29AAGFC5512K1ZC", found[0][1])
 
-    def test_a_new_party_looked_up_by_its_identifier_passes(self):
+    def test_typing_the_identifier_into_a_search_box_by_hand_resolves_nothing(self):
+        # The tool's resolution fact decides, not a typing the code somewhere: the identifier stays a candidate.
         searched = [opened("http://h:8704/books/ledgers"), typed("Find", GSTIN),
                     opened(f"http://h:8704/books/ledgers?q={GSTIN}&group=")]
-        self.assertEqual(core.unsearched_identifier(searched + NEW_LEDGER, []), [])
+        self.assertEqual(core.unsearched_identifier(searched + NEW_LEDGER, []), [(GSTIN, "")])
 
-    def test_an_application_without_a_search_its_list_seen_counts(self):
+    def test_a_list_seen_without_the_identifier_resolves_nothing_either(self):
         other = NEW_LEDGER[:-1] + [typed("GSTIN/UIN", "32AAKFK7764R1ZH")]
-        self.assertEqual(core.unsearched_identifier(other, [LEDGER_LIST]), [])
-        # (A document shows one code or two - its own and its party's: no list of such records.)
+        self.assertEqual(core.unsearched_identifier(other, [LEDGER_LIST]), [("32AAKFK7764R1ZH", "")])
         bill = look(words="Tax Invoice | Karkala Steel Fabricators | GSTIN 29AAKCK1234L1Z5 | Bill to | GSTIN 29AAHFH2231Q1Z8")
         self.assertEqual(core.unsearched_identifier(other, [bill]), [("32AAKFK7764R1ZH", "")])
+
+    def test_a_value_the_task_resolved_with_id_is_an_identifier_whatever_its_shape(self):
+        form = [opened("http://h:8704/books/ledger/new"), typed("Name", "Coastal Infra Projects"), typed("Code", "CB-77")]
+        self.assertEqual(core.unsearched_identifier(form, []), [])
+        self.assertEqual(core.unsearched_identifier(form, [], ["cb 77"]), [("CB-77", "")])
 
     def test_the_forms_own_field_is_not_a_page_showing_it(self):
         form = look(fields=f"Window with the keyboard: Ledger Creation\ntextbox \"GSTIN/UIN\" holds: {GSTIN}",
@@ -86,9 +93,12 @@ class TheCheck(unittest.TestCase):
         joiner = [opened("http://h:8701/people/new"), typed("First name", "Sneha"), typed("Last name", "Iyer"),
                   typed("Personal email", "sneha.iyer@example.com")]
         self.assertEqual(core.unsearched_identifier(joiner, []), [("sneha.iyer@example.com", "")])
+        # A list of such records seen without it resolves nothing by itself: the tool's fact does (test_resolve.py).
         people = look(words="People | Ananya Rao | ananya.rao@example.com | Arif Khan | arif.khan95@example.com | "
                             "Rohit Kulkarni | rohit.kulkarni@example.com")
-        self.assertEqual(core.unsearched_identifier(joiner, [people]), [])
+        self.assertEqual(core.unsearched_identifier(joiner, [people]), [("sneha.iyer@example.com", "")])
+        shown = look(words="People | Sneha Iyer | sneha.iyer@example.com | Arif Khan | arif.khan95@example.com")
+        self.assertIn("Sneha Iyer | sneha.iyer@example.com", core.unsearched_identifier(joiner, [shown])[0][1])
 
 
 class TheStop(unittest.TestCase):
@@ -96,6 +106,7 @@ class TheStop(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         patches = [mock.patch.object(core, "ID_REFUSALS_DIR", Path(tmp.name) / "id-refusals"),
+                   mock.patch.object(evidence, "NOTES_DIR", Path(tmp.name) / "evidence"),
                    mock.patch("decurix_agent.task_context.current", lambda: "t0123456789abcdef")]
         for p in patches:
             p.start()
@@ -107,15 +118,29 @@ class TheStop(unittest.TestCase):
             return core._unsearched_record({"name": "Accept"})
 
     def test_each_stop_is_made_once(self):
+        from decurix_agent.computer import resolve
         events = SEARCH_BY_NAME + NEW_LEDGER
         said = self.click(events, [])
-        self.assertIn(f"Not pressed: this makes a new record holding {GSTIN}, but you have not looked for", said)
+        self.assertIn(f"Not pressed: this makes a new record holding {GSTIN}, but nothing in this task resolved {GSTIN}", said)
+        self.assertIn(f'gui select REF "<the name as the document writes it>" --id {GSTIN}', said)
         # It looked, and the list shows the code under another name: named, once.
         said = self.click(events, [LEDGER_LIST])
         self.assertIn('a page you looked at shows 29AAGFC5512K1ZC already: "', said)
         self.assertIn("Coastal Builders", said)
         self.assertEqual(self.click(events, [LEDGER_LIST]), "")
         self.assertEqual(self.click(events, []), "")
+        # Resolved to a record, the stop stands every time (2026-10-27: refused once, the worker saved again and the
+        # customer got a second ledger); resolved to none, the save goes on.
+        resolve.note(resolve.matched_line(GSTIN, "Coastal Builders"))
+        self.assertIn('the record "Coastal Builders" holds it already', self.click(events, []))
+        self.assertIn("never saved on the worker's own judgement", self.click(events, []))
+        resolve.note(resolve.none_line(GSTIN, [GSTIN], ["Coastal Infra Projects"], []))
+        self.assertEqual(self.click(events, [LEDGER_LIST]), "")
+
+    def test_resolved_to_none_the_save_goes_on_first_time(self):
+        from decurix_agent.computer import resolve
+        resolve.note(resolve.none_line(GSTIN, [GSTIN], [], []))
+        self.assertEqual(self.click(SEARCH_BY_NAME + NEW_LEDGER, [LEDGER_LIST]), "")
 
     def test_a_control_that_saves_nothing_is_not_judged(self):
         with mock.patch("decurix_agent.computer.recording.load", lambda s: ({}, SEARCH_BY_NAME + NEW_LEDGER)):

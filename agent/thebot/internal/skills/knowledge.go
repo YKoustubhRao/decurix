@@ -144,12 +144,20 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 	// Values only a picture showed are read a second time first (second_read.go): what both reads agree on is traced
 	// before the review looks, and what they do not is a point like the review's.
 	pictured := o.secondRead(rc, st)
+	o.readRecordLedger(rc, st) // the records declared and what their saves showed, for the reviewer (record_ledger.go)
 	issues, reviewed := o.review(rc, st, said, items, action)
 	issues = append(issues, pictured...)
 	if action == "" {
+		// A record declared and never saved, or saved and not read back whole, is a point decided in code.
+		issues = append(issues, recordLedgerIssues(st.RecordLedger)...)
 		// Before a report: a document of the work nothing written reflects, and the report never names, is a point -
 		// decided in code, not left to the review to notice (evidence.go).
 		issues = append(issues, st.coverageIssues(said)...)
+		// ... and a message the task listed and never opened, from a sender it did open, or one that revises a
+		// document of this task (messages.go).
+		issues = append(issues, st.unopenedMessageIssues(said)...)
+		// ... and a record saved that a line the task read calls cancelled or returned (cancelled.go).
+		issues = append(issues, st.cancelledSavedIssues(said)...)
 		// ... and a plan with steps for the person's OK of which none went through (plan.go).
 		issues = append(issues, st.commitsIssue()...)
 		// ... and a one-word value written into a file that no source holds (evidence.go noteInventedCodes).
@@ -188,10 +196,31 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 			st.ExtraSendBacks++
 		}
 		st.SentBackRound, st.SentBackWorked, st.LastIssues = st.JudgementRounds, len(st.Worked), texts
-		rc.Logf("operator", "the review raised %d point(s) - sent back to settle them", len(issues))
+		rc.Logf("operator", "the review raised %d point(s) - sent back to settle them:\n- %s", len(issues), issueLines(issues))
 		return weighing{nudge: settleNudge(issues)}
 	}
+	// An advisory point was in the send-back; it goes no further (reviewIssue.Advisory).
+	issues = notAdvisory(issues)
+	texts = texts[:0]
+	for _, i := range issues {
+		texts = append(texts, i.text())
+	}
 	st.LastIssues = texts
+	// A point that is the worker's to do (a record declared and never saved, a document read and never named), and a
+	// point the person already answered, go back to the worker - never to the person as a choice. Found live
+	// (2026-10-26): four bills declared and never saved were put to the person as "choices I made", twice, two minutes
+	// apart, after they had said "enter them"; the worker did nothing in between.
+	if work := st.workPoints(issues); len(work) > 0 && action == "" && st.WorkSendBacks < maxWorkSendBacks {
+		st.WorkSendBacks++
+		st.SentBackRound, st.SentBackWorked = st.JudgementRounds, len(st.Worked)
+		rc.Logf("operator", "%d point(s) are the worker's to do, not the person's - sent back:\n- %s", len(work), issueLines(work))
+		return weighing{nudge: workNudge(work)}
+	}
+	issues = st.notWorkPoints(issues)
+	texts = texts[:0]
+	for _, i := range issues {
+		texts = append(texts, i.text())
+	}
 	// Before an action the gate stopped, what is still open goes into the approval itself - one question for one
 	// action: asked first as a question and then for the approval, every gated click cost the person two
 	// (2026-10-23). Their no, with what to do instead, comes back like any refusal.
@@ -203,10 +232,13 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 		st.JudgementQuestion = true
 		st.AskedSources = webIdx
 		st.AskedPoints = append(append([]string(nil), texts...), web...)
-		rc.Logf("operator", "%d point(s) still open, %d resting on the web - asking the person", len(issues), len(web))
+		rc.Logf("operator", "%d point(s) still open, %d resting on the web - asking the person:\n- %s", len(issues), len(web), issueLines(issues))
 		return weighing{question: st.withoutSecrets(knowledgeQuestion(issues, web, action))}
 	}
 	open := append([]string(nil), texts...)
+	for _, w := range st.lastWork {
+		open = append(open, w.text())
+	}
 	for _, w := range web {
 		open = append(open, "rests on a web page the person has not vouched for: "+w)
 	}
@@ -346,4 +378,95 @@ func knowledgeQuestion(issues []reviewIssue, web []string, action string) string
 	section("An independent check of the work still questions these after I went back over them. Tell me if any is "+
 		"wrong, or reply \"as you did\" to keep the work as it is:", checks)
 	return strings.TrimSpace(b.String())
+}
+
+// maxWorkSendBacks bounds the send-backs a goal makes for points that are the worker's to do; past it they are carried
+// with the result as open, never asked of the person.
+const maxWorkSendBacks = 3
+
+// pointKey is a review point as the same point is known across rounds: its first words, lower-cased, before any
+// " - " - a review words a point a little differently each time.
+func pointKey(text string) string {
+	t := strings.ToLower(strings.TrimSpace(text))
+	if i := strings.Index(t, " - "); i > 0 {
+		t = t[:i]
+	}
+	t = strings.Join(strings.Fields(t), " ")
+	if len(t) > 90 {
+		t = t[:90]
+	}
+	return t
+}
+
+// workPoints are the points that go back to the worker: marked Work, or answered by the person already (the answer is
+// put in the point's settle so the worker applies it). They are kept on st.lastWork for the carried-open list.
+func (st *operatorState) workPoints(issues []reviewIssue) []reviewIssue {
+	var out []reviewIssue
+	for _, i := range issues {
+		// A point the worker settles by looking (open the record, the book, the file and read it) stays the worker's
+		// while send-backs remain: found live (2026-10-27), three such points went to the person, who answered each
+		// "open it and look". Past the bound it goes to the person like any other.
+		recheck := strings.EqualFold(strings.TrimSpace(i.Settle), "recheck") && st.WorkSendBacks < maxWorkSendBacks
+		if i.Work || saysNotDone(i.What) || recheck {
+			i.Work = true
+			out = append(out, i)
+			continue
+		}
+		if answer, ok := st.AnsweredKeys[pointKey(i.text())]; ok {
+			i.Work = true
+			i.Settle = "the person already answered this point: \"" + truncateText(answer, 300) + "\" - apply their answer; it is not to be asked again"
+			out = append(out, i)
+		}
+	}
+	st.lastWork = out
+	return out
+}
+
+// notWorkPoints are the points that are not the worker's to do (workPoints).
+func (st *operatorState) notWorkPoints(issues []reviewIssue) []reviewIssue {
+	var out []reviewIssue
+	for _, i := range issues {
+		if i.Work || saysNotDone(i.What) || st.AnsweredKeys[pointKey(i.text())] != "" {
+			continue
+		}
+		out = append(out, i)
+	}
+	return out
+}
+
+// notDoneRe is a review point that says a part of the work was not done: not entered, never saved, left out, not
+// completed. Found live (2026-10-26, F3): "The requested task was not completed: bill 431 was not entered as a
+// Sales voucher" went to the person as a point to judge; they answered "not done - enter it".
+var notDoneRe = regexp.MustCompile(`(?i)\b(was|were|is|are|remains?|still)\s+(not|never)\s+(completed|entered|saved|done|filed|made|put|recorded|posted|written|copied|sent|created|finished)\b|\b(not|never)\s+(entered|saved|completed|recorded|posted)\b|\bleft\s+(out|unentered|undone|incomplete)\b|\bwas\s+not\s+completed\b`)
+
+// saysNotDone reports whether a review point says a part of the work is not done - the worker's to do, never the
+// person's to judge.
+func saysNotDone(what string) bool {
+	return notDoneRe.MatchString(what)
+}
+
+// workNudge sends the points that are the worker's to do back to it: do each, or report the task as not done with the
+// reason - never ask the person about it.
+func workNudge(work []reviewIssue) string {
+	var b strings.Builder
+	b.WriteString("These points are yours to settle, not the person's - they will not be asked about them:\n")
+	for n, i := range work {
+		fmt.Fprintf(&b, "%d. %s\n   -> %s\n", n+1, i.text(), i.Settle)
+	}
+	b.WriteString("Do each now (a record declared and never saved is entered and saved, then seen in the application; a " +
+		"document read and never named is entered or named in the report with why it is left out). If one cannot be done, " +
+		"say so in the report as NOT done, with what stopped it - never report done over it, and do not ask the person " +
+		"to decide it. Then reply again (DONE with your report and the JUDGEMENTS list)." + wholeReportNote)
+	return b.String()
+}
+
+// notAdvisory is the points that are not advisory (reviewIssue.Advisory).
+func notAdvisory(issues []reviewIssue) []reviewIssue {
+	var out []reviewIssue
+	for _, i := range issues {
+		if !i.Advisory {
+			out = append(out, i)
+		}
+	}
+	return out
 }

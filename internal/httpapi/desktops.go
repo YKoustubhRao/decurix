@@ -96,11 +96,20 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	linkedAll := s.Memory.LinkedWorkersMap()
 	linkedMemory := map[string][]string{}
 	desktopNames := map[string]string{}
+	tasksByDesktop := map[string][]tasks.Task{}
 	for _, d := range desktops {
 		if linked := linkedAll[d.ID]; len(linked) > 0 {
 			linkedMemory[d.ID] = linked
 		}
 		desktopNames[d.ID] = d.Name
+		// The card's task dropdown, filled server-side so it is right on the
+		// first paint; the poll keeps it current. A read error leaves the
+		// dropdown to the poll rather than failing the dashboard.
+		if s.Tasks != nil {
+			if list, err := s.Tasks.RecentForWorker(d.ID, maxTaskPicks); err == nil && len(list) > 0 {
+				tasksByDesktop[d.ID] = list
+			}
+		}
 	}
 
 	data := webui.PageData{
@@ -110,6 +119,7 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 		LinkedMemory:    linkedMemory,
 		DesktopNames:    desktopNames,
 		TunnelURL:       s.Tunnel.Get(),
+		TasksByDesktop:  tasksByDesktop,
 	}
 
 	if err := s.Web.RenderIndex(w, data); err != nil {

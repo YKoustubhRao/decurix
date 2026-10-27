@@ -206,7 +206,7 @@ func TestReadinessRoutesArePrimaryOnlyAndMutationsNeedOwnerSession(t *testing.T)
 	s := qualificationServer(t)
 	gated := http.NewServeMux()
 	s.RegisterRoutes(gated)
-	for _, path := range []string{"/api/readiness/session", "/api/readiness/run", "/readiness/worker"} {
+	for _, path := range []string{"/api/readiness/session", "/api/readiness/run", "/readiness/worker", "/api/readiness/simulation/list", "/api/readiness/simulation/run"} {
 		_, pattern := gated.Handler(httptest.NewRequest("GET", path, nil))
 		if pattern != "/" {
 			t.Fatalf("readiness registered on gated listener: %s %s", path, pattern)

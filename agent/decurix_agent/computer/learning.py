@@ -876,6 +876,27 @@ def understood_text(skill):
     lines = [f"What I understood: {understanding['summary']}"]
     if understanding.get("done_when"):
         lines.append(f"It is done when: {understanding['done_when']}")
+    brief = {b["topic"]: b for b in understanding.get("brief") or []}
+    if brief:
+        # The rules of the work, by topic: each says where it came from, so a guess is seen as one and corrected.
+        lines.append("The rules of this work as I understood them (correct any by its number):")
+        n = 0
+        for rule in understanding.get("rules") or []:
+            n += 1
+            topic = rule[1:rule.index("]")] if rule.startswith("[") and "]" in rule else ""
+            item = brief.get(topic) or {}
+            where = (f" - seen: {item['evidence']}" if item.get("basis") == "seen" and item.get("evidence") else
+                     " - my guess, please confirm" if item.get("basis") == "assumed" else
+                     " - as you told me" if item.get("basis") in ("answered", "confirmed") else "")
+            lines.append(f"{n}. {rule.replace(' (my assumption)', '')}{where}")
+        unknown = [t for t, b in brief.items() if b.get("basis") == "unknown"]
+        waiting = {str(q.get("topic") or "") for q in understanding.get("questions") or []
+                   if f"study:{q['id']}" not in (skill.get("answers") or {})}
+        if [t for t in unknown if t in waiting]:
+            lines.append("Not clear from the recording, asked next: " + ", ".join(t for t in unknown if t in waiting) + ".")
+        if [t for t in unknown if t not in waiting]:
+            lines.append("Still not settled - tell me if you can: " + ", ".join(t for t in unknown if t not in waiting) + ".")
+        return "\n".join(lines)
     for rule in understanding.get("rules") or []:
         lines.append(f"- {rule}")
     return "\n".join(lines)

@@ -1136,6 +1136,38 @@ func scanTask(scanner sqlitedb.Scanner) (Task, error) {
 	return task, nil
 }
 
+// maxRecentTasks bounds what RecentForWorker returns however small a limit is asked for.
+const maxRecentTasks = 200
+
+// RecentForWorker returns a worker's tasks newest first, at most limit of them
+// (a non-positive or oversized limit is capped at maxRecentTasks). It reads the
+// tasks table alone - no executions, steps or counts - so a dashboard poll can
+// ask for every card's list every few seconds without the cost of a summary.
+func (s *Store) RecentForWorker(workerID string, limit int) ([]Task, error) {
+	if limit <= 0 || limit > maxRecentTasks {
+		limit = maxRecentTasks
+	}
+
+	list, err := sqlitedb.QueryAll(s.db, scanTask,
+		`SELECT `+taskColumns+` FROM tasks t LEFT JOIN workers w ON w.id = t.worker_id
+		 WHERE t.worker_id = ? ORDER BY t.created_ns DESC LIMIT ?`, workerID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("tasks: listing worker tasks: %w", err)
+	}
+
+	if list == nil {
+		list = []Task{}
+	}
+
+	return list, nil
+}
+
+// ShortTitle is a request as one line of at most limit runes, for a list or
+// a dropdown that names the task without showing the whole request.
+func ShortTitle(request string, limit int) string {
+	return clipText(request, limit)
+}
+
 // TaskResult returns a task's current status and, once an execution has
 // ended, the reply it ended with - what internal/dag polls to learn a
 // dispatched node's ticket has finished, and what a later node's output

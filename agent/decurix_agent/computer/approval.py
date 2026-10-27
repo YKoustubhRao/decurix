@@ -550,11 +550,64 @@ def _locked():
 
 
 class Decision:
-    def __init__(self, allowed, reason=None, approved=False, request=None):
+    def __init__(self, allowed, reason=None, approved=False, request=None, by_reply=""):
         self.allowed = allowed
         self.reason = reason
         self.approved = approved
         self.request = request
+        self.by_reply = by_reply  # the person's reply that was this action's yes, when one was
+
+
+# How long the person's latest reply can stand as the yes for the action the gate stops next.
+REPLY_GRANT_SECONDS = 900
+
+# Words of an action's name or reason too common to tie a reply to it.
+_ACTION_FILLER = {"this", "that", "with", "button", "link", "click", "into", "from", "then", "page", "form", "their",
+                  "them", "they", "will", "would", "what", "which", "before", "after", "would"}
+
+
+def note_reply(text, asked=""):
+    """
+    The person's latest reply in this task, kept for check(): a reply that plainly says yes to the very action the
+    gate stops next is that action's yes - one reply, one action, read against the action as every approval is.
+    Found live (2026-10-26): "Yes, file the return" to the figures question, then the gate asked for the file click,
+    then "file it", then the gate asked again - eleven such questions in two tasks.
+    """
+
+    text = " ".join(str(text or "").split())
+    if not text:
+        return
+    with _locked() as state:
+        state["last_reply"] = {"text": text[:2000], "asked": " ".join(str(asked or "").split())[:2000],
+                               "at": time.time(), "used": False}
+
+
+def _action_words(element, reason):
+    words = set()
+    for w in re.findall(r"[a-z]{4,}", f"{(element or {}).get('name') or ''} {reason or ''}".lower()):
+        if w not in _ACTION_FILLER:
+            words.add(_stem_word(w))
+    return words
+
+
+def _stem_word(word):
+    for end in ("ing", "ed", "es", "s"):
+        if len(word) > len(end) + 3 and word.endswith(end):
+            return word[:-len(end)]
+    return word
+
+
+def _reply_grants(prior, description, element, reason):
+    """Whether the person's latest reply is the yes for this action: fresh, unused, naming the action by one of its
+    own words, and read as a plain yes against the action (reading) - "if" and "unclear" never grant."""
+
+    if not prior or prior.get("used") or time.time() - float(prior.get("at") or 0) > REPLY_GRANT_SECONDS:
+        return False
+    text = prior.get("text") or ""
+    said = {_stem_word(w) for w in re.findall(r"[a-z]{4,}", text.lower())}
+    if not (said & _action_words(element, reason)):
+        return False
+    return reading(text, action=description)["decision"] == "yes"
 
 
 def describe_action(kind, element, text=None, keys=None, point=None, withheld=None):
@@ -600,6 +653,18 @@ def check(kind, element, text=None, keys=None, point=None, context=None, about="
                 state["grants"].remove(grant)
                 return Decision(True, reason=reason, approved=True)
 
+        prior = state.get("last_reply")
+        if _reply_grants(prior, description, element, reason):
+            prior["used"] = True
+            state["last_reply"] = prior
+            try:
+                from decurix_agent import progress
+                progress.emit(f"Taking what you said as the yes for this one action - \"{prior['text'][:160]}\" - "
+                              f"and going on to {description[:120]}")
+            except Exception:  # noqa: BLE001 - progress is decoration
+                pass
+            return Decision(True, reason=reason, approved=True, by_reply=prior["text"])
+
         request = {
             "id": uuid.uuid4().hex[:12],
             "fingerprint": fingerprint,
@@ -636,6 +701,9 @@ def resolve_reply(reply, asked=""):
         request = state["pending"]
     if request is None:
         return None
+    with _locked() as state:
+        if state.get("last_reply"):
+            state["last_reply"]["used"] = True  # (a reply that settles a pending approval grants nothing else)
     action = request.get("action") or ""
     shown = " ".join(str(asked or "").split())
     if not (shown and " ".join(action.split())[:120] in shown):
@@ -689,6 +757,7 @@ def reset():
     with _locked() as state:
         state["pending"] = None
         state["grants"] = []
+        state["last_reply"] = None
 
 
 # What `gui` exits with when the gate stopped it (computer/cli.py).

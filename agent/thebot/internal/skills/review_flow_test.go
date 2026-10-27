@@ -72,7 +72,8 @@ func TestBeforeAnApprovalWhatStaysOpenGoesIntoTheApprovalNotAQuestion(t *testing
 func TestAPointPutToThePersonIsShownToLaterReviewsWithTheirAnswer(t *testing.T) {
 	raised := `{"issues": [{"what": "The report claims it checked 198_sales_invoice", "settle": "recheck"}]}`
 	o := &OperatorSkill{}
-	st := &operatorState{Hosted: true, Request: "save the files", JudgementRounds: 1, SentBackRound: 1}
+	// (The worker's own send-backs spent: a point it settles by looking is the person's only then.)
+	st := &operatorState{Hosted: true, Request: "save the files", JudgementRounds: 1, SentBackRound: 1, WorkSendBacks: maxWorkSendBacks}
 	if w := o.weighJudgements(weighRC(&scriptedChat{replies: []string{raised}}), st, nil, "Saved.", ""); w.question == "" {
 		t.Fatalf("not asked: %+v", w)
 	}
@@ -226,7 +227,7 @@ func TestPointsFoundInWorkDoneSinceTheLastSendBackGoBackToTheWorkerFirst(t *test
 	o := &OperatorSkill{}
 	weigh := func(worked []string, extra int) (weighing, *operatorState) {
 		st := &operatorState{Hosted: true, Request: "enter the month", JudgementRounds: 1, SentBackRound: 1,
-			SentBackWorked: 1, ExtraSendBacks: extra, Worked: worked}
+			SentBackWorked: 1, ExtraSendBacks: extra, Worked: worked, WorkSendBacks: maxWorkSendBacks}
 		return o.weighJudgements(weighRC(&scriptedChat{replies: []string{raised}}), st, nil, "Entered.", ""), st
 	}
 	w, st := weigh([]string{"cat bills.txt", `gui type e12 "7950"`}, 0)

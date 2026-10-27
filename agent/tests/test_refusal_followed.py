@@ -45,3 +45,23 @@ class ANoAnsweredWithFileWork(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ANotYetIsNotACallOff(unittest.TestCase):
+    def setUp(self):
+        self.events = []
+        for patch in (mock.patch.object(task_context, "current", lambda: "t1"),
+                      mock.patch.object(evidence, "_task_events", lambda task_id: self.events)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.addCleanup(guidance.note_reply, "", "approved")
+
+    def test_do_this_first_then_ask_again_keeps_the_task_going(self):
+        # Found live (2026-10-27): the check was done, the approval asked again, and the task was closed as stopped.
+        guidance.note_reply("No - do the serial check first: open the earlier block and tell me the last number. "
+                            "Once you have told me that, ask again.", "declined")
+        self.assertIsNone(guidance.refused())
+        guidance.note_reply("No, not yet - fix the opening row before you file.", "declined")
+        self.assertIsNone(guidance.refused())
+        guidance.note_reply("No - don't send anything; leave it for me.", "declined")
+        self.assertEqual(guidance.refused(), "No - don't send anything; leave it for me.")

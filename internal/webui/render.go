@@ -2,6 +2,7 @@
 package webui
 
 import (
+	"fmt"
 	"html/template"
 	"io"
 	"os"
@@ -62,6 +63,9 @@ type PageData struct {
 	// the template.
 	DesktopNames map[string]string
 	TunnelURL    string
+	// TasksByDesktop maps a desktop ID to its tasks, newest first - what the
+	// card's task dropdown shows before its first poll of /api/desktops/tasks.
+	TasksByDesktop map[string][]tasks.Task
 }
 
 // QueryNotesPageData is the template data for the query-notes dashboard.
@@ -96,6 +100,177 @@ type TasksPageData struct {
 type TaskPageData struct {
 	Task         tasks.Detail
 	ReadinessURL string
+}
+
+// TaskTracePageData is the template data for one task's full trace: the
+// request, every attempt and every step the store holds, in order.
+type TaskTracePageData struct {
+	Task tasks.Detail
+}
+
+// ShortTitleRunes is how much of a request the dashboard's task dropdown shows.
+const ShortTitleRunes = 60
+
+// foldLines and foldRunes are the size past which a step's text is folded
+// on the trace page, with its first line as the summary.
+const (
+	foldLines = 8
+	foldRunes = 700
+)
+
+// StepKind names what a step is, from the generic prefixes every harness
+// reports with (progress.emit): a command, its output, an on-screen action,
+// or a note (plans, checks, gate decisions, anything else said in words).
+func StepKind(step tasks.Step) string {
+	switch {
+	case step.Action != nil:
+		return "screen"
+	case strings.HasPrefix(step.Text, "$ "), strings.HasPrefix(step.Text, "Running: "):
+		return "command"
+	case strings.HasPrefix(step.Text, "Output: "):
+		return "output"
+	default:
+		return "note"
+	}
+}
+
+// stepKindLabel is the word the trace shows for a StepKind.
+var stepKindLabel = map[string]string{
+	"screen":  "Screen",
+	"command": "Command",
+	"output":  "Output",
+	"note":    "Note",
+}
+
+// firstLine is the first line of a text, clipped to one line of at most n runes.
+func firstLine(text string, n int) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
+	return tasks.ShortTitle(line, n)
+}
+
+// isLong says whether a step's text is folded on the trace page.
+func isLong(text string) bool {
+	return strings.Count(text, "\n")+1 > foldLines || len([]rune(text)) > foldRunes
+}
+
+// TraceText renders a task's whole trace as plain text - the request, each
+// attempt with its model, timing, tokens and cost, every step with its
+// timestamp, every question and answer, and the final report - for a copy
+// button or a download, so a run can be shared as one file.
+func TraceText(detail tasks.Detail) string {
+	var b strings.Builder
+	stamp := func(t time.Time) string {
+		if t.IsZero() {
+			return "—"
+		}
+		return t.UTC().Format("2006-01-02 15:04:05Z")
+	}
+	offset := func(from, to time.Time) string {
+		if from.IsZero() || to.IsZero() {
+			return ""
+		}
+		return "+" + tasks.FormatDuration(to.Sub(from))
+	}
+
+	fmt.Fprintf(&b, "Task %s\n", detail.ID)
+	fmt.Fprintf(&b, "Worker: %s (%s)", detail.WorkerName, detail.WorkerID)
+	if !detail.Worker.DeletedAt.IsZero() {
+		b.WriteString(" - deleted")
+	}
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "Engine: %s\n", tasks.EngineLabel(detail.Engine))
+	fmt.Fprintf(&b, "Type: %s\n", tasks.TypeLabel(detail.Type))
+	fmt.Fprintf(&b, "Status: %s\n", tasks.StatusLabel(detail.Status))
+	fmt.Fprintf(&b, "Created: %s\n", stamp(detail.CreatedAt))
+	if detail.Verdict != "" {
+		fmt.Fprintf(&b, "Verdict: %s (%s)\n", detail.Verdict, stamp(detail.VerdictAt))
+		if detail.VerdictNote != "" {
+			fmt.Fprintf(&b, "Verdict note: %s\n", detail.VerdictNote)
+		}
+	}
+	fmt.Fprintf(&b, "\nRequest:\n%s\n", detail.Request)
+
+	for _, e := range detail.Executions {
+		fmt.Fprintf(&b, "\n==== Attempt %d: %s", e.Attempt, tasks.StatusLabel(e.Status))
+		fmt.Fprintf(&b, " ====\nEngine: %s", tasks.EngineLabel(e.Engine))
+		if e.Model != "" {
+			fmt.Fprintf(&b, " · %s", e.Model)
+		}
+		fmt.Fprintf(&b, "\nStarted: %s\nEnded: %s\n", stamp(e.StartedAt), stamp(e.EndedAt))
+		if !e.EndedAt.IsZero() {
+			fmt.Fprintf(&b, "Duration: %s\n", tasks.FormatDuration(e.EndedAt.Sub(e.StartedAt)))
+		}
+		if e.InputTokens != nil || e.OutputTokens != nil {
+			fmt.Fprintf(&b, "Tokens: %s in / %s out\n", tasks.FormatTokens(e.InputTokens), tasks.FormatTokens(e.OutputTokens))
+		}
+		if e.CostUSD != nil {
+			fmt.Fprintf(&b, "Cost: %s\n", tasks.FormatCost(e.CostUSD))
+		}
+		if e.Checked != nil {
+			fmt.Fprintf(&b, "Final check: %s\n", map[bool]string{true: "judged the result", false: "not run"}[*e.Checked])
+		}
+
+		b.WriteString("\n-- Steps --\n")
+		n := 0
+		for _, ev := range e.Timeline() {
+			if ev.Step != nil {
+				n++
+				s := ev.Step
+				fmt.Fprintf(&b, "[%d] %s %s  %s\n", n, stamp(s.CreatedAt), offset(e.StartedAt, s.CreatedAt), stepKindLabel[StepKind(*s)])
+				b.WriteString(indent(s.Text))
+				if s.Action != nil {
+					a := s.Action
+					fmt.Fprintf(&b, "    action: %s", a.Kind)
+					if a.Target != "" {
+						fmt.Fprintf(&b, " %s", a.Target)
+					}
+					if a.Outcome != "" {
+						fmt.Fprintf(&b, " -> %s", a.Outcome)
+					}
+					if a.Change != "" {
+						fmt.Fprintf(&b, "; change: %s", a.Change)
+					}
+					if a.Reason != "" {
+						fmt.Fprintf(&b, "; reason: %s", a.Reason)
+					}
+					b.WriteString("\n")
+				}
+			}
+			if ev.Intervention != nil {
+				i := ev.Intervention
+				kind := "Query"
+				if i.Kind == tasks.InterventionApproval {
+					kind = "Approval"
+				}
+				fmt.Fprintf(&b, "[?] %s %s  %s asked (%s)\n", stamp(i.RequestedAt), offset(e.StartedAt, i.RequestedAt), kind, tasks.ReasonLabel(i.Reason))
+				b.WriteString(indent(i.Request))
+				if i.Reply != "" {
+					fmt.Fprintf(&b, "    Reply at %s:\n", stamp(i.RepliedAt))
+					b.WriteString(indent(i.Reply))
+				} else {
+					b.WriteString("    (no reply yet)\n")
+				}
+			}
+		}
+		if n == 0 {
+			b.WriteString("(no steps were reported)\n")
+		}
+
+		if e.FinalReply != "" {
+			fmt.Fprintf(&b, "\n-- Final report (%s) --\n%s\n", tasks.StatusLabel(e.Status), e.FinalReply)
+		}
+	}
+
+	return b.String()
+}
+
+// indent writes text with every line indented four spaces, ending in a newline.
+func indent(text string) string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = "    " + line
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 // DagsPageData is the template data for the DAGs list page.
@@ -175,6 +350,20 @@ var taskFuncs = template.FuncMap{
 	"live": func(status string) bool {
 		return status == tasks.StatusQueued || status == tasks.StatusRunning || status == tasks.StatusWaiting
 	},
+	"shortTitle": func(request string) string { return tasks.ShortTitle(request, ShortTitleRunes) },
+	// The trace page's helpers: what a step is, whether to fold it, and its
+	// first line as the fold's summary.
+	"stepKind":      StepKind,
+	"stepKindLabel": func(kind string) string { return stepKindLabel[kind] },
+	"isLong":        isLong,
+	"firstLine":     func(text string) string { return firstLine(text, 160) },
+	"lines":         func(text string) int { return strings.Count(strings.TrimRight(text, "\n"), "\n") + 1 },
+	"stamp": func(t time.Time) string {
+		if t.IsZero() {
+			return "—"
+		}
+		return t.UTC().Format("15:04:05")
+	},
 }
 
 // Renderer loads and executes the web UI's HTML templates.
@@ -185,6 +374,7 @@ type Renderer struct {
 	desktopTmpl    *template.Template
 	tasksTmpl      *template.Template
 	taskTmpl       *template.Template
+	traceTmpl      *template.Template
 	recordingsTmpl *template.Template
 	skillsTmpl     *template.Template
 	readinessTmpl  *template.Template
@@ -201,12 +391,13 @@ type Renderer struct {
 func NewRenderer() *Renderer {
 	return &Renderer{
 		readinessTmpl:  parse(nil, "readiness.html"),
-		indexTmpl:      parse(nil, "index.html"),
+		indexTmpl:      parse(taskFuncs, "index.html"),
 		requestsTmpl:   parse(nil, "requests.html", triggerParts),
 		dashboardTmpl:  parse(nil, "dashboard.html"),
 		desktopTmpl:    parse(nil, "desktop.html"),
 		tasksTmpl:      parse(taskFuncs, "tasks.html"),
 		taskTmpl:       parse(taskFuncs, "task.html"),
+		traceTmpl:      parse(taskFuncs, "trace.html"),
 		recordingsTmpl: parse(nil, "recordings.html"),
 		skillsTmpl:     parse(nil, "skills.html"),
 		dagsTmpl:       parse(taskFuncs, "dags.html"),
@@ -272,6 +463,11 @@ func (rd *Renderer) RenderTasks(w io.Writer, data TasksPageData) error {
 // RenderTask renders one task record.
 func (rd *Renderer) RenderTask(w io.Writer, data TaskPageData) error {
 	return rd.taskTmpl.ExecuteTemplate(w, "task.html", data)
+}
+
+// RenderTaskTrace renders one task's full trace page.
+func (rd *Renderer) RenderTaskTrace(w io.Writer, data TaskTracePageData) error {
+	return rd.traceTmpl.ExecuteTemplate(w, "trace.html", data)
 }
 
 // RenderRecordings renders one desktop's recordings page.

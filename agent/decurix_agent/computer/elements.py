@@ -186,6 +186,12 @@ def find(elements, ref=None, role=None, name=None, path=None, active_group=None)
         for element in elements:
             if element["ref"] == ref:
                 return element
+        # The ref is gone but the element it named may be on the screen under a new ref: the same role and name,
+        # once. Found live (2026-10-26): the review walked to another page before the person's yes, and the approved
+        # click came back as "no longer on the screen" and a "could not finish" to the person.
+        same = _same_named(elements, ref)
+        if same is not None:
+            return same
         raise ComputerError(
             f"{ref} is no longer on the screen (the window or page changed). "
             "Run observe again and use the new refs."
@@ -559,3 +565,17 @@ def render(observation, budget=3500, coords=False, only_group=None):
         )
 
     return "\n".join(lines)
+
+
+def _same_named(elements, ref):
+    """The one element on the screen with the role and name a gone ref was printed with, else None."""
+    try:
+        from decurix_agent.computer import shown
+        prior = shown.named(ref)
+    except Exception:
+        return None
+    if not prior or not prior[1]:
+        return None
+    role, name = normalize_role(prior[0]), prior[1]
+    same = [e for e in elements if normalize_role(e.get("role")) == role and (e.get("name") or "") == name]
+    return same[0] if len(same) == 1 else None

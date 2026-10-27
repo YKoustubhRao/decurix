@@ -5587,9 +5587,16 @@ HELD_QUESTION = ("A new message came while a request was in hand. Finish the one
 
 
 def _choice(reply):
-    """What the person chose for a held request: "after", "replace", "answer" or "" when it cannot be told."""
+    """What the person chose for a held request: "after", "replace", "answer" or "" when it cannot be told. A reply
+    that opens with "it was my answer" (and goes on with the answer itself) is the answer - found live (2026-10-27):
+    "It was my answer to your question. Yes - show me the draft first" was read as a new instruction and the question
+    was asked a second time."""
 
     from decurix_agent.computer import approval
+    head = " ".join(re.sub(r"[^a-z' ]+", " ", str(reply or "").lower()).split())
+    for phrase in sorted(HELD_PLAIN["answer"], key=len, reverse=True):
+        if len(phrase) >= 9 and (head == phrase or head.startswith(phrase + " ")):
+            return "answer"
     said = approval.read_choice(reply, HELD_QUESTION, HELD_CHOICES, HELD_PLAIN)
     return said["choice"] if said["choice"] in HELD_CHOICES else ""
 

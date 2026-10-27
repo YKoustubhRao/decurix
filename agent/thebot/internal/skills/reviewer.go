@@ -114,6 +114,12 @@ type reviewIssue struct {
 	What   string `json:"what"`
 	Why    string `json:"why"`
 	Settle string `json:"settle"`
+	// Work marks a point decided in code that is the worker's to do (save the record, name the document), never a
+	// choice for the person (knowledge.go).
+	Work bool `json:"-"`
+	// Advisory marks a point the worker is told once and that never goes to the person or the result: a verifier
+	// disagreement on a screen the work did not type into (evidence.go verifyReport).
+	Advisory bool `json:"-"`
 }
 
 // text is the issue as one line.
@@ -152,6 +158,24 @@ func (st *operatorState) reviewFacts(report string, items []string, action strin
 	if len(st.UntracedWrites) > 0 {
 		b.WriteString("\nVALUES WRITTEN INTO FILES THAT NO TEXT THE WORK WAS SHOWN HOLDS (read off a picture, worked out in " +
 			"the head, or not read at all - check each against its source): " + strings.Join(st.UntracedWrites, ", ") + "\n")
+	}
+	if n := len(st.Listings); n > 0 {
+		// The newest listing of each window the work looked at: a list of messages with a row never opened, a table
+		// with a line the report never mentions, is a fact the review can see for itself (found live, 2026-10-26: a
+		// revised bill sat in a second message from the client, listed on the inbox page and never opened).
+		var shown []string
+		for i := n - 1; i >= 0 && len(shown) < maxReviewListings; i-- {
+			shown = append([]string{truncateText(st.Listings[i], maxReviewListingChars)}, shown...)
+		}
+		b.WriteString("\nTHE NEWEST LISTING OF EACH WINDOW THE WORK LOOKED AT (what the screens showed; a message, row or " +
+			"document listed here that the work never opened or the report never accounts for is a point):\n" +
+			strings.Join(shown, "\n\n") + "\n")
+	}
+	if strings.TrimSpace(st.RecordLedger) != "" {
+		b.WriteString("\nTHE RECORD LEDGER (each record the worker declared from its document before typing it, the values " +
+			"it meant to enter, and whether the page showed each after the save - 'seen' is a fact, 'ABSENT' is not " +
+			"yet shown; a record entered without a declaration is not listed here - judge it from the other facts):\n" +
+			truncateText(st.RecordLedger, maxReviewLedgerChars) + "\n")
 	}
 	if gaps := st.coverageGaps(); len(gaps) > 0 {
 		b.WriteString("\nDOCUMENTS OF THE WORK THAT NOTHING ENTERED OR WRITTEN REFLECTS (right only when the report says " +
