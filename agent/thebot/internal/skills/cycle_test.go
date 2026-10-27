@@ -72,3 +72,34 @@ func TestWorkThatMovesOnIsNoCycle(t *testing.T) {
 		t.Fatalf("three in turn: %q", last)
 	}
 }
+
+// Found live (2026-10-27): the same cycle question went to the person twice in four minutes.
+func TestTheCycleQuestionIsAskedOnceAGoalThenTheAnswerIsGivenBack(t *testing.T) {
+	st := &operatorState{Hosted: true}
+	round := func() string {
+		var out string
+		for i := 0; i < cycleRounds+1; i++ {
+			if o := st.noteRun("gui click e1 && gui observe", "screen A"); o != "" {
+				out = o
+			}
+			if o := st.noteRun("gui click e2 && gui observe", "screen B"); o != "" {
+				out = o
+			}
+		}
+		return out
+	}
+	round()
+	round()
+	if st.CycleAsk == "" || !st.CycleAsked {
+		t.Fatalf("not asked the first time: %q", st.CycleAsk)
+	}
+	st.CycleAsk = ""
+	st.PersonSaid = append(st.PersonSaid, "asked: back and forth - answered: Stop flipping. Note the names and go to the voucher form.")
+	nudge := round()
+	if st.CycleAsk != "" {
+		t.Fatalf("asked a second time: %q", st.CycleAsk)
+	}
+	if !strings.Contains(nudge, "Stop flipping") || !strings.Contains(nudge, "not asked again") {
+		t.Fatalf("the answer was not given back: %q", nudge)
+	}
+}

@@ -568,6 +568,9 @@ def _learn_reply(paused, reply):
         if follow_up:
             _add_follow_up(skill, question, follow_up)
 
+    if question["kind"] == "goal" and learning.YES.match(reply or "") and len((reply or "").split()) <= 3:
+        study.confirm(skill)  # (a plain yes to the read-back: the brief's guesses are the person's word now)
+
     decision = result["decision"]
 
     if decision == "save":

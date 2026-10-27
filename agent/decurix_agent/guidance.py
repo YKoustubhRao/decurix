@@ -128,6 +128,29 @@ def said_this_task():
                                                             for q, a in _exchanges["said"]))
 
 
+# A no that is "not yet": the person asks for something first and says to come back. Found live (2026-10-27): "No -
+# do the serial check first ... Once you have told me that, ask again" - the worker did the check and asked again,
+# and the harness closed the task as "Stopped, as you said" with the return unfiled.
+_NOT_YET = re.compile(r"(?i)\b(first\b|before (you|that|filing|sending|pressing|clicking)|then ask|ask (me )?again|"
+                      r"come back|not yet|once you|after (you|that)|until you)")
+
+
+def not_yet(reply):
+    """Whether a refusal asks for something first and the action again after: the gate's own reading says so (an
+    "if" with a condition, or something the person wants to see), or the words do."""
+
+    from decurix_agent.computer import approval
+
+    text = " ".join(str(reply or "").split())
+    try:
+        said = approval.last_reading(text) or {}
+    except Exception:  # noqa: BLE001 - no reading kept: the words decide
+        said = {}
+    if said.get("decision") == "if" or said.get("wants"):
+        return True
+    return bool(_NOT_YET.search(text))
+
+
 def note_reply(reply, outcome):
     """
     What a person answered to an approval the screen gate asked for (the
@@ -145,7 +168,7 @@ def note_reply(reply, outcome):
     # live: told `stop` at a question, the engine wound up, the final check
     # found the work unfinished - and sent it back to finish what the person
     # had just called off.
-    if (outcome == "declined" and approval.is_refusal(reply)) or calls_off(reply, open_question()):
+    if (outcome == "declined" and approval.is_refusal(reply) and not not_yet(reply)) or calls_off(reply, open_question()):
         _refused = (task_context.current(), " ".join(str(reply).split())[:300], _screen_actions())
     else:
         _refused = None

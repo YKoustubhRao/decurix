@@ -303,6 +303,9 @@ func unreadNudge(docs []string) string {
 // valueTokenRe is a token that can be a value: a run of letters, digits and . , / - _ holding at least one digit.
 var valueTokenRe = regexp.MustCompile(`[\p{L}\p{N}._/,-]*\p{N}[\p{L}\p{N}._/,-]*`)
 
+// fileNameTokenRe is a token that names a file: it ends in a document's extension (a path's last part included).
+var fileNameTokenRe = regexp.MustCompile(`(?i)\.(?:pdf|docx?|odt|rtf|txt|eml|xlsx|xlsm|xls|ods|csv|png|jpe?g|tiff?|webp|heic|pptx?)['")]*$`)
+
 // withoutCommandValues is a command's output with every value that already stood in the command itself left out: what
 // a command prints back of what it was given is not a source of it. Found live (2026-10-23): late in a
 // long goal the worker wrote a list of records from memory into a script - two codes invented, record numbers shifted
@@ -311,6 +314,12 @@ var valueTokenRe = regexp.MustCompile(`[\p{L}\p{N}._/,-]*\p{N}[\p{L}\p{N}._/,-]*
 func withoutCommandValues(output, command string) string {
 	given := map[string]bool{}
 	for _, t := range valueTokenRe.FindAllString(command, -1) {
+		if fileNameTokenRe.MatchString(t) {
+			// A file's name is a name, not a value the command vouches for: masked, the header a read opens with
+			// ("SSS-26-27-0199.pdf:") matched no offered document and the bill was "never read" (found live,
+			// 2026-10-26, four runs over).
+			continue
+		}
 		given[strings.Trim(t, ".,/-_")] = true
 	}
 	if len(given) == 0 {

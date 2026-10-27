@@ -1500,16 +1500,8 @@ def _duplicate_record(element):
 _IDENTIFIER = re.compile(r"^(?:(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{10,20}|[^\s@]+@[^\s@]+\.[A-Za-z]{2,})$")
 # A value that is a name (of a person, a firm): what a record of a party has and a document's own number is not.
 _NAME_VALUE = re.compile(r"[A-Za-z][A-Za-z .,'&()-]{2,60}")
-# How many other codes of the same shape one look must show to be a list of such records (a document shows one or two).
-LIST_CODES = 3
-# The identifiers a task was stopped over (unsearched_identifier), by why: each refusal is made once.
+# The identifiers a task was stopped over (_unsearched_record), by why: each refusal is made once.
 ID_REFUSALS_DIR = STATE_DIR / "id-refusals"
-
-
-def _alike(a, b):
-    """Two codes of one kind: of a length, letters and digits in the same places but for two (a check character)."""
-
-    return len(a) == len(b) and sum(x.isdigit() != y.isdigit() for x, y in zip(a, b)) <= 2
 
 
 def _page_items(look):
@@ -1532,19 +1524,83 @@ def _page_items(look):
     return out
 
 
-def unsearched_identifier(events, looks):
+# A title in front of a name: not part of the name a record is known by.
+_TITLE_RE = re.compile(r"^(?:mr|mrs|ms|miss|mx|dr|prof|shri|smt|sri|m/s|messrs)\.?\s+", re.I)
+
+
+# The name field of a record of a party itself: "Name", "Ledger name", "Account name", "Full name" - not a field that
+# names a party on a document ("Party A/c name", "Customer", "Supplier name").
+_OWN_NAME_LABEL = re.compile(r"(?i)(?:ledger |account |full |legal |display |contact )?name\*?:?")
+
+
+def plain_name(value):
+    """A name as records are matched by it: titles set aside, case and punctuation too."""
+
+    value = _TITLE_RE.sub("", str(value or "").strip())
+    return " ".join(re.sub(r"[^a-z0-9 ]+", " ", value.lower()).split())
+
+
+def same_named_record(events, looks):
     """
-    For a new record of a party being saved - a new-record form with a name typed and no number of its own (a
-    customer, an employee; not an invoice, which only quotes one): [(identifier, words)] for each identifier typed
-    into it (a code, an email) that the task was not seen to look for in vain. words are the page's words around it
-    when a look this task made showed it already (a record holds it); "" when the task never looked for it - typed it
-    into no other field (a search, a filter) and saw no list of codes like it. [] otherwise. `looks` are the texts of
-    the task's looks at the screen. Found live (2026-10-26): a bill named its customer otherwise than the books did
-    (a trade name, a title); the worker searched the books by the bill's name only, found nothing, and made a second
-    account with the same tax number.
+    For a new record of a party being saved (a new-record form with a name typed): the name a look of this task
+    showed it listed under already - the same name once titles and punctuation are set aside - else "". Found live
+    (2026-10-27): the books held a customer by name; the bill wrote the name with "Mr." in front; the worker searched
+    the list, saw the row, and made a second customer with the title.
     """
 
-    pairs, typed, new_page = [], [], False
+    pairs, new_page = _new_record_fields(events)
+    if not new_page or _record_refs(pairs):
+        return ""  # (a document that quotes a party by name - a voucher, an order - is not a party record)
+    # The party record's own name field ("Name", "Ledger name"), never a field that names a party on a document
+    # ("Party A/c name", "Customer"): found live (2026-10-27), a voucher's save was refused as "a new party" because
+    # its party field held a name the ledger list showed - the one the voucher was meant to use.
+    names = [v.strip() for l, v in pairs if _OWN_NAME_LABEL.fullmatch(" ".join(l.split()))
+             and _NAME_VALUE.fullmatch(v.strip()) and not _IDENTIFIER.match(v.strip())]
+    if not names:
+        return ""
+    want = plain_name(names[0])
+    if len(want) < 4:
+        return ""
+    for look in looks:
+        for item, _ in _page_items(look):
+            quoted = re.search(r'"([^"]+)"', item)
+            text = quoted.group(1) if quoted else item
+            for cell in [c.strip() for c in text.split(" | ")][:1]:
+                if cell and plain_name(cell) == want:
+                    return cell
+    return ""
+
+
+def _same_named_record(element):
+    """The refusal of a save that makes a second party record under a name a list this task looked at shows already
+    (same_named_record); "" to go on. It stands every time: a title or a short form on a document does not make
+    another record, and only the person can say it is a different party."""
+
+    if not _SAVE_CONTROL.search(str(element.get("name") or "")):
+        return ""
+    try:
+        from decurix_agent import task_context
+        from decurix_agent.computer import evidence, recording
+        task_id = task_context.current()
+        if not task_id:
+            return ""
+        _, events = recording.load(recording.session_for_task(task_id))
+        shown = same_named_record(events, evidence.looks(task_id))
+    except (FileNotFoundError, OSError, ValueError, ImportError):
+        return ""
+    if not shown:
+        return ""
+    return (f"Not pressed: this makes a new record of a party, and a list you looked at shows {el._quote(shown, 80)} "
+            "already - the same name once the title is set aside. A title, a trade name or a short form on a document "
+            "does not make another record: use that one as it is (choose it in the field; alter nothing on it), or ask the "
+            "person (HELP) whether this is a different party - and only with their yes, create it.")
+
+
+def _new_record_fields(events):
+    """(pairs, new_page): the (label, value) typed or chosen into the form being saved, and whether the form is a
+    new-record page (unsearched_identifier, same_named_record)."""
+
+    pairs, new_page = [], False
     for event in events:
         if event.get("outcome") not in (None, "done"):
             continue
@@ -1559,72 +1615,133 @@ def unsearched_identifier(events, looks):
         label = str((event.get("element") or {}).get("name") or "")
         if event.get("kind") == "type" and event.get("text"):
             pairs.append((label, str(event["text"])))
-            typed.append((label, str(event["text"])))
         if event.get("kind") == "select" and event.get("option"):
             pairs.append((label, str(event["option"])))
         if event.get("kind") in ("click", "key") and _saved(change) and pairs:
             pairs, new_page = [], False
-    named = any(_NAME_VALUE.fullmatch(v.strip()) and not _IDENTIFIER.match(v.strip()) for _, v in pairs)
+    return pairs, new_page
+
+
+def unsearched_identifier(events, looks, known=()):
+    """
+    For a new record of a party being saved - a new-record form with a name typed and no number of its own (a
+    customer, an employee; not an invoice, which only quotes one): [(identifier, words)] for each identifier typed
+    into it - a code, an email (_IDENTIFIER), or any value in `known` (what this task resolved with --id, whatever its
+    shape). words are the page's words around it when a look this task made showed it already (a record holds it);
+    "" otherwise. [] when the form is not such a record. `looks` are the texts of the task's looks at the screen.
+    Whether the identifier was resolved is not judged here: _unsearched_record reads the task's resolution facts
+    (resolve.resolution). Found live (2026-10-26): a bill named its customer otherwise than the books did (a trade
+    name, a title); the worker searched the books by the bill's name only, found nothing, and made a second account
+    with the same tax number.
+    """
+
+    from decurix_agent.computer import resolve
+
+    pairs, new_page = [], False
+    known_keys = {resolve.key(k) for k in known if resolve.key(k)}
+    for event in events:
+        if event.get("outcome") not in (None, "done"):
+            continue
+        change = str(event.get("change") or "")
+        if _FORM_START.search(change) or _FORM_START.search("page is now " + str(event.get("target") or "")):
+            pairs = []
+        moved = re.search(r"page is now (\S+)", change)
+        if moved:
+            new_page = bool(_NEW_RECORD_PAGE.search("page is now " + moved.group(1).rstrip(";,")))
+        elif _NEW_RECORD_PAGE.search(change) or _NEW_RECORD_PAGE.search(str(event.get("target") or "")):
+            new_page = True
+        label = str((event.get("element") or {}).get("name") or "")
+        if event.get("kind") == "type" and event.get("text"):
+            pairs.append((label, str(event["text"])))
+        if event.get("kind") == "select" and event.get("option"):
+            pairs.append((label, str(event["option"])))
+        if event.get("kind") in ("click", "key") and _saved(change) and pairs:
+            pairs, new_page = [], False
+    is_ident = lambda v: bool(_IDENTIFIER.match(v)) or resolve.key(v) in known_keys
+    named = any(_NAME_VALUE.fullmatch(v.strip()) and not is_ident(v.strip()) for _, v in pairs)
     if not new_page or not named or _record_refs(pairs):
         return []
     items = [item for look in looks for item in _page_items(look)]
     out = []
     for label, value in dict.fromkeys(pairs):
         ident = value.strip()
-        if not _IDENTIFIER.match(ident):
+        if not is_ident(ident):
             continue
         low = ident.lower()
         shown = next((around for item, around in items if low in item.lower()), "")
-        if shown:
-            out.append((ident, " ".join(shown.split())[:240]))
-            continue
-        if any(low in v.lower() for other, v in typed if other != label):
-            continue  # looked for in a search or a filter, and not seen: not there
-        if "@" in ident:
-            like = {m.lower() for item, _ in items for m in re.findall(r"[^\s@|'\"]+@[^\s@|'\"]+\.[A-Za-z]{2,}", item)}
-        else:
-            like = {w.lower() for item, _ in items for w in re.findall(r"[A-Za-z0-9]+", item)
-                    if _IDENTIFIER.match(w) and _alike(w, ident)}
-        if len(like - {low}) >= LIST_CODES:
-            continue  # a list of such records was looked at, and it is not on it
-        out.append((ident, ""))
+        out.append((ident, " ".join(shown.split())[:240] if shown else ""))
     return out
 
 
 def _unsearched_record(element):
-    """The refusal of a save that makes a new record holding an identifier nobody looked for ("" to go on)."""
+    """
+    The refusal of a save that makes a new record holding an identifier this task has not resolved ("" to go on). A
+    mechanical gate on the task's resolution facts (resolve.py, written by gui select --id): no fact - refused until
+    resolved; a match - refused naming the record that holds it; none holds it - the save goes on. A look of this
+    task that showed the identifier beside other words is a second trigger. Each refusal is made once per identifier
+    and reason (ID_REFUSALS_DIR): the worker that saves again after it has decided, and the record says so.
+    """
 
     if not _SAVE_CONTROL.search(str(element.get("name") or "")):
         return ""
     try:
         from decurix_agent import task_context
-        from decurix_agent.computer import evidence, recording
+        from decurix_agent.computer import evidence, recording, resolve
         task_id = task_context.current()
         if not task_id:
             return ""
         _, events = recording.load(recording.session_for_task(task_id))
-        found = unsearched_identifier(events, evidence.looks(task_id))
+        found = unsearched_identifier(events, evidence.looks(task_id), resolve.identifiers(task_id))
     except (FileNotFoundError, OSError, ValueError, ImportError):
         return ""
     for ident, words in found:
-        mark = ID_REFUSALS_DIR / f"{task_id}-{'shown' if words else 'unsearched'}-{re.sub(r'[^A-Za-z0-9]', '_', ident)}"
+        fact = resolve.resolution(task_id, ident)
+        if fact["status"] == "none":
+            continue  # resolved: no record holds it, so this is a new one
+        why = fact["status"] or ("shown" if words else "unresolved")
+        mark = ID_REFUSALS_DIR / f"{task_id}-{why}-{re.sub(r'[^A-Za-z0-9]', '_', ident)}"
+        if mark.exists() and fact["status"] != "matched":
+            continue  # stopped over once already: the worker has decided, and saves it as it is
         if mark.exists():
-            continue  # stopped over once already: the worker has looked, and saves it as it is
+            # A record that holds the identifier exists: a second one is never the worker's to decide. Found live
+            # (2026-10-27): refused once, the worker saved again and the customer got a second ledger. Only the
+            # person's word on it (an answer, an approval) lets it through - and that comes back as "resolved by the
+            # person" through gui select --id, not by saving again.
+            return (f"Not pressed: this makes a new record holding {ident}, and the record "
+                    f"{el._quote(fact['name'] or '', 90)} holds it already ({fact['line']}). A second record holding "
+                    "the same identifier is never saved on the worker's own judgement: use that record (open it and "
+                    "edit it if its name or address must change), or ask the person (HELP) whether this is a "
+                    "different party - and only with their yes, create it.")
         try:
             ID_REFUSALS_DIR.mkdir(parents=True, exist_ok=True)
             mark.write_text("1", encoding="utf-8")
         except OSError:
             return ""  # a stop that cannot be kept to once is not made
+        head = f"Not pressed: this makes a new record holding {ident}, "
+        if fact["status"] == "matched":
+            return (head + f"and this task resolved {ident}: the record {el._quote(fact['name'] or '', 90)} holds it already "
+                    f"({fact['line']}). A record that holds the identifier is the one to use, whatever its name - a title, "
+                    "a trade name or a short form on a document does not make another one: use that record (to change "
+                    "it, open it and edit it), and say in the report how you matched it. Only if you can say why this is "
+                    "a different one, save again.")
+        if fact["status"] == "ambiguous":
+            return (head + f"and this task found more than one record holding it ({fact['line']}): a third makes it worse. "
+                    "Use one of them - ask the person which (HELP) if the documents do not say - and tell the person "
+                    "the application holds two.")
         if words:
-            return (f"Not pressed: this makes a new record holding {ident}, and a page you looked at shows {ident} "
-                    f"already: \"{words}\". A record that holds it already is the one to use - a name written otherwise "
-                    "on a document (a title, a trade name, a short form) does not make another one: use that record, and "
-                    "say in the report how you matched it. If those words were the document's own, not a record of the "
-                    "application, or you can say why this is a different one, save again.")
-        return (f"Not pressed: this makes a new record holding {ident}, but you have not looked for {ident} in this "
-                "application. Look it up in the application's own list of such records first (its search or filter, or "
-                "the whole list): a record that already holds it is the one to use, whatever name it has there. If none "
-                "holds it, save again - it is then a new one.")
+            return (head + f"and a page you looked at shows {ident} already: \"{words}\". A record that holds it already is "
+                    "the one to use - a name written otherwise on a document (a title, a trade name, a short form) does "
+                    f"not make another one. Resolve it first: gui select REF \"<the name as the document writes it>\" --id "
+                    f"{ident} on the application's list of such records (its search or filter field) or on the field that "
+                    "chooses one - it searches by the identifier and reports which record holds it. Use that record, and "
+                    "say in the report how you matched it.")
+        where = ("the field you searched showed nothing for it" if fact["status"] == "unanswered"
+                 else f"nothing in this task resolved {ident}")
+        return (head + f"but {where}. Resolve it first: gui select REF \"<the name as the document writes it>\" --id {ident} "
+                "on the application's list of such records (its page with a search or filter field) or on the field that "
+                "chooses one - it searches by the identifier first and reports whether a record holds it; a record that "
+                "already holds it is the one to use, whatever its name. When it reports that none holds it, save again - "
+                "it is then a new one.")
     return ""
 
 
@@ -1643,7 +1760,45 @@ def _unsourced_fields(fields):
     if not mine:
         return []
     sources = long_task.work_sources(task_context.current_request())
-    return [(label, value) for label, value in mine if sources.unsourced(value)]
+    declared = _declared_values()
+    # A value a record of this task declares from its document is that document's: the declaration checked it against
+    # the source, or kept it as read off a picture (records.declare). Found live (2026-10-27): the figures of a
+    # photographed bill, declared from the photo, were refused as "invented" at every save - no text holds a photo's
+    # figures - and a mixed-rate bill could not be entered at all.
+    return [(label, value) for label, value in mine
+            if sources.unsourced(value) and not _declared_holds(value, declared)]
+
+
+def _declared_holds(value, declared):
+    from decurix_agent.computer import records
+    return any(records.same_value(value, d) for d in declared)
+
+
+def _declared_values():
+    """The values the task's declared records hold as their intent (records.load)."""
+
+    out = []
+    try:
+        from decurix_agent.computer import records
+        for rec in records.load():
+            for f in (rec.get("fields") or {}).values():
+                if f.get("intent") and f.get("from") != "empty":
+                    out.append(str(f["intent"]))
+    except Exception:  # noqa: BLE001 - no ledger: nothing declared
+        return []
+    return out
+
+
+def _form_check_pending():
+    """The ref of the submit control whose form was listed for checking within FORM_CHECK_SECONDS and not confirmed
+    since, else "". The note is written at the listing and cleared when the checked click goes through."""
+    try:
+        noted = json.loads(FORM_CHECK_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if time.time() - float(noted.get("at") or 0) < FORM_CHECK_SECONDS and noted.get("key"):
+        return noted.get("ref") or "REF"
+    return ""
 
 
 def _form_check(element, checked=False):
@@ -1656,7 +1811,8 @@ def _form_check(element, checked=False):
 
     import hashlib
 
-    twice = _duplicate_record(element) or _crossed_record(element) or _unsearched_record(element)
+    twice = (_duplicate_record(element) or _crossed_record(element) or _unsearched_record(element)
+             or _same_named_record(element))
     if twice:
         return twice  # (never sent, --checked or not)
     found = cdp.submit_form_fields(element, min_fields=1)
@@ -1681,6 +1837,14 @@ def _form_check(element, checked=False):
     if made_up:
         # Never sent, with or without --checked (found live 2026-10-20: a joiner onboarded with phone 9999999999).
         return filler.refusal(made_up, files)
+    ledger_lines = []
+    judged = _ledger_check(found["fields"])
+    if judged is not None:
+        held, clean, ledger_lines = judged
+        if held:
+            return held
+        if clean:
+            return ""  # the declared record is the check this listing stood in for: one click saves
     if len(found["fields"]) < cdp.FORM_CHECK_MIN_FIELDS:
         return ""  # a small form (a search, a sign-in) is sent at once
     key = hashlib.sha256(json.dumps([element.get("path") or element.get("name"), found], sort_keys=True).encode()).hexdigest()
@@ -1695,18 +1859,82 @@ def _form_check(element, checked=False):
         # filing was put to the person five more times.
         return ""
     try:
-        FORM_CHECK_FILE.write_text(json.dumps({"key": key, "at": time.time()}), encoding="utf-8")
+        FORM_CHECK_FILE.write_text(json.dumps({"key": key, "at": time.time(), "ref": element.get("ref") or ""}), encoding="utf-8")
     except OSError:
         return ""  # a check that cannot be kept never blocks the click
     lines = "\n".join(f"  {label}: {value}" for label, value in found["fields"])
     return (f"Not pressed yet - {el._quote(found['form'], 60)} would be sent holding:\n{lines}\n"
-            "Check every value against what you meant to enter (a quantity, a price, every line). If all are right, "
+            + ("".join(f"  ({line})\n" for line in ledger_lines))
+            + "Check every value against what you meant to enter (a quantity, a price, every line). If all are right, "
             f"send gui click {element.get('ref') or 'REF'} --checked to save; if one is wrong, correct it first "
             "(gui type REF \"value\") - the form is listed again before it is sent.")
 
 
-def _perform(kind, element, point, text, keys, direction, amount, option, append, end=None, files=None):
-    """Carry out one action; return which backend did it."""
+def _ledger_check(form_fields):
+    """
+    The declared record (records.py) against the form about to be saved: None when no record is open; else
+    (what stops the click or "", whether the diff is clean enough to save without a listing, advisory lines). A field
+    holding a value the record does not stops the click; the record's scope absent from the window stops it once.
+    """
+
+    from decurix_agent import task_context
+    from decurix_agent.computer import evidence, records
+
+    try:
+        rec = records.open_record(records.load(), " | ".join(str(v) for _, v in form_fields if v), form=form_fields)
+    except Exception:  # noqa: BLE001 - a ledger that cannot be read judges nothing
+        return None
+    if rec is None:
+        return None
+    blocking, advisory, matched = records.presave(rec, form_fields)
+    key = rec.get("key")
+    if rec.get("scope"):
+        try:
+            now = observe(remember=False)
+            missing = records.scope_missing(rec["scope"], now.get("active_title"), evidence.words_text(now, records.MAX_PAGE_TEXT))
+        except Exception:  # noqa: BLE001
+            missing = []
+        if missing:
+            # (Once per scope, not per record: nine records on pages that never name the client would be nine stops.)
+            if records.stop_once(task_context.current(), f"scope-{rec['scope']}"):
+                return (f"Not pressed: record {key} belongs in {el._quote(rec['scope'], 80)}, but the window "
+                        f"({el._quote(now.get('active_title') or '', 80)}) shows none of: {', '.join(missing)}. Read "
+                        "which entity, book or period is open and open the right one before saving; if this window is "
+                        "right and only worded otherwise, save again.", False, [])
+            advisory.append(f"the window does not show the scope words {', '.join(missing)}")
+    try:
+        records.note_presave(rec, blocking)
+    except Exception:  # noqa: BLE001
+        pass
+    if blocking:
+        return (f"Not pressed: the form does not hold what record {key} says - " + "; ".join(blocking)
+                + ". Correct the field (gui type REF \"value\" / gui select REF \"option\"), then save again. If the "
+                "record's own intent was misread, declare it again from its source (gui record): the declaration is "
+                "checked against the document, so a value the document writes otherwise is refused there - never save "
+                "a value the document does not give, nor a part of one." + (" Also: " + "; ".join(advisory) if advisory else ""), False, advisory)
+    wanted = sum(1 for f in rec.get("fields", {}).values() if f.get("intent"))
+    clean = matched >= max(1, (wanted + 1) // 2)
+    return "", clean, ([f"record {key}: {matched} of {wanted} declared values match the form"] + advisory)
+
+
+def _ledger_readback(after, change_text):
+    """After a save: the declared record read back off the page the save left (records.py); "" when none is open."""
+
+    from decurix_agent.computer import evidence, records
+
+    try:
+        page = (evidence.fields_text(after, records.MAX_PAGE_TEXT, offscreen=True) + "\n"
+                + evidence.words_text(after, records.MAX_PAGE_TEXT))
+        rec = records.open_record(records.load(), page + "\n" + str(change_text or ""))
+        if rec is None:
+            return ""
+        return "\n" + "\n".join(records.readback(rec, after.get("active_title"), page, change_text))
+    except Exception as exc:  # noqa: BLE001 - a read-back that fails is said, never raised
+        return f"\n(the record could not be read back: {exc})"
+
+
+def _perform(kind, element, point, text, keys, direction, amount, option, append, end=None, files=None, ids=None):
+    """Carry out one action; return which backend did it. `ids`: the identifiers a select resolves the option by first."""
 
     if element is not None and element.get("handle", {}).get("sheet_cell"):
         if kind == "type":
@@ -1878,6 +2106,13 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             held = cdp.focused_enter_would_submit()
             if held:
                 raise cdp.EnterWouldSubmit(cdp.held_enter_message(held))
+            # A form listed for checking and not yet confirmed is not sent with Enter either. Found live (2026-10-26):
+            # after "Not pressed yet", Tab and Enter saved the record and the check never saw the confirmed click.
+            pending = _form_check_pending()
+            if pending:
+                raise ComputerError("Not pressed - the form listed for checking is not confirmed yet: check its values "
+                                    f"and send gui click {pending} --checked to save it; Enter does not stand in for "
+                                    "the checked click.")
         for combo in keys:
             xinput.key(combo)
         return "xdotool"
@@ -1910,12 +2145,24 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             # (2026-10-15): Impress's Insert Table "Number of rows" answered `select ... "5"` with "no option '5'").
             return _perform("type", element, None, option.strip(), None, None, None, None, False, None)
         if element["source"] == "cdp":
+            _resolved.clear()
+            _selected.update(name=None, why="")
+            if ids:
+                chosen = _select_native_by_id(element, option, ids)
+                if chosen:
+                    return chosen
             try:
                 cdp.select_option(element, option)
                 return "cdp"
             except ComputerError as exc:
                 if "is not a dropdown" not in str(exc):
+                    if _resolved:
+                        raise ComputerError(f"{exc}\n" + "\n".join(_resolved)) from exc
                     raise
+            if element.get("source") == "cdp":
+                chosen = _select_datalist(element, option, ids)
+                if chosen:
+                    return chosen
             if element.get("role") == "combobox" and _relayed(element, _load_state()):
                 # In a viewer of a Windows app the app's own list is asked first: what a page-style search sees
                 # appear there is the app's other controls (found live: Excel's Sort dialog "Sort by" was answered
@@ -1923,7 +2170,7 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
                 _selected.update(name=cdp.choose_in_app(element, option), why="the app's list chose it")
                 return "relayed:chosen"
             try:
-                _select_custom(element, option)
+                _select_custom(element, option, ids=ids)
             except ComputerError as exc:
                 if "showed no options" not in str(exc) or not _relayed(element, _load_state()):
                     raise
@@ -2065,13 +2312,19 @@ def _pick(candidates, option):
 _PLAIN_NUMBER = re.compile(r"[+-]?\d[\d,]*(?:\.\d+)?")
 
 
+_DECORATED_NUMBER = re.compile(r"(?:[^\w\s]{1,3}\s*|[A-Za-z]{1,3}\.?\s+|[A-Za-z]{1,3}\.)?[-+]?[\d.,]+(?:\s*[^\w\s]{1,3}|\s+[A-Za-z]{1,4})?")
+
+
 def _decorated_number(text, held):
     """Whether `text` is a number written with something a number field does not take, for a field that held a plain one."""
 
     text, held = (text or "").strip(), str(held or "").strip()
     if not held or not _PLAIN_NUMBER.fullmatch(held) or _PLAIN_NUMBER.fullmatch(text):
         return False
-    return bool(re.search(r"\d", text)) and len(re.sub(r"[\d.,\s+-]", "", text)) <= 4
+    # A decoration is a sign or a unit beside the number ("Rs 3,306", "3306 INR", "15 kg"), never a code whose letters
+    # are joined to its digits ("INV3306", "ABC-3306"): found live (2026-10-26), a bill number typed into a field that
+    # had held the form's default "1" drew "a number field takes digits only", and the worker asked the person.
+    return bool(_DECORATED_NUMBER.fullmatch(text))
 
 
 def _stem(word):
@@ -2378,7 +2631,226 @@ def _choose_radio(element, option):
     return "xdotool"
 
 
-def _select_custom(element, option):
+# The resolution facts the select being made wrote (resolve.py): act() puts them in its summary. One line each.
+_resolved = []
+# Fields in which a search is sent with Enter when typing alone showed nothing (a page that answers a query once sent);
+# never a combobox, whose Enter takes the highlighted entry.
+_QUERY_ROLES = ("textbox", "searchbox")
+# How many name searches a list page is sent after the identifier found nothing: each is a page load.
+MAX_SENT_NAME_SEARCHES = 4
+
+
+def _keep_fact(track, ident, line):
+    """One resolution fact: kept for the gate (evidence note), for the summary (_resolved) and against a second one."""
+
+    from decurix_agent.computer import resolve
+
+    track["facts"][ident] = line
+    resolve.note(line)
+    _resolved.append(line)
+
+
+def _wait_page_change(before, seconds=None):
+    """Whether the page's elements changed within `seconds` of a query sent (paths, as `before` has them)."""
+
+    deadline = time.monotonic() + (CUSTOM_OPTIONS_SECONDS if seconds is None else seconds)
+    while True:
+        if {e.get("path") for e in observe()["elements"]} != before:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.3)
+
+
+def _row_entries(now):
+    """The entries of a page's table rows (a link beside cells): what a list page offers once a query was sent to it."""
+
+    from decurix_agent.computer import resolve
+
+    cells = [e for e in now if e.get("role") in ("cell", "gridcell", "rowheader") and e.get("box")]
+    return [e for e in now if e.get("source") == "cdp" and e.get("box") and e.get("role") in _SUGGESTION_ROLES
+            and not _NOT_A_CHOICE.match(e.get("name") or "") and any(resolve.same_row(e, c) for c in cells)]
+
+
+def _matched_by_identifier(field, elements, ids, track):
+    """
+    Choose, among `elements`, the one record holding one of `ids` (resolve.matches): True when it was chosen - or
+    found, when its row has nothing to press - and its fact kept. Two records holding one identifier are not chosen
+    between: the ambiguity is kept and raised. False when none holds any. A field's own value never counts.
+    """
+
+    from decurix_agent.computer import resolve
+
+    pool = [e for e in elements if e.get("source") == "cdp" and e.get("role") not in TYPING_ROLES
+            and e.get("path") != field.get("path")]
+    for ident in ids:
+        if track["facts"].get(ident):
+            continue
+        found = resolve.matches(pool, ident)
+        if not found:
+            continue
+        if len(found) > 1:
+            _keep_fact(track, ident, resolve.ambiguous_line(ident, [name for _, name in found]))
+            raise ComputerError(f"{el.describe(field)}: {len(found)} records hold {ident} - "
+                                + ", ".join(el._quote(name, 60) for _, name in found)
+                                + ". One identifier, two records: none was chosen. Use the one the documents or the "
+                                "person name; when neither does, ask the person which (HELP) and tell them the "
+                                "application holds two.")
+        entry, name = found[0]
+        if entry is not None:
+            cdp.click(entry)
+        _selected.update(name=name, why=f"matched by identifier {ident}")
+        _keep_fact(track, ident, resolve.matched_line(ident, name))
+        forget_failed_search()
+        return True
+    return False
+
+
+def _select_datalist(element, option, ids=None):
+    """
+    A field with a <datalist>: the browser draws its list outside the page, so nothing "appears" to search. Its entries
+    are read through the page instead; the one that is `option` (or the one entry holding one of `ids`, or the one
+    entry whose own name lies within the value) is typed exactly, and the field keeps it. "cdp" when done; None when
+    the field has no datalist. Found live (2026-10-26): searched for "Sales@18%" in such a field, the shorter searches
+    left "Sales@18" in it and the application refused the save.
+    """
+
+    from decurix_agent.computer import resolve
+
+    try:
+        entries = cdp.datalist_options(element)
+    except (ComputerError, KeyError, TypeError):
+        return None
+    if entries is None:
+        return None
+    want = " ".join(option.split()).casefold()
+    pick = None
+    for ident in ids or []:
+        holders = list(dict.fromkeys(e for e in entries if resolve.holds(e, ident)))
+        if len(holders) == 1:
+            pick = holders[0]
+            line = resolve.matched_line(ident, pick)
+            resolve.note(line)
+            _resolved.append(line)
+            break
+        if len(holders) > 1:
+            line = resolve.ambiguous_line(ident, holders)
+            resolve.note(line)
+            _resolved.append(line)
+            raise ComputerError(f"{el.describe(element)}: {len(holders)} entries hold {ident} - " + ", ".join(el._quote(h, 60) for h in holders))
+    if pick is None and ids:
+        # The list shows names only; the identifier was resolved on the application's list page (a resolution fact
+        # names the record): that record's entry is the one. Found live (2026-10-26): the worker asked the picker for
+        # a group it had read off a row and was offered the real ledger.
+        from decurix_agent import task_context
+        for ident in ids:
+            found = resolve.resolution(task_context.current(), ident)
+            if found.get("status") == "matched" and found.get("name"):
+                match = [e for e in entries if " ".join(e.split()).casefold() == " ".join(found["name"].split()).casefold()]
+                if match:
+                    pick = match[0]
+                    _resolved.append(found["line"])
+                    break
+    if pick is None:
+        exact = [e for e in entries if " ".join(e.split()).casefold() == want]
+        pick = exact[0] if exact else None
+    if pick is None:
+        within = [e for e in entries if _named_within(e, option)]
+        if len(within) == 1:
+            pick = within[0]
+    if pick is None:
+        offered = ", ".join(el._quote(e, 50) for e in entries[:OFFERED_SHOWN]) + (f" (+{len(entries) - OFFERED_SHOWN} more)" if len(entries) > OFFERED_SHOWN else "")
+        how = (f" The list shows names, not identifiers: resolve {', '.join(ids)} on the application's own list page "
+               f"first (gui select <its Find field> \"name\" --id {ids[0]}), then choose the record it names here." if ids else
+               " Choose one of them by its exact name if it is the same thing; if none is, ask.")
+        raise ComputerError(f"{el.describe(element)} offers no entry that is {el._quote(option, 60)}. Its entries: "
+                            f"{offered or 'none'}.{how}")
+    cdp.type_text(element, pick)
+    _selected.update(name=pick, why="an entry of the field's own list" if not _resolved else _resolved[-1])
+    return "cdp"
+
+
+def _select_native_by_id(element, option, ids):
+    """
+    In a native <select>, choose the one option whose label holds one of `ids`: "cdp" when chosen. None when the
+    element is no <select> (the drawn list is searched instead) or no label holds any of them (the choice by name
+    follows; the whole list was read, so the fact says none holds it). Two labels holding one identifier are not
+    chosen between.
+    """
+
+    from decurix_agent.computer import resolve
+
+    try:
+        labels = cdp.native_options(element)
+    except (ComputerError, KeyError, TypeError):
+        return None
+    if not labels:
+        return None
+    for ident in ids:
+        holders = [label for label in labels if resolve.holds(label, ident) and not resolve._NOT_A_RECORD.search(label)]
+        names = list(dict.fromkeys(" ".join(label.split()) for label in holders))
+        if not names:
+            continue
+        if len(names) > 1:
+            line = resolve.ambiguous_line(ident, names)
+            resolve.note(line)
+            _resolved.append(line)
+            raise ComputerError(f"{el.describe(element)}: {len(names)} options hold {ident} - "
+                                + ", ".join(el._quote(n, 60) for n in names)
+                                + ". One identifier, two records: none was chosen. Use the one the documents or the "
+                                "person name; when neither does, ask the person which (HELP).")
+        cdp.select_option(element, holders[0])
+        _selected.update(name=names[0], why=f"matched by identifier {ident}")
+        line = resolve.matched_line(ident, names[0])
+        resolve.note(line)
+        _resolved.append(line)
+        return "cdp"
+    for ident in ids:
+        line = resolve.none_line(ident, [ident], [option], labels)
+        resolve.note(line)
+        _resolved.append(line)
+    return None
+
+
+def _select_custom(element, option, ids=None):
+    """
+    Pick `option` in a dropdown a page drew itself (_select_in_list). With `ids` - the identifiers a document gives
+    the record (a tax number, an account number, an email) - the list is searched by them first and an entry whose
+    text holds one is the record whatever its name; what each identifier resolved to is kept as one fact
+    (resolve.py: matched / no record holds it / ambiguous / unanswered), for the engine's summary and for the save
+    gate (_unsearched_record). Found live (2026-10-26, twice): searched by the document's name alone, an existing
+    party was made again.
+    """
+
+    ids = list(dict.fromkeys(" ".join(str(i).split()) for i in (ids or []) if str(i).strip()))
+    _resolved.clear()
+    if not ids:
+        return _select_in_list(element, option, [], None)
+    from decurix_agent.computer import resolve
+
+    track = {"searched": {i: [] for i in ids}, "name_searches": [], "offered": [], "answered": False, "facts": {}}
+
+    def close():
+        for ident in ids:
+            if track["facts"].get(ident) or not track["searched"][ident]:
+                continue  # resolved already, or never searched for: nothing to say about it
+            if track["answered"]:
+                line = resolve.none_line(ident, track["searched"][ident], track["name_searches"], track["offered"])
+            else:
+                line = resolve.unanswered_line(ident, track["searched"][ident], el.describe(element))
+            _keep_fact(track, ident, line)
+
+    try:
+        _select_in_list(element, option, ids, track)
+    except ComputerError as exc:
+        close()
+        if _resolved:
+            raise ComputerError(f"{exc}\n" + "\n".join(_resolved)) from exc
+        raise
+    close()
+
+
+def _select_in_list(element, option, ids, track):
     """
     Pick `option` in a dropdown a page drew itself (no <select>: OrangeHRM's
     "-- Select --", the web app's customer and product fields, most component kits)
@@ -2426,11 +2898,21 @@ def _select_custom(element, option):
         editor = _editor_opened_by(element)
         if editor is not None:
             element = editor
-    searches = _searches(option) if element["role"] in _SEARCHED_ROLES else []
+    from decurix_agent.computer import resolve
+
+    # (search, the identifier it is for or None): the identifiers' searches first, whole to digits, then the name's.
+    searches = [(s, None) for s in _searches(option)] if element["role"] in _SEARCHED_ROLES else []
+    if ids and element["role"] in _SEARCHED_ROLES:
+        searches = [(s, ident) for ident in ids for s in resolve.searches(ident)] + searches
     deadline = time.monotonic() + CUSTOM_OPEN_SECONDS
     seen = []
     # Entries whose own name lies within the value, with the search that showed each.
     within, typed, last_names, typed_at = {}, None, None, 0.0
+    # A page that answers a query once sent (Enter in a search box): found out when typing alone showed nothing.
+    submitted, can_send = False, bool(ids) and element["role"] in _QUERY_ROLES
+    # The page's rows before anything was typed: a list page's search box narrows rows that were there already, so
+    # none of them "appears" - a change in them is the list's answer.
+    rows_before = None
     _selected.update(name=None, why="")
 
     def offered(now):
@@ -2438,12 +2920,41 @@ def _select_custom(element, option):
                 and e.get("source") == "cdp" and e.get("box")
                 and not _NOT_A_CHOICE.match(e.get("name") or "")]
 
+    def entries(now):
+        # Once a query was sent, the page's rows are its answer: they were there before too, so none "appeared".
+        return _row_entries(now) if submitted else offered(now)
+
+    def send(now):
+        # Enter, in a field whose form only asks (cdp.submit_query); then the page's answer. False when not sent.
+        if not cdp.submit_query(element):
+            return False
+        if _wait_page_change({e.get("path") for e in now}) and track is not None:
+            track["answered"] = True
+        return True
+
     while True:
         now = observe()["elements"]
         refresh(now)
-        candidates = offered(now)
+        fresh = [e for e in now if e["path"] not in known and e.get("source") == "cdp" and e.get("box")]
+        if track is not None and fresh and not submitted:
+            track["answered"] = True  # the list answered (entries, or its own "create" or "no results" line)
+        if ids and element["role"] in _QUERY_ROLES:
+            rows = tuple(e.get("name") for e in _row_entries(now))
+            if rows_before is None:
+                rows_before = rows
+            elif track is not None and typed is not None and rows != rows_before:
+                track["answered"] = True  # a list page narrowed its rows to the search: that is its answer
+        candidates = entries(now)
         # Everything any search offered, in order: the engine chooses among real entries when none is the value.
         seen += [n for n in (e.get("name") or "" for e in candidates) if n and n not in seen]
+        if track is not None:
+            track["offered"] = list(seen)
+        # An entry whose text holds the document's identifier is the record, whatever its name (resolve.py). Among
+        # what appeared; or, once a page's search box was typed into or sent, among the whole page: a list page's
+        # rows were there before the search narrowed them, and a row holding the identifier is a record holding it.
+        whole_page = submitted or (typed is not None and element["role"] in _QUERY_ROLES)
+        if ids and _matched_by_identifier(element, now if whole_page else fresh, ids, track):
+            return
         hit = _pick(candidates, option)
         if hit is not None:
             cdp.click(hit)
@@ -2460,10 +2971,28 @@ def _select_custom(element, option):
         settled = typed is not None and names == last_names and time.monotonic() - typed_at >= MIN_LIST_ANSWER
         last_names = names
         if time.monotonic() > deadline or settled:
+            if can_send and typed is not None and not fresh and not submitted:
+                # Typing alone showed nothing: a search box of a page that answers a query once sent. Sent (only a
+                # form that asks, never one that saves), the page after it is the list's answer.
+                can_send = False
+                if send(now):
+                    submitted = True
+                    # Each page load costs seconds: the name is searched for in its most telling forms only - its
+                    # first forms (whole, head, runs from inside it) and its first word, which a list page's search
+                    # finds a trade name's relative by.
+                    by_name = [s for s in searches if not s[1]]
+                    searches = ([s for s in searches if s[1]]
+                                + list(dict.fromkeys(by_name[:MAX_SENT_NAME_SEARCHES - 1] + by_name[-1:])))
+                    deadline, last_names, typed_at = time.monotonic() + CUSTOM_OPTIONS_SECONDS, None, time.monotonic()
+                    continue
             if not searches:
                 break
-            typed = searches.pop(0)
+            typed, ident = searches.pop(0)
+            if track is not None:
+                (track["searched"][ident] if ident else track["name_searches"]).append(typed)
             cdp.type_text(element, typed)
+            if submitted:
+                send(now)
             typed_at = time.monotonic()
             deadline, last_names = typed_at + CUSTOM_OPTIONS_SECONDS, None
         time.sleep(0.3)
@@ -2486,11 +3015,13 @@ def _select_custom(element, option):
         for search in again:
             if search is not None:
                 cdp.type_text(element, search)
+                if submitted:
+                    send(now)
             deadline = time.monotonic() + CUSTOM_OPTIONS_SECONDS + (MIN_LIST_ANSWER if search else 0)
             while True:
                 now = observe()["elements"]
                 refresh(now)
-                entry = next((e for e in offered(now) if e.get("name") == name), None)
+                entry = next((e for e in entries(now) if e.get("name") == name), None)
                 if entry is not None:
                     try:
                         cdp.click(entry)
@@ -2534,6 +3065,13 @@ def _select_custom(element, option):
                             "where the value goes (a row of a table opens its fields when pressed), look at the "
                             "screen, and select in the field that appears, by its ref")
     _note_failed_search(element, option)
+    if element.get("source") == "cdp" and element.get("role") in _SEARCHED_ROLES:
+        # The last, shorter search must not stay in the field (found live, 2026-10-26: "Sales@18" was left where
+        # "Sales@18%" was asked for, and the application refused the save): the value asked for is put back whole.
+        try:
+            cdp.type_text(element, option)
+        except ComputerError:
+            pass
     raise ComputerError(f"{el.describe(element)} showed no options for {option!r}")
 
 
@@ -2678,11 +3216,13 @@ ACTS_ON_CHARS = 600
 
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
         text=None, keys=None, direction=None, amount=None, option=None, append=False, end=None, files=None,
-        see=None, replace_all=False, named=False, keys_from_task=False, cell=None, check_form=False):
+        see=None, replace_all=False, named=False, keys_from_task=False, cell=None, check_form=False, ids=None):
     """
     Do one thing on the screen and report what changed. `end` is the point a
     drag drops at. `see` describes the target in words for the grounding model
     to find on the screen (grounder.py), when nothing in the element list is it.
+    `ids` are the identifiers (a tax number, an account number, an email) a
+    select looks for first: an entry holding one is the record, whatever its name.
 
     Returns a dict: status ("done" | "needs_approval"), text (one
     paragraph for the engine), element, change, observation (the "after"
@@ -2967,13 +3507,13 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             backend = "relayed:block"
         else:
             try:
-                backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files)
+                backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files, ids=ids)
             except ComputerError as exc:
                 again = _redrawn(exc, element, ref, role, name, path)
                 if again is None:
                     raise
                 element = again
-                backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files)
+                backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files, ids=ids)
     except ComputerError as exc:
         entry.update({
             "outcome": "failed",
@@ -3072,6 +3612,9 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         # Which entry was taken is the fact of this action: the record of the task says so.
         entry["summary"] = (f"{described} - took the entry {el._quote(_selected['name'], 90)} for "
                             f"{el._quote(option or '', 90)} - {change_text}")
+    if kind == "select" and _resolved:
+        # What the identifiers resolved to is a fact of this action too (resolve.py).
+        entry["summary"] += " - " + "; ".join(_resolved)
 
     audit.record(entry, before=before["frame"], after=after["frame"] or settled,
                  masks=masks + privacy.secret_boxes(after["elements"]))
@@ -3095,12 +3638,15 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         summary = f"Pressed {' '.join(keys)}" + (f" on {target}" if target else "")
     elif kind == "select":
         summary = f"Selected {el._quote(option or '')} in {target}"
-        if backend == "cdp:custom" and _selected["name"]:
+        if backend in ("cdp", "cdp:custom") and _selected["name"]:
             # Not the text asked for: say which entry it was and why, so the engine and the check can object.
             summary = (f"Selected the entry {el._quote(_selected['name'], 90)} in {target} for "
                        f"{el._quote(option or '', 90)} ({_selected['why']})")
         if backend == "relayed:chosen":
             summary = f"Selected the entry {el._quote(_selected['name'] or '', 90)} in {target}"
+        if _resolved:
+            # The resolution facts, as noted: the engine reads what each identifier resolved to.
+            summary += " - " + "; ".join(_resolved)
     elif kind == "upload":
         files_str = ", ".join(os.path.basename(f) for f in (files or []))
         summary = f"Uploaded {files_str} to {target or 'the file input'}"
@@ -3181,6 +3727,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     if _relayed_page(before) and _saves(kind, element, keys):
         note += _shared_save_note(acted_at)
+    if kind in ("click", "key") and _saved(change_text):
+        note += _ledger_readback(after, change_text)
     if downloads_before is not None:
         note += _downloads_note(downloads_before)
 

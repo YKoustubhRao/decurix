@@ -184,7 +184,10 @@ MAX_LOOK = 2000
 MAX_FIELDS = 8000
 MAX_WORDS = 7000
 # What a page says without it being a field: a saved record shows its rows and totals as plain words.
-READ_ROLES = ("text", "link", "cell", "gridcell", "heading", "status", "alert", "rowheader", "columnheader", "listitem")
+# ("row" and "paragraph" too: a saved record's lines are rows - found live 2026-10-26, the read-back called every line
+# of a saved record absent because the page showed them as rows.)
+READ_ROLES = ("text", "link", "cell", "gridcell", "heading", "status", "alert", "rowheader", "columnheader", "listitem",
+              "row", "paragraph")
 
 
 def words_text(observation, limit=MAX_WORDS):
@@ -335,8 +338,16 @@ def observed(task_id=None):
         after = f" -> {change[:MAX_CHANGE]}{'…' if len(change) > MAX_CHANGE else ''}" if change else ""
         lines.append(f"action: {summary} ({event.get('outcome') or 'done'}){after}")
 
-    return lines + [(text if text.startswith(FILE_READ_LEAD) else "read off the screen: " + text)
-                    for text in _notes(task_id, MAX_OBSERVED)]
+    lines += [(text if text.startswith(FILE_READ_LEAD) else "read off the screen: " + text)
+              for text in _notes(task_id, MAX_OBSERVED)]
+    try:
+        from decurix_agent.computer import records
+        if records.load(task_id):
+            lines += ["the record ledger (declared intents, and what the page showed after each save): "
+                      + " | ".join(records.listing(task_id))]
+    except Exception as exc:  # noqa: BLE001
+        log(f"evidence: could not list the records: {exc}")
+    return lines
 
 
 # How a note of what a tool read from a file begins (office read; tools/office.py), so it is not called a screen read.

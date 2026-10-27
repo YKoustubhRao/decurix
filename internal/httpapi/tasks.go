@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"errors"
+	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -94,12 +96,24 @@ func (s *Server) tasksPageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// taskPageHandler renders one task record: every attempt, step, screenshot and
-// intervention, and the verdict control.
+// taskPageHandler renders one task record (/tasks/<id>): every attempt, step,
+// screenshot and intervention, and the verdict control. /tasks/<id>/trace is
+// the same record as a full trace page and /tasks/<id>/trace.txt as plain
+// text (taskTraceHandler).
 func (s *Server) taskPageHandler(w http.ResponseWriter, r *http.Request) {
-	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/tasks/"), "/")
+	id, rest, _ := strings.Cut(strings.Trim(strings.TrimPrefix(r.URL.Path, "/tasks/"), "/"), "/")
 
 	if !tasks.ValidID(id) {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch rest {
+	case "":
+	case "trace", "trace.txt":
+		s.taskTraceHandler(w, r, id, rest == "trace.txt")
+		return
+	default:
 		http.NotFound(w, r)
 		return
 	}
@@ -123,6 +137,101 @@ func (s *Server) taskPageHandler(w http.ResponseWriter, r *http.Request) {
 	if err := s.Web.RenderTask(w, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// taskTraceHandler renders one task's full trace - /tasks/<id>/trace as a page
+// in the site chrome, /tasks/<id>/trace.txt as plain text for sharing. Both
+// read the task store only, so they are served on both listeners like the
+// task page itself.
+func (s *Server) taskTraceHandler(w http.ResponseWriter, r *http.Request, id string, asText bool) {
+	if !allowMethod(w, r, http.MethodGet) {
+		return
+	}
+
+	detail, err := s.Tasks.Get(id)
+	if errors.Is(err, tasks.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "could not read the task record", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
+
+	if asText {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if r.URL.Query().Get("download") != "" {
+			w.Header().Set("Content-Disposition", `attachment; filename="decurix-trace-`+id+`.txt"`)
+		}
+		_, _ = io.WriteString(w, webui.TraceText(detail))
+		return
+	}
+
+	if err := s.Web.RenderTaskTrace(w, webui.TaskTracePageData{Task: detail}); err != nil {
+		log.Printf("task trace: render: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}
+}
+
+// maxTaskPicks bounds how many of a desktop's tasks its card's dropdown lists.
+const maxTaskPicks = 50
+
+// maxTaskPickIDs bounds one /api/desktops/tasks call, like the activity poll.
+const maxTaskPickIDs = 200
+
+// TaskPick is one entry of a dashboard card's task dropdown.
+type TaskPick struct {
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Request     string    `json:"request"`
+	Status      string    `json:"status"`
+	StatusLabel string    `json:"status_label"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// desktopTasksHandler answers GET /api/desktops/tasks?ids=a,b,c with each
+// named desktop's tasks newest first, keyed by ID - what the dashboard
+// cards' task dropdowns poll, one request for every card.
+func (s *Server) desktopTasksHandler(w http.ResponseWriter, r *http.Request) {
+	if !allowMethod(w, r, http.MethodGet) {
+		return
+	}
+
+	out := map[string][]TaskPick{}
+
+	for i, raw := range strings.Split(r.URL.Query().Get("ids"), ",") {
+		if i >= maxTaskPickIDs {
+			break
+		}
+
+		id := desktop.SanitizeID(strings.TrimSpace(raw))
+		if id == "" {
+			continue
+		}
+
+		list, err := s.Tasks.RecentForWorker(id, maxTaskPicks)
+		if err != nil {
+			jsonError(w, err)
+			return
+		}
+
+		picks := make([]TaskPick, 0, len(list))
+		for _, t := range list {
+			picks = append(picks, TaskPick{
+				ID:          t.ID,
+				Title:       tasks.ShortTitle(t.Request, webui.ShortTitleRunes),
+				Request:     t.Request,
+				Status:      t.Status,
+				StatusLabel: tasks.StatusLabel(t.Status),
+				CreatedAt:   t.CreatedAt,
+			})
+		}
+		out[id] = picks
+	}
+
+	jsonResponse(w, out)
 }
 
 // tasksAPIHandler lists task summaries as JSON, filtered by ?days=, ?worker=,
