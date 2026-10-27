@@ -148,7 +148,7 @@ func (o *OllamaProvider) Chat(ctx context.Context, model string, messages []Mess
 
 	msgs := make([]ollamaMessage, len(messages))
 	for i, m := range messages {
-		msgs[i] = ollamaMessage{Role: m.Role, Content: m.LabelledContent(), Images: base64All(m.Images)}
+		msgs[i] = ollamaMessage{Role: m.Role, Content: m.LabelledContent(), Images: base64All(onlyPictures(m.Images))}
 	}
 
 	// 8192 stays the default for ordinary calls; a caller that genuinely

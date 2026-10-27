@@ -28,8 +28,32 @@ ENGINE = "replay"
 COMMAND_RE = re.compile(r"^/replay\s+(\S+)(.*)$", re.DOTALL)
 OPTION_RE = re.compile(r"""([A-Za-z_]\w*)=(?:"([^"]*)"|'([^']*)'|(\S+))""")
 
-# A reply that stops a replay paused on a step a person had to do by hand.
+# A reply that stops a replay paused on a step a person had to do by hand (kept for its plain words; what a reply
+# decides is read by by_hand_choice).
 STOP_RE = re.compile(r"^\s*(no\b|stop|cancel|abort|don'?t|do not|never ?mind)", re.IGNORECASE)
+
+# What a reply to "do this step by hand, then tell me" decides, read once (approval.read_choice). The word list above
+# read "no problem, done" and "don't worry, logged in, carry on" as stop, and "not yet, the code hasn't come" as done
+# (audit, 2026-10-24). Code decides only a reply that is, whole, one of these phrases.
+BY_HAND_CHOICES = {
+    "done": "they did the step, so the replay goes on",
+    "not_done": "the step is not done yet, or could not be done - the replay must wait",
+    "stop": "stop the replay here",
+}
+BY_HAND_PLAIN = {
+    "done": ["done", "it's done", "its done", "it is done", "all done", "did it", "i did it", "done it", "ok", "okay",
+             "yes", "carry on", "continue", "go on", "go ahead", "proceed", "resume", "finished", "next"],
+    "stop": ["no", "stop", "stop it", "stop the replay", "cancel", "cancel it", "abort", "don't", "do not", "quit",
+             "never mind", "nevermind"],
+    "not_done": ["not yet", "wait", "not done", "not done yet", "hold on", "one minute", "give me a minute"],
+}
+
+
+def by_hand_choice(reply, asked=""):
+    """What a reply to a step a person was asked to do by hand decides: {"choice": done|not_done|stop|unclear, ...}."""
+
+    return approval.read_choice(reply, asked or "Do this step by hand on the screen, then tell me to carry on.",
+                                BY_HAND_CHOICES, BY_HAND_PLAIN)
 
 _held = {}
 _held_lock = threading.Lock()
@@ -110,6 +134,7 @@ def _run(program, params, start):
             "outcome": result["outcome"],
             "step": result["step"],
             "resume_from": result["resume_from"],
+            "text": result["text"],
         }
         kind = "approval" if result["outcome"] == replay.NEEDS_APPROVAL else "query"
         ask_for_query(result["text"], kind=kind, engine=ENGINE)
@@ -143,9 +168,17 @@ def resume(reply, approval_outcome=None):
         return
 
     if paused["outcome"] == replay.NEEDS_APPROVAL:
-        stop = approval_outcome == "declined" or (approval_outcome is None and not approval.is_approval(reply))
+        stop = approval_outcome == "declined" or (approval_outcome is None and not approval.says_yes(reply))
     else:
-        stop = bool(STOP_RE.match(reply or ""))
+        said = by_hand_choice(reply, paused.get("text") or "")
+        if said["choice"] not in ("done", "stop"):
+            # Not done yet, or not to be told: the replay waits on the same step and the person is asked again - a step
+            # nobody did is never carried on from.
+            state.paused_replay = paused
+            ask_for_query("I will carry on once that step is done - tell me when it is, or say stop."
+                          + (f"\n\n{paused['text']}" if paused.get("text") else ""), kind="query", engine=ENGINE)
+            return
+        stop = said["choice"] == "stop"
 
     if stop:
         write_final_reply(

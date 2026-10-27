@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from pathlib import Path
 
@@ -183,7 +184,10 @@ MAX_LOOK = 2000
 MAX_FIELDS = 8000
 MAX_WORDS = 7000
 # What a page says without it being a field: a saved record shows its rows and totals as plain words.
-READ_ROLES = ("text", "link", "cell", "gridcell", "heading", "status", "alert", "rowheader", "columnheader", "listitem")
+# ("row" and "paragraph" too: a saved record's lines are rows - found live 2026-10-26, the read-back called every line
+# of a saved record absent because the page showed them as rows.)
+READ_ROLES = ("text", "link", "cell", "gridcell", "heading", "status", "alert", "rowheader", "columnheader", "listitem",
+              "row", "paragraph")
 
 
 def words_text(observation, limit=MAX_WORDS):
@@ -236,14 +240,14 @@ def note_look(shown, observation=None):
         except Exception as exc:
             log(f"evidence: could not list the fields of a look: {exc}")
     if (shown and shown.strip()) or held or words:
-        note("a look at the screen then. What every field of the page held (in view or not):\n" + (held or "(none)")
+        note(LOOK_LEAD + ". What every field of the page held (in view or not):\n" + (held or "(none)")
              + "\nThe words the page showed outside its fields, in its order (in view or not):\n" + (words or "(none)")
              + "\nThe part in view, as the tool listed it:\n" + (shown or "").strip()[:MAX_LOOK])
 
 
 def _prune():
     cutoff = time.time() - NOTES_KEEP_SECONDS
-    for path in NOTES_DIR.glob("*.jsonl"):
+    for path in list(NOTES_DIR.glob("*.jsonl")) + list(NOTES_DIR.glob("*.files")) + list(NOTES_DIR.glob("*.outputs")):
         try:
             if path.stat().st_mtime < cutoff:
                 path.unlink()
@@ -290,6 +294,16 @@ def read(task_id=None):
     return "\n".join(_notes(task_id)) if task_id else ""
 
 
+LOOK_LEAD = "a look at the screen then"
+
+
+def looks(task_id=None):
+    """The task's looks at the screen as noted (note_look), oldest first: what the pages showed, never a file read."""
+
+    task_id = task_id or task_context.current()
+    return [text for text in _notes(task_id) if text.startswith(LOOK_LEAD)] if task_id else []
+
+
 def _notes(task_id, last=None):
     """The texts noted for a task, oldest first: of its `last` lines only, when given."""
 
@@ -324,4 +338,53 @@ def observed(task_id=None):
         after = f" -> {change[:MAX_CHANGE]}{'…' if len(change) > MAX_CHANGE else ''}" if change else ""
         lines.append(f"action: {summary} ({event.get('outcome') or 'done'}){after}")
 
-    return lines + ["read off the screen: " + text for text in _notes(task_id, MAX_OBSERVED)]
+    lines += [(text if text.startswith(FILE_READ_LEAD) else "read off the screen: " + text)
+              for text in _notes(task_id, MAX_OBSERVED)]
+    try:
+        from decurix_agent.computer import records
+        if records.load(task_id):
+            lines += ["the record ledger (declared intents, and what the page showed after each save): "
+                      + " | ".join(records.listing(task_id))]
+    except Exception as exc:  # noqa: BLE001
+        log(f"evidence: could not list the records: {exc}")
+    return lines
+
+
+# How a note of what a tool read from a file begins (office read; tools/office.py), so it is not called a screen read.
+FILE_READ_LEAD = "read from the file "
+
+
+def note_file_read(path):
+    """Keep the path of a file a tool read for the current task (office read). Never raises."""
+
+    task_id = task_context.current()
+    if not task_id or not path:
+        return
+    try:
+        NOTES_DIR.mkdir(parents=True, exist_ok=True)
+        with open(NOTES_DIR / f"{task_id}.files", "a", encoding="utf-8") as f:
+            f.write(str(path).replace("\n", " ") + "\n")
+    except OSError as exc:
+        log(f"evidence: could not keep a file read: {exc}")
+
+
+def files_read(task_id=None):
+    """The files the tools read during a task that are still there, oldest first. Found live (2026-10-21):
+    the invoice numbers and amounts typed into a portal were read from the client's workbook in the person's folder,
+    which the request did not name by file, and the check that a typed fact has a source called them invented."""
+
+    task_id = task_id or task_context.current()
+    if not task_id:
+        return []
+    try:
+        lines = (NOTES_DIR / f"{task_id}.files").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in dict.fromkeys(x.strip() for x in lines if x.strip()):
+        try:
+            if os.path.isfile(line):
+                out.append(line)
+        except OSError:
+            continue
+    return out[-60:]

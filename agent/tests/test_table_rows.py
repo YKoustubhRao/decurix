@@ -55,6 +55,14 @@ class WhichRow(unittest.TestCase):
         self.assertEqual(el.describe(quantity), 'textbox "Quantity" in row 3 (e7)')
         self.assertEqual(el.element_line(quantity), 'e7 textbox "Quantity" [row 3, focused]')
 
+    def test_a_table_rows_cells_are_shown_to_its_last_column(self):
+        # Found live (2026-10-25): a summary's row cut at 80 characters showed neither of its tax columns.
+        cells = "B2B Invoices | 4 | 259,272.00 | 219,722.46 | 0.00 | 19,775.02 | 19,775.02 | 0.00"
+        row = {"role": "row", "name": cells, "ref": "e9", "states": []}
+        self.assertEqual(el.element_line(row), f'e9 row "{cells}"')
+        button = {"role": "button", "name": "x" * 120, "ref": "e10", "states": []}
+        self.assertLess(len(el.element_line(button)), 100)   # other names keep their short form
+
 
 class AppsOnTheDesktop(unittest.TestCase):
     def render(self, apps):

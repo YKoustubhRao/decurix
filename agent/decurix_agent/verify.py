@@ -176,9 +176,12 @@ def not_found_undone(undone):
 
 # A sum written out in a report: "450.00 + 90.00 + 102.60 = 642.60", "$1,200 - 150 = $1,050", "3 x 25.00 = 75.00".
 _AMOUNT = r"(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d+(?:\.\d+)?"
-_SUM = re.compile(rf"(?<![\w.,/-])((?:{_AMOUNT})(?:\s*[-+×x*@]\s*(?:{_AMOUNT}))+)\s*=\s*({_AMOUNT})(?![\w%/.]|,\d)", re.I)
+# An operator stands on the same line as its terms: a dash that opens the next line is a bullet, not a minus. Found
+# live (2026-10-27): "... 56,994.00\n- 1191 = 55,802.60" (a list of vouchers and their totals) was read as
+# 56,994.00 - 1191 = 55,802.60, "a sum you wrote is wrong", and the worker undid right work.
+_SUM = re.compile(rf"(?<![\w.,/-])((?:{_AMOUNT})(?:[ \t]*[-+×x*@][ \t]*(?:{_AMOUNT}))+)[ \t]*=[ \t]*({_AMOUNT})(?![\w%/.]|,\d)", re.I)
 # One token of a written sum: an amount (with its currency) or an operator; a product's "x", "×", "*" or "@".
-_SUM_TOKEN = re.compile(rf"\s*(?:({_AMOUNT})|([-+×x*@]))", re.I)
+_SUM_TOKEN = re.compile(rf"[ \t]*(?:({_AMOUNT})|([-+×x*@]))", re.I)
 
 
 def _sum_terms(left):
@@ -211,7 +214,7 @@ def _amount(text):
 # One item of a priced list: "40 @ 175.75", "24 x 149", "30 × Rs 95".
 _ITEM = re.compile(r"(?<![\w.,])(\d(?:[\d,]*\d)?(?:\.\d+)?)\s*(?:@|×|x|\*)\s*(?:Rs\.?\s*|₹\s*|INR\s*|USD\s*|\$\s*)?"
                    r"(\d(?:[\d,]*\d)?(?:\.\d+)?)(?![\d])", re.I)
-# A stated total tied to the items that follow it: "should total 13129.00 ex GST from ...", "totals Rs 500 for: ...".
+# A stated total tied to the items that follow it: "should total 13129.00 ex tax from ...", "totals Rs 500 for: ...".
 _TOTAL_OF = re.compile(r"(?i)\btotal(?:s|led|ling)?\b(?:\s+(?:of|is|to|would be|should be|comes to))?\s+"
                        r"(?:Rs\.?\s*|₹\s*|INR\s*|USD\s*|\$\s*)?(\d(?:[\d,]*\d)?(?:\.\d+)?)([^.\n]{0,40}?)\s(?:from|for|of|over)\b:?")
 _TAX_RATE = re.compile(r"(\d{1,2}(?:\.\d+)?)\s*%")
@@ -220,7 +223,7 @@ _TAX_RATE = re.compile(r"(\d{1,2}(?:\.\d+)?)\s*%")
 def false_item_totals(text):
     """
     Each stated total of a list of "qty @ rate" items that the items do not come to, as a sentence. Found live
-    (2026-10-20, P2): a stage told the person a saved order was wrong because the lines "should total 13129.00 ex GST
+    (2026-10-20, P2): a stage told the person a saved order was wrong because the lines "should total 13129.00 ex tax
     from WB-500 40 @ 175.75, MUG-12 24 @ 149, NB-A5 30 @ 95" - they come to 13,456.00, the record's own total. A total
     stated with a tax rate nearby may be with or without it.
     """

@@ -204,6 +204,77 @@ func TestRenderEveryPage(t *testing.T) {
 		t.Fatalf("RenderTask: %v", err)
 	}
 
+	// The trace page, from the same record plus a long output step (folded)
+	// and an answered query: the request, every step with its number and
+	// kind, the question and its answer, the final report and the copy/
+	// download tools must all be there.
+	traceDetail := detail.Task
+	longOutput := "Output: line 1\n" + strings.Repeat("more\n", 12)
+	traceDetail.Executions[1].Steps = append(traceDetail.Executions[1].Steps,
+		tasks.Step{Text: longOutput, CreatedAt: now.Add(3 * time.Second)},
+		tasks.Step{Text: "Final check: judged done", CreatedAt: now.Add(4 * time.Second)},
+	)
+	traceDetail.Executions[1].Interventions = append(traceDetail.Executions[1].Interventions,
+		tasks.Intervention{Kind: tasks.InterventionQuery, Reason: tasks.ReasonCredentials, Request: "Which account?", Reply: "The second one", RequestedAt: now.Add(5 * time.Second), RepliedAt: now.Add(6 * time.Second)},
+	)
+	traceDetail.Executions[1].FinalReply = "Paid INV-1042."
+	traceDetail.Verdict, traceDetail.VerdictNote, traceDetail.VerdictAt = tasks.VerdictWrong, "wrong account", now
+
+	var trace bytes.Buffer
+	if err := renderer.RenderTaskTrace(&trace, TaskTracePageData{Task: traceDetail}); err != nil {
+		t.Fatalf("RenderTaskTrace: %v", err)
+	}
+	for _, want := range []string{
+		"pay invoice", "#1", "#4", `class="step kind-command"`, `class="step kind-screen"`, `class="step kind-output"`,
+		`<details class="fold">`, "13 lines · show all", "Which account?", "The second one", "Approval needed",
+		"Paid INV-1042.", "timed out", `href="/tasks/t0123456789abcdef/trace.txt?download=1"`, "data-copy-trace",
+		"Verdict: <b class=\"wrong\">wrong</b>", "wrong account", `href="/tasks/t0123456789abcdef"`,
+	} {
+		if !strings.Contains(trace.String(), want) {
+			t.Errorf("the trace page is missing %q", want)
+		}
+	}
+
+	// The plain-text trace holds the same, in order, as one shareable file.
+	text := TraceText(traceDetail)
+	for _, want := range []string{
+		"Task t0123456789abcdef", "Request:\npay invoice", "==== Attempt 1: Failed", "==== Attempt 2: Waiting",
+		"[1] ", "[4] ", "Command\n    $ ls", "Screen\n    click Pay now", "action: click -> needs_approval; reason: payment",
+		"[?] ", "Approval asked", "Query asked (", "    Which account?", "Reply at", "    The second one", "(no reply yet)",
+		"Final report (Waiting on you) --\nPaid INV-1042.", "Verdict: wrong", "Verdict note: wrong account", "Tokens: 900 in / — out", "Cost: $0.12",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the plain-text trace is missing %q in:\n%s", want, text)
+		}
+	}
+	if idx := strings.Index(text, "[?] "); idx < 0 || idx < strings.Index(text, "[2] ") {
+		t.Error("the plain-text trace does not keep the steps and the question in time order")
+	}
+
+	// The dashboard card lists the desktop's tasks newest first and links the
+	// Trace button to the first; a desktop with none says so, disabled.
+	page.TasksByDesktop = map[string][]tasks.Task{
+		running.ID: {
+			{ID: "t1111111111111111", Request: strings.Repeat("a very long request ", 10), Status: tasks.StatusRunning, CreatedAt: now},
+			{ID: "t2222222222222222", Request: "older task", Status: tasks.StatusDone, CreatedAt: now.Add(-time.Hour)},
+		},
+	}
+	index.Reset()
+	if err := renderer.RenderIndex(&index, page); err != nil {
+		t.Fatalf("RenderIndex with tasks: %v", err)
+	}
+	for _, want := range []string{
+		`data-task-pick="research-box"`, `href="/tasks/t1111111111111111/trace"`, `<option value="t2222222222222222">older task · Done · `,
+		`data-task-pick="spare-box"`, `<option value="">No tasks yet</option>`, "/api/desktops/tasks?",
+	} {
+		if !strings.Contains(index.String(), want) {
+			t.Errorf("the dashboard lacks %q", want)
+		}
+	}
+	if strings.Contains(index.String(), strings.Repeat("a very long request ", 10)) {
+		t.Error("the task dropdown shows the whole request instead of a short title")
+	}
+
 	// Both branches of the desktop view: a running desktop renders the chat
 	// and its screen, a stopped one renders only the "start it first" state.
 	for _, d := range []desktop.Desktop{running, stopped} {

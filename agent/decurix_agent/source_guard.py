@@ -23,7 +23,7 @@ import shutil
 import time
 from pathlib import Path
 
-from decurix_agent import attachments, config, shared
+from decurix_agent import attachments, config, shared, task_context
 from decurix_agent.logging_utils import log
 
 HASH_MAX = 64 * 1024 * 1024      # files larger than this are compared by size and time only
@@ -111,10 +111,14 @@ def take(request, task_id, notify=None):
             if entry["size"] <= HASH_MAX:
                 entry["sha256"] = _digest(local)
             if entry["size"] <= COPY_MAX and entry["size"] <= budget:
-                target = folder / "files" / rel
+                # Kept under a number, not the person's name and folders: found live (2026-10-21), an
+                # engine searching the desktop for the client's workbook by name found this copy and worked on it.
+                # The manifest says which file each copy is.
+                kept = f"{len([e for e in files.values() if e.get('copy')]) + 1:05d}{Path(rel).suffix.lower()}"
+                target = folder / "files" / kept
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(local, target)
-                entry["copy"] = rel
+                entry["copy"] = kept
                 budget -= entry["size"]
             elif entry["named"]:
                 skipped.append(rel)
@@ -294,6 +298,19 @@ def resaved(task_id, request):
     return _compare(task_id, request)[1]
 
 
+def before_copy(path, task_id=None):
+    """The copy of a file of the shared folder as it was before the task began (take), or None when none was kept."""
+
+    task_id = task_id or task_context.current()
+    rel = _rel(path)
+    found = manifest(task_id) if task_id and rel else None
+    copy = ((found or {}).get("files") or {}).get(rel, {}).get("copy")
+    if not copy:
+        return None
+    kept = _folder(task_id) / "files" / copy
+    return kept if kept.is_file() else None
+
+
 def kept_name(target):
     """Where the worker's version of a restored file is kept, beside it: "<name> (changed by worker)<ext>" - one fixed
     name, holding the worker's latest version, so the finding that names it reads the same on every attempt (a
@@ -323,10 +340,10 @@ def restore(task_id, rels, kept=None):
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():
                 beside = kept_name(target)
-                shutil.copy2(target, beside)
+                shared.copy_file(target, beside)
                 if kept is not None:
                     kept[rel] = str(beside)
-            shutil.copy2(folder / entry["copy"], target)
+            shared.copy_file(folder / entry["copy"], target)
             done.append(rel)
         except OSError as exc:
             failed.append((rel, f"it could not be written ({exc.strerror or exc}) - close it in the app that has it open"))
@@ -338,7 +355,13 @@ def is_source(path, task_id, request):
 
     data = manifest(task_id)
     rel = _rel(path)
-    return bool(data and rel and rel in data["files"] and not may_change(Path(rel).name, request))
+    if not (data and rel and rel in data["files"]) or may_change(Path(rel).name, request):
+        return False
+    # The same files the guard puts back (_compare): those the request gives. A file of the folder it does not give,
+    # that the work changed, is the work's - found live (2026-10-22): "bring the computation workbook
+    # up to date" names it by what it is, so it was neither guarded nor checked, and the final check, shown none of it,
+    # could not see the ARNs the work had written into it and asked three times.
+    return rel in given(request) or Path(rel).name.lower() in _names(request)
 
 
 def made_by_task(path, task_id=None, request=None):

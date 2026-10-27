@@ -1,0 +1,6 @@
+# OCR for brainiac_worker.py: RapidOCR 3 on ONNX Runtime, no torch.
+# The rapidocr wheel ships its default models (PP-OCRv6 small det/rec, mobile
+# cls), so nothing is downloaded when the engine starts. Both packages have
+# wheels for Python 3.11-3.14 on Windows, Linux x86_64 and macOS.
+rapidocr==3.10.0
+onnxruntime==1.31.0

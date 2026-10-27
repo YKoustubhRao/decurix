@@ -420,19 +420,19 @@ def _viewport(metrics):
     (origin_x, origin_y, dpr): where the page's top-left corner is on the
     screen, in screen pixels, and how many screen pixels one CSS pixel is.
 
-    On a Linux desktop the browser has no borders of its own and a CSS pixel
-    is a screen pixel, so the window's position plus the height of its bars is
-    the answer. On Windows neither holds - measured in Edge at 125% scaling: a
-    box at CSS (200, 100) was drawn at screen (277, 238), where that sum, even
-    scaled, said (291, 251): the window's invisible borders are on three sides
-    and the page reports rounded CSS pixels. The browser's own content window
-    says exactly where the page is, so that is asked instead (win.py); the
-    arithmetic is only the fallback, with the border taken off the bottom too.
+    On a desktop the browser has no borders of its own, so the window's
+    position plus the height of its bars is the answer. The window's outer
+    size and position are screen pixels, but its inner size is CSS pixels,
+    which a person's browser zoom changes: at 75% the page is 1707 CSS pixels
+    wide in a 1280 pixel window. So the inner size is turned into screen
+    pixels (times dpr, which carries the zoom) before the bars are worked out.
+    Found 2026-10-21: after ctrl+minus three times every box was reported 427
+    pixels left and 200 up of where it was drawn (some off the screen).
     """
 
     dpr = metrics["dpr"] or 1
-    side = metrics["ow"] - metrics["iw"]
-    bars = metrics["oh"] - metrics["ih"]
+    side = max(0, round(metrics["ow"] - metrics["iw"] * dpr))
+    bars = max(0, round(metrics["oh"] - metrics["ih"] * dpr))
 
     return metrics["sx"] + side, metrics["sy"] + bars, dpr
 
@@ -911,15 +911,20 @@ def observe():
         "source": "cdp",
     }
 
-    def text_of(node, depth=0):
+    def text_of(node, depth=0, links=False):
         """
         The plain text beneath a node, for rows and paragraphs - leaving out
         links, buttons and fields, which are listed as elements of their own.
+        With `links`, a link's text is kept: a table's row reads as all its
+        cells, the one that is a link included (found live 2026-10-26: a
+        ledger's row read without its name, and the group was taken for it).
         """
         if depth > 8:
             return ""
         role = ((node.get("role") or {}).get("value", "") or "").lower()
         if depth > 0 and role in INTERACTIVE:
+            if links and role == "link":
+                return " ".join(((node.get("name") or {}).get("value", "") or "").split())
             return ""
         name = (node.get("name") or {}).get("value", "") or ""
         if role in ("statictext", "inlinetextbox"):
@@ -928,7 +933,7 @@ def observe():
         for child_id in node.get("childIds", []):
             child = by_id.get(child_id)
             if child:
-                text = text_of(child, depth + 1)
+                text = text_of(child, depth + 1, links)
                 if text:
                     parts.append(text)
         return " ".join(parts)
@@ -939,7 +944,11 @@ def observe():
             child = by_id.get(child_id)
             if child is None:
                 continue
-            text = text_of(child, 1) if ((child.get("role") or {}).get("value", "").lower() not in INTERACTIVE) else ""
+            child_role = (child.get("role") or {}).get("value", "").lower()
+            if child_role == "link":
+                text = text_of(child, 1, links=True)
+            else:
+                text = text_of(child, 1, links=True) if child_role not in INTERACTIVE else ""
             if text:
                 texts.append(text)
         return texts
@@ -1959,6 +1968,78 @@ def close_list(element):
         page.close()
 
 
+def submit_query(element):
+    """
+    Press Enter in a field whose form only asks the page something - a form sent by GET (a search, a filter), or a
+    search box outside any form - and return True. A field of a form that would change something (sent by POST) is
+    never submitted this way: False, nothing pressed. False too when the field cannot be read.
+    """
+
+    try:
+        page = _page_for(element)
+    except (ComputerError, KeyError, TypeError):
+        return False
+    try:
+        object_id = _object(page, element["handle"]["backend_id"])
+        asks = page.call("Runtime.callFunctionOn", {
+            "objectId": object_id,
+            "returnByValue": True,
+            "functionDeclaration": """function() {
+                const f = this.form;
+                if (!f) { return (this.type || '').toLowerCase() === 'search'; }
+                return (f.getAttribute('method') || 'get').toLowerCase() === 'get';
+            }""",
+        }).get("result", {}).get("value")
+        if asks is not True:
+            return False
+        page.call("DOM.focus", {"backendNodeId": element["handle"]["backend_id"]})
+        press_key(page, "Enter")
+        return True
+    except (ComputerError, KeyError, TypeError):
+        return False
+    finally:
+        page.close()
+
+
+def native_options(element):
+    """The options of a native drop-down (<select>) as its labels, or None when the element is not one - a list that
+    opens in the page (its entries then become elements of their own) is not."""
+    page = _page_for(element)
+    try:
+        object_id = _object(page, element["handle"]["backend_id"])
+        result = page.call("Runtime.callFunctionOn", {
+            "objectId": object_id,
+            "returnByValue": True,
+            "functionDeclaration": """function() {
+                if (this.tagName !== 'SELECT' || !this.options) { return null; }
+                return Array.from(this.options).map(o => o.label.trim()).filter(Boolean);
+            }""",
+        }).get("result", {}).get("value")
+    finally:
+        page.close()
+    return result if isinstance(result, list) else None
+
+
+def datalist_options(element):
+    """The entries of a field's <datalist> (an <input list=...>: a list the browser draws itself, outside the page's
+    tree), as their values, or None when the field has none."""
+    page = _page_for(element)
+    try:
+        object_id = _object(page, element["handle"]["backend_id"])
+        result = page.call("Runtime.callFunctionOn", {
+            "objectId": object_id,
+            "returnByValue": True,
+            "functionDeclaration": """function() {
+                const l = this.list;
+                if (!l || !l.options) { return null; }
+                return Array.from(l.options).map(o => (o.value || o.label || o.textContent || '').trim()).filter(Boolean);
+            }""",
+        }).get("result", {}).get("value")
+    finally:
+        page.close()
+    return result if isinstance(result, list) else None
+
+
 def select_option(element, option):
     page = _page_for(element)
 
@@ -1998,9 +2079,15 @@ def select_option(element, option):
                     || within()
                     || allWords();
                 if (!hit) { return {ok: false, options: options.map(o => o.label)}; }
+                // A list a click opened keeps its own highlighted entry: set underneath it, the value is undone by
+                // the Return that closes it - found live (2026-10-22), "29-Karnataka" went back to
+                // "Select" at the taught Return. Losing focus closes the list; focus comes back after.
+                const focused = document.activeElement === this;
+                if (focused) { this.blur(); }
                 this.value = hit.value;
                 this.dispatchEvent(new Event('input', {bubbles: true}));
                 this.dispatchEvent(new Event('change', {bubbles: true}));
+                if (focused) { this.focus(); }
                 return {ok: true, label: hit.label};
             }""",
             "arguments": [{"value": option}],

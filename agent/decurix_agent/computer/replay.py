@@ -447,6 +447,91 @@ def mine_checks(expect, reference=None):
     return checks
 
 
+# The roles a field one types a secret into is listed with.
+SECRET_TYPING_ROLES = {"textbox", "password", "password text", "entry", "spinbutton", "combobox", "searchbox"}
+
+
+def _same_field(element, target):
+    """Whether a field on the screen is the one a recorded step targets (by its path, else by its role and name)."""
+
+    if not target:
+        return False
+    if target.get("path") and element.get("path") == target["path"]:
+        return True
+    return bool(target.get("name")) and element.get("name") == target["name"] and \
+        (not target.get("role") or element.get("role") == target["role"])
+
+
+def _empty_secret_fields(by_hand=None, later=()):
+    """
+    The secret fields (passwords, codes) a step done by hand should have filled that still hold nothing; [] when none,
+    or the screen cannot be read. Only a visible field of the window in front, whose value the screen reads (None is a
+    value nobody could read - an app read by vision), that no later recorded step fills itself (an OTP the next step
+    types); the step's own recorded field when it has one. Independent review (2026-10-22): an empty hidden field, one
+    of another window, or one read as None stopped every resume for ever.
+    """
+
+    try:
+        observation = core.observe()
+    except Exception as exc:  # noqa: BLE001 - a screen that cannot be looked at decides nothing
+        log(f"replay: could not look at the screen after a step done by hand: {exc}")
+        return []
+    active = observation.get("active_title") or ""
+    own = (by_hand or {}).get("target")
+    own = own if isinstance(own, dict) else None
+    filled_later = [s["target"] for s in later or () if isinstance(s.get("target"), dict)]
+    out = []
+    for e in observation.get("elements") or []:
+        if not (privacy.secret_field(e) and e.get("role") in SECRET_TYPING_ROLES):
+            continue
+        if e.get("value") is None or str(e.get("value")).strip():
+            continue
+        if "offscreen" in (e.get("states") or []) or (e.get("window_title") or active) != active:
+            continue
+        box = e.get("box") or []
+        if len(box) == 4 and (not box[2] or not box[3]):
+            continue  # (a hidden input: no size on the screen)
+        if own and not _same_field(e, own):
+            continue
+        if any(_same_field(e, t) for t in filled_later):
+            continue
+        out.append(e)
+    return out
+
+
+# The steps done by hand the replay already stopped at once for an empty field, by (recording, step): the next resume
+# of the same step goes on, and the steps after it show whether it was done.
+_by_hand_asked = set()
+
+
+def _open_where_it_began(first):
+    """
+    A recording that began on a web page begins by being on it: when its first step is on a page no tab is showing,
+    that page is opened (the same as `gui open URL`), and a sentence says so; "" otherwise. Found live
+    (2026-10-21): the person had opened the portal before pressing Record, the replay stopped at step 1 ("Username" is
+    not on the screen), and the engine then opened a real site of the same name from its own memory. Only a page of
+    the browser, only for the first step, never for a step recorded on a desktop app.
+    """
+
+    url = first.get("url") or ""
+    shape = url_shape(url)
+    if not shape or first.get("kind") == "open" or (first.get("target") or {}).get("source") not in (None, "cdp"):
+        return ""
+    try:
+        seen = core.observe(remember=False)
+    except Exception:  # noqa: BLE001 - a screen that cannot be looked at decides nothing: the step halts as before
+        return ""
+    if any(url_shape(g.get("url")) == shape for g in seen.get("groups") or []):
+        return ""
+    try:
+        core.open_target(url)
+    except ComputerError as exc:
+        return f"Could not open {url}, where the recording began: {exc}"
+    except Exception:  # noqa: BLE001 - nothing opened: the step halts as before
+        return ""
+    return f"Opened {url}, where the recording began."
+
+
 def url_shape(url):
     """A URL as a replay compares it: origin and path, id-like path segments as '*'."""
 
@@ -1473,6 +1558,28 @@ def run(program, params=None, start=1, report=None, ladder=None):
         first = next(s for s in steps if s["n"] == param["step"])
         return finish(HALTED_BEFORE_EFFECT, first, resume_from=start,
                       reason=f"the value for {param['label']} ({param['name']}) is wrong: {why}")
+
+    if start == 1:
+        opened = _open_where_it_began(steps[0])
+        if opened:
+            report(opened)
+
+    # Carrying on right after a step done by hand: it was done only if the screen shows it. Found live
+    # (2026-10-22): told "use your judgement" at "type the client's portal password", the engine carried on from the
+    # next step with the password field empty; the login failed and it went looking for the portal elsewhere.
+    # It stops once per such step: told again that it is done, the run goes on (a field the app empties after reading it
+    # would otherwise stop every resume for ever).
+    by_hand = next((s for s in steps if s["n"] == start - 1 and s["kind"] == "manual"), None)
+    asked_key = (program.get("session") or program.get("title") or "", by_hand["n"]) if by_hand is not None else None
+    if asked_key in _by_hand_asked:
+        _by_hand_asked.discard(asked_key)
+    elif by_hand is not None:
+        empty = _empty_secret_fields(by_hand, [s for s in steps if s["n"] >= start])
+        if empty:
+            _by_hand_asked.add(asked_key)
+            return finish(NEEDS_HUMAN, by_hand, resume_from=start,
+                          reason=f"{by_hand.get('reason') or 'the private step'} - it has not been done yet: "
+                                 f"{el.describe(empty[0])} on the screen is still empty")
 
     _fit_screen([s for s in steps if s["n"] >= start], report)
     changed_at = _first_change(program, values)

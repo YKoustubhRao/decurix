@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Trace · Decurix</title>
+
+{{template "theme"}}
+
+<style>
+.back{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--text-2);margin-bottom:16px}
+.back svg{transform:rotate(90deg)}
+.back:hover{color:var(--text)}
+
+.task-head h1{font-size:19px;line-height:1.4;overflow-wrap:anywhere;white-space:pre-wrap}
+.meta{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px;margin-top:10px;font-size:12.5px;color:var(--text-2)}
+.meta b{color:var(--text);font-weight:600}
+.meta .mono{font-family:var(--mono);font-size:11.5px}
+
+.tstatus{
+  display:inline-flex;align-items:center;gap:5px;height:21px;padding:0 8px;border-radius:999px;
+  font-size:11.5px;font-weight:600;white-space:nowrap;
+  background:var(--idle-soft);color:var(--text-2)
+}
+.tstatus.done{background:var(--live-soft);color:var(--live)}
+.tstatus.waiting,.tstatus.query{background:var(--accent-soft);color:var(--accent)}
+.tstatus.error,.tstatus.abandoned{background:var(--danger-soft);color:var(--danger)}
+
+.verdict{margin-top:8px;font-size:12.5px;color:var(--text-2)}
+.verdict b.correct{color:var(--live)}
+.verdict b.wrong{color:var(--danger)}
+.verdict p{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:3px}
+
+/* The copy/download row: the whole trace as one text, for sharing a run. */
+.trace-tools{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:16px 0 24px}
+.trace-tools .spacer{flex:1}
+.trace-tools .hint{font-size:11.5px}
+
+/* ---------- attempts ---------- */
+
+.attempt{margin-bottom:22px;overflow:hidden}
+.attempt-head{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px;padding:13px 18px;border-bottom:1px solid var(--line);background:var(--surface-2)}
+.attempt-head h2{font-size:14px;margin-right:4px}
+.attempt-head .meta{margin:0}
+
+.steps{list-style:none;margin:0;padding:4px 18px 10px}
+.step{display:grid;grid-template-columns:150px minmax(0,1fr);gap:4px 12px;padding:8px 0;border-bottom:1px dashed var(--line)}
+.step:last-child{border-bottom:0}
+.step-meta{display:flex;flex-direction:column;gap:2px;font-family:var(--mono);font-size:11px;color:var(--text-3);padding-top:2px;white-space:nowrap}
+.step-n{color:var(--text-2);font-weight:600}
+.step-kind{
+  display:inline-block;width:max-content;margin-top:2px;padding:1px 6px;border-radius:999px;
+  font-family:var(--sans);font-size:10.5px;font-weight:650;letter-spacing:.03em;text-transform:uppercase;
+  background:var(--idle-soft);color:var(--text-3)
+}
+.kind-command .step-kind{background:var(--surface-2);color:var(--text)}
+.kind-screen .step-kind{background:var(--accent-soft);color:var(--accent)}
+.kind-ask .step-kind{background:var(--accent-soft);color:var(--accent)}
+.kind-ask.is-approval .step-kind{background:var(--danger-soft);color:var(--danger)}
+
+.step-body{min-width:0}
+.step-text{
+  margin:0;font-family:var(--sans);font-size:12.5px;line-height:1.5;color:var(--text-2);
+  white-space:pre-wrap;overflow-wrap:anywhere
+}
+.kind-command .step-text,.kind-output .step-text{font-family:var(--mono);font-size:12px}
+.kind-command .step-text{color:var(--text)}
+
+/* A long step folds to its first line; the summary is the toggle. */
+.fold > summary{list-style:none;cursor:pointer;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.fold > summary::-webkit-details-marker{display:none}
+.fold > summary .step-text{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.fold-more{flex:none;font-size:11px;color:var(--accent);white-space:nowrap}
+.fold[open] > summary .step-text{display:none}
+.fold[open] > summary .fold-more::before{content:"hide · "}
+.fold > .step-text{margin-top:4px}
+
+.action-detail{font-size:12px;color:var(--text-3);margin-top:3px;overflow-wrap:anywhere}
+.action-detail .mono{font-family:var(--mono);font-size:11.5px}
+.shots{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+.shot{display:flex;flex-direction:column;gap:3px;width:min(260px,calc(50% - 5px));font-size:11px;color:var(--text-3)}
+.shot img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;border:1px solid var(--line);border-radius:7px;background:var(--surface-2)}
+.shot:hover img{border-color:var(--accent)}
+
+.ask{border:1px solid var(--line-2);border-radius:var(--r-lg);padding:10px 12px;background:var(--surface)}
+.kind-ask.is-approval .ask{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.ask-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px;font-size:12px;color:var(--text-2)}
+.ask-head b{color:var(--text)}
+.ask p{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;margin:0}
+.reply{margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}
+.reply .eyebrow{margin-bottom:3px}
+
+.final{padding:14px 18px;border-top:1px solid var(--line)}
+.final .eyebrow{margin-bottom:6px}
+.final pre{margin:0;font-family:var(--sans);white-space:pre-wrap;overflow-wrap:anywhere;font-size:13.5px}
+.final.is-error{background:var(--danger-soft)}
+
+.none{padding:14px 18px;color:var(--text-3);font-size:12.5px}
+
+@media (max-width:720px){
+  .step{grid-template-columns:minmax(0,1fr)}
+  .step-meta{flex-direction:row;flex-wrap:wrap;gap:4px 10px}
+  .attempt-head,.final,.none{padding-left:14px;padding-right:14px}
+  .steps{padding-left:14px;padding-right:14px}
+}
+</style>
+</head>
+
+<body>
+
+{{template "sprite"}}
+
+<div id="progress"></div>
+<div id="toasts"></div>
+
+{{template "topbar" "tasks"}}
+
+{{$task := .Task}}
+
+<main class="wrap wrap-narrow" data-task="{{$task.ID}}">
+
+  <a class="back" href="/tasks/{{$task.ID}}"><svg width="14" height="14"><use href="#i-chevron"/></svg>Task record</a>
+
+  <div class="task-head">
+    <div class="eyebrow">Full trace · {{typeLabel $task.Type}}</div>
+    <h1>{{$task.Request}}</h1>
+
+    <div class="meta">
+      <span class="tstatus {{$task.Status}}">{{statusLabel $task.Status}}</span>
+      <span><b>{{$task.WorkerName}}</b>{{if not $task.Worker.DeletedAt.IsZero}} (deleted){{end}}</span>
+      <span>{{engineLabel $task.Engine}}</span>
+      <span><time data-created="{{iso $task.CreatedAt}}">{{clock $task.CreatedAt}}</time></span>
+      <span class="mono">{{$task.ID}}</span>
+      {{if $task.Worker.DeletedAt.IsZero}}<a href="/view/{{$task.WorkerID}}">Open chat</a>{{end}}
+    </div>
+
+    {{if $task.Verdict}}
+    <div class="verdict">Verdict: <b class="{{$task.Verdict}}">{{$task.Verdict}}</b> <span>({{clock $task.VerdictAt}})</span>{{with $task.VerdictNote}}<p>{{.}}</p>{{end}}</div>
+    {{end}}
+  </div>
+
+  <div class="trace-tools">
+    <button type="button" class="btn btn-default btn-sm" data-copy-trace title="Copy the whole trace as plain text">
+      <svg width="14" height="14"><use href="#i-copy"/></svg>Copy as text
+    </button>
+    <a class="btn btn-default btn-sm" href="/tasks/{{$task.ID}}/trace.txt?download=1" title="Download the whole trace as a .txt file">
+      <svg width="14" height="14"><use href="#i-download"/></svg>Download .txt
+    </a>
+    <a class="btn btn-quiet btn-sm" href="/tasks/{{$task.ID}}/trace.txt" target="_blank" rel="noopener">Plain text</a>
+    <span class="spacer"></span>
+    <span class="hint">Every step the control plane recorded, in order, with the time it arrived.</span>
+  </div>
+
+  {{range $task.Executions}}
+  <article class="panel attempt">
+    <div class="attempt-head">
+      <h2>{{if gt (len $task.Executions) 1}}Attempt {{.Attempt}}{{else}}What happened{{end}}</h2>
+      <div class="meta">
+        <span class="tstatus {{.Status}}">{{statusLabel .Status}}</span>
+        <span>{{engineLabel .Engine}}{{with .Model}} · {{.}}{{end}}</span>
+        <span><time data-created="{{iso .StartedAt}}">{{clock .StartedAt}}</time>{{if not .EndedAt.IsZero}} → <time data-created="{{iso .EndedAt}}">{{clock .EndedAt}}</time>{{end}}</span>
+        <span>{{duration (.Duration now)}}</span>
+        {{if or .InputTokens .OutputTokens}}<span>{{tokens .InputTokens}} in / {{tokens .OutputTokens}} out tokens</span>{{end}}
+        {{if .CostUSD}}<span>{{cost .CostUSD}}</span>{{end}}
+        {{if .Checked}}<span>{{if deref .Checked | not}}Final check: not run{{else}}Final check: judged{{end}}</span>{{end}}
+      </div>
+    </div>
+
+    {{$started := .StartedAt}}
+    {{$n := 0}}
+    {{$events := .Timeline}}
+    {{if $events}}
+    <ol class="steps">
+      {{range $events}}
+
+      {{with .Step}}
+      {{$n = add $n 1}}
+      {{$kind := stepKind .}}
+      <li class="step kind-{{$kind}}">
+        <div class="step-meta">
+          <span class="step-n">#{{$n}}</span>
+          <time title="{{iso .CreatedAt}}">{{stamp .CreatedAt}} UTC</time>
+          <span>+{{duration (since $started .CreatedAt)}}</span>
+          <span class="step-kind">{{stepKindLabel $kind}}</span>
+        </div>
+        <div class="step-body">
+          {{if isLong .Text}}
+          <details class="fold">
+            <summary><span class="step-text">{{firstLine .Text}}</span><span class="fold-more">{{lines .Text}} lines · show all</span></summary>
+            <pre class="step-text">{{.Text}}</pre>
+          </details>
+          {{else}}
+          <pre class="step-text">{{.Text}}</pre>
+          {{end}}
+
+          {{with .Action}}
+          <div class="action-detail">
+            <span class="mono">{{.Kind}}</span>{{with .Target}} <span class="mono">{{.}}</span>{{end}}{{with .Backend}} · {{.}}{{end}}{{with .Outcome}} · {{.}}{{end}}{{with .Change}} · {{.}}{{end}}{{with .Reason}} · {{.}}{{end}}
+          </div>
+          {{if or .Before .After}}
+          <div class="shots">
+            {{with .Before}}<a class="shot" href="{{.}}" target="_blank" rel="noopener"><img src="{{.}}" loading="lazy" alt="Screen before the action"><span>Before</span></a>{{end}}
+            {{with .After}}<a class="shot" href="{{.}}" target="_blank" rel="noopener"><img src="{{.}}" loading="lazy" alt="Screen after the action"><span>After</span></a>{{end}}
+          </div>
+          {{end}}
+          {{end}}
+        </div>
+      </li>
+      {{end}}
+
+      {{with .Intervention}}
+      {{$approval := isApproval .Reason}}
+      <li class="step kind-ask{{if $approval}} is-approval{{end}}">
+        <div class="step-meta">
+          <span class="step-n">?</span>
+          <time title="{{iso .RequestedAt}}">{{stamp .RequestedAt}} UTC</time>
+          <span>+{{duration (since $started .RequestedAt)}}</span>
+          <span class="step-kind">{{if $approval}}Approval{{else}}Question{{end}}</span>
+        </div>
+        <div class="step-body">
+          <div class="ask">
+            <div class="ask-head"><b>{{if $approval}}Asked for approval{{else}}Asked a person{{end}}</b><span class="chip">{{reasonLabel .Reason}}</span></div>
+            <p>{{.Request}}</p>
+            <div class="reply">
+              {{if .Reply}}
+              <div class="eyebrow">Answer, after {{duration (since .RequestedAt .RepliedAt)}} ({{stamp .RepliedAt}} UTC)</div>
+              <p>{{.Reply}}</p>
+              {{else}}
+              <div class="eyebrow">No answer yet</div>
+              {{end}}
+            </div>
+          </div>
+        </div>
+      </li>
+      {{end}}
+
+      {{end}}
+    </ol>
+    {{else}}
+    <div class="none">No steps were reported for this attempt.</div>
+    {{end}}
+
+    {{if .FinalReply}}
+    <div class="final{{if or (eq .Status "error") (eq .Status "abandoned")}} is-error{{end}}">
+      <div class="eyebrow">{{if eq .Status "done"}}Final report{{else if eq .Status "error"}}Failed{{else}}Ended{{end}}</div>
+      <pre>{{.FinalReply}}</pre>
+    </div>
+    {{end}}
+  </article>
+  {{else}}
+  <div class="panel none">No attempt was recorded for this task.</div>
+  {{end}}
+
+</main>
+
+{{template "chrome-js"}}
+
+<script>
+(function(){
+  "use strict";
+
+  var toast = Decurix.toast;
+
+  document.querySelectorAll("[data-created]").forEach(function(el){
+    var date = new Date(el.dataset.created);
+    if(!isNaN(date.getTime())){ el.textContent = date.toLocaleString(); }
+  });
+
+  /* The copy button takes the same text the download gives: one source,
+     rendered by the control plane, never a second rendering in the page. */
+  var copy = document.querySelector("[data-copy-trace]");
+  var id = document.querySelector("main[data-task]").dataset.task;
+  copy.addEventListener("click", async function(){
+    copy.disabled = true;
+    try{
+      var response = await fetch("/tasks/" + encodeURIComponent(id) + "/trace.txt", {cache: "no-store"});
+      if(!response.ok){ throw new Error("could not read the trace"); }
+      var text = await response.text();
+      if(!navigator.clipboard || !navigator.clipboard.writeText){ throw new Error("the clipboard is not available here; use Download"); }
+      await navigator.clipboard.writeText(text);
+      toast("Trace copied (" + text.split("\n").length + " lines)");
+    }catch(e){
+      toast(e.message, "error");
+    }finally{
+      copy.disabled = false;
+    }
+  });
+})();
+</script>
+
+</body>
+</html>

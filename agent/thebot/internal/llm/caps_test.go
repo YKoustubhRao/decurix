@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -24,9 +25,12 @@ func captureServer(t *testing.T, reply string) (*httptest.Server, *string, *stri
 	return srv, &body, &path
 }
 
-var withPicture = []Message{{Role: "user", Content: "what is on screen?", Images: [][]byte{[]byte("PNG")}}}
+// testPNG is the start of a PNG file: enough for a provider to be sent it as a picture (ImageType).
+var testPNG = []byte("\x89PNG\r\n\x1a\nIHDR")
 
-const pictureB64 = "UE5H" // base64("PNG")
+var withPicture = []Message{{Role: "user", Content: "what is on screen?", Images: [][]byte{testPNG}}}
+
+var pictureB64 = base64.StdEncoding.EncodeToString(testPNG)
 
 func TestEveryProviderSendsPicturesInItsOwnShape(t *testing.T) {
 	t.Run("openai", func(t *testing.T) {

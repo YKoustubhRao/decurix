@@ -5,7 +5,7 @@ import sys
 import time
 
 from decurix_agent import logging_utils, progress
-from decurix_agent.computer import approval, core, replay, shown, skill_engine, skills
+from decurix_agent.computer import approval, cdp, core, replay, shown, skill_engine, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -155,11 +155,24 @@ USAGE = """gui - see and use this desktop's screen
   gui key KEYS...                press keys: enter, tab, ctrl+s, alt+f4 ...
   gui scroll [TARGET] down [N]   scroll up/down/left/right, N notches (about 100 px each)
   gui select TARGET "option"     choose an option in a dropdown
+     ... --id IDENTIFIER         a party by the document's identifier (tax/account number, email; repeatable):
+                                 searched for first; a record holding it is the one, whatever its name;
+                                 the result says matched / none holds it / ambiguous
   gui open URL|FILE|APP          open a web page, a document, or an app
   gui front TITLE                bring an open window to the front (a few words of its title)
   gui upload TARGET FILE...      upload file(s) to a file input element
   gui drag TARGET X,Y            drag an element (or a point) and drop it at X,Y
   gui verify [--text T]          look again: what changed, is T on screen?
+
+  gui record KEY --from FILE [--scope "entity/book/period"] --fields - <<'EOF'
+    {"Label as the form shows it": "value", ...}      EOF
+                                 declare a record BEFORE typing it: every value must stand in
+                                 its source document (or on a screen read, the request, the
+                                 person's words); before the save its form is checked against
+                                 this (a field holding another value stops the save), and the
+                                 page is read back after. --from screen for a record read on
+                                 the screen. Use the form's own field labels.
+  gui records                    the records declared in this task, with what was read back
 
   gui recordings [WORDS]         recorded demonstrations and tasks, best match first
   gui recording ID               one recording's steps and parameters
@@ -209,6 +222,25 @@ def scroll_words(words):
             amount = round(amount / PIXELS_PER_NOTCH)
         amount = min(max(amount, 1), MAX_NOTCHES)
     return words, direction or "down", amount
+
+
+def _refuse_native_dropdown(ref):
+    """A click on a native drop-down (<select>) opens a list drawn outside the page, whose entries no look can read: the
+    engine then clicks them by looking, slowly and by guess. Found live (2026-10-25): 15 such clicks averaged 32 s in
+    one task. It is told to choose by name instead, with the options - nothing is clicked."""
+    state = core._load_state() or {}
+    element = next((e for e in state.get("elements") or [] if e.get("ref") == ref), None)
+    if not element or element.get("role") != "combobox" or element.get("source") != "cdp":
+        return
+    try:
+        options = cdp.native_options(element)
+    except Exception:  # noqa: BLE001 - a look that fails leaves the click as it was
+        return
+    if options is None:
+        return
+    shown = ", ".join(el._quote(o, 40) for o in options[:40]) + (f" (+{len(options) - 40} more)" if len(options) > 40 else "")
+    raise ComputerError(f"Not clicked: {el.describe(element)} is a drop-down list, and an open list's entries cannot be "
+                        f"read from the screen. Choose by name instead: gui select {ref} \"<option>\". Its options: {shown}")
 
 
 def _target(value, args):
@@ -468,6 +500,9 @@ def build_parser():
         p.add_argument("words", nargs=nargs)
         p.add_argument("--role")
         p.add_argument("--name")
+        if name == "select":
+            # The identifiers the document gives the record: the list is searched by them first (resolve.py).
+            p.add_argument("--id", dest="ids", action="append", default=[])
 
     opener = sub.add_parser("open", add_help=False)
     opener.add_argument("target", nargs="+")
@@ -496,6 +531,15 @@ def build_parser():
     replayer.add_argument("session")
     replayer.add_argument("--param", action="append", default=[])
     replayer.add_argument("--from", dest="start", type=int, default=1)
+
+    recorder = sub.add_parser("record", add_help=False)
+    recorder.add_argument("key")
+    recorder.add_argument("--from", dest="source", required=True)
+    recorder.add_argument("--scope", default="")
+    recorder.add_argument("--fields", default="-")
+    recorder.add_argument("--field", action="append", default=[])
+
+    sub.add_parser("records", add_help=False)
 
     listed = sub.add_parser("skills", add_help=False)
     listed.add_argument("words", nargs="*")
@@ -798,6 +842,34 @@ def run(argv):
         print(reply)
         return EXIT_OK if kind == "final" else EXIT_ERROR
 
+    if command == "record":
+        # A record's intent, declared before it is typed: its form is checked against it before the save and the page
+        # read back after (records.py).
+        from decurix_agent.computer import records
+
+        fields = {}
+        if args.fields == "-":
+            fields.update(records.parse_fields("" if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read()))
+        elif args.fields:
+            try:
+                fields.update(records.parse_fields(open(args.fields, encoding="utf-8").read()))
+            except OSError as exc:
+                raise ComputerError(f"cannot read the fields file: {exc}")
+        for given in args.field:
+            if "=" not in given:
+                raise ComputerError(f'--field needs Label=value, not {given!r}')
+            k, v = given.split("=", 1)
+            fields[k.strip()] = v.strip()
+        _, lines = records.declare(args.key, args.source, fields, scope=args.scope)
+        print("\n".join(lines))
+        return EXIT_OK
+
+    if command == "records":
+        from decurix_agent.computer import records
+
+        print("\n".join(records.listing()))
+        return EXIT_OK
+
     if command == "skills":
         found = skills.search(" ".join(args.words))
         if not found:
@@ -824,7 +896,11 @@ def run(argv):
 
         from decurix_agent import guidance
 
-        params = guidance.with_run_values(_params(args.param), skill.get("params"), skill=skill["name"])
+        given = _params(args.param)
+        refused = guidance.taught_values_check(skill, given)
+        if refused:
+            raise ComputerError(refused)
+        params = guidance.with_run_values(given, skill.get("params"), skill=skill["name"])
         return _print_replay(skill_engine.run(skill, params=params, start=args.start, source_files=_params(args.source_file)),
                              command=f"gui do {skill['name']}")
 
@@ -845,6 +921,8 @@ def run(argv):
         target = _one_target(words, args)
         if not target:
             raise ComputerError(f"{command} what? Give a ref like e12 (run gui observe first).")
+        if command == "click" and target.get("ref"):
+            _refuse_native_dropdown(target["ref"])
         # named: a press on a control that has a name is made by its ref, not by where it is (core.act).
         result = core.act(command.replace("-", "_"), named=True,
                           check_form=("checked" if args.checked else True) if command == "click" else False, **target)
@@ -908,7 +986,8 @@ def run(argv):
             target, option = _target(words[0], args), " ".join(words[1:])
         else:
             raise ComputerError('select needs a dropdown and an option: gui select e5 "High"')
-        result = core.act("select", option=option, **target)
+        ids = [i.strip() for i in (getattr(args, "ids", None) or []) if i and i.strip()]
+        result = core.act("select", option=option, ids=ids, **target)
 
     elif command == "drag":
         words = list(args.words)

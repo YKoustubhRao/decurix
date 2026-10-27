@@ -107,6 +107,27 @@ type RunContext struct {
 	// HumanReply is what the human said when resuming a paused step: an
 	// approval, an answer to a question, or a correction.
 	HumanReply string
+	// HumanReading is the host's one reading of HumanReply when it answers an approval, or nil.
+	HumanReading *Reading
+}
+
+// Reading is what the host read a reply to an approval as - the one reading every part of the worker acts on (the
+// agent's approval.reading): Decision "yes" (granted now), "if" (granted only once Condition holds), "no", or
+// "unclear" (neither: a question back, something else). Set, it decides; soul's own word list (safety.IsApproval) only
+// stands in when none came.
+type Reading struct {
+	Decision  string `json:"decision"`
+	Condition string `json:"condition"`
+	// Wants is what they ask the worker to tell or show them before they decide, in their words, or "".
+	Wants string `json:"wants,omitempty"`
+}
+
+// ReplyDecision is the decision of the host's reading of the human's reply, or "" when none came.
+func (rc RunContext) ReplyDecision() string {
+	if rc.HumanReading == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(rc.HumanReading.Decision))
 }
 
 func (rc RunContext) Logf(prefix, format string, args ...any) {

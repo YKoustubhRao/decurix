@@ -90,3 +90,11 @@ def was(ref):
         return None
     named = (record.get("names") or {}).get(ref)
     return tuple(named) if isinstance(named, list) and len(named) == 2 else None
+
+
+def named(ref):
+    """[role, name] a ref was printed with in this task, else None (shown-refs.json "names")."""
+    record = _read()
+    names = record.get("names", {}) if isinstance(record, dict) else {}
+    got = names.get(ref)
+    return list(got) if isinstance(got, list) and len(got) == 2 else None

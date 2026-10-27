@@ -19,6 +19,7 @@ from the request, and every check is about files, drafts and figures.
 import json
 import os
 import re
+import secrets
 import threading
 import time
 import uuid
@@ -47,7 +48,11 @@ DELIVERABLE_KINDS = {
     "email": r"e-?mails?|drafts?|repl(?:y|ies)|reminders?|messages?",
     "document": r"pdfs?|invoices?|payslips?|certificates?",
     "plan": r"plans?|proposals?|requisitions?",
-    "records": r"(?:enter|record|post|create|onboard)\w*\s+(?:\w+\s+){0,4}(?:in|into|on)\s+(?:the\s+)?(?:portal|system|app|application|erp|crm|website)",
+    # Filing or submitting on a portal is entering records in it too, and what is filed has a name of its own ("file
+    # FORM-A and FORM-B on the portal" - found live, 2026-10-22: a six-part request ran as one job and ran out of
+    # turns twice).
+    "records": r"(?:enter|record|post|create|onboard|file|submit|upload)\w*\s+(?:\S+\s+){0,5}(?:in|into|on|to)\s+(?:the\s+)?"
+               r"(?:[\w-]+\s+){0,2}(?:portal|system|app|application|erp|crm|website)",
 }
 _KIND_RES = {kind: re.compile(rf"\b(?:{words})\b", re.I) for kind, words in DELIVERABLE_KINDS.items()}
 # An enumerated ask: lines of a list, or "1)", "(a)" items.
@@ -131,6 +136,8 @@ Rules:
   reference) as one of its outputs.
 - Output files: the names and folders the request gives, as paths relative to the work folder; otherwise short clear
   names. Never an attached input file's own path. The same file may be named by a later stage that adds to it.
+- A code, password or OTP the person gives when a step needs it ("ask me for the OTP") is not a decision: the stage
+  whose step needs it asks for it then, and no stage is planned for it.
 - A decision the request keeps for the person gets its own early stage with "decision": true: it works out what
   needs deciding, saves the working file the decision rests on, and asks the person in the chat. "Ask me" is never an
   email: a decision stage has drafts 0 and never writes to anyone else about it. "for_approval": true when the request
@@ -489,12 +496,57 @@ def spec_from_plan(plan, files=(), request=""):
     return spec
 
 
+SHARED_LISTING_FILES = 200
+
+
+def shared_folder_listing():
+    """
+    The files of the person's shared folder, for the planner: a request that says "bring the computation workbook up
+    to date - everything is in Returns on my PC" names its outputs by what they are, not by path. Found live
+    (2026-10-22): told only the request, the planner wrote the workbook as "Returns/<client>/computation.xlsx"
+    in the work folder, and the stages made a new workbook there instead of updating the client's own. Names only, at
+    most SHARED_LISTING_FILES; "" when the desktop has no shared folder.
+    """
+
+    from decurix_agent import shared
+    try:
+        if not shared.active():
+            return ""
+        root = shared.link_path()
+        names = []
+        for path in shared.walk():
+            names.append("~/PC/" + os.path.relpath(path, root).replace(os.sep, "/"))
+            if len(names) == SHARED_LISTING_FILES:
+                break
+        # Its folders too, an empty one included: found live (2026-10-22), the month's folder was there and
+        # empty, the listing (files only) did not show it, and the plan put the invoices in a new folder of its own name.
+        # Bounded like the files' walk (shared.walk_folders: breadth first, an entry budget) and stopped at the cap: a
+        # walk of the whole tree stalled planning on a big shared folder (independent review, 2026-10-22).
+        for path in shared.walk_folders(root):
+            if len(names) >= 2 * SHARED_LISTING_FILES:
+                break
+            if shared.contained(str(path)):
+                names.append("~/PC/" + os.path.relpath(str(path), str(root)).replace(os.sep, "/") + "/")
+    except Exception as exc:  # noqa: BLE001 - a listing that cannot be made leaves the plan as before
+        log(f"long_task: could not list the shared folder: {exc}")
+        return ""
+    if not names:
+        return ""
+    return ("\n\nThe person's shared folder (~/PC, their own files - \"on my PC\"), as it is now:\n" + "\n".join(sorted(names))
+            + "\nA file of theirs that the request asks to update, fill in or bring up to date is that stage's output by "
+              "its path above (~/PC/...), updated in place - never a new file of the same kind in the work folder. A "
+              "file the request asks to be saved in one of their folders is named by that folder's path above (a name "
+              "ending in / is a folder) - the folder that is there, following how its neighbours are named, never a "
+              "new one beside it.")
+
+
 def draft_plan(request):
     """The model's stage plan for a request, as a runner spec - or None (one stage, or no usable plan)."""
 
     files = attachments.files(request)
     prompt = (f"The work folder is {config.WORK_DIR}.\n\nThe request:\n{attachments.text(request).strip()[:12000]}\n\n"
-              + ("Attached files:\n" + "\n".join(files) if files else "No files are attached."))
+              + ("Attached files:\n" + "\n".join(files) if files else "No files are attached.")
+              + shared_folder_listing())
     try:
         plan = _ask_json(PLAN_SYSTEM, prompt)
         return spec_from_plan(plan, files, request=attachments.text(request))
@@ -1068,7 +1120,15 @@ def stage_prompt(state, step):
         lines += ["", "The request's own input files - sources this stage may read for any value it needs, besides "
                       "earlier stages' outputs:"]
         lines += [f"  {p}" for p in others]
+    # The run's plan is the person's to see with every question it asks (plan_text): a stage does not put a plan of
+    # its own to them (soul's plan.go reads this marker). Found live (2026-10-24): every attempt of a stage was a new
+    # goal, and each put its plan to the person again - ten times for one stage.
+    lines += ["", f"{PLAN_AGREED_MARKER}: the run's plan above is the person's; carry it out."]
     return "\n".join(lines)
+
+
+# soul's planAgreedMarker (plan.go): with it in the request, a stage does not put a plan of its own to the person.
+PLAN_AGREED_MARKER = "THE PLAN OF THIS REQUEST IS AGREED"
 
 
 # A sentence of a request that names a system to work in or read from: a web address (with its login), a mailbox.
@@ -1381,8 +1441,12 @@ def code_problems(made, reply, drafts, request, instruction=None, root=None, out
                         "store the results.")
     if facts.missing_files:
         problems.append(facts.missing_files + ". Make it, with the content asked for, where the stage says.")
-    if facts.file_faults:
-        problems.append("The saved file is not finished: " + "; ".join(facts.file_faults)[:400]
+    wrong = produced.wrong_kind(facts.file_faults)
+    if wrong:
+        problems.append("; ".join(wrong)[:400] + ". " + produced.WRONG_KIND_REMEDY)
+    unfinished = [f for f in facts.file_faults if f not in wrong]
+    if unfinished:
+        problems.append("The saved file is not finished: " + "; ".join(unfinished)[:400]
                         + ". Correct it in the file itself and save it again.")
     if facts.payee_mismatch:
         problems.append(" ".join(facts.payee_mismatch)[:900] + " Bank or payment account details come only from the "
@@ -2066,7 +2130,7 @@ def _sheet_owners(run_id, run_state):
     """
     {(file, sheet): stage id} - a sheet belongs to the stage in whose completion snapshot it first appeared (by when
     each stage completed, whatever its number). Every snapshot keeps all of its file's sheets; only the first holds
-    it as its own. Found live (round 5 P1, 2026-10-20): "Purchase Working" and "GSTR-3B" were reported as the AR
+    it as its own. Found live (round 5 P1, 2026-10-20): "Purchase Working" and "Tax Return" were reported as the AR
     Ageing stage's - the last stage to complete before the Purchase Register stage re-ran.
     """
 
@@ -2490,8 +2554,12 @@ def _judge(state, step, reply, made, drafts, note="", start=None, evidence=()):
     screen_text = ""
     if on_screen:
         try:
-            from decurix_agent.computer import evidence
-            live, observed, screen_text = evidence.live(), evidence.observed(), evidence.live_text()
+            # Not "evidence": that is this function's argument (what code checks saw), which the module's name would
+            # replace - found live (2026-10-22): "'module' object is not iterable" stopped a run whose
+            # stage had worked on the screen.
+            from decurix_agent.computer import evidence as screen_evidence
+            live, observed = screen_evidence.live(), screen_evidence.observed()
+            screen_text = screen_evidence.live_text()
         except Exception as exc:
             log(f"long_task: no screen evidence for the check: {exc}")
     # The stage checked here, by its own record - title, what it hands in, its instruction - first and named as such;
@@ -3042,21 +3110,54 @@ def _page_notes(task_id=None):
         return []
 
 
+def _command_outputs(task_id=None):
+    """What the work's commands printed during this task (soul's noteCommandOutput): its own recorded working - a total
+    a script summed from the sources and printed is held there, never something the work was given. Found live
+    (2026-10-21): totals summed and printed by a script were refused as held by no source."""
+
+    try:
+        from decurix_agent.computer import evidence
+        task_id = task_id or task_context.current() or ""
+        if not task_id:
+            return []
+        out = []
+        with open(evidence.NOTES_DIR / f"{task_id}.outputs", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    out.append(str(json.loads(line).get("text") or ""))
+                except ValueError:
+                    continue
+        return out
+    except Exception:  # noqa: BLE001 - nothing printed is nothing held
+        return []
+
+
+def _files_read():
+    """The files the tools read during this task (office read): a file the work read is one of its sources, named in the
+    request or not (computer/evidence.files_read)."""
+
+    try:
+        from decurix_agent.computer import evidence
+        return [Path(p) for p in evidence.files_read()]
+    except Exception:  # noqa: BLE001 - nothing listed is nothing added
+        return []
+
+
 def work_sources(request, made=()):
     """
     provenance.gather for a run: the request, its input files, the work folder (inputs and every output the work
     recorded), and the system's pages the tools read. What a value typed or written must trace to.
     """
 
-    inputs = request_input_files(request, made) if request else []
-    return provenance.gather(request, list(inputs) + list(made), roots=[config.WORK_DIR], notes=_page_notes())
+    inputs = (request_input_files(request, made) if request else []) + _files_read()
+    return provenance.gather(request, list(inputs) + list(made), roots=[config.WORK_DIR], notes=_page_notes() + _command_outputs())
 
 
 def given_sources(request, made=()):
     """provenance.gather without the work folder: the request, its input files and messages, the system's pages - what
     the work was given, never what it wrote (independent review, 2026-10-21, #11: the work folder is circular)."""
 
-    inputs = request_input_files(request, made) if request else []
+    inputs = (request_input_files(request, made) if request else []) + _files_read()
     return provenance.gather(request, list(inputs), roots=(), notes=_page_notes())
 
 
@@ -3637,8 +3738,13 @@ def invented_typing(typed, request):
         made_up = [repr(v) for v in typed if filler.looks_filler(v) and not filler.in_sources(v, texts)]
         # Provenance: a fact typed (an address, a date, a code, a figure of 100 or more) that no source holds.
         sources = work_sources(request)
+        # A figure worked out in one step from another value typed in this work and a source figure is held: the tax of
+        # a line typed beside its amount and rate (found live, 2026-10-24: 260 and 6,480 - 5,200 at 5% and 36,000 at
+        # 18%, a bill printing only their total - were "held by no source" and a finished task was refused).
+        from decurix_agent.provenance import _figures
+        typed_figures = _figures(" ".join(typed))
         for value in typed:
-            made_up += [repr(s) for s in sources.unsourced(value)]
+            made_up += [repr(s) for s in sources.unsourced(value, operands=typed_figures)]
         made_up = list(dict.fromkeys(made_up))
     except Exception as exc:  # noqa: BLE001
         log(f"long_task: could not check typed values: {exc}")
@@ -3855,6 +3961,36 @@ SKIP_RE = re.compile(r"^\W*(skip|leave (it|that|this)( out)?|drop (it|that)|don'
                      r"not needed|never ?mind|we don'?t need (it|that|this))\b", re.I)
 # How a person says to end the run, answering a stuck stage: never read as "try again".
 STOP_RE = re.compile(r"^\W*(stop|cancel|halt|abort|end it|call it off)\b", re.I)
+
+# What a person's answer to a stuck stage decides, read once (approval.read_choice). The word lists above only open a
+# reply's first words: "stop asking, just use last month's rate" stopped the run and "no need to recheck, the figure is
+# right" gave the stage up (audit, 2026-10-24). Code decides only a reply that is, whole, one of these phrases.
+STUCK_CHOICES = {
+    "retry": "try the stage again",
+    "skip": "leave this stage out and go on with the rest of the run",
+    "stop": "end the whole run now",
+    "answer": "anything else - information, a correction or an instruction for the stage to go on with "
+              "(including a stop or a skip of something later, not of this stage now)",
+}
+STUCK_PLAIN = {
+    "stop": ["stop", "stop it", "stop now", "stop the run", "stop everything", "cancel", "cancel it", "halt", "abort",
+             "end it", "call it off", "halt the whole thing", "stop the whole thing", "cancel the whole thing"],
+    "skip": ["skip", "skip it", "skip that", "skip this", "skip this one", "leave it", "leave it out", "leave that",
+             "leave that out", "leave this out", "drop it", "drop that", "don't bother", "dont bother", "no need",
+             "move on", "forget it", "forget that", "not needed", "never mind", "nevermind", "never mind not needed",
+             "we don't need it", "we don't need that", "skip it and move on"],
+    "retry": ["retry", "retry it", "try again", "try it again", "try that again", "again", "redo it", "redo that",
+              "go again", "one more try", "one more time", "have another go", "give it another try",
+              "give it another go"],
+}
+
+
+def stuck_choice(answer, question=""):
+    """What a person's answer to a stuck stage decides: {"choice": retry|skip|stop|answer|unclear, "instruction"}."""
+
+    from decurix_agent.computer import approval
+    return approval.read_choice(answer, question or "A stage could not be finished. Try it again, skip it, or stop?",
+                                STUCK_CHOICES, STUCK_PLAIN)
 # The marker of the question a stuck stage puts to the person (stuck_question).
 STUCK_MARK = "did not pass its check after"
 # A stage the worker stopped: the check said it could not be done, and the person was asked how to go on.
@@ -4186,7 +4322,7 @@ def _send_back_false_figures(run_id, step_id, question):
     """
     A stage about to tell the person something is wrong, with figures that do not add up (verify.false_sums): sent back
     once to recheck, never shown to the person as fact. Found live (2026-10-20, P2): "SO-5101 ... should total 13129.00
-    ex GST from 40 @ 175.75, 24 @ 149, 30 @ 95 - the person must correct the saved lines" - those come to 13,456.00,
+    ex tax from 40 @ 175.75, 24 @ 149, 30 @ 95 - the person must correct the saved lines" - those come to 13,456.00,
     the record's own total; a person would have "corrected" a correct order.
     """
 
@@ -5103,6 +5239,11 @@ person sent a message. Decide what the message is.
 - "status": it only asks how the work is going.
 - "stop": it calls the whole task off.
 - "unrelated": a separate request that has nothing to do with this work.
+- "new_request": a whole new piece of work of its own (its own goal and deliverables), sent while this one is in hand,
+  even about the same client or files - not an answer and not a change to this work.
+- A reply that gives what an open question asks for - the person's rules, figures or choices, however long, however
+  many points, even general ones that also cover other matters - answers that question ("both" when it also changes
+  the work): it is never "unrelated" or "new_request".
 - "unclear": you cannot tell whether it answers a question or changes the task, or which question it answers. Then
   write the one short question to ask the person to find out. Never guess. The person never sees ids (q1, d:...,
   stage ids): name a question by what it is about ("your answer about the quantities").
@@ -5124,7 +5265,7 @@ person sent a message. Decide what the message is.
   change ("approve it without the receipt, but pay only 1,200") keeps it IN: it is not excluded.
 
 Answer with JSON only:
-{"kind": "answer"|"amendment"|"both"|"status"|"stop"|"unrelated"|"unclear",
+{"kind": "answer"|"amendment"|"both"|"status"|"stop"|"unrelated"|"new_request"|"unclear",
  "answers": [{"question": "q1", "answer": "the person's answer in their words", "hands_back": false, "keep": false,
               "excluded": [], "restored": [], "names": [], "undecided": []}],
  "amendment": "the change, one sentence, or empty", "affects": ["stage ids"], "keeps_done": false,
@@ -5133,19 +5274,51 @@ Answer with JSON only:
 
 
 
-def classify(message, run_state, data, ask=None):
-    """What a mid-run message is: {"kind", "answers", "amendment", "affects", "ask"}. Never guesses an answer."""
+QUESTION_VIEW_CHARS = 4000
+
+
+def _message_hash(message, salt=""):
+    """A message's fingerprint (its words), kept in place of its text: a record never keeps what a message said. Salted
+    with the run's own random `salt` (the ledger's "heard_salt"), so a short message - a password - cannot be found
+    from its fingerprint by trying guesses."""
+
+    import hashlib
+    return hashlib.sha256((str(salt or "") + "\x00" + " ".join(str(message or "").split())).encode("utf-8")).hexdigest()[:24]
+
+
+# What an earlier reading of the same message must have been for the reader to be told it came again: one the question
+# was asked again after. A status question sent twice is just asked twice.
+HEARD_AGAIN = ("amendment", "unclear", "new_request")
+
+
+def _question_view(text):
+    """
+    An open question as the reader of a reply is shown it: whole, or its start and its end when very long. Found live
+    (2026-10-22): the first 800 characters were an approval's preamble, the ask ("tell me how each should
+    be treated") was cut off, and the person's rules, sent as the answer, read as a separate request.
+    """
+
+    text = str(text or "")
+    if len(text) <= QUESTION_VIEW_CHARS:
+        return text
+    return text[:1500] + "\n...\n" + text[-(QUESTION_VIEW_CHARS - 1500):]
+
+
+def classify(message, run_state, data, ask=None, said_answer=False):
+    """What a mid-run message is: {"kind", "answers", "amendment", "affects", "ask"}. Never guesses an answer.
+    `said_answer`: the person said this message is their answer to the open question (a held message read again)."""
 
     from decurix_agent import guidance
 
-    if guidance.STOP_ONLY.match(message or ""):
-        return {"kind": "stop", "answers": [], "amendment": "", "affects": [], "ask": ""}
     questions = _open_questions(data)
+    # "Never mind" / "leave it" to an open question is read against it (guidance.calls_off): often it answers it.
+    if guidance.calls_off(message, "\n".join(q.get("text") or "" for q in questions)[:3000]):
+        return {"kind": "stop", "answers": [], "amendment": "", "affects": [], "ask": ""}
     shown = [f"Request: {attachments.text(data.get('request') or '').strip()[:3000]}", "", "Stages:"]
     for step in _steps(run_state):
         shown.append(f"- {step['id']} ({run_state['steps'][step['id']]['status']}): {step.get('title', '')}")
     if questions:
-        shown += ["", "Open questions:"] + [f"- {q['id']}: {q['text'][:800]}" for q in questions]
+        shown += ["", "Open questions:"] + [f"- {q['id']}: {_question_view(q['text'])}" for q in questions]
     else:
         shown += ["", "The worker has no open question."]
     pending = undecided_stages(run_state, data)
@@ -5159,6 +5332,15 @@ def classify(message, run_state, data, ask=None):
                       f"message as the reply explains it."]
     # A secret the request gave is withheld from what the model reads of the message: it never needs it to tell an
     # answer from a change, and what it writes back becomes a record.
+    heard = data.get("last_heard") or {}
+    if questions and heard.get("kind") in HEARD_AGAIN and data.get("heard_salt") \
+            and heard.get("hash") == _message_hash(message, data["heard_salt"]):
+        # Found live (2026-10-22): the same rules, sent twelve times to the same question asked again, were
+        # read as a change each time. The fact only - what it means is the reader's to weigh (independent review).
+        shown += ["", f"The person sent this same message just before; it was read as \"{heard.get('kind')}\" and the "
+                      "question was asked again."]
+    if said_answer:
+        shown += ["", "The person said this message is their answer to the open question."]
     shown += ["", f"The person's message: \"{privacy_withheld(message or '')[:3000]}\""]
     try:
         found = (ask or _ask_json)(CLASSIFY_SYSTEM, "\n".join(shown), 800)
@@ -5166,7 +5348,7 @@ def classify(message, run_state, data, ask=None):
         log(f"long_task: could not classify the message ({exc}); reading it without a model")
         found = None
     if not isinstance(found, dict) or found.get("kind") not in {"answer", "amendment", "both", "status", "stop",
-                                                                 "unrelated", "unclear"}:
+                                                                 "unrelated", "new_request", "unclear"}:
         if questions:
             # No model to tell an answer from a change: never guess - ask.
             return {"kind": "unclear", "answers": [], "amendment": "", "affects": [],
@@ -5317,7 +5499,6 @@ def _mark(path):
 
 SAME_REQUEST = 0.8
 WHOLE_REQUEST_CHARS = 700
-SHAPED_REQUEST_CHARS = 300
 HELD_DIR = "held-requests"
 
 
@@ -5338,12 +5519,9 @@ def new_request_reason(content, data):
     known = set(_words(attachments.text(data.get("request") or "")))
     if len(words) >= 20 and known and len(words & known) / len(words | known) >= SAME_REQUEST:
         return "it is the request in hand sent again"
-    # Several deliverables in a message of a request's length: a change that names the outputs it touches ("leave it
-    # out of the register, the summary, the deck and the memo") is short, and stays a change.
-    if _shape_score(text) >= MIN_KINDS and len(text) >= SHAPED_REQUEST_CHARS:
-        return "it asks for several things of its own"
-    if len(text) >= WHOLE_REQUEST_CHARS:
-        return "it is a whole request of its own"
+    # Anything else is the model's reading (classify: "new_request"). A length or a count of deliverable words took an
+    # answer for a request: found live (2026-10-22), the practice's eight numbered rules, sent as the
+    # answer to the parked question, were held as "it asks for several things of its own" and the run waited forever.
     return ""
 
 
@@ -5381,22 +5559,46 @@ def _release(name, own):
     return True
 
 
-_AFTER = re.compile(r"\b(finish|first|after|then|later|queue|wait|next|both)\b", re.I)
-_REPLACE = re.compile(r"\b(drop|cancel|abandon|replace|instead|forget|scrap|discard|abort)\b", re.I)
-_MEANT_ANSWER = re.compile(r"\b(answer|meant|reply|question)\b", re.I)
+# What the person chose for a request held while another is in hand, read once (approval.read_choice). Keywords found
+# anywhere read "don't cancel the first one, do this after" as cancel it, and "it's a reply to your question - use 12%
+# instead" as drop the run (audit, 2026-10-24). Code decides only a reply that is, whole, one of these phrases - the
+# options the question offers in its own words, among them.
+HELD_CHOICES = {
+    "after": "finish the request in hand first, then do the new one",
+    "replace": "drop the request in hand and do the new one instead",
+    "answer": "the new message was meant as their answer to the open question",
+}
+HELD_PLAIN = {
+    "after": ["finish that one first", "finish that one first and then do this new one",
+              "finish that one first then do the new one", "finish that one first then do this one", "finish that first",
+              "finish first", "finish it first", "first finish that one", "after", "later", "do it after",
+              "do it later", "do this after", "queue it", "both", "do both", "finish both"],
+    "replace": ["drop that one", "drop that one and do this one instead", "drop that one and do this one", "drop it",
+                "drop that", "drop the old one", "do this one instead", "this one instead", "instead", "replace",
+                "replace it", "cancel that one", "cancel that", "forget that one", "forget the old one", "scrap it"],
+    "answer": ["answer", "my answer", "the answer", "yes the answer", "it is my answer", "it's my answer", "its my answer",
+               "it was my answer", "it was my answer to your question", "it is my answer to your question",
+               "it's my answer to your question", "it was meant as my answer", "meant as my answer", "it's an answer",
+               "it was an answer", "reply", "it's a reply", "it was a reply", "answer to your question"],
+}
+HELD_QUESTION = ("A new message came while a request was in hand. Finish the one in hand first and then do the new one, "
+                 "drop the one in hand and do the new one instead, or was the message meant as the answer to the open "
+                 "question?")
 
 
 def _choice(reply):
-    """What the person chose for a held request: "after", "replace", "answer" or "" when it cannot be told."""
+    """What the person chose for a held request: "after", "replace", "answer" or "" when it cannot be told. A reply
+    that opens with "it was my answer" (and goes on with the answer itself) is the answer - found live (2026-10-27):
+    "It was my answer to your question. Yes - show me the draft first" was read as a new instruction and the question
+    was asked a second time."""
 
-    text = " ".join(str(reply or "").split())
-    if _MEANT_ANSWER.search(text) and not _REPLACE.search(text):
-        return "answer"
-    if _REPLACE.search(text) and not re.search(r"\bfinish\b", text, re.I):
-        return "replace"
-    if _AFTER.search(text):
-        return "after"
-    return ""
+    from decurix_agent.computer import approval
+    head = " ".join(re.sub(r"[^a-z' ]+", " ", str(reply or "").lower()).split())
+    for phrase in sorted(HELD_PLAIN["answer"], key=len, reverse=True):
+        if len(phrase) >= 9 and (head == phrase or head.startswith(phrase + " ")):
+            return "answer"
+    said = approval.read_choice(reply, HELD_QUESTION, HELD_CHOICES, HELD_PLAIN)
+    return said["choice"] if said["choice"] in HELD_CHOICES else ""
 
 
 def _where_it_stands(run_state, data):
@@ -5424,10 +5626,21 @@ def _ask_about_new_request(run_id, run_state, data, own, why, waiting):
         post_question(question)
 
 
-def _take_new_request(run_id, run_state, data, content, path, own, why, waiting):
-    """Hold a request of its own and ask once what to do with it (never read as an answer or a change)."""
+def _forget_held(name):
+    """Remove a message kept aside while it was asked about, once it is read (the run's own copy; the command file stays)."""
 
-    name = _hold(content, path)
+    if name:
+        try:
+            (_held_dir() / name).unlink(missing_ok=True)
+        except OSError as exc:
+            log(f"long_task: could not remove the held copy {name}: {exc}")
+
+
+def _take_new_request(run_id, run_state, data, content, path, own, why, waiting, held=None):
+    """Hold a request of its own (or take `held`, one already kept aside) and ask once what to do with it (never read
+    as an answer or a change)."""
+
+    name = held or _hold(content, path)
     _mark(path)
     _update(run_id, lambda d: d.__setitem__("pending_request", {"file": name, "own": own, "why": why, "asks": 1,
                                                                  "at": time.time()}))
@@ -5538,8 +5751,12 @@ def _take_message(content, path, about_this=False):
     waiting = state.waiting_for_query
     waiting_kind = state.last_query_kind if waiting else ""
 
-    # An approval keeps working exactly as it always has: a yes or a no goes to the gate.
-    if waiting and waiting_kind == "approval" and (approval.is_approval(content) or approval.is_refusal(content)):
+    # A reply that decides the approval (yes, yes once something holds, no) goes to the gate, read once
+    # (approval.reading): "haan fine" is as much a yes as "yes". One that decides nothing - a question back, something
+    # else - is read below as any message is.
+    decides = (waiting and waiting_kind == "approval"
+               and approval.read_reply(content, (approval.pending() or {}).get("action") or state.last_query_text) != "unclear")
+    if decides:
         try:
             _approval_as_decision(run_id, content)
         except Exception as exc:  # noqa: BLE001 - keeping it as a decision is extra; the gate's answer goes on
@@ -5566,11 +5783,18 @@ def _take_message(content, path, about_this=False):
         # own (holding; found live 2026-10-20: "finish that one first?" was asked about a run the person had stopped).
         _defer(path)
         return
-    if _resume_wait == run_id and CARRY_ON.match(content or "") and not guidance.STOP_ONLY.match(content or ""):
-        _mark(path)
-        _carry_on_after_restart(run_id)
-        return
-    if not guidance.STOP_ONLY.match(content or ""):
+    open_text = "\n".join(q.get("text") or "" for q in _open_questions(data))[:3000]
+    if _resume_wait == run_id and not guidance.calls_off(content, RESUME_QUESTION):
+        resumed = resume_choice(content)
+        if resumed["choice"] == "carry_on":
+            _mark(path)
+            _carry_on_after_restart(run_id)
+            if not resumed["instruction"]:
+                return
+            # What they add to it ("continue, but redo stage 2") is never dropped: it is read below as any message to
+            # the run is - a change, an answer - with the run going on (audit, 2026-10-24).
+            content = resumed["instruction"]
+    if not guidance.calls_off(content, open_text):
         if data.get("pending_request") and not about_this:
             return _pending_request_reply(run_id, run_state, data, content, path, own, waiting)
         why = "" if about_this else new_request_reason(content, data)
@@ -5581,8 +5805,14 @@ def _take_message(content, path, about_this=False):
         verdict = {"kind": "answer", "answers": delegated, "amendment": "", "affects": [], "ask": ""}
     else:
         before = _asked()
-        verdict = classify(content, run_state, data)
+        verdict = classify(content, run_state, data, said_answer=about_this)
         _charge(run_id, before)
+    if about_this and verdict["kind"] not in ("answer", "both", "amendment"):
+        # The person said this held message is their answer: read as anything else, it is asked about plainly - never
+        # held again, never dropped (independent review, 2026-10-22).
+        verdict = {"kind": "unclear", "answers": [], "amendment": "", "affects": [],
+                   "ask": "You said your earlier message is your answer to my question, but I could not tell what it "
+                          "answers. Please tell me your answer in a line."}
     # A reply that hands a decision back ("use your judgement") answers a question with what the question proposed -
     # but a decision stage's question stays the person's: it is kept pending, listed for them, nothing promised (round
     # 5 P6, 2026-10-20). Which replies hand back is the model's reading (classify), never a word list.
@@ -5603,10 +5833,27 @@ def _take_message(content, path, about_this=False):
         answer["answer"] = privacy_withheld(answer.get("answer", ""))
     if verdict.get("amendment"):
         verdict["amendment"] = privacy_withheld(verdict["amendment"])
-    if data.get("confirming") and verdict["kind"] != "unclear":
-        _update(run_id, lambda d: d.pop("confirming", None))
     kind = verdict["kind"]
+    confirming = data.get("confirming") or {}
+    if confirming and kind != "unclear":
+        _update(run_id, lambda d: d.pop("confirming", None))
+        if kind != "new_request":
+            _forget_held(confirming.get("file"))
     log(f"long_task: message {path.name} read as {kind}")
+    salt = data.get("heard_salt") or secrets.token_hex(16)
+    heard = {"hash": _message_hash(content, salt), "kind": kind}
+    _update(run_id, lambda d: (d.__setitem__("heard_salt", d.get("heard_salt") or salt), d.__setitem__("last_heard", heard)))
+    if kind == "new_request":
+        # A request of its own is never an answer or a change: held, and the person asked what to do with it. Read with
+        # a reply to "is this your answer?", it is the EARLIER message that is the request, never the reply (independent
+        # review, 2026-10-22) - it was kept aside word for word when it was asked about.
+        earlier = confirming.get("file")
+        if earlier and (_held_dir() / earlier).is_file():
+            first = task_context.task_id_from_filename(earlier) or ""
+            first = first if first != run.get("task_id") else ""
+            return _take_new_request(run_id, run_state, data, None, path, first, "it reads as a new piece of work",
+                                     waiting, held=earlier)
+        return _take_new_request(run_id, run_state, data, content, path, own, "it reads as a new piece of work", waiting)
 
     def say(text):
         """A reply to this message: on its own task when it has one, else as a line of the running plan."""
@@ -5642,8 +5889,18 @@ def _take_message(content, path, about_this=False):
     if kind == "unclear":
         # Nothing is applied: one short question, and the message is read again with the reply.
         verdict["ask"] = no_internal_ids(verdict["ask"], run_state, data)
+        # Kept aside word for word too (the record's copy is cut and has secrets withheld): if the reply shows it was a
+        # request of its own, that is what is held (independent review, 2026-10-22).
+        try:
+            aside = _hold(content, path)
+        except OSError as exc:
+            log(f"long_task: could not keep {path.name} aside: {exc}")
+            aside = None
         _mark(path)
-        _update(run_id, lambda d: d.__setitem__("confirming", {"message": content[:2000], "ask": verdict["ask"]}))
+        if confirming.get("file") and confirming.get("file") != aside:
+            _forget_held(confirming["file"])
+        _update(run_id, lambda d: d.__setitem__("confirming", {"message": content[:2000], "ask": verdict["ask"],
+                                                               "file": aside}))
         if own:
             # A question: asked as one, so the chat waits for the person (it was posted as a plain reply).
             reply_on_task(own, verdict["ask"], kind="query")
@@ -5703,11 +5960,13 @@ def _take_message(content, path, about_this=False):
                                          f"{answer['answer']}")
         if question.get("parked"):
             try:
-                if question.get("kind") == "stuck" and STOP_RE.match(answer["answer"]):
-                    # A person's own words for "stop", answering a stuck stage (round 5 P6, 2026-10-20).
+                # A person's own words for "stop" or "skip", answering a stuck stage (round 5 P6, 2026-10-20) - read
+                # once: anything else, however it starts, is what the stage goes on with.
+                said = stuck_choice(answer["answer"], question.get("text")) if question.get("kind") == "stuck" else {}
+                if said.get("choice") == "stop":
                     _mark(path)
                     return stop(answer["answer"])
-                if question.get("kind") == "stuck" and SKIP_RE.match(answer["answer"]):
+                if said.get("choice") == "skip":
                     _runner().give_up(run_id, question["stage"], f"you said to leave it out (\"{answer['answer'][:200]}\")")
                 else:
                     _runner().unpark(run_id, question["stage"], answer["answer"])
@@ -5874,7 +6133,8 @@ def _approval_as_decision(run_id, reply):
         step = steps.get(q["stage"])
         if not step or not step.get("decision") or _decided(run_state, q["stage"]):
             continue
-        said = "approved" if approval.is_approval(reply) else "declined"
+        said = {"yes": "approved", "if": "approved only once a condition holds"}.get(
+            approval.read_reply(reply, q.get("text") or ""), "declined")
         answer = f"You {said}: \"{' '.join(str(reply).split())[:300]}\""
 
         def add(d, q=q, answer=answer):
@@ -6291,6 +6551,25 @@ def resume_interrupted(record):
 # The run a restart interrupted, waiting for the person to say carry on (or stop).
 _resume_wait = None
 CARRY_ON = re.compile(r"^\W*(?:carry on|continue|go on|resume|yes|yep|go ahead|proceed|ok(?:ay)?)\b", re.I)
+RESUME_QUESTION = "Your request was interrupted by a restart. Shall I carry on from its last checked stage, or stop?"
+RESUME_CHOICES = {
+    "carry_on": "carry on with the interrupted run (with anything they add)",
+    "stop": "do not carry on; end the run",
+    "other": "neither - a new request, or something else",
+}
+RESUME_PLAIN = {"carry_on": ["carry on", "continue", "go on", "resume", "yes", "yep", "yeah", "go ahead", "proceed", "ok",
+                             "okay", "ok carry on", "yes carry on", "yes continue", "ok continue", "go on then"]}
+
+
+def resume_choice(content):
+    """
+    What a reply to "carry on after the restart?" decides, read once: {"choice": carry_on|stop|other|unclear,
+    "instruction": what it adds}. Found (audit, 2026-10-24): "ok, but stop after the first stage" carried the whole run
+    on with its instruction dropped.
+    """
+
+    from decurix_agent.computer import approval
+    return approval.read_choice(content, RESUME_QUESTION, RESUME_CHOICES, RESUME_PLAIN)
 
 
 def _carry_on_after_restart(run_id):

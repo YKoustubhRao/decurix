@@ -21,8 +21,11 @@ class TestWrittenApprovalPause(unittest.TestCase):
         self.finals = []
         self.jobs = []
 
-        def fake_run(request, reply, extra_context=""):
-            self.calls.append({"request": request, "reply": reply, "context": extra_context})
+        def fake_run(request, reply, extra_context="", approval_reading=None):
+            call = {"request": request, "reply": reply, "context": extra_context}
+            if approval_reading is not None:
+                call["reading"] = approval_reading
+            self.calls.append(call)
             return self.jobs.pop(0), None
 
         self.patches = [
@@ -92,7 +95,9 @@ class TestWrittenApprovalPause(unittest.TestCase):
         thebot_harness.perform_task("clean the build", None)
         thebot_harness.continue_after_query("yes")
 
-        self.assertEqual(self.calls[1], {"request": "yes", "reply": True, "context": ""})
+        # The reply goes with its one reading, which soul acts on.
+        self.assertEqual(self.calls[1], {"request": "yes", "reply": True, "context": "",
+                                         "reading": {"decision": "yes", "condition": ""}})
 
     def test_a_new_task_forgets_a_written_pause(self):
         self.jobs = [_answered("NEEDS_APPROVAL: x"), _answered("ok")]
@@ -105,3 +110,49 @@ class TestWrittenApprovalPause(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestThePlanThePersonAnsweredIsCarriedThroughTheRequest(unittest.TestCase):
+    """Found live (2026-10-24): the final check sent a task back, soul started a new goal and put the same plan of the
+    work to the person again, half an hour after they had answered it ("ya same, carry on")."""
+
+    PLAN = "Before I change anything, this is how I will do it:\n- Covering: file both returns\n- From: the workbook"
+
+    def setUp(self):
+        thebot_harness._plan.update(task=None, asked="", said="", pending=False)
+        self.request = "t1"
+        patcher = patch.object(thebot_harness, "_request_id", side_effect=lambda: self.request)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_later_job_of_the_request_gets_the_plan_and_the_answer_as_agreed(self):
+        from decurix_agent.long_task import PLAN_AGREED_MARKER
+        self.assertEqual(thebot_harness.plan_context(), "")
+        thebot_harness.note_question(self.PLAN)
+        self.assertEqual(thebot_harness.plan_context(), "")      # not answered yet
+        thebot_harness.note_reply("haan ok, but read his messages too")
+        said = thebot_harness.plan_context()
+        self.assertTrue(said.startswith(PLAN_AGREED_MARKER))
+        self.assertIn("- Covering: file both returns", said)
+        self.assertIn("Their answer: haan ok, but read his messages too", said)
+        # Answers to later questions are not the plan's.
+        thebot_harness.note_question("I need your OK before I click FILE.")
+        thebot_harness.note_reply("yes")
+        self.assertIn("haan ok, but read his messages too", thebot_harness.plan_context())
+
+    def test_another_request_does_not_get_it(self):
+        thebot_harness.note_question(self.PLAN)
+        thebot_harness.note_reply("ok")
+        self.request = "t2"
+        self.assertEqual(thebot_harness.plan_context(), "")
+
+    def test_the_reply_to_another_question_is_not_taken_for_the_plans(self):
+        thebot_harness.note_question(self.PLAN)
+        thebot_harness.note_question("Which client?")
+        thebot_harness.note_reply("the first one")
+        self.assertEqual(thebot_harness.plan_context(), "")
+
+    def test_the_question_soul_writes_is_the_one_recognised(self):
+        import pathlib
+        go = (pathlib.Path(__file__).resolve().parents[1] / "thebot/internal/skills/plan.go").read_text(encoding="utf-8")
+        self.assertIn(thebot_harness.PLAN_QUESTION.replace("\n", ""), go)

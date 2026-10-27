@@ -75,10 +75,17 @@ type openaiChatResponse struct {
 // the whole task ended in error. The model can still read the document as text.
 func (o *OpenAIProvider) Chat(ctx context.Context, model string, messages []Message, opts Options) (Result, error) {
 	res, err := o.chatOnce(ctx, model, messages, opts)
-	if err == nil || !ContentFiltered(err) || !hasImages(messages) {
+	if err == nil || !hasImages(messages) {
 		return res, err
 	}
-	return o.chatOnce(ctx, model, WithoutImages(messages, "the model provider's content filter refused it"), opts)
+	switch {
+	case ContentFiltered(err):
+		return o.chatOnce(ctx, model, WithoutImages(messages, "the model provider's content filter refused it"), opts)
+	case ImageRefused(err):
+		// A picture the provider cannot read (2026-10-22) never ends the task: the rest is sent without it.
+		return o.chatOnce(ctx, model, WithoutImages(messages, "the model provider could not read it as a picture"), opts)
+	}
+	return res, err
 }
 
 func (o *OpenAIProvider) chatOnce(ctx context.Context, model string, messages []Message, opts Options) (Result, error) {
@@ -91,10 +98,15 @@ func (o *OpenAIProvider) chatOnce(ctx context.Context, model string, messages []
 		if len(m.Images) > 0 {
 			parts := []map[string]any{{"type": "text", "text": m.Content}}
 			for j, img := range base64All(m.Images) {
+				kind := ImageType(m.Images[j])
+				if kind == "" {
+					parts = append(parts, map[string]any{"type": "text", "text": notAPicture(j+1, m.ImageLabel(j))})
+					continue
+				}
 				if label := m.ImageLabel(j); label != "" {
 					parts = append(parts, map[string]any{"type": "text", "text": "Picture " + strconv.Itoa(j+1) + ": " + label})
 				}
-				parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]string{"url": "data:image/png;base64," + img}})
+				parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]string{"url": "data:" + kind + ";base64," + img}})
 			}
 			msgs[i].Content = parts
 		}

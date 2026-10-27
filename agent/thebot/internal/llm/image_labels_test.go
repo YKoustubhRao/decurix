@@ -26,7 +26,7 @@ func TestOpenAIPutsEachPicturesLabelRightBeforeIt(t *testing.T) {
 
 	p := NewOpenAI("k", "")
 	p.BaseURL = srv.URL
-	msg := Message{Role: "user", Content: "two scans", Images: [][]byte{[]byte("a"), []byte("b")},
+	msg := Message{Role: "user", Content: "two scans", Images: [][]byte{testPNG, testPNG},
 		ImageLabels: []string{"scan_0030.pdf, page 1", "scan_0031.pdf, page 1"}}
 	if _, err := p.Chat(context.Background(), "m", []Message{msg}, Options{}); err != nil {
 		t.Fatal(err)

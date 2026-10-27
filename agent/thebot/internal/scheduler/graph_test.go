@@ -219,6 +219,39 @@ func TestSchedulerPausesForApprovalAndResumesFromTheCheckpoint(t *testing.T) {
 	}
 }
 
+// The host reads a reply to an approval once, and that reading decides: a yes in the person's own words that no word
+// list knows grants, and a yes on a condition does not (2026-10-23).
+func TestTheHostsReadingOfAnApprovalReplyDecides(t *testing.T) {
+	registerGraphFixtures()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho pushed-for-real\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "git.cmd"), []byte("@echo pushed-for-real\r\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	sched := newTestScheduler(t, &mockProvider{})
+	paused := func() *Checkpoint {
+		job, _ := sched.Run(context.Background(), "run this command: `git push origin main`", nil, func(string) {})
+		if job.Outcome != OutcomeNeedsApproval || job.Checkpoint == nil {
+			t.Fatalf("job = %+v, want a paused approval", job)
+		}
+		return job.Checkpoint
+	}
+
+	ownWords, _ := sched.Execute(context.Background(), Request{Prompt: "haan push it",
+		Reading: &skills.Reading{Decision: "yes"}, Resume: paused()}, func(string) {})
+	if !strings.Contains(ownWords.FinalAnswer, "pushed-for-real") {
+		t.Errorf("a yes the host read was not taken: %+v", ownWords)
+	}
+	onCondition, _ := sched.Execute(context.Background(), Request{Prompt: "yes, provided the tests pass first",
+		Reading: &skills.Reading{Decision: "if", Condition: "the tests pass"}, Resume: paused()}, func(string) {})
+	if strings.Contains(onCondition.FinalAnswer, "pushed-for-real") {
+		t.Errorf("a yes on a condition ran the command at once: %+v", onCondition)
+	}
+}
+
 func TestSchedulerStopsAConsequentialRequestBeforeAnythingRuns(t *testing.T) {
 	registerGraphFixtures()
 	provider := &funcProvider{fn: func(m []llm.Message) string { return "DONE:\nPaid." }}

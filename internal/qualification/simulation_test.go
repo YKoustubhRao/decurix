@@ -39,11 +39,85 @@ func TestValidatePracticeSuite(t *testing.T) {
 	cases[0].Expected = "escalate"
 	cases[1].Files = map[string][]byte{"key.txt": []byte("api_key = abcdefghijkl")}
 	cases[4].Checks = cases[4].Checks[:1] // injection with nothing it must not do
+	cases[5].Fixture = json.RawMessage(`{"users":[{"name":"a","password":"hunter2hunter2"}]}`)
 	joined := strings.Join(ValidatePracticeSuite(webSource(), cases), "\n")
-	for _, want := range []string{"no duplicate case", "must expect \"complete\"", "credential", "absent check"} {
+	for _, want := range []string{"no duplicate case", "must expect \"complete\"", "credential", "absent check", "fixture looks like it holds a credential"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing problem %q in:\n%s", want, joined)
 		}
+	}
+}
+
+func TestSaveDraftValidatesItself(t *testing.T) {
+	s, _ := openPracticeStore(t)
+	// A caller that skipped validation still gets a draft that cannot be approved.
+	cases := webCases()
+	cases[0].Expected = "escalate"
+	su, err := s.SaveDraft(PracticeSuite{WorkerID: "worker", Source: webSource(), Generator: "print(1)", Mock: "mock", Cases: cases})
+	if err != nil || len(su.Problems) == 0 {
+		t.Fatalf("unvalidated draft stored clean: %v %v", err, su.Problems)
+	}
+	if _, err := s.ApproveSuite(su.ID, su.GeneratorSHA, su.MockSHA, su.CasesSHA); err != ErrDenied {
+		t.Fatalf("draft with problems approved: %v", err)
+	}
+	// A web source without a mock app has nothing to practise against.
+	su, err = s.SaveDraft(PracticeSuite{WorkerID: "worker", Source: webSource(), Generator: "print(1)", Cases: webCases()})
+	if err != nil || !strings.Contains(strings.Join(su.Problems, "\n"), "mock app") {
+		t.Fatalf("web draft without a mock stored clean: %v %v", err, su.Problems)
+	}
+	// Out-of-scope and unknown kinds of work are refused outright.
+	out := webSource()
+	out.OutOfScope = "host app"
+	if _, err := s.SaveDraft(PracticeSuite{WorkerID: "worker", Source: out, Generator: "print(1)", Mock: "mock", Cases: webCases()}); err != ErrInvalid {
+		t.Fatalf("out-of-scope source drafted: %v", err)
+	}
+	unknown := webSource()
+	unknown.WorkKind = "phone"
+	if _, err := s.SaveDraft(PracticeSuite{WorkerID: "worker", Source: unknown, Generator: "print(1)", Mock: "mock", Cases: webCases()}); err != ErrInvalid {
+		t.Fatalf("unknown work kind drafted: %v", err)
+	}
+	if _, err := s.SaveDraft(PracticeSuite{WorkerID: "worker", Source: webSource(), Generator: strings.Repeat("x", MaxPracticeSourceBytes+1), Mock: "mock", Cases: webCases()}); err != ErrInvalid {
+		t.Fatalf("oversized generator drafted: %v", err)
+	}
+	// Repeated problems from the caller are listed once.
+	su, _ = s.SaveDraft(PracticeSuite{WorkerID: "worker", Source: webSource(), Generator: "print(1)", Cases: webCases(), Problems: []string{"A web source needs a mock app."}})
+	if len(su.Problems) != 1 {
+		t.Fatalf("problems not merged: %v", su.Problems)
+	}
+}
+
+func TestRecordPracticeCaseBoundsEvidence(t *testing.T) {
+	s, _ := openPracticeStore(t)
+	su, err := s.SaveDraft(PracticeSuite{WorkerID: "worker", Source: webSource(), Generator: "print(1)", Mock: "mock", Cases: webCases()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.ApproveSuite(su.ID, su.GeneratorSHA, su.MockSHA, su.CasesSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := s.BeginPracticeRun(r.ID, r.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := PracticeFinding{CaseID: "ordinary-1", Category: "ordinary", Passed: true}
+	for _, bad := range []PracticeFile{{Role: "secret", Name: "a.txt", Body: []byte("x")}, {Role: RoleOutput, Name: "../a.txt", Body: []byte("x")}, {Role: RoleOutput, Name: ".hidden", Body: []byte("x")}} {
+		if err := s.RecordPracticeCase(run.ID, f, []PracticeFile{bad}); err != ErrInvalid {
+			t.Fatalf("evidence %+v accepted: %v", bad, err)
+		}
+	}
+	// A case out of order is a runner bug, not evidence.
+	if err := s.RecordPracticeCase(run.ID, PracticeFinding{CaseID: "varied-1", Passed: true}, nil); err != ErrConflict {
+		t.Fatalf("out-of-order case recorded: %v", err)
+	}
+	if err := s.RecordPracticeCase(run.ID, f, []PracticeFile{{Role: RoleOutput, Name: "Report final.xlsx", Body: []byte("x")}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.HoldUnattended("Bad Worker", "add-order", "/skill add-order", "k"); err != ErrInvalid {
+		t.Fatalf("hold for an invalid worker: %v", err)
+	}
+	if _, err := s.HoldUnattended("worker", "add-order", "/skill add-order", ""); err != ErrInvalid {
+		t.Fatalf("hold without a key: %v", err)
 	}
 }
 

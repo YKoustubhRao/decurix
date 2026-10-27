@@ -1,0 +1,47 @@
+package config
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestNoKeyMeansLoopbackOnly(t *testing.T) {
+	c := Default()
+	c.Mode = ModeLocal
+	if err := c.Validate(); err != nil {
+		t.Fatalf("loopback without a key: %v", err)
+	}
+	c.Listen = "0.0.0.0:8484"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "API key") {
+		t.Fatalf("open address without a key was allowed: %v", err)
+	}
+	t.Setenv("TEST_BRAINIAC_KEY", "k")
+	c.APIKeyEnv = "TEST_BRAINIAC_KEY"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("open address with a key: %v", err)
+	}
+}
+
+func TestRemoteFromEnvironment(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("BRAINIAC_REMOTE", "decurix:claude")
+	c, err := Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Mode != ModeHybrid || c.Remote.URL != "http://127.0.0.1:8080" || c.Remote.Model != "default" {
+		t.Fatalf("config %+v remote %+v", c, c.Remote)
+	}
+	t.Setenv("BRAINIAC_REMOTE", "decurix:gemini")
+	if _, err := Load(home); err == nil {
+		t.Fatal("an unknown hosted brain was accepted")
+	}
+}
+
+func TestHybridNeedsARemote(t *testing.T) {
+	c := Default()
+	c.Mode = ModeHybrid
+	if err := c.Validate(); err == nil {
+		t.Fatal("hybrid without a remote was accepted")
+	}
+}
