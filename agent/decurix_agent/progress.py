@@ -110,12 +110,17 @@ def emit(text):
     if len(text) > MAX_TEXT:
         text = text[:MAX_TEXT] + "…"
 
+    # The task is read now, not when the line is sent: by then the next task may already have started. With no task
+    # running there is nothing to report on: found live (2026-10-28), a `gui observe` run outside any task posted "looked
+    # at the screen" to the chat every few seconds, the chat read as busy, and the worker was never seen as ready.
+    task_id = task_context.current()
+    if not task_id:
+        return
+
     _ensure_sender()
 
     try:
-        # The task is read now, not when the line is sent: by then the next
-        # task may already have started.
-        _pending.put_nowait({"text": text, "task_id": task_context.current()})
+        _pending.put_nowait({"text": text, "task_id": task_id})
     except queue.Full:
         # The sender is behind. Losing a progress line is always better
         # than blocking the task that produced it.

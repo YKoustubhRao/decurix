@@ -98,6 +98,9 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		CostUSD      *float64 `json:"cost_usd"`
 		InputTokens  *int64   `json:"input_tokens"`
 		OutputTokens *int64   `json:"output_tokens"`
+		// CachedInputTokens is the part of InputTokens the provider served
+		// from its prompt cache.
+		CachedInputTokens *int64 `json:"cached_input_tokens"`
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxQueryTextRequestBytes)
@@ -113,7 +116,7 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	// Qualification outcomes are produced by the host verifier, never agent
 	// callbacks. An injected request cannot close or certify an exam task.
 	desktopID := desktop.SanitizeID(req.DesktopID)
-	if strings.HasPrefix(desktopID, "readiness-") {
+	if strings.HasPrefix(desktopID, "readiness-") || strings.HasPrefix(desktopID, "practice-") {
 		jsonStatusError(w, http.StatusForbidden, "Readiness results can only be recorded by the independent runner.")
 		return
 	}
@@ -165,14 +168,15 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	taskID, err := s.Tasks.RecordOutcome(desktopID, reportedTaskID(req.TaskID), tasks.Outcome{
-		Kind:         note.Kind,
-		Reply:        chatText,
-		Engine:       clip(req.Engine, 32),
-		Model:        clip(req.Model, 128),
-		CostUSD:      nonNegative(req.CostUSD),
-		InputTokens:  nonNegative(req.InputTokens),
-		OutputTokens: nonNegative(req.OutputTokens),
-		Checked:      req.Checked,
+		Kind:              note.Kind,
+		Reply:             chatText,
+		Engine:            clip(req.Engine, 32),
+		Model:             clip(req.Model, 128),
+		CostUSD:           nonNegative(req.CostUSD),
+		InputTokens:       nonNegative(req.InputTokens),
+		OutputTokens:      nonNegative(req.OutputTokens),
+		CachedInputTokens: cachedWithin(nonNegative(req.CachedInputTokens), nonNegative(req.InputTokens)),
+		Checked:           req.Checked,
 	})
 	if err != nil {
 		log.Printf("querytext from %s: %v", desktopID, err)
@@ -310,4 +314,17 @@ func (s *Server) dashboardPostsHandler(w http.ResponseWriter, r *http.Request) {
 		)
 		return
 	}
+}
+
+// cachedWithin is the cached share of the input, never more than the input it
+// is part of; nil when either is unknown.
+func cachedWithin(cached, input *int64) *int64 {
+	if cached == nil || input == nil {
+		return nil
+	}
+	if *cached > *input {
+		v := *input
+		return &v
+	}
+	return cached
 }

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/YKoustubhRao/decurix/internal/access"
 	"github.com/YKoustubhRao/decurix/internal/cftunnel"
 	"github.com/YKoustubhRao/decurix/internal/claudeauth"
 	"github.com/YKoustubhRao/decurix/internal/conversation"
@@ -21,8 +22,10 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/devices"
 	"github.com/YKoustubhRao/decurix/internal/grounder"
+	"github.com/YKoustubhRao/decurix/internal/handoff"
 	"github.com/YKoustubhRao/decurix/internal/idlepause"
 	"github.com/YKoustubhRao/decurix/internal/keepawake"
+	"github.com/YKoustubhRao/decurix/internal/knowledge"
 	"github.com/YKoustubhRao/decurix/internal/lanaccess"
 	"github.com/YKoustubhRao/decurix/internal/mailtrigger"
 	"github.com/YKoustubhRao/decurix/internal/memory"
@@ -31,12 +34,14 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/resourcemon"
 	"github.com/YKoustubhRao/decurix/internal/schedule"
+	"github.com/YKoustubhRao/decurix/internal/skillhub"
 	"github.com/YKoustubhRao/decurix/internal/stepimages"
 	"github.com/YKoustubhRao/decurix/internal/suggest"
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"github.com/YKoustubhRao/decurix/internal/tunnel"
 	"github.com/YKoustubhRao/decurix/internal/webui"
 	"github.com/YKoustubhRao/decurix/internal/winhost"
+	"github.com/YKoustubhRao/decurix/internal/workqueue"
 )
 
 // Server wires the desktop manager, query-notes store, memory store, chat
@@ -50,9 +55,20 @@ type Server struct {
 	Desktops   *desktop.Manager
 	QueryNotes *querynotes.Store
 	Memory     *memory.Store
-	Chat       *conversation.Store
-	StepImages *stepimages.Store
-	Tasks      *tasks.Store
+	// SkillHub keeps the org's skills (versions, installs, worker roles); Knowledge the scoped rules and facts with
+	// where each came from (docs/skillhub.md). Desktops read both; only a person writes (readsForAll).
+	SkillHub  *skillhub.Store
+	Knowledge *knowledge.Store
+	// Handoffs carries work from one worker to another, typed, with the receiver's final check (docs/handoff.md).
+	Handoffs *handoff.Service
+	// Access is users, roles and approval policy (docs/access.md); nil, every reply settles an approval as before.
+	Access *access.Handler
+	// Queue is work waiting for a worker; QueueDispatcher assigns it under capacity and spend limits (docs/workqueue.md).
+	Queue           *workqueue.Store
+	QueueDispatcher *workqueue.Dispatcher
+	Chat            *conversation.Store
+	StepImages      *stepimages.Store
+	Tasks           *tasks.Store
 	// Qualification owns evidence and grants; desktop agents cannot write them.
 	Qualification     *qualification.Store
 	qualificationAuth qualificationAuth
@@ -333,6 +349,28 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/teams/get", s.teamHandler)
 	mux.HandleFunc("/api/teams/deploy", s.deployTeamHandler)
 	mux.HandleFunc("/api/channels/inbound", s.inboundChannelHandler)
+	if s.SkillHub != nil {
+		hub := http.NewServeMux()
+		(&skillhub.Handler{Store: s.SkillHub, Agent: s.Desktops}).Register(hub)
+		for _, path := range []string{"/api/skillhub", "/api/skillhub/publish", "/api/skillhub/install", "/api/skillhub/roles",
+			"/api/skillhub/assign", "/api/skillhub/sync", "/api/skillhub/outdated"} {
+			mux.Handle(path, s.readsForAll(hub))
+		}
+	}
+	if s.Knowledge != nil {
+		known := http.NewServeMux()
+		var roles knowledge.RoleSource
+		if s.SkillHub != nil {
+			roles = s.SkillHub
+		}
+		(&knowledge.Handler{Store: s.Knowledge, Roles: roles}).Register(known)
+		for _, path := range []string{"/api/knowledge", "/api/knowledge/supersede", "/api/knowledge/why"} {
+			mux.Handle(path, s.readsForAll(known))
+		}
+	}
+	// The workforce page: skills and roles, the queue, handoffs, knowledge, users and approval policy (workforce.html);
+	// a page for people, never a desktop's agent.
+	mux.HandleFunc("/workforce", s.humansOnly(s.workforcePageHandler))
 	mux.HandleFunc("/api/skills/catalog", s.skillsCatalogHandler)
 	mux.HandleFunc("/api/skills/catalog/install", s.installCatalogSkillHandler)
 	mux.HandleFunc("/api/desktops/mode", s.workerModeHandler)
@@ -407,4 +445,18 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/native-ollama/", s.nativeOllamaHandler)
 	// Drafts from the agents' draft_email; sending them is humansOnly above.
 	mux.HandleFunc("/api/outbox", s.outboxCreateHandler)
+	// Handoffs between workers: the callers are desktops' agents, named in the body, which only this listener can
+	// trust - and a handoff starts work on another desktop and moves files between them (docs/handoff.md).
+	if s.Handoffs != nil {
+		(&handoff.Handler{Service: s.Handoffs}).Register(mux)
+	}
+	// The work queue starts work on desktops and spends model budget: primary listener only, and desktops may only
+	// read it - worker-to-worker work is a handoff (docs/workqueue.md).
+	if s.Queue != nil {
+		q := http.NewServeMux()
+		(&workqueue.Handler{Store: s.Queue, Dispatcher: s.QueueDispatcher}).Register(q)
+		for _, path := range workqueue.Paths() {
+			mux.Handle(path, s.readsForAll(q))
+		}
+	}
 }

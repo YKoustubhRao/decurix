@@ -389,6 +389,7 @@ def _record_usage(result):
         input_tokens=input_tokens if tokens else None,
         output_tokens=tokens.get("output_tokens"),
         cost_usd=result.get("total_cost_usd"),
+        cached_input_tokens=tokens.get("cache_read_input_tokens") if tokens else None,
     )
 
 

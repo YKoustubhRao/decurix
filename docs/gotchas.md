@@ -771,3 +771,14 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): A photographed bill's date was unreadable at the size the whole photo is shown, and the worker had no way to look closer: office read PHOTO PART crops and enlarges a part
 - [part-5.md](gotchas/part-5.md): The chat said a bill was cancelled, the worker read it and saved the bill anyway: a saved record whose number a line the task read calls off is a work point
 - [part-5.md](gotchas/part-5.md): The lesson asked about clicks and never about the rules of the work, and every run met them unready: a lesson settles a workflow brief of nine topics, each seen, confirmed or asked
+- [part-5.md](gotchas/part-5.md): A look at the screen outside any task made the chat read as busy and setup timed out: progress steps go out only while a task is current
+- [part-5.md](gotchas/part-5.md): Readiness and Simulate could not copy files into or out of their read-only offline container on Docker 29: tar through exec, with a freeze in the same exec
+- [part-5.md](gotchas/part-5.md): A practice draft failed for reasons its author could fix and never heard them: one repair round, steady Office bytes, named bad files
+- [part-5.md](gotchas/part-5.md): The first live practice run met five walls (broker address, missing .decurix, no-new-privileges, valueless replay, crashing mock): each fixed generically, every failure now logged
+- [part-5.md](gotchas/part-5.md): A rerun after a crash continued the failed task as a retry, with evidence from apps the test had reset: runners refuse that route
+- [part-5.md](gotchas/part-5.md): Five bills read, one entered, "done": shared figures made the others look used; with records declared, a read file is covered only by being a record's source
+- [part-5.md](gotchas/part-5.md): A month folder made in a dialog escaped the mkdir check ("11. NOVEMBER" beside "7. OCTOBER"): folder names are checked at the report, form and numbering
+- [part-5.md](gotchas/part-5.md): Review points reached the person cut mid-word with "[truncated]": 700 characters, cut at a sentence with an ellipsis
+- [part-5.md](gotchas/part-5.md): A photo bill was entered with a tax line that is the rate of no amount in the record: rate lines are checked in code (advisory)
+- [part-5.md](gotchas/part-5.md): A value read for a run went as the person's word and the review enforced it over correct work: inferred values are marked as readings
+- [part-5.md](gotchas/part-5.md): A new customer refused as "shown already" because its GSTIN was in the search page's address: headers and addresses are not page words

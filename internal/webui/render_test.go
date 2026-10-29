@@ -271,6 +271,19 @@ func TestRenderEveryPage(t *testing.T) {
 			t.Errorf("the dashboard lacks %q", want)
 		}
 	}
+	// A running worker's card offers Simulate on this computer; the gated listener never shows it (docs/simulation.md).
+	if !strings.Contains(index.String(), `href="/readiness/research-box#simulate"`) {
+		t.Error("a running worker's card lacks the Simulate button")
+	}
+	gated := page
+	gated.Gated = true
+	var gatedIndex strings.Builder
+	if err := renderer.RenderIndex(&gatedIndex, gated); err != nil {
+		t.Fatalf("RenderIndex gated: %v", err)
+	}
+	if strings.Contains(gatedIndex.String(), "#simulate") {
+		t.Error("the gated dashboard shows the Simulate button")
+	}
 	if strings.Contains(index.String(), strings.Repeat("a very long request ", 10)) {
 		t.Error("the task dropdown shows the whole request instead of a short title")
 	}
@@ -354,6 +367,35 @@ func TestRenderEveryPage(t *testing.T) {
 		if !strings.Contains(viewer, want) {
 			t.Fatalf("the screen viewer is missing %q", want)
 		}
+	}
+
+	// The workforce page: every section on the primary listener, and none of
+	// the primary-only ones (queue, handoffs, access) when asked for through
+	// the gated listener - neither their markup nor the script that calls them.
+	var workforce bytes.Buffer
+	if err := renderer.RenderWorkforce(&workforce, WorkforcePageData{HasSkillHub: true, HasKnowledge: true, HasQueue: true, HasHandoffs: true, HasAccess: true}); err != nil {
+		t.Fatalf("RenderWorkforce: %v", err)
+	}
+	for _, want := range []string{
+		`id="sec-workers"`, `id="sec-skills"`, `id="sec-queue"`, `id="sec-handoffs"`, `id="sec-knowledge"`, `id="sec-access"`,
+		"/api/skillhub/sync", "/api/queue/limits", "/api/handoffs/cancel", "/api/knowledge/why", "/api/access/policies/check",
+		`href="/workforce" class="active"`, "setInterval(refresh, POLL_MS)",
+	} {
+		if !strings.Contains(workforce.String(), want) {
+			t.Errorf("the workforce page is missing %q", want)
+		}
+	}
+	workforce.Reset()
+	if err := renderer.RenderWorkforce(&workforce, WorkforcePageData{Gated: true, HasSkillHub: true, HasKnowledge: true}); err != nil {
+		t.Fatalf("RenderWorkforce (gated): %v", err)
+	}
+	for _, gone := range []string{`id="sec-access"`, "/api/access/", `id="sec-queue"`, "/api/queue", `id="sec-handoffs"`, "/api/handoffs"} {
+		if strings.Contains(workforce.String(), gone) {
+			t.Errorf("the gated workforce page still has %q", gone)
+		}
+	}
+	if err := renderer.RenderWorkforce(io.Discard, WorkforcePageData{}); err != nil {
+		t.Fatalf("RenderWorkforce with nothing wired: %v", err)
 	}
 
 	// The DAGs list, empty and with one entry that has already run.

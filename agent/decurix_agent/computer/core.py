@@ -1519,9 +1519,18 @@ def _page_items(look):
     listing = look.split("as the tool listed it:\n", 1)
     for line in listing[1].splitlines() if len(listing) == 2 else []:
         parts = line.split()
+        # A window's or a tab's header and the page's address are not the page's words: a search typed into a list
+        # page puts the identifier into its address ("list?q=<the identifier>"), and the gate read that as a record
+        # holding it (2026-10-29: a new customer refused as "shown already" three times).
+        if _HEADER_LINE.match(line) or "://" in line:
+            continue
         if len(parts) > 1 and parts[1] not in TYPING_ROLES and " value=" not in line:
             out.append((line, line))
     return out
+
+
+# The lines of a listing that frame the page rather than show it: the screen, its windows, a tab's header.
+_HEADER_LINE = re.compile(r"^\s*(?:==|Screen \d|Active window:|Open windows:|Apps on this desktop)")
 
 
 # A title in front of a name: not part of the name a record is known by.

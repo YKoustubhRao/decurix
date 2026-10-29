@@ -127,7 +127,7 @@ func (m *Manager) RunQualification(ctx context.Context, d qualification.Definiti
 	if err = tw.Close(); err != nil {
 		return result, err
 	}
-	if err = m.client.CopyToContainer(ctx, created.ID, "/work", &buf, container.CopyToContainerOptions{}); err != nil {
+	if err = m.execTarIn(ctx, created.ID, "/work", &buf); err != nil {
 		return result, err
 	}
 	// env -i discards every image ENV as well as the caller's environment.
@@ -168,17 +168,13 @@ func (m *Manager) RunQualification(ctx context.Context, d qualification.Definiti
 		return result, fmt.Errorf("program still running")
 	}
 	result.ExitCode = state.ExitCode
-	// Freeze every subprocess before reading, preventing post-exit writes and
-	// races where the agent shows one file to a checker and then changes it.
-	if err = m.client.ContainerPause(ctx, created.ID); err != nil {
-		return result, err
-	}
-	rc, _, err := m.client.CopyFromContainer(ctx, created.ID, "/work")
+	// execTarOut stops every subprocess before reading, preventing post-exit
+	// writes and races where the agent shows one file to a checker and then changes it.
+	archive, err := m.execTarOut(ctx, created.ID, "/work", qualification.MaxTotalBytes+1<<20)
 	if err != nil {
 		return result, err
 	}
-	defer rc.Close()
-	result.Artifacts, err = qualificationArtifacts(rc, program, c.Inputs)
+	result.Artifacts, err = qualificationArtifacts(bytes.NewReader(archive), program, c.Inputs)
 	return result, err
 }
 
@@ -246,7 +242,7 @@ func qualificationArtifacts(r io.Reader, program string, inputs map[string][]byt
 			continue
 		}
 		if !qualification.FileName(name) {
-			return nil, fmt.Errorf("invalid artifact name")
+			return nil, fmt.Errorf("invalid artifact name %q", name)
 		}
 		out[name] = b
 	}
