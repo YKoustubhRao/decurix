@@ -101,3 +101,17 @@ func (s *Server) humansOnly(h http.HandlerFunc) http.HandlerFunc {
 		h(w, r)
 	}
 }
+
+// readsForAll serves reads (GET, HEAD) to anyone the listener lets in and every other method only to a person: a
+// desktop's agent may read the org's skills and knowledge, never write them. Found in review (2026-10-27): with writes
+// open to desktops, any worker could post an org-wide rule labelled as the person's, or install a skill into another
+// worker.
+func (s *Server) readsForAll(h http.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && s.fromContainer(r) {
+			jsonStatusError(w, http.StatusForbidden, "not available from inside a desktop")
+			return
+		}
+		h.ServeHTTP(w, r)
+	}
+}

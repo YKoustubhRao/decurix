@@ -21,6 +21,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/joho/godotenv"
 
+	"github.com/YKoustubhRao/decurix/internal/access"
 	"github.com/YKoustubhRao/decurix/internal/cftunnel"
 	"github.com/YKoustubhRao/decurix/internal/claudeauth"
 	"github.com/YKoustubhRao/decurix/internal/conversation"
@@ -28,9 +29,11 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/devices"
 	"github.com/YKoustubhRao/decurix/internal/grounder"
+	"github.com/YKoustubhRao/decurix/internal/handoff"
 	"github.com/YKoustubhRao/decurix/internal/httpapi"
 	"github.com/YKoustubhRao/decurix/internal/idlepause"
 	"github.com/YKoustubhRao/decurix/internal/keepawake"
+	"github.com/YKoustubhRao/decurix/internal/knowledge"
 	"github.com/YKoustubhRao/decurix/internal/lanaccess"
 	"github.com/YKoustubhRao/decurix/internal/llm"
 	"github.com/YKoustubhRao/decurix/internal/mailtrigger"
@@ -38,11 +41,13 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/ollama"
 	"github.com/YKoustubhRao/decurix/internal/outbox"
 	"github.com/YKoustubhRao/decurix/internal/phonehost"
+	"github.com/YKoustubhRao/decurix/internal/practice"
 	"github.com/YKoustubhRao/decurix/internal/qualification"
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/resourcemon"
 	"github.com/YKoustubhRao/decurix/internal/schedule"
 	"github.com/YKoustubhRao/decurix/internal/sealed"
+	"github.com/YKoustubhRao/decurix/internal/skillhub"
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 	"github.com/YKoustubhRao/decurix/internal/stepimages"
 	"github.com/YKoustubhRao/decurix/internal/suggest"
@@ -50,6 +55,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/tunnel"
 	"github.com/YKoustubhRao/decurix/internal/webui"
 	"github.com/YKoustubhRao/decurix/internal/winhost"
+	"github.com/YKoustubhRao/decurix/internal/workqueue"
 )
 
 const (
@@ -414,7 +420,15 @@ func main() {
 
 	server.Devices = pairedDevices
 	server.DB = db
+	server.SkillHub = must(skillhub.NewStore(db))
+	server.Knowledge = must(knowledge.NewStore(db))
+	server.Handoffs = server.NewHandoffService(must(handoff.NewStore(db)))
+	go server.Handoffs.Run(context.Background())
+	server.Queue = must(workqueue.NewStore(db))
+	server.QueueDispatcher = server.NewQueueDispatcher(server.Queue, db)
+	go server.QueueDispatcher.Run(context.Background(), 10*time.Second)
 	server.Qualification = must(qualification.NewStore(db))
+	server.SetAccess(must(access.NewStore(db)))
 	for _, run := range must(server.Qualification.Interrupted()) {
 		if err := tasksStore.CloseOpen("readiness-"+run.ID, "Readiness run interrupted by a control-plane restart; never automatically replayed."); err != nil {
 			log.Fatalf("reconcile interrupted readiness task: %v", err)
@@ -428,6 +442,10 @@ func main() {
 	qualificationCleanup, qualificationCleanupDone := context.WithTimeout(context.Background(), 30*time.Second)
 	if err := desktops.CleanupQualification(qualificationCleanup); err != nil {
 		log.Printf("warning: cleanup interrupted readiness containers: %v", err)
+	}
+	// Practice desktops are disposable the same way (docs/simulation.md).
+	if err := desktops.CleanupPractice(qualificationCleanup); err != nil {
+		log.Printf("warning: cleanup practice containers: %v", err)
 	}
 	qualificationCleanupDone()
 	server.CFTunnel = namedTunnel
@@ -462,6 +480,26 @@ func main() {
 		log.Printf("warning: %s: %v; the model API keys will be stored unencrypted", llm.KeyFile, err)
 	}
 	server.LLM = must(llm.NewHub(db, llmKey))
+	// Simulate: practice runs of what a worker was taught, on a practice desktop that reaches only its broker
+	// (docs/simulation.md). Its routes are the owner's, primary listener only.
+	practiceSvc := &practice.Service{
+		Store: server.Qualification, LLM: server.LLM, Offline: desktops, Workers: desktops, Sandbox: desktops, Tasks: tasksStore,
+		Broker: &practice.Broker{LLM: server.LLM, Steps: func(w, t, text string) { _, _ = tasksStore.AddStep(w, t, tasks.Step{Text: text}) }},
+		Rules: func(id string) string {
+			var b strings.Builder
+			for _, e := range server.Memory.List(id) {
+				b.WriteString(e.Title + ": " + e.Summary + "\n")
+			}
+			return b.String()
+		},
+		Vision:     func(p string) bool { return server.LLM.Status()[p].Vision },
+		FreeMemory: func() (uint64, error) { _, avail, err := ollama.AvailableMemory(); return avail, err },
+		MaxTokens:  practice.MaxTokensFromEnv(),
+	}
+	brokerLn := &practice.BrokerListener{Network: desktops.PracticeBrokerEndpoint, Port: "8091", Handler: practiceSvc.Broker.Handler()}
+	defer brokerLn.Close()
+	practiceSvc.BrokerURL = brokerLn.URL
+	practiceSubnets := &practice.SubnetCache{Lookup: desktops.PracticeSubnets}
 	// A GUI-grounding model, when .env names one (DECURIX_GROUNDER_MODEL):
 	// where on the screen a desktop's `gui click --see "..."` clicks.
 	if g := grounder.FromEnv(ollama.DesktopURL()); g != nil {
@@ -490,6 +528,9 @@ func main() {
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 	server.RegisterLocalRoutes(mux)
+	server.RegisterSimulationRoutes(mux, practiceSvc)
+	server.RegisterAccessRoutes(mux)
+	server.RegisterAccessLocalRoutes(mux)
 
 	// The second listener is what a Cloudflare tunnel or a direct LAN
 	// address should be pointed at: every route the primary listener serves,
@@ -500,6 +541,7 @@ func main() {
 	// for why this is a second port rather than authenticating :8080 itself.
 	lanMux := http.NewServeMux()
 	server.RegisterRoutes(lanMux)
+	server.RegisterAccessRoutes(lanMux)
 
 	lanAddr := lanListenAddr()
 
@@ -512,7 +554,8 @@ func main() {
 		}
 	}
 
-	lanServer := newServer(lanAddr, lanAccess.Middleware(httpapi.GzipMiddleware(httpapi.MarkGated(lanMux))))
+	// A practice desktop reaches only its broker: both listeners refuse its subnet (practice.RefuseSubnets).
+	lanServer := newServer(lanAddr, practice.RefuseSubnets(practiceSubnets.Subnets, lanAccess.Middleware(httpapi.GzipMiddleware(httpapi.MarkGated(lanMux)))))
 	// Every listener, for the shutdown below; appended to only before it starts.
 	activeServers := []*http.Server{lanServer}
 
@@ -648,7 +691,7 @@ func main() {
 	})
 	log.Printf("Desktop manager listening on %s", strings.Join(addrs, ", "))
 
-	handler := httpapi.RefuseForwarded(httpapi.GzipMiddleware(mux))
+	handler := practice.RefuseSubnets(practiceSubnets.Subnets, httpapi.RefuseForwarded(httpapi.GzipMiddleware(mux)))
 
 	for _, addr := range addrs[1:] {
 		s := newServer(addr, handler)

@@ -87,7 +87,7 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, sent, err := s.submitRequestWithFiles(r.Context(), desktopID, content, files)
+	route, sent, err := s.submitRequestWithFiles(s.ActorContext(r), desktopID, content, files)
 	if err != nil {
 		uploadError(w, err)
 		return
@@ -148,6 +148,12 @@ func (s *Server) submitLocked(ctx context.Context, desktopID, content string) (t
 	ollama.WarmAsync()
 
 	route := s.routeRequest(id, content)
+
+	// A reply that settles a pending approval is held to the approval policy: who may approve this action
+	// (docs/access.md). Every door passes here; an automated one carries no actor and never approves under a policy.
+	if err := s.gateApprovalReply(ctx, id, route, content); err != nil {
+		return tasks.Route{}, err
+	}
 
 	if err := s.deliverRequest(ctx, desktopID, content, route.TaskID); err != nil {
 		return tasks.Route{}, err

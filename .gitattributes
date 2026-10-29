@@ -27,3 +27,4 @@ agent/lookup text eol=lf
 agent/chromium-browser text eol=lf
 # Becomes .env, which docker/Dockerfile copies into the Linux control plane.
 .env.example text eol=lf
+agent/handoff text eol=lf

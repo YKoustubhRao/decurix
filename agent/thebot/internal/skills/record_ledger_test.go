@@ -59,3 +59,64 @@ func TestAQuestionTheScreenAnswersIsSentBackOnce(t *testing.T) {
 		t.Fatalf("a phrase the screen does not show: %q", got)
 	}
 }
+
+func TestASourceWithBracketsStillGivesItsPoints(t *testing.T) {
+	ledger := "1 record(s) declared in this task:\n" +
+		"- 0195 (from /home/h/Downloads/Anitha (Solar) 0195.pdf; scope Nov): declared, not saved (no save seen)\n"
+	issues := recordLedgerIssues(ledger)
+	if len(issues) != 1 || !strings.Contains(issues[0].What, "record 0195 was declared") {
+		t.Fatalf("a source holding brackets lost its point: %+v", issues)
+	}
+	if !ledgerSources(ledger)["anitha (solar) 0195.pdf"] {
+		t.Fatalf("source not read: %v", ledgerSources(ledger))
+	}
+}
+
+func TestReadFilesNoRecordCameFromArePointsWhenTheWorkDeclaresRecords(t *testing.T) {
+	st := &operatorState{RecordLedger: "1 record(s) declared in this task:\n" +
+		"- B2 (from /home/h/Downloads/B-0201 REVISED.pdf): saved and read back\n"}
+	for _, n := range []string{"B-0199.pdf", "B-0200.pdf", "B-0201.pdf", "B-0201 REVISED.pdf"} {
+		st.addUnit("document", "/home/h/Downloads/"+n, "Bill to Same Buyer GSTIN 29AAAAA0000A1Z5 total 1000")
+	}
+	st.Written = []string{"29AAAAA0000A1Z5", "1000"} // the one entry's values, which every bill shares
+	issues := st.coverageIssues("Entered B-0201 REVISED. B-0201.pdf is the earlier version, replaced by the revised bill.")
+	var named []string
+	for _, i := range issues {
+		named = append(named, i.What)
+	}
+	got := strings.Join(named, "\n")
+	if !strings.Contains(got, "B-0199.pdf") || !strings.Contains(got, "B-0200.pdf") {
+		t.Fatalf("bills read and never entered were not raised: %v", named)
+	}
+	if strings.Contains(got, "B-0201.pdf (") || strings.Contains(got, "REVISED") {
+		t.Fatalf("a bill entered, or one the report sets aside with its reason, was raised: %v", named)
+	}
+}
+
+func TestARateLineThatFitsNoAmountIsAMisreadFigure(t *testing.T) {
+	ledger := "2 record(s) declared in this task:\n" +
+		"- VAI-3307 (from /home/h/Downloads/IMG-0022.jpg; scope Nov): saved and read back\n" +
+		"    No.: VAI-3307 [source; read back: seen]\n" +
+		"    Particulars 1: Sales@5% [screen; read back: seen]\n" +
+		"    Amount 1: 32700.00 [source; read back: seen]\n" +
+		"    Particulars 2: CGST@2.5% [source; read back: seen]\n" +
+		"    Amount 2: 737.50 [source; read back: seen]\n" +
+		"    Particulars 3: SGST@2.5% [source; read back: seen]\n" +
+		"    Amount 3: 737.50 [source; read back: seen]\n" +
+		"- VAI-3308 (from /home/h/Downloads/VAI-3308.docx): saved and read back\n" +
+		"    Particulars 1: Sales@18% [screen; read back: seen]\n" +
+		"    Amount 1: 1,48,000.00 [source; read back: seen]\n" +
+		"    Particulars 2: IGST@18% [source; read back: seen]\n" +
+		"    Amount 2: 26,640.00 [source; read back: seen]\n" +
+		"    Particulars 3: Discount 10% [source; read back: seen]\n" +
+		"    Amount 3: 14,800.00 [source; read back: seen]\n"
+	issues := rateMismatchIssues(ledger)
+	if len(issues) != 2 {
+		t.Fatalf("want the two misread tax lines of VAI-3307 only, got %d: %+v", len(issues), issues)
+	}
+	for _, i := range issues {
+		if !strings.Contains(i.What, "VAI-3307") || !strings.Contains(i.What, "29500.00") || !i.Advisory {
+			t.Fatalf("point does not name the record and the base it implies, or is not advisory: %+v", i)
+		}
+	}
+}

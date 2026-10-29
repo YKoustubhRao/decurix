@@ -4,7 +4,7 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
-from decurix_agent import playbooks, record_task, replay_task, skill_task
+from decurix_agent import playbooks, practice, record_task, replay_task, skill_bundle, skill_task
 from decurix_agent.computer import (
     catalog,
     demonstration,
@@ -44,6 +44,8 @@ from decurix_agent.messaging import save_request
 #                                        criteria (workflow.py), as data and as
 #                                        the text a model is given
 #   GET  /skills/<name>/skill.md         a skill as a SKILL.md (skillmd.py)
+#   GET  /skills/<name>/bundle           a skill as a bundle for the org's registry (skill_bundle.py)
+#   POST /skills/install                 {bundle, version, sha, replace}: a skill from the registry
 #   POST /recordings/import              {title, data}: a Chrome DevTools Recorder
 #                                        export, a BrowserGym / AgentLab trajectory
 #                                        or an OpenHands event list saved as a
@@ -192,6 +194,14 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 3 and parts[0] == "playbooks" and parts[2] == "qualification-source":
                 return self._json(200, playbooks.qualification_source(parts[1]))
 
+            if parts == ["practice-sources"]:
+                return self._json(200, practice.sources())
+            if len(parts) == 3 and parts[0] == "skills" and parts[2] == "practice-source":
+                return self._json(200, practice.skill_source(parts[1]))
+            if len(parts) == 3 and parts[0] == "recordings" and parts[2] == "practice-source":
+                return self._json(200, practice.recording_source(parts[1]))
+            if len(parts) == 3 and parts[0] == "skills" and parts[2] == "bundle":
+                return self._json(200, skill_bundle.export(parts[1]))
             if len(parts) == 2 and parts[0] == "skills":
                 return self._json(200, {"skill": skills.summary(skills.load(parts[1]), detail=True)})
 
@@ -285,6 +295,10 @@ class Handler(BaseHTTPRequestHandler):
 
         def route():
             data = self._body()
+
+            if parts == ["skills", "install"]:
+                return self._json(200, skill_bundle.install(data.get("bundle"), version=data.get("version"),
+                                                            sha=data.get("sha"), replace=bool(data.get("replace"))))
 
             if len(parts) == 2 and parts[0] == "demonstration":
                 return self._demonstration(parts[1], data)

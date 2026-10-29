@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -23,7 +22,7 @@ import (
 func TestQualificationDockerAdapter(t *testing.T) {
 	image := "sha256:" + strings.Repeat("a", 64)
 	var mu sync.Mutex
-	paused, removed := false, false
+	copiedIn, readOut, removed := false, false, false
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -46,42 +45,32 @@ func TestQualificationDockerAdapter(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]string{"Id": "practice-container"})
 		case strings.HasSuffix(r.URL.Path, "/containers/practice-container/start"):
 			w.WriteHeader(204)
-		case strings.HasSuffix(r.URL.Path, "/archive") && r.Method == "PUT":
-			tr := tar.NewReader(r.Body)
-			copied := map[string]string{}
-			for {
-				h, err := tr.Next()
-				if err == io.EOF {
-					break
-				}
-				if err != nil {
-					t.Error(err)
-					break
-				}
-				b, _ := io.ReadAll(tr)
-				copied[h.Name] = string(b)
-			}
-			if len(copied) != 2 || copied["input.txt"] != "input" || copied["main.py"] != "print('work')" {
-				t.Error("wrong executable or fixture copy")
-			}
-			for _, s := range copied {
-				if strings.Contains(s, "SECRET_EXPECTATION") {
-					t.Error("holdout answer leaked to container")
-				}
-			}
-			w.WriteHeader(200)
+		case strings.HasSuffix(r.URL.Path, "/containers/practice-container/json"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"Id": "practice-container", "State": map[string]any{"Running": true, "Paused": false}})
 		case strings.HasSuffix(r.URL.Path, "/containers/practice-container/exec"):
 			var payload struct {
-				Cmd        []string
-				WorkingDir string
-				User       string
+				Cmd         []string
+				WorkingDir  string
+				User        string
+				AttachStdin bool
 			}
 			_ = json.NewDecoder(r.Body).Decode(&payload)
-			if payload.Cmd[0] != "/usr/bin/env" || payload.Cmd[1] != "-i" || payload.WorkingDir != "/work" || payload.User != "1001:1001" {
+			if payload.Cmd[0] != "/usr/bin/env" || payload.Cmd[1] != "-i" || payload.User != "1001:1001" {
 				t.Error("unsafe exec context")
 			}
-			_ = json.NewEncoder(w).Encode(map[string]string{"Id": "practice-exec"})
-		case strings.HasSuffix(r.URL.Path, "/exec/practice-exec/start"):
+			joined := strings.Join(payload.Cmd, " ")
+			id := "run-exec"
+			switch {
+			case strings.Contains(joined, "tar -x -C /work"):
+				id = "in-exec"
+			case strings.Contains(joined, "kill -s STOP"):
+				id = "out-exec"
+			case payload.WorkingDir != "/work":
+				t.Error("program not run in /work")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"Id": id})
+		case strings.Contains(r.URL.Path, "/exec/") && strings.HasSuffix(r.URL.Path, "/start"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path[strings.Index(r.URL.Path, "/exec/"):], "/exec/"), "/start")
 			// Consume the HTTP request before upgrading; otherwise Windows
 			// resets a connection closed with unread request-body bytes.
 			_, _ = io.Copy(io.Discard, r.Body)
@@ -93,31 +82,57 @@ func TestQualificationDockerAdapter(t *testing.T) {
 			defer conn.Close()
 			_, _ = buff.WriteString("HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
 			_ = buff.Flush()
-			_, _ = stdcopy.NewStdWriter(conn, stdcopy.Stdout).Write([]byte("worked"))
-		case strings.HasSuffix(r.URL.Path, "/exec/practice-exec/json"):
+			switch id {
+			case "in-exec":
+				tr := tar.NewReader(buff)
+				copied := map[string]string{}
+				for {
+					h, err := tr.Next()
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						t.Error(err)
+						break
+					}
+					b, _ := io.ReadAll(tr)
+					copied[h.Name] = string(b)
+				}
+				_, _ = io.Copy(io.Discard, buff)
+				if len(copied) != 2 || copied["input.txt"] != "input" || copied["main.py"] != "print('work')" {
+					t.Error("wrong executable or fixture copy")
+				}
+				for _, s := range copied {
+					if strings.Contains(s, "SECRET_EXPECTATION") {
+						t.Error("holdout answer leaked to container")
+					}
+				}
+				mu.Lock()
+				copiedIn = true
+				mu.Unlock()
+			case "out-exec":
+				var b bytes.Buffer
+				tw := tar.NewWriter(&b)
+				for name, text := range map[string]string{"main.py": "print('work')", "input.txt": "input", "out.txt": "SECRET_EXPECTATION"} {
+					_ = tw.WriteHeader(&tar.Header{Name: "work/" + name, Typeflag: tar.TypeReg, Size: int64(len(text))})
+					_, _ = tw.Write([]byte(text))
+				}
+				_ = tw.Close()
+				_, _ = stdcopy.NewStdWriter(conn, stdcopy.Stdout).Write(b.Bytes())
+				mu.Lock()
+				readOut = true
+				mu.Unlock()
+			default:
+				mu.Lock()
+				ok := copiedIn
+				mu.Unlock()
+				if !ok {
+					t.Error("program ran before its files were copied in")
+				}
+				_, _ = stdcopy.NewStdWriter(conn, stdcopy.Stdout).Write([]byte("worked"))
+			}
+		case strings.Contains(r.URL.Path, "/exec/") && strings.HasSuffix(r.URL.Path, "/json"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"Running": false, "ExitCode": 0})
-		case strings.HasSuffix(r.URL.Path, "/containers/practice-container/pause"):
-			mu.Lock()
-			paused = true
-			mu.Unlock()
-			w.WriteHeader(204)
-		case strings.HasSuffix(r.URL.Path, "/archive") && r.Method == "GET":
-			w.Header().Set("X-Docker-Container-Path-Stat", base64.StdEncoding.EncodeToString([]byte(`{"name":"work","size":0,"mode":2147484096,"mtime":"2026-10-19T00:00:00Z","linkTarget":""}`)))
-			mu.Lock()
-			isPaused := paused
-			mu.Unlock()
-			if !isPaused {
-				t.Error("artifacts read before subprocesses frozen")
-			}
-			var b bytes.Buffer
-			tw := tar.NewWriter(&b)
-			for name, text := range map[string]string{"main.py": "print('work')", "input.txt": "input", "out.txt": "SECRET_EXPECTATION"} {
-				_ = tw.WriteHeader(&tar.Header{Name: "work/" + name, Typeflag: tar.TypeReg, Size: int64(len(text))})
-				_, _ = tw.Write([]byte(text))
-			}
-			_ = tw.Close()
-			w.Header().Set("Content-Type", "application/x-tar")
-			_, _ = w.Write(b.Bytes())
 		case strings.HasSuffix(r.URL.Path, "/containers/practice-container") && r.Method == "DELETE":
 			mu.Lock()
 			removed = true
@@ -144,5 +159,8 @@ func TestQualificationDockerAdapter(t *testing.T) {
 	defer mu.Unlock()
 	if !removed {
 		t.Fatal("practice container left behind")
+	}
+	if !readOut {
+		t.Fatal("artifacts were not read through the freezing exec")
 	}
 }

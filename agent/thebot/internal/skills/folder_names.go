@@ -96,6 +96,90 @@ func siblingShape(siblings []string) (string, []string) {
 	return best, names
 }
 
+// leadNumberRe is a name's leading number ("7" of "7. OCTOBER").
+var leadNumberRe = regexp.MustCompile(`^\d+`)
+
+// folderMonth is the month a name names by its first month word, 0 when none.
+func folderMonth(name string) int {
+	for _, tok := range nameTokenRe.FindAllString(name, -1) {
+		if m, ok := monthWords[strings.ToLower(tok)]; ok {
+			return m
+		}
+	}
+	return 0
+}
+
+// siblingNumbering reads how month folders number their months: when every month-named sibling that leads with a
+// number has number = month - k (mod 12) for one k, it is k and the digits' width; ok false when fewer than two do, or
+// they disagree. A financial year that starts in April numbers October 7 (k = 3); a calendar one numbers it 10 (k = 0).
+// Found live (2026-10-28): beside "6. SEPTEMBER" and "7. OCTOBER" the worker made "11. NOVEMBER".
+func siblingNumbering(siblings []string) (k, width int, ok bool) {
+	n := 0
+	for _, s := range siblings {
+		num, month := leadNumberRe.FindString(s), folderMonth(s)
+		if num == "" || month == 0 {
+			continue
+		}
+		v := 0
+		fmt.Sscan(num, &v)
+		off := ((month-v)%12 + 12) % 12
+		if n > 0 && (off != k || len(num) != width) {
+			return 0, 0, false
+		}
+		k, width = off, len(num)
+		n++
+	}
+	return k, width, n >= 2
+}
+
+// numberFor is the number a month takes under a numbering with offset k.
+func numberFor(month, k int) int { return ((month-k-1)%12+12)%12 + 1 }
+
+// expectedMonthName is the name a folder for month takes among siblings: the form of one of them with this month in
+// it, renumbered by their numbering - "" when that cannot be said from them alone (no shared form, or digits that are
+// not their numbering, such as a year).
+func expectedMonthName(siblings []string, month int) string {
+	shape, examples := siblingShape(siblings)
+	if shape == "" || len(examples) == 0 || month < 1 || month > 12 {
+		return ""
+	}
+	k, width, numbered := siblingNumbering(siblings)
+	var b strings.Builder
+	for i, tok := range nameTokenRe.FindAllString(examples[0], -1) {
+		switch {
+		case tok[0] >= '0' && tok[0] <= '9':
+			if i != 0 || !numbered {
+				return ""
+			}
+			fmt.Fprintf(&b, "%0*d", width, numberFor(month, k))
+		case monthWords[strings.ToLower(tok)] != 0:
+			b.WriteString(monthWordLike(tok, month))
+		default:
+			b.WriteString(tok)
+		}
+	}
+	return b.String()
+}
+
+// fullMonthNames are the months' full names; a short form is the first three letters.
+var fullMonthNames = []string{"", "january", "february", "march", "april", "may", "june", "july", "august", "september",
+	"october", "november", "december"}
+
+// monthWordLike is month written as tok writes its own: short or full, and in its case.
+func monthWordLike(tok string, month int) string {
+	w := fullMonthNames[month]
+	if len(tok) <= 4 {
+		w = w[:3]
+	}
+	switch {
+	case tok == strings.ToUpper(tok):
+		return strings.ToUpper(w)
+	case tok[0] >= 'A' && tok[0] <= 'Z':
+		return strings.ToUpper(w[:1]) + w[1:]
+	}
+	return w
+}
+
 // mkdirTargets are the paths a command makes with mkdir.
 func mkdirTargets(command string) []string {
 	var out []string
@@ -133,8 +217,8 @@ func (o *OperatorSkill) folderNameNudge(rc RunContext, st *operatorState, comman
 				siblings = append(siblings, l)
 			}
 		}
-		shape, examples := siblingShape(siblings)
-		if shape == "" || shape == mine {
+		why, examples := monthFolderMismatch(name, siblings)
+		if why == "" {
 			continue
 		}
 		if st.FolderNudged == nil {
@@ -142,12 +226,102 @@ func (o *OperatorSkill) folderNameNudge(rc RunContext, st *operatorState, comman
 		}
 		st.FolderNudged[target] = true
 		rc.Logf("operator", "a new month folder named unlike the ones beside it - sent back (%s among %s)", name, strings.Join(examples, ", "))
-		return fmt.Sprintf("Not run: the new folder %q sits beside month folders named like %s - a new month's folder is "+
-			"named the same way (the same month form, case, separators and year as theirs). Look at the folder (ls) "+
-			"and make it in their form; then copy into it. If a folder for this month already exists there in another "+
-			"spelling, use that one.", name, strings.Join(quoteAll(examples), ", "))
+		return fmt.Sprintf("Not run: the new folder %q sits beside month folders named like %s - %s. Look at the folder "+
+			"(ls) and make it that way; then copy into it. If a folder for this month already exists there in another "+
+			"spelling, use that one.", name, strings.Join(quoteAll(examples), ", "), why)
 	}
 	return ""
+}
+
+// monthFolderMismatch says how a month folder's name differs from the month folders beside it - their form, or
+// their numbering - with the name it would take among them when that can be said; "" when it is named like them.
+func monthFolderMismatch(name string, siblings []string) (string, []string) {
+	mine := monthShape(name)
+	shape, examples := siblingShape(siblings)
+	if mine == "" || shape == "" {
+		return "", nil
+	}
+	wrongNumber := false
+	if k, _, numbered := siblingNumbering(siblings); numbered && shape == mine {
+		v := 0
+		fmt.Sscan(leadNumberRe.FindString(name), &v)
+		wrongNumber = v != numberFor(folderMonth(name), k)
+	}
+	if shape == mine && !wrongNumber {
+		return "", nil
+	}
+	why := "a new month's folder is named the same way (the same month form, case, separators and numbering as theirs)"
+	if want := expectedMonthName(siblings, folderMonth(name)); want != "" && want != name {
+		why += "; by their naming this month's folder is " + fmt.Sprintf("%q", want)
+	}
+	return why, examples
+}
+
+// typedFolderRe is a name typed alone into a field (gui type "NAME" or gui type REF "NAME") - a new folder's name in a
+// file manager's dialog among others; typed paths are not names.
+var typedFolderRe = regexp.MustCompile(`gui type (?:e\d+ )?"([^"/\n]{2,60})"`)
+
+// maxFolderChecks bounds the folders checked at a report.
+const maxFolderChecks = 4
+
+// folderNameIssues are the month folders this task named - with mkdir, or by typing a name into a dialog - that are
+// named unlike the month folders beside them on disk at the report: points that are the worker's to do (rename it).
+// Checked at the report, so a folder made by any means is checked. Found live (2026-10-28): the folder was made in the
+// file manager's own dialog, the mkdir check never saw it, and every bill was filed under the wrong month folder.
+func (o *OperatorSkill) folderNameIssues(rc RunContext, st *operatorState) []reviewIssue {
+	type folder struct{ parent, name string }
+	var cands []folder
+	seen := map[folder]bool{}
+	add := func(parent, name string) {
+		f := folder{parent, name}
+		if parent == "" || parent == "." || monthShape(name) == "" || seen[f] || len(cands) == maxFolderChecks {
+			return
+		}
+		seen[f] = true
+		cands = append(cands, f)
+	}
+	all := strings.Join(st.Commands, "\n")
+	for _, c := range st.Commands {
+		for _, target := range mkdirTargets(c) {
+			add(path.Dir(target), path.Base(target))
+		}
+		for _, m := range typedFolderRe.FindAllStringSubmatch(c, -1) {
+			name := strings.TrimSpace(m[1])
+			// The folder it was made in: a path the task used that ends in the name.
+			re := regexp.MustCompile(`(/[^"'\n]*?)/` + regexp.QuoteMeta(name) + `(?:/|["'\s]|$)`)
+			if p := re.FindStringSubmatch(all); p != nil {
+				add(p[1], name)
+			}
+		}
+	}
+	var out []reviewIssue
+	for _, f := range cands {
+		res := runShell(rc.Ctx, rc.Dir(), "ls -1 "+shellQuote(f.parent)+" 2>/dev/null", 15*time.Second, st.guiEnv()...)
+		var siblings []string
+		here := false
+		for _, l := range strings.Split(res.Output, "\n") {
+			switch l = strings.TrimSpace(l); {
+			case l == f.name:
+				here = true
+			case l != "":
+				siblings = append(siblings, l)
+			}
+		}
+		if !here {
+			continue // not made, or renamed since
+		}
+		why, examples := monthFolderMismatch(f.name, siblings)
+		if why == "" {
+			continue
+		}
+		out = append(out, reviewIssue{
+			What:   fmt.Sprintf("the folder %q in %s is named unlike the month folders beside it (%s)", f.name, f.parent, strings.Join(quoteAll(examples), ", ")),
+			Why:    why,
+			Settle: "rename it (keep what is in it), or say in the report why this folder is named otherwise",
+			Work:   true,
+		})
+	}
+	return out
 }
 
 func quoteAll(xs []string) []string {

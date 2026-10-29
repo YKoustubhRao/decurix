@@ -106,7 +106,7 @@ func TestAWholeTaskIsRecorded(t *testing.T) {
 
 	if got := outcome(t, s, "box", route.TaskID, Outcome{
 		Kind: OutcomeDone, Reply: "6.6.87.2", Engine: "ollama", Model: "qwen2.5-coder:3b",
-		CostUSD: ptrFloat(0), InputTokens: ptrInt(900), OutputTokens: ptrInt(40),
+		CostUSD: ptrFloat(0), InputTokens: ptrInt(900), OutputTokens: ptrInt(40), CachedInputTokens: ptrInt(700),
 	}); got != route.TaskID {
 		t.Fatalf("outcome attributed to %q, want %q", got, route.TaskID)
 	}
@@ -119,7 +119,8 @@ func TestAWholeTaskIsRecorded(t *testing.T) {
 
 	execution := detail.Executions[0]
 
-	if execution.FinalReply != "6.6.87.2" || len(execution.Steps) != 1 || *execution.InputTokens != 900 {
+	if execution.FinalReply != "6.6.87.2" || len(execution.Steps) != 1 || *execution.InputTokens != 900 ||
+		execution.CachedInputTokens == nil || *execution.CachedInputTokens != 700 {
 		t.Fatalf("execution = %+v", execution)
 	}
 
