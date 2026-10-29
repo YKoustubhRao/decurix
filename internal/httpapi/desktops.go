@@ -113,6 +113,7 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := webui.PageData{
+		Gated:           isGated(r),
 		Desktops:        desktops,
 		WorkerMemory:    memories,
 		MemoryByDesktop: memoryByDesktop,
@@ -505,6 +506,12 @@ func (s *Server) deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.Suggest != nil {
 		s.Suggest.Forget(forgotten)
+	}
+	// Its installs and roles in the org's skill registry go with it; the skills it published stay the org's.
+	if s.SkillHub != nil {
+		if err := s.SkillHub.ForgetWorker(desktop.SanitizeID(id)); err != nil {
+			log.Printf("deleteDesktop: skill registry: %v", err)
+		}
 	}
 
 	// A schedule targeting a deleted desktop would otherwise keep matching

@@ -113,6 +113,9 @@ type Execution struct {
 	CostUSD      *float64  `json:"cost_usd"`
 	InputTokens  *int64    `json:"input_tokens"`
 	OutputTokens *int64    `json:"output_tokens"`
+	// CachedInputTokens is the part of InputTokens served from the provider's
+	// prompt cache; nil when the desktop did not say.
+	CachedInputTokens *int64 `json:"cached_input_tokens"`
 	// Checked says whether the desktop's final check judged the result
 	// before it was reported; nil when the desktop did not say.
 	Checked       *bool          `json:"checked"`
@@ -210,6 +213,8 @@ type Outcome struct {
 	CostUSD      *float64
 	InputTokens  *int64
 	OutputTokens *int64
+	// CachedInputTokens: the part of InputTokens read from the prompt cache.
+	CachedInputTokens *int64
 	// Checked: whether the final check judged a finished result (nil: not said).
 	Checked *bool
 }
@@ -298,6 +303,10 @@ var schema = []string{
 	// Whether the desktop's final check (verify.py, the skill gate) judged
 	// the result: 1 checked, 0 not, NULL not said (an older desktop image).
 	`ALTER TABLE executions ADD COLUMN checked INTEGER`,
+	// The part of input_tokens the provider read from its prompt cache (billed
+	// at a fraction): what a task really cost, beside the raw count. NULL when
+	// the desktop did not say.
+	`ALTER TABLE executions ADD COLUMN cached_input_tokens INTEGER`,
 }
 
 // Store is the SQLite-backed record of every worker's tasks.
@@ -935,11 +944,12 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 			cost_usd = COALESCE(?, cost_usd),
 			input_tokens = COALESCE(?, input_tokens),
 			output_tokens = COALESCE(?, output_tokens),
+			cached_input_tokens = COALESCE(?, cached_input_tokens),
 			checked = COALESCE(?, checked)
 		 WHERE id = ?`,
 		outcome.Engine, outcome.Engine, outcome.Model, outcome.Model,
 		nullable(outcome.CostUSD), nullable(outcome.InputTokens), nullable(outcome.OutputTokens),
-		nullBool(outcome.Checked), ref.id,
+		nullable(outcome.CachedInputTokens), nullBool(outcome.Checked), ref.id,
 	); err != nil {
 		return "", fmt.Errorf("tasks: recording outcome: %w", err)
 	}
@@ -1265,11 +1275,11 @@ func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 		var execution Execution
 		var started, ended int64
 		var cost sql.NullFloat64
-		var input, output, checked sql.NullInt64
+		var input, output, cached, checked sql.NullInt64
 
 		if err := r.Scan(&execution.ID, &execution.TaskID, &execution.Attempt, &execution.WorkerID,
 			&execution.Engine, &execution.Model, &execution.Status, &execution.FinalReply,
-			&started, &ended, &cost, &input, &output, &checked); err != nil {
+			&started, &ended, &cost, &input, &output, &cached, &checked); err != nil {
 			return Execution{}, err
 		}
 
@@ -1287,6 +1297,9 @@ func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 		if output.Valid {
 			execution.OutputTokens = &output.Int64
 		}
+		if cached.Valid {
+			execution.CachedInputTokens = &cached.Int64
+		}
 		if checked.Valid {
 			c := checked.Int64 != 0
 			execution.Checked = &c
@@ -1294,7 +1307,7 @@ func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 
 		return execution, nil
 	}, `SELECT e.id, e.task_id, e.attempt, e.worker_id, e.engine, e.model, e.status, e.final_reply,
-			e.started_ns, e.ended_ns, e.cost_usd, e.input_tokens, e.output_tokens, e.checked
+			e.started_ns, e.ended_ns, e.cost_usd, e.input_tokens, e.output_tokens, e.cached_input_tokens, e.checked
 		 FROM executions e JOIN tasks t ON t.id = e.task_id `+where+` ORDER BY e.task_id, e.attempt`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("tasks: reading executions: %w", err)

@@ -231,3 +231,19 @@ func TestAPointSettledByLookingStaysTheWorkersWhileSendBacksRemain(t *testing.T)
 		t.Fatalf("past the bound the point was not put to the person: %+v", w)
 	}
 }
+
+func TestAPointForThePersonIsCutAtASentenceNeverMidWord(t *testing.T) {
+	short := "Voucher 1188 names the wrong party."
+	if forPerson(short, maxPointChars) != short {
+		t.Fatal("a point that fits must stay whole")
+	}
+	long := strings.Repeat("The ledger was not saved after the person's yes. ", 30)
+	got := forPerson(long, maxPointChars)
+	if len(got) > maxPointChars+4 || !strings.HasSuffix(got, ". …") || strings.Contains(got, "[truncated]") {
+		t.Fatalf("cut badly: %q", got[len(got)-40:])
+	}
+	q := knowledgeQuestion([]reviewIssue{{What: long, Settle: "recheck"}}, nil, "")
+	if strings.Contains(q, "[truncated]") {
+		t.Fatal("a question to the person shows an engineering marker")
+	}
+}
