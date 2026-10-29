@@ -448,7 +448,7 @@ func (s *Store) handleForget(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 	}
 
-	for _, name := range []string{deviceCookie, sessionCookie} {
+	for _, name := range []string{deviceCookie, sessionCookie, "decurix_user"} {
 		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
 	}
 

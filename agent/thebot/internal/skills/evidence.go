@@ -599,9 +599,19 @@ func (st *operatorState) coverageGaps() []string {
 			docs[u.Source] = u
 		}
 	}
+	// When the work declared records from files (gui record --from), a file is reflected by being a record's source,
+	// not by sharing a figure with one: bills to the same customer share its tax number, rates and dates. Found live
+	// (2026-10-28): five bills read, one entered, "done" - the other four "used" by the one entry's values, no point.
+	sources := ledgerSources(st.RecordLedger)
 	var gaps []string
 	for _, name := range order {
 		u := docs[name]
+		if len(sources) > 0 && docFileTypeRe.MatchString(name) && !pictureDocRe.MatchString(name) && u.Kind != "ocr" {
+			if !sources[strings.ToLower(path.Base(name))] {
+				gaps = append(gaps, name+" (read; no record declared in this task came from it)")
+			}
+			continue
+		}
 		if pictureDocRe.MatchString(name) || u.Kind == "ocr" {
 			// A picture is never "used" by a value match: a phone photo's OCR digits can coincide with anything
 			// written, and a picture with no text can never match. The report must name it (coverageIssues).
@@ -679,7 +689,8 @@ const pictureGapNote = " (a picture that was read: its figures must be entered f
 // leftOutRe is what a sentence says when it gives a document's reason for not being in the work: it is not part of it,
 // a copy, called off, someone else's.
 var leftOutRe = regexp.MustCompile(`(?i)\b(not|no|never|isn'?t|aren'?t|wasn'?t|without|exclud\w*|cancel\w*|duplicate\w*|` +
-	`ignor\w*|skip\w*|left out|kept out|leave out|another|other client|someone else)\b`)
+	`ignor\w*|skip\w*|left out|kept out|leave out|another|other client|someone else|replac\w*|supersed\w*|` +
+	`earlier version|older version|withdrawn)\b`)
 
 // sentenceBreakRe ends a sentence: a line break, a full stop before a space, a semicolon - never the dot of a file name.
 var sentenceBreakRe = regexp.MustCompile(`\n|\.\s|;`)

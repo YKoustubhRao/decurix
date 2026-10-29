@@ -388,7 +388,7 @@ func TestTheSameScreenAndSourcesAreWorkedOutOnce(t *testing.T) {
 	chat := &scriptedChat{replies: []string{`{"v1": "29", "v2": "24000", "v3": "2085"}`}}
 	st := &operatorState{Hosted: true, Request: "enter the month", TypedWindows: []string{"Sales | Portal - Chromium"},
 		TypedFigures: map[string]bool{"Sales | Portal - Chromium": true},
-		Listings: []string{screen("34,750")}, Worked: []string{"gui observe"}}
+		Listings:     []string{screen("34,750")}, Worked: []string{"gui observe"}}
 	if issues := (&OperatorSkill{}).verifyReport(weighRC(chat), st); len(issues) != 1 {
 		t.Fatalf("first check: %+v", issues)
 	}

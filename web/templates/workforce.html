@@ -1,0 +1,1224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Workforce · Decurix</title>
+
+{{template "theme"}}
+
+<style>
+/* The section switcher: the tasks page's period picker, scrolling on a phone. */
+.wf-tabs{
+  display:flex;gap:2px;padding:3px;margin-bottom:18px;max-width:100%;width:max-content;
+  background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-md);
+  overflow-x:auto;scrollbar-width:none
+}
+.wf-tabs::-webkit-scrollbar{display:none}
+.wf-tabs a{
+  display:flex;align-items:center;height:28px;padding:0 11px;flex:none;
+  border-radius:var(--r-sm);color:var(--text-2);font-size:12.5px;font-weight:500;white-space:nowrap
+}
+.wf-tabs a:hover{color:var(--text)}
+.wf-tabs a.active{background:var(--surface);color:var(--text);font-weight:600;box-shadow:var(--shadow-1)}
+
+.wf-section[hidden]{display:none}
+.wf-section > .rule{margin-top:26px}
+.wf-section > .rule:first-child{margin-top:0}
+
+.wf-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.wf-card{padding:14px 15px;display:grid;gap:10px;align-content:start}
+.wf-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.wf-card-head b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wf-label{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)}
+.wf-inline{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.wf-inline .input,.wf-inline .select{flex:1;min-width:0;width:auto}
+.wf-chips{display:flex;flex-wrap:wrap;gap:5px}
+.wf-chips .chip button{border:0;background:none;color:var(--text-3);cursor:pointer;padding:0 0 0 2px;font-size:13px;line-height:1}
+.wf-chips .chip button:hover{color:var(--danger)}
+.chip.warn{background:var(--busy-soft);color:var(--busy)}
+.chip.good{background:var(--live-soft);color:var(--live)}
+.chip.bad{background:var(--danger-soft);color:var(--danger)}
+
+.wf-form{padding:14px 15px;display:grid;gap:10px}
+.wf-form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;align-items:end}
+.wf-forms{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+.wf-form h3{font-size:13.5px;font-weight:600}
+.wf-check{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-2)}
+
+.wf-note{font-size:12.5px;color:var(--text-3);margin:4px 0 12px}
+.wf-note.error{color:var(--danger)}
+.wf-muted{color:var(--text-3)}
+.wf-over{color:var(--danger);font-weight:600}
+.wf-mono{font-family:var(--mono);font-size:12px}
+.wf-text{white-space:pre-wrap;overflow-wrap:anywhere}
+.wf-result{font-size:13px;line-height:1.5;padding:10px 12px;border-radius:var(--r-md);background:var(--surface-2)}
+.wf-result[hidden]{display:none}
+
+.wstatus{
+  display:inline-flex;align-items:center;height:21px;padding:0 8px;border-radius:999px;
+  font-size:11.5px;font-weight:600;white-space:nowrap;background:var(--idle-soft);color:var(--text-2)
+}
+.wstatus.running,.wstatus.assigned{background:var(--accent-soft);color:var(--accent)}
+.wstatus.done{background:var(--live-soft);color:var(--live)}
+.wstatus.queued,.wstatus.held{background:var(--busy-soft);color:var(--busy)}
+.wstatus.failed,.wstatus.not_done{background:var(--danger-soft);color:var(--danger)}
+
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{
+  text-align:left;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--text-3);padding:9px 11px;border-bottom:1px solid var(--line);white-space:nowrap
+}
+td{padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--surface-2)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+td .row-sub{font-size:11.5px;color:var(--text-3);margin-top:2px}
+td.actions{white-space:nowrap;text-align:right}
+.clip{max-width:34ch;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+
+.k-group{padding:12px 15px;display:grid;gap:8px}
+.k-item{display:grid;gap:4px;padding:9px 0;border-top:1px solid var(--line)}
+.k-item:first-of-type{border-top:0}
+.k-meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:11.5px;color:var(--text-3)}
+.k-actions{display:flex;gap:4px;flex-wrap:wrap}
+
+.wf-chain{display:grid;gap:10px}
+.wf-chain > div{padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-md)}
+.wf-chain > div:first-child{border-color:var(--accent)}
+
+@media (max-width:720px){
+  .wf-grid,.wf-forms{grid-template-columns:1fr}
+  td,th{padding:8px 9px}
+}
+</style>
+</head>
+
+<body>
+
+{{template "sprite"}}
+
+<div id="progress"></div>
+<div id="toasts"></div>
+
+{{template "topbar" "workforce"}}
+
+<main class="wrap">
+
+  <div class="page-head">
+    <div>
+      <div class="eyebrow">Team</div>
+      <h1>Workforce</h1>
+      <p class="page-sub">Who your workers are, what they know and carry, and the work waiting for them.{{if .Gated}} The queue, handoffs and access are managed from this computer only.{{end}}</p>
+    </div>
+  </div>
+
+  <nav class="wf-tabs" id="wfTabs" aria-label="Workforce sections">
+    {{if .HasSkillHub}}<a href="#workers" data-tab="workers">Workers &amp; roles</a>
+    <a href="#skills" data-tab="skills">Skills</a>{{end}}
+    {{if .HasQueue}}<a href="#queue" data-tab="queue">Queue</a>{{end}}
+    {{if .HasHandoffs}}<a href="#handoffs" data-tab="handoffs">Handoffs</a>{{end}}
+    {{if .HasKnowledge}}<a href="#knowledge" data-tab="knowledge">Knowledge</a>{{end}}
+    {{if .HasAccess}}<a href="#access" data-tab="access">Access</a>{{end}}
+  </nav>
+
+{{if not (or .HasSkillHub .HasQueue .HasHandoffs .HasKnowledge .HasAccess)}}
+  <div class="empty">
+    <div class="empty-mark"><svg width="19" height="19"><use href="#i-inbox"/></svg></div>
+    <h2>Nothing to manage here</h2>
+    <p>None of the workforce services are running on this control plane.</p>
+  </div>
+{{end}}
+
+{{if .HasSkillHub}}
+  <!-- ======================= Workers & roles ======================= -->
+  <section class="wf-section" id="sec-workers" data-section="workers" hidden>
+    <p class="wf-note" id="workersNote">Each worker's roles decide which skills it should carry and which knowledge it is given. Sync installs what it lacks or holds an older version of.</p>
+    <div class="wf-grid" id="workersList"><p class="wf-muted">Loading…</p></div>
+  </section>
+
+  <!-- ======================= Skills ======================= -->
+  <section class="wf-section" id="sec-skills" data-section="skills" hidden>
+    <div class="rule"><span class="eyebrow">Registry</span></div>
+    <p class="wf-note" id="skillsNote"></p>
+    <div class="panel table-wrap">
+      <table>
+        <thead><tr><th>Skill</th><th>Versions</th><th>Roles</th><th>Installed on</th></tr></thead>
+        <tbody id="skillsRows"><tr><td colspan="4" class="wf-muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="rule"><span class="eyebrow">Share</span></div>
+    <div class="wf-forms">
+      <form class="panel wf-form" id="publishForm">
+        <h3>Publish from a worker</h3>
+        <p class="hint">Reads a confirmed skill off the worker and stores it as a new version when it changed.</p>
+        <div class="field"><label for="pubWorker">Worker</label><select class="select" id="pubWorker" data-workers required></select></div>
+        <div class="field"><label for="pubName">Skill name</label><input class="input" id="pubName" autocomplete="off" required placeholder="skill-name"></div>
+        <div class="field"><label for="pubNote">Note</label><input class="input" id="pubNote" autocomplete="off" placeholder="What changed"></div>
+        <div><button type="submit" class="btn btn-primary btn-sm">Publish</button></div>
+      </form>
+
+      <form class="panel wf-form" id="installForm">
+        <h3>Install on a worker</h3>
+        <p class="hint">Leave the version empty for the latest. A skill the worker changed itself is not overwritten.</p>
+        <div class="field"><label for="instSkill">Skill</label><select class="select" id="instSkill" data-skills required></select></div>
+        <div class="wf-form-row">
+          <div class="field"><label for="instWorker">Worker</label><select class="select" id="instWorker" data-workers required></select></div>
+          <div class="field"><label for="instVersion">Version</label><input class="input" id="instVersion" type="number" min="1" placeholder="latest"></div>
+        </div>
+        <div><button type="submit" class="btn btn-primary btn-sm">Install</button></div>
+      </form>
+
+      <form class="panel wf-form" id="assignForm">
+        <h3>Give a skill to a role</h3>
+        <p class="hint">Every worker carrying the role then lists it as missing until it is installed.</p>
+        <div class="field"><label for="asgSkill">Skill</label><select class="select" id="asgSkill" data-skills required></select></div>
+        <div class="field"><label for="asgRole">Role</label><input class="input" id="asgRole" autocomplete="off" required placeholder="role"></div>
+        <div><button type="submit" class="btn btn-primary btn-sm">Assign</button></div>
+      </form>
+    </div>
+  </section>
+{{end}}
+
+{{if .HasQueue}}
+  <!-- ======================= Queue ======================= -->
+  <section class="wf-section" id="sec-queue" data-section="queue" hidden>
+    <div class="rule"><span class="eyebrow">Waiting and recent work</span></div>
+    <p class="wf-note" id="queueNote"></p>
+    <div class="panel table-wrap">
+      <table>
+        <thead><tr><th>Request</th><th>Status</th><th>Needs</th><th>Worker</th><th class="num">Tries</th><th class="num">Priority</th><th>Added</th><th></th></tr></thead>
+        <tbody id="queueRows"><tr><td colspan="8" class="wf-muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="rule"><span class="eyebrow">Add work</span></div>
+    <form class="panel wf-form" id="enqueueForm">
+      <div class="field"><label for="qRequest">Request</label><textarea class="textarea" id="qRequest" rows="3" required placeholder="What should be done"></textarea></div>
+      <div class="wf-form-row">
+        <div class="field"><label for="qSkill">Needs skill</label><select class="select" id="qSkill" data-skills data-any="Any skill"></select></div>
+        <div class="field"><label for="qRole">Needs role</label><input class="input" id="qRole" autocomplete="off" placeholder="Any role"></div>
+        <div class="field"><label for="qWorker">Only this worker</label><select class="select" id="qWorker" data-workers data-any="Any worker"></select></div>
+        <div class="field"><label for="qPriority">Priority</label><input class="input" id="qPriority" type="number" value="0" step="1"></div>
+      </div>
+      <div><button type="submit" class="btn btn-primary btn-sm"><svg width="14" height="14"><use href="#i-plus"/></svg>Add to queue</button></div>
+    </form>
+
+    <div class="rule"><span class="eyebrow">Capacity and spend</span></div>
+    <p class="wf-note">How many items each worker takes at once, and what it has spent today and this month against its limits.</p>
+    <div class="panel table-wrap">
+      <table>
+        <thead><tr><th>Worker</th><th>At once</th><th>Paused</th><th class="num">Today</th><th class="num">This month</th><th></th></tr></thead>
+        <tbody id="capacityRows"><tr><td colspan="6" class="wf-muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="rule"><span class="eyebrow">Spend limits</span></div>
+    <div class="panel table-wrap">
+      <table>
+        <thead><tr><th>Worker</th><th>Period</th><th class="num">Max USD</th><th class="num">Max tokens</th><th></th></tr></thead>
+        <tbody id="limitRows"><tr><td colspan="5" class="wf-muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <form class="panel wf-form" id="limitForm" style="margin-top:12px">
+      <h3>Set a limit</h3>
+      <div class="wf-form-row">
+        <div class="field"><label for="limWorker">Worker</label><select class="select" id="limWorker" data-workers data-all="Every worker"></select></div>
+        <div class="field"><label for="limPeriod">Period</label><select class="select" id="limPeriod"><option value="day">Day</option><option value="month">Month</option></select></div>
+        <div class="field"><label for="limUSD">Max USD</label><input class="input" id="limUSD" type="number" min="0" step="0.01" placeholder="0 = none"></div>
+        <div class="field"><label for="limTokens">Max tokens</label><input class="input" id="limTokens" type="number" min="0" step="1" placeholder="0 = none"></div>
+      </div>
+      <p class="hint">Both at zero removes the limit.</p>
+      <div><button type="submit" class="btn btn-primary btn-sm">Save limit</button></div>
+    </form>
+  </section>
+{{end}}
+
+{{if .HasHandoffs}}
+  <!-- ======================= Handoffs ======================= -->
+  <section class="wf-section" id="sec-handoffs" data-section="handoffs" hidden>
+    <div class="wf-inline" style="margin-bottom:12px;max-width:360px">
+      <select class="select" id="handoffWorker" data-workers data-any="Every worker" aria-label="Show handoffs of"></select>
+    </div>
+    <p class="wf-note" id="handoffsNote">Verified means the receiving worker's final check judged the result done.</p>
+    <div class="panel table-wrap">
+      <table>
+        <thead><tr><th>Request</th><th>From → to</th><th>Status</th><th>Verified</th><th>Open questions</th><th>Sent</th><th></th></tr></thead>
+        <tbody id="handoffRows"><tr><td colspan="7" class="wf-muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+{{end}}
+
+{{if .HasKnowledge}}
+  <!-- ======================= Knowledge ======================= -->
+  <section class="wf-section" id="sec-knowledge" data-section="knowledge" hidden>
+    <p class="wf-note" id="knowledgeNote">What workers are told, by scope, each with where it came from. A change replaces an item; nothing is edited in place.</p>
+    <div id="knowledgeList" style="display:grid;gap:12px"><p class="wf-muted">Loading…</p></div>
+
+    <div class="rule"><span class="eyebrow">For one task</span></div>
+    <form class="wf-inline" id="taskKnowledgeForm" style="max-width:520px">
+      <input class="input" id="kTask" autocomplete="off" placeholder="Task id">
+      <button type="submit" class="btn btn-default btn-sm">Show</button>
+    </form>
+    <div id="taskKnowledge" style="margin-top:10px"></div>
+
+    <div class="rule"><span class="eyebrow">Add</span></div>
+    <form class="panel wf-form" id="knowledgeForm">
+      <div class="wf-form-row">
+        <div class="field"><label for="kScope">Scope</label>
+          <select class="select" id="kScope"><option value="org">Everyone</option><option value="role">A role</option><option value="worker">A worker</option><option value="task">A task</option></select></div>
+        <div class="field" id="kKeyField" hidden><label for="kKey">Role, worker or task id</label><input class="input" id="kKey" autocomplete="off"></div>
+        <div class="field"><label for="kKind">Kind</label>
+          <select class="select" id="kKind"><option value="rule">Rule</option><option value="fact">Fact</option><option value="correction">Correction</option><option value="lesson">Lesson</option></select></div>
+        <div class="field"><label for="kRef">Source</label><input class="input" id="kRef" autocomplete="off" placeholder="Who or what said so"></div>
+      </div>
+      <div class="field"><label for="kText">Text</label><textarea class="textarea" id="kText" rows="3" required maxlength="4000"></textarea></div>
+      <div><button type="submit" class="btn btn-primary btn-sm">Add</button></div>
+    </form>
+  </section>
+{{end}}
+
+{{if .HasAccess}}
+  <!-- ======================= Access ======================= -->
+  <section class="wf-section" id="sec-access" data-section="access" hidden>
+    <div class="rule"><span class="eyebrow">People</span></div>
+    <p class="wf-note" id="accessNote">People who sign in through the access link. Role owner satisfies every approver role; on this computer you are the owner.</p>
+    <div class="panel table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Roles</th><th>State</th><th></th></tr></thead>
+        <tbody id="userRows"><tr><td colspan="4" class="wf-muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <form class="panel wf-form" id="userForm" style="margin-top:12px">
+      <h3>Add a person</h3>
+      <div class="wf-form-row">
+        <div class="field"><label for="uName">Name</label><input class="input" id="uName" autocomplete="off" required></div>
+        <div class="field"><label for="uPassword">Password</label><input class="input" id="uPassword" type="password" autocomplete="new-password" required></div>
+        <div class="field"><label for="uRoles">Roles</label><input class="input" id="uRoles" autocomplete="off" placeholder="comma separated"></div>
+      </div>
+      <div><button type="submit" class="btn btn-primary btn-sm">Add</button></div>
+    </form>
+
+    <div class="rule"><span class="eyebrow">Approval policies</span></div>
+    <div class="panel table-wrap">
+      <table>
+        <thead><tr><th>Applies to</th><th>Action matches</th><th>Over</th><th>Approved by</th><th class="num">Approvers</th><th></th></tr></thead>
+        <tbody id="policyRows"><tr><td colspan="6" class="wf-muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="wf-forms" style="margin-top:12px">
+      <form class="panel wf-form" id="policyForm">
+        <h3>Add a policy</h3>
+        <div class="wf-form-row">
+          <div class="field"><label for="pWorker">Worker</label><select class="select" id="pWorker" data-workers data-all="Every worker"></select></div>
+          <div class="field"><label for="pWorkerRole">Worker role</label><input class="input" id="pWorkerRole" autocomplete="off" placeholder="Any"></div>
+        </div>
+        <div class="field"><label for="pMatch">Action matches (regular expression)</label><input class="input wf-mono" id="pMatch" autocomplete="off" placeholder="\b(pay|transfer)\b"></div>
+        <div class="wf-form-row">
+          <div class="field"><label for="pAmount">Only over amount</label><input class="input" id="pAmount" type="number" min="0" step="any" placeholder="Any amount"></div>
+          <div class="field"><label for="pRoles">Approver roles</label><input class="input" id="pRoles" autocomplete="off" required placeholder="comma separated"></div>
+          <div class="field"><label for="pMin">Approvers</label><select class="select" id="pMin"><option value="1">One</option><option value="2">Two, different</option></select></div>
+        </div>
+        <div class="field"><label for="pNote">Note</label><input class="input" id="pNote" autocomplete="off"></div>
+        <div><button type="submit" class="btn btn-primary btn-sm">Add policy</button></div>
+      </form>
+
+      <form class="panel wf-form" id="checkForm">
+        <h3>Would this need approval?</h3>
+        <p class="hint">A dry run against the policies; nothing is recorded.</p>
+        <div class="field"><label for="cWorker">Worker</label><select class="select" id="cWorker" data-workers data-any="Any worker"></select></div>
+        <div class="field"><label for="cAction">The action, as the worker would ask</label><textarea class="textarea" id="cAction" rows="3" required></textarea></div>
+        <div><button type="submit" class="btn btn-default btn-sm">Check</button></div>
+        <div class="wf-result" id="checkResult" hidden></div>
+      </form>
+    </div>
+
+    <div class="rule"><span class="eyebrow">Worker roles for policies</span></div>
+    <div class="panel table-wrap">
+      <table>
+        <thead><tr><th>Worker</th><th>Roles a policy's worker role matches</th></tr></thead>
+        <tbody id="accessWorkerRows"><tr><td colspan="2" class="wf-muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="rule"><span class="eyebrow">Approvals log</span></div>
+    <div class="panel table-wrap">
+      <table>
+        <thead><tr><th>When</th><th>Worker</th><th>Action</th><th>Replied</th><th>By</th><th>Outcome</th></tr></thead>
+        <tbody id="approvalRows"><tr><td colspan="6" class="wf-muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+{{end}}
+
+</main>
+
+<dialog id="wfDialog">
+  <form method="dialog" id="wfDialogForm">
+    <div class="dialog-head">
+      <div>
+        <h2 id="wfDialogTitle"></h2>
+        <p id="wfDialogSub"></p>
+      </div>
+      <button type="button" class="icon-btn" data-close-dialog aria-label="Close">
+        <svg width="16" height="16"><use href="#i-x"/></svg>
+      </button>
+    </div>
+    <div class="dialog-body" id="wfDialogBody"></div>
+    <div class="dialog-foot">
+      <button type="button" class="btn btn-quiet" data-close-dialog>Close</button>
+      <button type="submit" class="btn btn-primary" id="wfDialogSubmit" hidden>Save</button>
+    </div>
+  </form>
+</dialog>
+
+{{template "chrome-js"}}
+
+<script>
+(function(){
+  "use strict";
+
+  var D = Decurix, node = D.node, toast = D.toast, getJSON = D.getJSON;
+  var POLL_MS = 4000;
+
+  /* ---------------- shared helpers ---------------- */
+
+  function $(id){ return document.getElementById(id); }
+  function enc(value){ return encodeURIComponent(value); }
+  function clear(el){ while(el.firstChild){ el.removeChild(el.firstChild); } }
+  function list(text){ return String(text || "").split(",").map(function(s){ return s.trim(); }).filter(Boolean); }
+
+  /* POST a JSON body; the routes behind this page take JSON. */
+  async function send(url, body){
+    var response = await fetch(url, {
+      method: "POST",
+      headers: {"Content-Type": "application/json", "Accept": "application/json"},
+      body: JSON.stringify(body)
+    });
+    var data = await response.json().catch(function(){ return {}; });
+    if(!response.ok){ throw new Error(data.error || "Request failed"); }
+    return data;
+  }
+
+  /* A poll leaves alone a block someone is typing in, so it never eats input. */
+  function editing(el){
+    var a = document.activeElement;
+    return !!(a && el.contains(a) && a.matches("input,select,textarea"));
+  }
+
+  var desktops = [];
+  function workerName(id){
+    if(id === "*"){ return "Every worker"; }
+    for(var i = 0; i < desktops.length; i++){ if(desktops[i].id === id){ return desktops[i].name || id; } }
+    return id;
+  }
+
+  function when(iso){
+    var t = node("time", "wf-muted");
+    if(!iso || iso.indexOf("0001-") === 0){ t.textContent = "—"; return t; }
+    t.dataset.created = iso;
+    t.textContent = new Date(iso).toLocaleString();
+    return t;
+  }
+
+  function pill(status){ return node("span", "wstatus " + status, String(status || "").replace("_", " ")); }
+  function chip(text, extra){ return node("span", "chip" + (extra ? " " + extra : ""), text); }
+  function cell(row, content, className){
+    var td = node("td", className);
+    if(content instanceof Node){ td.appendChild(content); }
+    else if(content !== undefined && content !== null){ td.textContent = content; }
+    row.appendChild(td);
+    return td;
+  }
+  function emptyRow(tbody, cols, text){
+    var tr = node("tr");
+    var td = cell(tr, text, "wf-muted");
+    td.colSpan = cols;
+    tbody.appendChild(tr);
+  }
+  function clipped(text){
+    var div = node("div", "clip", text);
+    div.title = text || "";
+    return div;
+  }
+
+  /* A button that runs fn, shows its error, and refreshes the page's data. */
+  function action(label, className, fn, iconName){
+    var b = D.button(label, className, iconName);
+    b.addEventListener("click", async function(){
+      b.disabled = true;
+      D.busy(true);
+      try{ var said = await fn(); if(said){ toast(said, "success"); } await refresh(true); }
+      catch(e){ toast(e.message, "error"); }
+      finally{ b.disabled = false; D.busy(false); }
+    });
+    return b;
+  }
+
+  /* A form whose submit runs fn the same way. */
+  function onSubmit(form, fn){
+    if(!form){ return; }
+    form.addEventListener("submit", async function(event){
+      event.preventDefault();
+      var submit = form.querySelector("[type=submit]");
+      if(submit){ submit.disabled = true; }
+      D.busy(true);
+      try{ var said = await fn(); if(said){ toast(said, "success"); } await refresh(true); }
+      catch(e){ toast(e.message, "error"); }
+      finally{ if(submit){ submit.disabled = false; } D.busy(false); }
+    });
+  }
+
+  function note(id, text, isError){
+    var el = $(id);
+    if(!el){ return; }
+    if(isError){ el.textContent = text; el.className = "wf-note error"; }
+    else if(el.className.indexOf("error") >= 0){ el.textContent = el.dataset.text || ""; el.className = "wf-note"; }
+  }
+  document.querySelectorAll(".wf-note").forEach(function(el){ el.dataset.text = el.textContent; });
+
+  /* Fill every worker and skill picker, keeping what is chosen. */
+  function fillSelect(sel, options){
+    if(editing(sel)){ return; }
+    var keep = sel.value;
+    clear(sel);
+    if(sel.dataset.any !== undefined){ sel.appendChild(new Option(sel.dataset.any, "")); }
+    if(sel.dataset.all !== undefined){ sel.appendChild(new Option(sel.dataset.all, "*")); }
+    options.forEach(function(o){ sel.appendChild(new Option(o[1], o[0])); });
+    if(keep && Array.prototype.some.call(sel.options, function(o){ return o.value === keep; })){ sel.value = keep; }
+  }
+  function fillWorkerSelects(){
+    var opts = desktops.map(function(d){ return [d.id, d.name || d.id]; });
+    document.querySelectorAll("select[data-workers]").forEach(function(sel){ fillSelect(sel, opts); });
+  }
+  function fillSkillSelects(skills){
+    var opts = skills.map(function(s){ return [s.name, s.name + " (v" + s.latest + ")"]; });
+    document.querySelectorAll("select[data-skills]").forEach(function(sel){ fillSelect(sel, opts); });
+  }
+
+  /* ---------------- dialog ---------------- */
+
+  var dialog = $("wfDialog");
+  var dialogSave = null;
+  function openDialog(title, sub, body, save){
+    $("wfDialogTitle").textContent = title;
+    $("wfDialogSub").textContent = sub || "";
+    var host = $("wfDialogBody");
+    clear(host);
+    host.appendChild(body);
+    dialogSave = save || null;
+    $("wfDialogSubmit").hidden = !save;
+    dialog.showModal();
+  }
+  document.querySelectorAll("[data-close-dialog]").forEach(function(b){ b.addEventListener("click", function(){ dialog.close(); }); });
+  $("wfDialogForm").addEventListener("submit", async function(event){
+    if(!dialogSave){ return; }
+    event.preventDefault();
+    var submit = $("wfDialogSubmit");
+    submit.disabled = true;
+    try{ var said = await dialogSave(); dialog.close(); if(said){ toast(said, "success"); } await refresh(true); }
+    catch(e){ toast(e.message, "error"); }
+    finally{ submit.disabled = false; }
+  });
+
+  /* ---------------- sections ---------------- */
+
+  var loaders = {};
+  var hub = {skills: [], workers: {}};
+
+{{if .HasSkillHub}}
+  async function loadHub(){
+    var data = await getJSON("/api/skillhub");
+    hub = {skills: data.skills || [], workers: data.workers || {}};
+    fillSkillSelects(hub.skills);
+  }
+
+  loaders.workers = async function(){
+    var host = $("workersList");
+    var outdated = {};
+    await Promise.all(desktops.map(async function(d){
+      try{ outdated[d.id] = (await getJSON("/api/skillhub/outdated?worker=" + enc(d.id))).outdated || []; }
+      catch(e){ outdated[d.id] = null; }
+    }));
+    if(editing(host)){ return; }
+    clear(host);
+    if(!desktops.length){ host.appendChild(node("p", "wf-muted", "No workers yet. Create a desktop on the Desktops page.")); return; }
+
+    desktops.forEach(function(d){
+      var card = node("div", "panel wf-card");
+      var head = node("div", "wf-card-head");
+      head.appendChild(node("b", null, d.name || d.id));
+      head.appendChild(node("span", "status " + (d.status || "stopped"), d.status || "unknown"));
+      card.appendChild(head);
+
+      card.appendChild(node("div", "wf-label", "Roles"));
+      var roles = node("div", "wf-inline");
+      var input = node("input", "input");
+      input.value = (hub.workers[d.id] || []).join(", ");
+      input.placeholder = "No roles";
+      input.setAttribute("aria-label", "Roles of " + (d.name || d.id));
+      roles.appendChild(input);
+      roles.appendChild(action("Save", "btn-default", async function(){
+        await send("/api/skillhub/roles", {worker: d.id, roles: list(input.value)});
+        return "Roles saved.";
+      }));
+      card.appendChild(roles);
+
+      card.appendChild(node("div", "wf-label", "Installed skills"));
+      var installed = node("div", "wf-chips");
+      var behind = {};
+      (outdated[d.id] || []).forEach(function(o){ behind[o.name] = o; });
+      hub.skills.forEach(function(s){
+        (s.installs || []).forEach(function(i){
+          if(i.worker !== d.id){ return; }
+          installed.appendChild(chip(s.name + " v" + i.version, behind[s.name] ? "warn" : ""));
+        });
+      });
+      if(!installed.firstChild){ installed.appendChild(node("span", "wf-muted", "None from the registry")); }
+      card.appendChild(installed);
+
+      var out = outdated[d.id];
+      var foot = node("div", "wf-card-head");
+      var said = node("div", "wf-chips");
+      if(out === null){ said.appendChild(chip("Could not check", "bad")); }
+      else if(!out.length){ said.appendChild(chip("Up to date", "good")); }
+      else{
+        out.forEach(function(o){
+          var text = o.reason === "missing" ? o.name + ": missing" + (o.role ? " (role " + o.role + ")" : "") : o.name + ": v" + o.installed + " → v" + o.latest;
+          said.appendChild(chip(text, "warn"));
+        });
+      }
+      foot.appendChild(said);
+      var sync = action("Sync", "btn-default", async function(){
+        var r = await send("/api/skillhub/sync", {worker: d.id});
+        var failed = (r.failed || []).map(function(f){ return f.name + ": " + f.error; });
+        if(failed.length){ throw new Error("Installed " + (r.installed || []).length + "; not installed: " + failed.join("; ")); }
+        return "Installed " + (r.installed || []).length + " skill(s).";
+      }, "restart");
+      sync.disabled = !out || !out.length;
+      foot.appendChild(sync);
+      card.appendChild(foot);
+
+      host.appendChild(card);
+    });
+  };
+
+  loaders.skills = async function(){
+    var tbody = $("skillsRows");
+    if(editing(tbody)){ return; }
+    clear(tbody);
+    if(!hub.skills.length){ emptyRow(tbody, 4, "No skills published yet. Teach a worker a skill, confirm it, then publish it below."); return; }
+
+    hub.skills.forEach(function(s){
+      var tr = node("tr");
+      var name = node("div");
+      name.appendChild(node("b", null, s.name));
+      name.appendChild(node("div", "row-sub", "latest v" + s.latest));
+      cell(tr, name);
+
+      var versions = node("div");
+      (s.versions || []).slice(0, 4).forEach(function(v){
+        var line = node("div", "row-sub");
+        line.textContent = "v" + v.version + " · from " + workerName(v.published_from) + (v.note ? " · " + v.note : "") + " · ";
+        line.appendChild(when(v.published_at));
+        versions.appendChild(line);
+      });
+      if((s.versions || []).length > 4){ versions.appendChild(node("div", "row-sub", "+" + (s.versions.length - 4) + " older")); }
+      cell(tr, versions);
+
+      var roles = node("div", "wf-chips");
+      (s.roles || []).forEach(function(role){
+        var c = chip(role);
+        var x = node("button", null, "×");
+        x.type = "button";
+        x.title = "Take " + s.name + " off role " + role;
+        x.addEventListener("click", async function(){
+          try{ await send("/api/skillhub/assign", {name: s.name, role: role, remove: true}); await refresh(true); }
+          catch(e){ toast(e.message, "error"); }
+        });
+        c.appendChild(x);
+        roles.appendChild(c);
+      });
+      if(!roles.firstChild){ roles.appendChild(node("span", "wf-muted", "—")); }
+      cell(tr, roles);
+
+      var installs = node("div", "wf-chips");
+      (s.installs || []).forEach(function(i){ installs.appendChild(chip(workerName(i.worker) + " v" + i.version, i.version < s.latest ? "warn" : "")); });
+      if(!installs.firstChild){ installs.appendChild(node("span", "wf-muted", "—")); }
+      cell(tr, installs);
+
+      tbody.appendChild(tr);
+    });
+  };
+
+  onSubmit($("publishForm"), async function(){
+    var r = await send("/api/skillhub/publish", {worker: $("pubWorker").value, name: $("pubName").value.trim(), note: $("pubNote").value.trim()});
+    $("pubNote").value = "";
+    return r.created ? "Published " + r.version.name + " v" + r.version.version + "." : "Unchanged: v" + r.version.version + " is already the latest.";
+  });
+  onSubmit($("installForm"), async function(){
+    var version = parseInt($("instVersion").value, 10);
+    var r = await send("/api/skillhub/install", {worker: $("instWorker").value, name: $("instSkill").value, version: version > 0 ? version : 0});
+    return "Installed " + r.name + " v" + r.version + ".";
+  });
+  onSubmit($("assignForm"), async function(){
+    await send("/api/skillhub/assign", {name: $("asgSkill").value, role: $("asgRole").value.trim()});
+    $("asgRole").value = "";
+    return "Assigned.";
+  });
+{{end}}
+
+{{if .HasQueue}}
+  function money(n){ return "$" + (Number(n) || 0).toFixed(2); }
+  function spendText(period){
+    if(!period){ return "—"; }
+    var text = money(period.usd) + " · " + (period.tokens || 0).toLocaleString() + " tok";
+    if(period.limit){
+      var caps = [];
+      if(period.limit.max_usd){ caps.push(money(period.limit.max_usd)); }
+      if(period.limit.max_tokens){ caps.push(period.limit.max_tokens.toLocaleString() + " tok"); }
+      text += " of " + caps.join(" / ");
+    }
+    return text;
+  }
+  function overLimit(period){
+    var l = period && period.limit;
+    return !!(l && ((l.max_usd && period.usd >= l.max_usd) || (l.max_tokens && period.tokens >= l.max_tokens)));
+  }
+
+  loaders.queue = async function(){
+    var results = await Promise.all([
+      getJSON("/api/queue?limit=100"),
+      getJSON("/api/queue/capacity"),
+      getJSON("/api/queue/limits")
+    ]);
+    var spend = {};
+    await Promise.all(desktops.map(async function(d){
+      try{ spend[d.id] = await getJSON("/api/queue/spend?worker=" + enc(d.id)); }catch(e){ spend[d.id] = null; }
+    }));
+
+    var tbody = $("queueRows");
+    if(!editing(tbody)){
+      clear(tbody);
+      var items = results[0].items || [];
+      if(!items.length){ emptyRow(tbody, 8, "The queue is empty."); }
+      items.forEach(function(it){
+        var tr = node("tr");
+        cell(tr, clipped(it.request));
+        var st = node("div");
+        st.appendChild(pill(it.status));
+        if(it.hold || it.reason){ st.appendChild(node("div", "row-sub", [it.hold, it.reason].filter(Boolean).join(" · "))); }
+        cell(tr, st);
+        var needs = node("div", "wf-chips");
+        if(it.required_skill){ needs.appendChild(chip("skill " + it.required_skill)); }
+        if(it.required_role){ needs.appendChild(chip("role " + it.required_role)); }
+        if(it.worker){ needs.appendChild(chip("only " + workerName(it.worker))); }
+        if(!needs.firstChild){ needs.appendChild(node("span", "wf-muted", "Anyone")); }
+        cell(tr, needs);
+        var worker = node("div");
+        worker.textContent = it.assigned_worker ? workerName(it.assigned_worker) : "—";
+        if(it.task_id){
+          var link = node("a", "row-sub", "task");
+          link.href = "/tasks/" + enc(it.task_id);
+          worker.appendChild(node("div")).appendChild(link);
+        }
+        cell(tr, worker);
+        cell(tr, it.attempts + "/" + it.max_attempts, "num");
+        cell(tr, String(it.priority), "num");
+        cell(tr, when(it.created_at));
+        var acts = cell(tr, null, "actions");
+        if(["queued", "held", "assigned", "running"].indexOf(it.status) >= 0){
+          acts.appendChild(action("Cancel", "btn-quiet btn-danger", async function(){
+            if(!window.confirm("Cancel this item?")){ return; }
+            await send("/api/queue/cancel", {id: it.id, reason: "cancelled by a person"});
+            return "Cancelled.";
+          }));
+        }
+        if(["failed", "not_done", "cancelled", "held"].indexOf(it.status) >= 0){
+          acts.appendChild(action("Retry", "btn-default", async function(){
+            await send("/api/queue/retry", {id: it.id});
+            return "Queued again.";
+          }));
+        }
+        tbody.appendChild(tr);
+      });
+    }
+
+    var caps = {};
+    (results[1].capacity || []).forEach(function(c){ caps[c.worker] = c; });
+    var capRows = $("capacityRows");
+    if(!editing(capRows)){
+      clear(capRows);
+      if(!desktops.length){ emptyRow(capRows, 6, "No workers yet."); }
+      desktops.forEach(function(d){
+        var c = caps[d.id] || {max_concurrent: results[1].default_max_concurrent || 1, paused: false};
+        var tr = node("tr");
+        cell(tr, d.name || d.id);
+        var n = node("input", "input");
+        n.type = "number"; n.min = "1"; n.step = "1"; n.value = c.max_concurrent; n.style.width = "80px";
+        n.setAttribute("aria-label", "Items at once for " + (d.name || d.id));
+        cell(tr, n);
+        var label = node("label", "wf-check");
+        var p = node("input");
+        p.type = "checkbox"; p.checked = !!c.paused;
+        label.appendChild(p);
+        label.appendChild(document.createTextNode("Paused"));
+        cell(tr, label);
+        var s = spend[d.id];
+        cell(tr, s ? spendText(s.day) : "—", "num" + (s && overLimit(s.day) ? " wf-over" : ""));
+        cell(tr, s ? spendText(s.month) : "—", "num" + (s && overLimit(s.month) ? " wf-over" : ""));
+        cell(tr, null, "actions").appendChild(action("Save", "btn-default", async function(){
+          await send("/api/queue/capacity", {worker: d.id, max_concurrent: parseInt(n.value, 10) || 1, paused: p.checked});
+          return "Saved.";
+        }));
+        capRows.appendChild(tr);
+      });
+    }
+
+    var limitRows = $("limitRows");
+    clear(limitRows);
+    var limits = results[2].limits || [];
+    if(!limits.length){ emptyRow(limitRows, 5, "No spend limits."); }
+    limits.forEach(function(l){
+      var tr = node("tr");
+      cell(tr, workerName(l.worker));
+      cell(tr, l.period);
+      cell(tr, l.max_usd ? money(l.max_usd) : "—", "num");
+      cell(tr, l.max_tokens ? l.max_tokens.toLocaleString() : "—", "num");
+      cell(tr, null, "actions").appendChild(action("Remove", "btn-quiet btn-danger", async function(){
+        await send("/api/queue/limits", {worker: l.worker, period: l.period, max_usd: 0, max_tokens: 0});
+        return "Limit removed.";
+      }));
+      limitRows.appendChild(tr);
+    });
+  };
+
+  onSubmit($("enqueueForm"), async function(){
+    await send("/api/queue", {
+      request: $("qRequest").value.trim(),
+      required_skill: $("qSkill").value,
+      required_role: $("qRole").value.trim(),
+      worker: $("qWorker").value,
+      priority: parseInt($("qPriority").value, 10) || 0,
+      source: "workforce page"
+    });
+    $("qRequest").value = "";
+    return "Added to the queue.";
+  });
+  onSubmit($("limitForm"), async function(){
+    await send("/api/queue/limits", {
+      worker: $("limWorker").value || "*",
+      period: $("limPeriod").value,
+      max_usd: parseFloat($("limUSD").value) || 0,
+      max_tokens: parseInt($("limTokens").value, 10) || 0
+    });
+    return "Limit saved.";
+  });
+{{end}}
+
+{{if .HasHandoffs}}
+  function handoffTarget(h){
+    var to = h.to_worker ? workerName(h.to_worker) : "";
+    var by = [h.to_role ? "role " + h.to_role : "", h.to_skill ? "skill " + h.to_skill : ""].filter(Boolean).join(", ");
+    return to ? (by ? to + " (" + by + ")" : to) : (by || "—");
+  }
+  function isOpen(h){ return h.status === "queued" || h.status === "running"; }
+
+  async function showHandoff(id){
+    var h = await getJSON("/api/handoffs/get?id=" + enc(id));
+    var body = node("div", "wf-chain");
+    function block(label, text){
+      if(!text || (Array.isArray(text) && !text.length)){ return; }
+      var div = node("div");
+      div.appendChild(node("div", "wf-label", label));
+      div.appendChild(node("div", "wf-text", Array.isArray(text) ? text.join("\n") : text));
+      body.appendChild(div);
+    }
+    block("Request", h.request);
+    block("Expected", h.expected);
+    block("Status", h.status + (h.reason ? ": " + h.reason : ""));
+    var r = h.result || {};
+    block("Report", r.report);
+    block("Verified", r.report ? (r.verified ? "Yes: the receiver's final check judged it done." : "No: not confirmed by the receiver's final check.") : "");
+    block("Open questions", r.open_questions);
+    block("Evidence", r.evidence);
+    block("Files", r.files);
+    openDialog("Handoff", workerName(h.from_worker) + " → " + handoffTarget(h), body);
+  }
+
+  loaders.handoffs = async function(){
+    var worker = $("handoffWorker").value;
+    var data = await getJSON("/api/handoffs?limit=100" + (worker ? "&worker=" + enc(worker) : ""));
+    var tbody = $("handoffRows");
+    clear(tbody);
+    var all = data.handoffs || [];
+    if(!all.length){ emptyRow(tbody, 7, "No handoffs."); }
+    all.forEach(function(h){
+      var tr = node("tr");
+      var req = clipped(h.request);
+      if(h.kind === "ask"){ req.insertBefore(chip("question"), req.firstChild); }
+      cell(tr, req);
+      cell(tr, workerName(h.from_worker) + " → " + handoffTarget(h));
+      var st = node("div");
+      st.appendChild(pill(h.status));
+      if(h.reason){ st.appendChild(node("div", "row-sub", h.reason)); }
+      cell(tr, st);
+      var r = h.result || {};
+      cell(tr, isOpen(h) ? node("span", "wf-muted", "—") : chip(r.verified ? "verified" : "not verified", r.verified ? "good" : "warn"));
+      var qs = r.open_questions || [];
+      cell(tr, qs.length ? clipped(qs.join(" · ")) : node("span", "wf-muted", "—"));
+      cell(tr, when(h.created_at));
+      var acts = cell(tr, null, "actions");
+      acts.appendChild(action("Details", "btn-quiet", async function(){ await showHandoff(h.id); }));
+      if(isOpen(h)){
+        acts.appendChild(action("Cancel", "btn-quiet btn-danger", async function(){
+          if(!window.confirm("Cancel this handoff? A task already started on the receiving worker is not stopped.")){ return; }
+          await send("/api/handoffs/cancel", {id: h.id});
+          return "Cancelled.";
+        }));
+      }
+      tbody.appendChild(tr);
+    });
+  };
+  $("handoffWorker").addEventListener("change", function(){ refresh(true); });
+{{end}}
+
+{{if .HasKnowledge}}
+  var scopeTitle = {org: "Everyone", role: "Role", worker: "Worker", task: "Task"};
+
+  function knowledgeItem(it){
+    var div = node("div", "k-item");
+    div.appendChild(node("div", "wf-text", it.text));
+    var meta = node("div", "k-meta");
+    meta.appendChild(chip(it.kind));
+    var src = it.source || {};
+    var from = src.kind + (src.ref ? ": " + src.ref : "");
+    if(src.worker){ from += " · worker " + workerName(src.worker); }
+    if(src.task_id){ from += " · task " + src.task_id; }
+    meta.appendChild(node("span", null, "from " + from));
+    meta.appendChild(when(it.created_at));
+    div.appendChild(meta);
+
+    var acts = node("div", "k-actions");
+    acts.appendChild(action("Why", "btn-quiet", async function(){ await showWhy(it.id); }));
+    acts.appendChild(action("Replace", "btn-quiet", async function(){ supersede(it); }));
+    acts.appendChild(action("Retire", "btn-quiet btn-danger", async function(){
+      if(!window.confirm("Stop giving this out? It stays in the history.")){ return; }
+      await send("/api/knowledge/supersede", {id: it.id, retire: true});
+      return "Retired.";
+    }));
+    div.appendChild(acts);
+    return div;
+  }
+
+  async function showWhy(id){
+    var data = await getJSON("/api/knowledge/why?id=" + enc(id));
+    var body = node("div", "wf-chain");
+    [data.item].concat(data.replaced || []).forEach(function(it, i){
+      var div = node("div");
+      div.appendChild(node("div", "wf-label", i === 0 ? "Now" : "Replaced"));
+      div.appendChild(node("div", "wf-text", it.text));
+      var src = it.source || {};
+      var meta = node("div", "k-meta");
+      meta.appendChild(chip(it.kind));
+      meta.appendChild(node("span", null, "from " + src.kind + (src.ref ? ": " + src.ref : "") + (src.task_id ? " · task " + src.task_id : "")));
+      meta.appendChild(when(it.created_at));
+      div.appendChild(meta);
+      body.appendChild(div);
+    });
+    openDialog("Why a worker is told this", (scopeTitle[data.item.scope] || data.item.scope) + (data.item.scope_key ? " " + data.item.scope_key : ""), body);
+    D.relativeTimes();
+  }
+
+  function supersede(it){
+    var body = node("div", "field");
+    var label = node("label", null, "New text");
+    label.htmlFor = "wfReplaceText";
+    var text = node("textarea", "textarea");
+    text.id = "wfReplaceText"; text.rows = 4; text.value = it.text; text.maxLength = 4000;
+    var refLabel = node("label", null, "Source");
+    refLabel.htmlFor = "wfReplaceRef";
+    var ref = node("input", "input");
+    ref.id = "wfReplaceRef"; ref.placeholder = "Who or what said so";
+    [label, text, refLabel, ref].forEach(function(el){ body.appendChild(el); });
+    openDialog("Replace", "The old text stays in the history.", body, async function(){
+      await send("/api/knowledge/supersede", {id: it.id, text: text.value.trim(), source: {kind: "person", ref: ref.value.trim()}});
+      return "Replaced.";
+    });
+  }
+
+  function group(title, items){
+    var panel = node("div", "panel k-group");
+    panel.appendChild(node("div", "wf-label", title + " · " + items.length));
+    items.forEach(function(it){ panel.appendChild(knowledgeItem(it)); });
+    return panel;
+  }
+
+  loaders.knowledge = async function(){
+    var asks = [getJSON("/api/knowledge")].concat(desktops.map(function(d){ return getJSON("/api/knowledge?worker=" + enc(d.id)); }));
+    var answers = await Promise.all(asks);
+    var seen = {}, groups = {}, order = [];
+    answers.forEach(function(a){
+      (a.items || []).forEach(function(it){
+        if(seen[it.id]){ return; }
+        seen[it.id] = true;
+        var key = it.scope + "\u0000" + (it.scope_key || "");
+        if(!groups[key]){
+          groups[key] = [];
+          order.push({key: key, title: it.scope === "org" ? "Everyone" : scopeTitle[it.scope] + " " + (it.scope === "worker" ? workerName(it.scope_key) : it.scope_key), rank: ["org", "role", "worker", "task"].indexOf(it.scope)});
+        }
+        groups[key].push(it);
+      });
+    });
+    order.sort(function(a, b){ return a.rank - b.rank || a.title.localeCompare(b.title); });
+
+    var host = $("knowledgeList");
+    if(editing(host)){ return; }
+    clear(host);
+    if(!order.length){ host.appendChild(node("p", "wf-muted", "Nothing yet. Add a rule below, or teach a worker and confirm what it learned.")); }
+    order.forEach(function(g){ host.appendChild(group(g.title, groups[g.key])); });
+
+    if(taskShown){ await loadTaskKnowledge(); }
+  };
+
+  var taskShown = "";
+  async function loadTaskKnowledge(){
+    var host = $("taskKnowledge");
+    var data = await getJSON("/api/knowledge?task=" + enc(taskShown));
+    var items = (data.items || []).filter(function(it){ return it.scope === "task"; });
+    clear(host);
+    host.appendChild(items.length ? group("Task " + taskShown, items) : node("p", "wf-muted", "Nothing scoped to that task."));
+  }
+  onSubmit($("taskKnowledgeForm"), async function(){
+    taskShown = $("kTask").value.trim();
+    if(!taskShown){ clear($("taskKnowledge")); return; }
+    await loadTaskKnowledge();
+  });
+
+  $("kScope").addEventListener("change", function(){ $("kKeyField").hidden = $("kScope").value === "org"; });
+  onSubmit($("knowledgeForm"), async function(){
+    var scope = $("kScope").value;
+    await send("/api/knowledge", {
+      scope: scope,
+      scope_key: scope === "org" ? "" : $("kKey").value.trim(),
+      kind: $("kKind").value,
+      text: $("kText").value.trim(),
+      source: {kind: "person", ref: $("kRef").value.trim()}
+    });
+    $("kText").value = "";
+    return "Added.";
+  });
+{{end}}
+
+{{if .HasAccess}}
+  loaders.access = async function(){
+    var results = await Promise.all([
+      getJSON("/api/access/users"),
+      getJSON("/api/access/policies"),
+      getJSON("/api/access/workers"),
+      getJSON("/api/access/approvals?limit=50")
+    ]);
+
+    var users = $("userRows");
+    if(!editing(users)){
+      clear(users);
+      var all = results[0].users || [];
+      if(!all.length){ emptyRow(users, 4, "No one yet. Only you, on this computer."); }
+      all.forEach(function(u){
+        var tr = node("tr");
+        cell(tr, u.name);
+        if(u.local){
+          cell(tr, (u.roles || []).join(", "));
+          cell(tr, chip("this computer"));
+          cell(tr, "");
+          users.appendChild(tr);
+          return;
+        }
+        var roles = node("input", "input");
+        roles.value = (u.roles || []).join(", ");
+        roles.placeholder = "No roles";
+        roles.setAttribute("aria-label", "Roles of " + u.name);
+        cell(tr, roles);
+        cell(tr, chip(u.disabled ? "disabled" : "active", u.disabled ? "bad" : "good"));
+        var acts = cell(tr, null, "actions");
+        acts.appendChild(action("Save roles", "btn-default", async function(){
+          await send("/api/access/users/update", {id: u.id, roles: list(roles.value)});
+          return "Roles saved.";
+        }));
+        acts.appendChild(action(u.disabled ? "Enable" : "Disable", "btn-quiet", async function(){
+          await send("/api/access/users/update", {id: u.id, disabled: !u.disabled});
+          return u.disabled ? "Enabled." : "Disabled; their sessions ended.";
+        }));
+        acts.appendChild(action("Delete", "btn-quiet btn-danger", async function(){
+          if(!window.confirm("Delete " + u.name + "?")){ return; }
+          await send("/api/access/users/delete", {id: u.id});
+          return "Deleted.";
+        }));
+        users.appendChild(tr);
+      });
+    }
+
+    var policies = $("policyRows");
+    clear(policies);
+    var ps = results[1].policies || [];
+    if(!ps.length){ emptyRow(policies, 6, "No policies: any reply settles an approval, as before."); }
+    ps.forEach(function(p){
+      var tr = node("tr");
+      var who = node("div");
+      who.textContent = workerName(p.worker || "*");
+      if(p.worker_role){ who.appendChild(node("div", "row-sub", "with role " + p.worker_role)); }
+      if(p.note){ who.appendChild(node("div", "row-sub", p.note)); }
+      cell(tr, who);
+      cell(tr, p.action_match ? node("span", "wf-mono", p.action_match) : node("span", "wf-muted", "Every approval"));
+      cell(tr, p.amount_over !== undefined && p.amount_over !== null ? String(p.amount_over) : "—");
+      cell(tr, (p.approver_roles || []).join(" or "));
+      cell(tr, String(p.min_approvers || 1), "num");
+      cell(tr, null, "actions").appendChild(action("Delete", "btn-quiet btn-danger", async function(){
+        if(!window.confirm("Delete this policy?")){ return; }
+        await send("/api/access/policies/delete", {id: p.id});
+        return "Deleted.";
+      }));
+      policies.appendChild(tr);
+    });
+
+    var workerRoles = results[2].workers || {};
+    var wrows = $("accessWorkerRows");
+    if(!editing(wrows)){
+      clear(wrows);
+      if(!desktops.length){ emptyRow(wrows, 2, "No workers yet."); }
+      desktops.forEach(function(d){
+        var tr = node("tr");
+        cell(tr, d.name || d.id);
+        var line = node("div", "wf-inline");
+        var input = node("input", "input");
+        input.value = (workerRoles[d.id] || []).join(", ");
+        input.placeholder = "No roles";
+        input.setAttribute("aria-label", "Policy roles of " + (d.name || d.id));
+        line.appendChild(input);
+        line.appendChild(action("Save", "btn-default", async function(){
+          await send("/api/access/workers/roles", {worker: d.id, roles: list(input.value)});
+          return "Saved.";
+        }));
+        cell(tr, line);
+        wrows.appendChild(tr);
+      });
+    }
+
+    var log = $("approvalRows");
+    clear(log);
+    var entries = results[3].approvals || [];
+    if(!entries.length){ emptyRow(log, 6, "No approvals replied to yet."); }
+    entries.forEach(function(a){
+      var tr = node("tr");
+      cell(tr, when(a.at));
+      cell(tr, workerName(a.worker));
+      cell(tr, clipped(a.action));
+      cell(tr, a.decision);
+      cell(tr, a.decided_by_name || "anonymous");
+      cell(tr, pill(a.outcome));
+      log.appendChild(tr);
+    });
+  };
+
+  onSubmit($("userForm"), async function(){
+    await send("/api/access/users/create", {name: $("uName").value.trim(), password: $("uPassword").value, roles: list($("uRoles").value)});
+    $("uName").value = ""; $("uPassword").value = ""; $("uRoles").value = "";
+    return "Added.";
+  });
+  onSubmit($("policyForm"), async function(){
+    var amount = $("pAmount").value.trim();
+    var policy = {
+      worker: $("pWorker").value || "*",
+      worker_role: $("pWorkerRole").value.trim(),
+      action_match: $("pMatch").value.trim(),
+      approver_roles: list($("pRoles").value),
+      min_approvers: parseInt($("pMin").value, 10) || 1,
+      note: $("pNote").value.trim()
+    };
+    if(amount !== ""){ policy.amount_over = parseFloat(amount); }
+    await send("/api/access/policies/save", policy);
+    ["pWorkerRole", "pMatch", "pAmount", "pRoles", "pNote"].forEach(function(id){ $(id).value = ""; });
+    return "Policy added.";
+  });
+  $("checkForm").addEventListener("submit", async function(event){
+    event.preventDefault();
+    var out = $("checkResult");
+    try{
+      var r = await send("/api/access/policies/check", {worker: $("cWorker").value, action: $("cAction").value});
+      var req = r.requirement || {};
+      var ps = req.policies || [];
+      clear(out);
+      if(!ps.length){
+        out.textContent = "No policy applies: any reply settles it, as today.";
+      }else{
+        out.appendChild(node("div", null, "Needs approval from " + r.approvers + (req.min_approvers > 1 ? ", " + req.min_approvers + " different people" : "") + "."));
+        if(req.amount !== undefined && req.amount !== null){ out.appendChild(node("div", "wf-muted", "Largest amount read: " + req.amount)); }
+        ps.forEach(function(p){
+          out.appendChild(node("div", "wf-muted", "Policy: " + (p.note || p.action_match || "every approval") + " → " + (p.approver_roles || []).join(" or ")));
+        });
+      }
+      out.hidden = false;
+    }catch(e){ toast(e.message, "error"); }
+  });
+{{end}}
+
+  /* ---------------- tabs and polling ---------------- */
+
+  var tabs = Array.prototype.slice.call(document.querySelectorAll("#wfTabs [data-tab]"));
+  var active = "";
+
+  function show(name){
+    if(!tabs.some(function(t){ return t.dataset.tab === name; })){ name = tabs.length ? tabs[0].dataset.tab : ""; }
+    active = name;
+    tabs.forEach(function(t){
+      var on = t.dataset.tab === name;
+      t.classList.toggle("active", on);
+      if(on){ t.setAttribute("aria-current", "page"); }else{ t.removeAttribute("aria-current"); }
+    });
+    document.querySelectorAll(".wf-section").forEach(function(s){ s.hidden = s.dataset.section !== name; });
+  }
+
+  tabs.forEach(function(t){
+    t.addEventListener("click", function(event){
+      event.preventDefault();
+      history.replaceState(null, "", "#" + t.dataset.tab);
+      show(t.dataset.tab);
+      refresh(true);
+    });
+  });
+
+  var polling = false;
+  async function refresh(force){
+    if(!active || (!force && document.visibilityState !== "visible")){ return; }
+    if(polling && !force){ return; }
+    polling = true;
+    var noteId = active + "Note";
+    try{
+      desktops = (await getJSON("/api/desktops")) || [];
+      fillWorkerSelects();
+{{if .HasSkillHub}}
+      await loadHub();
+{{end}}
+      if(loaders[active]){ await loaders[active](); }
+      note(noteId, "", false);
+    }catch(e){
+      note(noteId, "Could not read the latest: " + e.message + ". Trying again in a few seconds.", true);
+    }finally{
+      polling = false;
+      D.relativeTimes();
+    }
+  }
+
+  show(location.hash.replace("#", ""));
+  refresh(true);
+  setInterval(refresh, POLL_MS);
+  document.addEventListener("visibilitychange", function(){ refresh(false); });
+})();
+</script>
+
+</body>
+</html>

@@ -80,9 +80,17 @@ class RequestSecrets(unittest.TestCase):
 
         queued = []
         with mock.patch.object(progress, "_ensure_sender", lambda: None), \
-                mock.patch.object(progress._pending, "put_nowait", queued.append):
+                mock.patch.object(progress._pending, "put_nowait", queued.append), \
+                mock.patch("decurix_agent.task_context.current", lambda: "t0123456789abcdef"):
             progress.emit("Running: gui type e5 'Northwind#2026'")
         self.assertEqual(queued[0]["text"], "Running: gui type e5 '[withheld]'")
+        # With no task running nothing is sent: a look outside any task made the chat read as busy (2026-10-28).
+        queued.clear()
+        with mock.patch.object(progress, "_ensure_sender", lambda: None), \
+                mock.patch.object(progress._pending, "put_nowait", queued.append), \
+                mock.patch("decurix_agent.task_context.current", lambda: ""):
+            progress.emit("looked at the screen: no active window, 5 elements")
+        self.assertEqual(queued, [])
 
     def test_nothing_remembered_changes_nothing(self):
         (Path(self.tmp.name) / "withheld-secrets").unlink()

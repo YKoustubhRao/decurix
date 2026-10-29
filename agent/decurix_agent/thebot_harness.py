@@ -709,7 +709,8 @@ def _count(job):
 
     spent = job.get("usage") or {}
     if spent.get("calls"):
-        usage.add(input_tokens=spent.get("promptTokens"), output_tokens=spent.get("responseTokens"))
+        usage.add(input_tokens=spent.get("promptTokens"), output_tokens=spent.get("responseTokens"),
+                  cached_input_tokens=spent.get("cachedTokens"))
     try:
         playbooks.note_job(job)
         methods.note_job(job)

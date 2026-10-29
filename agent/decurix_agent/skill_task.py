@@ -5,6 +5,7 @@ import time
 import traceback
 from pathlib import Path
 
+from decurix_agent import org_knowledge
 from decurix_agent import (app_skills, attachments, binding, config, guidance, lessons, llm_client, messaging, playbooks, procedures, produced,
                            progress, request_reading, source_guard, sources, state, study, task_context, usage, verify)
 from decurix_agent.computer import (approval, constraints, core, escalation, evidence, experience, launchers, learning,
@@ -1742,6 +1743,9 @@ def _taught(skill, since=None):
     """What the person taught and answered before this run (since: when it began; None, every answer)."""
 
     parts = []
+    # What the organisation holds for this worker (its role's and the org's rules and facts, org_knowledge.py) comes
+    # first; the skill's own taught lines after it read as refinements. Cached, so a run's prompt stays the same.
+    parts.extend(org_knowledge.cached())
     said = skills.explanation(skill)
     if said:
         parts.append(said)
@@ -1961,7 +1965,17 @@ def _engine_request(run):
     else:
         request = f"Do the task you were taught, \"{skill.get('title') or skill['name']}\" (skill {skill['name']})"
     if run["values"]:
-        request += " with " + ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in run["values"].items())
+        stated, inferred = _stated_values(run)
+        if stated:
+            request += " with " + ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in stated.items())
+        if inferred:
+            # A value the request does not say is a reading, not the person's word. Found live (2026-10-29): the
+            # demonstration's "6. SEPTEMBER" was read for December as "12. DECEMBER"; sent as "with
+            # month_folder_name=...", the review took it for the person's instruction and sent correct work back nine
+            # times (the client's folders number months from April: "9. DECEMBER").
+            request += ("; values read for this run, not said by the person - check each against the documents and "
+                        "the application (a folder's name against the folders beside it) before you use it: "
+                        + ", ".join(f"{k}={json.dumps(v, ensure_ascii=False)}" for k, v in inferred.items()))
     request += "."
     if run.get("attempt_note") and run.get("attempt_blank"):
         request += ("\n\nYOUR FIRST ATTEMPT KEPT NOTHING IN THE APPLICATION (nothing was saved, added or submitted), so "
@@ -1985,6 +1999,18 @@ def _engine_request(run):
     elif run.get("context"):
         request += "\n\n" + run["context"]
     return request
+
+
+def _stated_values(run):
+    """(stated, inferred): the run's values the person's own words hold (case and spacing aside), and the rest - read
+    for this run from the request and the documents."""
+
+    said = " ".join(str(run.get("context") or (run.get("mimic") or {}).get("text") or "").lower().split())
+    stated, inferred = {}, {}
+    for name, value in run["values"].items():
+        text = " ".join(str(value).lower().split())
+        (stated if text and text in said else inferred)[name] = value
+    return stated, inferred
 
 
 def _by_model(run, from_step=None, note="", ran=False):
