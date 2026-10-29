@@ -47,6 +47,8 @@ const triggerParts = "triggerparts.html"
 
 // PageData is the template data passed to the dashboard page: the current desktops, the worker memory, and the current cloud tunnel URL (if any).
 type PageData struct {
+	// Gated: the page is served on the gated listener; owner-only controls (Simulate) are hidden.
+	Gated                  bool
 	DefaultDesktopCPUs     int64
 	DefaultDesktopMemoryMB int64
 	Desktops               []desktop.Desktop

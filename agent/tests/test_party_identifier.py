@@ -79,6 +79,13 @@ class TheCheck(unittest.TestCase):
                     listing=f"e477 textbox \"GSTIN/UIN\" value=\"{GSTIN}\" [focused]\ne479 button \"Accept\"")
         self.assertEqual(core.unsearched_identifier(SEARCH_BY_NAME + NEW_LEDGER, [form]), [(GSTIN, "")])
 
+    def test_the_pages_address_and_its_window_title_are_not_a_page_showing_it(self):
+        # Found live (2026-10-29): searching the list by the identifier put it into the page's address; the tab's
+        # header line was read as the page showing it, and a new customer was refused as "shown already".
+        searched = look(listing=f"== Chromium tab \"Chart of Accounts - Ledgers\" http://h:8704/books/ledgers?q={GSTIN}&group= ==\n"
+                                f"Active window: \"Ledgers {GSTIN} - Chromium\"\ne12 heading \"Chart of Accounts\"")
+        self.assertEqual(core.unsearched_identifier(SEARCH_BY_NAME + NEW_LEDGER, [searched]), [(GSTIN, "")])
+
     def test_a_document_with_its_own_number_is_not_a_partys_record(self):
         invoice = [opened("http://h:8703/gstr1/b2b/add?period=102026"), typed("Receiver name", "Coastal Builders"),
                    typed("Recipient GSTIN", GSTIN), typed("Invoice No.", "INV-1188"), typed("Value", "76700")]

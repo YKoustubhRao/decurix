@@ -128,7 +128,7 @@ func (i reviewIssue) text() string {
 	if why := strings.TrimSpace(i.Why); why != "" {
 		line += " - " + why
 	}
-	return truncateText(line, 500)
+	return forPerson(line, maxPointChars)
 }
 
 // reviewFacts is what the reviewer is shown: facts the goal holds, gathered by code, with no verdict of its own.

@@ -34,11 +34,12 @@ def set_model(model):
         _totals["model"] = str(model)
 
 
-def add(input_tokens=None, output_tokens=None, cost_usd=None):
+def add(input_tokens=None, output_tokens=None, cost_usd=None, cached_input_tokens=None):
     """
     Add one engine call's usage. A None leaves that figure unknown rather
     than zero: a local model's cost is a known $0, a count nobody reported
-    is not.
+    is not. cached_input_tokens is the part of input_tokens the provider
+    read from its prompt cache (billed at a fraction).
     """
 
     with _lock:
@@ -46,6 +47,7 @@ def add(input_tokens=None, output_tokens=None, cost_usd=None):
             ("input_tokens", input_tokens),
             ("output_tokens", output_tokens),
             ("cost_usd", cost_usd),
+            ("cached_input_tokens", cached_input_tokens),
         ):
             if value is None:
                 continue

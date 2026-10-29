@@ -742,7 +742,7 @@ body.busy{cursor:progress}
   .model-chip{padding:0 7px}
   .model-chip-name{display:none}
   .model-menu .menu-panel{width:min(320px,calc(100vw - 26px))}
-  /* Six sections do not fit a phone: the nav scrolls on its own, so the
+  /* Seven sections do not fit a phone: the nav scrolls on its own, so the
      page never scrolls sideways and every section stays reachable. */
   .nav{margin-left:0;flex:1 1 auto;min-width:0;overflow-x:auto;scrollbar-width:none;
        -webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 18px),transparent);
@@ -757,7 +757,7 @@ body.busy{cursor:progress}
   .menu-panel{width:min(300px,calc(100vw - 26px))}
 }
 
-/* Six sections and three icon buttons share a phone's width. */
+/* Seven sections and three icon buttons share a phone's width. */
 @media (max-width:440px){
   .topbar{gap:4px;padding:0 10px}
   .brand-mark{width:38px;height:38px}
@@ -1769,6 +1769,7 @@ body.busy{cursor:progress}
     <a href="/tasks"{{if eq . "tasks"}} class="active" aria-current="page"{{end}}>Tasks</a>
     <a href="/dags"{{if eq . "dags"}} class="active" aria-current="page"{{end}}>DAGs</a>
     <a href="/triggers"{{if eq . "triggers"}} class="active" aria-current="page"{{end}}>Triggers</a>
+    <a href="/workforce"{{if eq . "workforce"}} class="active" aria-current="page"{{end}}>Workforce</a>
   </nav>
 
   <div class="topbar-right">

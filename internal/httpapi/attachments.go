@@ -224,6 +224,9 @@ func splitAttachments(content string) (string, []string) {
 // uploadError answers a failed upload: the person's own mistake in words
 // they can act on, anything else as a send that failed.
 func uploadError(w http.ResponseWriter, err error) {
+	if writeApprovalRefused(w, err) {
+		return
+	}
 	var mistake *errUpload
 	if errors.As(err, &mistake) {
 		jsonStatusError(w, mistake.status, mistake.reason)

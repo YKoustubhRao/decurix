@@ -79,6 +79,13 @@ class Usage(unittest.TestCase):
 
         self.assertEqual(usage.snapshot(), {"cost_usd": 0.041})
 
+    def test_the_cached_share_of_the_input_is_kept_beside_it(self):
+        # What a task really cost: the provider bills prompt-cache reads at a fraction (2026-10-28: ~80% cached).
+        usage.add(input_tokens=1000, output_tokens=10, cached_input_tokens=800)
+        usage.add(input_tokens=500, cached_input_tokens=None)
+
+        self.assertEqual(usage.snapshot(), {"input_tokens": 1500, "output_tokens": 10, "cached_input_tokens": 800})
+
     def test_a_new_task_starts_from_nothing(self):
         usage.add(input_tokens=10)
         usage.reset()

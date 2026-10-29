@@ -1,0 +1,4 @@
+#!/bin/sh
+# The `handoff` command: hand part of a task to another worker, or ask one a question, through the control plane
+# (decurix_agent/tools/handoff.py). Only a result the receiving worker's own final check confirmed reads as done.
+PYTHONPATH="/opt${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m decurix_agent.tools.handoff "$@"

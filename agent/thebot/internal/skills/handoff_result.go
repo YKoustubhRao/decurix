@@ -1,0 +1,116 @@
+package skills
+
+import (
+	"regexp"
+	"strings"
+)
+
+// A part of the task handed to another worker (the `handoff` command, agent/decurix_agent/tools/handoff.py) comes
+// back as one printed block whose first line says whether the receiving worker's own final check confirmed it:
+// "=== HANDOFF <id>: DONE (verified) ===" and nothing else is done. A report that rests on a handed-back result the
+// receiver did not verify claims what nobody saw - decided in code, like the record ledger (record_ledger.go).
+
+// handoffHeadRe is the first line of a printed handoff result: its ID and its verdict.
+var handoffHeadRe = regexp.MustCompile(`(?m)^=== HANDOFF (\S+): (.+?) ===\s*$`)
+
+// handoffFieldRe is one "name: value" line of a printed handoff result.
+var handoffFieldRe = regexp.MustCompile(`(?m)^(status|verified|worker|reason): (.*)$`)
+
+// notDoneWordRe is wording with which a report says a part is not done.
+var notDoneWordRe = regexp.MustCompile(`(?i)\b(not (?:yet )?(?:done|verified|confirmed|finished|complete[d]?)|could not|couldn't|unverified|failed|still running|cancel\w*|unconfirmed)\b`)
+
+// maxHandoffIssues bounds the points raised.
+const maxHandoffIssues = 4
+
+// handedBack is one handoff result as the tool printed it.
+type handedBack struct {
+	ID       string
+	Verdict  string
+	Status   string
+	Worker   string
+	Reason   string
+	Verified bool
+}
+
+// handedBackResults returns the latest printed result of each handoff in text, in the order first seen. A result is
+// verified only when its first line says "DONE (verified)" and its verified line says yes: a block cut short after
+// its first line (an output shortened for the model) is judged by that first line alone.
+func handedBackResults(text string) []handedBack {
+	heads := handoffHeadRe.FindAllStringSubmatchIndex(text, -1)
+	byID := map[string]int{}
+	var out []handedBack
+	for n, m := range heads {
+		end := len(text)
+		if n+1 < len(heads) {
+			end = heads[n+1][0]
+		}
+		body := text[m[1]:end]
+		if cut := strings.Index(body, "\n=== END HANDOFF"); cut >= 0 {
+			body = body[:cut]
+		}
+		r := handedBack{ID: text[m[2]:m[3]], Verdict: strings.TrimSpace(text[m[4]:m[5]])}
+		verifiedLine := ""
+		for _, f := range handoffFieldRe.FindAllStringSubmatch(body, -1) {
+			switch f[1] {
+			case "status":
+				r.Status = strings.TrimSpace(f[2])
+			case "verified":
+				verifiedLine = strings.TrimSpace(f[2])
+			case "worker":
+				r.Worker = strings.TrimSpace(f[2])
+			case "reason":
+				r.Reason = strings.TrimSpace(f[2])
+			}
+		}
+		r.Verified = r.Verdict == "DONE (verified)" && (verifiedLine == "" || verifiedLine == "yes")
+		if i, ok := byID[r.ID]; ok {
+			out[i] = r
+			continue
+		}
+		byID[r.ID] = len(out)
+		out = append(out, r)
+	}
+	return out
+}
+
+// handoffResultIssues are Work points for each part handed to another worker whose latest result the receiver did
+// not verify - unless the report names that handoff and says it is not done.
+func handoffResultIssues(seen, report string) []reviewIssue {
+	saysNotDone := notDoneWordRe.MatchString(report)
+	var out []reviewIssue
+	for _, r := range handedBackResults(seen) {
+		if r.Verified {
+			continue
+		}
+		if saysNotDone && strings.Contains(report, r.ID) {
+			continue // the report says what became of it
+		}
+		who := "another worker"
+		if r.Worker != "" && !strings.HasPrefix(r.Worker, "(") {
+			who = "worker " + r.Worker
+		}
+		why := "only a result the receiving worker's own final check confirmed is done; this one reads " + r.Verdict
+		if r.Reason != "" {
+			why += " (" + truncateText(r.Reason, 200) + ")"
+		}
+		out = append(out, reviewIssue{
+			What: "the part handed to " + who + " (handoff " + r.ID + ") came back not verified",
+			Why:  why,
+			Settle: "check that part yourself and do what is missing, run `handoff status " + r.ID + "` if it was still " +
+				"running, or say in the report that handoff " + r.ID + " is not done and why",
+			Work: true,
+		})
+		if len(out) == maxHandoffIssues {
+			break
+		}
+	}
+	return out
+}
+
+// handoffIssues are the handoff points for a report, from everything the operator was shown.
+func (st *operatorState) handoffIssues(report string) []reviewIssue {
+	if !strings.Contains(st.Seen, "=== HANDOFF ") {
+		return nil
+	}
+	return handoffResultIssues(st.Seen, report)
+}

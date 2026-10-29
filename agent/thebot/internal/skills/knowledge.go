@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // ============================================================
@@ -150,6 +151,8 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 	if action == "" {
 		// A record declared and never saved, or saved and not read back whole, is a point decided in code.
 		issues = append(issues, recordLedgerIssues(st.RecordLedger)...)
+		// ... and a rate line of a record that holds that rate of none of its amounts: a misread figure (advisory).
+		issues = append(issues, rateMismatchIssues(st.RecordLedger)...)
 		// Before a report: a document of the work nothing written reflects, and the report never names, is a point -
 		// decided in code, not left to the review to notice (evidence.go).
 		issues = append(issues, st.coverageIssues(said)...)
@@ -158,8 +161,13 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 		issues = append(issues, st.unopenedMessageIssues(said)...)
 		// ... and a record saved that a line the task read calls cancelled or returned (cancelled.go).
 		issues = append(issues, st.cancelledSavedIssues(said)...)
+		// ... and a part handed to another worker whose result was not verified done (handoff_result.go).
+		issues = append(issues, st.handoffIssues(said)...)
 		// ... and a plan with steps for the person's OK of which none went through (plan.go).
 		issues = append(issues, st.commitsIssue()...)
+		// ... and a month folder this task named unlike the month folders beside it, however it was made
+		// (folder_names.go).
+		issues = append(issues, o.folderNameIssues(rc, st)...)
 		// ... and a one-word value written into a file that no source holds (evidence.go noteInventedCodes).
 		issues = append(issues, st.inventedCodeIssues(said)...)
 		// The figures the work leaves on a screen it typed into are worked out again from the sources, as before a
@@ -366,7 +374,7 @@ func knowledgeQuestion(issues []reviewIssue, web []string, action string) string
 		b.WriteString(head + "\n")
 		for _, p := range points {
 			n++
-			fmt.Fprintf(&b, "%d. %s\n", n, truncateText(p, 400))
+			fmt.Fprintf(&b, "%d. %s\n", n, forPerson(p, maxPointChars))
 		}
 	}
 	section("These rest on what I looked up on the web. Is each a source you trust for this? Reply yes to keep them, "+
@@ -378,6 +386,29 @@ func knowledgeQuestion(issues []reviewIssue, web []string, action string) string
 	section("An independent check of the work still questions these after I went back over them. Tell me if any is "+
 		"wrong, or reply \"as you did\" to keep the work as it is:", checks)
 	return strings.TrimSpace(b.String())
+}
+
+// maxPointChars bounds one point of a question to the person: room for the point and the evidence it rests on.
+const maxPointChars = 700
+
+// forPerson is s for a question to the person: whole when it fits, else cut at the last sentence or clause end in
+// the second half of the limit and marked with an ellipsis - never mid-word with an engineering marker. Found live
+// (2026-10-28): a review point reached the person as half a sentence ending "... [truncated]".
+func forPerson(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	cut := s[:n]
+	if i := strings.LastIndexAny(cut, ".;:"); i > n/2 {
+		cut = cut[:i+1]
+	} else if i := strings.LastIndex(cut, " "); i > n/2 {
+		cut = cut[:i]
+	}
+	return strings.TrimSpace(cut) + " …"
 }
 
 // maxWorkSendBacks bounds the send-backs a goal makes for points that are the worker's to do; past it they are carried
