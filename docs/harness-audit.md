@@ -262,7 +262,7 @@ A full read of every model-facing Go string (not only a search). No test-data na
 | grounding.go:630-632 (quotes nudge) | "Prices!$A$2:$C$13 ... =VLOOKUP(B2,Prices!$A$2:$C$13,3,FALSE)" | GENERALIZE | Neutral formula (the "Prices" sheet is one benchmark's). |
 | grounding.go:723-726 (filler nudge) | "(a phone: digits only, without the country code)" | GENERALIZE | Drop the phone aside. |
 | grounding.go:869-878 `sharedRule` | the named-app procedure and the source-file rule, again | GENERALIZE (dedupe) | When `rulesFor` has swapped in sharedAppSentence, sharedRule only needs the path mapping; a shared-folder desktop reads both rules twice today. |
-| memory/l1.go:101 | "e.g. 'The user's name is Alex Doe.'" | GENERALIZE | A real person's name as the example: "The user's name is Alex Doe." |
+| memory/l1.go:101 | "e.g. a real person's name as the example" | GENERALIZE | Use a placeholder name: "The user's name is Alex Doe." |
 | shell.go:116-118 | the killed-command note | KEEP | The single home for that rule. |
 | scheduler (recovery, compose), prompt/frame.go, skills general/filewrite/web/ragquery/terminal, atomizer plan prompts, coding prompts | | KEEP | Generic; nothing domain-fitted. |
 
