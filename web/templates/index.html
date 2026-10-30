@@ -1446,6 +1446,7 @@
           <label class="seg"><input type="radio" name="memory_mb" value="8192" {{if eq .DefaultDesktopMemoryMB 8192}}checked{{end}}><span>8 GB</span></label>
           <label class="seg"><input type="radio" name="memory_mb" value="16384" {{if eq .DefaultDesktopMemoryMB 16384}}checked{{end}}><span>16 GB</span></label>
         </div>
+        <div class="hint">The most this worker may use. It is taken only as the work needs it: an idle worker uses about 250 MB.</div>
       </div>
 
       <div class="field" id="sharedFolderField">

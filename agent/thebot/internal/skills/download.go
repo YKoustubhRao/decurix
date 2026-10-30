@@ -187,7 +187,7 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	}
 
 	exts := wantedExts(subtask.Step)
-	target := urlRe.FindString(subtask.Step)
+	target := findURL(subtask.Step)
 
 	var fileURLs []string
 	// Bulk mode: "download the raw html of these N pages" (typically the
@@ -227,7 +227,7 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 				// Weaker ground truth than Meta, but still real, and
 				// better than nothing when a skill didn't populate
 				// Meta["sources"]/"url".
-				if found := urlRe.FindString(rc.PriorFindings()); found != "" {
+				if found := findURL(rc.PriorFindings()); found != "" {
 					candidates = []string{found}
 				}
 			}

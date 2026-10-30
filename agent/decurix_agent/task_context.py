@@ -168,6 +168,12 @@ def mark_active(task_id, request=None):
         pass
 
 
+def is_active():
+    """Whether a task has been started and not finished (a question it waits on included)."""
+
+    return _active_path().exists()
+
+
 def clear_active():
     """The task this desktop was working on is over."""
 
