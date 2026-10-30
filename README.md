@@ -341,8 +341,11 @@ Re-run whichever of these changed whenever you edit `agent/` or a `docker/deskto
 ### 3. Start the control plane
 
 ```bash
+docker network inspect decurix-network >/dev/null 2>&1 || docker network create decurix-network
 docker compose up --build -d
 ```
+
+The network is created outside compose (it is `external` in `docker-compose.yaml`) because the scripts and the control plane create it too, and compose refuses a network it did not create.
 
 Open **http://localhost:8080** — that's the dashboard. Create a desktop from there (pick a profile and a harness), and its live desktop screen is reachable at `http://localhost:8080/desktop/<id>/`.
 

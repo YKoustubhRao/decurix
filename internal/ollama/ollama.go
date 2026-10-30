@@ -243,16 +243,14 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 			)
 		}
 
-		defer reader.Close()
+		err = drainImagePull(reader)
+		reader.Close()
 
-		buf := make([]byte, 4096)
-
-		for {
-			_, err := reader.Read(buf)
-
-			if err != nil {
-				break
-			}
+		if err != nil {
+			return fmt.Errorf(
+				"pull Ollama image: %w",
+				err,
+			)
 		}
 	}
 
@@ -445,6 +443,41 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 	log.Println("Ollama ready.")
 
 	return nil
+}
+
+// drainImagePull reads a Docker image-pull progress stream to its end and
+// returns the error the daemon reported inside it, if any. ImagePull only
+// starts a pull: a failure mid-download (a dropped connection, a missing
+// manifest) arrives as an {"error": ...} message in the stream, not as the
+// call's error. The old loop stopped at the first read error and looked at
+// nothing, so a failed pull went on to ContainerCreate and failed there as
+// "No such image", far from the real cause.
+func drainImagePull(r io.Reader) error {
+	dec := json.NewDecoder(r)
+
+	for {
+		var msg struct {
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+		}
+
+		err := dec.Decode(&msg)
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read pull progress: %w", err)
+		}
+
+		if msg.ErrorDetail.Message != "" {
+			return fmt.Errorf("%s", msg.ErrorDetail.Message)
+		}
+		if msg.Error != "" {
+			return fmt.Errorf("%s", msg.Error)
+		}
+	}
 }
 
 // dialableURL rewrites a desktop-facing Ollama URL into one this process
