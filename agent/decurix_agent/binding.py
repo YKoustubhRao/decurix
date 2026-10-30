@@ -441,7 +441,8 @@ def _rows_text(skill, params):
     return ("Repeating rows: the fields " + ", ".join(f"{name} ({label})" for name, label in zip(group["rows"][0], group["fields"]))
             + f" are one row, filled once per entry of the document; the demonstration's document had {len(group['rows'])} "
             "entries (its other rows are " + "; ".join(", ".join(row) for row in group["rows"][1:]) + "). Give this "
-            "document's entries under \"rows\", each with the names " + ", ".join(group["rows"][0]) + ".\n")
+            "document's entries under \"rows\", each with the names " + ", ".join(group["rows"][0]) + ", and each with its "
+            "own \"evidence\": {name: which line of the document it was read from}.\n")
 
 
 def _rows(skill, params, answer, texts, values, evidence, strict=False):
@@ -477,7 +478,11 @@ def _rows(skill, params, answer, texts, values, evidence, strict=False):
             if strict and not held_by(written, texts):
                 continue
             values[name] = written
-            evidence[name] = str(why.get(name) or why.get(field) or f"entry {n + 1} of the document")[:200]
+            # Where a row's value was read is that row's own: the answer's evidence for a field names the first row's
+            # line, and every later row's report cited that line for its own value (found live, 2026-10-30).
+            own = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+            where = own.get(field) or own.get(name) or why.get(name) or (why.get(field) if n == 0 else None)
+            evidence[name] = str(where or f"entry {n + 1} of the document")[:200]
             held += 1
     if strict and not held:
         log(f"binding: {len(names)} row(s) given and nothing this run was given holds any of them; left for the work")

@@ -450,17 +450,56 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 	return config, hostConfig, networkingConfig
 }
 
-// desktopResources is the CPU and memory a desktop is given: cpus whole CPUs and memoryMB of memory (half of it
-// reserved), never swapped.
+// desktopIdleMB is the memory a desktop is guaranteed whatever size was chosen: what an idle one uses (measured
+// 2026-10-30: ~290 MB with no browser, ~510 MB with one open). The chosen size is a ceiling taken on demand; it was
+// half reserved, so an idle 8 GB desktop held 4 GB back from Windows and every other desktop under pressure.
+const desktopIdleMB = 512
+
+// desktopReservation is the memory a desktop of memoryMB keeps under pressure: desktopIdleMB, or all of it when smaller.
+func desktopReservation(memoryMB int64) int64 {
+	return min(memoryMB, desktopIdleMB) * 1024 * 1024
+}
+
+// desktopResources is the CPU and memory a desktop is given: cpus whole CPUs and up to memoryMB of memory, only the
+// idle floor of it reserved, never swapped.
 func desktopResources(cpus, memoryMB int64) container.Resources {
 	swappinessZero := int64(0)
 	return container.Resources{
 		NanoCPUs:          cpus * 1_000_000_000,
 		CPUShares:         cpus * 1024,
 		Memory:            memoryMB * 1024 * 1024,
-		MemoryReservation: (memoryMB * 1024 * 1024) / 2,
+		MemoryReservation: desktopReservation(memoryMB),
 		MemorySwappiness:  &swappinessZero,
 	}
+}
+
+// ReleaseReservations lowers the memory reservation of desktops created when half the chosen size was reserved to
+// the idle floor, live (Docker's update, no restart), and returns the IDs it changed. A one-off startup pass.
+func (m *Manager) ReleaseReservations(ctx context.Context) []string {
+	args := filters.NewArgs()
+	args.Add("label", "desktop-manager=true")
+	containers, err := m.client.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
+	if err != nil {
+		return nil
+	}
+	var changed []string
+	for _, c := range containers {
+		inspect, err := m.client.ContainerInspect(ctx, c.ID)
+		if err != nil || inspect.HostConfig == nil || inspect.HostConfig.Memory <= 0 {
+			continue
+		}
+		want := desktopReservation(inspect.HostConfig.Memory / (1024 * 1024))
+		if inspect.HostConfig.MemoryReservation <= want {
+			continue
+		}
+		// Only the reservation is sent: Docker leaves a zero field of an update as it is.
+		if _, err := m.client.ContainerUpdate(ctx, c.ID, container.UpdateConfig{Resources: container.Resources{MemoryReservation: want}}); err != nil {
+			log.Printf("could not release %s's memory reservation: %v", inspect.Name, err)
+			continue
+		}
+		changed = append(changed, strings.TrimPrefix(strings.TrimPrefix(inspect.Name, "/"), "desktop_"))
+	}
+	return changed
 }
 
 // SanitizeID normalizes a caller-supplied desktop identifier the same way

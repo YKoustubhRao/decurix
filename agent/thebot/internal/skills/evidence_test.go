@@ -132,8 +132,8 @@ func TestADocumentNothingReflectsAndTheReportDoesNotNameIsAPoint(t *testing.T) {
 // Found live (2026-10-23): a date picker's "10/23/2026" had its first part checked as a figure.
 func TestADateIsOneValueNotThreeFigures(t *testing.T) {
 	masked, figures := maskedFigures(`toggle "10/23/2026" (e15)` + "\n" + `row "Total | 34,750.00 | 2026-09-30" (e16)`)
-	// The date's line holds no figure to check (it is left out); the other keeps its date whole.
-	if len(figures) != 1 || figures["v1"] != "34,750.00" || strings.Contains(masked, "/23/") ||
+	// The date's line holds no figure to check (it stays as it is, naming); the other keeps its date whole.
+	if len(figures) != 1 || figures["v1"] != "34,750.00" || !strings.Contains(masked, `toggle "10/23/2026"`) ||
 		!strings.Contains(masked, "2026-09-30") {
 		t.Fatalf("masked %q figures %v", masked, figures)
 	}
@@ -406,10 +406,62 @@ func TestATablesHeaderIsShownWithItsBlankedRows(t *testing.T) {
 		`e2 row "Sales | 4 | 219,722.46 | 19,775.02"` + "\n" + `e3 row "Returns | 1 | 500.00 | 45.00"` + "\n" +
 		`e4 text "Prepared by the clerk"` + "\n" + `e5 row "Notes | none | kept"` + "\n" + `e6 text "Total 220,222.46"`
 	masked, figures := maskedFigures(listing)
-	want := `e1 row "Description | No. of records | Taxable value | Tax"` + "\n" +
-		`e2 row "Sales | [v1] | [v2] | [v3]"` + "\n" + `e3 row "Returns | [v4] | [v5] | [v6]"` + "\n" + `e6 text "Total [v7]"`
+	want := "== Summary | Portal - Chromium ==\n" + `e1 row "Description | No. of records | Taxable value | Tax"` + "\n" +
+		`e2 row "Sales | [v1] | [v2] | [v3]"` + "\n" + `e3 row "Returns | [v4] | [v5] | [v6]"` + "\n" +
+		`e4 text "Prepared by the clerk"` + "\n" + `e5 row "Notes | none | kept"` + "\n" + `e6 text "Total [v7]"`
 	if masked != want || len(figures) != 7 {
 		t.Fatalf("masked:\n%s\nfigures %v", masked, figures)
+	}
+}
+
+// Found live twice (2026-10-30): a table listed one cell to a line had its column names and each row's name dropped
+// (they hold no figure), and the verifier set every blank against the wrong line. The screen goes whole, in order,
+// only its figures blanked.
+func TestAGridListedCellByCellKeepsItsColumnAndRowNames(t *testing.T) {
+	listing := "Screen 1400x788. Active window: \"Record 7 - Chromium\"\n== Chromium tab \"Record 7\" ==\n" +
+		`e20 text "Notification"` + "\n" + `e21 text "2"` + "\n" +
+		`e92 text "Item"` + "\n" + `e93 text "Qty"` + "\n" + `e94 text "Rate"` + "\n" +
+		`e170 link "Item A"` + "\n" + `e171 text "1"` + "\n" + `e172 text "₹ 65,000.00"` + "\n" +
+		`e65 text "30-10-2026"` + "\n" + `e180 link "Item B"` + "\n" + `e181 text "3"` + "\n" +
+		`e182 text "₹ 15,000.00"`
+	masked, figures := maskedFigures(listing)
+	want := `== Chromium tab "Record 7" ==` + "\n" + `e20 text "Notification"` + "\n" + `e21 text "[v1]"` + "\n" +
+		`e92 text "Item"` + "\n" + `e93 text "Qty"` + "\n" + `e94 text "Rate"` + "\n" +
+		`e170 link "Item A"` + "\n" + `e171 text "[v2]"` + "\n" + `e172 text "₹ [v3]"` + "\n" +
+		`e65 text "30-10-2026"` + "\n" + `e180 link "Item B"` + "\n" + `e181 text "[v4]"` + "\n" +
+		`e182 text "₹ [v5]"`
+	if masked != want || len(figures) != 5 || figures["v3"] != "65,000.00" {
+		t.Fatalf("figures %v\nmasked:\n%s", figures, masked)
+	}
+	if m, f := maskedFigures(`e1 heading "Bills"` + "\n" + `e2 text "Nothing to show"`); m != "" || len(f) != 0 {
+		t.Errorf("a screen with no figure gave %q %v", m, f)
+	}
+}
+
+// Found live (2026-10-30): a form's half-filled look was set against the source after the saved record had replaced
+// it under the record's own title, and its points went to the person. With the screen the work leaves checked, an
+// older look at a window no longer open gives the worker points, not the person.
+func TestAnOlderLookAtAWindowNoLongerOpenIsTheWorkersToLookAt(t *testing.T) {
+	form := "Screen 1400x788. Active window: \"New record - Chromium\"\n== New record - Chromium ==\n" +
+		`e5 text "Qty"` + "\n" + `e6 textbox "Qty" value="1.000"` + "\n" + `e7 text "₹ 65,000.00"`
+	saved := "Screen 1400x788. Active window: \"Record 6 - Chromium\"\nOpen windows: \"Files\"\n" +
+		"== Record 6 - Chromium ==\n" + `e8 text "Qty"` + "\n" + `e9 text "2"` + "\n" +
+		`e10 text "₹ 1,30,000.00"`
+	chat := &scriptedChat{replies: []string{`{"v1": "2", "v2": "130000"}`, `{"v1": "2", "v2": "130000"}`}}
+	st := &operatorState{Hosted: true, Request: "enter the document",
+		TypedWindows: []string{"New record - Chromium", "Record 6 - Chromium"},
+		TypedFigures: map[string]bool{"New record - Chromium": true, "Record 6 - Chromium": true},
+		TypedAt:      map[string]int{"New record - Chromium": 1, "Record 6 - Chromium": 3},
+		ListedAt:     map[string]int{"New record - Chromium": 2, "Record 6 - Chromium": 4},
+		Listings:     []string{form, saved}, Worked: []string{"a", `gui type e6 "1.000"`, "c", "d", "gui observe"}}
+	issues := (&OperatorSkill{}).verifyReport(weighRC(chat), st)
+	if len(issues) == 0 {
+		t.Fatal("the older form's disagreements were not raised at all")
+	}
+	for _, p := range issues {
+		if !p.Advisory {
+			t.Errorf("a point from a window no longer open went to the person: %+v", p)
+		}
 	}
 }
 

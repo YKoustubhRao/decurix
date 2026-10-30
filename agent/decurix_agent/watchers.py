@@ -5,7 +5,7 @@ import traceback
 
 from decurix_agent import (ask_task, attachments, config, guidance, lessons, long_task, playbooks, procedures, progress, record_task, replay_task,
                            skill_task, state, task_context, tool_task, usage, workflow_task)
-from decurix_agent.computer import approval
+from decurix_agent.computer import approval, browser
 from decurix_agent.harness import continue_after_query, perform_task
 from decurix_agent.logging_utils import log
 from decurix_agent.messaging import REPLY_MARK, resend_unsent_loop, write_final_reply
@@ -580,6 +580,8 @@ def _start_request(path, content):
     content, unpacked = attachments.expand_archives(content)
     task_context.start(task_id, request=content)
     task_context.mark_active(task_id, content)
+    # The browser is not kept running on an idle desktop; it starts now, alongside the work (browser.warm).
+    browser.warm_soon()
     for note in unpacked:
         progress.emit(note)
     attachments.keep_originals(content, task_id)

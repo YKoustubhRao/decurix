@@ -114,6 +114,21 @@ class OneRowPerEntryOfTheDocument(unittest.TestCase):
         self.assertEqual(rows["count"], 1)
         self.assertNotIn("product_2", values)
 
+    def test_each_rows_value_cites_its_own_line_never_the_first_rows(self):
+        # Found live (2026-10-30): the answer's evidence for a field named the first row's line, and every later row's
+        # report cited that line for its own value.
+        from decurix_agent import binding
+        skill = taught()
+        rows = [{"product": "A", "quantity": "3", "price": "6", "evidence": {"price": "line 1"}},
+                {"product": "B", "quantity": "3", "price": "15", "evidence": {"price": "line 2"}},
+                {"product": "C", "quantity": "3", "price": "65"}]
+        values, evidence = {}, {}
+        binding._rows(skill, skill["params"], {"rows": rows, "evidence": {"price": "line 1"}}, [], values, evidence)
+        self.assertEqual(evidence["price"], "line 1")
+        self.assertEqual(evidence["price_2"], "line 2")
+        self.assertEqual(evidence["price_3"], "entry 3 of the document")
+        self.assertIn('own "evidence"', binding._rows_text(skill, skill["params"]))
+
     def test_the_engine_and_the_check_are_told_how_many_rows_belong_and_which_are_chosen(self):
         from decurix_agent import binding
         skill = taught()
