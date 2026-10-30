@@ -13,7 +13,13 @@ compares product names. The raw title is kept beside it for anything shown to
 a person.
 """
 
+import os
 import re
+import signal
+import threading
+import time
+
+from decurix_agent.logging_utils import log
 
 # The name every title, recording and check uses for the browser.
 CANONICAL = "Chromium"
@@ -82,4 +88,56 @@ def launch_argv(url):
     """
 
     return [COMMAND, url]
+
+
+# How often a browser warm() started is looked at, to close it once the work is over and it never showed a page.
+UNUSED_CHECK_SECONDS = 60
+
+
+def warm_soon():
+    """warm() on a thread of its own: a busy browser takes seconds to answer, and the caller never waits on it."""
+
+    threading.Thread(target=warm, daemon=True, name="browser-warm").start()
+
+
+def warm():
+    """
+    Start the browser with no window when it is not running, so a page the
+    request opens finds it warm: its cold start (3 s idle, over 30 s on a
+    loaded host) overlaps the model's first call. It is not started at boot
+    (start_agent_terminal.sh) - idle it was the largest part of a desktop's
+    memory. A browser started here that no window ever came from is closed
+    once no task is running. Never raises; nothing waits on it.
+    """
+
+    try:
+        from decurix_agent.computer import cdp, session
+        if cdp.available():
+            return
+        process = session.launch([COMMAND, "--no-startup-window"])
+    except Exception as exc:
+        log(f"Could not warm the browser: {exc}")
+        return
+    threading.Thread(target=_close_if_unused, args=(process,), daemon=True, name="browser-unused").start()
+
+
+def _close_if_unused(process, check_seconds=None):
+    """Close a browser warm() started once no task is running, unless a browser window came of it."""
+
+    from decurix_agent import task_context
+    from decurix_agent.computer import screen
+
+    check_seconds = UNUSED_CHECK_SECONDS if check_seconds is None else check_seconds
+    while process.poll() is None:
+        time.sleep(check_seconds)
+        try:
+            if any(is_browser_title(w["title"]) for w in screen.windows()):
+                return  # in use: it stays, as a browser anyone opened does
+            if task_context.is_active():
+                continue
+            os.killpg(process.pid, signal.SIGTERM)
+            log("Closed the browser warmed for a task that opened no page.")
+        except Exception as exc:
+            log(f"Could not check the warmed browser: {exc}")
+        return
 

@@ -62,6 +62,8 @@ class Base(unittest.TestCase):
                               lambda text, kind="final", engine=None, quiet=False, interrupted=False:
                               self.finals.append((text, kind, interrupted, state.current_task, task_context.current()))),
             mock.patch.object(watchers.threading, "Thread", FakeThread),
+            # Never a real browser in a test, and the request's handler stays the first thread started.
+            mock.patch.object(watchers.browser, "warm_soon"),
             mock.patch.object(watchers.approval, "reset"),
             mock.patch.object(watchers.approval, "resolve_reply", return_value=None),
             mock.patch.object(watchers, "usage"),

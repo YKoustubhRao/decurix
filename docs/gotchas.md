@@ -782,3 +782,8 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): A photo bill was entered with a tax line that is the rate of no amount in the record: rate lines are checked in code (advisory)
 - [part-5.md](gotchas/part-5.md): A value read for a run went as the person's word and the review enforced it over correct work: inferred values are marked as readings
 - [part-5.md](gotchas/part-5.md): A new customer refused as "shown already" because its GSTIN was in the search page's address: headers and addresses are not page words
+- [part-5.md](gotchas/part-5.md): The figure check misplaced every blank of a cell-per-line grid and rechecked a half-filled form after the save: whole screen in order, places at the report, stale windows advisory
+- [part-5.md](gotchas/part-5.md): A report cited the first row's source line for every row's value: each entry carries its own evidence
+- [part-5.md](gotchas/part-5.md): A worker idled at 510 MB with half its chosen size reserved: the size is a ceiling (512 MB reserved), the browser starts with a request and closes unused, the extension server only with its flag
+- [part-5.md](gotchas/part-5.md): Chrome's back-forward cache was ~190 MB of a working desktop: off; its disk cache out of tmpfs; a pre-pause trim and fadvise cache eviction measured and dropped
+- [part-5.md](gotchas/part-5.md): A Wikipedia address ending in "_(...)" was fetched without its ")": an address keeps the brackets it opened, the sentence's punctuation is trimmed

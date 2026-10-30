@@ -203,6 +203,7 @@ class TheWatcherUnpacksBeforeAnythingReadsTheRequest(ArchiveBase):
                 mock.patch.object(watchers, "_mark_handled", lambda p: None), \
                 mock.patch.object(watchers.workflow_task, "handles", lambda c: seen.update(handler=c) or True), \
                 mock.patch.object(watchers, "_run_handler", lambda *a, **k: None), \
+                mock.patch.object(watchers.browser, "warm_soon"), \
                 mock.patch.object(watchers.threading, "Thread") as thread:
             watchers._start_request(path, self.request(archive))
         files = attachments.files(seen["start"])

@@ -47,7 +47,8 @@ var (
 )
 
 var (
-	urlRe = regexp.MustCompile(`https?://[^\s)]+`)
+	// urlRe takes everything up to whitespace; findURL then trims what belongs to the sentence around it.
+	urlRe = regexp.MustCompile(`https?://\S+`)
 	// "for" gets its own optional group AFTER the web/internet group.
 	// Folding it into that alternation left the word behind on the most
 	// common phrasing of all: "search the web for X" consumed "web" and
@@ -56,6 +57,26 @@ var (
 	searchLeadRe = regexp.MustCompile(`(?i)^\s*(please\s+)?(can you\s+)?(go\s+)?(search|google|look\s*up|find\s+out|find|research|browse)\s+(the\s+)?(web|internet|online)?\s*(for\s+)?`)
 	slugRe       = regexp.MustCompile(`[^a-z0-9]+`)
 )
+
+// findURL is the first web address in s, without the sentence's punctuation after it: a trailing ".,;:!?'\"" and a
+// closing bracket the address did not open ("(see https://x.org)" is https://x.org). A bracket the address opened
+// is its own: urlRe used to stop at any ")", and https://en.wikipedia.org/wiki/Python_(programming_language) was read
+// without its last character - a 404, put to the person as a question (found live, 2026-10-30).
+func findURL(s string) string {
+	u := urlRe.FindString(s)
+	for u != "" {
+		last := u[len(u)-1]
+		switch {
+		case strings.IndexByte(".,;:!?'\"", last) >= 0:
+		case last == ')' && strings.Count(u, ")") > strings.Count(u, "("):
+		case last == ']' && strings.Count(u, "]") > strings.Count(u, "["):
+		default:
+			return u
+		}
+		u = u[:len(u)-1]
+	}
+	return ""
+}
 
 // extractQuery turns "search the web for X" into "X" - the engines want
 // the subject, not the instruction wrapped around it.
@@ -70,7 +91,7 @@ func extractQuery(step string) string {
 
 func (w *WebSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	// A bare URL means "read this page", not "search for it".
-	if m := urlRe.FindString(subtask.Step); m != "" && strings.Contains(strings.ToLower(subtask.Step), "http") {
+	if m := findURL(subtask.Step); m != "" && strings.Contains(strings.ToLower(subtask.Step), "http") {
 		return w.readPage(rc, subtask, m)
 	}
 

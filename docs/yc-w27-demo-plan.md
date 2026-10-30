@@ -4,7 +4,7 @@ Status: planned, not recorded. Screen recording is deferred at the founder's req
 
 ## The claim to demonstrate
 
-Decurix is an OS for local AI workers that learn and collaborate, powered by models the user supplies. Demonstrate the platform through the accounting deployment: a person teaches a worker a bill-entry workflow, it applies that workflow to a different bill, processes a related bank-statement entry, and shows the saved ERP records. End with the vision of a marketplace where people buy and sell trained workers.
+Decurix is an OS for local AI workers that learn and collaborate, powered by models the user supplies. Demonstrate the platform through the accounting deployment: a person teaches a worker a bill-entry workflow, it applies that workflow to a different bill, processes a related bank-statement entry, and shows the saved ERP records. End with the vision of a marketplace where people buy and sell trained workers (the seller provides the context, the buyer provides the LLM and device), and a paid tier that trains a small model on a worker's checked runs to cut token use.
 
 Use the ERP application and workflow actually used at the accounting firm. Use a dedicated test company and fictional documents, with the accountant's debit/credit rules. The recording should identify the data as demo data.
 
@@ -27,11 +27,11 @@ Use the ERP application and workflow actually used at the accounting firm. Use a
 | 0:55–1:45 | Submit bill B; watch the worker use its different invoice number and amount | The worker applies the taught workflow to fresh inputs. Make the difference from bill A visible. |
 | 1:45–2:15 | Process the matching bank-statement entry | Show the second part of the actual deployed workflow and any necessary human question honestly. |
 | 2:15–2:45 | Reopen saved ERP records and compare with documents | Show invoice identity, amount, debit/credit mapping, and the saved bank entry. Explain what Decurix checked and what the person checked. |
-| 2:45–2:55 | Return to the worker/task view and its retained workflow | State: one deployment at the founder's accounting firm, about 20 active users, no revenue. Explain the ambition: people teach workers, buy and sell them, and assemble their own workforce. |
+| 2:45–2:58 | Return to the worker/task view and its retained workflow | State: one deployment at the founder's accounting firm, about 20 active users, no revenue. Explain the ambition: people teach workers, buy and sell them, and assemble their own workforce. A seller sells the worker's know-how; the buyer brings their own LLM and runs it on their own device. For a higher price, we train a small model on a worker's checked runs so routine tasks use far fewer tokens. |
 
 If the sequence does not fit, prioritize teaching, one fresh bill, and saved-result readback. Show the bank statement briefly as another supported input rather than compressing away the proof of correct work.
 
-The marketplace is a stated future ambition. Do not present a checkout, worker sale, or simulated marketplace screen as a shipped capability. If current skill sharing and handoff work reliably in the recorded build, a brief real view can support the collaboration claim; otherwise keep this as narration about the platform direction.
+The marketplace, selling a worker as context for the buyer's own LLM, and custom small-model training are stated future plans. Do not present a checkout, worker sale, simulated marketplace screen, or training screen as a shipped capability, and do not show a token-saving number for the small-model tier. If current skill sharing and handoff work reliably in the recorded build, a brief real view can support the collaboration claim; otherwise keep this as narration about the platform direction.
 
 ## Optional exception
 

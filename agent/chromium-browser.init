@@ -27,10 +27,18 @@
 # --hide-crash-restore-bubble: a desktop stopped by idle-pause leaves the profile
 #   marked as crashed, and the "Restore pages?" bubble takes the keyboard.
 # --renderer-process-limit / --disk-cache-*: a desktop has 1-2 vCPUs and ~2.5 GB;
-#   the cache lives in /tmp so it never fills the persistent home volume.
+#   the cache is capped at 64 MB on disk, in the desktop's own home volume, which goes
+#   with the desktop when it is deleted. It was in /tmp, which is memory (tmpfs): up to
+#   64 MB of RAM. (Not the shared /var/cache/decurix: a folder there outlived its desktop.)
 # Not set on purpose: MemorySaverMode (it discards background tabs - a half-filled
 #   application form in another tab) and a V8 heap cap (application single-page apps need more).
-CHROMIUM_FLAGS="--disable-gpu --start-maximized --remote-debugging-port=9222 --password-store=basic --no-default-browser-check --no-first-run --disable-breakpad --hide-crash-restore-bubble --renderer-process-limit=2 --disk-cache-dir=/tmp/chromium-cache --disk-cache-size=67108864 --disable-features=AudioServiceOutOfProcess,Translate,AutofillServerCommunication,OptimizationHints,MediaRouter --disable-background-networking --disable-component-update --disable-domain-reliability --disable-sync --no-pings --mute-audio"
+# BackForwardCache off: it kept every page a tab had left alive in memory, in case of
+#   Back. Measured 2026-10-30 (four pages in one tab and one more tab, three runs each):
+#   Chrome 675 MB median (576-786) with it, 484 MB every run without. Back now reloads
+#   the page, which shows its current state; an application's own in-page navigation never
+#   used it. Tried and not worth it there: the GPU or network service in the browser
+#   process, --enable-low-end-device-mode (each within the runs' spread).
+CHROMIUM_FLAGS="--disable-gpu --start-maximized --remote-debugging-port=9222 --password-store=basic --no-default-browser-check --no-first-run --disable-breakpad --hide-crash-restore-bubble --renderer-process-limit=2 --disk-cache-dir=$HOME/.cache/decurix-browser --disk-cache-size=67108864 --disable-features=AudioServiceOutOfProcess,Translate,AutofillServerCommunication,OptimizationHints,MediaRouter,BackForwardCache --disable-background-networking --disable-component-update --disable-domain-reliability --disable-sync --no-pings --mute-audio"
 
 # The warning bar is left alone in that case: the browser really is
 # running unsandboxed there, and hiding that would be a lie.

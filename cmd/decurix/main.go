@@ -374,6 +374,15 @@ func main() {
 		}
 	}()
 
+	// Desktops made when half their chosen memory was reserved get the idle floor instead
+	// (Manager.ReleaseReservations): the rest is taken only when used.
+	go func() {
+		if changed := desktops.ReleaseReservations(context.Background()); len(changed) > 0 {
+			log.Printf("desktops %s now reserve only their idle memory; the size chosen stays their ceiling",
+				strings.Join(changed, ", "))
+		}
+	}()
+
 	dbPath := filepath.Join(sqlitedb.DataDir(), sqlitedb.FileName)
 
 	db, err := sqlitedb.Open(dbPath)

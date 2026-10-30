@@ -41,3 +41,20 @@ func TestExtractQueryNeverReturnsEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestFindURLKeepsItsOwnBracketsAndDropsTheSentences(t *testing.T) {
+	cases := map[string]string{
+		"Open https://en.wikipedia.org/wiki/Python_(programming_language) and tell me who": "https://en.wikipedia.org/wiki/Python_(programming_language)",
+		"read it (see https://example.org/a)":                                              "https://example.org/a",
+		"Go to https://example.org/page.":                                                  "https://example.org/page",
+		`open "https://example.org/x?q=1",`:                                                "https://example.org/x?q=1",
+		"the list [https://example.org/b]":                                                 "https://example.org/b",
+		"https://example.org/wiki/Mercury_(planet)).":                                      "https://example.org/wiki/Mercury_(planet)",
+		"no address here":                                                                  "",
+	}
+	for in, want := range cases {
+		if got := findURL(in); got != want {
+			t.Errorf("findURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

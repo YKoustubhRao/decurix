@@ -5,6 +5,21 @@ import (
 	"testing"
 )
 
+func TestChosenMemoryIsACeilingNotAReservation(t *testing.T) {
+	for _, mb := range []int64{2048, 4096, 8192} {
+		_, host, _ := buildContainerConfigs("img", "desktop_test", "basic", "thebot", 2, mb, nil, "vol_test", nil)
+		if host.Memory != mb*1024*1024 {
+			t.Fatalf("%d MB desktop: limit %d, want the size chosen", mb, host.Memory)
+		}
+		if host.MemoryReservation != desktopIdleMB*1024*1024 {
+			t.Fatalf("%d MB desktop reserves %d bytes; only the idle floor may be held back", mb, host.MemoryReservation)
+		}
+	}
+	if got := desktopReservation(256); got != 256*1024*1024 {
+		t.Fatalf("a desktop smaller than the floor reserves %d, want all of it", got)
+	}
+}
+
 func TestBuildContainerConfigsMountsSharedToolsAndCacheVolume(t *testing.T) {
 	_, host, _ := buildContainerConfigs("img", "desktop_test", "developer", "ollama", 2, 4096, nil, "vol_test", nil)
 

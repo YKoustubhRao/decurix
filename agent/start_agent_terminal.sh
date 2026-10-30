@@ -38,33 +38,15 @@ if [ -f /opt/decurix-chromium.init ]; then
         || echo "[$(date)] could not install Chromium launch flags" >> "$LOG"
 fi
 
-# Pre-warm Chromium: a browser that is already running opens an app window in
-# about a second instead of several, which is what a copied web app's icon
-# (ChatGPT, Claude, ...) needs - people click it again and again while nothing
-# seems to happen. Idle it costs ~170MB, so it is on when this desktop has such
-# icons (~/.local/share/applications/*-host.desktop) and off on a plain
-# desktop. DECURIX_PREWARM_CHROMIUM=1 forces it on, =0 forces it off. No
-# window: the browser just waits. A new desktop's apps are copied in while it
-# boots, so they may land after this runs: it keeps looking for them for a few
-# minutes rather than deciding from the first glance.
-prewarm="${DECURIX_PREWARM_CHROMIUM:-}"
-prewarm_chromium() {
-    which chromium-browser >/dev/null 2>&1 || return
+# The browser is not started at boot: idle with no window it was 224 MB of an
+# idle desktop's 510 (measured 2026-10-30), the largest part of it. A request
+# warms it as it starts (computer/browser.warm), overlapping the cold start with
+# the model's first call, and closes it again if nothing opened a page. A person
+# clicking a web app's icon first waits the cold start once (a few seconds).
+# DECURIX_PREWARM_CHROMIUM=1 still starts it at boot.
+if [ "${DECURIX_PREWARM_CHROMIUM:-}" = "1" ] && which chromium-browser >/dev/null 2>&1; then
     setsid chromium-browser --no-startup-window >> /tmp/chromium-prewarm.log 2>&1 < /dev/null &
     echo "[$(date)] Chromium pre-warmed in background (pid $!)" >> "$LOG"
-}
-has_host_apps() { ls "$HOME"/.local/share/applications/*-host.desktop >/dev/null 2>&1; }
-# An Office (GPT) desktop works ERPs and HRMSs in the browser: warm it at boot,
-# or its first page waits out a cold start (over 30 s measured on a loaded host).
-if [ "$prewarm" = "1" ] || { [ -z "$prewarm" ] && { has_host_apps || [ "${AGENT_HARNESS:-}" = "azure" ]; }; }; then
-    prewarm_chromium
-elif [ -z "$prewarm" ]; then
-    (
-        for _ in $(seq 1 60); do
-            sleep 5
-            if has_host_apps; then prewarm_chromium; break; fi
-        done
-    ) &
 fi
 
 # Clear out core dumps a crashing Chromium already left behind, before core
@@ -199,11 +181,11 @@ setsid nice -n 10 python3 /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
 echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"
 
 # extension_pipeline/ext_server.py: the backend the browser-agent extension
-# (loaded into this desktop's Chromium via agent/chromium-browser.init's
-# --load-extension) talks to on 127.0.0.1:8092. Harness-independent - the
-# extension is a property of this desktop's browser, not of which engine is
-# running - so it starts unconditionally, the same way vm_server.py does.
-if [ -x /opt/browser-agent-venv/bin/python3 ]; then
+# talks to on 127.0.0.1:8092. No desktop loads the extension today (the
+# browser's launcher passes no --load-extension) and soul uses it only with
+# THEBOT_BROWSER_EXTENSION=1, so it starts only then: idle it was 48 MB nothing
+# talked to.
+if [ "${THEBOT_BROWSER_EXTENSION:-}" = "1" ] && [ -x /opt/browser-agent-venv/bin/python3 ]; then
     setsid /opt/browser-agent-venv/bin/python3 /opt/browser-agent/extension_pipeline/ext_server.py \
         >> /tmp/decurix-ext-server.log 2>&1 < /dev/null &
     echo "[$(date)] ext_server.py started as background daemon (pid $!)" >> "$LOG"

@@ -806,24 +806,23 @@ func maskedFiguresOf(listing string, typed func(string) bool) (string, map[strin
 	figures := map[string]string{}
 	var lines []string
 	n := 0
-	// A table's header row holds no figure, so it was dropped, and the verifier read a row's blanks with no names for
-	// its columns - it set a value against a count (found live, 2026-10-25). The header goes in front of the rows it
-	// heads.
-	header := ""
+	// The screen goes to the verifier whole, in its order, with only the figures blanked: the lines that hold no figure
+	// are what place the blanks. A table's header row was dropped and the verifier set a value against a count (found
+	// live, 2026-10-25); a grid listed one cell to a line lost its column names and each row's name, and the verifier
+	// set every blank against the wrong line - one row's amount against the document's total (found live twice,
+	// 2026-10-30).
 	for _, line := range strings.Split(listing, "\n") {
 		// The listing's own header (the screen's size, the window's title, the other windows and apps by name, its notes)
-		// names things, it files nothing; nor does a heading or a control's name ("5 - Large Invoices" on a link is the
-		// table's number - found live 2026-10-25, it shifted the verifier's reading of the counts beside it).
-		if activeWindowRe.MatchString(line) || listingHeaderRe.MatchString(line) || labelLineRe.MatchString(line) {
-			header = ""
+		// names things, it files nothing.
+		if activeWindowRe.MatchString(line) || listingHeaderRe.MatchString(line) {
 			continue
 		}
-		if !digitRe.MatchString(inlineRefRe.ReplaceAllString(line, "")) {
-			if tableRowRe.MatchString(line) {
-				header = line
-			} else {
-				header = ""
-			}
+		// A heading or a control's name is kept as it is, never blanked: "5 - Large Invoices" on a link is the table's
+		// number (found live 2026-10-25: blanked, it shifted the verifier's reading of the counts beside it).
+		// So is a window's own header ("== <window> =="): its title names the window ("Record 7"), it says no amount.
+		if labelLineRe.MatchString(line) || groupHeaderRe.MatchString(line) ||
+			!digitRe.MatchString(inlineRefRe.ReplaceAllString(line, "")) {
+			lines = append(lines, line)
 			continue
 		}
 		// Only what an element says is worked out: its quoted text - of a field, its value, never its label - not the
@@ -856,13 +855,14 @@ func maskedFiguresOf(listing string, typed func(string) bool) (string, map[strin
 			}
 		}
 		if changed {
-			if header != "" && tableRowRe.MatchString(line) {
-				lines = append(lines, header)
-			}
 			b.WriteString(line[last:])
 			lines = append(lines, b.String())
+		} else {
+			lines = append(lines, line) // (a date or a code: it names, and places the blanks around it)
 		}
-		header = ""
+	}
+	if n == 0 {
+		return "", figures
 	}
 	return strings.Join(lines, "\n"), figures
 }
@@ -874,8 +874,6 @@ var (
 	quotedRe      = regexp.MustCompile(`"[^"\n]*"`)
 	valueQuotedRe = regexp.MustCompile(` value="[^"\n]*"`)
 	labelLineRe   = regexp.MustCompile(`^\s*(?:e\d+\s+)?(?:heading|link|button|tab|menuitem)\b`)
-	// tableRowRe is a table row's line: three cells or more, joined by " | " (agent elements: a row's name).
-	tableRowRe = regexp.MustCompile(`"[^"\n]*\|[^"\n]*\|[^"\n]*"`)
 )
 
 // numbering reports whether s[i:j] is an item's number in parentheses ("(3)", "(A)(12)"), not an amount: one or two
@@ -918,6 +916,8 @@ func joinedToWord(s string, i, j int) bool {
 const verifierSystem = `You check, independently, the figures a computer worker is about to file, pay or send. You are given the source documents and rows the work was shown, the person's rules and what they taught, and the screen about to be committed - with every figure on it replaced by a blank like [v3].
 
 For each blank, work out from the sources and rules what it should be. Fill a blank only when the sources and rules settle it; leave it null when they do not (a reference number, a balance the sources do not show, a figure from a system you cannot see). Do not guess from the layout. Leave null too a blank that names rather than says how much: a section, item or row number, a date or time, an acknowledgement number.
+
+The screen is listed one element to a line, in reading order, and a table may be listed one cell to a line: its column names first, then each row's cells in turn, the row's item or name among them. When a line ends with its place on the screen (@x,y), a cell's column is the name above it at about the same x and its row the cells at about the same y - a column may have a name and no cell. Place each blank by the names around it - which column, which row, which field - before working it out, and leave it null when nothing on the screen places it (a count on a menu, a number in a sidebar). Never place blanks by counting them.
 
 Reply with JSON only: {"v1": "12,345.00", "v2": null, ...}`
 
@@ -1173,6 +1173,11 @@ func (o *OperatorSkill) verifyReport(rc RunContext, st *operatorState) []reviewI
 	o.lookAtReport(rc, st)
 	var out []reviewIssue
 	checked := 0
+	leftChecked := false
+	var stillOpen []string
+	if len(st.Listings) > 0 {
+		stillOpen = openWindows(st.Listings[len(st.Listings)-1])
+	}
 	for i := len(st.Listings) - 1; i >= 0 && checked < maxReportScreens; i-- {
 		window := listingWindow(st.Listings[i])
 		leaves := i == len(st.Listings)-1
@@ -1204,6 +1209,18 @@ func (o *OperatorSkill) verifyReport(rc RunContext, st *operatorState) []reviewI
 			heading += fmt.Sprintf(" - the window %q", window)
 		}
 		points := o.verifyFigures(rc, st, masked, figures, heading, "")
+		if leaves {
+			leftChecked = true
+		} else if leftChecked && !anyWindow(stillOpen, window) {
+			// A window no longer open, looked at before the work went on: what it showed may since have been changed
+			// under another title (a form saved, its tab renamed to the record's). Found live (2026-10-30): a form's
+			// half-filled look - its defaults and totals not yet worked out - was set against the source after the saved
+			// record, checked right, had replaced it; sixteen points went to the person. With the screen the work leaves
+			// checked, such points are the worker's to look at once.
+			for i := range points {
+				points[i].Advisory = true
+			}
+		}
 		if !st.typedIn(window) {
 			// The screen the work leaves on the site it typed in, without having typed there: its figures are the
 			// site's own (a chart of accounts' balances, a dashboard's counts), set against this task's sources only
@@ -1218,13 +1235,12 @@ func (o *OperatorSkill) verifyReport(rc RunContext, st *operatorState) []reviewI
 	return out
 }
 
-// lookAtReport looks at the screen now (a read-only gui observe) unless the work's last command did: a report rests on
-// the screen the work leaves, and the work often clicks on (a summary, a save) after its last look.
+// lookAtReport looks at the screen now (a read-only gui observe, with each element's place): a report rests on the
+// screen the work leaves, and the work often clicks on (a summary, a save) after its last look. The places are what let
+// the verifier read a grid listed one cell to a line: by order alone, a column with a header and no cell shifted every
+// blank after it (found live, 2026-10-30: one column's figure read as the next column's).
 func (o *OperatorSkill) lookAtReport(rc RunContext, st *operatorState) {
-	if n := len(st.Worked); n > 0 && listsScreen(st.Worked[n-1]) {
-		return
-	}
-	res := runShell(rc.Ctx, rc.Dir(), "gui observe", 60*time.Second, st.guiEnv()...)
+	res := runShell(rc.Ctx, rc.Dir(), "gui observe --coords", 60*time.Second, st.guiEnv()...)
 	if res.ExitCode != 0 || strings.TrimSpace(res.Output) == "" {
 		return
 	}
@@ -1325,6 +1341,16 @@ var openWindowsLineRe = regexp.MustCompile(`(?m)^Open windows: (.+)$`)
 
 // quotedTitleRe is one quoted title on that line.
 var quotedTitleRe = regexp.MustCompile(`"([^"\n]+)"`)
+
+// anyWindow reports whether window is one of windows (sameWindow: a title may be cut short where it was quoted).
+func anyWindow(windows []string, window string) bool {
+	for _, w := range windows {
+		if sameWindow(w, window) {
+			return true
+		}
+	}
+	return false
+}
 
 // openWindows are the windows a screen listing shows open: the active one and the line of the others.
 func openWindows(listing string) []string {
