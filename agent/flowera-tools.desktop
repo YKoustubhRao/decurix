@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Flowera Tools
+Comment=Starts the browser-agent and doc-ui servers
+Exec=/opt/flowera-tools-start.sh
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true

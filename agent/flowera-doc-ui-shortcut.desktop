@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Doc UI
+Comment=Document ingestion / schema-detection / codegen UI
+Exec=chromium-browser --new-window http://localhost:8000
+Icon=web-browser
+Terminal=false
+StartupNotify=false

@@ -1,0 +1,9 @@
+# Web UI + browser automation. Ollama is reached via OLLAMA_URL (models.py),
+# not a package dependency -- the desktop's Ollama is whatever OLLAMA_URL
+# points at (see flowera-tools-start.sh).
+fastapi
+uvicorn[standard]
+playwright
+beautifulsoup4
+psutil
+requests

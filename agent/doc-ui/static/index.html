@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Doc Pipeline Tester</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, Segoe UI, sans-serif; margin: 0; background: #0f1115; color: #e6e6e6; }
+  header { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background: #171a21; border-bottom: 1px solid #2a2e38; }
+  header h1 { font-size: 16px; margin: 0; color: #9fd3ff; }
+  .stats { display: flex; gap: 24px; font-size: 13px; }
+  .stat { min-width: 160px; }
+  .stat .label { color: #8a8f9b; margin-bottom: 3px; }
+  .bar { background: #2a2e38; border-radius: 4px; height: 8px; overflow: hidden; margin-top: 3px; }
+  .bar-fill { height: 100%; background: linear-gradient(90deg,#4f8cff,#7ad1ff); transition: width .3s; }
+  .bar-fill.ram { background: linear-gradient(90deg,#ff9d4f,#ffd27a); }
+  main { display: flex; height: calc(100vh - 56px); }
+  .sidebar { width: 240px; border-right: 1px solid #2a2e38; padding: 14px; overflow-y: auto; flex-shrink: 0; }
+  .sidebar h2 { font-size: 13px; text-transform: uppercase; color: #8a8f9b; margin: 0 0 10px; }
+  .group-item, .table-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 4px; font-size: 13px; }
+  .group-item:hover, .table-item:hover { background: #1e2129; }
+  .group-item.active, .table-item.active { background: #26314a; color: #9fd3ff; }
+  .table-item .edited-badge { color: #ffb84f; font-size: 10px; margin-left: 4px; }
+  .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; }
+  .status-new { background: #666; }
+  .status-ingesting { background: #ffb84f; }
+  .status-ready { background: #4fd17a; }
+  .status-error { background: #ff5c5c; }
+  .error-box { background: #2a1717; border: 1px solid #5c2a2a; border-radius: 6px; padding: 10px; font-size: 12.5px; color: #ff9a9a; margin-top: 10px; }
+  button { background: #2a5bd7; color: white; border: none; padding: 7px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #3a6ce0; }
+  button:disabled { background: #3a3f4a; cursor: not-allowed; }
+  button.secondary { background: #2a2e38; }
+  button.secondary:hover { background: #363b47; }
+  button.danger { background: #b5432f; }
+  button.danger:hover { background: #cc4c34; }
+  input[type=text], select { background: #1e2129; border: 1px solid #2a2e38; color: #e6e6e6; padding: 7px 10px; border-radius: 6px; font-size: 13px; width: 100%; }
+  .field-label { font-size: 11px; color: #8a8f9b; margin-bottom: 4px; }
+  textarea.editor { background: #12141a; border: 1px solid #2a2e38; color: #dfe3ea; padding: 10px; border-radius: 6px; font-size: 12.5px; font-family: Consolas, monospace; width: 100%; min-height: 220px; }
+  .content { flex: 1; padding: 20px; overflow-y: auto; }
+  .tables-col { width: 220px; border-right: 1px solid #2a2e38; padding: 14px; overflow-y: auto; flex-shrink: 0; }
+  .empty { color: #6a6f7b; text-align: center; margin-top: 80px; }
+  .panel { background: #171a21; border: 1px solid #2a2e38; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .panel h3 { margin: 0 0 10px; font-size: 14px; color: #9fd3ff; }
+  .file-list { font-size: 12px; color: #b7bcc7; margin: 8px 0; }
+  .progress-wrap { margin-top: 10px; }
+  .progress-detail { font-size: 12px; color: #8a8f9b; margin-top: 4px; }
+  .chat-log { font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+  .chat-turn { margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid #22262f; }
+  .chat-turn .role { color: #9fd3ff; font-weight: 600; font-size: 11px; text-transform: uppercase; margin-bottom: 4px; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .schema-output { font-size: 13px; white-space: pre-wrap; line-height: 1.6; font-family: Consolas, monospace; max-height: 300px; overflow-y: auto; }
+  .drop-zone { border: 2px dashed #363b47; border-radius: 8px; padding: 20px; text-align: center; color: #8a8f9b; font-size: 13px; cursor: pointer; }
+  .drop-zone:hover { border-color: #4f8cff; }
+  .reflection-box { background: #1a2233; border: 1px solid #2c3b5c; border-radius: 6px; padding: 10px; font-size: 12.5px; margin-top: 10px; color: #cfe0ff; }
+  .iter-block { border: 1px solid #2a2e38; border-radius: 6px; margin-bottom: 10px; overflow: hidden; }
+  .iter-header { padding: 7px 10px; background: #1c1f27; font-size: 12px; display: flex; justify-content: space-between; }
+  .iter-header .badge { padding: 1px 8px; border-radius: 10px; font-size: 10px; text-transform: uppercase; }
+  .badge-generating, .badge-running { background: #3a3f00; color: #e6d95e; }
+  .badge-success { background: #1f4a2a; color: #7ee69a; }
+  .badge-error { background: #4a1f1f; color: #ff9a9a; }
+  .badge-paused, .badge-paused-before-run { background: #3a3220; color: #ffcb7a; }
+  pre.code-block { margin: 0; padding: 10px; font-size: 12px; background: #101218; overflow-x: auto; font-family: Consolas, monospace; }
+  pre.output-block { margin: 0; padding: 10px; font-size: 12px; background: #14161c; overflow-x: auto; color: #b7bcc7; border-top: 1px solid #2a2e38; }
+  pre.output-block.stderr { color: #ff9a9a; }
+  .side-drawer { position: fixed; top: 0; right: 0; height: 100vh; width: min(640px, 94vw); background: #12141a; border-left: 1px solid #2a2e38; box-shadow: -12px 0 32px rgba(0,0,0,.45); transform: translateX(100%); transition: transform .22s ease; z-index: 100; display: flex; flex-direction: column; }
+  .side-drawer.open { transform: translateX(0); }
+  .drawer-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid #2a2e38; flex-shrink: 0; gap: 10px; }
+  .drawer-header h3 { margin: 0; font-size: 14px; color: #9fd3ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .drawer-close { background: none; border: none; color: #8a8f9b; font-size: 22px; cursor: pointer; line-height: 1; padding: 0 6px; flex-shrink: 0; }
+  .drawer-close:hover { background: none; color: #e6e6e6; }
+  .drawer-body { flex: 1; overflow-y: auto; padding: 16px; }
+  .view-toggle { display: flex; gap: 4px; margin-bottom: 10px; }
+  .view-toggle button { padding: 5px 12px; font-size: 12px; background: #1e2129; }
+  .view-toggle button.active { background: #2a5bd7; }
+  .data-grid-wrap { overflow: auto; border: 1px solid #2a2e38; border-radius: 6px; max-height: 44vh; }
+  table.data-grid { border-collapse: collapse; width: 100%; font-size: 12px; }
+  table.data-grid th, table.data-grid td { border: 1px solid #2a2e38; padding: 5px 8px; text-align: left; white-space: nowrap; }
+  table.data-grid th { background: #1c1f27; color: #9fd3ff; position: sticky; top: 0; }
+  table.data-grid tr:nth-child(even) td { background: #161920; }
+  .row-count { font-size: 11px; color: #6a6f7b; margin-top: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Doc Pipeline Tester</h1>
+  <div class="stats">
+    <div class="stat">
+      <div class="label">GPU VRAM <span id="gpu-text"></span></div>
+      <div class="bar"><div class="bar-fill" id="gpu-bar" style="width:0%"></div></div>
+    </div>
+    <div class="stat">
+      <div class="label">System RAM <span id="ram-text"></span></div>
+      <div class="bar"><div class="bar-fill ram" id="ram-bar" style="width:0%"></div></div>
+    </div>
+  </div>
+</header>
+<main>
+  <div class="sidebar">
+    <h2>Groups</h2>
+    <div id="group-list"></div>
+    <div style="margin-top:14px;">
+      <input type="text" id="new-group-name" placeholder="New group name">
+      <button id="create-group-btn" style="margin-top:6px; width:100%;">+ Create group</button>
+    </div>
+  </div>
+
+  <div class="tables-col" id="tables-col" style="display:none;">
+    <h2>Detected Tables</h2>
+    <div id="table-list"></div>
+  </div>
+
+  <div class="content" id="content">
+    <div class="empty">Select or create a group to begin.</div>
+  </div>
+</main>
+
+<div class="side-drawer" id="table-drawer">
+  <div class="drawer-header">
+    <h3 id="drawer-title"></h3>
+    <div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">
+      <span id="data-fill-status" style="font-size:12px; color:#8a8f9b; white-space:nowrap;"></span>
+      <button class="drawer-close" id="drawer-close-btn">&times;</button>
+    </div>
+  </div>
+  <div class="drawer-body" id="drawer-body"></div>
+</div>
+
+<script>
+const API = "";
+let groups = [];
+let allModels = [];
+let activeId = null;
+let activeTableId = null;
+let esProgress = null;
+let esCodegen = null;
+
+async function loadModels() {
+  try {
+    const r = await fetch(API + "/api/models");
+    allModels = await r.json();
+  } catch (e) { allModels = []; }
+}
+
+function populateModelOptions(mode, preferred) {
+  const sel = document.getElementById("model-select");
+  if (!sel) return;
+  const filtered = mode === "content" ? allModels : allModels.filter(m => m.vision);
+  sel.innerHTML = filtered.map(m =>
+    `<option value="${m.name}">${m.name}${m.vision ? " (vision)" : ""}</option>`).join("");
+  if (preferred && filtered.some(m => m.name === preferred)) sel.value = preferred;
+}
+
+async function refreshStats() {
+  try {
+    const r = await fetch(API + "/api/stats");
+    const s = await r.json();
+    if (s.gpu) {
+      document.getElementById("gpu-bar").style.width = (100 * s.gpu.used_mb / s.gpu.total_mb) + "%";
+      document.getElementById("gpu-text").textContent =
+        `${(s.gpu.used_mb/1024).toFixed(1)} / ${(s.gpu.total_mb/1024).toFixed(1)} GB (${s.gpu.util_pct}% util)`;
+    } else {
+      document.getElementById("gpu-text").textContent = "unavailable";
+    }
+    document.getElementById("ram-bar").style.width = s.ram.pct + "%";
+    document.getElementById("ram-text").textContent =
+      `${s.ram.used_gb.toFixed(1)} / ${s.ram.total_gb.toFixed(1)} GB`;
+  } catch (e) { /* ignore */ }
+}
+setInterval(refreshStats, 1500);
+refreshStats();
+
+async function loadGroups() {
+  const r = await fetch(API + "/api/groups");
+  groups = await r.json();
+  renderGroupList();
+}
+
+function renderGroupList() {
+  const el = document.getElementById("group-list");
+  el.innerHTML = "";
+  groups.forEach(g => {
+    const div = document.createElement("div");
+    div.className = "group-item" + (g.id === activeId ? " active" : "");
+    div.innerHTML = `<span class="status-dot status-${g.status}"></span>${g.name}`;
+    div.onclick = () => selectGroup(g.id);
+    el.appendChild(div);
+  });
+}
+
+document.getElementById("create-group-btn").onclick = async () => {
+  const name = document.getElementById("new-group-name").value.trim() || "Untitled group";
+  const r = await fetch(API + "/api/groups", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name})
+  });
+  const g = await r.json();
+  document.getElementById("new-group-name").value = "";
+  await loadGroups();
+  selectGroup(g.id);
+};
+
+async function selectGroup(id) {
+  activeId = id;
+  activeTableId = null;
+  document.getElementById("table-drawer").classList.remove("open");
+  renderGroupList();
+  await renderContent();
+  await renderTablesCol();
+}
+
+async function renderTablesCol() {
+  const col = document.getElementById("tables-col");
+  const r = await fetch(`${API}/api/groups/${activeId}/tables`);
+  const tables = await r.json();
+  if (!activeId || !tables.length) { col.style.display = "none"; return; }
+  col.style.display = "block";
+  const list = document.getElementById("table-list");
+  list.innerHTML = "";
+  tables.forEach(t => {
+    const div = document.createElement("div");
+    div.className = "table-item" + (t.id === activeTableId ? " active" : "");
+    div.innerHTML = `${t.name}${t.edited ? '<span class="edited-badge">audited</span>' : ""}`;
+    div.onclick = () => selectTable(t.id);
+    list.appendChild(div);
+  });
+}
+
+async function selectTable(tid) {
+  if (activeTableId && activeTableId !== tid) {
+    // don't let a still-streaming previous table silently queue behind the
+    // new one on the shared model - that's what made this feel "blocked"
+    await cancelOp(activeId);
+  }
+  activeTableId = tid;
+  await renderTablesCol();
+  document.getElementById("table-drawer").classList.add("open");
+  await renderTableDetail();
+}
+
+function closeDrawer() {
+  if (activeId) cancelOp(activeId);
+  document.getElementById("table-drawer").classList.remove("open");
+  activeTableId = null;
+  renderTablesCol();
+}
+document.getElementById("drawer-close-btn").onclick = closeDrawer;
+
+async function renderTableDetail() {
+  const r = await fetch(`${API}/api/groups/${activeId}/tables/${activeTableId}`);
+  const t = await r.json();
+  const body = document.getElementById("drawer-body");
+  if (!body) return;
+  document.getElementById("drawer-title").textContent = t.name + (t.edited ? " (audited)" : "");
+  const hasData = t.data !== null && t.data !== undefined;
+  const dataText = hasData ? JSON.stringify(t.data, null, 2) : (t.data_raw || "");
+  body.innerHTML = `
+    <div class="schema-output" style="max-height:110px;">${escapeHtml(t.text)}</div>
+    <h3 style="margin:14px 0 8px;">Extracted data</h3>
+    <div class="view-toggle">
+      <button id="view-table-btn" class="active">Table (CSV)</button>
+      <button id="view-json-btn">Edit JSON</button>
+    </div>
+    <div id="data-grid-wrap" class="data-grid-wrap"></div>
+    <div class="row-count" id="row-count"></div>
+    <textarea class="editor" id="data-editor" style="display:none; margin-top:8px;" placeholder="Data will appear here as it's extracted...">${escapeHtml(dataText)}</textarea>
+    ${t.data_error ? `<div class="error-box">${escapeHtml(t.data_error)}</div>` : ""}
+    <div class="row" style="margin-top:10px;">
+      <button id="refill-btn" class="secondary">Re-extract data</button>
+      <button id="cancel-fill-btn" class="danger" style="display:none;">Cancel</button>
+      <button id="confirm-audit-btn">Confirm audit / save correction</button>
+      <button id="gen-code-btn" class="secondary">Generate parsing code</button>
+    </div>
+    <div id="reflection-box"></div>
+    <div id="codegen-panel" style="margin-top:14px; display:none;">
+      <div class="row">
+        <button id="codegen-pause-btn" class="danger">Pause</button>
+        <span id="codegen-status" style="align-self:center; font-size:12px; color:#8a8f9b;"></span>
+      </div>
+      <div id="codegen-iterations" style="margin-top:10px;"></div>
+    </div>
+  `;
+  document.getElementById("refill-btn").onclick = () => fillTableData(t.id);
+  document.getElementById("cancel-fill-btn").onclick = () => cancelOp(activeId);
+  document.getElementById("confirm-audit-btn").onclick = () => confirmAudit(t.id);
+  document.getElementById("gen-code-btn").onclick = () => startCodegen(t.id);
+  document.getElementById("view-table-btn").onclick = () => setDataView("table");
+  document.getElementById("view-json-btn").onclick = () => setDataView("json");
+
+  renderDataGrid(hasData ? t.data : extractCompleteRows(dataText));
+
+  // Auto-extract on first open: never attempted yet (no data, no raw output, no error)
+  if (!hasData && !t.data_raw && !t.data_error) {
+    fillTableData(t.id);
+  }
+}
+
+function setDataView(mode) {
+  const gridWrap = document.getElementById("data-grid-wrap");
+  const rowCount = document.getElementById("row-count");
+  const editor = document.getElementById("data-editor");
+  const tblBtn = document.getElementById("view-table-btn");
+  const jsonBtn = document.getElementById("view-json-btn");
+  if (mode === "json") {
+    gridWrap.style.display = "none";
+    rowCount.style.display = "none";
+    editor.style.display = "block";
+    tblBtn.classList.remove("active");
+    jsonBtn.classList.add("active");
+  } else {
+    gridWrap.style.display = "block";
+    rowCount.style.display = "block";
+    editor.style.display = "none";
+    tblBtn.classList.add("active");
+    jsonBtn.classList.remove("active");
+    try { renderDataGrid(JSON.parse(editor.value)); } catch (e) { /* keep last good grid if mid-edit */ }
+  }
+}
+
+// Best-effort incremental parse: pulls out every complete top-level {...}
+// object seen so far in a streaming JSON array, so the grid can grow row by
+// row instead of waiting for the whole response to finish.
+function extractCompleteRows(text) {
+  const rows = [];
+  let depth = 0, start = -1, inString = false, escape = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (escape) escape = false;
+      else if (c === "\\") escape = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') { inString = true; continue; }
+    if (c === "{") { if (depth === 0) start = i; depth++; }
+    else if (c === "}") {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        try { rows.push(JSON.parse(text.slice(start, i + 1))); } catch (e) { /* malformed mid-stream, skip */ }
+        start = -1;
+      }
+    }
+  }
+  return rows;
+}
+
+function renderDataGrid(rows) {
+  const wrap = document.getElementById("data-grid-wrap");
+  const rowCount = document.getElementById("row-count");
+  if (!wrap) return;
+  if (!rows || !rows.length) {
+    wrap.innerHTML = '<div style="padding:14px; color:#6a6f7b; font-size:12.5px;">No rows yet...</div>';
+    if (rowCount) rowCount.textContent = "";
+    return;
+  }
+  const cols = [...new Set(rows.flatMap(r => Object.keys(r || {})))];
+  let html = '<table class="data-grid"><thead><tr>' + cols.map(c => `<th>${escapeHtml(c)}</th>`).join("") + '</tr></thead><tbody>';
+  for (const row of rows) {
+    html += '<tr>' + cols.map(c => {
+      const v = row ? row[c] : undefined;
+      return `<td>${v !== undefined && v !== null ? escapeHtml(String(v)) : ''}</td>`;
+    }).join("") + '</tr>';
+  }
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+  if (rowCount) rowCount.textContent = `${rows.length} row${rows.length === 1 ? "" : "s"}`;
+}
+
+async function fillTableData(tid) {
+  const statusEl = document.getElementById("data-fill-status");
+  const editor = document.getElementById("data-editor");
+  const refillBtn = document.getElementById("refill-btn");
+  const cancelBtn = document.getElementById("cancel-fill-btn");
+  if (refillBtn) refillBtn.disabled = true;
+  if (cancelBtn) cancelBtn.style.display = "inline-block";
+  if (statusEl) statusEl.textContent = "extracting from documents...";
+  if (editor) editor.value = "";
+  renderDataGrid([]);
+
+  const resp = await fetch(`${API}/api/groups/${activeId}/tables/${tid}/fill`, {method: "POST"});
+  let cancelled = false;
+  let buf = "";
+  await pipeSSE(resp, (data) => {
+    if (data.delta) {
+      buf += data.delta;
+      if (editor) { editor.value += data.delta; editor.scrollTop = editor.scrollHeight; }
+      if (data.delta.includes("}")) renderDataGrid(extractCompleteRows(buf));
+    }
+    if (data.cancelled) cancelled = true;
+  });
+  if (!cancelled) renderDataGrid(extractCompleteRows(buf));
+  if (statusEl) statusEl.textContent = cancelled ? "cancelled" : "done";
+  if (refillBtn) refillBtn.disabled = false;
+  if (cancelBtn) cancelBtn.style.display = "none";
+  await renderTablesCol();
+  if (activeTableId === tid && !cancelled) await renderTableDetail();
+}
+
+async function confirmAudit(tid) {
+  let newData;
+  try {
+    newData = JSON.parse(document.getElementById("data-editor").value);
+  } catch (e) {
+    alert("The data isn't valid JSON, so it can't be saved: " + e.message);
+    return;
+  }
+  renderDataGrid(newData);
+  const box = document.getElementById("reflection-box");
+  box.innerHTML = '<div class="reflection-box" id="reflection-stream">Model is reflecting on the correction...\n</div>';
+  const stream = document.getElementById("reflection-stream");
+  stream.textContent = "";
+
+  const resp = await fetch(`${API}/api/groups/${activeId}/tables/${tid}/audit`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({new_data: newData})
+  });
+  await pipeSSE(resp, (data) => {
+    if (data.delta) stream.textContent += data.delta;
+  });
+  await renderTablesCol();
+}
+
+async function startCodegen(tid) {
+  document.getElementById("codegen-panel").style.display = "block";
+  document.getElementById("codegen-iterations").innerHTML = "";
+  document.getElementById("codegen-status").textContent = "starting...";
+  await fetch(`${API}/api/groups/${activeId}/codegen/start`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({table_id: tid})
+  });
+
+  document.getElementById("codegen-pause-btn").onclick = async () => {
+    await fetch(`${API}/api/groups/${activeId}/codegen/pause`, {method: "POST"});
+  };
+
+  if (esCodegen) esCodegen.close();
+  esCodegen = new EventSource(`${API}/api/groups/${activeId}/codegen/stream`);
+  esCodegen.onmessage = (ev) => {
+    const state = JSON.parse(ev.data);
+    document.getElementById("codegen-status").textContent = state.phase + (state.detail ? " - " + state.detail : "");
+    renderIterations(state.iterations || []);
+    if (state.done) esCodegen.close();
+  };
+}
+
+function renderIterations(iterations) {
+  const el = document.getElementById("codegen-iterations");
+  el.innerHTML = "";
+  iterations.forEach(it => {
+    const block = document.createElement("div");
+    block.className = "iter-block";
+    const fillNote = (it.fill_fraction !== undefined) ? ` &middot; ${(it.fill_fraction*100).toFixed(0)}% fields populated` : "";
+    let html = `<div class="iter-header"><span>Iteration ${it.n}${fillNote}</span><span class="badge badge-${it.phase}">${it.phase}</span></div>`;
+    if (it.code) html += `<pre class="code-block">${escapeHtml(it.code)}</pre>`;
+    if (it.stdout) html += `<pre class="output-block">${escapeHtml(it.stdout)}</pre>`;
+    if (it.stderr) html += `<pre class="output-block stderr">${escapeHtml(it.stderr)}</pre>`;
+    block.innerHTML = html;
+    el.appendChild(block);
+  });
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+async function pipeSSE(resp, onData) {
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, {stream: true});
+    const parts = buf.split("\n\n");
+    buf = parts.pop();
+    for (const part of parts) {
+      if (!part.startsWith("data: ")) continue;
+      onData(JSON.parse(part.slice(6)));
+    }
+  }
+}
+
+async function renderContent() {
+  const r = await fetch(API + "/api/groups");
+  groups = await r.json();
+  const g = groups.find(x => x.id === activeId);
+  const content = document.getElementById("content");
+  if (!g) { content.innerHTML = '<div class="empty">Select or create a group to begin.</div>'; return; }
+
+  content.innerHTML = `
+    <div class="panel">
+      <h3>${g.name}</h3>
+      <div class="file-list" id="file-list">${g.files.length ? g.files.join(", ") : "(no files uploaded yet)"}</div>
+      <div class="drop-zone" id="drop-zone">Click to choose files to upload (PDF / HTML / TXT)</div>
+      <input type="file" id="file-input" multiple style="display:none">
+      <div class="row" style="margin-top:12px;">
+        <div>
+          <div class="field-label">Ingestion mode</div>
+          <select id="mode-select" ${g.status === "ingesting" ? "disabled" : ""}>
+            <option value="content">Content only (text)</option>
+            <option value="image">Image only (vision)</option>
+            <option value="image_content">Image + Content</option>
+          </select>
+        </div>
+        <div>
+          <div class="field-label">Model</div>
+          <select id="model-select" ${g.status === "ingesting" ? "disabled" : ""}></select>
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px; justify-content:flex-start; gap:10px;">
+        <button id="ingest-btn" style="flex:0 0 auto;" ${g.files.length === 0 ? "disabled" : ""}>Ingest into KV cache</button>
+        <button id="cancel-ingest-btn" class="danger" style="flex:0 0 auto; display:${g.status === "ingesting" ? "inline-block" : "none"};">Cancel</button>
+        <button id="clear-cache-btn" class="secondary" style="flex:0 0 auto;" ${g.status === "new" ? "disabled" : ""}>Clear cache</button>
+        <span id="ingest-status" style="font-size:12px; color:#8a8f9b;">
+          ${g.status === "ready" ? `ready &mdash; ${g.mode || "content"} mode, ${g.model || "?"} (~${g.context_token_estimate.toLocaleString()} tokens${g.image_count ? `, ${g.image_count} page image(s)` : ""}, ${g.context_turns || 0} turns, num_ctx ${g.num_ctx ? g.num_ctx.toLocaleString() : "?"})` : g.status}
+        </span>
+      </div>
+      <div class="progress-wrap" id="ingest-progress-wrap" style="display:none;">
+        <div class="bar"><div class="bar-fill" id="ingest-bar" style="width:0%"></div></div>
+        <div class="progress-detail" id="ingest-detail"></div>
+      </div>
+      ${g.status === "error" ? `<div class="error-box">Ingest failed: ${g.error}</div>` : ""}
+      ${g.status === "cancelled" ? `<div class="error-box">${g.error || "Ingest cancelled."}</div>` : ""}
+    </div>
+
+    <div class="panel" id="schema-panel" style="${g.status === 'ready' ? '' : 'opacity:.4; pointer-events:none;'}">
+      <h3>Detect Schema &amp; Tables</h3>
+      <button id="schema-btn">Run schema detection</button>
+      <button id="cancel-schema-btn" class="danger" style="display:none; margin-left:8px;">Cancel</button>
+      <div class="progress-wrap" id="schema-progress-wrap" style="display:none;">
+        <div class="bar"><div class="bar-fill" id="schema-bar" style="width:100%"></div></div>
+        <div class="progress-detail" id="schema-detail">streaming...</div>
+      </div>
+      <div class="schema-output" id="schema-output" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="panel" id="ask-panel" style="${g.status === 'ready' ? '' : 'opacity:.4; pointer-events:none;'}">
+      <h3>Ask a question</h3>
+      <div class="chat-log" id="chat-log"></div>
+      <div class="row" style="margin-top:8px;">
+        <input type="text" id="chat-input" placeholder="Ask something about the ingested documents...">
+        <button id="chat-send-btn" style="flex:0 0 auto;">Send</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById("drop-zone").onclick = () => document.getElementById("file-input").click();
+  document.getElementById("file-input").onchange = async (e) => {
+    const fd = new FormData();
+    for (const f of e.target.files) fd.append("files", f);
+    await fetch(`${API}/api/groups/${g.id}/upload`, {method: "POST", body: fd});
+    await renderContent();
+  };
+  const modeSelect = document.getElementById("mode-select");
+  modeSelect.value = g.mode || "content";
+  populateModelOptions(modeSelect.value, g.model);
+  modeSelect.onchange = () => populateModelOptions(modeSelect.value);
+
+  document.getElementById("ingest-btn").onclick = () => startIngest(g.id);
+  document.getElementById("cancel-ingest-btn").onclick = () => cancelOp(g.id);
+  document.getElementById("clear-cache-btn").onclick = () => clearCache(g.id);
+  document.getElementById("schema-btn").onclick = () => runSchema(g.id);
+  document.getElementById("cancel-schema-btn").onclick = () => cancelOp(g.id);
+  document.getElementById("chat-send-btn").onclick = () => sendQuestion(g.id);
+  document.getElementById("chat-input").onkeydown = (e) => { if (e.key === "Enter") sendQuestion(g.id); };
+
+  if (activeTableId) await renderTableDetail();
+}
+
+async function cancelOp(gid) {
+  await fetch(`${API}/api/groups/${gid}/cancel`, {method: "POST"});
+}
+
+async function clearCache(gid) {
+  if (!confirm("Clear this group's ingested cache (conversation, schema, extracted data)? Uploaded files are kept.")) return;
+  await fetch(`${API}/api/groups/${gid}/cancel`, {method: "POST"});
+  await fetch(`${API}/api/groups/${gid}/reset`, {method: "POST"});
+  if (esProgress) esProgress.close();
+  activeTableId = null;
+  await renderContent();
+  await renderTablesCol();
+}
+
+async function startIngest(gid) {
+  const mode = document.getElementById("mode-select").value;
+  const model = document.getElementById("model-select").value;
+  document.getElementById("ingest-btn").disabled = true;
+  document.getElementById("cancel-ingest-btn").style.display = "inline-block";
+  document.getElementById("ingest-progress-wrap").style.display = "block";
+  await fetch(`${API}/api/groups/${gid}/ingest`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({mode, model})
+  });
+
+  if (esProgress) esProgress.close();
+  esProgress = new EventSource(`${API}/api/groups/${gid}/ingest/progress`);
+  esProgress.onmessage = (ev) => {
+    const state = JSON.parse(ev.data);
+    document.getElementById("ingest-bar").style.width = state.pct + "%";
+    document.getElementById("ingest-detail").textContent = `${state.phase}: ${state.detail}`;
+    document.getElementById("ingest-status").textContent = state.phase;
+    if (state.phase === "done" || state.phase === "error" || state.phase === "cancelled") {
+      esProgress.close();
+      renderContent();
+    }
+  };
+}
+
+async function runSchema(gid) {
+  const out = document.getElementById("schema-output");
+  out.textContent = "";
+  document.getElementById("schema-progress-wrap").style.display = "block";
+  document.getElementById("schema-btn").disabled = true;
+  document.getElementById("cancel-schema-btn").style.display = "inline-block";
+
+  const resp = await fetch(`${API}/api/groups/${gid}/schema`, {method: "POST"});
+  await pipeSSE(resp, (data) => {
+    if (data.delta) out.textContent += data.delta;
+    if (data.cancelled) {
+      document.getElementById("schema-detail").textContent = "cancelled";
+      out.textContent += "\n\n[cancelled by user]";
+    }
+    if (data.done || data.cancelled) {
+      document.getElementById("schema-detail").textContent = data.cancelled ? "cancelled" : "done";
+      document.getElementById("schema-btn").disabled = false;
+      document.getElementById("cancel-schema-btn").style.display = "none";
+      renderTablesCol();
+    }
+  });
+}
+
+async function sendQuestion(gid) {
+  const input = document.getElementById("chat-input");
+  const q = input.value.trim();
+  if (!q) return;
+  input.value = "";
+  const log = document.getElementById("chat-log");
+  log.innerHTML += `<div class="chat-turn"><div class="role">You</div>${q}</div>`;
+  const g0 = groups.find(x => x.id === gid);
+  const answerDiv = document.createElement("div");
+  answerDiv.className = "chat-turn";
+  answerDiv.innerHTML = `<div class="role">${(g0 && g0.model) || "Assistant"}</div><span class="answer-text"></span>`;
+  log.appendChild(answerDiv);
+  const answerSpan = answerDiv.querySelector(".answer-text");
+
+  const resp = await fetch(`${API}/api/groups/${gid}/ask`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({question: q})
+  });
+  await pipeSSE(resp, (data) => {
+    if (data.delta) { answerSpan.textContent += data.delta; log.scrollTop = log.scrollHeight; }
+  });
+  // refresh only the turn-count label, without wiping the chat log we just streamed into
+  const r2 = await fetch(API + "/api/groups");
+  const g2 = (await r2.json()).find(x => x.id === gid);
+  if (g2) {
+    document.getElementById("ingest-status").textContent =
+      `ready (~${g2.context_token_estimate.toLocaleString()} tokens cached, ${g2.context_turns || 0} conversation turns remembered)`;
+  }
+}
+
+loadModels();
+loadGroups();
+</script>
+</body>
+</html>

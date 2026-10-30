@@ -29,7 +29,9 @@ RUN apt-get update && \
         python3-gi \
         gir1.2-atspi-2.0 \
         at-spi2-core \
-        libatk-adaptor && \
+        libatk-adaptor \
+        python3-pip \
+        python3-venv && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -64,6 +66,30 @@ COPY agent/flowera-wallpaper.svg /opt/flowera-wallpaper.svg
 # existing ones, whose home is a volume this layer never reaches.
 COPY agent/chromium-browser.init /opt/flowera-chromium.init
 COPY agent/chromium-browser.init /home/headless/.chromium-browser.init
+
+# Flowera tools: browser-agent (AI-controlled browser automation) and doc-ui
+# (document ingestion/codegen), alongside TheBot as another standalone tool
+# every desktop gets. Own venv so their deps (docling pulls in torch/
+# transformers) never collide with anything else installed in the image.
+COPY agent/browser-agent /opt/browser-agent
+COPY agent/doc-ui /opt/doc-ui
+RUN python3 -m venv /opt/flowera-tools-venv && \
+    /opt/flowera-tools-venv/bin/pip install --no-cache-dir \
+        -r /opt/browser-agent/requirements.txt \
+        -r /opt/doc-ui/requirements.txt && \
+    /opt/flowera-tools-venv/bin/playwright install --with-deps chromium
+
+COPY agent/flowera-tools-start.sh /opt/flowera-tools-start.sh
+COPY agent/flowera-tools.desktop /home/headless/.config/autostart/flowera-tools.desktop
+COPY agent/flowera-browser-agent-shortcut.desktop /home/headless/Desktop/Browser-Agent.desktop
+COPY agent/flowera-doc-ui-shortcut.desktop /home/headless/Desktop/Doc-UI.desktop
+
+RUN chmod +x /opt/flowera-tools-start.sh \
+        /home/headless/Desktop/Browser-Agent.desktop \
+        /home/headless/Desktop/Doc-UI.desktop && \
+    chmod 644 /home/headless/.config/autostart/flowera-tools.desktop && \
+    chown -R headless:headless /home/headless/Desktop \
+        /home/headless/.config/autostart/flowera-tools.desktop
 
 RUN chmod +x /opt/vm_server.py /opt/start_agent_terminal.sh /opt/soul /usr/local/bin/gui
 
