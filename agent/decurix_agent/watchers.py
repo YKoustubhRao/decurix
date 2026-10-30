@@ -268,8 +268,10 @@ def watchdog():
         try:
             log(f"Command watcher has not passed in {stalled:.0f}s (handling {_in_flight or 'nothing'}). Threads:\n"
                 + _thread_stacks())
-            progress.emit("This desktop's agent is stuck handling a message - restart the desktop if it does not "
-                          "recover within a minute.")
+            # Between messages nobody is waiting, and there is no message to be stuck on: only the log hears of it.
+            if _in_flight:
+                progress.emit("This desktop's agent is stuck handling a message - restart the desktop if it does not "
+                              "recover within a minute.")
         except Exception:
             pass
 

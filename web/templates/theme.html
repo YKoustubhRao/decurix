@@ -1761,6 +1761,7 @@ body.busy{cursor:progress}
   </div>
 
   <nav class="nav">
+    <a href="/chat"{{if eq . "chat"}} class="active" aria-current="page"{{end}}>Chat</a>
     <a href="/"{{if eq . "desktops"}} class="active" aria-current="page"{{end}}>Desktops</a>
     <a href="/dashboard"{{if eq . "queries"}} class="active" aria-current="page"{{end}}>
       Queries <span class="nav-badge" id="navQueryBadge">0</span>

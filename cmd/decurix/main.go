@@ -24,6 +24,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/access"
 	"github.com/YKoustubhRao/decurix/internal/cftunnel"
 	"github.com/YKoustubhRao/decurix/internal/claudeauth"
+	"github.com/YKoustubhRao/decurix/internal/concierge"
 	"github.com/YKoustubhRao/decurix/internal/conversation"
 	"github.com/YKoustubhRao/decurix/internal/dag"
 	"github.com/YKoustubhRao/decurix/internal/desktop"
@@ -533,6 +534,12 @@ func main() {
 	dagRunner := &dag.Runner{Store: dags, Submitter: server, Tasks: tasksStore}
 	server.DagRunner = dagRunner
 	go dagRunner.Run(ctx)
+
+	// The chat-first page (/chat): one conversation that starts jobs on
+	// desktops and relays what they say back. See internal/concierge.
+	chatConcierge := concierge.New(must(concierge.NewStore(db)), server.ConciergeDeps())
+	server.Concierge = chatConcierge
+	go chatConcierge.Run(ctx)
 
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)

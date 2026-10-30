@@ -387,6 +387,7 @@ type Renderer struct {
 	phoneLinkTmpl  *template.Template
 	screenTmpl     *template.Template
 	triggersTmpl   *template.Template
+	conciergeTmpl  *template.Template
 }
 
 // NewRenderer parses all templates once at startup.
@@ -413,6 +414,9 @@ func NewRenderer() *Renderer {
 		),
 		screenTmpl:   parse(nil, "screen.html"),
 		triggersTmpl: parse(nil, "triggers.html", triggerParts),
+		conciergeTmpl: template.Must(
+			template.ParseFS(web.TemplatesFS, templatePaths("concierge.html")...),
+		),
 	}
 }
 
@@ -572,6 +576,12 @@ type ScreenPageData struct {
 // RenderScreen renders the viewer for one desktop's screen.
 func (rd *Renderer) RenderScreen(w io.Writer, data ScreenPageData) error {
 	return rd.screenTmpl.ExecuteTemplate(w, "screen.html", data)
+}
+
+// RenderConcierge renders the chat-first page, /chat. It takes no data:
+// the page reads the conversation from /api/concierge.
+func (rd *Renderer) RenderConcierge(w io.Writer) error {
+	return rd.conciergeTmpl.ExecuteTemplate(w, "concierge.html", nil)
 }
 
 // FaviconSVG is the Decurix brand mark, served as the control plane's favicon.
