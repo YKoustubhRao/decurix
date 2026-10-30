@@ -18,7 +18,7 @@ class FormPage:
     def __init__(self, submits):
         self.submits, self.value, self.keys = submits, "", []
 
-    def call(self, method, params=None):
+    def call(self, method, params=None, timeout=None):
         params = params or {}
         if method == "Input.dispatchKeyEvent" and params.get("type") == "keyDown":
             if params.get("key") == "Enter":

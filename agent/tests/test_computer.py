@@ -726,7 +726,7 @@ class TypingIsKeys(unittest.TestCase):
         def __init__(self, takes_keys):
             self.takes_keys, self.value, self.calls = takes_keys, "", []
 
-        def call(self, method, params=None):
+        def call(self, method, params=None, timeout=None):
             self.calls.append(method)
             params = params or {}
             if method == "Input.dispatchKeyEvent" and params.get("type") == "keyDown" and self.takes_keys:

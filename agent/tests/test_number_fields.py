@@ -24,7 +24,7 @@ class NumberPage:
     def __init__(self, keeps=None):
         self.keeps, self.value, self.keys = keeps, "", []
 
-    def call(self, method, params=None):
+    def call(self, method, params=None, timeout=None):
         params = params or {}
         if method == "Input.dispatchKeyEvent" and params.get("type") == "keyDown":
             self.keys.append(params.get("key"))
