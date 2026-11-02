@@ -36,10 +36,15 @@ type containerNets struct {
 }
 
 func (s *Server) containerNetworks() ([]netip.Prefix, []netip.Addr) {
+	return s.containerNetworksFresh(containerNetsTTL)
+}
+
+// containerNetworksFresh is containerNetworks, asking Docker again when what it knows is older than maxAge.
+func (s *Server) containerNetworksFresh(maxAge time.Duration) ([]netip.Prefix, []netip.Addr) {
 	s.nets.mu.Lock()
 	defer s.nets.mu.Unlock()
 
-	if s.Desktops != nil && time.Since(s.nets.fetched) > containerNetsTTL {
+	if s.Desktops != nil && time.Since(s.nets.fetched) > maxAge {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		subnets, gateways := s.Desktops.ContainerNetworks(ctx)
 		cancel()
@@ -55,8 +60,13 @@ func (s *Server) containerNetworks() ([]netip.Prefix, []netip.Addr) {
 	return s.nets.subnets, s.nets.gateways
 }
 
-// fromContainer reports whether r came from a container rather than from
-// the host.
+// containerNetsRecheck bounds how often an address in no known range makes the ranges be asked for again.
+const containerNetsRecheck = 2 * time.Second
+
+// fromContainer reports whether r came from a container rather than from the host. It fails closed: an address
+// that is not loopback, not a network's gateway and in no range known now makes the ranges be asked for again (a
+// network made since, such as the practice one), and while no range is known at all, every such address is taken for
+// a container (review 2026-11-02: an empty list made every container a person).
 func (s *Server) fromContainer(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -65,7 +75,7 @@ func (s *Server) fromContainer(r *http.Request) bool {
 
 	addr, err := netip.ParseAddr(host)
 	if err != nil {
-		return false
+		return true
 	}
 
 	addr = addr.Unmap()
@@ -73,21 +83,30 @@ func (s *Server) fromContainer(r *http.Request) bool {
 		return false
 	}
 
+	verdict := func(subnets []netip.Prefix, gateways []netip.Addr) (container, known bool) {
+		for _, gw := range gateways {
+			if addr == gw.Unmap() {
+				return false, true
+			}
+		}
+		for _, subnet := range subnets {
+			if subnet.Contains(addr) {
+				return true, true
+			}
+		}
+		return false, false
+	}
+
 	subnets, gateways := s.containerNetworks()
-
-	for _, gw := range gateways {
-		if addr == gw.Unmap() {
-			return false
-		}
+	if container, known := verdict(subnets, gateways); known {
+		return container
 	}
-
-	for _, subnet := range subnets {
-		if subnet.Contains(addr) {
-			return true
-		}
+	subnets, gateways = s.containerNetworksFresh(containerNetsRecheck)
+	if container, known := verdict(subnets, gateways); known {
+		return container
 	}
-
-	return false
+	// No desktop manager means no containers (a test's server); with one, no known range means not known to be a person.
+	return len(subnets) == 0 && s.Desktops != nil
 }
 
 // humansOnly serves h only to requests that do not come from a container.

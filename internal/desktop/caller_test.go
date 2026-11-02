@@ -37,9 +37,9 @@ func TestDesktopIDFromNames(t *testing.T) {
 	}
 }
 
-// Each new desktop's screen has a password of its own, unless DEFAULT_PASSWORD sets one for all.
+// Each new desktop's screen has a password of its own; DEFAULT_PASSWORD (once "admin" for all) is not read.
 func TestScreenPasswordIsPerDesktop(t *testing.T) {
-	t.Setenv("DEFAULT_PASSWORD", "")
+	t.Setenv("DEFAULT_PASSWORD", "admin")
 	m := &Manager{HostGUISecret: []byte("secret")}
 	a, b := m.screenPassword("box-a"), m.screenPassword("box-b")
 	if a == b || len(a) != 8 || a == "admin" {
@@ -49,8 +49,12 @@ func TestScreenPasswordIsPerDesktop(t *testing.T) {
 	if len(env) != 2 || env[1] != "VNC_PW="+a {
 		t.Errorf("env = %v", env)
 	}
-	t.Setenv("DEFAULT_PASSWORD", "chosen")
-	if got := m.screenPassword("box-a"); got != "chosen" {
-		t.Errorf("DEFAULT_PASSWORD ignored: %q", got)
+}
+
+// No secret, no desktop: it would have no agent token and a guessable screen.
+func TestNoDesktopWithoutTheSecret(t *testing.T) {
+	m := &Manager{}
+	if _, err := m.BeginProvisioning("box", "basic", "thebot", Brain{}, 1, 2048, "", "", "", nil, nil, nil); err == nil {
+		t.Fatal("a desktop was begun without the control plane's secret")
 	}
 }

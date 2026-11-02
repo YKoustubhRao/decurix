@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -198,6 +199,10 @@ func TestSchedulerReclassifiesRetryStepInsteadOfInheritingOriginalType(t *testin
 // the original action type; only an actual different classifier match
 // does.
 func TestSchedulerRetryKeepsOriginalTypeWhenNothingPositivelyReclassifies(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The retry step runs python3, which on Windows is the Store alias (exit 49), not an interpreter.
+		t.Skip("needs a real python3 (a Linux desktop's)")
+	}
 	registerTerminalSkill()
 
 	// The ORIGINAL step is genuinely terminal work and fails for real

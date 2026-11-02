@@ -21,9 +21,10 @@ const healthPath = "/api/health"
 //     preflight soul never answers), and a request carrying an Origin that
 //     is not soul's own (the Host it was sent to), or a Sec-Fetch-Site that
 //     says another site sent it, is refused.
-//   - another desktop on the shared Docker network: with DECURIX_AGENT_TOKEN
-//     set, every API route but the health check needs
-//     "Authorization: Bearer <token>", compared in constant time.
+//   - another desktop on the shared Docker network: every API route but the
+//     health check needs "Authorization: Bearer <DECURIX_AGENT_TOKEN>",
+//     compared in constant time. Without a token soul fails closed: those
+//     routes are refused until the desktop is recreated with one.
 //
 // The honest limit: the worker's own shell runs as the same user and can read
 // the token from its environment. That is what the approval gate is for: no
@@ -55,13 +56,24 @@ func (s *server) refusal(r *http.Request) (int, string) {
 			return http.StatusUnsupportedMediaType, "a write must be sent as application/json"
 		}
 	}
-	if token := s.cfg.AgentToken; token != "" && strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != healthPath {
+	if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != healthPath {
+		token := s.cfg.AgentToken
+		if token == "" {
+			// Fail closed: a desktop created before agent tokens existed (or by a
+			// control plane whose secret did not load) has no token, and without
+			// one anyone on the Docker network could run commands here.
+			return http.StatusUnauthorized, noTokenRefusal
+		}
 		if !bearerMatches(r.Header.Get("Authorization"), token) {
 			return http.StatusUnauthorized, "this desktop's agent token is required"
 		}
 	}
 	return 0, ""
 }
+
+// noTokenRefusal is what every API route but the health check answers on a
+// desktop that has no agent token.
+const noTokenRefusal = "this desktop was created without an agent token: recreate it"
 
 // sameOrigin reports whether origin is the address the request was sent to
 // (host, the request's Host): a page served from soul itself, or from the

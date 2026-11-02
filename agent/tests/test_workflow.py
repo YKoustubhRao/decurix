@@ -7,10 +7,12 @@ export (Understudy's intent / routes / GUI-hints layers, in the Agent Skills for
 
 import importlib.util
 import json
+import os
 import re
 import tempfile
 import threading
 import unittest
+from unittest import mock
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -256,6 +258,10 @@ class Routes(unittest.TestCase):
         recording.append("demo-20260914T101500-aaaaaa", {"kind": "click", "outcome": "done", "actor": "human",
                                                           "element": {"role": "button", "name": "Save"}})
 
+        # A desktop's agent serves only with its token (http_api.refusal); the control plane sends it.
+        token = mock.patch.dict(os.environ, {"DECURIX_AGENT_TOKEN": "test-agent-token"})
+        token.start()
+        self.addCleanup(token.stop)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), http_api.Handler)
         threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
@@ -267,8 +273,9 @@ class Routes(unittest.TestCase):
         self.tmp.cleanup()
 
     def get(self, path):
+        request = urllib.request.Request(self.base + path, headers={"Authorization": "Bearer test-agent-token"})
         try:
-            with urllib.request.urlopen(self.base + path, timeout=5) as response:
+            with urllib.request.urlopen(request, timeout=5) as response:
                 return response.status, dict(response.headers), response.read().decode()
         except urllib.error.HTTPError as err:
             with err:

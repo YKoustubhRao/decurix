@@ -909,7 +909,12 @@ def _unknown_recipients(request, every, drafts_made, failed=None):
 def _payee_mismatch(request, every, failed=None):
     from decurix_agent import payees
     try:
-        return payees.mismatches(request, every)
+        found = payees.mismatches(request, every)
+        # Payments with no record of the payees' accounts to check them against: the check is not made, so the work
+        # is not checked - never passed (payees.unchecked; review 2026-11-02).
+        if failed is not None:
+            failed.extend(payees.unchecked(request, every))
+        return found
     except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing (and is said: `failed`)
         log(f"produced: could not check where payments go: {exc}")
         _not_made(failed, "could not check where payments go", exc)

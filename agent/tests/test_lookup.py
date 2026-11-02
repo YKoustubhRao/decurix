@@ -31,6 +31,32 @@ class WhatIsSent(unittest.TestCase):
     def test_a_question_about_the_app_is_sent(self):
         self.assertEqual(lookup.unsafe("TallyPrime how to create a ledger under Sundry Creditors"), "")
 
+    def test_a_clients_identifiers_names_and_amounts_never_go_to_a_search_engine(self):
+        # Review 2026-11-02: a GSTIN, a PAN and a client's name went out in questions.
+        for q in ("GSTR-1 status of 29ABCDE1234F1Z5", "is ABCDE1234F a valid PAN", "HDFC0001234 branch address",
+                  "Aadhaar 2345 6789 0123 linked", "pay Rs 45,000 to the vendor", "late fee on 125000",
+                  "credit note against INV455 in GSTR-1", "PO-7781 amendment", "Tunga Pipes Pvt Ltd GST number",
+                  "UPI refund to acme@okicici", "token 9fK2mQ8xL4vB7nR1tZ6wY3pA rejected"):
+            self.assertTrue(lookup.unsafe(q), q)
+        with mock.patch("decurix_agent.memory_context._entries",
+                        lambda: [{"title": "About Tunga Pipes", "category": "fact", "text": "", "words": []}]):
+            self.assertIn("tunga pipes", lookup.unsafe("how does tunga pipes file GSTR-1"))
+        with mock.patch("decurix_agent.task_context.current_request", lambda: "Enter bill B-455 for the client"):
+            self.assertTrue(lookup.unsafe("why is B-455 rejected"))
+        with mock.patch.object(lookup, "_get", side_effect=AssertionError("sent")):
+            with self.assertRaises(lookup.LookupError_):
+                lookup.read("https://services.gst.gov.in/search?gstin=29ABCDE1234F1Z5")
+
+    def test_the_generic_question_is_still_sent(self):
+        for q in ("how is a credit note shown in GSTR-1", "GSTR-3B due date for FY 2025-26",
+                  "TDS rate under section 194C", "TallyPrime 4.0 how to export a ledger to Excel",
+                  "what is the HSN code length for turnover above 5 crore"):
+            self.assertEqual(lookup.unsafe(q), "", q)
+
+    def test_a_question_that_cannot_be_checked_is_not_sent(self):
+        with mock.patch.object(lookup, "_unsafe", side_effect=RuntimeError("boom")):
+            self.assertTrue(lookup.unsafe("how to create a ledger"))
+
 
 class WhatComesBack(unittest.TestCase):
     def test_results_skip_ads_and_read_the_answering_paragraphs(self):

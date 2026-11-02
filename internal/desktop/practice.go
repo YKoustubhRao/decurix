@@ -460,7 +460,12 @@ func (m *Manager) CreatePractice(ctx context.Context, spec PracticeSpec) (d Prac
 	if err != nil {
 		return d, err
 	}
-	config, host, net := practiceConfigs(spec, practiceEnvironment(inherited, spec, practicePassword()), m.desktopSecurityOpt(ctx))
+	env := practiceEnvironment(inherited, spec, practicePassword())
+	// A practice desktop's agent takes requests only with its token, like every desktop's (agenttoken.go).
+	if token := m.AgentToken(PracticeDesktopID(spec.RunID)); token != "" {
+		env = append(env, AgentTokenEnv+"="+token)
+	}
+	config, host, net := practiceConfigs(spec, env, m.desktopSecurityOpt(ctx))
 	created, err := m.client.ContainerCreate(ctx, config, host, net, nil, PracticeDesktopID(spec.RunID))
 	if err != nil {
 		return d, err
@@ -927,9 +932,8 @@ func (m *Manager) PracticeAgentRequest(ctx context.Context, d PracticeDesktop, m
 	if err != nil {
 		return nil, err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
+	req.Header.Set("Content-Type", "application/json")
+	m.AuthorizeAgentRequest(req, d.Name)
 	resp, err := agentClient.Do(req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

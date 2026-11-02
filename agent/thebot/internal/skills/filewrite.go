@@ -344,6 +344,17 @@ func resolveWritePath(rc RunContext, path string) (string, error) {
 		}
 		p = filepath.Join(home, strings.TrimPrefix(p, "~"))
 	}
+	if !filepath.IsAbs(p) && rootedPath(p) {
+		// "/etc/passwd" on Windows is not IsAbs (it has no drive) but is still
+		// a path from the root of the current drive, never one inside the
+		// working directory: resolve it where the system would, and let the
+		// containment check below refuse it.
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", path, err)
+		}
+		p = abs
+	}
 	if !filepath.IsAbs(p) {
 		if rc.WorkDir == "" && rc.Workspace != nil {
 			return rc.Workspace.ResolveSafe(p)
@@ -366,6 +377,13 @@ func resolveWritePath(rc RunContext, path string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%s is outside the working directory and the home directory", p)
+}
+
+// rootedPath reports whether p names a place from a root rather than from the
+// working directory: it starts with a separator ("/etc/passwd", and on Windows
+// `\Windows`) or carries a volume ("C:notes.txt").
+func rootedPath(p string) bool {
+	return strings.HasPrefix(p, "/") || (filepath.Separator == '\\' && strings.HasPrefix(p, `\`)) || filepath.VolumeName(p) != ""
 }
 
 // documentFormats are files that are not text: writing text under one of

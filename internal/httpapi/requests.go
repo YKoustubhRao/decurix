@@ -13,6 +13,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"github.com/YKoustubhRao/decurix/internal/webui"
+	"github.com/YKoustubhRao/decurix/internal/withhold"
 )
 
 // maxRequestBytes is the longest request a human can send a desktop.
@@ -106,7 +107,8 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{
 		"status":  "sent",
 		"task_id": route.TaskID,
-		"content": sent,
+		"content": withhold.Text(sent), // as the chat keeps it
+
 	})
 }
 

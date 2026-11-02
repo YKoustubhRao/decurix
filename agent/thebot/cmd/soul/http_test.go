@@ -54,9 +54,13 @@ func serve(s *server, method, target, body string) *httptest.ResponseRecorder {
 	if method != http.MethodGet {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	req.Header.Set("Authorization", "Bearer "+testAgentToken)
 	s.mux().ServeHTTP(rec, req)
 	return rec
 }
+
+// testAgentToken is the agent token newTestServer's desktop was created with.
+const testAgentToken = "test-agent-token"
 
 // realEmbedder is a reachable Ollama at OLLAMA_HOST (or the local default), or skips the test saying why it needs one.
 func realEmbedder(t *testing.T, why string) *llm.OllamaProvider {
@@ -85,7 +89,7 @@ func newTestServer(t *testing.T) *server {
 	registerTerminalSkillOnce()
 	provider := stubProvider{}
 	sched := scheduler.New(provider, llm.DefaultModels("stub-model"), ws, l2, nil, nil, nil)
-	return newServer(config.Config{OllamaHost: "stub"}, provider, ws, sched)
+	return newServer(config.Config{OllamaHost: "stub", AgentToken: testAgentToken}, provider, ws, sched)
 }
 
 func TestHandleHealth(t *testing.T) {
@@ -323,7 +327,9 @@ func TestStreamAfterCompletion(t *testing.T) {
 	realSrv := httptest.NewServer(s.mux())
 	defer realSrv.Close()
 
-	resp, err := http.Get(realSrv.URL + "/api/jobs/" + id + "/stream")
+	streamReq, _ := http.NewRequest(http.MethodGet, realSrv.URL+"/api/jobs/"+id+"/stream", nil)
+	streamReq.Header.Set("Authorization", "Bearer "+testAgentToken)
+	resp, err := http.DefaultClient.Do(streamReq)
 	if err != nil {
 		t.Fatalf("GET stream error = %v", err)
 	}
@@ -588,7 +594,7 @@ func TestSoulRefusesWhatAWebPageCanSend(t *testing.T) {
 		t.Fatalf("a refused request started %d job(s)", len(s.jobs))
 	}
 	// The control plane's proxy passes the person's own page on: same origin as the Host it was sent to.
-	own := map[string]string{"Content-Type": "application/json", "Origin": "http://example.com"}
+	own := map[string]string{"Content-Type": "application/json", "Origin": "http://example.com", "Authorization": "Bearer " + testAgentToken}
 	if rec := guarded(s, http.MethodPost, "/api/chat", `{"prompt":"hello"}`, own); rec.Code != 200 {
 		t.Errorf("same-origin POST = %d (%s), want 200", rec.Code, rec.Body.String())
 	} else {
@@ -623,6 +629,32 @@ func TestSoulNeedsTheAgentTokenWhenItHasOne(t *testing.T) {
 	}
 	if strings.Contains(guarded(s, http.MethodPost, "/api/chat", `{"prompt":"x"}`, asJSON).Body.String(), "s3cret") {
 		t.Error("a refusal echoed the token")
+	}
+}
+
+// A desktop created without an agent token (before tokens existed, or by a control plane whose secret did not load)
+// fails closed: every API route but the health check is refused, saying to recreate it, and no job starts.
+func TestSoulWithoutAnAgentTokenRefusesTheAPI(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.AgentToken = ""
+	asJSON := map[string]string{"Content-Type": "application/json"}
+	withSome := map[string]string{"Content-Type": "application/json", "Authorization": "Bearer anything"}
+	for _, headers := range []map[string]string{asJSON, withSome} {
+		rec := guarded(s, http.MethodPost, "/api/chat", `{"prompt":"run this command: `+"`echo pwned`"+`"}`, headers)
+		if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "recreate it") {
+			t.Errorf("POST /api/chat with no token configured = %d %s, want 401 saying to recreate the desktop", rec.Code, rec.Body.String())
+		}
+	}
+	for _, path := range []string{"/api/memory", "/api/jobs/x", "/api/skills", "/api/rag/stats"} {
+		if rec := guarded(s, http.MethodGet, path, "", nil); rec.Code != http.StatusUnauthorized {
+			t.Errorf("GET %s with no token configured = %d, want 401", path, rec.Code)
+		}
+	}
+	if rec := guarded(s, http.MethodGet, "/api/health", "", nil); rec.Code != 200 {
+		t.Errorf("health with no token configured = %d, want 200", rec.Code)
+	}
+	if len(s.jobs) != 0 {
+		t.Fatalf("a refused request started %d job(s)", len(s.jobs))
 	}
 }
 

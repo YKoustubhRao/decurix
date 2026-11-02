@@ -9,7 +9,7 @@ from decurix_agent import progress
 from decurix_agent.computer import approval, audit, browser, constraints, core, launchers, privacy, recording, screen, visual, volatility
 from decurix_agent.computer import detour
 from decurix_agent.computer import elements as el
-from decurix_agent.computer.errors import ComputerError
+from decurix_agent.computer.errors import ActedError, ComputerError
 from decurix_agent.logging_utils import log
 
 
@@ -827,10 +827,14 @@ def _screen_brief(observation):
 
 class _Halt(Exception):
 
-    def __init__(self, reason, evidence="", missing=False, options=None, observation=None):
+    def __init__(self, reason, evidence="", missing=False, options=None, observation=None, acted=False):
         super().__init__(reason)
         self.reason = reason
         self.evidence = evidence
+        # The step's action was carried out before this was found (core.ActedError; a pressed cell whose field never
+        # appeared): the step is never retried or healed as if it had not happened, and a step that commits is
+        # reconciliation_required (review 2026-11-02: such a halt resumed from the same step and pressed it again).
+        self.acted = acted
         # The screen the target was looked for on, when it was not found:
         # what run() compares with the recording's screens (a detour).
         self.observation = observation
@@ -1204,11 +1208,15 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
             append=bool(step.get("append")),
             end=tuple(step["end"]) if step.get("end") else None,
             files=files,
+            # The pre-save checks a committing press of an engine's goes through, for a replay's too; what would list
+            # the form is put to the person with today's values (core._form_check, listing="ask"): the person made the
+            # recording, not a yes to the values this run types (review 2026-11-02).
+            check_form="replay",
             **target,
         )
         if pressed_cell and not _field_appeared(step):
             raise _Halt(f"pressed where {_summary(step).split(' ', 1)[-1]} was when this was recorded, and no such field "
-                        "appeared there - the page is laid out differently now")
+                        "appeared there - the page is laid out differently now", acted=True)
         # A deterministic healing renamed this exact control. Carry its
         # identity to same-step value checks; checking the old label after
         # typing into the healed field would incorrectly reject transfer.
@@ -1217,11 +1225,38 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
             done = dict(done, target_alias={"was": dict(step["target"]),
                                            "now": {"role": element.get("role"), "name": element.get("name")}})
         return done
+    except ActedError as exc:
+        raise _Halt(str(exc), acted=True)
     except ComputerError as exc:
         raise _Halt(str(exc))
 
 
 SELECT_ALL = {"ctrl+a", "control+a", "cmd+a", "meta+a"}
+
+
+def _shown_by_step(checks, before, values):
+    """
+    Whether a step's met checks show this step did it: a value it was to leave in a field (the field holds the run's
+    value now), or another check (a window, a page, a dialog) that was NOT already met on the screen before the step
+    acted (`before`, core.act's). With no `before` to compare (a step that opened something by its launcher), the
+    checks are taken as they stand.
+    """
+
+    if before is None or any(c.get("type") == "value" for c in checks):
+        return True
+    return bool(unmet([c for c in checks if c.get("type") != "value"], before, values))
+
+
+def _step_commits(step):
+    """Whether a step's press commits something (approval.commits on its recorded control; Enter or Ctrl+S)."""
+
+    target = step.get("target") or {}
+    if step.get("kind") in ("click", "double_click") and target.get("name"):
+        return approval.commits({"role": target.get("role") or "button", "name": target["name"]})
+    if step.get("kind") == "key":
+        pressed = {"".join(str(k).lower().split()) for k in step.get("keys") or []}
+        return bool(pressed & {"return", "enter", "kp_enter", "ctrl+s", "control+s"})
+    return False
 
 
 def _replaces_selection(previous, step):
@@ -1622,6 +1657,14 @@ def run(program, params=None, start=1, report=None, ladder=None):
             next_step = steps[index + 1] if index + 1 < total else None
             result = _run_step(step, values, ladder, report, next_step=next_step)
         except _Halt as halt:
+            if halt.acted:
+                # The step's action happened and what came after it went wrong: it is not healed, retried or resumed
+                # as if it had not. A step that commits may or may not have taken effect - checked, never redone.
+                counts["done"] += 1
+                if step.get("consequential") or _step_commits(step):
+                    return finish(RECONCILIATION_REQUIRED, step, reason=halt.reason, evidence=halt.evidence)
+                return finish(HALTED, step, reason=halt.reason, resume_from=step["n"], evidence=halt.evidence)
+
             # An optional step (a skill learned that it only sometimes
             # happens) that is not on the screen simply did not happen this
             # time. Nothing else is stepped over: an optional step whose
@@ -1700,6 +1743,14 @@ def run(program, params=None, start=1, report=None, ladder=None):
             if step.get("consequential"):
                 return finish(RECONCILIATION_REQUIRED, step, reason=reason, evidence=evidence)
             return finish(HALTED, step, reason=reason, resume_from=step["n"] + 1, evidence=evidence)
+
+        if not _shown_by_step(checks, result.get("before"), values):
+            # What the step should leave was on the screen before it ran (a banner, a window, a page already open):
+            # its presence shows nothing of this step (review 2026-11-02). Ran, not seen.
+            counts["unverified"] += 1
+            report(f"Step {step['n']}: what it should leave on the screen was there before it ran, so nothing shows "
+                   "this step did it")
+            continue
 
         counts["verified"] += 1
         if ladder is not None:

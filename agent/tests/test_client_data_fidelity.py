@@ -121,17 +121,32 @@ class PinCodeIsAnAddress(unittest.TestCase):
         box = {"role": "textbox", "name": "PIN Code"}
         self.assertIsNone(privacy.secret_field(box))
         self.assertIsNone(privacy.secret_field({"role": "textbox", "name": "Pincode"}))
+        self.assertIsNone(privacy.secret_field({"role": "textbox", "name": "Pin-code"}))
+        self.assertIsNone(privacy.secret_field({"role": "textbox", "name": "Postal code"}))
+        self.assertIsNone(privacy.secret_field({"role": "textbox", "name": "Postal code (PIN)"}))
         self.assertIsNone(privacy.secret_field({"role": "textbox", "name": "PIN",
                                                 "handle": {"autocomplete": "postal-code"}}))
-        self.assertEqual(privacy.request_secrets("Ship to 12 MG Road, Udupi, PIN: 576104"), [])
         self.assertEqual(privacy.request_secrets("Address PIN code 576104"), [])
+        self.assertEqual(privacy.request_secrets("Ship to 12 MG Road, Udupi, Pincode: 576104"), [])
+        self.assertEqual(privacy.request_secrets("Ship to 12 MG Road, Udupi, Pin-code: 576104"), [])
 
     def test_a_card_or_login_pin_still_is(self):
         self.assertTrue(privacy.secret_field({"role": "textbox", "name": "ATM PIN"}))
         self.assertTrue(privacy.secret_field({"role": "textbox", "name": "PIN"}))
+        self.assertTrue(privacy.secret_field({"role": "textbox", "name": "Card PIN code"}))
+        self.assertTrue(privacy.secret_field({"role": "textbox", "name": "ATM PIN",
+                                              "handle": {"autocomplete": "postal-code"}}))
         self.assertIn("4821", privacy.request_secrets("the PIN: 4821"))
         self.assertIn("576104", privacy.request_secrets("login PIN: 576104"))
         self.assertIn("123456", privacy.request_secrets("UPI PIN is 123456"))
+
+    def test_a_bare_pin_is_a_secret_whatever_its_digit_count(self):
+        # Recheck 2026-11-02: six digits after a bare "PIN" were taken for a postal code and not withheld. The digits
+        # never tell a PIN from a postal code; only a label that says "PIN code" / "postal code" does.
+        self.assertIn("482193", privacy.request_secrets("PIN: 482193"))
+        self.assertIn("482193", privacy.request_secrets("my PIN is 482193"))
+        self.assertIn("576104", privacy.request_secrets("Ship to 12 MG Road, Udupi, PIN: 576104"))
+        self.assertTrue(privacy.secret_field({"role": "textbox", "name": "PIN no."}))
 
 
 if __name__ == "__main__":

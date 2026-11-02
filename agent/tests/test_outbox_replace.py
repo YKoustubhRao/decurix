@@ -43,6 +43,8 @@ class _Drafting(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.task = "t1"
         self.patches = [mock.patch.object(outbox, "DRAFTS_DIR", Path(self.tmp.name)),
+                        # The attachments are files of the work (computer/privacy.file_may_leave).
+                        mock.patch.object(outbox.config, "WORK_DIR", Path(self.tmp.name)),
                         mock.patch.object(outbox.task_context, "current", lambda: self.task),
                         mock.patch.object(outbox.progress, "emit")]
         for p in self.patches:

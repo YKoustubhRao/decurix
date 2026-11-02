@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"thebot/internal/netguard"
 )
 
 // DownloadSkill finds REAL downloadable links in a page's actual HTML and
@@ -152,6 +154,11 @@ const (
 	maxFileBytes = 200 << 20
 )
 
+// fetchClient dials only public internet addresses and re-checks every
+// redirect (netguard): a link a model or a page named never reaches the
+// control plane, this desktop's own services or a metadata endpoint. Tests swap it.
+var fetchClient = netguard.Client(0)
+
 // fetchBytesAs fetches target as ua, reading at most limit bytes.
 func fetchBytesAs(ctx context.Context, target, ua string, timeout time.Duration, limit int64) ([]byte, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -172,7 +179,7 @@ func fetchBytesAs(ctx context.Context, target, ua string, timeout time.Duration,
 	// .html extension. Every download this skill had ever done was at
 	// real risk of the same silent corruption whenever the server
 	// happened to compress its response; PDFs/binaries just rarely are.
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := fetchClient.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -202,7 +209,7 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	}
 
 	exts := wantedExts(subtask.Step)
-	target := findURL(subtask.Step)
+	target := givenURL(rc, subtask.Step)
 
 	var fileURLs []string
 	// Bulk mode: "download the raw html of these N pages" (typically the
@@ -235,17 +242,10 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 			// the page and wrote "no information found", citing no URL in
 			// its answer text at all. The real link was still sitting in
 			// that step's Meta the whole time.
+			// Never a URL an earlier step's prose mentions: that text may be
+			// a model's summary (or a page's injected words), not a page
+			// anything fetched.
 			candidates := rc.PriorSourceURLs()
-			if len(candidates) == 0 {
-				// Nothing recorded structurally - fall back to whatever
-				// URL an earlier step's own text happened to mention.
-				// Weaker ground truth than Meta, but still real, and
-				// better than nothing when a skill didn't populate
-				// Meta["sources"]/"url".
-				if found := findURL(rc.PriorFindings()); found != "" {
-					candidates = []string{found}
-				}
-			}
 			if len(candidates) > 0 {
 				// Prefer a candidate that's already a direct file of the
 				// wanted type over one that's just a page to go scan.
@@ -418,6 +418,24 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		Output: b.String(), Verified: complete,
 		Meta: map[string]any{"downloaded": len(saved), "failed": len(failed), "leftOut": leftOut, "paths": saved},
 	}, nil
+}
+
+// givenURL is the URL step names, when it is one the work was given: the
+// person's request or reply names it, or a verified earlier step actually
+// fetched it. A URL only a plan's (a model's) wording carries is not taken -
+// it may come from a model's summary or a page's injected text - and "" sends
+// the skill to what earlier steps fetched instead. Outside a scheduler (no
+// request recorded) the step is the request.
+func givenURL(rc RunContext, step string) string {
+	u := findURL(step)
+	if u == "" || strings.TrimSpace(rc.OriginalPrompt) == "" {
+		return u
+	}
+	if strings.Contains(rc.OriginalPrompt, u) || strings.Contains(rc.HumanReply, u) || slices.Contains(rc.PriorSourceURLs(), u) {
+		return u
+	}
+	rc.Logf("url", "not using %s: neither the request nor a page fetched earlier gave it", u)
+	return ""
 }
 
 // fileExt is the lower-case extension a URL's path names ("pdf"), or "".

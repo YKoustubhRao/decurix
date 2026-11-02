@@ -551,8 +551,10 @@ type operatorState struct {
 	// been shown as text since (the request, command outputs, a person's
 	// replies), and ShownPages whether a document page came as a picture.
 	// grounding.go refuses to type a value none of them hold.
-	Request        string
-	Seen           string
+	Request string
+	Seen    string
+	// SeenHead is how much of the start of Seen (the request) is kept when it is cut (noteSeen).
+	SeenHead       int `json:",omitempty"`
 	ShownPages     bool
 	UntracedNudges int
 	// SourcesRead are the files the work's commands named that the operator itself read for the trace (readNamedSources).

@@ -61,5 +61,8 @@ func fakeDesktopManager(t *testing.T, existingIDs ...string) *desktop.Manager {
 		t.Fatal(err)
 	}
 
-	return desktop.NewManager(cli)
+	mgr := desktop.NewManager(cli)
+	// A real control plane has its secret; without one, creation is refused (agent tokens).
+	mgr.HostGUISecret = []byte("test secret")
+	return mgr
 }

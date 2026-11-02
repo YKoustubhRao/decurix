@@ -115,6 +115,37 @@ class WhereMoneyGoes(Fixture):
         wb.save(not_payments)
         self.assertEqual(payees.mismatches("", [str(not_payments)], found=self.found), [])
 
+    def test_without_a_master_the_payments_are_not_checked_never_passed(self):
+        # Review 2026-11-02: with no master nothing was checked and nothing said.
+        made = [proposal(self.dir / "p.xlsx")]
+        said = payees.unchecked("", made, found=([], [str(self.email)]))
+        self.assertEqual(len(said), 1)
+        self.assertTrue(said[0].startswith("PAYEES NOT CHECKED: p.xlsx pays Shree Ganesh Packaging"))
+        self.assertEqual(payees.unchecked("", made, found=self.found), [], "a master decides (mismatches)")
+        failed = []
+        with mock.patch.object(payees, "inputs", lambda request, made=(), roots=None: ([], [])):
+            self.assertEqual(produced._payee_mismatch("", made, failed), [])
+        self.assertTrue(failed and "PAYEES NOT CHECKED" in failed[0], "the final check is left unmade: not checked")
+
+    def test_a_payee_is_matched_by_whole_words_never_a_part_of_one(self):
+        # Review 2026-11-02: "Ram" matched "Ramesh" as a substring, so Ramesh's account passed for Ram.
+        self.assertTrue(payees.names_payee("Shree Ganesh Packaging", "M/s Shree Ganesh Packaging Pvt Ltd | 5010"))
+        self.assertFalse(payees.names_payee("Ram", "Ramesh Traders | 50100012345678"))
+        self.assertFalse(payees.names_payee("Apex Office", "Apex Officeware | 000405012345"))
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["Vendor", "Account No", "IFSC"])
+        ws.append(["Ramesh Traders", "50100012345678", "HDFC0000123"])
+        wb.save(self.dir / "master2.xlsx")
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["Vendor", "Amount Payable", "Account No", "IFSC"])
+        ws.append(["Ram", 5000, "50100012345678", "HDFC0000123"])
+        wb.save(self.dir / "pay2.xlsx")
+        found = payees.mismatches("", [str(self.dir / "pay2.xlsx")], found=([str(self.dir / "master2.xlsx")], []))
+        self.assertTrue(found and found[0].startswith("PAYMENT TO ANOTHER PARTY'S ACCOUNT:"), found)
+        self.assertIn("Ramesh Traders", found[0])
+
     def test_a_message_from_a_lookalike_domain_is_suspicious(self):
         found = payees.suspicious_messages("", found=self.found)
         self.assertEqual(len(found), 1)

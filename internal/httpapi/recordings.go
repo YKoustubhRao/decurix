@@ -564,6 +564,10 @@ func relayAgent(w http.ResponseWriter, resp *http.Response) {
 			w.Header().Set(name, value)
 		}
 	}
+	// The body is the desktop's, served from the control plane's own address: never run as one of its pages
+	// (review 2026-11-02 - a desktop answering with text/html had the dashboard's rights).
+	w.Header().Set("Content-Security-Policy", containerContentPolicy)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)

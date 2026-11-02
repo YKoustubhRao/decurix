@@ -19,6 +19,8 @@ from decurix_agent.logging_utils import log
 #   - the newest of what the person taught (lessons, workflows), up to a third;
 #   - every entry about the party the request names, then the entries sharing
 #     the request's words, then the newest;
+#   - a fact kept about a party (a client) only when the request names that
+#     party (_scoped): a fact is never shared across clients;
 # and a first line says how much is not shown and how to search it, so a thing
 # not shown never reads as a thing never said.
 # ============================================================
@@ -141,16 +143,18 @@ def get_memory_context(query=None):
     stays byte-identical across its model calls.
     """
 
-    entries = _entries()
+    query = _current_request() if query is None else query
+    entries, hidden = _scoped(_entries(), query)
+    note = (f"({hidden} fact(s) kept about parties this request does not name are not shown: each is for a task "
+            "about its own party.)\n\n") if hidden else ""
     if not entries:
-        return ""
+        return note.strip()
 
     whole = "\n\n---\n\n".join(e["text"] for e in reversed(entries))
-    if len(whole) <= config.MEMORY_CONTEXT_CHARS:
-        return whole
+    if len(note) + len(whole) <= config.MEMORY_CONTEXT_CHARS:
+        return note + whole
 
-    query = _current_request() if query is None else query
-    room = max(0, config.MEMORY_CONTEXT_CHARS - 170)  # (the first line)
+    room = max(0, config.MEMORY_CONTEXT_CHARS - 170 - len(note))  # (the first lines)
     chosen = set()
     person = [i for i, e in enumerate(entries) if e["category"] in PERSON_CATEGORIES]
     person_room = room // PERSON_SHARE
@@ -164,7 +168,26 @@ def get_memory_context(query=None):
     head = (f"({len(chosen)} of {len(entries)} remembered entries are shown here, chosen for this task, oldest first; "
             "the rest are not lost: gui recall WORDS searches them all.)")
     # Oldest first: chronological order for the model, so a later statement reads as the later one.
-    return head + "\n\n" + "\n\n---\n\n".join(entries[i]["text"] for i in sorted(chosen, reverse=True))
+    return head + "\n\n" + note + "\n\n---\n\n".join(entries[i]["text"] for i in sorted(chosen, reverse=True))
+
+
+def _scoped(entries, query):
+    """(the entries a task about `query` may see, how many were left out). A fact a source stated is kept about one
+    party - a client (kept_facts.py: "About <client>") - and is shown only to a task whose request names that party:
+    one client's message ("bill 455 is cancelled") is never another client's to act on, nor to read. Found in review
+    (2026-11-02): every kept fact went into every later task's prompt, whichever client it was for. A fact kept with no
+    party is shown to no task's view (gui recall still finds it). Everything else is shared as before."""
+
+    text = f" {' '.join(_words(query))} "
+    kept, hidden = [], 0
+    for entry in entries:
+        if entry["category"] == "fact":
+            subject = _subject_of(entry)
+            if not subject or f" {subject} " not in text:
+                hidden += 1
+                continue
+        kept.append(entry)
+    return kept, hidden
 
 
 def search(words, limit=12):

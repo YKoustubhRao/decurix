@@ -432,4 +432,3 @@ func (s *Server) workerModeHandler(w http.ResponseWriter, r *http.Request) {
 
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 }
-

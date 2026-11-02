@@ -4,6 +4,7 @@ package hostshell
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"time"
 )
@@ -37,4 +38,19 @@ func CommandContext(ctx context.Context, line string) *exec.Cmd {
 	}
 	cmd.WaitDelay = waitDelay
 	return cmd
+}
+
+// Exited is Wait's (or Run's, Output's) error with one case taken out: the
+// command itself exited 0 and only its output pipes were still held, by a
+// child it left running in the background, when WaitDelay cut them off
+// (exec.ErrWaitDelay). That command succeeded - its own exit is its result.
+// Every caller of CommandContext reads the outcome through this, so a
+// backgrounded child means the same thing in the terminal skill, the
+// operator's shell and the coding harness. Wait returns ErrWaitDelay only
+// after a successful exit; the ProcessState check keeps that explicit.
+func Exited(cmd *exec.Cmd, err error) error {
+	if errors.Is(err, exec.ErrWaitDelay) && cmd != nil && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		return nil
+	}
+	return err
 }

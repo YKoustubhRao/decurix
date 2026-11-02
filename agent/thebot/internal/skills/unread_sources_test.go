@@ -3,6 +3,7 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -37,6 +38,9 @@ func p2StageState(t *testing.T) (*operatorState, string, string) {
 }
 
 func TestTheUnreadSourcesAreOnlyRealSourcesNotYetRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs Linux absolute paths: a command's paths are read as /-rooted (namedPathRe), and the test's temp dir has a drive letter")
+	}
 	saved := sourceMissing
 	sourceMissing = func(p string) bool { _, err := os.Stat(p); return err != nil }
 	defer func() { sourceMissing = saved }()

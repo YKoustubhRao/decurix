@@ -224,7 +224,11 @@ def _run_answer(result, what, tool):
     if result.get("resume_from") and result["outcome"] in (replay.HALTED, replay.NEEDS_HUMAN):
         text += f"\n\nTo carry on from there later, call {tool} with from={result['resume_from']}."
 
-    return [_text(text)], result["outcome"] not in replay.SUCCESS
+    if result["outcome"] == replay.COMPLETED_UNVERIFIED:
+        # Ran to its end without seeing every result: not done until it is seen (no unseen success).
+        text += ("\n\nNOT CHECKED: this is not done until its result is seen - observe the screen and check the "
+                 "result against the request before reporting it done.")
+    return [_text(text)], result["outcome"] != replay.VERIFIED
 
 
 def call_tool(name, arguments):

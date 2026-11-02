@@ -44,11 +44,29 @@ class HandoffError(Exception):
 
 
 def _withhold(text):
+    """text with the request's secrets withheld before it leaves the desktop; fails closed (computer/privacy.py)."""
+
     try:
         from decurix_agent.computer import privacy
         return privacy.withhold_known(text)
-    except Exception:  # noqa: BLE001 - a missing privacy module must not stop the command; nothing was learned then
-        return text
+    except Exception:  # noqa: BLE001 - nothing that could not be checked leaves the desktop as it was
+        return "[held back: this text could not be checked for secrets]" if text else text
+
+
+def _files(paths):
+    """The files to carry, each checked to be a file of the work (computer/privacy.file_may_leave): never one under a
+    hidden folder (~/.claude/.credentials.json, ~/.ssh) or outside the work and shared folders. Raises HandoffError,
+    nothing sent, for the first that is not."""
+
+    from decurix_agent.computer import privacy
+
+    out = []
+    for path in paths or ():
+        allowed, why = privacy.file_may_leave(path)
+        if allowed is None:
+            raise HandoffError(f"{path} is not sent: {why}. Nothing was handed off.")
+        out.append(str(allowed))
+    return out
 
 
 def _url(path, query=None):
@@ -92,7 +110,7 @@ def create(target, request, inputs=None, files=None, expect=""):
     """POST a new handoff; the record the control plane made. target is {"to_worker"|"to_role"|"to_skill": value}."""
 
     body = {"desktop_id": config.DESKTOP_ID, "from_task": task_context.current(), "request": _withhold(request),
-            "inputs": inputs or {}, "files": list(files or ()), "expected": _withhold(expect or "")}
+            "inputs": inputs or {}, "files": _files(files), "expected": _withhold(expect or "")}
     body.update(target)
     return _call("POST", "/api/handoffs", body)
 
@@ -199,7 +217,8 @@ def _parser():
     target.add_argument("--skill", help="any free worker taught this skill")
     d.add_argument("--request", required=True, help="what the other worker must do, complete on its own")
     d.add_argument("--input", action="append", default=[], metavar="NAME=VALUE", help="a value the work needs")
-    d.add_argument("--file", action="append", default=[], metavar="PATH", help="a file under the home folder to carry")
+    d.add_argument("--file", action="append", default=[], metavar="PATH",
+                   help="a file of the work to carry (under ~/work, the shared folder or ~/Downloads; never a hidden folder)")
     d.add_argument("--expect", default="", help="what the result must show when it is done")
     d.add_argument("--wait", type=float, default=DEFAULT_WAIT, help="seconds to wait for the result (default 1800)")
 

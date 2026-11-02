@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -11,6 +12,9 @@ import (
 // Found live (2026-10-21): Word invoices read by a python script were not known as read, and their figures were
 // refused as invented at the portal's Save.
 func TestTheFilesACommandNamesAreNotedAsRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs Linux absolute paths: a command's paths are read as /-rooted (namedPathRe), and the test's temp dir has a drive letter")
+	}
 	root := t.TempDir()
 	folder := filepath.Join(root, "GST Returns", "6. SEPTEMBER")
 	if err := os.MkdirAll(folder, 0o755); err != nil {
@@ -68,6 +72,9 @@ func TestATypedTextWithADollarIsTypedAsWritten(t *testing.T) {
 
 // Found live (2026-10-21): values printed on Word invoices a script had read were refused as never read.
 func TestValuesInAFileTheWorkNamedAreTraced(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs sh (its office stand-in) and Linux absolute paths: a command's paths are read as /-rooted (namedPathRe), and the test's temp dir has a drive letter")
+	}
 	root := t.TempDir()
 	invoice := filepath.Join(root, "786 Kamath Jewellers.docx")
 	if err := os.WriteFile(invoice, []byte("Annual maintenance | 9987 | 1 nos | 26,500.00"), 0o644); err != nil {

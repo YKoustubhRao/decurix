@@ -159,6 +159,31 @@ _SHOWN_OUT = re.compile(r"(?i)\b(?:cancel\w*|exclud\w*|removed|left out|void\w*|
                         r"reversed|struck|deleted|omitted)\b")
 
 
+# A cell that is a figure written as text: a CSV's every cell is text ("66700", "4,533.00", "(1,200)").
+_FIGURE_TEXT = re.compile(r"^\s*[-+]?\(?\s*(?:₹|rs\.?|inr)?\s*\d[\d,]*(?:\.\d+)?\s*\)?\s*$", re.I)
+
+
+def _figure(cell):
+    """A cell's figure: a number as stored, or a text that is only a number (as every cell of a CSV is); else None.
+    Found in review (2026-11-02): only stored numbers counted, so in a CSV no removed record ever had figures and the
+    checks of removed records found nothing."""
+
+    if isinstance(cell, bool):
+        return None
+    if isinstance(cell, (int, float)):
+        return float(cell)
+    if isinstance(cell, str) and _FIGURE_TEXT.match(cell):
+        value = _number(re.sub(r"(?i)₹|rs\.?|inr|[()\s]", "", cell))
+        return -value if value is not None and "(" in cell else value
+    return None
+
+
+def _as_figures(rows):
+    """A CSV's rows with each cell that is only a number read as that number (a workbook stores them so already)."""
+
+    return [[(_figure(c) if isinstance(c, str) and _FIGURE_TEXT.match(c) else c) for c in row] for row in rows]
+
+
 def removed_still_present(amendments, made):
     """
     Sentences for each record the person removed that a made table still holds as a full row - a row naming it with
@@ -178,7 +203,8 @@ def removed_still_present(amendments, made):
             for reference in removed:
                 if not re.search(r"(?<![\w/-])" + re.escape(reference) + r"(?![\w/-])", text, re.I):
                     continue
-                if _SHOWN_OUT.search(text) or not any(_number(c) not in (None, 0) for c in cells if not isinstance(c, str)):
+                if _SHOWN_OUT.search(text) or not any(_figure(c) not in (None, 0) for c in cells
+                                                      if str(c).strip().lower() != reference.lower()):
                     continue  # shown as taken out, or a mention with no figures
                 out.append(f"{label}: {reference} is still a row (\"{text[:120]}\") though the person removed it")
     return list(dict.fromkeys(out))[:8]
@@ -202,6 +228,8 @@ def removed_residue(amendments, made, documents):
         return []
     out = []
     for path, sheets in _table_files(made):
+        if Path(str(path)).suffix.lower() in {".csv", ".tsv"}:
+            sheets = [(name, _as_figures(rows)) for name, rows in sheets]
         totals = {}
         for name, rows in sheets:
             for (column, kind), value in _column_sums(rows).items():

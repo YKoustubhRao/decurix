@@ -45,6 +45,33 @@ AMOUNT_COLUMN = re.compile(r"\b(?:amount|payable|pay(?:ment)?|paid|net|total|val
 MAX_ROWS = 5000
 
 
+# Words of a name that say what kind of body it is, not which one: "ABC Traders Pvt Ltd" is "ABC Traders".
+_LEGAL_FORM = {"pvt", "private", "ltd", "limited", "llp", "inc", "llc", "co", "company", "corp", "corporation", "the"}
+
+
+def _name_tokens(text):
+    """A party's name as whole lower-case words, its legal form ("Pvt Ltd", "M/s") left out."""
+
+    text = re.sub(r"(?i)\bm/s\b\.?", " ", str(text or ""))
+    return [w for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in _LEGAL_FORM]
+
+
+def names_payee(payee, row):
+    """Whether a record's row (its cells joined by " | ") names the payee: the payee's whole words, in order, are the
+    words of one of its cells or a run of them - never a part of a word. Found in review (2026-11-02): matched as a
+    substring, "Ram" was on record wherever "Ramesh" was, and another party's account passed for the payee's."""
+
+    wanted = _name_tokens(payee)
+    if not wanted:
+        return False
+    n = len(wanted)
+    for cell in str(row or "").split(" | "):
+        words = _name_tokens(cell)
+        if any(words[i:i + n] == wanted for i in range(len(words) - n + 1)):
+            return True
+    return False
+
+
 def _identifiers(text, column=""):
     """Account-like identifiers in a cell: digit runs of 9-18 digits, IFSC, IBAN, SWIFT/BIC (in such a column), UPI."""
 
@@ -217,11 +244,34 @@ def mismatches(request, made, found=None):
     """
     Sentences for each payment a produced file makes to an identifier that is not on record for its payee - loudly, in
     plain words. [] when no produced file holds payments, or the inputs hold no master with such identifiers (nothing
-    to check against: decided only where it is precise). A payment to details from a message the request gives as
+    to check against: decided only where it is precise - and said, as not checked, by unchecked). A payment to details
+    from a message the request gives as
     their source, for a payee no record holds an account for, is not here: it is message_payments', for approval.
     """
 
     return _payment_findings(request, made, found)[0]
+
+
+def unchecked(request, made, found=None):
+    """
+    Sentences saying a produced file's payments could not be checked: it pays to bank details, and the inputs hold no
+    record of payees' accounts (a master) to check them against. [] when no produced file holds payments or a master
+    is there (mismatches then decides). Found in review (2026-11-02): with no master nothing was checked and nothing was
+    said, so a payment run to any account read as checked. A payee no record confirms is "not checked", never passed.
+    """
+
+    files = [p for p in made if Path(str(p)).suffix.lower() in RECORD_KINDS]
+    rows = [(path, r) for path in files for r in _payment_rows(path)]
+    if not rows:
+        return []
+    records, _messages = found if found is not None else inputs(request, made)
+    if any(record_identifiers(record) for record in records):
+        return []
+    names = list(dict.fromkeys(payee or "a payee" for _, (payee, _i, _w) in rows))
+    where = ", ".join(dict.fromkeys(Path(str(path)).name for path, _ in rows))
+    return [f"PAYEES NOT CHECKED: {where} pays {', '.join(names[:6])}{' and others' if len(names) > 6 else ''} to bank "
+            "details, and no record the request gave (a vendor, employee or party master with their accounts) holds "
+            "an account to check them against - where this money goes is not confirmed."]
 
 
 def message_payments(request, made, found=None):
@@ -254,14 +304,15 @@ def _payment_findings(request, made, found=None):
     def recorded_for(payee):
         """The identifiers the records hold for a payee, and the record file they are in."""
         found = [(ident, name) for ident, places in on_record.items() for name, row in places
-                 if payee and payee.lower() in row.lower()]
+                 if payee and names_payee(payee, row)]
         return sorted({i for i, _ in found}), sorted({n for _, n in found})
 
     wrong = {}
     for path in files:
         for payee, ident, where in _payment_rows(path):
+            # The identifier exactly as on record (a dict key: never a part of one), for this payee by name.
             places = on_record.get(ident, [])
-            if places and (not payee or any(payee.lower() in row.lower() for _, row in places)):
+            if places and (not payee or any(names_payee(payee, row) for _, row in places)):
                 continue
             key = (where, payee)
             entry = wrong.setdefault(key, {"idents": [], "message": "", "owner": ""})
@@ -326,7 +377,7 @@ def _suspicious(found):
         domain = sender.split("@", 1)[1]
         text = " ".join([display or "", body or ""]).lower()
         for party, known in domains.items():
-            if party and party in text and domain not in known:
+            if party and names_payee(party, text) and domain not in known:
                 out.append((message, subject,
                             f"The message \"{subject}\" says it is from {party.title()}, but it comes from {domain}; the "
                             f"record has {', '.join(sorted(known))} for them - treat it as suspicious and use the details "
@@ -353,7 +404,7 @@ def payments_summary(request, made, found=None):
     in_messages = _message_identifiers(messages)
     grouped = {}
     for payee, ident, _ in rows:
-        if ident in on_record and (not payee or any(payee.lower() in t.lower() for t in on_record[ident][1])):
+        if ident in on_record and (not payee or any(names_payee(payee, t) for t in on_record[ident][1])):
             source = f"from {on_record[ident][0]}"
         elif ident in in_messages:
             source = f"NOT ON RECORD - from the message \"{in_messages[ident]}\""

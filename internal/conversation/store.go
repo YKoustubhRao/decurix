@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/YKoustubhRao/decurix/internal/withhold"
 	"log"
 	"sync"
 	"time"
@@ -235,6 +236,8 @@ func (t *thread) touch() {
 // new turn: the agent is now considered busy, and the steps it reports from
 // here on belong to this turn.
 func (s *Store) AppendUserRequest(desktopID, taskID, content string) Entry {
+	// The chat keeps the request with any secret it holds withheld (withhold.Text); the desktop was sent it as written.
+	content = withhold.Text(content)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

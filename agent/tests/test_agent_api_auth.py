@@ -62,11 +62,16 @@ class RefusalTest(unittest.TestCase):
         self.assertEqual(refusal("POST", ("request",), Content_Length="9", **good)[0], 415, "a body that says nothing")
         self.assertIsNone(refusal("POST", ("request",), Content_Type="application/json; charset=utf-8",
                                   Content_Length="9", **good))
-        self.assertIsNone(refusal("POST", ("ticket", "end"), **good), "the control plane's body-less writes")
+        self.assertIsNone(refusal("POST", ("ticket", "end"), Content_Type="application/json", **good),
+                          "the control plane's body-less writes say JSON too")
+        self.assertEqual(refusal("POST", ("ticket", "end"), **good)[0], 415, "a write that says nothing")
 
-    def test_a_desktop_without_a_token_still_refuses_pages_and_non_json(self):
-        self.assertIsNone(refusal(token=""))
-        self.assertIsNone(refusal("POST", ("request",), token="", Content_Type="application/json", Content_Length="9"))
+    def test_a_desktop_without_a_token_serves_nothing_but_health(self):
+        # Fails closed: made without a token, it would take a person's replies from anything on the network.
+        self.assertEqual(refusal(token="")[0], 401)
+        self.assertEqual(refusal("POST", ("request",), token="", Content_Type="application/json",
+                                 Content_Length="9")[0], 401)
+        self.assertIsNone(refusal("GET", http_api.HEALTH, token=""))
         self.assertEqual(refusal("POST", ("request",), token="", Content_Type="text/plain", Content_Length="9")[0], 415)
         self.assertEqual(refusal("POST", ("request",), token="", Origin="http://a.example",
                                  Content_Type="application/json", Content_Length="9")[0], 403)
@@ -77,7 +82,7 @@ class RefusalTest(unittest.TestCase):
             self.assertEqual(http_api.refusal("GET", ["skills"], {})[0], 401)
         with mock.patch.dict(os.environ, {config.AGENT_TOKEN_ENV: ""}):
             self.assertEqual(config.agent_auth_headers(), {})
-            self.assertIsNone(http_api.refusal("GET", ["skills"], {}))
+            self.assertEqual(http_api.refusal("GET", ["skills"], {})[0], 401)
 
 
 class ServerTest(unittest.TestCase):
@@ -167,15 +172,44 @@ class ReplyNamesItsQuestionTest(test_watcher_restart.Base):
         state.current_task = "pay the invoice"
         self.addCleanup(setattr, state, "last_query_kind", getattr(state, "last_query_kind", ""))
         state.last_query_kind = "approval"
+        self.addCleanup(setattr, state, "last_query_text", getattr(state, "last_query_text", ""))
+        state.last_query_text = "Click Pay for invoice 1188?"
         path = self.command_dir / f"20261102_101500_ab12cd34.{TASK}.txt"
         path.write_text("yes", encoding="utf-8")
-        with mock.patch.object(watchers.approval, "note_reply") as noted:
+        asked = []
+        with mock.patch.object(watchers.approval, "note_reply") as noted, \
+                mock.patch.object(watchers.long_task, "_ask_again", lambda text, kind: asked.append((text, kind))):
             watchers.answer_waiting(path, "yes")
         noted.assert_not_called()
         watchers.approval.resolve_reply.assert_not_called()
         self.assertEqual(FakeThread.started, [], "the engine is not handed it")
         self.assertTrue(state.waiting_for_query, "the question stays open")
         self.assertFalse(path.exists(), "it is not read again")
+        # Recheck 2026-11-02: never dropped in silence - the person is told, and the question is asked again.
+        self.assertEqual(len(asked), 1)
+        self.assertIn("not taken it as the answer - nothing was approved", asked[0][0])
+        self.assertIn('"yes"', asked[0][0])
+        self.assertIn("Click Pay for invoice 1188?", asked[0][0])
+        self.assertEqual(asked[0][1], "approval")
+        self.assertEqual(state.last_query_text, "Click Pay for invoice 1188?", "the reply is read against the question")
+
+    def test_an_answer_a_long_request_read_from_a_message_that_is_not_the_reply_is_not_lost(self):
+        # long_task._take_message hands over the answer it read, with the file already renamed (already_marked).
+        state.waiting_for_query = True
+        state.current_task_id = TASK
+        state.current_task = "close the month"
+        self.addCleanup(setattr, state, "last_query_kind", getattr(state, "last_query_kind", ""))
+        self.addCleanup(setattr, state, "last_query_text", getattr(state, "last_query_text", ""))
+        state.last_query_kind, state.last_query_text = "query", "Which bank account should the refunds go to?"
+        path = self.command_dir / f"20261102_101500_ab12cd34.{TASK}.txt.done"
+        asked = []
+        with mock.patch.object(watchers.long_task, "_ask_again", lambda text, kind: asked.append((text, kind))):
+            watchers.answer_waiting(path, "use the HDFC current account", already_marked=True)
+        self.assertEqual(FakeThread.started, [], "the engine is not handed it")
+        self.assertEqual(len(asked), 1)
+        self.assertIn("use the HDFC current account", asked[0][0])
+        self.assertIn("Which bank account should the refunds go to?", asked[0][0])
+        self.assertNotIn("nothing was approved", asked[0][0])
 
     def test_the_reply_itself_still_settles_it(self):
         state.waiting_for_query = True

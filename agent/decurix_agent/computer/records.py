@@ -136,6 +136,13 @@ def stands_in(value, text):
     key = _text_key(value)
     if len(key) < 2:
         return False
+    if re.search(r"\d", key):
+        # An identifier ("INV-1234", "B9", "12 MG Road") stands in the text only as a whole token: its letters and
+        # digits in order (punctuation and spaces between them aside), with no letter or digit glued on at either end.
+        # Recheck (2026-11-02): "INV-1234" was found in "Invoice INV-12345" - another document's number counted as
+        # read back.
+        pattern = r"(?<![a-z0-9])" + r"[^a-z0-9]*".join(re.escape(c) for c in key) + r"(?![a-z0-9])"
+        return bool(re.search(pattern, str(text).lower()))
     return key in _text_key(text)
 
 
@@ -241,16 +248,32 @@ def _save(task_id, records):
     tmp.replace(_path(task_id))
 
 
-def _key_number_stands_in(key, text):
-    """Whether a record key's number - after a letter prefix ("B9", "INV-1234") - stands in the text as a number of its
-    own. Only for finding which declared record a form is (a form shows the voucher's number, not the worker's key);
-    never for whether a value is the document's (stands_in, same_value)."""
+def _key_number_on_form(rec, form):
+    """
+    Whether the form shows a record key's number - after a letter prefix ("B9", "INV-1234") - in the record's own
+    number field. Only for finding which declared record a form is (a form shows the voucher's number, not the
+    worker's key); never for whether a value is the document's (stands_in, same_value).
 
-    m = re.fullmatch(r"\s*[A-Za-z]{1,6}[-/ ]?(\d+)\s*", str(key or ""))
-    if not m:
+    The number counts only in the field that holds it on the record: the one declared field whose intent is the key
+    or its number, found on the form by its label. Any other field showing the same digits ("Qty 9" for record B9) is
+    not the record's number. Recheck (2026-11-02): matched anywhere in the form's text, record B9 was bound to a form
+    whose quantity was 9. When the record has no such field, or more than one, which field holds the number cannot be
+    told, and the number binds nothing.
+    """
+
+    m = re.fullmatch(r"\s*[A-Za-z]{1,6}[-/ ]?(\d+)\s*", str(rec.get("key") or ""))
+    if not m or not form:
         return False
     n = as_number(m.group(1))
-    return n is not None and any(as_number(tok) == n for tok in _NUMBER_TOKEN.findall(text or ""))
+    if n is None:
+        return False
+    own = [label for label, f in (rec.get("fields") or {}).items()
+           if isinstance(f, dict) and f.get("intent") not in (None, "")
+           and (same_value(f["intent"], m.group(1)) or same_value(f["intent"], rec.get("key")))]
+    if len(own) != 1:
+        return False
+    return any(label_matches(own[0], flabel) and as_number(str(fvalue if fvalue is not None else "")) == n
+               for flabel, fvalue in form)
 
 
 def open_record(records, text=None, form=None):
@@ -265,7 +288,7 @@ def open_record(records, text=None, form=None):
     unsaved = [rec for rec in records if not rec.get("saved_at")]
     if text:
         for rec in reversed(unsaved):
-            if stands_in(rec.get("key", ""), text) or _key_number_stands_in(rec.get("key", ""), text):
+            if stands_in(rec.get("key", ""), text) or _key_number_on_form(rec, form):
                 return rec
     if form is not None:
         pairs = [(str(l), str(v if v is not None else "")) for l, v in form]

@@ -111,19 +111,21 @@ class TellingTheEngine(unittest.TestCase):
         self.assertFalse(self.preapproved({"approval": "ask"}))
         self.assertFalse(self.preapproved({"approval": None}))
 
-    def test_thebot_is_sent_the_flag_for_a_new_request_never_for_a_reply(self):
+    def test_thebot_is_never_sent_an_approval_in_the_body(self):
+        # A yes is one action's (CLAUDE.md): soul takes no approval from a request body, so none is sent - not for a
+        # preapproved request, not for a reply (review 2026-11-02 removed the field).
         sent = []
 
         def post(url, body, *a, **k):
             sent.append(body)
             return {}
 
-        for pre, reply, want in ((True, False, True), (True, True, False), (False, False, False)):
+        self.addCleanup(setattr, state, "request_preapproved", False)
+        for pre, reply in ((True, False), (True, True), (False, False)):
             state.request_preapproved = pre
             with mock.patch.object(thebot_harness, "_post_json", post):
                 thebot_harness._run_thebot("do it", reply=reply)
-            self.assertEqual(sent[-1]["approved"], want, (pre, reply))
-        state.request_preapproved = False
+            self.assertNotIn("approved", sent[-1], (pre, reply))
 
 
 if __name__ == "__main__":

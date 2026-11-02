@@ -53,9 +53,29 @@ type Harness struct {
 	MaxTotalAttempts int
 	Timeout          time.Duration
 
+	// Approve reports whether the person approved this exact command - the
+	// operator's single-use grant (RunContext.IsApproved). A fix command a
+	// web page or a model's reply proposed (Diagnosis.IsProposal) runs only
+	// when it says yes; nil approves nothing, so such a fix pauses the build
+	// (BuildReport.NeedsApproval) instead of running.
+	Approve func(command string) bool
+	// Proposed are the proposals the person was already asked about (the
+	// paused step's checkpoint), reused for the same failure when the build
+	// re-runs, so the yes is for the command they saw.
+	Proposed []Diagnosis
+	// Declined are proposed commands the person did not approve: never run,
+	// and not asked about again in this run.
+	Declined []string
+
 	// ---- run state ----
-	attempts int
-	deadline time.Time
+	// pending is the first proposal still waiting for approval; once set the
+	// build stops (budgetLeft) and the report carries it.
+	pending *Diagnosis
+	// unconfirmed is a researched fix that ran but whose failing check has
+	// not been re-run yet: remembered only if that check then passes.
+	unconfirmed *Diagnosis
+	attempts    int
+	deadline    time.Time
 	// fixesApplied records every real environment fix that worked, so the
 	// final report can say what it actually had to do to get the build
 	// running (install uv, create a venv, add a package).
@@ -88,6 +108,9 @@ type BuildReport struct {
 	// Incomplete marks a build that ran out of budget rather than finishing.
 	Incomplete bool
 	Failures   []string
+	// NeedsApproval is the proposed fix the build stopped at: a command a
+	// web page or a model put forward, not run because nobody approved it.
+	NeedsApproval *Diagnosis
 }
 
 // BuiltFile is one real file that really exists on disk.
@@ -110,6 +133,10 @@ func (h *Harness) logf(format string, args ...any) {
 // single place both limits are enforced so no loop can accidentally skip
 // one of them.
 func (h *Harness) budgetLeft() bool {
+	if h.pending != nil {
+		// A fix waits for the person's yes: nothing more is spent until they answer.
+		return false
+	}
 	if h.attempts >= h.MaxTotalAttempts {
 		return false
 	}
@@ -229,9 +256,16 @@ func (h *Harness) Run(ctx context.Context, request, knownContext string) (*Build
 	// --------------------------------------------------------- integration
 	h.runIntegrationPhase(runCtx, runner, design, tc, env, built, report)
 
+	// A researched fix whose check never re-ran is not known to work.
+	h.settleLearning(runCtx, false)
 	report.Attempts = h.attempts
 	report.FixesApplied = h.fixesApplied
 	report.LearnedFixes = h.learnedFixes
+	if h.pending != nil {
+		p := *h.pending
+		report.NeedsApproval = &p
+		report.Incomplete = true
+	}
 
 	h.announceResult(report)
 	h.rememberBuild(runCtx, request, design, report)
@@ -429,6 +463,9 @@ func (r *BuildReport) Summary() string {
 	}
 	if r.Incomplete {
 		status = "⚠ Incomplete (ran out of build budget)"
+	}
+	if r.NeedsApproval != nil {
+		status = "⏸ Paused: a proposed fix needs your approval (`" + r.NeedsApproval.Action() + "`)"
 	}
 
 	fmt.Fprintf(&b, "%s: %s (%s %s)\n\n", status, r.Design.ProjectName, r.Design.Language, r.Design.Kind)

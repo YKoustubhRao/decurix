@@ -276,7 +276,7 @@ func createHostCmd(ctx context.Context, display, cmdStr string, args ...string) 
 	if len(args) > 0 {
 		var quoted []string
 		for _, a := range args {
-			quoted = append(quoted, fmt.Sprintf("%q", a))
+			quoted = append(quoted, shellQuote(a))
 		}
 		fullCmd = fullCmd + " " + strings.Join(quoted, " ")
 	}
@@ -374,12 +374,14 @@ func (s *Server) hostBridgeOpenHandler(w http.ResponseWriter, r *http.Request) {
 	case runtime.GOOS == "windows":
 		// The URL protocol handler, not cmd.exe's start: no shell parses the link, so the & of a query string stays one.
 		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
+	// Never cmd.exe, and never Go's %q (which is not shell quoting): the link is one shell-quoted argument of the URL
+	// handler, so neither bash nor cmd.exe can read an & or a % in it as more than text (review 2026-11-02).
 	case runtime.GOOS == "darwin":
-		cmd = createHostCmd(nil, "", fmt.Sprintf("open %q", target))
+		cmd = createHostCmd(nil, "", "open "+shellQuote(target))
 	case desktop.IsWSLOrWindows():
-		cmd = createHostCmd(nil, "", fmt.Sprintf(`cmd.exe /c start "" %q`, target))
+		cmd = createHostCmd(nil, "", "rundll32.exe url.dll,FileProtocolHandler "+shellQuote(target))
 	default:
-		cmd = createHostCmd(nil, "", fmt.Sprintf("xdg-open %q", target))
+		cmd = createHostCmd(nil, "", "xdg-open "+shellQuote(target))
 	}
 
 	if err := startAndWatch(cmd, hostOpenWait); err != nil {

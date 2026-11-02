@@ -93,14 +93,13 @@ func runShell(ctx context.Context, dir, command string, timeout time.Duration, e
 		res.Output += "\n... [output continued; " + strconv.Itoa(out.dropped) + " more bytes not captured]"
 	}
 
+	// The command itself finished with 0; a background child it started is
+	// what still held the pipe. Its own exit is the real result (hostshell.Exited).
+	err = hostshell.Exited(cmd, err)
 	var exitErr *exec.ExitError
 	switch {
 	case err == nil:
 		res.ExitCode = 0
-	case errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil:
-		// The command itself finished; a background child it started is
-		// what still held the pipe. Its own exit code is the real result.
-		res.ExitCode = cmd.ProcessState.ExitCode()
 	case errors.As(err, &exitErr):
 		res.ExitCode = exitErr.ExitCode()
 	default:

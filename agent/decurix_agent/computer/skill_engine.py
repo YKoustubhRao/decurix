@@ -218,13 +218,36 @@ def run(skill, params=None, start=1, source_files=None):
     # renamed is found, and anything less halts as it always did. Nothing is
     # kept from it: a skill is rewritten by a person's correction or by a run
     # skill_task did, never by an engine's.
+    # A run of it this request that stopped part way did the steps before its stop: it carries on from there, never
+    # from an earlier step (review 2026-11-02: only a run that reached its end was noted, so a run halted after its
+    # save could be started again from step 1 and save a second record).
+    stopped = _stopped_at(skill["name"])
+    if stopped:
+        at, how = stopped["at"], stopped.get("outcome")
+        if how == replay.RECONCILIATION_REQUIRED and start <= at:
+            return _refusal(skill, f"an earlier run of it for this request did step {at} and its result never "
+                                   "appeared - it may or may not have taken effect, so no step up to it is done again. "
+                                   "Look at the screen (gui observe) and finish or correct the work by hand, or ask "
+                                   "the human")
+        if start < at:
+            return _refusal(skill, f"an earlier run of it for this request did steps up to {at - 1} and stopped at "
+                                   f"step {at}; running it from step {start} would do steps {start}-{at - 1} a second "
+                                   f"time. Put right what stopped it, then carry on with gui do {skill['name']} "
+                                   f"--from {at} (with the same --param values)")
+
     program, expanded = skills.expand(skill, values)
     result = replay.run(program, params=expanded, start=start,
                         ladder=escalation.Ladder(ask_model=None, goal=skill.get("title") or "", total=len(program["steps"])))
 
     if result["outcome"] in replay.SUCCESS:
-        skills.note_run(skill["name"])
+        # Ran to its end (seen or not): it is never run again for this request. Only a run whose every result was seen
+        # counts as a good run of the skill.
+        if result["outcome"] == replay.VERIFIED:
+            skills.note_run(skill["name"])
         _note_replayed(skill["name"], len(program["steps"]))
+    elif result["outcome"] != replay.HALTED_BEFORE_EFFECT or start > 1:
+        at = result.get("resume_from") or result.get("step") or start
+        _note_stopped(skill["name"], int(at), result["outcome"])
 
     return result
 
@@ -244,14 +267,35 @@ def _replayed_to(name):
         return 0
 
 
-def _note_replayed(name, last):
+def _stopped_at(name):
+    """Where a run of `name` for this task stopped part way: {"at": the step it carries on from, "outcome"}, or None."""
+
+    path = _replayed_path()
+    try:
+        kept = json.loads(path.read_text(encoding="utf-8")).get(f"{name}#stopped") if path else None
+        return {"at": int(kept["at"]), "outcome": kept.get("outcome")} if kept else None
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def _note_stopped(name, at, outcome):
+    """Keep where a run of `name` stopped part way, so the next run carries on from there (or refuses)."""
+
+    _note_replayed(name, None, stopped={"at": at, "outcome": outcome})
+
+
+def _note_replayed(name, last, stopped=None):
     path = _replayed_path()
     if path is None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         done = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        done[name] = last
+        if stopped is not None:
+            done[f"{name}#stopped"] = stopped
+        else:
+            done[name] = last
+            done.pop(f"{name}#stopped", None)
         path.write_text(json.dumps(done), encoding="utf-8")
         for old in sorted(REPLAYED_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime)[:-KEEP_REPLAYED]:
             old.unlink()

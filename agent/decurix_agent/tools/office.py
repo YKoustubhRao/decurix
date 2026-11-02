@@ -1718,6 +1718,41 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
                       + (("; typed figures left empty to fill: " + ", ".join(cleared[:12])
                           + (" ..." if len(cleared) > 12 else "")) if cleared else ""))
 
+    # The guards below read each cell as the edits will find it. After rows were put in, that is not the file as saved:
+    # found in review (2026-11-02), an edit emptying the TOTAL label that insert_rows had moved down read the saved
+    # file's (empty) cell at that address, and the label went without a word. So they read the workbook as it is now.
+    probe = src
+    if inserted and edits:
+        handle, name = tempfile.mkstemp(suffix=src.suffix or ".xlsx", prefix="office-probe-")
+        os.close(handle)
+        probe = Path(name)
+        _write_zip(probe, order, entries)
+    try:
+        by_sheet, labels, replaced = _guard_edits(probe, edits, sheet_files, copy_rows, clear_text)
+    finally:
+        if probe != src:
+            _HELD.clear()
+            try:
+                probe.unlink()
+            except OSError:
+                pass
+
+    for sheet, cell_edits in by_sheet.items():
+        name = sheet_files[sheet]
+        xml = entries[name].decode("utf-8")
+        for cell, value in cell_edits:
+            xml = _set_cell(xml, cell, value)
+            changed.append(f"{sheet}!{cell}")
+        entries[name] = _fix_dimension(xml).encode("utf-8")
+
+    return _finish_update(src, dst, entries, order, replace_refs, added, inserted, copied, changed, replaced)
+
+
+def _guard_edits(src, edits, sheet_files, copy_rows, clear_text):
+    """The edits by sheet [(cell, value)], after the guards that read `src` - the workbook as the edits will find it:
+    a date cell takes a date, text is not emptied unless clear_text, a filled cell written over is said. Returns
+    (by_sheet, labels, replaced); raises OfficeError when an edit is refused."""
+
     by_sheet = {}
     labels, replaced = [], []
     for e in edits or []:
@@ -1757,14 +1792,12 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
                           "would empty them: " + ", ".join(labels[:10]) + (" ..." if len(labels) > 10 else "")
                           + ". A block made like the earlier ones keeps their labels; empty only the figures. To clear "
                           "text on purpose, put \"clear_text\": true in the update.")
+    return by_sheet, labels, replaced
 
-    for sheet, cell_edits in by_sheet.items():
-        name = sheet_files[sheet]
-        xml = entries[name].decode("utf-8")
-        for cell, value in cell_edits:
-            xml = _set_cell(xml, cell, value)
-            changed.append(f"{sheet}!{cell}")
-        entries[name] = _fix_dimension(xml).encode("utf-8")
+
+def _finish_update(src, dst, entries, order, replace_refs, added, inserted, copied, changed, replaced):
+    """The rest of update_workbook once the cells are set: ranges rewritten, recalculation on open, the file written
+    and its results stored. Returns the update's sentence."""
 
     swaps = 0
     for r in replace_refs or []:

@@ -814,3 +814,8 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): Shell edits on this Windows host
 - [part-5.md](gotchas/part-5.md): The agent's own ports took a person's reply from anyone
 - [part-5.md](gotchas/part-5.md): TheBot verified what it had not seen, and a yes paid twice
+- [part-5.md](gotchas/part-5.md): The recheck of the morning's fixes found the fixes' own holes
+- [part-5.md](gotchas/part-5.md): Fixes for identifiers and PINs widened into new leaks
+- [part-5.md](gotchas/part-5.md): A small marked figure hid a large one in an approval policy
+- [part-5.md](gotchas/part-5.md): A person's typed password was kept in the task records and the chat
+- [part-5.md](gotchas/part-5.md): On Windows, `filepath.IsAbs("/etc/passwd")` is false

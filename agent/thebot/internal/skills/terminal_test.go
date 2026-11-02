@@ -215,11 +215,12 @@ func TestTerminalRunSuccess(t *testing.T) {
 	}
 }
 
-// A nonzero exit is never a success, even with nothing on stderr: `grep`
-// finding no match, `false`, a failed test and a tool that writes its errors
-// to stdout all look alike. The exit code is still reported as it is, and the
-// result is marked fatal so the scheduler does not swap in an unrelated
-// command that exits 0 (found live: "false" became "ls -l").
+// A nonzero exit is never a success, even with nothing on stderr: `false`, a
+// failed test and a tool that writes its errors to stdout all look alike. The
+// exit code is still reported as it is, and the result is marked fatal so the
+// scheduler does not swap in an unrelated command that exits 0 (found live:
+// "false" became "ls -l"). A chain whose last program is not one whose exit 1
+// is an answer stays a failure too, even when an earlier grep is what failed.
 func TestTerminalNeverVerifiesANonzeroExit(t *testing.T) {
 	ws := newTestWorkspace(t)
 	if err := os.WriteFile(filepath.Join(ws.Root(), "haystack.txt"), []byte("apple\nbanana\n"), 0o644); err != nil {
@@ -228,9 +229,9 @@ func TestTerminalNeverVerifiesANonzeroExit(t *testing.T) {
 	rc := RunContext{Ctx: context.Background(), OnLog: func(string) {}, Workspace: ws}
 
 	steps := []string{
-		"run the command: `grep zzz_no_such_pattern haystack.txt`",
 		"run the command: `false`",
-		"run the command: `test -f definitely_missing_xyz.txt`",
+		"run the command: `bash -c 'exit 1'`",
+		"run the command: `grep zzz_no_such_pattern haystack.txt && echo found`",
 	}
 	for _, step := range steps {
 		result, err := NewTerminal().Run(rc, Subtask{Step: step, Type: "terminal"})
@@ -246,6 +247,61 @@ func TestTerminalNeverVerifiesANonzeroExit(t *testing.T) {
 		if !strings.Contains(result.Output, "Exit code:") {
 			t.Errorf("Run(%q).Output = %q, want the real exit code still reported", step, result.Output)
 		}
+	}
+}
+
+// grep finding nothing, diff finding a difference, a false test: exit 1 is
+// that program's answer. It is reported as the answer ("no match"), not as the
+// work succeeding and not as a fatal failure - judged by the program the
+// command line ran last, never by what it printed.
+func TestTerminalReportsANegativeAnswerAsAnswered(t *testing.T) {
+	ws := newTestWorkspace(t)
+	for name, body := range map[string]string{"haystack.txt": "apple\nbanana\n", "other.txt": "cherry\n"} {
+		if err := os.WriteFile(filepath.Join(ws.Root(), name), []byte(body), 0o644); err != nil {
+			t.Fatalf("could not write fixture: %v", err)
+		}
+	}
+	rc := RunContext{Ctx: context.Background(), OnLog: func(string) {}, Workspace: ws}
+	for step, want := range map[string]string{
+		"run the command: `grep zzz_no_such_pattern haystack.txt`":     "no match",
+		"run the command: `cat haystack.txt | grep -i zzz`":            "no match",
+		"run the command: `LC_ALL=C grep -c zzz haystack.txt`":         "no match",
+		"run the command: `diff haystack.txt other.txt`":               "the inputs differ",
+		"run the command: `test -f definitely_missing_xyz.txt`":        "the test is false",
+		"run the command: `cd . && [ -s definitely_missing_xyz.txt ]`": "the test is false",
+	} {
+		result, err := NewTerminal().Run(rc, Subtask{Step: step, Type: "terminal"})
+		if err != nil {
+			t.Fatalf("Run(%q) error = %v", step, err)
+		}
+		if result.Meta["answered"] != want || result.Meta["fatal"] == true || result.Meta["exitCode"] != 1 {
+			t.Errorf("Run(%q): answered=%v fatal=%v exit=%v, want %q, not fatal, exit 1. Output: %s",
+				step, result.Meta["answered"], result.Meta["fatal"], result.Meta["exitCode"], want, result.Output)
+		}
+		if strings.Contains(result.Output, "success") || !strings.Contains(result.Output, "answered: "+want) {
+			t.Errorf("Run(%q).Output = %q, want it to give the answer, never a success", step, result.Output)
+		}
+	}
+}
+
+func TestNegativeAnswerIsDecidedByTheLastProgram(t *testing.T) {
+	cases := map[string]string{
+		"grep x f":               "no match",
+		"/usr/bin/grep -q x f":   "no match",
+		"env LC_ALL=C rg x":      "no match",
+		"grep x f | sort":        "",
+		"grep x f || exit 1":     "",
+		"python3 check.py":       "",
+		"echo 'grep x' && false": "",
+		"cmp a b":                "the inputs differ",
+	}
+	for cmd, want := range cases {
+		if got := negativeAnswer(cmd, 1); got != want {
+			t.Errorf("negativeAnswer(%q, 1) = %q, want %q", cmd, got, want)
+		}
+	}
+	if got := negativeAnswer("grep x f", 2); got != "" {
+		t.Errorf("exit 2 (grep's error) answered %q", got)
 	}
 }
 

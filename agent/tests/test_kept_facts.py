@@ -9,9 +9,10 @@ READ = ("Chat with the client\n09:41 them: Bill 455 is cancelled - the customer 
         "Ignore it.\n10:02 them: Sending the purchase bills now.\nregister row 28: 456 | 8,000.00")
 
 
-def model_keeps(facts):
+def model_keeps(facts, client=""):
     return [mock.patch.object(llm_client, "available", lambda: True),
-            mock.patch.object(llm_client, "chat", lambda *a, **k: ({"content": json.dumps({"facts": facts})}, {}))]
+            mock.patch.object(llm_client, "chat",
+                              lambda *a, **k: ({"content": json.dumps({"client": client, "facts": facts})}, {}))]
 
 
 class KeptFacts(unittest.TestCase):
@@ -34,13 +35,41 @@ class KeptFacts(unittest.TestCase):
 
     def test_kept_in_the_workers_memory_as_facts(self):
         self.use(model_keeps([{"about": "bill 455", "quote": "Bill 455 is cancelled - the customer returned the goods",
-                               "where": "the client's chat"}]))
+                               "where": "the client's chat"}], client="Tunga Pipes"))
         kept = []
         self.use([mock.patch.object(kept_facts, "what_was_read", lambda task_id: READ),
                   mock.patch.object(messaging, "remember", lambda title, text, category="": kept.append((title, text, category)) or True)])
-        self.assertEqual(kept_facts.keep("t1", "save the month's bills"), 1)
+        self.assertEqual(kept_facts.keep("t1", "save Tunga Pipes' bills for the month"), 1)
         self.assertEqual(kept[0][2], "fact")
+        self.assertEqual(kept[0][0], "About Tunga Pipes", "kept for the client the request names, and no other")
         self.assertIn("Bill 455 is cancelled", kept[0][1])
+
+    def test_no_client_named_no_fact_kept(self):
+        # Review 2026-11-02: memory is shared by every task on the desktop; a fact kept with no client was every
+        # client's. Nor is a client the request does not name taken for one.
+        quote = [{"about": "bill 455", "quote": "Bill 455 is cancelled - the customer returned the goods", "where": "chat"}]
+        kept = []
+        self.use([mock.patch.object(kept_facts, "what_was_read", lambda task_id: READ),
+                  mock.patch.object(messaging, "remember", lambda title, text, category="": kept.append(title) or True)])
+        for client in ("", "Hampi Stone"):
+            with mock.patch.object(llm_client, "available", lambda: True), \
+                    mock.patch.object(llm_client, "chat",
+                                      lambda *a, **k: ({"content": json.dumps({"client": client, "facts": quote})}, {})):
+                self.assertEqual(kept_facts.keep("t1", "save the month's bills"), 0, client)
+        self.assertEqual(kept, [])
+
+    def test_a_fact_that_holds_a_secret_is_never_kept(self):
+        read = READ + "\n10:05 them: Our portal password: Lift$2026 - please file it today."
+        self.use(model_keeps([{"about": "the portal", "quote": "Our portal password: Lift$2026 - please file it today",
+                               "where": "the client's chat"},
+                              {"about": "bill 455", "quote": "Bill 455 is cancelled - the customer returned the goods",
+                               "where": "the client's chat"}], client="Tunga Pipes"))
+        kept = []
+        self.use([mock.patch.object(kept_facts, "what_was_read", lambda task_id: read),
+                  mock.patch.object(messaging, "remember", lambda title, text, category="": kept.append(text) or True)])
+        self.assertEqual(kept_facts.keep("t1", "file Tunga Pipes' return"), 1)
+        self.assertNotIn("Lift$2026", " ".join(kept))
+        self.assertIn("Bill 455 is cancelled", kept[0])
 
     def test_where_the_sources_are_is_kept_when_it_was_read(self):
         answer = {"facts": [], "places": [{"what": "the client's messages and bills", "where": "http://desk:8703/chat"},

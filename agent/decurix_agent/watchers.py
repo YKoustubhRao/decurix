@@ -441,6 +441,41 @@ def _pass():
                 _release_slot(content)
 
 
+NOT_THE_REPLY = ("Your message \"{said}\" did not come as the reply to my question, so I have not taken it as the "
+                 "answer{granted}. The question is still open - please answer it by replying to it:\n\n{asked}")
+
+
+def _not_the_reply(content):
+    """
+    Tell the person a message of theirs was not taken as the answer to the open question (it did not come as its
+    reply), and put that question to them again, unchanged, so the answer they send comes as its reply. Called off the
+    command watcher's thread (a long request's message thread). Never raises.
+    """
+
+    said = " ".join(str(content or "").split())
+    said = said[:120] + ("..." if len(said) > 120 else "")
+    try:
+        from decurix_agent.computer import privacy
+        said = privacy.withhold_known(said)
+    except Exception:  # noqa: BLE001 - the quote is withheld whole rather than risked
+        said = "[withheld]"
+    asked, kind = state.last_query_text or "", state.last_query_kind or "query"
+    try:
+        if state.waiting_for_query and asked:
+            long_task._ask_again(NOT_THE_REPLY.format(said=said, asked=asked,
+                                                      granted=" - nothing was approved" if kind == "approval" else ""),
+                                 kind)
+            # What reads the reply (the approval gate, lessons) reads the question itself, not this note around it.
+            state.last_query_text, state.last_query_kind = asked, kind
+        else:
+            progress.emit(f"Your message \"{said}\" did not come as the reply to a question, so it was not taken as "
+                          "an answer.")
+    except Exception as exc:  # noqa: BLE001
+        log(f"Could not tell the person their message was not taken as the answer: {exc}")
+        progress.emit(f"Your message \"{said}\" was not taken as the answer to my question - it is still open; "
+                      "please answer it by replying to it.")
+
+
 def answer_waiting(path, content, already_marked=False):
     """
     A request that arrived while the agent waits on a question: its reply.
@@ -454,11 +489,15 @@ def answer_waiting(path, content, already_marked=False):
     # answers it. Anything else that reached this desktop (another desktop, a
     # web page, a message a long request read as an answer without that name)
     # answers nothing and grants nothing; the question stays open (review
-    # 2026-11-02).
+    # 2026-11-02). It is never dropped in silence either: the person is told it
+    # was not taken as the answer, and the open question is put to them again
+    # so their reply comes as its reply (recheck 2026-11-02: dropped, a long
+    # run waited on an answer the person thought they had given).
     if not is_reply_file(path.name):
         log(f"{path.name} does not name the open question's task - it is not taken as the answer.")
         if not already_marked:
             _mark_handled(path)
+        _not_the_reply(content)
         return
 
     # A reply belongs to the paused task. A desktop whose
@@ -712,25 +751,33 @@ def _guarded(target, task_id):
     handler left "Task already running" for the life of the agent).
     """
 
+    # (Exception only: KeyboardInterrupt and SystemExit end the agent and are never swallowed here - the slot is given
+    # back and they go on.)
+    def release():
+        if task_context.current() in ("", task_id):
+            with state.state_lock:
+                state.current_task = None
+
     def run(content, path):
         try:
             target(content, path)
-        except BaseException as exc:  # noqa: BLE001 - whatever ends the handler, the slot is given back
+        except Exception as exc:  # noqa: BLE001 - a handler's error is reported, never the end of the agent
             try:
                 log(f"The request's handler stopped on an error: {exc!r}\n{traceback.format_exc()}")
                 if state.current_task is not None and task_context.current() in ("", task_id):
                     write_final_reply(f"That stopped on an internal error ({type(exc).__name__}) - it is NOT done. "
                                       "Look at what it left before sending it again.", kind="error", gated=True,
                                       task_id=task_id or None)
-            except BaseException as again:  # noqa: BLE001
+            except Exception as again:  # noqa: BLE001
                 try:
                     log(f"Could not report the handler's error: {again!r}")
-                except BaseException:  # noqa: BLE001
+                except Exception:  # noqa: BLE001
                     pass
             finally:
-                if task_context.current() in ("", task_id):
-                    with state.state_lock:
-                        state.current_task = None
+                release()
+        except BaseException:
+            release()
+            raise
     run.__wrapped__ = target  # (inspect.unwrap(thread target) is the handler chosen for the request)
     return run
 

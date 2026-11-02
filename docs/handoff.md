@@ -28,7 +28,10 @@ Stored in SQLite (`handoffs`, component `handoff`, append-only `Migrate` steps).
 ## How a handoff runs
 
 1. `POST /api/handoffs` from the sending desktop (`desktop_id` in the body, like every agent callback). Validated:
-   one target, a request, at most 40 inputs and 20 files, every file under `/home/headless`, a known sender and
+   one target, a request, at most 40 inputs and 20 files, every file under `/home/headless` (the sending `handoff`
+   command refuses, before anything is sent, a file outside the work folder, the shared folder and `~/Downloads`, any
+   file under a hidden folder such as `~/.claude` or `~/.ssh`, and the worker's own `~/.decurix`:
+   `privacy.file_may_leave`), a known sender and
    receiver, not the sender itself, and not a worker already waiting up the same chain (A -> B -> A would never finish,
    since A is busy waiting on B).
 2. Sending. A named worker is used as named; a role or skill is resolved through `WorkerFinder.Holders` to the first

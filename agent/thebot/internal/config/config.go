@@ -79,9 +79,9 @@ type Config struct {
 	// container (the control plane reaches it from outside the container),
 	// loopback for a native Windows worker.
 	Host string
-	// AgentToken is the desktop's agent token (DECURIX_AGENT_TOKEN): when set,
-	// every API route but the health check needs "Authorization: Bearer <it>".
-	// Never logged.
+	// AgentToken is the desktop's agent token (DECURIX_AGENT_TOKEN): every API
+	// route but the health check needs "Authorization: Bearer <it>", and
+	// without one those routes are refused (fail closed). Never logged.
 	AgentToken string
 	// DoclingScript is the path to scripts/docling_convert.py - a Python
 	// subprocess the Data RAG shells out to for real PDF/DOCX/HTML/image

@@ -84,7 +84,9 @@ var commandRules = []rule{
 		"it publishes a package or image"},
 	{regexp.MustCompile(`(?i)\bgh\s+(pr\s+(create|merge|close)|issue\s+(create|close|comment)|release\s+create|repo\s+(delete|create))\b`),
 		"it acts on GitHub as the user"},
-	{regexp.MustCompile(`(?i)\brm\s+(-[a-z]*\s+)*-[a-z]*r[a-z]*\s+(-[a-z]*\s+)*("|')?(/|~/?|\$HOME/?|/home/?|/home/[^/\s]+/?)("|')?(\s|$)`),
+	// The whole of /, a home or every home, also by a glob of what is in it ("/*", "~/*", "$HOME/.*") or with the
+	// long option (review 2026-11-02: "rm -rf /*" passed).
+	{regexp.MustCompile(`(?i)\brm\s+((-[a-z]*|--[a-z-]+)\s+)*(-[a-z]*r[a-z]*|--recursive)\s+((-[a-z]*|--[a-z-]+)\s+)*("|')?(/|~/?|\$HOME/?|\$\{HOME\}/?|/home/?|/home/[^/\s]+/?)("|')?(\.?\*)?(\s|$)`),
 		"it recursively deletes a home or root directory"},
 	{regexp.MustCompile(`(?i)\bmkfs(\.\w+)?\b|\bdd\b[^|;&]*\bof=/dev/|\bwipefs\b|\bshred\b`),
 		"it can destroy a disk or file permanently"},
@@ -97,10 +99,26 @@ var commandRules = []rule{
 		"it is a fork bomb"},
 	{regexp.MustCompile(`(?i)\bchmod\s+(-[a-z]*\s+)*-[a-z]*R[a-z]*\s+[0-7]*7[0-7]*7\s+/(\s|$)|\bchown\s+(-[a-z]*\s+)*-[a-z]*R[a-z]*\s+\S+\s+/(\s|$)`),
 		"it changes permissions on the whole filesystem"},
-	{regexp.MustCompile(`(?i)\bcurl\b[^|;&]*(\s-X\s*(POST|PUT|PATCH|DELETE)\b|\s(-d|--data(-\w+)?|-F|--form|-T|--upload-file)\s)`),
+	// Any way curl is told to send: a method, a body (also --json, -d@file, --data=...), a form, an upload, and short
+	// flags run together (-sd, -XPOST). Review 2026-11-02: only some spellings were caught.
+	{regexp.MustCompile(`(?i)\bcurl\b[^|;&]*(\s(-X\s*|--request[\s=]+)['"]?(POST|PUT|PATCH|DELETE)\b|\s--(data|data-\w+|json|form|form-string|upload-file)\b|\s-[a-z]*[dFT]([\s=@'"]|$))`),
 		"it sends data to a web service"},
-	{regexp.MustCompile(`(?i)\bwget\b[^|;&]*\s--(post-data|post-file|method=(POST|PUT|PATCH|DELETE))`),
+	{regexp.MustCompile(`(?i)\bwget\b[^|;&]*\s--(post-data|post-file|body-data|body-file|method[\s=]+['"]?(POST|PUT|PATCH|DELETE))`),
 		"it sends data to a web service"},
+}
+
+// indirectRules are matched against the shell's own words (quoted arguments blanked): code that reaches a shell or
+// an interpreter from a pipe, a decoder or a substitution is code the rules above never saw, so it is asked about
+// rather than let through (review 2026-11-02: a here-document piped into bash, and a decoded payload, passed).
+var indirectRules = []rule{
+	{regexp.MustCompile(`(?i)\|\s*(sudo\s+((-\S+|\S+=\S*)\s+)*)?(env\s+((-\S+|\S+=\S*)\s+)*)?(/\S*/)?(ba|z|da|k|c|tc|fi)?sh\b`),
+		"it runs commands piped into a shell, which cannot be checked before they run"},
+	{regexp.MustCompile(`(?i)\|\s*(sudo\s+)?(/\S*/)?(python[0-9.]*|perl|ruby|node|php)\s+-(\s|$)`),
+		"it runs code piped into an interpreter, which cannot be checked before it runs"},
+	{regexp.MustCompile(`(?i)(^|[;&|(]\s*)(eval|source|\.)\s+["']?(\$\(|\x60|<\()|(^|[\s;&|(])(ba|z|da|k)?sh\s+(-\w+\s+)*<\(`),
+		"it runs commands it builds or fetches at run time, which cannot be checked before they run"},
+	{regexp.MustCompile(`(?i)\b(ba|z|da|k)?sh\s+(-\w+\s+)*-\w*c\w*\s+["']?(\$\(|\x60)`),
+		"it runs commands it builds or fetches at run time, which cannot be checked before they run"},
 }
 
 // programRules are matched against the shell's own words only (quoted arguments and here-documents blanked): a
@@ -140,6 +158,12 @@ func AssessCommand(command string) *Concern {
 	}
 	for _, r := range programRules {
 		if r.re.MatchString(unquoted) {
+			return &Concern{Reason: r.reason}
+		}
+	}
+	// With the here-documents left in: `cat <<EOF | bash` feeds its body to the shell even though cat reads it.
+	for _, r := range indirectRules {
+		if r.re.MatchString(unquoted) || r.re.MatchString(blankQuoted(command)) {
 			return &Concern{Reason: r.reason}
 		}
 	}

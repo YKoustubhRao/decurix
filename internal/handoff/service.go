@@ -646,6 +646,14 @@ func homePath(p string) (string, bool) {
 	if !strings.HasPrefix(clean, home+"/") || strings.Contains(p, "/../") || strings.HasSuffix(p, "/..") {
 		return "", false
 	}
+	// A program's own data - the agent's state, Claude's credentials, keys, a browser profile - lives in a dot-folder
+	// of the home; no work does. A report naming one must not have it copied to another worker (review 2026-11-02:
+	// ~/.claude/.credentials.json could be handed back).
+	for _, part := range strings.Split(strings.TrimPrefix(clean, home+"/"), "/") {
+		if strings.HasPrefix(part, ".") {
+			return "", false
+		}
+	}
 	return clean, true
 }
 

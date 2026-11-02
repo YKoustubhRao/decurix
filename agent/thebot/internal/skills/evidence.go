@@ -76,7 +76,7 @@ func (u *evidenceUnit) holds(v string) bool {
 	if u.norm == "" {
 		u.norm = normalise(u.Text)
 	}
-	return strings.Contains(u.norm, normalise(v))
+	return holdsToken(u.norm, normalise(v))
 }
 
 // label is the unit as a finding names it.
@@ -527,7 +527,7 @@ func (st *operatorState) noteInventedCodes(command string) {
 			v, ok := e.Value.(string)
 			v = strings.TrimSpace(v)
 			if !ok || len(st.InventedCodes) >= maxInventedCodes || !oneWordCodeRe.MatchString(v) ||
-				len(letterRunRe.FindString(v)) < 3 || st.sourceHolds(v) || strings.Contains(known, normalise(v)) {
+				len(letterRunRe.FindString(v)) < 3 || st.sourceHolds(v) || holdsToken(known, normalise(v)) {
 				continue
 			}
 			st.InventedCodes = append(st.InventedCodes, fmt.Sprintf("%q (%s)", v, where))

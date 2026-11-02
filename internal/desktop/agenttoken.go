@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"net/http"
-	"os"
 	"strings"
 )
 
@@ -39,16 +38,10 @@ func (m *Manager) AuthorizeAgentRequest(req *http.Request, id string) {
 }
 
 // screenPassword is the VNC password a new desktop gets: its own, derived like its agent token, so one desktop cannot
-// open another's screen over the shared network (they all had "admin"). VNC's own authentication reads 8 characters,
-// so it is 8 base64 characters (48 bits). DEFAULT_PASSWORD in the environment still sets one for every desktop, and
-// with no secret the old default stays.
+// open another's screen over the shared network (they all had "admin", and .env.example's DEFAULT_PASSWORD kept it
+// that way - it is not read any more). VNC's own authentication reads 8 characters, so it is 8 base64 characters
+// (48 bits). BeginProvisioning refuses to make a desktop without the secret, so there is no shared fallback.
 func (m *Manager) screenPassword(id string) string {
-	if v := os.Getenv("DEFAULT_PASSWORD"); v != "" {
-		return v
-	}
-	if m == nil || len(m.HostGUISecret) == 0 {
-		return "admin"
-	}
 	mac := hmac.New(sha256.New, m.HostGUISecret)
 	mac.Write([]byte("decurix-screen-password\x00" + sanitizeName(id)))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))[:8]

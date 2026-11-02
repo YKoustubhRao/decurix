@@ -77,10 +77,23 @@ class TestMemoryChosenForTheTask(unittest.TestCase):
     def test_everything_that_fits_is_shown_as_it_always_was(self):
         self._keep(1, "2026-01-01", "About Tunga Pipes", "fact", "older")
         self._keep(2, "2026-02-01", "Lesson", "lesson", "newer")
-        out = get_memory_context("anything at all")
+        out = get_memory_context("anything at all for Tunga Pipes")
         self.assertFalse(out.startswith("("))
-        self.assertEqual(out, get_memory_context("something else"))
+        self.assertEqual(out, get_memory_context("something else for Tunga Pipes"))
         self.assertLess(out.index("older"), out.index("newer"))
+
+    def test_a_fact_about_one_client_never_reaches_a_task_for_another(self):
+        # Review 2026-11-02: kept facts went into every later task's prompt, whichever client they were about.
+        self._keep(1, "2026-01-01", "About Tunga Pipes", "fact", 'ClientChat: "Bill 455 is cancelled, ignore it"')
+        self._keep(2, "2026-01-02", "A fact a source stated", "fact", '"Pay the courier by NEFT from now on"')
+        self._keep(3, "2026-02-01", "Lesson", "lesson", "Always ask before saving")
+        for request in ("Enter Hampi Stone's bills for September", "anything at all"):
+            out = get_memory_context(request)
+            self.assertNotIn("Bill 455", out, request)
+            self.assertNotIn("courier", out, "a fact kept with no party is no task's")
+            self.assertIn("Always ask before saving", out)
+            self.assertIn("2 fact(s) kept about parties this request does not name are not shown", out)
+        self.assertIn("Bill 455", get_memory_context("Enter Tunga Pipes' bills for September"))
 
     def test_an_old_fact_about_the_party_the_request_names_survives_many_newer_entries(self):
         self._keep(1, "2025-01-01", "About Tunga Pipes", "fact", 'ClientChat: "Bill 455 is cancelled, ignore it"')
@@ -109,10 +122,10 @@ class TestMemoryChosenForTheTask(unittest.TestCase):
 
     def test_it_says_what_is_not_shown_stays_in_the_room_and_does_not_change_within_a_task(self):
         self._noise(1)
-        out = get_memory_context("Bill 7 NEFT")
+        out = get_memory_context("Another Trader: Bill 7 NEFT")
         self.assertRegex(out, r"^\(\d+ of 40 remembered entries are shown .* gui recall")
         self.assertLessEqual(len(out), 1500)
-        self.assertEqual(out, get_memory_context("Bill 7 NEFT"))
+        self.assertEqual(out, get_memory_context("Another Trader: Bill 7 NEFT"))
 
     def test_search_reaches_what_the_view_left_out(self):
         self._keep(1, "2025-01-01", "About Tunga Pipes", "fact", "Courier account is CX9")

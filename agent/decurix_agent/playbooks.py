@@ -45,7 +45,7 @@ import threading
 import time
 from pathlib import Path
 
-from decurix_agent import attachments, commands as shell_rules, config, llm_client, produced, usage
+from decurix_agent import attachments, commands as shell_rules, config, llm_client, produced, script_sandbox, usage
 from decurix_agent.computer import privacy
 from decurix_agent.logging_utils import log
 
@@ -494,11 +494,13 @@ def _stated(tool, request, commands=None):
 # (the gui command, xdotool, a browser), reaching the network or another machine, or sending mail is the engine's, under
 # the gate (review 2026-11-02: model-written scripts ran for real during the proof and then with no approval).
 # (`office email` only drafts into the Outbox, which a person sends: a script may draft.)
+# This reading is an early refusal and nothing more: a list of words cannot be made sound (`"cu" + "rl"`, an aliased
+# import). The boundary is where the script runs - script_sandbox: no network, no display, a scratch copy of the work.
 _UNGATED_PROGRAMS = (r"gui|xdotool|xte|ydotool|wmctrl|xdg-open|chromium|chromium-browser|google-chrome|firefox|curl|"
                      r"wget|ssh|scp|sftp|rsync|nc|ncat|netcat|telnet|ftp|sendmail|mailx|mutt|msmtp|swaks")
 # In a shell script: one of those programs where a command starts (a line, after ; & | ( ` $( or sudo/env).
 UNGATED_IN_SHELL = re.compile(r"(?:^|[;&|(`{]|\$\()\s*(?:(?:sudo|env|exec|command|nohup|time|do|then|else|if|while|until|"
-                              r"!)\s+)*(?:" + _UNGATED_PROGRAMS
+                              r"!)\s+)*(?:[\w./~-]*/)?(?:" + _UNGATED_PROGRAMS
                               + r")(?=$|[\s;&|)`])", re.MULTILINE)
 # In a Python script: a module that reaches the network, the screen or a browser, or one of those programs run.
 UNGATED_IN_PYTHON = re.compile(
@@ -506,11 +508,20 @@ UNGATED_IN_PYTHON = re.compile(
     r"selenium|playwright|pyautogui|pynput|webbrowser|imaplib|poplib|xmlrpc|ssl|ctypes|multiprocessing\.connection)\b"
     # (code it builds at run time is not read here, so it is not run: exec/eval of a string.)
     r"|(?<![\w.])(?:exec|eval)\("
-    r"|\b(?:subprocess\.\w+|os\.system|os\.popen|os\.exec\w*|os\.spawn\w*)\(\s*\[?\s*[rbf]?[\"'](?:" + _UNGATED_PROGRAMS
+    r"|\b(?:subprocess\.\w+|os\.system|os\.popen|os\.exec\w*|os\.spawn\w*)\(\s*\[?\s*[rbf]?[\"'](?:[\w./~-]*/)?(?:"
+    + _UNGATED_PROGRAMS
     + r")(?=[\s\"'])"
     r"|\b__import__\(|\bimportlib\b",
     re.MULTILINE,
 )
+
+
+# What only the gate, the agent or the screen use, named in a script in any language: the worker's own folder (the
+# approval store, the command channel), the display and its key, the agent's token, the browser's DevTools port and the
+# agent's and soul's ports. With `unshare` alone the sandbox still shows the filesystem (script_sandbox), so a script
+# that names these is refused before it runs - an early refusal, never the boundary.
+GATE_STATE = re.compile(r"\.decurix\b|X11-unix|\.Xauthority|\b(?:DISPLAY|XAUTHORITY|DBUS_SESSION_BUS_ADDRESS|"
+                        r"DECURIX_AGENT_TOKEN)\b|:(?:9222|8080|8081|4900|8092)\b|approval\.json|-reply\.txt")
 
 
 def ungated_effect(script, language="python"):
@@ -519,6 +530,9 @@ def ungated_effect(script, language="python"):
     one that runs a shell (`bash -c`, shell=True) is read as a shell script too."""
 
     script = script or ""
+    touched = GATE_STATE.search(script)
+    if touched:
+        return " ".join(touched.group(0).split())
     found = None
     if language == "bash":
         found = UNGATED_IN_SHELL.search(script)
@@ -617,52 +631,20 @@ def _reading(path):
 
 
 def _copy_work(work, sandbox, leave_out=()):
-    """Copy the work folder into `sandbox`/work; False when it is too big to prove anything in."""
+    """Copy the work folder into `sandbox`/work; False when it is too big to prove anything in (script_sandbox)."""
 
-    count = size = 0
-    for root, dirs, files in os.walk(work):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
-        for name in files:
-            source = Path(root) / name
-            relative = source.relative_to(work)
-            if relative.as_posix() in leave_out:
-                continue
-            try:
-                size += source.stat().st_size
-            except OSError:
-                continue
-            count += 1
-            if count > PROOF_MAX_FILES or size > PROOF_MAX_BYTES:
-                return False
-            target = sandbox / "work" / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
-    (sandbox / "work").mkdir(parents=True, exist_ok=True)
-    return True
-
-
-# Where a proof's network goes: nowhere (a port nothing listens on).
-_NOWHERE = "http://127.0.0.1:9"
+    return script_sandbox.copy_work(work, sandbox, leave_out)
 
 
 def proof_env(sandbox):
     """
-    The environment a script is proven in: HOME and the worker's own folder moved into the sandbox (so ~/work is
-    the copy, and the approval store, the drafts and the secrets are a fresh, empty set), drafts kept in the sandbox,
-    no display or accessibility bus to act on the screen with, the control plane, soul and every proxy-honouring
-    program's network pointed at nothing. A second fence behind _sound's refusal of a script that acts beyond files:
-    a proof is not a sandbox a determined script cannot leave (no network namespace here), so what reaches the network
-    by its own sockets is refused by reading the script, not by this.
+    The environment a script is proven and run in (script_sandbox.clean_env): built from nothing, HOME and the
+    worker's own folder in the sandbox (a fresh approval store, no secrets, no command channel), drafts kept there, no
+    display or bus, no agent token, the control plane, soul and every proxy pointed at nothing - inside a network
+    namespace of its own (script_sandbox.run), which is the boundary; this and _sound's reading are fences before it.
     """
 
-    env = dict(os.environ, HOME=str(sandbox), DECURIX_DIR=str(Path(sandbox) / ".decurix"),
-               DECURIX_OUTBOX_DRY=str(Path(sandbox) / "drafts.jsonl"),
-               CONTROL_PLANE_URL=_NOWHERE, THEBOT_URL=_NOWHERE, OLLAMA_URL=_NOWHERE,
-               http_proxy=_NOWHERE, https_proxy=_NOWHERE, HTTP_PROXY=_NOWHERE, HTTPS_PROXY=_NOWHERE,
-               all_proxy=_NOWHERE, ALL_PROXY=_NOWHERE, no_proxy="", NO_PROXY="")
-    for name in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "AT_SPI_BUS_ADDRESS", "XAUTHORITY"):
-        env.pop(name, None)
-    return env
+    return script_sandbox.clean_env(sandbox)
 
 
 def _run_in_copy(tool, sandbox, work):
@@ -674,12 +656,16 @@ def _run_in_copy(tool, sandbox, work):
     except ValueError as exc:
         return [], f"its example arguments could not be read ({exc})"
 
-    before = {p.relative_to(copy).as_posix(): p.stat().st_mtime_ns for p in copy.rglob("*") if p.is_file()}
+    before = script_sandbox.snapshot(copy)
     try:
-        # A Python tool is tried with the interpreter this agent runs on - the one its `python3` is.
+        # A Python tool is tried with the interpreter this agent runs on - the one its `python3` is. The script is
+        # copied into the sandbox first: it runs from there, and what it is cannot change under the run.
         interpreter = "bash" if tool["path"].endswith(".sh") else sys.executable
-        done = subprocess.run([interpreter, tool["path"]] + args, cwd=str(copy), capture_output=True,
-                              text=True, timeout=PROOF_SECONDS, env=proof_env(sandbox))
+        script = Path(sandbox) / ("tool" + Path(tool["path"]).suffix)
+        shutil.copy2(tool["path"], script)
+        done = script_sandbox.run([interpreter, str(script)] + args, sandbox, PROOF_SECONDS)
+    except RuntimeError as exc:
+        return [], f"it cannot be tried here: {exc}"
     except (OSError, subprocess.TimeoutExpired) as exc:
         return [], f"it could not be run ({exc})"
     if done.returncode != 0:
@@ -687,9 +673,7 @@ def _run_in_copy(tool, sandbox, work):
     if not (done.stdout or "").strip():
         return [], "it printed nothing: it has to print what it wrote"
 
-    written = [p.relative_to(copy).as_posix() for p in copy.rglob("*")
-               if p.is_file() and before.get(p.relative_to(copy).as_posix()) != p.stat().st_mtime_ns]
-    return written, ""
+    return script_sandbox.written(copy, before), ""
 
 
 def _same_drafts(sandbox):
@@ -788,6 +772,13 @@ def _distil(book):
 
     book["tool_tried"] = True
     if not llm_client.available():
+        return False
+    if not script_sandbox.available():
+        # A kept script runs with nobody watching, and only shut off from the network and the screen
+        # (script_sandbox): where that cannot be done, none is written - no model call is spent on one that could
+        # never be proven or run. A later run on a desktop that can may try again.
+        log(f"Playbooks: no tool for {book['name']}: {script_sandbox.why_not()}")
+        book["tool_tried"] = False
         return False
     book["tool_sessions"] = book.get("tool_sessions", 0) + 1
 

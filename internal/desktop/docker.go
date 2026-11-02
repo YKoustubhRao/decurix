@@ -134,8 +134,9 @@ func (m *Manager) GatewayIPs(ctx context.Context) []string {
 
 	var ips []string
 	seen := map[string]bool{}
-	// The practice network too: a practice desktop is a container like any other, and reaches only its broker.
-	for _, name := range []string{NetworkName, "bridge", PracticeNetworkName} {
+	// Never the practice network: a practice desktop reaches only its broker, so the control plane listens nowhere on
+	// it (review 2026-11-02 - an edit put it here by mistake and bound the no-login listener there).
+	for _, name := range []string{NetworkName, "bridge"} {
 		info, err := m.client.NetworkInspect(ctx, name, network.InspectOptions{})
 		if err != nil {
 			continue
@@ -162,7 +163,7 @@ func (m *Manager) GatewayIPs(ctx context.Context) []string {
 // the agents.
 func (m *Manager) ContainerNetworks(ctx context.Context) (subnets []netip.Prefix, gateways []netip.Addr) {
 
-	for _, name := range []string{NetworkName, "bridge"} {
+	for _, name := range []string{NetworkName, "bridge", PracticeNetworkName} {
 		info, err := m.client.NetworkInspect(ctx, name, network.InspectOptions{})
 		if err != nil {
 			continue
@@ -173,7 +174,9 @@ func (m *Manager) ContainerNetworks(ctx context.Context) (subnets []netip.Prefix
 				subnets = append(subnets, prefix.Masked())
 			}
 
-			if gw, err := netip.ParseAddr(cfg.Gateway); err == nil {
+			// The practice network's gateway is not the host's way in: nothing a person uses arrives from it, so it
+			// stays inside the range a container is recognised by.
+			if gw, err := netip.ParseAddr(cfg.Gateway); err == nil && name != PracticeNetworkName {
 				gateways = append(gateways, gw)
 			}
 		}
@@ -250,7 +253,6 @@ func controlPlaneURL() string {
 
 // buildDesktopEnv builds the container environment variables (VNC, desktop identity, control-plane/Ollama URLs, agent harness, brain) for a desktop by name.
 func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain, shared ...*SharedFolder) []string {
-	defaultPassword := envOr("DEFAULT_PASSWORD", "admin")
 
 	// OLLAMA_URL/OLLAMA_MODEL follow the same pattern as DEFAULT_PASSWORD:
 	// the control plane's own environment wins, with a default that has to
@@ -281,7 +283,6 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 	ollamaModel := ollama.DesktopModel()
 
 	env := []string{
-		"VNC_PW=" + defaultPassword,
 		"VNC_RESOLUTION=1280x720",
 		// sanitizeName, not an ad-hoc lowercase/space swap: this is the ID
 		// the agent reports itself as on every callback, and Desktop.ID is

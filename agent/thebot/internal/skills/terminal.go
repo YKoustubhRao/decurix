@@ -227,11 +227,9 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	start := time.Now()
 	stdout, err := cmd.Output()
 	duration := time.Since(start).Milliseconds()
-	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
-		// The command itself finished with 0; a background child it started
-		// is what still held the pipe (and was cut off). Its own exit is the result.
-		err = nil
-	}
+	// The command itself finished with 0; a background child it started is
+	// what still held the pipe (and was cut off). Its own exit is the result.
+	err = hostshell.Exited(cmd, err)
 
 	if err != nil {
 		stderr := ""
@@ -283,6 +281,27 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 			return Result{
 				Subtask: subtask, SkillName: t.Name(), Output: out, Verified: false,
 				Meta:       map[string]any{"command": command, "source": source, "exitCode": exitCode, "cwd": cwd, "error": why},
+				DurationMs: duration,
+			}, nil
+		}
+
+		if answer := negativeAnswer(command, exitCode); isExitErr && answer != "" {
+			// grep finding nothing, diff finding a difference, a false test:
+			// exit 1 is that program's answer, decided by the program that
+			// ran last, not by what it printed. The step's question is
+			// answered - "no match" - which is neither the work done nor a
+			// failure to retry with another command.
+			rc.Logf("terminal", "exit code: 1 - answered: %s", answer)
+			out := fmt.Sprintf("Command: %s\nWorking directory: %s\nExit code: 1 - answered: %s", command, cwd, answer)
+			if len(stdout) > 0 {
+				out += "\n\nStdout:\n" + string(stdout)
+			}
+			if strings.TrimSpace(stderr) != "" {
+				out += "\n\nStderr:\n" + stderr
+			}
+			return Result{
+				Subtask: subtask, SkillName: t.Name(), Output: out, Verified: true,
+				Meta:       map[string]any{"command": command, "source": source, "exitCode": exitCode, "cwd": cwd, "answered": answer},
 				DurationMs: duration,
 			}, nil
 		}
@@ -352,4 +371,47 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		Meta:       map[string]any{"command": command, "source": source, "exitCode": 0, "cwd": cwd},
 		DurationMs: duration,
 	}, nil
+}
+
+// negativeAnswers are the programs whose exit 1 is, by convention, an answer
+// rather than an error (an error is 2 or more): what that answer says.
+var negativeAnswers = map[string]string{
+	"grep": "no match", "egrep": "no match", "fgrep": "no match", "zgrep": "no match", "rg": "no match",
+	"diff": "the inputs differ", "cmp": "the inputs differ",
+	"test": "the test is false", "[": "the test is false", "[[": "the test is false",
+}
+
+// negativeAnswer is the answer exit code 1 gives for command, judged by the
+// program the shell ran last (the first word of the command line's last
+// stage, past variable assignments and wrappers like env or time), or ""
+// when exit 1 from that program is not an answer and stays a failure.
+func negativeAnswer(command string, exitCode int) string {
+	if exitCode != 1 {
+		return ""
+	}
+	segs := shellSegments(command)
+	if len(segs) == 0 {
+		return ""
+	}
+	words := strings.Fields(segs[len(segs)-1].Text)
+	for len(words) > 0 {
+		w := words[0]
+		switch {
+		case strings.Contains(w, "=") && !strings.HasPrefix(w, "="):
+			words = words[1:] // FOO=bar grep ...
+			continue
+		case w == "env" || w == "command" || w == "builtin" || w == "time" || w == "nice" || w == "exec":
+			words = words[1:]
+			continue
+		}
+		break
+	}
+	if len(words) == 0 {
+		return ""
+	}
+	w := words[0]
+	if i := strings.LastIndexByte(w, '/'); i >= 0 && w != "/" {
+		w = w[i+1:]
+	}
+	return negativeAnswers[w]
 }

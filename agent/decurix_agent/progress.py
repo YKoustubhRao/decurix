@@ -39,12 +39,35 @@ _sender_lock = threading.Lock()
 _sender_started = False
 
 
+HELD_BACK = "[held back: this text could not be checked for secrets]"
+
+
+def _withheld(value):
+    """A line, or an action's fields, with the request's secrets withheld (computer/privacy.py) before it leaves the
+    desktop. Fails closed and never raises: a text that cannot be checked is HELD_BACK, never sent as it was."""
+
+    if isinstance(value, str):
+        try:
+            from decurix_agent.computer import privacy
+            return privacy.withhold_known(value)
+        except Exception:  # noqa: BLE001 - decoration never fails the task; nor does it let a secret through
+            return HELD_BACK
+    if isinstance(value, dict):
+        # A step's screenshots are pictures (painted over at the source, screen.Frame.masked), not text.
+        return {k: (v if str(k).endswith("_png") else _withheld(v)) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_withheld(v) for v in value]
+    return value
+
+
 def _post(item):
     payload = {
         "desktop_id": config.DESKTOP_ID,
         "vm_name": config.DESKTOP_NAME,
     }
 
+    # Every line and step goes through the withholding here too, whoever queued it (emit_action did not).
+    item = _withheld(item)
     if isinstance(item, dict):
         payload.update(item)
     else:
@@ -101,11 +124,7 @@ def emit(text):
     if not text:
         return
 
-    try:
-        from decurix_agent.computer import privacy
-        text = privacy.withhold_known(text)
-    except Exception:  # noqa: BLE001 - decoration never fails the task
-        pass
+    text = _withheld(text)
 
     if len(text) > MAX_TEXT:
         text = text[:MAX_TEXT] + "…"
@@ -144,8 +163,8 @@ def emit_action(text, action, before_png=None, after_png=None, task_id=None):
         return
 
     item = {
-        "text": str(text).strip()[:MAX_TEXT],
-        "action": action,
+        "text": _withheld(str(text).strip())[:MAX_TEXT],
+        "action": _withheld(action),
         "task_id": task_id if task_id is not None else task_context.current(),
     }
 

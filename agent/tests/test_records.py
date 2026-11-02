@@ -58,6 +58,16 @@ class Values(unittest.TestCase):
         # (A number inside a longer number is not that number: 850 is not in 5,850.00.)
         self.assertFalse(records.stands_in("850", BILL))
 
+    def test_an_identifier_stands_in_only_as_a_whole_token(self):
+        # Recheck (2026-11-02): another document's longer number counted as this one's read back.
+        self.assertFalse(records.stands_in("INV-1234", "Invoice INV-12345"))
+        self.assertFalse(records.stands_in("INV-1234", "Invoice XINV-1234 saved"))
+        self.assertFalse(records.stands_in("B9", "Qty 9 | B91"))
+        self.assertTrue(records.stands_in("INV-1234", "Invoice INV-1234 saved"))
+        self.assertTrue(records.stands_in("INV-1234", "Invoice No: inv 1234, dated"))
+        self.assertTrue(records.stands_in("INV-1234", "INV-1234/A"))
+        self.assertTrue(records.stands_in("B9", "Voucher B9 | Alpha Farms"))
+
 
 class Labels(unittest.TestCase):
     def test_labels_match_by_their_words(self):
@@ -306,4 +316,21 @@ class TheRecordForTheForm(unittest.TestCase):
         voucher_form = [("Voucher type", "Sales"), ("No.", "1"), ("Date", ""), ("Party A/c name", ""),
                         ("Amount 1", ""), ("Amount 2", ""), ("Amount 3", "")]
         self.assertIs(records.open_record([bill], "Sales | 1", form=voucher_form), bill)
-        self.assertIs(records.open_record([bill], "9 | Alpha Farms", form=party_form), bill)  # its key on the form
+        # Its key's number in its own number field binds it (the form shows the voucher's number, not the key).
+        numbered = [("Voucher type", "Sales"), ("No.", "9"), ("Party A/c name", "Alpha Farms")]
+        self.assertIs(records.open_record([bill], "Sales | 9 | Alpha Farms", form=numbered), bill)
+
+    def test_a_key_number_in_another_field_binds_nothing(self):
+        # Recheck (2026-11-02): record B9 was bound to a form whose Qty was 9.
+        bill = {"key": "B9", "saved_at": None, "fields": {
+            "No.": {"intent": "9"}, "Date": {"intent": "2026-11-28"}, "Party A/c name": {"intent": "Alpha Farms"},
+            "Amount 1": {"intent": "1000"}, "Amount 2": {"intent": "90"}, "Amount 3": {"intent": "90"}}}
+        other = [("Item", "Widget"), ("Qty", "9")]
+        self.assertIsNone(records.open_record([bill], "Widget | 9", form=other))
+        # Two records open: the form numbered 1 with a quantity of 9 is B1's, not B9's.
+        b1 = {"key": "B1", "saved_at": None, "fields": {"No.": {"intent": "1"}, "Party A/c name": {"intent": "Beta"}}}
+        form = [("No.", "1"), ("Party A/c name", ""), ("Qty", "9")]
+        self.assertIs(records.open_record([b1, bill], "1 | 9", form=form), b1)
+        # No field (or more than one) holds the key's number on the record: which field it is cannot be told.
+        vague = {"key": "B9", "saved_at": None, "fields": {"Qty": {"intent": "9"}, "No.": {"intent": "9"}}}
+        self.assertIsNone(records.open_record([vague], "9", form=[("No.", "9"), ("Item", "Widget")]))

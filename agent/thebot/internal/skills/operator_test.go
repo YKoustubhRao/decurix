@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -390,9 +391,16 @@ func TestResolveWritePathUsesTheWorkingDirectory(t *testing.T) {
 	if err != nil || got != filepath.Join(work, "notes", "today.md") {
 		t.Errorf("resolveWritePath = %q, %v", got, err)
 	}
-	outside := "/etc/passwd"
-	if _, err := resolveWritePath(rc, outside); err == nil {
-		t.Errorf("resolveWritePath allowed %s", outside)
+	// A path from the root is never one inside the working directory - on
+	// Windows too, where "/etc/passwd" has no drive and is not IsAbs.
+	outsides := []string{"/etc/passwd", "/../etc/shadow"}
+	if runtime.GOOS == "windows" {
+		outsides = append(outsides, `\etc\passwd`)
+	}
+	for _, outside := range outsides {
+		if got, err := resolveWritePath(rc, outside); err == nil {
+			t.Errorf("resolveWritePath allowed %s (as %s)", outside, got)
+		}
 	}
 }
 
@@ -500,6 +508,11 @@ func TestMissingProgramHintNamesOnlyAProgramTheCommandRan(t *testing.T) {
 // answered with a header nothing had printed. A failed repeat does not invite
 // an answer, and a DONE with no successful command is pushed back once.
 func TestOperatorDoesNotTakeAnAnswerNothingShowed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows' python3 is the Store alias (exit 49, "Python was not found"),
+		// not an interpreter that fails the import as a desktop's does.
+		t.Skip("needs a real python3 (a Linux desktop's)")
+	}
 	workerPython(t)
 	chat := &scriptedChat{replies: []string{
 		"COMMAND:\npython3 -c \"import no_such_module_decurix\"",

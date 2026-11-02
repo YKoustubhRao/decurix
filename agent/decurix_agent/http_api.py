@@ -159,12 +159,16 @@ def refusal(method, parts, headers, token=None):
             length = -1
         if length < 0:
             return 400, "invalid content length"
-        # A write with no body and no type (the control plane's "/ticket/end") is let through; one that names any
-        # other type, or carries a body without saying it is JSON, is not: a page's simple POST is text/plain or a form.
-        if (ctype and ctype != "application/json") or (length and ctype != "application/json"):
+        # The control plane sends every write as JSON, a body or not (desktop.Manager.AgentRequest); a page's simple
+        # POST is text/plain or a form.
+        if ctype != "application/json":
             return 415, "the body must be JSON (Content-Type: application/json)"
 
-    if token and parts != HEALTH:
+    if list(parts) != HEALTH and not token:
+        # Fails closed (review 2026-11-02): a desktop made without a token would take requests and a person's
+        # replies from anything on the network.
+        return 401, "this desktop was created without an agent token: recreate it"
+    if list(parts) != HEALTH:
         given = headers.get("Authorization") or ""
         scheme, _, value = given.partition(" ")
         if scheme.lower() != "bearer" or not hmac.compare_digest(value.strip().encode("utf-8"), token.encode("utf-8")):

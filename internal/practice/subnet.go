@@ -65,6 +65,11 @@ func (c *SubnetCache) Subnets() []netip.Prefix {
 	if ttl <= 0 {
 		ttl = 30 * time.Second
 	}
+	// Knowing no range is not knowing there is none: a practice network made a moment ago is asked for again within
+	// a second, not after the whole TTL (review 2026-11-02).
+	if len(c.list) == 0 && ttl > time.Second {
+		ttl = time.Second
+	}
 	if c.Lookup != nil && time.Since(c.at) > ttl {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		// A Docker hiccup returns nothing: the last ranges known stay refused rather than none.

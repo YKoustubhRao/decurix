@@ -33,12 +33,14 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import traceback
 from pathlib import Path
 
-from decurix_agent import attachments, config, guidance, llm_client, playbooks, produced, progress, state, verify
+from decurix_agent import (attachments, config, guidance, llm_client, playbooks, produced, progress, script_sandbox, state,
+                           verify)
 from decurix_agent.logging_utils import log
 from decurix_agent.messaging import write_final_reply
 
@@ -153,12 +155,21 @@ def read_args(book, content):
     return args, ""
 
 
+class NoSandbox(Exception):
+    """The tool cannot run unattended here (script_sandbox): nothing was run."""
+
+
 def _run(tool, args):
-    """Run the tool in the work folder. (exit code, what it printed)."""
+    """
+    Run the tool, shut off (script_sandbox): in a scratch copy of the work folder with no network, no display and an
+    environment of its own; what it wrote there is copied back into the work folder, and what it drafted is drafted
+    for real by the agent. (exit code, what it printed). Raises NoSandbox when this desktop cannot shut it off - it
+    is then not run at all, and the engine does the request.
+    """
 
     interpreter = "bash" if tool["path"].endswith(".sh") else sys.executable
-    # Read again as it is on disk now, before it runs with no engine and no approval: a script that acts beyond the
-    # work folder's files (the screen, the network) is never run here - the engine does the request, under the gate.
+    # Read again as it is on disk now, before it runs with no engine and no approval: a script that names the screen,
+    # the network or the gate's state is refused at once - an early refusal; the sandbox below is the boundary.
     try:
         script = Path(tool["path"]).read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
@@ -166,14 +177,67 @@ def _run(tool, args):
     wrong = playbooks._sound(script, "bash" if tool["path"].endswith(".sh") else "python")
     if wrong:
         return 126, f"it is not run without the engine: {wrong}"
+    if not script_sandbox.available():
+        raise NoSandbox(script_sandbox.why_not())
+
+    work = Path(config.WORK_DIR)
+    scratch = script_sandbox.new_scratch()
     try:
-        done = subprocess.run([interpreter, tool["path"]] + args, cwd=str(config.WORK_DIR), capture_output=True,
-                              text=True, timeout=RUN_SECONDS)
-    except subprocess.TimeoutExpired:
-        return 124, f"it did not finish in {RUN_SECONDS} seconds"
-    except OSError as exc:
-        return 126, f"it could not be run ({exc})"
-    return done.returncode, ((done.stdout or "") + (("\n" + done.stderr) if done.returncode and done.stderr else "")).strip()
+        if not script_sandbox.copy_work(work, scratch):
+            return 126, "the work folder is too large to run it in a copy of"
+        copy = scratch / "work"
+        # The script runs as read now, from the scratch copy: it cannot change under the run.
+        own = scratch / ("tool" + Path(tool["path"]).suffix)
+        own.write_text(script, encoding="utf-8", newline="\n")
+        args = [a.replace(str(work), str(copy)).replace("~/work", str(copy)) for a in args]
+        before = script_sandbox.snapshot(copy)
+        try:
+            done = script_sandbox.run([interpreter, str(own)] + args, scratch, RUN_SECONDS)
+        except subprocess.TimeoutExpired:
+            return 124, f"it did not finish in {RUN_SECONDS} seconds"
+        except RuntimeError as exc:
+            raise NoSandbox(str(exc)) from None
+        except OSError as exc:
+            return 126, f"it could not be run ({exc})"
+        printed = ((done.stdout or "") + (("\n" + done.stderr) if done.returncode and done.stderr else "")).strip()
+        printed = printed.replace(str(copy), str(work))
+        if done.returncode != 0:
+            # (What a failed run wrote stays in the scratch copy: the engine starts from the work folder as it was.)
+            return done.returncode, printed
+        copied, refused = script_sandbox.copy_back(copy, work, script_sandbox.written(copy, before))
+        if refused:
+            return 126, (printed + f"\n\nNot copied into the work folder (a link, or a place outside it): "
+                         + ", ".join(refused[:10])).strip()
+        drafted = _draft_for_real(scratch / "drafts.jsonl", work)
+        if drafted:
+            return 126, (printed + "\n\n" + drafted).strip()
+        return 0, printed
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _draft_for_real(log_path, work):
+    """
+    Draft into the Outbox what the script drafted in its scratch copy (office email there is kept, not sent to the
+    control plane, which it cannot reach): "" when every draft was made, else what went wrong. An attachment is the
+    file of that name the script left in the work folder (copied back).
+    """
+
+    from decurix_agent.tools import outbox
+
+    for record in outbox.read_log(log_path):
+        attached = []
+        for name in record.get("attachments") or []:
+            found = [p for p in work.rglob("*") if p.name == name and p.is_file() and not p.is_symlink()]
+            if len(found) != 1:
+                return f"An email it drafted attaches {name}, which is not one file in the work folder: nothing more was drafted."
+            attached.append(str(found[0]))
+        try:
+            outbox.draft(record.get("to") or [], record.get("subject") or "", record.get("body") or "",
+                         cc=record.get("cc") or None, attachments=attached)
+        except Exception as exc:  # noqa: BLE001 - a draft that could not be made is said, never dropped
+            return f"An email it drafted could not be put in the Outbox ({exc})."
+    return ""
 
 
 def _note(book, ok, failed=False, wrong=""):
@@ -218,6 +282,12 @@ def perform(content, task_file=None):
         if book is None:
             return _to_engine(content, task_file, "Working this one out.")
         tool = book["tool"]
+        if not script_sandbox.available():
+            # Before any model call: a tool that cannot be shut off here is not run unattended at all.
+            log(f"Tool {book['name']}: not run with no engine: {script_sandbox.why_not()}")
+            return _to_engine(content, task_file, "I have a script of my own for this kind of request, but it does "
+                                                  f"not run unattended here: {script_sandbox.why_not()}. So I am "
+                                                  "working it out myself.")
 
         args, why = read_args(book, content)
         if args is None:
@@ -226,7 +296,12 @@ def perform(content, task_file=None):
 
         line = " ".join(shlex.quote(a) for a in args)
         progress.emit(f"Running the tool I wrote for this kind of request: {Path(tool['path']).name} {line}")
-        code, printed = _run(tool, args)
+        try:
+            code, printed = _run(tool, args)
+        except NoSandbox as exc:
+            log(f"Tool {book['name']}: not run with no engine: {exc}")
+            return _to_engine(content, task_file, f"My script for this does not run unattended here ({exc}), so I am "
+                                                  "working it out myself.")
         log(f"Tool {book['name']} {line}: exit {code}\n{printed[:2000]}")
 
         if code != 0:

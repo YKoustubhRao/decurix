@@ -93,6 +93,7 @@ func containerMayCall(method, path string) bool {
 // only on its callback routes, as itself.
 func (s *Server) GuardPrimary(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		noFraming(w)
 		if !knownHost(r.Host) {
 			http.Error(w, "unknown host name for this listener", http.StatusMisdirectedRequest)
 			return
@@ -121,6 +122,7 @@ func (s *Server) GuardPrimary(next http.Handler) http.Handler {
 // a cross-site form post), and no desktop at all - a desktop has no business there, and must not try codes.
 func (s *Server) GuardGated(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		noFraming(w)
 		if changesSomething(r) && !sameOrigin(r) {
 			http.Error(w, "refused a cross-site request", http.StatusForbidden)
 			return
@@ -131,6 +133,13 @@ func (s *Server) GuardGated(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// noFraming keeps every page of the control plane out of another site's frames (clickjacking: a page that frames
+// the dashboard under a decoy and gets an Approve clicked). Its own pages may still frame each other.
+func noFraming(w http.ResponseWriter) {
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+	w.Header().Add("Content-Security-Policy", "frame-ancestors 'self'")
 }
 
 // changesSomething reports whether r may change state: any method but GET, HEAD and OPTIONS, and any WebSocket.

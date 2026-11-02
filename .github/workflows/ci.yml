@@ -15,10 +15,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      # TheBot (packed and built by go generate) needs Go 1.27; the control plane's own go.mod builds with it too.
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-      # TheBot's sources are packed for go:embed by go generate; the build does not need the packed soul binary.
+          go-version-file: agent/thebot/go.mod
       - run: go generate .
       - run: go build ./...
       - run: go vet ./...
@@ -48,6 +48,23 @@ jobs:
       # What the desktop image installs from Ubuntu for the agent (docker/desktop.basic.Dockerfile).
       - run: pip install openpyxl pypdf python-docx pillow
       - run: PYTHONPATH=agent python -m unittest discover -s agent/tests
+
+  javascript:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # The browser extension's own logic, run outside a browser (no browser is launched).
+      - run: node --test agent/tests/browser_extension.test.js
+      # The Electron shell's main-process logic (no window is opened).
+      - run: npm ci
+        working-directory: desktop/electron
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      - run: npm test
+        working-directory: desktop/electron
 
   scripts:
     runs-on: ubuntu-24.04

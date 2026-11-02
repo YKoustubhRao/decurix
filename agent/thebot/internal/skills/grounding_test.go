@@ -65,6 +65,59 @@ func TestGroundingRefusesAValueNothingShowed(t *testing.T) {
 	}
 }
 
+// A value is traced as a whole token: "50" was never shown because "1,500" was, nor "500" by "INV5000"; the same
+// figure written another way (1500 for 1,500) still is.
+func TestGroundingMatchesValuesAsWholeTokens(t *testing.T) {
+	st := groundingState("Enter /w/GF-5522.pdf as a quotation.", "office read /w/GF-5522.pdf")
+	st.noteSeen("Customer: Gemini Furniture\nInvoice INV5000 total 1,500 rate 2.50\nPhone +91 98450 12345")
+
+	for _, v := range []string{"50", "500", "150", "25", "Gemini Furn", "emini", "9845", "4501"} {
+		if n := groundingNudge(st, `gui do enter-po --param v="`+v+`"`); n == "" {
+			t.Errorf("%q was taken as seen inside a longer token", v)
+		}
+	}
+	for _, v := range []string{"1500", "1,500", "1,500.00", "2.50", "Gemini Furniture", "INV5000", "+91 98450 12345"} {
+		if n := groundingNudge(st, `gui do enter-po --param v="`+v+`"`); n != "" {
+			t.Errorf("%q was refused though it was shown: %q", v, n)
+		}
+	}
+	if inSeen("phones 98450 and 12345 elsewhere 5", "984501") || !inSeen("call 98450-12345", "9845012345") {
+		t.Error("a long number is traced by its digits only as consecutive whole groups of one run")
+	}
+	cases := map[[2]string]bool{
+		{"total 1,500", "50"}: false, {"total 1,500", "1,500"}: true, {"1,500.25 due", "1,500"}: false,
+		{"x 2.50 y", "2.5"}: false, {"pune", "pune"}: true, {"puneet", "pune"}: false, {"(50)", "50"}: true,
+		{"50%", "50"}: true, {"mug-12 x", "mug"}: true,
+	}
+	for c, want := range cases {
+		if got := holdsToken(c[0], c[1]); got != want {
+			t.Errorf("holdsToken(%q, %q) = %v, want %v", c[0], c[1], got, want)
+		}
+	}
+	if !numbersIn("total 1,500")["1500"] || numbersIn("total 1,500")["500"] || numbersIn("v1.2.3")["3"] {
+		t.Errorf("numbersIn takes a figure only whole: %v %v", numbersIn("total 1,500"), numbersIn("v1.2.3"))
+	}
+	if !inSeen("Total 2,750.00", "2750") || inSeen("Total 2,750.00", "750") {
+		t.Error("inSeen matches the same figure however written, never a part of one")
+	}
+}
+
+// The seen text is bounded, and what the request said is kept however much output follows.
+func TestSeenTextKeepsTheRequestWhenCut(t *testing.T) {
+	st := &operatorState{}
+	st.noteSeen("Request: enter the bill from Acme Traders")
+	chunk := strings.Repeat("line of output 7\n", 10_000)
+	for i := 0; i < 20; i++ { // 3.4 MB in all
+		st.noteSeen(chunk)
+	}
+	if len(st.Seen) > maxSeenChars {
+		t.Fatalf("seen text is %d chars, over %d", len(st.Seen), maxSeenChars)
+	}
+	if !strings.Contains(st.Seen, "Acme Traders") {
+		t.Fatal("the request was dropped when the seen text was cut")
+	}
+}
+
 // A file the request names, saved in the work folder or a folder it names, is a path the task gave.
 func TestGroundingTakesAFilePathTheRequestGave(t *testing.T) {
 	st := groundingState("Make a deck from the brief. Save it as q3_review.pptx in my work folder.")
@@ -248,9 +301,12 @@ func stubTools(t *testing.T, officeOutput string) (log string) {
 	if err := os.WriteFile(said, []byte(officeOutput+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Forward slashes and quotes: on a Windows development host the temp dir is
+	// C:\..., and unquoted backslashes in a sh script are escapes - the log
+	// went nowhere and every "nothing reached the app" check passed vacuously.
 	stubWorkerTools(t,
-		`printf '%s\n' "$*" >> `+log+"\necho done\n",
-		"cat "+said+"\n",
+		`printf '%s\n' "$*" >> '`+filepath.ToSlash(log)+"'\necho done\n",
+		"cat '"+filepath.ToSlash(said)+"'\n",
 		"if \"%2\"==\"decurix_agent.tools.office\" goto office\r\n"+
 			">>\""+log+"\" echo %DECURIX_CLI_ARGS%\r\necho done\r\nexit /b 0\r\n"+
 			":office\r\ntype \""+said+"\"\r\n")

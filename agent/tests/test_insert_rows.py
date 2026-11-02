@@ -81,6 +81,19 @@ class TestInsertRows(unittest.TestCase):
         self.assertEqual([sales.cell(5, c).value for c in (1, 2)], [200, 400])
         self.assertEqual((sales["A6"].value, sales["B6"].value), ("TOTAL", "=SUM(B2:B5)"))
 
+    def test_the_guards_read_the_rows_as_they_are_after_it(self):
+        # Review 2026-11-02: the guards read the file as saved. The TOTAL label moved from A5 to A6; emptying A6 read the
+        # saved (empty) A6 and the label went without a word, while filling the new empty A5 was said to write over it.
+        with self.assertRaises(office.OfficeError) as refused:
+            office.update_workbook(self.book, output_path=self.out,
+                                   insert_rows=[{"sheet": "SALES", "before": 5, "count": 1}],
+                                   edits=[{"sheet": "SALES", "cell": "A6", "value": None}])
+        self.assertIn("SALES!A6 'TOTAL'", str(refused.exception))
+        said = office.update_workbook(self.book, output_path=self.out,
+                                      insert_rows=[{"sheet": "SALES", "before": 5, "count": 1}],
+                                      edits=[{"sheet": "SALES", "cell": "A5", "value": 200}])
+        self.assertNotIn("replaced", said, "the new row was empty: nothing was written over")
+
     def test_shared_formulas_are_written_out_before_rows_go_in_among_them(self):
         xml = ('<sheetData><row r="2"><c r="C2"><f t="shared" ref="C2:C4" si="0">B2*2</f><v>2</v></c></row>'
                '<row r="3"><c r="C3"><f t="shared" si="0"/><v>4</v></c></row>'

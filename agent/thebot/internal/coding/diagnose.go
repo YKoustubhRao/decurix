@@ -59,8 +59,24 @@ type Diagnosis struct {
 	Source string
 	// Learned marks a diagnosis worth remembering - one that came from
 	// real research rather than a table lookup it can always redo for free.
+	// It is remembered only once its fix ran with approval and the check
+	// that failed then passed (settleLearning).
 	Learned bool
+	// Signature is the failure's errorSignature, which pairs a proposal
+	// the person approved with the same failure when the build is re-run.
+	Signature string
 }
+
+// IsProposal reports whether the diagnosis's fix commands are a proposal - a
+// command a web page or a model's reply put forward, as opposed to one
+// written in this source file's table. A proposal runs only with the
+// person's approval of that exact command (Harness.Approve).
+func (d Diagnosis) IsProposal() bool {
+	return len(d.FixCommands) > 0 && !strings.HasPrefix(d.Source, "known:")
+}
+
+// Action is the one command line a proposal asks approval for.
+func (d Diagnosis) Action() string { return strings.Join(d.FixCommands, " && ") }
 
 // knownFix is one real, recognised toolchain failure and its real fix.
 // This table is the agent's built-in operational experience: every entry
@@ -276,6 +292,12 @@ var knownFixes = []knownFix{
 // web search, and an unknown one should never be guessed at when the real
 // answer is a search away.
 func (h *Harness) Diagnose(ctx context.Context, failure string, d *Design, env *EnvFacts, tc *Toolchain) Diagnosis {
+	diag := h.diagnose(ctx, failure, d, env, tc)
+	diag.Signature = errorSignature(failure)
+	return diag
+}
+
+func (h *Harness) diagnose(ctx context.Context, failure string, d *Design, env *EnvFacts, tc *Toolchain) Diagnosis {
 	if strings.TrimSpace(failure) == "" {
 		return Diagnosis{Kind: DiagUnknown, Cause: "the command failed with no output at all", Source: "none"}
 	}
@@ -284,6 +306,17 @@ func (h *Harness) Diagnose(ctx context.Context, failure string, d *Design, env *
 	if diag, ok := matchKnownFix(failure, d, env, tc); ok {
 		h.logf("coding-diagnosis: recognised this failure: %s (%s)", diag.Cause, diag.Source)
 		return diag
+	}
+
+	// 1b. A proposal the person was asked about for this same failure: the
+	// build re-runs after their reply, and the yes is for that command, not
+	// for whatever a fresh search or model call would propose now.
+	sig := errorSignature(failure)
+	for _, p := range h.Proposed {
+		if p.Signature != "" && p.Signature == sig {
+			h.logf("coding-diagnosis: the same failure as the fix you were asked about: %s", truncate(p.Action(), 120))
+			return p
+		}
 	}
 
 	// 2. Its own memory - has it genuinely solved this before?
@@ -517,16 +550,75 @@ func looksRunnable(cmd string) bool {
 	return len(fields) >= 2 && !strings.HasSuffix(cmd, ".") && len(cmd) < 300
 }
 
+// mayRun reports whether diag's fix commands may run now. A command from
+// this file's table may; a proposal (a web page's or a model's) runs only
+// when the person approved that exact command. An unapproved one is kept as
+// the build's pending question - the build stops there and asks - unless the
+// person already declined it, in which case it is simply not run.
+func (h *Harness) mayRun(diag Diagnosis) bool {
+	if !diag.IsProposal() {
+		return true
+	}
+	action := diag.Action()
+	for _, d := range h.Declined {
+		if d == action {
+			h.logf("coding: not running `%s` - you did not approve it", truncate(action, 120))
+			return false
+		}
+	}
+	if h.Approve != nil && h.Approve(action) {
+		h.logf("coding: running the fix you approved: %s", truncate(action, 120))
+		return true
+	}
+	if h.pending == nil {
+		p := diag
+		h.pending = &p
+		h.logf("coding: a %s-proposed fix needs your approval before it runs: %s", diag.Source, truncate(action, 120))
+	}
+	return false
+}
+
+// awaitCheck notes a researched fix that ran: it is remembered only once the
+// check that failed passes after it (settleLearning).
+func (h *Harness) awaitCheck(diag Diagnosis) {
+	if diag.Learned {
+		d := diag
+		h.unconfirmed = &d
+	}
+}
+
+// settleLearning ends the wait for a researched fix's check: passed, the fix
+// is remembered (L1) and reported as learned; failed or never re-run, it is
+// forgotten. No-op when no fix waits.
+func (h *Harness) settleLearning(ctx context.Context, passed bool) {
+	diag := h.unconfirmed
+	h.unconfirmed = nil
+	if diag == nil {
+		return
+	}
+	if !passed {
+		h.logf("coding: not remembering the fix `%s` - the check it was for did not pass after it", truncate(diag.Action(), 120))
+		return
+	}
+	h.learnedFixes = append(h.learnedFixes, diag.Cause+" → "+fixSummary(*diag))
+	h.Learn(ctx, diag.Signature, *diag)
+}
+
 // Learn records a genuinely new fix in long-term memory, so the same
 // unrecognised failure costs a web search exactly once. Only called after
-// the fix REALLY worked - remembering a guess that didn't work would be
-// worse than remembering nothing.
+// the fix ran with the person's approval and the check it was for then
+// passed (settleLearning) - remembering a guess that didn't work, or a
+// command nobody approved, would be worse than remembering nothing.
 func (h *Harness) Learn(ctx context.Context, failure string, diag Diagnosis) {
 	if h.L1 == nil || !diag.Learned {
 		return
 	}
+	sig := diag.Signature
+	if sig == "" {
+		sig = errorSignature(failure)
+	}
 	fact := fmt.Sprintf("build failure fix: when a build fails with %q, the cause is: %s. The fix that actually worked: %s",
-		errorSignature(failure), diag.Cause, fixSummary(diag))
+		sig, diag.Cause, fixSummary(diag))
 	if err := h.L1.Store(ctx, fact, "coding-harness"); err != nil {
 		h.logf("coding-diagnosis: could not store what was learned: %s", err.Error())
 		return

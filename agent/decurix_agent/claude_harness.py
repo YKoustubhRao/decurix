@@ -102,6 +102,10 @@ this desktop the task, mcp__computer__skills finds it and
 mcp__computer__run_skill does it with no model: prefer that to working the
 task out yourself.
 
+Never drive the screen or the browser from the shell (xdotool, the DevTools
+port, this desktop's own agent ports) and never write into ~/.decurix: such
+commands are refused, and the computer tools are the way.
+
 You do not need to ask before clicking an on-screen control: the act tool
 itself stops before anything that sends, pays, buys or publishes. When it
 returns NEEDS_APPROVAL, stop and reply beginning with {APPROVAL_MARKER}
@@ -121,6 +125,27 @@ MCP_CONFIG = json.dumps({
         }
     }
 })
+
+# How Claude Code is let use its tools: every tool without a prompt (a headless run has nobody to answer one), behind a
+# PreToolUse hook (claude_guard.py) that refuses a Bash command or a file write that drives the screen or the browser
+# around the approval gate, reaches this desktop's own agent and DevTools ports, or touches the gate's state and the
+# person's reply channel - and deny rules for the plainest of them, which hold in every permission mode. Review
+# 2026-11-02: under --dangerously-skip-permissions alone, Bash could `xdotool` a click on Pay or write a yes into the
+# reply channel. A GUARD RAIL, NOT A BOUNDARY: the shell runs as the same Linux user as the gate, so a determined
+# command gets past words; the boundary is a separate user for the gate and its state (not built yet).
+GUARD_SCRIPT = Path(__file__).resolve().parent / "claude_guard.py"
+_GUARD_HOOK = [{"type": "command", "command": f"python3 {GUARD_SCRIPT.as_posix()}"}]
+GUARD_SETTINGS = json.dumps({
+    "hooks": {"PreToolUse": [{"matcher": tool, "hooks": _GUARD_HOOK}
+                             for tool in ("Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch")]},
+})
+PERMISSION_FLAGS = [
+    # Every tool allowed without a prompt, as before - the mode named rather than "dangerously" skipped, so the hook
+    # and the deny rules below apply in it.
+    "--permission-mode", "bypassPermissions",
+    "--settings", GUARD_SETTINGS,
+    "--disallowedTools", "Bash(xdotool:*),Bash(xte:*),Bash(ydotool:*),Bash(wmctrl:*)",
+]
 
 # Tool inputs are arbitrary JSON; these are the keys worth showing in a
 # one-line step, in the order that best identifies what the tool is doing
@@ -229,7 +254,7 @@ def _run_claude(prompt, resume_session_id=None):
         # stream in print mode and the loop below would see nothing.
         "--output-format", "stream-json",
         "--verbose",
-        "--dangerously-skip-permissions",
+        *PERMISSION_FLAGS,
         "--max-budget-usd", MAX_BUDGET_USD,
         "--append-system-prompt", SAFETY_SYSTEM_PROMPT,
         # Which desktop this is. Claude Code can of course run `hostname`

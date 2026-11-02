@@ -189,12 +189,9 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
     # land first.
     progress.flush()
 
-    # A secret the request gave never reaches the chat, the task record or the rail (computer/privacy.py).
-    try:
-        from decurix_agent.computer import privacy
-        content, reply = privacy.withhold_known(content), privacy.withhold_known(reply)
-    except Exception as exc:  # noqa: BLE001
-        log(f"Could not withhold secrets from a note: {exc}")
+    # A secret the request gave never reaches the chat, the task record or the rail (computer/privacy.py). Fails
+    # closed: a text that cannot be checked is held back, never sent as it was (review 2026-11-02).
+    content, reply, fallback = _withheld(content), _withheld(reply), _withheld(fallback)
     payload = {
         "desktop_id": config.DESKTOP_ID,
         "vm_name": config.DESKTOP_NAME,
@@ -258,6 +255,24 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
         log(f"Could not reach the control plane ({detail}); sending again in {int(wait)} s.")
         time.sleep(wait)
         wait = min(wait * 2, 20.0)
+
+
+HELD_BACK = "[held back: this text could not be checked for secrets]"
+
+
+def _withheld(text):
+    """text with the request's secrets and any credential it spells out withheld (computer/privacy.py), for anything
+    that leaves the desktop: the chat, the task record, the rail, the worker's memory. Never raises, and never lets a
+    text it could not check through: that is HELD_BACK."""
+
+    if text is None or text == "":
+        return text
+    try:
+        from decurix_agent.computer import privacy
+        return privacy.withhold_known(text)
+    except Exception as exc:  # noqa: BLE001 - fail closed
+        log(f"Could not withhold secrets from a note, so it is held back: {exc}")
+        return HELD_BACK
 
 
 def _post_querytext(payload):
@@ -358,10 +373,11 @@ def remember(title, summary, category="workflow"):
     fail the task that produced it. Returns whether it was recorded.
     """
 
+    # Memory is read by every later task and shown on the dashboard: no secret goes in it (computer/privacy.py).
     body = urllib.parse.urlencode({
         "desktop_id": config.DESKTOP_ID,
-        "title": title,
-        "summary": summary,
+        "title": _withheld(title) or "",
+        "summary": _withheld(summary) or "",
         "category": category,
     }).encode("utf-8")
 

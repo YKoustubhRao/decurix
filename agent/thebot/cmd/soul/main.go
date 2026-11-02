@@ -794,7 +794,7 @@ func main() {
 	// the network and makes Windows Firewall ask about it. The control plane
 	// sets SOUL_HOST=127.0.0.1 there.
 	if cfg.AgentToken == "" {
-		log.Printf("[soul] DECURIX_AGENT_TOKEN is not set: the API needs no token (only JSON writes from no other site are refused)")
+		log.Printf("[soul] DECURIX_AGENT_TOKEN is not set: every API route but /api/health is refused (%s)", noTokenRefusal)
 	}
 	addr := cfg.Host + ":" + cfg.Port
 	log.Printf("[soul] listening on http://%s", addr)

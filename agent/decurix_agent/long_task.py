@@ -1566,7 +1566,8 @@ def _payment_warnings(run_state, request):
         work = Path(_runner().context(run_state)["work_dir"])
         made = [str(work / e["path"]) for s in _steps(run_state) for e in run_state["steps"][s["id"]]["evidence"]
                 if not e.get("drafts")]
-        return list(dict.fromkeys(payees.mismatches(request, made) + payees.suspicious_messages(request, made)))
+        return list(dict.fromkeys(payees.mismatches(request, made) + payees.unchecked(request, made)
+                                  + payees.suspicious_messages(request, made)))
     except Exception as exc:  # noqa: BLE001
         log(f"long_task: could not check where payments go: {exc}")
         return []
@@ -5740,13 +5741,14 @@ def no_internal_ids(text, run_state=None, data=None):
 
 
 def privacy_withheld(text):
-    """text with the secrets a request gave replaced by [withheld] (computer/privacy.py)."""
+    """text with the secrets a request gave replaced by [withheld] (computer/privacy.py). Never raises, and fails
+    closed: a text that cannot be checked is held back, never kept as it was."""
 
     try:
         from decurix_agent.computer import privacy
         return privacy.withhold_known(text)
-    except Exception:  # noqa: BLE001 - never a reason to fail
-        return text
+    except Exception:  # noqa: BLE001 - never a reason to fail, nor to let a secret through
+        return "[held back: this text could not be checked for secrets]" if text else text
 
 
 # Ledger fields that are records made from the person's words (never the request itself, which stays as written).

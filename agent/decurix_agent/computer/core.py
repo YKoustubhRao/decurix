@@ -11,7 +11,7 @@ from pathlib import Path
 from decurix_agent import config, filelock, progress
 from decurix_agent.computer import approval, atspi, audit, browser, cdp, grounder, launchers, privacy, screen, session, volatility, xinput
 from decurix_agent.computer import elements as el
-from decurix_agent.computer.errors import ComputerError
+from decurix_agent.computer.errors import ActedError, ComputerError
 
 
 # ============================================================
@@ -1261,9 +1261,25 @@ def _beside_number_fields(target):
     return (20, height // 2)
 
 
-# Where a form waiting to be confirmed is noted between gui commands (each runs as its own process).
+# Where a form waiting to be confirmed is noted between gui commands (each runs as its own process): one note per task
+# (_form_check_file), so a listing in one task is never the confirmation of a click in the next.
 FORM_CHECK_FILE = Path(os.environ.get("TMPDIR", "/tmp")) / "decurix-form-check.json"
 FORM_CHECK_SECONDS = 600
+
+
+def _form_check_file():
+    """This task's form-check note: FORM_CHECK_FILE with the task's id in its name (review 2026-11-02: one global file
+    let a form listed in one task be sent by a --checked click in another). No task: FORM_CHECK_FILE itself."""
+
+    from decurix_agent import task_context
+
+    task = task_context.current()
+    return FORM_CHECK_FILE.with_name(f"{FORM_CHECK_FILE.stem}.{task}{FORM_CHECK_FILE.suffix}") if task else FORM_CHECK_FILE
+
+
+class AskFirst(str):
+    """What a replay's committing press holds that a person checks before it goes (_form_check, listing="ask"): the
+    press is put to them through the approval gate rather than refused."""
 
 
 # A value that only holds a place: "TEST", "dummy", "xxx", "asdf" anywhere; "123", "abc" in a reference-like field.
@@ -1863,11 +1879,14 @@ def _declared_values():
 def _form_check_pending():
     """The ref of the submit control whose form was listed for checking within FORM_CHECK_SECONDS and not confirmed
     since, else "". The note is written at the listing and cleared when the checked click goes through."""
+    from decurix_agent import task_context
+
     try:
-        noted = json.loads(FORM_CHECK_FILE.read_text(encoding="utf-8"))
+        noted = json.loads(_form_check_file().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return ""
-    if time.time() - float(noted.get("at") or 0) < FORM_CHECK_SECONDS and noted.get("key"):
+    if (time.time() - float(noted.get("at") or 0) < FORM_CHECK_SECONDS and noted.get("key")
+            and (noted.get("task") or "") == task_context.current()):
         return noted.get("ref") or "REF"
     return ""
 
@@ -1882,9 +1901,16 @@ def _form_check(element, checked=False, found=None, confirm=None, listing=True):
     found: {"form", "fields"} when the caller has read what the press sends (a page with no <form>, Enter in a form's
     field - _commit_check); else the <form> of the submit control is read. confirm: how the listing is confirmed, when
     not by the same click with --checked (an Enter is never confirmed: the form's own submit control is pressed).
+
+    listing="ask" (a replay's press): what would list the form, or a value no source of today's request holds, is
+    returned as AskFirst - the press is put to the person with today's values through the approval gate (core.act),
+    since a recording a person made is not their yes to the values a run types today. What is never sent (a record
+    entered twice, a placeholder, a value the declared record does not hold) still stops it.
     """
 
     import hashlib
+
+    from decurix_agent import task_context
 
     twice = (_duplicate_record(element) or _crossed_record(element) or _unsearched_record(element)
              or _same_named_record(element))
@@ -1913,7 +1939,8 @@ def _form_check(element, checked=False, found=None, confirm=None, listing=True):
         return (f"Not pressed: the check of where {el._quote(found['form'], 60)}'s values come from could not be made "
                 f"({' '.join(str(exc).split())[:160]}), so nothing shows they are the request's. Ask the person (HELP) "
                 "before this is saved.")
-    if made_up:
+    lines = "\n".join(f"  {label}: {value}" for label, value in found["fields"])
+    if made_up and listing != "ask":
         # Never sent, with or without --checked (found live 2026-10-20: a joiner onboarded with phone 9999999999).
         return filler.refusal(made_up, files)
     ledger_lines = []
@@ -1922,18 +1949,25 @@ def _form_check(element, checked=False, found=None, confirm=None, listing=True):
         held, clean, ledger_lines = judged
         if held:
             return held
-        if clean:
+        if clean and not made_up:
             return ""  # the declared record is the check this listing stood in for: one click saves
+    if listing == "ask" and (made_up or len(found["fields"]) >= cdp.FORM_CHECK_MIN_FIELDS):
+        unsourced = ("; ".join(f"{label}: {value!r}" for label, value in made_up))
+        return AskFirst(f"this replay would save {el._quote(found['form'], 60)} with the values it holds today, which "
+                        "a person has not seen - a recording is not a yes to the values a run types:\n" + lines
+                        + (f"\n  (in no source of this request: {unsourced})" if unsourced else ""))
     if len(found["fields"]) < cdp.FORM_CHECK_MIN_FIELDS or not listing:
         return ""  # a small form (a search, a sign-in) is sent at once
     key = hashlib.sha256(json.dumps([element.get("path") or element.get("name"), found], sort_keys=True).encode()).hexdigest()
+    note_file = _form_check_file()
     try:
-        noted = json.loads(FORM_CHECK_FILE.read_text(encoding="utf-8"))
+        noted = json.loads(note_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         noted = {}
+    if (noted.get("task") or "") != task_context.current():
+        noted = {}  # another task's listing confirms nothing here
     if confirm:
         # Not confirmed this way: the same press would only list it again. The form's own submit control is.
-        lines = "\n".join(f"  {label}: {value}" for label, value in found["fields"])
         return (f"Not pressed - {el._quote(found['form'], 60)} would be sent holding:\n{lines}\n"
                 + ("".join(f"  ({line})\n" for line in ledger_lines)) + confirm)
     if checked and noted.get("key") == key and time.time() - float(noted.get("at") or 0) < FORM_CHECK_SECONDS:
@@ -1943,13 +1977,13 @@ def _form_check(element, checked=False, found=None, confirm=None, listing=True):
         # filing was put to the person five more times.
         return ""
     try:
-        FORM_CHECK_FILE.write_text(json.dumps({"key": key, "at": time.time(), "ref": element.get("ref") or ""}), encoding="utf-8")
+        note_file.write_text(json.dumps({"key": key, "at": time.time(), "ref": element.get("ref") or "",
+                                         "task": task_context.current()}), encoding="utf-8")
     except OSError as exc:
         # Without the note the listing cannot be confirmed later, and letting the press through unlisted is the check
         # skipped (review 2026-11-02). It waits for a person instead.
         return (f"Not pressed: the list of what {el._quote(found['form'], 60)} would send could not be kept "
                 f"({' '.join(str(exc).split())[:120]}). Ask the person (HELP) before this is saved.")
-    lines = "\n".join(f"  {label}: {value}" for label, value in found["fields"])
     return (f"Not pressed yet - {el._quote(found['form'], 60)} would be sent holding:\n{lines}\n"
             + ("".join(f"  ({line})\n" for line in ledger_lines))
             + "Check every value against what you meant to enter (a quantity, a price, every line). If all are right, "
@@ -1989,7 +2023,7 @@ def _commit_keys(keys):
     return (any(c in ("return", "enter", "kp_enter") for c in combos), any(c == "ctrl+s" for c in combos))
 
 
-def _commit_check(kind, element, keys, before, checked=False, text=None):
+def _commit_check(kind, element, keys, before, checked=False, text=None, listing=True):
     """
     The pre-save checks (_form_check: a record entered twice, a placeholder, an invented or unsourced value, the
     declared record's ledger, the listing of a full form) for every action that commits what a form or a page holds,
@@ -2005,7 +2039,7 @@ def _commit_check(kind, element, keys, before, checked=False, text=None):
         form = cdp.submit_form_fields(element, min_fields=1) if element.get("source") == "cdp" else None
         if form is None and not approval.commits(element):
             return ""
-        return _form_check(element, checked=checked, found=form or _page_fields(before, element))
+        return _form_check(element, checked=checked, found=form or _page_fields(before, element), listing=listing)
     typed_enter = kind == "type" and bool(text) and "\n" in text and element is not None
     if kind != "key" and not typed_enter:
         return ""
@@ -2022,7 +2056,7 @@ def _commit_check(kind, element, keys, before, checked=False, text=None):
             form = dict(form, fields=[f for f in form.get("fields") or [] if f[0] != label]
                         + ([[label, line[:80]]] if line.strip() and not privacy.secret_field(field) else []))
         submit = {"name": form.get("submit") or "Submit", "ref": "", "path": field.get("path") or ""}
-        return _form_check(submit, found=form, confirm=(
+        return _form_check(submit, found=form, listing=listing, confirm=(
             "Enter would send it, and an Enter is not how a full form is sent: press the form's own submit control "
             "(gui click REF), which lists the form once more and is confirmed with --checked."))
     if save and before.get("page_url") and not _relayed_page(before):
@@ -3394,11 +3428,75 @@ def _what_it_acts_on(observation, element):
         # A message about to be sent is read whole: cut at 80 characters, the person asked to approve it was shown
         # the first few words and refused until the worker pasted it into a question (2026-10-25).
         shown.append(f"{e['role']} {el._quote(e.get('name') or '', 60)} holds {el._quote(value, ACTS_ON_CHARS)}")
-    return ("It would act on what is filled in: " + "; ".join(shown[:3])) if shown else ""
+    # Every filled field is shown up to a length (the grant is bound to all of them, _what_it_sends): an amount in the
+    # fourth field is as much what the person approves as the first three.
+    out, used = [], 0
+    for line in shown:
+        if out and used + len(line) > ACTS_ON_TOTAL:
+            out.append(f"and {len(shown) - len(out)} more filled field(s)")
+            break
+        out.append(line)
+        used += len(line)
+    return ("It would act on what is filled in: " + "; ".join(out)) if out else ""
 
 
-# How much of a filled field's value an approval quotes (_what_it_acts_on).
+# How much of a filled field's value an approval quotes (_what_it_acts_on), and of all of them together.
 ACTS_ON_CHARS = 600
+ACTS_ON_TOTAL = 3000
+
+CHECKED_ROLES = ("checkbox", "radio", "switch")
+
+
+def _what_it_sends(observation, element, enter_form=None):
+    """
+    Every filled field an action the gate stopped would send, for its grant (approval.sent_digest): each filled field
+    of its window, a checked box among them, and the fields of the <form> a click or an Enter submits as the page holds
+    them. A secret field is in it as filled, never by its value. Found in review (2026-11-02): the grant held the first
+    three fields shown, so an amount in a later one could change under a yes.
+    """
+
+    group = (element or {}).get("group") or active_group(observation)
+    out = []
+    for e in (observation or {}).get("elements") or []:
+        if group and e.get("group") != group:
+            continue
+        role = e.get("role")
+        if role in FILLED_ROLES:
+            value = " ".join(str(e.get("value") or "").split())
+            if value:
+                secret = privacy.secret_field(e) or privacy.credential_in(value)
+                out.append([e.get("name") or role, "" if secret else value, bool(secret)])
+        elif role in CHECKED_ROLES and "checked" in (e.get("states") or []):
+            out.append([e.get("name") or role, "checked"])
+    form = enter_form
+    if form is None and element is not None and element.get("source") == "cdp" and element.get("handle"):
+        form = cdp.submit_form_fields(element, min_fields=0)
+    for label, value in (form or {}).get("fields") or []:
+        out.append(["form " + str(label), value])
+    return out
+
+
+def _enter_submits(kind, element, keys, text, before):
+    """
+    The submit control an Enter in this action presses, as an element ({"role": "button", "name": its label, "form":
+    what the form holds}), when the keys (or a typed new line) go to a page's single-line field whose <form> has one;
+    else None. Enter there is a press on that control (cdp.FORM_FIELDS), and is put to the gate as one: found in review
+    (2026-11-02), Enter in a form whose submit was "Pay" went past the gate, which looks at labels it is pressed on.
+    """
+
+    if kind == "key":
+        if not _commit_keys(keys)[0]:
+            return None
+    elif not (kind == "type" and text and "\n" in text):
+        return None
+    field = element if element is not None else _keyboard_field(before)
+    if not field or field.get("source") != "cdp" or not field.get("handle"):
+        return None
+    form = cdp.enter_form_fields(field)
+    if not form:
+        return None
+    return {"role": "button", "name": form.get("submit") or "", "source": "cdp", "path": field.get("path") or "",
+            "group": field.get("group"), "window_title": field.get("window_title"), "form": form}
 
 
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
@@ -3632,17 +3730,34 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     _refuse_unsafe_save(kind, element, keys, before)
     downloads_before = _downloads_snapshot() if kind in ("click", "double_click", "key") else None
     acted_at = time.time()
+    require = None
     if check_form:
-        # Every committing action an engine takes, however it is pressed (_commit_check).
-        held = _commit_check(kind, element, keys, before, checked=check_form == "checked", text=text)
-        if held:
+        # Every committing action an engine or a replay takes, however it is pressed (_commit_check). A replay's
+        # (check_form="replay") listing of today's values is put to the person instead (AskFirst).
+        held = _commit_check(kind, element, keys, before, checked=check_form == "checked", text=text,
+                             listing="ask" if check_form == "replay" else True)
+        if isinstance(held, AskFirst):
+            require = str(held)
+        elif held:
             raise ComputerError(held)
 
+    # Enter that submits a form is a press on its submit control, and is asked for when that press would be
+    # (_enter_submits).
+    by_enter = _enter_submits(kind, element, keys, text, before)
+    if by_enter is not None:
+        why = approval.assess("click", by_enter, context=context)
+        if why:
+            label = " ".join(str(by_enter.get("name") or "").split())[:60]
+            why = f'Enter here submits the form with its "{label}" control - {why}'
+            require = f"{why}; {require}" if require else why
+
     decision = approval.check(kind, element, text=text, keys=keys, point=point, context=context,
-                              about=_what_it_acts_on(before, element))
+                              about=_what_it_acts_on(before, element), require=require,
+                              sends=lambda: _what_it_sends(before, element if by_enter is None else by_enter,
+                                                           enter_form=(by_enter or {}).get("form")))
     if decision.allowed and check_form == "checked":
         try:
-            FORM_CHECK_FILE.unlink()  # the checked form is sent now (_form_check)
+            _form_check_file().unlink()  # the checked form is sent now (_form_check)
         except OSError:
             pass
 
@@ -3713,6 +3828,15 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         })
         audit.record(entry, before=before["frame"], masks=masks)
         raise
+    except OSError as exc:
+        # A connection that broke mid-action (a browser tab that crashed: BrokenPipeError on its DevTools socket) is a
+        # failed action, recorded like any other - it may have half happened. Found in review (2026-11-02): it left
+        # `gui` with exit 0 and no audit step.
+        reason = (f"the connection to the app broke while acting ({type(exc).__name__}: {exc}) - it may or may not "
+                  "have happened; observe before doing anything again")
+        entry.update({"outcome": "failed", "reason": reason, "summary": f"{described} - failed: {reason}"})
+        audit.record(entry, before=before["frame"], masks=masks)
+        raise ActedError(reason) from exc
 
     settled = _wait_for_settle(before["frame"])
     after = observe()
@@ -3748,7 +3872,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
                           "summary": described + " - failed: " + reason})
             audit.record(entry, before=before["frame"], after=after["frame"] or settled,
                          masks=masks + privacy.secret_boxes(after["elements"]))
-            raise ComputerError(reason)
+            raise ActedError(reason)
 
     block_note, unverified = "", []
     if block is not None and backend == "xdotool:sheet-block":
@@ -3929,6 +4053,9 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         "element": element,
         "change": change,
         "observation": after,
+        # The screen as it was before the action: what a replay holds a step's expected result against, so a result
+        # that was already there is not taken for the step's (replay.run).
+        "before": before,
         # Cells of a typed block that do not hold what was typed: the gui command fails verification (exit 4).
         "unverified": unverified,
     }

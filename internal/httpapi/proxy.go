@@ -126,6 +126,11 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 	reverseProxy.ServeHTTP(w, r)
 }
 
+// containerContentPolicy is the policy on anything a desktop serves through the control plane's address: a sandbox
+// (an opaque origin, which the guard refuses and the browser keeps from reading the control plane), framed by nothing
+// but the control plane's own pages.
+const containerContentPolicy = "sandbox allow-scripts allow-forms allow-popups; frame-ancestors 'self'"
+
 // sandboxContainerContent marks what a desktop serves through the control plane's address as a sandbox. A page or
 // script from a desktop shown at /desktop/<id>/ or /agent/<id>/ would otherwise run as the control plane's own origin
 // and could call every route a person can (review 2026-11-02). Sandboxed, it has an opaque origin: GuardPrimary
@@ -135,7 +140,7 @@ func sandboxContainerContent(resp *http.Response) {
 	if resp.StatusCode == http.StatusSwitchingProtocols {
 		return
 	}
-	resp.Header.Set("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-popups")
+	resp.Header.Set("Content-Security-Policy", containerContentPolicy)
 	resp.Header.Set("X-Content-Type-Options", "nosniff")
 }
 

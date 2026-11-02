@@ -286,12 +286,17 @@ func scale(word string) float64 {
 	return 1
 }
 
-// LargestAmount returns the largest money figure in text, or nil when there is none. A figure is money when a
-// currency sign, code or word (or "amount"/"total") stands beside it, when it is grouped with commas (1,250 or
-// 4,50,000), or when "lakh"/"crore" follows it; a figure followed by "%" is a rate and never an amount, and a figure
-// joined to letters, a dash or a slash (INV-2024, 27/10) is part of a code or a date.
+// LargestAmount returns the largest figure in text that could be the money an action moves, or nil when there is
+// none. It answers an approval threshold, so it errs high. With no figure marked as money (a currency sign, code or
+// word, "amount"/"total", comma grouping, lakh/crore) the amount is unknown: nil, and an amount policy applies
+// ("Pay 3 invoices" is not a payment of 3). With one, every standalone figure counts, marked or not, so a policy is
+// skipped only when all of them are under its limit (review 2026-11-02 - "Pay 450000 ... bank charges Rs 50" read
+// as 50 and skipped the two-approver rule); "lakh"/"crore" and L/Cr/k/million scale a figure; a figure
+// followed by "%" is a rate and never an amount, and a figure joined to letters, a dash or a slash (INV-2024, 27/10)
+// is part of a code or a date. Grouping must be Western or Indian (1,250 or 4,50,000).
 func LargestAmount(text string) *float64 {
 	var best *float64
+	sawMoney := false
 	for _, loc := range figureRe.FindAllStringIndex(text, -1) {
 		raw, before, after := text[loc[0]:loc[1]], text[:loc[0]], text[loc[1]:]
 		if joined(before, true) || (joined(after, false) && !scaleMarkRe.MatchString(after) && !scaleWordRe.MatchString(after)) {
@@ -307,19 +312,22 @@ func LargestAmount(text string) *float64 {
 		if err != nil {
 			continue
 		}
-		marked := moneyBeforeRe.MatchString(before) || moneyAfterRe.MatchString(after)
-		if m := scaleWordRe.FindStringSubmatch(after); m != nil {
-			v, marked = v*scale(m[1]), true
-		} else if m := scaleMarkRe.FindStringSubmatch(after); m != nil && marked {
-			v = v * scale(m[1])
+		if moneyBeforeRe.MatchString(before) || moneyAfterRe.MatchString(after) || strings.Contains(raw, ",") {
+			sawMoney = true
 		}
-		if !marked && !strings.Contains(raw, ",") {
-			continue
+		if m := scaleWordRe.FindStringSubmatch(after); m != nil {
+			v *= scale(m[1])
+			sawMoney = true
+		} else if m := scaleMarkRe.FindStringSubmatch(after); m != nil {
+			v *= scale(m[1])
 		}
 		if best == nil || v > *best {
 			val := v
 			best = &val
 		}
+	}
+	if !sawMoney {
+		return nil
 	}
 	return best
 }

@@ -108,6 +108,9 @@ type Manager struct {
 	// and desktop icons/apps are migrated in the background.
 	provisioningMu sync.RWMutex
 	provisioning   map[string]*ProvisioningDesktop
+	// provisioningRuns is each creation in flight's cancel and its done channel (closed when its goroutine has
+	// finished, cleanup included), so a delete can stop a creation and wait for it (Delete).
+	provisioningRuns map[*ProvisioningDesktop]provisioningRun
 
 	// missingMu guards missing (the requested host apps each desktop does not have, and why) and retrying (desktops
 	// with a background retry of apps the host could not be asked about yet). See missingapps.go.
@@ -183,6 +186,11 @@ func (m *Manager) BeginProvisioning(
 	if sanitizedID == "" {
 		return nil, fmt.Errorf("invalid desktop name")
 	}
+	// Without the control plane's secret a desktop would get no agent token and a guessable screen password: its
+	// agent would take requests and replies from anyone on the network (review 2026-11-02). Never made that way.
+	if len(m.HostGUISecret) == 0 {
+		return nil, fmt.Errorf("the control plane could not load its secret (hostgui.key in the data folder), so a new desktop cannot be made safely; check the data folder and restart Decurix")
+	}
 
 	// Verify no existing container or provisioning desktop with this name
 	m.provisioningMu.RLock()
@@ -256,6 +264,19 @@ func (m *Manager) runProvisioning(
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	done := make(chan struct{})
+	m.provisioningMu.Lock()
+	if m.provisioningRuns == nil {
+		m.provisioningRuns = map[*ProvisioningDesktop]provisioningRun{}
+	}
+	m.provisioningRuns[prov] = provisioningRun{cancel: cancel, done: done}
+	m.provisioningMu.Unlock()
+	defer func() {
+		m.provisioningMu.Lock()
+		delete(m.provisioningRuns, prov)
+		m.provisioningMu.Unlock()
+		close(done)
+	}()
 
 	sanitizedID := prov.ID
 	name := prov.Name
@@ -282,12 +303,12 @@ func (m *Manager) runProvisioning(
 		_ = m.client.ContainerRemove(context.Background(), containerName, container.RemoveOptions{Force: true})
 		_ = m.client.VolumeRemove(context.Background(), volumeName, true)
 
-		// Retain error for 60s so UI polls can display the error before cleaning up
-		time.AfterFunc(60*time.Second, func() {
-			m.provisioningMu.Lock()
-			delete(m.provisioning, sanitizedID)
-			m.provisioningMu.Unlock()
-		})
+		// A creation stopped by a delete is gone at once; a failure is kept 60s so the page can show it.
+		if ctx.Err() == context.Canceled {
+			m.forgetProvisioning(prov)
+			return
+		}
+		time.AfterFunc(60*time.Second, func() { m.forgetProvisioning(prov) })
 	}
 
 	// 1. Resolve image
@@ -388,6 +409,11 @@ func (m *Manager) runProvisioning(
 	// 6. Readiness Probe (Wait for VNC / websockify to listen)
 	updateStage("readiness", "Waiting for desktop GUI to initialize...", 90)
 	ready := m.WaitForGUIReady(ctx, sanitizedID, 25*time.Second)
+	if ctx.Err() == context.Canceled {
+		// Deleted while it started: the delete waits for this run and then removes what it made.
+		m.forgetProvisioning(prov)
+		return
+	}
 	if !ready {
 		log.Printf("warning: desktop %s GUI readiness probe timed out (will continue running)", sanitizedID)
 	}
@@ -402,9 +428,26 @@ func (m *Manager) runProvisioning(
 	m.provisioningMu.Unlock()
 
 	// Retain ready state in provisioning for 5 seconds so in-flight status polls receive ready: true
-	time.Sleep(5 * time.Second)
+	select {
+	case <-time.After(5 * time.Second):
+	case <-ctx.Done():
+	}
+	m.forgetProvisioning(prov)
+}
+
+// provisioningRun is one creation's cancel and the channel closed when it has finished.
+type provisioningRun struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// forgetProvisioning removes prov from the creations in flight, only if it is still the one under its ID: a later
+// creation of the same name must never lose its entry to an older one's cleanup (review 2026-11-02).
+func (m *Manager) forgetProvisioning(prov *ProvisioningDesktop) {
 	m.provisioningMu.Lock()
-	delete(m.provisioning, sanitizedID)
+	if m.provisioning[prov.ID] == prov {
+		delete(m.provisioning, prov.ID)
+	}
 	m.provisioningMu.Unlock()
 }
 
@@ -943,12 +986,26 @@ func (m *Manager) Delete(
 	m.InvalidateProxyTarget(sanitizedID)
 	name := "desktop_" + sanitizedID
 
+	// A creation in flight is stopped and waited for before anything is removed: removing its entry at once let a
+	// new desktop of the same name start while the old run still made (or cleaned up) the same container and volume,
+	// and the old one's cleanup wiped the new one (review 2026-11-02). Its name stays claimed until the run is done.
 	m.provisioningMu.Lock()
-	_, isProvisioning := m.provisioning[sanitizedID]
-	if isProvisioning {
-		delete(m.provisioning, sanitizedID)
-	}
+	prov, isProvisioning := m.provisioning[sanitizedID]
+	run, running := m.provisioningRuns[prov]
 	m.provisioningMu.Unlock()
+	if running {
+		run.cancel()
+		select {
+		case <-run.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(60 * time.Second):
+			return fmt.Errorf("desktop %s is still being created and did not stop; try again", id)
+		}
+	}
+	if isProvisioning {
+		m.forgetProvisioning(prov)
+	}
 
 	inspect, err := m.client.ContainerInspect(
 		ctx,
@@ -957,8 +1014,8 @@ func (m *Manager) Delete(
 	if err != nil {
 		if isProvisioning {
 			// Container was not yet created or partially created; clean up volume if any
-			volumeName := "decurix_home_" + sanitizedID
-			_ = m.client.VolumeRemove(ctx, volumeName, true)
+			// The name runProvisioning gives it.
+			_ = m.client.VolumeRemove(ctx, fmt.Sprintf("desktop_%s_home", sanitizedID), true)
 			return nil
 		}
 		return notFound(id, err)

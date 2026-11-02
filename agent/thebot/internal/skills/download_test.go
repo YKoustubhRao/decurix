@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"thebot/internal/netguard"
 	"thebot/internal/workspace"
 )
 
@@ -22,16 +23,23 @@ func newDownloadRC(t *testing.T) RunContext {
 	if err != nil {
 		t.Fatalf("workspace.New() error = %v", err)
 	}
+	// These tests' pages are httptest servers on loopback, which the guarded
+	// client refuses (TestDownloadRefusesNonPublicAddresses).
+	old := fetchClient
+	fetchClient = http.DefaultClient
+	t.Cleanup(func() { fetchClient = old })
 	return RunContext{Ctx: context.Background(), Workspace: ws, OnLog: func(string) {}}
 }
 
-// The real bug this pins: "download the PDF files from the URL found"
-// (the exact phrasing a 2-step search-then-download plan produces) has
-// no URL in its own text. Without falling back to what the earlier
-// search step actually found, this failed on every single compound
-// download request.
-func TestDownloadFallsBackToURLFromPriorFindings(t *testing.T) {
+// "download the PDF files from the URL found" (the phrasing a 2-step
+// search-then-download plan produces) names no URL. The URL an earlier step's
+// prose mentions is NOT taken: that prose may be a model's summary of a page
+// (or a page's injected text), not a page anything fetched. Only what a
+// verified step recorded fetching (Meta, TestDownloadRecoversURLWhenSearchSynthesisWasWrong) is.
+func TestDownloadDoesNotTakeAURLFromPriorProse(t *testing.T) {
+	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
 		w.Write([]byte("%PDF-1.4 report"))
 	}))
 	defer srv.Close()
@@ -42,17 +50,69 @@ func TestDownloadFallsBackToURLFromPriorFindings(t *testing.T) {
 		Subtask:  Subtask{Step: "search the web for the filing"},
 		Output:   "Found the filing at " + fileURL + " according to the source.",
 		Verified: true,
+		Meta:     map[string]any{MetaModelReply: true},
 	}}
 
 	res, err := NewDownload().Run(rc, Subtask{Step: "download the PDF files from the URL found", Type: "download"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if !res.Verified {
-		t.Fatalf("Run() not verified: %s", res.Output)
+	if res.Verified || hits != 0 {
+		t.Fatalf("downloaded a URL only a model's summary named (verified=%v, hits=%d): %s", res.Verified, hits, res.Output)
 	}
-	if !strings.Contains(res.Output, "report.pdf") {
-		t.Errorf("Output = %q, want it to reflect the downloaded file", res.Output)
+}
+
+// A plan step naming a URL neither the request nor a fetched page gave is not
+// followed - a planner (a model) may have copied it from a summary.
+func TestDownloadIgnoresAStepURLTheRequestDidNotGive(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Write([]byte("%PDF-1.4 x"))
+	}))
+	defer srv.Close()
+
+	rc := newDownloadRC(t)
+	rc.OriginalPrompt = "find the annual report and download it"
+	res, _ := NewDownload().Run(rc, Subtask{Step: "download " + srv.URL + "/annual.pdf", Type: "download"})
+	if res.Verified || hits != 0 {
+		t.Fatalf("followed a URL the request never gave (verified=%v, hits=%d): %s", res.Verified, hits, res.Output)
+	}
+
+	rc.OriginalPrompt = "download " + srv.URL + "/annual.pdf please"
+	res, _ = NewDownload().Run(rc, Subtask{Step: "download " + srv.URL + "/annual.pdf", Type: "download"})
+	if !res.Verified {
+		t.Fatalf("a URL the request gave was not downloaded: %s", res.Output)
+	}
+}
+
+// The guarded client never reaches loopback (the control plane's published
+// port, soul, the agent API, Chrome's debugging port), private or link-local
+// addresses (the metadata service) - including through a redirect.
+func TestDownloadRefusesNonPublicAddresses(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Write([]byte("%PDF-1.4 internal"))
+	}))
+	defer srv.Close()
+
+	rc := newDownloadRC(t)
+	fetchClient = netguard.Client(0) // the production client, not the test's
+	for _, u := range []string{
+		srv.URL + "/x.pdf",
+		"http://169.254.169.254/latest/meta-data/iam.json",
+		"http://10.0.0.1:8080/api/desktops.json",
+		"http://[::1]:4900/report.pdf",
+		"http://localhost:9222/json",
+	} {
+		res, _ := NewDownload().Run(rc, Subtask{Step: "download " + u, Type: "download"})
+		if res.Verified {
+			t.Errorf("downloaded %s: %s", u, res.Output)
+		}
+	}
+	if hits != 0 {
+		t.Errorf("the loopback server was reached %d time(s)", hits)
 	}
 }
 
@@ -341,6 +401,7 @@ func TestFetchBytesIsBounded(t *testing.T) {
 		w.Write(bytes.Repeat([]byte("x"), 4096))
 	}))
 	defer srv.Close()
+	newDownloadRC(t) // lets this test reach its loopback server
 	if _, err := fetchBytes(context.Background(), srv.URL, 5*time.Second, 1024); err == nil {
 		t.Fatal("a 4 KB body was read whole under a 1 KB bound")
 	}

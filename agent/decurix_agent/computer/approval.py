@@ -82,6 +82,83 @@ CONSEQUENTIAL_CONTROL = re.compile(
     re.IGNORECASE,
 )
 
+# More phrases that commit the person, read like CONSEQUENTIAL_CONTROL at any word of a label (consequential). Found in
+# review (2026-11-02): "Continue to payment", "Authorize", "Approve payment" passed a gate that read only the label's
+# first words.
+MORE_CONSEQUENTIAL = re.compile(
+    r"^\s*(?:"
+    r"(?:proceed|continue|go|move on|next|skip) to (?:the )?(?:checkout|payment|pay|paying|file|filing|submit|submission"
+    r"|send|transfer|purchase)"
+    r"|authori[sz]e"
+    r"|(?:make|submit|confirm|complete|process|release|initiate|execute|approve|schedule|send|finali[sz]e) "
+    r"(?:the |this |a |my |your )?(?:payments?|transfers?|transactions?|remittances?|wires?|purchases?|donations?)"
+    r"|remit|wire(?: money| funds)?"
+    r"|settle (?:the |this )?(?:invoices?|bills?|payments?|balances?|amounts?|dues)"
+    r"|place (?:the |this |an )?order"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# A label as words: "&", "+" and "/" read as "and"; symbols, emoji and arrows dropped ("🔒 Pay now →" is "Pay now").
+_JOINERS = re.compile(r"\s*[&+/]\s*")
+_NOT_A_WORD = re.compile(r"[^\w\s'-]+")
+
+# How a label that holds a committing word only reads or goes somewhere: a read or navigation word before it ("View
+# post", "Track transfer"), or nothing but nouns of looking after it ("Payment history", "Pay slip", "Transfer
+# history"); "New Purchase Invoice" names a kind of record. Words that destroy or end something
+# are never read so: "Delete history" deletes it.
+_READ_BEFORE = set("view show see track print download export preview find search filter browse open review "
+                   "read list".split())
+_READ_AFTER = set("history list lists report reports details detail summary status settings setting options option "
+                  "methods method preferences statement statements slip slips log logs overview dashboard records "
+                  "activity analytics info information help faq faqs terms policy policies guide page register "
+                  "registers trends analysis calendar".split())
+_RECORD_NOUNS = set("invoice invoices order orders receipt receipts request requests return returns ledger ledgers "
+                    "entry entries quotation quotations requisition requisitions item items record records note notes "
+                    "voucher vouchers bill bills".split())
+_CREATE_BEFORE = set("new add create draft edit copy duplicate amend".split())
+_DESTROYS = set("delete erase purge destroy cancel close withdraw remove".split())
+
+
+def label_words(name):
+    """A control's accessible name as plain words (symbols, emoji and arrows dropped; & + / read as "and")."""
+
+    text = _NOT_A_WORD.sub(" ", _JOINERS.sub(" and ", str(name or ""))).replace("_", " ")
+    return " ".join(text.split())
+
+
+def _only_reads(words, i):
+    """Whether the committing word at words[i] is used to read or go somewhere, not to commit (_READ_BEFORE...)."""
+
+    verb = words[i].lower()
+    if verb in _DESTROYS:
+        return False
+    before = words[i - 1].lower() if i else ""
+    after = [w.lower() for w in words[i + 1:]]
+    if before in _READ_BEFORE:
+        return True
+    # (Only nouns of looking: "Purchase Invoice List" on a button may still be an act - a kind of record after the word
+    # is RECORD_NAME's to read, for links and menus.)
+    if after and all(w in _READ_AFTER for w in after):
+        return True
+    return before in _CREATE_BEFORE and bool(after) and all(w in _RECORD_NOUNS for w in after)
+
+
+def consequential(name):
+    """
+    Whether a control's label commits the person to something (CONSEQUENTIAL_CONTROL, MORE_CONSEQUENTIAL), matched as
+    whole words at any word of it - "Confirm & Pay", "Securely pay", "🔒 Pay", "Pay now →" - unless that word is only
+    read there (_only_reads: "Payment history", "View post"). Found in review (2026-11-02): matched at the label's
+    first word only, every one of those passed unasked. Anything not plainly a read is asked: unsure is asked.
+    """
+
+    words = label_words(name).split()
+    for i in range(len(words)):
+        rest = " ".join(words[i:])
+        if (CONSEQUENTIAL_CONTROL.match(rest) or MORE_CONSEQUENTIAL.match(rest)) and not _only_reads(words, i):
+            return True
+    return False
+
 # Roles that carry out their label when activated.
 ACTIVATING_ROLES = {"button", "link", "menuitem", "toggle", "listitem", "icon", "option"}
 
@@ -408,7 +485,7 @@ def assess(kind, element, text=None, keys=None, context=None):
 
     if kind in ("click", "double_click") and element is not None:
         name = element.get("name") or ""
-        if element["role"] in ACTIVATING_ROLES and CONSEQUENTIAL_CONTROL.match(name) and not _navigates(element):
+        if press_effect(element) == "asks":
             label = " ".join(name.split())[:60]
             return f'"{label}" sends, pays, buys or publishes something on your behalf'
 
@@ -450,14 +527,28 @@ COMMIT_CONTROL = re.compile(
 PRESS_ROLES = ACTIVATING_ROLES | {"menuitem", "tab"}
 
 
-def commits(element):
-    """Whether a press on this control commits something (COMMIT_CONTROL, or a control the gate stops), and does not
-    only go somewhere (a navigation link, a list's option)."""
+def press_effect(element):
+    """
+    What a press on this control does, as one decision for every part that asks: "asks" - it commits the person to
+    something (consequential), and the gate puts it to them first; "commits" - it keeps, sends or ends a record
+    (COMMIT_CONTROL at the label's first word, or a consequential label on a role the gate does not ask for), and the
+    pre-save checks run before it; None - it only goes somewhere or changes nothing kept.
+    """
 
-    if not element or (element.get("role") or "") not in PRESS_ROLES or _navigates(element):
-        return False
+    role = (element or {}).get("role") or ""
+    if not element or role not in PRESS_ROLES or _navigates(element):
+        return None
     name = element.get("name") or ""
-    return bool(COMMIT_CONTROL.match(name) or CONSEQUENTIAL_CONTROL.match(name))
+    if consequential(name):
+        return "asks" if role in ACTIVATING_ROLES else "commits"
+    return "commits" if COMMIT_CONTROL.match(label_words(name)) else None
+
+
+def commits(element):
+    """Whether a press on this control commits something (press_effect: a control the gate stops, or one whose label
+    says it keeps, sends or ends a record), and does not only go somewhere (a navigation link, a list's option)."""
+
+    return press_effect(element) is not None
 
 
 # Where a person's secrets may be typed without asking (2026-10-21): a taught task's replay stopped
@@ -547,12 +638,33 @@ def confirms_permanently(element, open_dialogs=None):
     return asked or None
 
 
-def _fingerprint(kind, element, text, keys, point, context=None, about=""):
+SECRET_MARK = "\x00secret"
+
+
+def sent_digest(fields):
+    """
+    One digest of every filled field a press sends ([[label, value, secret?], ...]), in order: the amount in the
+    tenth field counts as much as the first. A secret field's value never enters it - only that the field is filled
+    (SECRET_MARK). Found in review (2026-11-02): the fingerprint held the first three fields shown to the person, so a
+    yes stood for the same form with another amount in its fourth.
+    """
+
+    parts = []
+    for item in fields or ():
+        label, value = (list(item) + ["", ""])[:2]
+        secret = len(item) > 2 and bool(item[2])
+        parts.append(" ".join(str(label or "").split()).lower() + "\x1e"
+                     + (SECRET_MARK if secret else " ".join(str(value or "").split())))
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:24] if parts else ""
+
+
+def _fingerprint(kind, element, text, keys, point, context=None, about="", sends=""):
     """
     What one approval is for: the action, the control, and what it acts on - the window, the page's address (the
-    document, the chat, the record) and the filled fields beside it (the recipient, the amount, the message). A yes
-    to "Send" in one chat, or to a form holding one amount, is no yes once the page or the fields are another's
-    (review 2026-11-02: the fingerprint was the label and the window title only).
+    document, the chat, the record), the filled fields beside it as shown (the recipient, the amount, the message) and
+    every field the press sends (`sends`, sent_digest). A yes to "Send" in one chat, or to a form holding one amount,
+    is no yes once the page or the fields are another's (review 2026-11-02: the fingerprint was the label and the
+    window title only).
     """
 
     context = context or {}
@@ -565,6 +677,7 @@ def _fingerprint(kind, element, text, keys, point, context=None, about=""):
         "+".join(keys or []),
         str(context.get("url") or ""),
         " ".join(str(about or "").split()),
+        str(sends or ""),
     ]
     if element is None and point:
         parts.append(f"{point[0]},{point[1]}")
@@ -699,19 +812,29 @@ def describe_action(kind, element, text=None, keys=None, point=None, withheld=No
     return f"{kind.replace('_', ' ')} {target}{where}"
 
 
-def check(kind, element, text=None, keys=None, point=None, context=None, about=""):
+def check(kind, element, text=None, keys=None, point=None, context=None, about="", sends=None, require=None):
     """
     Decide whether an action may run now. Consumes a matching grant. `about`
     says what the action would act on (the filled fields beside it), shown to
-    the person with the request.
+    the person with the request. `sends`: every filled field the press sends
+    ([[label, value, secret?]], or a function giving them, read only when the
+    action is gated) - bound into the grant whole (sent_digest). `require`: a
+    reason the caller has to put this action to the person when assess finds
+    none (an Enter that presses a form's Pay, a replay saving today's values).
     """
 
-    reason = assess(kind, element, text=text, keys=keys, context=context)
+    reason = assess(kind, element, text=text, keys=keys, context=context) or require
 
     if reason is None:
         return Decision(True)
 
-    fingerprint = _fingerprint(kind, element, text, keys, point, context=context, about=about)
+    if callable(sends):
+        try:
+            sends = sends()
+        except Exception as exc:  # noqa: BLE001 - what it sends cannot be read: no grant can be bound to it
+            sends = [["(the fields could not be read)", f"{type(exc).__name__} {time.time()}"]]
+    fingerprint = _fingerprint(kind, element, text, keys, point, context=context, about=about,
+                               sends=sent_digest(sends))
     description = describe_action(kind, element, text=text, keys=keys, point=point)
 
     with _locked() as state:

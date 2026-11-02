@@ -348,6 +348,20 @@ class TheSlotIsGivenBack(Base):
         # (A handler that asked a question and returned holds the slot until the answer: untouched.)
         self.assertEqual(state.current_task, "process the next bill")
 
+    def test_an_interrupt_is_not_swallowed_and_still_gives_the_slot_back(self):
+        # Recheck 2026-11-02: BaseException was caught - a KeyboardInterrupt or SystemExit was reported as a task error.
+        said = []
+        for stop in (KeyboardInterrupt, SystemExit):
+            def ended(content, path, stop=stop):
+                raise stop()
+            state.current_task = "process the next bill"
+            with mock.patch.object(watchers, "write_final_reply", lambda text, **kw: said.append(text)), \
+                    mock.patch.object(watchers.task_context, "current", return_value=TASK):
+                with self.assertRaises(stop):
+                    watchers._guarded(ended, TASK)("process the next bill", None)
+            self.assertIsNone(state.current_task)
+        self.assertEqual(said, [])
+
 
 class ApprovalLock(unittest.TestCase):
 

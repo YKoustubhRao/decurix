@@ -617,8 +617,14 @@ def _print_replay(result, command=None):
     elif outcome == replay.HALTED and result.get("resume_from"):
         print(f"To carry on after putting it right: {again}")
 
-    if outcome in replay.SUCCESS:
+    if outcome == replay.VERIFIED:
         return EXIT_OK
+    if outcome == replay.COMPLETED_UNVERIFIED:
+        # Every step ran, but not every result was seen: not done until someone looks (no unseen success). Exit 4, as
+        # a verify that failed: the engine checks the screen, or says it could not, before it reports the work done.
+        print("NOT CHECKED: this replay is not done until its result is seen - gui observe and check the result "
+              "against the request before reporting it done.")
+        return EXIT_VERIFY_FAILED
     if outcome == replay.RECONCILIATION_REQUIRED:
         return EXIT_VERIFY_FAILED
     return EXIT_ERROR
@@ -1144,13 +1150,22 @@ def main(argv=None):
     except KeyboardInterrupt:
         code = EXIT_ERROR
     except BrokenPipeError:
-        # The reader took what it wanted and left (gui observe | head): the action itself was done. Found by hand:
-        # the engine was handed two tracebacks for a look that had worked. Nothing more can be printed there.
+        # A pipe broke: the reader of this output left (gui observe | head), or a connection the command was using
+        # did - a browser tab that crashed under it. Which one cannot be told from here, and an action whose end was
+        # not seen is not done (review 2026-11-02: this exited 0 with no audit step). It is an error, logged; nothing
+        # more can be printed to a reader that left (in `gui observe | head` the shell reports head's status anyway).
+        import traceback
+        logging_utils.log(traceback.format_exc())
         try:
             sys.stdout = open(os.devnull, "w")
         except OSError:
             pass
-        code = EXIT_OK
+        try:
+            sys.stderr.write("gui: a connection broke while this ran (BrokenPipeError) - what it did was not seen; "
+                             "observe before doing it again\n")
+        except OSError:
+            pass
+        code = EXIT_ERROR
     except Exception as exc:
         # A bug here must not hand an engine a traceback to reason about.
         import traceback

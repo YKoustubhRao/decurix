@@ -128,6 +128,15 @@ func (l *L1) ConsiderExchange(ctx context.Context, prompt, answer string, onLog 
 	if looksExplicit(prompt) {
 		source = "explicit"
 	}
+	// A fact about the person holds only values the person said. One the
+	// answer carried - a client's GSTIN from an invoice, a total from a
+	// sheet, a number a page printed - belongs to that task's documents, and
+	// L1 has no scope to keep it in: it would be recalled into every later
+	// task as if it were known about the person.
+	if unsaid := unsaidValues(fact, prompt); len(unsaid) > 0 {
+		log(fmt.Sprintf("not stored: %s (it carries %d value(s) the person never said)", ErrUnscoped.Error(), len(unsaid)))
+		return
+	}
 
 	if err := l.Store(ctx, fact, source); err != nil {
 		log("failed to store: " + err.Error())
@@ -191,7 +200,14 @@ const dedupeThreshold = 0.95
 
 // Store writes one real fact with its real embedding, unless L1 already
 // holds something that means the same thing.
+//
+// A fact holding a secret-shaped value (LooksSecret: a password, PIN, OTP,
+// token or key) is never stored, whoever asks: L1 is recalled into every
+// later job's system frame, and a secret there is in every prompt after it.
 func (l *L1) Store(ctx context.Context, fact, source string) error {
+	if LooksSecret(fact) {
+		return ErrSecret
+	}
 	l.storeMu.Lock()
 	defer l.storeMu.Unlock()
 

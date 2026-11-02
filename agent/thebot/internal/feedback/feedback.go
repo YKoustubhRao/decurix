@@ -24,6 +24,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"thebot/internal/llm"
+	"thebot/internal/memory"
 )
 
 // embedModel is deliberately empty - see rag.go's matching comment. Each
@@ -74,7 +75,12 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // RecordNegative stores one real limitation - task is what was being
 // attempted, detail is what went wrong / what the limitation is.
+// An entry holding a secret-shaped value (memory.LooksSecret) is not kept:
+// it would be recalled into later failures' reasoning prompts.
 func (s *Store) RecordNegative(ctx context.Context, task, detail, source string) error {
+	if memory.LooksSecret(task) || memory.LooksSecret(detail) {
+		return memory.ErrSecret
+	}
 	vec, err := s.embedder.Embed(ctx, embedModel, task+"\n"+detail)
 	if err != nil {
 		return fmt.Errorf("feedback: embed entry: %w", err)

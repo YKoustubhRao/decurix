@@ -125,7 +125,9 @@ func (r *Runner) Run(ctx context.Context, command string, timeout time.Duration)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	// A background child still holding the pipes after a clean exit is the
+	// command's success, as everywhere else that runs a shell (hostshell.Exited).
+	err := hostshell.Exited(cmd, cmd.Run())
 	duration := time.Since(start)
 
 	res := CmdResult{

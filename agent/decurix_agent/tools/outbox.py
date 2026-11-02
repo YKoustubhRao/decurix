@@ -128,6 +128,21 @@ def _reason(exc):
         return str(exc)
 
 
+def _withheld(text):
+    """text with the request's secrets withheld (computer/privacy.py); a text that cannot be checked is not drafted."""
+
+    if not text:
+        return text
+    try:
+        from decurix_agent.computer import privacy
+        out = privacy.withhold_known(text)
+    except Exception as exc:  # noqa: BLE001
+        raise DraftError(f"the text could not be checked for secrets ({exc.__class__.__name__}). Nothing was drafted.")
+    if out == privacy.HELD_BACK:
+        raise DraftError("the text could not be checked for secrets. Nothing was drafted.")
+    return out
+
+
 ADDRESS = re.compile(r"[^@\s<>,;]+@[^@\s<>,;]+\.[^@\s<>,;]+")
 
 
@@ -163,6 +178,9 @@ def draft(to, subject, body, cc=None, attachments=None, replaces=None):
     to = _recipients(to)
     if not to:
         raise DraftError("give at least one recipient.")
+    # The subject and body leave the desktop (the Outbox, then a person's Send): a secret the request gave, or one the
+    # text spells out, is withheld first - failing closed (computer/privacy.py; review 2026-11-02: no pass was made).
+    subject, body = _withheld(subject), _withheld(body)
     # A recipient is an email address. Found live (2026-10-14): drafts went to "grant", "holt" and "wei" - a rep's
     # surname where the address was meant - and waited in the Outbox beside the right ones.
     bad = [r for r in to + _recipients(cc) if not ADDRESS.fullmatch(_address_of(r))]
@@ -191,10 +209,13 @@ def draft(to, subject, body, cc=None, attachments=None, replaces=None):
 
     files = []
     total = 0
+    from decurix_agent.computer import privacy
     for path in attachments or []:
-        p = Path(os.path.expanduser(str(path)))
-        if not p.is_absolute():
-            p = config.WORK_DIR / p
+        # Only a file of the work is attached: never one under a hidden folder (~/.ssh, ~/.claude/.credentials.json)
+        # or the worker's own state (review 2026-11-02: any path was attached).
+        p, why = privacy.file_may_leave(path, base=config.WORK_DIR)
+        if p is None:
+            raise DraftError(f"attachment {path} is not attached: {why}. Nothing was drafted.")
         if not p.is_file():
             raise DraftError(f"attachment {path} does not exist.")
         data = p.read_bytes()

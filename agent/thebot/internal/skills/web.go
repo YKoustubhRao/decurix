@@ -91,7 +91,7 @@ func extractQuery(step string) string {
 
 func (w *WebSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	// A bare URL means "read this page", not "search for it".
-	if m := findURL(subtask.Step); m != "" && strings.Contains(strings.ToLower(subtask.Step), "http") {
+	if m := givenURL(rc, subtask.Step); m != "" && strings.Contains(strings.ToLower(subtask.Step), "http") {
 		return w.readPage(rc, subtask, m)
 	}
 

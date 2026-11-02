@@ -7,6 +7,8 @@ from unittest.mock import patch
 from decurix_agent import llm_client, playbooks, usage
 from decurix_agent.computer import experience
 
+import sandbox_standin
+
 
 def job(worked, turns=10, resumed=False, prompt_tokens=0, response_tokens=0):
     """A finished soul job, as its snapshot reports it."""
@@ -44,6 +46,7 @@ class _Store(unittest.TestCase):
                   patch("decurix_agent.progress.emit", lambda line, *a, **k: self.said.append(line))):
             p.start()
             self.addCleanup(p.stop)
+        sandbox_standin.start(self, Path(self.tmp.name) / "scratch")
 
         usage.reset()
         playbooks.begin()

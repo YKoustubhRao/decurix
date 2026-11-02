@@ -301,6 +301,32 @@ class ARemovedRecordStillInTheOutputs(unittest.TestCase):
             self.assertEqual(stage_facts.removed_still_present(NS_0457, [str(path)]), [])
             self.assertEqual(stage_facts.removed_still_present([{"text": "Use the 18 Oct cash figure."}], [str(path)]), [])
 
+    def test_a_csv_is_checked_like_a_workbook(self):
+        # Review 2026-11-02: a CSV's cells are all text, and only stored numbers counted as figures - both checks of a
+        # removed record found nothing in any CSV.
+        with tempfile.TemporaryDirectory() as tmp:
+            register = Path(tmp) / "purchase_register.csv"
+            register.write_text("Invoice No,Vendor,Taxable Value,CGST,Note\n"
+                                "NS-0452,Nova Stationers,41800,2880,As billed\n"
+                                "NS-0457,Nova Stationers,\"66,700.00\",4533,As billed\n", encoding="utf-8")
+            found = stage_facts.removed_still_present(NS_0457, [str(register)])
+            self.assertTrue(found and found[0].startswith("purchase_register.csv: NS-0457 is still a row"), found)
+            shown_out = Path(tmp) / "shown_out.csv"
+            shown_out.write_text("Invoice No,Vendor,Taxable Value,Note\nNS-0457,Nova Stationers,66700,Cancelled\n"
+                                 "NS-0457,see the vendor's mail,,\n", encoding="utf-8")
+            self.assertEqual(stage_facts.removed_still_present(NS_0457, [str(shown_out)]), [])
+
+            bill = Path(tmp) / "NS-0457.txt"
+            bill.write_text("Nova Stationers\nTax invoice NS-0457\nTaxable 66,700.00\nCGST 4,533.00\n", encoding="utf-8")
+            summary = Path(tmp) / "itc.csv"
+            summary.write_text("Invoice No,Vendor,CGST,Claimed\nNS-0452,Nova Stationers,2880,\n"
+                               "NS-0453,Nova Stationers,1000,\nTotal ITC claimed,,,8413\n", encoding="utf-8")
+            residue = stage_facts.removed_residue(NS_0457, [str(summary)], [str(bill)])
+            self.assertTrue(residue and "plus 4,533.00 of NS-0457, which was removed" in residue[0], residue)
+            summary.write_text("Invoice No,Vendor,CGST,Claimed\nNS-0452,Nova Stationers,2880,\n"
+                               "NS-0453,Nova Stationers,1000,\nTotal ITC claimed,,,3880\n", encoding="utf-8")
+            self.assertEqual(stage_facts.removed_residue(NS_0457, [str(summary)], [str(bill)]), [])
+
 
 if __name__ == "__main__":
     unittest.main()

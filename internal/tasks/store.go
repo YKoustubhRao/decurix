@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/YKoustubhRao/decurix/internal/withhold"
 	"sort"
 	"strings"
 	"sync"
@@ -425,6 +426,8 @@ func (s *Store) MarkWorkerDeleted(id string) error {
 // The decision mirrors the desktop's own: its command watcher treats any
 // request that arrives while the agent waits on a human as the reply.
 func (s *Store) Plan(workerID, text string) (Route, error) {
+	// Compared with what Commit stored, so withheld the same way (withhold.Text).
+	text = withhold.Text(text)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -593,6 +596,9 @@ func NewRoute() Route {
 // returns the route actually taken - which differs when the situation moved in
 // between (the intervention it replied to was closed, say).
 func (s *Store) Commit(route Route, worker Worker, text string) (Route, error) {
+	// A secret the person typed (a password, an OTP) reaches the desktop as written, never these records: they are
+	// shown in traces, reports and exports (review 2026-11-02).
+	text = withhold.Text(text)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
