@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"brainiac/internal/backend"
+	"brainiac/internal/gguf"
+	"brainiac/internal/isolate"
 )
 
 // LlamaProc is one llama-server process serving one model. Brainiac starts it
@@ -27,11 +30,18 @@ type LlamaProc struct {
 	Threads   int
 	Embedding bool
 	LogPath   string
+	// TemplateSHA is the chat template the model was installed with; a file
+	// that no longer carries it is not served. Empty for an older lock.
+	TemplateSHA string
+	NoSandbox   bool // the operator turned the file sandbox off
+	Logf        func(format string, a ...any)
 
 	mu     sync.Mutex
 	cmd    *exec.Cmd
 	done   chan struct{}
 	client *backend.OpenAI
+	open   []string
+	sock   string // the Unix socket's private directory, when one is used
 }
 
 var (
@@ -49,7 +59,9 @@ func serverHelp(bin string) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	out, _ := exec.CommandContext(ctx, bin, "--help").CombinedOutput()
+	cmd := exec.CommandContext(ctx, bin, "--help")
+	cmd.Env = isolate.Env()
+	out, _ := cmd.CombinedOutput()
 	helpCache[bin] = string(out)
 	return helpCache[bin]
 }
@@ -60,10 +72,10 @@ func has(help, flag string) bool {
 
 // args are the server's flags: the model, a fixed window, a q8_0 KV cache
 // with flash attention when the build has them, one slot (its prompt cache
-// is what makes the next turn cheap), and loopback only.
-func (p *LlamaProc) args(port int) []string {
+// is what makes the next turn cheap), and loopback or a Unix socket only.
+func (p *LlamaProc) args(host string, port int) []string {
 	help := serverHelp(p.Bin)
-	a := []string{"-m", p.Model, "--host", "127.0.0.1", "--port", strconv.Itoa(port), "-c", strconv.Itoa(p.Ctx)}
+	a := []string{"-m", p.Model, "--host", host, "--port", strconv.Itoa(port), "-c", strconv.Itoa(p.Ctx)}
 	if p.Threads > 0 {
 		a = append(a, "-t", strconv.Itoa(p.Threads))
 	}
@@ -103,20 +115,36 @@ func (p *LlamaProc) Start(ctx context.Context) error {
 	if p.running() {
 		return nil
 	}
+	if p.TemplateSHA != "" {
+		got, err := gguf.FileSHA(p.Model)
+		if err != nil {
+			return fmt.Errorf("llama-server: %w", err)
+		}
+		if got != p.TemplateSHA {
+			return fmt.Errorf("llama-server: %s no longer carries the chat template it was installed with; not serving it. "+
+				"After `brainiac update approve-template`, `brainiac pull --latest` installs it again", filepath.Base(p.Model))
+		}
+	}
 	port, err := freePort()
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(p.Bin, p.args(port)...)
-	cmd.Dir = filepath.Dir(p.Bin) // shared libraries sit beside the binary
 	var logf *os.File
 	if p.LogPath != "" {
 		_ = os.MkdirAll(filepath.Dir(p.LogPath), 0o755)
 		logf, _ = os.Create(p.LogPath)
-		cmd.Stdout, cmd.Stderr = logf, logf
 	}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("llama-server: %w", err)
+	p.removeSock()
+	cmd, client, err := p.launchNoNetwork(port, logf)
+	if err != nil {
+		p.logf("llama-server: %s cannot run without a network: %v", filepath.Base(p.Model), err)
+		p.removeSock()
+		if cmd, client, err = p.launchOnLoopback(port, logf); err != nil {
+			return fmt.Errorf("llama-server: %w", err)
+		}
+	}
+	if len(p.open) > 0 {
+		p.logf("llama-server: %s runs with access to: %s", filepath.Base(p.Model), strings.Join(p.open, ", "))
 	}
 	done := make(chan struct{})
 	go func() {
@@ -126,8 +154,7 @@ func (p *LlamaProc) Start(ctx context.Context) error {
 		}
 		close(done)
 	}()
-	p.cmd, p.done = cmd, done
-	p.client = &backend.OpenAI{Name: "llama-server", BaseURL: fmt.Sprintf("http://127.0.0.1:%d", port), TemplateThinking: true}
+	p.cmd, p.done, p.client = cmd, done, client
 
 	// Loading reads the whole file; on a slow disk under memory pressure that
 	// is minutes, so the wait is long, but a crash is noticed at once.
@@ -153,6 +180,118 @@ func (p *LlamaProc) Start(ctx context.Context) error {
 			return errors.New("llama-server did not finish loading in 15 minutes")
 		}
 	}
+}
+
+// command is the server process: none of Brainiac's secrets in its environment.
+func (p *LlamaProc) command(host string, port int, logf *os.File) *exec.Cmd {
+	cmd := exec.Command(p.Bin, p.args(host, port)...)
+	cmd.Dir = filepath.Dir(p.Bin) // shared libraries sit beside the binary
+	cmd.Env = isolate.Env()
+	if logf != nil {
+		cmd.Stdout, cmd.Stderr = logf, logf
+	}
+	return cmd
+}
+
+// policy is the files the server may touch: its build and its model files,
+// and the socket's directory when it has one.
+func (p *LlamaProc) policy(write ...string) isolate.Policy {
+	read := []string{p.Model}
+	if p.MMProj != "" {
+		read = append(read, p.MMProj)
+	}
+	return isolate.ForProgram(p.Bin, read, write)
+}
+
+func (p *LlamaProc) sandboxes() bool { return !p.NoSandbox && isolate.CanSandbox() }
+
+// launchOnLoopback starts the server on a TCP port, the way that works
+// everywhere. Where the kernel can, it still may not connect anywhere, and
+// may listen on that one port only. What stays open is named in p.open.
+func (p *LlamaProc) launchOnLoopback(port int, logf *os.File) (*exec.Cmd, *backend.OpenAI, error) {
+	cmd := p.command("127.0.0.1", port, logf)
+	p.open = []string{"network", "files"}
+	if p.sandboxes() {
+		pol := p.policy()
+		pol.BlockTCP, pol.BindTCP = isolate.CanBlockTCP(), []int{port}
+		if err := isolate.Wrap(cmd, pol); err != nil {
+			p.logf("llama-server: no file sandbox: %v", err)
+			cmd = p.command("127.0.0.1", port, logf)
+		} else if pol.BlockTCP {
+			p.open = []string{"udp"}
+		} else {
+			p.open = []string{"network"}
+		}
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, nil, err
+	}
+	return cmd, &backend.OpenAI{Name: "llama-server", BaseURL: fmt.Sprintf("http://127.0.0.1:%d", port), TemplateThinking: true}, nil
+}
+
+// launchNoNetwork starts the server with no network at all, reached through a
+// Unix socket in a directory only this user can open. It returns an error,
+// with nothing started, when this system or build cannot do that.
+func (p *LlamaProc) launchNoNetwork(port int, logf *os.File) (*exec.Cmd, *backend.OpenAI, error) {
+	if !isolate.CanCutNetwork {
+		return nil, nil, errors.New("this system cannot start a process without a network")
+	}
+	if !strings.Contains(serverHelp(p.Bin), ".sock") {
+		return nil, nil, errors.New("this llama-server build has no Unix socket to be reached through")
+	}
+	dir, err := os.MkdirTemp("", "brainiac-llama-")
+	if err != nil {
+		return nil, nil, err
+	}
+	p.sock = dir
+	path := filepath.Join(dir, "s.sock")
+	if len(path) > 100 { // sun_path holds about 108 bytes
+		return nil, nil, fmt.Errorf("the socket path %s is too long", path)
+	}
+	cmd := p.command(path, port, logf)
+	isolate.NoNetwork(cmd)
+	p.open = []string{"files"}
+	if p.sandboxes() {
+		if err := isolate.Wrap(cmd, p.policy(dir)); err != nil {
+			p.logf("llama-server: no file sandbox: %v", err)
+		} else {
+			p.open = nil
+		}
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, nil, err
+	}
+	client := &backend.OpenAI{Name: "llama-server", BaseURL: "http://llama-server", TemplateThinking: true, HTTP: &http.Client{
+		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", path)
+		}},
+	}}
+	return cmd, client, nil
+}
+
+func (p *LlamaProc) removeSock() {
+	if p.sock != "" {
+		_ = os.RemoveAll(p.sock)
+		p.sock = ""
+	}
+}
+
+func (p *LlamaProc) logf(f string, a ...any) {
+	if p.Logf != nil {
+		p.Logf(f, a...)
+	}
+}
+
+// Open names what a running server can still reach: "files", "network", or
+// "udp" when only TCP could be blocked. Nothing for a fully confined one.
+func (p *LlamaProc) Open() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.running() {
+		return nil
+	}
+	return p.open
 }
 
 // Client is the server's API, valid while it runs.
@@ -197,6 +336,7 @@ func (p *LlamaProc) stopLocked() {
 		}
 	}
 	p.cmd = nil
+	p.removeSock()
 }
 
 func freePort() (int, error) {

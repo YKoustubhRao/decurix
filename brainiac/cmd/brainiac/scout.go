@@ -132,6 +132,11 @@ func renderScout(w io.Writer, rep *scout.Report) {
 			c.License, c.LicenseClass, c.SizeGB+c.MMProjGB, fits, claims(c.Claims, 3))
 	}
 	tw.Flush()
+	for _, c := range usable {
+		if !scout.TrustedUploader(c.Repo) {
+			fmt.Fprintf(w, "  %s: its uploader is not on the trusted list, so only a person can add it\n", c.Repo)
+		}
+	}
 	if len(other) > 0 {
 		fmt.Fprintln(w, "\nNew, but not usable yet:")
 		for _, c := range other {

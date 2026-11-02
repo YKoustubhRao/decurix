@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,23 +22,26 @@ import (
 const (
 	ProviderAzure  = "azure"
 	ProviderClaude = "claude"
+	// ProviderOpenAI is any OpenAI-compatible server: OpenAI itself by default, or another named by its base address
+	// (OpenRouter; a Brainiac box on the network, which may run on plain http).
+	ProviderOpenAI = "openai"
 )
 
 // KeyFile is the data-dir file sealing the saved API keys (sealed.LoadKey).
 const KeyFile = "llm.key"
 
 // Providers lists the hosted providers, in the order the dashboard shows them.
-var Providers = []string{ProviderClaude, ProviderAzure}
+var Providers = []string{ProviderClaude, ProviderAzure, ProviderOpenAI}
 
 // ValidProvider reports whether p names a hosted provider.
 func ValidProvider(p string) bool {
-	return p == ProviderAzure || p == ProviderClaude
+	return p == ProviderAzure || p == ProviderClaude || p == ProviderOpenAI
 }
 
 // Settings is what a person types in to set up one provider. Key is never
 // read back out of the Hub; an empty Key on a save keeps the saved one.
 type Settings struct {
-	Endpoint  string `json:"endpoint,omitempty"` // Azure only
+	Endpoint  string `json:"endpoint,omitempty"` // Azure: required; OpenAI-compatible: optional (OpenAI by default)
 	Key       string `json:"-"`
 	Model     string `json:"model"`
 	FastModel string `json:"fast_model"`
@@ -78,6 +82,7 @@ type Hub struct {
 	mu      sync.RWMutex
 	azure   *Client
 	claude  *Claude
+	openai  *Client
 	updated map[string]time.Time
 	vision  map[string]bool
 
@@ -138,14 +143,24 @@ func (h *Hub) apply(provider string, s Settings, at time.Time) {
 		h.azure = h.newAzure(s)
 	case ProviderClaude:
 		h.claude = h.newClaude(s)
+	case ProviderOpenAI:
+		h.openai = h.newOpenAI(s)
 	}
 	h.updated[provider] = at
 	h.vision[provider] = s.Vision || provider == ProviderClaude
 }
 
-// newAzure and newClaude build a provider client with the Hub's test seams.
+// newAzure, newOpenAI and newClaude build a provider client with the Hub's test seams.
 func (h *Hub) newAzure(s Settings) *Client {
 	c := NewAzure(s.Endpoint, s.Key, s.Model, s.FastModel)
+	if h.HTTP != nil {
+		c.HTTP = h.HTTP
+	}
+	return c
+}
+
+func (h *Hub) newOpenAI(s Settings) *Client {
+	c := NewOpenAI(s.Endpoint, s.Key, s.Model, s.FastModel)
 	if h.HTTP != nil {
 		c.HTTP = h.HTTP
 	}
@@ -171,6 +186,8 @@ func (h *Hub) Configured(provider string) bool {
 		return h.azure.Configured()
 	case ProviderClaude:
 		return h.claude.Configured()
+	case ProviderOpenAI:
+		return h.openai.Configured()
 	}
 
 	return false
@@ -178,7 +195,7 @@ func (h *Hub) Configured(provider string) bool {
 
 // AnyConfigured reports whether any hosted provider is set up.
 func (h *Hub) AnyConfigured() bool {
-	return h.Configured(ProviderAzure) || h.Configured(ProviderClaude)
+	return h.Configured(ProviderAzure) || h.Configured(ProviderClaude) || h.Configured(ProviderOpenAI)
 }
 
 // Model is the main model of a configured provider ("" otherwise): what a
@@ -202,8 +219,12 @@ func (h *Hub) Status() map[string]ProviderStatus {
 	if h.claude.Configured() {
 		cl = ProviderStatus{Configured: true, Model: h.claude.Model, FastModel: h.claude.FastModel}
 	}
+	op := ProviderStatus{}
+	if h.openai.Configured() {
+		op = ProviderStatus{Configured: true, Endpoint: h.openai.Endpoint, Model: h.openai.Model, FastModel: h.openai.FastModel}
+	}
 
-	for p, st := range map[string]*ProviderStatus{ProviderAzure: &az, ProviderClaude: &cl} {
+	for p, st := range map[string]*ProviderStatus{ProviderAzure: &az, ProviderClaude: &cl, ProviderOpenAI: &op} {
 		if t, ok := h.updated[p]; ok && st.Configured {
 			st.UpdatedAt = t.UTC().Format(time.RFC3339)
 			st.Vision = h.vision[p]
@@ -228,9 +249,24 @@ func (h *Hub) savedKey(provider string) string {
 		if h.claude != nil {
 			return h.claude.Key
 		}
+	case ProviderOpenAI:
+		if h.openai != nil {
+			return h.openai.Key
+		}
 	}
 
 	return ""
+}
+
+// privateHost reports whether an endpoint's host is this machine's own or on its network: a server there may run on
+// plain http (a Brainiac box, a model served in WSL); anything else must be https, or the key goes out in the clear.
+func privateHost(u *url.URL) bool {
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || host == "host.docker.internal" || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast())
 }
 
 // Complete fills in what a save left out (the saved key when Key is empty)
@@ -259,12 +295,22 @@ func (h *Hub) Complete(provider string, s Settings) (Settings, error) {
 		return s, errors.New("an API key is needed")
 	}
 
-	if provider == ProviderAzure {
+	switch provider {
+	case ProviderAzure:
 		u, err := url.Parse(s.Endpoint)
 		if s.Endpoint == "" || err != nil || u.Scheme != "https" || u.Host == "" {
 			return s, errors.New("the endpoint must be the https:// address of your Azure AI resource")
 		}
-	} else {
+	case ProviderOpenAI:
+		if s.Endpoint == "" {
+			s.Endpoint = DefaultOpenAIEndpoint
+		}
+		u, err := url.Parse(s.Endpoint)
+		if err != nil || u.Host == "" || (u.Scheme != "https" && !(u.Scheme == "http" && privateHost(u))) {
+			return s, errors.New("the endpoint must be the https:// address of an OpenAI-compatible server " +
+				"(http:// only for one on this machine or your own network)")
+		}
+	default:
 		s.Endpoint = ""
 	}
 
@@ -325,6 +371,8 @@ func (h *Hub) Forget(provider string) error {
 		h.azure = nil
 	case ProviderClaude:
 		h.claude = nil
+	case ProviderOpenAI:
+		h.openai = nil
 	}
 	delete(h.updated, provider)
 	delete(h.vision, provider)
@@ -336,7 +384,7 @@ func (h *Hub) Forget(provider string) error {
 // and Claude.Chat for what comes back).
 func (h *Hub) Chat(ctx context.Context, provider string, body []byte) (int, []byte, http.Header, error) {
 	h.mu.RLock()
-	az, cl := h.azure, h.claude
+	az, cl, op := h.azure, h.claude, h.openai
 	h.mu.RUnlock()
 
 	// Each Chat answers ErrNotConfigured itself, a nil client included.
@@ -345,6 +393,8 @@ func (h *Hub) Chat(ctx context.Context, provider string, body []byte) (int, []by
 		return az.Chat(ctx, body)
 	case ProviderClaude:
 		return cl.Chat(ctx, body)
+	case ProviderOpenAI:
+		return op.Chat(ctx, body)
 	}
 
 	return 0, nil, nil, fmt.Errorf("llm: unknown provider %q", provider)
@@ -372,6 +422,8 @@ func (h *Hub) Test(ctx context.Context, provider string, s Settings) (vision boo
 		chat = h.newAzure(s).Chat
 	case ProviderClaude:
 		chat = h.newClaude(s).Chat
+	case ProviderOpenAI:
+		chat = h.newOpenAI(s).Chat
 	}
 
 	body := []byte(`{"model":"default","max_completion_tokens":64,"messages":[{"role":"user","content":"Reply with the word OK."}]}`)

@@ -141,8 +141,11 @@ internal/llm       — the hosted models a desktop's brain can be: Claude (claud
                       OpenAI chat shape translated to the Messages API through the official
                       Go SDK - system/tool calls/tool results/images, turns merged to
                       alternate, temperature dropped and forced tool_choice made "auto"
-                      because the current models refuse both) and Azure AI Foundry (Client,
-                      api-key added). Hub holds both, set up by a PERSON in the create
+                      because the current models refuse both), Azure AI Foundry (Client,
+                      api-key added) and any OpenAI-compatible server (the same Client with
+                      Bearer: OpenAI itself by default, OpenRouter, a Brainiac box on the own
+                      network - plain http allowed only for a private host, privateHost).
+                      Hub holds all three, set up by a PERSON in the create
                       dialog (never .env) and saved in SQLite with the key sealed (llm.key);
                       Save runs Test first, so a key the provider refuses is never kept, and
                       an empty key on a save keeps the saved one. Served on the primary

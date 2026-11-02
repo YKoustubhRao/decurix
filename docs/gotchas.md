@@ -787,3 +787,18 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): A worker idled at 510 MB with half its chosen size reserved: the size is a ceiling (512 MB reserved), the browser starts with a request and closes unused, the extension server only with its flag
 - [part-5.md](gotchas/part-5.md): Chrome's back-forward cache was ~190 MB of a working desktop: off; its disk cache out of tmpfs; a pre-pause trim and fadvise cache eviction measured and dropped
 - [part-5.md](gotchas/part-5.md): A Wikipedia address ending in "_(...)" was fetched without its ")": an address keeps the brackets it opened, the sentence's punctuation is trimmed
+- [part-5.md](gotchas/part-5.md): Newest-only memory forgot quietly once it filled, and read as "nothing was ever said": memory is chosen for the request, with a search for the rest
+- [part-5.md](gotchas/part-5.md): A compaction that freed nothing ran again 37 seconds later: what it keeps is bounded in characters, and it waits for regrowth
+- [part-5.md](gotchas/part-5.md): A stale screen's file could be overwritten by a later one: numbered by a counter, not a message's place
+- [part-5.md](gotchas/part-5.md): "Everything a command showed is known to the checks" stopped being true at 400,000 characters: the bound is 2,000,000
+- [part-5.md](gotchas/part-5.md): The person's answer never reached a taught task's final check or its second attempt: both are given what was said during the task
+- [part-5.md](gotchas/part-5.md): A record deleted in the application stayed "already saved": a confirmed delete releases the save it names
+- [part-5.md](gotchas/part-5.md): A Yes to "Permanently delete <record>?" went through unasked: the dialogs open on the screen count when a button's path names none
+- [part-5.md](gotchas/part-5.md): Every taught skill stayed an apprentice for good: a plan approved exactly as it was put is no longer help
+- [part-5.md](gotchas/part-5.md): On GPT-6 deployments a third of the prompt was cached: rewriting the transcript's tail threw the cache away; it is only appended to between maintenance passes
+- [part-5.md](gotchas/part-5.md): The maintenance passes meant to save the cache were two thirds of what it cost: a pass is due by the share it takes off (40% of 40,000+ characters), never by count
+- [part-5.md](gotchas/part-5.md): A task taught on five documents was 292 steps the model followed one by one every month: the learner finds long repeated blocks with steps between them, and a run gathers its documents, fills the lists and replays the block per document
+- [part-5.md](gotchas/part-5.md): The first live runs of the per-document path: loops by coverage, no address at a block's start or end, no rows over lists, a corrected plan goes to the model not to a stop, a spot-click is the model's, a same-every-item address is carried
+- [part-5.md](gotchas/part-5.md): First learning curve on the per-document path: all checks over four months, 15% less billed in full; three months ended on a question code could answer (the saved files are a code-checked fact for the judge), a phase's "enter nothing" was read as the task's rule (the rest phase is told the phases in order), the gather report says "saved, not entered in this phase"
+- [part-5.md](gotchas/part-5.md): Code-checked facts handed to the judge among the person's words read as a claim (own `found` slot now); a worked-out value is kept but told to the judge as an assumption; a party the procedure chooses is never a reason to set a document aside
+- [part-5.md](gotchas/part-5.md): A person's answer naming the control of a spot-only press is applied to the step (study._aim_spots), so the replay finds that control instead of pressing the spot

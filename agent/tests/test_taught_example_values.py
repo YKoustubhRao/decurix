@@ -111,6 +111,32 @@ class TestBindingSaysANameNoDocumentHas(unittest.TestCase):
         self.assertEqual(values, {})
 
 
+class TestAValueWithoutTheTaughtNumberIsLeftOut(unittest.TestCase):
+    """Found live (2026-11-01): taught with a folder "6. SEPTEMBER", a run was handed "December" from the request and
+    made a folder "December" beside the numbered ones; left out, the work reads the name off the screen."""
+
+    PARAMS = [{"name": "folder", "label": "Enter the name", "example": "6. SEPTEMBER"},
+              {"name": "month", "label": "Period", "example": "August"},
+              {"name": "pos", "label": "POS", "example": "29-Karnataka"}]
+
+    def test_the_meaning_without_the_number_is_left_out_held_or_not(self):
+        request = "The client's December sales bills are in the mail; their customers are in Karnataka."
+        answer = {"values": {"folder": "December", "month": "December", "pos": "Karnataka"}}
+        for strict in (False, True):
+            values, _ = binding._clean(self.PARAMS, answer, [request], strict=strict)
+            self.assertEqual(values, {"month": "December"})
+
+    def test_a_value_written_with_its_number_is_kept(self):
+        values, _ = binding._clean(self.PARAMS, {"values": {"folder": "9. DECEMBER", "pos": "27-Maharashtra"}},
+                                   ["December bills; folders 1. APRIL to 8. NOVEMBER; customers in Maharashtra"])
+        self.assertEqual(values, {"folder": "9. DECEMBER", "pos": "27-Maharashtra"})
+
+    def test_a_list_item_without_it_drops_the_list(self):
+        params = [{"name": "folders", "label": "Folder", "example": "6. SEPTEMBER", "list": True}]
+        values, _ = binding._clean(params, {"values": {"folders": ["9. DECEMBER", "January"]}}, ["x"])
+        self.assertEqual(values, {})
+
+
 class TestARunTheModelDoesIsGivenOnlyWhatItsTextsHold(unittest.TestCase):
     """Found live (2026-10-24): a request naming no document came back with an invoice series KC/SEP/001 to
     KC/SEP/014, a count of 14 and two HSN rows - none of them anywhere. Handed on as the run's values they read as the

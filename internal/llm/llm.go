@@ -44,12 +44,19 @@ const (
 // ErrNotConfigured is a chat asked of a provider nobody has set up yet.
 var ErrNotConfigured = errors.New("llm: this hosted model has not been set up (dashboard: New desktop > Model)")
 
-// Client forwards chat requests to one Azure AI endpoint.
+// DefaultOpenAIEndpoint is where an OpenAI-compatible provider is reached when no endpoint is given: OpenAI itself.
+// Another compatible server (OpenRouter, a Brainiac box on the LAN) is named by its own base address.
+const DefaultOpenAIEndpoint = "https://api.openai.com/v1"
+
+// Client forwards chat requests to one OpenAI-shaped endpoint: an Azure AI resource (the api-key header, the
+// deployments' chat route with its api-version), or - Bearer set - any OpenAI-compatible server (Authorization:
+// Bearer, {base}/v1/chat/completions).
 type Client struct {
 	Endpoint  string
 	Key       string
 	Model     string
 	FastModel string
+	Bearer    bool
 	HTTP      *http.Client
 }
 
@@ -72,6 +79,20 @@ func NewAzure(endpoint, key, model, fastModel string) *Client {
 		c.FastModel = DefaultFastModel
 	}
 
+	return c
+}
+
+// NewOpenAI builds a Client for an OpenAI-compatible endpoint (DefaultOpenAIEndpoint when none is given; a base
+// address without its "/v1" gets it); empty model names take DefaultModel / DefaultFastModel.
+func NewOpenAI(endpoint, key, model, fastModel string) *Client {
+	c := NewAzure(endpoint, key, model, fastModel)
+	c.Bearer = true
+	if c.Endpoint == "" {
+		c.Endpoint = DefaultOpenAIEndpoint
+	}
+	if !strings.HasSuffix(c.Endpoint, "/v1") {
+		c.Endpoint += "/v1"
+	}
 	return c
 }
 
@@ -101,6 +122,9 @@ func resolve(asked, model, fast string) (string, error) {
 // both work.
 func (c *Client) chatURL() string {
 	base := c.Endpoint
+	if c.Bearer {
+		return base + "/chat/completions"
+	}
 	if !strings.HasSuffix(base, "/models") {
 		base += "/models"
 	}
@@ -159,7 +183,11 @@ func (c *Client) Chat(ctx context.Context, body []byte) (int, []byte, http.Heade
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("api-key", c.Key)
+	if c.Bearer {
+		httpReq.Header.Set("Authorization", "Bearer "+c.Key)
+	} else {
+		httpReq.Header.Set("api-key", c.Key)
+	}
 
 	resp, err := c.HTTP.Do(httpReq)
 	if err != nil {

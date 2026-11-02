@@ -44,7 +44,8 @@ fine and common answer.
 Keep also where the sources a later task will need are: each web address or folder the task read from, with what is \
 kept there (whose messages, which documents) - exactly as it appears in the request or what was read. At most \
 {MAX_PLACES}.
-Reply with JSON only: {{"facts": [{{"about": "what it is about, as the source names it", "quote": "the source's exact \
+Reply with JSON only: {{"facts": [{{"about": "only the client or party it concerns, as the request or source names \
+them", "quote": "the source's exact \
 words", "where": "the source (file, page, chat, sender) and its date when it shows one"}}], "places": [{{"what": "what \
 is kept there", "where": "the address or folder"}}]}}"""
 

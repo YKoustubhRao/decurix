@@ -7,7 +7,7 @@ type Desktop struct {
 	Profile string `json:"profile"`
 	Harness string `json:"harness"`
 	// Brain is the model TheBot reasons with: BrainOllama (the local model,
-	// the default), BrainClaude or BrainAzure (hosted, reached through the
+	// the default), BrainClaude, BrainAzure or BrainOpenAI (hosted, reached through the
 	// control plane's /api/llm proxy). Fixed at creation, like Harness.
 	Brain       string `json:"brain"`
 	Model       string `json:"model,omitempty"`

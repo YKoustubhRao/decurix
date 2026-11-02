@@ -150,7 +150,7 @@
         <span class="tstatus {{.Status}}">{{statusLabel .Status}}</span>
         <span>{{engineLabel .Engine}}{{with .Model}} · {{.}}{{end}}</span>
         <span>{{duration (.Duration now)}}</span>
-        {{if or .InputTokens .OutputTokens}}<span>{{deref .InputTokens}} in / {{deref .OutputTokens}} out tokens</span>{{end}}
+        {{if or .InputTokens .OutputTokens}}<span>{{deref .InputTokens}} in{{with .CachedInputTokens}} ({{deref .}} of them from the cache){{end}} / {{deref .OutputTokens}} out tokens</span>{{end}}
         <span>{{cost .CostUSD}}</span>
       </div>
     </div>

@@ -123,8 +123,10 @@ If the answer is unclear, or opens something you must know to do the task right,
 
 You are also given the questions still waiting to be asked. List in "settled" the ids of those that the answers so far already answer, so they are not asked.
 
+A step the recording kept only as a spot on the screen reads "click X,Y" in the step list: a replay presses that spot blindly. When the answer says which control such a step really is or should be (a button, a link, a tab, a check box, a menu item - "the Save button on the form"), list it in "controls": {"steps": [the numbers of every such "click X,Y" step it is about], "role": "button", "name": "the control's visible name, as the person or the screen gives it"}. Only for "click X,Y" steps, only a control the answer names; otherwise "controls" is [].
+
 Reply with JSON only, the whole understanding without "questions":
-{"summary": "...", "steps": {"1": "..."}, "inputs": {"param": "..."}, "varies": {"param": true}, "done_when": "...", "incidental": [], "rules": ["..."], "follow_up": "", "settled": ["q3"]}"""
+{"summary": "...", "steps": {"1": "..."}, "inputs": {"param": "..."}, "varies": {"param": true}, "done_when": "...", "incidental": [], "rules": ["..."], "follow_up": "", "settled": ["q3"], "controls": []}"""
 
 KEYS = ("summary", "steps", "inputs", "varies", "done_when", "incidental", "rules")
 
@@ -480,6 +482,7 @@ def absorb(skill, question, answer):
         understanding.setdefault("rules", []).append(f"(Asked: {question}) The person said: {answer}")
         return ""
 
+    _aim_spots(skill, data.get("controls"), said=answer)
     updated = _clean(data, skill)
     # The rules are the model's own merged list. What the person actually
     # said is never lost to a rewording: it stays in `dialogue`, word for
@@ -504,6 +507,48 @@ def absorb(skill, question, answer):
         understanding["follow_ups"] = understanding.get("follow_ups", 0) + 1
         return follow_up
     return ""
+
+
+def _aim_spots(skill, controls, said=""):
+    """
+    Point each position-only click the person's answer named a control for at that control (learning._target_named),
+    in place; every other position-only click at the same spot of the same window goes with it, so the repetitions
+    of a block stay alike. Found live (2026-11-02): asked which control saves each item, as the ring of a recorded
+    press was on empty panel space, the person said "the Save button on the form"; the answer reached the rules only,
+    the step stayed a spot, and the replay pressed the panel four times, typing every item into one unsaved form.
+    """
+
+    from decurix_agent.computer import learning
+
+    by_n = {s["n"]: s for s in skill.get("steps") or []}
+
+    def spot(step):
+        return step is not None and step.get("kind") in ("click", "double_click") and step.get("point") \
+            and not step.get("target")
+
+    aimed = []
+    for item in controls if isinstance(controls, list) else []:
+        if not isinstance(item, dict):
+            continue
+        role = learning.CONTROL_ROLES.get(" ".join(str(item.get("role") or "").lower().split()))
+        name = " ".join(str(item.get("name") or "").split()).strip(learning._QUOTES).strip()
+        if not role or not name or len(name.split()) > 5:
+            continue
+        numbers = [int(n) for n in item.get("steps") or [] if str(n).isdigit()]
+        named = [by_n[n] for n in numbers if spot(by_n.get(n))]
+        places = {(tuple(s["point"]), s.get("window")) for s in named}
+        for step in skill.get("steps") or []:
+            if spot(step) and (step in named or (tuple(step["point"]), step.get("window")) in places):
+                learning._target_named(step, role, name)
+                # Their words go with it: what finds the control when the screen names it otherwise (escalation).
+                words = " ".join(str(said or "").split())
+                if words:
+                    step["intent"] = ((step["intent"] + " ") if step.get("intent") else "") \
+                        + f"The person said: {words}"[:learning.MAX_INTENT]
+                aimed.append(step["n"])
+    if aimed:
+        log(f"study: {skill.get('name')}: steps {aimed} now find the control the person named, not a spot")
+    return aimed
 
 
 def confirm(skill):

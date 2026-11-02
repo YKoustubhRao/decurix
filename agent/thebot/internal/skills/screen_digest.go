@@ -67,6 +67,8 @@ const (
 	maxDigestLines    = 6
 	maxDigestLineChar = 200
 	staleNote         = "(An earlier screen, since changed: its full output is shortened here.)"
+	// maxKeptOutputBytes bounds the outputs one goal keeps on disk (the desktop's /tmp is memory).
+	maxKeptOutputBytes = 64 << 20
 )
 
 // digestScreen is the short form of a stale screen output: its exit line, the first line and the lines that say
@@ -112,6 +114,26 @@ func (st *operatorState) outputsDir() string {
 	return st.OutputsDir
 }
 
+// keepOutput writes an output's full text to a file of its own and returns its path, or "" when it could not or the
+// goal's room is spent. Files are numbered by a counter of the goal, never by a message's place: a compaction moves the
+// places, and a later output would overwrite an earlier one a pointer still names (found 2026-10-30).
+func (st *operatorState) keepOutput(text string) string {
+	if st.OutputBytes+int64(len(text)) > maxKeptOutputBytes {
+		return ""
+	}
+	dir := st.outputsDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	st.OutputSeq++
+	p := filepath.Join(dir, fmt.Sprintf("output-%d.txt", st.OutputSeq))
+	if os.WriteFile(p, []byte(text), 0o600) != nil {
+		return ""
+	}
+	st.OutputBytes += int64(len(text))
+	return p
+}
+
 // digestStaleScreens shortens every screen output not shortened yet (each once), keeping its full text on disk.
 func (st *operatorState) digestStaleScreens() {
 	for _, idx := range st.ScreenMsgs {
@@ -119,15 +141,7 @@ func (st *operatorState) digestStaleScreens() {
 			continue
 		}
 		m := &st.Messages[idx]
-		path := ""
-		dir := st.outputsDir()
-		if err := os.MkdirAll(dir, 0o700); err == nil {
-			p := filepath.Join(dir, fmt.Sprintf("output-%d.txt", idx))
-			if os.WriteFile(p, []byte(m.Content), 0o600) == nil {
-				path = p
-			}
-		}
-		m.Content = digestScreen(m.Content, path)
+		m.Content = digestScreen(m.Content, st.keepOutput(m.Content))
 		m.Images, m.ImageLabels = nil, nil
 	}
 	st.ScreenMsgs = nil

@@ -114,11 +114,81 @@ def fill(skill, params, context, strict=False):
     final check then held the work to them over the person's own "don't invent".
     """
 
-    if not params or not available():
+    answer, texts = _ask(skill, params, context, referenced_files(context))
+    if answer is None:
         return ({}, {}, None)
+    values, evidence = _clean(params, answer, texts, strict=strict)
+    rows = _rows(skill, params, answer, texts, values, evidence, strict=strict)
+    return (values, evidence, rows)
 
-    files = referenced_files(context)
-    parts = [{"type": "text", "text": _prompt(skill, params, context)}]
+
+# How many documents one run's lists are read from at once (the gathered documents of a month; a page each).
+MAX_GATHERED = 12
+
+LISTS_NOTE = (
+    "This run has SEVERAL documents, listed below in order, and the procedure is done once per document: every value "
+    "marked \"list\" takes one item per document, in the documents' order, so that item N of every list belongs to "
+    "document N. Read each document's own values from that document only. Two kinds of document are LEFT OUT of every "
+    "list and named under \"left_out\", so the lists stay aligned over the documents that are entered by the procedure: "
+    "(1) \"skip\": the person's rules (below) say it is not to be entered at all - cancelled, already in the books, not "
+    "of the kind the task enters, a duplicate of another; (2) \"by_hand\": it IS to be entered, but it does not fit the "
+    "procedure's shape as taught - a different number of lines or tax rows, another kind of tax, a field the taught "
+    "fields do not cover, a value you cannot read - so it will be entered separately by hand. A party, ledger or other "
+    "thing the procedure chooses from the application's own lists is read as the document names it: whether it is "
+    "already in the application, under which exact name, or has to be made first is for the procedure to find on the "
+    "screen, and is never a reason for \"by_hand\" or \"skip\". Never force such a "
+    "document into the lists with empty or made-up items. Give no \"rows\": the procedure's shape (its number of lines "
+    "and rows) is fixed as taught, and a document with another shape is \"by_hand\". Add to the JSON: "
+    '"left_out": [{"document": "<path>", "kind": "skip" or "by_hand", "why": "<in a few words>"}].\n'
+)
+
+
+def fill_lists(skill, params, context, files, rules=""):
+    """
+    The values of a run done once per document - the loop's lists, one item per document - read from `files` in one
+    call: ({name: value}, {name: evidence}, rows, left_out). left_out: [{"document", "kind", "why"}] - kind "skip" for
+    a document the person's rules (`rules`, their words) say not to enter, "by_hand" for one to enter that does not
+    fit the taught shape. A list whose items do not count one per entered document is left out of the values (the
+    work reads it itself) rather than typed misaligned. ({}, {}, None, []) when there is no model or it fails.
+    """
+
+    files = files[:MAX_GATHERED]
+    note = LISTS_NOTE + (f"The person's rules for this task:\n{rules}\n" if rules else "")
+    note += "This run's documents, in order:\n" + "\n".join(f"{n + 1}. {p}" for n, p in enumerate(files))
+    answer, texts = _ask(skill, params, context, files, note=note, rows=False)
+    if answer is None:
+        return ({}, {}, None, [])
+    # No rows across documents: the per-document shape is the taught one (found live 2026-11-02: the rows of ONE
+    # document were written over the lists, one list losing its items and a field getting another's amount).
+    answer.pop("rows", None)
+    left_out = [{"document": str(x.get("document") or ""), "why": str(x.get("why") or "")[:200],
+                 "kind": "by_hand" if str(x.get("kind") or "").strip().lower() == "by_hand" else "skip"}
+                for x in (answer.get("left_out") or []) if isinstance(x, dict) and x.get("document")]
+    left_out = [x for x in left_out if any(x["document"] == f or x["document"] in f or f in x["document"] for f in files)]
+    entered = len(files) - len({x["document"] for x in left_out})
+    values, evidence = _clean(params, answer, texts)
+    for param in params:
+        if param.get("list") and param["name"] in values and len(split_items(values[param["name"]])) != entered:
+            log(f"binding: {param['name']} has {len(split_items(values[param['name']]))} items for {entered} documents - left for the work to read")
+            values.pop(param["name"])
+            evidence.pop(param["name"], None)
+    return (values, evidence, None, left_out)
+
+
+def split_items(text):
+    """The items of a list value, as skills.split_items splits them (imported late: skills imports this module)."""
+
+    from decurix_agent.computer import skills
+    return skills.split_items(text)
+
+
+def _ask(skill, params, context, files, note="", rows=True):
+    """One model reading of `files` for `params`: (the JSON answer, the texts it read) or (None, texts)."""
+
+    if not params or not available():
+        return None, [context or ""]
+
+    parts = [{"type": "text", "text": _prompt(skill, params, context, rows=rows) + ("\n" + note if note else "")}]
     texts = [context or ""]
     images = 0
 
@@ -144,16 +214,13 @@ def fill(skill, params, context, strict=False):
     try:
         message, _ = llm_client.chat(
             [{"role": "system", "content": SYSTEM}, {"role": "user", "content": parts}],
-            max_tokens=3000, response_format={"type": "json_object"},
+            max_tokens=3000 if len(files) <= MAX_FILES else 8000, response_format={"type": "json_object"},
         )
         answer = json.loads(message.get("content") or "{}")
     except (llm_client.LLMError, ValueError) as exc:
         log(f"binding: could not fill values for {skill.get('name')}: {exc}")
-        return ({}, {}, None)
-
-    values, evidence = _clean(params, answer, texts, strict=strict)
-    rows = _rows(skill, params, answer, texts, values, evidence, strict=strict)
-    return (values, evidence, rows)
+        return None, texts
+    return (answer if isinstance(answer, dict) else {}), texts
 
 
 # A date written with digits only: 03/10/2026, 3.10.2026, 28-09-2026.
@@ -213,7 +280,7 @@ def _date_note(skill, texts):
             "shows which comes first, leave that value out - it will be asked for.")
 
 
-def _prompt(skill, params, context):
+def _prompt(skill, params, context, rows=True):
     from decurix_agent.computer import skills
 
     meanings = (skill.get("understanding") or {}).get("inputs") or {}
@@ -225,7 +292,7 @@ def _prompt(skill, params, context):
         json.dumps([_describe(p, meanings.get(p["name"]), p["name"].split("__")[0] in chosen) for p in params],
                    ensure_ascii=False, indent=1),
         "",
-        _rows_text(skill, params),
+        _rows_text(skill, params) if rows else "",
         "The request that started this run (it may include an email, and it names the files attached):",
         (context or "")[:6000],
     ])
@@ -250,6 +317,9 @@ def _clean(params, answer, texts=(), strict=False):
             if not items or any(";" in v or "\n" in v for v in items):
                 continue  # an item holding the separator cannot be written as a list value
             written = [as_written(v, param.get("example"), texts) for v in items]
+            if any(drops_number(v, param.get("example")) for v in written):
+                log(f"binding: {name} - an item has no number where the taught one had; left for the work to read")
+                continue
             if strict and not all(held_by(v, texts) for v in written):
                 log(f"binding: {name} - not every item is in what this run was given; left for the work to read")
                 continue
@@ -258,21 +328,30 @@ def _clean(params, answer, texts=(), strict=False):
             if isinstance(value, (list, dict)):
                 continue
             written = as_written(str(value).strip(), param.get("example"), texts)
+            if drops_number(written, param.get("example")):
+                log(f"binding: {name} = {written!r} has no number where the taught {param.get('example')!r} had; "
+                    "left for the work to read")
+                continue
             if strict and not held_by(written, texts):
                 log(f"binding: {name} = {written!r} is in nothing this run was given; left for the work to read")
                 continue
+            if numbered_like_example(written, param, texts):
+                log(f"binding: {name} = {written!r} numbers this run's words the way the taught "
+                    f"{param.get('example')!r} did, and nothing of this run says it - kept, and said")
+                old = why.get(name) if isinstance(why, dict) else None
+                evidence[name] = (f"{str(old)[:120]} ({NUMBERED})" if old else NUMBERED)[:240]
             if is_example(written, param.get("example")) and not held_by(written, texts) and not (
                     re.search(r"[^\W\d_]{3,}", written) and words_held(written, texts)):
                 # The person's own value from when they taught it, which nothing of this run says.
                 log(f"binding: {name} = {written!r} is the taught example and this run's documents do not hold it - left out")
                 continue
-            if not words_held(written, texts):
+            if not words_held(written, texts) and name not in evidence:
                 # Said, never dropped (independent review, 2026-10-22): a value worked out from the documents is
                 # written otherwise than they write it (28-Sep-2026 from 28/09/2026, "Private Limited" from "Pvt Ltd")
                 # and is right. Found live (2026-10-22) the other way: a portal username made up from the
                 # client's name, "srilakshmielev" - so the person and the check see that it is not the documents' own.
                 log(f"binding: {name} = {written!r} is not written so in this run's documents - kept, and said")
-                note = "not written so in this run's documents - worked out, or a guess: check it"
+                note = WORKED
                 old = why.get(name) if isinstance(why, dict) else None
                 evidence[name] = (f"{str(old)[:150]} ({note})" if old else note)[:200]
             values[name] = written
@@ -359,6 +438,51 @@ def is_example(value, example):
     """Whether `value` is the one typed when the procedure was taught."""
 
     return example not in (None, "") and _plain(value) == _plain(example)
+
+
+def drops_number(value, example):
+    """
+    Whether the taught example carries a number that `value` has none of: the value is what the thing means, not how
+    it is written here. Found live (2026-11-01): taught with a folder "6. SEPTEMBER" among numbered siblings, a run
+    was handed "December" from the request's words; the work made a folder "December" beside "8. NOVEMBER", and both
+    workers did the same. Left out, the work reads the name off the screen, as the run without a skill did.
+    """
+
+    return bool(re.search(r"\d", str(example or ""))) and not re.search(r"\d", str(value or ""))
+
+
+# What the fill says of a value it did not read as written (binding.report shows it; the final check weighs it as an
+# assumption, skill_task._assumed_note).
+WORKED = "not written so in this run's documents - worked out, or a guess: check it"
+NUMBERED = ("its number is in nothing this run was given - the taught example's numbering, assumed: where the screen "
+            "or the person names it another way, theirs is right")
+
+# A date with its month in words: 12-Nov-2026, 3 September 2026, Sep 3, 2026.
+NAMED_DATE = re.compile(r"(?<!\w)(?:\d{1,2}[\s./-]*[^\W\d_]{3,9}\.?[\s./,-]*\d{2,4}|[^\W\d_]{3,9}\.?\s+\d{1,2},?\s+\d{4})(?!\w)")
+
+
+def numbered_like_example(value, param, texts):
+    """
+    Whether `value` is this run's words numbered the way the taught example was, by a number nothing of this run
+    gives. Found live (2026-11-02, two runs of four): taught with a name made of a number and a word, the fill gave
+    another run the same pattern with its own word and a number of its own working; the place it names was rightly
+    called otherwise on the screen, the work followed the screen, and the final check held the run to the worked-out
+    name and asked a person. Such a value is kept - the numbering is often right (a series the screen continues, a
+    code that goes with a name) - and said, so the check weighs it as the assumption it is. A date is exempt (it is
+    rewritten in the example's form on purpose), and so is a number the example itself carries.
+    """
+
+    example = str(param.get("example") or "")
+    v = str(value or "")
+    if _is_date_param(param) or DIGIT_DATE.search(v) or NAMED_DATE.search(v) or not any(texts):
+        return False
+    if not (re.search(r"\d", example) and re.search(r"[^\W\d_]{3,}", example)):
+        return False
+    if not (re.search(r"\d", v) and re.search(r"[^\W\d_]{3,}", v)):
+        return False
+    if re.findall(r"\d+", v) == re.findall(r"\d+", example):
+        return False
+    return not held_by(v, texts)
 
 
 def words_held(value, texts):

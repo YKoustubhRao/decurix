@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -67,6 +68,8 @@ func main() {
 		err = runAsk(args)
 	case "status":
 		err = runStatus(args)
+	case "paths":
+		err = runPaths(args)
 	case "eval":
 		err = runEval(args)
 	case "scout":
@@ -93,14 +96,16 @@ func usage() {
 
   census [--json] [--no-bench] [--no-network]   measure this machine
   plan   [--json] [--verbose] [plan flags]       choose models, and say why
-  pull   [--yes] [plan flags]                    install the plan
+  pull   [--yes] [--latest] [plan flags]         install the plan; --latest moves installed models to the newest commit
   serve                                          serve what is installed
   up     [--yes] [plan flags]                    census, plan, pull, serve
   ask    "question" [--image file] [--audio file] [--model m] [--url u]
   status [--url u]
+  paths  [--url u]                                 per field: what could answer here, and why each does or does not
   eval   --cases file.jsonl [--models a,b] [--learn]  measure models field by field on checked cases
   update [--apply] [--json]                       find better open models from public evaluations; serve
                                                  switches to them on its own, after checking them
+  update approve-template <model>                 accept a model's changed chat template, after reading it
   scout  [--days 120]                              find open models newer than the catalog, checked
   scout adopt <repo> --roles code=72               add a scouted model to the local catalog
   scout pin b11xxx                                 move to a newer llama.cpp build
@@ -121,6 +126,7 @@ type common struct {
 	json        bool
 	verbose     bool
 	yes         bool
+	latest      bool
 	noBench     bool
 	noNetwork   bool
 }
@@ -135,6 +141,7 @@ func flags(name string, args []string, plan bool) (*common, *flag.FlagSet, error
 	fs.BoolVar(&c.noBench, "no-bench", false, "skip the memory-bandwidth test")
 	fs.BoolVar(&c.noNetwork, "no-network", false, "skip the network checks")
 	if plan {
+		fs.BoolVar(&c.latest, "latest", false, "move installed models to their repo's newest commit")
 		fs.BoolVar(&c.offline, "offline", false, "choose only what is installed")
 		fs.StringVar(&c.licenses, "licenses", "", "licence classes to allow (permissive,restricted,noncommercial)")
 		fs.Float64Var(&c.reserve, "reserve", 0, "GB to keep free in every memory pool")
@@ -287,7 +294,7 @@ func pull(ctx context.Context, c *common, st *store.Store, cfg config.Config) (*
 			return nil, errors.New("not installed")
 		}
 	}
-	lock, err := install.Run(ctx, plan, install.Options{Store: st, Census: cs, WorkerDir: workerDir(), Log: os.Stdout})
+	lock, err := install.Run(ctx, plan, install.Options{Store: st, Census: cs, WorkerDir: workerDir(), Log: os.Stdout, Latest: c.latest})
 	if err != nil {
 		return nil, err
 	}
@@ -530,6 +537,43 @@ func runStatus(args []string) error {
 	defer resp.Body.Close()
 	_, err = io.Copy(os.Stdout, resp.Body)
 	return err
+}
+
+// runPaths prints, per field, which local models have earned it and why.
+func runPaths(args []string) error {
+	fs := flag.NewFlagSet("paths", flag.ContinueOnError)
+	url := fs.String("url", "http://127.0.0.1:8484", "Brainiac's address")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	resp, err := http.Get(strings.TrimRight(*url, "/") + "/v1/brainiac/paths")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var paths map[string][]engine.PathStatus
+	if err := json.NewDecoder(resp.Body).Decode(&paths); err != nil {
+		return err
+	}
+	fields := make([]string, 0, len(paths))
+	for f := range paths {
+		fields = append(fields, f)
+	}
+	sort.Strings(fields)
+	for _, f := range fields {
+		fmt.Println(f)
+		for _, p := range paths[f] {
+			mark := "  remote keeps it"
+			if p.Earned {
+				mark = "  earned"
+			}
+			fmt.Printf("%s  %s: %s\n", mark, p.Model, p.Why)
+			if p.Live.Missed+p.Live.Passed > 0 {
+				fmt.Printf("    real answers reported: %d passed, %d missed\n", p.Live.Passed, p.Live.Missed)
+			}
+		}
+	}
+	return nil
 }
 
 type multi []string

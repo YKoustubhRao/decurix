@@ -35,5 +35,19 @@ class AYesToAPermanentQuestion(unittest.TestCase):
         self.assertIsNone(approval.confirms_permanently(button("Submit feedback", 'dialog "Send feedback?" > button "Submit feedback"')))
 
 
+    def test_a_yes_whose_path_does_not_name_its_dialog_is_judged_by_the_dialog_on_screen(self):
+        # Found live (2026-10-31): "Permanently delete <record>?" was answered Yes unasked - the application's modal
+        # buttons do not sit under the dialog in the page's tree, so the path named no dialog.
+        yes = button("Yes", 'site host.docker.internal:8000 > button "Yes"')
+        self.assertIsNone(approval.assess("click", yes))
+        open_now = {"dialogs": ["Confirm Permanently delete Grant Plastics Ltd. (SAL-ORD-2026-00002) ?"]}
+        why = approval.assess("click", yes, context=open_now)
+        self.assertIsNotNone(why)
+        self.assertIn("Permanently delete", why)
+        # An ordinary dialog on screen still lets its Yes through, and a No is never stopped.
+        self.assertIsNone(approval.assess("click", yes, context={"dialogs": ["Leave site?"]}))
+        self.assertIsNone(approval.assess("click", button("No", 'button "No"'), context=open_now))
+
+
 if __name__ == "__main__":
     unittest.main()

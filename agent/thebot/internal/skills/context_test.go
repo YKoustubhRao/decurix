@@ -3,6 +3,7 @@ package skills
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -64,6 +65,97 @@ func TestALongGoalIsShortenedToItsPrefixNotesRecordAndNewestSteps(t *testing.T) 
 	}
 }
 
+// bigGoal is a goal whose every output is as long as a hosted brain's limit and whose ledger is long.
+func bigGoal(t *testing.T) *operatorState {
+	t.Helper()
+	st := &operatorState{Hosted: true, Request: "file September", PrefixLen: 2, OutputsDir: t.TempDir()}
+	st.Messages = []llm.Message{{Role: "system", Content: "frame"}, {Role: "user", Content: "contract: file September"}}
+	output := strings.Repeat("a line of a long listing\n", 640) // 16,000 characters
+	for i := 0; i < 40; i++ {
+		st.Messages = append(st.Messages, llm.Message{Role: "assistant", Content: fmt.Sprintf("COMMAND:\noffice read book%d.xlsx", i)})
+		st.Messages = append(st.Messages, llm.Message{Role: "user", Content: "Command execution result:\n\nexit_code: 0\n\noutput:\n" + output})
+		st.noteLedger(fmt.Sprintf("office read book%d.xlsx %s", i, strings.Repeat("--range A1:Z9 ", 20)), shellResult{Output: fmt.Sprintf("row %d\n", i) + output})
+	}
+	return st
+}
+
+func TestACompactionFreesRealRoomHoweverLongTheKeptOutputs(t *testing.T) {
+	st := bigGoal(t)
+	if transcriptChars(st) <= contextBudgetChars || !st.contextOverBudget() {
+		t.Fatalf("not over budget: %d", transcriptChars(st))
+	}
+	(&OperatorSkill{}).compact(RunContext{Ctx: context.Background(), Provider: &notesProvider{}, OnLog: func(string) {}}, st, "test")
+	if got := transcriptChars(st); got > contextBudgetChars/2 {
+		t.Errorf("after a compaction %d characters are still re-sent", got)
+	}
+	if st.CompactedTo != transcriptChars(st) {
+		t.Errorf("CompactedTo %d", st.CompactedTo)
+	}
+}
+
+func TestACompactionThatCouldNotFreeRoomIsNotTriedAgainAtOnce(t *testing.T) {
+	st := bigGoal(t)
+	st.CompactedTo = transcriptChars(st) - 1000
+	if st.contextOverBudget() {
+		t.Error("compacted again with 1,000 characters of growth")
+	}
+	st.CompactedTo = transcriptChars(st) - compactRegrowth
+	if !st.contextOverBudget() {
+		t.Error("not compacted after growing by a quarter of the budget")
+	}
+}
+
+func TestAShortenedOutputCanBeReadAgainAndNoLaterOneOverwritesIt(t *testing.T) {
+	st := bigGoal(t)
+	first := st.Ledger[0]
+	i := strings.Index(first, "(full output: ")
+	if i < 0 {
+		t.Fatalf("no pointer in %q", first[:200])
+	}
+	path := strings.TrimSuffix(first[i+len("(full output: "):], ")")
+	before, err := os.ReadFile(path)
+	if err != nil || !strings.HasPrefix(string(before), "row 0\n") {
+		t.Fatalf("%v, %q", err, string(before)[:20])
+	}
+	(&OperatorSkill{}).compact(RunContext{Ctx: context.Background(), Provider: &notesProvider{}, OnLog: func(string) {}}, st, "test")
+	st.Messages = append(st.Messages, llm.Message{Role: "user", Content: "a later screen"})
+	st.ScreenMsgs = []int{len(st.Messages) - 1}
+	st.digestStaleScreens()
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(before) {
+		t.Error("the earlier output was overwritten")
+	}
+	if !strings.Contains(st.Messages[len(st.Messages)-1].Content, "(full output: ") {
+		t.Error("the digest lost its pointer")
+	}
+}
+
+func TestACompactionCarriesTheDeclaredRecordsOverFromTheHarness(t *testing.T) {
+	saved := declaredRecords
+	defer func() { declaredRecords = saved }()
+	declaredRecords = func(RunContext, *operatorState) string { return "invoice 455: confirmed\ninvoice 456: differs" }
+	st := longGoal(30)
+	(&OperatorSkill{}).compact(RunContext{Ctx: context.Background(), Provider: &notesProvider{}, OnLog: func(string) {}}, st, "test")
+	if !strings.Contains(st.Messages[2].Content, "invoice 456: differs") {
+		t.Error("the declared records were not carried over")
+	}
+}
+
+func TestAShortOutputNeedsNoFile(t *testing.T) {
+	st := &operatorState{OutputsDir: t.TempDir()}
+	st.noteLedger("gui click e1", shellResult{Output: "Clicked e1"})
+	if strings.Contains(st.Ledger[0], "full output") || st.OutputSeq != 0 {
+		t.Errorf("%q", st.Ledger[0])
+	}
+}
+
+func TestKeptOutputsAreBounded(t *testing.T) {
+	st := &operatorState{OutputsDir: t.TempDir(), OutputBytes: maxKeptOutputBytes}
+	if p := st.keepOutput("more"); p != "" {
+		t.Errorf("kept past the limit: %s", p)
+	}
+}
+
 func TestAShortGoalIsLeftAsItIs(t *testing.T) {
 	st := longGoal(4)
 	before := len(st.Messages)
@@ -87,5 +179,118 @@ func TestOnlyAWindowThatMadeProgressGetsAnotherBudget(t *testing.T) {
 	}
 	if (&operatorState{CommandsSucceeded: 40}).mayContinue(0) {
 		t.Error("a local model is left as it was")
+	}
+}
+
+// maskGoal is a goal of n steps whose outputs are each size characters long; step 3 is the person's reply.
+func maskGoal(t *testing.T, n, size int) *operatorState {
+	st := &operatorState{Hosted: true, Request: "file September", PrefixLen: 2, OutputsDir: t.TempDir()}
+	st.Messages = []llm.Message{{Role: "system", Content: "frame"}, {Role: "user", Content: "contract: file September"}}
+	for i := 0; i < n; i++ {
+		st.Messages = append(st.Messages, llm.Message{Role: "assistant", Content: fmt.Sprintf("COMMAND:\noffice read bill%d.pdf", i)})
+		content := fmt.Sprintf("Command execution result:\n\nexit_code: 0\n\noutput:\nbill %d: ", i) + strings.Repeat("x", size)
+		if i == 3 {
+			content = "The human replied: the rent is paid in cash. " + strings.Repeat("y", size)
+		}
+		st.Messages = append(st.Messages, llm.Message{Role: "user", Content: content})
+	}
+	return st
+}
+
+func TestOlderOutputsAreMaskedInOnePassKeepingTheirStartAndFile(t *testing.T) {
+	st := maskGoal(t, 30, 5_000)
+	if !st.maintenanceDue() {
+		t.Fatalf("not due at %d characters with %d removable", transcriptChars(st), st.removableChars())
+	}
+	before := transcriptChars(st)
+	n := st.maskOldOutputs()
+	if n == 0 || transcriptChars(st) >= before/2 {
+		t.Fatalf("masked %d, %d -> %d characters", n, before, transcriptChars(st))
+	}
+	last := len(st.Messages) - maskKeepNewest
+	for i, m := range st.Messages {
+		masked := strings.Contains(m.Content, maskMarker)
+		switch {
+		case i < 2 && masked:
+			t.Errorf("the prefix was masked (%d)", i)
+		case i >= last && masked:
+			t.Errorf("a newest message was masked (%d)", i)
+		case strings.HasPrefix(m.Content, "The human replied") && masked:
+			t.Error("the person's words were masked")
+		case masked:
+			if !strings.HasPrefix(m.Content, "Command execution result") || !strings.Contains(m.Content, "bill ") {
+				t.Errorf("a masked output lost its start: %q", m.Content[:60])
+			}
+			path := m.Content[strings.Index(m.Content, "output is in ")+len("output is in "):]
+			path = path[:strings.Index(path, " - cat")]
+			if b, err := os.ReadFile(path); err != nil || !strings.Contains(string(b), strings.Repeat("x", 5_000)) {
+				t.Errorf("the whole output is not in %s: %v", path, err)
+			}
+		}
+	}
+}
+
+func TestMaskingWaitsForRegrowthAndNeverMasksTwice(t *testing.T) {
+	st := maskGoal(t, 30, 5_000)
+	st.maskOldOutputs()
+	if st.maintenanceDue() {
+		t.Fatal("due again at once: every turn would break the prompt cache")
+	}
+	once := st.Messages[5].Content // (the second step's output: 0 frame, 1 contract, then command and output in turn)
+	st.maskOldOutputs()
+	if st.Messages[5].Content != once || strings.Count(once, maskMarker) != 1 {
+		t.Error("an output was masked twice")
+	}
+	small := maskGoal(t, 30, 100)
+	if small.maintenanceDue() || small.maskOldOutputs() != 0 {
+		t.Error("a short transcript, or short outputs, were masked")
+	}
+}
+
+// shotGoal is a hosted goal of n listings, each with a screenshot, tracked as screen outputs.
+func shotGoal(t *testing.T, n int) *operatorState {
+	st := &operatorState{Hosted: true, Request: "file September", PrefixLen: 2, OutputsDir: t.TempDir()}
+	st.Messages = []llm.Message{{Role: "system", Content: "frame"}, {Role: "user", Content: "contract: file September"}}
+	for i := 0; i < n; i++ {
+		st.Messages = append(st.Messages, llm.Message{Role: "assistant", Content: "COMMAND:\ngui observe"},
+			llm.Message{Role: "user", Content: fmt.Sprintf("Command execution result:\n\nexit_code: 0\n\noutput:\nScreen %d\ne1 button \"Save\"", i) + screenshotNote,
+				Images: [][]byte{[]byte("png")}})
+		st.ScreenMsgs = append(st.ScreenMsgs, len(st.Messages)-1)
+	}
+	return st
+}
+
+func TestATranscriptIsOnlyAppendedToUntilAPassTakesEnoughOff(t *testing.T) {
+	st := shotGoal(t, 8) // seven older screenshots, but a transcript too short for a pass to pay back
+	if st.maintenanceDue() {
+		t.Fatalf("a pass is due at %d characters with %d older screenshots", transcriptChars(st), st.oldScreenshots())
+	}
+	long := shotGoal(t, 12) // the same pictures beside a contract they are a fifth of: not worth the cache either
+	long.Messages[1].Content = strings.Repeat("rule ", 30_000)
+	if long.maintenanceDue() {
+		t.Fatalf("a pass is due for %d removable of %d characters", long.removableChars(), transcriptChars(long))
+	}
+	st = shotGoal(t, 12) // eleven older screenshots that are most of the transcript: worth it
+	if !st.maintenanceDue() {
+		t.Fatalf("no pass due for %d removable of %d characters", st.removableChars(), transcriptChars(st))
+	}
+	did := st.maintain()
+	shots, digested := 0, 0
+	for i, m := range st.Messages {
+		if len(m.Images) > 0 {
+			shots++
+			if i != len(st.Messages)-1 {
+				t.Errorf("an older screenshot stayed at %d", i)
+			}
+		}
+		if strings.Contains(m.Content, staleNote) {
+			digested++
+		}
+	}
+	if shots != 1 || digested != 11 || len(st.ScreenMsgs) != 1 || st.ScreenMsgs[0] != len(st.Messages)-1 {
+		t.Errorf("after %q: %d screenshots, %d digested, screens %v", did, shots, digested, st.ScreenMsgs)
+	}
+	if st.maintenanceDue() {
+		t.Error("due again right after a pass")
 	}
 }

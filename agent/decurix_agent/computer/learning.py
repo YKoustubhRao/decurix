@@ -59,7 +59,8 @@ CLICKS = {"click", "double_click", "right_click", "drag", "select"}
 MAX_OVERVIEW_CHARS = 1600
 
 # The longest block of steps looked at for repetition.
-MAX_LOOP_BLOCK = 12
+MAX_LOOP_BLOCK = 60  # a document entered as one record is 30-50 steps
+MAX_LOOP_GAP = 60    # what a person may do between two items: read the next document, make a record it needs
 
 SAME = re.compile(r"\b(same|constant|fixed|static|unchanged|never changes?|(does not|doesn'?t|do not|don'?t) change)\b", re.I)
 CHANGES = re.compile(r"(?<!not )(?<!n't )\b(chang(?:e|es|ing)|differ(?:s|ent)?|vary|vari(?:es|able|ed))\b", re.I)
@@ -612,54 +613,187 @@ def _generalise(steps):
 
 def _find_loops(steps, demos):
     """
-    Blocks of steps repeated back to back, with different text typed each
-    time: [{"id", "length", "reps", "blocks": [[step ids] per repetition],
-    "enabled": None}], earliest first. The longest run of repetition wins,
-    and the shorter block when two cover the same steps.
+    Blocks of steps repeated, with different text typed each time: [{"id", "length", "reps", "blocks": [[step ids] per
+    repetition], "between": [[step ids] between one repetition and the next], "enabled": None}], earliest first. The
+    longest run of repetition wins, and the shorter block when two cover the same steps.
+
+    Repetitions need not be back to back. What the person did between two of them - opened the next document to read
+    it, made a record the next one needed - is kept apart as `between`: not part of every item, so never replayed per
+    item, and kept for the model to read when such a case comes up. What they did right before EVERY repetition after
+    the first (brought up a fresh form) is the way to the next item, and belongs to the block: the first repetition is
+    then shorter by that much, the form having been reached another way. Measured (2026-11-01): a demonstration of five
+    bills was 292 steps - five copies of a 41-step block, with 6 to 37 steps between them - and a search for blocks of
+    at most 12 steps back to back found none of it, so the task stayed the model's step by step every month.
     """
 
     signatures = [_signature(step) for step in steps]
-    loops, i = [], 0
+    n = len(steps)
 
-    while i < len(steps):
-        best = None
+    def candidate(reps, length):
+        """(steps covered, reps, length, gaps, prefix) for repetitions of a block, or None when it is not about data."""
+        # An item does not begin with the person going somewhere different each time: an address typed differently
+        # before each repetition (the next document opened to read it) is what came between, not the item's first
+        # step, however exactly the window matches. The block begins after it and the key press that sent it.
+        while length >= 3 and (shift := _reading_shift(steps, reps)):
+            reps, length = [r + shift for r in reps], length - shift
+        # Nor does an item end with it: the next document opened to read it (or, after the last item, the report
+        # opened to check them) is typed the same way, so every repetition matched with it at its end.
+        while length >= 3 and (cut := _trailing_reading(steps, reps, length)):
+            length -= cut
+        if len(reps) < 2 or length < 2 or not _loops_over_data([steps[r:r + length] for r in reps], demos):
+            return None
+        # The steps every gap ends with are the way to the next item: they count as the block's too.
+        gaps = [list(range(reps[r] + length, reps[r + 1])) for r in range(len(reps) - 1)]
+        prefix = _common_tail(steps, signatures, gaps)
+        return (len(reps) * length + (len(reps) - 1) * prefix, reps, length, gaps, prefix)
 
-        for length in range(2, MAX_LOOP_BLOCK + 1):
-            if i + 2 * length > len(steps):
-                break
+    candidates = []
+    for length in range(2, min(MAX_LOOP_BLOCK, n // 2) + 1):
+        windows = {}
+        for k in range(n - length + 1):
+            windows.setdefault(tuple(signatures[k:k + length]), []).append(k)
+        for positions in windows.values():
+            if len(positions) < 2:
+                continue
+            first = positions[0]
+            reps, end = [first], first + length
+            for j in positions[1:]:
+                if j < end:
+                    continue
+                if j - end > MAX_LOOP_GAP:
+                    break
+                reps.append(j)
+                end = j + length
+            if (c := candidate(reps, length)) is not None:
+                candidates.append(c)
 
-            reps = 1
-            while signatures[i + reps * length:i + (reps + 1) * length] == signatures[i:i + length]:
-                reps += 1
-
-            if reps >= 2 and _loops_over_data(steps, i, length, reps, demos):
-                if best is None or reps * length > best[0] * best[1]:
-                    best = (reps, length)
-
-        if best is None:
-            i += 1
+    # The loop that covers the most steps is the task's shape; the others fit around it. Found live (2026-11-01): a
+    # 4-step "type an address, Enter" repeated 7 times over a recording of five bills began earlier than the first
+    # bill's block, was taken for the loop, and the five 41-step bill blocks became "steps between" and were dropped.
+    # A loop that overlaps one already taken is cut to the repetitions before the overlap, and tried again as that.
+    loops, taken = [], set()
+    candidates.sort(key=lambda c: (-c[0], c[1][0]))
+    while candidates:
+        covered, reps, length, gaps, prefix = candidates.pop(0)
+        span = [set(range(start - (prefix if r else 0), start + length)) for r, start in enumerate(reps)]
+        clear = 0
+        while clear < len(reps) and not (span[clear] & taken) and (clear == 0 or not (set(gaps[clear - 1]) & taken)):
+            clear += 1
+        if clear < len(reps):
+            if clear >= 2 and (c := candidate(reps[:clear], length)) is not None:
+                candidates.append(c)
+                candidates.sort(key=lambda c: (-c[0], c[1][0]))
             continue
+        for s in span:
+            taken |= s
+        for gap in gaps:
+            taken |= set(gap)
+        blocks = [[steps[k]["id"] for k in sorted(s)] for s in span]
+        between = [[steps[k]["id"] for k in gap[:len(gap) - prefix]] for gap in gaps]
+        loops.append({"length": length + prefix, "reps": len(reps), "blocks": blocks, "between": between, "enabled": None})
 
-        reps, length = best
-        blocks = [[s["id"] for s in steps[i + r * length:i + (r + 1) * length]] for r in range(reps)]
-        loops.append({"id": f"l{len(loops) + 1}", "length": length, "reps": reps, "blocks": blocks, "enabled": None})
-        i += reps * length
-
+    loops.sort(key=lambda loop: steps.index(next(s for s in steps if s["id"] == loop["blocks"][0][0])))
+    for i, loop in enumerate(loops, 1):
+        loop["id"] = f"l{i}"
     return loops
 
 
-def _loops_over_data(steps, start, length, reps, demos):
-    """Whether repeating this block is about data: it types something different each time."""
+def _is_address(text):
+    """Whether typed text is a place to go rather than a value: a web address or an absolute path."""
 
-    blocks = [steps[start + r * length:start + (r + 1) * length] for r in range(reps)]
+    t = str(text or "").strip().lower()
+    return t.startswith(("http://", "https://", "file://", "/", "~/")) or bool(re.match(r"^[a-z]:[\\/]", t))
+
+
+def _differing_addresses(steps, at):
+    """Whether the steps at these positions each type an address, a different one each time."""
+
+    if any(k < 0 or k >= len(steps) for k in at):
+        return False
+    typed = [steps[k] for k in at]
+    if any(s["kind"] != "type" or not _is_address((s.get("samples") or [""])[0]) for s in typed):
+        return False
+    return len({(s.get("samples") or [""])[0] for s in typed}) > 1
+
+
+def _reading_shift(steps, reps):
+    """
+    How many leading steps of a block are the person going somewhere different before each repetition (an address
+    typed differently each time, and the key press that sent it): 0 when the block begins with the item itself.
+    """
+
+    if _differing_addresses(steps, reps):
+        return 2 if all(steps[r + 1]["kind"] == "key" for r in reps if r + 1 < len(steps)) else 1
+    if all(steps[r]["kind"] == "key" for r in reps) and _differing_addresses(steps, [r - 1 for r in reps]):
+        return 1
+    return 0
+
+
+def _trailing_reading(steps, reps, length):
+    """How many steps at a block's end type an address differently each time (with the key press that sent it): 0, 1 or 2."""
+
+    last = [r + length - 1 for r in reps]
+    if _differing_addresses(steps, last):
+        return 1
+    if all(steps[k]["kind"] == "key" for k in last) and _differing_addresses(steps, [k - 1 for k in last]):
+        return 2
+    return 0
+
+
+def _common_tail(steps, signatures, gaps):
+    """
+    How many steps every gap ends with the same way (0 when a gap is empty): the steps that bring the next item's form
+    up. The same way means typed the same too - the way to a fresh form is the same each time, and an address typed
+    differently before each item is the person opening that item's document to read it, which no run repeats.
+    """
+
+    if not gaps or any(not gap for gap in gaps):
+        return 0
+
+    def loose(k):
+        # A key press goes to whatever has focus, which the recording names differently each time (the last field of
+        # the form just saved): the press itself is what is the same.
+        return ("key", *(steps[k].get("keys") or [])) if steps[k]["kind"] == "key" else signatures[k]
+
+    tail = 0
+    while all(len(gap) > tail for gap in gaps):
+        at = [gap[-1 - tail] for gap in gaps]
+        if len({loose(k) for k in at}) != 1:
+            break
+        if steps[at[0]]["kind"] == "type" and len({(steps[k].get("samples") or [None])[0] for k in at}) != 1:
+            break
+        tail += 1
+    # A key press completes the typing before it: the way to the form begins with something else.
+    while tail > 0 and steps[gaps[0][-tail]]["kind"] == "key":
+        tail -= 1
+    return tail
+
+
+def _aligned(blocks, position, length):
+    """The steps of each block at `position` of a block of `length` - a shorter (first) block aligned from its end."""
+
+    found = []
+    for block in blocks:
+        at = position - (length - len(block))
+        if at >= 0:
+            found.append(block[at])
+    return found
+
+
+def _loops_over_data(blocks, demos):
+    """Whether repeating this block is about data: it types something different each time."""
 
     if any(s["kind"] in ("manual", "open") or s.get("seen", demos) < demos for block in blocks for s in block):
         return False
 
+    length = max(len(block) for block in blocks)
     for position in range(length):
-        if blocks[0][position]["kind"] == "type" and len({block[position]["samples"][0] for block in blocks}) > 1:
+        at = _aligned(blocks, position, length)
+        if len(at) < 2:
+            continue
+        if at[0]["kind"] == "type" and len({s["samples"][0] for s in at}) > 1:
             return True
-        if blocks[0][position]["kind"] == "upload" and len({tuple(block[position].get("files", [])) for block in blocks}) > 1:
+        if at[0]["kind"] == "upload" and len({tuple(s.get("files", [])) for s in at}) > 1:
             return True
 
     return False
@@ -808,7 +942,7 @@ def questions(skill):
     # A loop nobody has answered about decides what its steps' typed fields
     # are (one value, or a list), so they are not asked about until it is.
     undecided = [loop for loop in skill.get("loops") or [] if loop["enabled"] is None]
-    in_loop = {step_id for loop in undecided for block in loop["blocks"] for step_id in block}
+    in_loop = {step_id for loop in undecided for block in loop["blocks"] + (loop.get("between") or []) for step_id in block}
     loop_at = {loop["blocks"][0][0]: loop for loop in undecided}
 
     # Every click recorded only as a position is asked about in one question,
@@ -1071,20 +1205,40 @@ def _answer_values(skill, question, text):
     return {"understood": True, "note": note, "decision": None}
 
 
-def _loop(skill, loop):
+def _template(skill, loop):
+    """The steps of a loop's first whole repetition (the first may be shorter: it reached the form another way)."""
+
     by_id = {s["id"]: s for s in skill["steps"]}
-    first = [by_id[step_id] for step_id in loop["blocks"][0] if step_id in by_id]
+    blocks = [[by_id[step_id] for step_id in block if step_id in by_id] for block in loop["blocks"]]
+    return blocks, next((b for b in blocks if len(b) == loop["length"]), blocks[0])
+
+
+def _loop(skill, loop):
+    blocks, template = _template(skill, loop)
+    first = blocks[0]
 
     typed = []
-    for position, step in enumerate(first):
+    for position, step in enumerate(template):
         if step["kind"] == "type":
-            values = [by_id[block[position]]["samples"][0] for block in loop["blocks"]]
-            typed.append(f"{step['param']}: " + ", ".join(el._quote(v or "", 30) for v in values))
+            values = [s["samples"][0] for s in _aligned(blocks, position, loop["length"])]
+            if len(set(values)) > 1:
+                typed.append(f"{step['param']}: " + ", ".join(el._quote(v or "", 30) for v in values))
 
-    text = (f"Steps {first[0]['n']}-{first[-1]['n']} ({'; '.join(s['summary'] for s in first)}) were done "
-            f"{loop['reps']} times in a row with different text each time - {' / '.join(typed)}. Should I do them once "
-            "per item in a list you give me each run? Reply `each`, or `fixed` if it was just those "
-            f"{loop['reps']} times.")
+    shown = "; ".join(s["summary"] for s in template)
+    if len(shown) > 600:
+        shown = shown[:600].rstrip() + " ..."
+    text = (f"Steps {first[0]['n']}-{first[-1]['n']} ({shown}) were done {loop['reps']} times"
+            + (" in a row" if not any(loop.get("between") or []) else "")
+            + f" with different text each time - {' / '.join(typed)}.")
+    between = [g for g in loop.get("between") or [] if g]
+    if between:
+        by_id = {s["id"]: s for s in skill["steps"]}
+        gaps = [", ".join(by_id[i]["summary"] for i in g if i in by_id) for g in between]
+        text += (f" Between two of them you did {sum(len(g) for g in between)} other step(s) ("
+                 + "; then ".join(el._quote(g, 160) for g in gaps[:3]) + ("; ..." if len(gaps) > 3 else "")
+                 + ") - not part of every item, so I would not repeat those; I would do them only when the case comes up.")
+    text += (" Should I do them once per item in a list you give me each run? Reply `each`, or `fixed` if it was "
+             f"just those {loop['reps']} times.")
 
     return _question(f"loop:{loop['id']}", "loop", text)
 
@@ -1517,15 +1671,19 @@ def _apply_loop(skill, loop, choice):
         return
 
     by_id = {s["id"]: s for s in skill["steps"]}
-    first = loop["blocks"][0]
-    dropped = {step_id for block in loop["blocks"][1:] for step_id in block}
+    blocks, template = _template(skill, loop)
+    kept = {s["id"] for s in template}
+    dropped = {step_id for block in loop["blocks"] for step_id in block if step_id not in kept}
+    # What came between two items is not part of every item: it goes out of the steps, and stays on the loop in words
+    # for the model, which reads it when such a case comes up (skill_task._procedure).
+    between = [[by_id[i]["summary"] for i in gap if i in by_id] for gap in loop.get("between") or []]
+    dropped |= {step_id for gap in loop.get("between") or [] for step_id in gap}
 
-    for position, step_id in enumerate(first):
-        step = by_id[step_id]
+    for position, step in enumerate(template):
         step["repeat"] = loop["id"]
 
         if step.get("param"):
-            examples = [by_id[block[position]]["samples"][0] for block in loop["blocks"]]
+            examples = [s["samples"][0] for s in _aligned(blocks, position, loop["length"])]
             param = next(p for p in skill["params"] if p["name"] == step["param"])
             if len(set(examples)) == 1:
                 # Typed the same into every repetition (the income account on
@@ -1540,7 +1698,9 @@ def _apply_loop(skill, loop, choice):
     skills.renumber(skill)
 
     loop["enabled"] = True
-    loop["blocks"] = [first]
+    loop["blocks"] = [[s["id"] for s in template]]
+    loop["between"] = []
+    loop["between_summaries"] = [g for g in between if g]
 
 
 def _apply_step_choice(skill, step, choice):

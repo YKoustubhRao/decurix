@@ -61,6 +61,8 @@ type Record struct {
 	Error   string   `json:"error,omitempty"`
 	LocalT  int      `json:"local_tokens"`
 	RemoteT int      `json:"remote_tokens"`
+	// USD is what the remote brain's tokens cost, when its price is configured.
+	USD float64 `json:"usd,omitempty"`
 }
 
 // Check is one thing the verifier found.

@@ -54,8 +54,10 @@ echo not-a-screen-command`,
 	for _, m := range turn3 {
 		shown += len(m.Images)
 	}
-	if shown != 1 {
-		t.Errorf("%d screenshots in the transcript, want only the newest", shown)
+	// A hosted goal keeps older screenshots until a maintenance pass is worth the cache it costs (context.go): the
+	// transcript is only appended to, and a short one like this has both.
+	if shown != 2 {
+		t.Errorf("%d screenshots in the transcript, want both: nothing is taken off a short transcript", shown)
 	}
 
 	// A command that is not a screen command leaves no file, so it gets no

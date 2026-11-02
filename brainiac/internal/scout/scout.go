@@ -138,6 +138,18 @@ func init() {
 	}
 }
 
+// quantisers are uploaders of other labs' models that Brainiac takes files from.
+var quantisers = map[string]bool{"ggml-org": true, "unsloth": true, "bartowski": true, "mradermacher": true, "lmstudio-community": true}
+
+// TrustedUploader reports whether a repo's owner is a lab or quantiser on the
+// lists here. The Hub's tags and a repo's name are the uploader's own words,
+// so nothing else about a repo can say who made its files. The updater adds
+// only these on its own; anything else takes a person (`scout adopt`).
+func TrustedUploader(repo string) bool {
+	org := strings.ToLower(strings.SplitN(repo, "/", 2)[0])
+	return labs[org] || quantisers[org]
+}
+
 // junkRe marks derivatives that are not better models: safety training taken
 // out, merges, role-play tunes.
 var junkRe = regexp.MustCompile(`(?i)(uncensor|abliterat|obliterat|heretic|nsfw|roleplay|\brp\b|erotic|lewd|merge|frankenmerge|humanizer|dpo-?test|toxic)`)
@@ -183,7 +195,9 @@ func known(cat *catalog.Catalog) map[string]bool {
 	return k
 }
 
-// uploaderRank prefers the original publisher and well-known quantisers.
+// uploaderRank prefers the original publisher and well-known quantisers. A
+// stranger's repo comes last whatever it is called, or it would hide a
+// trusted copy of the same model.
 func uploaderRank(repo string) int {
 	org := strings.ToLower(strings.SplitN(repo, "/", 2)[0])
 	switch org {
@@ -193,13 +207,29 @@ func uploaderRank(repo string) int {
 		return 2
 	case "bartowski":
 		return 3
-	case "mradermacher":
+	case "mradermacher", "lmstudio-community":
 		return 4
 	}
-	if strings.HasSuffix(strings.ToLower(repo), "-gguf") {
-		return 1 // the publisher's own GGUF repo
+	if labs[org] {
+		return 1 // the publisher's own repo
 	}
 	return 5
+}
+
+// derivedFromJunk reports a repo whose base model or tags say what its name
+// does not.
+func derivedFromJunk(d hub.Details) bool {
+	for _, b := range d.BaseModels {
+		if junkRe.MatchString(b) {
+			return true
+		}
+	}
+	for _, t := range d.Tags {
+		if !strings.HasPrefix(t, "dataset:") && junkRe.MatchString(t) {
+			return true
+		}
+	}
+	return false
 }
 
 // Run scouts once.
@@ -339,6 +369,9 @@ func verify(ctx context.Context, opt Options, m hub.ModelInfo, role, found strin
 	}
 	if d.Architecture == "clip" {
 		return Candidate{}, false // a vision projector alone, not a model
+	}
+	if derivedFromJunk(d) {
+		return Candidate{}, false
 	}
 	c := Candidate{Repo: m.ID, Base: baseName(m.ID), Role: role, Found: found, Created: d.CreatedAt, ParamsB: round2(d.ParamsB),
 		Arch: d.Architecture, License: d.License, Gated: d.Gated, Downloads: d.Downloads, Likes: d.Likes, Claims: d.Claims}

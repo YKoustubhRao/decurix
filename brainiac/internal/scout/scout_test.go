@@ -56,15 +56,15 @@ func TestRunFindsVerifiesAndSkipsWhatTheCatalogHas(t *testing.T) {
 		switch {
 		case r.URL.Path == "/api/models":
 			fmt.Fprint(w, `[{"id":"unsloth/Qwen3.5-2B-GGUF","likes":900},
-				{"id":"newlab/Nova-4B-GGUF","likes":500,"pipeline_tag":"text-generation","tags":["gguf"]},
+				{"id":"allenai/Nova-4B-GGUF","likes":500,"pipeline_tag":"text-generation","tags":["gguf"]},
 				{"id":"mradermacher/Nova-4B-GGUF","likes":40},
 				{"id":"oddlab/Weird-3B-GGUF","likes":300},
 				{"id":"nclab/Closed-2B-GGUF","likes":200},
 				{"id":"oldlab/Ancient-1B-GGUF","likes":100},
 				{"id":"someone/Qwen3.8-27B-Uncensored-GGUF","likes":5000},
 				{"id":"remixer/Qwen3.5-2B-Turbo-GGUF","likes":800}]`)
-		case r.URL.Path == "/api/models/newlab/Nova-4B-GGUF":
-			fmt.Fprintf(w, `{"id":"newlab/Nova-4B-GGUF","createdAt":%q,"downloads":2000,"cardData":{"license":"apache-2.0","model-index":[{"results":[{"dataset":{"name":"AIME26"},"metrics":[{"type":"acc","value":88.5}]}]}]},"gguf":{"architecture":"qwen35","total":4.2e9}}`, created)
+		case r.URL.Path == "/api/models/allenai/Nova-4B-GGUF":
+			fmt.Fprintf(w, `{"id":"allenai/Nova-4B-GGUF","createdAt":%q,"downloads":2000,"cardData":{"license":"apache-2.0","model-index":[{"results":[{"dataset":{"name":"AIME26"},"metrics":[{"type":"acc","value":88.5}]}]}]},"gguf":{"architecture":"qwen35","total":4.2e9}}`, created)
 		case r.URL.Path == "/api/models/oddlab/Weird-3B-GGUF":
 			fmt.Fprintf(w, `{"id":"oddlab/Weird-3B-GGUF","createdAt":%q,"downloads":900,"cardData":{"license":"mit","model-index":[{"results":[{"dataset":{"name":"X"},"metrics":[{"type":"acc","value":70}]}]}]},"gguf":{"architecture":"brandnewarch","total":3e9}}`, created)
 		case r.URL.Path == "/api/models/nclab/Closed-2B-GGUF":
@@ -115,7 +115,7 @@ func TestRunFindsVerifiesAndSkipsWhatTheCatalogHas(t *testing.T) {
 		t.Error("a model the catalog has came back as new")
 	}
 	nova, ok := by["nova-4b"]
-	if !ok || nova.Repo != "newlab/Nova-4B-GGUF" || !nova.Usable || !nova.ArchOK || nova.File != "Nova-4B-Q4_K_M.gguf" {
+	if !ok || nova.Repo != "allenai/Nova-4B-GGUF" || !nova.Usable || !nova.ArchOK || nova.File != "Nova-4B-Q4_K_M.gguf" {
 		t.Fatalf("nova %+v", nova)
 	}
 	if nova.FitsHere == nil || *nova.FitsHere || len(nova.Claims) != 1 {
@@ -138,6 +138,48 @@ func TestRunFindsVerifiesAndSkipsWhatTheCatalogHas(t *testing.T) {
 	b, _ := json.Marshal(rep)
 	if !strings.Contains(string(b), `"candidates"`) {
 		t.Fatal("report does not serialise")
+	}
+}
+
+func TestOnlyListedUploadersAreTrusted(t *testing.T) {
+	for repo, want := range map[string]bool{"unsloth/Nova-GGUF": true, "ggml-org/Nova-GGUF": true, "Qwen/Qwen3.9-4B-GGUF": true,
+		"someone/Qwen3.9-4B-GGUF": false, "qwen-official/Qwen3.9-4B-GGUF": false, "unsloth2/Nova-GGUF": false} {
+		if got := TrustedUploader(repo); got != want {
+			t.Errorf("TrustedUploader(%s) = %v", repo, got)
+		}
+	}
+}
+
+// A stranger's "-GGUF" repo must not beat a trusted copy of the same model:
+// only one repo per model goes on to be checked.
+func TestAStrangerNeverOutranksATrustedCopy(t *testing.T) {
+	stranger := uploaderRank("someone/Qwen3.9-4B-GGUF")
+	for _, repo := range []string{"Qwen/Qwen3.9-4B-GGUF", "ggml-org/Qwen3.9-4B-GGUF", "unsloth/Qwen3.9-4B-GGUF", "bartowski/Qwen3.9-4B-GGUF",
+		"mradermacher/Qwen3.9-4B-GGUF", "lmstudio-community/Qwen3.9-4B-GGUF"} {
+		if uploaderRank(repo) >= stranger {
+			t.Errorf("%s ranks %d, a stranger %d", repo, uploaderRank(repo), stranger)
+		}
+	}
+}
+
+func TestARenamedDerivativeIsCaughtByItsBaseModelOrTags(t *testing.T) {
+	for name, d := range map[string]hub.Details{
+		"base model": {BaseModels: []string{"someone/Qwen3.8-27B-abliterated"}},
+		"tag":        {Tags: []string{"gguf", "uncensored"}},
+		"tag's base": {Tags: []string{"base_model:someone/Qwen3.8-27B-Heretic"}},
+	} {
+		if !derivedFromJunk(d) {
+			t.Errorf("%s: not caught", name)
+		}
+	}
+	for name, d := range map[string]hub.Details{
+		"plain":            {BaseModels: []string{"Qwen/Qwen3.8-27B"}, Tags: []string{"gguf", "text-generation"}},
+		"trained on data":  {Tags: []string{"dataset:toxic-comments-for-safety"}},
+		"nothing declared": {},
+	} {
+		if derivedFromJunk(d) {
+			t.Errorf("%s: dropped", name)
+		}
 	}
 }
 

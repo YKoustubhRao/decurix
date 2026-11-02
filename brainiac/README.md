@@ -98,6 +98,7 @@ The `web` setting is `auto` (default), `on-request` or `off`. Agents can use the
    - A model under a new name never inherits its parent's scores, whatever the Hub's tags say.
    - The catalog's own ratings are the only yardstick; ratings the updater made are never used to rate others.
 4. **Adopt.** A model rated at least 3 points above the current pick for a role goes into `catalog.local.json`, marked `auto`, with the comparisons as its basis.
+   Only a repo owned by a lab or quantiser on the trusted list (`internal/scout`) is adopted on its own. A repo's name and tags are its uploader's own words, so a stranger's upload under a real model's name waits for a person (`brainiac scout adopt`).
 5. **Plan again** for the machine as it was planned (today's memory pressure is not a reason to downgrade). The plan is applied only if it is better overall and no core role is lost.
 6. **Install beside the running models** (`lock.next.json`), only after 10 minutes with no requests and when the CPU is not busy.
 7. **Check every changed role** with questions code can verify: the brain must answer 17 + 25 and repeat a word, a vision model must read a number from a picture, OCR must read it too, a math model must get 12 × 13 right, a translator must write Hindi. This catches a model that does not load, cannot see, or answers in the wrong template.
@@ -109,19 +110,32 @@ The leaderboards cover the brain, code, math and pointing on a screen. No mainta
 
 `brainiac update` shows what the next cycle would do, with every rating and its evidence. `GET /v1/brainiac/update` returns the last report. Set `update_every: "off"` to change models only by hand (`brainiac scout adopt`, `brainiac scout pin`).
 
+## What a downloaded model can reach
+
+A model file is untrusted input to a large native parser, and it carries a chat template that the server runs on every request.
+
+- **Where a model comes from.** Only trusted uploaders are adopted automatically (above). A sha256 only proves a file is what its uploader published.
+- **What is installed stays installed.** A model stays at the commit it was installed from; a push to its repo changes nothing here. `brainiac pull --latest` moves it on purpose.
+- **Chat templates.** The first template a model installs is recorded in `templates.json` and its text kept under `templates/`, to read. A different one later stops the install, and the updater sets that model aside, until a person reads it and runs `brainiac update approve-template <model>`. A file whose template no longer matches its lock is not served. This catches a change; code cannot judge whether a model's first template is honest.
+- **Secrets.** `llama-server` and the Python worker get a short list of environment variables, none of them Brainiac's keys.
+- **Network.** On Linux, `llama-server` runs in its own network namespace, reached through a Unix socket only this user can open. Where that cannot work (Windows, macOS, a system that refuses namespaces, a build with no socket support) it runs on loopback, the log says so, and `/v1/brainiac/status` lists it under `with_network`. The Python worker keeps its network, because its OCR package can fetch its default models on first use.
+
+Not covered: a model process can still read and write what this user can, and a hostile model can give bad answers. Files are the next gap; answers are what Decurix's final gate and the approval gate are for.
+
 ## Commands
 
 | Command | Does |
 |---|---|
 | `brainiac census` | Measures CPU and instruction sets, memory pools (cgroup and WSL aware), GPUs, disk, memory bandwidth, the local Ollama and its models, network, Python |
 | `brainiac plan [--verbose]` | Chooses a model per role and says why, and why every other candidate was not chosen |
-| `brainiac pull [--yes]` | Downloads the plan (pinned commits, sha256-checked, resumable) and writes `lock.json` |
+| `brainiac pull [--yes] [--latest]` | Downloads the plan (pinned commits, sha256-checked, resumable) and writes `lock.json`; `--latest` moves installed models to their repo's newest commit |
 | `brainiac serve` | Serves what is installed |
 | `brainiac up [--yes]` | All of the above; what `build.sh` runs |
 | `brainiac ask "..." --image f --audio f` | Asks a running Brainiac, streaming the answer |
 | `brainiac status` | What a running Brainiac holds in memory |
 | `brainiac eval --cases f.jsonl [--learn]` | Measures models field by field on checked cases; the server uses the results to route |
 | `brainiac update [--apply]` | Rates new open models from public evaluations and says what would change; `--apply` switches now (a running `serve` does it on its own) |
+| `brainiac update approve-template <model>` | Accepts a model's changed chat template, after a person has read it |
 | `brainiac scout [--days 120]` | Finds and checks open models newer than the catalog |
 | `brainiac scout adopt <repo> --roles r=q` / `scout pin <tag>` | Adds a scouted model to the local catalog / moves llama.cpp |
 
@@ -200,6 +214,8 @@ internal/scout/      finds and checks new open models
 internal/bench/      public evaluations: leaderboards and model-card tables, ratings against the catalog
 internal/update/     the self-update cycle: rate, adopt, plan, install aside, check, switch
 internal/evals/      checked cases, scoring, evals.json
+internal/gguf/       reads the chat templates in a GGUF header, with every length bounded
+internal/isolate/    what a model process can reach: its environment and, on Linux, its network
 internal/{config,store,cache,trace}/
 ```
 

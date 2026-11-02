@@ -756,6 +756,11 @@ async function startStack() {
     if (code !== 0) throw new Error(`${failure} Check ${logFile()}`);
   };
   await step('Preparing Decurix…', ['compose', 'build'], 'Could not build Decurix in Docker.');
+  // The compose file declares the network external (compose will not adopt one the control plane made), so it must
+  // exist before compose runs anything. On a fresh install, or after a `compose down`, it does not.
+  if (await docker(['network', 'inspect', 'decurix-network']) !== 0) {
+    await step('Preparing Decurix…', ['network', 'create', 'decurix-network'], 'Could not create the Docker network.');
+  }
   // The desktop images are built by the control plane itself, from the build
   // context inside it; it skips the ones that exist. Only the desktop is
   // waited for: the tools image (Go, Node, Rust, the coding CLIs) is a long

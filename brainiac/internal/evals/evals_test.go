@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestChecks(t *testing.T) {
@@ -46,6 +47,71 @@ func TestCompareNeedsEnoughCases(t *testing.T) {
 	}
 	if better, _ := r.Compare("remote", "math-7b", "math"); better {
 		t.Fatal("the worse model compared as better")
+	}
+}
+
+func TestLowerBoundReflectsHowLittleASmallSampleSays(t *testing.T) {
+	small, large := Score{N: 20, Correct: 20}.LowerBound(), Score{N: 200, Correct: 200}.LowerBound()
+	if small > 0.90 || large < 0.98 || small >= large {
+		t.Fatalf("20/20 claims %.3f, 200/200 claims %.3f", small, large)
+	}
+	if got := (Score{N: 100, Correct: 50}).LowerBound(); got < 0.40 || got > 0.45 {
+		t.Fatalf("50/100 claims %.3f", got)
+	}
+	if got := (Score{}).LowerBound(); got != 0 {
+		t.Fatalf("no cases claims %.3f", got)
+	}
+}
+
+func TestProvenNeedsMoreThanAnEqualSmallScore(t *testing.T) {
+	r := &Results{}
+	set := func(a, b Score) {
+		r.Set("cheap", "math", a)
+		r.Set("remote", "math", b)
+	}
+	cases := []struct {
+		name string
+		a, b Score
+		want bool
+	}{
+		{"too few cases", Score{N: 10, Correct: 10}, Score{N: 10, Correct: 5}, false},
+		{"20/20 against a perfect score could be chance", Score{N: 20, Correct: 20}, Score{N: 20, Correct: 20}, false},
+		{"20/20 against 80% is clear", Score{N: 20, Correct: 20}, Score{N: 20, Correct: 16}, true},
+		{"60/60 against a perfect score", Score{N: 60, Correct: 60}, Score{N: 60, Correct: 60}, true},
+		{"one point ahead on 40 is not enough", Score{N: 40, Correct: 36}, Score{N: 40, Correct: 35}, false},
+		{"worse on many cases", Score{N: 200, Correct: 160}, Score{N: 200, Correct: 190}, false},
+		{"close on many cases", Score{N: 400, Correct: 376}, Score{N: 400, Correct: 380}, true},
+	}
+	for _, c := range cases {
+		set(c.a, c.b)
+		if got := r.Proven("cheap", "remote", "math"); got != c.want {
+			t.Errorf("%s: %v (claims %.3f)", c.name, got, c.a.LowerBound())
+		}
+	}
+	if (*Results)(nil).Proven("a", "b", "c") {
+		t.Error("no results proved something")
+	}
+}
+
+func TestOutcomesPersistAndOnlyAMissMoves(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "outcomes.json")
+	o := OpenOutcomes(p)
+	t1 := time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
+	if err := o.Record("m", "math", true, t1); err != nil {
+		t.Fatal(err)
+	}
+	if got := o.Get("m", "math"); got.Passed != 1 || !got.LastMiss.IsZero() {
+		t.Fatalf("%+v", got)
+	}
+	o.Record("m", "math", false, t1)
+	o.Record("m", "math", false, t1.Add(-time.Hour)) // an older report does not move it back
+	again := OpenOutcomes(p)
+	if got := again.Get("m", "math"); got.Missed != 2 || !got.LastMiss.Equal(t1) {
+		t.Fatalf("%+v", got)
+	}
+	os.WriteFile(p, []byte("not json"), 0o644)
+	if got := OpenOutcomes(p).Get("m", "math"); got.Missed != 0 {
+		t.Fatalf("a broken file: %+v", got)
 	}
 }
 

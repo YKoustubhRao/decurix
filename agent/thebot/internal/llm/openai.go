@@ -2,9 +2,15 @@ package llm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,13 +28,32 @@ type OpenAIProvider struct {
 	// BaseURL defaults to the real API - overridable in tests, the same
 	// seam OllamaProvider.Host and AnthropicProvider.BaseURL provide.
 	BaseURL string
+	// Effort is the reasoning effort asked of the model ("" leaves it to the model's default).
+	Effort string
+}
+
+// reasoningEffort is what a person set for this worker in ~/.decurix/reasoning-effort: low, medium or high; "" otherwise.
+func reasoningEffort() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".decurix", "reasoning-effort"))
+	if err != nil {
+		return ""
+	}
+	switch effort := strings.TrimSpace(string(data)); effort {
+	case "low", "medium", "high":
+		return effort
+	}
+	return ""
 }
 
 func NewOpenAI(apiKey, embedModel string) *OpenAIProvider {
 	if embedModel == "" {
 		embedModel = "text-embedding-3-small"
 	}
-	return &OpenAIProvider{APIKey: apiKey, Client: &http.Client{}, EmbedModel: embedModel, BaseURL: openAIDefaultBaseURL}
+	return &OpenAIProvider{APIKey: apiKey, Client: &http.Client{}, EmbedModel: embedModel, BaseURL: openAIDefaultBaseURL, Effort: reasoningEffort()}
 }
 
 func (o *OpenAIProvider) Name() string { return "openai" }
@@ -51,6 +76,29 @@ type openaiChatRequest struct {
 	Temperature float64         `json:"temperature,omitempty"`
 	MaxTokens   int             `json:"max_tokens,omitempty"`
 	Stop        []string        `json:"stop,omitempty"`
+	Effort      string          `json:"reasoning_effort,omitempty"`
+	CacheKey    string          `json:"prompt_cache_key,omitempty"`
+}
+
+// noCacheKey is set once a provider refused prompt_cache_key: it is not sent again.
+var noCacheKey atomic.Bool
+
+// cacheKey routes one goal's calls of one kind to the same cache: its instructions (the first message) and its request
+// (the first user message), hashed. Found (2026-10-31): with no key, GPT-6 deployments cached 35% of the prompt against
+// 83% on gpt-5.4, with the same harness.
+func cacheKey(msgs []openaiMessage) string {
+	if noCacheKey.Load() || len(msgs) == 0 {
+		return ""
+	}
+	h := sha256.New()
+	fmt.Fprint(h, msgs[0].Content)
+	for _, m := range msgs[1:] {
+		if m.Role == "user" {
+			fmt.Fprint(h, m.Content)
+			break
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))[:32]
 }
 
 type openaiChatResponse struct {
@@ -118,10 +166,18 @@ func (o *OpenAIProvider) chatOnce(ctx context.Context, model string, messages []
 		Temperature: opts.Temperature,
 		MaxTokens:   opts.MaxTokens,
 		Stop:        opts.Stop,
+		Effort:      o.Effort,
+		CacheKey:    cacheKey(msgs),
 	}
 	do := func(req *http.Request) (*http.Response, error) { return rateLimitedRequest(o.Client, req) }
 	var parsed openaiChatResponse
 	respBytes, err := postJSON(ctx, do, "openai", o.BaseURL+"/v1/chat/completions", o.authHeader(), reqBody, &parsed, &parsed.apiError)
+	if err != nil && reqBody.CacheKey != "" && strings.Contains(err.Error(), "prompt_cache_key") {
+		// A provider that does not know the key: the same request without it, and never again with it.
+		noCacheKey.Store(true)
+		reqBody.CacheKey, parsed = "", openaiChatResponse{}
+		respBytes, err = postJSON(ctx, do, "openai", o.BaseURL+"/v1/chat/completions", o.authHeader(), reqBody, &parsed, &parsed.apiError)
+	}
 	if err != nil {
 		return Result{}, err
 	}

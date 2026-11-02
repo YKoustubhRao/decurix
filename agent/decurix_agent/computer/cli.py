@@ -544,6 +544,9 @@ def build_parser():
     listed = sub.add_parser("skills", add_help=False)
     listed.add_argument("words", nargs="*")
 
+    recalled = sub.add_parser("recall", add_help=False)
+    recalled.add_argument("words", nargs="+")
+
     described = sub.add_parser("skill", add_help=False)
     described.add_argument("name")
     described.add_argument("--look", type=int, default=None)
@@ -878,6 +881,12 @@ def run(argv):
         for skill in found:
             print(skill_engine.summary_line(skill))
         print("`gui skill NAME` shows one's steps; `gui do NAME` does it with no model.")
+        return EXIT_OK
+
+    if command == "recall":
+        from decurix_agent import memory_context
+
+        print(memory_context.search(" ".join(args.words)) or "Nothing in this worker's memory has those words.")
         return EXIT_OK
 
     if command in ("skill", "do"):

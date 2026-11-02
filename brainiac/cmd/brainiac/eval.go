@@ -86,8 +86,8 @@ func runEval(args []string) error {
 	}
 	sort.Strings(names)
 	type tally struct {
-		n, ok int
-		ms    int64
+		n, ok, prompt, completion int
+		ms                        int64
 	}
 	scores := map[string]map[string]*tally{}
 	for _, model := range names {
@@ -104,7 +104,7 @@ func runEval(args []string) error {
 				return err
 			}
 			t0 := time.Now()
-			answer, err := cl.ask(ctx, model, c)
+			answer, usage, err := cl.ask(ctx, model, c)
 			ms := time.Since(t0).Milliseconds()
 			ok := err == nil && c.Check.Correct(answer)
 			mark := "ok  "
@@ -126,6 +126,8 @@ func runEval(args []string) error {
 			}
 			s.n++
 			s.ms += ms
+			s.prompt += usage.PromptTokens
+			s.completion += usage.CompletionTokens
 			if ok {
 				s.ok++
 			}
@@ -134,7 +136,7 @@ func runEval(args []string) error {
 
 	fmt.Println()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "MODEL\tFIELD\tCORRECT\tACCURACY\tMEAN TIME")
+	fmt.Fprintln(tw, "MODEL\tFIELD\tCORRECT\tACCURACY\tCAN CLAIM\tMEAN TIME\tMEAN TOKENS")
 	for _, model := range names {
 		var ds []string
 		for d := range scores[model] {
@@ -143,15 +145,16 @@ func runEval(args []string) error {
 		sort.Strings(ds)
 		for _, d := range ds {
 			s := scores[model][d]
-			fmt.Fprintf(tw, "%s\t%s\t%d/%d\t%.0f%%\t%.1fs\n", model, d, s.ok, s.n, 100*float64(s.ok)/float64(s.n), float64(s.ms)/float64(s.n)/1000)
-			results.Set(model, d, evals.Score{N: s.n, Correct: s.ok, MeanMs: s.ms / int64(s.n)})
+			score := evals.Score{N: s.n, Correct: s.ok, MeanMs: s.ms / int64(s.n), MeanPrompt: s.prompt / s.n, MeanCompletion: s.completion / s.n, At: time.Now().UTC()}
+			fmt.Fprintf(tw, "%s\t%s\t%d/%d\t%.0f%%\t%.0f%%\t%.1fs\t%d+%d\n", model, d, s.ok, s.n, 100*score.Accuracy(), 100*score.LowerBound(), float64(s.ms)/float64(s.n)/1000, score.MeanPrompt, score.MeanCompletion)
+			results.Set(model, d, score)
 		}
 	}
 	tw.Flush()
 	if err := results.Save(resultsPath); err != nil {
 		return err
 	}
-	fmt.Printf("\nSaved to %s. A specialist takes a field from the remote brain only with at least %d cases there and an accuracy at least as high.\n", resultsPath, evals.MinCases)
+	fmt.Printf("\nSaved to %s. A local model takes a field from the remote brain only with at least %d cases there, when the accuracy it can claim is within %.0f points of the remote brain's. `brainiac paths` shows where that leaves each field.\n", resultsPath, evals.MinCases, 100*evals.Margin)
 	if *learn {
 		n, err := learnRouter(st, cases)
 		if err != nil {
@@ -160,6 +163,12 @@ func runEval(args []string) error {
 		fmt.Printf("The router learned %d new examples (%s).\n", n, st.Path(engine.RouterExamplesFile))
 	}
 	return nil
+}
+
+// evalUsage is the tokens one answer used.
+type evalUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
 }
 
 type evalClient struct {
@@ -214,7 +223,7 @@ func (c *evalClient) auth(r *http.Request) {
 }
 
 // ask sends one case to one model and returns the answer text.
-func (c *evalClient) ask(ctx context.Context, model string, cs evals.Case) (string, error) {
+func (c *evalClient) ask(ctx context.Context, model string, cs evals.Case) (string, evalUsage, error) {
 	var msgs []map[string]any
 	if cs.System != "" {
 		msgs = append(msgs, map[string]any{"role": "system", "content": cs.System})
@@ -230,12 +239,12 @@ func (c *evalClient) ask(ctx context.Context, model string, cs evals.Case) (stri
 	c.auth(req)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", evalUsage{}, err
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return "", evalUsage{}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	var out struct {
 		Choices []struct {
@@ -243,11 +252,12 @@ func (c *evalClient) ask(ctx context.Context, model string, cs evals.Case) (stri
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage evalUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil || len(out.Choices) == 0 {
-		return "", errors.New("the answer was not a chat completion")
+		return "", evalUsage{}, errors.New("the answer was not a chat completion")
 	}
-	return out.Choices[0].Message.Content, nil
+	return out.Choices[0].Message.Content, out.Usage, nil
 }
 
 // learnRouter appends the cases' prompts and fields to the router's examples,

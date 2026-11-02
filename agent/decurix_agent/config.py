@@ -40,7 +40,7 @@ AGENT_HARNESS = os.environ.get(
 # created before brains existed have none, which is the local model.
 BRAIN = os.environ.get("DECURIX_BRAIN", "ollama").strip().lower() or "ollama"
 BRAIN_MODEL = os.environ.get("DECURIX_BRAIN_MODEL", "").strip()
-HOSTED_BRAIN = BRAIN in ("claude", "azure")
+HOSTED_BRAIN = BRAIN in ("claude", "azure", "openai")
 
 # Set only for a desktop spawned as another desktop's specialized child (see
 # httpapi.createDesktopHandler / desktop.Manager.Create) - "" for an ordinary,
