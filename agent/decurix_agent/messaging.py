@@ -14,7 +14,8 @@ from decurix_agent.logging_utils import log, log_banner, timestamp
 # ============================================================
 
 # In the name of a command file saved while the agent was waiting on a
-# question: it is that question's answer. The mark outlives the process, so an
+# question, naming the task that asked it: it is that question's answer
+# (save_request). The mark outlives the process, so an
 # agent that restarted in between can tell an answer to a question it no
 # longer has from a new request (watchers.is_reply_file).
 REPLY_MARK = "-reply"
@@ -119,7 +120,11 @@ def save_request(request, task_id=""):
     """
 
     stem = time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
-    if state.waiting_for_query and (not task_id or not state.current_task_id or task_id == state.current_task_id):
+    # A reply must name the question it answers: the task whose question is open. One without a task ID, or with
+    # another task's, is not its answer whatever it says - otherwise anything that reached :8081 could answer an
+    # approval "yes" (review 2026-11-02). The control plane sends a reply with the waiting task's ID only after
+    # checking that note is this desktop's newest open one.
+    if state.waiting_for_query and task_id and task_id == state.current_task_id:
         stem += REPLY_MARK
 
     filename = task_context.command_filename(stem, task_id)
@@ -610,7 +615,7 @@ def _task_name():
 
 
 def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted=False, checked=False, fallback=None,
-                      task_id=None):
+                      task_id=None, gated=False):
     """
     Write the final result into querytext/ so the existing
     querytext watcher sends it to the Decurix control plane.
@@ -624,6 +629,10 @@ def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted
     Query rail (nor a file in querytext/, which its watcher would send as
     one): for a result nobody needs paging about, such as a finished
     recording that now sits in the desktop card's recordings list.
+
+    `checked` says the result was judged by a check (recorded on the task as such) and skips the final gate; `gated`
+    skips the gate for a report the gate (or a run's own checks) already settled WITHOUT judging it done - recorded as
+    not checked (verify.outcome).
     """
 
     # Durable workflow stages report through the same harness as ordinary work.
@@ -634,7 +643,7 @@ def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted
         if workflow_task.final_gate(reply, kind, engine):
             return
 
-    if _final_gate is not None and not checked and not interrupted:
+    if _final_gate is not None and not checked and not gated and not interrupted:
         try:
             if _final_gate(reply, kind, engine):
                 return

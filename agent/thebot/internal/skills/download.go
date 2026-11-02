@@ -1,7 +1,9 @@
 package skills
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -142,7 +144,16 @@ const (
 	declaredUA = "TheBot-Research/1.0 (automated research agent; contact: research@thebot.local)"
 )
 
-func fetchBytesAs(ctx context.Context, target, ua string, timeout time.Duration) ([]byte, int, error) {
+// maxPageBytes and maxFileBytes bound what one fetch may hold in memory: a
+// page scanned for links, and one downloaded file. Past the bound the fetch
+// fails rather than reading on without end.
+const (
+	maxPageBytes = 20 << 20
+	maxFileBytes = 200 << 20
+)
+
+// fetchBytesAs fetches target as ua, reading at most limit bytes.
+func fetchBytesAs(ctx context.Context, target, ua string, timeout time.Duration, limit int64) ([]byte, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -169,14 +180,18 @@ func fetchBytesAs(ctx context.Context, target, ua string, timeout time.Duration)
 	if resp.StatusCode != http.StatusOK {
 		return nil, resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err == nil && int64(len(body)) > limit {
+		return nil, resp.StatusCode, fmt.Errorf("larger than %d MB - not downloaded", limit>>20)
+	}
 	return body, resp.StatusCode, err
 }
 
-func fetchBytes(ctx context.Context, target string, timeout time.Duration) ([]byte, error) {
-	data, status, err := fetchBytesAs(ctx, target, browserUA, timeout)
+// fetchBytes fetches target, at most limit bytes, retrying a 403 once as the declared client.
+func fetchBytes(ctx context.Context, target string, timeout time.Duration, limit int64) ([]byte, error) {
+	data, status, err := fetchBytesAs(ctx, target, browserUA, timeout, limit)
 	if err != nil && status == http.StatusForbidden {
-		data, _, err = fetchBytesAs(ctx, target, declaredUA, timeout)
+		data, _, err = fetchBytesAs(ctx, target, declaredUA, timeout, limit)
 	}
 	return data, err
 }
@@ -261,7 +276,7 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 			// list of other pages to download).
 			fileURLs = []string{target}
 		} else {
-			body, err := fetchBytes(rc.Ctx, target, 25*time.Second)
+			body, err := fetchBytes(rc.Ctx, target, 25*time.Second, maxPageBytes)
 			if err != nil {
 				return Result{
 					Subtask: subtask, SkillName: d.Name(),
@@ -282,8 +297,10 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		}
 	}
 
+	leftOut := 0
 	if len(fileURLs) > maxDownloads {
 		rc.Logf("download", "capping at %d of %d found links", maxDownloads, len(fileURLs))
+		leftOut = len(fileURLs) - maxDownloads
 		fileURLs = fileURLs[:maxDownloads]
 	}
 
@@ -292,10 +309,18 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	usedNames := map[string]bool{}
 	for i, fileURL := range fileURLs {
 		rc.Logf("download", "downloading %d/%d: %s", i+1, len(fileURLs), fileURL)
-		data, err := fetchBytes(rc.Ctx, fileURL, 60*time.Second)
+		data, err := fetchBytes(rc.Ctx, fileURL, 60*time.Second, maxFileBytes)
 		if err != nil {
 			failed = append(failed, fmt.Sprintf("%s: %s", fileURL, err.Error()))
 			continue
+		}
+		// What came back must be the kind of file asked for: a login page
+		// served under invoice.pdf is not an invoice.
+		if ext := fileExt(fileURL); ext != "" {
+			if why := contentMismatch(ext, data); why != "" {
+				failed = append(failed, fmt.Sprintf("%s: not saved - %s", fileURL, why))
+				continue
+			}
 		}
 
 		parsed, _ := url.Parse(fileURL)
@@ -375,13 +400,76 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 			fmt.Fprintf(&b, "  - %s\n", f)
 		}
 	}
+	if leftOut > 0 {
+		fmt.Fprintf(&b, "Not downloaded: %d more matching link(s) past the limit of %d per step.\n", leftOut, maxDownloads)
+	}
 	if b.Len() == 0 {
 		b.WriteString("Nothing downloaded.")
 	}
 
+	// Verified only when every file asked for was saved and checked: 1 of 20
+	// is not the download that was asked for.
+	complete := len(saved) > 0 && len(failed) == 0 && leftOut == 0
+	if !complete && len(saved) > 0 {
+		fmt.Fprintf(&b, "Not complete: %d of %d file(s) saved.\n", len(saved), len(saved)+len(failed)+leftOut)
+	}
 	return Result{
 		Subtask: subtask, SkillName: d.Name(),
-		Output: b.String(), Verified: len(saved) > 0,
-		Meta: map[string]any{"downloaded": len(saved), "failed": len(failed), "paths": saved},
+		Output: b.String(), Verified: complete,
+		Meta: map[string]any{"downloaded": len(saved), "failed": len(failed), "leftOut": leftOut, "paths": saved},
 	}, nil
+}
+
+// fileExt is the lower-case extension a URL's path names ("pdf"), or "".
+func fileExt(fileURL string) string {
+	if em := extRe.FindStringSubmatch(fileURL); em != nil {
+		return strings.ToLower(em[1])
+	}
+	return ""
+}
+
+var (
+	zipMagic = []byte("PK\x03\x04")
+	oleMagic = []byte("\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1")
+)
+
+// contentMismatch says why data is not a file of kind ext - an HTML page (a
+// login, an error) served under a .pdf name, a binary under a .csv - or ""
+// when it is, or when ext is a kind this does not know.
+func contentMismatch(ext string, data []byte) string {
+	if len(data) == 0 {
+		return "the server sent an empty file"
+	}
+	sniffed := http.DetectContentType(data)
+	isHTML := strings.HasPrefix(sniffed, "text/html")
+	isText := strings.HasPrefix(sniffed, "text/") || strings.HasPrefix(sniffed, "application/json")
+	switch ext {
+	case "pdf":
+		// Readers accept the header anywhere in the first 1024 bytes.
+		if !bytes.Contains(data[:min(len(data), 1024)], []byte("%PDF")) || isHTML {
+			return "it is not a PDF (the server sent " + sniffed + ")"
+		}
+	case "xlsx", "docx", "pptx", "zip":
+		if !bytes.HasPrefix(data, zipMagic) {
+			return "it is not a ." + ext + " file (the server sent " + sniffed + ")"
+		}
+	case "xls", "doc", "ppt":
+		// An old Office binary, or a newer zip saved under the old name.
+		if !bytes.HasPrefix(data, oleMagic) && !bytes.HasPrefix(data, zipMagic) {
+			return "it is not a ." + ext + " file (the server sent " + sniffed + ")"
+		}
+	case "json":
+		if !json.Valid(data) {
+			return "it is not valid JSON (the server sent " + sniffed + ")"
+		}
+	case "html", "htm":
+		if !isText {
+			return "it is not a web page (the server sent " + sniffed + ")"
+		}
+	case "csv", "cpp", "hpp", "h", "cc", "cxx", "py", "go", "rs", "java", "js", "ts":
+		if isHTML || !isText {
+			return "it is not a ." + ext + " text file (the server sent " + sniffed + ")"
+		}
+	}
+	return ""
 }

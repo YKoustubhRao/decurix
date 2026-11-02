@@ -88,8 +88,10 @@ def files(report="", started=None, root=None, request=""):
     candidates = set(_walk(root or config.WORK_DIR))
     if root is None:
         candidates.update(shared.walk())  # what the task made in the shared folder counts like the work folder
-    for named in NAMED_PATH.findall(report or ""):
-        candidates.add(Path(os.path.expanduser(named)))
+    # (`raw`, not `named`: reusing that name here left it holding the last path's text, and every file the report
+    # named but the request did not was then dropped from what is read back - review 2026-11-02.)
+    for raw in NAMED_PATH.findall(report or ""):
+        candidates.add(Path(os.path.expanduser(raw)))
 
     made = []
     for path in candidates:
@@ -182,18 +184,19 @@ VALUES_ASKED = re.compile(r"\b(?:as|in|only)\s+(?:plain\s+)?values\b|\bvalues\s+
                           r"\bplain\s+numbers\b|\bpaste[ds]?\s+(?:as\s+)?values\b|\bhard-?coded?\b", re.I)
 
 
-def formula_errors(paths):
+def formula_errors(paths, failed=None):
     """A sentence for each workbook among `paths` with formula cells showing an error (office.formula_errors) - certain,
-    blocking: anyone who opens the file sees #REF!."""
+    blocking: anyone who opens the file sees #REF!. `failed`: see _per_file."""
 
     from decurix_agent.tools import office
 
-    return _per_file(paths, office.formula_errors, "check the formula results of")
+    return _per_file(paths, office.formula_errors, "check the formula results of", failed=failed)
 
 
-def _per_file(paths, check, what):
+def _per_file(paths, check, what, failed=None):
     """check(path)'s sentences for each of `paths`, each headed by the file's name; a file it cannot be made for is
-    logged ("could not <what> <path>") and decides nothing."""
+    logged ("could not <what> <path>") and decides nothing - and, given a `failed` list, is added to it, so a blocking
+    check that could not be made leaves the work NOT checked rather than passed (FileFacts.could_not)."""
 
     out = []
     for path in paths:
@@ -201,6 +204,7 @@ def _per_file(paths, check, what):
             found = check(path)
         except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
             log(f"produced: could not {what} {path}: {exc}")
+            _not_made(failed, f"could not {what} {Path(path).name}", exc)
             continue
         out.extend(f"{Path(path).name}: {sentence}" for sentence in found)
     return out
@@ -540,6 +544,8 @@ class FileFacts:
                     in this task while their references stayed behind (office.moved_formula_breaks)
       code_notes    a long reference code a file holds that differs in a few characters from one the task was shown
                     (evidence: sequential references and sibling ids look the same - independent review, 2026-10-22)
+      could_not     the blocking checks above that could not be made (they raised): the work is NOT checked on that
+                    point - never passed for it (verify.outcome's not_made; review 2026-11-02)
     notes() is the evidence: what reads the request or needs judgement. The judge weighs it and the person sees it under
     "Please check"; it never fails the work by itself (harness audit, 2026-10-21).
     """
@@ -547,7 +553,8 @@ class FileFacts:
     def __init__(self, unstored=(), typed_totals=(), totals_note=(), missing_files="", file_faults=(), gaps=(), layout=(),
                  source_mismatch=(), disclosures=(), payee_mismatch=(), unknown_recipients=(), draft_facts=(),
                  request_faults=(), draft_fields=(), gap_notes=(), unchecked=(), duplicates=(), pattern_breaks=(),
-                 code_notes=()):
+                 code_notes=(), could_not=()):
+        self.could_not = list(could_not)
         self.code_notes = list(code_notes)
         self.duplicates = list(duplicates)
         self.pattern_breaks = list(pattern_breaks)
@@ -718,9 +725,10 @@ def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_m
     wrong_totals = found_totals if formulas_asked(request) else []
     every = list(dict.fromkeys(list(made) + [str(c) for c in host_copies]))
     opened = open_statuses(every)
+    failed = []  # the blocking checks that could not be made: FileFacts.could_not
     return FileFacts(
         # Needs the formula results stored (above): they say which empty cells a text result explains.
-        gaps=formula_errors(every) if not unstored else [],
+        gaps=formula_errors(every, failed=failed) if not unstored else [],
         gap_notes=coverage_gaps(every) if not unstored else [],
         layout=layout_faults(every, request),
         unstored=unstored,
@@ -734,15 +742,17 @@ def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_m
         request_faults=image_findings(named, every, source_images(named, every, **({"root": root} if root else {})))
         + page_break_findings(named, every),
         # Needs the formula results stored too: the figure checked is the value the file holds (sources.py).
-        source_mismatch=_source_mismatch(request, every) if not unstored else [],
+        source_mismatch=_source_mismatch(request, every, failed) if not unstored else [],
         code_notes=miscopied_codes(every, request),
         disclosures=draft_disclosures(drafts_made, request) if drafts_made else [],
-        payee_mismatch=_payee_mismatch(request, every),
+        payee_mismatch=_payee_mismatch(request, every, failed),
         duplicates=identical_files(every),
         pattern_breaks=reference_breaks(every) + moved_breaks(every) + layout_breaks(every),
-        unknown_recipients=(_unknown_recipients(request, every, drafts_made) if drafts_made else [])
-        + _unknown_in_files(request, every),
-        **(_draft_facts(request, every, drafts_made) if drafts_made else {}))
+        unknown_recipients=(_unknown_recipients(request, every, drafts_made, failed) if drafts_made else [])
+        + _unknown_in_files(request, every, failed),
+        **(_draft_facts(request, every, drafts_made, failed) if drafts_made else {}),
+        # (Evaluated last: every check above has run, so `failed` holds each one that could not be made.)
+        could_not=failed)
 
 
 def reference_breaks(paths):
@@ -855,16 +865,24 @@ def identical_files(paths):
     return out
 
 
-def _unknown_in_files(request, every):
+def _not_made(failed, what, exc):
+    """Note in `failed` (when given) that a blocking check could not be made, and why."""
+
+    if failed is not None:
+        failed.append(f"{what} ({' '.join(str(exc).split())[:160] or type(exc).__name__})")
+
+
+def _unknown_in_files(request, every, failed=None):
     from decurix_agent import payees
     try:
         return payees.unknown_addresses_in_files(request, every)
-    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
+    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing (and is said: `failed`)
         log(f"produced: could not check the addresses in the files: {exc}")
+        _not_made(failed, "could not check the addresses in the files", exc)
         return []
 
 
-def _draft_facts(request, every, drafts_made):
+def _draft_facts(request, every, drafts_made, failed=None):
     """{"draft_facts": provenance findings, "draft_fields": evidence} for a task's drafts (long_task.draft_checks; the
     final gate and the tool route)."""
 
@@ -872,34 +890,39 @@ def _draft_facts(request, every, drafts_made):
         from decurix_agent import long_task
         unsourced, fields = long_task.draft_checks(drafts_made, request, every)
         return {"draft_facts": unsourced, "draft_fields": fields}
-    except Exception:  # noqa: BLE001 - a check that cannot be made decides nothing
+    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing (and is said: `failed`)
+        log(f"produced: could not check the drafts' facts against their sources: {exc}")
+        _not_made(failed, "could not check the drafts' facts against their sources", exc)
         return {}
 
 
-def _unknown_recipients(request, every, drafts_made):
+def _unknown_recipients(request, every, drafts_made, failed=None):
     from decurix_agent import payees
     try:
         return payees.unknown_recipients(request, drafts_made, made=every)
-    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
+    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing (and is said: `failed`)
         log(f"produced: could not check where the drafts go: {exc}")
+        _not_made(failed, "could not check where the drafts go", exc)
         return []
 
 
-def _payee_mismatch(request, every):
+def _payee_mismatch(request, every, failed=None):
     from decurix_agent import payees
     try:
         return payees.mismatches(request, every)
-    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
+    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing (and is said: `failed`)
         log(f"produced: could not check where payments go: {exc}")
+        _not_made(failed, "could not check where payments go", exc)
         return []
 
 
-def _source_mismatch(request, every):
+def _source_mismatch(request, every, failed=None):
     from decurix_agent import sources
     try:
         return sources.mismatches(request, every)
-    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
+    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing (and is said: `failed`)
         log(f"produced: could not compare figures with their sources: {exc}")
+        _not_made(failed, "could not compare figures with their sources", exc)
         return []
 
 

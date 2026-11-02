@@ -138,3 +138,22 @@ func TestOpenAIChatAgainstRealServer(t *testing.T) {
 	}
 	t.Logf("real OpenAI response: %q", result.Text)
 }
+
+// A hosted answer that stopped for want of room is marked cut off: the HTTP call is a clean 200 and the body looks
+// like an answer, so without this a half report was taken as the whole.
+func TestOpenAIChatMarksACutOffAnswer(t *testing.T) {
+	for reason, want := range map[string]bool{"length": true, "max_tokens": true, "stop": false, "": false} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{"message": map[string]any{"content": "half a rep"}, "finish_reason": reason}},
+			})
+		}))
+		p := NewOpenAI("test-key", "")
+		p.BaseURL = srv.URL
+		result, err := p.Chat(context.Background(), "m", []Message{{Role: "user", Content: "hi"}}, Options{})
+		srv.Close()
+		if err != nil || result.Truncated != want {
+			t.Errorf("finish_reason %q: Truncated = %v (%v), want %v", reason, result.Truncated, err, want)
+		}
+	}
+}

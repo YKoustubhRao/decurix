@@ -188,7 +188,11 @@ func (s *Server) agentEventHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	desktopID := desktop.SanitizeID(strings.TrimSpace(req.DesktopID))
+	claimed, ok := actingAs(w, r, strings.TrimSpace(req.DesktopID))
+	if !ok {
+		return
+	}
+	desktopID := desktop.SanitizeID(claimed)
 	if strings.HasPrefix(desktopID, "readiness-") || strings.HasPrefix(desktopID, "practice-") {
 		jsonStatusError(w, http.StatusForbidden, "Readiness evidence is recorded by the independent runner.")
 		return

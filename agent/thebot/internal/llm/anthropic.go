@@ -53,7 +53,9 @@ type anthropicResponse struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
-	Usage struct {
+	// StopReason is why the model stopped: "max_tokens" means the answer was cut off.
+	StopReason string `json:"stop_reason"`
+	Usage      struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
@@ -125,6 +127,7 @@ func (a *AnthropicProvider) chatOnce(ctx context.Context, model string, messages
 		Text:           text,
 		PromptTokens:   parsed.Usage.InputTokens,
 		ResponseTokens: parsed.Usage.OutputTokens,
+		Truncated:      parsed.StopReason == "max_tokens",
 	}, nil
 }
 

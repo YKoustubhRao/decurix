@@ -384,3 +384,21 @@ func TestRunAutoRotateRotatesOnInterval(t *testing.T) {
 		t.Fatal("RunAutoRotate did not return after its context was cancelled")
 	}
 }
+
+// A redirect after the access code stays on this site, whatever a browser would make of the path.
+func TestSanitizeNextStaysOnThisSite(t *testing.T) {
+	for next, want := range map[string]string{
+		"/tasks?id=3":      "/tasks?id=3",
+		"/desktop/box/":    "/desktop/box/",
+		"//evil.com":       "/",
+		`/\evil.com`:       "/",
+		"/\t/evil.com":     "/",
+		"https://evil.com": "/",
+		"":                 "/",
+		"tasks":            "/",
+	} {
+		if got := sanitizeNext(next); got != want {
+			t.Errorf("sanitizeNext(%q) = %q, want %q", next, got, want)
+		}
+	}
+}

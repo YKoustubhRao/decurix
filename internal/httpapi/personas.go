@@ -346,7 +346,9 @@ func (s *Server) inboundChannelHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// skillsCatalogHandler returns the built-in catalog of 22 ready skills.
+// skillsCatalogHandler returns a desktop's skill catalog (with ?id=), or what
+// the built-in catalog holds: nothing, since a skill nobody demonstrated here
+// is not one a worker knows (agent/decurix_agent/computer/catalog.py).
 func (s *Server) skillsCatalogHandler(w http.ResponseWriter, r *http.Request) {
 	if !allowMethod(w, r, http.MethodGet) {
 		return
@@ -361,11 +363,9 @@ func (s *Server) skillsCatalogHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Return catalog info
 	jsonResponse(w, map[string]any{
-		"catalog_count": 22,
-		"departments": []string{
-			"finance", "support", "sales", "executive_assistant", "operations", "data", "devops", "recruiting", "legal", "marketing",
-		},
-		"description": "Standard business skill catalog inspired by IrisGo AI and Cura Labs.",
+		"catalog_count": 0,
+		"departments":   []string{},
+		"description":   "The built-in catalog is empty: a worker's skills are the ones a person here taught it.",
 	})
 }
 
@@ -433,22 +433,3 @@ func (s *Server) workerModeHandler(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 }
 
-// shadowingHandler proxies shadowing observations and metrics for a desktop.
-func (s *Server) shadowingHandler(w http.ResponseWriter, r *http.Request) {
-	if !allowMethod(w, r, http.MethodGet) {
-		return
-	}
-
-	desktopID := strings.TrimSpace(r.URL.Query().Get("id"))
-	if desktopID == "" {
-		jsonStatusError(w, http.StatusBadRequest, "id is required")
-		return
-	}
-
-	endpoint := "/shadowing/observations"
-	if r.URL.Query().Get("view") == "metrics" {
-		endpoint = "/shadowing/metrics"
-	}
-
-	s.callAgent(w, r, desktopID, http.MethodGet, endpoint, nil, true)
-}

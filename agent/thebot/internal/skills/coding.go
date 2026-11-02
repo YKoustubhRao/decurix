@@ -98,14 +98,15 @@ func (c *CodingSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	}
 
 	// Verified means exactly one thing here: the real test suite really
-	// passed. A project whose files all got written but whose tests fail is
+	// passed, the project really builds, and what is meant to run really
+	// starts (BuildReport.Succeeded). A project whose files all got written but whose tests fail is
 	// NOT a success - reporting it as one is how "it's done!" ends up
 	// meaning "there is a folder with some code in it", which is the exact
 	// failure this whole harness exists to eliminate.
 	return Result{
 		Subtask: subtask, SkillName: c.Name(),
 		Output:   report.Summary(),
-		Verified: report.TestsPassed && !report.Incomplete,
+		Verified: report.Succeeded(),
 		Meta:     meta,
 	}, nil
 }

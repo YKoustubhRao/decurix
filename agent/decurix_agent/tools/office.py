@@ -1551,12 +1551,23 @@ def _given_value(spec, missing):
     raise OfficeError(missing)
 
 
+# A whole number with this many digits or more is written as text: Excel shows it as 1.23457E+11 from 12 digits and
+# keeps only 15 of them, so a bank account or Aadhaar number would be changed. (No amount in whole rupees runs to 12
+# digits; a 9-11 digit figure stays a number, or its SUM would silently leave it out.)
+_LONG_DIGITS = 12
+
+
 def _cell_value(v):
+    """A value as written into a cell: a text that is a plain number becomes the number, unless it is an identifier
+    written in digits - one with a leading zero or too long for a number to keep as typed - which stays text."""
+
     if isinstance(v, float):
         return clean_number(v)
     if isinstance(v, str):
         s = v.strip()
-        if re.fullmatch(r"-?\d+(\.\d+)?", s) and not (len(s) > 1 and s.startswith("0") and "." not in s):
+        m = re.fullmatch(r"-?(\d+)(\.\d+)?", s)
+        if m and not (len(m.group(1)) > 1 and m.group(1).startswith("0")) \
+                and len(m.group(1)) < _LONG_DIGITS and len(m.group(1) + (m.group(2) or "")) <= 16:
             return clean_number(float(s)) if "." in s else int(s)
         return clean_text(v)
     return v
@@ -3740,11 +3751,17 @@ def _replace_in_paragraph(paragraph, replace, counts):
     if not any(key in whole for key in replace):
         return
     for key, value in replace.items():
+        if not key:
+            continue
+        # Left to right, never into what was just put in: a value that holds its key ("Q3" -> "Q3 FY26") is
+        # replaced once, not again and again until memory runs out.
+        at_from = 0
         while True:
             whole = "".join(t.text or "" for t in texts)
-            i = whole.find(key)
+            i = whole.find(key, at_from)
             if i < 0:
                 break
+            at_from = i + len(str(value))
             end = i + len(key)
             # Where each w:t starts in the paragraph's text.
             starts, at = [], 0

@@ -571,12 +571,13 @@ func main() {
 	}
 
 	// A practice desktop reaches only its broker: both listeners refuse its subnet (practice.RefuseSubnets).
-	lanServer := newServer(lanAddr, practice.RefuseSubnets(practiceSubnets.Subnets, lanAccess.Middleware(httpapi.GzipMiddleware(httpapi.MarkGated(lanMux)))))
+	lanServer := newServer(lanAddr, practice.RefuseSubnets(practiceSubnets.Subnets, server.GuardGated(lanAccess.Middleware(httpapi.GzipMiddleware(httpapi.MarkGated(lanMux))))))
 	// Every listener, for the shutdown below; appended to only before it starts.
 	activeServers := []*http.Server{lanServer}
 
 	go func() {
-		log.Printf("LAN/tunnel listener on %s (access code: %s)", lanAddr, lanAccess.Password())
+		// Never the code itself: logs are copied into bug reports and read by agents.
+		log.Printf("LAN/tunnel listener on %s (access code: in the app's Mobile menu)", lanAddr)
 
 		if err := lanServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("warning: LAN/tunnel listener failed: %v", err)
@@ -707,7 +708,7 @@ func main() {
 	})
 	log.Printf("Desktop manager listening on %s", strings.Join(addrs, ", "))
 
-	handler := practice.RefuseSubnets(practiceSubnets.Subnets, httpapi.RefuseForwarded(httpapi.GzipMiddleware(mux)))
+	handler := practice.RefuseSubnets(practiceSubnets.Subnets, httpapi.RefuseForwarded(server.GuardPrimary(httpapi.GzipMiddleware(mux))))
 
 	for _, addr := range addrs[1:] {
 		s := newServer(addr, handler)

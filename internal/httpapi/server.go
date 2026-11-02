@@ -164,6 +164,9 @@ type Server struct {
 	hostVisionMu sync.Mutex
 	hostVision   map[string]*hostVision
 
+	// callerAt stands in for Desktops.DesktopAt in callerDesktop, in tests.
+	callerAt func(r *http.Request) (string, bool)
+
 	// agentRequest stands in for Desktops.AgentRequest there, in tests.
 	agentRequest func(ctx context.Context, id, method, path string, body io.Reader) (*http.Response, error)
 }
@@ -384,7 +387,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/skills/catalog", s.skillsCatalogHandler)
 	mux.HandleFunc("/api/skills/catalog/install", s.installCatalogSkillHandler)
 	mux.HandleFunc("/api/desktops/mode", s.workerModeHandler)
-	mux.HandleFunc("/api/desktops/shadowing", s.shadowingHandler)
 	mux.HandleFunc("/favicon.svg", s.faviconHandler)
 	mux.HandleFunc(noVNCPath, s.noVNCHandler)
 }
@@ -458,7 +460,7 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	// Handoffs between workers: the callers are desktops' agents, named in the body, which only this listener can
 	// trust - and a handoff starts work on another desktop and moves files between them (docs/handoff.md).
 	if s.Handoffs != nil {
-		(&handoff.Handler{Service: s.Handoffs}).Register(mux)
+		(&handoff.Handler{Service: s.Handoffs, Caller: requestDesktop}).Register(mux)
 	}
 	// The work queue starts work on desktops and spends model budget: primary listener only, and desktops may only
 	// read it - worker-to-worker work is a handoff (docs/workqueue.md).

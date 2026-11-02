@@ -477,7 +477,7 @@ func TestReportAnswersWhichEngineAndWhy(t *testing.T) {
 	for _, text := range []string{"what is the kernel version?", "list files in /work"} {
 		route := send(t, s, claude, text)
 		c.advance(20 * time.Second)
-		outcome(t, s, "claude-box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "ok", CostUSD: ptrFloat(0.05)})
+		outcome(t, s, "claude-box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "ok", CostUSD: ptrFloat(0.05), Checked: &checkedTrue})
 	}
 
 	paid := send(t, s, claude, "pay invoice INV-7")
@@ -499,7 +499,7 @@ func TestReportAnswersWhichEngineAndWhy(t *testing.T) {
 	outcome(t, s, "ollama-box", slow.TaskID, Outcome{Kind: OutcomeError, Reply: "Ollama accepted the request but did not finish answering in time. context deadline exceeded"})
 
 	right := send(t, s, ollama, "uname -r")
-	outcome(t, s, "ollama-box", right.TaskID, Outcome{Kind: OutcomeDone, Reply: "6.6.87.2"})
+	outcome(t, s, "ollama-box", right.TaskID, Outcome{Kind: OutcomeDone, Reply: "6.6.87.2", Checked: &checkedTrue})
 	s.SetVerdict(right.TaskID, VerdictCorrect, "")
 
 	// A person recording themselves doing a task is not Ollama being autonomous,
@@ -668,5 +668,31 @@ func TestAReportShowsWhatTasksCostInTokens(t *testing.T) {
 	}
 	if FormatTokens(nil) != "—" {
 		t.Fatal("no count must not read as a number")
+	}
+}
+
+// checkedTrue is a final check that confirmed the result.
+var checkedTrue = true
+
+// Done on the worker's word alone is not autonomous: the final check has to have confirmed it (review 2026-11-02).
+func TestUncheckedDoneIsNotAutonomous(t *testing.T) {
+	c := newClock()
+	s := openStore(t, c)
+	since := c.now().Add(-time.Minute)
+	box := worker("box", "claude")
+	unchecked := send(t, s, box, "sum the bills")
+	outcome(t, s, "box", unchecked.TaskID, Outcome{Kind: OutcomeDone, Reply: "Total 4,50,000"})
+	notChecked := false
+	failedCheck := send(t, s, box, "file the return")
+	outcome(t, s, "box", failedCheck.TaskID, Outcome{Kind: OutcomeDone, Reply: "Filed", Checked: &notChecked})
+	checked := send(t, s, box, "list the files")
+	outcome(t, s, "box", checked.TaskID, Outcome{Kind: OutcomeDone, Reply: "3 files", Checked: &checkedTrue})
+
+	report, err := s.Report(since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Totals.Autonomous != 1 {
+		t.Fatalf("autonomous = %d, want 1 (only the checked one): %+v", report.Totals.Autonomous, report.Totals)
 	}
 }

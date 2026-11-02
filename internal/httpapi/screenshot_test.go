@@ -1,11 +1,8 @@
 package httpapi
 
 import (
-	"crypto/sha256"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -21,28 +18,28 @@ func TestDesktopScreenshotHandlerMissingID(t *testing.T) {
 	}
 }
 
+// The handler's own answer (writeScreenshot), not a copy of it: the same picture again is a 304, a new one is sent.
 func TestDesktopScreenshotETagAnd304NotModified(t *testing.T) {
-	fakeImage := []byte("fake-jpeg-image-bytes-for-testing")
-	etag := fmt.Sprintf("\"%x\"", sha256.Sum256(fakeImage))
+	image := []byte("fake-jpeg-image-bytes-for-testing")
 
-	// Test 304 Not Modified check logic:
+	first := httptest.NewRecorder()
+	writeScreenshot(first, httptest.NewRequest(http.MethodGet, "/api/desktops/screenshot?id=test", nil), image)
+	etag := first.Header().Get("ETag")
+	if first.Code != http.StatusOK || etag == "" || first.Body.String() != string(image) {
+		t.Fatalf("first answer: %d etag=%q body=%q", first.Code, etag, first.Body.String())
+	}
+
 	req := httptest.NewRequest(http.MethodGet, "/api/desktops/screenshot?id=test", nil)
 	req.Header.Set("If-None-Match", etag)
-
-	w := httptest.NewRecorder()
-
-	// Simulate handler's ETag matching block:
-	w.Header().Set("ETag", etag)
-	if match := req.Header.Get("If-None-Match"); match != "" {
-		if strings.Contains(match, etag) || match == "*" {
-			w.WriteHeader(http.StatusNotModified)
-		}
+	same := httptest.NewRecorder()
+	writeScreenshot(same, req, image)
+	if same.Code != http.StatusNotModified || same.Body.Len() != 0 {
+		t.Fatalf("same picture: %d with %d bytes, want 304 and none", same.Code, same.Body.Len())
 	}
 
-	if w.Code != http.StatusNotModified {
-		t.Fatalf("expected 304 Not Modified, got %d", w.Code)
-	}
-	if w.Header().Get("ETag") != etag {
-		t.Fatalf("expected ETag %s, got %s", etag, w.Header().Get("ETag"))
+	changed := httptest.NewRecorder()
+	writeScreenshot(changed, req, []byte("another picture"))
+	if changed.Code != http.StatusOK || changed.Header().Get("ETag") == etag {
+		t.Fatalf("changed picture: %d etag=%q", changed.Code, changed.Header().Get("ETag"))
 	}
 }

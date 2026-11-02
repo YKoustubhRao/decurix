@@ -134,7 +134,8 @@ func (m *Manager) GatewayIPs(ctx context.Context) []string {
 
 	var ips []string
 	seen := map[string]bool{}
-	for _, name := range []string{NetworkName, "bridge"} {
+	// The practice network too: a practice desktop is a container like any other, and reaches only its broker.
+	for _, name := range []string{NetworkName, "bridge", PracticeNetworkName} {
 		info, err := m.client.NetworkInspect(ctx, name, network.InspectOptions{})
 		if err != nil {
 			continue

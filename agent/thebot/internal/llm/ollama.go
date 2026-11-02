@@ -227,6 +227,7 @@ func (o *OllamaProvider) Chat(ctx context.Context, model string, messages []Mess
 func readOllamaStream(r io.Reader) (Result, error) {
 	var text strings.Builder
 	var final ollamaChatResponse
+	sawDone := false
 
 	scanner := bufio.NewScanner(r)
 	// A single chunk is tiny, but the default 64KB token limit is not worth
@@ -249,11 +250,17 @@ func readOllamaStream(r io.Reader) (Result, error) {
 		}
 		text.WriteString(chunk.Message.Content)
 		if chunk.Done {
-			final = chunk
+			final, sawDone = chunk, true
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return Result{}, fmt.Errorf("ollama: read stream: %w", err)
+	}
+	if !sawDone {
+		// The stream ended without its final chunk: the connection dropped or the server stopped mid-answer. What came
+		// is not the whole answer, and is never taken for one.
+		return Result{Text: text.String(), Truncated: true},
+			fmt.Errorf("ollama: the answer stream ended before it was finished: %w", io.ErrUnexpectedEOF)
 	}
 
 	return Result{

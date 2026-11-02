@@ -1412,7 +1412,7 @@ def _stage_files(state, step):
     return found
 
 
-def code_problems(made, reply, drafts, request, instruction=None, root=None, outputs=None, notes=None):
+def code_problems(made, reply, drafts, request, instruction=None, root=None, outputs=None, notes=None, not_made=None):
     """
     What the final check decides about a stage's result without a model: the file facts are produced.file_facts, the
     very function skill_task._gate calls (results stored, a Total row short of its column, a file the stage names not
@@ -1420,6 +1420,8 @@ def code_problems(made, reply, drafts, request, instruction=None, root=None, out
     the files. `instruction` is the stage's own text (the files it is asked for); `request` the whole one. [] when
     nothing is wrong. What reads the request or needs judgement (typed totals, layout, a picture's size, page breaks,
     fills, a draft naming another party) is appended to `notes` - evidence, never a verdict (harness audit, 2026-10-21).
+    A blocking check that could not be made (produced.FileFacts.could_not) is appended to `not_made`: the stage is then
+    not checked, never passed on that point (verify.outcome).
     """
 
     from decurix_agent import produced, verify
@@ -1427,6 +1429,8 @@ def code_problems(made, reply, drafts, request, instruction=None, root=None, out
     problems = []
     facts = produced.file_facts(request, made, named_in=instruction, root=root, drafts_made=drafts, own_outputs=outputs)
     notes = notes if notes is not None else []
+    if not_made is not None:
+        not_made.extend(facts.could_not)
     if facts.disclosures:
         progress.emit("An email draft may name another party's business to its recipient - check it before sending: "
                       + "; ".join(facts.disclosures)[:400])
@@ -2702,7 +2706,11 @@ CHECK_MATURITY = {
     "status_conflicts": ADVISORY,  # BZ1: outputs disagreeing on an item's status
     "lost_sheets": ADVISORY,  # CO/CP2: an earlier stage's sheet changed
     "summary_totals": ADVISORY,  # DC: a summary row against the detail rows it seems to count
+    # A blocking check that could not be made (it raised): fails nothing by itself, but the stage it saw is not checked
+    # - never "done" (stage_finished hands these to verify.outcome as not made; review 2026-11-02).
+    "checks_not_made": ADVISORY,
 }
+NOT_MADE = "checks_not_made"
 # Advisories the person must not miss: first in "Needs you", and named in the report's first line.
 LOUD = {"repeated_rows": ("includes rows the input repeats", "include rows the input repeats")}
 
@@ -3255,13 +3263,14 @@ def stage_code_findings(run_id, run_state, step, made, drafts, request, reply, s
     def add(check, problems):
         found.extend((check, p) for p in problems or [])
 
-    notes = []
+    notes, not_made = [], []
     add("file_facts", code_problems(made, reply, drafts, request, instruction=step.get("instruction"),
                                     root=_runner().context(run_state)["work_dir"],
                                     outputs=list(step.get("outputs") or []) + [c["path"] for c in step.get("checks", [])
                                                                                 if c.get("format") != "drafts"],
-                                    notes=notes))
+                                    notes=notes, not_made=not_made))
     add("file_notes", notes)
+    add(NOT_MADE, not_made)
     add("source_guard", source_guard_problems(request))
     add("repeated_rows", repeated_rows(made, reply, request))
     add("repeated_rows_quiet", quiet_repeated_rows(made, reply, request))
@@ -3646,7 +3655,14 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
                 _record_cost(run_id, step_id, start, "asked")
                 _park(run_id, step_id, question, run_state, kind="stuck")
                 return r.status(run_id)
-            checked_by = "model" if verdict["verdict"] == verify.DONE else "code only"
+            # The one decision (verify.outcome): only the judge's confident done, with every blocking check made, is
+            # a checked stage. Anything else that got here - unsure, an outage, no model, a check that raised - is
+            # completed NOT checked, and the run's report says so first; it is never "made and checked" (review
+            # 2026-11-02: a judge's unsure completed the stage and the report said every stage was checked).
+            decided = verify.outcome(verdict, not_made=[text for check, text in findings if check == NOT_MADE])
+            checked_by = "model" if decided["status"] == verify.DONE else "code only"
+            if decided["status"] != verify.DONE:
+                verdict = dict(verdict, why=decided["why"])
 
     if error is None:
         # The runner refuses a file handed in unchanged; said here, in plain words, so it is asked like any other
@@ -3700,8 +3716,9 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
             if step_id in amendment.get("affects", []) or not amendment.get("affects"):
                 _reopen(run_id, step_id, f"while it ran, the person changed the request: \"{amendment['text']}\"",
                         amendment)
-        progress.emit(f"Stage done and checked: {step.get('title', step_id)}"
-                      + ("" if checked_by == "model" else " (checked in code; the model check could not confirm it)"))
+        progress.emit(f"Stage done and checked: {step.get('title', step_id)}" if checked_by == "model" else
+                      f"Stage made but NOT checked: {step.get('title', step_id)} - the code checks passed, the model "
+                      "check could not confirm it; the report will say so.")
     elif record["status"] == "failed":
         progress.emit(f"Stage could not be done: {step.get('title', step_id)} - {str(record.get('error'))[:300]}")
     else:
@@ -4893,7 +4910,7 @@ def _cross_check(run_state):
 def final_report(run_state):
     """What was done, what was not, what was assumed and what needs the person - plainly, checked."""
 
-    from decurix_agent import workflow_task
+    from decurix_agent import verify, workflow_task
     from decurix_agent.messaging import write_final_reply
 
     run_id = run_state["run_id"]
@@ -4908,7 +4925,7 @@ def final_report(run_state):
     # (A "<name>.orig" copy kept of a file the run made is a stale version beside its output: removed, round 5 P5.)
     source_guard.tidy_own_backups(data.get("request") or "")
     work = Path(_runner().context(run_state)["work_dir"])
-    done, done_short, not_done, needs = [], [], [], []
+    done, done_short, not_done, needs, unchecked = [], [], [], [], []
     for n, step in enumerate(_steps(run_state), 1):
         record = run_state["steps"][step["id"]]
         title = step.get("title", step["id"])
@@ -4917,8 +4934,10 @@ def final_report(run_state):
             drafts = sum(i["bytes"] for i in record["evidence"] if i.get("drafts"))
             made = ", ".join(files) + (f"{', ' if files else ''}{drafts} email draft(s) in the Outbox" if drafts else "")
             how = ("checked by reading the files back against the stage" if record.get("checked_by") == "model"
-                   else "checked in code only - the model check could not confirm it"
+                   else "NOT checked - the code checks passed, the model check could not confirm it"
                    + (f" ({record['check_note']})" if record.get("check_note") else ""))
+            if record.get("checked_by") != "model":
+                unchecked.append((title, record.get("check_note") or "the model check could not confirm it"))
             said = " ".join((record.get("report") or "").split())[:3000]  # in the full report only
             line = f"{n}. {title}: {made or 'done'} ({how})."
             if record.get("declined"):
@@ -4987,8 +5006,21 @@ def final_report(run_state):
         needs[:0] = [f"Please check this figure: {line}" for line in loud.get(check, [])]
     said_loud = "; ".join(f"{len(lines)} figure{'s' if len(lines) != 1 else ''} {LOUD[check][len(lines) != 1]}"
                           for check, lines in loud.items())
+    # What was made but not checked: a stage the model check could not confirm, figures the outputs give differently
+    # that the cross-check could not settle. Each is the person's to look at - never "made and checked" (verify.outcome).
+    for title, why in unchecked:
+        needs.append(f"Check \"{title}\" yourself before relying on it: it was NOT checked ({' '.join(str(why).split())[:300]}).")
+    not_checked = [f"{len(unchecked)} stage{'s' if len(unchecked) != 1 else ''} the model check could not confirm"] \
+        if unchecked else []
+    if unresolved:
+        not_checked.append(f"{len(unresolved)} figure{'s' if len(unresolved) != 1 else ''} that the outputs give "
+                           "differently and the cross-check could not settle (under Please check)")
     if run_state["status"] == "cancelled":
         head = "Stopped, as you said. Here is where it stands."
+    elif finished and not_checked:
+        head = ("Made, but not everything is checked: " + "; ".join(not_checked) + " - look at "
+                + ("them" if len(not_checked) > 1 or len(unchecked) > 1 else "it") + " before relying on it."
+                + (f" And {said_loud} (see Needs you)." if said_loud else ""))
     elif finished:
         head = ("Done - but " + said_loud + " (see Needs you).") if said_loud else "Done - every stage was made and checked."
     else:
@@ -5004,7 +5036,11 @@ def final_report(run_state):
             head = "Not everything is done."
     if warnings:
         head = "WARNING - " + " ".join(warnings) + "\n\n" + head
-    if finished:
+    # The one decision (verify.outcome): a run with a stage not done is not done; one with something made but not
+    # checked is "not checked" - recorded so (checked=False), never reported as a checked success.
+    decided = verify.outcome({"verdict": verify.DONE} if finished else {"verdict": verify.NOT_DONE},
+                             not_made=not_checked if finished else ())
+    if decided["status"] == verify.DONE:
         # A guide a stage wrote to an app it had none for is kept only now every stage is checked done.
         try:
             from decurix_agent import app_skills
@@ -5047,7 +5083,7 @@ def final_report(run_state):
         agent_state.current_task = data.get("request") or agent_state.current_task
     if run_state["status"] != "cancelled":
         _remember_reported(data, text, [p for _, p in _outputs(run_state)])
-    write_final_reply(text, kind="final" if finished else "error", checked=True, fallback=fallback,
+    write_final_reply(text, kind=decided["kind"], checked=decided["checked"], gated=True, fallback=fallback,
                       task_id=data.get("task_id") or None)
     _release_hold(run_id)
     return None

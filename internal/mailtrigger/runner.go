@@ -137,6 +137,19 @@ func (r *Runner) step(ctx context.Context) {
 	r.dispatch(ctx)
 }
 
+// readSafely is read, with a panic on one email turned into that poll's error: one email must never be able to stop
+// the control plane (review 2026-11-02 - and the mailbox position is saved only after a batch, so a crash repeated
+// on every start).
+func (r *Runner) readSafely(ctx context.Context, acct Account) (p Poll) {
+	defer func() {
+		if v := recover(); v != nil {
+			log.Printf("mailtrigger: %s: reading the mailbox failed: %v", acct.Email, v)
+			p = Poll{At: r.clock(), UIDValidity: acct.uidValidity, LastUID: acct.lastUID, Err: fmt.Errorf("an email in this mailbox could not be read")}
+		}
+	}()
+	return r.read(ctx, acct)
+}
+
 // due decides whether a mailbox is polled this tick. A paused one never is,
 // nor one waiting for a new password (only a person can fix that, and
 // repeating a refused login is how an account gets locked). One that keeps
@@ -227,7 +240,7 @@ func (r *Runner) poll(ctx context.Context, acct Account) error {
 	}
 	defer r.release(acct.ID)
 
-	p := r.read(ctx, acct)
+	p := r.readSafely(ctx, acct)
 	if p.Err != nil {
 		log.Printf("mailtrigger: %s: %v", acct.Email, p.Err)
 	}
@@ -416,10 +429,26 @@ func compileRules(rules []Rule) []matcher {
 	return out
 }
 
+// matchesDisplayName reports whether the rule's sender pattern matches the name in the From line, outside its
+// address. Only a pattern for a name ("Ada Lovelace") is matched there, and never for a verified-only rule: the name
+// is free text the sender writes, so `"billing@acme.com" <x@evil.com>` would pass a rule for billing@acme.com - and
+// pass verification too, since evil.com can sign its own mail (review 2026-11-02).
+func (m matcher) matchesDisplayName(msg Message) bool {
+	if m.rule.VerifiedOnly || strings.Contains(m.sender.String(), "@") {
+		return false
+	}
+	name := msg.From
+	if i := strings.LastIndex(name, "<"); i >= 0 {
+		name = name[:i]
+	}
+	name = strings.TrimSpace(name)
+	return name != "" && m.sender.MatchString(name)
+}
+
 // matches reports whether a message's sender and subject satisfy a rule's
 // patterns, whatever the rule says about verified senders.
 func (m matcher) matches(msg Message) bool {
-	if m.sender != nil && !m.sender.MatchString(msg.Sender) && !m.sender.MatchString(msg.From) {
+	if m.sender != nil && !m.sender.MatchString(msg.Sender) && !m.matchesDisplayName(msg) {
 		return false
 	}
 

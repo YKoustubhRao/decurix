@@ -22,6 +22,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -577,7 +578,12 @@ func (s *Store) handleSubmit(w http.ResponseWriter, r *http.Request) {
 // that is not an ordinary absolute path (or that starts "//", a
 // protocol-relative URL to somewhere else entirely) collapses to "/".
 func sanitizeNext(next string) string {
-	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
+	// Browsers read a backslash as a slash and drop tabs and newlines, so "/\evil.com" and "/<tab>/evil.com" lead to
+	// other sites too (review 2026-11-02). Only a plain path on this site goes back.
+	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.ContainsAny(next, "\\\t\r\n") {
+		return "/"
+	}
+	if u, err := url.Parse(next); err != nil || u.Scheme != "" || u.Host != "" {
 		return "/"
 	}
 

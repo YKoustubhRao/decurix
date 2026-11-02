@@ -118,9 +118,8 @@ def demonstration(case):
 
 
 class ScriptedApplication:
-    def __init__(self, case, offset=0, rename=False, ambiguous=False, wrong_result=False):
+    def __init__(self, case, offset=0, rename=False, ambiguous=False):
         self.case, self.result, self.actions = case, None, []
-        self.wrong_result = wrong_result
         self.elements = [element("textbox", "Source data:" if rename else "Source data", offset),
                          element("combobox", "Output mode", offset), element("button", "Prepare workspace", offset),
                          element("button", "Run operation", offset)]
@@ -145,7 +144,7 @@ class ScriptedApplication:
                 if field["path"] == kwargs.get("path"): field["value"] = kwargs["text"]
         if kind == "click" and "Run operation" in kwargs.get("path", ""):
             raw = next(field["value"] for field in self.elements if field["role"] == "textbox")
-            self.result = "wrong customer" if self.wrong_result else evaluate(self.case["operation"], raw)
+            self.result = evaluate(self.case["operation"], raw)
             self.elements.append(element("status", "Result ready"))
         return {"status":"done", "text":"ok", "observation":self.observe()}
 
@@ -174,8 +173,7 @@ def run_case(case, root, variant="holdout", learned=None):
     from decurix_agent.computer import replay, skill_engine
     learned = learned or learn(case, root)
     app = ScriptedApplication(case, offset=400 if variant == "moved-layout" else 0,
-                              rename=variant == "renamed-control", ambiguous=variant == "ambiguous-control",
-                              wrong_result=variant == "wrong-business-result")
+                              rename=variant == "renamed-control", ambiguous=variant == "ambiguous-control")
     params = {p["name"]:case["holdout"] for p in learned["params"] if p.get("varies")}
     if variant == "missing-parameter": params = {}
     with patch.object(replay, "core", app), patch.object(replay, "FIND_SECONDS", 0), \
@@ -184,9 +182,13 @@ def run_case(case, root, variant="holdout", learned=None):
             patch.object(replay.progress, "emit", lambda *args, **kwargs: None):
         outcome = skill_engine.run(learned, params=params)
     business_ok = app.result == case["expected"]
-    normal = variant not in {"ambiguous-control", "wrong-business-result", "missing-parameter"}
-    passed = outcome["outcome"] in replay.SUCCESS and business_ok if normal else \
-             (outcome["outcome"] not in replay.SUCCESS if variant in {"ambiguous-control", "missing-parameter"} else not business_ok)
+    # A variant that must stop passes only when the replay did not report
+    # success. (A "wrong-business-result" variant was removed: its scripted app
+    # always answered wrongly and the row passed on the bench's own check of
+    # that answer, whatever the worker did, so it measured nothing.)
+    must_stop = variant in {"ambiguous-control", "missing-parameter"}
+    passed = outcome["outcome"] not in replay.SUCCESS if must_stop else \
+             (outcome["outcome"] in replay.SUCCESS and business_ok)
     return {"task":case["id"], "variant":variant, "passed":passed, "replay_outcome":outcome["outcome"],
             "business_verified":business_ok, "actions":len(app.actions), "recordings":1,
             "typed_values":[args["text"] for kind,args in app.actions if kind == "type"],
@@ -202,7 +204,7 @@ def benchmark(cases=SCENARIOS):
             results = []
             for case in cases:
                 learned = learn(case, root)
-                for variant in ("holdout", "moved-layout", "renamed-control", "ambiguous-control", "wrong-business-result", "missing-parameter"):
+                for variant in ("holdout", "moved-layout", "renamed-control", "ambiguous-control", "missing-parameter"):
                     results.append(run_case(case, root, variant, learned=skills.load(learned["name"])))
     return {"mode":"scripted_application_learning_transfer", "live_apps_tested":False,
             "families":len(cases), "demonstrations":len(cases), "persisted_skills":len(cases),

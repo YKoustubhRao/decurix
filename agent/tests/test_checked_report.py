@@ -56,6 +56,14 @@ class CheckedReports(unittest.TestCase):
         messaging.write_final_reply("6.6")
         self.assertIs(self.sent[-1]["checked"], False)
 
+    def test_a_report_the_gate_settled_without_judging_it_done_skips_the_gate_and_says_not_checked(self):
+        # verify.outcome's "unchecked": the gate wrote the report itself, so it is not gated twice - and not checked.
+        gate = mock.Mock(return_value=True)
+        with mock.patch.object(messaging, "_final_gate", gate):
+            messaging.write_final_reply("Not checked - no model here. Made result.xlsx.", gated=True)
+        gate.assert_not_called()
+        self.assertIs(self.sent[-1]["checked"], False)
+
     # A question is not a result; "checked" means nothing there.
     def test_a_question_carries_no_checked(self):
         messaging.send_query("q.txt", "DECURIX QUERY REQUEST", kind="query", reply="Which one?")

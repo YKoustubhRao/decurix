@@ -1783,8 +1783,8 @@ MAX_CORRECTIONS = 8
 def _engine_can_drive():
     """Whether this desktop's engine can do screen work with a hosted model (TheBot on one, or the Office engine)."""
 
-    engine_ok = (config.AGENT_HARNESS == "thebot" and config.HOSTED_BRAIN) or config.AGENT_HARNESS == "azure"
-    return engine_ok and llm_client.available() and getattr(state, "backend_ready", False)
+    from decurix_agent import harness  # (the one file that branches on AGENT_HARNESS; imported here, not at the top)
+    return harness.drives_screen_with_hosted_model() and llm_client.available() and getattr(state, "backend_ready", False)
 
 
 def _stage(run):
@@ -2999,7 +2999,10 @@ def _gate(reply, kind, engine):
 
     guided = guidance.get()
     if guided is None:
-        if kind != "final" or not verify.available():
+        # (Not "or no hosted model": the checks a program decides need none, and a judgement nobody could make is
+        # "not checked", never passed - verify.outcome. Review 2026-11-02: with no model the whole gate was skipped,
+        # code checks and the restore of the person's changed files with it.)
+        if kind != "final":
             return False
         # A ticket, a replay, a lesson, a web lookup or a proven script reports for itself, screen work or not. Found
         # live (2026-10-13): a person ended a recording ticket with the form not yet saved; the check judged it "not
@@ -3047,7 +3050,7 @@ def _gate(reply, kind, engine):
             except Exception as exc:
                 log(f"Skill {run['skill']['name']}: could not check what a failed run left: {exc}")
                 verdict = {"verdict": verify.UNSURE, "seen": "", "why": ""}
-            if verdict["verdict"] == verify.DONE:
+            if verify.outcome(verdict)["status"] == verify.DONE:
                 _record_verdict(run, True, checked_by="model", helped=True)
                 write_final_reply("The work is done, though my model stopped answering before I could report it. "
                                   f"Checked on the screen and in what my tools read: {verdict.get('seen') or verdict.get('why')}"
@@ -3075,8 +3078,10 @@ def _gate(reply, kind, engine):
         guidance.end()
         if run is not None:
             _record_verdict(run, False, why=f"the person said no at an approval: {said_no}"[:300])
+        # Not done, and not checked: the task ended where the person stopped it (verify.outcome - never checked=True,
+        # which an audit reads as a checked result; the control plane records it as not done).
         write_final_reply(f"Stopped there, as you said (\"{said_no}\"): I did not carry on with it.\n\n"
-                          f"{reply}", kind="final", engine=engine, checked=True)
+                          f"{reply}", kind="final", engine=engine, gated=True)
         return True
 
     on_screen = run is not None or _did_screen_work()
@@ -3191,6 +3196,11 @@ def _gate(reply, kind, engine):
         verdict = {"verdict": verify.UNSURE, "confidence": 0.0,
                    "seen": "could not read " + ", ".join(unread_host) + " to check it",
                    "why": "The file is there but its content could not be checked."}
+    elif facts.could_not:
+        # Not checked: a check a program decides could not be made (it raised). A check that cannot be made decides
+        # nothing - least of all that the work passed it (review 2026-11-02).
+        verdict = {"verdict": verify.UNSURE, "confidence": 0.0, "seen": "",
+                   "why": verify.outcome(None, not_made=facts.could_not)["why"]}
     elif facts.unstored:
         # No model is asked: whether a formula has a result in the file is a fact about the file. Read back by a tool
         # that calculates, it looked right; handed in, it is blank to anything that reads it (found live, 2026-10-19).
@@ -3293,14 +3303,24 @@ def _gate(reply, kind, engine):
             deliverables=produced.asked_files(made, state.current_task or ""),
             look_up=lambda terms: produced.lines_with(list(made) + produced.named_sources(reply, state.current_task or "", made) + [p for p in evidence.files_read() if p not in made], terms))
 
-    if not on_screen and verdict["verdict"] == verify.UNSURE and not unread_host:
-        # File work the check could not settle goes out as the worker reported it, marked not checked: only a
-        # report its own files contradict is worth a second attempt or a person's time. A report that says it could
-        # NOT be done is not one of those: found live (2026-10-14), "the workbook has no November targets ... the
-        # deck cannot be completed" went out as the task's result and was recorded done, with a deck of zero targets
-        # and its email drafted. It goes to the person below, like screen work that could not be finished.
+    decided = verify.outcome(verdict)
+    if not on_screen and decided["status"] == verify.UNCHECKED and verdict["verdict"] == verify.UNSURE \
+            and not unread_host:
+        # File work the check could not settle goes out as the worker reported it, said first to be NOT checked and
+        # recorded so (checked=False: the control plane counts it not done until a person looks) - only a report its
+        # own files contradict is worth a second attempt or a person's time. Review 2026-11-02: it went out through
+        # the ordinary path, recorded COMPLETED. A report that says it could NOT be done is not one of those: found
+        # live (2026-10-14), "the workbook has no November targets ... the deck cannot be completed" went out as the
+        # task's result and was recorded done, with a deck of zero targets and its email drafted. It goes to the
+        # person below, like screen work that could not be finished.
         guidance.end()
-        return False
+        text = (f"Not checked - {decided['why'].rstrip('.')}. Look at the files before relying on this.\n\n"
+                f"{(reply or '').strip()}")
+        if notes:
+            text += "\n\nPlease check (a check in code saw this):\n" + "\n".join(
+                f"- {' '.join(str(n).split())[:400]}" for n in notes[:12])
+        write_final_reply(text, kind=decided["kind"], engine=engine, checked=decided["checked"], gated=True)
+        return True
 
     if verdict["verdict"] == verify.CANNOT:
         # The worker says it could not do it, and why. Not a success and not a check that failed: the person
@@ -3322,7 +3342,7 @@ def _gate(reply, kind, engine):
                       + "\n\nTell me what to do about it and I will carry on with that, or reply `stop`.", kind="query", engine=engine)
         return True
 
-    if verdict["verdict"] == verify.DONE:
+    if decided["status"] == verify.DONE:
         guidance.end()
         # The way this run took is kept for the next request like it - not a
         # takeover's, which is only the end of a task a replay began.
@@ -3455,7 +3475,7 @@ def check_unchecked(claim, engine):
     progress.emit("Checking the screen to see that the task was really done.")
     verdict = verify.judge(_with_said(state.current_task or ""), claim=claim, live_png=evidence.live(),
                            observed=evidence.observed(), screen_text=evidence.live_text())
-    if verdict["verdict"] == verify.DONE:
+    if verify.outcome(verdict)["status"] == verify.DONE:
         return write_final_reply(f"{claim}\n\nChecked on the screen: {verdict['seen']}", kind="final", engine=engine,
                                  checked=True)
     state.paused_skill = {"mode": "confirm", "run": None, "claim": claim, "verdict": verdict, "engine": engine,

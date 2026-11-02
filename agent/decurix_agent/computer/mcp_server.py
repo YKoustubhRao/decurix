@@ -83,6 +83,8 @@ TOOLS = [
                 "end_x": {"type": "integer", "description": "For drag: where to drop."},
                 "end_y": {"type": "integer"},
                 "files": {"type": "array", "items": {"type": "string"}, "description": "For upload: file paths on this desktop."},
+                "checked": {"type": "boolean", "description": "For click/double_click on a control that saves or "
+                            "submits a form: the form was listed by the click before and every value is right - send it."},
             },
             "required": ["action"],
         },
@@ -265,6 +267,9 @@ def call_tool(name, arguments):
             replace_all=bool(arguments.get("replace_all")),
             end=end,
             files=_absolute(arguments.get("files")),
+            # The same pre-save checks as the gui command's (core._commit_check): a right-click commits nothing.
+            check_form=(False if arguments.get("action") == "right_click"
+                        else "checked" if arguments.get("checked") else True),
         )
 
         if result["status"] == "needs_approval":

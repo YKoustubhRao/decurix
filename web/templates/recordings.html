@@ -804,11 +804,39 @@
 
   /* ---- keep up with a live recording ---- */
 
+  /* The person is using the open recording: a rename, replay or teach form is
+     open, or they are typing in it. A redraw then would throw that away, so
+     the new actions wait until they are done (the next tick after). */
+  function usingDetail(){
+    var focused = document.activeElement;
+    if(focused && detail.contains(focused) && focused.matches("input, textarea, select")){ return true; }
+    return Array.prototype.some.call(detail.querySelectorAll("form"), function(f){ return !f.hidden; });
+  }
+
+  /* Redraws the open recording in place for its new actions: no "Loading…"
+     in between, and the sections left open and the scroll position stay. */
+  async function redrawDetail(session){
+    var data;
+    try{
+      data = await getJSON("/api/desktops/recordings/get?" + query({session: session}));
+    }catch(err){ return; /* keep what is showing; the next tick tries again */ }
+    if(state.selected !== session || usingDetail()){ return; }
+
+    var opened = Array.prototype.map.call(detail.querySelectorAll("details"), function(d){ return d.open; });
+    var y = window.scrollY;
+
+    state.loaded = data;
+    renderDetail(data);
+
+    detail.querySelectorAll("details").forEach(function(d, i){ if(i < opened.length){ d.open = opened[i]; } });
+    window.scrollTo(window.scrollX, y);
+  }
+
   async function tick(){
     await refresh();
     var demo = state.demonstration;
-    if(demo && state.selected === demo.session && state.loaded && state.loaded.meta.event_count !== demo.events){
-      open(demo.session);
+    if(demo && state.selected === demo.session && state.loaded && state.loaded.meta.event_count !== demo.events && !usingDetail()){
+      await redrawDetail(demo.session);
     }
     setTimeout(tick, demo ? 2500 : 15000);
   }

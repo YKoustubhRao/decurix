@@ -10,6 +10,7 @@ import (
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/ollama"
+	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"github.com/YKoustubhRao/decurix/internal/webui"
 )
@@ -87,7 +88,14 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route, sent, err := s.submitRequestWithFiles(s.ActorContext(r), desktopID, content, files)
+	// A reply typed under one question card answers that question only: if the desktop has since asked something
+	// newer, that newer question is what the reply would land on, so it is refused (review 2026-11-02: a "yes" under
+	// an old card approved a newer action).
+	ctx := s.ActorContext(r)
+	if noteID := strings.TrimSpace(r.FormValue("note_id")); noteID != "" {
+		ctx = context.WithValue(ctx, replyNoteKey{}, noteID)
+	}
+	route, sent, err := s.submitRequestWithFiles(ctx, desktopID, content, files)
 	if err != nil {
 		uploadError(w, err)
 		return
@@ -112,6 +120,12 @@ func (s *Server) submitRequestWithFiles(ctx context.Context, desktopID, content 
 	unlock := s.lockDesktop(id)
 	defer unlock()
 
+	if noteID, ok := ctx.Value(replyNoteKey{}).(string); ok && noteID != "" {
+		if err := s.replyStillAnswers(id, noteID); err != nil {
+			return tasks.Route{}, "", err
+		}
+	}
+
 	paths, err := s.putAttachments(ctx, id, files)
 	if err != nil {
 		return tasks.Route{}, "", err
@@ -125,6 +139,38 @@ func (s *Server) submitRequestWithFiles(ctx context.Context, desktopID, content 
 	route, err := s.submitLocked(ctx, desktopID, content)
 
 	return route, content, err
+}
+
+// replyNoteKey carries the question card a reply was typed under (sendRequestHandler's note_id).
+type replyNoteKey struct{}
+
+// replyStillAnswers is nil when noteID is the desktop's newest open question or approval - the one a reply now
+// reaches - and an upload error (409) a person can act on otherwise. The caller holds the desktop's send lock.
+func (s *Server) replyStillAnswers(desktopID, noteID string) error {
+	if s.QueryNotes == nil {
+		return nil
+	}
+	var newest *querynotes.QueryNote
+	found := false
+	for _, note := range s.QueryNotes.List() {
+		if desktop.SanitizeID(note.DesktopID) != desktopID || (note.Kind != querynotes.KindQuery && note.Kind != querynotes.KindApproval) {
+			continue
+		}
+		if note.ID == noteID {
+			found = true
+		}
+		if newest == nil || note.CreatedAt.After(newest.CreatedAt) {
+			n := note
+			newest = &n
+		}
+	}
+	if !found {
+		return &errUpload{http.StatusConflict, "that question is already answered or closed"}
+	}
+	if newest.ID != noteID {
+		return &errUpload{http.StatusConflict, "this worker has asked something newer since: answer that card instead"}
+	}
+	return nil
 }
 
 // submitLocked sends content to a desktop through the same path every

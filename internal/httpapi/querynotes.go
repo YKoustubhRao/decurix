@@ -109,6 +109,11 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	acting, ok := actingAs(w, r, req.DesktopID)
+	if !ok {
+		return
+	}
+	req.DesktopID = acting
 	if req.DesktopID == "" {
 		http.Error(w, "desktop_id is required", http.StatusBadRequest)
 		return
@@ -222,6 +227,10 @@ func outcomeKindFor(reported, chatKind string) string {
 		return tasks.OutcomeError
 	case "final", "message":
 		return tasks.OutcomeDone
+	case "":
+	default:
+		// A kind this control plane does not know is not a success it can record: a person looks at it.
+		return tasks.OutcomeQuery
 	}
 
 	switch chatKind {

@@ -18,7 +18,7 @@ import (
 // the answer wrong. An approval counts as stepping in: it is the agent doing
 // the right thing, but it is still a person being paged, and the reasons table
 // keeps approvals apart from being stuck.
-const AutonomyDefinition = "A task is autonomous when its only attempt ended done, it never had a query or asked a human for approval, and nobody marked the answer wrong. Tasks still running with no human involvement yet are not counted."
+const AutonomyDefinition = "A task is autonomous when its only attempt ended done and its final check confirmed the result, it never had a query or asked a human for approval, and nobody marked the answer wrong. Tasks still running with no human involvement yet are not counted."
 
 var engineLabels = map[string]string{
 	"ollama": "Ollama",
@@ -82,6 +82,8 @@ type Summary struct {
 
 	// examples holds, per reason key, the words behind that stepping-in.
 	examples map[string]string
+	// checked is what the last attempt's final check said (nil: it said nothing).
+	checked *bool
 }
 
 // Filter narrows a task list. Zero values match everything.
@@ -210,6 +212,7 @@ func (s *Store) summaries(since time.Time) ([]Summary, error) {
 
 		summary.Executions++
 		summary.Model = execution.Model
+		summary.checked = execution.Checked
 
 		summary.Duration += execution.Duration(now)
 
@@ -267,8 +270,11 @@ func (s *Store) summaries(since time.Time) ([]Summary, error) {
 		}
 
 		summary.Settled = !Live(summary.Status) || len(summary.SteppedIn) > 0
+		// Done on the worker's word is not autonomous work: only a result its final check confirmed is
+		// (review 2026-11-02: unchecked "done" counted, so the rate rewarded what nobody had seen).
 		summary.Autonomous = summary.Status == StatusDone && summary.Executions == 1 &&
-			summary.Interventions == 0 && summary.Verdict != VerdictWrong
+			summary.Interventions == 0 && summary.Verdict != VerdictWrong &&
+			summary.checked != nil && *summary.checked
 	}
 
 	return summaries, nil

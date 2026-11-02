@@ -356,9 +356,13 @@ class FiguresOfEqualSizeAgree(unittest.TestCase):
 
 
 class ACrossCheckDisagreementIsAdvisory(base.LongRun):
-    """H2: a disagreement the cross-check could not settle is under "Please check" - never the headline."""
+    """
+    H2: a disagreement the cross-check could not settle fails no stage, and its figures are under "Please check". But
+    the run is not "made and checked" (review 2026-11-02: this test required that headline while two totals
+    disagreed): it is reported not checked, first, and recorded so.
+    """
 
-    def test_the_run_is_done_and_the_figures_are_under_please_check(self):
+    def test_the_run_is_made_not_checked_and_the_figures_are_under_please_check(self):
         disagreement = {"figure": "total shortages", "values": [
             {"stage": "s1-register", "file": "register.csv", "text": "Total: 1,000.00"},
             {"stage": "s2-bank", "file": "bank.csv", "text": "Total: 1,100.00"}]}
@@ -367,7 +371,10 @@ class ACrossCheckDisagreementIsAdvisory(base.LongRun):
             long_task.perform(base.LONG, None)
         final = self.finals()[-1]
         self.assertEqual(final["kind"], "final")
-        self.assertTrue(final["reply"].startswith("Done - every stage was made and checked."), final["reply"][:200])
+        self.assertIs(final.get("checked"), False)
+        self.assertTrue(final["reply"].startswith("Made, but not everything is checked: 1 figure that the outputs give "
+                                                  "differently and the cross-check could not settle"), final["reply"][:200])
+        self.assertNotIn("every stage was made and checked", final["reply"])
         please = final["reply"].split(long_task.PLEASE_CHECK, 1)[1]
         self.assertIn("Figures that may not agree - total shortages", please)
         self.assertNotIn("Figures that may not agree", final["reply"].split("Needs you:", 1)[-1].split(

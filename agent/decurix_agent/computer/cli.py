@@ -460,6 +460,15 @@ class _Parser(argparse.ArgumentParser):
         raise ComputerError(f"could not read that command ({message}). Run `gui help` for the forms.")
 
 
+def _check_form(command, args):
+    """What core.act's pre-save checks are told for a press: a click or double-click is checked, and --checked confirms
+    a listed form; a right-click opens a menu and commits nothing."""
+
+    if command == "right-click":
+        return False
+    return "checked" if getattr(args, "checked", False) else True
+
+
 def build_parser():
     parser = _Parser(prog="gui", add_help=False, usage=USAGE)
     sub = parser.add_subparsers(dest="command", parser_class=_Parser)
@@ -918,7 +927,9 @@ def run(argv):
         if args.see:
             if words:
                 raise ComputerError(f"{command} takes a target or --see \"what to look for\", not both")
-            result = core.act(command.replace("-", "_"), see=args.see)
+            # The pre-save checks stand however the control is found (core._commit_check).
+            result = core.act(command.replace("-", "_"), see=args.see,
+                              check_form=_check_form(command, args))
             _print_act(result)
             return EXIT_NEEDS_APPROVAL if result["status"] == "needs_approval" else EXIT_OK
         if len(words) > 1 and all(el.parse_point(w) for w in words):
@@ -933,8 +944,7 @@ def run(argv):
         if command == "click" and target.get("ref"):
             _refuse_native_dropdown(target["ref"])
         # named: a press on a control that has a name is made by its ref, not by where it is (core.act).
-        result = core.act(command.replace("-", "_"), named=True,
-                          check_form=("checked" if args.checked else True) if command == "click" else False, **target)
+        result = core.act(command.replace("-", "_"), named=True, check_form=_check_form(command, args), **target)
 
     elif command == "type":
         words = _strip_descriptor(list(args.words))
@@ -973,12 +983,12 @@ def run(argv):
                 "the text in parts and press the key between them with gui key (a page break in a word processor "
                 "is gui key ctrl+Return).")
         result = core.act("type", text=text, append=args.append, replace_all=args.replace_all, keys_from_task=True,
-                          **target)
+                          check_form=True, **target)
 
     elif command == "key":
         target = _target(args.on, args) if args.on else {}
         _refuse_blind_walk(args.keys)
-        result = core.act("key", keys=args.keys, keys_from_task=True, **target)
+        result = core.act("key", keys=args.keys, keys_from_task=True, check_form=True, **target)
 
     elif command == "scroll":
         words, direction, amount = scroll_words(args.words)

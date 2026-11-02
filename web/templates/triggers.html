@@ -590,7 +590,11 @@ details.adv[open] summary{margin-bottom:10px}
     meta.appendChild(el("span", "", "To " + (d.to || []).join(", ") + ((d.cc || []).length ? "  Cc " + d.cc.join(", ") : "")));
     meta.appendChild(el("span", "", "from " + desktopName(d.desktop_id)));
     var when = T.ago(d.created_at);
-    if(when){ meta.appendChild(el("span", "", when)); }
+    if(when){
+      var ago = el("span", "", when);
+      ago.dataset.ago = d.created_at;
+      meta.appendChild(ago);
+    }
     if(d.task_id){
       var link = el("a", "", "Open task");
       link.href = "/tasks/" + encodeURIComponent(d.task_id);
@@ -624,17 +628,27 @@ details.adv[open] summary{margin-bottom:10px}
         connect.href = "#mailboxes";
         send.appendChild(connect);
       }else{
+        /* With more than one mailbox the person picks one: a default would
+           send from whichever happened to be listed first. */
         var pick = el("select", "select");
+        if(accounts.length > 1){
+          var none = el("option", "", "From which mailbox?");
+          none.value = "";
+          pick.appendChild(none);
+        }
         accounts.forEach(function(a){
           var o = el("option", "", a.email);
           o.value = a.id;
           pick.appendChild(o);
         });
+        pick.addEventListener("change", function(){ pick.dataset.picked = "1"; });
         send.appendChild(pick);
         var btn = el("button", "btn btn-primary btn-sm", d.status === "failed" ? "Try again" : "Send");
         btn.type = "button";
         btn.addEventListener("click", async function(){
-          if(!window.confirm("Send \"" + (d.subject || "(no subject)") + "\" to " + (d.to || []).join(", ") + "?")){ return; }
+          var from = pick.options[pick.selectedIndex];
+          if(!pick.value || !from){ pick.focus(); return toast("Choose the mailbox to send it from.", "error"); }
+          if(!window.confirm("Send \"" + (d.subject || "(no subject)") + "\" to " + (d.to || []).join(", ") + " from " + from.textContent + "?")){ return; }
           Decurix.busy(true);
           try{
             var r = await post("/api/outbox/send", {id: d.id, account_id: pick.value});
@@ -657,13 +671,66 @@ details.adv[open] summary{margin-bottom:10px}
       var r = await fetch("/api/outbox/list", {cache: "no-store"});
       if(!r.ok){ return; }
       var data = await r.json();
-      list.innerHTML = "";
-      if(!(data.drafts || []).length){
-        list.appendChild(el("div", "empty-row", "Nothing yet. When you ask an agent to draft an email, it waits here."));
-        return;
-      }
-      data.drafts.forEach(function(d){ list.appendChild(draftRow(d, data.accounts || [])); });
+      placeDrafts(list, data.drafts || [], data.accounts || []);
     }catch(e){ /* the rest of the page still works */ }
+  }
+
+  /* The outbox is polled, and a row is rebuilt only when its draft (or the
+     mailboxes it can go from) changed: an email open to read stays open and
+     the mailbox picked for it stays picked. A rebuilt row keeps both too. */
+  var draftRows = new Map();
+
+  function draftKey(d, accounts){
+    return JSON.stringify([d, accounts.map(function(a){ return [a.id, a.email]; })]);
+  }
+
+  function keepDraftState(oldRow, row){
+    var oldDetails = oldRow.querySelector("details"), details = row.querySelector("details");
+    if(oldDetails && details){ details.open = oldDetails.open; }
+
+    var oldPick = oldRow.querySelector("select"), pick = row.querySelector("select");
+    if(oldPick && pick && oldPick.dataset.picked){
+      var still = Array.prototype.some.call(pick.options, function(o){ return o.value && o.value === oldPick.value; });
+      if(still){
+        pick.value = oldPick.value;
+        pick.dataset.picked = "1";
+      }
+    }
+    if(oldRow.parentNode){ oldRow.replaceWith(row); }
+  }
+
+  function placeDrafts(list, drafts, accounts){
+    var empty = list.querySelector(".empty-row");
+    if(!drafts.length){
+      draftRows.forEach(function(v){ v.row.remove(); });
+      draftRows.clear();
+      if(!empty){ list.appendChild(el("div", "empty-row", "Nothing yet. When you ask an agent to draft an email, it waits here.")); }
+      return;
+    }
+    if(empty){ empty.remove(); }
+
+    var seen = new Set();
+    drafts.forEach(function(d, i){
+      var id = String(d.id);
+      var key = draftKey(d, accounts);
+      var had = draftRows.get(id);
+      var row = had && had.key === key ? had.row : null;
+      seen.add(id);
+
+      if(!row){
+        row = draftRow(d, accounts);
+        if(had){ keepDraftState(had.row, row); }
+        draftRows.set(id, {key: key, row: row});
+      }
+      if(list.children[i] !== row){ list.insertBefore(row, list.children[i] || null); }
+    });
+
+    draftRows.forEach(function(v, id){
+      if(!seen.has(id)){ v.row.remove(); draftRows.delete(id); }
+    });
+
+    // A kept row's "5m ago" still moves on.
+    list.querySelectorAll("[data-ago]").forEach(function(span){ span.textContent = T.ago(span.dataset.ago); });
   }
 
   /* ---------------- load ---------------- */

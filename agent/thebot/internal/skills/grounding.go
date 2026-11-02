@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"thebot/internal/atomizer"
 	"thebot/internal/llm"
@@ -1853,12 +1854,11 @@ func readBefore(commands []string, doc string) bool {
 var numberRe = regexp.MustCompile(`\d[\d,]*(?:\.\d+)?`)
 
 // canonicalNumber is a value that is only a number - an amount, a rate, a quantity, with any currency mark or
-// separators - written one way (6,000.00, Rs. 6000 and 6000 are all "6000"), or false.
+// separators - written one way (6,000.00, Rs. 6000 and 6000 are all "6000"), or false. Letters before the digits are
+// taken only when they are a currency's code or abbreviation: "INV 5000", "PO 12" and "Bill 456" are identifiers,
+// never the numbers 5000, 12 and 456.
 func canonicalNumber(v string) (string, bool) {
-	// Any currency mark before the digits: a symbol (₹ $ € £ ¥) or a code or abbreviation (Rs., INR, USD, EUR, Fr.).
-	v = strings.TrimLeftFunc(strings.TrimSpace(v), func(r rune) bool {
-		return !unicode.IsDigit(r) && (unicode.IsLetter(r) || unicode.IsSymbol(r) || unicode.IsSpace(r) || r == '.')
-	})
+	v = withoutCurrencyMark(strings.TrimSpace(v))
 	if !numberRe.MatchString(v) || numberRe.FindString(v) != v {
 		return "", false
 	}
@@ -1867,6 +1867,47 @@ func canonicalNumber(v string) (string, bool) {
 		return "", false
 	}
 	return strconv.FormatFloat(f, 'f', -1, 64), true
+}
+
+// currencyWords are the currency codes and abbreviations written before an amount (ISO 4217 codes and their common
+// short forms), lowercased and without dots.
+var currencyWords = map[string]bool{
+	"rs": true, "inr": true, "re": true, "usd": true, "eur": true, "gbp": true, "jpy": true, "cny": true,
+	"rmb": true, "aud": true, "cad": true, "chf": true, "sgd": true, "aed": true, "sar": true, "qar": true, "kwd": true,
+	"hkd": true, "nzd": true, "zar": true, "sek": true, "nok": true, "dkk": true, "pln": true, "czk": true, "huf": true,
+	"rub": true, "brl": true, "mxn": true, "krw": true, "try": true, "pkr": true, "lkr": true, "npr": true, "bdt": true,
+	"idr": true, "rp": true, "myr": true, "rm": true, "thb": true, "php": true, "vnd": true, "egp": true, "ngn": true,
+	"kes": true, "fr": true, "sfr": true,
+}
+
+// dollarPrefixes name a dollar only written against its sign: US$, A$, C$, S$, NZ$, HK$.
+var dollarPrefixes = map[string]bool{"us": true, "a": true, "c": true, "s": true, "nz": true, "hk": true}
+
+// withoutCurrencyMark is v with any currency mark before its digits taken off - symbols (₹ $ € £ ¥) and the words in
+// currencyWords ("Rs.", "INR", "US$") - or v unchanged from the first letters that are no currency's.
+func withoutCurrencyMark(v string) string {
+	for v != "" {
+		r, size := utf8.DecodeRuneInString(v)
+		switch {
+		case unicode.IsDigit(r):
+			return v
+		case unicode.IsSymbol(r) || unicode.IsSpace(r) || r == '.':
+			v = v[size:]
+		case unicode.IsLetter(r):
+			end := strings.IndexFunc(v, func(r rune) bool { return !unicode.IsLetter(r) })
+			if end < 0 {
+				return v
+			}
+			word := strings.ToLower(v[:end])
+			if !currencyWords[word] && !(dollarPrefixes[word] && strings.HasPrefix(v[end:], "$")) {
+				return v
+			}
+			v = v[end:]
+		default:
+			return v
+		}
+	}
+	return v
 }
 
 // numbersIn is every number written in text, each in canonicalNumber's form. A bill writes a rate as "Rs. 6,000.00"

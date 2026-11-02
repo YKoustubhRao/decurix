@@ -802,3 +802,15 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): First learning curve on the per-document path: all checks over four months, 15% less billed in full; three months ended on a question code could answer (the saved files are a code-checked fact for the judge), a phase's "enter nothing" was read as the task's rule (the rest phase is told the phases in order), the gather report says "saved, not entered in this phase"
 - [part-5.md](gotchas/part-5.md): Code-checked facts handed to the judge among the person's words read as a claim (own `found` slot now); a worked-out value is kept but told to the judge as an assumption; a party the procedure chooses is never a reason to set a document aside
 - [part-5.md](gotchas/part-5.md): A person's answer naming the control of a spot-only press is applied to the step (study._aim_spots), so the replay finds that control instead of pressing the spot
+- [part-5.md](gotchas/part-5.md): A page on another site created a desktop and queued a task on the no-login listener
+- [part-5.md](gotchas/part-5.md): A desktop could reach every route a person can, and named itself in the body
+- [part-5.md](gotchas/part-5.md): A field the host bridge's signature did not cover went onto a host shell line as root
+- [part-5.md](gotchas/part-5.md): "Copy apps & sessions" copied the person's accounts into a worker
+- [part-5.md](gotchas/part-5.md): When something could not be checked, the default was "done"
+- [part-5.md](gotchas/part-5.md): A yes granted any action that shared a word with it
+- [part-5.md](gotchas/part-5.md): Identifiers went through number comparisons
+- [part-5.md](gotchas/part-5.md): One email crash-looped the control plane
+- [part-5.md](gotchas/part-5.md): Keys were baked into an image layer
+- [part-5.md](gotchas/part-5.md): Shell edits on this Windows host
+- [part-5.md](gotchas/part-5.md): The agent's own ports took a person's reply from anyone
+- [part-5.md](gotchas/part-5.md): TheBot verified what it had not seen, and a yes paid twice

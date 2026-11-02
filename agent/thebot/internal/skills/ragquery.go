@@ -81,6 +81,6 @@ func (q *RAGQuerySkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		Subtask: subtask, SkillName: q.Name(),
 		Output:   resp.Text,
 		Verified: true,
-		Meta:     map[string]any{"matches": len(results), "sources": sources, "userFacing": true},
+		Meta:     map[string]any{"matches": len(results), "sources": sources, "userFacing": true, MetaModelReply: true},
 	}, nil
 }

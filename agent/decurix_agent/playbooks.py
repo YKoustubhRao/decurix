@@ -489,8 +489,49 @@ def _stated(tool, request, commands=None):
     return ""
 
 
+# What a kept script may not do, because nothing would ask the person first: it is run in a proof (_prove) and then,
+# with no engine, by tool_task - outside the screen's approval gate. A script works on files; acting on the screen
+# (the gui command, xdotool, a browser), reaching the network or another machine, or sending mail is the engine's, under
+# the gate (review 2026-11-02: model-written scripts ran for real during the proof and then with no approval).
+# (`office email` only drafts into the Outbox, which a person sends: a script may draft.)
+_UNGATED_PROGRAMS = (r"gui|xdotool|xte|ydotool|wmctrl|xdg-open|chromium|chromium-browser|google-chrome|firefox|curl|"
+                     r"wget|ssh|scp|sftp|rsync|nc|ncat|netcat|telnet|ftp|sendmail|mailx|mutt|msmtp|swaks")
+# In a shell script: one of those programs where a command starts (a line, after ; & | ( ` $( or sudo/env).
+UNGATED_IN_SHELL = re.compile(r"(?:^|[;&|(`{]|\$\()\s*(?:(?:sudo|env|exec|command|nohup|time|do|then|else|if|while|until|"
+                              r"!)\s+)*(?:" + _UNGATED_PROGRAMS
+                              + r")(?=$|[\s;&|)`])", re.MULTILINE)
+# In a Python script: a module that reaches the network, the screen or a browser, or one of those programs run.
+UNGATED_IN_PYTHON = re.compile(
+    r"^\s*(?:import|from)\s+(?:urllib|http|requests|httpx|aiohttp|socket|smtplib|ftplib|telnetlib|paramiko|websockets?|"
+    r"selenium|playwright|pyautogui|pynput|webbrowser|imaplib|poplib|xmlrpc|ssl|ctypes|multiprocessing\.connection)\b"
+    # (code it builds at run time is not read here, so it is not run: exec/eval of a string.)
+    r"|(?<![\w.])(?:exec|eval)\("
+    r"|\b(?:subprocess\.\w+|os\.system|os\.popen|os\.exec\w*|os\.spawn\w*)\(\s*\[?\s*[rbf]?[\"'](?:" + _UNGATED_PROGRAMS
+    + r")(?=[\s\"'])"
+    r"|\b__import__\(|\bimportlib\b",
+    re.MULTILINE,
+)
+
+
+def ungated_effect(script, language="python"):
+    """What a script does that only the engine may do under the approval gate, or "". A shell script is read for the
+    programs it runs (UNGATED_IN_SHELL); a Python one for what it imports and runs (UNGATED_IN_PYTHON) - and a Python
+    one that runs a shell (`bash -c`, shell=True) is read as a shell script too."""
+
+    script = script or ""
+    found = None
+    if language == "bash":
+        found = UNGATED_IN_SHELL.search(script)
+    else:
+        found = UNGATED_IN_PYTHON.search(script)
+        if found is None and re.search(r"shell\s*=\s*True|[\"'](?:ba|z)?sh[\"']\s*,\s*[\"']-c[\"']", script):
+            found = re.search(r"\b(?:" + _UNGATED_PROGRAMS + r")\b(?=\s)", script)
+    return " ".join(found.group(0).split()) if found else ""
+
+
 def _sound(script, language):
-    """Why a script the model wrote is not kept, or "": it must parse, and hold no credential and nothing commands.py stops."""
+    """Why a script the model wrote is not kept, or "": it must parse, and hold no credential, nothing commands.py
+    stops, and nothing that acts beyond the work folder's files (ungated_effect)."""
 
     if not script.strip() or len(script) > MAX_SCRIPT_CHARS:
         return "empty or too long"
@@ -500,6 +541,10 @@ def _sound(script, language):
         reason = shell_rules.dangerous_reason(line)
         if reason:
             return f"a line of it would need approval ({reason})"
+    effect = ungated_effect(script, language)
+    if effect:
+        return (f"it acts beyond the work folder's files ({effect!r}): a kept script runs with no approval, so it may "
+                "only read and write files - the screen, the network and mail are the engine's, under the approval gate")
     if language == "python":
         try:
             compile(script, "tool.py", "exec")
@@ -596,6 +641,30 @@ def _copy_work(work, sandbox, leave_out=()):
     return True
 
 
+# Where a proof's network goes: nowhere (a port nothing listens on).
+_NOWHERE = "http://127.0.0.1:9"
+
+
+def proof_env(sandbox):
+    """
+    The environment a script is proven in: HOME and the worker's own folder moved into the sandbox (so ~/work is
+    the copy, and the approval store, the drafts and the secrets are a fresh, empty set), drafts kept in the sandbox,
+    no display or accessibility bus to act on the screen with, the control plane, soul and every proxy-honouring
+    program's network pointed at nothing. A second fence behind _sound's refusal of a script that acts beyond files:
+    a proof is not a sandbox a determined script cannot leave (no network namespace here), so what reaches the network
+    by its own sockets is refused by reading the script, not by this.
+    """
+
+    env = dict(os.environ, HOME=str(sandbox), DECURIX_DIR=str(Path(sandbox) / ".decurix"),
+               DECURIX_OUTBOX_DRY=str(Path(sandbox) / "drafts.jsonl"),
+               CONTROL_PLANE_URL=_NOWHERE, THEBOT_URL=_NOWHERE, OLLAMA_URL=_NOWHERE,
+               http_proxy=_NOWHERE, https_proxy=_NOWHERE, HTTP_PROXY=_NOWHERE, HTTPS_PROXY=_NOWHERE,
+               all_proxy=_NOWHERE, ALL_PROXY=_NOWHERE, no_proxy="", NO_PROXY="")
+    for name in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "AT_SPI_BUS_ADDRESS", "XAUTHORITY"):
+        env.pop(name, None)
+    return env
+
+
 def _run_in_copy(tool, sandbox, work):
     """Run the tool with its example arguments inside the copy. Returns (written relative paths, "" or what went wrong)."""
 
@@ -610,8 +679,7 @@ def _run_in_copy(tool, sandbox, work):
         # A Python tool is tried with the interpreter this agent runs on - the one its `python3` is.
         interpreter = "bash" if tool["path"].endswith(".sh") else sys.executable
         done = subprocess.run([interpreter, tool["path"]] + args, cwd=str(copy), capture_output=True,
-                              text=True, timeout=PROOF_SECONDS,
-                              env=dict(os.environ, HOME=str(sandbox), DECURIX_OUTBOX_DRY=str(sandbox / "drafts.jsonl")))
+                              text=True, timeout=PROOF_SECONDS, env=proof_env(sandbox))
     except (OSError, subprocess.TimeoutExpired) as exc:
         return [], f"it could not be run ({exc})"
     if done.returncode != 0:

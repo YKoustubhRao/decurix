@@ -118,6 +118,13 @@ def continue_after_query(query_response):
         workflow_task.engine_returned()
 
 
+def drives_screen_with_hosted_model():
+    """Whether this desktop's engine does screen work with a hosted model: TheBot on a hosted brain, or the Office
+    engine (skill_task asks, so that only this file branches on the harness)."""
+
+    return (config.AGENT_HARNESS == "thebot" and bool(config.HOSTED_BRAIN)) or config.AGENT_HARNESS == "azure"
+
+
 def cancel_running():
     """
     End the engine's work in progress, when the engine can be told to (a

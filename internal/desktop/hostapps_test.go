@@ -806,45 +806,24 @@ func TestHasWindowsInstallNeedsWindowsInsideTheDrive(t *testing.T) {
 	}
 }
 
-func TestChromeDiscoveredAndPackaged(t *testing.T) {
-	tempHome := t.TempDir()
-	chromeDir := filepath.Join(tempHome, ".config", "google-chrome")
-	if err := os.MkdirAll(filepath.Join(chromeDir, "Default"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(chromeDir, "Local State"), []byte(`{"profile":{"info_cache":{"Default":{"user_name":"test@example.com"}}}}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Setenv("HOME", tempHome)
-	t.Setenv("USERPROFILE", tempHome)
-
-	defs := getKnownAppDefs()
-	var chromeDef *knownAppDef
-	for i := range defs {
-		if defs[i].id == "chrome" {
-			chromeDef = &defs[i]
-			break
+// No app copies the person's own accounts into a worker: a browser profile (cookies, saved passwords), keys, tokens,
+// keyrings or dotfiles. Only launchers are packed (review 2026-11-02).
+func TestNoAppCopiesTheHostsCredentials(t *testing.T) {
+	for _, def := range getKnownAppDefs() {
+		switch def.id {
+		case "claude", "chatgpt", "host_bridge":
+		default:
+			t.Errorf("unexpected host app definition %q: only launchers may be copied into a desktop", def.id)
 		}
-	}
-	if chromeDef == nil {
-		t.Fatal("chrome definition not found in getKnownAppDefs")
-	}
-
-	paths := chromeDef.probeFn()
-	if len(paths) == 0 {
-		t.Fatal("expected chrome probeFn to discover profile directory")
-	}
-
-	files := pack(t, func(tw *tar.Writer) error { return chromeDef.packFn(tw, paths) })
-	_, foundLocalState := files[".config/google-chrome/Local State"]
-	link, foundSymlink := files[".config/chromium"]
-	foundSymlink = foundSymlink && link.hdr.Typeflag == tar.TypeSymlink && link.hdr.Linkname == "google-chrome"
-	if !foundLocalState {
-		t.Error("expected .config/google-chrome/Local State to be packed")
-	}
-	if !foundSymlink {
-		t.Error("expected .config/chromium symlink to google-chrome to be created")
+		files := pack(t, func(tw *tar.Writer) error { return def.packFn(tw, nil) })
+		for name := range files {
+			lower := strings.ToLower(name)
+			for _, secret := range []string{".ssh", ".config/google-chrome", ".mozilla", ".config/gh", ".docker", ".config/gcloud", ".azure", "keyrings", "cookies", "login data"} {
+				if strings.Contains(lower, secret) {
+					t.Errorf("%s packs %s", def.id, name)
+				}
+			}
+		}
 	}
 }
 

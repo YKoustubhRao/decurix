@@ -61,7 +61,6 @@ flowchart TD
 | `bench/` | 38 | Repeatable task, computer-use, privacy, teaching, and document exercise harnesses. |
 | `scripts/` | 38 | Build, release, setup, synchronization, packaging, and platform support. |
 | `docs/` | 35 | Architecture, behavior, operating instructions, design work, gotchas, and formal protocol specifications. |
-| `migration-toolkit/` | 30 | Selected app/toolchain/session migration and host bridging. |
 | `cmd/` | 8 | Main application, CLI/phone entrypoints, restore, and resource/platform helpers. |
 | `website/` | 6 | Static public-facing product site and assets. |
 | `docker/` | 5 | Worker image profiles and agent startup environment. |
@@ -199,7 +198,7 @@ Bench scripts exercise real applications and teaching flows, while unit/regressi
 | What did it retain for next time? | `learning.py`, `study.py`, `experience.py`, `playbooks.py`, `lessons.py`, `methods.py`, `internal/knowledge` |
 | How do workers cooperate? | `internal/dag`, `internal/handoff`, `internal/workqueue`, `internal/skillhub`, `web/templates/workforce.html` |
 | What grants unattended authority? | `internal/access`, `internal/qualification`, `internal/httpapi/qualification*.go`, `docs/readiness.md` |
-| How does installation reach host/phone apps? | `desktop/electron`, `internal/winhost`, `internal/phonehost`, `internal/phoneagent`, `scripts`, `migration-toolkit` |
+| How does installation reach host/phone apps? | `desktop/electron`, `internal/winhost`, `internal/phonehost`, `internal/phoneagent`, `scripts` |
 | What inference can this machine sustain? | `internal/ollama`, `internal/llm`, `brainiac` |
 
 The [file-by-file index](codebase-file-index.md) provides the complete inventory behind this map. Source and startup wiring take precedence when older documentation disagrees.

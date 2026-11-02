@@ -659,8 +659,7 @@
   border-radius:var(--r-lg);
   margin-top:2px;
 }
-.host-apps-head,
-.host-files-head{
+.host-apps-head{
   display:flex;
   align-items:center;
   justify-content:space-between;
@@ -813,72 +812,6 @@
   margin-top:2px;
   line-height:1.35;
 }
-
-.host-files-section{
-  padding:12px 14px;
-  background:var(--surface-2);
-  border:1px solid var(--line);
-  border-radius:var(--r-lg);
-  margin-top:6px;
-}
-.host-files-rows{
-  display:flex;
-  flex-direction:column;
-  gap:6px;
-  max-height:200px;
-  overflow-y:auto;
-  margin-top:10px;
-}
-.host-files-rows:empty{display:none}
-.host-file-row{
-  display:flex;
-  gap:10px;
-  align-items:center;
-  padding:6px 8px 6px 10px;
-  background:var(--surface);
-  border:1px solid var(--line);
-  border-radius:var(--r-md, 8px);
-}
-.host-file-kind{
-  flex:none;
-  font-size:11px;
-  font-weight:600;
-  color:var(--text-3);
-  width:42px;
-}
-.host-file-paths{
-  flex:1;
-  min-width:0;
-  font-family:var(--font-mono);
-  font-size:12px;
-  line-height:1.4;
-}
-.host-file-paths div{
-  overflow:hidden;
-  text-overflow:ellipsis;
-  white-space:nowrap;
-}
-.host-file-dest{color:var(--text-3)}
-.host-files-actions{
-  display:flex;
-  flex-wrap:wrap;
-  gap:8px;
-  align-items:center;
-  margin-top:10px;
-}
-.host-files-actions [hidden]{display:none}
-.host-files-actions .input{
-  flex:1;
-  min-width:180px;
-  height:30px;
-  font-family:var(--font-mono);
-  font-size:12px;
-}
-.host-files-note{
-  font-size:12px;
-  color:var(--text-3);
-}
-.host-files-note.err{color:var(--red, #ef4444)}
 
 /* ---------- query rail ---------- */
 
@@ -1485,23 +1418,6 @@
         </div>
       </div>
 
-      <div class="field host-files-section" id="hostFilesSection">
-        <div class="host-files-head">
-          <div>
-            <span class="field-label" style="margin-bottom:2px">Copy folders from host</span>
-            <div class="hint">Each one is put at the same place in the desktop's home folder as it has in yours.</div>
-          </div>
-        </div>
-
-        <div class="host-files-rows" id="hostFilesRows"></div>
-
-        <div class="host-files-actions">
-          <button type="button" class="btn btn-quiet btn-xs" id="hostFilesPick">+ Add</button>
-          <input type="text" class="input input-sm" id="hostFilesTyped" placeholder="Path of a folder on the host" hidden>
-          <button type="button" class="btn btn-quiet btn-xs" id="hostFilesTypedAdd" hidden>Add</button>
-          <span class="host-files-note" id="hostFilesNote"></span>
-        </div>
-      </div>
     </div>
 
     <div class="dialog-foot">
@@ -1704,7 +1620,6 @@
     createDialog.showModal();
     document.getElementById(parent ? "dSpecialization" : "dName").focus();
     resetHostAppsSection();
-    resetHostFilesSection();
   }
 
   document.getElementById("newDesktopBtn").addEventListener("click", function(){ openCreate(); });
@@ -2166,156 +2081,6 @@
     });
   }
 
-  /* ---------------- host files & directories copy ---------------- */
-
-  /* The installed app opens the host chooser; a native control plane can
-     open it itself. Other browsers can enter a path visible to the server. */
-  var hostFilesRows = document.getElementById("hostFilesRows");
-  var hostFilesPick = document.getElementById("hostFilesPick");
-  var hostFilesTyped = document.getElementById("hostFilesTyped");
-  var hostFilesTypedAdd = document.getElementById("hostFilesTypedAdd");
-  var hostFilesNote = document.getElementById("hostFilesNote");
-  var hostFilesChosen = [];
-  var hostFilesNoPicker = false;
-
-  function hostFilesSay(text, isError){
-    hostFilesNote.textContent = text || "";
-    hostFilesNote.className = "host-files-note" + (isError ? " err" : "");
-  }
-
-  function hostFilesShowChoices(show){
-    hostFilesPick.hidden = hostFilesNoPicker;
-    hostFilesTyped.hidden = !show || !hostFilesNoPicker;
-    hostFilesTypedAdd.hidden = !show || !hostFilesNoPicker;
-    if(show && hostFilesNoPicker){ hostFilesTyped.focus(); }
-  }
-
-  function renderHostFiles(){
-    hostFilesRows.textContent = "";
-    hostFilesChosen.forEach(function(item){
-      var row = node("div", "host-file-row");
-
-      var kind = node("span", "host-file-kind", item.is_dir ? "Folder" : "File");
-
-      var paths = node("div", "host-file-paths");
-      var src = node("div", "", item.display_path || item.path);
-      src.title = item.display_path || item.path;
-      var dest = node("div", "host-file-dest");
-      dest.textContent = "→ " + String(item.dest || "").replace(/^\/home\/headless/, "~");
-      dest.title = "Where it will be in the desktop";
-      paths.appendChild(src);
-      paths.appendChild(dest);
-
-      var remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "btn btn-quiet btn-xs";
-      remove.title = "Do not copy this";
-      remove.textContent = "✕";
-      remove.addEventListener("click", function(){
-        hostFilesChosen = hostFilesChosen.filter(function(other){ return other !== item; });
-        renderHostFiles();
-      });
-
-      row.appendChild(kind);
-      row.appendChild(paths);
-      row.appendChild(remove);
-      hostFilesRows.appendChild(row);
-    });
-  }
-
-  function addHostFiles(items){
-    (items || []).forEach(function(item){
-      var known = hostFilesChosen.some(function(other){ return other.path === item.path; });
-      if(item && item.path && !known){ hostFilesChosen.push(item); }
-    });
-    renderHostFiles();
-  }
-
-  function pickHostFiles(type){
-    hostFilesPick.disabled = true;
-    hostFilesSay("Choose in the window that opened on this computer…");
-
-    var selection;
-    if(window.decurixHost && typeof window.decurixHost.pickFolders === "function"){
-      selection = window.decurixHost.pickFolders().then(function(data){
-        if(data.busy){ return data; }
-        return Promise.all((data.paths || []).map(function(item){
-          return fetch("/api/host-paths/validate?path=" + encodeURIComponent(item.path))
-            .then(function(res){
-              if(!res.ok){ throw new Error("Could not check the selected folder."); }
-              return res.json();
-            })
-            .then(function(info){
-              if(!info.exists || !info.is_dir){ throw new Error("The selected folder is not accessible to Decurix: " + item.display_path); }
-              return {path: info.path, display_path: item.display_path, is_dir: true, dest: info.default_dest};
-            });
-        })).then(function(paths){ return {paths: paths}; });
-      });
-    } else {
-      selection = fetch("/api/host-paths/browse?type=" + type, {method: "POST"})
-      .then(function(res){
-        if(res.status === 403 || res.status === 404){ return {unavailable: true}; }
-        if(!res.ok){ throw new Error("failed"); }
-        return res.json();
-      });
-    }
-    selection.then(function(data){
-        hostFilesSay("");
-        if(data.unavailable){
-          hostFilesNoPicker = true;
-          hostFilesShowChoices(true);
-          hostFilesSay("No file chooser can be opened from here. Type the path instead.");
-          return;
-        }
-        if(data.busy){
-          hostFilesSay("A chooser is already open on this computer.", true);
-          return;
-        }
-        addHostFiles(data.paths);
-        hostFilesShowChoices(false);
-      })
-      .catch(function(err){
-        hostFilesSay(err.message || "Could not open the file chooser.", true);
-      })
-      .then(function(){
-        hostFilesPick.disabled = false;
-      });
-  }
-
-  function addTypedHostFile(){
-    var typed = hostFilesTyped.value.trim();
-    if(!typed){ return; }
-
-    fetch("/api/host-paths/validate?path=" + encodeURIComponent(typed))
-      .then(function(res){ return res.json(); })
-      .then(function(data){
-        if(!data || !data.exists){
-          hostFilesSay("Nothing is at that path on the host.", true);
-          return;
-        }
-        addHostFiles([{path: data.path, is_dir: data.is_dir, dest: data.default_dest}]);
-        hostFilesTyped.value = "";
-        hostFilesSay("");
-      })
-      .catch(function(){
-        hostFilesSay("Could not check that path.", true);
-      });
-  }
-
-  function resetHostFilesSection(){
-    hostFilesChosen = [];
-    renderHostFiles();
-    hostFilesShowChoices(false);
-    hostFilesTyped.value = "";
-    hostFilesSay("");
-  }
-
-  hostFilesPick.addEventListener("click", function(){ pickHostFiles("folder"); });
-  hostFilesTypedAdd.addEventListener("click", addTypedHostFile);
-  hostFilesTyped.addEventListener("keydown", function(e){
-    if(e.key === "Enter"){ e.preventDefault(); addTypedHostFile(); }
-  });
-
   function insertProvisioningCard(info){
     var grid = document.querySelector(".grid");
     if(!grid){ return null; }
@@ -2460,10 +2225,6 @@
       });
     }
 
-    /* No destination is sent: the control plane maps each path itself. */
-    var hostCopyPaths = hostFilesChosen.map(function(item){ return {src: item.path, dest: ""}; });
-    var copyHostFiles = hostCopyPaths.length > 0;
-
     // Immediately insert spinning VM card into the dashboard grid
     var card = insertProvisioningCard({
       id: sanitizedID,
@@ -2499,9 +2260,7 @@
         parent_id: parentId,
         shared_folder: sharedFolder,
         copy_host_apps: copyHostApps ? "1" : "0",
-        host_apps: selectedApps.join(","),
-        copy_host_files: copyHostFiles ? "1" : "0",
-        host_paths: JSON.stringify(hostCopyPaths)
+        host_apps: selectedApps.join(",")
       });
 
       busy(false);

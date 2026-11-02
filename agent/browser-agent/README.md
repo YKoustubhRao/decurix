@@ -77,7 +77,7 @@ selection in the popup):
 ```
 core/                  LLM plumbing ext_server.py imports
   models.py               LLM call abstraction (Ollama + the spec-decode backend)
-  spec_backend.py          llama-server backend for speculative decoding (qwen3-spec)
+  spec_backend.py          llama-server backend for speculative decoding (qwen3-spec); paths from SPEC_LLAMA_SERVER / SPEC_TARGET_GGUF / SPEC_DRAFT_GGUF
   atomizer.py              is_done() + the old free-text atomize call (slow-path fallback)
   stack_atomizer.py        The stack flavour's plan() call
   reasoning.py             expected_outcome / verify_outcome / answer_from_page
@@ -107,7 +107,17 @@ cd extension_pipeline
 python ext_server.py      # http://127.0.0.1:8092
 ```
 Then load `extension/` as an unpacked extension in `chrome://extensions`
-(Developer mode on, "Load unpacked"). The request listener is on by
+(Developer mode on, "Load unpacked").
+
+Who may call it (`extension_pipeline/guard.py`): the extension (its own
+`chrome-extension://` origin) and, on a desktop created with
+`DECURIX_AGENT_TOKEN`, a plain client sending `Authorization: Bearer <token>`
+(TheBot's browser skill). A web page in the same browser is refused (any
+other Origin, a `Sec-Fetch-*` request without one, a non-loopback Host), the
+server sends no CORS headers, and an `approved` list in a `/requests` body is
+honoured only from a token-bearing caller and only for an action the
+extension's gate stopped on, once. A script driving it by hand on a desktop
+with a token needs that header too. The request listener is on by
 default (see `background.js`'s `LISTENER`) -- no popup interaction needed;
 it persists across service-worker and browser restarts, and each incoming
 request gets its own fresh tab.

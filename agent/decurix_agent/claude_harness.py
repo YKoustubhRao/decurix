@@ -415,7 +415,13 @@ def _handle_result(result):
     result_text = (result.get("result") or "").strip()
 
     if result_text.startswith(APPROVAL_MARKER):
-        ask_for_query(result_text[len(APPROVAL_MARKER):].strip(), kind="approval")
+        said = result_text[len(APPROVAL_MARKER):].strip()
+        blocked = approval.pending()
+        if blocked is not None:
+            # The gate's own words for the action it holds lead: a yes settles only the action it was asked for
+            # (approval.asked_about), and Claude's paraphrase may name another.
+            said = approval.request_text(blocked) + (f"\n\nThe agent's own words:\n{said}" if said else "")
+        ask_for_query(said, kind="approval")
         return
 
     # The act tool stopped an on-screen action for approval, and the turn

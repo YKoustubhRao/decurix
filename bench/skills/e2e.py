@@ -85,9 +85,12 @@ def wait_reply(count, timeout=150):
                      + "\n".join(str(r.get("kind")) + ": " + str(r.get("reply"))[:200] for r in replies()))
 
 
-HTTP = ("import sys,json,urllib.request as u;"
+# A write to :8081 must say it is JSON, and a desktop with an agent token needs it (http_api.refusal).
+HTTP = ("import sys,os,json,urllib.request as u;"
         "d=sys.argv[2] if len(sys.argv)>2 else None;"
-        "r=u.Request('http://localhost:8081'+sys.argv[1],data=d.encode() if d else None,method='POST' if d else 'GET');"
+        "t=os.environ.get('DECURIX_AGENT_TOKEN','');"
+        "h=dict({'Content-Type':'application/json'} if d else {},**({'Authorization':'Bearer '+t} if t else {}));"
+        "r=u.Request('http://localhost:8081'+sys.argv[1],data=d.encode() if d else None,headers=h,method='POST' if d else 'GET');"
         "print(u.urlopen(r,timeout=20).read().decode())")
 
 

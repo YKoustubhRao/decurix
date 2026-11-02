@@ -791,7 +791,9 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 	st.PrefixLen = len(st.Messages)
 	st.Request = subtask.Step
 	st.notePersonLinks(subtask.Step)
-	st.noteSeen(subtask.Step + "\n" + findings)
+	// Only what earlier steps read or ran is a source a typed value may be traced to: a model's own reply (a chat
+	// answer, a summary of web pages) is shown above as context, never noted as seen (skills.go, MetaModelReply).
+	st.noteSeen(subtask.Step + "\n" + rc.PriorSourcedFindings())
 	st.addUnit("request", "the request", subtask.Step)
 	// What earlier tasks kept (the person's lessons, and facts sources stated - kept_facts.py) is evidence with its
 	// own provenance: it can explain a record the sources disagree about (case.go), as the person's words can.
@@ -1429,6 +1431,13 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		res.Checkpoint = st
 		return res, nil
 	}
+	// unchecked puts an answer that never went through the DONE checks (judgements, the review, the screen and
+	// grounding checks) to the person as what it is: not verified, with what was not checked, and the goal kept so
+	// their reply carries it on. A stalled or unmarked loop is never reported as a success.
+	unchecked := func(answer, why string) (Result, error) {
+		return ask(strings.TrimSpace(answer) + "\n\n(Not checked: " + why + ". Tell me whether this answers the request, " +
+			"or how to go on.)")
+	}
 
 	began := time.Now()
 	windowStart := st.CommandsSucceeded
@@ -1499,6 +1508,14 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			})
 		}
 		rc.Logf("operator", "%s", turnUsage(turn+1, st, resp))
+		if resp.Truncated {
+			// A reply cut off for want of room is not the reply: a DONE's report, a command, a list are all missing their
+			// end. Never acted on - asked for again, shorter (the turn budget bounds how often).
+			rc.Logf("operator", "the reply was cut off before it was finished - asking for it again, shorter")
+			st.Messages = append(st.Messages, llm.Message{Role: "assistant", Content: resp.Text},
+				llm.Message{Role: "user", Content: cutOffReplyNudge})
+			continue
+		}
 
 		action, value := parseControl(resp.Text)
 		if action == "invalid" {
@@ -1779,7 +1796,8 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				// 5.10.124 before running anything; the real answer was 6.6.87.
 				rc.Logf("operator", "still repeating the same command - ending with what it printed")
 				if st.LastResult.ExitCode == 0 {
-					return finish(answerFromCommand(value, *st.LastResult, st.outputChars()), true, nil)
+					return unchecked("`"+value+"` printed:\n\n"+answerFromCommand(value, *st.LastResult, st.outputChars()),
+						"the model kept repeating this command instead of reporting a result, so no check of the answer ran")
 				}
 				return finish(fmt.Sprintf("I kept retrying `%s`, and it keeps failing with exit code %d:\n\n%s",
 					value, st.LastResult.ExitCode, truncateText(st.LastResult.Output, 1000)), false,
@@ -1868,10 +1886,12 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		default:
 			invalid++
 			if invalid > maxInvalidReplies {
-				// An answer without a marker is still an answer. The loop
-				// this replaces argued about format until its budget ran out
-				// and then reported a stuck agent - for "how many files are
-				// in /etc?", answered correctly ("241") on turn two.
+				// An answer without a marker is still shown, never dropped: the
+				// loop this replaces argued about format until its budget ran
+				// out and then reported a stuck agent - for "how many files are
+				// in /etc?", answered correctly ("241") on turn two. But it went
+				// through none of the DONE checks, so it goes to the person as
+				// not checked, never as a verified result.
 				// But a marker word and nothing else answers nothing. Found
 				// live on a native Windows worker: asked to open an app, a
 				// 1.5B model replied "DONE" four times without running a
@@ -1879,8 +1899,8 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				text := strings.TrimSpace(resp.Text)
 				bare := bareMarkerRe.FindStringSubmatch(text)
 				if text != "" && bare == nil {
-					rc.Logf("operator", "never used a marker - taking its reply as the answer")
-					return finish(text, true, nil)
+					rc.Logf("operator", "never used a marker - putting its reply to the person as not checked")
+					return unchecked(text, "the model never replied with DONE, so this reply is its own and no check of it ran")
 				}
 				// "DONE" and nothing else, after a command that worked: the
 				// model is finished and has not said with what. What the
@@ -1891,8 +1911,9 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				// Not for work in a window no command did - that is asked.
 				if bare != nil && strings.EqualFold(bare[1], "DONE") && st.LastResult != nil && st.LastResult.ExitCode == 0 &&
 					strings.TrimSpace(st.LastResult.Output) != "" && unperformedScreenNudge(st) == "" {
-					rc.Logf("operator", "said done without an answer - ending with what its last command printed")
-					return finish(answerFromCommand(st.LastCommand, *st.LastResult, st.outputChars()), true, nil)
+					rc.Logf("operator", "said done without an answer - putting what its last command printed to the person")
+					return unchecked("`"+st.LastCommand+"` printed:\n\n"+answerFromCommand(st.LastCommand, *st.LastResult, st.outputChars()),
+						"the model said DONE without an answer, so whether this output answers the request was not checked")
 				}
 				// Nothing usable and nothing to report: said as it is, to the
 				// person, with the goal kept so their reply carries it on. (A
@@ -1934,6 +1955,10 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 // closingTurns is how many turns from the end the operator is told its
 // budget is nearly spent (only for a budget of at least four times that).
 const closingTurns = 8
+
+// cutOffReplyNudge answers a reply the provider cut off for want of room (llm.Result.Truncated).
+const cutOffReplyNudge = "Your last reply was cut off before it was finished (it ran out of room), so none of it was used. " +
+	"Send it again, shorter: one COMMAND, or DONE with a shorter report, or HELP."
 
 // closingNote is said once, closingTurns from the end. Found live: an
 // application refused to save for want of a value the request did not give,

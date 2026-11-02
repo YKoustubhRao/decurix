@@ -840,8 +840,10 @@ func (h *Harness) smokeRun(ctx context.Context, r *Runner, d *Design, env *EnvFa
 
 	switch {
 	case res.ExitCode == 124:
+		report.SmokePassed = true
 		h.logf("coding: ✓ it starts and keeps running (still alive after 20s)")
 	case res.OK:
+		report.SmokePassed = true
 		h.logf("coding: ✓ it ran and exited cleanly")
 	default:
 		h.logf("coding: ✗ it failed to start: %s", truncate(res.Tail(500), 250))

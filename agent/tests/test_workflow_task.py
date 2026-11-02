@@ -59,6 +59,13 @@ class WorkflowHarnessIntegration(unittest.TestCase):
         self.assertEqual(len(self.reports), 1)
         self.assertIn(": completed", self.reports[0][0])
         self.assertIn('"outputs": {"extract":', self.prompts[1])
+        # Its stages passed only their spec's file checks: reported NOT checked, first, and recorded so (review
+        # 2026-11-02: reported checked=True past the final gate).
+        reply, kwargs = self.reports[0]
+        self.assertTrue(reply.startswith("Not checked - each stage's output passed only its file checks"), reply[:200])
+        self.assertEqual(kwargs["kind"], "final")
+        self.assertIs(kwargs["checked"], False)
+        self.assertTrue(kwargs["gated"])
 
     def test_each_stages_own_report_reaches_the_one_final_reply(self):
         # Found in review (2026-10-14): final_gate consumed every stage's report

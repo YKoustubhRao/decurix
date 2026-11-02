@@ -367,6 +367,56 @@ async function unlockRun(run) {
   run.lockedTabIds.clear();
 }
 
+// Runs inside the page (chrome.scripting), so it is self-contained.
+// liveFields mirrors worker.py's get_live_field_values: outerHTML is the
+// DOM's ORIGINAL markup and never reflects a later .value set via typing
+// or JS, so without this verify_outcome sees a just-typed field as empty.
+// The side-car is stripped out too -- it's our own UI, not page content,
+// and letting the model see it just wastes context and invites it to
+// try clicking our own Stop button.
+// A secret field (a password, a one-time code, a card number) is never read
+// out: it says it is filled, not what it holds. This snapshot goes to the
+// model, the step trace, TheBot's result and the live viewer.
+function snapshotPage() {
+  const SECRET_AUTOCOMPLETE = /(^|\s)(current-password|new-password|one-time-code|cc-number|cc-csc)(\s|$)/i;
+  const isSecret = (e) => e.tagName === "INPUT"
+    && (String(e.type || "").toLowerCase() === "password"
+      || SECRET_AUTOCOMPLETE.test(e.getAttribute("autocomplete") || ""));
+  // Clone, then drop our own UI from the clone -- regex-stripping the
+  // serialized string can't reliably find the matching close tag, and
+  // removing the nodes from the live DOM would make the panel flicker.
+  const clone = document.documentElement.cloneNode(true);
+  clone.querySelector("#__ba_sidecar__")?.remove();
+  clone.querySelector("#__ba_backdrop__")?.remove();
+  for (const f of clone.querySelectorAll("input")) {
+    if (isSecret(f) && f.hasAttribute("value")) f.setAttribute("value", "(hidden)");
+  }
+  const liveFields = Array.from(document.querySelectorAll("input, textarea, select"))
+    .slice(0, 30)
+    .map((e) => {
+      const val = e.tagName === "SELECT"
+        ? (e.selectedOptions[0] ? e.selectedOptions[0].textContent.trim() : "")
+        : e.value;
+      if (!val) return null;
+      return { tag: e.tagName.toLowerCase(), id: e.id, name: e.name, value: isSecret(e) ? "(filled - hidden)" : val };
+    })
+    .filter(Boolean);
+  // The rendered text, separately from the markup. A big article cleans
+  // down to ~100k chars of link-dense HTML, and asking a small model to
+  // find one fact in the middle of that is a needle-in-haystack job it
+  // reliably loses -- the same fact sits near the top of the prose in a
+  // few hundred characters.
+  const visibleText = (document.body?.innerText || "")
+    .replace(/\n{3,}/g, "\n\n").trim().slice(0, 6000);
+  return {
+    url: location.href,
+    title: document.title,
+    html: clone.outerHTML,
+    visibleText,
+    liveFields,
+  };
+}
+
 // withScreenshot is off by default on purpose: the screenshot is only ever
 // sent when vision mode is on, but this used to grab one on EVERY snapshot
 // regardless -- wasted work on every step, and enough captureVisibleTab
@@ -375,43 +425,7 @@ async function unlockRun(run) {
 async function captureSnapshot(run, withScreenshot = false) {
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId: run.tabId },
-    // liveFields mirrors worker.py's get_live_field_values: outerHTML is the
-    // DOM's ORIGINAL markup and never reflects a later .value set via typing
-    // or JS, so without this verify_outcome sees a just-typed field as empty.
-    // The side-car is stripped out too -- it's our own UI, not page content,
-    // and letting the model see it just wastes context and invites it to
-    // try clicking our own Stop button.
-    func: () => {
-      // Clone, then drop our own UI from the clone -- regex-stripping the
-      // serialized string can't reliably find the matching close tag, and
-      // removing the nodes from the live DOM would make the panel flicker.
-      const clone = document.documentElement.cloneNode(true);
-      clone.querySelector("#__ba_sidecar__")?.remove();
-      clone.querySelector("#__ba_backdrop__")?.remove();
-      const liveFields = Array.from(document.querySelectorAll("input, textarea, select"))
-        .slice(0, 30)
-        .map((e) => {
-          const val = e.tagName === "SELECT"
-            ? (e.selectedOptions[0] ? e.selectedOptions[0].textContent.trim() : "")
-            : e.value;
-          return val ? { tag: e.tagName.toLowerCase(), id: e.id, name: e.name, value: val } : null;
-        })
-        .filter(Boolean);
-      // The rendered text, separately from the markup. A big article cleans
-      // down to ~100k chars of link-dense HTML, and asking a small model to
-      // find one fact in the middle of that is a needle-in-haystack job it
-      // reliably loses -- the same fact sits near the top of the prose in a
-      // few hundred characters.
-      const visibleText = (document.body?.innerText || "")
-        .replace(/\n{3,}/g, "\n\n").trim().slice(0, 6000);
-      return {
-        url: location.href,
-        title: document.title,
-        html: clone.outerHTML,
-        visibleText,
-        liveFields,
-      };
-    },
+    func: snapshotPage,
   });
   if (!withScreenshot) return { ...result, screenshot_b64: null };
 
@@ -569,6 +583,10 @@ function domAction(act, approved = []) {
     + "mail\\.google|gmail|outlook|mail\\.yahoo|proton\\.me|protonmail|thunderbird|"
     + "\\bcompose\\b|new message|linkedin\\.com/messaging|twitter\\.com|x\\.com/)", "i");
   const SEARCH_FIELD = /^\s*(search|find|filter|look up)\b/i;
+  const SECRET_AUTOCOMPLETE = /(^|\s)(current-password|new-password|one-time-code|cc-number|cc-csc)(\s|$)/i;
+  const isSecret = (e) => e.tagName === "INPUT"
+    && (String(e.type || "").toLowerCase() === "password"
+      || SECRET_AUTOCOMPLETE.test(e.getAttribute("autocomplete") || ""));
   const ACTIVATING = "button, a[href], summary, input[type=submit], input[type=button], [role=button], [role=link], [role=menuitem], [role=tab]";
   const labelOf = (n) => String(n.getAttribute("aria-label") || n.innerText || n.value || n.title || "")
     .replace(/\s+/g, " ").trim().slice(0, 60);
@@ -582,6 +600,13 @@ function domAction(act, approved = []) {
     const label = control ? labelOf(control) : "";
     if (!control || !CONSEQUENTIAL.test(label)) return null;
     return gate(`click "${label}" on ${location.host}`, `"${label}" sends, pays, buys or publishes something on your behalf`);
+  }
+  // Submitting a form is clicking its submit button, and goes through the
+  // same check: a search typed into a checkout form whose button is "Pay now"
+  // is a payment.
+  function submitGate(form) {
+    const submitter = Array.from(form.elements || []).find((e) => String(e.type || "").toLowerCase() === "submit");
+    return submitter ? clickGate(submitter) : null;
   }
   function enterGate(field) {
     if (isSearch(field) || !MESSAGING.test(`${location.href} ${document.title}`)) return null;
@@ -672,8 +697,18 @@ function domAction(act, approved = []) {
       if (!el) {
         return { success: false, error: `"${act.selector}" is not a text field and contains none` };
       }
-      const held = act.type === "search" ? enterGate(el) : null;
-      if (held && !held.usedApproval) return held;
+      const secretField = isSecret(el);
+      // A recorded password step keeps no value (recorderInject): it cannot be
+      // replayed, and typing nothing into the field would be a silent wrong.
+      if (act.secret && !act.text) {
+        return { success: false, secretField, error: "this step types a password, which a recording never keeps - type it in yourself, then carry on" };
+      }
+      const form = el.form || el.closest("form");
+      const holds = act.type === "search" ? [enterGate(el), form ? submitGate(form) : null].filter(Boolean) : [];
+      const stopped = holds.find((h) => !h.usedApproval);
+      if (stopped) return { ...stopped, secretField };
+      const used = holds.map((h) => h.usedApproval);
+      const held = used.length ? { usedApproval: used } : null;
       el.scrollIntoView({ block: "center" });
       el.focus();
       if (el.isContentEditable && el.tagName !== "INPUT" && el.tagName !== "TEXTAREA") {
@@ -698,10 +733,9 @@ function domAction(act, approved = []) {
         el.dispatchEvent(new KeyboardEvent("keydown", opts));
         el.dispatchEvent(new KeyboardEvent("keypress", opts));
         el.dispatchEvent(new KeyboardEvent("keyup", opts));
-        const form = el.form || el.closest("form");
         if (form && form.requestSubmit) form.requestSubmit();
       }
-      return { success: true, ...held };
+      return { success: true, secretField, ...held };
     }
     if (act.type === "scroll") {
       window.scrollBy(0, act.direction === "down" ? 800 : -800);
@@ -714,18 +748,20 @@ function domAction(act, approved = []) {
 }
 
 async function execAction(run, action) {
+  let result = null;
   if (action.type === "navigate") {
     await chrome.tabs.update(run.tabId, { url: normalizeUrl(action.url) });
     await waitForTabLoad(run.tabId);
   } else {
-    const [{ result }] = await chrome.scripting.executeScript({
+    [{ result }] = await chrome.scripting.executeScript({
       target: { tabId: run.tabId }, func: domAction, args: [action, run.approved || []],
     });
     await sleep(STEP_SETTLE_MS);
     if (result.needsApproval) run.needsApproval = result.needsApproval;
     if (!result.success) return result;
     // A yes lets one action through, once.
-    if (result.usedApproval) run.approved = (run.approved || []).filter((a) => a !== result.usedApproval);
+    const used = [].concat(result.usedApproval || []);
+    if (used.length) run.approved = (run.approved || []).filter((a) => !used.includes(a));
     if (result.openNewTab) {
       // Called directly rather than left to the onCreated listener alone, so
       // the group/lock/switch decision is settled before the next step's
@@ -737,7 +773,15 @@ async function execAction(run, action) {
     }
   }
   if (run.lockedTabIds.size) await lockTab(run, run.tabId); // re-apply -- navigation wipes the DOM
-  return { success: true };
+  return { success: true, secretField: !!(result && result.secretField) };
+}
+
+// An action as the step record keeps it: text typed into a secret field (a
+// password) is replaced, since steps and traces go to TheBot, the live viewer
+// and saved runs.
+function shownAction(action, result) {
+  return result && result.secretField && action && typeof action.text === "string"
+    ? { ...action, text: "(hidden)" } : action;
 }
 
 function pause(run, { task, remaining, modelKey, vision, verifyEnabled, error, memory, flavour, stack }) {
@@ -754,6 +798,10 @@ async function runLoop(run, { task, remaining, modelKey, vision, verifyEnabled, 
   run.fatalError = null;
   run.stalled = null;
   run.blocked = null;
+  // Set only where the task is genuinely finished (the model said done, or
+  // answered); everything else that ends the loop says why (runOutcome).
+  run.completed = false;
+  run.endedWhy = null;
   updateKeepAlive();
 
   const useVision = vision && (await getJSON("/models"))[modelKey]?.vision;
@@ -766,7 +814,7 @@ async function runLoop(run, { task, remaining, modelKey, vision, verifyEnabled, 
   try {
     for (let i = 0; i < MAX_STEPS; i++) {
       if (run.cancelledByUser) { stage(run, "Cancelled."); log(run, "Cancelled."); break; }
-      if (run.stop) { stage(run, "Stopped by user."); log(run, "Stopped by user."); break; }
+      if (run.stop) { run.endedWhy = "Stopped by user."; stage(run, "Stopped by user."); log(run, "Stopped by user."); break; }
       if (deadline && Date.now() > deadline) {
         stage(run, "Stopped: task time limit reached.");
         log(run, "Stopped: task time limit reached.");
@@ -856,6 +904,7 @@ async function runLoop(run, { task, remaining, modelKey, vision, verifyEnabled, 
           stage(run, "Task complete.");
           log(run, "Task complete.");
         }
+        run.completed = true;
         break;
       }
       if (stepResp.captcha) {
@@ -899,6 +948,7 @@ async function runLoop(run, { task, remaining, modelKey, vision, verifyEnabled, 
         }
         if (repeatCount >= 3) {
           const msg = "Stopped: the same action repeated 3 times without changing the page.";
+          run.endedWhy = msg;
           stage(run, msg);
           log(run, `${msg} Last action: ${actionKey}`);
           break;
@@ -916,13 +966,15 @@ async function runLoop(run, { task, remaining, modelKey, vision, verifyEnabled, 
 
       stage(run, "Running action in the browser...");
       const result = await execAction(run, stepResp.action);
+      const action = shownAction(stepResp.action, result);
+      if (action !== stepResp.action) upsertStep(run, i, { action });
       if (!result.success) {
         upsertStep(run, i, { status: "failed", error: result.error });
         // No fresh capture on a failed action -- the page may be mid-crash
         // or mid-navigation, and snap (taken just before the action) is
         // still informative about the state the action actually acted on.
         pushTrace(run, onStepState, {
-          index: i, instruction: stepResp.next_instruction, action: stepResp.action,
+          index: i, instruction: stepResp.next_instruction, action,
           result: "failed", error: result.error, state: stateOf(snap),
         });
         pause(run, { task, remaining, modelKey, vision, verifyEnabled, error: result.error, memory, flavour, stack });
@@ -949,7 +1001,7 @@ async function runLoop(run, { task, remaining, modelKey, vision, verifyEnabled, 
         if (!verifyResp.met) {
           upsertStep(run, i, { status: "not_met", verify: verifyResp });
           pushTrace(run, onStepState, {
-            index: i, instruction: stepResp.next_instruction, action: stepResp.action,
+            index: i, instruction: stepResp.next_instruction, action,
             result: "not_met", verify: verifyResp, state: stepState,
           });
           pause(run, {
@@ -962,7 +1014,7 @@ async function runLoop(run, { task, remaining, modelKey, vision, verifyEnabled, 
 
       upsertStep(run, i, { status: "ok", verify: verifyResp });
       pushTrace(run, onStepState, {
-        index: i, instruction: stepResp.next_instruction, action: stepResp.action,
+        index: i, instruction: stepResp.next_instruction, action,
         result: "ok", verify: verifyResp, state: stepState,
       });
 
@@ -977,6 +1029,7 @@ async function runLoop(run, { task, remaining, modelKey, vision, verifyEnabled, 
       lastError = null;
 
       if (i === MAX_STEPS - 1) {
+        run.endedWhy = "Stopped: reached the max-steps safety cap.";
         stage(run, "Stopped: reached the max-steps safety cap.");
         log(run, "Stopped: reached the max-steps safety cap.");
       }
@@ -1118,9 +1171,10 @@ async function handleProgram(run, req, deadline, onStepState = null) {
   if (!rec) throw new Error(`no saved program matching "${req.program}"`);
 
   log(run, `Replaying program "${rec.name}" (${rec.steps.length} steps)`);
+  run.completed = false;
   for (let i = 0; i < rec.steps.length; i++) {
-    if (run.stop || LISTENER.stop) { log(run, "Program stopped."); break; }
-    if (deadline && Date.now() > deadline) { run.timedOut = true; break; }
+    if (run.stop || LISTENER.stop) { run.endedWhy = "Program stopped."; log(run, "Program stopped."); return; }
+    if (deadline && Date.now() > deadline) { run.timedOut = true; return; }
     const step = rec.steps[i];
     const label = step.type === "navigate" ? step.url : (step.label || step.selector);
     upsertStep(run, i, { instruction: `${step.type}: ${label}`, action: step, status: "running" });
@@ -1128,16 +1182,38 @@ async function handleProgram(run, req, deadline, onStepState = null) {
     const result = await execAction(run, step);
     if (!result.success) {
       upsertStep(run, i, { status: "failed", error: result.error });
-      if (result.needsApproval) { log(run, `Stopped: ${result.error}`); break; }
+      if (result.needsApproval) { log(run, `Stopped: ${result.error}`); return; }
       throw new Error(`program step ${i + 1} failed: ${result.error}`);
     }
     upsertStep(run, i, { status: "ok" });
     const afterSnap = await captureSnapshot(run, true);
     pushTrace(run, onStepState, {
-      index: i, instruction: `${step.type}: ${label}`, action: step,
+      index: i, instruction: `${step.type}: ${label}`, action: shownAction(step, result),
       result: "ok", state: stateOf(afterSnap),
     });
   }
+  run.completed = true;
+}
+
+// What a finished request reports. Only a run that reached its end - the
+// model said the task was done (or answered it), or a program ran every
+// step - is "done"; anything else says what stopped it. The default is NOT
+// done: a run that hit the step cap, repeated itself or was stopped used to
+// be reported as a success.
+function runOutcome(run, kind) {
+  if (!run) return { status: "error", error: "the request never started" };
+  if (run.cancelledByUser) return { status: "cancelled", error: "Cancelled by request." };
+  if (run.needsApproval) return { status: "needs_approval", error: run.needsApproval.reason };
+  if (run.blocked) return { status: "blocked", error: run.blocked };
+  if (run.fatalError) return { status: "error", error: run.fatalError };
+  if (run.timedOut) return { status: "timeout", error: null };
+  if (run.paused) return { status: "paused", error: run.paused.lastError };
+  if (run.stalled) return { status: "stalled", error: run.stalled };
+  if (run.completed === true) return { status: "done", error: null };
+  return {
+    status: "incomplete",
+    error: run.endedWhy || (kind === "program" ? "the program did not run to its end" : "the run ended before the task was finished"),
+  };
 }
 
 // Starts (or no-ops if already running) the always-on request listener.
@@ -1197,7 +1273,7 @@ async function runListenerLoop({ modelKey, vision, verifyEnabled, flavour = "liv
       broadcastListener();
 
       const started = Date.now();
-      let status = "done";
+      let status = "error"; // never "done" unless runOutcome says so
       let error = null;
       let run = null;
 
@@ -1271,23 +1347,14 @@ async function runListenerLoop({ modelKey, vision, verifyEnabled, flavour = "liv
             } finally {
               run.running = false;
             }
-            if (run.cancelledByUser) { status = "cancelled"; error = "Cancelled by request."; }
-            else if (run.needsApproval) { status = "needs_approval"; error = run.needsApproval.reason; }
-            else if (run.timedOut) status = "timeout";
           } else {
             await runLoop(run, {
               task: req.task, remaining: req.task, modelKey, vision, verifyEnabled,
               lastError: null, memory: "", flavour, stack: null, deadline: started + capMs,
               onStepState: pushLiveStep,
             });
-            if (run.cancelledByUser) { status = "cancelled"; error = "Cancelled by request."; }
-            else if (run.needsApproval) { status = "needs_approval"; error = run.needsApproval.reason; }
-            else if (run.blocked) { status = "blocked"; error = run.blocked; }
-            else if (run.fatalError) { status = "error"; error = run.fatalError; }
-            else if (run.timedOut) status = "timeout";
-            else if (run.paused) { status = "paused"; error = run.paused.lastError; }
-            else if (run.stalled) { status = "stalled"; error = run.stalled; }
           }
+          ({ status, error } = runOutcome(run, req.kind));
         } finally {
           clearInterval(cancelPoll);
         }
@@ -1424,6 +1491,13 @@ function recorderInject() {
   }
 
   const inOwnUi = (el) => !!(el.closest && el.closest("#__ba_sidecar__, #__ba_backdrop__"));
+  // A secret field's value (a password, a one-time code, a card number) is
+  // never recorded: the step says a secret was typed there, and a replay
+  // stops at it for a person (domAction).
+  const SECRET_AUTOCOMPLETE = /(^|\s)(current-password|new-password|one-time-code|cc-number|cc-csc)(\s|$)/i;
+  const isSecret = (e) => e.tagName === "INPUT"
+    && (String(e.type || "").toLowerCase() === "password"
+      || SECRET_AUTOCOMPLETE.test(e.getAttribute("autocomplete") || ""));
 
   document.addEventListener("click", (e) => {
     if (inOwnUi(e.target)) return; // never record clicks on our own side-car
@@ -1437,9 +1511,11 @@ function recorderInject() {
   document.addEventListener("change", (e) => {
     const el = e.target;
     if (inOwnUi(el) || !("value" in el) || el.tagName === "SELECT") return;
+    const secret = isSecret(el);
+    const step = { type: "type", selector: buildSelector(el), text: secret ? "" : el.value, label: (el.placeholder || el.name || "").slice(0, 40) };
     chrome.runtime.sendMessage({
       type: "recordedEvent",
-      step: { type: "type", selector: buildSelector(el), text: el.value, label: (el.placeholder || el.name || "").slice(0, 40) },
+      step: secret ? { ...step, secret: true } : step,
     }).catch(() => {});
   }, true);
 }

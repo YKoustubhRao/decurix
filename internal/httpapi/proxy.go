@@ -95,6 +95,7 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") && resp.StatusCode == http.StatusOK {
 			resp.Header.Set("Cache-Control", "public, max-age=86400, stale-while-revalidate=3600")
 		}
+		sandboxContainerContent(resp)
 		return rewriteDesktopHTML(resp, desktopID)
 	}
 	reverseProxy.ErrorHandler = func(
@@ -123,6 +124,19 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reverseProxy.ServeHTTP(w, r)
+}
+
+// sandboxContainerContent marks what a desktop serves through the control plane's address as a sandbox. A page or
+// script from a desktop shown at /desktop/<id>/ or /agent/<id>/ would otherwise run as the control plane's own origin
+// and could call every route a person can (review 2026-11-02). Sandboxed, it has an opaque origin: GuardPrimary
+// refuses its writes and WebSockets, and the browser keeps it from reading the control plane's answers. The screen a
+// person uses is the control plane's own page (screen.go) with its own noVNC, so it is not affected.
+func sandboxContainerContent(resp *http.Response) {
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		return
+	}
+	resp.Header.Set("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-popups")
+	resp.Header.Set("X-Content-Type-Options", "nosniff")
 }
 
 // decurixBrandingRewrites are the literal noVNC markup fragments swapped for
@@ -1643,6 +1657,13 @@ func (s *Server) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 	reverseProxy := httputil.NewSingleHostReverseProxy(proxyURL)
 
 	prefix := "/agent/" + desktopID
+	// Soul takes the desktop's agent token; the person's browser never sees it.
+	director := reverseProxy.Director
+	reverseProxy.Director = func(req *http.Request) {
+		director(req)
+		req.Header.Del("Authorization")
+		s.Desktops.AuthorizeAgentRequest(req, desktopID)
+	}
 
 	r.URL.Path = strings.TrimPrefix(
 		r.URL.Path,
@@ -1654,6 +1675,7 @@ func (s *Server) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reverseProxy.ModifyResponse = func(resp *http.Response) error {
+		sandboxContainerContent(resp)
 		return rewriteHTML(resp, func(body []byte) []byte {
 			rewritten := bytes.ReplaceAll(body, []byte("'/api/"), []byte("'"+prefix+"/api/"))
 			return bytes.ReplaceAll(rewritten, []byte("`/api/"), []byte("`"+prefix+"/api/"))
@@ -1886,8 +1908,16 @@ const launchScreenHTML = `<!DOCTYPE html>
       const data = await res.json();
       if (data.status === 'failed') {
         errorBox.style.display = 'block';
-        errorBox.innerHTML = '<strong>Creation Error:</strong><br>' + (data.error || data.message || 'Unknown error') +
-          '<br><a href="/" class="back-btn">&larr; Return to Dashboard</a>';
+        // The error text can carry what a desktop or a request named: text, never markup.
+        errorBox.replaceChildren();
+        const head = document.createElement('strong');
+        head.textContent = 'Creation Error:';
+        const back = document.createElement('a');
+        back.href = '/';
+        back.className = 'back-btn';
+        back.textContent = '← Return to Dashboard';
+        errorBox.append(head, document.createElement('br'), String(data.error || data.message || 'Unknown error'),
+          document.createElement('br'), back);
         statusMsg.textContent = 'Provisioning Failed';
         statusMsg.style.color = '#ef4444';
         pbar.style.background = '#ef4444';

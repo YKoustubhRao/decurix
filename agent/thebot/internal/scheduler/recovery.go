@@ -43,6 +43,9 @@ func (s *Scheduler) runStep(rc skills.RunContext, subtask skills.Subtask, planne
 	rc.Model = s.Models.ForTaskType(subtask.Type)
 	skill := skills.Pick(subtask)
 	result := s.runOnce(skill, rc, subtask, onLog)
+	// An approval is for one run of one action: whatever this run did not use is gone, so a retry, a reroute or a
+	// decomposed recovery that reaches the same action is stopped and asked again.
+	rc.Approved = nil
 
 	if result.Verified {
 		return result

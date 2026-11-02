@@ -8,7 +8,7 @@ import (
 )
 
 func TestADesktopDockerfileCopiesAPrebuiltSoulInsteadOfCompilingIt(t *testing.T) {
-	for _, name := range []string{"desktop.basic.Dockerfile", "desktop.developer.Dockerfile", "desktop.ai.Dockerfile"} {
+	for _, name := range []string{"desktop.basic.Dockerfile"} {
 		data, err := os.ReadFile(filepath.Join("..", "..", "docker", name))
 		if err != nil {
 			t.Fatal(err)

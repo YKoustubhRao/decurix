@@ -76,6 +76,16 @@ class EveryOtherReplyIsTheModels(Base):
             approval.read_reply("theek hai, kar do", "file")
         self.assertEqual(len(calls), 1, "the parts that act on one reply read it once")
 
+    def test_one_reply_is_read_again_for_another_action(self):
+        # "yes, if the totals match" read for one action is not the reading of the same words for another (review
+        # 2026-11-02: kept by the reply's text alone, a reading made for one action was reused for the next).
+        patches, calls = model_reads("if", "totals match")
+        self.use(patches)
+        approval.reading("yes, once the totals match", "file the return")
+        approval.reading("yes, once the totals match", "pay the challan")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("pay the challan", calls[-1])
+
 
 class WithNoModel(Base):
     def test_what_the_lists_cannot_settle_is_unclear(self):
@@ -101,7 +111,7 @@ class TheGateKeepsItsReadingForTheEngine(Base):
         patches, calls = model_reads("yes")
         self.use(patches)
         approval.check("click", self.element())
-        self.assertEqual(approval.resolve_reply("haan fine"), "granted")
+        self.assertEqual(approval.resolve_reply("haan fine", asked=approval.request_text(approval.pending())), "granted")
         self.assertEqual(approval.last_reading("haan  fine"), {"decision": "yes", "condition": ""})
         self.assertEqual(len(calls), 1)
 
@@ -115,16 +125,19 @@ class TheGateKeepsItsReadingForTheEngine(Base):
         shown = f"I need your OK before I run this, because {action}\n\nStill open: - file sizes on the status bar"
         self.assertEqual(approval.resolve_reply("yes go. file sizes irrelevant", asked=shown), "granted")
         self.assertIn("Still open: - file sizes on the status bar", calls[-1])
-        # A question about something else is not what the reply is read against.
+        # A reply to a question about something else is not read as this action's: it settles nothing.
         approval.check("click", self.element())
-        approval.resolve_reply("yes, fine by me", asked="Which client is this for?")
-        self.assertNotIn("Which client", calls[-1])
+        before = len(calls)
+        self.assertIsNone(approval.resolve_reply("yes, fine by me", asked="Which client is this for?"))
+        self.assertEqual(len(calls), before)
+        self.assertFalse(approval.has_grant())
 
     def test_a_condition_grants_nothing_and_is_kept(self):
         patches, _ = model_reads("if", "the chat holds nothing")
         self.use(patches)
         approval.check("click", self.element())
-        self.assertEqual(approval.resolve_reply("ok provided the chat has nothing"), "declined")
+        self.assertEqual(approval.resolve_reply("ok provided the chat has nothing",
+                                                asked=approval.request_text(approval.pending())), "declined")
         self.assertFalse(approval.has_grant())
         self.assertEqual(approval.last_reading("ok provided the chat has nothing")["decision"], "if")
         self.assertIsNone(approval.last_reading("some other reply"))

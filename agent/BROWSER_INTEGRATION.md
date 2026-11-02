@@ -136,7 +136,37 @@ carried out. The run stops with status `needs_approval` and the action
 `NeedsApproval`, the scheduler asks the person, and on a yes the step runs
 again with `approved: [that action]` on the request - the extension lets it
 through once. A yes is one action's. In the popup, Retry on a run the gate
-stopped is the person's yes to that action.
+stopped is the person's yes to that action. Submitting a form (the `search`
+action's `requestSubmit`) is checked like a click on the form's submit
+button, so a search typed into a checkout form whose button is "Pay now"
+stops too.
+
+**Who may call `ext_server.py`** (`extension_pipeline/guard.py`, review
+2026-11-02). It used to send CORS `*` with no check, so any web page open in
+the desktop's Chromium could drive the logged-in browser with a pre-approved
+"Pay" and read other requests' screenshots. Now: it binds 127.0.0.1 and
+refuses a non-loopback Host (DNS rebinding); it sends no CORS headers (the
+extension's host_permissions exempt it); a request with an Origin other
+than `chrome-extension://...`, or a browser request marked `Sec-Fetch-*`
+with no Origin at all, is refused; on a desktop created with
+`DECURIX_AGENT_TOKEN`, every other caller must send
+`Authorization: Bearer <token>` (TheBot's browser skill,
+`agent/thebot/internal/skills/browser.go`, has to send it). An `approved`
+list is honoured only from a caller with the token and only for an action
+the gate actually stopped on (a `needs_approval` result), each once; from
+anyone else it is dropped and the gate stops the action again. The worker's
+own shell can read the token, so this keeps web pages out, not the worker.
+
+**What a run reports.** A request is `done` only when the model said the
+task is finished (or answered it), or a program ran every step; running out
+of steps, repeating the same action, being stopped, or a model answer that
+could not be read is `incomplete`/`error`, never `done`. `remaining` counts
+as finished only when its whole text is a done status (`atomizer.is_done`):
+"abandoned" and "incomplete" used to match as substrings. A secret field
+(a password, one-time code or card number) is never read out: the snapshot's
+live field values and markup say it is filled, a step typed into one keeps
+"(hidden)", and the recorder keeps no value for it (a replay stops at that
+step for a person).
 
 ## What "TheBot will control everything" means concretely
 

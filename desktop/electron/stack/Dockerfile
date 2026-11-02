@@ -17,8 +17,9 @@ COPY decurix decurix-android-arm64 ./
 # A file copied out of an app bundle keeps whatever mode it was given there.
 RUN chmod 755 decurix
 
-# The person's settings (the app copies their .env here at each start).
-COPY .env ./
+# The person's settings (the .env the app copies beside this file at each start) are never copied into an image
+# layer, where anyone with the image could read the keys in it: compose hands them to the container when it starts
+# (env_file in the staged docker-compose.yaml).
 
 ENV DECURIX_DATA_DIR=/data
 VOLUME /data

@@ -58,10 +58,18 @@ CONSEQUENTIAL_CONTROL = re.compile(
     r"|pay|pay now|make (a )?payment|submit payment|authori[sz]e payment"
     r"|confirm (and pay|payment|purchase|order|transfer|booking)"
     r"|buy|buy now|purchase|place (your |my )?order|complete (order|purchase|payment|checkout)"
-    r"|checkout|check out(?=\s*(now)?\s*$)|proceed to (checkout|payment)"
+    r"|checkout|check out(?=\s*(now)?\s*$)"
+    # The step that leads straight into a committing act is put to the person like the act: "proceed to checkout"
+    # always was, and "proceed to file / pay / submit" is the same step (review 2026-11-02: a test pinned "PROCEED TO
+    # FILE" as ungated).
+    r"|proceed to (checkout|payment|pay|file|filing|submit|submission|send|transfer)"
     r"|transfer( money| funds| now)?|donate|withdraw"
     r"|publish|post|post now|tweet|reply all"
     r"|delete (my )?account|close (my )?account|cancel (my )?(subscription|membership|account|order)"
+    # Deleting a named thing ("Delete user", "Delete invoice", "Delete permanently") is not taken back. A bare
+    # "Delete" / "Remove" (a row of a form being filled, a chip) is left to the dialog that confirms it
+    # (confirms_permanently), which asks then.
+    r"|(delete|erase|purge|destroy)( (this|the|selected|all|my))? [\w-]{2,}"
     r"|book now|reserve now|subscribe( now)?"
     # Filing a return or a declaration with an authority binds the person in law and is not taken back; offsetting a
     # liability spends their balance (2026-10-21: a portal's "file with <signature>" and "offset liability" buttons
@@ -143,7 +151,8 @@ _PLAIN_NO = set("no nope don't dont do not stop cancel abort never deny denied r
 _MAY_CONDITION = re.compile(r"\b(if|provided|unless|once|after|before|when|only|but|first|as long as|so long as)\b", re.I)
 
 
-# The model's readings in this process, by reply text: {text: (when, reading)}.
+# The model's readings in this process, by the action and the reply: {(action, text): (when, reading)}. Keyed by the
+# action too: "yes, if the totals match" read for one action is not the reading of the same words for another.
 _READ = {}
 READING_SECONDS = 10 * 60
 
@@ -155,10 +164,14 @@ def _plain(text, words):
     return bool(tokens) and all(t in words for t in tokens)
 
 
-def reading(reply, action=""):
+def reading(reply, action="", plain=True):
     """
     What a reply to an approval decides about that one action, read once for every part of the worker that acts on
     it: {"decision": "yes" | "if" | "no" | "unclear", "condition": what must hold first, or ""}. Only "yes" grants.
+
+    plain=False: whether the reply is a yes to THIS action is itself the question (a reply to another question, held
+    against the action the gate stops next - _reply_grants), so code never settles a yes and with no model the answer
+    is "unclear"; a plain no is still a no.
 
     Code decides only a reply that plainly says yes or no (every word of it a plain yes, or a plain no); every other
     reply is the model's reading. Found live (2026-10-23): "Provided you looked in the client's messages and found
@@ -171,12 +184,14 @@ def reading(reply, action=""):
     text = " ".join(str(reply or "").split())
     if not text:
         return {"decision": "no", "condition": ""}
-    if _plain(text, _PLAIN_YES) and not REFUSAL_RE.search(text):
+    if plain and _plain(text, _PLAIN_YES) and not REFUSAL_RE.search(text):
         return {"decision": "yes", "condition": ""}
     if _plain(text, _PLAIN_NO) and REFUSAL_RE.search(text):
         return {"decision": "no", "condition": ""}
-    # One reply, one reading: the parts that act on it in turn (a long request, the gate, the engine) reuse it.
-    kept = _READ.get(text)
+    # One reply, one reading per action: the parts that act on it in turn (a long request, the gate, the engine) reuse
+    # it - never for another action.
+    key = (" ".join(str(action or "").split())[:6000], text, bool(plain))
+    kept = _READ.get(key)
     if kept and time.time() - kept[0] < READING_SECONDS:
         return dict(kept[1])
     try:
@@ -197,11 +212,11 @@ def reading(reply, action=""):
                     said["wants"] = wants
                 if len(_READ) > 64:
                     _READ.clear()
-                _READ[text] = (time.time(), said)
+                _READ[key] = (time.time(), said)
                 return dict(said)
     except Exception:  # noqa: BLE001 - no reading to be had: what the word lists can settle, else unclear
         pass
-    if is_approval(text) and not _MAY_CONDITION.search(text):
+    if plain and is_approval(text) and not _MAY_CONDITION.search(text):
         return {"decision": "yes", "condition": ""}
     if REFUSAL_LEAD.match(text):
         return {"decision": "no", "condition": ""}
@@ -420,6 +435,31 @@ def assess(kind, element, text=None, keys=None, context=None):
     return None
 
 
+# A control whose own label says a press keeps, sends or ends something: it saves, submits, posts, files, books, pays,
+# sends, deletes, places, confirms or creates. Wider than CONSEQUENTIAL_CONTROL on purpose: this does not ask the
+# person, it says the press commits a record - the pre-save checks run before it (core._commit_check), and healing
+# never re-targets a step onto one under another name (healing.decide).
+COMMIT_CONTROL = re.compile(
+    # ("Add", "Apply", "Remove" are left out: an "Add row", an "Apply filter", a "Remove" chip are steps of filling a
+    # form; the form's own submit control is the commit, and a <form>'s is found by its markup whatever its label.)
+    r"^\s*(?:save|submit|post|file|e-?file|book|pay|send|delete|place|confirm|create|register|onboard|"
+    r"finish|complete|accept|approve|update|publish|finali[sz]e|transfer|cancel (?:the |this )?"
+    r"(?:order|invoice|document|booking|payment|entry))\b",
+    re.IGNORECASE,
+)
+PRESS_ROLES = ACTIVATING_ROLES | {"menuitem", "tab"}
+
+
+def commits(element):
+    """Whether a press on this control commits something (COMMIT_CONTROL, or a control the gate stops), and does not
+    only go somewhere (a navigation link, a list's option)."""
+
+    if not element or (element.get("role") or "") not in PRESS_ROLES or _navigates(element):
+        return False
+    name = element.get("name") or ""
+    return bool(COMMIT_CONTROL.match(name) or CONSEQUENTIAL_CONTROL.match(name))
+
+
 # Where a person's secrets may be typed without asking (2026-10-21): a taught task's replay stopped
 # because its portal was not open, and the engine opened the real government site of that name from its own memory and
 # typed the client's username and password from the person's client list into it. A password or code goes, unasked,
@@ -507,7 +547,15 @@ def confirms_permanently(element, open_dialogs=None):
     return asked or None
 
 
-def _fingerprint(kind, element, text, keys, point):
+def _fingerprint(kind, element, text, keys, point, context=None, about=""):
+    """
+    What one approval is for: the action, the control, and what it acts on - the window, the page's address (the
+    document, the chat, the record) and the filled fields beside it (the recipient, the amount, the message). A yes
+    to "Send" in one chat, or to a form holding one amount, is no yes once the page or the fields are another's
+    (review 2026-11-02: the fingerprint was the label and the window title only).
+    """
+
+    context = context or {}
     parts = [
         kind,
         (element or {}).get("role", ""),
@@ -515,6 +563,8 @@ def _fingerprint(kind, element, text, keys, point):
         (element or {}).get("window_title", ""),
         text or "",
         "+".join(keys or []),
+        str(context.get("url") or ""),
+        " ".join(str(about or "").split()),
     ]
     if element is None and point:
         parts.append(f"{point[0]},{point[1]}")
@@ -566,17 +616,13 @@ class Decision:
 # How long the person's latest reply can stand as the yes for the action the gate stops next.
 REPLY_GRANT_SECONDS = 900
 
-# Words of an action's name or reason too common to tie a reply to it.
-_ACTION_FILLER = {"this", "that", "with", "button", "link", "click", "into", "from", "then", "page", "form", "their",
-                  "them", "they", "will", "would", "what", "which", "before", "after", "would"}
-
 
 def note_reply(text, asked=""):
     """
-    The person's latest reply in this task, kept for check(): a reply that plainly says yes to the very action the
-    gate stops next is that action's yes - one reply, one action, read against the action as every approval is.
-    Found live (2026-10-26): "Yes, file the return" to the figures question, then the gate asked for the file click,
-    then "file it", then the gate asked again - eleven such questions in two tasks.
+    The person's latest reply in this task and the question it answered, kept for check(): when that question named
+    the very control the gate stops next, and the reply - read against the question and that action - approves that
+    action, it is that action's yes: one reply, one action. Found live (2026-10-26): "Yes, file the return" to the
+    figures question, then the gate asked for the file click, then "file it", then the gate asked again.
     """
 
     text = " ".join(str(text or "").split())
@@ -587,32 +633,48 @@ def note_reply(text, asked=""):
                                "at": time.time(), "used": False}
 
 
-def _action_words(element, reason):
-    words = set()
-    for w in re.findall(r"[a-z]{4,}", f"{(element or {}).get('name') or ''} {reason or ''}".lower()):
-        if w not in _ACTION_FILLER:
-            words.add(_stem_word(w))
-    return words
+def _words(text):
+    return re.findall(r"[a-z0-9]+", str(text or "").lower())
 
 
-def _stem_word(word):
-    for end in ("ing", "ed", "es", "s"):
-        if len(word) > len(end) + 3 and word.endswith(end):
-            return word[:-len(end)]
-    return word
+def names_control(question, element):
+    """
+    Whether a question names this control by its whole label, as a phrase ("click FILE WITH EVC", "send the
+    message"). The control's label is what the gate stops; a question that does not name it was about something else.
+    A share of words is not enough (review 2026-11-02: a reply that shared one four-letter word with an action - its
+    own reason text gave "your", "something" - stood as that action's yes).
+    """
+
+    label = _words((element or {}).get("name"))
+    asked = _words(question)
+    if not label or len(label) > len(asked):
+        return False
+    return any(asked[i:i + len(label)] == label for i in range(len(asked) - len(label) + 1))
 
 
-def _reply_grants(prior, description, element, reason):
-    """Whether the person's latest reply is the yes for this action: fresh, unused, naming the action by one of its
-    own words, and read as a plain yes against the action (reading) - "if" and "unclear" never grant."""
+def _reply_bound(prior, element):
+    """Whether the person's latest reply could be this action's yes: fresh, unused, and answering a question that
+    named this very control (names_control). Its reading decides the rest (_reply_grants)."""
 
     if not prior or prior.get("used") or time.time() - float(prior.get("at") or 0) > REPLY_GRANT_SECONDS:
         return False
-    text = prior.get("text") or ""
-    said = {_stem_word(w) for w in re.findall(r"[a-z]{4,}", text.lower())}
-    if not (said & _action_words(element, reason)):
+    return bool(prior.get("text")) and names_control(prior.get("asked") or "", element)
+
+
+def _reply_grants(prior, description, element, reason, about=""):
+    """
+    Whether the person's latest reply is the yes for this action: bound to it (_reply_bound), and read by the model -
+    against the question they answered and this exact action - as a yes to this action now (reading, plain=False).
+    A plain "yes" is not settled by code here: the question was not the gate's, so whether it was about this action is
+    a judgement; with no model there is none, and the gate asks. "if" and "unclear" never grant.
+    """
+
+    if not _reply_bound(prior, element):
         return False
-    return reading(text, action=description)["decision"] == "yes"
+    action = (f"The question they answered: {prior.get('asked')}\n\nThe one action now about to happen, held until "
+              f"they approve it: {description} - {reason}." + (f" {about}" if about else "")
+              + "\nSay \"yes\" only if their reply approves exactly this action, now.")
+    return reading(prior.get("text") or "", action=action, plain=False)["decision"] == "yes"
 
 
 def describe_action(kind, element, text=None, keys=None, point=None, withheld=None):
@@ -649,7 +711,7 @@ def check(kind, element, text=None, keys=None, point=None, context=None, about="
     if reason is None:
         return Decision(True)
 
-    fingerprint = _fingerprint(kind, element, text, keys, point)
+    fingerprint = _fingerprint(kind, element, text, keys, point, context=context, about=about)
     description = describe_action(kind, element, text=text, keys=keys, point=point)
 
     with _locked() as state:
@@ -657,11 +719,20 @@ def check(kind, element, text=None, keys=None, point=None, context=None, about="
             if grant["fingerprint"] == fingerprint:
                 state["grants"].remove(grant)
                 return Decision(True, reason=reason, approved=True)
+        prior = dict(state.get("last_reply") or {})
 
-        prior = state.get("last_reply")
-        if _reply_grants(prior, description, element, reason):
-            prior["used"] = True
-            state["last_reply"] = prior
+    # Read outside the lock (a model's reading takes seconds, and every gui action waits on this store).
+    if _reply_grants(prior, description, element, reason, about=about):
+        with _locked() as state:
+            now = state.get("last_reply") or {}
+            # The very reply read, still unused: two actions racing for one yes get one of them.
+            if now.get("at") == prior.get("at") and now.get("text") == prior.get("text") and not now.get("used"):
+                now["used"] = True
+                state["last_reply"] = now
+                granted = True
+            else:
+                granted = False
+        if granted:
             try:
                 from decurix_agent import progress
                 progress.emit(f"Taking what you said as the yes for this one action - \"{prior['text'][:160]}\" - "
@@ -670,6 +741,7 @@ def check(kind, element, text=None, keys=None, point=None, context=None, about="
                 pass
             return Decision(True, reason=reason, approved=True, by_reply=prior["text"])
 
+    with _locked() as state:
         request = {
             "id": uuid.uuid4().hex[:12],
             "fingerprint": fingerprint,
@@ -709,15 +781,20 @@ def resolve_reply(reply, asked=""):
     with _locked() as state:
         if state.get("last_reply"):
             state["last_reply"]["used"] = True  # (a reply that settles a pending approval grants nothing else)
-    action = request.get("action") or ""
     shown = " ".join(str(asked or "").split())
-    if not (shown and " ".join(action.split())[:120] in shown):
-        shown = action
+    if not asked_about(request, shown):
+        # The reply answered another question (an older card, a question of the engine's own that did not put this
+        # action to them): it settles nothing here. The pending action is withdrawn, so the engine's repeat of it is
+        # put to the person in the gate's own words - a yes is only ever the yes of the action it was asked for.
+        with _locked() as state:
+            if state["pending"] is not None and state["pending"].get("id") == request.get("id"):
+                state["pending"] = None
+        return None
     # Read outside the lock: a model's reading takes seconds, and every gui action waits on this store.
     said = reading(reply, shown)
 
     with _locked() as state:
-        if state["pending"] is None or state["pending"].get("fingerprint") != request.get("fingerprint"):
+        if state["pending"] is None or state["pending"].get("id") != request.get("id"):
             return None
         state["pending"] = None
         state["reading"] = dict(said, reply=" ".join(str(reply or "").split()), at=time.time())
@@ -732,6 +809,19 @@ def resolve_reply(reply, asked=""):
         })
 
         return "granted"
+
+
+def asked_about(request, question):
+    """
+    Whether the question a person answered put this pending action to them: it holds the gate's line for the action
+    (describe_action, as request_text words it - soul quotes it, and its review question cuts it at 200 characters).
+    Every harness asks with request_text or text that quotes it; a question without it was another one. What the
+    action acts on (the filled fields) is bound by the grant's fingerprint, not here.
+    """
+
+    question = " ".join(str(question or "").split())
+    action = " ".join(str((request or {}).get("action") or "").split())
+    return bool(question and action) and action[:120] in question
 
 
 def last_reading(reply):

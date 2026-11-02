@@ -67,7 +67,10 @@ func (c *SubnetCache) Subnets() []netip.Prefix {
 	}
 	if c.Lookup != nil && time.Since(c.at) > ttl {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		c.list = c.Lookup(ctx)
+		// A Docker hiccup returns nothing: the last ranges known stay refused rather than none.
+		if list := c.Lookup(ctx); len(list) > 0 {
+			c.list = list
+		}
 		cancel()
 		c.at = time.Now()
 	}

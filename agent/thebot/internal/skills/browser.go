@@ -132,6 +132,33 @@ type extRequestsStatus struct {
 	Requests []extRequest `json:"requests"`
 }
 
+// agentTokenEnv is the desktop's agent token: the extension's server (EXT_SERVER_URL) refuses a caller without it
+// when it is set.
+const agentTokenEnv = "DECURIX_AGENT_TOKEN"
+
+// maxExtReply bounds what one reply of the extension's server may hold in memory.
+const maxExtReply = 8 << 20
+
+// authorizeExt adds the desktop's agent token to a request to the extension's server, when there is one.
+func authorizeExt(req *http.Request) {
+	if token := strings.TrimSpace(os.Getenv(agentTokenEnv)); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+}
+
+// readExt is a reply's body, at most maxExtReply bytes; a refusal (any status but 2xx) is an error, never read as an
+// answer.
+func readExt(resp *http.Response) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxExtReply))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("the browser extension's server answered HTTP %d", resp.StatusCode)
+	}
+	return data, nil
+}
+
 func (b *BrowserSkill) postJSON(ctx context.Context, path string, body any, out any) error {
 	buf, err := json.Marshal(body)
 	if err != nil {
@@ -144,12 +171,13 @@ func (b *BrowserSkill) postJSON(ctx context.Context, path string, body any, out 
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	authorizeExt(req)
 	resp, err := b.client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := readExt(resp)
 	if err != nil {
 		return err
 	}
@@ -166,12 +194,13 @@ func (b *BrowserSkill) getJSON(ctx context.Context, path string, out any) error 
 	if err != nil {
 		return err
 	}
+	authorizeExt(req)
 	resp, err := b.client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := readExt(resp)
 	if err != nil {
 		return err
 	}
@@ -306,15 +335,12 @@ func (b *BrowserSkill) cancelAndReport(subtask Subtask, requestID string, causeE
 // never nil here - the caller only reaches this once the queue entry itself
 // is "done", which background.js only sets alongside posting a result.
 //
-// Anything the browser actually did - even a run that never finished the
-// task - is reported as a verified answer, never as a failure to recover
-// from: a captcha, a stalled step or a run that used up its own time budget
-// almost never goes differently on a second try, and the scheduler's retry/
-// decompose/ask-user machinery exists for failures a different approach
-// could fix, not this. What it actually saw along the way (compiled from
-// the extension's own step-by-step log) is real information TheBot should
-// be able to answer follow-up questions about regardless of whether the
-// original task was fully completed.
+// Only a run the extension finished with an answer is verified. Anything
+// else - an error, a captcha, a stall, a run out of time, a "done" with
+// nothing to report - is not a success, whatever the browser saw along the
+// way: it is reported as a failure, with the compiled log of what it did
+// see, and marked fatal so the scheduler does not retry it (a captcha or a
+// stalled step almost never goes differently on a second try).
 func (b *BrowserSkill) report(subtask Subtask, r extRequest) (Result, error) {
 	meta := map[string]any{"userFacing": true}
 	res := r.Result
@@ -333,7 +359,9 @@ func (b *BrowserSkill) report(subtask Subtask, r extRequest) (Result, error) {
 	if res.Status == "done" && res.Answer != "" {
 		return Result{Subtask: subtask, SkillName: b.Name(), Output: res.Answer, Verified: true, Meta: meta}, nil
 	}
-	return Result{Subtask: subtask, SkillName: b.Name(), Output: summarizeBrowserRun(res), Verified: true, Meta: meta}, nil
+	meta["fatal"] = true
+	meta["browserStatus"] = res.Status
+	return Result{Subtask: subtask, SkillName: b.Name(), Output: summarizeBrowserRun(res), Verified: false, Meta: meta}, nil
 }
 
 // statusPrefixes are the one-line framing summarizeBrowserRun opens with,

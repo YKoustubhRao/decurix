@@ -3601,6 +3601,12 @@ $ProfileSkipDirs = @(
 $ProfileSkipFiles = @('Singleton*', '*lock*', '*.tmp', 'Lock*', 'Parent.lock', '*.pma')
 
 function Initialize-PrivateBrowserProfile([string]$base, [string]$dir, [string]$requestedProfile) {
+    # Not imported any more (review 2026-11-02): the copy carried the person's cookies, saved passwords and Local State
+    # (the key they are encrypted with) into a browser a worker drives, and anything that steers the worker - a web
+    # page, an email - could then act as the person on every site they are signed in to. The private profile starts
+    # empty; the worker signs in on its own screen, asking the person when it needs to. The import below is kept only
+    # for an explicit opt-in, DECURIX_IMPORT_HOST_BROWSER_PROFILE=1 in this computer's environment.
+    if ($env:DECURIX_IMPORT_HOST_BROWSER_PROFILE -ne '1') { return }
     if (-not ($Browsers -contains $base)) { return }
     $source = Get-BrowserProfileSource $base
     if (-not $source -or -not (Test-Path -LiteralPath $source -PathType Container)) { return }

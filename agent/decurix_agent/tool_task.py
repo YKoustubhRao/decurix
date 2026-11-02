@@ -157,6 +157,15 @@ def _run(tool, args):
     """Run the tool in the work folder. (exit code, what it printed)."""
 
     interpreter = "bash" if tool["path"].endswith(".sh") else sys.executable
+    # Read again as it is on disk now, before it runs with no engine and no approval: a script that acts beyond the
+    # work folder's files (the screen, the network) is never run here - the engine does the request, under the gate.
+    try:
+        script = Path(tool["path"]).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return 126, f"it could not be read ({exc})"
+    wrong = playbooks._sound(script, "bash" if tool["path"].endswith(".sh") else "python")
+    if wrong:
+        return 126, f"it is not run without the engine: {wrong}"
     try:
         done = subprocess.run([interpreter, tool["path"]] + args, cwd=str(config.WORK_DIR), capture_output=True,
                               text=True, timeout=RUN_SECONDS)
@@ -258,12 +267,15 @@ def perform(content, task_file=None):
                                                                   produced.notes_text(facts.notes())) if x),
                                    look_up=lambda terms: produced.lines_with(made, terms))
 
-        if verdict["verdict"] == verify.DONE:
+        # The one decision (verify.outcome): a done the judge is not sure of, or with a check that could not be made,
+        # is not done here either - it goes to the engine below like any unsettled check.
+        settled = verify.outcome(verdict, not_made=getattr(facts, "could_not", ()))
+        if settled["status"] == verify.DONE:
             _note(book, True)
             seen = f"\n\nChecked against the files it wrote: {verdict['seen']}" if verdict.get("seen") else ""
             return write_final_reply(reply + seen, kind="final", engine=ENGINE, checked=True)
 
-        if verdict["verdict"] == verify.NOT_DONE:
+        if settled["status"] == verify.NOT_DONE:
             wrong = " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x)
             _note(book, False, failed=True, wrong=wrong or "its result was not what the request asked")
             return _to_engine(content, task_file, f"My tool's result is not right ({wrong[:200]}), so I am correcting it.",

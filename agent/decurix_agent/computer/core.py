@@ -183,6 +183,7 @@ def observe(remember=True, frame=None):
     with _state_lock():
         previous = _load_state()
         next_ref = el.assign_refs(found, previous)
+        gone = _gone(previous, found, groups)
 
         behind = [g for g in groups if g.get("behind")]
         if behind:
@@ -202,6 +203,7 @@ def observe(remember=True, frame=None):
             "elements": found,
             "notes": notes,
             "page_url": page_group.get("url") if page_group else "",
+            "gone": gone,
             "frame": frame,
             "apps": _desktop_apps(),
         }
@@ -210,6 +212,31 @@ def observe(remember=True, frame=None):
             _save_state(observation, next_ref)
 
     return observation
+
+
+# How many refs no longer on the screen are kept with where they were (_gone).
+GONE_LIMIT = 600
+
+
+def _gone(previous, found, groups):
+    """
+    {"refs": {ref: where it was seen}, "urls": {group: the address it shows now}}: the refs earlier looks printed that
+    this one no longer has, with their role, name, window and document (elements.where_seen), for a ref an engine uses
+    after its control was drawn anew (elements._same_named re-binds it only within that same window and document).
+    """
+
+    previous = previous or {}
+    urls_then = {g.get("id"): g.get("url") or "" for g in previous.get("groups") or []}
+    refs = dict(((previous.get("gone") or {}).get("refs")) or {})
+    present = {e.get("ref") for e in found}
+    for old in previous.get("elements") or []:
+        if old.get("ref") and old["ref"] not in present:
+            refs[old["ref"]] = el.where_seen(old, urls_then.get(old.get("group"), ""))
+    for ref in present:
+        refs.pop(ref, None)
+    if len(refs) > GONE_LIMIT:
+        refs = dict(list(refs.items())[-GONE_LIMIT:])
+    return {"refs": refs, "urls": {g.get("id"): g.get("url") or "" for g in groups}}
 
 
 def report_observation(observation):
@@ -799,10 +826,15 @@ def _numeric(text):
     import decimal
 
     t = re.sub(r"[\s,]", "", text or "")
-    t = re.sub(r"^[^\d+\-.]+", "", t)
+    # The currency is a token of its own, its dot included: "Rs.78" is 78, never .78.
+    t = re.sub(r"(?i)^(?:rs\.?|inr|rupees?|usd|eur|gbp|[^\w+\-.])+", "", t)
     percent = t.endswith("%")
     t = t.rstrip("%")
     if not re.fullmatch(r"[+-]?(?:\d+\.?\d*|\.\d+)", t):
+        return None
+    # A leading zero is part of an identifier, not of a number: "0012345" is not 12345 (a sheet that drops it has
+    # changed the value).
+    if re.match(r"[+-]?0\d", t):
         return None
     value = decimal.Decimal(t)
     return value / 100 if percent else value
@@ -1840,12 +1872,16 @@ def _form_check_pending():
     return ""
 
 
-def _form_check(element, checked=False):
+def _form_check(element, checked=False, found=None, confirm=None, listing=True):
     """
     Before a form with several filled fields is sent by a click on its submit control: a click lists what the form
     holds and presses nothing; the click again with --checked, the form unchanged since that list, sends it. Found live
     (2026-10-20): an order saved with a quantity the worker had not meant - a list of the fields before Save is the
     one look that catches it. Returns the text that stops the click, or "" to go on.
+
+    found: {"form", "fields"} when the caller has read what the press sends (a page with no <form>, Enter in a form's
+    field - _commit_check); else the <form> of the submit control is read. confirm: how the listing is confirmed, when
+    not by the same click with --checked (an Enter is never confirmed: the form's own submit control is pressed).
     """
 
     import hashlib
@@ -1854,8 +1890,9 @@ def _form_check(element, checked=False):
              or _same_named_record(element))
     if twice:
         return twice  # (never sent, --checked or not)
-    found = cdp.submit_form_fields(element, min_fields=1)
-    if not found:
+    if found is None:
+        found = cdp.submit_form_fields(element, min_fields=1)
+    if not found or not found.get("fields"):
         return ""
     probe = placeholder_fields(found["fields"])
     if probe:
@@ -1871,8 +1908,11 @@ def _form_check(element, checked=False):
         files = task_context.current_files()
         made_up = filler.invented(found["fields"], task_context.current_request(), files)
         made_up += _unsourced_fields(found["fields"])
-    except Exception:  # noqa: BLE001 - a check that cannot be made stops nothing
-        made_up = []
+    except Exception as exc:  # noqa: BLE001
+        # A check that could not be made is not a check that passed (review 2026-11-02): the press waits for a person.
+        return (f"Not pressed: the check of where {el._quote(found['form'], 60)}'s values come from could not be made "
+                f"({' '.join(str(exc).split())[:160]}), so nothing shows they are the request's. Ask the person (HELP) "
+                "before this is saved.")
     if made_up:
         # Never sent, with or without --checked (found live 2026-10-20: a joiner onboarded with phone 9999999999).
         return filler.refusal(made_up, files)
@@ -1884,13 +1924,18 @@ def _form_check(element, checked=False):
             return held
         if clean:
             return ""  # the declared record is the check this listing stood in for: one click saves
-    if len(found["fields"]) < cdp.FORM_CHECK_MIN_FIELDS:
+    if len(found["fields"]) < cdp.FORM_CHECK_MIN_FIELDS or not listing:
         return ""  # a small form (a search, a sign-in) is sent at once
     key = hashlib.sha256(json.dumps([element.get("path") or element.get("name"), found], sort_keys=True).encode()).hexdigest()
     try:
         noted = json.loads(FORM_CHECK_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         noted = {}
+    if confirm:
+        # Not confirmed this way: the same press would only list it again. The form's own submit control is.
+        lines = "\n".join(f"  {label}: {value}" for label, value in found["fields"])
+        return (f"Not pressed - {el._quote(found['form'], 60)} would be sent holding:\n{lines}\n"
+                + ("".join(f"  ({line})\n" for line in ledger_lines)) + confirm)
     if checked and noted.get("key") == key and time.time() - float(noted.get("at") or 0) < FORM_CHECK_SECONDS:
         # Kept until the click is let through (act): a click the approval gate then stops is asked for, and the same
         # --checked click after the person's yes must not list the form again. Found live (2026-10-24): the note was
@@ -1899,14 +1944,94 @@ def _form_check(element, checked=False):
         return ""
     try:
         FORM_CHECK_FILE.write_text(json.dumps({"key": key, "at": time.time(), "ref": element.get("ref") or ""}), encoding="utf-8")
-    except OSError:
-        return ""  # a check that cannot be kept never blocks the click
+    except OSError as exc:
+        # Without the note the listing cannot be confirmed later, and letting the press through unlisted is the check
+        # skipped (review 2026-11-02). It waits for a person instead.
+        return (f"Not pressed: the list of what {el._quote(found['form'], 60)} would send could not be kept "
+                f"({' '.join(str(exc).split())[:120]}). Ask the person (HELP) before this is saved.")
     lines = "\n".join(f"  {label}: {value}" for label, value in found["fields"])
     return (f"Not pressed yet - {el._quote(found['form'], 60)} would be sent holding:\n{lines}\n"
             + ("".join(f"  ({line})\n" for line in ledger_lines))
             + "Check every value against what you meant to enter (a quantity, a price, every line). If all are right, "
-            f"send gui click {element.get('ref') or 'REF'} --checked to save; if one is wrong, correct it first "
-            "(gui type REF \"value\") - the form is listed again before it is sent.")
+            f"send gui click {element.get('ref') or 'REF'} --checked to save (the act tool: the same click with "
+            "checked: true); if one is wrong, correct it first (gui type REF \"value\") - the form is listed again "
+            "before it is sent.")
+
+
+# A value that is a file's name or path (a save dialog's "Name" field): not a record's value, never judged as one.
+_FILE_NAME_VALUE = re.compile(r"(?:[^\s@]*[/\\])?[^\s@/\\]+\.[A-Za-z][A-Za-z0-9]{1,4}")
+
+
+def _page_fields(observation, element):
+    """
+    {"form", "fields": [[label, value]]}: the filled fields in the same window as a committing control that sits in no
+    <form> - an application drawn with divs and spans, a desktop app's dialog. What a press there saves is what the
+    window holds. Secrets and file names are left out.
+    """
+
+    group = (element or {}).get("group") or active_group(observation)
+    fields = []
+    for e in (observation or {}).get("elements") or []:
+        if e.get("role") not in FILLED_ROLES or (group and e.get("group") != group) or e is element:
+            continue
+        value = " ".join(str(e.get("value") or "").split())
+        if not value or privacy.secret_field(e) or privacy.credential_in(value) or _FILE_NAME_VALUE.fullmatch(value):
+            continue
+        fields.append([" ".join(str(e.get("name") or e.get("role") or "").split())[:60], value[:80]])
+    title = (element or {}).get("window_title") or (observation or {}).get("active_title") or "the window"
+    return {"form": str(title)[:80], "fields": fields}
+
+
+def _commit_keys(keys):
+    """(Enter, Ctrl+S): whether these keys press Enter, and whether they save (an application's Ctrl+S)."""
+
+    combos = [xinput.normalize_combo(k).lower() for k in keys or () if k and k.strip()]
+    return (any(c in ("return", "enter", "kp_enter") for c in combos), any(c == "ctrl+s" for c in combos))
+
+
+def _commit_check(kind, element, keys, before, checked=False, text=None):
+    """
+    The pre-save checks (_form_check: a record entered twice, a placeholder, an invented or unsourced value, the
+    declared record's ledger, the listing of a full form) for every action that commits what a form or a page holds,
+    whichever way it is pressed: a click or double-click on a <form>'s submit control or on any control whose label
+    says it saves, submits, sends, pays or posts (approval.commits) - a CDP element or an AT-SPI one, found by ref, by
+    name or by --see; Enter in a form's field that submits it; Ctrl+S on a web page. Returns the text that stops the
+    action, or "" to go on. Found in review (2026-11-02): the checks ran only for a single `gui click` on a CDP
+    <form type=submit>, so a double-click, --see, the act tool, an AT-SPI press, an Enter and every button an
+    application draws with divs (the `gui record` ledger among them) went past them.
+    """
+
+    if kind in ("click", "double_click") and element is not None:
+        form = cdp.submit_form_fields(element, min_fields=1) if element.get("source") == "cdp" else None
+        if form is None and not approval.commits(element):
+            return ""
+        return _form_check(element, checked=checked, found=form or _page_fields(before, element))
+    typed_enter = kind == "type" and bool(text) and "\n" in text and element is not None
+    if kind != "key" and not typed_enter:
+        return ""
+    enter, save = _commit_keys(keys) if kind == "key" else (True, False)
+    field = element if element is not None else _keyboard_field(before)
+    if enter and field is not None and field.get("source") == "cdp":
+        form = cdp.enter_form_fields(field)
+        if not form:
+            return ""
+        if typed_enter:
+            # What the field will hold when its new line submits the form: the text typed before it.
+            label = " ".join(str(field.get("name") or field.get("role") or "").split())[:60]
+            line = text.split("\n", 1)[0]
+            form = dict(form, fields=[f for f in form.get("fields") or [] if f[0] != label]
+                        + ([[label, line[:80]]] if line.strip() and not privacy.secret_field(field) else []))
+        submit = {"name": form.get("submit") or "Submit", "ref": "", "path": field.get("path") or ""}
+        return _form_check(submit, found=form, confirm=(
+            "Enter would send it, and an Enter is not how a full form is sent: press the form's own submit control "
+            "(gui click REF), which lists the form once more and is confirmed with --checked."))
+    if save and before.get("page_url") and not _relayed_page(before):
+        # (Ctrl+S on a web page saves its record: the checks that stop a wrong record stand; the listing of a full
+        # form is the Save control's, since a page saved only by its keys has no control to confirm it on.)
+        save_control = {"name": "Save", "ref": "", "path": (field or {}).get("path") or "",
+                        "group": (field or {}).get("group")}
+        return _form_check(save_control, found=_page_fields(before, field), listing=False)
+    return ""
 
 
 def _ledger_check(form_fields):
@@ -2032,6 +2157,13 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             done = atspi.default_action(element)
             if done:
                 return f"atspi:{done}"
+            # A control that commits or that the gate stops is pressed only as the very widget that was looked at: one
+            # that is no longer at its place (atspi.resolve) is not clicked where it was drawn, where another may now be.
+            if (approval.commits(element) or approval.assess(kind, element) is not None) \
+                    and not element.get("handle", {}).get("sheet_cell") and atspi.resolve(element) is None:
+                raise ComputerError(f"{el.describe(element)} is no longer the control it was when the screen was read "
+                                    "(the window redrew) - nothing was pressed. gui observe again and press it by its "
+                                    "new ref.")
 
         target = point or (el.center(element) if element else None)
         if target is None:
@@ -2200,7 +2332,11 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
                 if chosen:
                     return chosen
             try:
-                cdp.select_option(element, option)
+                label = cdp.select_option(element, option)
+                if " ".join(str(label or "").split()).casefold() != " ".join(option.split()).casefold():
+                    # Not the text asked for: the summary says which option was taken, so the engine and the check
+                    # can object.
+                    _selected.update(name=label, why="the one option of the list that fits it")
                 return "cdp"
             except ComputerError as exc:
                 if "is not a dropdown" not in str(exc):
@@ -3218,10 +3354,13 @@ def _redrawn(exc, element, ref, role, name, path):
         return None
     fresh = observe()
     try:
-        again = el.find(fresh["elements"], ref=ref, role=role, name=name, path=path, active_group=active_group(fresh))
+        again = el.find(fresh["elements"], ref=ref, role=role, name=name, path=path, active_group=active_group(fresh),
+                        gone=fresh.get("gone"))
     except ComputerError:
         return None
-    if again is None or again.get("role") != element.get("role") or again.get("name") != element.get("name"):
+    # ...and in the same window: the same tab, the same title (an approval judged for one document's control never
+    # passes to another's).
+    if again is None or again.get("role") != element.get("role") or again.get("name") != element.get("name")             or again.get("group") != element.get("group") or again.get("window_title") != element.get("window_title"):
         return None
     return again
 
@@ -3297,7 +3436,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     elif ref or role or name or path:
         try:
             element = el.find(before["elements"], ref=ref, role=role, name=name, path=path,
-                              active_group=active_group(before))
+                              active_group=active_group(before), gone=before.get("gone"))
         except ComputerError as exc:
             # A control the element list does not have (an icon drawn on a canvas, a page whose tree is
             # empty, a toolkit with no accessibility) is looked for by eye, when a grounding model is set
@@ -3493,8 +3632,9 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     _refuse_unsafe_save(kind, element, keys, before)
     downloads_before = _downloads_snapshot() if kind in ("click", "double_click", "key") else None
     acted_at = time.time()
-    if check_form and kind == "click" and element is not None and element.get("source") == "cdp":
-        held = _form_check(element, checked=check_form == "checked")
+    if check_form:
+        # Every committing action an engine takes, however it is pressed (_commit_check).
+        held = _commit_check(kind, element, keys, before, checked=check_form == "checked", text=text)
         if held:
             raise ComputerError(held)
 

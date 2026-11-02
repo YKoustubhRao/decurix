@@ -8,31 +8,53 @@ via a tiny duck-typed shim below (it only ever calls page.content() on the
 object it's given). ext_codegen.py turns one instruction into something
 executable with a small grounded-action grammar.
 
-Runs as its own standalone process on its own port; the Chrome extension
-supplies its own page snapshots directly from the user's real tab.
+Runs as its own standalone process on its own port (127.0.0.1 only); the
+Chrome extension supplies its own page snapshots directly from the user's real
+tab. Who may call it is guard.py's: the extension (its own chrome-extension://
+origin) and TheBot's browser skill (the desktop's agent token) - never a web
+page open in the same browser, and an approval never from a request body the
+approval gate did not ask for.
 """
 import re
 import threading
 import time
 from typing import Any, Optional
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import _pathfix  # noqa: F401
 import atomizer
 import ext_codegen
+import guard
 import models
 import reasoning
 import stack_atomizer
 import stats as stats_mod
 import worker
 
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
-)
+# No interactive docs: a page served from this origin could call every route.
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+# No CORS middleware, on purpose: it used to allow every origin, so any web page
+# open in the desktop's Chromium could drive the logged-in browser (and read
+# other requests' screenshots). The extension needs no CORS headers - its
+# host_permissions exempt it - and soul is not a browser.
+
+
+@app.middleware("http")
+async def only_ours(request: Request, call_next):
+    """Turns away every caller guard.refusal does not let through, before any route runs."""
+    refused = guard.refusal(request.method, request.headers)
+    if refused is not None:
+        status, reason = refused
+        return JSONResponse({"ok": False, "error": reason}, status_code=status)
+    return await call_next(request)
+
+
+# The actions the approval gate stopped before, each waiting for one yes (guard.Approvals).
+APPROVALS = guard.Approvals()
 
 # ---- request inbox -------------------------------------------------------
 # The extension runs a listener that pulls from here, so anything at all --
@@ -56,7 +78,9 @@ class RequestBody(BaseModel):
     meta: Optional[dict] = None
     # Actions a person approved for this request (background.js's approval
     # gate names them, e.g. 'click "Send" on mail.google.com'); each one lets
-    # exactly one such action through, once.
+    # exactly one such action through, once. Honoured only from the agent's
+    # own gate - a caller with the agent token - and only for an action the
+    # gate stopped on (guard.Approvals); dropped from anyone else.
     approved: Optional[list[str]] = None
 
 
@@ -85,11 +109,11 @@ class RequestResultBody(BaseModel):
     approval: Optional[dict] = None
 
 
-def _add_request(r: RequestBody):
+def _add_request(r: RequestBody, approved=()):
     rid = r.id or f"r{int(time.time() * 1000)}{len(REQUESTS)}"
     REQUESTS.append({
         **r.model_dump(), "id": rid, "status": "pending", "result": None,
-        "live_steps": [], "cancel_requested": False,
+        "live_steps": [], "cancel_requested": False, "approved": list(approved),
     })
     return rid
 
@@ -158,13 +182,17 @@ class LiveStepBody(BaseModel):
 
 
 @app.post("/requests")
-def submit_request(body: RequestBody):
+def submit_request(body: RequestBody, request: Request):
+    # A yes comes only through the agent's gate: soul sends it with the agent token, for the action the extension's
+    # gate stopped on. From anyone else the list is dropped, and the gate stops that action again.
+    approved = APPROVALS.grant(body.approved or [], trusted=guard.has_token(request.headers))
     with REQUESTS_LOCK:
-        return {"id": _add_request(body)}
+        return {"id": _add_request(body, approved)}
 
 
 @app.post("/requests/bulk")
 def submit_requests(body: RequestsBody):
+    # Never carries an approval: the gate's yes is one action's, asked about one request (submit_request).
     with REQUESTS_LOCK:
         if body.replace:
             REQUESTS.clear()
@@ -192,6 +220,8 @@ def request_result(body: RequestResultBody):
             if str(r.get("id")) == str(body.id):
                 r["status"] = "done"
                 r["result"] = body.model_dump()
+                if body.status == "needs_approval" and isinstance(body.approval, dict):
+                    APPROVALS.stopped(body.approval.get("action"))
                 return {"ok": True}
     return {"ok": False, "error": "unknown request id"}
 

@@ -28,7 +28,11 @@ func (s *Server) hostFileAsked(w http.ResponseWriter, r *http.Request, method st
 	if !allowMethod(w, r, method) {
 		return "", "", false
 	}
-	id := desktop.SanitizeID(r.URL.Query().Get("desktop"))
+	claimed, ok := actingAs(w, r, r.URL.Query().Get("desktop"))
+	if !ok {
+		return "", "", false
+	}
+	id := desktop.SanitizeID(claimed)
 	asked = strings.TrimSpace(r.URL.Query().Get("path"))
 	if strings.EqualFold(path.Base(strings.ReplaceAll(asked, "\\", "/")), QualificationOwnerFile) {
 		http.Error(w, "readiness owner keys cannot be read by a desktop", http.StatusForbidden)
@@ -42,6 +46,12 @@ func (s *Server) hostFileAsked(w http.ResponseWriter, r *http.Request, method st
 	for _, part := range strings.Split(rel, "/") {
 		if part == ".." {
 			http.Error(w, "the path may not go up a folder", http.StatusBadRequest)
+			return "", "", false
+		}
+		// A program's own data (browser profiles with saved passwords and cookies, keys, tokens) lives under AppData
+		// or a dot-folder; no task's output does, and a task's text can be written by someone else (review 2026-11-02).
+		if strings.HasPrefix(part, ".") || strings.EqualFold(part, "AppData") {
+			http.Error(w, "files under AppData or a hidden folder are not read for a desktop", http.StatusForbidden)
 			return "", "", false
 		}
 	}

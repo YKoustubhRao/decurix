@@ -171,6 +171,12 @@ func (w *WebSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 			Verified: false, Meta: map[string]any{"error": err.Error(), "results": len(results)},
 		}, nil
 	}
+	if resp.Truncated {
+		// Cut off for want of room: shown as it is, never as a finished answer.
+		return Result{Subtask: subtask, SkillName: w.Name(), Output: stripControlMarker(resp.Text) + cutOffNote, Verified: false,
+			Meta: map[string]any{"query": query, "results": len(results), "userFacing": true, MetaModelReply: true, "fatal": true,
+				"error": errCutOff.Error()}}, nil
+	}
 
 	// Save the real report so the research is reusable - it also gets
 	// picked up by the scheduler's P0 RAG ingestion automatically.
@@ -192,7 +198,7 @@ func (w *WebSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	return Result{
 		Subtask: subtask, SkillName: w.Name(),
 		Output: out, Verified: true,
-		Meta: map[string]any{"query": query, "results": len(results), "sources": sources, "path": reportPath, "userFacing": true},
+		Meta: map[string]any{"query": query, "results": len(results), "sources": sources, "path": reportPath, "userFacing": true, MetaModelReply: true},
 	}, nil
 }
 
@@ -219,9 +225,13 @@ func (w *WebSkill) readPage(rc RunContext, subtask Subtask, target string) (Resu
 			Meta: map[string]any{"error": err.Error(), "url": target},
 		}, nil
 	}
+	if resp.Truncated {
+		return Result{Subtask: subtask, SkillName: w.Name(), Output: stripControlMarker(resp.Text) + cutOffNote, Verified: false,
+			Meta: map[string]any{"url": target, "userFacing": true, MetaModelReply: true, "fatal": true, "error": errCutOff.Error()}}, nil
+	}
 	return Result{
 		Subtask: subtask, SkillName: w.Name(),
-		Output: stripControlMarker(resp.Text), Verified: true, Meta: map[string]any{"url": target, "userFacing": true},
+		Output: stripControlMarker(resp.Text), Verified: true, Meta: map[string]any{"url": target, "userFacing": true, MetaModelReply: true},
 	}, nil
 }
 

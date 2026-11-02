@@ -300,6 +300,9 @@ window.Triggers = (function(){
       }));
     }
     actions.appendChild(iconButton("trash", "Delete schedule", function(){
+      var what = String(sch.content || "").trim();
+      if(what.length > 80){ what = what.slice(0, 77) + "…"; }
+      if(!confirm("Delete this schedule" + (what ? " (\"" + what + "\")" : "") + "? It will not run again.")){ return; }
       act("/api/schedules/delete", {id: sch.id}, reload);
     }));
     row.appendChild(actions);

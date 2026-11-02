@@ -1867,12 +1867,17 @@ def focused_number_field():
             page.close()
 
 
-FORM_FIELDS = """function() {
+FORM_FIELDS = """function(enter) {
   const b = this;
   const form = b.form || (b.closest && b.closest('form'));
   if (!form) return null;
   const t = (b.type || '').toLowerCase();
-  const submits = (b.tagName === 'BUTTON' && (t === '' || t === 'submit')) || (b.tagName === 'INPUT' && ['submit', 'image'].includes(t));
+  const submitControl = form.querySelector('button:not([type]), button[type=submit], input[type=submit], input[type=image]');
+  // enter: Enter pressed in this field - a single-line input of a form that has a submit control submits it.
+  const submits = enter
+    ? (b.tagName === 'INPUT' && !['search', 'checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'image', 'hidden',
+        'range', 'color'].includes(t) && (b.getAttribute('role') || '').toLowerCase() !== 'searchbox' && !!submitControl)
+    : ((b.tagName === 'BUTTON' && (t === '' || t === 'submit')) || (b.tagName === 'INPUT' && ['submit', 'image'].includes(t)));
   if (!submits) return null;
   const labelOf = (f) => {
     if (f.getAttribute('aria-label')) return f.getAttribute('aria-label');
@@ -1894,7 +1899,9 @@ FORM_FIELDS = """function() {
   }
   const name = form.getAttribute('aria-label') || form.getAttribute('name') || form.id ||
     ((form.querySelector('legend, h1, h2, h3') || {}).textContent || '').trim() || 'the form';
-  return {form: name.slice(0, 80), fields: out};
+  const control = enter ? submitControl : b;
+  const submit = ((control && (control.getAttribute('aria-label') || control.textContent || control.value)) || '').trim();
+  return {form: name.slice(0, 80), fields: out, submit: submit.slice(0, 60)};
 }"""
 
 # A form with fewer filled fields than this (a search box and its button, a sign-in) is sent without the check.
@@ -1915,6 +1922,26 @@ def submit_form_fields(element, min_fields=None):
         if not found or len(found.get("fields") or []) < (FORM_CHECK_MIN_FIELDS if min_fields is None else min_fields):
             return None
         return found
+    except (ComputerError, KeyError, TypeError, ValueError, OSError):
+        return None
+    finally:
+        if page is not None:
+            page.close()
+
+
+def enter_form_fields(element):
+    """{"form", "fields", "submit"} when Enter in this field would submit its form (a single-line input in a <form>
+    with a submit control), whatever the form holds; else None. What the pre-save checks read for an Enter
+    (core._commit_check)."""
+
+    page = None
+    try:
+        page = _page_for(element)
+        object_id = _object(page, element["handle"]["backend_id"])
+        return page.call("Runtime.callFunctionOn", {
+            "objectId": object_id, "returnByValue": True, "functionDeclaration": FORM_FIELDS,
+            "arguments": [{"value": True}],
+        }).get("result", {}).get("value") or None
     except (ComputerError, KeyError, TypeError, ValueError, OSError):
         return None
     finally:
@@ -2101,67 +2128,101 @@ def datalist_options(element):
     return result if isinstance(result, list) else None
 
 
+def _option_words(text):
+    return " " + " ".join(re.sub(r"[\W_]+", " ", str(text or "").casefold()).split()) + " "
+
+
+def _option_stem(word):
+    return re.sub(r"(?:es|s)$", "", word)
+
+
+def pick_option(options, wanted):
+    """
+    Which option of a native drop-down is `wanted`: the index into `options` ([{"label", "value"}]), or a
+    ComputerError. The label itself (case and spaces aside), then the same words; only then one that fits less
+    exactly - the label holding the words given as whole words ("Karnataka" for "29-Karnataka"), the one whose whole
+    name lies within the text given ("IT department" for "IT"), or the one holding every word given in any order
+    ("navy baseball cap" for "CAP-NV - Baseball cap, navy") - and only when exactly one option fits so: two that fit
+    are never chosen between. Found in review (2026-11-02): "Rent" took "Rent Paid" when "Rent Received" was there too,
+    because the first label that began with the text was taken, and the label taken was not said.
+    """
+
+    want = " ".join(str(wanted or "").split()).casefold()
+    labels = [" ".join(str(o.get("label") or "").split()) for o in options]
+    for i, label in enumerate(labels):
+        if label.casefold() == want:
+            return i
+    given = _option_words(wanted)
+    if given.strip():
+        for i, label in enumerate(labels):
+            if _option_words(label) == given:
+                return i
+    fits = []
+    given_stems = [_option_stem(w) for w in given.split()]
+    for i, (o, label) in enumerate(zip(options, labels)):
+        have = _option_words(label)
+        if o.get("value") == "" or not have.strip():
+            continue  # a placeholder ("-- Select --") is no choice
+        if (given.strip() and given in have) or have in given \
+                or (len(given_stems) >= 2 and set(given_stems) <= {_option_stem(w) for w in have.split()}):
+            if label.casefold() not in (labels[j].casefold() for j in fits):
+                fits.append(i)
+    if len(fits) == 1:
+        return fits[0]
+    if fits:
+        raise ComputerError(f"{len(fits)} options fit {wanted!r} and none is exactly it: "
+                            + ", ".join(repr(labels[i]) for i in fits)
+                            + ". None was chosen: select the exact option the documents or the person name; when "
+                            "neither says which, ask the person (HELP).")
+    raise ComputerError(f"no option {wanted!r}. Options: " + ", ".join(labels))
+
+
 def select_option(element, option):
+    """Choose `option` in a native <select> (pick_option decides which) and return the label of the option chosen."""
+
     page = _page_for(element)
 
     try:
         object_id = _object(page, element["handle"]["backend_id"])
+        listed = page.call("Runtime.callFunctionOn", {
+            "objectId": object_id,
+            "returnByValue": True,
+            "functionDeclaration": """function() {
+                if (!this.options) { return null; }
+                return Array.from(this.options).map(o => ({label: o.label, value: o.value}));
+            }""",
+        }).get("result", {}).get("value")
+        if not isinstance(listed, list):
+            raise ComputerError(f"{el.describe(element)} is not a dropdown")
+        try:
+            index = pick_option(listed, option)
+        except ComputerError as exc:
+            raise ComputerError(f"{el.describe(element)} has {exc}" if str(exc).startswith("no option")
+                                else f"{el.describe(element)}: {exc}") from exc
         result = page.call("Runtime.callFunctionOn", {
             "objectId": object_id,
             "returnByValue": True,
-            "functionDeclaration": """function(label) {
-                if (!this.options) { return {ok: false, error: 'not a dropdown'}; }
-                const want = label.trim().toLowerCase();
-                const options = Array.from(this.options);
-                // A document says more than a list's entry: "IT department" for the option "IT". The one option
-                // whose whole name lies within the text given, as words, is that option - never one of two.
-                const words = s => ' ' + s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() + ' ';
-                const within = () => {
-                    const given = words(label);
-                    const fits = options.filter(o => o.value !== '' && words(o.label).trim() && given.includes(words(o.label)));
-                    return fits.length === 1 ? fits[0] : null;
-                };
-                // The one option holding every word given, in any order and singular or plural: "navy baseball
-                // cap" is "CAP-NV - Baseball cap, navy". Found live (2026-10-14): word order alone sent a worker to
-                // pick a product by position, and it took a notebook.
-                const stem = w => w.replace(/(?:es|s)$/, '');
-                const allWords = () => {
-                    const given = words(label).trim().split(' ').filter(Boolean).map(stem);
-                    if (given.length < 2) { return null; }
-                    const fits = options.filter(o => {
-                        const have = new Set(words(o.label).trim().split(' ').map(stem));
-                        return o.value !== '' && given.every(w => have.has(w));
-                    });
-                    return fits.length === 1 ? fits[0] : null;
-                };
-                const hit = options.find(o => o.label.trim().toLowerCase() === want)
-                    || options.find(o => o.label.trim().toLowerCase().startsWith(want))
-                    || options.find(o => o.label.toLowerCase().includes(want))
-                    || within()
-                    || allWords();
-                if (!hit) { return {ok: false, options: options.map(o => o.label)}; }
+            "functionDeclaration": """function(index, label) {
+                const hit = this.options && this.options[index];
+                if (!hit || hit.label !== label) { return {ok: false, error: 'the list changed while it was read'}; }
                 // A list a click opened keeps its own highlighted entry: set underneath it, the value is undone by
                 // the Return that closes it - found live (2026-10-22), "29-Karnataka" went back to
                 // "Select" at the taught Return. Losing focus closes the list; focus comes back after.
                 const focused = document.activeElement === this;
                 if (focused) { this.blur(); }
-                this.value = hit.value;
+                this.selectedIndex = index;
                 this.dispatchEvent(new Event('input', {bubbles: true}));
                 this.dispatchEvent(new Event('change', {bubbles: true}));
                 if (focused) { this.focus(); }
                 return {ok: true, label: hit.label};
             }""",
-            "arguments": [{"value": option}],
+            "arguments": [{"value": index}, {"value": listed[index].get("label")}],
         }).get("result", {}).get("value") or {}
     finally:
         page.close()
 
     if not result.get("ok"):
-        if result.get("options"):
-            raise ComputerError(
-                f"{el.describe(element)} has no option {option!r}. Options: " + ", ".join(result["options"])
-            )
-        raise ComputerError(f"{el.describe(element)} is not a dropdown: {result.get('error')}")
+        raise ComputerError(f"{el.describe(element)}: nothing was chosen - {result.get('error')}. Run observe again.")
 
     return result["label"]
 

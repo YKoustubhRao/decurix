@@ -78,16 +78,26 @@ def removed_records(amendments):
     return out
 
 
+def names_in(name, text):
+    """Whether `text` names `name` as a whole token, separators aside ("PO-1" in "po1_bill", "PO 1.pdf"), never as part
+    of a longer one: "po1" is not in "po12.pdf". Found in review (2026-11-02): a substring match took another record's
+    file."""
+
+    chars = [c for c in str(name or "").lower() if c.isalnum()]
+    if not chars:
+        return False
+    pattern = r"(?<![a-z0-9])" + r"[^a-z0-9]*".join(re.escape(c) for c in chars) + r"(?![a-z0-9])"
+    return bool(re.search(pattern, str(text or "").lower()))
+
+
 def record_figures(reference, documents):
     """The money figures of a removed record, from the input document that is that record (its name or its text)."""
 
     from decurix_agent import payees
-    key = re.sub(r"[^a-z0-9]", "", reference.lower())
     figures = set()
     for doc in documents:
-        name_key = re.sub(r"[^a-z0-9]", "", Path(doc).stem.lower())
         text = ""
-        if key and key in name_key:
+        if names_in(reference, Path(doc).stem):
             text = payees._doc_text(doc)
         if not text:
             continue
@@ -636,6 +646,8 @@ def evaluate(formula, excel_row, row, formulas=None, depth=0):
     expr = re.sub(r"(?i)\bROUND\s*\(", "_round(", expr)
     if failed or not re.fullmatch(r"[\d.\s+\-*/(),e]*", expr.replace("_round", "")):
         return None
+    if "**" in re.sub(r"\s", "", expr):
+        return None  # a power is no formula of a row, and 9**9**9 would never finish
     try:
         return float(eval(expr, {"__builtins__": {}}, {"_round": lambda x, n=0: round(x + 0.0, int(n))}))  # noqa: S307
     except Exception:  # noqa: BLE001 - a formula it cannot work out is not decided
@@ -727,8 +739,10 @@ def reproduces(work, target):
         for _, p in work["price"]:
             for t in taxes:
                 for d in discounts:
-                    rate_t = t / 100 if t > 1 else t
-                    rate_d = d / 100 if d > 1 else d
+                    # A rate of 1 or more is a percent (1 is 1%, never 100%); under 1 it is the fraction a
+                    # percent-formatted cell holds (0.18 for 18%).
+                    rate_t = t / 100 if t >= 1 else t
+                    rate_d = d / 100 if d >= 1 else d
                     if _matches(q * p * (1 + rate_t) * (1 - rate_d), target):
                         return True
     return False
@@ -871,7 +885,7 @@ def working_problems(made, sources=(), messages=()):
             by_ref.setdefault(ref, (set(), label))[0].update(v for _, v in w["results"])
         if refs and w["source"]:
             prices = [v for _, v in w["price"]]
-            named = [t for t in source_tables if Path(t[0].split(" (")[0]).stem.lower() in w["source"].lower()]
+            named = [t for t in source_tables if names_in(Path(t[0].split(" (")[0]).stem, w["source"])]
             for t_label, header, rows in named:
                 pcols = [i for i, h in enumerate(header) if PRICE_COLUMN.search(h or "") and not TAX_COLUMN.search(h or "")]
                 if not pcols:

@@ -25,6 +25,9 @@ import (
 type Manager struct {
 	client *client.Client
 
+	// callers maps a desktop container's address to its desktop ID (caller.go).
+	callers callerCache
+
 	// HostGUISecret signs the launch tokens written into launchers for Windows apps that run on the host (see
 	// internal/winhost); set by main before any desktop is created.
 	HostGUISecret []byte
@@ -223,7 +226,14 @@ func (m *Manager) BeginProvisioning(
 	// The caller gets a snapshot, never prov itself: runProvisioning keeps updating prov from its own goroutine (under
 	// provisioningMu) for the whole creation, and the caller serialises what it is given without holding that lock -
 	// returning the live pointer let the two run at once, a data race on every field of the record.
+	// Checked again and claimed under one lock: two requests whose names sanitise alike ("my.box", "my-box") both
+	// passed the read-locked check above, and the second one's provisioning removed the first one's container and
+	// volume (review 2026-11-02).
 	m.provisioningMu.Lock()
+	if _, exists := m.provisioning[sanitizedID]; exists {
+		m.provisioningMu.Unlock()
+		return nil, fmt.Errorf("desktop %s is already being created", name)
+	}
 	m.provisioning[sanitizedID] = prov
 	snapshot := *prov
 	m.provisioningMu.Unlock()
@@ -304,6 +314,10 @@ func (m *Manager) runProvisioning(
 	// 3. Container Configuration & Creation
 	updateStage("container", "Creating container environment...", 45)
 	env := buildDesktopEnv(name, prov.Harness, prov.Specialization, prov.ParentID, brain, shared)
+	if token := m.AgentToken(name); token != "" {
+		env = append(env, AgentTokenEnv+"="+token)
+	}
+	env = m.withScreenPassword(env, name)
 	m.provisioningMu.Lock()
 	prov.Model = desktopModel(env)
 	m.provisioningMu.Unlock()
@@ -1212,6 +1226,7 @@ func (m *Manager) SendRequest(
 		"Content-Type",
 		"application/json",
 	)
+	m.AuthorizeAgentRequest(req, desktopID)
 
 	cli := m.httpClient
 	if cli == nil {

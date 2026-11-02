@@ -51,7 +51,8 @@ type caseRecord struct {
 }
 
 // caseMatrix is the records the sources disagree about with nothing read that says why, as recheck points before the
-// action; none when there is no screen of the action's window to read or the check cannot be made.
+// action; none when there is no screen of the action's window to read, and a "not checked" point when the check cannot be
+// made (an error is never a pass).
 func (o *OperatorSkill) caseMatrix(rc RunContext, st *operatorState, action string) []reviewIssue {
 	if rc.Provider == nil || !st.Hosted {
 		return nil
@@ -68,7 +69,11 @@ func (o *OperatorSkill) caseMatrix(rc RunContext, st *operatorState, action stri
 		llm.Options{TimeoutMs: verifyTimeoutMs, Temperature: reviewTemperature})
 	if err != nil {
 		rc.Logf("operator", "could not list the records before the action: %v", err)
-		return nil
+		return []reviewIssue{notChecked("the records the action covers were not set against every source read", err)}
+	}
+	if resp.Truncated {
+		rc.Logf("operator", "the record list before the action was cut off")
+		return []reviewIssue{notChecked("the records the action covers were not set against every source read", errCutOff)}
 	}
 	text := resp.Text
 	if i, j := strings.Index(text, "{"), strings.LastIndex(text, "}"); i >= 0 && j > i {
@@ -79,7 +84,7 @@ func (o *OperatorSkill) caseMatrix(rc RunContext, st *operatorState, action stri
 	}
 	if json.Unmarshal([]byte(text), &answer) != nil {
 		rc.Logf("operator", "the record list before the action could not be read")
-		return nil
+		return []reviewIssue{notChecked("the records the action covers were not set against every source read", nil)}
 	}
 	out := st.unexplained(answer.Records, action)
 	rc.Logf("operator", "the case before the action: %d record(s), %d the sources disagree about with nothing read that says why",

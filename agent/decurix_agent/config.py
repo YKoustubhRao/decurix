@@ -65,6 +65,26 @@ THEBOT_URL = os.environ.get(
 AGENT_BIND = os.environ.get("DECURIX_AGENT_BIND", "0.0.0.0")
 AGENT_PORT = int(os.environ.get("DECURIX_AGENT_PORT", "8081"))
 
+# The secret the control plane gave this desktop at creation (internal/desktop/agenttoken.go): it sends it as
+# "Authorization: Bearer <token>" on every call to :8081 and to soul, and http_api.py refuses a call without it.
+# What it keeps out is other desktops on the shared Docker network and web pages in this desktop's browser - not this
+# desktop's own worker, whose shell runs as the same user and can read this environment. Empty on a desktop created
+# before tokens existed (desktop state is fixed at creation); such a desktop is served as before.
+AGENT_TOKEN_ENV = "DECURIX_AGENT_TOKEN"
+
+
+def agent_token():
+    """This desktop's agent token, or "" when it was created without one. Read each time, so a test can set it."""
+
+    return os.environ.get(AGENT_TOKEN_ENV, "").strip()
+
+
+def agent_auth_headers():
+    """The header an in-container caller of :8081 or soul sends: {} when this desktop has no token."""
+
+    token = agent_token()
+    return {"Authorization": "Bearer " + token} if token else {}
+
 # Everything the agent keeps for itself lives under one hidden directory, so
 # the home a human browses on the desktop holds only the work directory.
 # start_agent_terminal.sh moves these in from where older desktops kept them.

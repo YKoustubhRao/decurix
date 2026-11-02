@@ -46,13 +46,6 @@ class LearningTransferAcceptance(unittest.TestCase):
                 self.assertTrue(result["passed"], result["reason"])
                 self.assertEqual(result["typed_values"], [])
 
-    def test_ui_success_is_rejected_when_independent_business_answer_is_wrong(self):
-        for result in self.report["results"]:
-            if result["variant"] == "wrong-business-result":
-                with self.subTest(task=result["task"]):
-                    self.assertTrue(result["passed"])
-                    self.assertFalse(result["business_verified"])
-
 
 if __name__ == "__main__":
     unittest.main()

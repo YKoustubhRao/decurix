@@ -33,11 +33,11 @@ WORKDIR /app
 # minutes of a first start of the app.
 RUN apk add --no-cache docker-cli bash curl ca-certificates
 
-# The templates are embedded in the binary (web/embed.go), so only .env has
-# to come along.
+# The templates are embedded in the binary (web/embed.go). The settings (.env, with the keys) are never copied into
+# an image layer, where anyone with the image could read them: compose hands them to the container when it starts
+# (env_file in docker-compose.yaml).
 COPY --from=builder /app/decurix .
 COPY --from=builder /app/decurix-android-arm64 .
-COPY .env ./
 
 # The records database (decurix.db). docker-compose.yaml mounts a named volume
 # here; the VOLUME line keeps a plain `docker run` from writing it into the

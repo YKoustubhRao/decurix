@@ -46,7 +46,7 @@ OPERATIONAL = re.compile(
 
 # A question whose answer is a secret.
 SECRET_ASKED = re.compile(
-    r"\b(password|passcode|passphrase|pin|otp|one[- ]time (?:code|password)|verification code|security code|"
+    r"\b(password|passcode|passphrase|" + privacy.PIN_WORD + r"|otp|one[- ]time (?:code|password)|verification code|security code|"
     r"2fa|cvv|api key|secret|token)\b", re.IGNORECASE)
 
 DISTILL_SYSTEM ="""A computer worker stopped during a task to ask the person it works for a question, and the person answered. Decide what, if anything, the worker should remember from this for future tasks, and write it as one instruction.

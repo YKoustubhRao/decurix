@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"thebot/internal/workspace"
 )
@@ -31,7 +32,7 @@ func newDownloadRC(t *testing.T) RunContext {
 // download request.
 func TestDownloadFallsBackToURLFromPriorFindings(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`report.pdf`))
+		w.Write([]byte("%PDF-1.4 report"))
 	}))
 	defer srv.Close()
 	fileURL := srv.URL + "/report.pdf"
@@ -285,5 +286,87 @@ func TestDownloadRecoversFromUABlock(t *testing.T) {
 	}
 	if string(data) != "%PDF-1.4 real bytes" {
 		t.Errorf("saved file content = %q, want the real fetched bytes", data)
+	}
+}
+
+// A login page served under invoice.pdf is not an invoice: it is not saved
+// and the step is not verified.
+func TestDownloadRefusesAPageServedUnderAFileName(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte("<!DOCTYPE html><html><body><form>Sign in</form></body></html>"))
+	}))
+	defer srv.Close()
+
+	rc := newDownloadRC(t)
+	res, _ := NewDownload().Run(rc, Subtask{Step: "download " + srv.URL + "/invoice.pdf", Type: "download"})
+	if res.Verified {
+		t.Fatalf("an HTML page saved as invoice.pdf was verified: %s", res.Output)
+	}
+	if _, err := os.Stat(filepath.Join(rc.Workspace.Root(), "downloads", "invoice.pdf")); err == nil {
+		t.Error("the HTML page was saved as invoice.pdf")
+	}
+	if !strings.Contains(res.Output, "not a PDF") {
+		t.Errorf("Output = %q, want it to say what came back", res.Output)
+	}
+}
+
+// Every file asked for must be saved: 1 of 2 is not the download asked for.
+func TestDownloadVerifiesOnlyWhenEveryFileIsSaved(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/list":
+			w.Write([]byte(`<a href="/a.pdf">a</a><a href="/b.pdf">b</a>`))
+		case "/a.pdf":
+			w.Write([]byte("%PDF-1.4 a"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	rc := newDownloadRC(t)
+	res, _ := NewDownload().Run(rc, Subtask{Step: "download the pdf files from " + srv.URL + "/list", Type: "download"})
+	if res.Verified {
+		t.Fatalf("1 of 2 files was verified: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "1 of 2") {
+		t.Errorf("Output = %q, want it to say how much was saved", res.Output)
+	}
+}
+
+// One fetch never reads without bound.
+func TestFetchBytesIsBounded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(bytes.Repeat([]byte("x"), 4096))
+	}))
+	defer srv.Close()
+	if _, err := fetchBytes(context.Background(), srv.URL, 5*time.Second, 1024); err == nil {
+		t.Fatal("a 4 KB body was read whole under a 1 KB bound")
+	}
+	if data, err := fetchBytes(context.Background(), srv.URL, 5*time.Second, 8192); err != nil || len(data) != 4096 {
+		t.Fatalf("within the bound: %d bytes, %v", len(data), err)
+	}
+}
+
+func TestContentMismatch(t *testing.T) {
+	for _, c := range []struct {
+		ext, data string
+		ok        bool
+	}{
+		{"pdf", "%PDF-1.7\n...", true},
+		{"pdf", "<html>login</html>", false},
+		{"xlsx", "PK\x03\x04rest", true},
+		{"xlsx", "<!doctype html>", false},
+		{"csv", "a,b\n1,2\n", true},
+		{"csv", "<html><body>error</body></html>", false},
+		{"json", `{"a": 1}`, true},
+		{"json", "<html></html>", false},
+		{"html", "<html></html>", true},
+		{"html", "\x1f\x8b\x08\x00gz", false},
+	} {
+		if got := contentMismatch(c.ext, []byte(c.data)) == ""; got != c.ok {
+			t.Errorf("contentMismatch(%s, %q) ok = %v, want %v", c.ext, c.data, got, c.ok)
+		}
 	}
 }

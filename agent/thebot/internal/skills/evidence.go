@@ -686,11 +686,14 @@ var pictureDocRe = regexp.MustCompile(`(?i)\.(?:jpe?g|png|tiff?|webp|heic|gif)$`
 
 const pictureGapNote = " (a picture that was read: its figures must be entered from it, and the report must name it with what was entered, or say why it is left out)"
 
-// leftOutRe is what a sentence says when it gives a document's reason for not being in the work: it is not part of it,
-// a copy, called off, someone else's.
-var leftOutRe = regexp.MustCompile(`(?i)\b(not|no|never|isn'?t|aren'?t|wasn'?t|without|exclud\w*|cancel\w*|duplicate\w*|` +
-	`ignor\w*|skip\w*|left out|kept out|leave out|another|other client|someone else|replac\w*|supersed\w*|` +
-	`earlier version|older version|withdrawn)\b`)
+// leftOutRe is what a sentence says when it gives a document's reason for not being in the work: why (because, since,
+// due to), or what makes it no part of it - a copy, called off, replaced, someone else's, another period's. A bare
+// "no", "not" or "never" states no reason: "img_0932.jpg was not entered" left a month a bill short.
+var leftOutRe = regexp.MustCompile(`(?i)\b(because|since|due to|as it|as this|the reason|reason being|not part of|` +
+	`exclud\w*|cancel\w*|duplicate\w*|cop(?:y|ies) of|replac\w*|supersed\w*|withdrawn|void\w*|belongs? to|` +
+	`another|other client|someone else|different (?:client|customer|company|party|month|period|quarter|year)|` +
+	`out of (?:scope|period)|not (?:for|in|from|of) (?:this|the) (?:month|period|quarter|year|return|client|work)|` +
+	`earlier version|older version)\b`)
 
 // sentenceBreakRe ends a sentence: a line break, a full stop before a space, a semicolon - never the dot of a file name.
 var sentenceBreakRe = regexp.MustCompile(`\n|\.\s|;`)
@@ -700,14 +703,28 @@ var sentenceBreakRe = regexp.MustCompile(`\n|\.\s|;`)
 // phone photo of a bill was saved with the month's bills and never entered; the report pasted the folder's listing,
 // which named it, and the point was never raised - the month's totals went out 8,750 short.
 func saysWhyLeftOut(report, base, stem string) bool {
-	for _, sentence := range sentenceBreakRe.Split(report, -1) {
-		if (strings.Contains(sentence, base) || strings.Contains(sentence, stem)) && leftOutRe.MatchString(sentence) &&
-			!couldNotReadRe.MatchString(sentence) {
+	sentences := sentenceBreakRe.Split(report, -1)
+	for i, sentence := range sentences {
+		if !strings.Contains(sentence, base) && !strings.Contains(sentence, stem) {
+			continue
+		}
+		if leftOutRe.MatchString(sentence) && !couldNotReadRe.MatchString(sentence) {
 			return true
+		}
+		// "Left out IMG_0932.jpg; it is another client's bill.": the sentence that says it is left out, and the reason
+		// in the one right after it.
+		if leaveOutRe.MatchString(sentence) && i+1 < len(sentences) {
+			next := sentences[i+1]
+			if leftOutRe.MatchString(next) && !couldNotReadRe.MatchString(next) && !couldNotReadRe.MatchString(sentence) {
+				return true
+			}
 		}
 	}
 	return false
 }
+
+// leaveOutRe is a sentence saying a document is left out of the work, whose reason may follow in the next sentence.
+var leaveOutRe = regexp.MustCompile(`(?i)\b(left out|kept out|leave out|leaving out|left it out|not entered|skipp\w*|exclud\w*)\b`)
 
 // couldNotReadRe is a sentence saying the work could not read or use a document: no reason for it to be out of the
 // work. Found live (2026-10-25): "its image contents were not successfully extracted ... therefore it did not change
@@ -1035,7 +1052,7 @@ func sourceKind(kind string) bool {
 }
 
 // verifyCommit is the verifier's disagreements with the screen about to be committed, as recheck points; none when
-// there is nothing to verify or the check cannot be made (a check that cannot be made decides nothing). The screen is
+// there is nothing to verify, and a "not checked" point when the check cannot be made (an error is never a pass). The screen is
 // the window the action acts on (named in action, the gate's reason): found live (2026-10-23), the last listing was of
 // an image viewer the worker had opened a scan in, and the person was asked about its zoom and pixel figures before a
 // filing on another window.
@@ -1098,7 +1115,11 @@ func (o *OperatorSkill) verifyFigures(rc RunContext, st *operatorState, masked s
 			llm.Options{TimeoutMs: verifyTimeoutMs, Temperature: reviewTemperature})
 		if err != nil {
 			rc.Logf("operator", "could not verify the figures before the action: %v", err)
-			return nil
+			return []reviewIssue{notChecked("the figures on "+strings.ToLower(heading)+" were not worked out again from the sources", err)}
+		}
+		if resp.Truncated {
+			rc.Logf("operator", "the verifier's answer was cut off")
+			return []reviewIssue{notChecked("the figures on "+strings.ToLower(heading)+" were not worked out again from the sources", errCutOff)}
 		}
 		text := resp.Text
 		if i, j := strings.Index(text, "{"), strings.LastIndex(text, "}"); i >= 0 && j > i {
@@ -1107,7 +1128,7 @@ func (o *OperatorSkill) verifyFigures(rc RunContext, st *operatorState, masked s
 		var answered map[string]*string
 		if json.Unmarshal([]byte(text), &answered) != nil {
 			rc.Logf("operator", "the verifier's answer could not be read")
-			return nil
+			return []reviewIssue{notChecked("the figures on "+strings.ToLower(heading)+" were not worked out again from the sources", nil)}
 		}
 		derived = map[string]string{}
 		for k, v := range answered {
@@ -1218,7 +1239,7 @@ func (o *OperatorSkill) verifyReport(rc RunContext, st *operatorState) []reviewI
 			// record, checked right, had replaced it; sixteen points went to the person. With the screen the work leaves
 			// checked, such points are the worker's to look at once.
 			for i := range points {
-				points[i].Advisory = true
+				points[i].Advisory = !points[i].Unchecked
 			}
 		}
 		if !st.typedIn(window) {
@@ -1227,7 +1248,7 @@ func (o *OperatorSkill) verifyReport(rc RunContext, st *operatorState) []reviewI
 			// loosely. Found live (2026-10-26): eight "disagreements" between a ledger list's yearly balances and the
 			// month's bills went to the person, who dismissed every one. Such points are the worker's to look at once.
 			for i := range points {
-				points[i].Advisory = true
+				points[i].Advisory = !points[i].Unchecked
 			}
 		}
 		out = append(out, points...)

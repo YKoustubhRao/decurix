@@ -259,10 +259,26 @@ def _clean_action(action):
 
 
 def _turn(parsed):
-    """(memory, evaluation_previous_goal, action_or_None) of a decide call's parsed JSON; None for "done"."""
-    action_obj = parsed.get("action") or {}
-    action = None if (action_obj.get("type") or "").lower() == "done" else _clean_action(action_obj)
+    """(memory, evaluation_previous_goal, action_or_None) of a decide call's parsed JSON; None only for an explicit
+    "done". An action the model invented, or none at all, is not "done": it raises, so the step fails (and
+    background.js may re-ask) instead of the run ending as if the task were finished."""
+    action_obj = parsed.get("action") if isinstance(parsed.get("action"), dict) else {}
+    kind = (action_obj.get("type") or "").strip().lower()
+    action = None if kind == "done" else _clean_action(action_obj)
+    if action is None and kind != "done":
+        raise ValueError(f"model returned no usable action: {kind or '(none)'!r}")
     return (parsed.get("memory") or "").strip(), (parsed.get("evaluation_previous_goal") or "").strip(), action
+
+
+def _parsed(raw):
+    """A decide call's JSON object; raises ValueError (a failed step) when the model's answer is not one."""
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+    if not isinstance(parsed, dict):
+        raise ValueError(f"model returned no usable action (unreadable response): {str(raw)[:200]!r}")
+    return parsed
 
 
 def decide_and_act(model_key, full_task, remaining, url, page_html, memory="", prior_error=None,
@@ -305,13 +321,13 @@ def decide_and_act(model_key, full_task, remaining, url, page_html, memory="", p
                       images=[screenshot_b64] if use_vision else None,
                       max_tokens=max_tokens, response_format=STEP_SCHEMA)
 
-    try:
-        parsed = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return None, "done", None, None, memory, "", raw
+    # A response that cannot be read is a failed step, never "done": reporting it as done ended runs as successes
+    # that had done nothing (review 2026-11-02).
+    parsed = _parsed(raw)
 
     instruction = (parsed.get("next_instruction") or "").strip() or None
-    remaining_after = (parsed.get("remaining") or "").strip() or "done"
+    # Empty is not "done" either (atomizer.is_done): only the model's own word for it ends the task.
+    remaining_after = (parsed.get("remaining") or "").strip()
     expectation = (parsed.get("expectation") or "").strip() or None
     new_memory, evaluation, action = _turn(parsed)
     return instruction, remaining_after, expectation, action, new_memory, evaluation, raw
@@ -421,10 +437,7 @@ def decide_stack_step(model_key, current_instruction, full_task, url, page_html,
                       images=[screenshot_b64] if use_vision else None,
                       max_tokens=max_tokens, response_format=STACK_STEP_SCHEMA)
 
-    try:
-        parsed = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return None, None, "", memory, "", raw
+    parsed = _parsed(raw)
 
     expectation = (parsed.get("expectation") or "").strip() or None
     push_before = (parsed.get("push_before") or "").strip()

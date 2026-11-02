@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -167,68 +166,26 @@ func TestWindowsPickerIsToldWhichWindowToOpen(t *testing.T) {
 	}
 }
 
-func TestCreateDesktopWithHostPaths(t *testing.T) {
+// Copying a file of this computer into a new desktop is refused, a real file as much as a missing one: it reached the
+// control plane's own keys and database (review 2026-11-02). A shared folder is the way to give a worker files.
+func TestCreateDesktopRefusesHostPaths(t *testing.T) {
 	mgr := fakeDesktopManager(t)
-	srv := &Server{
-		Desktops: mgr,
-	}
+	srv := &Server{Desktops: mgr}
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	tmpDir := t.TempDir()
-	validFile := filepath.Join(tmpDir, "repo.zip")
+	validFile := filepath.Join(t.TempDir(), "repo.zip")
 	if err := os.WriteFile(validFile, []byte("fake zip"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	// Test 1: Non-existent host path should fail with 400 Bad Request
-	form := url.Values{
-		"name":       {"test-bad-path"},
-		"profile":    {"basic"},
-		"brain":      {"ollama"},
-		"host_paths": {"/completely/missing/file.txt -> Desktop/file.txt"},
-	}
-	req := httptest.NewRequest(http.MethodPost, "/api/desktops/create", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for non-existent host path, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "host path does not exist") {
-		t.Errorf("expected error message to mention path does not exist, got: %s", rec.Body.String())
-	}
-
-	// Test 2: Destination escaping /home/headless should fail with 400 Bad Request
-	form = url.Values{
-		"name":       {"test-traversal"},
-		"profile":    {"basic"},
-		"brain":      {"ollama"},
-		"host_paths": {fmt.Sprintf("%s -> /etc/shadow", validFile)},
-	}
-	req = httptest.NewRequest(http.MethodPost, "/api/desktops/create", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec = httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for path traversal, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	// Test 3: Valid file path should succeed and return 202 Accepted
-	form = url.Values{
-		"name":       {"test-valid-path"},
-		"profile":    {"basic"},
-		"brain":      {"ollama"},
-		"host_paths": {fmt.Sprintf(`[{"src":%q,"dest":"Desktop/repo.zip"}]`, validFile)},
-	}
-	req = httptest.NewRequest(http.MethodPost, "/api/desktops/create", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	rec = httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("expected 202 Accepted for valid host path, got %d: %s", rec.Code, rec.Body.String())
+	for _, field := range []string{"host_paths", "copy_host_paths", "copy_paths"} {
+		form := url.Values{"name": {"hp-" + strings.ReplaceAll(field, "_", "-")}, field: {validFile}}
+		req := httptest.NewRequest(http.MethodPost, "/api/desktops/create", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "shared folder") {
+			t.Errorf("%s: got %d %s, want a refusal pointing at the shared folder", field, rec.Code, rec.Body.String())
+		}
 	}
 }

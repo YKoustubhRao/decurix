@@ -134,9 +134,13 @@ func trustedAuthServ(host string) string {
 	case "outlook.office365.com", "imap-mail.outlook.com":
 		return "" // Microsoft's authserv-id varies by tenant; the topmost header is taken as theirs.
 	default:
-		return ""
+		return unknownAuthServ
 	}
 }
+
+// unknownAuthServ marks a provider this does not know: whether it adds an Authentication-Results header of its own
+// is unknown, and if it does not, the topmost one is whatever the sender wrote. So nothing it says is believed.
+const unknownAuthServ = "(unknown provider)"
 
 var (
 	dmarcPassRe = regexp.MustCompile(`(?i)\bdmarc=pass\b[^;]*?\bheader\.from=([^\s;]+)`)
@@ -156,6 +160,9 @@ func verifySender(h mail.Header, sender, host string) (bool, string) {
 
 	top := strings.Join(strings.Fields(results[0]), " ")
 
+	if trustedAuthServ(host) == unknownAuthServ {
+		return false, "this mailbox's provider is not one whose own sender check can be told from a forged one"
+	}
 	if want := trustedAuthServ(host); want != "" {
 		authServ := strings.TrimSpace(strings.SplitN(top, ";", 2)[0])
 		if !strings.EqualFold(authServ, want) {

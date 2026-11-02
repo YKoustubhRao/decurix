@@ -292,6 +292,7 @@ def _walk(Atspi, root, index_path, path, group_id, window_title, app_name, pid, 
             name = (node.get_name() or "").strip()
         except Exception:
             continue
+        own_name = name  # (the accessible's own name, before a label is borrowed for it: what resolve checks)
 
         flags, shown_states = _states(Atspi, node)
 
@@ -379,6 +380,7 @@ def _walk(Atspi, root, index_path, path, group_id, window_title, app_name, pid, 
                 "handle": {
                     "indices": indices,
                     "raw_role": raw_role,
+                    "own_name": own_name,
                     "actions": actions,
                     "single_line": bool(flags.get("single_line")),
                     "editable": bool(flags.get("editable")),
@@ -681,7 +683,13 @@ def _child_text(Atspi, node):
 # ============================================================
 
 def resolve(element):
-    """Walk an element's index path back to its live accessible, or None."""
+    """
+    Walk an element's index path back to its live accessible, or None. An index path is where a widget was, not
+    which widget: an app that started or quit renumbers the desktop's children, a dialog that redrew renumbers its
+    own, and another widget of the same role can stand at the same path. So the accessible found must still be the
+    one looked at - the same role, its own name the same, in the same process - or there is none (review 2026-11-02:
+    a stale element pressed another widget).
+    """
 
     Atspi = _lib()
     handle = element["handle"]
@@ -697,6 +705,15 @@ def resolve(element):
             return Atspi.Table.get_accessible_at(node, handle["row"], handle["column"])
         if node.get_role_name() != handle["raw_role"]:
             return None
+        if "own_name" in handle and (node.get_name() or "").strip() != handle["own_name"]:
+            return None
+        if handle.get("pid"):
+            try:
+                pid = node.get_process_id()
+            except Exception:  # noqa: BLE001 - a toolkit that cannot say: the name and role stand
+                pid = None
+            if pid and pid != handle["pid"]:
+                return None
     except Exception:
         return None
 

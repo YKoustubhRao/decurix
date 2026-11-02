@@ -4,6 +4,8 @@ Playwright-sized instruction at a time, given the live page and whatever of
 the original task is still left -- so it can react to things an upfront plan
 can't know about (a cookie banner, needing to scroll first, an unexpected
 redirect) instead of blindly executing a plan made before the page loaded."""
+import re
+
 import models
 
 ATOMIZE_SYSTEM = """You are the planner for a browser automation agent that executes ONE tiny \
@@ -42,7 +44,13 @@ Respond in exactly this format, nothing else, replacing the example text with yo
 NEXT: click the "Sign in" button
 REMAINING: fill in the email field with the given address"""
 
-_DONE_WORDS = ("done", "nothing", "complete", "n/a", "none", "finished")
+# What "remaining" says when nothing is left - the WHOLE status, not a word inside it: "abandoned" contains "done" and
+# "incomplete" contains "complete", and a substring match ended such runs as finished (review 2026-11-02).
+_DONE_STATUSES = frozenset({
+    "done", "all done", "task done", "nothing", "nothing left", "nothing remaining", "nothing more",
+    "nothing left to do", "nothing more to do", "complete", "completed", "task complete", "task completed",
+    "finished", "task finished", "n/a", "none",
+})
 
 
 def _strip_wrapping(text):
@@ -60,8 +68,12 @@ def _strip_wrapping(text):
 
 
 def is_done(remaining_text):
-    text = (remaining_text or "").strip().lower()
-    return not text or any(w in text for w in _DONE_WORDS)
+    """Whether `remaining` says the task is finished: its whole text is one of _DONE_STATUSES (case, spacing,
+    wrapping quotes/brackets and end punctuation aside). Empty is NOT done: an answer that could not be read is a
+    failure, never a finished task."""
+    text = re.sub(r"\s+", " ", (remaining_text or "").strip().lower())
+    text = text.strip(" <>\"'`*.!-")
+    return text in _DONE_STATUSES
 
 
 def next_step(model_key, full_task, remaining, url, page_html, prior_error=None,
@@ -102,7 +114,8 @@ def next_step(model_key, full_task, remaining, url, page_html, prior_error=None,
                                    max_tokens=200):
         full = evt["text"]
 
-    next_instr, remaining_after = None, "done"
+    # No REMAINING line is not "done" (is_done): a reply that could not be read never ends the task.
+    next_instr, remaining_after = None, ""
     for line in full.splitlines():
         line = line.strip()
         if line.upper().startswith("NEXT:"):

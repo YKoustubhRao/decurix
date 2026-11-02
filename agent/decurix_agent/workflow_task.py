@@ -102,7 +102,7 @@ def _report(state):
     artifacts = [f"- {key}: {work_dir / item['path']} ({item['bytes']} bytes)" for key, record in state["steps"].items()
                  if record["status"] == "completed" for item in record["evidence"]]
     if artifacts:
-        detail += "\n\nChecked outputs in " + runner().context(state)["work_dir"] + ":\n" + "\n".join(artifacts)
+        detail += "\n\nOutputs in " + runner().context(state)["work_dir"] + ":\n" + "\n".join(artifacts)
     records = ", ".join(f"{key}: {value['status']}" for key, value in state["steps"].items())
     # Each stage's own report is consumed by final_gate (only its artifacts can
     # advance the run), so the person's one reply carries what each stage said.
@@ -110,8 +110,19 @@ def _report(state):
                    for key, value in state["steps"].items() if value.get("report"))
     if said:
         detail = (detail + "\n\n" if detail else "") + "What each stage reported:" + said
-    write_final_reply(f"Workflow {state['run_id']}: {state['status']}. {records}. {detail}",
-                      kind="error" if state["status"] in {"failed", "uncertain"} else "final", checked=True)
+    # The one decision (verify.outcome). A stage of this kind of run counts as completed on its spec's file checks -
+    # that a file is there, opens, has the columns or words asked - which judge nothing of whether it is the work the
+    # request asked for: the run is reported NOT checked (review 2026-11-02: reported checked=True, bypassing the final
+    # gate, with specs whose checks were format only). A failure is a check that saw it fail; any other status (waiting
+    # for approval, running, cancelled) is no result at all.
+    from decurix_agent import verify
+    decided = verify.outcome({"verdict": verify.NOT_DONE} if state["status"] in {"failed", "uncertain"} else None)
+    head = ""
+    if state["status"] == "completed":
+        head = ("Not checked - each stage's output passed only its file checks (it is there, it opens, it has what the "
+                "spec names); nothing judged it against the request. Look at the outputs before relying on them.\n\n")
+    write_final_reply(f"{head}Workflow {state['run_id']}: {state['status']}. {records}. {detail}",
+                      kind=decided["kind"], checked=decided["checked"], gated=True)
 
 
 def _dispatch_one(run_id, task_file=None, approvals=(), recover=False):

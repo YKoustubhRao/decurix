@@ -1,10 +1,12 @@
+import hmac
+import ipaddress
 import json
 import shutil
 import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
-from decurix_agent import playbooks, practice, record_task, replay_task, skill_bundle, skill_task
+from decurix_agent import config, playbooks, practice, record_task, replay_task, skill_bundle, skill_task
 from decurix_agent.computer import (
     catalog,
     demonstration,
@@ -13,7 +15,6 @@ from decurix_agent.computer import (
     modes,
     recording,
     replay,
-    shadowing,
     skillmd,
     skills,
     workflow,
@@ -79,16 +80,97 @@ from decurix_agent.messaging import save_request
 #                                        the open ticket, kept with its recording
 #   POST /ticket/end                     stop capturing (if started) and
 #                                        finish the ticket's task
+#   GET  /health                         {"status": "ok"} and nothing else: the
+#                                        one route served without the token
 #
 # Served by a ThreadingHTTPServer (app.py): exporting a large recording must
 # not hold up the next chat request.
+#
+# Who may call (refusal() below, before any route runs). /request carries a
+# person's replies, approvals included, so a caller that is not the control
+# plane must not get through:
+#   - the token: on a desktop created with DECURIX_AGENT_TOKEN, every route but
+#     /health needs "Authorization: Bearer <token>" (compared in constant time).
+#     That keeps out the other desktops on the shared Docker network.
+#   - a browser: a request with an Origin or Sec-Fetch-* header was made by a
+#     web page (a page in this desktop's Chrome can POST to it as text/plain,
+#     no CORS needed), and is refused; so is a write whose body is not JSON,
+#     and a Host that is a DNS name (a rebinding page reaches this port by one;
+#     the control plane calls by IP or container name).
+# Those last checks hold on a desktop without a token too (created before
+# tokens existed): it is otherwise served as before until it is recreated.
+# The honest limit: the worker's own shell runs as the same Linux user and can
+# read the token from the environment, so nothing here stops the worker itself
+# from calling this API. That is what the approval gate's own rules are for
+# (a reply must name the open question: messaging.save_request).
 # ============================================================
 
 MAX_BODY = 1024 * 1024
 
+# The one route a caller without the token is answered on. It says nothing but that the agent is up.
+HEALTH = ["health"]
+
 
 def _text(value, limit):
     return str(value or "").strip()[:limit]
+
+
+def _host_is_ours(host):
+    """Whether a Host header names this desktop the way its callers do: an IP address, or a name with no dot (a
+    container name, localhost). A DNS name is how a rebinding web page reaches this port."""
+
+    host = (host or "").strip()
+    if not host:
+        return True  # HTTP/1.0 without a Host: not something a browser sends
+    if host.startswith("["):
+        name = host[1:].split("]", 1)[0]
+    else:
+        name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        return "." not in name and name != ""
+
+
+def refusal(method, parts, headers, token=None):
+    """
+    Why a request to this API may not be served - (status, reason) - or None when it may.
+
+    `headers` is the request's headers (anything with .get); `token` defaults to this desktop's own
+    (config.agent_token()), "" when it was created without one.
+    """
+
+    token = config.agent_token() if token is None else token
+
+    # A web page: its fetch, form or beacon always names its origin on a write, and Chromium marks every request
+    # it makes with Sec-Fetch-*. Nothing that legitimately calls this API is a browser.
+    if headers.get("Origin") is not None or any(headers.get(h) is not None for h in
+                                                ("Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest")):
+        return 403, "this API is not for web pages"
+    if not _host_is_ours(headers.get("Host")):
+        return 403, "this API is reached by address, not by a DNS name"
+
+    if method != "GET":
+        ctype = (headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        try:
+            length = int(headers.get("Content-Length") or "0")
+        except ValueError:
+            length = -1
+        if length < 0:
+            return 400, "invalid content length"
+        # A write with no body and no type (the control plane's "/ticket/end") is let through; one that names any
+        # other type, or carries a body without saying it is JSON, is not: a page's simple POST is text/plain or a form.
+        if (ctype and ctype != "application/json") or (length and ctype != "application/json"):
+            return 415, "the body must be JSON (Content-Type: application/json)"
+
+    if token and parts != HEALTH:
+        given = headers.get("Authorization") or ""
+        scheme, _, value = given.partition(" ")
+        if scheme.lower() != "bearer" or not hmac.compare_digest(value.strip().encode("utf-8"), token.encode("utf-8")):
+            return 401, "this desktop's agent token is required"
+
+    return None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -132,6 +214,18 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, status, reason):
         self._json(status, {"status": "error", "error": reason})
 
+    def _refused(self, parts):
+        """Answer a request refusal() turns away, and say whether it did. Nothing in it is read first."""
+
+        refused = refusal(self.command, parts, self.headers)
+        if refused is None:
+            return False
+        status, reason = refused
+        log(f"HTTP {self.command} {urllib.parse.urlsplit(self.path).path} refused ({status}): {reason}")
+        self.close_connection = True  # its body, if any, is never read
+        self._error(status, reason)
+        return True
+
     def _guarded(self, route):
         """Run a route, turning what it raises into a status an HTTP client can act on."""
 
@@ -153,7 +247,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parts = self._parts()
 
+        if self._refused(parts):
+            return
+
         def route():
+            if parts == HEALTH:
+                return self._json(200, {"status": "ok"})
+
             if parts == ["workflows"]:
                 from decurix_agent.workflow_api import listing
                 return self._json(200, listing())
@@ -222,12 +322,6 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["mode"]:
                 return self._json(200, modes.stage_summary())
 
-            if parts == ["shadowing", "metrics"]:
-                return self._json(200, shadowing.get_metrics())
-
-            if parts == ["shadowing", "observations"]:
-                return self._json(200, {"observations": shadowing.get_recent_observations()})
-
             if parts == ["catalog"]:
                 return self._json(200, {"catalog": catalog.get_catalog()})
 
@@ -289,6 +383,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parts = self._parts()
+
+        if self._refused(parts):
+            return
 
         if parts == ["request"]:
             return self._request()
@@ -470,48 +567,30 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, {"status": "received", "file": path.name, "content": content})
 
     def _request(self):
+        """
+        A person's request or reply. A reply is taken as one only when it names
+        the task whose question is open (messaging.save_request): the control
+        plane sends a reply with that task's ID, after checking the note it
+        answers is this desktop's newest open one.
+        """
 
         try:
+            data = self._body()
 
-            content_length = int(
-                self.headers.get(
-                    "Content-Length",
-                    "0",
-                )
-            )
+            content = data.get("content", "")
+            if not isinstance(content, str) or not content:
+                raise ValueError("missing content")
 
-            raw = self.rfile.read(
-                content_length
-            )
-
-            data = json.loads(
-                raw.decode("utf-8")
-            )
-
-            content = data.get(
-                "content",
-                "",
-            )
-
-            if not content:
-                raise ValueError(
-                    "missing content"
-                )
+            task_id = data.get("task_id", "")
+            if not isinstance(task_id, str):
+                raise ValueError("task_id must be a string")
 
             # The control plane's record for this request; it comes back
             # on every report about it (task_context.py).
-            path = save_request(
-                content,
-                data.get("task_id", ""),
-            )
+            path = save_request(content, task_id)
 
             self._json(200, {"status": "received", "file": path.name})
 
         except Exception as exc:
-
-            log(
-                f"POST /request failed: "
-                f"{exc}"
-            )
-
+            log(f"POST /request failed: {exc}")
             self._error(400, str(exc))

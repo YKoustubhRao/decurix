@@ -139,7 +139,7 @@ def imported():
     body = json.dumps({"data": EXPORT})
     r = bash(f"python3 - <<'EOF'\nimport json,urllib.request as u\n"
              f"d={body!r}\n"
-             f"print(u.urlopen(u.Request('http://localhost:8081/recordings/import',data=d.encode(),method='POST'),timeout=20).read().decode())\nEOF")
+             f"print(u.urlopen(u.Request('http://localhost:8081/recordings/import',data=d.encode(),headers={{'Content-Type':'application/json'}},method='POST'),timeout=20).read().decode())\nEOF")
     result = json.loads(r.stdout)
     print("  imported:", {k: result[k] for k in ("session", "imported", "ignored")}, "skipped:", [(x["type"], x["why"][:40]) for x in result["skipped"]])
     session = result["session"]

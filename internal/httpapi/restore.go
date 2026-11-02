@@ -166,7 +166,9 @@ func readBackupFolders(body io.Reader) (map[string]map[string][]byte, error) {
 	if err != nil {
 		return nil, errors.New("that is not a Decurix backup (not a .tar.gz)")
 	}
-	tr := tar.NewReader(gz)
+	// Everything is decompressed to be walked, also the entries skipped below: a small upload must not expand into
+	// gigabytes of work (review 2026-11-02). A real backup's skills and memory are well inside this.
+	tr := tar.NewReader(io.LimitReader(gz, 4*restoreMaxSum+restoreMaxBody))
 
 	out := map[string]map[string][]byte{}
 	var sum int64

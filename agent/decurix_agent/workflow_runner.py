@@ -50,7 +50,9 @@ def _unchanged_counts(state, step, record):
     if step.get("decision") and (record.get("answer") or record.get("decided")):
         return {}
     others = {c.get("path") for s in state["spec"]["steps"] if s["id"] != step["id"] for c in s.get("checks", [])}
-    return {path: digest for path, digest in baseline.items() if path not in others}
+    patterns = [o for o in others if _is_pattern(o)]
+    return {path: digest for path, digest in baseline.items()
+            if path not in others and not any(PurePosixPath(path).match(o) for o in patterns)}
 
 
 def _serialized(method):
@@ -557,14 +559,21 @@ class WorkflowRunner:
             # retried keeps its first baseline. Found live (round 5 P4, 2026-10-20): taken again after the stage
             # asked, it held the stage's own first-attempt files, and a retry that fixed one of its two workbooks was
             # failed for leaving the other "already present and unchanged". A reopened stage has none (reopen).
+            # A pattern check's baseline is every file it matches now: a file there before the stage, unchanged, is not
+            # one the stage made (review 2026-11-02: never baselined, a stale match from before the task passed).
             if not record["attempts"] and "baseline" not in record:
                 record["baseline"] = {}
+                base = Path(context["work_dir"])
                 for c in s["checks"]:
                     if c.get("format") == "drafts":
                         continue
-                    artifact = Path(context["work_dir"]) / c["path"]
-                    if artifact.is_file():
-                        record["baseline"][c["path"]] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                    if _is_pattern(c["path"]):
+                        found = [(m.relative_to(base).as_posix(), m) for m in sorted(base.glob(c["path"]))]
+                    else:
+                        found = [(c["path"], base / c["path"])]
+                    for key, artifact in found:
+                        if artifact.is_file():
+                            record["baseline"][key] = hashlib.sha256(artifact.read_bytes()).hexdigest()
             record["status"], record["attempts"] = "running", record["attempts"] + 1
             token = uuid.uuid4().hex
             record["lease"] = {"token": token, "owner": self.owner, "host": socket.gethostname(), "pid": os.getpid(), "process_identity": _process_identity(os.getpid()), "expires_at": time.time() + self.lease_seconds}
@@ -596,15 +605,25 @@ class WorkflowRunner:
             record["changed_later"] = True
 
     def _reopen_record(self, step, record, reason):
+        """
+        A done stage to run again for `reason`; True when it may. One out of attempts (its lifetime limit of 10) is
+        failed for that reason instead - never left completed after its result stopped being trusted, and never a
+        raise: from claim() that stopped every later claim of the run (review 2026-11-02).
+        """
         need = record["attempts"] + 1 - step.get("max_attempts", 2)
         if need > record.get("additional_attempts", 0):
             if need > 10 - step.get("max_attempts", 2):
-                raise ValueError("stage reached its lifetime limit of 10 attempts")
+                record["status"] = "failed"
+                record["error"] = (f"{reason} - and it has used its lifetime limit of 10 attempts, so it was not run "
+                                   "again")[:MAX_REPORT_CHARS]
+                record.pop("lease", None)
+                return False
             record["additional_attempts"] = need
         record["status"] = "pending"
         record["baseline"] = {}
         record["reopened"] = str(reason)[:MAX_REPORT_CHARS]
         record.pop("lease", None)
+        return True
 
     @_serialized
     def park(self, run_id, step_id, question, report=None):
@@ -689,8 +708,8 @@ class WorkflowRunner:
         record = state["steps"][step_id]
         if record["status"] not in {"completed", "failed"}:
             return state
-        self._reopen_record(step, record, reason)
-        record.pop("error", None)
+        if self._reopen_record(step, record, reason):
+            record.pop("error", None)
         if state["status"] != "running":
             state["status"] = "pending"
         return self._save(state)
@@ -743,9 +762,20 @@ class WorkflowRunner:
             if error:
                 raise ValueError(str(error))
             context = self.context(state)
-            evidence = artifact_evidence(step, result or {}, context)
-            if any(_unchanged_counts(state, step, record).get(item["path"]) == item["sha256"] for item in evidence):
-                raise ValueError("artifact was already present and unchanged before this step")
+            unchanged = _unchanged_counts(state, step, record)
+            evidence = []
+            for check in step["checks"]:
+                items = artifact_evidence({**step, "checks": [check]}, result or {}, context)
+                if check.get("format") != "drafts" and _is_pattern(check.get("path")):
+                    # Of the files a pattern matches, only those the stage made or changed count toward its minimum.
+                    fresh = [item for item in items if unchanged.get(item["path"]) != item["sha256"]]
+                    if len(fresh) < check.get("min_count", 1):
+                        raise ValueError(f"expected at least {check.get('min_count', 1)} new or changed file(s) "
+                                         f"matching {check['path']}; {len(items) - len(fresh)} of the {len(items)} "
+                                         "found were already there, unchanged, before this step")
+                elif any(unchanged.get(item["path"]) == item["sha256"] for item in items):
+                    raise ValueError("artifact was already present and unchanged before this step")
+                evidence += items
             if self.verifier and not self.verifier(step, result or {}, context):
                 raise ValueError("independent verifier rejected output")
             record.update(status="completed", evidence=evidence)

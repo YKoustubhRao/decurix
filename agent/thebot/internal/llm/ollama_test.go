@@ -73,7 +73,7 @@ func TestOllamaChatForwardsTemperature(t *testing.T) {
 		opts, _ := body["options"].(map[string]any)
 		gotTemp = opts["temperature"]
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{"content": "ok"}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{"content": "ok"}, "done": true})
 	}))
 	defer srv.Close()
 
@@ -97,7 +97,7 @@ func TestOllamaChatOmitsZeroTemperature(t *testing.T) {
 		opts, _ := body["options"].(map[string]any)
 		_, sawKey = opts["temperature"]
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{"content": "ok"}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{"content": "ok"}, "done": true})
 	}))
 	defer srv.Close()
 
@@ -269,5 +269,20 @@ func TestOllamaChatForwardsStopAndThreadOptions(t *testing.T) {
 	}
 	if gotBatch != float64(512) {
 		t.Errorf("num_batch sent = %v, want 512", gotBatch)
+	}
+}
+
+// A stream that ends without its done chunk (the connection dropped, the server stopped) is not a complete answer.
+func TestOllamaStreamWithoutDoneIsNotComplete(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{"content": "The total is 4"}, "done": false})
+	}))
+	defer srv.Close()
+	result, err := NewOllama(srv.URL).Chat(context.Background(), "m", []Message{{Role: "user", Content: "hi"}}, Options{})
+	if err == nil || !result.Truncated {
+		t.Fatalf("result = %+v, err = %v: want an error and the answer marked cut off", result, err)
+	}
+	if !Transient(err) {
+		t.Errorf("a dropped stream is not retried: %v", err)
 	}
 }

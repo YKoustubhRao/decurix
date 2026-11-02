@@ -385,9 +385,9 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// Reply says whether this request answers the session's paused
 		// job. Unset means "if there is one"; false discards it.
 		Reply *bool `json:"reply"`
-		// Approved says the person already said yes to this kind of request
-		// (see scheduler.Request.Approved).
-		Approved bool `json:"approved"`
+		// No "approved" field: a request never approves itself. A yes reaches
+		// a job only as the reply to its own paused approval (Reply, with
+		// ApprovalReading), for that one action, once.
 		// ApprovalReading is the host's one reading of a reply to an approval
 		// (see scheduler.Request.Reading), or null.
 		ApprovalReading *skills.Reading `json:"approvalReading"`
@@ -407,7 +407,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// before it runs - every prior turn is actually handed to the model.
 	history := s.sessions.History(body.SessionID)
 
-	req := scheduler.Request{Prompt: body.Prompt, Context: body.Context, WorkDir: body.WorkDir, History: history, Approved: body.Approved,
+	req := scheduler.Request{Prompt: body.Prompt, Context: body.Context, WorkDir: body.WorkDir, History: history,
 		Reading: body.ApprovalReading}
 	if paused := s.takePaused(body.SessionID); paused != nil {
 		if body.Reply == nil || *body.Reply {
@@ -571,7 +571,8 @@ func (s *server) streamJob(w http.ResponseWriter, r *http.Request, job *jobRecor
 	}
 }
 
-func (s *server) mux() *http.ServeMux {
+// mux is soul's routes behind its guard (guard.go).
+func (s *server) mux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/rag/stats", s.handleRAGStats)
@@ -585,7 +586,7 @@ func (s *server) mux() *http.ServeMux {
 	// "/". This is the ONLY thing this loopback server exists to serve to
 	// a browser; everything else is the JSON/SSE API the UI's own JS calls.
 	mux.Handle("/", http.FileServer(http.FS(web.FS)))
-	return mux
+	return s.guard(mux)
 }
 
 // modelConcurrency is how many chat calls may run at once. A local Ollama
@@ -783,16 +784,18 @@ func main() {
 	// caught running this inside a container: a process bound to
 	// loopback-only is unreachable through Docker's own -p port mapping,
 	// since an incoming connection arrives on the container's external
-	// interface, not its loopback. This does NOT weaken "embedded, not an
-	// external API" - reachability is still entirely gated by whether
-	// whoever runs the container chooses to publish this port (or proxies
-	// it internally, as decurix's own control plane does), never by a
-	// public listener outside the VM.
+	// interface, not its loopback. Every container on the same Docker network
+	// can reach it too (other desktops among them), so who may call is decided
+	// by the guard (guard.go): the desktop's agent token on every API route,
+	// JSON-only writes, and no request from another site.
 	//
 	// A native Windows worker is not in a container: it shares the person's
 	// own computer, where a listener on every interface is reachable from
 	// the network and makes Windows Firewall ask about it. The control plane
 	// sets SOUL_HOST=127.0.0.1 there.
+	if cfg.AgentToken == "" {
+		log.Printf("[soul] DECURIX_AGENT_TOKEN is not set: the API needs no token (only JSON writes from no other site are refused)")
+	}
 	addr := cfg.Host + ":" + cfg.Port
 	log.Printf("[soul] listening on http://%s", addr)
 	log.Fatal(http.ListenAndServe(addr, s.mux()))

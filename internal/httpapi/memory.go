@@ -13,7 +13,9 @@ import (
 // desktopMemoryHandler stores a new worker memory entry or returns all remembered workflows.
 func (s *Server) desktopMemoryHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		jsonResponse(w, s.Memory.List(""))
+		// A desktop reads its own memory; every worker's is a person's to see.
+		own, _ := requestDesktop(r)
+		jsonResponse(w, s.Memory.List(own))
 		return
 	}
 
@@ -26,7 +28,10 @@ func (s *Server) desktopMemoryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	desktopID := strings.TrimSpace(r.FormValue("desktop_id"))
+	desktopID, ok := actingAs(w, r, strings.TrimSpace(r.FormValue("desktop_id")))
+	if !ok {
+		return
+	}
 	title := strings.TrimSpace(r.FormValue("title"))
 	summary := strings.TrimSpace(r.FormValue("summary"))
 	category := strings.TrimSpace(r.FormValue("category"))

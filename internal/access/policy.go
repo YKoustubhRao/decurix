@@ -244,23 +244,76 @@ func CanApprove(u User, req Requirement) bool {
 	return true
 }
 
-// moneyRe finds figures marked as money: a currency symbol or an uppercase
-// three-letter currency code before or after the number, or "amount"/"total"
-// before it.
-var moneyRe = regexp.MustCompile(
-	`(?:\p{Sc}|\b[A-Z]{3}\b|\b(?i:rs|amount|total|sum)\b\.?:?)\s?(\d[\d,]*(?:\.\d+)?)` +
-		`|(\d[\d,]*(?:\.\d+)?)\s?(?:\p{Sc}|\b[A-Z]{3}\b)`)
+// figureRe finds a figure: digits with optional comma groups and decimals.
+var figureRe = regexp.MustCompile(`\d+(?:,\d+)*(?:\.\d+)?`)
 
-// LargestAmount returns the largest money figure in text, or nil when there is none.
+// groupedRe is a figure grouped the Western (1,250,000) or the Indian (12,50,000) way.
+var groupedRe = regexp.MustCompile(`^(?:\d{1,3}(?:,\d{3})+|\d{1,2}(?:,\d{2})*,\d{3})(?:\.\d+)?$`)
+
+// moneyBeforeRe is what marks the figure after it as money: a currency sign, a
+// currency code or word, or "amount"/"total"/"sum", ending where the figure starts.
+var moneyBeforeRe = regexp.MustCompile(`(?i)(?:\p{Sc}|\b(?:` + currencyWords + `|amount|total|sum)\b\.?:?)\s?$`)
+
+// moneyAfterRe is what marks the figure before it as money, from where the figure ends.
+var moneyAfterRe = regexp.MustCompile(`(?i)^\s?(?:\p{Sc}|\b(?:` + currencyWords + `)\b|/-)`)
+
+// percentAfterRe: a figure followed by this is a rate, never an amount.
+var percentAfterRe = regexp.MustCompile(`(?i)^\s?(?:%|per\s?cent\b|pct\b)`)
+
+// scaleWordRe: a word that makes the figure before it an amount on its own (Indian lakh and crore).
+var scaleWordRe = regexp.MustCompile(`(?i)^\s?(lakhs?|lacs?|crores?)\b`)
+
+// scaleMarkRe: a short scale that counts only after a figure already marked as money ("Rs 5 L", "₹2Cr", "$50k").
+var scaleMarkRe = regexp.MustCompile(`(?i)^\s?(l|cr|k|thousand|million|mn|billion|bn)\b`)
+
+// currencyWords are ISO codes and words that name a currency.
+const currencyWords = `rs|inr|rupees?|usd|eur|gbp|aed|sar|qar|kwd|omr|bhd|sgd|hkd|jpy|cny|rmb|aud|nzd|cad|chf|sek|nok|dkk|zar|myr|thb|idr|php|lkr|npr|bdt|pkr|krw|brl|mxn|rub|try`
+
+// scale returns the multiplier a scale word names.
+func scale(word string) float64 {
+	switch strings.TrimRight(strings.ToLower(word), "s") {
+	case "lakh", "lac", "l":
+		return 1e5
+	case "crore", "cr":
+		return 1e7
+	case "k", "thousand":
+		return 1e3
+	case "million", "mn":
+		return 1e6
+	case "billion", "bn":
+		return 1e9
+	}
+	return 1
+}
+
+// LargestAmount returns the largest money figure in text, or nil when there is none. A figure is money when a
+// currency sign, code or word (or "amount"/"total") stands beside it, when it is grouped with commas (1,250 or
+// 4,50,000), or when "lakh"/"crore" follows it; a figure followed by "%" is a rate and never an amount, and a figure
+// joined to letters, a dash or a slash (INV-2024, 27/10) is part of a code or a date.
 func LargestAmount(text string) *float64 {
 	var best *float64
-	for _, m := range moneyRe.FindAllStringSubmatch(text, -1) {
-		raw := m[1]
-		if raw == "" {
-			raw = m[2]
+	for _, loc := range figureRe.FindAllStringIndex(text, -1) {
+		raw, before, after := text[loc[0]:loc[1]], text[:loc[0]], text[loc[1]:]
+		if joined(before, true) || (joined(after, false) && !scaleMarkRe.MatchString(after) && !scaleWordRe.MatchString(after)) {
+			continue
+		}
+		if percentAfterRe.MatchString(after) {
+			continue
+		}
+		if strings.Contains(raw, ",") && !groupedRe.MatchString(raw) {
+			continue
 		}
 		v, err := strconv.ParseFloat(strings.ReplaceAll(raw, ",", ""), 64)
 		if err != nil {
+			continue
+		}
+		marked := moneyBeforeRe.MatchString(before) || moneyAfterRe.MatchString(after)
+		if m := scaleWordRe.FindStringSubmatch(after); m != nil {
+			v, marked = v*scale(m[1]), true
+		} else if m := scaleMarkRe.FindStringSubmatch(after); m != nil && marked {
+			v = v * scale(m[1])
+		}
+		if !marked && !strings.Contains(raw, ",") {
 			continue
 		}
 		if best == nil || v > *best {
@@ -269,4 +322,40 @@ func LargestAmount(text string) *float64 {
 		}
 	}
 	return best
+}
+
+// joined reports whether a figure touches a code or a date on that side: a letter or digit right beside it, or a
+// dash or slash with a letter or digit beyond (INV-2024, 27/10). Before a figure, a currency word ending in a dot
+// ("Rs.4000") is not a code.
+func joined(side string, before bool) bool {
+	r := []rune(side)
+	if len(r) == 0 {
+		return false
+	}
+	at, next := len(r)-1, len(r)-2
+	if !before {
+		at, next = 0, 1
+	}
+	c := r[at]
+	if isAlnum(c) {
+		return true
+	}
+	if (c == '-' || c == '/' || c == '.') && next >= 0 && next < len(r) && isAlnum(r[next]) {
+		if before && c == '.' && moneyBeforeRe.MatchString(side) {
+			return false
+		}
+		if !before && c == '.' {
+			return false // a full stop after the figure ends the sentence
+		}
+		if !before && c == '/' && r[next] == '-' {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+// isAlnum reports whether r is a letter or a digit.
+func isAlnum(r rune) bool {
+	return r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
 }

@@ -61,6 +61,10 @@ class TestWrittenApprovalPause(unittest.TestCase):
         self.assertFalse(second["reply"])
         self.assertIn("that is approval", second["context"])
         self.assertIn("proceed", second["context"])
+        # A yes is that one action's, never a waiver for the rest of the task (review 2026-11-02).
+        self.assertIn("for that one action, once", second["context"])
+        self.assertNotIn("do not ask for approval", second["context"].lower())
+        self.assertIn("still needs its own approval", second["context"])
         self.assertEqual(self.finals, ["Top result: ..."])
 
     def test_a_non_approval_answer_is_passed_as_an_answer(self):

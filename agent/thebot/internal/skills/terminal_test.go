@@ -215,15 +215,12 @@ func TestTerminalRunSuccess(t *testing.T) {
 	}
 }
 
-// The live bug this pins - found via a 100+ case terminal battery: `grep
-// pattern file` finding no match, or plain `false`, are real, honest,
-// COMPLETE results - not a failure of the agent's job, which was simply
-// to run the command and report what actually happened. Treating them as
-// Verified:false triggered a full LLM failure-reasoning-and-retry cycle
-// that quietly substituted an unrelated command that happened to exit 0
-// ("false" silently became "ls -l" in one real run), discarding what was
-// actually asked and misreporting a perfectly successful grep as broken.
-func TestTerminalTreatsOrdinaryNonzeroExitAsARealVerifiedResult(t *testing.T) {
+// A nonzero exit is never a success, even with nothing on stderr: `grep`
+// finding no match, `false`, a failed test and a tool that writes its errors
+// to stdout all look alike. The exit code is still reported as it is, and the
+// result is marked fatal so the scheduler does not swap in an unrelated
+// command that exits 0 (found live: "false" became "ls -l").
+func TestTerminalNeverVerifiesANonzeroExit(t *testing.T) {
 	ws := newTestWorkspace(t)
 	if err := os.WriteFile(filepath.Join(ws.Root(), "haystack.txt"), []byte("apple\nbanana\n"), 0o644); err != nil {
 		t.Fatalf("could not write fixture: %v", err)
@@ -240,8 +237,11 @@ func TestTerminalTreatsOrdinaryNonzeroExitAsARealVerifiedResult(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Run(%q) error = %v", step, err)
 		}
-		if !result.Verified {
-			t.Errorf("Run(%q).Verified = false, want true - this is a real, honest, complete result, not an execution failure. Output: %s", step, result.Output)
+		if result.Verified {
+			t.Errorf("Run(%q).Verified = true for a nonzero exit. Output: %s", step, result.Output)
+		}
+		if result.Meta["fatal"] != true {
+			t.Errorf("Run(%q) not marked fatal: the scheduler would retry it with another command", step)
 		}
 		if !strings.Contains(result.Output, "Exit code:") {
 			t.Errorf("Run(%q).Output = %q, want the real exit code still reported", step, result.Output)
@@ -332,7 +332,7 @@ func TestTerminalTreatsNonzeroExitWithRealStderrAsARealFailure(t *testing.T) {
 // found live, it was reported as the command's ordinary result and the
 // person's yes had nothing to resume. Approved, the same command runs again.
 func TestTerminalPausesWhenTheScreenGateStopsAGuiCommand(t *testing.T) {
-	grant := filepath.Join(t.TempDir(), "granted")
+	grant := filepath.ToSlash(filepath.Join(t.TempDir(), "granted"))
 	stubWorkerTools(t,
 		"if [ -f "+grant+" ]; then echo 'Clicked button \"Send message\" (e85).'; exit 0; fi\n"+
 			"echo 'NEEDS_APPROVAL: Approval needed before I click button \"Send message\" (e85) in \"Message form\": it sends something on your behalf. Nothing was clicked or sent.'\nexit 3\n",

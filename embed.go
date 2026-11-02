@@ -31,8 +31,6 @@ import "embed"
 //
 //go:generate go run embed_gen.go
 //go:embed docker/desktop.basic.Dockerfile
-//go:embed docker/desktop.developer.Dockerfile
-//go:embed docker/desktop.ai.Dockerfile
 //go:embed docker/tools.Dockerfile
 //go:embed agent
 //go:embed agent/decurix_agent/__init__.py agent/decurix_agent/*/__init__.py agent/decurix_agent/*/__main__.py

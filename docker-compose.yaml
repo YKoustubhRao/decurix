@@ -7,6 +7,12 @@ services:
 
     container_name: decurix
 
+    # The settings, keys included, given to the container when it starts - never baked into the image. Optional, so
+    # a checkout without a .env still starts (and says it found none).
+    env_file:
+      - path: .env
+        required: false
+
     ports:
       # The primary listener has no login: it can create desktops and run
       # commands on the host. Published on loopback only, so nothing else on

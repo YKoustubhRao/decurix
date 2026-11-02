@@ -166,7 +166,7 @@ class TheGateSendsBackAShortFill(FileWorkIsChecked):
         with mock.patch.object(skill_task.produced, "store_results", lambda paths: []), \
                 mock.patch.object(skill_task.produced, "missing_requested", lambda request, made, root=None: ""), \
                 mock.patch.object(skill_task.produced, "formula_errors",
-                                  lambda paths: ["orders.xlsx: Orders!E5 shows #REF!"]):
+                                  lambda paths, failed=None: ["orders.xlsx: Orders!E5 shows #REF!"]):
             self.assertTrue(skill_task._gate("Done.", "final", "thebot"))
         self.assertEqual(self.judged, [])
         self.assertIn("Orders!E5 shows #REF!", self.asked[-1][0])

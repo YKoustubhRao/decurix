@@ -29,7 +29,8 @@ MAX_VALUE = 400
 # How much of a look's text the read-back searches (fields in view or not, and the page's words).
 MAX_PAGE_TEXT = 60000
 # A label's words that say nothing about which field it is.
-_LABEL_FILLER = {"of", "the", "a", "an", "in", "rs", "inr", "usd", "per", "dd", "mm", "yyyy", "yy", "in", "to", "and"}
+# ("to" is not one: "To Date" is another field than "Date" - _LABEL_QUALIFIERS.)
+_LABEL_FILLER = {"of", "the", "a", "an", "in", "rs", "inr", "usd", "per", "dd", "mm", "yyyy", "yy", "and"}
 _LABEL_SYNONYMS = {"no": "number", "num": "number", "#": "number", "nbr": "number", "ref": "reference",
                    "amt": "amount", "qty": "quantity", "dt": "date", "a/c": "account", "ac": "account"}
 # A word that makes a label another field's ("Due date" is not "Date"): a label with one of these never stands for a
@@ -50,17 +51,28 @@ def _text_key(value):
     return re.sub(r"[^a-z0-9]", "", re.sub(r"\s*\([^()]{1,12}\)\s*$", "", str(value or "")).lower())
 
 
-def as_number(value):
-    """The number a value writes (commas, currency signs and spaces aside), or None."""
+# A number as a value writes it: a currency sign or word before it ("Rs. 5,850.00", "₹78", "INR 400"), a sign or a
+# unit after it ("500/-", "18%", "15 kg"). Letters or a dash joined to the digits ("INV-1234", "PO1234", "1234A") make
+# it an identifier, never a number: "INV-1234" and "PO-1234" are two documents, not the figure -1234 twice. Found in
+# review (2026-11-02): the save gate passed a form holding the wrong document number.
+_AS_NUMBER = re.compile(
+    r"\s*(?:(?:rs\.?|inr|rupees?|usd|eur|gbp)\s*|[^\w\s.,+-]\s*)?([-+]?)\s*"
+    r"(\d(?:[\d,]|\s(?=\d))*(?:\.\d+)?)"
+    r"\s*(?:/-|%|[^\w\s.,]|\s[A-Za-z]{1,12}\.?)?\s*", re.I)
 
-    t = str(value if value is not None else "").strip()
-    t = re.sub(r"^[^\d]*?(?=[-+]?\d)", "", t)  # a currency sign or word before it ("Rs. 5,850.00")
-    t = re.sub(r"[^\d.]*$", "", t)              # a unit or sign after it
-    t = t.replace(",", "").replace(" ", "")
-    if not re.fullmatch(r"[-+]?\d+(?:\.\d+)?", t):
+
+def as_number(value):
+    """The number a value writes (commas, currency signs and spaces aside), or None - None also for an identifier
+    written in digits: letters joined to them, or a leading zero ("0012345" is not 12345)."""
+
+    m = _AS_NUMBER.fullmatch(str(value if value is not None else ""))
+    if not m:
+        return None
+    digits = re.sub(r"[,\s]", "", m.group(2))
+    if re.match(r"0\d", digits):
         return None
     try:
-        return Decimal(t)
+        return Decimal(m.group(1) + digits)
     except InvalidOperation:
         return None
 
@@ -229,6 +241,18 @@ def _save(task_id, records):
     tmp.replace(_path(task_id))
 
 
+def _key_number_stands_in(key, text):
+    """Whether a record key's number - after a letter prefix ("B9", "INV-1234") - stands in the text as a number of its
+    own. Only for finding which declared record a form is (a form shows the voucher's number, not the worker's key);
+    never for whether a value is the document's (stands_in, same_value)."""
+
+    m = re.fullmatch(r"\s*[A-Za-z]{1,6}[-/ ]?(\d+)\s*", str(key or ""))
+    if not m:
+        return False
+    n = as_number(m.group(1))
+    return n is not None and any(as_number(tok) == n for tok in _NUMBER_TOKEN.findall(text or ""))
+
+
 def open_record(records, text=None, form=None):
     """
     The record being entered now: among those declared and not yet saved, the latest whose key stands in `text` (the
@@ -241,7 +265,7 @@ def open_record(records, text=None, form=None):
     unsaved = [rec for rec in records if not rec.get("saved_at")]
     if text:
         for rec in reversed(unsaved):
-            if stands_in(rec.get("key", ""), text):
+            if stands_in(rec.get("key", ""), text) or _key_number_stands_in(rec.get("key", ""), text):
                 return rec
     if form is not None:
         pairs = [(str(l), str(v if v is not None else "")) for l, v in form]

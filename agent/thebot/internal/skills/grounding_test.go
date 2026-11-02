@@ -754,3 +754,21 @@ func TestAMonthsFirstAndLastDayAreTracedByADateInIt(t *testing.T) {
 		}
 	}
 }
+
+// An identifier with letters is not a number: "INV 5000" typed into a field is not traced by any 5000 the work saw.
+// A currency's mark before the digits is no identifier.
+func TestCanonicalNumberKeepsIdentifiersApart(t *testing.T) {
+	for v, want := range map[string]string{
+		"6,000.00": "6000", "Rs. 6000": "6000", "₹6,000": "6000", "INR 6000": "6000", "US$ 12.5": "12.5", "$ 7": "7",
+		"EUR 1.200": "1.2",
+	} {
+		if got, ok := canonicalNumber(v); !ok || got != want {
+			t.Errorf("canonicalNumber(%q) = %q, %v; want %q", v, got, ok, want)
+		}
+	}
+	for _, v := range []string{"INV 5000", "PO 12", "Bill 456", "A 12", "Invoice No. 455", "v1.27", "Q3 2026"} {
+		if got, ok := canonicalNumber(v); ok {
+			t.Errorf("canonicalNumber(%q) = %q, want no number: it is an identifier", v, got)
+		}
+	}
+}

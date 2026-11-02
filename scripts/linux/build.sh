@@ -104,7 +104,11 @@ if [ -d /mnt/c ]; then
         powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/decurix_host_apps.json 2>/dev/null || true
     fi
 else
-    export DECURIX_HOST_MNT_C="/"
+    # No Windows drive here. Never the host's root: the control plane has no login, and its "C:" is what host-file
+    # checks read from - "/" put /etc/shadow and every home folder in reach (review 2026-11-02). An empty folder.
+    DECURIX_HOST_MNT_C="${XDG_CACHE_HOME:-$HOME/.cache}/decurix/no-windows-drive"
+    mkdir -p "$DECURIX_HOST_MNT_C"
+    export DECURIX_HOST_MNT_C
 fi
 export DECURIX_HOST_HOME="${HOME:-/home}"
 

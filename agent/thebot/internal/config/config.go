@@ -68,14 +68,21 @@ type Config struct {
 	// OpenAI-compatible proxy need not offer embeddings at all.
 	EmbedProvider string
 
-	// Port is loopback-only - "embedded, not an external API" means this
-	// is how the VM's own local UI talks to the soul process, never a
-	// network-facing contract for third parties.
+	// Port is soul's HTTP API and UI. "Embedded, not an external API": it is
+	// how the control plane (through its /agent/<id>/ proxy) and the desktop's
+	// own agent talk to soul, never a contract for third parties. Inside a
+	// desktop container it listens on every interface (Host), so other
+	// containers on the Docker network can reach it: AgentToken is what keeps
+	// them out (cmd/soul/guard.go).
 	Port string
 	// Host is the address it listens on: every interface inside a desktop
 	// container (the control plane reaches it from outside the container),
 	// loopback for a native Windows worker.
 	Host string
+	// AgentToken is the desktop's agent token (DECURIX_AGENT_TOKEN): when set,
+	// every API route but the health check needs "Authorization: Bearer <it>".
+	// Never logged.
+	AgentToken string
 	// DoclingScript is the path to scripts/docling_convert.py - a Python
 	// subprocess the Data RAG shells out to for real PDF/DOCX/HTML/image
 	// parsing (docling is Python-only, so this dependency doesn't go away
@@ -117,6 +124,7 @@ func Load() Config {
 
 		Host:          getenv("SOUL_HOST", "0.0.0.0"),
 		Port:          getenv("SOUL_PORT", "4900"),
+		AgentToken:    getenv("DECURIX_AGENT_TOKEN", ""),
 		DoclingScript: getenv("DOCLING_SCRIPT", "scripts/docling_convert.py"),
 	}
 }

@@ -101,3 +101,21 @@ func TestAnthropicChatAgainstRealServer(t *testing.T) {
 	}
 	t.Logf("real Anthropic response: %q", result.Text)
 }
+
+// stop_reason max_tokens is an answer cut off for want of room.
+func TestAnthropicChatMarksACutOffAnswer(t *testing.T) {
+	for reason, want := range map[string]bool{"max_tokens": true, "end_turn": false} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"content": []map[string]any{{"type": "text", "text": "half a rep"}}, "stop_reason": reason,
+			})
+		}))
+		p := NewAnthropic("test-key", "claude-test")
+		p.BaseURL = srv.URL
+		result, err := p.Chat(context.Background(), "claude-test", []Message{{Role: "user", Content: "hi"}}, Options{})
+		srv.Close()
+		if err != nil || result.Truncated != want {
+			t.Errorf("stop_reason %q: Truncated = %v (%v), want %v", reason, result.Truncated, err, want)
+		}
+	}
+}

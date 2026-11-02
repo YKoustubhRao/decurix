@@ -72,10 +72,15 @@ type BuildReport struct {
 	FilesWritten []BuiltFile
 	// TestsPassed is the real result of the real full test suite - false
 	// means the suite genuinely did not pass, never "we didn't check".
-	TestsPassed  bool
-	TestOutput   string
-	BuildPassed  bool
+	TestsPassed bool
+	TestOutput  string
+	// BuildPassed is the real result of the project's build step (true when
+	// the toolchain has none).
+	BuildPassed bool
+	// SmokeRan and SmokePassed are whether something meant to run was
+	// started, and whether it really started (or ran and exited cleanly).
 	SmokeRan     bool
+	SmokePassed  bool
 	SmokeOutput  string
 	Attempts     int
 	FixesApplied []string
@@ -402,13 +407,25 @@ func fileNames(files []FileSpec) []string {
 	return out
 }
 
+// Succeeded reports whether the build is a success: the full test suite
+// passed, the project builds, a smoke start (when one ran) really started,
+// and the build finished within its budget. Anything less is not done.
+func (r *BuildReport) Succeeded() bool {
+	return r.TestsPassed && r.BuildPassed && (!r.SmokeRan || r.SmokePassed) && !r.Incomplete
+}
+
 // Summary renders the report as the answer the user actually sees.
 func (r *BuildReport) Summary() string {
 	var b strings.Builder
 
 	status := "✓ Built and tested"
-	if !r.TestsPassed {
+	switch {
+	case !r.TestsPassed:
 		status = "⚠ Built, but the tests do not pass"
+	case !r.BuildPassed:
+		status = "⚠ The tests pass, but the project does not build"
+	case r.SmokeRan && !r.SmokePassed:
+		status = "⚠ Built and tested, but it does not start"
 	}
 	if r.Incomplete {
 		status = "⚠ Incomplete (ran out of build budget)"

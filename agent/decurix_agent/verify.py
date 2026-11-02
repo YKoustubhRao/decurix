@@ -118,11 +118,75 @@ def available():
     return llm_client.available()
 
 
+# ============================================================
+# The one decision: what a check's result lets a report say
+#
+# Every route that reports work - a planned stage and its run's final report, the final gate, a workflow stage - maps
+# what its checks found to the report through outcome(), so "done" means the same everywhere and nothing reaches it by
+# default. It fails closed (review 2026-11-02: across the agent, whatever could not be checked - a judge unsure, a
+# model outage, no model at all, a check that raised - went out as "done", checked).
+# ============================================================
+
+UNCHECKED = "unchecked"
+
+
+def outcome(verdict=None, problems=(), not_made=(), error=None):
+    """
+    What a report may say after its checks: {"status", "checked", "kind", "why"}.
+
+    `verdict` is the judge's answer (judge()) or None when no judgement was made; `problems` what a check in code found
+    wrong; `not_made` the checks that could not be made (they raised, a file could not be read); `error` the check
+    itself failing (an exception, an outage). In this order:
+      "not_done"  any problem, or the judge's not_done / cannot: checked=True (a check saw it), kind "error";
+      "unchecked" an error, a check not made, no judgement, unsure, an unknown verdict, or a done whose confidence is
+                  below DONE_CONFIDENCE: checked=False, kind "final" - the task ended with a result nobody could check,
+                  which the control plane records as not done until a person looks (workqueue: "finished without a
+                  checked final report"). Never a success: the caller asks the person, or reports it saying, first,
+                  what was not checked;
+      "done"      only the judge's done (its confidence, when given, at least DONE_CONFIDENCE) with no problem, no
+                  check left unmade and no error: checked=True, kind "final".
+    """
+
+    problems = [" ".join(str(p).split()) for p in problems or () if str(p or "").strip()]
+    if problems:
+        return {"status": NOT_DONE, "checked": True, "kind": "error", "why": "; ".join(problems)[:600]}
+    given = verdict if isinstance(verdict, dict) else {}
+    name = str(given.get("verdict") or "").strip().lower()
+    said = " ".join(str(x) for x in (given.get("seen"), given.get("why")) if x)
+    if name in (NOT_DONE, CANNOT):
+        return {"status": NOT_DONE, "checked": True, "kind": "error", "why": said[:600] or "the check found it not done"}
+    if error is not None:
+        return {"status": UNCHECKED, "checked": False, "kind": "final",
+                "why": f"the check could not be made ({' '.join(str(error).split())[:300]})"}
+    not_made = [" ".join(str(n).split()) for n in not_made or () if str(n or "").strip()]
+    if not_made:
+        return {"status": UNCHECKED, "checked": False, "kind": "final",
+                "why": "not checked - these checks could not be made: " + "; ".join(not_made)[:500]}
+    if name == DONE:
+        try:
+            sure = float(given["confidence"]) >= DONE_CONFIDENCE if "confidence" in given else True
+        except (TypeError, ValueError):
+            sure = False
+        if sure:
+            return {"status": DONE, "checked": True, "kind": "final", "why": said[:600]}
+        return {"status": UNCHECKED, "checked": False, "kind": "final",
+                "why": f"not sure enough that it is done: {said}".strip()[:600]}
+    if not given:
+        return {"status": UNCHECKED, "checked": False, "kind": "final", "why": "no check judged it"}
+    return {"status": UNCHECKED, "checked": False, "kind": "final",
+            "why": str(given.get("why") or said or "the check could not confirm it")[:600]}
+
+
 # A report's own heading for what it did not do ("Left undone:", "**Not done:**").
 _UNDONE_HEAD = re.compile(r"^\s*(?:[*_#>\-\s]*)(left undone|not done|undone|not completed|could not (?:do|complete))"
                           r"(?:[*_\s]*)[:\-]\s*(.*)$", re.I)
-# What under such a heading says that nothing was left.
-_NOTHING_LEFT = re.compile(r"^[\s*_\-.]*(?:none|nothing|n/?a\b|no (?:part|item|step)s?\b|all (?:done|of it)\b)", re.I)
+# What under such a heading says that nothing was left - the WHOLE item, not only how it begins: "None of 3 bills
+# saved" begins with "none" and lists everything as undone (review 2026-11-02: read as "nothing left", the no-model
+# gate passed it). An item that says more than "nothing (was) left" is kept as undone - asked, never passed.
+_NOTHING_LEFT = re.compile(r"^[\s*_\-.]*(?:none|nothing|n/?a|no (?:part|item|step|thing)s?|all (?:done|of it))"
+                           r"(?:\s+(?:was\s+|is\s+|were\s+|are\s+)?(?:left(?:\s+undone)?|undone|remaining|remains|"
+                           r"outstanding|needed|required|necessary))?(?:\s*[-–—:,;(]\s*(?:all|everything)\s+(?:was\s+|is\s+|of it\s+)?"
+                           r"(?:done|completed?|finished|saved))?[\s*_.!)]*$", re.I)
 # A line that opens the next part of a report ("How I verified:").
 _NEXT_HEAD = re.compile(r"^\s*[*_#]*[A-Z][^:\n]{0,60}:\s*$")
 

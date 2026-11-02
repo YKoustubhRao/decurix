@@ -101,7 +101,7 @@ A rundown of what's actually built and working, grouped by area. See [`docs/`](d
 
 **Workers & environments**
 * Create, start, stop, restart and delete disposable desktop VMs (Docker containers running a full XFCE desktop over VNC) from a single dashboard
-* Three desktop profiles — `basic` (VNC only), `developer` (+ LibreOffice, git, Node, Go, Rust, gh, Claude Code) and `ai` (developer + Codex) — picked per worker at creation time
+* One desktop image (`decurix-desktop:basic`) for every worker; the older `developer` and `ai` profile names are tags of the same image
 * Persistent per-worker environments and worker memory that survive a container being recreated
 * Idle workers stop themselves automatically after a configurable timeout, and a stopped worker auto-starts (and the request waits for it) the moment it's given something to do
 * Live desktop thumbnails on every dashboard card, driven by a direct RFB screenshot reader rather than an embedded VNC iframe, so the dashboard stays fast at any worker count
@@ -226,7 +226,7 @@ Everything scripted lives under [`scripts/`](scripts/), split by who runs it. `l
 |---|---|---|---|---|
 | **One-shot** | `scripts/linux/quickstart.sh` | `scripts/mac/quickstart.sh` | `scripts\windows\quickstart.ps1` | Fresh machine to running dashboard in one command: host setup (if Docker's missing) then Start, below. |
 | **Host setup** | `scripts/linux/setup.sh` | `scripts/mac/setup.sh` | `scripts\windows\setup.ps1` | One-time: Docker, `cloudflared`, Ollama / QEMU. |
-| **Desktop images** | `scripts/linux/build-images.sh` | `scripts/mac/build-images.sh` | `scripts\windows\build-images.ps1` | Builds `decurix-desktop:{basic,developer,ai}`. |
+| **Desktop images** | `scripts/linux/build-images.sh` | `scripts/mac/build-images.sh` | `scripts\windows\build-images.ps1` | Builds `decurix-desktop:basic` and `decurix-tools:latest`. |
 | **Start** | `scripts/linux/build.sh` | `scripts/mac/build.sh` | `scripts\windows\build.ps1` | Like opening the app: builds only missing images, starts the control plane if it isn't already running, opens a tunnel. Leaves existing desktops and the database untouched. |
 | **Rebuild** | `scripts/linux/rebuild.sh` | `scripts/mac/rebuild.sh` | `scripts\windows\rebuild.ps1` | Like reinstalling: rebuilds every image and the control plane (still cached, so it's fast), every `desktop_*` container/volume removed, and (after a confirmation prompt) the app database wiped. |
 | **Standalone VM test** | `scripts/linux/test-vm.sh` | `scripts/mac/test-vm.sh` | `scripts\windows\test-vm.ps1` | One throwaway desktop container + a dummy control-plane stub, no full Decurix stack needed. See below. |
@@ -331,12 +331,11 @@ That's it — the popup calls the control plane, which runs the login in a throw
 which is a wrapper around:
 
 ```bash
-docker build --platform linux/amd64 -f docker/desktop.basic.Dockerfile     -t decurix-desktop:basic     .
-docker build --platform linux/amd64 -f docker/desktop.developer.Dockerfile -t decurix-desktop:developer .
-docker build --platform linux/amd64 -f docker/desktop.ai.Dockerfile        -t decurix-desktop:ai        .
+docker build --platform linux/amd64 -f docker/desktop.basic.Dockerfile -t decurix-desktop:basic .
+docker build --platform linux/amd64 -f docker/tools.Dockerfile         -t decurix-tools:latest  .
 ```
 
-Re-run whichever of these changed whenever you edit `agent/` or a `docker/desktop.*.Dockerfile` — the control plane doesn't rebuild them for you.
+Re-run whichever of these changed whenever you edit `agent/` or a `docker/*.Dockerfile` — the control plane doesn't rebuild them for you.
 
 ### 3. Start the control plane
 
@@ -425,7 +424,7 @@ tar -xzf decurix_<version>_linux_amd64.tar.gz && cd decurix_<version>_linux_amd6
 ./decurix                    # dashboard on http://localhost:8080
 ```
 
-`--build-images` builds `decurix-desktop:{basic,developer,ai}` straight out of the executable, streaming Docker's output; it skips images that already exist unless you add `--rebuild`. Until they exist the dashboard still starts, and says which ones are missing.
+`--build-images` builds `decurix-desktop:basic` and `decurix-tools:latest` straight out of the executable, streaming Docker's output; it skips images that already exist unless you add `--rebuild`. Until they exist the dashboard still starts, and says which ones are missing.
 
 Configuration is optional — every setting has a working default, and `.env` is read from the working directory or from the folder the executable sits in (plain environment variables work too). `./decurix --version` prints the build it came from.
 

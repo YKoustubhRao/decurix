@@ -332,7 +332,9 @@ document.querySelectorAll("[data-waitlist]").forEach((form) => {
       form.email.focus();
       return;
     }
-    if (form.botcheck.checked) return; // a bot filled the hidden field
+    // A bot ticked the hidden honeypot. Read it defensively: a form without the field must still submit.
+    const trap = form.elements.namedItem("botcheck");
+    if (trap && trap.checked) return;
 
     if (!WAITLIST.accessKey) {
       console.warn("Decurix waitlist: set WAITLIST.accessKey in main.js (see website/README.md).");

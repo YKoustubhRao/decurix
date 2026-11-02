@@ -864,6 +864,9 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
   var verdictOverrides = {};
 
   function setVerdict(entry, verdict){
+    /* The button may belong to an element kept from an earlier snapshot: act
+       on this entry as the latest snapshot holds it. */
+    entry = lastThread.entries.filter(function(e){ return e.id === entry.id; })[0] || entry;
     var previous = entry.verdict || "";
 
     verdictOverrides[entry.task_id] = verdict;
@@ -1050,15 +1053,81 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
 
   /* ---------------- render ---------------- */
 
+  /* The log is redrawn on every step, but an entry that has not changed keeps
+     its element: a steps list someone opened stays open, its screenshots are
+     not loaded again, and the log does not collapse and jump to the top while
+     someone reads further up. The live turn takes its new steps on the end. */
+  var entryEls = new Map();
+  var working = null;
+
+  function entrySig(entry, withVerdict){
+    return JSON.stringify([entry.role, entry.kind, entry.content, entry.steps, entry.files, entry.verdict, entry.task_id, withVerdict]);
+  }
+
+  function keepOpen(from, to){
+    var was = from && from.querySelector("details.steps");
+    var now = to.querySelector("details.steps");
+    if(was && now){ now.open = was.open; }
+  }
+
+  function entryNode(entry, withVerdict){
+    var sig = entrySig(entry, withVerdict);
+    var had = entry.id ? entryEls.get(entry.id) : null;
+
+    if(had && had.sig === sig){
+      var time = had.el.querySelector(".entry-time");
+      if(time){ time.textContent = relativeTime(entry.created_at); }
+      return had.el;
+    }
+
+    var el = entryElement(entry, withVerdict);
+    if(had){ keepOpen(had.el, el); }
+    if(entry.id){ entryEls.set(entry.id, {sig: sig, el: el}); }
+    return el;
+  }
+
+  function workingNode(thread){
+    var keys = thread.steps.map(function(step){ return JSON.stringify(step); });
+    var startedAt = thread.started_at || "";
+
+    var grows = working && working.startedAt === startedAt &&
+      keys.length >= working.keys.length && (working.keys.length > 0 || keys.length === 0) &&
+      working.keys.every(function(key, i){ return key === keys[i]; });
+
+    if(grows){
+      if(keys.length > working.keys.length){
+        var list = working.el.querySelector(".steps-list");
+        var label = working.el.querySelector(".steps > summary span");
+        var follow = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+
+        thread.steps.slice(working.keys.length).forEach(function(step){ list.appendChild(stepElement(step)); });
+        if(label){ label.textContent = keys.length === 1 ? "1 step" : keys.length + " steps"; }
+        if(follow){ list.scrollTop = list.scrollHeight; }
+
+        working.keys = keys;
+      }
+      return working.el;
+    }
+
+    var el = workingElement(thread);
+    if(working){ keepOpen(working.el, el); }
+    working = {el: el, startedAt: startedAt, keys: keys};
+    return el;
+  }
+
   function render(thread){
     var stick = atBottom();
-
-    inner.innerHTML = "";
+    var top = log.scrollTop;
 
     if(!thread.entries.length && !thread.running && !pending.length){
-      inner.appendChild(emptyElement());
+      entryEls.clear();
+      working = null;
+      if(!inner.querySelector(".chat-empty")){ inner.replaceChildren(emptyElement()); }
       return;
     }
+
+    var nodes = [];
+    var seen = new Set();
 
     /* One verdict per task, on its latest answer: a retried task answers
        more than once, and a query is not an answer at all. */
@@ -1074,18 +1143,30 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
         entry.verdict = verdictOverrides[entry.task_id];
       }
 
-      inner.appendChild(entryElement(entry, answerFor[entry.task_id] === entry.id));
+      if(entry.id){ seen.add(entry.id); }
+      nodes.push(entryNode(entry, answerFor[entry.task_id] === entry.id));
     });
 
+    entryEls.forEach(function(_, id){ if(!seen.has(id)){ entryEls.delete(id); } });
+
     if(thread.running){
-      inner.appendChild(workingElement(thread));
+      nodes.push(workingNode(thread));
+    }else{
+      working = null;
     }
 
     pending.forEach(function(item){
-      inner.appendChild(pendingElement(item));
+      nodes.push(pendingElement(item));
     });
 
-    if(stick){ scrollToBottom(); }
+    /* Only what moved is moved: a kept element taken out and put back would
+       lose the focus of a button in it. */
+    nodes.forEach(function(el, i){
+      if(inner.childNodes[i] !== el){ inner.insertBefore(el, inner.childNodes[i] || null); }
+    });
+    while(inner.childNodes.length > nodes.length){ inner.removeChild(inner.lastChild); }
+
+    if(stick){ scrollToBottom(); }else{ log.scrollTop = top; }
   }
 
   /* ---------------- sending ----------------

@@ -229,38 +229,14 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		selectedApps = splitList(r.FormValue("host_apps"))
 	}
 
+	// Copying any file the control plane can see into a desktop was removed (review 2026-11-02): it reached the
+	// control plane's own data (/data: keys, the database) and every file of the person's computer, from whoever could
+	// create a desktop. The one way to give a worker files of this computer is a shared folder, chosen at its screen.
 	var hostCopyPaths []desktop.HostCopyPath
-	rawHostPaths := strings.TrimSpace(r.FormValue("host_paths"))
-	if rawHostPaths == "" {
-		rawHostPaths = strings.TrimSpace(r.FormValue("copy_host_paths"))
-	}
-	if rawHostPaths == "" {
-		rawHostPaths = strings.TrimSpace(r.FormValue("copy_paths"))
-	}
-	if rawHostPaths == "" && len(r.Form["host_paths"]) > 0 {
-		rawHostPaths = strings.Join(r.Form["host_paths"], "\n")
-	}
-
-	if rawHostPaths != "" {
-		parsed, err := desktop.ParseHostCopyPaths(rawHostPaths)
-		if err != nil {
-			jsonStatusError(w, http.StatusBadRequest, fmt.Sprintf("invalid host copy paths: %v", err))
+	for _, field := range []string{"host_paths", "copy_host_paths", "copy_paths"} {
+		if strings.TrimSpace(r.FormValue(field)) != "" && strings.TrimSpace(r.FormValue(field)) != "[]" {
+			jsonStatusError(w, http.StatusBadRequest, "copying files from this computer into a desktop is no longer offered: choose a shared folder instead")
 			return
-		}
-		for _, p := range parsed {
-			if strings.TrimSpace(p.Src) == "" {
-				continue
-			}
-			fi, err := os.Stat(p.Src)
-			if err != nil {
-				jsonStatusError(w, http.StatusBadRequest, fmt.Sprintf("host path does not exist: %s", p.Src))
-				return
-			}
-			if _, err := desktop.ResolveVMDestPath(p.Src, p.Dest, fi.IsDir()); err != nil {
-				jsonStatusError(w, http.StatusBadRequest, fmt.Sprintf("invalid destination path for %s: %v", p.Src, err))
-				return
-			}
-			hostCopyPaths = append(hostCopyPaths, p)
 		}
 	}
 

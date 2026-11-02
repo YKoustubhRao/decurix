@@ -47,8 +47,13 @@ class Names(unittest.TestCase):
         self.assertLess(healing.name_similarity("Save", "Archive"), 0.4)
 
     def test_a_synonym_is_close_but_never_the_same(self):
-        self.assertEqual(healing.name_similarity("Save", "Submit"), 0.8)
+        self.assertEqual(healing.name_similarity("Save", "Update"), 0.8)
         self.assertEqual(healing.name_similarity("Save", "Save"), 1.0)
+
+    def test_saving_and_submitting_are_not_synonyms(self):
+        # In many applications Save keeps a draft and Submit makes it final (review 2026-11-02: 0.90 against 0.72).
+        self.assertLess(healing.name_similarity("Save", "Submit"), healing.NAME_FLOOR)
+        self.assertLess(healing.name_similarity("Save", "Confirm"), healing.NAME_FLOOR)
 
     def test_a_longer_label_is_not_taken_for_the_shorter_one_on_its_name_alone(self):
         # "Delete" and "Delete all" are different actions.
@@ -94,7 +99,7 @@ class Healing(unittest.TestCase):
         self.assertNotEqual(verdict, "confident")
 
     def test_a_step_the_gate_guards_is_never_healed_by_a_rename(self):
-        renamed = button("Submit", [500, 400, 80, 30], group="g")
+        renamed = button("Save changes", [500, 400, 80, 30], group="g")
         step = save_step(consequential=True)
 
         verdict, top = healing.decide(step, healing.rank(step, screen(renamed, CANCEL)))
@@ -102,6 +107,25 @@ class Healing(unittest.TestCase):
 
         # ... while the same screen heals an ordinary step.
         self.assertEqual(healing.decide(save_step(), healing.rank(save_step(), screen(renamed, CANCEL)))[0], "confident")
+
+    def test_a_step_the_gate_guards_is_healed_only_onto_its_own_control(self):
+        # Moved and redrawn, the same role and name: found. A near-identical name is another control.
+        step = save_step(consequential=True, target={"role": "button", "name": "Pay now INV-1042",
+                                                     "path": PATH.format("Pay now INV-1042"),
+                                                     "window_title": "Shop - Chromium"})
+        moved = field("button", "Pay now INV-1042", box=[520, 410, 80, 30], path='site x > div > button "Pay now INV-1042"',
+                      group="g")
+        self.assertEqual(healing.decide(step, healing.rank(step, screen(moved, CANCEL)))[0], "confident")
+        other = field("button", "Pay now INV-1043", box=[500, 400, 80, 30], path=PATH.format("Pay now INV-1043"), group="g")
+        self.assertNotEqual(healing.decide(step, healing.rank(step, screen(other, CANCEL)))[0], "confident")
+
+    def test_an_ordinary_step_is_never_healed_onto_a_control_that_commits_more(self):
+        # "Save" kept a draft; "Submit", "Save and Submit", "Pay" do something else - asked, never taken by likeness.
+        for name in ("Submit", "Save and Submit", "Pay"):
+            with self.subTest(name=name):
+                other = button(name, [500, 400, 80, 30], group="g")
+                self.assertNotEqual(healing.decide(save_step(), healing.rank(save_step(), screen(other, CANCEL)))[0],
+                                    "confident")
 
     def test_a_different_kind_of_control_is_not_a_candidate(self):
         ranked = healing.rank(save_step(), screen(field("checkbox", "Save", box=[500, 400, 80, 30])))

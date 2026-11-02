@@ -107,8 +107,10 @@ func TestSkillsCatalogAPI(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&catalogResp); err != nil {
 		t.Fatalf("failed to decode catalog response: %v", err)
 	}
-	if catalogResp.CatalogCount != 22 {
-		t.Errorf("expected 22 catalog skills, got %d", catalogResp.CatalogCount)
+	// The built-in catalog is empty (agent/decurix_agent/computer/catalog.py):
+	// the count says so rather than advertise skills nobody taught.
+	if catalogResp.CatalogCount != 0 || len(catalogResp.Departments) != 0 {
+		t.Errorf("expected an empty catalog, got %d skills in %v", catalogResp.CatalogCount, catalogResp.Departments)
 	}
 }
 

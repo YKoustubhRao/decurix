@@ -2,6 +2,7 @@ package skills
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode"
@@ -120,6 +121,30 @@ type reviewIssue struct {
 	// Advisory marks a point the worker is told once and that never goes to the person or the result: a verifier
 	// disagreement on a screen the work did not type into (evidence.go verifyReport).
 	Advisory bool `json:"-"`
+	// Unchecked marks a check that could not be made (notChecked): never advisory, so it reaches the person.
+	Unchecked bool `json:"-"`
+}
+
+// errCutOff is a model's answer that stopped for want of room (llm.Result.Truncated): what came is not the whole
+// answer, and is never taken for one.
+var errCutOff = errors.New("the model's answer was cut off before it was finished")
+
+// cutOffNote is said after a reply shown although it was cut off.
+const cutOffNote = "\n\n(This reply was cut off before it was finished: it is incomplete.)"
+
+// notChecked is the point that stands for an independent check that could not be made (the model call failed - a
+// timeout, a 429 - or its answer could not be read): what was not checked, never a pass. It goes back to the worker
+// like any recheck point, and on to the person with the approval or the result.
+func notChecked(what string, err error) reviewIssue {
+	why := "the check's answer could not be read"
+	if err != nil {
+		why = "the check could not be made (" + truncateText(err.Error(), 160) + ")"
+	}
+	return reviewIssue{
+		What:   "Not checked: " + what + " - " + why,
+		Why:    "check them against the documents before going on, or say plainly that they are not checked",
+		Settle: "recheck", Unchecked: true,
+	}
 }
 
 // text is the issue as one line.
@@ -355,6 +380,11 @@ func (o *OperatorSkill) review(rc RunContext, st *operatorState, said string, it
 			llm.Options{TimeoutMs: reviewTimeoutMs, Temperature: reviewTemperature})
 		if err != nil {
 			rc.Logf("operator", "could not review the work (try %d): %v", try, err)
+			continue
+		}
+		if resp.Truncated {
+			// A cut-off answer is not the review: the points past the cut are missing.
+			rc.Logf("operator", "the review's answer was cut off (try %d)", try)
 			continue
 		}
 		text := resp.Text

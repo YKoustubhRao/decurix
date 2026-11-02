@@ -154,6 +154,10 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cmd cannot be empty", http.StatusBadRequest)
 		return
 	}
+	// A launcher's token is for its own desktop: one desktop cannot replay another's.
+	if _, ok := actingAs(w, r, req.Desktop); !ok {
+		return
+	}
 
 	// This runs a program on the host, and the caller may be a desktop whose agent takes instructions from web pages.
 	// It only ever runs what a launcher Decurix wrote was signed for - exactly that program and those arguments.
@@ -165,7 +169,14 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve target display for display tunneling:
 	// Direct GUI rendering back to the requesting desktop container instead of the host desktop.
+	// The display is not covered by the signature and ends up on a shell command line on the host, so only a plain X
+	// display name is accepted (review 2026-11-02: a crafted display gave root on the host).
 	targetDisplay := strings.TrimSpace(req.Display)
+	if targetDisplay != "" && !validDisplay(targetDisplay) {
+		log.Printf("host-bridge: refused a malformed display from %s", r.RemoteAddr)
+		http.Error(w, "display must look like :1 or 172.17.0.2:1", http.StatusBadRequest)
+		return
+	}
 	if targetDisplay == "" {
 		if clientHost, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && clientHost != "" {
 			if clientHost != "127.0.0.1" && clientHost != "::1" && clientHost != "localhost" {
@@ -283,8 +294,8 @@ func createHostCmd(ctx context.Context, display, cmdStr string, args ...string) 
 	// If it's a Windows command and cmd.exe is not directly executable in PATH (e.g. inside Docker container)
 	if isWinCmd && desktop.IsWSLOrWindows() {
 		displayEnv := ""
-		if display != "" {
-			displayEnv = fmt.Sprintf("DISPLAY=%s ", display)
+		if display != "" && validDisplay(display) {
+			displayEnv = "DISPLAY=" + shellQuote(display) + " "
 		}
 		// Named, labelled and removed when cancelled (desktop.HopCommand); a nil ctx is a launch that ends
 		// on its own when the program it started returns.
@@ -307,6 +318,15 @@ func createHostCmd(ctx context.Context, display, cmdStr string, args ...string) 
 	}
 	return cmd
 }
+
+// displayPattern is an X display name: ":1", ":1.0", or an IPv4 address with a display number.
+var displayPattern = regexp.MustCompile(`^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3})?:[0-9]{1,3}(\.[0-9]{1,2})?$`)
+
+// validDisplay reports whether display is a plain X display name, safe to put on a host command line.
+func validDisplay(display string) bool { return displayPattern.MatchString(display) }
+
+// shellQuote quotes s for a POSIX shell: in single quotes, with any single quote inside closed, escaped and reopened.
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 // openURLPattern is what may be opened on the host: an http(s) link with nothing a shell or cmd.exe would act on. The
 // target is spliced into a shell command line, so quotes, backslashes, $, backticks, ^, <, >, | and ; are refused

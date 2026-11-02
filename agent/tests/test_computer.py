@@ -60,15 +60,39 @@ class ApprovalRules(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIsNotNone(approval.assess("click", element("button", name)))
         # The way to the filing page is not the filing (a live run was stopped at its dashboard's FILE RETURNS).
-        for name in ("File", "File Manager", "Files", "Filed returns", "Submit", "Return Dashboard", "Liability ledger",
-                     "FILE RETURNS", "FILE STATEMENT", "PROCEED TO FILE"):
+        for name in ("File", "File Manager", "Files", "Filed returns", "Return Dashboard", "Liability ledger",
+                     "FILE RETURNS", "FILE STATEMENT"):
+            with self.subTest(name=name):
+                self.assertIsNone(approval.assess("click", element("button", name)))
+        # ...but the step that goes straight on into the act is put to the person, as "proceed to checkout" is.
+        for name in ("PROCEED TO FILE", "Proceed to payment", "Proceed to submit"):
+            with self.subTest(name=name):
+                self.assertIsNotNone(approval.assess("click", element("button", name)))
+
+    def test_a_submit_is_not_asked_for_but_commits(self):
+        # A bare "Submit" goes through the pre-save checks (approval.commits -> core._commit_check), not the person;
+        # a dialog that makes it permanent is asked (confirms_permanently).
+        self.assertIsNone(approval.assess("click", element("button", "Submit")))
+        for name in ("Submit", "Save", "Post", "Pay now", "Send", "Delete user", "Place order", "Create invoice"):
+            with self.subTest(name=name):
+                self.assertTrue(approval.commits(element("button", name)))
+        for name in ("Cancel", "Next", "Search", "Add row filter", "Sales"):
+            with self.subTest(name=name):
+                self.assertFalse(approval.commits(element("button", name)))
+        self.assertFalse(approval.commits(element("option", "Submit")))         # a choice in a list
+        self.assertFalse(approval.commits(element("heading", "Submit")))
+
+    def test_ordinary_controls_do_not(self):
+        for name in ("Save settings", "Sign in", "Create user", "Sending options", "Posts", "Check out our blog",
+                     "Delete", "Deleted items"):
             with self.subTest(name=name):
                 self.assertIsNone(approval.assess("click", element("button", name)))
 
-    def test_ordinary_controls_do_not(self):
-        for name in ("Save settings", "Sign in", "Create user", "Sending options", "Posts", "Check out our blog", "Delete user"):
+    def test_deleting_a_named_thing_is_asked(self):
+        # A bare Delete is left to its confirming dialog; one that names what goes is not taken back.
+        for name in ("Delete user", "Delete invoice", "Delete permanently", "Delete all", "Erase account"):
             with self.subTest(name=name):
-                self.assertIsNone(approval.assess("click", element("button", name)))
+                self.assertIsNotNone(approval.assess("click", element("button", name)))
 
     def test_navigating_to_a_module_is_not_an_action(self):
         # Portal's menu search lists its apps as options; its navbar as one-word links.
@@ -118,6 +142,13 @@ class ApprovalRules(unittest.TestCase):
             self.assertFalse(approval.is_approval(reply), reply)
 
 
+def answer(reply):
+    """The person's reply to the approval the gate asked for, under the gate's own question (request_text)."""
+
+    pending = approval.pending()
+    return approval.resolve_reply(reply, asked=approval.request_text(pending) if pending else "")
+
+
 class ApprovalStore(unittest.TestCase):
 
     def setUp(self):
@@ -137,7 +168,7 @@ class ApprovalStore(unittest.TestCase):
         self.assertFalse(first.allowed)
         self.assertIsNotNone(approval.pending())
 
-        self.assertEqual(approval.resolve_reply("yes"), "granted")
+        self.assertEqual(answer("yes"), "granted")
         self.assertIsNone(approval.pending())
 
         again = approval.check("click", send)
@@ -148,13 +179,41 @@ class ApprovalStore(unittest.TestCase):
 
     def test_a_grant_is_for_that_action_only(self):
         approval.check("click", element("button", "Pay now INV-1043"))
-        approval.resolve_reply("yes")
+        answer("yes")
         self.assertFalse(approval.check("click", element("button", "Pay now INV-1042")).allowed)
+
+    def test_a_grant_is_for_what_the_action_acts_on(self):
+        # The same Send on another page, or with other fields filled in, is another action (the fingerprint holds the
+        # address and what it acts on, not the label alone).
+        send = element("button", "Send")
+        chat = {"url": "https://chat.example/c/priya"}
+        approval.check("click", send, context=chat, about="It would act on: textbox To holds Priya")
+        answer("yes")
+        self.assertFalse(approval.check("click", send, context={"url": "https://chat.example/c/ravi"},
+                                        about="It would act on: textbox To holds Priya").allowed)
+        approval.reset()
+        approval.check("click", send, context=chat, about="It would act on: textbox Amount holds 500")
+        answer("yes")
+        self.assertFalse(approval.check("click", send, context=chat,
+                                        about="It would act on: textbox Amount holds 5000").allowed)
+        approval.reset()
+        approval.check("click", send, context=chat, about="x")
+        answer("yes")
+        self.assertTrue(approval.check("click", send, context=chat, about="x").allowed)
+
+    def test_a_reply_to_another_question_settles_nothing(self):
+        # A yes under an older card, or to a question that did not put this action to the person, is not its yes.
+        send = element("button", "Send newsletter")
+        approval.check("click", send)
+        self.assertIsNone(approval.resolve_reply("yes", asked="Which client is this for?"))
+        self.assertIsNone(approval.resolve_reply("yes"))
+        self.assertFalse(approval.has_grant())
+        self.assertFalse(approval.check("click", send).allowed)       # asked again, in the gate's words
 
     def test_a_refusal_withdraws_the_request(self):
         send = element("button", "Send")
         approval.check("click", send)
-        self.assertEqual(approval.resolve_reply("no, not yet"), "declined")
+        self.assertEqual(answer("no, not yet"), "declined")
         self.assertFalse(approval.has_grant())
         self.assertIsNone(approval.resolve_reply("yes"))
 
@@ -172,7 +231,7 @@ class ApprovalStore(unittest.TestCase):
 
     def test_reset_forgets_grants(self):
         approval.check("click", element("button", "Send"))
-        approval.resolve_reply("yes")
+        answer("yes")
         approval.reset()
         self.assertFalse(approval.has_grant())
 

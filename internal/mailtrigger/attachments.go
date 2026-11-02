@@ -168,8 +168,13 @@ func SafeFileName(name string) string {
 	name = strings.TrimSpace(path.Base(name))
 	name = unsafeName.ReplaceAllString(name, "_")
 	if len(name) > 150 {
+		// An extension that long is not one: cutting the name to make room for it panicked and crash-looped the
+		// control plane on one email (review 2026-11-02).
 		ext := path.Ext(name)
-		name = name[:150-len(ext)] + ext
+		if len(ext) > 16 {
+			ext = ""
+		}
+		name = strings.ToValidUTF8(name[:150-len(ext)], "") + ext
 	}
 	if name == "" || name == "." || name == ".." {
 		name = "file"

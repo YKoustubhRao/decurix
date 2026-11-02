@@ -430,7 +430,15 @@ def _pass():
 
             state.current_task = content
 
-        _start_request(path, content)
+        # The slot claimed above is given back if the request never reached its handler: an exception on the way
+        # (a file that would not unpack, a record that would not start) otherwise left current_task set for the life
+        # of the agent, and every later request waited behind "Task already running" (review 2026-11-02).
+        started = False
+        try:
+            started = _start_request(path, content)
+        finally:
+            if not started:
+                _release_slot(content)
 
 
 def answer_waiting(path, content, already_marked=False):
@@ -440,6 +448,18 @@ def answer_waiting(path, content, already_marked=False):
     answer to the question its whole run waits on - with the answer alone,
     `already_marked` when it has renamed the file itself.
     """
+
+    # A reply must name the question it answers: only a message saved as the
+    # reply - naming the task whose question is open (messaging.save_request) -
+    # answers it. Anything else that reached this desktop (another desktop, a
+    # web page, a message a long request read as an answer without that name)
+    # answers nothing and grants nothing; the question stays open (review
+    # 2026-11-02).
+    if not is_reply_file(path.name):
+        log(f"{path.name} does not name the open question's task - it is not taken as the answer.")
+        if not already_marked:
+            _mark_handled(path)
+        return
 
     # A reply belongs to the paused task. A desktop whose
     # task started before the control plane sent IDs takes
@@ -668,12 +688,51 @@ def _start_request(path, content):
         target = _follow_up_or(target)
 
     thread = threading.Thread(
-        target=target,
+        target=_guarded(target, task_id),
         args=(content, path),
         daemon=True,
     )
 
     thread.start()
+    return True
+
+
+def _release_slot(content):
+    """Give the task slot back when it is still held for `content` (claimed in _pass)."""
+
+    with state.state_lock:
+        if state.current_task is content or state.current_task == content:
+            state.current_task = None
+
+
+def _guarded(target, task_id):
+    """
+    `target` on the request's own thread, with the slot given back if it raises: the request is reported as stopped
+    on an internal error - not done, and not checked - and the next one can run (review 2026-11-02: an exception in a
+    handler left "Task already running" for the life of the agent).
+    """
+
+    def run(content, path):
+        try:
+            target(content, path)
+        except BaseException as exc:  # noqa: BLE001 - whatever ends the handler, the slot is given back
+            try:
+                log(f"The request's handler stopped on an error: {exc!r}\n{traceback.format_exc()}")
+                if state.current_task is not None and task_context.current() in ("", task_id):
+                    write_final_reply(f"That stopped on an internal error ({type(exc).__name__}) - it is NOT done. "
+                                      "Look at what it left before sending it again.", kind="error", gated=True,
+                                      task_id=task_id or None)
+            except BaseException as again:  # noqa: BLE001
+                try:
+                    log(f"Could not report the handler's error: {again!r}")
+                except BaseException:  # noqa: BLE001
+                    pass
+            finally:
+                if task_context.current() in ("", task_id):
+                    with state.state_lock:
+                        state.current_task = None
+    run.__wrapped__ = target  # (inspect.unwrap(thread target) is the handler chosen for the request)
+    return run
 
 
 def _follow_up_or(target):

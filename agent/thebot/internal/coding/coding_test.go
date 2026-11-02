@@ -722,3 +722,30 @@ func TestHarnessWritesEveryFileBeforeTestingAnyOfThem(t *testing.T) {
 		t.Errorf("TestsPassed = false, want a passing suite. Output:\n%s", report.TestOutput)
 	}
 }
+
+// A build is a success only when the tests pass, the project builds and what
+// is meant to run really starts. Passing tests over a project that does not
+// build, or a server that crashes at once, is not "Built and tested".
+func TestBuildReportSucceedsOnlyWhenBuildTestsAndStartAllPass(t *testing.T) {
+	d := &Design{ProjectName: "calc", Language: "python", Kind: "cli"}
+	cases := []struct {
+		name   string
+		report BuildReport
+		want   bool
+	}{
+		{"all pass", BuildReport{Design: d, TestsPassed: true, BuildPassed: true}, true},
+		{"all pass with a start", BuildReport{Design: d, TestsPassed: true, BuildPassed: true, SmokeRan: true, SmokePassed: true}, true},
+		{"build fails", BuildReport{Design: d, TestsPassed: true, BuildPassed: false}, false},
+		{"start fails", BuildReport{Design: d, TestsPassed: true, BuildPassed: true, SmokeRan: true}, false},
+		{"tests fail", BuildReport{Design: d, BuildPassed: true}, false},
+		{"incomplete", BuildReport{Design: d, TestsPassed: true, BuildPassed: true, Incomplete: true}, false},
+	}
+	for _, c := range cases {
+		if got := c.report.Succeeded(); got != c.want {
+			t.Errorf("%s: Succeeded() = %v, want %v", c.name, got, c.want)
+		}
+		if said := strings.Contains(c.report.Summary(), "✓ Built and tested"); said != c.want {
+			t.Errorf("%s: summary says built and tested = %v, want %v:\n%s", c.name, said, c.want, c.report.Summary())
+		}
+	}
+}

@@ -1,0 +1,62 @@
+# The checks every change must pass, run on every push and pull request (review 2026-11-02: there was no CI, so
+# nothing stopped a red suite from merging). Live benches need Docker and minutes each; they stay manual
+# (docs/running.md).
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # TheBot's sources are packed for go:embed by go generate; the build does not need the packed soul binary.
+      - run: go generate .
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+
+  thebot:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: agent/thebot
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/thebot/go.mod
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+
+  python:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # What the desktop image installs from Ubuntu for the agent (docker/desktop.basic.Dockerfile).
+      - run: pip install openpyxl pypdf python-docx pillow
+      - run: PYTHONPATH=agent python -m unittest discover -s agent/tests
+
+  scripts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # Scripts that run in Linux must have LF endings (.gitattributes; the build refuses CRLF).
+      - name: No CRLF in shell scripts
+        run: |
+          bad=$(git ls-files '*.sh' | xargs -r grep -l $'\r' || true)
+          if [ -n "$bad" ]; then echo "CRLF line endings in:"; echo "$bad"; exit 1; fi
+      - name: Shell scripts parse
+        run: git ls-files '*.sh' | xargs -r -n1 bash -n

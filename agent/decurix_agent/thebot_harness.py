@@ -175,12 +175,14 @@ def _emit_step(line):
         progress.emit(text)
 
 
+# Every call to soul carries this desktop's agent token (config.agent_auth_headers), the same one the control plane
+# sends through its /agent/<id>/ proxy: soul refuses a job, reply or cancel without it.
 def _post_json(url, payload):
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **config.agent_auth_headers()},
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=15) as response:
@@ -188,7 +190,7 @@ def _post_json(url, payload):
 
 
 def _get_json(url):
-    request = urllib.request.Request(url, method="GET")
+    request = urllib.request.Request(url, headers=config.agent_auth_headers(), method="GET")
     with urllib.request.urlopen(request, timeout=15) as response:
         return json.loads(response.read().decode("utf-8"))
 
@@ -206,7 +208,7 @@ def _stream_job(base, job_id):
 
     url = base + f"/api/jobs/{job_id}/stream"
 
-    request = urllib.request.Request(url, method="GET")
+    request = urllib.request.Request(url, headers=config.agent_auth_headers(), method="GET")
 
     deadline = time.monotonic() + TASK_TIMEOUT_SECONDS
 
@@ -469,10 +471,14 @@ def _answer_context(asked, reply):
 
     said = approval.reading(reply, asked)
     if said["decision"] == "yes":
+        # A yes is one action's: what was asked, once - never a waiver for the rest of the task. Every other action
+        # that needs a yes (and this one, if it is stopped by the gate on the screen) is still asked for (review
+        # 2026-11-02: "do not ask for approval for it again" turned one yes into the whole task's).
         return (
             "Earlier in this task you asked the human for approval: "
-            f"\"{asked}\". They replied \"{reply}\" - that is approval. "
-            "Do the task now, and do not ask for approval for it again."
+            f"\"{asked}\". They replied \"{reply}\" - that is approval for that one action, once. "
+            "Do it now. Any other action that sends, pays, files, deletes or commits something still needs its own "
+            "approval: ask for it as before (the screen's gate stops it and asks by itself)."
         )
     if said["decision"] == "if":
         return (
@@ -535,8 +541,8 @@ def _run_thebot(request, reply, extra_context="", approval_reading=None):
                 # gets one of its own (_session_id).
                 "sessionId": _session_id(),
                 "reply": reply,
-                # Said yes already, as a kind of task: soul does not ask about the request's own words again.
-                "approved": bool(state.request_preapproved) and not reply,
+                # No "approved": a yes is one action's (CLAUDE.md), so soul takes none from a request body and asks
+                # about each consequential action itself (review 2026-11-02).
                 # What the reply to an approval decides ({"decision": yes|if|no|unclear, "condition"}), or None.
                 "approvalReading": approval_reading,
             },

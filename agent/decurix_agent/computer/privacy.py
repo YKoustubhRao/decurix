@@ -17,9 +17,18 @@ from decurix_agent.computer import elements as el
 # record or a recording has any word that is one of them replaced by [withheld].
 # ============================================================
 
+# "PIN" names a secret - a card's, an ATM's, a UPI or a login PIN - but in an Indian address it is the postal code:
+# "PIN code", "Pin-code", "PIN: 576104" (six digits, the first not 0). Those are an address, never withheld: found in
+# review (2026-11-02), a GST or address form's "PIN code" field was taken for a secret and the worker stopped for a
+# person. A PIN named for a card, an ATM, UPI, a login or a bank stays a secret whatever follows it.
+PIN_WORD = (r"(?:(?:card|atm|upi|login|debit|credit|bank(?:ing)?|transaction|security|account)[\s_-]*pin|m-?pin"
+            r"|pin(?![\s_-]{0,3}code\b)(?![\s_:=#.-]{0,6}(?:(?:no\.?|number)[\s:=#.-]{0,4})?(?:is\s+)?"
+            r"[1-9]\d{2}\s?\d{3}(?!\d)))")
+# (Bounded runs only: two unbounded runs of spaces side by side took seconds over a long blank text.)
+
 # A secret after its name in a request: "password Northwind#2026", "PIN: 4821", "api key=abc", "token is xyz".
 REQUEST_SECRET = re.compile(
-    r"(?i)\b(?:pass(?:word|code|phrase)|pwd|pin|otp|one[- ]time (?:code|password)|token|api[ _-]?key|secret(?: key)?)"
+    r"(?i)\b(?:pass(?:word|code|phrase)|pwd|" + PIN_WORD + r"|otp|one[- ]time (?:code|password)|token|api[ _-]?key|secret(?: key)?)"
     r"\b\s*(is\s+|[:=]\s*)?([\"'\u201c\u2018]?)([^\s\"'\u201d\u2019,;)\]]{3,200})")
 _WORD = re.compile(r"[^\s\"'\u201c\u201d\u2018\u2019(),;<>\[\]{}=]+")
 _MAX_KEPT = 200
@@ -154,7 +163,7 @@ SECRET_AUTOCOMPLETE = {
 
 # A field labelled for a secret, when the toolkit does not say so itself.
 SECRET_LABEL = re.compile(
-    r"\b(pass(word|code|phrase)|pin|otp|one[- ]time (code|password|pin)|verification code"
+    r"\b(pass(word|code|phrase)|" + PIN_WORD + r"|otp|one[- ]time (code|password|pin)|verification code"
     r"|security code|2fa|mfa|totp|cvv2?|cvc2?|csc|card number|credit card"
     r"|api[ _-]?key|secret( key)?|access token|auth(entication)? token|private key)\b",
     re.IGNORECASE,
@@ -210,7 +219,10 @@ def secret_field(element):
         return "field for a password, code or card number"
 
     if element.get("role") in TEXT_ENTRY_ROLES and SECRET_LABEL.search(element.get("name") or ""):
-        return "field labelled for a secret"
+        # A field the page itself marks as a postal code, labelled just "PIN", is an address's PIN code.
+        postal = "postal-code" in (handle.get("autocomplete") or "").lower().split()
+        if not (postal and re.fullmatch(r"(?i)\W*pin\W*", element.get("name") or "")):
+            return "field labelled for a secret"
 
     return None
 
@@ -250,7 +262,7 @@ def credential_in(text):
 # own words often carry one, and a recording's title and description are shown to
 # anyone who opens the page and exported with it.
 SPOKEN_SECRET = re.compile(
-    r"(?i)\b(?:pass(?:word|code|phrase)|secret|token|api[ _-]?key|pin|otp|cvv2?)\b[^\"'\u201c\u2018\n]{0,20}?"
+    r"(?i)\b(?:pass(?:word|code|phrase)|secret|token|api[ _-]?key|" + PIN_WORD + r"|otp|cvv2?)\b[^\"'\u201c\u2018\n]{0,20}?"
     r"[\"'\u201c\u2018]([^\"'\u201d\u2019\n]{1,200})[\"'\u201d\u2019]"
 )
 

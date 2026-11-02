@@ -113,7 +113,9 @@ func TestIsApproval(t *testing.T) {
 			t.Errorf("IsApproval(%q) = false, want true", reply)
 		}
 	}
-	for _, reply := range []string{"no", "don't", "yes but don't push yet", "wait", "use rsync instead", "", "what would it do?"} {
+	for _, reply := range []string{"no", "don't", "yes but don't push yet", "wait", "use rsync instead", "", "what would it do?",
+		"ok, what will this send?", "yes, how much is it?", "sure - which account?", "yes if the total matches",
+		"ok, but only the first one", "yes once the tests pass", "go ahead unless it is over 500"} {
 		if IsApproval(reply) {
 			t.Errorf("IsApproval(%q) = true, want false", reply)
 		}

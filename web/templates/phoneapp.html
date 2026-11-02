@@ -67,6 +67,35 @@
     live = true; msg.style.display = 'none'; stage.hidden = false; surface.focus();
   }
 
+  // ---- When the picture stops ----
+  // A decoder that fails mid-stream is closed for good, and every frame after
+  // it was dropped: the screen froze with nothing said. Now the page says so
+  // and starts the video again, from the next key frame: WebCodecs a few times,
+  // then MediaSource, which keeps being retried with a growing wait.
+  var videoErrors = 0, lastVideoError = 0, retryTimer = null, noteBefore = null;
+  function videoTrouble(text) {
+    var now = Date.now();
+    videoErrors = now - lastVideoError > 30000 ? 1 : videoErrors + 1;
+    lastVideoError = now;
+    needKey = true;
+    if (!noteBefore) { noteBefore = { text: note.textContent, hidden: note.hidden }; }
+    note.textContent = 'The picture stopped' + (text ? ' (' + text + ')' : '') + '. Starting it again…';
+    note.hidden = false;
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(restartVideo, Math.min(10000, 500 * Math.pow(2, videoErrors - 1)));
+  }
+  function restartVideo() {
+    retryTimer = null;
+    if (mode === 'webcodecs' && videoErrors < 3 && config) { configure(config); return; }
+    resetMSE();
+    toMSE();
+  }
+  function videoOK() {
+    if (!noteBefore || retryTimer) { return; }
+    note.textContent = noteBefore.text; note.hidden = noteBefore.hidden;
+    noteBefore = null;
+  }
+
   // ---- H.264 into fragmented MP4, for MediaSource ----
   // scrcpy sends Annex B H.264. A browser without a working WebCodecs H.264
   // decoder (the VM's own Chromium: its VideoDecoder claims avc1 and then
@@ -166,10 +195,12 @@
         gfx.drawImage(frame, 0, 0);
         frame.close();
         showLive();
+        videoOK();
       },
       // A decoder that fails before it has shown anything is one this browser
-      // does not have, whatever isConfigSupported said: use MediaSource.
-      error: function () { if (!decoded) { toMSE(); } else { needKey = true; } }
+      // does not have, whatever isConfigSupported said: use MediaSource. One
+      // that fails later has closed itself: start it again.
+      error: function (e) { if (!decoded) { toMSE(); } else { videoTrouble(e && e.message); } }
     });
     try {
       // No description: the stream is Annex B, which is what WebCodecs takes without one.
@@ -179,6 +210,7 @@
   }
 
   function webcodecsFrame(isKey, payload, pts) {
+    if (decoder && decoder.state === 'closed' && decoded && !retryTimer) { videoTrouble(''); return; }
     if (!decoder || decoder.state !== 'configured') { return; }
     var data = payload;
     if (isKey && config) { // the parameter sets travel ahead of each key frame
@@ -192,6 +224,11 @@
 
   // ---- MediaSource: the same frames as MP4 fragments, on a video element ----
   var ms = null, sb = null, queue = [], seq = 0, clock = 0, FRAME = 3000; // 1/30 s in 1/90000 s
+  function resetMSE() {
+    if (ms) { try { if (ms.readyState === 'open') { ms.endOfStream(); } } catch (e) {} }
+    if (vid.src) { try { URL.revokeObjectURL(vid.src); } catch (e) {} }
+    ms = null; sb = null; queue = []; seq = 0; clock = 0;
+  }
   function toMSE() {
     if (mode === 'mse' && ms) { return; }
     mode = 'mse';
@@ -242,9 +279,10 @@
     try { sb.appendBuffer(queue.shift()); } catch (e) { queue = []; needKey = true; }
     if (vid.paused) { vid.play().catch(function () {}); }
   }
-  vid.addEventListener('loadeddata', showLive);
+  vid.addEventListener('loadeddata', function () { showLive(); videoOK(); });
   vid.addEventListener('error', function () {
-    if (!live) { fail('This browser cannot play the phone’s video (H.264). Recreate the desktop from a current image.'); }
+    if (!live) { fail('This browser cannot play the phone’s video (H.264). Recreate the desktop from a current image.'); return; }
+    if (vid.src && ms) { videoTrouble(vid.error && vid.error.message); }
   });
 
   function onFrame(buf) {
@@ -511,7 +549,11 @@
       if (m.error) { fail(m.error); } else { try { window.close(); } catch (err) {} fail('The app was closed. You can close this window.'); }
     }
   };
-  ws.onclose = function () { if (live) { fail('The connection to your phone ended. Close this window and open the app again.'); } };
+  ws.onclose = function () {
+    clearTimeout(retryTimer); retryTimer = null;
+    if (live) { fail('The connection to your phone ended. Close this window and open the app again.'); }
+    else if (msg.className !== 'error') { fail('Could not reach your phone. Close this window and open the app again.'); }
+  };
 })();
 </script>
 </body>

@@ -106,6 +106,8 @@ type openaiChatResponse struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		// FinishReason is why the model stopped: "length" (or a proxied "max_tokens") means the answer was cut off.
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens        int `json:"prompt_tokens"`
@@ -190,6 +192,7 @@ func (o *OpenAIProvider) chatOnce(ctx context.Context, model string, messages []
 		PromptTokens:   parsed.Usage.PromptTokens,
 		ResponseTokens: parsed.Usage.CompletionTokens,
 		CachedTokens:   parsed.Usage.PromptTokensDetails.CachedTokens,
+		Truncated:      truncatedFinish(parsed.Choices[0].FinishReason),
 	}, nil
 }
 
@@ -240,4 +243,14 @@ func (o *OpenAIProvider) Embed(ctx context.Context, model string, text string) (
 		return nil, fmt.Errorf("openai embed: response contained no data")
 	}
 	return parsed.Data[0].Embedding, nil
+}
+
+// truncatedFinish reports whether an OpenAI-style finish_reason says the answer was cut off for room ("length"; a
+// proxy in front of another provider may pass on its "max_tokens").
+func truncatedFinish(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "length", "max_tokens", "max_output_tokens":
+		return true
+	}
+	return false
 }

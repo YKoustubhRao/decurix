@@ -373,14 +373,49 @@ class RunnerPlannedRuns(unittest.TestCase):
             validate(unplanned)
         run = self.r.create(spec, work_dir=str(self.work))
         (self.work / "out").mkdir()
-        (self.work / "out" / "inv_1.csv").write_text("a,b\n1,2\n", encoding="utf-8")
         self.r.claim(run["run_id"])
+        (self.work / "out" / "inv_1.csv").write_text("a,b\n1,2\n", encoding="utf-8")
         state = self.r.complete(run["run_id"], "inv")
         self.assertIn("at least 2 file(s) matching out/inv_*.csv, found 1", state["steps"]["inv"]["error"])
         (self.work / "out" / "inv_2.csv").write_text("a,b\n3,4\n", encoding="utf-8")
         self.r.claim(run["run_id"])
         state = self.r.complete(run["run_id"], "inv")
         self.assertEqual([e["path"] for e in state["steps"]["inv"]["evidence"]], ["out/inv_1.csv", "out/inv_2.csv"])
+
+    def test_a_file_a_pattern_matched_before_the_stage_does_not_count(self):
+        # Review 2026-11-02: a pattern check was never baselined, so files left from before the task passed it.
+        spec = {"id": "p", "planned": True, "steps": [{"id": "inv", "instruction": "x", "retry_safe": True,
+                                                       "checks": [{"path": "out/inv_*.csv", "format": "csv", "min_count": 2}]}]}
+        run = self.r.create(spec, work_dir=str(self.work))
+        (self.work / "out").mkdir()
+        for n in (1, 2):
+            (self.work / "out" / f"inv_{n}.csv").write_text(f"a,b\n{n},2\n", encoding="utf-8")
+        self.r.claim(run["run_id"])
+        state = self.r.complete(run["run_id"], "inv")
+        self.assertNotEqual(state["steps"]["inv"]["status"], "completed")
+        self.assertIn("2 of the 2 found were already there, unchanged", state["steps"]["inv"]["error"])
+        self.r.claim(run["run_id"])
+        (self.work / "out" / "inv_2.csv").write_text("a,b\n2,9\n", encoding="utf-8")  # changed by the stage
+        (self.work / "out" / "inv_3.csv").write_text("a,b\n3,4\n", encoding="utf-8")  # made by it
+        state = self.r.complete(run["run_id"], "inv")
+        self.assertEqual(state["steps"]["inv"]["status"], "completed")
+
+    def test_a_stage_out_of_attempts_is_failed_when_reopened_never_a_raise(self):
+        # Review 2026-11-02: _reopen_record raised at the lifetime limit; from claim()'s re-check that stopped the run.
+        spec = {"id": "p", "planned": True, "steps": [{"id": "a", "instruction": "x", "retry_safe": True,
+                                                       "checks": [{"path": "a.txt"}]}]}
+        run = self.r.create(spec, work_dir=str(self.work))
+        self.r.claim(run["run_id"])
+        (self.work / "a.txt").write_text("made", encoding="utf-8")
+        self.r.complete(run["run_id"], "a")
+
+        spent = self.r.status(run["run_id"])
+        spent["steps"]["a"].update(attempts=10, additional_attempts=8)  # 2 + 8 more: all ten used
+        self.r._save(spent)
+        state = self.r.reopen(run["run_id"], "a", "the person changed the request")
+        self.assertEqual(state["steps"]["a"]["status"], "failed")
+        self.assertIn("the person changed the request", state["steps"]["a"]["error"])
+        self.assertIn("lifetime limit", state["steps"]["a"]["error"])
 
     def test_drafts_checks_are_for_planned_runs_and_count_drafts(self):
         from decurix_agent.workflow_runner import validate
@@ -595,6 +630,40 @@ class LongRunBase(unittest.TestCase):
 
 
 class LongRun(LongRunBase):
+
+    def test_a_judge_that_could_not_check_never_makes_a_checked_done(self):
+        # Review 2026-11-02: an "unsure" (here a model outage) completed each stage and the run was reported "Done -
+        # every stage was made and checked", checked=True. Fail closed: completed, said NOT checked first, recorded so.
+        outage = {"verdict": "unsure", "confidence": 0.0, "seen": "", "why": "the check could not be made (rate limit)"}
+        with mock.patch.object(verify, "judge", lambda task, **k: dict(outage)):
+            long_task.perform(LONG, None)
+        steps = self.runner.status(self.run_id())["steps"]
+        self.assertTrue(all(record["status"] == "completed" for record in steps.values()))
+        self.assertTrue(all(record.get("checked_by") == "code only" for record in steps.values()))
+        final = self.finals()[-1]
+        self.assertEqual(final["kind"], "final")
+        self.assertIs(final["checked"], False)
+        self.assertTrue(final["reply"].startswith(f"Made, but not everything is checked: {len(steps)} stages the model "
+                                                  "check could not confirm"), final["reply"][:300])
+        self.assertNotIn("every stage was made and checked", final["reply"])
+        self.assertIn("NOT checked - the code checks passed, the model check could not confirm it (the check could "
+                      "not be made (rate limit))", final["reply"])
+        self.assertIn("yourself before relying on it", final["reply"].split("Needs you:", 1)[1])
+
+    def test_a_blocking_check_that_raised_leaves_the_stage_not_checked(self):
+        # Review 2026-11-02: a code check that crashed counted as passed. The judge's done does not make up for it.
+        sure = {"verdict": "done", "confidence": 0.95, "seen": "the files are right", "why": ""}
+        with mock.patch.object(verify, "judge", lambda task, **k: dict(sure)), \
+                mock.patch("decurix_agent.payees.mismatches", side_effect=RuntimeError("bad account table")):
+            long_task.perform(LONG, None)
+        steps = self.runner.status(self.run_id())["steps"]
+        self.assertTrue(all(record.get("checked_by") == "code only" for record in steps.values()))
+        self.assertTrue(any("could not check where payments go (bad account table)" in record.get("check_note", "")
+                            for record in steps.values()))
+        final = self.finals()[-1]
+        self.assertIs(final["checked"], False)
+        self.assertNotIn("every stage was made and checked", final["reply"])
+
 
     def test_stages_run_one_by_one_and_the_report_is_plain(self):
         self.assertTrue(long_task.perform(LONG, None))
@@ -833,6 +902,14 @@ class LongRun(LongRunBase):
         self.assertEqual(record["status"], "completed")
         self.assertEqual(record.get("checked_by"), "code only")
         self.assertIn("whom the person left out", record.get("check_note", ""))
+        # Never failed on that ground - and never reported checked either (review 2026-11-02: the run went out as
+        # "Done - every stage was made and checked", checked=True): the report says first what was not checked.
+        final = self.finals()[-1]
+        self.assertIs(final.get("checked"), False)
+        self.assertTrue(final["reply"].startswith("Made, but not everything is checked: 1 stage the model check "
+                                                  "could not confirm"), final["reply"][:300])
+        self.assertNotIn("every stage was made and checked", final["reply"])
+        self.assertIn("it was NOT checked (the check kept counting Priya", final["reply"])
 
     def test_the_retry_prompt_never_pushes_the_excluded_person_back_in(self):
         rid, _ = self.p2_run()

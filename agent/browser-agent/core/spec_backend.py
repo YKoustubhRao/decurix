@@ -16,14 +16,19 @@ length would need ~6GB for the target alone, which doesn't leave room for
 the 9.3GB of Q4 weights plus the draft model on a 16GB card.
 """
 import json
+import os
 import subprocess
 import time
 
 import requests
 
-LLAMA_SERVER = r"C:\Users\dshek\tools\llama.cpp-b10948\llama-server.exe"
-TARGET_GGUF = r"C:\Users\dshek\.ollama\models\blobs\sha256-a8cc1361f3145dc01f6d77c6c82c9116b9ffe3c97b34716fe20418455876c40e"
-DRAFT_GGUF = r"C:\Users\dshek\.ollama\models\blobs\sha256-7f4030143c1c477224c5434f8272c662a8b042079a0a584f0a27a1684fe2e1fa"
+# Where llama-server and the two GGUF files are on this machine, set per
+# machine (SPEC_LLAMA_SERVER, SPEC_TARGET_GGUF, SPEC_DRAFT_GGUF). llama-server
+# defaults to the one on PATH; the models have no default, and
+# ensure_started() names the one that is missing rather than guess a path.
+LLAMA_SERVER = os.environ.get("SPEC_LLAMA_SERVER", "llama-server")
+TARGET_GGUF = os.environ.get("SPEC_TARGET_GGUF", "")
+DRAFT_GGUF = os.environ.get("SPEC_DRAFT_GGUF", "")
 PORT = 8091
 CTX_SIZE = 40960
 DRAFT_MAX = 5
@@ -94,6 +99,9 @@ def ensure_started():
     global _proc
     if is_running():
         return
+    missing = [name for name, value in (("SPEC_TARGET_GGUF", TARGET_GGUF), ("SPEC_DRAFT_GGUF", DRAFT_GGUF)) if not value]
+    if missing:
+        raise RuntimeError("speculative-decoding backend is not configured: set " + " and ".join(missing))
     stop_if_running()
     _free_ollama_vram()
     _wait_for_free_vram()

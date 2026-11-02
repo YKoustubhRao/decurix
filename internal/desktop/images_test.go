@@ -223,7 +223,7 @@ func TestAnImageIsOutOfDateExactlyWhenWhatItIsBuiltFromChanges(t *testing.T) {
 
 	base := fstest.MapFS{
 		"docker/desktop.basic.Dockerfile":          {Data: []byte("FROM x\nCOPY agent /opt\n")},
-		"docker/desktop.developer.Dockerfile":      {Data: []byte("FROM x\n")},
+		"docker/unused.Dockerfile":                 {Data: []byte("FROM x\n")},
 		"docker/tools.Dockerfile":                  {Data: []byte("FROM alpine\n")},
 		"agent/decurix_agent/computer/__main__.py": {Data: []byte("main()\n")},
 	}
@@ -266,7 +266,7 @@ func TestAnImageIsOutOfDateExactlyWhenWhatItIsBuiltFromChanges(t *testing.T) {
 		t.Errorf("a tools Dockerfile change: desktop changed %v (want false), tools changed %v (want true)", d != d0, tl != t0)
 	}
 
-	if d, _ := hashes(with("docker/desktop.developer.Dockerfile", "FROM y\n")); d != d0 {
+	if d, _ := hashes(with("docker/unused.Dockerfile", "FROM y\n")); d != d0 {
 		t.Error("a Dockerfile the desktop image is not built from changed its hash")
 	}
 }

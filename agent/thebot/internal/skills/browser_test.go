@@ -127,3 +127,72 @@ func TestBrowserSkillAsksBeforeWhatTheGateStopped(t *testing.T) {
 		t.Fatalf("a rerun with no yes carried an approval: %v", ext.submitted)
 	}
 }
+
+// Only a run the extension finished with an answer is a success. An error, a
+// captcha, a stall, a timeout or a "done" with nothing to report is a failure
+// the scheduler must not retry - never a verified answer.
+func TestBrowserReportVerifiesOnlyAFinishedAnswer(t *testing.T) {
+	b := NewBrowser()
+	step := Subtask{Step: "look it up", Type: "browser"}
+	ok, _ := b.report(step, extRequest{ID: "r1", Status: "done", Result: &extResult{Status: "done", Answer: "42"}})
+	if !ok.Verified || ok.Output != "42" {
+		t.Fatalf("finished answer = %+v, want verified", ok)
+	}
+	for _, status := range []string{"error", "timeout", "blocked", "stalled", "paused", "cancelled", "done", "something-new"} {
+		res, _ := b.report(step, extRequest{ID: "r1", Status: "done", Result: &extResult{Status: status, Error: "captcha", Log: []string{"opened the page"}}})
+		if res.Verified {
+			t.Errorf("status %q reported verified: %+v", status, res)
+		}
+		if res.Meta["fatal"] != true {
+			t.Errorf("status %q not marked fatal, the scheduler would retry it", status)
+		}
+		if !strings.Contains(res.Output, "opened the page") {
+			t.Errorf("status %q lost what the browser saw: %q", status, res.Output)
+		}
+	}
+}
+
+// The extension's server refuses a caller without the desktop's agent token: every call carries it, writes as JSON,
+// and a refusal is an error, never read as an answer.
+func TestBrowserSkillSendsTheAgentToken(t *testing.T) {
+	t.Setenv(agentTokenEnv, "tok-123")
+	var mu sync.Mutex
+	var auths, types []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auths = append(auths, r.Header.Get("Authorization"))
+		if r.Method == http.MethodPost {
+			types = append(types, r.Header.Get("Content-Type"))
+		}
+		mu.Unlock()
+		if r.Header.Get("Authorization") != "Bearer tok-123" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		json.NewEncoder(w).Encode(extRequestsStatus{Requests: []extRequest{{ID: "r1", Status: "done", Result: &extResult{Status: "done", Answer: "ok"}}}})
+	}))
+	defer server.Close()
+	b := NewBrowser()
+	b.BaseURL = server.URL
+	var status extRequestsStatus
+	if err := b.getJSON(context.Background(), "/requests/status", &status); err != nil || len(status.Requests) != 1 {
+		t.Fatalf("get = %+v, %v", status, err)
+	}
+	if err := b.postJSON(context.Background(), "/requests", map[string]any{"task": "x"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range auths {
+		if a != "Bearer tok-123" {
+			t.Errorf("Authorization = %q", a)
+		}
+	}
+	for _, ct := range types {
+		if ct != "application/json" {
+			t.Errorf("Content-Type of a write = %q", ct)
+		}
+	}
+	t.Setenv(agentTokenEnv, "")
+	if err := b.getJSON(context.Background(), "/requests/status", &status); err == nil {
+		t.Error("a 401 was read as an answer")
+	}
+}

@@ -134,6 +134,8 @@ func TestOperatorDeliversASecondQueryAndCanResumeWithTheReply(t *testing.T) {
 	}
 }
 
+// A command repeated past the nudge ends the loop with what it printed - put
+// to the person as not checked, because no DONE check ran.
 func TestOperatorEndsARepeatLoopWithTheRealOutput(t *testing.T) {
 	chat := &scriptedChat{replies: []string{
 		"COMMAND:\necho 6.6.87.2",
@@ -141,19 +143,21 @@ func TestOperatorEndsARepeatLoopWithTheRealOutput(t *testing.T) {
 		"COMMAND:\necho 6.6.87.2",
 	}}
 	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "kernel version?", Type: "operator"})
-	if !res.Verified || strings.TrimSpace(res.Output) != "6.6.87.2" {
-		t.Errorf("result = %+v, want the command's own output as the answer", res)
+	if res.Verified || res.Meta["needsUserInput"] != true || !strings.Contains(res.Output, "6.6.87.2") || !strings.Contains(res.Output, "Not checked") {
+		t.Errorf("result = %+v, want the command's own output put to the person as not checked", res)
 	}
 	if len(chat.calls) != 3 {
 		t.Errorf("made %d model calls, want 3 (run, nudge, stop)", len(chat.calls))
 	}
 }
 
+// An unmarked reply is never dropped, and never verified either: it went
+// through none of the DONE checks.
 func TestOperatorTakesAnUnmarkedReplyAsTheAnswerEventually(t *testing.T) {
 	chat := &scriptedChat{replies: []string{"241", "241", "241", "241"}}
 	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "how many files in /etc?", Type: "operator"})
-	if !res.Verified || res.Output != "241" {
-		t.Errorf("result = %+v, want the unmarked reply salvaged", res)
+	if res.Verified || res.Meta["needsUserInput"] != true || !strings.HasPrefix(res.Output, "241") || !strings.Contains(res.Output, "Not checked") {
+		t.Errorf("result = %+v, want the unmarked reply shown to the person as not checked, never verified", res)
 	}
 	if !strings.Contains(chat.calls[1][len(chat.calls[1])-1].Content, `started with "241"`) {
 		t.Error("the format nudge did not quote the model's own reply back to it")
@@ -177,15 +181,15 @@ func TestOperatorNeverTakesABareMarkerAsTheAnswer(t *testing.T) {
 	}
 }
 
-// ...but after a command that worked, a bare "DONE" means the model is
-// finished: what the command printed is the answer. Found live: the computer's
-// name was on the screen of the transcript, and the person was paged about a
-// "failed" step instead of being told it.
+// ...but after a command that worked, a bare "DONE" shows the person what the
+// command printed (found live: the computer's name was in the transcript and
+// the person was told only that a step "failed") - as not checked, never as a
+// verified result: no DONE check ran over it.
 func TestOperatorAnswersWithWhatTheCommandPrintedWhenDoneSaysNothing(t *testing.T) {
 	chat := &scriptedChat{replies: []string{"COMMAND:\necho LMNOP", "DONE", "DONE", "DONE", "DONE"}}
 	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "what is the name of this computer?", Type: "operator"})
-	if !res.Verified || !strings.Contains(res.Output, "LMNOP") {
-		t.Fatalf("result = %+v, want the command's own output as the answer", res)
+	if res.Verified || res.Meta["needsUserInput"] != true || !strings.Contains(res.Output, "LMNOP") || !strings.Contains(res.Output, "Not checked") {
+		t.Fatalf("result = %+v, want the command's own output put to the person as not checked", res)
 	}
 }
 
@@ -256,7 +260,7 @@ func TestOperatorPausesWhenTheScreenGateStopsAGuiAction(t *testing.T) {
 
 	// A fake gui: stopped until the grant file exists, as the real gate is
 	// until a human's approval turns into a grant.
-	grant := filepath.Join(t.TempDir(), "granted")
+	grant := filepath.ToSlash(filepath.Join(t.TempDir(), "granted"))
 	stubWorkerTools(t,
 		"if [ -f "+grant+" ]; then echo 'Clicked button \"Send newsletter\" (e35).'; exit 0; fi\n"+
 			"echo 'NEEDS_APPROVAL: Approval needed before I click button \"Send newsletter\" (e35) in \"Newsletter\": it sends something on your behalf. Nothing was clicked or sent.'\nexit 3\n",
@@ -600,5 +604,37 @@ func TestACommandACheckStoppedIsNotARepeatWhenSentAgain(t *testing.T) {
 	}
 	if stoppedBeforeActing("Clicked button \"Save\" (e5). What changed: ...") {
 		t.Errorf("an action that went through seen as stopped")
+	}
+}
+
+// cutChat answers with results as given (a Truncated one among them).
+type cutChat struct {
+	results []llm.Result
+	calls   int
+}
+
+func (c *cutChat) Name() string                         { return "cut" }
+func (c *cutChat) IsReachable(ctx context.Context) bool { return true }
+func (c *cutChat) Chat(ctx context.Context, model string, messages []llm.Message, opts llm.Options) (llm.Result, error) {
+	c.calls++
+	if c.calls > len(c.results) {
+		return llm.Result{Text: "DONE: out of script"}, nil
+	}
+	return c.results[c.calls-1], nil
+}
+
+// A reply the provider cut off for want of room is never acted on: the half report is not the result, and the model
+// is asked again.
+func TestOperatorNeverTakesACutOffReply(t *testing.T) {
+	chat := &cutChat{results: []llm.Result{
+		{Text: "DONE:\nThe total is 4", Truncated: true},
+		{Text: "DONE:\nThe total is 4,500."},
+	}}
+	res, _ := NewOperator().Run(operatorContext(t, chat), Subtask{Step: "what is the total?", Type: "operator"})
+	if strings.TrimSpace(res.Output) == "The total is 4" {
+		t.Fatalf("the cut-off reply was reported: %+v", res)
+	}
+	if chat.calls < 2 {
+		t.Errorf("made %d model call(s), want the cut-off reply asked for again", chat.calls)
 	}
 }

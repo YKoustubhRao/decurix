@@ -1044,7 +1044,9 @@ class Endpoints(unittest.TestCase):
 
     def call(self, path, body=None):
         data = json.dumps(body).encode() if body is not None else None
-        request = urllib.request.Request(self.base + path, data=data, method="POST" if body is not None else "GET")
+        # JSON, as the control plane sends it: :8081 refuses a write that is not (http_api.refusal).
+        request = urllib.request.Request(self.base + path, data=data, method="POST" if body is not None else "GET",
+                                         headers={"Content-Type": "application/json"} if data is not None else {})
         try:
             with urllib.request.urlopen(request, timeout=5) as response:
                 return response.status, json.loads(response.read())

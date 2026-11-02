@@ -54,6 +54,11 @@ func (s *Server) outboxCreateHandler(w http.ResponseWriter, r *http.Request) {
 		jsonStatusError(w, http.StatusBadRequest, "the draft is not valid JSON")
 		return
 	}
+	acting, ok := actingAs(w, r, in.DesktopID)
+	if !ok {
+		return
+	}
+	in.DesktopID = acting
 
 	d := outbox.Draft{
 		DesktopID: desktop.SanitizeID(in.DesktopID),

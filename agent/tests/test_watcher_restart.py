@@ -9,6 +9,7 @@ the agent that came back ran "keep" as a request to TheBot while the chat said
     PYTHONPATH=agent python3 -m unittest discover -s agent/tests
 """
 
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,7 +31,8 @@ class FakeThread:
         self.target, self.args = target, args
 
     def start(self):
-        FakeThread.started.append((self.target, self.args))
+        # The handler chosen for the request (watchers._guarded wraps it, to give the task slot back if it raises).
+        FakeThread.started.append((inspect.unwrap(self.target), self.args))
 
 
 class Base(unittest.TestCase):
@@ -113,6 +115,7 @@ class Replies(Base):
 
     def test_a_reply_saved_while_waiting_is_marked_as_one(self):
         state.waiting_for_query = True
+        state.current_task_id = TASK
         path = messaging.save_request("keep", TASK)
         self.assertTrue(watchers.is_reply_file(path.name))
         self.assertEqual(task_context.task_id_from_filename(path.name), TASK, "the task ID still reads back")
@@ -185,6 +188,7 @@ class Replies(Base):
 
     def test_a_reply_is_invisible_to_watcher_until_its_text_is_complete(self):
         state.waiting_for_query = True
+        state.current_task_id = TASK  # a reply names the task whose question is open
         state.current_task = "/learn demo-x"
         state.paused_skill = {"mode": "learn"}
         original_write = Path.write_text
@@ -308,6 +312,41 @@ class Ordering(Base):
                 mock.patch.object(messaging.config, "QUERYTEXT_DIR", Path(self.tmp.name)):
             messaging.ask_for_query("which one?")
         self.assertEqual(seen, [True], "a reply that lands while the question is being sent is a reply")
+
+
+class TheSlotIsGivenBack(Base):
+    """Review 2026-11-02: a request whose start or handler raised kept the task slot - "Task already running" for the
+    life of the agent."""
+
+    def test_a_start_that_raises_gives_the_slot_back(self):
+        self.request("process the next bill")
+        with mock.patch.object(watchers.attachments, "expand_archives", side_effect=OSError("the archive is damaged")):
+            with self.assertRaises(OSError):
+                watchers._pass()
+        self.assertIsNone(state.current_task)
+        self.assertEqual(FakeThread.started, [])
+
+    def test_a_handler_that_raises_is_reported_not_done_and_gives_the_slot_back(self):
+        said = []
+
+        def broken(content, path):
+            raise RuntimeError("the handler broke")
+        state.current_task = "process the next bill"
+        with mock.patch.object(watchers, "write_final_reply", lambda text, **kw: said.append((text, kw))), \
+                mock.patch.object(watchers.task_context, "current", return_value=TASK):
+            watchers._guarded(broken, TASK)("process the next bill", None)
+        self.assertIsNone(state.current_task)
+        self.assertEqual(len(said), 1)
+        self.assertIn("it is NOT done", said[0][0])
+        self.assertEqual(said[0][1]["kind"], "error")
+        self.assertNotIn("checked", said[0][1])  # not checked: nothing judged it
+
+    def test_a_handler_that_ends_normally_keeps_its_own_ending(self):
+        state.current_task = "process the next bill"
+        with mock.patch.object(watchers.task_context, "current", return_value=TASK):
+            watchers._guarded(lambda content, path: None, TASK)("process the next bill", None)
+        # (A handler that asked a question and returned holds the slot until the answer: untouched.)
+        self.assertEqual(state.current_task, "process the next bill")
 
 
 class ApprovalLock(unittest.TestCase):

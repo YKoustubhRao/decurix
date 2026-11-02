@@ -267,15 +267,21 @@ func AssessRequest(prompt string) *Concern {
 var (
 	approvalRe = regexp.MustCompile(`(?i)^\s*(yes|yep|yeah|yup|y|ok|okay|sure|approved?|i approve|confirm(ed)?|go( ahead)?|go for it|do it|proceed|continue|lgtm|sounds good|fine|allowed?|granted|you can|please do|affirmative)\b`)
 	refusalRe  = regexp.MustCompile(`(?i)\b(no|nope|don'?t|do not|stop|cancel|abort|wait|hold on|never|not now|deny|denied|reject(ed)?)\b`)
+	// A question back, or a yes on a condition, grants nothing yet: "ok, what will this send?" asks before deciding, and
+	// "yes if the total matches" is a yes only once something holds that no one has checked.
+	questionRe  = regexp.MustCompile(`(?i)\?|\b(what|which|how|why|where|who|whom|whose|when)\b`)
+	conditionRe = regexp.MustCompile(`(?i)\b(if|only|unless|provided|providing|as long as|so long as|assuming|but|except|after|once|first|before|until)\b`)
 )
 
 // IsApproval reports whether a human's reply to an approval request grants
 // it. A reply that says yes and no at once ("ok but don't push yet") is not
 // an approval - the gate stays shut and the reply is passed on as input.
+// Only a clear affirmative is one: a reply with a question in it, or a
+// condition, is not a yes.
 func IsApproval(reply string) bool {
 	reply = strings.TrimSpace(reply)
 	if reply == "" || !approvalRe.MatchString(reply) {
 		return false
 	}
-	return !refusalRe.MatchString(reply)
+	return !refusalRe.MatchString(reply) && !questionRe.MatchString(reply) && !conditionRe.MatchString(reply)
 }
