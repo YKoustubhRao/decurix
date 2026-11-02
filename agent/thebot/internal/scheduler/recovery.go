@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"thebot/internal/atomizer"
 	"thebot/internal/feedback"
@@ -254,7 +255,12 @@ func (s *Scheduler) recallL1(ctx context.Context, prompt string, onLog func(stri
 	}
 	facts := make([]string, 0, len(entries))
 	for _, e := range entries {
-		facts = append(facts, e.Fact)
+		// With its date: a correction and the fact it replaced must not read as equally current.
+		fact := e.Fact
+		if e.CreatedAt > 0 {
+			fact += " (noted " + time.Unix(e.CreatedAt, 0).UTC().Format("2006-01-02") + ")"
+		}
+		facts = append(facts, fact)
 	}
 	onLog(fmt.Sprintf("memory: recalled %d fact(s) from L1", len(facts)))
 	return facts

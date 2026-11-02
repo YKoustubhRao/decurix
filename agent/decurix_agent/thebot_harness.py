@@ -55,7 +55,7 @@ POLL_INTERVAL_SECONDS = 2
 # reports what it finished when that runs out; this is only the backstop
 # for a soul that stopped responding altogether. A goal working without a
 # question is not stuck: found live (2026-10-23), 25 minutes stopped one mid-work.
-TASK_TIMEOUT_SECONDS = 7500
+TASK_TIMEOUT_SECONDS = int(os.environ.get("THEBOT_JOB_TIMEOUT_SECONDS") or 7200) + 300
 
 SAFETY_PREAMBLE = f"""
 Approval rules for this desktop.

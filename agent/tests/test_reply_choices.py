@@ -149,3 +149,32 @@ class WhatThePersonSaidReachesTheFinalCheck(unittest.TestCase):
             self.assertIn("they answered: 454 two rows, one per rate", judged)
         with mock.patch.object(guidance.task_context, "current", return_value="t2"):
             self.assertEqual(skill_task._with_said("Another"), "Another")   # another task's words never go with it
+
+    def test_a_taught_runs_check_and_its_second_attempt_are_given_the_answers(self):
+        # Found live (2026-10-31, T7): the client gave a bill's right GSTIN in answer to the worker's question; the
+        # check, shown only the request, failed the bill for not using the printed one, and the second attempt, shown
+        # the check's note but not the answer, undid the correction.
+        from decurix_agent import guidance
+        run = {"skill": {"name": "gstr1", "title": "GSTR-1", "steps": [{"n": 1, "summary": "open the portal"}]},
+               "values": {}, "context": "Prepare September's GSTR-1"}
+        answer = "The printed GSTIN has two digits swapped - use 29ADLFB1520R1ZW"
+        with mock.patch.object(guidance.task_context, "current", return_value="t7"):
+            guidance._exchanges.update(task=None, said=[])
+            guidance.note_exchange("Invoice 792's GSTIN fails its check digit - which is right?", answer)
+            with mock.patch.object(skill_task.verify, "judge", return_value={"verdict": "done"}) as judge, \
+                    mock.patch.multiple(skill_task, _criteria=mock.DEFAULT, _rows_note=mock.DEFAULT,
+                                        _chosen_for=mock.DEFAULT) as helpers, \
+                    mock.patch.multiple(skill_task.evidence, live=mock.DEFAULT, final_frame=mock.DEFAULT,
+                                        observed=mock.DEFAULT, live_text=mock.DEFAULT):
+                helpers["_criteria"].return_value, helpers["_rows_note"].return_value = "", ""
+                helpers["_chosen_for"].return_value = ()
+                skill_task._judge(run, "done")
+            task = judge.call_args[0][0]
+            self.assertTrue(task.startswith("Prepare September's GSTR-1"))
+            self.assertIn(answer, task)
+            self.assertNotIn(answer, skill_task._engine_request(run))   # a first attempt: the request as it was
+            run.update(attempt_note="the record uses a GSTIN other than the printed one", attempt_report="done")
+            request = skill_task._engine_request(run)
+            self.assertIn(answer, request)
+            self.assertIn("stand over the check's note", request)
+            self.assertEqual(skill_task._with_said(request).count(answer), 1)   # never twice

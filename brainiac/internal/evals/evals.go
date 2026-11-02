@@ -177,6 +177,12 @@ type Score struct {
 	N       int   `json:"n"`
 	Correct int   `json:"correct"`
 	MeanMs  int64 `json:"mean_ms"`
+	// MeanPrompt and MeanCompletion are the tokens one case used, which is
+	// what a hosted model bills.
+	MeanPrompt     int `json:"mean_prompt,omitempty"`
+	MeanCompletion int `json:"mean_completion,omitempty"`
+	// At is when it was measured; a live miss after this undoes what it earned.
+	At time.Time `json:"at,omitempty"`
 }
 
 // Accuracy is correct over n.
@@ -210,6 +216,42 @@ func (r *Results) Compare(a, b, domain string) (aAtLeastB, known bool) {
 		return false, false
 	}
 	return sa.Accuracy() >= sb.Accuracy(), true
+}
+
+// Margin is how much accuracy a cheaper path may give up, and z the one-sided
+// 95% confidence behind LowerBound.
+const (
+	Margin = 0.05
+	z      = 1.645
+)
+
+// LowerBound is the accuracy a score can honestly claim: the Wilson lower
+// bound, which stays well below correct/n when n is small.
+func (s Score) LowerBound() float64 {
+	if s.N == 0 {
+		return 0
+	}
+	n, p := float64(s.N), s.Accuracy()
+	mid := p + z*z/(2*n)
+	spread := z * math.Sqrt(p*(1-p)/n+z*z/(4*n*n))
+	return (mid - spread) / (1 + z*z/n)
+}
+
+// Proven reports whether checked cases show a is not worse than b in a field:
+// the accuracy a can claim is within Margin of what b scored. Compare asks who
+// did better; this asks whether the gap could be chance, so a small sample
+// never moves work to a cheaper path. 20 of 20 is not enough to replace a
+// model that scored 100%; about 55 of 55 is.
+func (r *Results) Proven(a, b, domain string) bool {
+	if r == nil {
+		return false
+	}
+	sa, oka := r.Scores[a][domain]
+	sb, okb := r.Scores[b][domain]
+	if !oka || !okb || sa.N < MinCases || sb.N < MinCases {
+		return false
+	}
+	return sa.LowerBound() >= sb.Accuracy()-Margin
 }
 
 // Set records a score, replacing the model's earlier one in that field.

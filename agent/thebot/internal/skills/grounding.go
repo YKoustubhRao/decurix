@@ -65,8 +65,9 @@ func (st *operatorState) noteTracedTyping(command string) {
 	}
 }
 
-// maxSeenChars bounds what is kept of the request and command outputs.
-const maxSeenChars = 400_000
+// maxSeenChars bounds what is kept of the request and command outputs. Long enough for the longest goals measured: a
+// goal is told its checks still know what it was shown, and 400,000 was passed by one that compacted eleven times.
+const maxSeenChars = 2_000_000
 
 var (
 	// documentPathRe is a document named by its path in a request.

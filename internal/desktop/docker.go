@@ -68,6 +68,9 @@ const (
 	BrainOllama = "ollama"
 	BrainClaude = "claude"
 	BrainAzure  = "azure"
+	// BrainOpenAI is any OpenAI-compatible server the control plane was given (OpenAI itself, OpenRouter, a Brainiac
+	// box on the network): the same proxy route, the same env for the desktop.
+	BrainOpenAI = "openai"
 )
 
 // Brain is a desktop's model choice as the control plane resolved it at

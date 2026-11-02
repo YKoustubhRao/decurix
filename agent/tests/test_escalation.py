@@ -205,6 +205,12 @@ class Ladder(unittest.TestCase):
         self.assertIsNone(found["element"])
         self.assertEqual(found["options"], [])
 
+    def test_the_engine_is_told_what_the_person_said_the_step_is(self):
+        # A control the person named in their own words ("the Save button") is often labelled otherwise on the screen.
+        ask = asks('{"choice": 1, "confidence": 0.9}')
+        self.recover(ask, save_step(intent="The person said: the Save button on the form itself."))
+        self.assertIn("What the person said this step is for: The person said: the Save button", ask.calls[0][1])
+
     def test_the_engine_sees_what_is_in_front(self):
         ask = asks('{"choice": 0}')
         observation = screen(button("Store", [500, 400, 80, 30]), field("dialog", "Session expired"))

@@ -86,7 +86,16 @@ type Config struct {
 	// public evaluations, installs a better plan beside the running one,
 	// checks it, and switches only when the check passes.
 	UpdateEvery string `json:"update_every,omitempty"`
+	// Sandbox "off" lets model processes read and write what this user can.
+	// It is for a GPU whose driver needs a path the sandbox does not allow.
+	Sandbox string `json:"sandbox,omitempty"`
+	// MaxLocalSeconds keeps a field with the remote brain when a local model
+	// that earned it takes longer than this on average; 0 means no limit.
+	MaxLocalSeconds float64 `json:"max_local_seconds,omitempty"`
 }
+
+// SandboxOff turns the model processes' file sandbox off.
+const SandboxOff = "off"
 
 // The web settings.
 const (
@@ -114,6 +123,10 @@ type Remote struct {
 	APIVersion string `json:"api_version,omitempty"`
 	// Vision says the remote model reads pictures.
 	Vision bool `json:"vision,omitempty"`
+	// USDPerMTokIn and USDPerMTokOut are its price per million tokens, for
+	// reporting what answers cost; 0 reports none.
+	USDPerMTokIn  float64 `json:"usd_per_mtok_in,omitempty"`
+	USDPerMTokOut float64 `json:"usd_per_mtok_out,omitempty"`
 }
 
 // Default is the configuration with nothing set.
@@ -163,6 +176,10 @@ func (c *Config) fromEnv() {
 	set("BRAINIAC_SEARX_URL", &c.SearxURL)
 	set("BRAINIAC_BRAVE_KEY_ENV", &c.BraveKeyEnv)
 	set("BRAINIAC_UPDATE_EVERY", &c.UpdateEvery)
+	set("BRAINIAC_SANDBOX", &c.Sandbox)
+	if v := os.Getenv("BRAINIAC_MAX_LOCAL_SECONDS"); v != "" {
+		c.MaxLocalSeconds, _ = strconv.ParseFloat(v, 64)
+	}
 	if v := os.Getenv("BRAINIAC_SHARE_MEDIA"); v != "" {
 		c.ShareMedia, _ = strconv.ParseBool(v)
 	}

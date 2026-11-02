@@ -21,6 +21,7 @@ func (s *Server) llmStatusHandler(w http.ResponseWriter, r *http.Request) {
 		"defaults": map[string]any{
 			llm.ProviderClaude: map[string]string{"model": llm.DefaultClaudeModel, "fast_model": llm.DefaultClaudeFastModel},
 			llm.ProviderAzure:  map[string]string{"model": llm.DefaultModel, "fast_model": llm.DefaultFastModel},
+			llm.ProviderOpenAI: map[string]string{"model": llm.DefaultModel, "fast_model": llm.DefaultFastModel, "endpoint": llm.DefaultOpenAIEndpoint},
 		},
 	})
 }
@@ -185,19 +186,19 @@ func (s *Server) desktopBrain(harness, brain string) (desktop.Brain, error) {
 	switch strings.TrimSpace(harness) {
 	case "", desktop.HarnessTheBot:
 	default:
-		return desktop.Brain{}, errBrain("every new desktop runs TheBot: leave harness out and choose its model with brain=ollama, claude or azure")
+		return desktop.Brain{}, errBrain("every new desktop runs TheBot: leave harness out and choose its model with brain=ollama, claude, azure or openai")
 	}
 
 	switch kind := strings.ToLower(strings.TrimSpace(brain)); kind {
 	case "", desktop.BrainOllama:
 		return desktop.Brain{Kind: desktop.BrainOllama}, nil
-	case desktop.BrainClaude, desktop.BrainAzure:
+	case desktop.BrainClaude, desktop.BrainAzure, desktop.BrainOpenAI:
 		if !s.LLM.Configured(kind) {
 			return desktop.Brain{}, errBrain(kind + " is not set up yet: choose it under Model in the New desktop dialog and add its key")
 		}
 		st := s.LLM.Status()[kind]
 		return desktop.Brain{Kind: kind, Model: st.Model, Vision: st.Vision}, nil
 	default:
-		return desktop.Brain{}, errBrain("brain must be ollama, claude or azure")
+		return desktop.Brain{}, errBrain("brain must be ollama, claude, azure or openai")
 	}
 }

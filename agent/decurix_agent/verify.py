@@ -313,7 +313,7 @@ def program_numbers(text):
 
 
 def judge(task, claim="", criteria="", values=None, steps="", live_png=None, reference_png=None, observed=None,
-          screen_text="", chosen=(), produced="", screen=True, deliverables=(), look_up=None):
+          screen_text="", chosen=(), produced="", screen=True, deliverables=(), look_up=None, found=""):
     """
     {"verdict", "confidence", "seen", "why"} for whether `task` was done. With
     no model, or when the model cannot be read, the verdict is "unsure" - the
@@ -323,6 +323,8 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
     task's files that hold those terms - when the judge is unsure only because
     a part it needs was not shown, it names what to find and judges once more
     with those lines (the judge asks for evidence; nothing is guessed for it).
+    `found`: facts the harness's code checked on this desktop (files present and their sizes, values never typed) -
+    evidence of their own, never the person's words or the worker's claim.
     """
 
     if not available():
@@ -363,6 +365,13 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
         lines.append("What the worker's tools did and read off the screen during this task, as it happened (observed, "
                      "not claimed - a report that matches these is backed by them; a look at the screen listed here "
                      "shows what was on it at that moment, a page since closed included):\n" + "\n".join(observed)[-24000:])
+    if found:
+        # Found live (2026-11-02): handed over inside the person's words ("what the person who taught this task said"),
+        # the code's file check read as one more claim, and the check still answered "the observations do not show
+        # the files saved in the folder".
+        lines.append("Facts the harness checked in code on this desktop just now (exact; not the worker's claim and not "
+                     "the person's words - a part of the result these settle IS settled, judge it from them):\n"
+                     + found.strip()[:4000])
     if screen_text:
         lines.append("The text the fields on the screen hold NOW, read from the apps themselves (exact - where it and "
                      "the picture's small print disagree, this is right; a report that says a text was changed is "

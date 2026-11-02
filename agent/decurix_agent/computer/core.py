@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import time
+import urllib.parse
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -1271,6 +1272,22 @@ def _saved(change):
     return bool(_SAVED_ANSWER.search(change)) and not _SAVE_REFUSED.search(change)
 
 
+# What an application says once it has removed a record.
+_DELETED_ANSWER = re.compile(r"(?i)\b(?:deleted|removed|moved to (?:the )?(?:trash|bin))\b")
+
+
+def _released(save, answer, page):
+    """Whether a delete's answer (or the page it was pressed on) is about this earlier save: the record's number or
+    one of its own references named in it, or the delete pressed on the page the save led to."""
+
+    _, number, refs, saved_page = save
+    named = [r for r in ({number} | refs) if r and len(r) >= 3]
+    if any(re.search(r"(?<![A-Z0-9])" + re.escape(r.upper()) + r"(?![A-Z0-9])", answer) for r in named):
+        return True
+    # (an answer that names another record is about that one, wherever it was pressed)
+    return bool(saved_page) and page == saved_page and not _RECORD_NO.search(answer)
+
+
 def _record_refs(pairs):
     """The values typed into a record's own number fields (No., Bill, Invoice, Voucher, Ref) that hold a digit."""
 
@@ -1298,13 +1315,21 @@ def already_entered(events):
     typed since the last save, against those of each earlier save (an email, or its first two words). None otherwise -
     and never for a form that changes an existing record. Found live (round 5 P4, 2026-10-21): a joiner saved with the
     wrong department was entered again, and the portal held him twice.
+
+    A save the application has since deleted no longer counts: found live (2026-10-31): a record saved with a misread
+    value was deleted to be entered again, and every re-entry was refused as "already saved" though the application
+    no longer held it.
     """
 
-    saved, current, pairs, new_page = [], [], [], False
+    saved, current, pairs, new_page, page = [], [], [], False, ""
     for event in events:
         if event.get("outcome") not in (None, "done"):
             continue
         change = str(event.get("change") or "")
+        if event.get("kind") in ("click", "key") and saved:
+            answer = urllib.parse.unquote_plus(change).upper()
+            if _DELETED_ANSWER.search(answer) and not _SAVE_REFUSED.search(answer):
+                saved = [s for s in saved if not _released(s, answer, page)]
         if _FORM_START.search(change) or _FORM_START.search("page is now " + str(event.get("target") or "")):
             current, pairs = [], []  # (a new record's form opened afresh: what was typed into an abandoned one is not this one's)
         label = str((event.get("element") or {}).get("name") or "")
@@ -1324,13 +1349,18 @@ def already_entered(events):
             new_page = True
         if event.get("kind") in ("click", "key") and _saved(change) and current:
             number = _RECORD_NO.search(change)
-            saved.append((_identity(current), number.group(0) if number else "", _record_refs(pairs)))
+            # (the page a save led to is the record's own only when it ends in its id: a list page holds others too)
+            landed = moved.group(1).rstrip(";,").split("?")[0] if moved else ""
+            saved.append((_identity(current), number.group(0) if number else "", _record_refs(pairs),
+                          landed if re.search(r"/[^/]*\d[^/]*/?$", landed) else ""))
             current, pairs, new_page = [], [], False
+        if moved:
+            page = moved.group(1).rstrip(";,").split("?")[0]
     mine = _identity(current)
     if not mine or not new_page:
         return None
     my_refs = _record_refs(pairs)
-    for theirs, number, their_refs in saved:
+    for theirs, number, their_refs, _ in saved:
         # Two bills to one customer share a name, never their own numbers (found live, 2026-10-25: a month's second bill
         # for a customer was refused as the first one again).
         if my_refs and their_refs and not (my_refs & their_refs):
@@ -3455,6 +3485,9 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     context = _context(before)
     if kind == "key" and element is None:
         context["focused"] = _keyboard_field(before)
+    # The dialogs open on the screen, for a yes-button whose own path does not name its dialog (approval.py).
+    context["dialogs"] = [str(e.get("name") or "") for e in before.get("elements") or []
+                          if str(e.get("role") or "").lower() in ("dialog", "alertdialog") and e.get("name")]
 
     _refuse_number_arrows(kind, point)
     _refuse_unsafe_save(kind, element, keys, before)

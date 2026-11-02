@@ -220,6 +220,18 @@ func ReadState(st *store.Store) State {
 	return s
 }
 
+// ApproveTemplate is a person accepting a model's changed chat template. The
+// next cycle may choose that model again.
+func ApproveTemplate(st *store.Store, model string) (install.TemplateRecord, error) {
+	rec, err := install.ApproveTemplate(st, model)
+	if err != nil {
+		return rec, err
+	}
+	s := ReadState(st)
+	delete(s.Rejected, model)
+	return rec, st.WriteJSON(StateFile, s)
+}
+
 // cycle is one run's working set.
 type cycle struct {
 	opt     Options
@@ -325,6 +337,16 @@ func (c *cycle) decide(ctx context.Context, overlay catalog.Overlay, pin string)
 		}
 		c.logf("installing beside the running models: %s", describe(changes))
 		next, err := c.opt.Install(ctx, plan, install.Options{Store: c.st, Census: cs, WorkerDir: c.opt.WorkerDir, Log: c.opt.Log, LockName: NextLock})
+		var changed *install.TemplateChanged
+		if errors.As(err, &changed) {
+			// Only a person accepts it; approving ends the set-aside early.
+			c.state.Rejected[changed.Model] = Rejection{Until: c.now.Add(SetAside), Why: changed.Error()}
+			c.res.SetAside = append(c.res.SetAside, changed.Model)
+			c.res.Notes = append(c.res.Notes, changed.Error())
+			c.logf("%v", changed)
+			c.set(OutcomeRejected, "the better plan is held for a person: %v", changed)
+			continue
+		}
 		if err != nil {
 			c.set(OutcomeFailed, "installing the better plan failed (nothing changed; tried again next cycle): %v", err)
 			return
@@ -563,6 +585,8 @@ func (c *cycle) notRunnable(cand scout.Candidate, rep *scout.Report) string {
 		return "not runnable: " + strings.Join(cand.Problems, "; ")
 	case !c.chatRole(cand.Role):
 		return "a " + cand.Role + " model: the updater adds chat models (brain, vision, fields) only"
+	case !scout.TrustedUploader(cand.Repo):
+		return "its uploader is not on the trusted list; a person can add it with `brainiac scout adopt`"
 	case cand.FitsHere != nil && !*cand.FitsHere:
 		return fmt.Sprintf("needs %.1f GB, more than this machine's budget", cand.MemGB)
 	case splitRe.MatchString(cand.File):

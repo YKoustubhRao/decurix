@@ -150,7 +150,7 @@ func buildUnits(lock *install.Lock, cat *catalog.Catalog, ollamaURL, logDir stri
 				}
 				u.ctx = ctx
 				u.llama = &LlamaProc{Bin: lock.LlamaServer, Model: u.files["model"], MMProj: u.files["mmproj"],
-					Ctx: ctx, Threads: threads, LogPath: filepath.Join(logDir, "llama-"+p.Model+".log")}
+					Ctx: ctx, Threads: threads, LogPath: filepath.Join(logDir, "llama-"+p.Model+".log"), TemplateSHA: inst.TemplateSHA}
 			case catalog.RuntimeOllama:
 				if ol == nil {
 					ol = backend.NewOllama(ollamaURL)

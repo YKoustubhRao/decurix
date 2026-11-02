@@ -1047,7 +1047,7 @@
             </span>
 
             <span class="chip">
-              {{if eq .Harness "claude"}}Claude Code{{else if eq .Harness "azure"}}Office (GPT){{else if eq .Harness "thebot"}}TheBot · {{if eq .Brain "claude"}}Claude{{else if eq .Brain "azure"}}Azure{{else}}Ollama{{end}}{{else}}Ollama{{end}}
+              {{if eq .Harness "claude"}}Claude Code{{else if eq .Harness "azure"}}Office (GPT){{else if eq .Harness "thebot"}}TheBot · {{if eq .Brain "claude"}}Claude{{else if eq .Brain "azure"}}Azure{{else if eq .Brain "openai"}}OpenAI{{else}}Ollama{{end}}{{else}}Ollama{{end}}
             </span>
           </div>
         </div>
@@ -1394,8 +1394,9 @@
           <label class="seg"><input type="radio" name="brain" value="ollama" checked><span>Ollama (local)</span></label>
           <label class="seg"><input type="radio" name="brain" value="claude"><span>Claude</span></label>
           <label class="seg"><input type="radio" name="brain" value="azure"><span>Azure OpenAI</span></label>
+          <label class="seg"><input type="radio" name="brain" value="openai"><span>OpenAI / compatible</span></label>
         </div>
-        <div class="hint" id="brainHint">Every desktop runs TheBot, and TheBot adapts to the model: one that reads images is shown the screen and scanned pages, a text-only one gets the screen's element list and OCR. With Ollama it thinks on this machine's own model, free but slower. Claude or Azure OpenAI think faster and better, billed to your account; their keys stay in the control plane and never enter a desktop.</div>
+        <div class="hint" id="brainHint">Every desktop runs TheBot, and TheBot adapts to the model: one that reads images is shown the screen and scanned pages, a text-only one gets the screen's element list and OCR. With Ollama it thinks on this machine's own model, free but slower. Claude, Azure OpenAI or an OpenAI-compatible server (OpenAI itself, OpenRouter, a model box on your own network) think faster and better, billed to your account; their keys stay in the control plane and never enter a desktop.</div>
 
         <div class="brain-status" id="brainStatus" hidden>
           <span id="brainStatusText"></span>
@@ -1773,7 +1774,7 @@
      control plane - never read from .env. The settings routes are only on
      this computer's own address; over the phone link they are refused and
      the panel says so. */
-  var BRAIN_NAMES = {claude: "Claude", azure: "Azure OpenAI"};
+  var BRAIN_NAMES = {claude: "Claude", azure: "Azure OpenAI", openai: "OpenAI / compatible"};
   var modelInfo = null;
   var brainEditing = false;
 
@@ -1800,7 +1801,7 @@
     var p = chosenBrain();
     var status = document.getElementById("brainStatus");
     var setup = document.getElementById("brainSetup");
-    var hosted = p === "claude" || p === "azure";
+    var hosted = p === "claude" || p === "azure" || p === "openai";
     var info = providerInfo(p);
 
     if(!hosted){
@@ -1828,17 +1829,23 @@
   function fillSetup(p, info, configured){
     var defaults = (modelInfo && modelInfo.defaults && modelInfo.defaults[p]) || {};
     var azure = p === "azure";
+    var openai = p === "openai";
 
     document.getElementById("brainSetupIntro").textContent = azure
       ? "Your Azure AI resource: its endpoint, a key, and the names of two chat deployments that read images and call tools."
-      : "An Anthropic API key (console.anthropic.com > API keys). Usage is billed to that account.";
-    document.getElementById("brainEndpointRow").hidden = !azure;
+      : openai
+        ? "An OpenAI API key (platform.openai.com), or the address and key of another OpenAI-compatible server: OpenRouter, or a model box on your own network (http:// is allowed there; type any word as its key if it needs none). Leave the endpoint empty for OpenAI itself."
+        : "An Anthropic API key (console.anthropic.com > API keys). Usage is billed to that account.";
+    document.getElementById("brainEndpointRow").hidden = !(azure || openai);
+    document.getElementById("brainEndpoint").placeholder = azure
+      ? "https://your-resource.services.ai.azure.com/models"
+      : (defaults.endpoint || "https://api.openai.com/v1");
     document.getElementById("brainModelLabel").textContent = azure ? "Deployment" : "Model";
     document.getElementById("brainFastLabel").textContent = azure ? "Fast deployment" : "Fast model";
 
     var key = document.getElementById("brainKey");
     key.value = "";
-    key.placeholder = configured ? "Saved - leave empty to keep it" : (azure ? "Key 1 or Key 2" : "sk-ant-…");
+    key.placeholder = configured ? "Saved - leave empty to keep it" : (azure ? "Key 1 or Key 2" : (openai ? "sk-…" : "sk-ant-…"));
     document.getElementById("brainEndpoint").value = info.endpoint || "";
     document.getElementById("brainModel").value = info.model || "";
     document.getElementById("brainModel").placeholder = defaults.model || "";

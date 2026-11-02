@@ -373,6 +373,7 @@ test('a first launch imports the distro, prepares it, starts Docker and the stac
     'version --format {{.Server.Version}}',
     'version --format {{.Server.Version}}',
     'compose build',
+    'network inspect decurix-network',
     'compose run --rm --no-deps -T desktop-manager ./decurix --build-images -images desktop',
     'compose up -d --no-build',
     // The tools image only once the dashboard is up, waited for by nothing.
@@ -644,12 +645,21 @@ test('runs the shipped cloudflared for the phone link and stops it when the app 
 const dockerOnPath = path.join('/usr/local/bin', 'docker');
 const cloudflaredOnPath = path.join('/opt/homebrew/bin', 'cloudflared');
 
+test('the external network is created before compose runs anything that needs it, when it is missing', async () => {
+  const result = await boot('absent', { dockerRun: (args) => (args.join(' ') === 'network inspect decurix-network' ? 1 : 0) });
+  const at = (words) => result.docker.indexOf(words);
+  assert.ok(at('network create decurix-network') > at('network inspect decurix-network'));
+  assert.ok(at('network create decurix-network') < at('compose run --rm --no-deps -T desktop-manager ./decurix --build-images -images desktop'));
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+});
+
 test('on a Mac, a first launch builds and starts the control plane in Docker', async () => {
   const result = await boot('absent', { platform: 'darwin', files: [dockerOnPath] });
   assert.equal(result.window.url, 'http://127.0.0.1:8080');
   assert.deepEqual(result.docker, [
     'version --format {{.Server.Version}}',
     'compose build',
+    'network inspect decurix-network',
     'compose run --rm --no-deps -T desktop-manager ./decurix --build-images -images desktop',
     'compose up -d --no-build',
     // The tools image only once the dashboard is up, waited for by nothing.

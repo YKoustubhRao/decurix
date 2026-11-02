@@ -29,7 +29,7 @@ import (
 //     model (how much of a command's output, of the screen's element list,
 //     how many turns a goal may take) are raised for it.
 type Capabilities struct {
-	// Brain names what TheBot reasons with: "ollama", "claude" or "azure".
+	// Brain names what TheBot reasons with: "ollama", "claude", "azure" or "openai" (any OpenAI-compatible server).
 	Brain         string
 	Vision        bool
 	Hosted        bool

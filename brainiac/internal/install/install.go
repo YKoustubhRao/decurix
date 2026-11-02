@@ -51,6 +51,9 @@ type Unit struct {
 	Source catalog.Source    `json:"source"`
 	Files  map[string]string `json:"files,omitempty"` // role -> absolute path
 	Commit string            `json:"commit,omitempty"`
+	// TemplateSHA is the chat template in the model's GGUF file; the file is
+	// not served if it stops matching. See checkTemplate.
+	TemplateSHA string `json:"template_sha,omitempty"`
 }
 
 // UnitKey names one model source.
@@ -67,6 +70,19 @@ type Options struct {
 	// LockName is the lock file written (default lock.json). The updater
 	// installs into lock.next.json and promotes it only after checking it.
 	LockName string
+	// Latest moves models already installed to their repo's newest commit.
+	// Without it a model stays at the commit it was installed from: what runs
+	// here does not change because someone pushed to a repo.
+	Latest bool
+}
+
+// installedCommit is the commit the current lock has for a unit, or "".
+func installedCommit(st *store.Store, key string) string {
+	var l Lock
+	if st.ReadJSON("lock.json", &l) != nil {
+		return ""
+	}
+	return l.Units[key].Commit
 }
 
 // Run installs everything in the plan and returns the lock (also written to
@@ -98,6 +114,9 @@ func Run(ctx context.Context, plan *selector.Plan, opt Options) (*Lock, error) {
 		switch src.Kind {
 		case catalog.SourceHF:
 			rev := src.Revision
+			if rev == "" && !opt.Latest {
+				rev = installedCommit(st, UnitKey(p.Model, src))
+			}
 			if rev == "" {
 				rev = "main"
 			}
@@ -124,10 +143,30 @@ func Run(ctx context.Context, plan *selector.Plan, opt Options) (*Lock, error) {
 				if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 					return nil, err
 				}
-				if err := hf.Download(ctx, src.Repo, commit, f, dest, hub.ProgressPrinter(opt.Log, want.Path)); err != nil {
+				// A file already in place may be running: a different one
+				// arrives beside it, and replaces it only after its template
+				// has been checked.
+				incoming := dest
+				if had := installedCommit(st, UnitKey(p.Model, src)); had != "" && had != commit {
+					incoming = dest + ".incoming"
+				}
+				if err := hf.Download(ctx, src.Repo, commit, f, incoming, hub.ProgressPrinter(opt.Log, want.Path)); err != nil {
 					return nil, fmt.Errorf("%s: %w", p.Model, err)
 				}
 				u.Files[want.Role] = dest
+				if want.Role == "model" && src.Runtime == catalog.RuntimeLlamaCpp {
+					if u.TemplateSHA, err = checkTemplate(st, p.Model, src.Repo, commit, incoming, time.Now()); err != nil {
+						return nil, err
+					}
+					if u.TemplateSHA != "" {
+						fmt.Fprintf(opt.Log, "   chat template %s\n", short(u.TemplateSHA))
+					}
+				}
+				if incoming != dest {
+					if err := os.Rename(incoming, dest); err != nil {
+						return nil, fmt.Errorf("%s: %w", p.Model, err)
+					}
+				}
 			}
 		case catalog.SourceGitHub:
 			asset, err := hub.ReleaseAsset(ctx, gh, src.Repo, src.Tag, src.Asset)

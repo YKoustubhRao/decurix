@@ -376,7 +376,7 @@ func practiceEnvironment(inherited []string, spec PracticeSpec, vncPassword stri
 		"DECURIX_PRACTICE=1",
 		"PYTHONDONTWRITEBYTECODE=1", "PYTHONUNBUFFERED=1",
 	)
-	if spec.Brain == BrainClaude || spec.Brain == BrainAzure {
+	if (Brain{Kind: spec.Brain}).Hosted() {
 		vision := "0"
 		if spec.Vision {
 			vision = "1"

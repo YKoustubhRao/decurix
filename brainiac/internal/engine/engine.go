@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -23,7 +24,9 @@ import (
 	"brainiac/internal/catalog"
 	"brainiac/internal/census"
 	"brainiac/internal/config"
+	"brainiac/internal/evals"
 	"brainiac/internal/install"
+	"brainiac/internal/isolate"
 	"brainiac/internal/router"
 	"brainiac/internal/store"
 	"brainiac/internal/trace"
@@ -114,24 +117,25 @@ type Options struct {
 
 // Engine runs requests on the installed models.
 type Engine struct {
-	cfg     config.Config
-	st      *store.Store
-	lock    *install.Lock
-	units   map[string]*unit
-	byRole  map[string]*unit
-	res     *Residency
-	wk      *worker.Worker
-	cache   *cache.Cache
-	traces  *trace.Store
-	remote  backend.Chatter
-	rname   string
-	threads int
-	log     *log.Logger
-	mu      sync.Mutex
-	cat     *catalog.Catalog
-	rt      *router.Router
-	evals   *evalCache
-	web     *web.Client
+	cfg      config.Config
+	st       *store.Store
+	lock     *install.Lock
+	units    map[string]*unit
+	byRole   map[string]*unit
+	res      *Residency
+	wk       *worker.Worker
+	cache    *cache.Cache
+	traces   *trace.Store
+	remote   backend.Chatter
+	rname    string
+	threads  int
+	log      *log.Logger
+	mu       sync.Mutex
+	cat      *catalog.Catalog
+	rt       *router.Router
+	evals    *evalCache
+	outcomes *evals.Outcomes
+	web      *web.Client
 	// inflight counts requests being answered, so an engine replaced by a
 	// newer one is closed only after they finish.
 	inflight sync.WaitGroup
@@ -170,8 +174,16 @@ func New(opt Options) (*Engine, error) {
 	e := &Engine{cfg: opt.Config, st: opt.Store, lock: opt.Lock, threads: threads, log: lg,
 		cache: cache.New(opt.Store.Path("cache")), traces: trace.NewStore(opt.Store.Path("traces"))}
 	if opt.Lock.Python != "" && opt.Lock.WorkerScript != "" {
-		e.wk = worker.New(opt.Lock.Python, opt.Lock.WorkerScript, []string{"OMP_NUM_THREADS=" + fmt.Sprint(threads)})
+		// The worker's own venv is writable because its OCR package may fetch
+		// its default models there on first use; its temp files stay in the store.
+		tmp := opt.Store.Path("tmp")
+		_ = os.MkdirAll(tmp, 0o700)
+		e.wk = worker.New(opt.Lock.Python, opt.Lock.WorkerScript, []string{"OMP_NUM_THREADS=" + fmt.Sprint(threads), "TMPDIR=" + tmp})
 		e.wk.Logf = func(f string, a ...any) { lg.Printf("worker: "+f, a...) }
+		if opt.Config.Sandbox != config.SandboxOff {
+			pol := isolate.ForProgram(opt.Lock.Python, []string{filepath.Dir(opt.Lock.WorkerScript), opt.Store.Path("models")}, []string{opt.Store.Venv(), tmp})
+			e.wk.Sandbox = &pol
+		}
 	}
 	e.cat = opt.Catalog
 	if e.cat == nil {
@@ -185,8 +197,15 @@ func New(opt Options) (*Engine, error) {
 			}
 		}
 	}
+	for _, u := range e.units {
+		if u.llama != nil {
+			u.llama.Logf = lg.Printf
+			u.llama.NoSandbox = opt.Config.Sandbox == config.SandboxOff
+		}
+	}
 	e.rt = buildRouter(e.cat, opt.Store.Path(RouterExamplesFile))
 	e.evals = &evalCache{path: opt.Store.Path("evals.json")}
+	e.outcomes = evals.OpenOutcomes(opt.Store.Path(OutcomesFile))
 	if opt.Config.Web != config.WebOff {
 		e.web = web.New()
 		e.web.SearxURL, e.web.BraveKey = opt.Config.SearxURL, opt.Config.BraveKey()
@@ -427,6 +446,9 @@ func (e *Engine) Chat(ctx context.Context, req Request) (*Response, error) {
 	if atom.Tokens != nil {
 		if atom.Tokens.Remote {
 			rec.RemoteT += atom.Tokens.Prompt + atom.Tokens.Completion
+			if r := e.cfg.Remote; r != nil {
+				rec.USD += (float64(atom.Tokens.Prompt)*r.USDPerMTokIn + float64(atom.Tokens.Completion)*r.USDPerMTokOut) / 1e6
+			}
 		} else {
 			rec.LocalT += atom.Tokens.Prompt + atom.Tokens.Completion
 		}
@@ -847,6 +869,9 @@ type Status struct {
 	Loaded  []string          `json:"loaded"`
 	Catalog string            `json:"catalog"`
 	Machine string            `json:"machine"`
+	// Unconfined are the running model servers that can reach more than their
+	// own files: what each can still reach ("files", "network", "udp").
+	Unconfined map[string][]string `json:"unconfined,omitempty"`
 }
 
 // Status reports the mode, the model per role and what is in memory.
@@ -855,6 +880,17 @@ func (e *Engine) Status() Status {
 		Catalog: e.lock.Plan.CatalogVersion, Machine: e.lock.Plan.Machine}
 	for r, u := range e.byRole {
 		s.Roles[r] = u.model + " (" + u.runtime + ")"
+	}
+	for _, u := range e.units {
+		if u.llama == nil {
+			continue
+		}
+		if open := u.llama.Open(); len(open) > 0 {
+			if s.Unconfined == nil {
+				s.Unconfined = map[string][]string{}
+			}
+			s.Unconfined[u.model] = open
+		}
 	}
 	return s
 }

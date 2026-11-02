@@ -14,7 +14,10 @@ import (
 // a hosted model's per-minute token quota is a one-minute window, and four tries (about 30 s of waiting with no hint)
 // gave up on a busy minute while two thirds of the operator's 180 s deadline was left - found live, an application bill on
 // Azure ended "exceeded token rate limit" twice.
-const maxRateLimitRetries = 10
+// maxRateLimitRetries is high because a 429 says nothing about the work: a worker that shares a token quota waits
+// its turn (about 30 seconds each, within the job's deadline) and never fails a task over it. Found 2026-10-30: at 10,
+// about five minutes, one busy deployment could end a good run.
+const maxRateLimitRetries = 60
 
 // maxFallbackDelay caps the wait when the provider gives no hint.
 const maxFallbackDelay = 30 * time.Second

@@ -62,6 +62,33 @@ class WhoDoesATaughtTask(unittest.TestCase):
             skill_task.learn_answer("the second one")
         self.assertTrue(run["asked_person"])
 
+    def test_a_plan_approved_as_it_was_put_is_not_help_and_anything_added_is(self):
+        # Found (2026-10-31): every run puts its plan to the person first; with every answer counted as help, no taught
+        # skill could ever run cleanly three times and be trusted.
+        from decurix_agent.thebot_harness import PLAN_QUESTION
+        plan = PLAN_QUESTION + "\n- Covering: the November bills in the folder\n- Then enter each and read it back"
+
+        def answered(reply, reading=None):
+            run = {"skill": skill(True), "values": {}}
+            with patch.object(skill_task.guidance, "get", return_value={"run": run, "asked": plan}), \
+                    patch.object(skill_task.skills, "load", side_effect=FileNotFoundError), \
+                    patch("decurix_agent.computer.approval.read_choice", return_value=reading or {"choice": "unclear", "instruction": ""}) as read:
+                if reading is None:
+                    read.side_effect = None  # (a plain reply is decided before the model is asked)
+                skill_task.learn_answer(reply)
+            return run.get("asked_person", False)
+
+        self.assertFalse(answered("Plan is fine, go ahead", {"choice": "as_planned", "instruction": ""}))
+        self.assertTrue(answered("Plan is fine. Also read the client's chat to the end first.",
+                                 {"choice": "changed", "instruction": "read the client's chat to the end first"}))
+        self.assertTrue(answered("Go ahead, but don't file it", {"choice": "as_planned", "instruction": "don't file it"}))
+        # Any other question answered is help, as before.
+        run = {"skill": skill(True), "values": {}}
+        with patch.object(skill_task.guidance, "get", return_value={"run": run, "asked": "Which ledger?"}), \
+                patch.object(skill_task.skills, "load", side_effect=FileNotFoundError):
+            skill_task.learn_answer("go ahead")
+        self.assertTrue(run["asked_person"])
+
 
 if __name__ == "__main__":
     unittest.main()

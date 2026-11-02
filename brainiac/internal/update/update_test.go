@@ -40,7 +40,7 @@ var now = time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
 // does not know.
 func nova() scout.Candidate {
 	fits := true
-	return scout.Candidate{Repo: "someone/Nova-2B-GGUF", BaseRepo: "newlab/Nova-2B", Base: "nova-2b", Role: catalog.RoleBrain,
+	return scout.Candidate{Repo: "unsloth/Nova-2B-GGUF", BaseRepo: "newlab/Nova-2B", Base: "nova-2b", Role: catalog.RoleBrain,
 		Created: now.AddDate(0, 0, -20), ParamsB: 2, Arch: "nova", ArchOK: true, License: "apache-2.0", LicenseClass: catalog.LicensePermissive,
 		File: "Nova-2B-Q4_K_M.gguf", SizeGB: 1.3, MMProj: "mmproj-Nova-2B-f16.gguf", MMProjGB: 0.6, MemGB: 2.2, FitsHere: &fits, Usable: true}
 }
@@ -315,7 +315,7 @@ func TestAModelUnderAnotherNameDoesNotInheritItsParentsScores(t *testing.T) {
 	f := setup(t, novaCard)
 	f.opt.Scout = func(context.Context, scout.Options) (*scout.Report, error) {
 		c := nova()
-		c.Repo, c.Base, c.BaseRepo = "someone/Starling-2B-GGUF", "starling-2b", "newlab/Nova-2B" // tagged a quantisation of Nova
+		c.Repo, c.Base, c.BaseRepo = "unsloth/Starling-2B-GGUF", "starling-2b", "newlab/Nova-2B" // tagged a quantisation of Nova
 		return &scout.Report{Candidates: []scout.Candidate{c}}, nil
 	}
 	// The parent's rows are on a leaderboard.
@@ -331,6 +331,56 @@ func TestAModelUnderAnotherNameDoesNotInheritItsParentsScores(t *testing.T) {
 		if got := baseIfSame(scout.Candidate{Base: in[0], BaseRepo: in[1]}); got != want {
 			t.Errorf("baseIfSame(%v) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// The attack: a stranger's repo with a real model's name, tagged as that
+// model's quantisation, with the real model's rows on a leaderboard.
+func TestAStrangerUnderARealModelsNameIsNotAdopted(t *testing.T) {
+	f := setup(t, novaCard)
+	f.opt.Apply = true
+	f.opt.Scout = func(context.Context, scout.Options) (*scout.Report, error) {
+		c := nova()
+		c.Repo = "someone/Nova-2B-GGUF"
+		return &scout.Report{Candidates: []scout.Candidate{c}}, nil
+	}
+	res, err := Run(context.Background(), f.opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Adopted) != 0 || f.install != 0 || !strings.Contains(fmt.Sprint(res.Considered), "not on the trusted list") {
+		t.Fatalf("adopted %+v installs %d considered %+v", res.Adopted, f.install, res.Considered)
+	}
+	if b := brainOf(t, f.st, "lock.json"); b != "qwen3.5-2b" {
+		t.Fatalf("now running %s", b)
+	}
+}
+
+func TestAChangedTemplateHoldsTheModelForAPerson(t *testing.T) {
+	f := setup(t, novaCard)
+	f.opt.Apply = true
+	installs := f.opt.Install
+	f.opt.Install = func(ctx context.Context, plan *selector.Plan, o install.Options) (*install.Lock, error) {
+		if b, _ := plan.Pick(catalog.RoleBrain); b.Model == "nova-2b" {
+			return nil, &install.TemplateChanged{Model: "nova-2b"}
+		}
+		return installs(ctx, plan, o)
+	}
+	res, err := Run(context.Background(), f.opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(res.SetAside, " "), "nova-2b") || !strings.Contains(strings.Join(res.Notes, " "), "chat template") {
+		t.Fatalf("set aside %v notes %v", res.SetAside, res.Notes)
+	}
+	if b := brainOf(t, f.st, "lock.json"); b != "qwen3.5-2b" {
+		t.Fatalf("a held model runs: %s", b)
+	}
+	if len(f.checked) != 0 {
+		t.Errorf("checked %v", f.checked)
+	}
+	if ReadState(f.st).Rejected["nova-2b"].Why == "" {
+		t.Fatal("the hold was not remembered")
 	}
 }
 

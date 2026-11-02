@@ -81,6 +81,29 @@ class TheSaveGuard(unittest.TestCase):
         self.assertIsNone(core.already_entered(bill("1190") + [ok] + bill("1194")))
         self.assertEqual(core.already_entered(bill("1190") + [ok] + bill("1190")), ("Sales Hebri Agro Industries", ""))
 
+    def test_a_record_the_application_deleted_can_be_entered_again(self):
+        # Found live (2026-10-31, F2): a voucher saved with a misread value was deleted to be entered again; every
+        # re-entry was refused as "already saved" though the application no longer held it.
+        def bill(no):
+            return [opened("http://h:8704/books/voucher/new"), typed("Sales"), typed("Maharashtra"),
+                    {"kind": "type", "outcome": "done", "text": no, "change": "", "element": {"name": "No."}}]
+        ok = {"kind": "click", "outcome": "done", "change": 'page is now http://h:8704/books/voucher/12; 1 element(s) '
+              'appeared: status "Sales voucher saved."'}
+
+        def delete(msg):
+            return {"kind": "click", "outcome": "done", "element": {"name": "Delete"},
+                    "change": "page is now http://h:8704/books/daybook?msg=" + msg.replace(" ", "%20")}
+        self.assertIsNone(core.already_entered(bill("VAI-3310") + [ok, delete("Voucher VAI-3310 deleted.")]
+                                               + bill("VAI-3310")))
+        # Another record deleted, or a delete the application refused, leaves the save standing.
+        self.assertEqual(core.already_entered(bill("VAI-3310") + [ok, delete("Voucher VAI-3311 deleted.")]
+                                              + bill("VAI-3310")), ("Sales Maharashtra", ""))
+        self.assertEqual(core.already_entered(bill("VAI-3310") + [ok, delete("A voucher cannot be deleted.")]
+                                              + bill("VAI-3310")), ("Sales Maharashtra", ""))
+        # A delete pressed on the record's own page, whose answer names nothing, is that record's.
+        on_page = [opened("http://h:8704/books/voucher/12"), delete("Deleted.")]
+        self.assertIsNone(core.already_entered(bill("VAI-3310") + [ok] + on_page + bill("VAI-3310")))
+
     def test_an_edit_form_is_never_refused(self):
         edit = [opened("http://h:8701/people/EMP-2043/edit"), typed("Rohit"), typed("Kulkarni"),
                 typed("rohit.kulkarni@example.com")]

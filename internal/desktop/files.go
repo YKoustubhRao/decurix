@@ -144,7 +144,7 @@ func (m *Manager) UsesLocalModel(ctx context.Context) bool {
 	}
 
 	for _, d := range list {
-		if d.Harness == HarnessOllama || (d.Harness == HarnessTheBot && d.Brain != BrainClaude && d.Brain != BrainAzure) {
+		if d.Harness == HarnessOllama || (d.Harness == HarnessTheBot && !(Brain{Kind: d.Brain}).Hosted()) {
 			return true
 		}
 	}

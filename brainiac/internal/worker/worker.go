@@ -18,11 +18,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
+
+	"brainiac/internal/isolate"
 )
 
 // stopGrace is how long Stop waits for the worker to exit on EOF before killing it.
@@ -39,6 +40,8 @@ type Worker struct {
 
 	// Logf, when set, receives each line the worker writes to stderr.
 	Logf func(format string, args ...any)
+	// Sandbox, when set and the kernel can, is what the worker may touch.
+	Sandbox *isolate.Policy
 
 	callMu sync.Mutex // one call at a time
 
@@ -52,8 +55,9 @@ type Worker struct {
 	stderr  *tail
 }
 
-// New describes a worker run as `python -I -u script` with env added to this
-// process's environment. Nothing starts until Start or the first Call.
+// New describes a worker run as `python -I -u script` with env added to the
+// reduced environment a model process gets (none of Brainiac's secrets).
+// Nothing starts until Start or the first Call.
 func New(python, script string, env []string) *Worker {
 	return &Worker{python: python, script: script, env: env, stderr: &tail{max: stderrKeep}}
 }
@@ -77,7 +81,16 @@ func (w *Worker) startLocked() error {
 	// -I: isolated mode, so modules in the working directory or the user's
 	// site-packages are never imported; -u: unbuffered replies.
 	cmd := exec.Command(w.python, "-I", "-u", w.script)
-	cmd.Env = append(os.Environ(), w.env...)
+	cmd.Env = isolate.Env(w.env...)
+	if w.Sandbox != nil && isolate.CanSandbox() {
+		if err := isolate.Wrap(cmd, *w.Sandbox); err != nil {
+			if w.Logf != nil {
+				w.Logf("no file sandbox: %v", err)
+			}
+			cmd = exec.Command(w.python, "-I", "-u", w.script)
+			cmd.Env = isolate.Env(w.env...)
+		}
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("worker: stdin: %w", err)

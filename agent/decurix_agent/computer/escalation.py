@@ -266,6 +266,10 @@ class Ladder:
             (f"Task: {self.goal}\n" if self.goal else "")
             + f"Step {step['n']}" + (f" of {self.total}" if self.total else "") + f": {step.get('summary', '')}\n"
             + f"Recorded control: {target.get('role', 'control')} {el._quote(target.get('name') or '')}\n"
+            # What the person said the step is (learning, study._aim_spots): a control they named in their own words
+            # ("the Save button") is often labelled otherwise on the screen.
+            + (f"What the person said this step is for: {' '.join(str(step['intent']).split())[:400]}\n"
+               if step.get("intent") else "")
             + f"Window now: {window}\n"
             + (f"In front: {', '.join(el._quote(n, 60) for n in front)}\n" if front else "")
             + "Candidates:\n" + "\n".join(lines)

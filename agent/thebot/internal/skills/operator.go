@@ -582,6 +582,13 @@ type operatorState struct {
 	Ledger        []string `json:",omitempty"`
 	Continuations int      `json:",omitempty"`
 	Compactions   int      `json:",omitempty"`
+	// CompactedTo is how long the transcript was after the last shortening; OutputSeq and OutputBytes number and bound
+	// the outputs kept on disk (context.go).
+	CompactedTo int   `json:",omitempty"`
+	OutputSeq   int   `json:",omitempty"`
+	OutputBytes int64 `json:",omitempty"`
+	// MaskedTo is how long the transcript was after the last masking pass (context.go).
+	MaskedTo int `json:",omitempty"`
 	// The judgement calls a result rests on (judgements.go): rounds asked, the successes counted when the last one was
 	// read, which one is awaited ("done" or "approval") and, for an approval, the reason the gate gave.
 	JudgementRounds int    `json:",omitempty"`
@@ -1109,7 +1116,9 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	}
 	msg := llm.Message{Role: "user", Content: result}
 	screen := screenOnly(command)
-	if screen && res.ExitCode == 0 && listsScreen(command) {
+	// A hosted model's transcript is appended to, never rewritten turn by turn: stale screens and old screenshots wait
+	// for the next maintenance pass (context.go). A local model is left as it was.
+	if !st.Hosted && screen && res.ExitCode == 0 && listsScreen(command) {
 		// A new listing of the screen supersedes every earlier screen output: shortened now, once
 		// (screen_digest.go). Actions between listings keep the last listing whole - its refs are still in use.
 		st.digestStaleScreens()
@@ -1121,7 +1130,9 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 		msg.Images, msg.ImageLabels = pages, labels
 		msg.Content += pagesNote
 	} else if shot := st.takeScreenshot(started); shot != nil {
-		st.forgetOldPictures(screenshotNote, 0)
+		if !st.Hosted {
+			st.forgetOldPictures(screenshotNote, 0)
+		}
 		msg.Images, msg.ImageLabels = [][]byte{shot}, []string{"the screen as this command left it"}
 		msg.Content += screenshotNote
 	}
@@ -1141,7 +1152,8 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 // invoice out of the conversation and the engine asked a person to type in
 // what it had already read.
 const (
-	screenshotNote = "\n\n(The screenshot shows the screen now.)"
+	// (as the command left it, not "now": a hosted goal keeps a few older ones until its next maintenance pass)
+	screenshotNote = "\n\n(The screenshot shows the screen as this command left it.)"
 	pagesNote      = "\n\n(The document's pages are shown as pictures, each labelled with its file and page.)"
 	// maxDocumentPictures bounds the document pages kept in the transcript.
 	maxDocumentPictures = 6
@@ -1434,7 +1446,12 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			turn = 0
 		}
 		turnsUsed++
-		if st.Hosted && transcriptChars(st) > contextBudgetChars {
+		if st.Hosted && st.maintenanceDue() {
+			before := transcriptChars(st)
+			did := st.maintain()
+			rc.Logf("operator", "context maintained (%s): %d -> %d characters re-sent", did, before, transcriptChars(st))
+		}
+		if st.Hosted && st.contextOverBudget() {
 			o.compact(rc, st, "context size")
 		}
 		if err := rc.Ctx.Err(); err != nil {

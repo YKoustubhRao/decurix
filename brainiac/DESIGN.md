@@ -72,6 +72,16 @@ client ──► api ──► engine.Chat
 - **No unseen success.** The answer's figures are checked against the sources in code. The check is advisory, because a computed total appears in no source and is still right. It lists what a person or a stronger model should look at. Decurix's final gate is still where "done" is decided.
 - **Traces hold no content**: no prompt, picture or transcript. Keys live only in environment variables named by the config. Brainiac will not listen beyond loopback without an API key.
 
+### Models are untrusted input
+
+The updater installs and runs files with no person in the loop, so what it will accept and what those files can reach are decided here (2026-10-30). The README lists the rules; these are the reasons.
+
+- **Provenance is the main defence.** A behaviour test cannot find a backdoor that waits for a trigger, and a renamed model with its safety training removed passes a name filter. So the updater adopts only from an explicit list of owners. Everything the Hub says about a repo besides its owner (name, `base_model`, tags, downloads) is the uploader's own claim.
+- **The commit does not move by itself.** Resolving `main` on every install would let a push reach a running machine at the next plan change, and would overwrite the file a running model loads.
+- **A first template is recorded, not judged.** Approving every new model's template would end unattended updates, which is the owner's decision; judging one in code would be a guess. Changes stop for a person. A quantiser's template often differs from its lab's for good reasons, so comparing the two would mostly raise false alarms.
+- **The list of environment variables says what to keep.** No list of secrets' names is ever complete.
+- **Network isolation fails open, and says so.** Refusing to serve on a system that blocks unprivileged namespaces (some Ubuntu AppArmor settings, some containers) would stop the product there. The clean environment always applies.
+
 ### Field specialists
 
 The idea: a niche model for every field, each beating the frontier in its field. It holds only partly, and the design is built around which part.
@@ -135,6 +145,10 @@ These are for an i5-10210U with 8 GB of RAM, a 5 GB WSL cap, about 3.3 GB free w
 1. **Live run on this laptop,** once the GST series is not running: `wsl -d Ubuntu -- ./brainiac/scripts/build.sh`. Then measure real decode speed and feed it back to the selector as `DecodeGBps` (calibration).
 2. **Parity suite.** The same tasks run through Brainiac (local and hybrid) and through gpt-5.4 alone, with ground truth from `decurix-tests`. It scores correct results, questions asked, tokens and time per kind of task. This is the number that says how close local really is. Held-out sets stay sealed.
 3. **Recipes, earned like Decurix methods.** For a kind of request, a cheaper path (say, OCR plus a small brain instead of the remote brain) becomes the default only after N checked runs agree with the heavy path. It goes back to learning on one miss.
+   - Record checked results, time and money per kind of work and path. Pick the cheapest path whose pass rate, at its lower confidence bound, is not below the heavy path's. `evals.Compare` uses raw accuracy today, so 20/20 beats 19/20 on what could be chance.
+   - A cheaper path is tried in shadow only: the user always gets the heavy path's answer while it is being tested.
+   - The hard part is the label, not the loop: a failed gate is not always the model's fault, and a model cannot grade itself.
+   - Speculative decoding's acceptance rate says two models agree, not that the work is right, so it never earns a path. It can speed up a big model on the appliance tier, where the output stays the big model's; that needs measuring.
 4. **Plan atoms with the brain** for compound requests: a typed step graph in constrained JSON, checked by code. This is Decurix's atomizer pattern: rules first, a model only when rules cannot decide. Long documents become map-reduce over pages with extraction and checks in code.
 5. **More roles:**
    - Document OCR to Markdown: GLM-OCR (1.3B, MIT, about 1.4 GB) and PaddleOCR-VL 1.6 beat Gemini 3 Pro on OmniDocBench, and both fit this laptop.

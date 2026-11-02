@@ -20,6 +20,7 @@ This file holds only what must be in your head for every change. The detail live
 | Skills: learn, ask, run | [docs/skills.md](docs/skills.md) |
 | Maturity, final check, "no unseen success", token savings | [docs/learning-and-verification.md](docs/learning-and-verification.md) |
 | Healing ladder, experience | [docs/healing.md](docs/healing.md) |
+| What a run costs, where the tokens go, why a worker gets cheaper with practice (cache, turns, replay per document) | [docs/token-economy.md](docs/token-economy.md) |
 | Long requests: planned runs, ledger, amendments, parked questions, cross-check | [docs/long-requests.md](docs/long-requests.md) |
 | Build, run, env vars, `--cli`, releases | [docs/running.md](docs/running.md) |
 | Harness v2: evidence store, lineage, record integrity, accounting, commit-gate verifier, interaction FSM | [docs/harness-v2.md](docs/harness-v2.md) |
@@ -27,7 +28,7 @@ This file holds only what must be in your head for every change. The detail live
 | Harness v3: the record ledger (`gui record`), party resolution by identifier (`gui select --id`), the scope on the window, questions the screen answers; why four days of rules did not converge | [docs/harness-v3-plan.md](docs/harness-v3-plan.md) |
 | The workforce: org skill registry and scoped knowledge with provenance; typed handoff between workers and asking a taught worker before a person; users, roles and approval policy as data; a work queue with capacity and spend limits; the Workforce page (`/workforce`) | [docs/skillhub.md](docs/skillhub.md), [docs/handoff.md](docs/handoff.md), [docs/access.md](docs/access.md), [docs/workqueue.md](docs/workqueue.md) |
 | Brainiac: many open models behind one OpenAI-compatible endpoint, chosen per machine (own Go module, imports nothing from Decurix) | [brainiac/README.md](brainiac/README.md), [brainiac/DESIGN.md](brainiac/DESIGN.md) |
-| Every lesson learned the hard way (785 entries) | [docs/gotchas.md](docs/gotchas.md): one line each, grep it, then open the named part file |
+| Every lesson learned the hard way (800 entries) | [docs/gotchas.md](docs/gotchas.md): one line each, grep it, then open the named part file |
 
 ## Commands
 

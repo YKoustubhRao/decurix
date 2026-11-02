@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import threading
 import time
@@ -720,7 +721,7 @@ def _prepare(run):
 
     skill = run["skill"]
 
-    missing = [p for p in skills.required(skill) if not run["values"].get(p["name"])]
+    missing = [p for p in _needed(run) if not run["values"].get(p["name"])]
 
     # A row the demonstration had and this run's document does not is not a value to find or to ask for.
     if run.get("rows"):
@@ -729,8 +730,10 @@ def _prepare(run):
         missing = [p for p in missing if p["name"] not in absent]
 
     # Lists that do not line up are asked for again, whole - which item a
-    # value belongs to is not something to guess.
-    problem = None if missing else skills.list_problem(skill, run["values"])
+    # value belongs to is not something to guess. (A gathered run's lists are the per-item block's; a navigation
+    # loop before the block has none and is not run.)
+    problem = None if missing else skills.list_problem({"params": _needed(run)} if run.get("gathered") == "done" else skill,
+                                                       run["values"])
     if problem:
         missing = skills.list_params(skill)
         for param in missing:
@@ -767,6 +770,15 @@ def _prepare(run):
             progress.emit("Read from the documents:\n" + binding.report(evidence, found))
             _prepare(run)
             return
+
+    # A task done once per document whose documents are not in hand - they come by mail or chat, and the person's
+    # first steps save them: the model gathers them, then the lists are read from them and the per-item block replays
+    # ("The per-document part" below).
+    if missing and not problem and run.get("filled") and run["start"] == 1 and not run.get("gathered") \
+            and any(p.get("list") for p in missing) and _loop_start(skill) > 1 and _engine_can_drive() \
+            and binding.available():
+        _gather(run)
+        return
 
     # A task the model does while it is still learning it takes its values as guidance, and reads the run's own
     # documents itself: a value the request and its documents do not have is no reason to stop. One demonstration
@@ -815,6 +827,265 @@ def _prepare(run):
     _execute(run)
 
 
+# ============================================================
+# The per-document part: the harness drives the loop, the model the exceptions
+#
+# A task taught on several documents folds into the steps before the first one (open the mail, make the month's
+# folder, open the application), one block done once per document (learning._find_loops: each typed value a list with
+# one item per document) and the steps after the last. Run as the engine's with the skill as its guide, every item
+# cost the model its whole way through, and the model never reached for the replay (measured 2026-11-01: 3-8M tokens a
+# month, the fourth month no cheaper than the first). So a run whose documents are not in hand goes:
+#   gather   the model does the steps before the block for this request - saves every document where the person's
+#            steps put theirs - and enters nothing (_by_model with phase "gather"; its report comes back through
+#            _gate to _after_phase);
+#   fill     the lists are read from the documents that appeared, in one model call (binding.fill_lists); a document
+#            the person's rules leave out is named with its rule;
+#   replay   the block runs once per document (_execute from its first step; skills.expand writes it out per item),
+#            and a halt hands the rest to the model from that step, as any replay's halt does;
+#   finish   _finish judges the result as it judges every replay.
+# Trust (experience.stage) decides whether the plan is put to the person before the first replay - never what is
+# checked: every step's expectation, the approval gate, the ledger's pre-save comparison and read-back apply as always.
+# ============================================================
+
+DOCUMENT_SUFFIXES = {".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".jpg", ".jpeg", ".png", ".txt", ".odt", ".ods"}
+MAX_GATHERED_FILES = 40
+GATHER_PHASE = "gather"
+# The documents the fill set aside as not fitting the taught shape: the model enters them after the replay (_finish).
+REST_PHASE = "rest"
+
+
+def _needed(run):
+    """
+    The values this run must be given: every one learned to change - or, for a run that begins at the per-item block
+    after gathering its documents, those of the steps from there on that a document can give. What the gather typed is
+    done, and an address (a page, a folder) is nowhere in a document: a step that types one is the model's when the
+    replay reaches it.
+    """
+
+    skill = run["skill"]
+    if run.get("gathered") == "done" and run["start"] > 1:
+        return [p for p in skills.required(skill)
+                if (p.get("step") or 0) >= run["start"] and not learning._is_address(p.get("example"))]
+    return skills.required(skill)
+
+
+def _item_loop(skill):
+    """The per-item loop: the one that is on and repeats the most steps (a navigation repeat before it is small), or None."""
+
+    loops = [loop for loop in skill.get("loops") or [] if loop.get("enabled") and loop.get("blocks") and loop["blocks"][0]]
+    return max(loops, key=lambda loop: (loop.get("length") or 0) * (loop.get("reps") or 0), default=None)
+
+
+def _loop_start(skill):
+    """The number of the first step of the per-item block, or 0 when the skill has none."""
+
+    loop = _item_loop(skill)
+    by_id = {s["id"]: s["n"] for s in skill.get("steps") or []}
+    return by_id.get(loop["blocks"][0][0], 0) if loop else 0
+
+
+def _document_files():
+    """Every document file under the home folder, with its modification time (hidden folders aside)."""
+
+    found = {}
+    for root, dirs, files in os.walk(Path.home()):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("snap", "node_modules")]
+        for name in files:
+            path = Path(root) / name
+            if path.suffix.lower() in DOCUMENT_SUFFIXES:
+                try:
+                    found[str(path)] = path.stat().st_mtime
+                except OSError:
+                    continue
+    return found
+
+
+def _gather(run):
+    run["gathered"] = "started"
+    run["files_before"] = _document_files()
+    progress.emit("This task is done once per document: collecting this request's documents first, the way you showed me.")
+    _by_model(run, phase=GATHER_PHASE)
+
+
+def _new_documents(run):
+    """The documents that appeared or changed since the gather began, oldest first: what it saved for this request."""
+
+    before = run.get("files_before") or {}
+    now = _document_files()
+    since = (run.get("began") or 0) - 5
+    new = [p for p, m in now.items() if (p not in before or m > before[p]) and m >= since]
+    return sorted(new, key=lambda p: now[p])[:MAX_GATHERED_FILES]
+
+
+def _after_phase(run, phase, reply, kind):
+    """The engine's report on a phase of a per-document run (from _gate): decides what the run does next. True: handled."""
+
+    skill = run["skill"]
+    report = " ".join((reply or "").split())[:1500]
+
+    if phase == REST_PHASE:
+        # The model entered the documents the fill set aside; the replay's result and the model's report are judged as
+        # one (the model's part is its own word until the check looks).
+        result = dict(run.get("replay_result") or {"text": "", "outcome": replay.COMPLETED_UNVERIFIED})
+        result["outcome"] = replay.COMPLETED_UNVERIFIED
+        done = ", ".join(Path(x["document"]).name for x in run.get("by_hand") or [])
+        result["text"] = (result.get("text") or "") + f"\n\nEntered by hand, outside the replay ({done}): " + (
+            report if kind == "final" else f"NOT finished - the model stopped with {kind}: {report}")
+        run["by_hand_done"], run["by_hand"] = run.get("by_hand") or [], []
+        _finish(run, result)
+        return True
+    if phase != GATHER_PHASE:
+        return False
+
+    if kind != "final":
+        progress.emit(f"Collecting the documents ended with {kind}, so the model does the whole task itself.")
+        log(f"Skill {skill['name']}: collecting the documents ended with {kind}; the model does the whole task")
+        run["gathered"] = "failed"
+        _by_model(run, note=f"Collecting the documents first did not finish ({report[:300]}). Do the whole task yourself.")
+        return True
+
+    documents = _new_documents(run)
+    if not documents:
+        progress.emit(f"No document file appeared under the home folder since the collection began ({len(_document_files())} "
+                      "document files seen in all), so the model does the rest of the task itself.")
+        log(f"Skill {skill['name']}: collecting the documents saved none the harness can find; the model does the rest")
+        run["gathered"] = "failed"
+        _by_model(run, note=f"You collected the documents and reported: {report[:600]}. Now do the rest of the task "
+                            "yourself: the person's steps after the folder is ready, once per document.")
+        return True
+
+    run["gathered"], run["documents"], run["gather_report"] = "done", documents, report
+    run["start"] = _loop_start(skill)
+    wanted = [p for p in _needed(run) if not run["values"].get(p["name"])]
+    _same_addresses(run)
+    progress.emit(f"{len(documents)} document(s) collected. Reading each one's values for the steps done per document.")
+    values, evidence, rows, left_out = binding.fill_lists(
+        skill, wanted, (run.get("context") or "") + "\n" + report, documents, rules=_taught(skill))
+    if rows:
+        run["rows"] = rows
+    if values:
+        run["values"].update(values)
+        run.setdefault("evidence", {}).update(evidence)
+        progress.emit("Read from the documents:\n" + binding.report(evidence, values))
+    run["left_out"] = [x for x in left_out if x.get("kind") != "by_hand"]
+    run["by_hand"] = [x for x in left_out if x.get("kind") == "by_hand"]
+    if run["left_out"]:
+        progress.emit("Left out under your rules:\n" + "\n".join(f"- {x['document']}: {x['why']}" for x in run["left_out"]))
+    if run["by_hand"]:
+        progress.emit("Not of the taught shape - to be entered by hand after the replay:\n"
+                      + "\n".join(f"- {x['document']}: {x['why']}" for x in run["by_hand"]))
+
+    still = [p for p in _needed(run) if not run["values"].get(p["name"])]
+    if still:
+        progress.emit("The documents do not give " + ", ".join(p["name"] for p in still[:12])
+                      + (" ..." if len(still) > 12 else "") + ", so the model does the rest of the task itself.")
+        log(f"Skill {skill['name']}: the documents do not give {', '.join(p['name'] for p in still)}; the model does the rest")
+        run["gathered"], run["start"] = "failed", 1
+        _by_model(run, note=f"The documents are collected ({len(documents)}: "
+                            + ", ".join(Path(d).name for d in documents[:12]) + f"); you reported: {report[:500]}. "
+                            "Carry on from the person's steps after the folder is ready: enter each document.")
+        return True
+
+    _same_addresses(run)
+    if _stage(run) == experience.APPRENTICE and not run.get("plan_ok"):
+        _pause(run, "plan", _plan_text(run))
+        return True
+    _prepare(run)
+    return True
+
+
+def _documents_note(run):
+    """
+    What code can say about a gathered run's documents, for the final check and the report: each file saved for this
+    request is on disk now (its size), or is not; which the person's rules left out and which the model entered by
+    hand. Found live (2026-11-02): in three months of four the check answered "cannot confirm - the observations do
+    not verify that all six files are in the folder" and a person had to look, though the files were there - the
+    gather's phase had saved them and nothing of it reached the check but the worker's word. A fact a program can
+    decide is decided in code.
+    """
+
+    docs = run.get("documents") or []
+    if not docs:
+        return ""
+    present, missing = [], []
+    for d in docs:
+        try:
+            present.append(f"{Path(d).name} ({Path(d).stat().st_size:,} bytes)")
+        except OSError:
+            missing.append(Path(d).name)
+    folders = sorted({str(Path(d).parent) for d in docs})
+    lines = [f"CHECKED IN CODE, NOT CLAIMED - this request's document files on this desktop now: {len(present)} of "
+             f"{len(docs)} present under {' and '.join(folders)}: " + (", ".join(present) or "none") + "."]
+    if missing:
+        lines.append("NOT present (saved during the task and gone since): " + ", ".join(missing) + ".")
+    kinds = [("Left out under the person's rules (saved, not entered)", run.get("left_out")),
+             ("Entered by the model by hand, not by the taught steps", run.get("by_hand_done"))]
+    for head, items in kinds:
+        if items:
+            lines.append(f"{head}: " + "; ".join(f"{Path(x['document']).name} ({x['why']})" for x in items) + ".")
+    return "\n".join(lines)
+
+
+def _assumed_note(run):
+    """
+    This run's values the fill worked out rather than read (binding.WORKED, binding.NUMBERED), for the final check:
+    assumptions, never the person's word. Found live (2026-11-02): a folder name the fill numbered after the taught
+    example was held over the one the work rightly took from the screen, as the person had said to, and a person was
+    asked twice.
+    """
+
+    marks = (binding.WORKED, binding.NUMBERED)
+    values, said = run.get("values") or {}, run.get("evidence") or {}
+    lines = [f"{name} = {values[name]} ({why})" for name, why in said.items()
+             if name in values and any(m in str(why) for m in marks)]
+    if not lines:
+        return ""
+    return ("These of this run's values were WORKED OUT by the harness, not read as written in what the run was given - "
+            "assumptions, not the person's word. Judge the work by the documents, the person's rules and the screen; "
+            "where those name such a thing another way, the work is right to follow them:\n- " + "\n- ".join(lines))
+
+
+def _same_addresses(run):
+    """
+    An address the person typed the same way before every item (the fresh form's page) is their own fixed value, however
+    the lesson was answered about it: a gathered run types it as they did, once per item. One typed differently each
+    time stays unfilled (the model's, when the replay reaches it).
+    """
+
+    skill = run["skill"]
+    lists = [v for p in skills.list_params(skill) if (v := run["values"].get(p["name"]))]
+    items = len(skills.split_items(lists[0])) if lists else 1
+    for p in skills.required(skill):
+        if (p.get("step") or 0) < run["start"] or run["values"].get(p["name"]) or not learning._is_address(p.get("example")):
+            continue
+        examples = p.get("examples") or [p.get("example")]
+        if len({str(e) for e in examples}) == 1:
+            run["values"][p["name"]] = "; ".join([str(p["example"])] * items) if p.get("list") else str(p["example"])
+
+
+def _plan_text(run):
+    """The plan put to the person before the first replay of a run still being learned: the documents, each item's values."""
+
+    from decurix_agent.thebot_harness import PLAN_QUESTION
+
+    skill, docs = run["skill"], run.get("documents") or []
+    lines = [PLAN_QUESTION,
+             f"- {len(docs)} document(s) collected: " + ", ".join(Path(d).name for d in docs[:12]) + (" ..." if len(docs) > 12 else "")]
+    for x in run.get("left_out") or []:
+        lines.append(f"- Left out ({x['why']}): {Path(x['document']).name}")
+    for x in run.get("by_hand") or []:
+        lines.append(f"- Entered by hand after the others, not by the taught steps ({x['why']}): {Path(x['document']).name}")
+    lists = [p for p in skills.list_params(skill) if run["values"].get(p["name"])]
+    items = {p["name"]: skills.split_items(run["values"][p["name"]]) for p in lists}
+    for n in range(max((len(v) for v in items.values()), default=0)):
+        shown = "; ".join(f"{name}={el._quote(v[n], 40)}" for name, v in items.items() if n < len(v))
+        lines.append(f"- Item {n + 1}: {shown}")
+    lines.append(f"- Then your steps from step {run['start']}, once per item, each value checked against its document "
+                 "before the save.")
+    lines.append("Reply `yes` to go ahead, or say what to change.")
+    return "\n".join(lines)
+
+
 def _need_text(skill, missing):
     """Ask for what a run still needs, saying how each is to be given."""
 
@@ -852,6 +1123,13 @@ def _execute(run):
     # Carrying on past the last step - the person skipped it, or did it by
     # hand - leaves nothing to run. That is the end of the task, and said as
     # what it is: replay.run would call it a halt at a step that does not exist.
+    # A gathered run begins at the per-item block: the step of the expanded program that carries the block's first
+    # step id (a loop before it, written out zero times for want of items, moves the numbers).
+    if run.get("gathered") == "done" and (loop := _item_loop(skill)):
+        first = next((s["n"] for s in program["steps"] if s.get("id") == loop["blocks"][0][0]), None)
+        if first:
+            run["start"] = first
+
     if run["start"] > len(program["steps"]):
         _finish(run, {"text": f"Finished \"{skill['title']}\": nothing was left to do after step {run['start'] - 1}. "
                               "A step that was skipped or done by hand was not checked."})
@@ -867,6 +1145,19 @@ def _execute(run):
 
     if outcome in replay.SUCCESS:
         _finish(run, result)
+    elif outcome == replay.NEEDS_HUMAN and run.get("gathered") == "done" and _engine_can_drive() \
+            and _click_left_to_a_person(program["steps"], result.get("step")):
+        # A click the recording kept only as a spot on the screen, made "a person does this" when it was taught, is
+        # the model's in a run that gathered its documents: it can see the screen and find the control, and the person
+        # is not at this desktop. Found live (2026-11-02): the replay stopped at it inside item 1 of 4 and the run ended.
+        run["taken_over"] = True
+        _own_run(run, False)
+        _settle(run, outcome)
+        step = program["steps"][result["step"] - 1]
+        _by_model(run, from_step=result["step"],
+                  note=f"Step {result['step']} is a click the recording kept only as a spot on the screen "
+                       f"({step.get('by_hand') or step.get('summary')}); nobody is at the screen to do it. Look (gui observe), "
+                       "find the control that is there and click it yourself, then carry on.")
     elif outcome in (replay.NEEDS_APPROVAL, replay.NEEDS_HUMAN):
         kind = "approval" if outcome == replay.NEEDS_APPROVAL else "human"
         text = _approval_text(run, result, values) if kind == "approval" else result["text"]
@@ -889,6 +1180,16 @@ def _execute(run):
     else:
         run["stuck"] += 1
         _ask_stuck(run, result)
+
+
+def _click_left_to_a_person(steps, n):
+    """Whether step n is a manual step that was a click or a key press (not a secret typed), from learning's "manual"."""
+
+    if not n or n > len(steps):
+        return False
+    step = steps[n - 1]
+    what = " ".join(str(step.get("by_hand") or "").lower().split())
+    return step.get("kind") == "manual" and bool(what) and what.startswith(("click", "double", "right", "press", "scroll"))
 
 
 def _approval_text(run, result, values):
@@ -1006,10 +1307,18 @@ def _finish(run, result):
     outcome = result.get("outcome", replay.COMPLETED_UNVERIFIED)
     screen_checked = outcome == replay.VERIFIED and not result.get("skipped")
 
+    # The documents the fill set aside as not of the taught shape are the model's to enter now, by hand, before the
+    # whole is judged ("The per-document part").
+    if run.get("by_hand") and _engine_can_drive():
+        run["replay_result"] = dict(result)
+        _by_model(run, phase=REST_PHASE)
+        return
+
     if screen_checked and not (verify.available() and _stage(run) == experience.APPRENTICE):
         return _succeed(run, result, "screen")
 
     progress.emit("Checking the screen to see that the task was really done.")
+    # A gathered run's files are a fact code decides (_documents_note, added in _judge): weighed as found, not claimed.
     verdict = _judge(run, result["text"])
 
     if verdict["verdict"] == verify.DONE:
@@ -1020,8 +1329,10 @@ def _finish(run, result):
         return _succeed(run, result, "screen")
 
     # A replay that ran to its end and still cannot be confirmed is the model's to finish before a person
-    # is asked - and the sign that this task needs more than its recorded steps (_supervise).
-    if not run.get("one_off") and not run.get("taken_over") and _engine_can_drive():
+    # is asked - and the sign that this task needs more than its recorded steps (_supervise). Not for a run that
+    # gathered its documents: the model has done its parts (the gather, the documents set aside), the replay the rest,
+    # and a third pass over work already entered risks entering it twice - the person is asked instead.
+    if not run.get("one_off") and not run.get("taken_over") and not run.get("gathered") and _engine_can_drive():
         run["taken_over"] = True
         note = " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x) or "the result could not be confirmed"
         _supervise(run, note)
@@ -1119,6 +1430,8 @@ def _succeed(run, result, checked_by, seen="", helped=False):
         text += "\n\nYou confirmed it was done."
 
     text += _evidence_text(run)
+    if _documents_note(run):
+        text += "\n\n" + _documents_note(run).replace("CHECKED IN CODE, NOT CLAIMED - this", "Checked on this desktop: this")
 
     if run.get("one_off"):
         # Built from a recording for this request only: nothing to save, and a
@@ -1165,6 +1478,28 @@ def _run_reply(paused, reply, approval_outcome):
 
     if kind == "confirm":
         return _confirm_reply(dict(paused, claim=paused["result"]["text"]), reply)
+
+    if kind == "plan":
+        # The plan before the first replay of a per-document run (_after_phase). A yes as it stands starts it; a
+        # change, a condition or a correction gives the rest to the model with the person's words in hand; only a plain
+        # no stops. Found live (2026-11-02): "the values look right ... one stray field, don't type it" was read as a
+        # refusal and nothing was entered.
+        said = approval.read_choice(reply, paused.get("plan_text") or _plan_text(run), {
+            "as_planned": "it approves the plan exactly as written and adds, changes, asks or answers nothing else",
+            "changed": "it approves going ahead but adds, corrects or changes something (a value, a field, a rule, a "
+                       "document to leave out or add), or answers a point",
+            "stop": "it refuses: nothing is to be entered",
+        }, plain={"as_planned": ["yes", "ok", "okay", "fine", "go ahead", "proceed", "looks good", "yes, go ahead"],
+                  "stop": ["no", "stop", "don't", "do not", "cancel"]})
+        if said["choice"] == "as_planned" and not said.get("instruction"):
+            run["plan_ok"] = True
+            return _prepare(run)
+        if said["choice"] == "stop":
+            return write_final_reply("Stopped before entering anything, as you asked. The documents are collected and "
+                                     "nothing was entered.", kind="final", engine=SKILL_ENGINE)
+        run["asked_person"], run["start"] = True, 1
+        return _by_model(run, note=f"You put this plan to the person:\n{_plan_text(run)[:1200]}\nThe person answered: "
+                                   f"{reply}\nThe documents are already collected. Do the rest with their words.")
 
     if kind in ("go", "start"):
         # The reply's one reading (approval.reading). A word list OR'd with it read "check the amount first, it should
@@ -1470,6 +1805,11 @@ def _learning_by_model(run):
 
     if not _engine_can_drive() or run.get("replay_only"):
         return False
+    # A run that gathered its documents and read the per-item lists from them replays the per-item block, apprentice
+    # or not: the model did the part that varies (the gather), and takes over where the replay stops. Its trust decides
+    # whether the plan is put to the person first (_after_phase), never what is checked. See "The per-document part".
+    if run.get("gathered") == "done":
+        return False
     if _stage(run) == experience.APPRENTICE:
         return True
     # A task whose rules ask for more than its recorded steps (_supervise) - found out when a replay of it
@@ -1769,7 +2109,7 @@ def _taught(skill, since=None):
     return "\n".join(parts)
 
 
-def _procedure(run, from_step=None, note="", ran=False):
+def _procedure(run, from_step=None, note="", ran=False, phase=None):
     """What the engine is told when it does a taught task (guidance.py puts it into its model's context)."""
 
     skill = run["skill"]
@@ -1854,6 +2194,10 @@ def _procedure(run, from_step=None, note="", ran=False):
 
     steps = []
     for step in skill["steps"]:
+        if phase == GATHER_PHASE and step["n"] >= _loop_start(skill):
+            break  # (the per-item block and what follows are not this phase's)
+        if phase == REST_PHASE and step["n"] < _loop_start(skill):
+            continue  # (the steps before the block were done by the gather)
         line = f"{step['n']}. {step.get('summary') or step['kind']}"
         if step.get("intent"):
             line += f" - the person said: {step['intent']}"
@@ -1862,12 +2206,20 @@ def _procedure(run, from_step=None, note="", ran=False):
             line += f" - purpose: {purpose}"
         steps.append(line)
     lines.append("The person's steps:\n" + "\n".join(steps))
+    for loop in skill.get("loops") or []:
+        # What the person did between two items when they taught it (learning._apply_loop): not part of every item,
+        # so no step repeats it - done when its case comes up (a record the next item needed, a document to read).
+        for gap in loop.get("between_summaries") or []:
+            lines.append("Between two items, the person also did this once (not part of every item - do it only when "
+                         "the same case comes up): " + "; ".join(gap)[:600])
 
     if from_step:
         lines.append(f"A replay of these steps already ran up to step {from_step} and stopped there: {note} "
                      + ("That step WAS done but its result did not show: look at the screen before doing anything - "
                         "never repeat it blindly. " if ran else "")
                      + f"Carry on from step {from_step}.")
+    elif note:
+        lines.append(note)
 
     if one_off:
         how = [
@@ -1944,13 +2296,79 @@ def _procedure(run, from_step=None, note="", ran=False):
         "- A value a field refuses (it does not keep what you typed) is not entered: type it again in the form "
         "the field shows it takes, and read the field back. Never pick a date from a calendar by guessing a day.",
     ]
+    if phase == GATHER_PHASE:
+        how = _gather_how(run)
+    elif phase == REST_PHASE:
+        how = _rest_how(run)
+    elif run.get("by_hand"):
+        # A takeover part way through the replay: the documents set aside are still to be entered, by the model.
+        how.append("- These documents of this request are NOT in the lists above and are yours to enter by hand, each "
+                   "once, the way the person's steps do, reading each from its file: "
+                   + "; ".join(f"{x['document']} ({x['why']})" for x in run["by_hand"]) + ".")
     lines.append("\n".join(how))
 
     return "\n\n".join(lines)
 
 
-def _engine_request(run):
-    """The request the engine is given for a taught task."""
+def _gather_how(run):
+    """How the engine works the gather phase of a per-document run: the steps before the per-item block, and no entry."""
+
+    start = _loop_start(run["skill"])
+    return [
+        "How to work - THIS PHASE ONLY:",
+        f"- Do the person's steps BEFORE step {start} (the ones listed above) for THIS request: open where its documents "
+        "are, save every one of them where the person's steps put theirs (the client's folder for the period; make the "
+        "folder if it is missing, named like the folders beside it), and open the application to where step "
+        f"{start} begins.",
+        "- Do NOT enter, create, save or submit any record in the application: the entering is done after this phase, "
+        "once per document, from the files you save. Nothing of the per-item steps is yours now.",
+        "- Save EVERY document of this request, whatever their number - the demonstration had its own number. Count "
+        "them against what the request, the mail or the chat shows, and say if one looks missing or doubled.",
+        "- What the person answered - when they taught this and during earlier runs - is settled. Act on it and never "
+        "ask them the same thing again. Ask (HELP) only for what nothing in front of you can tell.",
+        "- When every document is saved, finish with DONE and a report that lists the folder, then one line per file "
+        "saved in the form `FULL PATH - saved, not entered in this phase`, and anything about a document that looked "
+        "wrong (missing, a duplicate, not of this kind, cancelled). Entering is the next phase's: a report of this "
+        "phase is complete when every document is saved.",
+    ]
+
+
+def _rest_how(run):
+    """How the engine works the rest phase: the documents the fill set aside, entered by hand, and nothing else."""
+
+    docs = run.get("documents") or []
+    aside = {x["document"] for x in (run.get("by_hand") or []) + (run.get("left_out") or [])}
+    done = [Path(d).name for d in docs if d not in aside]
+    return [
+        "How to work - THIS PHASE ONLY:",
+        # Found live (2026-11-02): the model read the first phase's "enter nothing" as a rule over the whole task, called
+        # the vouchers the replay had saved since a breach of "the settled collection-only restriction", and asked the
+        # person whether to undo them. The phases are told in order, and what each did.
+        "- This task ran in phases, in this order: (1) YOU collected and read this request's documents and entered "
+        f"nothing - that phase is OVER, and its 'enter nothing' was that phase's rule alone, never a restriction on "
+        "this task; (2) the person's own taught steps were then run once per document" + (
+            ", on a plan the person approved" if run.get("plan_ok") else "") + "; (3) now this phase. The records "
+        "made in phase 2 are this request's work, right to have been made, and stay: never undo, question or report "
+        "them as a breach. The sources were all collected and read BEFORE any record was made, so the order 'review "
+        "the sources, then enter' has been kept - do not redo that review and do not report it as missed.",
+        "- The taught steps have ALREADY been run once per document for these documents, which are entered: "
+        + (", ".join(done) or "none") + ". Do NOT enter them again, and do not check them now.",
+        "- Enter BY HAND, each once, the way the person's steps do (gui observe / click / type / select / key, one at a "
+        "time, every value read from the document's own file with office read), ONLY these documents, which were set "
+        "aside because they do not fit the taught shape: "
+        + "; ".join(f"{x['document']} ({x['why']})" for x in run.get("by_hand") or []) + ".",
+        "- Documents the person's rules leave out stay out: " + ("; ".join(
+            f"{Path(x['document']).name} ({x['why']})" for x in run.get("left_out") or []) or "none") + ".",
+        "- What the person answered - when they taught this and during earlier runs - is settled. Act on it and never "
+        "ask them the same thing again. Ask (HELP) only for what nothing in front of you can tell.",
+        "- Before you say DONE, read each record you made back off the screen (gui observe) against its document, and "
+        "report per document: what was entered, its reference, and what you read back. Never report DONE for what the "
+        "screen does not show.",
+    ]
+
+
+def _engine_request(run, phase=None):
+    """The request the engine is given for a taught task (`phase`: one part of it)."""
 
     skill = run["skill"]
 
@@ -1962,6 +2380,16 @@ def _engine_request(run):
     # engine sends "Do the task you were taught" to its operator, always.
     if run.get("one_off"):
         request = f"Do the task you were taught by a recording of \"{run['mimic']['text']}\""
+    elif phase == GATHER_PHASE:
+        request = (f"Do the FIRST PART of the task you were taught, \"{skill.get('title') or skill['name']}\" (skill "
+                   f"{skill['name']}): collect this request's documents the way the person's first steps do, and enter "
+                   "nothing")
+    elif phase == REST_PHASE:
+        entered = len(run.get("documents") or []) - len((run.get("by_hand") or []) + (run.get("left_out") or []))
+        request = (f"Do the REST of the task you were taught, \"{skill.get('title') or skill['name']}\" (skill "
+                   f"{skill['name']}): the first part (collecting this request's documents, entering nothing) is "
+                   f"finished, and the taught steps have since entered {max(entered, 0)} of them, rightly; enter by hand "
+                   "only the documents your instructions name as left for you, each once, and nothing else")
     else:
         request = f"Do the task you were taught, \"{skill.get('title') or skill['name']}\" (skill {skill['name']})"
     if run["values"]:
@@ -1994,6 +2422,13 @@ def _engine_request(run):
                       "record is the one thing you must not do - only if the application shows none, enter it once. "
                       "In your report, call that record what it is - the one this request produced, with its number "
                       "- never something that \"was already entered\". " + NOT_YOURS_TO_FORCE)
+    # The person's answers outlive the attempt they were given in. Found live (2026-10-31): without them the second
+    # attempt took the check's note for the fault, found "no such instruction" from the person, and undid a correction
+    # the person had given.
+    said = guidance.said_this_task() if run.get("attempt_note") else ""
+    if said:
+        request += ("\n\n" + said + "\nThese answers stand over the check's note above: where the note contradicts one "
+                    "of them, the person's answer is right.")
     if run.get("mimic"):
         request += "\n\nThe person asked: " + (run.get("context") or run["mimic"]["text"])
     elif run.get("context"):
@@ -2013,18 +2448,24 @@ def _stated_values(run):
     return stated, inferred
 
 
-def _by_model(run, from_step=None, note="", ran=False):
-    """Hand the task to the engine, guided by the skill (see the section above)."""
+def _by_model(run, from_step=None, note="", ran=False, phase=None):
+    """Hand the task to the engine, guided by the skill (see the section above); `phase`: one part of it only."""
 
     skill = run["skill"]
-    request = _engine_request(run)
+    request = _engine_request(run, phase)
     run.setdefault("attempts", 0)
     run["attempts"] += 1
 
-    guidance.begin(skill=skill["name"], task=request, text=_procedure(run, from_step, note, ran),
-                   values=run["values"], mode="takeover" if from_step else "model", run=run)
+    guidance.begin(skill=skill["name"], task=request, text=_procedure(run, from_step, note, ran, phase=phase),
+                   values=run["values"], mode="phase" if phase else ("takeover" if from_step else "model"), run=run,
+                   phase=phase)
 
-    if from_step:
+    if phase == GATHER_PHASE:
+        progress.emit("Collecting this request's documents with the model, the way you showed me; nothing is entered yet.")
+    elif phase == REST_PHASE:
+        progress.emit("The taught steps have run once per document; the model now enters by hand the documents that did "
+                      "not fit them: " + ", ".join(Path(x["document"]).name for x in run.get("by_hand") or []))
+    elif from_step:
         progress.emit(f"The replay stopped at step {from_step}; the model is taking it from there.")
     else:
         progress.emit(f"Doing \"{skill.get('title') or skill['name']}\" with the model, guided by what you taught "
@@ -2044,8 +2485,14 @@ def _judge(run, claim, note=""):
     """The final check's judge on a skill run (`note`: evidence code found, for the judge to weigh)."""
     skill = run["skill"]
     steps = "; ".join(f"{s['n']}. {s.get('summary')}" for s in skill["steps"])[:1500]
-    return verify.judge(run.get("context") or _engine_request(run), claim=claim,
-                        criteria=(note + "\n" if note else "") + (_rows_note(run) + "\n" if _rows_note(run) else "")
+    # With what the person said during the task. Found live (2026-10-31): asked about a document's identifier that failed
+    # its own check, the person gave the right one; the check, shown only the request, failed the work for not using
+    # the printed one.
+    # A gathered run's files are a fact code decides (_documents_note), on every way the run ends - the replay's and
+    # the model's alike (found live 2026-11-02: a month the model did itself after the gather was judged without them).
+    found = "\n".join(x for x in (note, _documents_note(run), _assumed_note(run)) if x)
+    return verify.judge(_with_said(run.get("context") or _engine_request(run)), claim=claim, found=found,
+                        criteria=(_rows_note(run) + "\n" if _rows_note(run) else "")
                         + _criteria(skill, run["values"], since=run.get("began")),
                         values=run["values"], steps=steps, live_png=evidence.live(),
                         reference_png=evidence.final_frame(skill), observed=evidence.observed(), screen_text=evidence.live_text(),
@@ -2325,6 +2772,28 @@ def _answer_engine(answer):
                       "Tell me what to do next.", engine=SKILL_ENGINE)
 
 
+def _plan_approved_as_is(asked, reply):
+    """
+    Whether a reply approves the plan of the work exactly as it was put, adding nothing: a routine yes, not help.
+    Found (2026-10-31): every run puts its plan to the person first, so with every answer counted as help no taught
+    skill could ever run cleanly three times and be trusted - each run of a routine task cost the model's whole way
+    through, for good. Anything the reply adds (a source, a rule, a correction, a condition) is still help.
+    """
+
+    from decurix_agent.thebot_harness import PLAN_QUESTION
+    from decurix_agent.computer import approval
+
+    if not str(asked or "").startswith(PLAN_QUESTION) or not str(reply or "").strip():
+        return False
+    said = approval.read_choice(reply, asked, {
+        "as_planned": "it approves the plan exactly as written and adds, changes, asks or answers nothing else",
+        "changed": "it adds anything (a source, a rule, a fact, a correction), changes the plan, sets a condition, "
+                   "answers something, or refuses",
+    }, plain={"as_planned": ["yes", "ok", "okay", "fine", "go ahead", "proceed", "looks good", "plan is fine",
+                             "plan is fine, go ahead", "yes, go ahead", "ok, go ahead", "the plan is fine"]})
+    return said["choice"] == "as_planned" and not said.get("instruction")
+
+
 def learn_answer(reply):
     """
     Keep a person's answer to a question the engine asked during a taught
@@ -2337,7 +2806,7 @@ def learn_answer(reply):
     asked = (guided or {}).pop("asked", None) if guided else None
     reply = " ".join((reply or "").split())[:500]
 
-    if run is not None and asked:
+    if run is not None and asked and not _plan_approved_as_is(asked, reply):
         # A run a person had to answer was helped, however well it then went (_gate). Found live: three runs
         # in a row, two of them answered by a person, counted as three clean runs and the skill was trusted.
         run["asked_person"] = True
@@ -2514,7 +2983,7 @@ def _with_said(task):
     """The task as the final check judges it: the request, and what the person said during it (guidance)."""
 
     said = guidance.said_this_task()
-    return task + "\n\n" + said if said else task
+    return task + "\n\n" + said if said and said not in task else task
 
 
 def _gate(reply, kind, engine):
@@ -2551,6 +3020,17 @@ def _gate(reply, kind, engine):
                                                                         or produced.requested_names(state.current_task))):
             return False
         guided = guidance.begin(skill=None, task=state.current_task or "", text="", mode="engine", run=None)
+
+    if guided.get("mode") == "phase" and guided.get("run") is not None:
+        # One phase of a per-document run ended (_after_phase): the harness decides what comes next, and nothing is
+        # reported to the person yet.
+        guidance.end()
+        try:
+            return _after_phase(guided["run"], guided.get("phase"), reply, kind)
+        except Exception as exc:  # noqa: BLE001 - the run must end with a word to the person, not a silence
+            log(traceback.format_exc())
+            write_final_reply(f"That stopped on an internal error: {exc}", kind="error", engine=SKILL_ENGINE)
+            return True
 
     run = guided.get("run")
 

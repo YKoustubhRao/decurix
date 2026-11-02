@@ -398,7 +398,7 @@ def assess(kind, element, text=None, keys=None, context=None):
             return f'"{label}" sends, pays, buys or publishes something on your behalf'
 
     if kind in ("click", "double_click") and element is not None:
-        asked = confirms_permanently(element)
+        asked = confirms_permanently(element, context.get("dialogs"))
         if asked:
             return f'this answers "{asked}" - it cannot be taken back'
 
@@ -492,14 +492,19 @@ PERMANENT_QUESTION = re.compile(
 DIALOG_IN_PATH = re.compile(r"\b(?:alertdialog|dialog) \"([^\"]*)\"", re.IGNORECASE)
 
 
-def confirms_permanently(element):
-    """The question a yes-button answers when its dialog asks to do something that cannot be taken back, or None."""
+def confirms_permanently(element, open_dialogs=None):
+    """
+    The question a yes-button answers when its dialog asks to do something that cannot be taken back, or None. The
+    dialog is the one the button's path names, else one open on the screen (`open_dialogs`, their names). Found live
+    (2026-10-31): an application's "Permanently delete <record>?" was answered Yes unasked - its buttons' paths did not
+    name the dialog they sit in.
+    """
 
     if (element.get("role") or "") not in ACTIVATING_ROLES or not CONFIRM_ANSWER.match(element.get("name") or ""):
         return None
-    dialogs = DIALOG_IN_PATH.findall(element.get("path") or "")
-    asked = dialogs[-1].strip() if dialogs else ""
-    return asked if asked and PERMANENT_QUESTION.search(asked) else None
+    dialogs = DIALOG_IN_PATH.findall(element.get("path") or "") or [d for d in (open_dialogs or []) if d.strip()]
+    asked = next((d.strip() for d in reversed(dialogs) if PERMANENT_QUESTION.search(d)), "")
+    return asked or None
 
 
 def _fingerprint(kind, element, text, keys, point):

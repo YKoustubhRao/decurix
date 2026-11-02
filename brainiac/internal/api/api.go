@@ -107,6 +107,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/brainiac/fetch", s.fetch)
 	mux.HandleFunc("GET /v1/models", s.models)
 	mux.HandleFunc("GET /v1/brainiac/status", s.status)
+	mux.HandleFunc("GET /v1/brainiac/paths", s.paths)
+	mux.HandleFunc("POST /v1/brainiac/outcomes", s.outcome)
 	mux.HandleFunc("GET /v1/brainiac/traces", s.traces)
 	mux.HandleFunc("GET /v1/brainiac/scout", s.scoutReport)
 	mux.HandleFunc("GET /v1/brainiac/update", s.updateReport)
@@ -659,6 +661,35 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.engine().Status())
+}
+
+// paths says, per field, what could answer here and why each does or does not.
+func (s *Server) paths(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, s.engine().Paths())
+}
+
+// outcome files a client's final verdict on real answers: {"ok": false} with
+// "trace" for one answer, or "since" (RFC 3339) for every answer since then.
+func (s *Server) outcome(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Trace string    `json:"trace"`
+		Since time.Time `json:"since"`
+		OK    *bool     `json:"ok"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.OK == nil || (body.Trace == "" && body.Since.IsZero()) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "an outcome needs \"ok\", and \"trace\" or \"since\"")
+		return
+	}
+	n, err := s.engine().RecordOutcome(body.Trace, body.Since, *body.OK)
+	if errors.Is(err, engine.ErrNoTrace) {
+		writeError(w, http.StatusNotFound, "not_found", "no recent trace with that id")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", "the outcome could not be saved")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"recorded": n})
 }
 
 // scoutReport is the newest scouting report (new open models, checked).

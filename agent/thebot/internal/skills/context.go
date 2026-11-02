@@ -3,6 +3,8 @@ package skills
 import (
 	"fmt"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"thebot/internal/llm"
 )
@@ -22,7 +24,14 @@ import (
 //   - when the turn budget is spent and the window made progress, the goal is compacted the same way and given another
 //     budget, up to maxContinuations times, instead of being told to wrap up or stopping to ask.
 //
-// Nothing the checks rely on is lost: grounding traces against st.Seen, which keeps every output every command showed.
+// Nothing the checks rely on is lost: grounding traces against st.Seen, which keeps what every command showed. Nor is
+// it lost to the model: an output the record shortens is kept in a file the record names, so a step can be read again
+// even when its screen has since changed.
+//
+// What a compaction keeps is bounded in characters, not only in messages. Found in the logs (2026-10-30): with 10 kept
+// messages of up to 16,000 characters and 90 ledger lines of up to 1,000, a long goal's "shortened" transcript came to
+// 197,000 of its 200,000, and it compacted again 37 seconds later, a whole-transcript model call each time.
+//
 // A local model is left as it was (its context and its prefix cache are its own).
 // ============================================================
 
@@ -31,14 +40,21 @@ const (
 	// before its older part is compacted.
 	contextBudgetChars = 200_000
 	pictureChars       = 4_000
-	// keepRecentMessages is how many of the newest messages a compaction keeps word for word.
+	// keepRecentMessages and keepRecentChars bound the newest messages a compaction keeps word for word; at least
+	// minRecentMessages stay whatever their size.
 	keepRecentMessages = 10
+	keepRecentChars    = 40_000
+	minRecentMessages  = 4
+	// compactRegrowth is how much a transcript must grow after a compaction before another is worth its model call.
+	compactRegrowth = contextBudgetChars / 4
 	// maxContinuations bounds how many more turn budgets a goal that keeps making progress gets.
 	maxContinuations = 4
 	// minWindowProgress is how many commands must have worked in a budget for it to count as progress.
 	minWindowProgress = 5
 	maxLedger         = 400
 	ledgerShown       = 90
+	ledgerShownChars  = 30_000
+	recordsShownChars = 20_000
 	maxNotesChars     = 8_000
 )
 
@@ -64,18 +80,28 @@ func (st *operatorState) prefixEnd() int {
 	return min(1, len(st.Messages))
 }
 
-// transcriptChars is the size of what is re-sent each turn.
-func transcriptChars(st *operatorState) int {
+// messagesChars is the size of messages, a picture counted as pictureChars.
+func messagesChars(messages []llm.Message) int {
 	n := 0
-	for _, m := range st.Messages {
+	for _, m := range messages {
 		n += len(m.Content) + pictureChars*len(m.Images)
 	}
 	return n
 }
 
+// transcriptChars is the size of what is re-sent each turn.
+func transcriptChars(st *operatorState) int {
+	return messagesChars(st.Messages)
+}
+
 // noteLedger records what a command did, for a compaction's progress note.
 func (st *operatorState) noteLedger(command string, res shellResult) {
 	line := fmt.Sprintf("$ %s -> %s", truncateText(strings.Join(strings.Fields(command), " "), 300), ledgerOutput(res))
+	if ledgerShortens(res) {
+		if path := st.keepOutput(res.Output); path != "" {
+			line += " (full output: " + path + ")"
+		}
+	}
 	st.Ledger = append(st.Ledger, line)
 	if len(st.Ledger) > maxLedger {
 		st.Ledger = st.Ledger[len(st.Ledger)-maxLedger:]
@@ -105,6 +131,183 @@ func ledgerOutput(res shellResult) string {
 		return fmt.Sprintf("exit %d · %s", res.ExitCode, strings.Join(lines, " | "))
 	}
 	return fmt.Sprintf("%s (+%d more lines)", truncateText(headline(res), 220), len(lines)-1)
+}
+
+// ledgerShortens reports whether the ledger keeps less of this output than it was (ledgerOutput).
+func ledgerShortens(res shellResult) bool {
+	out := strings.TrimSpace(res.Output)
+	lines := strings.Split(out, "\n")
+	if len(lines) == 1 {
+		return len(out) > 220
+	}
+	return len(lines) > maxLedgerLines || len(out) > maxLedgerOutput
+}
+
+// declaredRecords is what `gui records` lists, "" when there are none. Notes cannot be relied on to say whether item X
+// of N is done (a bounded summary cannot answer that in general); the harness holds the answer, so it carries it over.
+var declaredRecords = func(rc RunContext, st *operatorState) string {
+	res := runShell(rc.Ctx, rc.Dir(), "gui records", 30*time.Second, st.guiEnv()...)
+	out := strings.TrimSpace(res.Output)
+	if res.ExitCode != 0 || out == "" || strings.HasPrefix(strings.ToLower(out), "no record") {
+		return ""
+	}
+	return out
+}
+
+// shownLedger is the newest of the record that a progress note has room for, in order.
+func shownLedger(ledger []string) []string {
+	first, room := len(ledger), ledgerShownChars
+	for first > 0 && len(ledger)-first < ledgerShown && room >= len(ledger[first-1]) {
+		first--
+		room -= len(ledger[first])
+	}
+	return ledger[first:]
+}
+
+// Older command outputs are masked well before a compaction is due: each one older than the newest few keeps its start
+// and says where its whole text is (a file the goal keeps), with no model call. Measured (2026-10-31): a task made
+// ~200 calls of ~36k prompt tokens each, the transcript swinging between a compaction's ~90k characters and the 200k
+// budget; old outputs are most of it, and masking them matched model summaries at about half the cost elsewhere
+// (JetBrains, "The Complexity Trap", 2025). It is done in a maintenance pass, never turn by turn: rewriting earlier
+// messages breaks the model provider's prompt cache from that message on.
+const (
+	maskKeepNewest = 10    // the newest messages are never masked
+	maskMinChars   = 1_500 // a shorter output costs less than its stub
+	maskHeadChars  = 600   // what a masked output keeps of its start
+	maskMarker     = "\n[... masked: "
+)
+
+// A hosted goal's transcript is only appended to between maintenance passes. Measured (2026-10-31, gpt-6.1-sol): a
+// call whose previous message had been changed (its screenshot taken off, an earlier listing digested) was served
+// 12,160 cached tokens - the frame alone - where one with nothing earlier changed was served 38-41k: on these models
+// any rewrite of the transcript's tail costs the whole cache. So stale screen listings, older screenshots and older
+// outputs wait, and one pass deals with all of them once they are worth the break.
+//
+// Worth the break is a matter of share, not count. Cached input is billed at about a tenth of the price: a pass
+// re-sends the C-r characters it keeps at the full price once, and saves a tenth of r on every later turn, so it pays
+// back after about 9(C-r)/r turns - 13 turns when it takes off 40% of the transcript, 81 when it takes off 10%, more
+// than most goals have left. Measured (2026-11-01, probe of a 64-minute task): passes due by counts (four older
+// screenshots, 20k of stale listings) came every 3-4 turns and were 64% of the task's uncached input; what the task
+// kept adding was 22%.
+const (
+	maintainShare    = 0.4    // the share of the transcript a pass must take off to be worth the cache it costs
+	maintainMinChars = 40_000 // a shorter transcript is cheap to re-send either way
+	staleDigestChars = 600    // about what a digested screen listing keeps (digestScreen)
+)
+
+// staleScreens are the screen outputs a pass would digest: every one tracked but the newest, whose refs are in use.
+func (st *operatorState) staleScreens() []int {
+	if len(st.ScreenMsgs) <= 1 {
+		return nil
+	}
+	return st.ScreenMsgs[:len(st.ScreenMsgs)-1]
+}
+
+// oldScreenshots counts the screenshots older than the newest one still shown.
+func (st *operatorState) oldScreenshots() int {
+	n := 0
+	for _, m := range st.Messages {
+		if len(m.Images) > 0 && strings.HasSuffix(m.Content, screenshotNote) {
+			n++
+		}
+	}
+	return max(0, n-1)
+}
+
+// removableChars is what a pass would take off the transcript: stale screen listings down to their digests,
+// screenshots older than the newest, and older outputs down to their stubs.
+func (st *operatorState) removableChars() int {
+	n, stale := 0, map[int]bool{}
+	for _, idx := range st.staleScreens() {
+		if idx >= 0 && idx < len(st.Messages) {
+			stale[idx] = true
+			n += max(0, len(st.Messages[idx].Content)-staleDigestChars)
+		}
+	}
+	n += st.oldScreenshots() * pictureChars
+	for i := st.prefixEnd(); i < len(st.Messages)-maskKeepNewest; i++ {
+		if !stale[i] && maskable(st.Messages[i]) {
+			n += len(st.Messages[i].Content) - maskHeadChars
+		}
+	}
+	return n
+}
+
+// maintenanceDue is whether what has piled up is worth one break of the prompt cache: a large enough share of a
+// transcript large enough to matter (maintainShare, maintainMinChars).
+func (st *operatorState) maintenanceDue() bool {
+	n := transcriptChars(st)
+	return n >= maintainMinChars && float64(st.removableChars()) >= maintainShare*float64(n)
+}
+
+// maintain does, in one pass, every rewrite the transcript waits for: stale listings digested (screen_digest.go),
+// screenshots older than the newest taken off, and older outputs masked. The cache is broken once either way, so
+// nothing removable is left for a later pass. Says what it did.
+func (st *operatorState) maintain() string {
+	var did []string
+	if stale := st.staleScreens(); len(stale) > 0 {
+		newest := st.ScreenMsgs[len(st.ScreenMsgs)-1]
+		st.ScreenMsgs = stale
+		st.digestStaleScreens()
+		st.ScreenMsgs = []int{newest}
+		did = append(did, fmt.Sprintf("%d stale screens digested", len(stale)))
+	}
+	if old := st.oldScreenshots(); old > 0 {
+		st.forgetOldPictures(screenshotNote, 1)
+		did = append(did, fmt.Sprintf("%d older screenshots taken off", old))
+	}
+	if masked := st.maskOldOutputs(); masked > 0 {
+		did = append(did, fmt.Sprintf("%d older outputs masked", masked))
+	}
+	return strings.Join(did, ", ")
+}
+
+// maskable is a command output a pass would mask: a user message of plain text, long enough, not yet masked. The
+// request, the person's words, notes and pictures are never touched.
+func maskable(m llm.Message) bool {
+	return m.Role == "user" && len(m.Images) == 0 && len(m.Content) >= maskMinChars &&
+		strings.HasPrefix(m.Content, "Command execution result") && !strings.Contains(m.Content, maskMarker)
+}
+
+// maskOldOutputs masks, in one pass, every command output older than the newest maskKeepNewest messages and longer
+// than maskMinChars: its first maskHeadChars stay, the rest is in a file it names. An output whose file cannot be
+// written stays whole. The checks are unaffected (st.Seen keeps what every command showed). Returns how many it masked.
+func (st *operatorState) maskOldOutputs() int {
+	masked := 0
+	for i := st.prefixEnd(); i < len(st.Messages)-maskKeepNewest; i++ {
+		m := &st.Messages[i]
+		if !maskable(*m) {
+			continue
+		}
+		path := st.keepOutput(m.Content)
+		if path == "" {
+			continue
+		}
+		cut := maskHeadChars
+		for cut > 0 && !utf8.RuneStart(m.Content[cut]) {
+			cut--
+		}
+		m.Content = m.Content[:cut] + fmt.Sprintf("%s%d more characters; the whole output is in %s - cat it to read it again]",
+			maskMarker, len(m.Content)-cut, path)
+		masked++
+	}
+	// (a masked screen is not digested again later)
+	kept := st.ScreenMsgs[:0]
+	for _, idx := range st.ScreenMsgs {
+		if idx >= 0 && idx < len(st.Messages) && !strings.Contains(st.Messages[idx].Content, maskMarker) {
+			kept = append(kept, idx)
+		}
+	}
+	st.ScreenMsgs = kept
+	st.MaskedTo = transcriptChars(st)
+	return masked
+}
+
+// contextOverBudget is whether a compaction is due: past the budget, and grown enough since the last one to be worth
+// its model call. A goal whose fixed part alone fills the room would otherwise compact on every turn.
+func (st *operatorState) contextOverBudget() bool {
+	n := transcriptChars(st)
+	return n > contextBudgetChars && (st.CompactedTo == 0 || n >= st.CompactedTo+compactRegrowth)
 }
 
 // personSaid is every exchange with the person in messages: the question the model asked (HELP) and what came back,
@@ -138,6 +341,9 @@ func (o *OperatorSkill) compact(rc RunContext, st *operatorState, why string) {
 		return
 	}
 	cut := len(st.Messages) - keepRecentMessages
+	for kept := messagesChars(st.Messages[cut:]); kept > keepRecentChars && len(st.Messages)-cut > minRecentMessages; cut++ {
+		kept -= messagesChars(st.Messages[cut : cut+1])
+	}
 	// The kept part starts with the model's own reply, so the progress note (a user message) comes before it.
 	for cut > prefix && st.Messages[cut].Role != "assistant" {
 		cut--
@@ -170,14 +376,17 @@ func (o *OperatorSkill) compact(rc RunContext, st *operatorState, why string) {
 		b.WriteString("\nYour own notes, written just before:\n" + notes + "\n")
 	}
 	if len(st.Ledger) > 0 {
-		shown := st.Ledger
-		if len(shown) > ledgerShown {
-			fmt.Fprintf(&b, "\nWhat the commands did, as recorded (the last %d of %d, latest last):\n", ledgerShown, len(shown))
-			shown = shown[len(shown)-ledgerShown:]
+		shown := shownLedger(st.Ledger)
+		if len(shown) < len(st.Ledger) {
+			fmt.Fprintf(&b, "\nWhat the commands did, as recorded (the last %d of %d, latest last):\n", len(shown), len(st.Ledger))
 		} else {
 			b.WriteString("\nWhat the commands did, as recorded (latest last):\n")
 		}
 		b.WriteString(strings.Join(shown, "\n") + "\n")
+	}
+	if records := declaredRecords(rc, st); records != "" {
+		b.WriteString("\nThe records declared in this goal, with what was read back (the harness's own, not your notes; " +
+			"this is what says which items are done):\n" + truncateText(records, recordsShownChars) + "\n")
 	}
 	// Everything the person said in the goal, kept apart (resume), so a second compaction does not lose what the first
 	// folded into its note; a goal checkpointed before that was kept reads it from the part being folded.
@@ -188,9 +397,10 @@ func (o *OperatorSkill) compact(rc RunContext, st *operatorState, why string) {
 	if len(said) > 0 {
 		b.WriteString("\nWhat the person said in this goal, word for word (it still holds):\n- " + strings.Join(said, "\n- ") + "\n")
 	}
-	b.WriteString("\nEverything a command showed earlier is still known to the checks. Read a file or a range again " +
-		"(office read) or look at the screen (gui observe) whenever you need exact words or figures - never type a value " +
-		"from memory. Carry on from where the notes leave off, and never redo a step the record shows done.")
+	b.WriteString("\nEverything a command showed earlier is still known to the checks. A step marked (full output: PATH) " +
+		"can be read again with cat PATH, even if that screen has since changed. For what stands now, read the file or " +
+		"range again (office read) or look at the screen (gui observe) whenever you need exact words or figures - never " +
+		"type a value from memory. Carry on from where the notes leave off, and never redo a step the record shows done.")
 
 	kept := make([]llm.Message, 0, prefix+1+len(st.Messages)-cut)
 	kept = append(kept, st.Messages[:prefix]...)
@@ -206,6 +416,7 @@ func (o *OperatorSkill) compact(rc RunContext, st *operatorState, why string) {
 	before := transcriptChars(st)
 	st.Messages, st.ScreenMsgs = kept, screens
 	st.Compactions++
+	st.CompactedTo = transcriptChars(st)
 	rc.Logf("operator", "context shortened (%s): %d -> %d characters re-sent, %d newest messages kept word for word", why,
 		before, transcriptChars(st), len(st.Messages)-prefix-1)
 }

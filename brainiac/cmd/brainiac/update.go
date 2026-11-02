@@ -30,6 +30,9 @@ import (
 // runUpdate runs one update cycle by hand: without --apply it says what
 // `serve` would switch to; with --apply it switches (when no server runs).
 func runUpdate(args []string) error {
+	if len(args) > 0 && args[0] == "approve-template" {
+		return runApproveTemplate(args[1:])
+	}
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	home := fs.String("home", "", "Brainiac's home")
 	apply := fs.Bool("apply", false, "install, check and switch now (a running `serve` does this on its own)")
@@ -59,6 +62,28 @@ func runUpdate(args []string) error {
 		return printJSON(res)
 	}
 	renderUpdate(os.Stdout, res)
+	return nil
+}
+
+// runApproveTemplate is a person accepting a model's changed chat template.
+func runApproveTemplate(args []string) error {
+	fs := flag.NewFlagSet("update approve-template", flag.ContinueOnError)
+	home := fs.String("home", "", "Brainiac's home")
+	if err := fs.Parse(reorder(args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: brainiac update approve-template <model>")
+	}
+	st, err := openStore(&common{home: *home})
+	if err != nil {
+		return err
+	}
+	rec, err := update.ApproveTemplate(st, fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Accepted the chat template of %s from %s at %s. If that model is installed, `brainiac pull --latest` moves it there.\n", fs.Arg(0), rec.Repo, rec.Commit)
 	return nil
 }
 
