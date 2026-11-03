@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -44,6 +45,7 @@ func TestNoResponseEchoesAnError(t *testing.T) {
 // formatted by fmt, and written through a ResponseWriter of any name.
 func TestTheEchoWalkerCatchesIndirectShapes(t *testing.T) {
 	src := `package x
+import "example.com/mailtrigger"
 func a(w http.ResponseWriter, err error) { msg := err.Error(); http.Error(w, msg, 500) }
 func b(w http.ResponseWriter, err error) { jsonStatusError(w, 400, fmt.Sprint(err)) }
 func c(w http.ResponseWriter, err error) { jsonStatusError(w, 400, fmt.Sprintf("failed: %v", err)) }
@@ -51,6 +53,8 @@ func d(rw http.ResponseWriter, err error) { rw.Write([]byte(err.Error())) }
 func e(rw http.ResponseWriter, saveErr error) { fmt.Fprintf(rw, "no: %v", saveErr) }
 func f(out http.ResponseWriter, err error) { _ = json.NewEncoder(out).Encode(map[string]string{"error": err.Error()}) }
 func ok(w http.ResponseWriter, err error) { log.Print(err.Error()); http.Error(w, "internal server error", 500); jsonStatusError(w, 400, refusal(err)) }
+func g(w http.ResponseWriter, p Poll) { http.Error(w, p.Err.Error(), 500) }
+func sentinel(w http.ResponseWriter) { jsonStatusError(w, 400, mailtrigger.ErrAuth.Error()) }
 `
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "x.go", src, 0)
@@ -58,7 +62,7 @@ func ok(w http.ResponseWriter, err error) { log.Print(err.Error()); http.Error(w
 		t.Fatal(err)
 	}
 	found := echoesIn(fset, f)
-	for _, fn := range []string{"x.go:2", "x.go:3", "x.go:4", "x.go:5", "x.go:6", "x.go:7"} {
+	for _, fn := range []string{"x.go:3", "x.go:4", "x.go:5", "x.go:6", "x.go:7", "x.go:8", "x.go:10"} {
 		hit := false
 		for _, s := range found {
 			hit = hit || strings.HasPrefix(s, fn+":")
@@ -68,7 +72,7 @@ func ok(w http.ResponseWriter, err error) { log.Print(err.Error()); http.Error(w
 		}
 	}
 	for _, s := range found {
-		if strings.HasPrefix(s, "x.go:8:") {
+		if strings.HasPrefix(s, "x.go:9:") || strings.HasPrefix(s, "x.go:11:") {
 			t.Errorf("a fixed message or a named helper is not an echo: %s", s)
 		}
 	}
@@ -82,6 +86,16 @@ func ok(w http.ResponseWriter, err error) { log.Print(err.Error()); http.Error(w
 func echoesIn(fset *token.FileSet, f *ast.File) []string {
 	var found []string
 	named := map[string]bool{"http.Error": true, "jsonStatusError": true, "jsonResponse": true}
+	imports := map[string]bool{}
+	for _, spec := range f.Imports {
+		name := path.Base(strings.Trim(spec.Path.Value, `"`))
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		imports[name] = true
+	}
+	errorText := func(call *ast.CallExpr) bool { return errorTextIn(call, imports) }
+	hasErrorCall := func(e ast.Expr) bool { return hasErrorCallIn(e, imports) }
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
@@ -166,26 +180,27 @@ func echoesIn(fset *token.FileSet, f *ast.File) []string {
 	return found
 }
 
-// errorText reports whether call is X.Error() for an error whose words are not this code's own: a package's sentinel
-// (mailtrigger.ErrAuth) has a fixed text and is not an echo.
-func errorText(call *ast.CallExpr) bool {
+// errorTextIn reports whether call is X.Error() for an error whose words are not this code's own: a sentinel of an
+// imported package (mailtrigger.ErrAuth, pkg one of imports) has a fixed text and is not an echo; a field such as
+// p.Err is not a sentinel (RW1-G-06).
+func errorTextIn(call *ast.CallExpr, imports map[string]bool) bool {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok || sel.Sel.Name != "Error" || len(call.Args) != 0 {
 		return false
 	}
 	if recv, ok := sel.X.(*ast.SelectorExpr); ok {
-		if _, pkg := recv.X.(*ast.Ident); pkg && strings.HasPrefix(recv.Sel.Name, "Err") {
+		if pkg, ok := recv.X.(*ast.Ident); ok && imports[pkg.Name] && strings.HasPrefix(recv.Sel.Name, "Err") {
 			return false
 		}
 	}
 	return true
 }
 
-// hasErrorCall reports whether e calls X.Error() (errorText) anywhere in it.
-func hasErrorCall(e ast.Expr) bool {
+// hasErrorCallIn reports whether e calls X.Error() (errorTextIn) anywhere in it.
+func hasErrorCallIn(e ast.Expr, imports map[string]bool) bool {
 	found := false
 	ast.Inspect(e, func(n ast.Node) bool {
-		if call, ok := n.(*ast.CallExpr); ok && errorText(call) {
+		if call, ok := n.(*ast.CallExpr); ok && errorTextIn(call, imports) {
 			found = true
 		}
 		return !found
