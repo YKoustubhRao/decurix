@@ -20,6 +20,7 @@ answered as a person in the chat would.
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -31,6 +32,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import brain  # noqa: E402
 from agent_token import docker_env as token_env  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import teach_answers  # noqa: E402
 
 # The checks here are assert statements. Under python -O they all vanish, and this would report a pass it never
 # checked (review 2026-11-02): it refuses to run that way.
@@ -198,7 +201,6 @@ def run():
     first = wait_reply(seen)
     show("question 1", first)
 
-    answers = ["the page shows a line beginning Saved", ]
     reply_text = lambda r: (r.get("reply") or "")
     conversation = []
     while True:
@@ -206,26 +208,13 @@ def run():
         text = reply_text(last)
         if last.get("kind") == "final" or last.get("kind") == "error":
             break
-        # The last question asks for the name ("What should I call it? ... `yes` keeps ...");
-        # it also says when the task is finished, so it is matched before "finished" is.
-        if "Save it as" in text or "What should I call it" in text:
-            answer = "yes"
-        elif "ask first" in text and "go ahead" in text:
-            # The fixture only saves a local synthetic form; this explicitly
-            # answers the teaching contract's start-autonomy question.
-            answer = "go ahead"
-        elif "Which of them change" in text:
-            answer = "all change"
-        elif "same every time" in text:
-            answer = "changes"
-        elif "only sometimes happen" in text or "sometimes" in text and "always part" in text:
-            answer = "always"
-        elif "finished" in text:
-            answer = answers[0]
-        elif "check that before I start" in text:
-            answer = "yes"
-        else:
-            raise SystemExit(f"a question this script does not know how to answer:\n{text}")
+        # Answered by the question's structure (its kind, a study question's topic), read from the lesson's draft on
+        # the desktop: bench/skills/teach_answers.py. A kind it does not know stops the bench.
+        probe = subprocess.run(["docker", "exec", "-u", "headless", "-e", "PYTHONPATH=/opt", NAME, "python3", "-c",
+                                teach_answers.PROBE], capture_output=True, text=True, timeout=60)
+        if probe.returncode:
+            raise SystemExit(f"could not read the lesson's question on the desktop:\n{probe.stderr[-600:]}")
+        answer = teach_answers.answer(json.loads(probe.stdout), text)
         conversation.append((text[:90].replace("\n", " "), answer))
         seen += 1
         send(answer, "t00000000000000b1")
@@ -273,17 +262,23 @@ def run():
     assert v.returncode == 0, "the real page does not show what the skill typed"
 
     # ---- the form changed ----
-    # A rename the healing ladder is sure of ("Save" -> "Save changes": same words, same
-    # place, same neighbours) is repaired without a question, and says so.
-    print("\n== the Save button is renamed to something plainly the same; the skill heals it and says so")
+    # A heal onto another name is the person's call (D-09, healing.keeps_identity): even "Save" -> "Save changes"
+    # is put to the person, with the closest controls numbered. The person answers with the number offered for the
+    # renamed button, and the run finishes with the result on the screen.
+    print("\n== the Save button is renamed; replay asks which control to use, and the person picks the renamed one")
     bash("sed -i 's/>Save</>Save changes</' ~/work/form.html")
     before = len(replies())
     send('/skill add-a-customer customer_name="Umbrella"', "t00000000000000d1")
-    healed = wait_reply(before + 1, timeout=180)
+    asked = wait_reply(before + 1, timeout=180)
+    show("it asks", asked)
+    assert asked["kind"] == "query", "a heal onto another name was not put to the person (D-09)"
+    offered = re.search(r'(\d+)\) button "Save changes"', asked["reply"])
+    assert offered, "the question does not offer the renamed button by number"
+    send(offered.group(1), "t00000000000000d1")
+    healed = wait_reply(before + 2, timeout=180)
     show("result", healed)
-    repaired = "repaired step 3" in healed["reply"]
-    healed = confirmed(healed, before + 1, "t00000000000000d1", "Saved Umbrella")
-    assert healed["kind"] == "final" and (repaired or "repaired step 3" in healed["reply"]), "the rename was not healed"
+    healed = confirmed(healed, before + 2, "t00000000000000d1", "Saved Umbrella")
+    assert healed["kind"] == "final", "the run did not finish after the person chose the renamed button"
 
     v = bash("gui verify --text 'Saved Umbrella'", check=False)
     print("$ gui verify --text 'Saved Umbrella' ->", v.returncode)

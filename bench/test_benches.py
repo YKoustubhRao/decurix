@@ -69,6 +69,7 @@ class AgentTokenTest(unittest.TestCase):
         AgentStandIn.rule = staticmethod(rule) if rule else None
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), AgentStandIn)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
 
@@ -118,6 +119,62 @@ class BenchDesktopsTest(unittest.TestCase):
         for p in self.bench_files():
             for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
                 self.assertIsNone(bare.search(line), f"{p.relative_to(REPO)}:{n} calls :8081 without the token")
+
+
+class TeachAnswersTest(unittest.TestCase):
+    """The skills bench answers a real lesson's questions by their structure, read through its own probe."""
+
+    def setUp(self):
+        sys.path.insert(0, str(REPO / "agent" / "tests"))
+        sys.path.insert(0, str(BENCH / "skills"))
+        import teach_answers
+        from decurix_agent.computer import learning
+        from test_skills import demo
+
+        self.answers, self.learning, self.demo = teach_answers, learning, demo
+        self.home = Path(self.enterContext(__import__("tempfile").TemporaryDirectory()))
+        (self.home / ".decurix" / "skills").mkdir(parents=True)
+
+    def probe(self, skill):
+        """Run the bench's PROBE as the desktop would, against this skill saved as the draft."""
+        (self.home / ".decurix" / "skills" / "draft.json").write_text(json.dumps(skill), encoding="utf-8")
+        env = dict(os.environ, HOME=str(self.home), USERPROFILE=str(self.home), PYTHONPATH=str(REPO / "agent"))
+        r = subprocess.run([sys.executable, "-c", self.answers.PROBE], capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr[-800:])
+        return json.loads(r.stdout)
+
+    def teach(self, skill):
+        kinds = []
+        while (q := self.learning.next_question(skill)) is not None:
+            reply = self.answers.answer(self.probe(skill), "Some words first. " + q["text"])
+            kinds.append(q["kind"])
+            self.assertTrue(self.learning.answer(skill, q, reply)["understood"], f"{q['kind']}: {reply!r}")
+            self.assertLess(len(kinds), 40, "the lesson never ended")
+        return kinds
+
+    def test_a_lesson_without_a_model(self):
+        skill = self.learning.build([self.demo("demo-20260914T101500-aaaaaa", "Acme"), self.demo("demo-20260914T101600-bbbbbb", "Globex")])
+        kinds = self.teach(skill)
+        self.assertIn("goal", kinds)
+        self.assertEqual(kinds[-1], "confirm")
+
+    def test_a_lesson_a_hosted_model_studied(self):
+        skill = self.learning.build([self.demo("demo-20260914T101500-aaaaaa", "Acme")])
+        topics = ["sources", "changes", "filing", "matching", "prechecks"]
+        skill["understanding"] = {"summary": "Saves a customer.", "done_when": "Saved shows",
+                                  "questions": [{"id": f"b_{t}", "topic": t, "text": f"Question about {t}?"} for t in topics]}
+        kinds = self.teach(skill)
+        self.assertEqual(kinds[:6], ["goal"] + ["study"] * 5)
+        self.assertEqual(skill["answers"]["study:b_filing"], self.answers.FACTS["filing"])
+        self.assertEqual(skill["answers"]["goal"], "yes")
+
+    def test_an_unknown_kind_or_topic_stops_the_bench(self):
+        with self.assertRaises(self.answers.UnknownQuestion):
+            self.answers.answer({"question": {"kind": "loop", "text": "Repeat?"}})
+        with self.assertRaises(self.answers.UnknownQuestion):
+            self.answers.answer({"question": {"kind": "study", "id": "study:q9", "text": "?"}, "study": [{"id": "q9", "topic": "weather"}]})
+        with self.assertRaises(self.answers.UnknownQuestion):
+            self.answers.answer({"question": {"kind": "start", "text": "Should I check that?"}}, "Something else entirely was asked.")
 
 
 if __name__ == "__main__":
