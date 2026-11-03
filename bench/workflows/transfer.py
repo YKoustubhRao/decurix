@@ -4,6 +4,7 @@ No live application success is implied. Every family has a distinct business
 operation, UI route, unseen input and independently specified expected result.
 """
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -169,9 +170,18 @@ def learn(case, root):
     return skills.load(learned["name"])
 
 
+def task_id_for(case, variant):
+    """Each run's own task id, in the control plane's shape ("t" + 16 hex):
+    the agent attributes every outcome strictly to the task it names, so two
+    runs sharing one would collide."""
+    return "t" + hashlib.sha256(f"{case['id']}|{variant}".encode()).hexdigest()[:16]
+
+
 def run_case(case, root, variant="holdout", learned=None):
+    from decurix_agent import task_context
     from decurix_agent.computer import replay, skill_engine
     learned = learned or learn(case, root)
+    task_context.start(task_id_for(case, variant), request=case["title"])
     app = ScriptedApplication(case, offset=400 if variant == "moved-layout" else 0,
                               rename=variant == "renamed-control", ambiguous=variant == "ambiguous-control")
     params = {p["name"]:case["holdout"] for p in learned["params"] if p.get("varies")}
@@ -189,7 +199,8 @@ def run_case(case, root, variant="holdout", learned=None):
     must_stop = variant in {"ambiguous-control", "missing-parameter"}
     passed = outcome["outcome"] not in replay.SUCCESS if must_stop else \
              (outcome["outcome"] in replay.SUCCESS and business_ok)
-    return {"task":case["id"], "variant":variant, "passed":passed, "replay_outcome":outcome["outcome"],
+    return {"task":case["id"], "task_id":task_id_for(case, variant), "variant":variant, "passed":passed,
+            "replay_outcome":outcome["outcome"],
             "business_verified":business_ok, "actions":len(app.actions), "recordings":1,
             "typed_values":[args["text"] for kind,args in app.actions if kind == "type"],
             "skill_status":learned["status"], "parameters":params, "reason":outcome.get("text", "")}
@@ -199,8 +210,11 @@ def benchmark(cases=SCENARIOS):
     with tempfile.TemporaryDirectory(prefix="workflow-transfer-") as tmp:
         root = Path(tmp)
         with patch.dict(os.environ, {"DECURIX_DIR":str(root/"runtime")}):
+            from decurix_agent import task_context
             from decurix_agent.computer import recording, skills
-        with patch.object(recording, "ROOT", root/"recordings"), patch.object(skills, "ROOT", root/"skills"):
+        # The current task lives in this run's own file, never the machine-wide one.
+        with patch.object(recording, "ROOT", root/"recordings"), patch.object(skills, "ROOT", root/"skills"), \
+                patch.object(task_context, "CURRENT_FILE", str(root/"current-task")):
             results = []
             for case in cases:
                 learned = learn(case, root)
