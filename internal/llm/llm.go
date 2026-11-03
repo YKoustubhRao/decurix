@@ -163,21 +163,28 @@ func bounded(req map[string]any) {
 // resolved (resolve) and its size bounded (bounded), and returns the upstream
 // status, body and the headers in RetryHeaders it sent, unchanged.
 func (c *Client) Chat(ctx context.Context, body []byte) (int, []byte, http.Header, error) {
+	r, err := c.chat(ctx, body)
+	return r.Status, r.Body, r.Retry, err
+}
+
+// chat is Chat, also saying which deployment the request was resolved to ("" when it was not resolved).
+func (c *Client) chat(ctx context.Context, body []byte) (ChatResult, error) {
 	if !c.Configured() {
-		return 0, nil, nil, ErrNotConfigured
+		return ChatResult{}, ErrNotConfigured
 	}
 
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
-		return 0, nil, nil, fmt.Errorf("llm: request is not a JSON object: %w", err)
+		return ChatResult{}, fmt.Errorf("llm: request is not a JSON object: %w", err)
 	}
 
 	asked, _ := req["model"].(string)
 
 	model, err := resolve(asked, c.Model, c.FastModel)
 	if err != nil {
-		return 0, nil, nil, err
+		return ChatResult{}, err
 	}
+	res := ChatResult{Deployment: model}
 
 	req["model"] = model
 	bounded(req)
@@ -198,12 +205,12 @@ func (c *Client) Chat(ctx context.Context, body []byte) (int, []byte, http.Heade
 
 	out, err := json.Marshal(req)
 	if err != nil {
-		return 0, nil, nil, err
+		return res, err
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.chatURL(), bytes.NewReader(out))
 	if err != nil {
-		return 0, nil, nil, err
+		return res, err
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -215,19 +222,20 @@ func (c *Client) Chat(ctx context.Context, body []byte) (int, []byte, http.Heade
 
 	resp, err := c.HTTP.Do(httpReq)
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("llm: %w", err)
+		return res, fmt.Errorf("llm: %w", err)
 	}
 	defer resp.Body.Close()
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswerBytes+1))
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("llm: reading the answer: %w", err)
+		return res, fmt.Errorf("llm: reading the answer: %w", err)
 	}
 	if len(data) > maxAnswerBytes {
-		return 0, nil, nil, ErrAnswerTooLong
+		return res, ErrAnswerTooLong
 	}
 
-	return resp.StatusCode, data, copyHeaders(resp.Header, RetryHeaders), nil
+	res.Status, res.Body, res.Retry = resp.StatusCode, data, copyHeaders(resp.Header, RetryHeaders)
+	return res, nil
 }
 
 // copyHeaders is the headers of from named in names that are set.

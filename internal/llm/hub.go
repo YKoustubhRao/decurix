@@ -99,6 +99,9 @@ type Hub struct {
 	// every provider call uses (tests: a TLS fake's own client).
 	ClaudeBaseURL string
 	HTTP          *http.Client
+
+	listenMu  sync.Mutex
+	listeners []func(provider string) // OnChange
 }
 
 // NewHub opens the Hub on db (nil for memory only), sealing keys with key,
@@ -384,6 +387,7 @@ func (h *Hub) Save(provider string, s Settings) error {
 	}
 
 	h.apply(provider, s, now)
+	h.changed(provider)
 
 	return nil
 }
@@ -402,8 +406,6 @@ func (h *Hub) Forget(provider string) error {
 	}
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	switch provider {
 	case ProviderAzure:
 		h.azure = nil
@@ -414,28 +416,96 @@ func (h *Hub) Forget(provider string) error {
 	}
 	delete(h.updated, provider)
 	delete(h.vision, provider)
+	h.mu.Unlock()
 
+	h.changed(provider)
 	return nil
+}
+
+// ChatResult is one forwarded chat's answer: the upstream status and body, the retry headers of a rate limit, and
+// the deployment (Azure, OpenAI-compatible) or model (Claude) the request's "model" was resolved to. Deployment is
+// "" when the request never got that far (not set up, not JSON, a model not offered).
+type ChatResult struct {
+	Status     int
+	Body       []byte
+	Retry      http.Header
+	Deployment string
 }
 
 // Chat forwards one OpenAI-shaped chat body to a provider (see Client.Chat
 // and Claude.Chat for what comes back).
 func (h *Hub) Chat(ctx context.Context, provider string, body []byte) (int, []byte, http.Header, error) {
+	r, err := h.ChatResult(ctx, provider, body)
+	return r.Status, r.Body, r.Retry, err
+}
+
+// ChatResult forwards one OpenAI-shaped chat body to a provider, like Chat, and also says which deployment served it.
+func (h *Hub) ChatResult(ctx context.Context, provider string, body []byte) (ChatResult, error) {
 	h.mu.RLock()
 	az, cl, op := h.azure, h.claude, h.openai
 	h.mu.RUnlock()
 
-	// Each Chat answers ErrNotConfigured itself, a nil client included.
+	// Each chat answers ErrNotConfigured itself, a nil client included.
 	switch provider {
 	case ProviderAzure:
-		return az.Chat(ctx, body)
+		return az.chat(ctx, body)
 	case ProviderClaude:
-		return cl.Chat(ctx, body)
+		return cl.chat(ctx, body)
 	case ProviderOpenAI:
-		return op.Chat(ctx, body)
+		return op.chat(ctx, body)
 	}
 
-	return 0, nil, nil, fmt.Errorf("llm: unknown provider %q", provider)
+	return ChatResult{}, fmt.Errorf("llm: unknown provider %q", provider)
+}
+
+// Resolve is the deployment a chat asking provider for asked ("", "default", "fast" or one of the two configured
+// names) would be served by now, or an error when the provider is not set up or does not offer asked.
+func (h *Hub) Resolve(provider, asked string) (string, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	var model, fast string
+	switch provider {
+	case ProviderAzure:
+		if !h.azure.Configured() {
+			return "", ErrNotConfigured
+		}
+		model, fast = h.azure.Model, h.azure.FastModel
+	case ProviderClaude:
+		if !h.claude.Configured() {
+			return "", ErrNotConfigured
+		}
+		model, fast = h.claude.Model, h.claude.FastModel
+	case ProviderOpenAI:
+		if !h.openai.Configured() {
+			return "", ErrNotConfigured
+		}
+		model, fast = h.openai.Model, h.openai.FastModel
+	default:
+		return "", fmt.Errorf("llm: unknown provider %q", provider)
+	}
+	return resolve(asked, model, fast)
+}
+
+// OnChange registers fn to be called, with the provider's name, after each Save or Forget of that provider. fn runs
+// outside the Hub's lock, on the saving goroutine, and must not block for long.
+func (h *Hub) OnChange(fn func(provider string)) {
+	if fn == nil {
+		return
+	}
+	h.listenMu.Lock()
+	h.listeners = append(h.listeners, fn)
+	h.listenMu.Unlock()
+}
+
+// changed tells every OnChange listener that provider changed. Callers hold no lock.
+func (h *Hub) changed(provider string) {
+	h.listenMu.Lock()
+	fns := append([]func(string){}, h.listeners...)
+	h.listenMu.Unlock()
+	for _, fn := range fns {
+		fn(provider)
+	}
 }
 
 // Test asks a provider, with the given settings (Complete first), for a

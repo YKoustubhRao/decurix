@@ -10,10 +10,12 @@ import (
 // knows the calling desktop and reads the usage the provider reports. The spend limits read this, not only what a
 // desktop says it spent when a turn ends - a figure that is empty until then, and one the worker writes itself.
 
-// Usage is what one answer says it used.
+// Usage is what one answer says it used. Cached is the part of Input the provider read from its prompt cache (0 when
+// it did not say); it is counted inside Input, never on top of it.
 type Usage struct {
 	Input  int64
 	Output int64
+	Cached int64
 }
 
 // Tokens is the answer's tokens in all.
@@ -24,9 +26,12 @@ func (u Usage) Tokens() int64 { return u.Input + u.Output }
 func ParseUsage(answer []byte) Usage {
 	var a struct {
 		Usage struct {
-			Prompt     int64 `json:"prompt_tokens"`
-			Completion int64 `json:"completion_tokens"`
-			Total      int64 `json:"total_tokens"`
+			Prompt        int64 `json:"prompt_tokens"`
+			Completion    int64 `json:"completion_tokens"`
+			Total         int64 `json:"total_tokens"`
+			PromptDetails struct {
+				Cached int64 `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
 	}
 	if json.Unmarshal(answer, &a) != nil {
@@ -36,6 +41,7 @@ func ParseUsage(answer []byte) Usage {
 	if u.Tokens() == 0 && a.Usage.Total > 0 {
 		u.Input = a.Usage.Total
 	}
+	u.Cached = min(max(a.Usage.PromptDetails.Cached, 0), u.Input)
 	return u
 }
 

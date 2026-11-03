@@ -12,6 +12,12 @@ func TestTheProxyMetersWhatAnswersUsed(t *testing.T) {
 	if u := ParseUsage([]byte(`{"usage":{"prompt_tokens":1200,"completion_tokens":300}}`)); u.Tokens() != 1500 {
 		t.Fatalf("usage = %+v", u)
 	}
+	if u := ParseUsage([]byte(`{"usage":{"prompt_tokens":1200,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":1024}}}`)); u.Cached != 1024 || u.Tokens() != 1203 {
+		t.Fatalf("cached usage = %+v", u)
+	}
+	if u := ParseUsage([]byte(`{"usage":{"prompt_tokens":10,"prompt_tokens_details":{"cached_tokens":99}}}`)); u.Cached != 10 {
+		t.Fatalf("a cached part over the input = %+v", u)
+	}
 	if u := ParseUsage([]byte(`not json`)); u.Tokens() != 0 {
 		t.Fatalf("usage of nothing = %+v", u)
 	}

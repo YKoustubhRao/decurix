@@ -239,6 +239,8 @@ type Route struct {
 	TaskID         string `json:"task_id"`
 	ExecutionID    string `json:"execution_id"`
 	InterventionID string `json:"intervention_id,omitempty"`
+	// Origin is what started the execution this route opens or continues (C12); written on a new execution.
+	Origin Origin `json:"origin"`
 }
 
 // Route kinds.
