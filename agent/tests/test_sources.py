@@ -182,7 +182,8 @@ class AtTheFinalCheck(FileWorkIsChecked):
                  'bank_oct.csv itself states 398,360.00']
         skill_task.state.current_task = REQUEST
         with mock.patch.object(skill_task.produced, "file_facts",
-                               lambda *a, **k: produced.FileFacts(source_mismatch=found)),                 mock.patch.object(skill_task.produced, "missing_highlight", lambda paths, request="": []):
+                               lambda *a, **k: produced.FileFacts(source_mismatch=found)), \
+                mock.patch.object(skill_task.produced, "missing_highlight", lambda paths, request="": []):
             self.assertTrue(skill_task._gate("Saved bank_rec_oct.xlsx, ending at -14,140.00.", "final", "thebot"))
         self.assertEqual(len(self.judged), 1)
         self.assertIn("bank_oct.csv itself states 398,360.00", self.judged[0]["produced"])

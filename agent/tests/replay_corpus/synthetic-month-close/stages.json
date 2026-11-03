@@ -1,0 +1,11 @@
+{
+  "stages": [
+    {"title": "Purchase register", "outputs": ["register.csv"], "drafts": 0,
+     "reply": "Done. register.csv has one row per bill: B-101 (Northgate Paper, 1,250.00) and B-102 (Riverside Supplies, 830.00). B-103 is left out, as the person asked."},
+    {"title": "Memo", "outputs": ["memo.md"], "drafts": 0,
+     "reply": "Done. memo.md says the register holds two bills, 2,080.00 in all, and that B-103 is left out."},
+    {"title": "Email to Northgate Paper", "outputs": [], "drafts": 1,
+     "reply": "Done. One draft to accounts@northgate.example in the Outbox, confirming bill B-101 of 1,250.00 dated 2026-10-02."}
+  ],
+  "amendments": [{"text": "Leave bill B-103 out of everything.", "removed": ["B-103"]}]
+}

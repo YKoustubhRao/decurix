@@ -1,0 +1,5 @@
+[
+  {"id": "d1", "to": ["accounts@northgate.example"], "subject": "October bill B-101",
+   "body": "Dear Northgate Paper,\n\nWe have recorded your bill B-101 of 1,250.00 dated 2026-10-02.\n\nRegards,\nAccounts",
+   "attachments": []}
+]

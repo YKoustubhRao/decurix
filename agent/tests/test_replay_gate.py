@@ -13,9 +13,16 @@ the changes the person made) and expected.json ({"allowed": [...]}: for a
 nearly right run, words of the findings its known-wrong items may raise; empty
 for a right run). Any finding outside "allowed" fails the gate.
 
-Every new code check must pass this gate. A new corpus run is added with
-decurix-tests/wide/process/build_replay.py (add the run to RUNS); a run belongs here when its checker scored
-it right or nearly right.
+Two corpora. replay_corpus/ (in the repo, always run): synthetic, suite-free right runs with invented names and
+figures, built to carry what the checks read - a removed record, values typed into a form (typed.json:
+{stage number: [values]}), a change to a given file (sources.json: {stage number: [source_guard.changed_sources
+facts]}). The private corpus (fixtures/replay, live runs, outside the repo) runs where it is; DECURIX_REQUIRE_FIXTURES=1
+makes its absence a failure (review 2026-11-03, E-16: the gate skipped on every machine but one, and patched three
+blocking checks out).
+
+Every new code check must pass this gate, and every blocking check must be evaluated by it (the coverage test below).
+A private run is added with decurix-tests/wide/process/build_replay.py (add the run to RUNS); a run belongs there when
+its checker scored it right or nearly right.
 
     PYTHONPATH="agent;agent/tests" python -m unittest test_replay_gate
 """
@@ -36,6 +43,8 @@ from decurix_agent.tools import office, table_quality
 from decurix_agent.workflow_runner import WorkflowRunner
 
 FIXTURES = fixture_paths.fixture("replay")
+# The synthetic corpus in the repository: always there.
+CORPUS = Path(__file__).resolve().parent / "replay_corpus"
 # Where the runs' worker had its work folder; replaced with the replay's own.
 LIVE_WORK = "/home/headless/work"
 
@@ -115,8 +124,14 @@ def replay(fixture, root, crosscheck=(), seen=None):
         shutil.copytree(fixture / "work", work, dirs_exist_ok=True,
                         ignore=lambda folder, names: [n for n in names if (Path(folder) / n).relative_to(
                             fixture / "work").as_posix() in outputs])
+        # An amendment is its text, or {"text", "removed", "restored"} as classify reads it.
         long_task._update(run_id, lambda d: d.update(request=request, amendments=[
-            {"n": n, "text": t, "at": 0, "affects": []} for n, t in enumerate(saved["amendments"], 1)]))
+            dict({"n": n, "at": 0, "affects": []}, **(a if isinstance(a, dict) else {"text": a}))
+            for n, a in enumerate(saved["amendments"], 1)]))
+        # What the worker typed into forms, and the given files that changed, per stage - when the run kept them.
+        typed = json.loads((fixture / "typed.json").read_text(encoding="utf-8")) if (fixture / "typed.json").is_file() else {}
+        changes = (json.loads((fixture / "sources.json").read_text(encoding="utf-8"))
+                   if (fixture / "sources.json").is_file() else {})
         # (No office read record of the inputs: the repeated-rows check reads the request's input tables itself - found
         # live, series 11: the worker read them with python and office read never saw them.)
         handed = set()
@@ -144,7 +159,11 @@ def replay(fixture, root, crosscheck=(), seen=None):
             if tools.is_file():
                 kept = json.loads(tools.read_text(encoding="utf-8"))
                 record = (kept.get("actions") or [], kept.get("read") or "", kept.get("stage_read", kept.get("read") or ""))
-            with mock.patch.object(long_task, "_stage_tool_record", lambda *a, **k: record):
+            number = str(saved["stages"].index(said) + 1)
+            with mock.patch.object(long_task, "_stage_tool_record", lambda *a, **k: record), \
+                    mock.patch.object(long_task, "_entered", lambda values=typed.get(number) or []: list(values)), \
+                    mock.patch("decurix_agent.source_guard.changed_sources",
+                               lambda task_id, request, facts=changes.get(number) or []: [dict(f) for f in facts]):
                 for problem in long_task.stage_code_problems(run_id, run_state, step, made, mine, request, reply,
                                                              {"entered": 0}):
                     found.append((said["title"], problem))
@@ -166,8 +185,6 @@ def replay(fixture, root, crosscheck=(), seen=None):
 class ReplayGate(unittest.TestCase):
 
     def setUp(self):
-        if not FIXTURES.is_dir():
-            raise fixture_paths.missing(f"fixture not here: {FIXTURES} (set DECURIX_TEST_FIXTURES)")
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
@@ -176,17 +193,14 @@ class ReplayGate(unittest.TestCase):
             mock.patch.object(config, "WORK_DIR", root / "work"),
             mock.patch.dict("os.environ", {"DECURIX_DIR": str(root)}),
             mock.patch.object(long_task.progress, "emit", lambda *a, **k: None),
-            # What the worker typed into fields is not kept with a saved run; the shared folder's snapshot neither.
-            mock.patch.object(long_task, "_entered", lambda: []),
-            mock.patch("decurix_agent.source_guard.check_and_restore", lambda *a, **k: ""),
         ]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
 
-    def test_saved_right_runs_meet_no_finding_on_their_right_parts(self):
-        runs = sorted(p for p in FIXTURES.iterdir() if (p / "stages.json").is_file())
-        self.assertTrue(runs, "no saved runs to replay")
+    def check_runs(self, folder):
+        runs = sorted(p for p in folder.iterdir() if (p / "stages.json").is_file())
+        self.assertTrue(runs, f"no saved runs to replay in {folder}")
         for fixture in runs:
             with self.subTest(run=fixture.name):
                 expected = json.loads((fixture / "expected.json").read_text(encoding="utf-8"))
@@ -204,9 +218,34 @@ class ReplayGate(unittest.TestCase):
                     self.assertTrue(any(words.lower() in text.lower() for _, text in found),
                                     f"{fixture.name}: a check no longer catches {words!r}")
 
+    def test_the_synthetic_right_runs_meet_no_finding(self):
+        self.check_runs(CORPUS)
+
+    def test_saved_right_runs_meet_no_finding_on_their_right_parts(self):
+        if not FIXTURES.is_dir():
+            raise fixture_paths.missing(f"fixture not here: {FIXTURES} (set DECURIX_TEST_FIXTURES)")
+        self.check_runs(FIXTURES)
+
+    def test_every_blocking_check_is_evaluated_by_the_replay(self):
+        # A check made BLOCKING must have met correct work here (CLAUDE.md, docs/long-requests.md): one the replay
+        # never ran would be blocking unproven.
+        ran = set()
+        real = long_task._checked
+
+        def recorded(check, unmade, fn, *args, **kwargs):
+            ran.add(check)
+            return real(check, unmade, fn, *args, **kwargs)
+        for fixture in sorted(p for p in CORPUS.iterdir() if (p / "stages.json").is_file()):
+            root = Path(self.tmp.name) / ("coverage-" + fixture.name)
+            root.mkdir()
+            with mock.patch.object(config, "WORK_DIR", root / "work"), mock.patch.object(long_task, "_checked", recorded):
+                replay(fixture, root)
+        blocking = {c for c in long_task.CHECK_MATURITY if long_task.is_blocking(c) or long_task.asks_person(c)}
+        self.assertEqual(blocking - ran, set(), "blocking checks the replay never evaluated")
+
     def test_the_gate_sees_a_check_that_flags_correct_work(self):
         # A check added to the stage checks that finds something in correct work shows up in the replay.
-        fixture = min((p for p in FIXTURES.iterdir() if (p / "stages.json").is_file()),
+        fixture = min((p for p in CORPUS.iterdir() if (p / "stages.json").is_file()),
                       key=lambda p: sum(f.stat().st_size for f in p.rglob("*") if f.is_file()))
         root = Path(self.tmp.name) / "planted"
         root.mkdir()

@@ -158,7 +158,6 @@ class TheGateSendsBackAShortFill(FileWorkIsChecked):
         gaps = ["orders.xlsx: Orders!D25 is empty, but D2:D24 hold one formula filled down and the table beside it runs "
                 "to row 25"]
         with mock.patch.object(skill_task.produced, "store_results", lambda paths: []), \
-                mock.patch.object(skill_task.produced, "missing_requested", lambda request, made, root=None: ""), \
                 mock.patch.object(skill_task.produced, "coverage_gaps", lambda paths: list(gaps)):
             skill_task._gate("Done: E26 = 515127, verified by reading the sheet.", "final", "thebot")
         self.assertIn("Orders!D25 is empty", self.judged[0]["produced"])
@@ -166,7 +165,6 @@ class TheGateSendsBackAShortFill(FileWorkIsChecked):
     def test_a_formula_that_shows_an_error_is_not_done_without_a_model(self):
         self.verdicts = []
         with mock.patch.object(skill_task.produced, "store_results", lambda paths: []), \
-                mock.patch.object(skill_task.produced, "missing_requested", lambda request, made, root=None: ""), \
                 mock.patch.object(skill_task.produced, "formula_errors",
                                   lambda paths, failed=None: ["orders.xlsx: Orders!E5 shows #REF!"]):
             self.assertTrue(skill_task._gate("Done.", "final", "thebot"))
@@ -177,7 +175,6 @@ class TheGateSendsBackAShortFill(FileWorkIsChecked):
     def test_a_complete_table_goes_on_to_the_judge(self):
         self.verdicts = [{"verdict": verify.DONE, "confidence": 0.95, "seen": "all 24 rows", "why": ""}]
         with mock.patch.object(skill_task.produced, "store_results", lambda paths: []), \
-                mock.patch.object(skill_task.produced, "missing_requested", lambda request, made, root=None: ""), \
                 mock.patch.object(skill_task.produced, "coverage_gaps", lambda paths: []):
             self.assertTrue(skill_task._gate("Done.", "final", "thebot"))
         self.assertEqual(len(self.judged), 1)
@@ -309,7 +306,6 @@ class TheGateSendsBackALayoutFault(FileWorkIsChecked):
         layout = ["g.xlsx: Register!F4 is the typed number 9000, but F2 is a formula: 10 cell(s) of column F are typed "
                   "numbers where the formula belongs"]
         with mock.patch.object(skill_task.produced, "store_results", lambda paths: []), \
-                mock.patch.object(skill_task.produced, "missing_requested", lambda request, made, root=None: ""), \
                 mock.patch.object(skill_task.produced, "layout_faults", lambda paths, request="": list(layout)):
             skill_task._gate("Done. Note: rows 4-13 were entered as fixed numbers rather than formulas.",
                              "final", "thebot")

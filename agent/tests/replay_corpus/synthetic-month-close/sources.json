@@ -1,0 +1,3 @@
+{"2": [{"rel": "vendors.csv", "name": "vendors.csv", "path": "/shared/vendors.csv",
+        "diff": "row 3 added: Eastfield Traders, ap@eastfield.example", "gone": false, "kept": true, "asked": false,
+        "copy": "/kept/vendors.csv"}]}

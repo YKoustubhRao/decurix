@@ -193,7 +193,9 @@ class FileWorkIsChecked(ts.TeachingBase):
         # Not judged (there is nothing to judge it against), and never sent as a checked result: it is labelled
         # (E-02 / T-01, review 2026-11-03 - it used to skip the gate and go out as written).
         self.made = []
-        with mock.patch.object(skill_task.evidence, "observed", lambda *a, **k: []),                 mock.patch.object(skill_task.evidence, "files_read", lambda *a, **k: []),                 mock.patch.object(skill_task, "_commands_text", lambda: ""):
+        with mock.patch.object(skill_task.evidence, "observed", lambda *a, **k: []), \
+                mock.patch.object(skill_task.evidence, "files_read", lambda *a, **k: []), \
+                mock.patch.object(skill_task, "_commands_text", lambda: ""):
             self.assertTrue(skill_task._gate("The kernel is 6.6.", "final", "thebot"))
         self.assertEqual(self.judged, [])
         self.assertTrue(self.finals[-1][0].startswith(skill_task.UNCHECKED_ANSWER))
@@ -249,7 +251,8 @@ class NoModelAtTheGate(ts.TeachingBase):
         restored = []
         change = {"rel": "list_a.xlsx", "name": "list_a.xlsx", "path": "/shared/list_a.xlsx", "diff": "A2: x -> y",
                   "gone": False, "kept": True, "asked": False, "copy": "/kept/list_a.xlsx"}
-        with mock.patch.object(skill_task.source_guard, "changed_sources", lambda task_id, request: [change]),                 mock.patch.object(skill_task.source_guard, "restore", lambda *a, **k: restored.append(a) or ([], [])):
+        with mock.patch.object(skill_task.source_guard, "changed_sources", lambda task_id, request: [change]), \
+                mock.patch.object(skill_task.source_guard, "restore", lambda *a, **k: restored.append(a) or ([], [])):
             self.assertTrue(skill_task._gate("Made result.xlsx.", "final", "thebot"))
         self.assertEqual(restored, [])
         text, kw = self.said[-1]

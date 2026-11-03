@@ -1,0 +1,5 @@
+{
+  "about": "A synthetic, suite-free right run (review 2026-11-03, E-16): invented vendors and figures. It carries a removed record (B-103), values typed into a form (typed.json) and a change to a given file (sources.json), so the checks that read those are replayed on correct work. The given file's change is told to the person and the judge as evidence - the one finding this right run may raise.",
+  "allowed": ["changed your file"],
+  "must_find": ["changed your file"]
+}
