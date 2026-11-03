@@ -102,6 +102,14 @@ func SetInstallRoots(dirs ...string) {
 	rootsMu.Unlock()
 }
 
+// InstallRoots are the directories SetInstallRoots named, by their real
+// paths.
+func InstallRoots() []string {
+	rootsMu.RLock()
+	defer rootsMu.RUnlock()
+	return append([]string{}, installRoots...)
+}
+
 // realPath is p with its symlinks resolved, or p cleaned when it cannot be.
 func realPath(p string) string {
 	if r, err := filepath.EvalSymlinks(p); err == nil {

@@ -430,11 +430,55 @@ func TestAPanicReadingAnELFIsAnError(t *testing.T) {
 // withInstallRoots sets the install roots for one test.
 func withInstallRoots(t *testing.T, dirs ...string) {
 	t.Helper()
-	rootsMu.RLock()
-	old := append([]string{}, installRoots...)
-	rootsMu.RUnlock()
+	old := InstallRoots()
 	SetInstallRoots(dirs...)
 	t.Cleanup(func() { SetInstallRoots(old...) })
+}
+
+// An install root that is a symlink counts by its real path, so a program
+// beneath it may fall back. A directory symlink planted inside an install
+// root (a compromised worker's venv) is judged by where it really points.
+func TestASymlinkedInstallRootAndAPlantedLink(t *testing.T) {
+	top := realTempDir(t)
+	alt := filepath.Join(top, "altstore")
+	if err := os.MkdirAll(filepath.Join(alt, "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	symlinkOrSkip(t, alt, filepath.Join(top, "storelink"))
+	withInstallRoots(t, filepath.Join(top, "storelink"))
+	if ok, why := directoryFallback(filepath.Join(top, "storelink", "b")); !ok {
+		t.Fatalf("refused beneath a symlinked root: %s", why)
+	}
+	if ok, why := directoryFallback(filepath.Join(alt, "b")); !ok {
+		t.Fatalf("refused by its real path: %s", why)
+	}
+	secrets := filepath.Join(top, "secrets")
+	if err := os.MkdirAll(secrets, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	symlinkOrSkip(t, secrets, filepath.Join(alt, "evil"))
+	if ok, _ := directoryFallback(filepath.Join(top, "storelink", "evil")); ok {
+		t.Fatal("a link planted in the store reached the directory it points at")
+	}
+}
+
+// The loader loads a name once, by the name as written: an absolute
+// DT_NEEDED and the same base name by plain name are two names (a library
+// with no SONAME matches only its path), and each is looked up on its own.
+func TestANeededNameIsLookedUpOnceAsWritten(t *testing.T) {
+	dir := realTempDir(t)
+	sub := filepath.Join(dir, "sub", "libA.so")
+	writeELF(t, sub, fixture{})
+	writeELF(t, filepath.Join(dir, "libA.so"), fixture{})
+	prog := filepath.Join(dir, "server")
+	writeELF(t, prog, fixture{needed: []string{filepath.ToSlash(sub), "libA.so", filepath.ToSlash(sub)}, runpath: "$ORIGIN"})
+	got, err := ownLibraries(prog, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.files, []string{sub, filepath.Join(dir, "libA.so")}) {
+		t.Fatalf("granted %v", got.files)
+	}
 }
 
 // The directory fallback is allowed only strictly beneath an install root,

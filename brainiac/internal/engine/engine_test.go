@@ -10,6 +10,9 @@ import (
 	"hash/crc32"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +23,7 @@ import (
 	"brainiac/internal/catalog"
 	"brainiac/internal/config"
 	"brainiac/internal/install"
+	"brainiac/internal/isolate"
 	"brainiac/internal/selector"
 	"brainiac/internal/store"
 	"brainiac/internal/worker"
@@ -155,6 +159,37 @@ func newEngine(t *testing.T, cfg config.Config, lock *install.Lock) *Engine {
 	}
 	e.res.live = nil // tests do not measure this machine
 	return e
+}
+
+// New names Brainiac's own installs as the sandbox's install roots, its
+// llama.cpp builds and its venv, and nothing else of the store: a program
+// in store/tmp or store/logs must never get its directory granted.
+func TestNewSetsTheInstallRootsToTheBuildsAndTheVenvOnly(t *testing.T) {
+	old := isolate.InstallRoots()
+	t.Cleanup(func() { isolate.SetInstallRoots(old...) })
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{st.Path("bin"), st.Venv()} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := New(Options{Config: config.Default(), Store: st, Lock: lockWith(ollamaPick(catalog.RoleBrain, "tiny", "tiny:1b"))}); err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, d := range []string{st.Path("bin"), st.Venv()} {
+		r, err := filepath.EvalSymlinks(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, r)
+	}
+	if got := isolate.InstallRoots(); !slices.Equal(got, want) {
+		t.Fatalf("install roots %v, want %v", got, want)
+	}
 }
 
 func TestTextGoesStraightToTheBrain(t *testing.T) {
