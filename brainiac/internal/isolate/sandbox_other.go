@@ -17,7 +17,9 @@ func CanBlockTCP() bool { return false }
 func Wrap(*exec.Cmd, Policy) error { return errors.New("no sandbox on this system") }
 
 // resolved is the program itself; no sandbox applies here anyway.
-func resolved(program string) []string { return []string{program} }
+func resolved(program string, plugins []string) (files, libPath []string) {
+	return append([]string{program}, plugins...), nil
+}
 
 // CanConfine is false here: no network or mount namespace for a process.
 func CanConfine() (bool, error) {

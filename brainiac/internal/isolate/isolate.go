@@ -7,6 +7,7 @@
 package isolate
 
 import (
+	"log"
 	"os"
 	"runtime"
 	"strings"
@@ -37,9 +38,19 @@ const (
 
 // Policy is what a sandboxed process may touch; everything else is refused.
 type Policy struct {
-	Read     []string `json:"read,omitempty"`  // read and execute, beneath each path
-	Write    []string `json:"write,omitempty"` // and create, change and delete
-	BlockTCP bool     `json:"block_tcp,omitempty"`
+	Read  []string `json:"read,omitempty"`  // read and execute, beneath each path
+	Write []string `json:"write,omitempty"` // and create, change and delete
+	// List are directories whose entries it may list, not read: a program
+	// that finds its own plugins by listing its directory (ggml). In a mount
+	// view such a directory holds only what Read grants; without one the
+	// names of everything in it are visible, never the contents.
+	List []string `json:"list,omitempty"`
+	// LibraryPath is the program's own $ORIGIN search path, expanded. A
+	// mount view has no /proc/self/exe, from which the loader expands
+	// $ORIGIN for the program, so the helper passes it as LD_LIBRARY_PATH
+	// there, after whatever that already holds.
+	LibraryPath []string `json:"library_path,omitempty"`
+	BlockTCP    bool     `json:"block_tcp,omitempty"`
 	// BindTCP are the ports it may listen on when TCP is blocked. It may
 	// connect to none.
 	BindTCP []int `json:"bind_tcp,omitempty"`
@@ -60,13 +71,44 @@ var systemRead = []string{"/usr", "/lib", "/lib32", "/lib64", "/bin", "/sbin", "
 // server opens read-write.
 var systemWrite = []string{"/dev"}
 
+// logf reports what a policy grants beyond its usual shape (tests replace it).
+var logf = log.Printf
+
 // ForProgram is the policy for a program that reads the given paths and
-// writes the given ones, with what the system needs added.
-func ForProgram(program string, read, write []string) Policy {
+// writes the given ones, with what the system needs added: the program, and
+// the shared libraries it and its plugins (libraries it opens itself at run
+// time) load from its own build, read-only.
+func ForProgram(program string, read, write []string, plugins ...string) Policy {
 	p := Policy{Read: append([]string{}, systemRead...), Write: append(append([]string{}, systemWrite...), write...)}
-	p.Read = append(p.Read, resolved(program)...)
+	files, libPath := resolved(program, plugins)
+	p.Read = append(p.Read, files...)
 	p.Read = append(p.Read, read...)
+	p.LibraryPath = libPath
 	return p
+}
+
+// withLibraryPath is environ with dirs added at the end of LD_LIBRARY_PATH.
+func withLibraryPath(environ, dirs []string) []string {
+	if len(dirs) == 0 {
+		return environ
+	}
+	add := strings.Join(dirs, ":")
+	out := make([]string, 0, len(environ)+1)
+	done := false
+	for _, kv := range environ {
+		if v, ok := strings.CutPrefix(kv, "LD_LIBRARY_PATH="); ok && !done {
+			done = true
+			if v != "" {
+				add = v + ":" + add
+			}
+			kv = "LD_LIBRARY_PATH=" + add
+		}
+		out = append(out, kv)
+	}
+	if !done {
+		out = append(out, "LD_LIBRARY_PATH="+add)
+	}
+	return out
 }
 
 // Env is this process's environment reduced to the allowed variables, plus

@@ -166,3 +166,30 @@ func TestLiveServerWithoutASocketFallsBackAndSaysSo(t *testing.T) {
 }
 
 func filepathProc(pid int, name string) string { return "/proc/" + strconv.Itoa(pid) + "/" + name }
+
+// The server's policy grants ggml's backends, which ggml opens itself and
+// no DT_NEEDED names, and lets it list its build to find them. Other
+// programs' libraries and other files are not backends.
+func TestThePolicyGrantsTheGGMLBackendsAndListsTheBuild(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"llama-server", "libggml-cpu-haswell.so", "libggml-cuda.so", "libllama-cli-impl.so", "libggml-base.so.0", "notes.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{filepath.Join(dir, "libggml-cpu-haswell.so"), filepath.Join(dir, "libggml-cuda.so")}
+	if got := ggmlBackends(dir); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("backends %v, want %v", got, want)
+	}
+	p := &LlamaProc{Bin: filepath.Join(dir, "llama-server"), Model: filepath.Join(dir, "m.gguf")}
+	pol := p.policy()
+	if strings.Join(pol.List, "|") != dir {
+		t.Fatalf("list %v", pol.List)
+	}
+	read := "|" + strings.Join(pol.Read, "|") + "|"
+	for _, w := range want {
+		if !strings.Contains(read, "|"+w+"|") {
+			t.Fatalf("%s not granted: %v", w, pol.Read)
+		}
+	}
+}

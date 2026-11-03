@@ -941,6 +941,7 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): pivot_root from a tmpfs on /tmp keeps /tmp's real contents reachable at /oldroot/tmp
 - [part-6.md](gotchas/part-6.md): Pdeathsig fires when the creating thread exits
 - [part-6.md](gotchas/part-6.md): Run go test -c binaries for Linux sandbox tests from a private directory, not /tmp
+- [part-6.md](gotchas/part-6.md): A mount view hides /proc/self/exe, and with it the program's $ORIGIN and ggml's backends
 - [part-6.md](gotchas/part-6.md): Margin 0 makes "B proven as good as A, and A proven as good as B" impossible
 - [part-6.md](gotchas/part-6.md): A strict checker is not neutral in a comparison
 - [part-6.md](gotchas/part-6.md): Chrome's own networking bypasses a Go dialer guard

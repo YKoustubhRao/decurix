@@ -123,7 +123,11 @@ func init() {
 		err = dropHelperPowers()
 	}
 	if err == nil {
-		err = syscall.Exec(os.Args[3], append([]string{os.Args[3]}, os.Args[4:]...), os.Environ())
+		env := os.Environ()
+		if p.Mount {
+			env = withLibraryPath(env, p.LibraryPath)
+		}
+		err = syscall.Exec(os.Args[3], append([]string{os.Args[3]}, os.Args[4:]...), env)
 	}
 	// Failing here must never become running unconfined.
 	fmt.Fprintf(os.Stderr, "brainiac sandbox: %v\n", err)
@@ -181,6 +185,11 @@ func apply(p Policy) error {
 			return err
 		}
 	}
+	for _, path := range p.List {
+		if err := allowPath(int(fd), path, fsReadDir); err != nil {
+			return err
+		}
+	}
 	if attr[1] != 0 {
 		for _, port := range p.BindTCP {
 			rule := [2]uint64{netBindTCP, uint64(port)}
@@ -215,6 +224,9 @@ func allowPath(ruleset int, path string, rights uint64) error {
 	}
 	if st.Mode&syscall.S_IFMT != syscall.S_IFDIR {
 		rights &= fileRights
+	}
+	if rights == 0 {
+		return nil // listing a file grants nothing
 	}
 	// struct landlock_path_beneath_attr is packed: u64 rights, then s32 fd.
 	var rule [12]byte
@@ -261,32 +273,31 @@ func CanConfine() (bool, error) {
 
 // resolved is what running a program needs from where it lives: the program
 // file, the real one behind a symlink (a venv's python points at the
-// system's or a managed install's), and the shared libraries beside each
-// (llama.cpp ships its libggml*.so next to llama-server). Not the whole
-// directory: a program in a shared directory (a download folder, /tmp) must
-// not be handed everything else in it.
-func resolved(program string) []string {
-	files := []string{program}
-	if real, err := filepath.EvalSymlinks(program); err == nil && real != program {
+// system's or a managed install's), and the shared libraries it and its
+// plugins load from its own build, read from the ELF (llama.cpp ships
+// libllama*.so and libggml*.so next to llama-server, found through
+// $ORIGIN). Not the whole directory: a program in a shared directory (a
+// download folder, /tmp) must not be handed everything else in it. Only
+// when the ELF cannot be read is the directory granted, read-only, and
+// that is logged. libPath is the program's own $ORIGIN search path, which
+// a mount view leaves the loader unable to expand.
+func resolved(program string, plugins []string) (files, libPath []string) {
+	files = []string{program}
+	real, err := filepath.EvalSymlinks(program)
+	if err == nil && real != program {
 		files = append(files, real)
 	}
-	out := append([]string{}, files...)
-	seen := map[string]bool{}
-	for _, f := range files {
-		dir := filepath.Dir(f)
-		if seen[dir] {
-			continue
+	libs, err := ownLibraries(program, plugins)
+	if err != nil {
+		dir := filepath.Dir(program)
+		if real != "" {
+			dir = filepath.Dir(real)
 		}
-		seen[dir] = true
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if n := e.Name(); !e.IsDir() && (strings.HasSuffix(n, ".so") || strings.Contains(n, ".so.")) {
-				out = append(out, filepath.Join(dir, n))
-			}
-		}
+		logf("isolate: cannot read the libraries %s links (%v); granting its directory %s read-only", program, err, dir)
+		return append(append(files, plugins...), dir), nil
 	}
-	return out
+	if len(libs.outside) > 0 {
+		logf("isolate: %s loads %s from outside its build; not granted", program, strings.Join(libs.outside, ", "))
+	}
+	return append(append(files, plugins...), libs.files...), libs.origin
 }

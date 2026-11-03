@@ -254,14 +254,38 @@ func (p *LlamaProc) command(host string, port int, logf *os.File) *exec.Cmd {
 	return cmd
 }
 
-// policy is the files the server may touch: its build and its model files,
-// and the socket's directory when it has one.
+// policy is the files the server may touch: its program, the libraries it
+// loads from its build (ggml's backends among them), its model files, and
+// the socket's directory when it has one. ggml finds its backends by
+// listing a directory (the working directory, where it cannot read
+// /proc/self/exe), so the build may be listed: in a view it holds only
+// what is granted.
 func (p *LlamaProc) policy(write ...string) isolate.Policy {
 	read := []string{p.Model}
 	if p.MMProj != "" {
 		read = append(read, p.MMProj)
 	}
-	return isolate.ForProgram(p.Bin, read, write)
+	build := filepath.Dir(p.Bin)
+	pol := isolate.ForProgram(p.Bin, read, write, ggmlBackends(build)...)
+	pol.List = append(pol.List, build)
+	return pol
+}
+
+// ggmlBackends are the backend modules in a llama.cpp build
+// (libggml-cpu-haswell.so, libggml-cuda.so...): ggml opens them itself at
+// run time, so no DT_NEEDED names them.
+func ggmlBackends(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if n := e.Name(); !e.IsDir() && strings.HasPrefix(n, "libggml-") && strings.HasSuffix(n, ".so") {
+			out = append(out, filepath.Join(dir, n))
+		}
+	}
+	return out
 }
 
 func (p *LlamaProc) sandboxes() bool { return !p.NoSandbox && isolate.CanSandbox() }
