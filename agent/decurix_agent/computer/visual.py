@@ -454,6 +454,50 @@ def make_look(png, point, screen=None):
     }
 
 
+def _line_digits(width, height, rgb, at):
+    """The digit runs of the line of text at `at` in a picture, by OCR; None when it cannot be read."""
+
+    from decurix_agent.computer import identity, ocr
+
+    if not ocr.available():
+        return None
+    try:
+        line = ocr.line_at(ocr.read(width, height, bytes(rgb)), at)
+    except Exception:  # noqa: BLE001 - not read is not known
+        return None
+    return identity.digit_runs(line["text"]) if line else []
+
+
+def digits_hold(look, frame, point):
+    """
+    Whether the place a look was found at reads the same numbers as the look itself: True (the same digit runs, or the
+    look shows none), False (other numbers - another record that only looks alike), None (it cannot be told: no OCR,
+    or nothing readable). Found in review (2026-11-03, D-15): a row one digit off ("Invoice 1041" for "Invoice 1042")
+    scores under MAX_MISMATCH, so a look alone took it. A look with digits is a candidate until a text read confirms
+    them; no threshold is tuned for it.
+    """
+
+    try:
+        width, height, rgb = decode_png(base64.b64decode(look["png"]))
+        recorded = _line_digits(width, height, rgb, look["at"])
+        if recorded is None:
+            return None
+        if not recorded:
+            return True
+        x0, y0 = int(point[0]) - look["at"][0], int(point[1]) - look["at"][1]
+        if x0 < 0 or y0 < 0 or x0 + width > frame.width or y0 + height > frame.height:
+            return None
+        patch = bytearray()
+        for y in range(y0, y0 + height):
+            patch += bytes(frame.rgb[(y * frame.width + x0) * 3:(y * frame.width + x0 + width) * 3])
+        now = _line_digits(width, height, patch, look["at"])
+    except Exception:  # noqa: BLE001 - not read is not known
+        return None
+    if now is None or not now:
+        return None
+    return now == recorded
+
+
 def _template(look):
     """(luma rows, gradient map) of a look's picture."""
 

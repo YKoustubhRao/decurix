@@ -967,6 +967,13 @@ def resolve(step, observation):
                 return None, None, (f"{seen['matches']} places on the screen look like what was clicked, "
                                     "and a replay does not guess which")
             if seen["status"] == visual.FOUND:
+                held = visual.digits_hold(step["look"], observation["frame"], seen["point"])
+                if held is False:
+                    return None, None, ("what is there looks like what was clicked but reads other numbers - another "
+                                        "record, and a replay does not take it")
+                # Not read: found by its picture alone, which a one-digit difference passes - a candidate, and the
+                # run cannot be verified (D-15).
+                seen["unconfirmed"] = held is None
                 return None, seen["point"], None
 
         return None, point, None
@@ -1188,7 +1195,7 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
                     "raised": {"window": _opened_window(step) or _stable_title((next_step or {}).get("window")),
                                "already": already}}
 
-        target = {}
+        target, seen_look = {}, None
         if kind in NEEDS_TARGET and not (step.get("target") or step.get("point")):
             # Nothing is clicked on a hope: a step recorded with neither a
             # control nor a position (an import that only had a CSS selector)
@@ -1262,6 +1269,8 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
         # identity to same-step value checks; checking the old label after
         # typing into the healed field would incorrectly reject transfer.
         # A model-grounded guess does not receive an exact-check alias.
+        if seen_look and seen_look.get("unconfirmed"):
+            done = dict(done, unconfirmed=True)
         if repair and repair.get("how") == "healed" and element is not None and element.get("role") == (step.get("target") or {}).get("role"):
             done = dict(done, target_alias={"was": dict(step["target"]),
                                            "now": {"role": element.get("role"), "name": element.get("name")}})
@@ -1772,6 +1781,10 @@ def _run_program(program, params=None, start=1, report=None, ladder=None):
             return finish(NEEDS_APPROVAL, step, reason=text, resume_from=step["n"])
 
         counts["done"] += 1
+        if result.get("unconfirmed"):
+            counts["unverified"] += 1
+            report(f"Step {step['n']}: what was clicked was found by its picture alone, which another record's row "
+                   "may also pass - the run is not verified")
         if step.get("consequential") or _step_commits(step):
             committed.update(n=step["n"], observation=result.get("observation"))
 
