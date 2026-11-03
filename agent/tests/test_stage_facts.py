@@ -291,10 +291,10 @@ class ARemovedRecordStillInTheOutputs(unittest.TestCase):
     @fixture_paths.skip_unless(LIVE_P1_S13.is_file(), f"fixture not here: {LIVE_P1_S13}")
     def test_the_live_register_is_found(self):
         found = stage_facts.removed_still_present(NS_0457, [str(LIVE_P1_S13)])
-        self.assertTrue(any(f.startswith("p1_series13_month_end_close.xlsx (Purchase Register): NS-0457 is still a row")
-                            for f in found), found)
+        self.assertTrue(any(f.startswith("p1_series13_month_end_close.xlsx (Purchase Register): NS-0457 has a row of "
+                                         "its own") for f in found), found)
 
-    def test_a_row_that_shows_it_cancelled_or_only_mentions_it_is_right(self):
+    def test_a_row_that_only_mentions_it_is_not_its_row_and_its_own_row_is_shown_to_the_judge(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "register.xlsx"
             book = openpyxl.Workbook()
@@ -305,7 +305,11 @@ class ARemovedRecordStillInTheOutputs(unittest.TestCase):
                         ["Note", "NS-0457 left out (cancelled by the vendor)", None, None, None]):
                 book.active.append(row)
             book.save(path)
-            self.assertEqual(stage_facts.removed_still_present(NS_0457, [str(path)]), [])
+            # Its own row is quoted, words and all, for the judge to read whether it is shown taken out (E-07: no word
+            # list decides that); the note that only mentions it is not its row.
+            found = stage_facts.removed_still_present(NS_0457, [str(path)])
+            self.assertEqual(len(found), 1, found)
+            self.assertIn("Cancelled - excluded from all totals", found[0])
             self.assertEqual(stage_facts.removed_still_present([{"text": "Use the 18 Oct cash figure."}], [str(path)]), [])
 
     def test_a_csv_is_checked_like_a_workbook(self):
@@ -317,11 +321,11 @@ class ARemovedRecordStillInTheOutputs(unittest.TestCase):
                                 "NS-0452,Nova Stationers,41800,2880,As billed\n"
                                 "NS-0457,Nova Stationers,\"66,700.00\",4533,As billed\n", encoding="utf-8")
             found = stage_facts.removed_still_present(NS_0457, [str(register)])
-            self.assertTrue(found and found[0].startswith("purchase_register.csv: NS-0457 is still a row"), found)
+            self.assertTrue(found and found[0].startswith("purchase_register.csv: NS-0457 has a row of its own"), found)
             shown_out = Path(tmp) / "shown_out.csv"
             shown_out.write_text("Invoice No,Vendor,Taxable Value,Note\nNS-0457,Nova Stationers,66700,Cancelled\n"
                                  "NS-0457,see the vendor's mail,,\n", encoding="utf-8")
-            self.assertEqual(stage_facts.removed_still_present(NS_0457, [str(shown_out)]), [])
+            self.assertEqual(len(stage_facts.removed_still_present(NS_0457, [str(shown_out)])), 1)  # evidence
 
             bill = Path(tmp) / "NS-0457.txt"
             bill.write_text("Nova Stationers\nTax invoice NS-0457\nTaxable 66,700.00\nCGST 4,533.00\n", encoding="utf-8")

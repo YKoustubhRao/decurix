@@ -154,11 +154,6 @@ def _column_sums(rows):
     return sums
 
 
-# A row that shows a record as taken out, not counted: what a removed record may still appear as.
-_SHOWN_OUT = re.compile(r"(?i)\b(?:cancel\w*|exclud\w*|removed|left out|void\w*|withdrawn|not (?:counted|included|claimed)|"
-                        r"reversed|struck|deleted|omitted)\b")
-
-
 # A cell that is a figure written as text: a CSV's every cell is text ("66700", "4,533.00", "(1,200)").
 _FIGURE_TEXT = re.compile(r"^\s*[-+]?\(?\s*(?:₹|rs\.?|inr)?\s*\d[\d,]*(?:\.\d+)?\s*\)?\s*$", re.I)
 
@@ -186,10 +181,12 @@ def _as_figures(rows):
 
 def removed_still_present(amendments, made):
     """
-    Sentences for each record the person removed that a made table still holds as a full row - a row naming it with
-    figures and no word that it was taken out (cancelled, excluded ...). Certain: the record's reference is in the
-    person's own change. Found live (round 5 P1 on pc3, 2026-10-21): "Bill NS-0457 ... was cancelled - leave it out of
-    everything", and the Purchase Register still had NS-0457 as a full row with its 66,700 and its tax.
+    Sentences for each record the person removed that a made table still has as a row of its own: a cell that IS the
+    record's reference (the whole cell, not a word inside a note), on a row with figures. Mechanical, and evidence for
+    the judge: whether that row shows the record taken out ("cancelled", "taken out at your request", in any wording) is
+    a reading, which the judge makes from the row's text quoted here. A row that only mentions the reference inside
+    other text (a credit note "against" it) is not the record's own row. Found (review 2026-11-03, E-07): a word list
+    decided "shown as taken out", and a correct row worded differently was refused.
     """
 
     removed = removed_records(amendments)
@@ -199,22 +196,25 @@ def removed_still_present(amendments, made):
     for label, header, rows in sheet_tables(made):
         for row in rows:
             cells = [c for c in row if c not in (None, "")]
-            text = " | ".join(str(c) for c in cells)
+            own = {str(c).strip().lower() for c in cells}
             for reference in removed:
-                if not re.search(r"(?<![\w/-])" + re.escape(reference) + r"(?![\w/-])", text, re.I):
+                if reference.strip().lower() not in own:
                     continue
-                if _SHOWN_OUT.search(text) or not any(_figure(c) not in (None, 0) for c in cells
-                                                      if str(c).strip().lower() != reference.lower()):
-                    continue  # shown as taken out, or a mention with no figures
-                out.append(f"{label}: {reference} is still a row (\"{text[:120]}\") though the person removed it")
+                if not any(_figure(c) not in (None, 0) for c in cells if str(c).strip().lower() != reference.lower()):
+                    continue  # (its row carries no figures: nothing of it can be counted)
+                text = " | ".join(str(c) for c in cells)
+                out.append(f"{label}: {reference} has a row of its own with figures (\"{text[:120]}\") though the "
+                           "person removed it - check that the row shows it taken out and that no total counts it")
     return list(dict.fromkeys(out))[:8]
 
 
 def removed_residue(amendments, made, documents):
     """
     Sentences for each figure in a made workbook that is a column's total (or its total over the rows of one kind)
-    plus exactly one money figure of a record the person removed: the record left the table, its figures stayed in the
-    total. [] when nothing was removed or nothing adds up so.
+    plus exactly one money figure of a record the person removed: the record may have left the table while its figures
+    stayed in the total. [] when nothing was removed or nothing adds up so. EVIDENCE only: with many sums and many
+    figures an unrelated total can add up the same way (review 2026-11-03, E-08: a courier charge equal to the removed
+    bill's freight line refused a correct total).
     """
 
     removed = removed_records(amendments)
@@ -254,7 +254,7 @@ def removed_residue(amendments, made, documents):
                             out.append(f"{Path(str(path)).name}: {name} \"{label}\" {column} {_fmt(value)} is "
                                        f"{where[0]}'s {where[1]}{' (' + where[2] + ')' if where[2] else ''} "
                                        f"{_fmt(base)} plus {_fmt(figure)} of {reference}, which was removed - the "
-                                       "total still includes it")
+                                       "total may still include it (an arithmetic match only: check how it is made)")
                             break
     return list(dict.fromkeys(out))[:8]
 
