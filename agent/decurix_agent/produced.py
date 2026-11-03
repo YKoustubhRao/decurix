@@ -575,6 +575,28 @@ class FileFacts:
         self.missing_files = missing_files
         self.file_faults = list(file_faults)
 
+    # The facts that fail the work by themselves, in one place for every route (the final gate, a taught run's
+    # read-back, a desktop tool's run, a long request's stage). Found (review 2026-11-03, E-27): four routes each listed
+    # their own, and the lists had drifted.
+    BLOCKING = ("unstored", "gaps", "missing_files", "file_faults", "payee_mismatch", "source_mismatch",
+                "unknown_recipients", "draft_facts")
+
+    def blocking(self):
+        """Every blocking fact, in BLOCKING's order: the work is not done while any is there."""
+
+        out = []
+        for name in self.BLOCKING:
+            value = getattr(self, name)
+            out.extend([value] if isinstance(value, str) else value)
+        return [p for p in out if p]
+
+    def not_made(self):
+        """What the code could not check: a blocking check that raised, and an Office file it could not open
+        (password-protected, Strict Open XML, a kind it does not read). The work is then not checked on that point -
+        never passed for it (verify.outcome's not_made)."""
+
+        return [p for p in list(self.could_not) + list(self.unchecked) if p]
+
     def notes(self):
         """The evidence among these facts (never a verdict): what reads the request, or needs judgement."""
 
