@@ -21,6 +21,20 @@ import (
 // RemoteEvalName is the name the remote brain's eval results are kept under.
 const RemoteEvalName = "remote"
 
+// RoutedEvalName is the name a local model's routed-path results are kept
+// under: in each field, the cases the router sends to that field, answered
+// by that model. A case the router sends to the wrong field is a miss there,
+// so the score measures the path that is served, router included.
+func RoutedEvalName(model string) string { return "routed:" + model }
+
+// Route is the field the router would send a text to, its confidence, and
+// whether that is confident enough to route. `brainiac eval` asks it for
+// every case, to score the routed path.
+func (e *Engine) Route(text string) (string, float64, bool) {
+	d := e.rt.Classify(text)
+	return d.Class, d.P, d.Routes()
+}
+
 // RouterExamplesFile holds checked requests the router learns from, one JSON
 // object {"text": ..., "domain": ...} per line, under the store root.
 const RouterExamplesFile = "router-examples.jsonl"
@@ -172,11 +186,12 @@ func (e *Engine) routeDomain(req Request, explicit string, base brainChoice, bas
 		if better, known := res.Compare(spec.model, base.local.model, d); known && !better {
 			return keep(spec.model + " was measured worse than " + base.local.model + " at " + d + "; the brain answers")
 		}
-		if !res.Proven(spec.model, base.local.model, d) {
-			return keep(spec.model + " is not proven on checked cases to be as good as " + base.local.model + " at " + d +
+		// The router chose this field, so the evidence is the routed path's.
+		if !res.Proven(RoutedEvalName(spec.model), base.local.model, d) {
+			return keep(spec.model + " is not proven on checked cases, as routed, to be as good as " + base.local.model + " at " + d +
 				" (brainiac eval); the brain answers. Name the field (\"domain\": \"" + d + "\") to ask the specialist")
 		}
-		if live := e.outcomes.Get(spec.model, d); live.LastMiss.After(res.Scores[spec.model][d].At) {
+		if live := e.outcomes.Get(spec.model, d); live.LastMiss.After(res.Scores[RoutedEvalName(spec.model)][d].At) {
 			return keep("a real " + d + " answer from " + spec.model + " was reported wrong after it was measured; the brain answers until it is measured again")
 		}
 		if !shaped {
@@ -210,30 +225,33 @@ func (e *Engine) localPaths(d string) []*unit {
 	return out
 }
 
-// pathStatus judges one local model against the remote brain. Quality comes
-// first and is a gate, not a trade: time and money only choose among the
-// models that passed it.
+// pathStatus judges one local model, as the router serves it, against the
+// remote brain: the evidence is its routed-path score (RoutedEvalName), so a
+// model proven by name on its field still earns nothing if the router sends
+// it questions of other fields. Quality comes first and is a gate, not a
+// trade: time and money only choose among the models that passed it.
 func (e *Engine) pathStatus(u *unit, d string) PathStatus {
 	st := PathStatus{Model: u.model, Live: e.outcomes.Get(u.model, d)}
 	res := e.evals.get()
+	key := RoutedEvalName(u.model)
 	var score evals.Score
 	if res != nil {
-		if s, ok := res.Scores[u.model][d]; ok {
+		if s, ok := res.Scores[key][d]; ok {
 			score, st.Score = s, &s
 		}
 	}
 	switch {
 	case st.Score == nil:
-		st.Why = "not measured in this field (brainiac eval)"
-	case !res.Proven(u.model, RemoteEvalName, d):
-		st.Why = fmt.Sprintf("%d/%d correct can claim only %.0f%%, which does not show it is as good as the remote brain (brainiac eval)", score.Correct, score.N, 100*score.LowerBound())
+		st.Why = "its routed path is not measured in this field (brainiac eval)"
+	case !res.Proven(key, RemoteEvalName, d):
+		st.Why = fmt.Sprintf("%d/%d correct as routed can claim only %.0f%%, which does not show it is as good as the remote brain (brainiac eval)", score.Correct, score.N, 100*score.LowerBound())
 	case st.Live.LastMiss.After(score.At):
 		st.Why = "a real answer was reported wrong after it was measured; it must be measured again (brainiac eval)"
 	case e.cfg.MaxLocalSeconds > 0 && float64(score.MeanMs)/1000 > e.cfg.MaxLocalSeconds:
 		st.Why = fmt.Sprintf("it takes %.0f s on average, over the %.0f s allowed (max_local_seconds)", float64(score.MeanMs)/1000, e.cfg.MaxLocalSeconds)
 	default:
 		st.Earned = true
-		st.Why = fmt.Sprintf("%d/%d correct is proven as good as the remote brain, at no hosted cost", score.Correct, score.N)
+		st.Why = fmt.Sprintf("%d/%d correct as routed is proven as good as the remote brain, at no hosted cost", score.Correct, score.N)
 	}
 	return st
 }

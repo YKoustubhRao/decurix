@@ -91,13 +91,16 @@ func runEval(args []string) error {
 		ms                        int64
 	}
 	scores := map[string]map[string]*tally{}
+	answered := map[string]map[int]bool{} // model -> case index -> correct
+	meanMs := map[string]map[string]int64{}
 	for _, model := range names {
+		answered[model] = map[int]bool{}
 		only := map[string]bool{}
 		for _, d := range plan[model] {
 			only[d] = true
 		}
 		scores[model] = map[string]*tally{}
-		for _, c := range cases {
+		for ci, c := range cases {
 			if len(only) > 0 && !only[c.Domain] {
 				continue
 			}
@@ -125,6 +128,7 @@ func runEval(args []string) error {
 				s = &tally{}
 				scores[model][c.Domain] = s
 			}
+			answered[model][ci] = ok
 			s.n++
 			s.ms += ms
 			s.prompt += usage.PromptTokens
@@ -154,8 +158,40 @@ func runEval(args []string) error {
 			s := scores[model][d]
 			score := evals.Score{N: s.n, Correct: s.ok, MeanMs: s.ms / int64(s.n), MeanPrompt: s.prompt / s.n, MeanCompletion: s.completion / s.n, At: time.Now().UTC(),
 				Decided: s.decided, DecidedCorrect: s.decidedOK}
+			if meanMs[model] == nil {
+				meanMs[model] = map[string]int64{}
+			}
+			meanMs[model][d] = score.MeanMs
 			fmt.Fprintf(tw, "%s\t%s\t%d/%d\t%.0f%%\t%.0f%%\t%.1fs\t%d+%d\n", model, d, s.ok, s.n, 100*score.Accuracy(), 100*score.LowerBound(), float64(s.ms)/float64(s.n)/1000, score.MeanPrompt, score.MeanCompletion)
 			results.Set(model, d, score)
+		}
+	}
+	tw.Flush()
+
+	// The routed path: where the router sends each case, answered by each
+	// local model. A case sent to a field it is not from counts as a miss
+	// there, and so does one the model was not asked.
+	routed := make([]string, len(cases))
+	for i, c := range cases {
+		d, ok, err := cl.route(ctx, c.Prompt)
+		if err != nil {
+			return fmt.Errorf("asking the router (a Brainiac older than this eval?): %w", err)
+		}
+		if ok {
+			routed[i] = d
+		}
+	}
+	fmt.Println()
+	tw = tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ROUTED PATH\tFIELD\tCORRECT\tCAN CLAIM\tSENT FROM OTHER FIELDS")
+	for _, model := range names {
+		if model == engine.RemoteEvalName {
+			continue
+		}
+		for _, sc := range routedScores(cases, routed, answered[model]) {
+			sc.score.MeanMs, sc.score.At = meanMs[model][sc.field], time.Now().UTC()
+			results.Set(engine.RoutedEvalName(model), sc.field, sc.score)
+			fmt.Fprintf(tw, "%s\t%s\t%d/%d\t%.0f%%\t%d\n", model, sc.field, sc.score.Correct, sc.score.N, 100*sc.score.LowerBound(), sc.misrouted)
 		}
 	}
 	tw.Flush()
@@ -171,6 +207,78 @@ func runEval(args []string) error {
 		fmt.Printf("The router learned %d new examples (%s).\n", n, st.Path(engine.RouterExamplesFile))
 	}
 	return nil
+}
+
+// routedScore is one model's routed-path score in one field.
+type routedScore struct {
+	field     string
+	score     evals.Score
+	misrouted int
+}
+
+// routedScores scores a model's routed path per field: every case the router
+// sent to the field counts, and is correct only when the model answered it
+// correctly. A case of another field sent there is a miss unless the model
+// was asked it and got it right (the brain answers every field).
+func routedScores(cases []evals.Case, routed []string, answered map[int]bool) []routedScore {
+	by := map[string]*routedScore{}
+	var order []string
+	for i, c := range cases {
+		d := routed[i]
+		if d == "" {
+			continue
+		}
+		s := by[d]
+		if s == nil {
+			s = &routedScore{field: d}
+			by[d] = s
+			order = append(order, d)
+		}
+		ok := answered[i]
+		s.score.N++
+		if ok {
+			s.score.Correct++
+		}
+		if c.Check.Decides() {
+			s.score.Decided++
+			if ok {
+				s.score.DecidedCorrect++
+			}
+		}
+		if c.Domain != d {
+			s.misrouted++
+		}
+	}
+	sort.Strings(order)
+	out := make([]routedScore, 0, len(order))
+	for _, d := range order {
+		out = append(out, *by[d])
+	}
+	return out
+}
+
+// route asks the server which field the router sends a text to.
+func (c *evalClient) route(ctx context.Context, text string) (string, bool, error) {
+	data, _ := json.Marshal(map[string]string{"text": text})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.url+"/v1/brainiac/route", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	c.auth(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", false, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		Domain string `json:"domain"`
+		Routes bool   `json:"routes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", false, err
+	}
+	return out.Domain, out.Routes, nil
 }
 
 // evalUsage is the tokens one answer used.

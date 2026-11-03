@@ -167,6 +167,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.models)
 	mux.HandleFunc("GET /v1/brainiac/status", s.status)
 	mux.HandleFunc("GET /v1/brainiac/paths", s.paths)
+	mux.HandleFunc("POST /v1/brainiac/route", s.route)
 	mux.HandleFunc("POST /v1/brainiac/outcomes", s.outcome)
 	mux.HandleFunc("GET /v1/brainiac/traces", s.traces)
 	mux.HandleFunc("GET /v1/brainiac/scout", s.scoutReport)
@@ -765,6 +766,21 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.engine().Status())
+}
+
+// route says which field the router would send a text to: {"text": "..."}.
+// No model runs; `brainiac eval` uses it to score the routed path.
+func (s *Server) route(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var in struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", `send {"text": "..."}`)
+		return
+	}
+	d, p, ok := s.engine().Route(in.Text)
+	writeJSON(w, 200, map[string]any{"domain": d, "p": p, "routes": ok})
 }
 
 // paths says, per field, what could answer here and why each does or does not.

@@ -237,3 +237,22 @@ func TestFetchCutsAtACharacter(t *testing.T) {
 		t.Fatalf("cut to %q", out.Text)
 	}
 }
+
+// The router can be asked where a text would go, without running a model.
+func TestRouteAnswersWithoutAModel(t *testing.T) {
+	started := make(chan struct{}, 1)
+	srv := httptest.NewServer((&Server{Eng: replyEngine(t, "x", started, nil)}).Handler())
+	defer srv.Close()
+	resp := post(t, srv, "/v1/brainiac/route", `{"text":"Solve 5x + 7 = 2x - 8"}`, "")
+	defer resp.Body.Close()
+	var out map[string]any
+	json.NewDecoder(resp.Body).Decode(&out)
+	if _, ok := out["routes"]; resp.StatusCode != 200 || !ok {
+		t.Fatalf("%d %v", resp.StatusCode, out)
+	}
+	select {
+	case <-started:
+		t.Fatal("asking the router ran a model")
+	default:
+	}
+}

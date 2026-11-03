@@ -129,6 +129,9 @@ func saveScores(t *testing.T, e *Engine, scores map[string]evals.Score) {
 			s.Decided, s.DecidedCorrect = s.N, s.Correct // every case decided by a stated value
 		}
 		r.Set(m, "math", s)
+		if m != RemoteEvalName {
+			r.Set(RoutedEvalName(m), "math", s) // a router that files every case right
+		}
 	}
 	if err := r.Save(e.st.Path("evals.json")); err != nil {
 		t.Fatal(err)
@@ -314,5 +317,38 @@ func TestAnEarnedPathServesOnlyRequestsShapedLikeItsCases(t *testing.T) {
 		if res.Brain != "decurix:azure" {
 			t.Errorf("%s went to %s: %v", name, res.Brain, res.Trace.Notes)
 		}
+	}
+}
+
+// A specialist proven by name on its field earns nothing for routed traffic
+// when the router sends it questions of other fields: what is measured is
+// the path that is served. Naming the field still reaches it.
+func TestAPathProvenByNameButMisroutedDoesNotEarn(t *testing.T) {
+	e := remoteEngine(t)
+	byName := evals.Score{N: 100, Correct: 99, Decided: 100, DecidedCorrect: 99, At: time.Now().Add(-time.Hour)}
+	// Half of what the router sends to math was office questions it misfiled.
+	routed := evals.Score{N: 200, Correct: 99, Decided: 200, DecidedCorrect: 99, At: time.Now().Add(-time.Hour)}
+	r := &evals.Results{}
+	r.Set("math-1.5b", "math", byName)
+	r.Set(RoutedEvalName("math-1.5b"), "math", routed)
+	r.Set(RemoteEvalName, "math", evals.Score{N: 100, Correct: 92, Decided: 100, DecidedCorrect: 92})
+	if err := r.Save(e.st.Path("evals.json")); err != nil {
+		t.Fatal(err)
+	}
+	e.evals.res = nil
+	if res := ask(t, e, "brainiac", "", mathAsk); res.Brain != "decurix:azure" || !strings.Contains(strings.Join(res.Trace.Notes, " "), "as routed") {
+		t.Fatalf("misrouted traffic earned the field for %s: %v", res.Brain, res.Trace.Notes)
+	}
+	if res := ask(t, e, "brainiac", "math", mathAsk); res.Brain != "math-1.5b" {
+		t.Fatalf("the named field went to %s", res.Brain)
+	}
+	// Routed as well as by name, it earns.
+	r.Set(RoutedEvalName("math-1.5b"), "math", byName)
+	if err := r.Save(e.st.Path("evals.json")); err != nil {
+		t.Fatal(err)
+	}
+	e.evals.res = nil
+	if res := ask(t, e, "brainiac", "", mathAsk); res.Brain != "math-1.5b" {
+		t.Fatalf("a well-routed path did not earn: %s", res.Brain)
 	}
 }
