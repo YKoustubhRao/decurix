@@ -49,10 +49,12 @@ type jobRecord struct {
 	// FinalAnswer (see scheduler.Outcome).
 	Outcome  scheduler.Outcome
 	Question string
-	Route    string
-	Steps    []scheduler.StepRecord
-	Resumed  bool
-	Log      []string
+	// Secret is set when the answer to Question is a secret (scheduler.Job.Secret): "secret" in the job's JSON.
+	Secret  bool
+	Route   string
+	Steps   []scheduler.StepRecord
+	Resumed bool
+	Log     []string
 	// Usage is what this job's model calls read and wrote (llm.Metered).
 	Usage       *llm.Usage
 	startedAt   time.Time
@@ -140,7 +142,7 @@ func (j *jobRecord) snapshot() map[string]any {
 		"id": j.ID, "prompt": j.Prompt, "status": j.Status,
 		"plan": j.Plan, "results": j.Results, "finalAnswer": j.FinalAnswer,
 		"usedSkill": j.UsedSkill, "proposedSkill": j.ProposedSkill,
-		"outcome": j.Outcome, "question": j.Question, "route": j.Route,
+		"outcome": j.Outcome, "question": j.Question, "secret": j.Secret, "route": j.Route,
 		"steps": j.Steps, "resumed": j.Resumed,
 		"usage": map[string]int{"promptTokens": promptTokens, "responseTokens": responseTokens, "calls": calls,
 			"cachedTokens": j.Usage.Cached()},
@@ -506,6 +508,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 			job.ProposedSkill = result.ProposedSkill
 			job.Outcome = result.Outcome
 			job.Question = result.Question
+			job.Secret = result.Secret
 			job.Route = string(result.Route)
 			job.Steps = result.Steps
 			if result.Prompt != "" {

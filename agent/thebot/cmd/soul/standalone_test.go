@@ -8,11 +8,14 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"thebot/internal/atomizer"
 	"thebot/internal/memory"
 	"thebot/internal/rag"
+	"thebot/internal/skills"
 )
 
 // fakeEmbedder stands in for a real embedder: skillLibraryFor must not need one to say no.
@@ -119,5 +122,42 @@ func TestAStoreANewerSoulWroteIsStartedWithout(t *testing.T) {
 	s.storesOff = off
 	if rec := serve(s, http.MethodGet, "/api/health", ""); !strings.Contains(rec.Body.String(), "the Data RAG") {
 		t.Errorf("health does not say the store is off: %s", rec.Body.String())
+	}
+}
+
+// secretAskSkill asks the person for a value a password field needs, as the operator does (skills.Result Meta).
+type secretAskSkill struct{}
+
+func (secretAskSkill) Name() string                   { return "fx-secret-ask" }
+func (secretAskSkill) Description() string            { return "asks for a password field's value" }
+func (secretAskSkill) Matches(st skills.Subtask) bool { return st.Type == "fx-secret-ask" }
+func (secretAskSkill) Run(rc skills.RunContext, st skills.Subtask) (skills.Result, error) {
+	return skills.Result{Subtask: st, SkillName: "fx-secret-ask", Output: "Where does the password come from?",
+		Checkpoint: "asked", Meta: map[string]any{"needsUserInput": true, "question": "Where does the password come from?",
+			"secret": true}}, nil
+}
+
+var registerSecretAskOnce sync.Once
+
+// A job paused on a question whose answer is a secret says so in its JSON: "secret": true (F-1). W2's harness reads
+// job["secret"].
+func TestASecretFieldQuestionIsMarkedSecretInTheJobJSON(t *testing.T) {
+	registerSecretAskOnce.Do(func() {
+		atomizer.Register("fx-secret-ask", func(s string) bool { return strings.HasPrefix(s, "fx-secret-ask") })
+		skills.Register(secretAskSkill{})
+	})
+	s := newTestServer(t)
+	id := postChat(t, s, `{"prompt": "fx-secret-ask sign in", "sessionId": "s1"}`)
+	job := waitJob(t, s, id, 10*time.Second)
+	if job["outcome"] != "needs_input" || job["secret"] != true {
+		t.Fatalf("job = outcome %v secret %v", job["outcome"], job["secret"])
+	}
+	rec := serve(s, http.MethodGet, "/api/jobs/"+id, "")
+	if !strings.Contains(rec.Body.String(), `"secret":true`) {
+		t.Fatalf("GET /api/jobs/%s does not carry \"secret\": true: %s", id, rec.Body.String())
+	}
+	plain := waitJob(t, s, postChat(t, s, `{"prompt": "run this command: `+"`echo hi`"+`"}`), 10*time.Second)
+	if plain["secret"] != false {
+		t.Errorf("an ordinary job's secret = %v, want false", plain["secret"])
 	}
 }

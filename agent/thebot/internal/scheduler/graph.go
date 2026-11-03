@@ -723,6 +723,9 @@ func (e *execution) finish() *Job {
 		} else {
 			job.Outcome = OutcomeNeedsInput
 			job.Question = e.pause.question
+			if e.pause.node != nil {
+				job.Secret, _ = e.pause.node.result.Meta["secret"].(bool)
+			}
 		}
 		job.FinalAnswer = job.Question
 	} else {

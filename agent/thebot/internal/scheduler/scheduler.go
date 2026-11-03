@@ -104,6 +104,9 @@ type Job struct {
 	Outcome Outcome
 	// Question is what the human is being asked, when the job paused.
 	Question string
+	// Secret is set when the answer to Question is a secret (a value for a password field): the host withholds the
+	// reply wherever it keeps it (review F-1).
+	Secret bool
 	// Route is the atomizer's decision about the request's shape.
 	Route atomizer.RouteKind
 	Steps []StepRecord

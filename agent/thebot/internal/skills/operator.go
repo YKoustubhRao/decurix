@@ -1946,7 +1946,13 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				question := untracedQuestion(untraced, nudge)
 				st.AskedUntraced = untraced
 				st.Messages = append(st.Messages, reply)
-				return ask(question)
+				res, err := ask(question)
+				if slices.Contains(untraced, secretShown) {
+					// A value for a field the screen lists as a password (or one the request names as a secret): the
+					// answer is a secret by structure, and the host withholds it wherever it keeps the reply (F-1).
+					res.Meta["secret"] = true
+				}
+				return res, err
 			}
 			st.noteTracedTyping(value)
 			st.Messages = append(st.Messages, reply)

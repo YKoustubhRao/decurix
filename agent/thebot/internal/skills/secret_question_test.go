@@ -56,3 +56,20 @@ func TestARefusalNeverShowsASecret(t *testing.T) {
 		t.Errorf("the question does not say which field: %q", q)
 	}
 }
+
+// A question for a value the work was about to type into a password field is marked secret, by structure (F-1).
+func TestAQuestionForAPasswordFieldIsMarkedSecret(t *testing.T) {
+	listing := `Screen 1280x720. Active window: "Sign in"\ne4 textbox "Username"\ne5 password text "Password"`
+	replies := []string{"COMMAND:\nprintf '" + listing + "\n'"}
+	for i := 0; i < 4; i++ {
+		replies = append(replies, "COMMAND:\ngui type e5 'Guessed-Value-9'")
+	}
+	chat := &scriptedChat{replies: replies}
+	res, err := (&OperatorSkill{MaxTurns: 10}).Run(operatorContext(t, chat), Subtask{Step: "sign in to the portal", Type: "operator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Meta["needsUserInput"] != true || res.Meta["secret"] != true || strings.Contains(res.Output, "Guessed-Value-9") {
+		t.Fatalf("result = %+v", res)
+	}
+}
