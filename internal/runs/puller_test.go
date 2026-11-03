@@ -26,6 +26,7 @@ type fakeHome struct {
 	written   map[string][]byte
 	failWrite bool
 	block     map[string]bool // part paths whose read waits for the context
+	gone      bool            // the desktop is not there
 }
 
 func newFakeHome() *fakeHome {
@@ -51,8 +52,11 @@ func (h *fakeHome) ReadTar(ctx context.Context, id, p string, limit int64) (io.R
 			names = append(names, name)
 		}
 	}
-	if len(names) == 0 && len(h.extra[rel]) == 0 {
+	if h.gone {
 		return nil, desktop.ErrNotFound
+	}
+	if len(names) == 0 && len(h.extra[rel]) == 0 {
+		return nil, desktop.ErrPathNotFound
 	}
 	sort.Strings(names)
 	var buf bytes.Buffer
@@ -304,9 +308,9 @@ func TestNothingFoundSavesNoBundle(t *testing.T) {
 
 func TestFlushStopsAtItsTimeoutAndSaysWhatWasNotPulled(t *testing.T) {
 	h := fixtureHome()
-	// The second run's recording read hangs until the flush's time is up.
+	// The second run's run-folder read hangs until the flush's time is up.
 	h.files[".decurix/runs/t_2/run.json"] = []byte(`{}`)
-	h.block["/home/headless/.decurix/recordings/task-t_2"] = true
+	h.block["/home/headless/.decurix/runs/t_2"] = true
 	h.files[".decurix/runs/t_3/run.json"] = []byte(`{}`)
 	p, _ := newPuller(t, h)
 	refs := []ExecutionRef{{ExecID: "e_1", TaskID: "t_1"}, {ExecID: "e_2", TaskID: "t_2"}, {ExecID: "e_3", TaskID: "t_3"}}

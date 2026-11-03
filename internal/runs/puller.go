@@ -21,14 +21,29 @@ import (
 )
 
 // Home is the as-worker file access desktop.Manager already has (homefs.go): paths are absolute, under the worker's
-// home. A path that is not there is desktop.ErrNotFound.
+// home. A path that is not there is desktop.ErrPathNotFound; a desktop that is not there, desktop.ErrNotFound.
 type Home interface {
 	ReadTar(ctx context.Context, id, p string, limit int64) (io.ReadCloser, error)
 	WriteTar(ctx context.Context, id, dir string, archive io.Reader) error
 }
 
-// DefaultLimit bounds what one run's bundle may hold when Puller.Limit is unset.
+// DefaultLimit bounds the recording's observations, program and frames kept for one run when Puller.Limit is unset.
 const DefaultLimit = 64 << 20
+
+// LabelLimit bounds one label part's read (the run folder, the ledger, notes, files, outputs, soul's trace, the
+// recording's meta and events). Labels are kept whole whatever the frames take; one over this is cut, and said.
+const LabelLimit = 64 << 20
+
+// MaxFiles bounds how many files one pull keeps of the recording, and MaxLabelFiles of each label part (review M3): a
+// worker can make zero-byte entries without end, and the manifest and Missing list must not grow with them. Each part
+// has its own count, so a flood in one never crowds out another's labels.
+const (
+	MaxFiles      = 20000
+	MaxLabelFiles = 2000
+)
+
+// maxMissing bounds the Missing list; past it one line says how many more there were.
+const maxMissing = 200
 
 // homeDir is the worker's home in every desktop; bundle paths are relative to it.
 const homeDir = "/home/headless"
@@ -42,17 +57,21 @@ var TaskIDShape = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 // ErrBadTaskID is a task id not of TaskIDShape: nothing is read for it.
 var ErrBadTaskID = errors.New("runs: not a task id")
 
-// ErrNothingFound is a pull that found no part of the run at all: no bundle is saved (the run has none, or the
-// desktop is gone), so the execution stays unpulled.
+// ErrNothingFound is a pull that found no part of the run at all: no bundle is saved (the run has none), so the
+// execution stays unpulled.
 var ErrNothingFound = errors.New("runs: no part of the run was found on the desktop")
+
+// ErrDesktopGone is a pull of a desktop that is not there: nothing is saved.
+var ErrDesktopGone = errors.New("runs: the desktop is not there")
 
 // Puller reads a run's files out of the worker's home and saves them as its bundle.
 type Puller struct {
 	Home  Home
 	Store *Store
 	Blobs Blobs
-	// Limit bounds the bytes kept for one run, across all its parts (DefaultLimit when 0). Over it, the recording's
-	// frames are dropped first, oldest first; nothing else is.
+	// Limit bounds the recording's observations, program and frames kept for one run (DefaultLimit when 0). Over
+	// it, frames are dropped first, then observations, oldest first. The labels (the run folder, ledger, notes,
+	// files, outputs, trace, the recording's meta and events) are never dropped for it.
 	Limit int64
 }
 
@@ -75,31 +94,55 @@ func partsOf(task string) []part {
 	}
 }
 
-// pull is one Pull's state: what is kept, what is not, and the frames held back until the budget is known.
+// labelParts are the parts read first and kept whole: everything that labels the run but the recording.
+func labelParts(task string) []part {
+	var out []part
+	for _, pt := range partsOf(task) {
+		if pt.name != "recording" {
+			out = append(out, pt)
+		}
+	}
+	return out
+}
+
+// Kinds of the recording's budgeted files, in the order they are kept: observations, then the program, then frames.
+const (
+	kindObs = iota
+	kindProgram
+	kindFrame
+)
+
+// pull is one Pull's state: what is kept, what is not, and the recording's files held back until the budget decides.
 type pull struct {
 	p        *Puller
 	ref      ExecutionRef
 	limit    int64
-	kept     int64 // bytes of every file kept but frames
 	files    []File
 	missing  []string
-	frames   []spooled
+	dropped  int // Missing lines past maxMissing
+	held     []spooled
 	spoolDir string
-	events   string // the recording's events.jsonl blob, to order the frames
+	events   string // the recording's events.jsonl blob, to order observations and frames
 	found    bool
+	gone     bool
+	capped   map[string]int // entries not kept for the file cap, by part
+	counted  map[string]int // entries kept or held, by part
 }
 
-// spooled is a frame read off the desktop and held on local disk until the budget decides.
+// spooled is a budgeted recording file read off the desktop and held on local disk until the budget decides.
 type spooled struct {
 	rel   string // under the home
 	name  string // its file name, as events.jsonl names it
+	kind  int
 	local string
 	bytes int64
 }
 
-// Pull reads ref's run off its desktop as the worker, stores every file once as a blob, saves the bundle, and writes
-// EXPORTED (C8) into the run's folder on the desktop. A part that is not there is listed in Missing by name; one
-// that could not be read, with a short reason. Writing EXPORTED is logged when it fails; the bundle is saved anyway.
+// Pull reads ref's run off its desktop as the worker, stores every file once as a blob, saves the bundle (merged with
+// an earlier pull of the same execution, never dropping what that one kept), and writes EXPORTED (C8) into the run's
+// folder on the desktop. The labels are read first and kept whole; the recording's observations and frames share
+// Limit. A part not there is listed in Missing by name; one that could not be read, with a short reason. Writing
+// EXPORTED is logged when it fails; the bundle is saved anyway.
 func (p *Puller) Pull(ctx context.Context, ref ExecutionRef) (Bundle, error) {
 	if !TaskIDShape.MatchString(ref.TaskID) {
 		return Bundle{}, ErrBadTaskID
@@ -118,19 +161,49 @@ func (p *Puller) Pull(ctx context.Context, ref ExecutionRef) (Bundle, error) {
 	if limit <= 0 {
 		limit = DefaultLimit
 	}
-	st := &pull{p: &Puller{Home: p.Home, Store: p.Store, Blobs: blobs, Limit: limit}, ref: ref, limit: limit}
+	st := &pull{p: &Puller{Home: p.Home, Store: p.Store, Blobs: blobs, Limit: limit}, ref: ref, limit: limit,
+		capped: map[string]int{}, counted: map[string]int{}}
 	defer st.cleanup()
 
-	for _, pt := range partsOf(ref.TaskID) {
+	// 1. The labels, each on its own read: nothing the recording holds can crowd them out.
+	for _, pt := range labelParts(ref.TaskID) {
 		if err := ctx.Err(); err != nil {
 			return Bundle{}, err
 		}
-		st.readPart(ctx, pt)
+		st.readLabel(ctx, pt.name, pt.rel)
+		if st.gone {
+			return Bundle{}, ErrDesktopGone
+		}
+	}
+	// 2. The recording's own labels, by path.
+	rec := ".decurix/recordings/task-" + ref.TaskID
+	metaThere := st.readLabel(ctx, "recording", rec+"/meta.json")
+	eventsThere := st.readLabel(ctx, "recording", rec+"/events.jsonl")
+	if st.gone {
+		return Bundle{}, ErrDesktopGone
+	}
+	if !metaThere && !eventsThere {
+		st.miss("recording: not present")
+	} else {
+		// 3. What the budget decides: observations, the program, frames, each its own bounded read.
+		st.readHeld(ctx, rec+"/obs", kindObs, true)
+		st.readHeld(ctx, rec+"/program.json", kindProgram, false)
+		st.readHeld(ctx, rec+"/frames", kindFrame, true)
+		if st.gone {
+			return Bundle{}, ErrDesktopGone
+		}
+		st.keepHeld()
 	}
 	if !st.found {
 		return Bundle{}, ErrNothingFound
 	}
-	st.keepFrames()
+	for _, name := range sortedKeys(st.capped) {
+		st.missing = append(st.missing, fmt.Sprintf("%s: %d entries not kept (over the cap of files a pull keeps of it)",
+			name, st.capped[name]))
+	}
+	if st.dropped > 0 {
+		st.missing = append(st.missing, fmt.Sprintf("... and %d more not listed", st.dropped))
+	}
 
 	b := Bundle{ExecID: ref.ExecID, TaskID: ref.TaskID, Worker: ref.Worker, PulledAt: time.Now(), Files: st.files,
 		Missing: st.missing}
@@ -148,28 +221,99 @@ func (p *Puller) Pull(ctx context.Context, ref ExecutionRef) (Bundle, error) {
 	return saved, nil
 }
 
-// readPart reads one part as a tar and keeps its files.
-func (s *pull) readPart(ctx context.Context, pt part) {
-	// A part's own read may bring the whole budget (frames are spooled, not counted, until keepFrames); the recording
-	// may bring more, since its frames are chosen afterwards.
-	readLimit := s.limit - s.kept + tarSlack
-	if pt.name == "recording" {
-		readLimit = 4*s.limit + tarSlack
-	}
-	rc, err := s.p.Home.ReadTar(ctx, s.ref.Worker, homeDir+"/"+pt.rel, readLimit)
-	if errors.Is(err, desktop.ErrNotFound) {
-		s.missing = append(s.missing, pt.name+": not present")
+// miss adds one line to Missing, or counts it past maxMissing.
+func (s *pull) miss(line string) {
+	if len(s.missing) >= maxMissing {
+		s.dropped++
 		return
 	}
-	if err != nil {
-		log.Printf("runs: reading %s of %s on %s: %v", pt.name, s.ref.ExecID, s.ref.Worker, err)
-		s.missing = append(s.missing, pt.name+": could not be read")
+	s.missing = append(s.missing, line)
+}
+
+// room reports whether one more file of part name may be kept under its cap, counting it against name when not.
+func (s *pull) room(name string) bool {
+	limit := MaxLabelFiles
+	if name == "recording" {
+		limit = MaxFiles
+	}
+	if s.counted[name] < limit {
+		s.counted[name]++
+		return true
+	}
+	s.capped[name]++
+	return false
+}
+
+// open reads rel off the desktop as a tar, or says why not. ok is false when there is nothing to read.
+func (s *pull) open(ctx context.Context, name, rel string, limit int64, quietIfAbsent bool) (io.ReadCloser, bool) {
+	rc, err := s.p.Home.ReadTar(ctx, s.ref.Worker, homeDir+"/"+rel, limit)
+	switch {
+	case errors.Is(err, desktop.ErrPathNotFound):
+		if !quietIfAbsent {
+			s.miss(name + ": not present")
+		}
+		return nil, false
+	case errors.Is(err, desktop.ErrNotFound):
+		s.gone = true
+		return nil, false
+	case err != nil:
+		log.Printf("runs: reading %s of %s on %s: %v", rel, s.ref.ExecID, s.ref.Worker, err)
+		s.miss(name + ": could not be read")
+		return nil, false
+	}
+	s.found = true
+	return rc, true
+}
+
+// readLabel reads one label part (a file or a folder) and keeps every regular file of it, under the file cap only.
+// It reports whether the path was there.
+func (s *pull) readLabel(ctx context.Context, name, rel string) bool {
+	quiet := name == "recording" // the recording's absence is said once, for both of its labels
+	rc, ok := s.open(ctx, name, rel, LabelLimit+tarSlack, quiet)
+	if !ok {
+		return false
+	}
+	defer rc.Close()
+	s.eachEntry(rc, name, rel, func(tr io.Reader, rel string, size int64) {
+		if !s.room(name) {
+			return
+		}
+		sha, n, err := s.p.Blobs.Put(io.LimitReader(tr, size))
+		if err != nil || n != size {
+			log.Printf("runs: storing %s of %s: %v (%d of %d bytes)", rel, s.ref.ExecID, err, n, size)
+			s.miss(clip(rel) + ": could not be stored")
+			return
+		}
+		s.files = append(s.files, File{Path: rel, SHA256: sha, Bytes: n})
+		if strings.HasSuffix(rel, "/events.jsonl") && name == "recording" {
+			s.events = sha
+		}
+	})
+	return true
+}
+
+// readHeld reads a budgeted recording file or folder and holds each regular file on local disk for keepHeld. Its read
+// is bounded: a folder past it is cut there, the files read before the cut are still candidates, and the cut is said.
+func (s *pull) readHeld(ctx context.Context, rel string, kind int, quietIfAbsent bool) {
+	rc, ok := s.open(ctx, "recording", rel, 4*s.limit+tarSlack, quietIfAbsent || kind == kindProgram)
+	if !ok {
 		return
 	}
 	defer rc.Close()
-	s.found = true
-	parent := path.Dir(pt.rel)
-	root := path.Base(pt.rel)
+	s.eachEntry(rc, "recording", rel, func(tr io.Reader, rel string, size int64) {
+		if !s.room("recording") {
+			return
+		}
+		if err := s.spool(tr, rel, kind, size); err != nil {
+			s.miss(clip(rel) + ": could not be read")
+		}
+	})
+}
+
+// eachEntry walks a part's tar: names outside it are refused, links and devices skipped (each said), folders passed
+// over; fn gets every regular file with its path under the home. A cut stream is said, and ends the walk.
+func (s *pull) eachEntry(rc io.Reader, name, rel string, fn func(tr io.Reader, rel string, size int64)) {
+	parent, root := path.Dir(rel), path.Base(rel)
 	tr := tar.NewReader(rc)
 	for {
 		hdr, err := tr.Next()
@@ -177,44 +321,24 @@ func (s *pull) readPart(ctx context.Context, pt part) {
 			return
 		}
 		if err != nil {
-			log.Printf("runs: reading %s of %s on %s: %v", pt.name, s.ref.ExecID, s.ref.Worker, err)
-			s.missing = append(s.missing, pt.name+": stopped part way (over the read limit, or the copy failed)")
+			log.Printf("runs: reading %s of %s on %s: %v", rel, s.ref.ExecID, s.ref.Worker, err)
+			s.miss(clip(rel) + ": stopped part way (over the read limit, or the copy failed)")
 			return
 		}
-		name, ok := entryName(hdr.Name, root)
+		entry, ok := entryName(hdr.Name, root)
 		if !ok {
-			s.missing = append(s.missing, clip(hdr.Name)+": refused (a path outside "+pt.name+")")
+			s.miss(clip(hdr.Name) + ": refused (a path outside " + name + ")")
 			continue
 		}
 		if hdr.Typeflag == tar.TypeDir {
 			continue
 		}
-		rel := parent + "/" + name
+		full := parent + "/" + entry
 		if hdr.Typeflag != tar.TypeReg {
-			s.missing = append(s.missing, clip(rel)+": not a regular file (skipped)")
+			s.miss(clip(full) + ": not a regular file (skipped)")
 			continue
 		}
-		if pt.name == "recording" && isFrame(name, root) {
-			if err := s.spool(tr, rel, hdr.Size); err != nil {
-				s.missing = append(s.missing, clip(rel)+": could not be read")
-			}
-			continue
-		}
-		if s.kept+hdr.Size > s.limit {
-			s.missing = append(s.missing, clip(rel)+": over the bundle limit")
-			continue
-		}
-		sha, n, err := s.p.Blobs.Put(io.LimitReader(tr, hdr.Size))
-		if err != nil || n != hdr.Size {
-			log.Printf("runs: storing %s of %s: %v (%d of %d bytes)", rel, s.ref.ExecID, err, n, hdr.Size)
-			s.missing = append(s.missing, clip(rel)+": could not be stored")
-			continue
-		}
-		s.kept += n
-		s.files = append(s.files, File{Path: rel, SHA256: sha, Bytes: n})
-		if pt.name == "recording" && name == root+"/events.jsonl" {
-			s.events = sha
-		}
+		fn(tr, full, hdr.Size)
 	}
 }
 
@@ -235,11 +359,6 @@ func entryName(name, root string) (string, bool) {
 	return clean, true
 }
 
-// isFrame reports whether name (under the recording's root) is one of its frames.
-func isFrame(name, root string) bool {
-	return strings.HasPrefix(name, root+"/frames/") && !strings.Contains(strings.TrimPrefix(name, root+"/frames/"), "/")
-}
-
 // clip bounds a name the worker chose before it goes into the Missing list.
 func clip(s string) string {
 	if len(s) > 200 {
@@ -248,8 +367,8 @@ func clip(s string) string {
 	return s
 }
 
-// spool holds one frame on local disk until the budget is known.
-func (s *pull) spool(r io.Reader, rel string, size int64) error {
+// spool holds one budgeted file on local disk until the budget is known.
+func (s *pull) spool(r io.Reader, rel string, kind int, size int64) error {
 	if s.spoolDir == "" {
 		dir, err := os.MkdirTemp("", "decurix-pull-")
 		if err != nil {
@@ -257,7 +376,7 @@ func (s *pull) spool(r io.Reader, rel string, size int64) error {
 		}
 		s.spoolDir = dir
 	}
-	f, err := os.CreateTemp(s.spoolDir, "frame-")
+	f, err := os.CreateTemp(s.spoolDir, "held-")
 	if err != nil {
 		return err
 	}
@@ -267,57 +386,69 @@ func (s *pull) spool(r io.Reader, rel string, size int64) error {
 	}
 	if err != nil || n != size {
 		os.Remove(f.Name())
-		return fmt.Errorf("frame %s: %v (%d of %d bytes)", rel, err, n, size)
+		return fmt.Errorf("%s: %v (%d of %d bytes)", rel, err, n, size)
 	}
-	s.frames = append(s.frames, spooled{rel: rel, name: path.Base(rel), local: f.Name(), bytes: n})
+	s.held = append(s.held, spooled{rel: rel, name: path.Base(rel), kind: kind, local: f.Name(), bytes: n})
 	return nil
 }
 
-// keepFrames stores the frames that fit in what the budget has left, newest first by the recording's events; the
-// rest are dropped, oldest first, each named in Missing.
-func (s *pull) keepFrames() {
-	if len(s.frames) == 0 {
+// keepHeld stores the budgeted files that fit in Limit: observations first, then the program, then frames, each
+// kind newest first by the recording's events. The rest are dropped, frames before observations, oldest first, each
+// named in Missing.
+func (s *pull) keepHeld() {
+	if len(s.held) == 0 {
 		return
 	}
-	order := s.frameOrder()
+	order := s.eventOrder()
 	rank := func(f spooled) int {
 		if i, ok := order[f.name]; ok {
 			return i
 		}
-		return -1 // a frame no event names is the oldest
+		return -1 // a file no event names is the oldest
 	}
-	sort.SliceStable(s.frames, func(i, j int) bool { return rank(s.frames[i]) > rank(s.frames[j]) })
-	left := s.limit - s.kept
-	var dropped []string
-	for _, f := range s.frames {
+	sort.SliceStable(s.held, func(i, j int) bool {
+		if s.held[i].kind != s.held[j].kind {
+			return s.held[i].kind < s.held[j].kind
+		}
+		return rank(s.held[i]) > rank(s.held[j])
+	})
+	left := s.limit
+	var dropped []spooled
+	for _, f := range s.held {
 		if f.bytes > left {
-			dropped = append(dropped, f.rel)
+			dropped = append(dropped, f)
 			continue
 		}
 		file, err := os.Open(f.local)
 		if err != nil {
-			s.missing = append(s.missing, clip(f.rel)+": could not be stored")
+			s.miss(clip(f.rel) + ": could not be stored")
 			continue
 		}
 		sha, n, err := s.p.Blobs.Put(file)
 		file.Close()
 		if err != nil || n != f.bytes {
 			log.Printf("runs: storing %s of %s: %v", f.rel, s.ref.ExecID, err)
-			s.missing = append(s.missing, clip(f.rel)+": could not be stored")
+			s.miss(clip(f.rel) + ": could not be stored")
 			continue
 		}
 		left -= n
 		s.files = append(s.files, File{Path: f.rel, SHA256: sha, Bytes: n})
 	}
-	// Named oldest first, which is the order they were given up in.
-	for i := len(dropped) - 1; i >= 0; i-- {
-		s.missing = append(s.missing, clip(dropped[i])+": over the bundle limit (frames are dropped first, oldest first)")
+	// Named in the order they were given up: frames first, each kind oldest first.
+	sort.SliceStable(dropped, func(i, j int) bool {
+		if dropped[i].kind != dropped[j].kind {
+			return dropped[i].kind > dropped[j].kind
+		}
+		return rank(dropped[i]) < rank(dropped[j])
+	})
+	for _, f := range dropped {
+		s.miss(clip(f.rel) + ": over the bundle limit (frames are dropped first, then observations, oldest first)")
 	}
 }
 
-// frameOrder is when each frame was taken, by the recording's events: its first appearance, counting an event's
-// "before" ahead of its "after" (a larger number is a newer frame).
-func (s *pull) frameOrder() map[string]int {
+// eventOrder is when each frame and observation was first used, by the recording's events: an event's "obs" and
+// "before" ahead of its "after" (a larger number is newer). Observations are named by their stem, frames by file name.
+func (s *pull) eventOrder() map[string]int {
 	order := map[string]int{}
 	if s.events == "" {
 		return order
@@ -330,24 +461,40 @@ func (s *pull) frameOrder() map[string]int {
 	sc := bufio.NewScanner(rc)
 	sc.Buffer(make([]byte, 1<<20), 16<<20)
 	for i := 0; sc.Scan(); i++ {
-		var ev struct{ Before, After string }
+		var ev struct{ Before, After, Obs string }
 		if json.Unmarshal(sc.Bytes(), &ev) != nil {
 			continue
 		}
-		for k, f := range []string{ev.Before, ev.After} {
-			if _, seen := order[path.Base(f)]; f != "" && !seen {
-				order[path.Base(f)] = 2*i + k
+		obs := ""
+		if ev.Obs != "" {
+			obs = path.Base(ev.Obs) + ".json"
+		}
+		for k, f := range []string{obs, ev.Before, ev.After} {
+			if f == "" {
+				continue
+			}
+			if _, seen := order[path.Base(f)]; !seen {
+				order[path.Base(f)] = 3*i + k
 			}
 		}
 	}
 	return order
 }
 
-// cleanup removes the frames spooled on local disk.
+// cleanup removes the files spooled on local disk.
 func (s *pull) cleanup() {
 	if s.spoolDir != "" {
 		os.RemoveAll(s.spoolDir)
 	}
+}
+
+func sortedKeys(m map[string]int) []string {
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // writeExported writes ~/.decurix/runs/<task>/EXPORTED (C8): the execution id and the manifest's SHA-256, one line

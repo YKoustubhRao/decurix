@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
@@ -48,6 +50,9 @@ type Bundle struct {
 	TotalBytes int64
 	// ManifestSHA is the SHA-256 of the canonical JSON of Files (ManifestSHA).
 	ManifestSHA string
+	// History holds every file an earlier pull kept at a path whose content has changed since: a later pull never
+	// takes a reference away (plan rule 4).
+	History []File
 }
 
 // Blobs is the content-addressed store a bundle's files live in: *blobstore.Store satisfies it.
@@ -72,12 +77,16 @@ var schema = []string{
 	)`,
 	`CREATE INDEX run_bundles_task ON run_bundles (task_id)`,
 	`CREATE INDEX run_bundles_worker ON run_bundles (worker_id, pulled_ns)`,
+	// Earlier contents of a path a later pull found changed (review M1): a re-pull merges, it never drops.
+	`ALTER TABLE run_bundles ADD COLUMN history TEXT NOT NULL DEFAULT '[]'`,
 }
 
 // Store keeps the bundle manifests of runs.
 type Store struct {
 	db    *sql.DB
 	blobs Blobs
+	// mu makes SaveBundle's read of the earlier pull and its write one step.
+	mu sync.Mutex
 }
 
 // ErrNoBlobs is a store or puller made without a blob store.
@@ -112,12 +121,21 @@ func sortedFiles(files []File) []File {
 	return out
 }
 
-// SaveBundle stores b's manifest, replacing an earlier pull of the same execution: a task's files are cumulative, so
-// a later pull is a superset. Files are kept sorted by path, ManifestSHA and TotalBytes are computed here, and a nil
-// Missing is stored as []. The row is one statement, so no read-then-write is needed.
+// SaveBundle stores b's manifest, merged with an earlier pull of the same execution by path: a file the earlier pull
+// kept and this one did not find stays (the desktop may have pruned it since, W0.8); a path whose content changed
+// keeps the new file, and the old one moves to History. Nothing a pull once referenced is ever dropped (plan rule 4).
+// A "<part>: not present" line for a part the merged files still hold says it was kept from an earlier pull. Files
+// are kept sorted by path; ManifestSHA and TotalBytes are computed here; a nil Missing is stored as [].
 func (s *Store) SaveBundle(b Bundle) error {
 	if b.ExecID == "" || b.TaskID == "" {
 		return errors.New("runs: a bundle needs its execution and task")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if old, ok, err := s.Bundle(b.ExecID); err != nil {
+		return err
+	} else if ok {
+		b = mergeBundles(old, b)
 	}
 	b.Files = sortedFiles(b.Files)
 	b.TotalBytes = 0
@@ -128,32 +146,78 @@ func (s *Store) SaveBundle(b Bundle) error {
 	if b.Missing == nil {
 		b.Missing = []string{}
 	}
+	if b.History == nil {
+		b.History = []File{}
+	}
 	if b.PulledAt.IsZero() {
 		b.PulledAt = time.Now()
 	}
 	files, _ := json.Marshal(b.Files)
 	missing, _ := json.Marshal(b.Missing)
+	history, _ := json.Marshal(sortedFiles(b.History))
 	_, err := s.db.Exec(`INSERT INTO run_bundles (exec_id, task_id, worker_id, pulled_ns, manifest_sha, total_bytes,
-			files, missing) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			files, missing, history) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(exec_id) DO UPDATE SET task_id = excluded.task_id, worker_id = excluded.worker_id,
 			pulled_ns = excluded.pulled_ns, manifest_sha = excluded.manifest_sha, total_bytes = excluded.total_bytes,
-			files = excluded.files, missing = excluded.missing`,
+			files = excluded.files, missing = excluded.missing, history = excluded.history`,
 		b.ExecID, b.TaskID, b.Worker, sqlitedb.ToNS(b.PulledAt), b.ManifestSHA, b.TotalBytes, string(files),
-		string(missing))
+		string(missing), string(history))
 	if err != nil {
 		return fmt.Errorf("runs: saving the bundle of %s: %w", b.ExecID, err)
 	}
 	return nil
 }
 
+// mergeBundles is next with everything old referenced kept (SaveBundle).
+func mergeBundles(old, next Bundle) Bundle {
+	byPath := map[string]File{}
+	for _, f := range next.Files {
+		byPath[f.Path] = f
+	}
+	history := append([]File{}, old.History...)
+	seen := map[File]bool{}
+	for _, h := range history {
+		seen[h] = true
+	}
+	for _, f := range old.Files {
+		cur, ok := byPath[f.Path]
+		switch {
+		case !ok:
+			byPath[f.Path] = f // gone from the desktop since: kept from the earlier pull
+		case cur.SHA256 != f.SHA256 && !seen[f]:
+			history = append(history, f)
+			seen[f] = true
+		}
+	}
+	files := make([]File, 0, len(byPath))
+	for _, f := range byPath {
+		files = append(files, f)
+	}
+	held := map[string]bool{}
+	for _, f := range files {
+		if name := partOf(next.TaskID, f.Path); name != "" {
+			held[name] = true
+		}
+	}
+	missing := make([]string, 0, len(next.Missing))
+	for _, m := range next.Missing {
+		if name, ok := strings.CutSuffix(m, ": not present"); ok && held[name] {
+			m = name + ": not present on the desktop now; kept from an earlier pull"
+		}
+		missing = append(missing, m)
+	}
+	next.Files, next.History, next.Missing = files, history, missing
+	return next
+}
+
 // Bundle returns the stored bundle of execID; ok is false when none was pulled.
 func (s *Store) Bundle(execID string) (Bundle, bool, error) {
 	var b Bundle
 	var pulled int64
-	var files, missing string
-	err := s.db.QueryRow(`SELECT exec_id, task_id, worker_id, pulled_ns, manifest_sha, total_bytes, files, missing
-		FROM run_bundles WHERE exec_id = ?`, execID).Scan(&b.ExecID, &b.TaskID, &b.Worker, &pulled, &b.ManifestSHA,
-		&b.TotalBytes, &files, &missing)
+	var files, missing, history string
+	err := s.db.QueryRow(`SELECT exec_id, task_id, worker_id, pulled_ns, manifest_sha, total_bytes, files, missing,
+		history FROM run_bundles WHERE exec_id = ?`, execID).Scan(&b.ExecID, &b.TaskID, &b.Worker, &pulled,
+		&b.ManifestSHA, &b.TotalBytes, &files, &missing, &history)
 	if err == sql.ErrNoRows {
 		return Bundle{}, false, nil
 	}
@@ -167,8 +231,14 @@ func (s *Store) Bundle(execID string) (Bundle, bool, error) {
 	if err := json.Unmarshal([]byte(missing), &b.Missing); err != nil {
 		return Bundle{}, false, fmt.Errorf("runs: the bundle of %s has an unreadable missing list: %w", execID, err)
 	}
+	if err := json.Unmarshal([]byte(history), &b.History); err != nil {
+		return Bundle{}, false, fmt.Errorf("runs: the bundle of %s has an unreadable history: %w", execID, err)
+	}
 	if b.Files == nil {
 		b.Files = []File{}
+	}
+	if b.History == nil {
+		b.History = []File{}
 	}
 	if b.Missing == nil {
 		b.Missing = []string{}
