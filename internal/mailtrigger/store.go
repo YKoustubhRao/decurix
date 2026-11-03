@@ -73,6 +73,10 @@ type Account struct {
 	passwordErr error
 	uidValidity uint32
 	lastUID     uint32
+	// stuckUID is the email the latest polls failed to read, and stuckTries
+	// how many polls in a row did (Runner.readBatch).
+	stuckUID   uint32
+	stuckTries int
 }
 
 // ErrNotFound is an account, rule or job ID that does not exist (or, for a
@@ -143,6 +147,10 @@ var schema = []string{
 		data         BLOB NOT NULL,
 		PRIMARY KEY (job_id, position)
 	)`,
+	// The email the latest polls could not read, and how many polls in a row
+	// failed on it: after maxReadTries it is passed over (review 2026-11-03).
+	`ALTER TABLE mail_accounts ADD COLUMN stuck_uid INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE mail_accounts ADD COLUMN stuck_tries INTEGER NOT NULL DEFAULT 0`,
 }
 
 // Store is the SQLite-backed collection of accounts, rules and jobs.
@@ -371,11 +379,15 @@ func (s *Store) DeleteAccount(id string) error {
 		}
 	}
 
+	if err := dropOrphanFiles(tx); err != nil {
+		return err
+	}
+
 	return tx.Commit()
 }
 
 const accountColumns = `id, email, password, host, port, folder, enabled, created_ns, uid_validity, last_uid,
-	last_check_ns, last_ok_ns, last_error, needs_password, failures, seen`
+	last_check_ns, last_ok_ns, last_error, needs_password, failures, seen, stuck_uid, stuck_tries`
 
 // Accounts returns every mailbox connection, oldest first.
 func (s *Store) Accounts() ([]Account, error) {
@@ -404,13 +416,16 @@ func (s *Store) scanAccount(rows sqlitedb.Scanner) (Account, error) {
 	var a Account
 	var enabled, needsPassword int
 	var created, lastCheck, lastOK int64
-	var validity, lastUID int64
+	var validity, lastUID, stuckUID int64
 	var stored string
 
 	if err := rows.Scan(&a.ID, &a.Email, &stored, &a.Host, &a.Port, &a.Folder, &enabled, &created,
-		&validity, &lastUID, &lastCheck, &lastOK, &a.LastError, &needsPassword, &a.Failures, &a.Seen); err != nil {
+		&validity, &lastUID, &lastCheck, &lastOK, &a.LastError, &needsPassword, &a.Failures, &a.Seen,
+		&stuckUID, &a.stuckTries); err != nil {
 		return Account{}, err
 	}
+
+	a.stuckUID = uint32(stuckUID)
 
 	a.password, a.passwordErr = unseal(s.key, stored)
 	a.Enabled = enabled != 0
@@ -454,6 +469,13 @@ type Poll struct {
 	LastUID uint32
 	Seen    int
 	Jobs    []Job
+	// StuckUID is an email the poll could not read and StuckTries how many
+	// polls in a row could not; both are 0 when nothing is stuck.
+	StuckUID   uint32
+	StuckTries int
+
+	// reading is the email being read, for readSafely.
+	reading uint32
 }
 
 // RecordPoll saves a poll's result: its new jobs and the mailbox's new
@@ -462,6 +484,18 @@ type Poll struct {
 // not). A poll of a mailbox deleted while it ran is dropped, and a job for a
 // rule deleted or paused while it ran is not queued.
 func (s *Store) RecordPoll(accountID string, p Poll) error {
+	return s.record(accountID, p, true)
+}
+
+// RecordProgress saves the part of a poll read so far - its jobs and how far
+// it has read - without the poll's outcome, which RecordPoll saves at the end.
+// A poll commits each batch this way, so a mailbox that received a flood is
+// never held in memory whole (review 2026-11-03, B-17).
+func (s *Store) RecordProgress(accountID string, p Poll) error {
+	return s.record(accountID, p, false)
+}
+
+func (s *Store) record(accountID string, p Poll, final bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -474,8 +508,8 @@ func (s *Store) RecordPoll(accountID string, p Poll) error {
 	// A poll that failed part way still saves how far it got (and the jobs
 	// it queued up to there): Poll starts from the account's own position,
 	// so one that failed before reading anything leaves it where it was.
-	res, err := tx.Exec(`UPDATE mail_accounts SET last_check_ns = ?, uid_validity = ?, last_uid = ?, seen = seen + ? WHERE id = ?`,
-		sqlitedb.ToNS(p.At), p.UIDValidity, p.LastUID, p.Seen, accountID)
+	res, err := tx.Exec(`UPDATE mail_accounts SET uid_validity = ?, last_uid = ?, seen = seen + ?, stuck_uid = ?, stuck_tries = ? WHERE id = ?`,
+		p.UIDValidity, p.LastUID, p.Seen, p.StuckUID, p.StuckTries, accountID)
 	if err != nil {
 		return fmt.Errorf("mailtrigger: record poll: %w", err)
 	}
@@ -484,12 +518,15 @@ func (s *Store) RecordPoll(accountID string, p Poll) error {
 		return nil
 	}
 
-	if p.Err != nil {
-		_, err = tx.Exec(`UPDATE mail_accounts SET last_error = ?, needs_password = ?, failures = failures + 1 WHERE id = ?`,
-			clip(p.Err.Error()), boolInt(NeedsPassword(p.Err)), accountID)
-	} else {
-		_, err = tx.Exec(`UPDATE mail_accounts SET last_ok_ns = ?, last_error = '', needs_password = 0, failures = 0 WHERE id = ?`,
-			sqlitedb.ToNS(p.At), accountID)
+	// The poll's outcome is saved once, at its end (RecordPoll).
+	switch {
+	case !final:
+	case p.Err != nil:
+		_, err = tx.Exec(`UPDATE mail_accounts SET last_check_ns = ?, last_error = ?, needs_password = ?, failures = failures + 1 WHERE id = ?`,
+			sqlitedb.ToNS(p.At), clip(p.Err.Error()), boolInt(NeedsPassword(p.Err)), accountID)
+	default:
+		_, err = tx.Exec(`UPDATE mail_accounts SET last_check_ns = ?, last_ok_ns = ?, last_error = '', needs_password = 0, failures = 0 WHERE id = ?`,
+			sqlitedb.ToNS(p.At), sqlitedb.ToNS(p.At), accountID)
 	}
 
 	if err != nil {

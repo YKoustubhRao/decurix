@@ -53,24 +53,24 @@ func mayHaveAttachments(header []byte) bool {
 // ExtractAttachments returns the files of a whole message: parts marked as
 // attachments, and inline parts that carry a file name and are not the
 // message's own text. A part cut short (a message over the fetch limit) is
-// left out rather than delivered broken.
-func ExtractAttachments(raw []byte) []Attachment {
+// left out rather than delivered broken, and so is every file past
+// maxAttachments; dropped names each file left out and why, for the request
+// to say (review 2026-11-03, B-28).
+func ExtractAttachments(raw []byte) (files []Attachment, dropped []string) {
 	msg, err := mail.ReadMessage(bytes.NewReader(raw))
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
-	var out []Attachment
-	walkAttachments(msg.Header, msg.Body, 0, &out)
+	walkAttachments(msg.Header, msg.Body, 0, &files, &dropped)
 
-	return out
+	return files, dropped
 }
 
-func walkAttachments(h partHeader, body io.Reader, depth int, out *[]Attachment) {
-	if len(*out) >= maxAttachments {
-		return
-	}
+// maxDropped bounds how many left-out files a request names.
+const maxDropped = 20
 
+func walkAttachments(h partHeader, body io.Reader, depth int, out *[]Attachment, dropped *[]string) {
 	mediaType, params, err := mime.ParseMediaType(h.Get("Content-Type"))
 	if err != nil {
 		mediaType = "application/octet-stream"
@@ -87,7 +87,7 @@ func walkAttachments(h partHeader, body io.Reader, depth int, out *[]Attachment)
 			if err != nil {
 				return
 			}
-			walkAttachments(part.Header, part, depth+1, out)
+			walkAttachments(part.Header, part, depth+1, out, dropped)
 		}
 	}
 
@@ -102,8 +102,29 @@ func walkAttachments(h partHeader, body io.Reader, depth int, out *[]Attachment)
 		return
 	}
 
+	shown := SafeFileName(name)
+	if name == "" {
+		shown = "an unnamed " + mediaType + " file"
+	}
+
+	drop := func(why string) {
+		if len(*dropped) < maxDropped {
+			*dropped = append(*dropped, shown+" ("+why+")")
+		}
+	}
+
+	if len(*out) >= maxAttachments {
+		drop(fmt.Sprintf("only the first %d files of an email are kept", maxAttachments))
+		return
+	}
+
 	data, err := decodeAll(h.Get("Content-Transfer-Encoding"), body)
-	if err != nil || len(data) == 0 {
+	if err != nil {
+		drop("it was cut short or could not be decoded")
+		return
+	}
+	if len(data) == 0 {
+		drop("it is empty")
 		return
 	}
 
@@ -128,7 +149,13 @@ func decodeAll(encoding string, body io.Reader) ([]byte, error) {
 		r = body
 	}
 
-	return io.ReadAll(io.LimitReader(r, maxMessageBytes))
+	data, err := io.ReadAll(io.LimitReader(r, maxMessageBytes+1))
+	if err == nil && len(data) > maxMessageBytes {
+		// Cut at the limit, it would be delivered broken.
+		return nil, fmt.Errorf("larger than %d MB", maxMessageBytes>>20)
+	}
+
+	return data, err
 }
 
 // stripNewlines feeds base64 its text without line breaks or stray spaces,
@@ -182,15 +209,33 @@ func SafeFileName(name string) string {
 	return name
 }
 
-// uniqueNames renames duplicates ("invoice.pdf", "invoice (2).pdf").
+// uniqueNames renames duplicates ("invoice.pdf", "invoice (2).pdf"),
+// comparing without case, and never to a name another file already has
+// (review 2026-11-03, B-37: "a.pdf", "a.pdf", "a (2).pdf" made two of them).
 func uniqueNames(files []Attachment) []Attachment {
-	seen := map[string]int{}
+	taken := map[string]bool{}
+	for _, f := range files {
+		taken[strings.ToLower(f.Name)] = true
+	}
+
+	seen := map[string]bool{}
 	for i := range files {
 		name := files[i].Name
-		seen[strings.ToLower(name)]++
-		if n := seen[strings.ToLower(name)]; n > 1 {
-			ext := path.Ext(name)
-			files[i].Name = fmt.Sprintf("%s (%d)%s", strings.TrimSuffix(name, ext), n, ext)
+		if !seen[strings.ToLower(name)] {
+			seen[strings.ToLower(name)] = true
+			continue
+		}
+
+		ext := path.Ext(name)
+		stem := strings.TrimSuffix(name, ext)
+		for n := 2; ; n++ {
+			candidate := fmt.Sprintf("%s (%d)%s", stem, n, ext)
+			if key := strings.ToLower(candidate); !taken[key] && !seen[key] {
+				files[i].Name = candidate
+				seen[key] = true
+				taken[key] = true
+				break
+			}
 		}
 	}
 	return files
@@ -221,4 +266,17 @@ func insertJobFiles(tx *sql.Tx, jobID string, files []Attachment) error {
 
 func (s *Store) dropJobFiles(jobID string) {
 	_, _ = s.db.Exec(`DELETE FROM mail_job_files WHERE job_id = ?`, jobID)
+}
+
+// dropOrphanFiles deletes the files kept for jobs that no longer exist: a
+// job pruned from the history or deleted with its rule, mailbox or desktop
+// takes its files with it, so untrusted mail cannot grow the database for
+// good (review 2026-11-03, B-17).
+func dropOrphanFiles(db interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}) error {
+	if _, err := db.Exec(`DELETE FROM mail_job_files WHERE job_id NOT IN (SELECT id FROM mail_jobs)`); err != nil {
+		return fmt.Errorf("mailtrigger: drop job files: %w", err)
+	}
+	return nil
 }

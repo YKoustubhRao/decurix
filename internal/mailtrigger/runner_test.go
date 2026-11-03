@@ -342,13 +342,13 @@ func TestSlashCommandRequestsKeepTheirCommandLine(t *testing.T) {
 
 	// /skill keeps its command, placeholders filled, as the first line; the
 	// email follows it as the run's context (TestASkillRuleCarries...).
-	got := RenderWithFiles(Rule{Content: `/skill ship-order order="{subject}"`, IncludeBody: true}, msg, "body", "", nil)
+	got := mustRender(Rule{Content: `/skill ship-order order="{subject}"`, IncludeBody: true}, msg, "body", "", nil)
 	if first, _, _ := strings.Cut(got, "\n"); first != `/skill ship-order order="Order 7"` {
 		t.Errorf("got %q", got)
 	}
 
 	// Every other slash command is sent exactly as written.
-	if got := RenderWithFiles(Rule{Content: `/replay demo-1 from=2`, IncludeBody: true}, msg, "body", "", nil); got != `/replay demo-1 from=2` {
+	if got := mustRender(Rule{Content: `/replay demo-1 from=2`, IncludeBody: true}, msg, "body", "", nil); got != `/replay demo-1 from=2` {
 		t.Errorf("got %q", got)
 	}
 }

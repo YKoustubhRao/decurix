@@ -192,9 +192,11 @@ func (s *Store) CancelJob(id string) error {
 }
 
 // RetryJob queues a finished job again, to be sent the next time its desktop
-// is free. Its request is sent exactly as it was queued.
+// is free. Its request is sent exactly as it was queued. A job with no request
+// (an email that could not be read, or whose values could not go into its
+// rule's command) has nothing to send, and is ErrNotFound.
 func (s *Store) RetryJob(id string) error {
-	return s.moveJob(id, JobPending, "", `status IN ('failed', 'skipped', 'cancelled', 'sent')`)
+	return s.moveJob(id, JobPending, "", `status IN ('failed', 'skipped', 'cancelled', 'sent') AND content != ''`)
 }
 
 func (s *Store) moveJob(id, status, note, where string) error {
@@ -218,4 +220,5 @@ func (s *Store) pruneLocked() {
 			SELECT id FROM mail_jobs WHERE status NOT IN ('pending', 'sending') ORDER BY created_ns DESC LIMIT ?)`, maxJobs,
 	)
 	logErr(err)
+	logErr(dropOrphanFiles(s.db))
 }

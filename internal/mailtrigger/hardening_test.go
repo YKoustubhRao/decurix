@@ -274,19 +274,19 @@ func TestARuleDeletedDuringAPollQueuesNothing(t *testing.T) {
 	h := newHarness(t)
 	rule := h.rule(t, NewRule{SubjectRe: `.`})
 
-	h.box.deliver("a@x.com", "Hi", "")
-	h.advance(2 * time.Minute)
-
 	acct, _ := h.store.Account(h.acct.ID)
-	p := h.runner.read(context.Background(), acct)
-	if len(p.Jobs) != 1 {
-		t.Fatalf("read %d jobs", len(p.Jobs))
-	}
+	msg := Message{From: "a@x.com", Sender: "a@x.com", Subject: "Hi"}
+	p := Poll{At: *h.clock, UIDValidity: acct.uidValidity, LastUID: acct.lastUID + 1,
+		Jobs: []Job{newJob(acct, rule, msg, "", *h.clock, nil, nil)}}
 
 	if err := h.store.DeleteRule(rule.ID); err != nil {
 		t.Fatal(err)
 	}
 
+	// Neither a batch's commit nor the poll's last one queues it.
+	if err := h.store.RecordProgress(h.acct.ID, p); err != nil {
+		t.Fatal(err)
+	}
 	if err := h.store.RecordPoll(h.acct.ID, p); err != nil {
 		t.Fatal(err)
 	}

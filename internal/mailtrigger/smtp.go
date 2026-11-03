@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
@@ -140,7 +142,26 @@ func sendSMTP(ctx context.Context, host string, port int, user, password string,
 		}
 	}
 
-	if err := c.Auth(smtp.PlainAuth("", user, password, host)); err != nil {
+	return converse(c, smtp.PlainAuth("", user, password, host), user, rcpt, msg)
+}
+
+// smtpConversation is the part of *smtp.Client a send uses once the
+// connection is secured.
+type smtpConversation interface {
+	Auth(smtp.Auth) error
+	Mail(from string) error
+	Rcpt(to string) error
+	Data() (io.WriteCloser, error)
+	Quit() error
+}
+
+// converse logs in and hands the server one email. Once the server has
+// accepted the message (its reply to the end of DATA), the email is sent: a
+// failed goodbye after that is logged, never returned, since a returned
+// error leaves the draft to be sent again and the email would go out twice
+// (review 2026-11-03, B-28).
+func converse(c smtpConversation, auth smtp.Auth, user string, rcpt []string, msg []byte) error {
+	if err := c.Auth(auth); err != nil {
 		return fmt.Errorf("mailtrigger: the mail server refused the login: %w", err)
 	}
 
@@ -167,7 +188,11 @@ func sendSMTP(ctx context.Context, host string, port int, user, password string,
 		return fmt.Errorf("mailtrigger: the server did not accept the email: %w", err)
 	}
 
-	return c.Quit()
+	if err := c.Quit(); err != nil {
+		log.Printf("mailtrigger: the server accepted the email, then the goodbye failed (the email is sent): %v", err)
+	}
+
+	return nil
 }
 
 // BuildMessage renders m as a MIME email from `from`: a plain-text body,
@@ -177,10 +202,27 @@ func BuildMessage(from string, m OutgoingMail, at time.Time) ([]byte, error) {
 
 	header := func(k, v string) { fmt.Fprintf(&buf, "%s: %s\r\n", k, v) }
 
+	// Every header value is built from parsed parts, never pasted in: a draft's
+	// recipients and file types come from an agent, and a line break in one
+	// would start a header of its own (review 2026-11-03, B-16).
+	if strings.ContainsAny(from, "\r\n") {
+		return nil, fmt.Errorf("mailtrigger: the sending address has a line break in it")
+	}
+
+	to, err := headerAddresses(m.To)
+	if err != nil {
+		return nil, err
+	}
+
+	cc, err := headerAddresses(m.Cc)
+	if err != nil {
+		return nil, err
+	}
+
 	header("From", from)
-	header("To", strings.Join(m.To, ", "))
-	if len(m.Cc) > 0 {
-		header("Cc", strings.Join(m.Cc, ", "))
+	header("To", to)
+	if cc != "" {
+		header("Cc", cc)
 	}
 	header("Subject", mime.QEncoding.Encode("utf-8", oneLine(m.Subject)))
 	header("Date", at.Format(time.RFC1123Z))
@@ -213,14 +255,10 @@ func BuildMessage(from string, m OutgoingMail, at time.Time) ([]byte, error) {
 	}
 
 	for _, a := range m.Attachments {
-		ct := a.ContentType
-		if ct == "" {
-			ct = "application/octet-stream"
-		}
-		name := mime.QEncoding.Encode("utf-8", a.Name)
+		name := strings.Map(dropControl, a.Name)
 		part, err := mw.CreatePart(textproto.MIMEHeader{
-			"Content-Type":              {fmt.Sprintf("%s; name=%q", ct, name)},
-			"Content-Disposition":       {fmt.Sprintf("attachment; filename=%q", name)},
+			"Content-Type":              {mediaTypeWithName(a.ContentType, name)},
+			"Content-Disposition":       {formatMediaType("attachment", name, "filename")},
 			"Content-Transfer-Encoding": {"base64"},
 		})
 		if err != nil {
@@ -240,6 +278,56 @@ func BuildMessage(from string, m OutgoingMail, at time.Time) ([]byte, error) {
 	}
 
 	return buf.Bytes(), nil
+}
+
+// headerAddresses renders addresses for a To or Cc header from their parsed
+// form, refusing any with a line break (net/mail accepts one inside a
+// comment, and a header pasted from the raw text would then be split).
+func headerAddresses(list []string) (string, error) {
+	out := make([]string, 0, len(list))
+	for _, raw := range list {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if strings.ContainsAny(raw, "\r\n") {
+			return "", fmt.Errorf("mailtrigger: the address %q has a line break in it", clip(strings.Map(dropControl, raw)))
+		}
+		addr, err := mail.ParseAddress(raw)
+		if err != nil {
+			return "", fmt.Errorf("mailtrigger: %q is not an email address", clip(raw))
+		}
+		out = append(out, addr.String())
+	}
+	return strings.Join(out, ", "), nil
+}
+
+// mediaTypeWithName is a part's Content-Type re-rendered from its parsed form,
+// with the file's name: a type that does not parse is sent as
+// application/octet-stream.
+func mediaTypeWithName(contentType, name string) string {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil || strings.ContainsAny(contentType, "\r\n") {
+		mediaType = "application/octet-stream"
+	}
+	return formatMediaType(mediaType, name, "name")
+}
+
+// formatMediaType renders "mediaType; param=name", the name encoded as RFC
+// 2231 when it needs to be.
+func formatMediaType(mediaType, name, param string) string {
+	if out := mime.FormatMediaType(mediaType, map[string]string{param: name}); out != "" {
+		return out
+	}
+	return mime.FormatMediaType(mediaType, map[string]string{param: "file"})
+}
+
+// dropControl drops control characters from a header value.
+func dropControl(r rune) rune {
+	if r < 0x20 || r == 0x7f {
+		return -1
+	}
+	return r
 }
 
 func writeQP(w interface{ Write([]byte) (int, error) }, text string) error {

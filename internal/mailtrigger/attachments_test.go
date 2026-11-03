@@ -26,7 +26,7 @@ func TestAnAttachmentSurvivesBeingSentAndReadBack(t *testing.T) {
 		t.Fatal("a multipart/mixed email was not recognised as carrying files")
 	}
 
-	files := ExtractAttachments(raw)
+	files, _ := ExtractAttachments(raw)
 	if len(files) != 2 {
 		t.Fatalf("got %d files, want 2", len(files))
 	}
@@ -59,7 +59,7 @@ func TestAPlainEmailKeepsItsBody(t *testing.T) {
 }
 
 func TestARequestListsWhereTheFilesAre(t *testing.T) {
-	out := RenderWithFiles(Rule{Content: "Create the sales order"}, Message{From: "a@b.c", Subject: "PO"}, "", InboxDir("mjob_1"),
+	out := mustRender(Rule{Content: "Create the sales order"}, Message{From: "a@b.c", Subject: "PO"}, "", InboxDir("mjob_1"),
 		[]Attachment{{Name: "PO.pdf"}})
 
 	if !strings.Contains(out, "/home/headless/work/inbox/mjob_1/PO.pdf") {
@@ -76,7 +76,7 @@ func TestDuplicateNamesAreKeptApart(t *testing.T) {
 
 func TestASkillRuleCarriesTheEmailAndItsFilesAfterItsCommand(t *testing.T) {
 	rule := Rule{Content: "/skill enter-a-customer-po  warehouse=\"Main\"", IncludeBody: true}
-	out := RenderWithFiles(rule, Message{From: "buyer@x.test", Subject: "PO 7731"}, "Please supply...", InboxDir("mjob_9"),
+	out := mustRender(rule, Message{From: "buyer@x.test", Subject: "PO 7731"}, "Please supply...", InboxDir("mjob_9"),
 		[]Attachment{{Name: "PO-7731.pdf"}})
 
 	first, rest, _ := strings.Cut(out, "\n")
@@ -93,7 +93,7 @@ func TestASkillRuleCarriesTheEmailAndItsFilesAfterItsCommand(t *testing.T) {
 
 func TestOtherSlashCommandsAreSentAsWritten(t *testing.T) {
 	for _, cmd := range []string{"/replay demo-1", "/learn demo-1", "/record Enter a PO"} {
-		if out := RenderWithFiles(Rule{Content: cmd, IncludeBody: true}, Message{Subject: "x"}, "body", "/d", []Attachment{{Name: "a.pdf"}}); out != cmd {
+		if out := mustRender(Rule{Content: cmd, IncludeBody: true}, Message{Subject: "x"}, "body", "/d", []Attachment{{Name: "a.pdf"}}); out != cmd {
 			t.Fatalf("%s became %q", cmd, out)
 		}
 	}

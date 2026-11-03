@@ -99,6 +99,10 @@ func (s *Store) CreateRule(n NewRule) (Rule, error) {
 		}
 	}
 
+	if n.VerifiedOnly && n.SenderRe != "" && NamedDomain(n.SenderRe) == "" {
+		return Rule{}, fmt.Errorf(`with "verified senders only", write the sender's address or domain out (billing@acme.com or @acme.com), so the check knows which domain must have sent the email`)
+	}
+
 	if len(n.Name) > 200 {
 		return Rule{}, fmt.Errorf("a name can be at most 200 characters")
 	}
@@ -141,6 +145,51 @@ func (s *Store) CreateRule(n NewRule) (Rule, error) {
 	}
 
 	return rule, nil
+}
+
+// NamedDomain is the domain a sender pattern names, read as plain text: the
+// part after its last "@" (or the whole pattern when it has none), with the
+// anchors and the escaped dots a person writes in a pattern taken off. It is
+// "" when what is left is not a plain domain name.
+//
+// A verified-only rule needs it because the provider's check proves only that
+// an email comes from the domain in its own From line, and a sender pattern
+// is matched anywhere in the address: "billing@acme.com" also matches an
+// address at acme.com.example.net, a domain whose owner can sign its own
+// mail. So the verified domain must also be this one, or a subdomain of it
+// (review 2026-11-03, B-15).
+func NamedDomain(pattern string) string {
+	p := strings.TrimSpace(pattern)
+	p = strings.TrimPrefix(p, "(?i)")
+	p = strings.TrimPrefix(p, "^")
+	p = strings.TrimSuffix(p, "$")
+	p = strings.NewReplacer(`\.`, ".", `\-`, "-", `\@`, "@").Replace(p)
+
+	if at := strings.LastIndex(p, "@"); at >= 0 {
+		p = p[at+1:]
+	}
+
+	p = strings.ToLower(p)
+	if !plainDomainRe.MatchString(p) {
+		return ""
+	}
+
+	return p
+}
+
+var plainDomainRe = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z][a-z0-9-]*[a-z0-9]$`)
+
+// withinDomain reports whether the address sender is at domain or at one of
+// its subdomains.
+func withinDomain(sender, domain string) bool {
+	at := strings.LastIndex(sender, "@")
+	if at < 0 || domain == "" {
+		return false
+	}
+
+	d := strings.ToLower(strings.TrimSuffix(sender[at+1:], "."))
+
+	return d == domain || strings.HasSuffix(d, "."+domain)
 }
 
 func describe(senderRe, subjectRe string) string {
@@ -214,7 +263,7 @@ func (s *Store) DeleteRule(id string) error {
 		return fmt.Errorf("mailtrigger: delete rule: %w", err)
 	}
 
-	return nil
+	return dropOrphanFiles(s.db)
 }
 
 // DeleteForDesktop removes every rule that sends to desktopID, and its
@@ -231,4 +280,6 @@ func (s *Store) DeleteForDesktop(desktopID string) {
 	if _, err := s.db.Exec(`DELETE FROM mail_jobs WHERE desktop_id = ? AND status = 'pending'`, desktopID); err != nil {
 		log.Printf("mailtrigger: delete for desktop %s: %v", desktopID, err)
 	}
+
+	logErr(dropOrphanFiles(s.db))
 }
