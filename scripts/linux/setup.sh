@@ -123,7 +123,12 @@ echo ""
 echo "Cloudflared:"
 cloudflared --version
 
-if [ -d /sys/kernel/mm/ksm ] && ! grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
+# KSM merges identical memory pages across processes - here across desktops
+# that do not trust each other, which is a known page-sharing side channel -
+# and turning it on from here needs a privileged container on every launch.
+# So it is off unless asked for: DECURIX_ENABLE_KSM=1 in the environment or in
+# .env (internal/desktop reads the same switch).
+if [ "${DECURIX_ENABLE_KSM:-}" = "1" ] && [ -d /sys/kernel/mm/ksm ] && ! grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
     echo ""
     echo "=== Enabling Linux Kernel Samepage Merging (KSM) for RAM deduplication ==="
     echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null && echo "KSM enabled (run=1)" || true

@@ -70,15 +70,21 @@ if [ ! -f .env ]; then
     fi
 fi
 
-# Enable Linux KSM for RAM deduplication if supported
-if [ -d /sys/kernel/mm/ksm ] && ! grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
+# KSM merges identical memory pages across processes - here across desktops
+# that do not trust each other, which is a known page-sharing side channel -
+# and turning it on from here needs a privileged container on every launch.
+# So it is off unless asked for: DECURIX_ENABLE_KSM=1 in the environment or in
+# .env (internal/desktop reads the same switch).
+if [ "${DECURIX_ENABLE_KSM:-$(read_env_var DECURIX_ENABLE_KSM)}" != "1" ]; then
+    echo "KSM stays off (DECURIX_ENABLE_KSM=1 turns it on)."
+elif [ -d /sys/kernel/mm/ksm ] && ! grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
     if [ -w /sys/kernel/mm/ksm/run ]; then
         echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
         echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null || true
         echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
         echo 20 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
     else
-        docker run --rm --privileged -v /sys/kernel/mm/ksm:/sys/kernel/mm/ksm alpine sh -c "echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null; echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null; echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null; echo 20 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null" >/dev/null 2>&1 || true
+        docker run --rm --privileged -v /sys/kernel/mm/ksm:/sys/kernel/mm/ksm alpine:3.20 sh -c "echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null; echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null; echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null; echo 20 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null" >/dev/null 2>&1 || true
     fi
 fi
 
