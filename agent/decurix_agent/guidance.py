@@ -137,7 +137,10 @@ _NOT_YET = re.compile(r"(?i)\b(first\b|before (you|that|filing|sending|pressing|
 
 def not_yet(reply):
     """Whether a refusal asks for something first and the action again after: the gate's own reading says so (an
-    "if" with a condition, or something the person wants to see), or the words do."""
+    "if" with a condition, or something the person wants to see). A reading that is a plain no (or yes) decides: the
+    words never turn it into "not yet" (review 2026-11-03, E-28: "No, not yet - I will do it myself first" read as a
+    no by the model was overridden by a word, and the gate could send the worker back to do what the person stopped).
+    Only with no reading at all, or an unclear one, do the words decide."""
 
     from decurix_agent.computer import approval
 
@@ -148,6 +151,8 @@ def not_yet(reply):
         said = {}
     if said.get("decision") == "if" or said.get("wants"):
         return True
+    if said.get("decision") in ("no", "yes"):
+        return False
     return bool(_NOT_YET.search(text))
 
 
