@@ -786,6 +786,9 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 	}
 	if arm.Kind == ArmModel {
 		for _, m := range usage.Served {
+			if m == "" {
+				continue // an answer that names no model pins nothing and changes nothing
+			}
 			if pinned, ok := served.check(arm.Deployment, m); !ok {
 				row.Invalid = true
 				row.Problems = append(row.Problems, fmt.Sprintf("%s: %q answered as %q, the run's first answer from it said %q", modelChanged, arm.Deployment, m, pinned))

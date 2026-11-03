@@ -297,7 +297,7 @@ func (b *Broker) llm(w http.ResponseWriter, r *http.Request) {
 	}
 	status, answer, retry := res.Status, res.Body, res.Retry
 	usage := llm.ParseUsage(answer)
-	b.count(run, usage, res.Deployment, ServedModel(answer))
+	b.count(run, usage, res.Deployment, servedBy(res.Status, answer))
 	b.record(r, run, provider, body, res, usage, started)
 	for name, values := range retry {
 		for _, v := range values {
@@ -342,7 +342,7 @@ func (b *Broker) count(run *brokerRun, u llm.Usage, deployment, served string) {
 	if !seen {
 		c.Deployments = append(c.Deployments, deployment)
 	}
-	seen = false
+	seen = served == ""
 	for _, m := range c.Served {
 		seen = seen || m == served
 	}
@@ -353,6 +353,15 @@ func (b *Broker) count(run *brokerRun, u llm.Usage, deployment, served string) {
 		run.caseClosed = true
 		close(run.caseOver)
 	}
+}
+
+// servedBy is the model a successful answer says served it: "" for an error answer (a 429, a 500), which names no
+// model that served anything and must never read as another model (review EVAL-3, R3-B1).
+func servedBy(status int, answer []byte) string {
+	if status < 200 || status > 299 {
+		return ""
+	}
+	return ServedModel(answer)
 }
 
 // ServedModel is the model an OpenAI-shaped answer says served it ("" when it says none).

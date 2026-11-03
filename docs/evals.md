@@ -132,7 +132,8 @@ fail it; for `asked`, an `asked` grader with `facts`. A case passes only when th
 every independent, output and model grader counted under it passes, with no runner error, no collection problem, no
 changed input (work is saved under a new name), and the case finished as written: a sixth question ends it unfinished
 and fails it inside the grade. A case the runner could not run as written (inputs not copied, the mock not started,
-the request not delivered for want of a connection) fails and is counted apart as infrastructure, never in the
+the request not delivered for want of a connection), or whose evidence it could not read (a runner error, a pause or
+collection that failed), fails and is counted apart as infrastructure, never as a false done, never in the
 worker's k/n, and any such run marks the table INCOMPLETE with the count shown beside k/n. The worker's agent answering
 a delivered request with an error is the worker's failure, not infrastructure. Each row's grade is also recorded on its
 task record as a verdict (`by: eval`; `by: practice` for Simulate), from which `checked` is derived: a case whose
@@ -150,7 +151,8 @@ two deployments), `expert` (on or off), and the agent tree (the image's, or a `g
 `agent/decurix_agent` at a rev, resolved to its commit id, copied into the practice desktop as Simulate copies a
 worker's). The deployments every model arm and the expert resolve to, and the endpoint each provider is reached at,
 are pinned once, when the run starts, and so is the model each upstream answer says served it (its `model` field, the
-first seen in the run for each deployment). An arm whose desktop is ready to work and finds another resolution or
+first seen in the run for each deployment; only a successful answer names one, so a throttled or failed call
+changes nothing). An arm whose desktop is ready to work and finds another resolution or
 endpoint, a call served by another deployment, or an answer naming another model than the first under the same
 deployment, makes its rows invalid ("model changed during the run"), and the run's note says `invalid`. A key change
 alone is not a model change. Invalid rows are data (`eval_rows.invalid`),

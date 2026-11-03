@@ -45,6 +45,29 @@ func TestAPracticeGradeIsRecordedAsAVerdict(t *testing.T) {
 	}
 }
 
+// When the case's evidence could not be read, the checker decided nothing: the recorded grade is not made, unchecked.
+func TestAPracticeCaseWhoseEvidenceCouldNotBeReadIsUnchecked(t *testing.T) {
+	s, _, _, sb, tk := service(t)
+	sb.failCollect = true
+	su := approved(t, s)
+	run, err := s.StartRun(context.Background(), su.ID, su.Source.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitRun(t, s, run.ID)
+	tk.mu.Lock()
+	defer tk.mu.Unlock()
+	if len(done.Findings) == 0 {
+		t.Fatal("no findings")
+	}
+	for _, f := range done.Findings {
+		v := tk.outcomes[f.TaskID].Verdict
+		if v == nil || v.Verdict != tasks.GateUnchecked || v.Checks[0].Result != "not_made" {
+			t.Fatalf("%s: %+v", f.CaseID, v)
+		}
+	}
+}
+
 func TestAGradeThatCouldNotBeMadeIsUnchecked(t *testing.T) {
 	if v := GraderVerdict(tasks.ByEval, true, false, "eval.graders", "x", "case:c"); v.Verdict != tasks.GateUnchecked || v.Checks[0].Result != "not_made" {
 		t.Fatalf("ungraded: %+v", v)

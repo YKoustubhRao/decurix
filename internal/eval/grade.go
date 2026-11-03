@@ -176,7 +176,9 @@ func Grade(c Case, ev Evidence, mode Mode) Result {
 	}
 	r.Problems = append(r.Problems, ev.Unfinished...)
 	r.Problems = append(r.Problems, ev.Infra...)
-	r.Infra = len(ev.Infra) > 0
+	// Evidence the runner could not read (a runner error, a pause or collection that failed) says nothing of the
+	// worker either: infrastructure, like a case it could not run (review EVAL-3, N-a).
+	r.Infra = len(ev.Infra) > 0 || ev.RunErr != nil || len(ev.CollectProblems) > 0
 	for _, name := range unexpectedOutputs(c, ev) {
 		r.Problems = append(r.Problems, fmt.Sprintf("Saved besides what the case grades: %s.", name))
 	}
@@ -190,8 +192,8 @@ func Grade(c Case, ev Evidence, mode Mode) Result {
 	r.Passed = outcomeOK && allPass && ev.RunErr == nil && len(ev.CollectProblems) == 0 && len(ev.ChangedInputs) == 0 &&
 		len(ev.Unfinished) == 0 && len(ev.Infra) == 0
 	checked := ev.Checked != nil && *ev.Checked
-	r.FalseDone = ev.Observation == ObservedFinal && checked && !r.Passed
-	r.DoneUncheckedWrong = ev.Observation == ObservedFinal && !checked && !r.Passed
+	r.FalseDone = ev.Observation == ObservedFinal && checked && !r.Passed && !r.Infra
+	r.DoneUncheckedWrong = ev.Observation == ObservedFinal && !checked && !r.Passed && !r.Infra
 	if r.FalseDone {
 		r.Problems = append(r.Problems, "The worker reported this done and checked, and the graders say it is not.")
 	}

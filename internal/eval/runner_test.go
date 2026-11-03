@@ -81,6 +81,9 @@ type fakeHub struct {
 	workerCalls int
 	switchAfter int // after this many worker calls the default deployment changes (0: never)
 	endpoint    string
+	endpoints   map[string]string
+	// throttled lists worker calls (1-based) the upstream answers 429, naming no model.
+	throttled map[int]bool
 	// served is the model string each worker answer reports ("" reports the deployment's own name).
 	served string
 }
@@ -89,17 +92,33 @@ func newHub() *fakeHub {
 	return &fakeHub{deployments: map[string]string{"azure/default": "big-1", "azure/fast": "small-1"}, expert: `{"fact": "centre"}`}
 }
 
-func (h *fakeHub) Configured(p string) bool { return p == "azure" }
+// Configured is azure, and any other provider the hub has a deployment for.
+func (h *fakeHub) Configured(p string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if p == "azure" {
+		return true
+	}
+	_, ok := h.deployments[p+"/default"]
+	return ok
+}
 
-// Status says the endpoint each provider is reached at (endpoint, else a fixed one).
+// Status says the endpoint each provider is reached at: endpoint (azure) or endpoints[provider], else a fixed one.
 func (h *fakeHub) Status() map[string]llm.ProviderStatus {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	ep := h.endpoint
-	if ep == "" {
-		ep = "https://models.example.test"
+	out := map[string]llm.ProviderStatus{}
+	for _, p := range []string{"azure", "claude"} {
+		ep := h.endpoints[p]
+		if p == "azure" && h.endpoint != "" {
+			ep = h.endpoint
+		}
+		if ep == "" {
+			ep = "https://" + p + ".models.example.test"
+		}
+		out[p] = llm.ProviderStatus{Configured: true, Endpoint: ep}
 	}
-	return map[string]llm.ProviderStatus{"azure": {Configured: true, Endpoint: ep}}
+	return out
 }
 
 func (h *fakeHub) Resolve(provider, asked string) (string, error) {
@@ -132,6 +151,10 @@ func (h *fakeHub) ChatResult(_ context.Context, provider string, body []byte) (l
 	h.workerCalls++
 	if h.switchAfter > 0 && h.workerCalls > h.switchAfter {
 		h.deployments["azure/default"] = "big-2"
+	}
+	if h.throttled[h.workerCalls] {
+		return llm.ChatResult{Status: 429, Deployment: h.deployments[provider+"/default"],
+			Body: []byte(`{"error":{"code":"429","message":"Rate limit is exceeded. Try again later."}}`)}, nil
 	}
 	var req struct {
 		Model     string `json:"model"`
@@ -180,8 +203,10 @@ type fakeSandbox struct {
 	// home is the files in the desktop's home that outlive a case unless the reset clears them.
 	home     map[string]bool
 	onCreate func(n int)
-	blockReq chan struct{}
-	seenWork chan struct{}
+	// failCollect makes every collection of a case's files fail.
+	failCollect bool
+	blockReq    chan struct{}
+	seenWork    chan struct{}
 }
 
 func newSandbox(t *testing.T, b *practice.Broker, w worker) *fakeSandbox {
@@ -281,6 +306,9 @@ func (f *fakeSandbox) UnpausePractice(_ context.Context, ids ...string) error {
 func (f *fakeSandbox) CollectPractice(_ context.Context, id, caseID string, _ map[string][]byte) (map[string][]byte, []string, []string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failCollect {
+		return nil, nil, nil, errors.New("the copy out of the container failed")
+	}
 	if !f.paused[id] {
 		f.t.Errorf("collected %s without a pause", id)
 	}

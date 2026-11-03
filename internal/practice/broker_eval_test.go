@@ -127,3 +127,46 @@ func TestTheBrokerServesTheRunsModelAndCountsTheCase(t *testing.T) {
 		t.Fatal("a call that names its own model was changed")
 	}
 }
+
+// throttlingChat answers in turn: each status with a body that names a model only when it succeeds.
+type throttlingChat struct {
+	mu       sync.Mutex
+	statuses []int
+}
+
+func (c *throttlingChat) Configured(string) bool { return true }
+func (c *throttlingChat) Chat(ctx context.Context, p string, body []byte) (int, []byte, http.Header, error) {
+	r, err := c.ChatResult(ctx, p, body)
+	return r.Status, r.Body, r.Retry, err
+}
+func (c *throttlingChat) ChatResult(context.Context, string, []byte) (llm.ChatResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	status := c.statuses[0]
+	c.statuses = c.statuses[1:]
+	if status != 200 {
+		return llm.ChatResult{Status: status, Deployment: "big-1", Body: []byte(`{"error":{"code":"429","message":"Rate limit is exceeded."}}`)}, nil
+	}
+	return llm.ChatResult{Status: 200, Deployment: "big-1", Body: []byte(`{"model":"gpt-big-2026-01","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1}}`)}, nil
+}
+
+// A throttled or failed answer names no model that served anything: only a 2xx answer's model is recorded
+// (review EVAL-3, R3-B1).
+func TestOnlyASuccessfulAnswerSaysWhichModelServed(t *testing.T) {
+	for name, statuses := range map[string][]int{"429 between": {200, 429, 200}, "429 first": {429, 200}, "500 only": {500}} {
+		b := &Broker{LLM: &throttlingChat{statuses: statuses}}
+		b.Begin("practice-r1", 0)
+		b.StartCase("t1")
+		for range statuses {
+			brokerPost(b, "/api/llm/azure/chat", `{"model":"default","messages":[]}`, nil)
+		}
+		served := b.CaseUsage().Served
+		want := 1
+		if name == "500 only" {
+			want = 0
+		}
+		if len(served) != want || (want == 1 && served[0] != "gpt-big-2026-01") {
+			t.Fatalf("%s: served %q", name, served)
+		}
+	}
+}

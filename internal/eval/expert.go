@@ -173,7 +173,7 @@ func (e *Expert) ChooseFor(ctx context.Context, desktopID, taskID, question stri
 	}
 	pinned := e.Served
 	e.mu.Unlock()
-	if (e.Deployment != "" && res.Deployment != e.Deployment) || served != pinned {
+	if (e.Deployment != "" && res.Deployment != e.Deployment) || (served != "" && served != pinned) {
 		c.Problem = strings.TrimLeft(c.Problem+"; ", "; ") + modelChanged
 	}
 	return c, nil

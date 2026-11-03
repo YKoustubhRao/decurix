@@ -211,6 +211,8 @@ type fakeSandbox struct {
 	removed bool
 	created chan struct{}
 	block   chan struct{} // when set, a delivered request waits on it
+	// failCollect makes every collection of a case's files fail.
+	failCollect bool
 }
 
 func (f *fakeSandbox) note(s string) {
@@ -262,6 +264,9 @@ func (f *fakeSandbox) CollectPractice(_ context.Context, _, caseID string, _ map
 	defer f.mu.Unlock()
 	if !f.paused {
 		f.t.Error("evidence collected from a running desktop")
+	}
+	if f.failCollect {
+		return nil, nil, nil, errors.New("the copy out of the container failed")
 	}
 	f.log = append(f.log, "collect "+caseID)
 	out := map[string][]byte{}
