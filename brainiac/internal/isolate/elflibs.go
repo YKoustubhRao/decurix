@@ -3,7 +3,6 @@ package isolate
 import (
 	"debug/elf"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,14 +23,26 @@ type elfObject struct {
 	needed, rpath, runpath []string
 }
 
+// errNotShared is a library that is not an ELF shared object: the loader
+// cannot load it, so it is not granted.
+var errNotShared = errors.New("not an ELF shared object")
+
 // readELF reads an ELF file's DT_NEEDED, DT_RPATH and DT_RUNPATH. A file
 // with no dynamic section (a static program) names nothing.
-func readELF(path string) (elfObject, error) {
+func readELF(path string) (elfObject, error) { return readELFOf(path, false) }
+
+// readLib is readELF for a library, which must be a shared object.
+func readLib(path string) (elfObject, error) { return readELFOf(path, true) }
+
+func readELFOf(path string, shared bool) (elfObject, error) {
 	f, err := elf.Open(path)
 	if err != nil {
 		return elfObject{}, err
 	}
 	defer f.Close()
+	if shared && f.Type != elf.ET_DYN {
+		return elfObject{}, errNotShared
+	}
 	var o elfObject
 	if o.needed, err = f.DynString(elf.DT_NEEDED); err != nil {
 		return o, err
@@ -77,6 +88,27 @@ func expandDirs(dirs []string, origin string) []searchDir {
 	return out
 }
 
+// buildRoot is where a program's own libraries may resolve: the program's
+// directory, or, when that is a bin directory (an install tree with its
+// libraries in ../lib), its parent. Never a filesystem root, /usr or
+// /usr/local, which every policy already reads. Only the exact libraries
+// the program's search path reaches there are granted, never the directory.
+func buildRoot(real string) string {
+	dir := filepath.Dir(real)
+	if filepath.Base(dir) != "bin" {
+		return dir
+	}
+	parent := filepath.Dir(dir)
+	switch filepath.ToSlash(parent) {
+	case "/usr", "/usr/local":
+		return dir
+	}
+	if filepath.Dir(parent) == parent {
+		return dir
+	}
+	return parent
+}
+
 // within says p is beneath root.
 func within(root, p string) bool {
 	rel, err := filepath.Rel(root, p)
@@ -94,24 +126,29 @@ type ownLibs struct {
 	// outside are libraries the build's own $ORIGIN path finds outside the
 	// build: not granted, so a program that needs them will not load.
 	outside []string
+	// skipped are files in the build the loader was sent to that are not
+	// ELF shared objects (nor plugins that are): not granted.
+	skipped []string
+	// plugins are the plugins that are ELF shared objects, granted.
+	plugins []string
 }
 
 // ownLibraries finds the shared libraries a program loads from its own
 // build: those its ELF names (DT_NEEDED), looked up as the dynamic loader
 // does (DT_RPATH of the object and of what loaded it, unless it has
-// DT_RUNPATH, then DT_RUNPATH), and theirs in turn. The build is the
-// directory of the real program; a library found outside it is the
-// system's, which the policy's system paths already hold, and is not walked.
-// plugins are libraries the program opens itself at run time (a ggml
-// backend), which no DT_NEEDED names; their own libraries are walked the
-// same way. It fails when the program, or a library in its build, is not an
-// ELF file it can read.
+// DT_RUNPATH, then DT_RUNPATH), and theirs in turn. The build is
+// buildRoot's; a library found outside it is the system's, which the
+// policy's system paths already hold, and is not walked. plugins are
+// libraries the program opens itself at run time (a ggml backend), which no
+// DT_NEEDED names; their own libraries are walked the same way. A library
+// or plugin that is not an ELF shared object is skipped. It fails only when
+// the program is not an ELF file it can read.
 func ownLibraries(program string, plugins []string) (ownLibs, error) {
 	real, err := filepath.EvalSymlinks(program)
 	if err != nil {
 		return ownLibs{}, err
 	}
-	root := filepath.Dir(real)
+	root, home := buildRoot(real), filepath.Dir(real)
 	exe, err := readELF(real)
 	if err != nil {
 		return ownLibs{}, err
@@ -128,18 +165,20 @@ func ownLibraries(program string, plugins []string) (ownLibs, error) {
 		return expandDirs(o.rpath, origin)
 	}
 	var out ownLibs
-	for _, d := range append(rpathOf(exe, root), expandDirs(exe.runpath, root)...) {
+	for _, d := range append(rpathOf(exe, home), expandDirs(exe.runpath, home)...) {
 		if d.origin && (d.path == root || within(root, d.path)) {
 			out.origin = append(out.origin, d.path)
 		}
 	}
-	exeRpath := rpathOf(exe, root)
+	exeRpath := rpathOf(exe, home)
 	queue := []item{{path: real, o: exe}}
 	for _, p := range plugins {
-		o, err := readELF(p)
+		o, err := readLib(p)
 		if err != nil {
-			return out, fmt.Errorf("%s: %w", p, err)
+			out.skipped = append(out.skipped, p)
+			continue
 		}
+		out.plugins = append(out.plugins, p)
 		queue = append(queue, item{path: p, o: o, inherited: exeRpath})
 	}
 	granted, found := map[string]bool{}, map[string]bool{}
@@ -188,9 +227,10 @@ func ownLibraries(program string, plugins []string) (ownLibs, error) {
 					}
 					break
 				}
-				o, err := readELF(r)
+				o, err := readLib(r)
 				if err != nil {
-					return out, fmt.Errorf("%s: %w", cand, err)
+					out.skipped = append(out.skipped, cand)
+					break
 				}
 				grant(cand)
 				grant(r)

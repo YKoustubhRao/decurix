@@ -294,10 +294,13 @@ func resolved(program string, plugins []string) (files, libPath []string) {
 			dir = filepath.Dir(real)
 		}
 		logf("isolate: cannot read the libraries %s links (%v); granting its directory %s read-only", program, err, dir)
-		return append(append(files, plugins...), dir), nil
+		return append(files, dir), nil
 	}
 	if len(libs.outside) > 0 {
 		logf("isolate: %s loads %s from outside its build; not granted", program, strings.Join(libs.outside, ", "))
 	}
-	return append(append(files, plugins...), libs.files...), libs.origin
+	if len(libs.skipped) > 0 {
+		logf("isolate: %s: %s not ELF shared objects; not granted", program, strings.Join(libs.skipped, ", "))
+	}
+	return append(append(files, libs.plugins...), libs.files...), libs.origin
 }

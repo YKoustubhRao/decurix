@@ -14,11 +14,11 @@ import (
 
 // fixture is a tiny ELF file: a dynamic section naming needed libraries and
 // a search path, which is all the walk reads. static makes one with no
-// dynamic section at all.
+// dynamic section at all; exec makes an executable, not a shared object.
 type fixture struct {
 	needed         []string
 	rpath, runpath string
-	static         bool
+	static, exec   bool
 }
 
 // writeELF writes f as a 64-bit little-endian ELF file at path.
@@ -62,7 +62,11 @@ func writeELF(t *testing.T, path string, f fixture) {
 		sections[1].Name = 18
 		shstrndx = 1
 	}
-	h := elf.Header64{Type: uint16(elf.ET_DYN), Machine: uint16(elf.EM_X86_64), Version: uint32(elf.EV_CURRENT),
+	typ := elf.ET_DYN
+	if f.exec {
+		typ = elf.ET_EXEC
+	}
+	h := elf.Header64{Type: uint16(typ), Machine: uint16(elf.EM_X86_64), Version: uint32(elf.EV_CURRENT),
 		Shoff: uint64(shOff), Ehsize: ehsize, Shentsize: shentsize, Shnum: uint16(len(sections)), Shstrndx: uint16(shstrndx)}
 	copy(h.Ident[:], elf.ELFMAG)
 	h.Ident[elf.EI_CLASS], h.Ident[elf.EI_DATA], h.Ident[elf.EI_VERSION] = byte(elf.ELFCLASS64), byte(elf.ELFDATA2LSB), byte(elf.EV_CURRENT)
@@ -149,12 +153,12 @@ func TestTheProgramsRPATHServesItsLibrariesToo(t *testing.T) {
 	}
 }
 
-// A library the program's $ORIGIN path finds outside its own directory is
-// not granted, and is reported, so a server that will not load says why.
-// A search path that is not the build's ($LIB, a relative one) is not used.
+// A library the program's $ORIGIN path finds outside its build is not
+// granted, and is reported, so a server that will not load says why. A
+// search path that is not the build's ($LIB, a relative one) is not used.
 func TestALibraryOutsideTheBuildIsNotGranted(t *testing.T) {
 	dir := realTempDir(t)
-	prog := filepath.Join(dir, "bin", "server")
+	prog := filepath.Join(dir, "app", "server")
 	writeELF(t, prog, fixture{needed: []string{"libX.so", "libY.so"}, runpath: "$ORIGIN/../lib:$LIB/z:rel"})
 	writeELF(t, filepath.Join(dir, "lib", "libX.so"), fixture{})
 	got, err := ownLibraries(prog, nil)
@@ -188,9 +192,72 @@ func TestAPluginsLibrariesAreGranted(t *testing.T) {
 	}
 }
 
-// A static program names no library and is no error; a file that is not
-// ELF, or a library in the build that is not, is an error, so the caller
-// falls back rather than grant too little.
+// An install tree: the program in bin, its libraries in ../lib. The
+// parent of bin is the build, so the exact libraries its search path
+// reaches there are granted, and nothing else in it: not a directory, not
+// a library nothing names, not a file that is not a shared object.
+func TestABinDirectorysParentIsTheBuild(t *testing.T) {
+	dir := realTempDir(t)
+	prog := filepath.Join(dir, "bin", "server")
+	lib := filepath.Join(dir, "lib")
+	writeELF(t, prog, fixture{needed: []string{"libX.so", "libZ.so", "libc.so.6"}, runpath: "$ORIGIN/../lib"})
+	writeELF(t, filepath.Join(lib, "libX.so"), fixture{needed: []string{"libY.so"}, runpath: "$ORIGIN"})
+	writeELF(t, filepath.Join(lib, "libY.so"), fixture{})
+	mustWrite(t, filepath.Join(lib, "libZ.so"), "INPUT(-lz)") // a linker script, not a library
+	writeELF(t, filepath.Join(lib, "libunused.so"), fixture{})
+	if err := os.MkdirAll(filepath.Join(dir, "share"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(dir, "share", "secret.txt"), "x")
+	got, err := ownLibraries(prog, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameSet(got.files, []string{filepath.Join(lib, "libX.so"), filepath.Join(lib, "libY.so")}) {
+		t.Fatalf("granted %v", got.files)
+	}
+	if !slices.Equal(got.origin, []string{lib}) || len(got.outside) != 0 {
+		t.Fatalf("origin %v, outside %v", got.origin, got.outside)
+	}
+	if !slices.Equal(got.skipped, []string{filepath.Join(lib, "libZ.so")}) {
+		t.Fatalf("skipped %v", got.skipped)
+	}
+	if runtime.GOOS != "linux" {
+		return
+	}
+	p := ForProgram(prog, nil, nil)
+	for _, d := range []string{dir, lib, filepath.Join(dir, "bin"), filepath.Join(dir, "share")} {
+		if slices.Contains(p.Read, d) {
+			t.Fatalf("the directory %s was granted:\n%s", d, strings.Join(p.Read, "\n"))
+		}
+	}
+	if !slices.Contains(p.Read, filepath.Join(lib, "libX.so")) || !slices.Equal(p.LibraryPath, []string{lib}) {
+		t.Fatalf("read %v, library path %v", p.Read, p.LibraryPath)
+	}
+}
+
+// The parent of bin is the build only where it is not a filesystem root,
+// /usr or /usr/local, which every policy reads anyway.
+func TestBuildRoot(t *testing.T) {
+	for in, want := range map[string]string{
+		"/opt/llama/bin/server":  "/opt/llama",
+		"/home/u/llama/server":   "/home/u/llama",
+		"/home/u/bin/server":     "/home/u",
+		"/bin/server":            "/bin",
+		"/usr/bin/server":        "/usr/bin",
+		"/usr/local/bin/server":  "/usr/local/bin",
+		"/srv/bin/x/bin/server2": "/srv/bin/x",
+	} {
+		if got := filepath.ToSlash(buildRoot(filepath.FromSlash(in))); got != want {
+			t.Errorf("buildRoot(%s) = %s, want %s", in, got, want)
+		}
+	}
+}
+
+// A static program names no library and is no error, and a file that is
+// not ELF is, so the caller falls back to its directory. A library or a
+// plugin that is not a shared object (not ELF, or an executable) is skipped
+// and named, never granted.
 func TestStaticAndUnreadablePrograms(t *testing.T) {
 	dir := realTempDir(t)
 	static := filepath.Join(dir, "static")
@@ -204,10 +271,18 @@ func TestStaticAndUnreadablePrograms(t *testing.T) {
 		t.Fatal("a script read as ELF")
 	}
 	prog := filepath.Join(dir, "server")
-	writeELF(t, prog, fixture{needed: []string{"libbad.so"}, runpath: "$ORIGIN"})
+	writeELF(t, prog, fixture{needed: []string{"libbad.so", "libexec.so"}, runpath: "$ORIGIN"})
 	mustWrite(t, filepath.Join(dir, "libbad.so"), "not elf")
-	if _, err := ownLibraries(prog, nil); err == nil || !strings.Contains(err.Error(), "libbad.so") {
-		t.Fatalf("a broken library in the build: %v", err)
+	writeELF(t, filepath.Join(dir, "libexec.so"), fixture{exec: true})
+	plugin := filepath.Join(dir, "libggml-bad.so")
+	mustWrite(t, plugin, "not elf")
+	got, err := ownLibraries(prog, []string{plugin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{plugin, filepath.Join(dir, "libbad.so"), filepath.Join(dir, "libexec.so")}
+	if len(got.files) != 0 || len(got.plugins) != 0 || !sameSet(got.skipped, want) {
+		t.Fatalf("granted %v, plugins %v, skipped %v", got.files, got.plugins, got.skipped)
 	}
 }
 

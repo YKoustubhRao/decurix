@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"brainiac/internal/backend"
+	"brainiac/internal/isolate"
 )
 
 func writeGGUF(t *testing.T, template string) string {
@@ -165,11 +166,68 @@ func TestLiveServerWithoutASocketFallsBackAndSaysSo(t *testing.T) {
 	}
 }
 
+// The fallback where the host refuses namespaces: llama-server on a TCP
+// port under Landlock alone. Its libraries and ggml's backends are granted
+// by file there too, so it must still load and answer, with its file
+// sandbox on ("files" not open), no secret and no new privileges.
+func TestLiveServerOnLoopbackUnderLandlockAlone(t *testing.T) {
+	bin, model := os.Getenv("BRAINIAC_LIVE_LLAMA"), os.Getenv("BRAINIAC_LIVE_GGUF")
+	if bin == "" || model == "" || runtime.GOOS != "linux" {
+		t.Skip("set BRAINIAC_LIVE_LLAMA and BRAINIAC_LIVE_GGUF to run a real server on Linux")
+	}
+	if !isolate.CanSandbox() {
+		t.Skip("no Landlock on this kernel")
+	}
+	t.Setenv("AZURE_KEY", "secret-that-must-not-leak")
+	p := &LlamaProc{Bin: bin, Model: model, Ctx: 256, Threads: 1, LogPath: filepath.Join(t.TempDir(), "llama.log")}
+	logf, err := os.Create(p.LogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logf.Close()
+	l, err := p.launchOnLoopback(logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(l.open, " "), "files") {
+		t.Fatalf("no file sandbox: still open %v", l.open)
+	}
+	if err := p.startLaunch(l); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { _ = l.cmd.Wait(); close(done) }()
+	defer func() { _ = l.cmd.Process.Kill(); <-done }()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := p.waitHealthy(ctx, l.client, done); err != nil {
+		t.Fatal(err)
+	}
+	res, err := l.client.Chat(ctx, backend.ChatRequest{MaxTokens: 4, Messages: []backend.Message{{Role: "user", Text: "Once"}}})
+	if err != nil {
+		t.Fatalf("no answer on loopback: %v", err)
+	}
+	pid := l.cmd.Process.Pid
+	env, err := os.ReadFile(filepathProc(pid, "environ"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(env, []byte("secret-that-must-not-leak")) {
+		t.Fatal("the secret is in the server's environment")
+	}
+	if status, err := os.ReadFile(filepathProc(pid, "status")); err != nil || !strings.Contains(string(status), "NoNewPrivs:\t1") {
+		t.Fatalf("no sandbox on the running server: %v\n%s", err, status)
+	}
+	t.Logf("answered %q; still open: %v", res.Text, l.open)
+}
+
 func filepathProc(pid int, name string) string { return "/proc/" + strconv.Itoa(pid) + "/" + name }
 
 // The server's policy grants ggml's backends, which ggml opens itself and
 // no DT_NEEDED names, and lets it list its build to find them. Other
-// programs' libraries and other files are not backends.
+// programs' libraries and other files are not backends. The files here are
+// not ELF, so on Linux the backends are reached through the fallback (the
+// build read-only); isolate's tests check the per-file grant.
 func TestThePolicyGrantsTheGGMLBackendsAndListsTheBuild(t *testing.T) {
 	dir := t.TempDir()
 	for _, n := range []string{"llama-server", "libggml-cpu-haswell.so", "libggml-cuda.so", "libllama-cli-impl.so", "libggml-base.so.0", "notes.txt"} {
@@ -188,8 +246,56 @@ func TestThePolicyGrantsTheGGMLBackendsAndListsTheBuild(t *testing.T) {
 	}
 	read := "|" + strings.Join(pol.Read, "|") + "|"
 	for _, w := range want {
-		if !strings.Contains(read, "|"+w+"|") {
+		if !strings.Contains(read, "|"+w+"|") && !strings.Contains(read, "|"+dir+"|") {
 			t.Fatalf("%s not granted: %v", w, pol.Read)
 		}
+	}
+}
+
+// With real ELF files, each backend that is a shared object is granted by
+// itself, and the build's directory is not.
+func TestThePolicyGrantsEachGGMLBackendNotTheBuild(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the per-file grant is Linux's")
+	}
+	dir := t.TempDir()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "llama-server")
+	if err := os.WriteFile(bin, data, 0o755); err != nil { // an ELF program with nothing of its own
+		t.Fatal(err)
+	}
+	// A shared object every Linux has stands in for a backend.
+	var lib string
+	for _, c := range []string{"/lib/x86_64-linux-gnu/libc.so.6", "/lib64/libc.so.6", "/lib/aarch64-linux-gnu/libc.so.6", "/usr/lib/libc.so.6"} {
+		if _, err := os.Stat(c); err == nil {
+			lib = c
+			break
+		}
+	}
+	if lib == "" {
+		t.Skip("no libc.so.6 found to stand in for a backend")
+	}
+	so, err := os.ReadFile(lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := filepath.Join(dir, "libggml-cpu-x64.so")
+	if err := os.WriteFile(backend, so, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "libggml-bad.so"), []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pol := (&LlamaProc{Bin: bin, Model: filepath.Join(dir, "m.gguf")}).policy()
+	read := "|" + strings.Join(pol.Read, "|") + "|"
+	if !strings.Contains(read, "|"+backend+"|") || strings.Contains(read, "|"+dir+"|") || strings.Contains(read, "libggml-bad.so") {
+		t.Fatalf("read %v", pol.Read)
 	}
 }
