@@ -88,9 +88,11 @@ def _rows(path):
 def stated(path):
     """
     What an input file plainly states: {"opening": (value, where), "closing": (value, where), "totals": [(value,
-    where)]}, each absent when the file does not state it. A Balance column's last value is its closing balance (its
-    first is not an opening balance: that comes before the first line); a row labelled Opening/Closing balance or Total
-    states that figure.
+    where)], "balances": [every value of its Balance column]}, each absent when the file does not state it. A Balance
+    column's last value is shown as its closing balance (its first is not an opening balance: that comes before the
+    first line); a row labelled Opening/Closing balance or Total states that figure. These are readings for the judge:
+    an export listed newest first ends on its oldest line, and a "Dr" balance is a positive debit in a cash book, so
+    neither convention may fail work on its own (review 2026-11-03, E-13).
     """
 
     out = {"totals": []}
@@ -118,6 +120,7 @@ def stated(path):
             value = _number(cells[balance_col])
             if value is not None:
                 last = (value, f"the last line of its {rows_header(rows, balance_col, n)} column, row {n}")
+                out.setdefault("balances", []).append(value)
         label = next((t for t in texts if re.search(r"[a-z]", t)), "")
         numbers = [v for v in (_number(c) for c in cells) if v is not None]
         if not numbers:
@@ -223,11 +226,20 @@ def _per_source_lines(path):
     return out
 
 
+def _same_figure(value, expected):
+    """The same figure whatever sign either side writes it with: a sign is a book's convention (Dr, Cr, brackets),
+    which code does not decide."""
+
+    return abs(abs(value) - abs(expected)) <= TOLERANCE
+
+
 def mismatches(request, made, found_inputs=None):
     """
-    Sentences for each figure a made workbook presents as a source's own that the source contradicts: the label names
-    exactly one input file, that file states the figure, and the two differ. [] otherwise (decided only where it is
-    precise; the judge sees the rest as evidence).
+    Sentences for each figure a made workbook presents as a source's own that the source does not hold: the label
+    names exactly one input file, that file states figures of that kind, and the figure is none of them with either
+    sign (for a balance, no line of the source's Balance column). [] otherwise. EVIDENCE for the judge and the person,
+    never a verdict by itself (review 2026-11-03, E-13: a cash book's "15,000.00 Dr" and a newest-first bank export
+    refused right work).
     """
 
     books = [p for p in made if Path(str(p)).suffix.lower() in (".xlsx", ".xlsm")]
@@ -249,14 +261,14 @@ def mismatches(request, made, found_inputs=None):
             continue
         facts = stated(candidates[0]["path"])
         if what == "total":
-            if not facts["totals"] or any(abs(value - t) <= TOLERANCE for t, _ in facts["totals"]):
+            if not facts["totals"] or any(_same_figure(value, t) for t, _ in facts["totals"]):
                 continue
             expected, said = facts["totals"][-1]
         else:
             if kind not in facts:
                 continue
             expected, said = facts[kind]
-            if abs(value - expected) <= TOLERANCE:
+            if _same_figure(value, expected) or any(_same_figure(value, b) for b in facts.get("balances", ())):
                 continue
         out.append(f"{book}: {where} \"{label}\" is {_money(value)}, but {candidates[0]['name']} itself states "
                    f"{_money(expected)} ({said})")

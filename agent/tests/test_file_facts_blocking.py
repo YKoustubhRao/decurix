@@ -17,7 +17,7 @@ class WhatBlocks(unittest.TestCase):
             self.assertEqual(facts.not_made(), [], name)
         evidence = produced.FileFacts(gap_notes=["n"], layout=["n"], typed_totals=["n"], request_faults=["n"],
                                       disclosures=["n"], draft_fields=["n"], duplicates=["n"], pattern_breaks=["n"],
-                                      code_notes=["n"], totals_note=["n"])
+                                      code_notes=["n"], totals_note=["n"], source_mismatch=["n"])
         self.assertEqual(evidence.blocking(), [])
         self.assertEqual(evidence.not_made(), [])
 
@@ -28,8 +28,13 @@ class WhatBlocks(unittest.TestCase):
 
     def test_the_blocking_set_is_pinned(self):
         self.assertEqual(set(produced.FileFacts.BLOCKING),
-                         {"unstored", "gaps", "missing_files", "file_faults", "payee_mismatch", "source_mismatch",
-                          "unknown_recipients", "draft_facts"})
+                         {"unstored", "gaps", "missing_files", "file_faults", "payee_mismatch", "unknown_recipients",
+                          "draft_facts"})
+
+    def test_a_figure_a_source_does_not_hold_is_evidence(self):
+        facts = produced.FileFacts(source_mismatch=["r.xlsx: B5 is 1.00, but s.csv itself states 2.00"])
+        self.assertEqual(facts.blocking(), [])
+        self.assertIn("r.xlsx: B5 is 1.00, but s.csv itself states 2.00", facts.notes())
 
 
 if __name__ == "__main__":

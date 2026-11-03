@@ -532,7 +532,8 @@ class FileFacts:
                     (evidence: an intentional blank looks the same - independent review, 2026-10-21)
       unchecked     Office files not opened: password-protected, Strict Open XML, a kind not checked (evidence)
       layout        typed numbers among a column's formulas, a Total split over two rows, as asked (evidence)
-      source_mismatch a figure given as a source's own ("closing balance per bank statement") that the source contradicts
+      source_mismatch a figure given as a source's own ("closing balance per bank statement") that the source does not
+                    hold (evidence: which line states a balance, and its sign, are the book's conventions)
       disclosures   an email draft to one party of the inputs that names another party with figures (evidence)
       payee_mismatch a payment to a bank account / IFSC / IBAN / UPI id that is not on record for its payee (payees.py)
       unknown_recipients an email draft addressed to an address that is in no input (payees.unknown_recipients)
@@ -578,8 +579,10 @@ class FileFacts:
     # The facts that fail the work by themselves, in one place for every route (the final gate, a taught run's
     # read-back, a desktop tool's run, a long request's stage). Found (review 2026-11-03, E-27): four routes each listed
     # their own, and the lists had drifted.
-    BLOCKING = ("unstored", "gaps", "missing_files", "file_faults", "payee_mismatch", "source_mismatch",
-                "unknown_recipients", "draft_facts")
+    # source_mismatch is evidence (review 2026-11-03, E-13): which line of a source states a balance, and its sign,
+    # are a book's conventions.
+    BLOCKING = ("unstored", "gaps", "missing_files", "file_faults", "payee_mismatch", "unknown_recipients",
+                "draft_facts")
 
     def blocking(self):
         """Every blocking fact, in BLOCKING's order: the work is not done while any is there."""
@@ -601,6 +604,7 @@ class FileFacts:
         """The evidence among these facts (never a verdict): what reads the request, or needs judgement."""
 
         return (list(self.gap_notes) + list(self.unchecked) + list(self.layout) + list(self.typed_totals) + list(self.request_faults)
+                + list(self.source_mismatch)
                 + list(self.disclosures) + list(self.draft_fields) + list(self.duplicates)
                 + list(self.pattern_breaks) + list(self.code_notes))
 
