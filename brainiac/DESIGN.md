@@ -2,6 +2,8 @@
 
 Status (2026-10-24): v0 is built, with unit tests for every package. OCR and speech have run live on this laptop. The full model run (downloading the 3.2 GB plan and serving it) is next.
 
+Review (2026-11-03): the web is read only on the client's own query, updates only stage, earned paths need decided cases and routed scores, streams must finish explicitly, and each model process runs in its own mount view. What is still owed before an appliance ships is in [docs/follow-ups.md](../docs/follow-ups.md) (O-3, N-W4-8).
+
 ## The goal
 
 One endpoint, tokens in and tokens out, that takes text, pictures and audio. Behind it are many open models, each the best that fits this machine at one kind of work. They should match frontier quality wherever the work can be split into steps that can each be checked, and say plainly where they cannot.
@@ -80,7 +82,8 @@ The updater installs and runs files with no person in the loop, so what it will 
 - **The commit does not move by itself.** Resolving `main` on every install would let a push reach a running machine at the next plan change, and would overwrite the file a running model loads.
 - **A first template is recorded, not judged.** Approving every new model's template would end unattended updates, which is the owner's decision; judging one in code would be a guess. Changes stop for a person. A quantiser's template often differs from its lab's for good reasons, so comparing the two would mostly raise false alarms.
 - **The list of environment variables says what to keep.** No list of secrets' names is ever complete.
-- **Network isolation fails open, and says so.** Refusing to serve on a system that blocks unprivileged namespaces (some Ubuntu AppArmor settings, some containers) would stop the product there. The clean environment always applies.
+- **Isolation fails open only where it says so, and never on an appliance.** Refusing to serve on a system that blocks unprivileged namespaces (some Ubuntu AppArmor settings, some containers) would stop the product there, so by default Brainiac falls back to Landlock and lists what stays reachable in `status.unconfined`. With `sandbox: required` (the default on an appliance) it starts no model process it cannot fully confine. The clean environment always applies. (Review 2026-11-03.)
+- **A network namespace does not hide a pathname Unix socket, and Landlock has no right for connecting to one.** Only a mount view without the socket hides it, so each model process gets its own root: its build, its model files, its socket directory, the plain devices, the GPU's nodes and a private `/dev/shm`.
 
 ### Field specialists
 
@@ -95,8 +98,11 @@ So the system:
 1. **Installs a specialist only where it should help here.** It must beat the chosen brain in its field by 5 points of its published quality prior, and fit the machine. Every field without one is listed with the reason.
 2. **Routes without a model.** The router is a naive Bayes classifier over words, word pairs and text shapes (code fences, LaTeX, equations, SQL, money, legal provisions, Indic scripts), trained on catalog examples and learned cases. Routing only reaches a specialist at confidence 0.35 or more. That threshold was tuned so held-out requests are never sent to the wrong field. A missed route costs only what the brain already costs.
 3. **Lets measurement overrule priors.** `brainiac eval` scores models per field on checked cases.
-   - A specialist takes a field from the remote frontier brain only after at least 20 cases show it is at least as accurate there.
+   - A specialist takes a field from the remote frontier brain only when the accuracy its checked cases let it claim (Wilson lower bound, at least 20 cases) is at least the remote's. There is no margin. Only cases a stated number, letter or exact text decides count; `contains` and `regex` prove nothing.
+   - A routed request earns on its routed score (`routed:<model>`): a case the router files under the wrong field is a miss there.
+   - An earned path serves only requests shaped like its eval cases (one user turn, a short system prompt, no pictures, recordings or web lookup). An agent's long prompt is not an eval case.
    - A specialist measured worse than the local brain loses its field back to the brain.
+   - A strict checker is not neutral in a comparison: marking the remote's verbose correct answers wrong lowers its score and makes a cheap path look as good. Case prompts should ask for a final `Answer: <value>` line.
 
    This is Decurix's maturity rule applied to models: a cheaper path is earned by checked runs, never assumed.
 
@@ -104,11 +110,11 @@ So the system:
 
 A model knows the world up to its training cutoff, and the open-model field moves monthly. A shared browser (`internal/web`) handles both problems.
 
-- **Answers about now read the web.** A plain phrase check flags these (latest, today, news, a current price or rate, a new rule, this year). The scrubbed question is searched, three pages are read, and passages matching the question go to the brain as dated, cited `[web-N]` evidence. The figure check covers web evidence too.
+- **Answers read the web only when the client asks, with its own query.** A phrase check deciding when data leaves the box was a word list in the one place a regex must not decide (review G-01, 2026-11-03). The client sends `web: true` and `web_query`; Brainiac scrubs the query and reads three pages as dated, cited `[web-N]` evidence. The figure check covers web evidence too.
   - The browser dials no internal address.
-  - Only the query leaves the machine.
-  - A real headless browser is used only when a page needs JavaScript.
-- **The arsenal updates itself from evidence.** `internal/update` runs a cycle every 24 hours: scout, read public evaluations, rate, adopt, plan, install aside, check, switch. Nothing waits for a person, and nothing switches on a claim alone.
+  - Only the client's own query and the page requests leave the machine.
+  - The headless browser runs only when a client asks for it on `fetch`, and its own networking goes through a guard proxy inside Brainiac (Chrome's networking bypasses a Go dialer guard).
+- **The arsenal updates itself from evidence, and a person switches.** `internal/update` can run a cycle (`update_every`, off by default): scout, read public evaluations, rate, adopt, plan, install aside, check, stage. Nothing switches on a claim alone, and nothing switches without a person: the updater stages when the canary passes; a person promotes; a signed release may promote in future. A canary catches a model that does not load or uses the wrong template. It does not judge quality. So the box's judgement model changes only by a person's decision.
   - **Ratings are ratios inside one independent leaderboard.** A new model's score divided by a catalog model's score, on the same benchmark in the same leaderboard, times the catalog's rating, gives one estimate. The rating is the median of these. Leaderboards are never compared with each other, because harnesses differ. Benchmarks map to roles by name (GPQA → brain, MMMU → vision, ScreenSpot → ground, SWE-bench → code, AIME → math).
   - **Guards against flattering numbers:**
     - independent leaderboards only (decided 2026-10-25): a maker's card is read for the name it uses, and its claims are reported as context, never rated
@@ -119,7 +125,7 @@ A model knows the world up to its training cutoff, and the open-model field move
   - **Names.** Model names are normalised across sources: sizes in brackets kept ("Qwen3.5 (9B)"), precision suffixes dropped, "gemma-4" = "gemma4". A model's own column on its own card is found even when the maker drops the size or the org. A repo under a different name than its base is a different model and inherits nothing.
   - **Plan for the machine, not the minute.** Re-planning uses the memory and speed measured when the running plan was made, so a busy afternoon does not shrink the models. A plan is applied only if its changed roles gain quality in total and no core role is lost.
   - **The check is a canary, not a benchmark.** Public evaluations chose the model. The check catches the failures they cannot: a model that will not load, a broken chat template, a vision projector that does not work. It asks questions with answers code can verify. The vision check sends the picture straight to the model, because through the normal path OCR would answer for it.
-  - **Switching is safe.** The new plan installs into `lock.next.json` only when Brainiac has been idle for 10 minutes and the CPU is not busy. It is checked, then swapped in under live traffic. The old engine drains and the old lock is kept for rollback. A failed model is set aside for 30 days. A llama.cpp build moves only when a better model needs it, and is blamed when a model that ran before fails on it.
+  - **Switching is safe.** The new plan installs into `lock.next.json` only when Brainiac has been idle for 10 minutes and the CPU is not busy. It is checked and staged; after a person's `brainiac update promote` it is swapped in under live traffic. The old engine drains and the old lock is kept for rollback. A failed model is set aside for 30 days. A llama.cpp build moves only when a better model needs it, and is blamed when a model that ran before fails on it.
 
   The first live cycle (2026-10-24) on a 32 GB PC profile read about 1,300 independent scores and the cards of eight new models:
   - Mellum2.1 (its card: brain 46, code 49, math 69) and Nemotron-3.5-Bolt-E4B (its card: brain 40) are not on a leaderboard yet, so they wait. Nothing switched.
@@ -172,7 +178,7 @@ These are for an i5-10210U with 8 GB of RAM, a 5 GB WSL cap, about 3.3 GB free w
 8. **The appliance tier.** The same code on a 128 GB box:
    - Several users at once, through vLLM batching.
    - Paired-device login.
-   - Signed, eval-gated model updates.
+   - Signed, eval-gated model updates. `update.Promote` is the one place a staged plan becomes served; a signed release can call it once there is a local parity eval.
    - Night-shift learning on the customer's own checked runs.
 
 ## Decisions for the owner
