@@ -13,8 +13,15 @@
 // Beside the video, the phone sends what is on the app's display as controls
 // (OpTree: role, label, position - read from Android's own accessibility
 // tree), so a VM sees a phone app the way it sees a web page: named buttons
-// and fields, not only a picture. That is what lets the desktops' approval
-// gate stop a tap on a phone app's Send or Pay.
+// and fields, not only a picture.
+//
+// The desktops' approval gate does NOT see this input: a tap or key sent to a
+// phone app through its viewer goes straight to the phone, the same as the
+// person's own finger, so a Send or Pay tapped here is not stopped by the gate
+// (review 2026-11-03, B-05; gate-mediated phone input is the owner's input
+// broker decision). What is enforced here is narrower: only ordinary typing
+// and navigation keys are passed on (OrdinaryKey), never system keys that
+// would reach beyond the chosen app.
 //
 // Depends on nothing internal but wsconn.
 package phonehost
@@ -26,9 +33,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/YKoustubhRao/decurix/internal/wsconn"
 )
@@ -478,11 +488,56 @@ func (h *Hub) Apps(ctx context.Context, id string, refresh bool) ([]App, error) 
 		return nil, fmt.Errorf("asking %s for its apps: %w", p.name, err)
 	}
 
+	apps := CleanApps(ans.Apps)
+
 	p.mu.Lock()
-	p.apps, p.appsTime = ans.Apps, time.Now()
+	p.apps, p.appsTime = apps, time.Now()
 	p.mu.Unlock()
 
-	return append([]App(nil), ans.Apps...), nil
+	return append([]App(nil), apps...), nil
+}
+
+// maxApps bounds the apps kept from one phone's answer.
+const maxApps = 2000
+
+// packageRe is the shape of an Android package name (com.example.app).
+var packageRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$`)
+
+// ValidPackage reports whether pkg has the shape of an Android package name:
+// the only thing a phone app is opened by, and a part of the launchers and
+// .desktop files made from it.
+func ValidPackage(pkg string) bool {
+	return len(pkg) <= 255 && packageRe.MatchString(pkg)
+}
+
+// CleanApps keeps the apps a phone listed whose package is a package name,
+// with control characters taken out of their names and the names bounded:
+// the list comes from the phone, and its names end up in files a desktop
+// reads (review 2026-11-03, B-22).
+func CleanApps(apps []App) []App {
+	out := make([]App, 0, len(apps))
+	for _, a := range apps {
+		if len(out) >= maxApps {
+			break
+		}
+		if !ValidPackage(a.Package) {
+			continue
+		}
+		name := strings.Join(strings.Fields(strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) || r == unicode.ReplacementChar {
+				return ' '
+			}
+			return r
+		}, a.Name)), " ")
+		if r := []rune(name); len(r) > 100 {
+			name = string(r[:100])
+		}
+		if name == "" {
+			name = a.Package
+		}
+		out = append(out, App{Package: a.Package, Name: name, System: a.System})
+	}
+	return out
 }
 
 // Cached returns the apps the phone paired as id last reported, without
@@ -518,6 +573,10 @@ type Session struct {
 // Open starts pkg on a new w x h display (dpi) of the phone paired as id and
 // waits, up to ctx, until it is streaming.
 func (h *Hub) Open(ctx context.Context, id, pkg string, w, hgt, dpi int) (*Session, error) {
+	if !ValidPackage(pkg) {
+		return nil, fmt.Errorf("%q is not an app's package name", pkg)
+	}
+
 	p := h.phone(id)
 	if p == nil {
 		return nil, ErrNoPhone
@@ -638,9 +697,44 @@ func (s *Session) Err() string {
 }
 
 // Input sends one event to the app.
+// A key that is not an ordinary typing or navigation key (OrdinaryKey) is
+// refused: system keys - power, the app switcher, the assistant, calls -
+// act on the whole phone, not on the app this session shows.
 func (s *Session) Input(in Input) error {
+	if in.Kind == "key" && !OrdinaryKey(in.Key) {
+		return fmt.Errorf("key %d is not a typing or navigation key; it is not sent to the phone", in.Key)
+	}
 	return s.phone.send(Message{Op: OpInput, Session: s.ID, Input: &in})
 }
+
+// ordinaryKeys are the Android keycodes (android.view.KeyEvent) of typing and
+// moving around inside one app: back, digits, letters, punctuation, the
+// arrows, editing keys, modifiers and the number pad. Anything else - home,
+// power, volume, camera, call, the app switcher, the assistant, settings - is
+// a system key.
+var ordinaryKeys = func() map[int]bool {
+	m := map[int]bool{4: true} // BACK
+	add := func(lo, hi int) {
+		for k := lo; k <= hi; k++ {
+			m[k] = true
+		}
+	}
+	add(7, 18)    // 0-9, STAR, POUND
+	add(19, 23)   // DPAD up, down, left, right, centre
+	add(29, 56)   // A-Z, COMMA, PERIOD
+	add(57, 62)   // ALT, SHIFT, TAB, SPACE
+	add(66, 77)   // ENTER, DEL, GRAVE ... SLASH, AT
+	add(81, 82)   // PLUS, MENU
+	add(92, 93)   // PAGE_UP, PAGE_DOWN
+	add(111, 115) // ESCAPE, FORWARD_DEL, CTRL, CAPS_LOCK
+	add(122, 124) // MOVE_HOME, MOVE_END, INSERT
+	add(144, 161) // the number pad
+	return m
+}()
+
+// OrdinaryKey reports whether an Android keycode is an ordinary typing or
+// navigation key, the only kind a phone viewer may send.
+func OrdinaryKey(code int) bool { return ordinaryKeys[code] }
 
 // Close ends the session and tells the phone to close the app's display.
 func (s *Session) Close() {

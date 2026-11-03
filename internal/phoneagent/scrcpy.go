@@ -189,6 +189,11 @@ func encodeInput(in phonehost.Input) ([][]byte, error) {
 		return [][]byte{b}, nil
 
 	case "key":
+		// The control plane refuses system keys already (phonehost.OrdinaryKey);
+		// the phone refuses them too, whoever sent them.
+		if !phonehost.OrdinaryKey(in.Key) {
+			return nil, fmt.Errorf("key %d is not a typing or navigation key", in.Key)
+		}
 		b := make([]byte, 14)
 		b[0] = msgInjectKeycode
 		b[1] = byte(in.Action)

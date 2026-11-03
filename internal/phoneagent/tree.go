@@ -209,7 +209,9 @@ func (b *treeBuilder) walk(n xmlNode, inside *[]string) {
 		if role == "textbox" {
 			node.Password = n.Password
 			node.Name = clean(firstOf(n.Hint, n.ContentDesc))
-			if n.Text != n.Hint {
+			// A password field's text never leaves the phone, whatever Android
+			// shows in it (review 2026-11-03, B-22).
+			if n.Text != n.Hint && !n.Password {
 				node.Value = limit(n.Text, 500)
 			}
 		} else {
