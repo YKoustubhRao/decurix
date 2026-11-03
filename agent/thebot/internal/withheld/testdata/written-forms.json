@@ -1,0 +1,61 @@
+{
+ "note": "approval.written_forms(value) for each value, as the agent gives them (agent/decurix_agent/computer/approval.py); regenerate from there if that function changes.",
+ "cases": [
+  {
+   "value": "it's \"q\" $x`y\\z",
+   "forms": [
+    "it's \"q\" $x`y\\z",
+    "'it'\"'\"'s \"q\" $x`y\\z'",
+    "it's \\\"q\\\" \\$x\\`y\\\\z",
+    "it'\\''s \"q\" $x`y\\z",
+    "it's \\\"q\\\" $x`y\\\\z",
+    "it%27s%20%22q%22%20%24x%60y%5Cz",
+    "it%27s+%22q%22+%24x%60y%5Cz"
+   ]
+  },
+  {
+   "value": "\u00e4 \ud835\udc00/b&c",
+   "forms": [
+    "\u00e4 \ud835\udc00/b&c",
+    "'\u00e4 \ud835\udc00/b&c'",
+    "\\u00e4 \\ud835\\udc00/b&c",
+    "%C3%A4%20%F0%9D%90%80%2Fb%26c",
+    "%C3%A4+%F0%9D%90%80%2Fb%26c",
+    "%C3%A4%20%F0%9D%90%80/b%26c"
+   ]
+  },
+  {
+   "value": "plain-Value_1.2",
+   "forms": [
+    "plain-Value_1.2"
+   ]
+  },
+  {
+   "value": "tab\tnew\nline\u0001",
+   "forms": [
+    "tab\tnew\nline\u0001",
+    "'tab\tnew\nline\u0001'",
+    "tab\\tnew\\nline\\u0001",
+    "tab%09new%0Aline%01"
+   ]
+  },
+  {
+   "value": "a b+c%",
+   "forms": [
+    "a b+c%",
+    "'a b+c%'",
+    "a%20b%2Bc%25",
+    "a+b%2Bc%25"
+   ]
+  },
+  {
+   "value": "Plum7'Orbit",
+   "forms": [
+    "Plum7'Orbit",
+    "'Plum7'\"'\"'Orbit'",
+    "Plum7'\\''Orbit",
+    "Plum7%27Orbit"
+   ]
+  }
+ ]
+}
