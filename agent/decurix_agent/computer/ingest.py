@@ -263,6 +263,12 @@ def from_chrome_recorder(data):
         if kind == "keyDown":
             name = step.get("key")
 
+            if not isinstance(name, str) or not name:
+                # A key press that names no key presses nothing a replay can press (review 2026-11-03, D-36: it
+                # raised a TypeError, answered as a 500).
+                ignored += 1
+                continue
+
             if name in MODIFIERS:
                 if name not in held:
                     held.append(name)

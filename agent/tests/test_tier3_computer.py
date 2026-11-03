@@ -47,5 +47,32 @@ class BoundedBrowserReads(unittest.TestCase):
             sock.receive()
 
 
+class MalformedImportsAndPictures(unittest.TestCase):
+    """D-36: a recorder's key press with no key, an agent's press() with none, and a picture larger than any screen."""
+
+    def test_a_press_with_no_key_is_no_key(self):
+        from decurix_agent.computer import ingest_agents
+        self.assertIsNone(ingest_agents._keys(None))
+
+    def test_a_key_down_with_no_key_is_left_out(self):
+        from decurix_agent.computer import ingest
+        try:
+            ingest.from_chrome_recorder({"title": "t", "steps": [{"type": "keyDown"}]})
+        except ingest.IngestError:
+            pass  # refused as an import is fine; a TypeError is not
+
+    def test_a_picture_larger_than_any_screen_is_refused(self):
+        import struct
+        import zlib
+        from decurix_agent.computer import visual
+        header = struct.pack(">IIBBBBB", 100000, 100000, 8, 2, 0, 0, 0)
+
+        def chunk(tag, body):
+            return struct.pack(">I", len(body)) + tag + body + struct.pack(">I", zlib.crc32(tag + body))
+        png = visual.PNG_SIGNATURE + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(b"\0" * 10)) + chunk(b"IEND", b"")
+        with self.assertRaises(ValueError):
+            visual.decode_png(png)
+
+
 if __name__ == "__main__":
     unittest.main()

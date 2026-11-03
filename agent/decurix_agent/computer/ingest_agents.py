@@ -258,6 +258,8 @@ def parse_actions(text):
 
 
 def _keys(combo):
+    if combo is None:
+        return None  # a press with no key (D-36: recorded as the key "None")
     parts = [p for p in str(combo).split("+") if p]
     if not parts:
         return None

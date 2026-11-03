@@ -149,6 +149,10 @@ def png_of_rows(width, height, raw, level):
     )
 
 
+# The most pixels a picture decode_png reads may have: a large screen, several times over.
+MAX_PIXELS = 8192 * 8192
+
+
 def decode_png(data):
     """
     (width, height, packed RGB) of a non-interlaced 8-bit PNG (grey, RGB or
@@ -181,9 +185,13 @@ def decode_png(data):
 
     if depth != 8 or channels is None or interlace:
         raise ValueError("a PNG this reader does not handle")
+    if width * height > MAX_PIXELS:
+        raise ValueError("a PNG larger than any screen")
 
-    raw = zlib.decompress(b"".join(idat))
     stride = width * channels
+    # Never more than the picture can hold (review 2026-11-03, D-36: a small file could inflate without bound).
+    inflate = zlib.decompressobj()
+    raw = inflate.decompress(b"".join(idat), height * (stride + 1) + 1)
 
     if len(raw) < height * (stride + 1):
         raise ValueError("a PNG cut short")
