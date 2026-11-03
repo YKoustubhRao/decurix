@@ -25,10 +25,17 @@ def control(role, name, **extra):
 ASKED = ["Confirm & Pay", "\U0001f512 Pay", "Securely pay", "Continue to payment", "Authorize", "Approve", "Approve payment",
          "File GSTR-1", "File return", "File the declaration", "Release funds", "Submit order", "E-sign", "Sign",
          "Sign & submit", "Cash out", "Request payout", "Envoyer", "Pagar", "Pay now →", "Send money"]
-NOT_ASKED = ["Make Purchase Receipt", "Make Payment Entry", "Stock Transfer", "Material Transfer", "Post Date",
-             "Get Items From Purchase Order", "Buy Price", "Purchase Taxes and Charges", "Delete row", "Delete Rows",
-             "Delete selected rows", "Send to back", "Payment history", "View post", "Sign in", "Sign up", "Sign out",
-             "File returns", "Save", "Save & Submit", "Create", "Update", "Accept"]
+# Not asked on any control: no committing word, a form's own part, or a drawing arranged (structure).
+NOT_ASKED = ["Delete row", "Delete Rows", "Delete selected rows", "Send to back", "Sign in", "Sign up", "Sign out",
+             "File returns", "Save", "Save & Submit", "Create", "Update", "Accept", "Payment history"]
+# Names of things that hold a committing word: read as a place only on a control that goes somewhere (a link, a tab, a
+# navigation menu's item). On a button a committing word anywhere asks (review 2026-11-03, D-04).
+NAMES = ["Make Purchase Receipt", "Make Payment Entry", "Stock Transfer", "Material Transfer", "Post Date",
+         "Get Items From Purchase Order", "Buy Price", "Purchase Taxes and Charges", "View post"]
+
+
+def nav(role, name):
+    return control(role, name, path=f'site x > navigation > {role} "{name}"')
 
 
 class WhichLabelsAsk(unittest.TestCase):
@@ -43,6 +50,13 @@ class WhichLabelsAsk(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIsNone(approval.assess("click", control("button", name)))
 
+    def test_a_name_holding_a_committing_word_is_a_place_only_where_the_control_goes_somewhere(self):
+        for name in NAMES:
+            with self.subTest(name=name):
+                self.assertIsNone(approval.assess("click", control("link", name)))
+                self.assertIsNone(approval.assess("click", nav("menuitem", name)))
+                self.assertEqual(approval.press_effect(control("button", name)), "asks")
+
     def test_deleting_a_form_part_is_not_deleting_a_record(self):
         self.assertIsNone(approval.press_effect(control("button", "Delete row")))
         self.assertEqual(approval.press_effect(control("button", "Delete invoice")), "asks")
@@ -51,7 +65,9 @@ class WhichLabelsAsk(unittest.TestCase):
     def test_the_same_in_a_link_and_a_menu(self):
         for role in ("link", "menuitem"):
             self.assertEqual(approval.press_effect(control(role, "File GSTR-1")), "asks")
-            self.assertIsNone(approval.press_effect(control(role, "Stock Transfer")))
+            self.assertIsNone(approval.press_effect(nav(role, "Stock Transfer")))
+        # An item of an action menu acts where it is, like a button.
+        self.assertEqual(approval.press_effect(control("menuitem", "Stock Transfer")), "asks")
 
 
 class ReturnOnAButton(unittest.TestCase):
@@ -282,10 +298,12 @@ MONEY_ASKED = ["Bank Transfer", "Wire transfer", "Fund Transfer", "NEFT Transfer
                "Submit trade", "Confirm trade", "Sell", "Sell now", "Sell all shares", "Release", "Release payment",
                "Fund release", "Sign off", "Sign-off", "Signoff", "Approve and sign off", "Refund", "Issue refund",
                "Liquidate"]
-MONEY_NOT_ASKED = ["Stock Transfer", "Material Transfer", "Make Purchase Receipt", "Post Date", "Delete row",
-                   "New Bank Transfer", "Bank Transfer Details", "Bank Transfer history", "Sell Price", "Selling Price",
-                   "Release Notes", "Release Date", "Sign off date", "Sign on", "Disbursement", "Trade history",
-                   "Refund policy"]
+# No committing word as a word (or structure): not asked on any control.
+MONEY_NOT_ASKED = ["Delete row", "Selling Price", "Sign on", "Disbursement", "Trade history"]
+# Names on a link or a navigation item; on a button they ask (D-04).
+MONEY_NAMES = ["Stock Transfer", "Material Transfer", "Make Purchase Receipt", "Post Date", "New Bank Transfer",
+               "Bank Transfer Details", "Bank Transfer history", "Sell Price", "Release Notes", "Release Date",
+               "Sign off date", "Refund policy"]
 
 
 class MovingMoneyAsks(unittest.TestCase):
@@ -298,11 +316,15 @@ class MovingMoneyAsks(unittest.TestCase):
         for name in MONEY_NOT_ASKED:
             with self.subTest(name=name):
                 self.assertIsNone(approval.assess("click", control("button", name)))
+        for name in MONEY_NAMES:
+            with self.subTest(name=name):
+                self.assertIsNone(approval.assess("click", control("link", name)))
+                self.assertEqual(approval.press_effect(control("button", name)), "asks")
 
     def test_stock_transfer_stays_a_record_type_in_a_menu(self):
         for role in ("link", "menuitem"):
-            self.assertIsNone(approval.press_effect(control(role, "Stock Transfer")))
-            self.assertEqual(approval.press_effect(control(role, "Bank Transfer")), "asks")
+            self.assertIsNone(approval.press_effect(nav(role, "Stock Transfer")))
+            self.assertEqual(approval.press_effect(nav(role, "Bank Transfer")), "asks")
 
 
 class KeysThatMoveTheKeyboardFirst(unittest.TestCase):

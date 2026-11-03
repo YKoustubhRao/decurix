@@ -104,7 +104,7 @@ CONSEQUENTIAL_CONTROL = re.compile(
 # first words.
 MORE_CONSEQUENTIAL = re.compile(
     r"^\s*(?:"
-    r"(?:proceed|continue|go|move on|next|skip) to (?:the )?(?:checkout|payment|pay|paying|file|filing|submit|submission"
+    r"(?:proceed|continue|go|move on|next|skip) (?:to|with) (?:the )?(?:checkout|payment|pay|paying|file|filing|submit|submission"
     r"|send|transfer|purchase)"
     r"|authori[sz]e"
     r"|(?:make|submit|confirm|complete|process|release|initiate|execute|approve|schedule|send|finali[sz]e|issue) "
@@ -187,8 +187,13 @@ def label_words(name):
     return " ".join(text.split())
 
 
-def _only_reads(words, i):
-    """Whether the committing word at words[i] is used to read or go somewhere, not to commit (_READ_BEFORE...)."""
+def _only_reads(words, i, goes_somewhere=True):
+    """Whether the committing word at words[i] is used to read or go somewhere, not to commit (_READ_BEFORE...).
+
+    goes_somewhere=False (a button, or any control that is not a link, a tab or a navigation menu's item): only the
+    label's structure may say so ("Send to back" arranges a drawing), never the words beside the committing one. Found
+    (review 2026-11-03, D-04): "Pay tax", "Send statement", "Instant transfer" on buttons were read as names by the
+    vocabularies below and paid or sent unasked. A link goes somewhere, and what it leads to is gated there."""
 
     verb = words[i].lower()
     if verb in _DESTROYS:
@@ -200,6 +205,10 @@ def _only_reads(words, i):
         verb, after = "transfer", after[1:]
     elif verb == "sign" and after[:1] == ["off"]:
         after = after[1:]
+    if verb in ("send", "bring") and after in _ARRANGES:
+        return True
+    if not goes_somewhere:
+        return False
     if after[:1] and after[0] in _NAMED_AFTER.get(verb, ()):
         return True
     if before in _READ_BEFORE:
@@ -212,8 +221,6 @@ def _only_reads(words, i):
         return True
     if after and all(w in _ATTRIBUTES or w == "and" for w in after) and any(w in _ATTRIBUTES for w in after):
         return True
-    if verb in ("send", "bring") and after in _ARRANGES:
-        return True
     if i and verb in _ALSO_NOUNS and before not in _LEADS and not before.endswith("ly") \
             and not (verb in _MOVES_MONEY and before in _MONEY_NOUNS):
         return True
@@ -223,12 +230,16 @@ def _only_reads(words, i):
     return before in _CREATE_BEFORE and bool(after) and all(w in _RECORD_NOUNS for w in after)
 
 
-def consequential(name):
+def consequential(name, goes_somewhere=False):
     """
     Whether a control's label commits the person to something (CONSEQUENTIAL_CONTROL, MORE_CONSEQUENTIAL), matched as
-    whole words at any word of it - "Confirm & Pay", "Securely pay", "🔒 Pay", "Pay now →" - unless that word is only
-    read there (_only_reads: "Payment history", "View post"). Found in review (2026-11-02): matched at the label's
-    first word only, every one of those passed unasked. Anything not plainly a read is asked: unsure is asked.
+    whole words at any word of it - "Confirm & Pay", "Securely pay", "🔒 Pay", "Pay now →". Found in review
+    (2026-11-02): matched at the label's first word only, every one of those passed unasked. Anything not plainly a
+    read is asked: unsure is asked.
+
+    goes_somewhere: the control is a link, a tab or an item of a navigation menu (goes_somewhere), whose label may name
+    a place ("Payment history", "View post") - the words around the committing one are read for that (_only_reads).
+    On a button they are not: a committing word anywhere in its label asks.
     """
 
     words = label_words(name).split()
@@ -236,7 +247,7 @@ def consequential(name):
         return False
     for i in range(len(words)):
         rest = " ".join(words[i:])
-        if (CONSEQUENTIAL_CONTROL.match(rest) or MORE_CONSEQUENTIAL.match(rest)) and not _only_reads(words, i):
+        if (CONSEQUENTIAL_CONTROL.match(rest) or MORE_CONSEQUENTIAL.match(rest))                 and not _only_reads(words, i, goes_somewhere):
             return True
     return bool(OTHER_LANGUAGES.search(" ".join(str(name or "").split())))
 
@@ -378,7 +389,7 @@ Y", "file it if Z"). Only a condition on THIS action counts: what they ask to be
 payment, and check X before you file") is an instruction for that step, and this action is a "yes". So is one that \
 can only be met after this action - to show or check what it leads to ("go ahead, show me the next screen before you \
 click there"): this action is what brings that about.
-- "no": they do not approve it now (not yet, wait, fix something first, never).
+- "no": they do not approve it now (not yet, wait, fix something first, never). A reply that approves with a different amount, recipient, account, date or item is "no" for THIS action: put the change they ask for in "wants".
 - "unclear": the reply neither approves nor refuses it - a question back to the worker, or about something else.
 And "wants": what they ask the worker to tell them, show them or do before they decide (a question to answer, a \
 report), in their words - empty when they ask nothing of it.
@@ -393,8 +404,6 @@ _PLAIN_YES = set("yes yep yeah yup y ok okay k sure approved approve i confirm c
                  "continue lgtm sounds good fine allowed granted you can please".split())
 _PLAIN_NO = set("no nope don't dont do not stop cancel abort never deny denied reject rejected wait hold on now yet "
                 "please sorry".split())
-# With no model to ask, a yes that may carry a condition is not taken for a plain one.
-_MAY_CONDITION = re.compile(r"\b(if|provided|unless|once|after|before|when|only|but|first|as long as|so long as)\b", re.I)
 
 
 # The model's readings in this process, by the action and the reply: {(action, text): (when, reading)}. Keyed by the
@@ -462,8 +471,10 @@ def reading(reply, action="", plain=True):
                 return dict(said)
     except Exception:  # noqa: BLE001 - no reading to be had: what the word lists can settle, else unclear
         pass
-    if plain and is_approval(text) and not _MAY_CONDITION.search(text):
-        return {"decision": "yes", "condition": ""}
+    # No reading: a plain yes was settled above, before the model. Found (review 2026-11-03, F-02): a fallback here took
+    # any reply that began with a yes word and held no condition word for a yes, so a yes that changed the amount, the
+    # payee, the account or the time granted the ORIGINAL action on every desktop whose gate has no model. Anything
+    # beyond a plain yes is "unclear" and is asked again; a refusal may still be read as one (that only withholds).
     if REFUSAL_LEAD.match(text):
         return {"decision": "no", "condition": ""}
     return {"decision": "unclear", "condition": ""}
@@ -612,6 +623,16 @@ def searches(element):
     return element.get("role") in ("textbox", "combobox", "entry") and bool(SEARCH_FIELD.match(element.get("name") or ""))
 
 
+def goes_somewhere(element):
+    """Whether this control leads to a place rather than acting where it is: a link, a tab, or an item of the site's
+    navigation menu (NAVIGATION_PATH). Read from the control's role and container - never from its words."""
+
+    role = (element or {}).get("role") or ""
+    if role in ("link", "tab"):
+        return True
+    return role == "menuitem" and bool(NAVIGATION_PATH.search((element or {}).get("path") or ""))
+
+
 def _navigates(element):
     role = element.get("role")
     if role == "option":
@@ -723,7 +744,7 @@ def press_effect(element):
     name = element.get("name") or ""
     if _edits_the_form(label_words(name).split()):
         return None
-    if consequential(name):
+    if consequential(name, goes_somewhere(element)):
         return "asks" if role in ACTIVATING_ROLES else "commits"
     return "commits" if COMMIT_CONTROL.match(label_words(name)) else None
 

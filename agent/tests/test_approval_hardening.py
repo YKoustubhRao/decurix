@@ -38,10 +38,14 @@ class ConsequentialAnywhereInTheName(unittest.TestCase):
                 self.assertIsNotNone(approval.assess("click", control("button", name)))
 
     def test_a_read_of_one_does_not(self):
-        for name in ("Payment history", "View submitted", "View post", "Transfer history", "Pay slip",
-                     "New Purchase Invoice", "Track transfer"):
+        for name in ("Payment history", "View submitted"):
             with self.subTest(name=name):
                 self.assertIsNone(approval.assess("click", control("button", name)))
+        # A label with a committing word reads as a place only on a link (review 2026-11-03, D-04): on a button it asks.
+        for name in ("View post", "Transfer history", "Pay slip", "New Purchase Invoice", "Track transfer"):
+            with self.subTest(name=name):
+                self.assertIsNone(approval.assess("click", control("link", name)))
+                self.assertIsNotNone(approval.assess("click", control("button", name)))
 
     def test_destroying_is_never_a_read(self):
         self.assertIsNotNone(approval.assess("click", control("button", "Delete history")))

@@ -36,9 +36,11 @@ class AReplyToAnApprovalIsReadForWhatItDecides(unittest.TestCase):
             self.addCleanup(p.stop)
         self.assertEqual(approval.read_reply("yes - the client has paid the challan; offset and file.", "offset"), "yes")
 
-    def test_with_no_model_the_word_list_decides_as_before(self):
+    def test_with_no_model_only_a_plain_yes_or_no_is_decided(self):
+        # A yes with remarks may change the action (review F-02): with no model to read it, it is asked again.
         with mock.patch.object(llm_client, "available", lambda: False):
-            self.assertEqual(approval.read_reply("yes - the client has paid the challan; offset and file.", "x"), "yes")
+            self.assertEqual(approval.read_reply("yes - the client has paid the challan; offset and file.", "x"), "unclear")
+            self.assertEqual(approval.read_reply("yes go ahead", "x"), "yes")
             self.assertEqual(approval.read_reply("no, do not file it yet please", "x"), "no")
 
 

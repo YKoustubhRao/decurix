@@ -92,7 +92,8 @@ class WithNoModel(Base):
         self.use([mock.patch.object(llm_client, "available", lambda: False)])
         self.assertEqual(approval.read_reply("haan fine", "file"), "unclear")
         self.assertEqual(approval.read_reply("yes if the client paid", "pay"), "unclear", "a yes that may carry a condition")
-        self.assertEqual(approval.read_reply("yes - the client has paid the challan; offset and file.", "x"), "yes")
+        # Remarks may change the action (review F-02): beyond a plain yes, no model means it is asked again.
+        self.assertEqual(approval.read_reply("yes - the client has paid the challan; offset and file.", "x"), "unclear")
         self.assertEqual(approval.read_reply("no, do not file it yet please", "x"), "no")
 
 
