@@ -44,6 +44,23 @@ class SourceBindings(unittest.TestCase):
 
 
 class AFileNameIsReplacedOnlyWhereItStandsWhole(unittest.TestCase):
+    def test_bind_sources_leaves_a_longer_name_holding_the_bound_one(self):
+        # Through bind_sources itself (review round 4): a window of another file whose name ends with the bound one's.
+        with tempfile.TemporaryDirectory() as tmp:
+            old, new = Path(tmp) / "bill.ods", Path(tmp) / "october.ods"
+            old.write_text("demonstration")
+            new.write_text("holdout")
+            program = {"starts": {"window": "bill.ods - LibreOffice Calc"}, "steps": [
+                {"kind": "open", "open": str(old), "expect": [{"type": "active_window", "value": "bill.ods - Calc"}]},
+                {"kind": "click", "window": "prebill.ods - LibreOffice Calc", "phase_label": "bill.ods.bak",
+                 "expect": [{"type": "window", "value": "prebill.ods - Calc"}]}]}
+            bound = skills.bind_sources(program, {str(old): str(new)})
+        self.assertEqual(bound["starts"]["window"], "october.ods - LibreOffice Calc")
+        self.assertEqual(bound["steps"][0]["expect"][0]["value"], "october.ods - Calc")
+        self.assertEqual(bound["steps"][1]["window"], "prebill.ods - LibreOffice Calc")
+        self.assertEqual(bound["steps"][1]["phase_label"], "bill.ods.bak")
+        self.assertEqual(bound["steps"][1]["expect"][0]["value"], "prebill.ods - Calc")
+
     # D-36 (review round 3): a substring replace rewrote another file's name that only ends with the bound one's.
     def test_a_longer_name_holding_it_is_left_alone(self):
         self.assertEqual(skills._rename_file("prebill.xlsx - Calc", "bill.xlsx", "oct.xlsx"), "prebill.xlsx - Calc")

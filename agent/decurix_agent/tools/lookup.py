@@ -52,7 +52,7 @@ _IFSC = re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b", re.I)
 # An amount: a currency mark, Indian or Western digit grouping, paise, or a bare number of five digits or more.
 _AMOUNT = re.compile(r"(?:₹|\brs\.?|\binr)\s*\d|\b\d{1,3}(?:,\d{2,3})+(?:\.\d+)?\b|\b\d{3,}\.\d{1,2}\b|\b\d{5,}\b",
                      re.I)
-# A record's own number: letters and three or more digits in one code ("INV455", "PO-7781", "B/2026/017"); a financial
+# A record's own number: letters and three or more digits in one code ("INV0455", "PO-0001", "B/2026/001"); a financial
 # or assessment year ("FY2025-26") is the period, not a record.
 _RECORD_NUMBER = re.compile(r"(?<![\w/-])(?=[\w/-]*[A-Za-z])(?=(?:[\w/-]*?\d){3})[A-Za-z0-9][\w/-]{5,}(?![\w/-])")
 _PERIOD = re.compile(r"(?i)^(?:fy|ay)?[\s-]?\d{4}(?:[-/]\d{2,4})?$")
