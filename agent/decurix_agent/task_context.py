@@ -115,13 +115,10 @@ def withhold(text, task_id=None):
     from decurix_agent.computer import privacy
     try:
         text = str(text if text is not None else "")
-        flat = " ".join(text.split())
-        for value in sorted(secret_values(task_id), key=len, reverse=True):
-            if value in text:
-                text = text.replace(value, "[withheld]")
-            elif value == flat:
-                text = "[withheld]"
-        return privacy.withhold_known(text)
+        held = secret_values(task_id)
+        if " ".join(text.split()) in held:
+            return "[withheld]"  # a marked message, whatever its line breaks
+        return privacy.withhold_known(privacy.withhold_values(text, held))
     except Exception:  # noqa: BLE001 - fail closed
         return privacy.HELD_BACK
 

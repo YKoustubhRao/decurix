@@ -167,3 +167,10 @@ class TheControlPlanesVectors(unittest.TestCase):
         self.assertEqual(gate.verify_secrets(key, secrets, now=float(secrets["ts"])), "")
         self.assertEqual(gate.verify_request(key, dict(request, text=request["text"] + " "), now=float(request["ts"])),
                          "bad signature")
+        # H-CP-4: text whose bytes were not valid UTF-8 arrives with each bad byte as U+FFFD; that decoded string is
+        # what was signed and what is hashed.
+        bad = vectors.get("request_invalid_utf8")
+        if bad:
+            self.assertIn("�", bad["text"])
+            body = {k: bad[k] for k in ("task_id", "ts", "nonce", "text", "sig")}
+            self.assertEqual(gate.verify_request(key, body, now=float(bad["ts"])), "")

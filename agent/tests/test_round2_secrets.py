@@ -151,7 +151,12 @@ class WhatIsKeptFromAReply(unittest.TestCase):
         def distil(question, reply, task="", skill=""):
             task_context.set_reply_judgement(TASK, "j_bbbbbbbbbbbbbbbb")  # a second reply arrives meanwhile
             return ("Ledger", "Use the Purchases ledger.")
-        with mock.patch.object(lessons, "distil", distil), mock.patch.object(lessons, "remember", lambda *a, **k: True):
+        import sys
+        import decurix_agent
+        # (Some test modules put a stand-in messaging in sys.modules; this one posts through the real one.)
+        with mock.patch.object(lessons, "distil", distil), mock.patch.object(lessons, "remember", lambda *a, **k: True), \
+                mock.patch.dict(sys.modules, {"decurix_agent.messaging": messaging}), \
+                mock.patch.object(decurix_agent, "messaging", messaging, create=True):
             lessons._keep("Which ledger?", "Purchases", "", "", task_id=TASK, judgement_id="j_aaaaaaaaaaaaaaaa")
         self.wait()
         self.assertEqual(_ControlPlane.posts[-1]["derived_from"], "j_aaaaaaaaaaaaaaaa")
@@ -174,3 +179,17 @@ class AQuestionThatCannotBeShownIsRefused(InTheGate):
             said = gate.handle({"op": "check", "material": {"kind": "command", "command": "rm -rf /tmp/x"}})
         self.assertFalse(said["allowed"])
         self.assertIsNone(said["request"])
+
+
+class TheSharedHeldValueRule(unittest.TestCase):
+    """H-CP-9: the control plane and the agent withhold held values by one rule, pinned by the same vectors."""
+
+    def test_every_shared_case(self):
+        path = Path(__file__).resolve().parents[2] / "internal" / "llmrec" / "testdata" / "held-values.json"
+        if not path.exists():
+            self.skipTest(f"{path} is not in this tree")
+        cases = json.loads(path.read_text(encoding="utf-8"))["cases"]
+        self.assertTrue(cases)
+        for case in cases:
+            with self.subTest(text=case["text"]):
+                self.assertEqual(privacy.withhold_values(case["text"], case["values"]), case["want"])

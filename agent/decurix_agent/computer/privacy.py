@@ -312,8 +312,7 @@ def clean_values(values):
     withheld text, or one of its words) - withholding those would withhold the marks themselves."""
 
     out = [" ".join(str(v).split()) for v in values or () if str(v or "").strip()]
-    return [v for v in out if v.strip("[]:").lower() not in _MARK_WORDS and "[withheld" not in v.lower()
-            and "[held back" not in v.lower()]
+    return [v for v in out if "[withheld" not in v.lower() and "[held back" not in v.lower()]
 
 
 def remember_literals(values, task_id=""):
@@ -359,28 +358,68 @@ def clear_literals(task_id):
 
 
 _unsaved_literals = set()
-_MARK_WORDS = {"withheld", "held", "back", "withheld:", "marked", "secret"}
-_TOKEN_EDGE = r"\s\"'\u201c\u201d\u2018\u2019(),;<>\[\]{}=`"
 
 
-def _literal_pattern(values):
-    long = sorted({v for v in values if len(v) >= MIN_SUBSTRING}, key=len, reverse=True)
-    short = sorted({v for v in values if len(v) < MIN_SUBSTRING}, key=len, reverse=True)
-    parts = [r"\s+".join(map(re.escape, v.split())) for v in long]
-    parts += [rf"(?<![^{_TOKEN_EDGE}]){re.escape(v)}(?![^{_TOKEN_EDGE}.:!?])" for v in short]
-    return re.compile("|".join(parts)) if parts else None
+_MARKER = "[withheld]"
+
+
+def _letter_or_digit(ch):
+    """Unicode general category L* or Nd - nothing else (str.isalnum is also true for No and Nl: "\u00b2", "\u2165")."""
+
+    import unicodedata
+    category = unicodedata.category(ch)
+    return category[0] == "L" or category == "Nd"
+
+
+def withhold_values(text, values):
+    """
+    `text` with each held value withheld, by the rule the control plane applies too (llmrec.ReplaceHeld; shared vectors
+    in internal/llmrec/testdata/held-values.json, H-CP-9): a value of MIN_SUBSTRING or more code points wherever it
+    occurs, as a substring; a shorter one only as a whole token (the code point before and after it each not a letter
+    or digit - _letter_or_digit - or the text's start or end). Values longest first by code points, ties in the order
+    given, in one pass over the original text: an occurrence overlapping one already chosen, or a [withheld] marker
+    already there, is skipped. Each occurrence becomes [withheld].
+    """
+
+    if not text or not values:
+        return text
+    taken = []  # (start, end) spans chosen, and the markers already in the text
+    at = text.find(_MARKER)
+    while at != -1:
+        taken.append((at, at + len(_MARKER)))
+        at = text.find(_MARKER, at + 1)
+
+    def free(a, b):
+        return all(b <= x or a >= y for x, y in taken)
+
+    order = sorted(dict.fromkeys(v for v in values if v), key=len, reverse=True)  # (stable: ties as given)
+    chosen = []
+    for value in order:
+        at = text.find(value)
+        while at != -1:
+            end = at + len(value)
+            whole = (len(value) >= MIN_SUBSTRING
+                     or ((at == 0 or not _letter_or_digit(text[at - 1]))
+                         and (end == len(text) or not _letter_or_digit(text[end]))))
+            if whole and free(at, end):
+                taken.append((at, end))
+                chosen.append((at, end))
+            at = text.find(value, at + 1)
+    if not chosen:
+        return text
+    out, last = [], 0
+    for a, b in sorted(chosen):
+        out.append(text[last:a])
+        out.append(_MARKER)
+        last = b
+    out.append(text[last:])
+    return "".join(out)
 
 
 def _withhold_literals(text):
     tasks = _read_literals()  # raises _Unreadable: the callers fail closed
     values = [v for vs in tasks.values() for v in vs] + sorted(_unsaved_literals)
-    if not values:
-        return text
-    key = tuple(values)
-    if _literal_cache.get("pattern_key") != key:
-        _literal_cache.update(pattern_key=key, pattern=_literal_pattern(values))
-    pattern = _literal_cache.get("pattern")
-    return pattern.sub("[withheld]", text) if pattern else text
+    return withhold_values(text, values)
 
 
 def _withhold_known(text):

@@ -63,6 +63,9 @@ def _norm(text):
 
 
 def _sha(text):
+    # Hash the JSON-decoded string as received. The control plane signs text in the form encoding/json sends it (each
+    # byte that is not valid UTF-8 as U+FFFD, desktop.GateText), so the decoded string is what was signed; never
+    # re-encode or normalise it before hashing (H-CP-7). verify_request, verify_secrets and verify (a reply) rest on it.
     return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
 
 
