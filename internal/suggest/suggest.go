@@ -274,9 +274,9 @@ func (s *Store) Forget(memoryIDs []string) {
 // loadCachedVectors reads the cached embedding for each of entries (never
 // the whole suggestion_embeddings table - that would grow with total fleet
 // memory rather than with what this call could ever use). Rows are fully
-// read and closed before returning - the SQLite pool here is one
-// connection, and no query may run while a *sql.Rows from an earlier one is
-// still open.
+// read and closed before returning: no query may run while a *sql.Rows from
+// an earlier one is still open (the CLAUDE.md rule; the pool holds several
+// connections, C-27).
 func (s *Store) loadCachedVectors(entries []memory.WorkerMemoryEntry) map[string][]float32 {
 	vectors := make(map[string][]float32, len(entries))
 	if len(entries) == 0 {

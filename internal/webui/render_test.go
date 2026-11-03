@@ -29,6 +29,10 @@ func TestRenderEveryPage(t *testing.T) {
 	if !strings.Contains(readiness.String(), "Unlock owner controls") || !strings.Contains(readiness.String(), "Enable this scope") {
 		t.Fatal("readiness page lost its owner gate or scoped enable control")
 	}
+	// Its top bar works as on every other page: the shared chrome script is there (W-17).
+	if !strings.Contains(readiness.String(), "window.Decurix = {") {
+		t.Fatal("readiness page lacks the chrome script its top bar needs")
+	}
 
 	running := desktop.Desktop{
 		ID:        "research-box",

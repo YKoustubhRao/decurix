@@ -2107,7 +2107,7 @@
     card.dataset.desktopId = info.id;
 
     var profileLabel = info.profile === "ai" ? "AI Developer" : (info.profile === "developer" ? "Developer" : "Basic");
-    var harnessLabel = "TheBot · " + ({claude: "Claude", azure: "Azure"}[info.brain] || "Ollama");
+    var harnessLabel = "TheBot · " + ({claude: "Claude", azure: "Azure", openai: "OpenAI"}[info.brain] || "Ollama");
     var cpusLabel = info.cpus == 1 ? "1 core" : (info.cpus + " cores");
     var url = "/desktop/" + encodeURIComponent(info.id) + "/";
 

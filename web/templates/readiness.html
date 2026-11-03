@@ -68,4 +68,7 @@ $('sim-draft').onclick=async()=>{$('error').textContent='';try{const sources=[..
 $('sim-approve').onclick=async()=>{$('error').textContent='';try{await api('simulation/approve',{draft_id:simDraft.id,generator_sha:simDraft.generator_sha,mock_sha:simDraft.mock_sha,cases_sha:simDraft.cases_sha});$('sim-review').hidden=true;const run=await api('simulation/run',{suite_id:simDraft.id});await simPollRun(run.id)}catch(e){error(e)}};
 window.addEventListener('pagehide',()=>clearTimeout(simTimer));
 })();
-</script></body></html>
+</script>
+{{/* The top bar's menus, bell, theme toggle and badges work here as on every other page (W-17). */}}
+{{template "chrome-js"}}
+</body></html>
