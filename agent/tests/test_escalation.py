@@ -65,13 +65,28 @@ class Names(unittest.TestCase):
 
 class Healing(unittest.TestCase):
 
-    def test_a_renamed_control_in_the_same_place_is_found(self):
+    def test_a_renamed_control_in_the_same_place_is_put_to_a_person(self):
+        # Another name is never taken without a person (review 2026-11-03, D-09): it is a candidate.
         renamed = button("Save changes", [502, 401, 110, 30], group="g")
         ranked = healing.rank(save_step(), screen(renamed, CANCEL))
 
         verdict, top = healing.decide(save_step(), ranked)
-        self.assertEqual(verdict, "confident")
+        self.assertEqual(verdict, "doubt")
         self.assertEqual(top["element"]["name"], "Save changes")
+
+    def test_the_same_name_in_another_role_is_found(self):
+        moved = field("link", "Save", box=[502, 401, 110, 30], path=PATH.format("Save"), group="g")
+        verdict, top = healing.decide(save_step(), healing.rank(save_step(), screen(moved, CANCEL)))
+        self.assertEqual(verdict, "confident")
+        self.assertIs(top["element"], moved)
+
+    def test_another_number_or_party_is_never_healed_onto(self):
+        for was, now in (("INV-1042", "INV-1043"), ("Vendor One", "Vendor One Pvt"), ("Vendor One Pvt", "Vendor One")):
+            step = save_step(kind="click", target={"role": "link", "name": was, "path": PATH.format(was),
+                                                   "window_title": "Shop - Chromium"})
+            other = field("link", now, box=[500, 400, 80, 30], path=PATH.format(now), group="g")
+            with self.subTest(was=was, now=now):
+                self.assertNotEqual(healing.decide(step, healing.rank(step, screen(other, CANCEL)))[0], "confident")
 
     def test_a_similar_name_somewhere_else_is_doubt_not_a_match(self):
         far = field("button", "Delete all", box=[50, 600, 90, 30], path='site x > table "Rows" > button "Delete all"', group="g")
@@ -105,8 +120,8 @@ class Healing(unittest.TestCase):
         verdict, top = healing.decide(step, healing.rank(step, screen(renamed, CANCEL)))
         self.assertEqual(verdict, "doubt")
 
-        # ... while the same screen heals an ordinary step.
-        self.assertEqual(healing.decide(save_step(), healing.rank(save_step(), screen(renamed, CANCEL)))[0], "confident")
+        # ... and so it is for an ordinary step: another name is a person's to take (D-09).
+        self.assertEqual(healing.decide(save_step(), healing.rank(save_step(), screen(renamed, CANCEL)))[0], "doubt")
 
     def test_a_step_the_gate_guards_is_healed_only_onto_its_own_control(self):
         # Moved and redrawn, the same role and name: found. A near-identical name is another control.
@@ -174,13 +189,14 @@ class Ladder(unittest.TestCase):
         ladder = escalation.Ladder(ask_model=ask, goal="Save the order", total=4, **kwargs)
         return ladder, ladder.recover(step or save_step(), doubtful(), "button \"Save\" is not on the screen")
 
-    def test_the_engine_may_choose_among_the_candidates(self):
+    def test_the_engines_choice_under_another_name_is_put_to_a_person(self):
         ask = asks('Sure: {"choice": 1, "confidence": 0.9, "reason": "same place"}')
         ladder, found = self.recover(ask)
 
-        self.assertEqual(found["how"], "grounded")
-        self.assertEqual(found["element"]["name"], "Store")
+        self.assertIsNone(found["element"])
+        self.assertTrue(found["options"])
         self.assertEqual(ladder.model_calls, 1)
+        self.assertIn("under another name - asked instead", " ".join(ladder.trail))
         # It is shown the recorded control and the numbered candidates, never asked to invent one.
         self.assertIn('Recorded control: button "Save"', ask.calls[0][1])
         self.assertIn('1. button "Store"', ask.calls[0][1])
@@ -292,16 +308,23 @@ class Running(unittest.TestCase):
         self.assertEqual(fake.acted, [])
 
     def test_with_a_ladder_it_is_found_and_the_run_says_so(self):
-        renamed = button("Save changes", [500, 400, 80, 30], group="g")
+        moved = button("Save!", [500, 400, 80, 30], group="g")  # the same name, drawn with a mark
         ladder = escalation.Ladder()
-        fake, result = self.run_on([renamed, CANCEL], ladder, expect=[{"type": "element", "role": "alert", "name": "Saved"}])
+        fake, result = self.run_on([moved, CANCEL], ladder, expect=[{"type": "element", "role": "alert", "name": "Saved"}])
 
-        self.assertEqual(result["outcome"], replay.VERIFIED)
-        self.assertEqual(fake.acted[0][1]["path"], renamed["path"])
+        # A repaired run is complete, never verified: VERIFIED skips the final judge (D-09).
+        self.assertEqual(result["outcome"], replay.COMPLETED_UNVERIFIED)
+        self.assertEqual(fake.acted[0][1]["path"], moved["path"])
         self.assertEqual(result["healed"], 1)
-        self.assertIn('("Save" is now "Save changes")', result["text"])
-        self.assertIn("No model was used", result["text"])
+        self.assertIn("I repaired step 1", result["text"])
         self.assertIn("s1", ladder.confirmed)
+
+    def test_with_a_ladder_a_renamed_control_is_not_pressed(self):
+        renamed = button("Save changes", [500, 400, 80, 30], group="g")
+        fake, result = self.run_on([renamed, CANCEL], escalation.Ladder(),
+                                   expect=[{"type": "element", "role": "alert", "name": "Saved"}])
+        self.assertNotIn(result["outcome"], replay.SUCCESS)
+        self.assertEqual(fake.acted, [])
 
     def test_a_control_nothing_is_like_still_halts_and_offers_what_is_closest(self):
         ladder = escalation.Ladder(ask_model=None)
@@ -465,23 +488,24 @@ class Flow(ts.TeachingBase):
     def test_a_renamed_control_is_repaired_and_learned_when_the_screen_confirms_it(self):
         name = self.taught(expect=True)
         fake = self.screen()
-        fake.elements[:] = [field("button", "Save changes")]
+        fake.elements[:] = [field("button", "Save!")]
         fake.after = {"adds": [field("alert", "Saved")]}
         self.asked.clear()
 
         skill_task.perform(f"/skill {name}")
+        # A repaired run is unverified: a person (or the judge) confirms it (D-09).
+        self.confirm_done()
 
-        self.assertEqual(self.asked, [])
         self.assertEqual(self.finals[-1][1], "final", self.finals[-1][0])
-        self.assertIn('I repaired step 1 ("Save" is now "Save changes")', self.finals[-1][0])
+        self.assertIn('I repaired step 1 ("Save" is now "Save!")', self.finals[-1][0])
         self.assertIn("learned from this run", self.finals[-1][0])
-        self.assertEqual(skills.load(name)["steps"][0]["alternates"], [{"role": "button", "name": "Save changes"}])
+        self.assertEqual(skills.load(name)["steps"][0]["alternates"], [{"role": "button", "name": "Save!"}])
 
     def test_a_repair_nothing_confirmed_is_learned_the_second_time(self):
         name = self.taught()
         for _ in range(2):
             fake = self.screen()
-            fake.elements[:] = [field("button", "Save changes")]
+            fake.elements[:] = [field("button", "Save!")]
             skill_task.perform(f"/skill {name}")
             self.confirm_done()
 
@@ -489,18 +513,17 @@ class Flow(ts.TeachingBase):
         self.assertNotIn("learned from this run", self.finals[0][0])
         self.assertIn("learned from this run", self.finals[1][0])
 
-    def test_the_engine_grounds_a_control_healing_was_unsure_of(self):
+    def test_the_engines_pick_under_another_name_is_put_to_the_person(self):
         name = self.taught()
         ask = self.engine('{"choice": 1, "confidence": 0.9, "reason": "same button"}')
         fake = self.screen()
         fake.elements[:] = [field("button", "Store"), field("button", "Cancel", path="site x > button Cancel", box=[300, 300, 50, 20])]
 
         skill_task.perform(f"/skill {name}")
-        self.confirm_done()
 
         self.assertEqual(len(ask.calls), 1)
-        self.assertEqual(self.finals[-1][1], "final", self.finals[-1][0])
-        self.assertEqual(fake.acted[0][1]["path"], fake.elements[0]["path"])
+        self.assertEqual(fake.acted, [])
+        self.assertIn('1) button "Store"', self.asked[-1][0])
 
     def test_without_a_ready_engine_a_person_is_asked_with_the_candidates_numbered(self):
         state.backend_ready = False

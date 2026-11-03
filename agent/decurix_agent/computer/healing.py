@@ -343,6 +343,23 @@ def _gated(element):
         return True
 
 
+def keeps_identity(step, element):
+    """
+    Whether taking `element` keeps the step on the same named thing: its name is one the step's control is known by
+    (aliases), apart from case, spacing and punctuation - the same digit runs and the same whole words
+    (identity.changes_identity). A repair may find a control in another place, container or role; never under
+    another name. Found in review (2026-11-03, D-09): a link to one invoice number was healed "confidently" onto the
+    next number's, and a party's name onto a longer name - another record, then reported verified.
+    """
+
+    from decurix_agent.computer import identity
+
+    names = aliases(step)
+    if not names:
+        return True  # nothing named was recorded: no name to keep
+    return any(not identity.changes_identity(name, element.get("name")) for name in names)
+
+
 def retargets(step, element):
     """
     Whether taking `element` for this step would aim it at another control where that matters: a strict step (one
@@ -378,7 +395,8 @@ def decide(step, ranked):
     accept, floor = (STRICT_ACCEPT, STRICT_NAME_FLOOR) if strict(step) else (ACCEPT, NAME_FLOOR)
     lead = top["score"] - (ranked[1]["score"] if len(ranked) > 1 else 0.0)
 
-    if top["score"] >= accept and top["name"] >= floor and lead >= MARGIN and not retargets(step, top["element"]):
+    if top["score"] >= accept and top["name"] >= floor and lead >= MARGIN and not retargets(step, top["element"]) \
+            and keeps_identity(step, top["element"]):
         return "confident", top
 
     if top["score"] >= DOUBT:

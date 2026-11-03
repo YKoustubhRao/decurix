@@ -237,6 +237,10 @@ class Ladder:
                 # The engine's pick is a control that commits or is gated, under another name: a person decides that.
                 self.trail.append(f"the engine chose {healing.describe(picked[0])}, which commits - asked instead")
                 picked = None
+            if picked is not None and not healing.keeps_identity(step, picked[0]["element"]):
+                # Another name is another record or party, whoever picks it (D-09): a person decides that.
+                self.trail.append(f"the engine chose {healing.describe(picked[0])}, under another name - asked instead")
+                picked = None
             if picked is not None:
                 return {"element": picked[0]["element"], "how": GROUNDED, "confidence": picked[1],
                         "reason": "", "options": [], "observation": observation}

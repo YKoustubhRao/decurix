@@ -1659,6 +1659,8 @@ def _run_program(program, params=None, start=1, report=None, ladder=None):
 
     # Steps from here up to this one were left out as a detour (_recover).
     skip_until = 0
+    # The last step that committed something, and what the screen showed after it: {"n", "observation"}.
+    committed = {}
 
     for index, step in enumerate(steps):
         if step["n"] < start or step["n"] < skip_until:
@@ -1726,6 +1728,8 @@ def _run_program(program, params=None, start=1, report=None, ladder=None):
             return finish(NEEDS_APPROVAL, step, reason=text, resume_from=step["n"])
 
         counts["done"] += 1
+        if step.get("consequential") or _step_commits(step):
+            committed.update(n=step["n"], observation=result.get("observation"))
 
         # A step that worked in the window an earlier step opened: that app is
         # in a state the recording's steps work in, and opening it fresh is no
@@ -1779,10 +1783,54 @@ def _run_program(program, params=None, start=1, report=None, ladder=None):
         if ladder is not None:
             ladder.confirm(step)
 
-    # Steps left out, or a click placed by the engine reading the screen, are
-    # a judgement: such a run is complete, never verified.
-    judged = counts["detoured"] or (ladder is not None and ladder.grounded)
-    return finish(VERIFIED if counts["unverified"] == 0 and not judged else COMPLETED_UNVERIFIED)
+    # Steps left out, a control found again under means other than its recorded name (healed, or picked by the
+    # engine), or a click placed by the engine reading the screen, are a judgement: such a run is complete, never
+    # verified. Found in review (2026-11-03, D-09): a healed step was not counted, and a run re-aimed onto another
+    # record ended VERIFIED, which skips the final judge.
+    judged = counts["detoured"] or (ladder is not None and (ladder.grounded or ladder.healed))
+    if counts["unverified"] == 0 and not judged:
+        unread = _not_read_back(program, values, committed)
+        if unread:
+            report("The run's values were not read back after it saved: " + ", ".join(unread)
+                   + " - it ran as recorded, unverified")
+            return finish(COMPLETED_UNVERIFIED)
+        return finish(VERIFIED)
+    return finish(COMPLETED_UNVERIFIED)
+
+
+def _screen_text(observation):
+    """Everything an observation shows as text: window titles, element names and values."""
+
+    observation = observation or {}
+    parts = [observation.get("active_title") or ""] + [w.get("title") or "" for w in observation.get("windows") or []]
+    for e in observation.get("elements") or []:
+        parts += [str(e.get("name") or ""), str(e.get("value") or "")]
+    return " | ".join(p for p in parts if p)
+
+
+def _not_read_back(program, values, committed):
+    """
+    The run's own values (its parameters typed before the last step that committed) that the screen does not show
+    after that step, by name; [] when every one is there, or nothing was committed. Found in review (2026-11-03,
+    D-25): VERIFIED meant the pages had the recorded shape - a run that saved another amount or customer was VERIFIED
+    whenever the pages looked alike. A value is read back as records.stands_in reads one: a number in any format, a
+    date in any format, words whole. The screen is looked at once more at the end; unreadable is not read back.
+    """
+
+    if not committed:
+        return []
+    wanted = [p for p in program.get("params") or []
+              if not p.get("secret") and p.get("step", 0) <= committed["n"]
+              and isinstance(values.get(p["name"]), str) and values[p["name"]].strip()]
+    if not wanted:
+        return []
+    try:
+        shown = _screen_text(core.observe(remember=False))
+    except Exception:  # noqa: BLE001 - the end could not be looked at: what the committing step left is used
+        shown = _screen_text(committed.get("observation"))
+    from decurix_agent.computer import records
+
+    return [p["name"] for p in wanted if not records.stands_in(values[p["name"]], shown)]
 
 
 def _summary_text(program, result, step):
