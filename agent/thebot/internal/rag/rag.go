@@ -30,6 +30,7 @@ import (
 
 	"thebot/internal/llm"
 	"thebot/internal/migrate"
+	"thebot/internal/withheld"
 )
 
 const (
@@ -218,7 +219,8 @@ func (r *RAG) IngestFile(ctx context.Context, relPath string) (chunks int, metho
 		return 0, "", err
 	}
 
-	pieces := chunkText(text)
+	// The job's secret values never reach the index, the embedder or a later recall (C14): withheld before chunking.
+	pieces := chunkText(withheld.From(ctx).Text(text))
 	if len(pieces) == 0 {
 		return 0, method, nil
 	}
