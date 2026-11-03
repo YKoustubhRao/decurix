@@ -41,19 +41,24 @@ type viewStep struct {
 // program uses, and a GPU's, where this machine has them. Not the host's
 // whole /dev: its /dev/shm and /dev/mqueue are shared with every host
 // process, a channel out of the sandbox.
+// WSL2 exposes its GPU as /dev/dxg (its user-space drivers are under
+// /usr/lib/wsl, which the /usr read already binds, submounts included).
 var viewDevices = []string{"/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom",
-	"/dev/dri", "/dev/kfd", "/dev/nvidiactl", "/dev/nvidia-uvm", "/dev/nvidia-uvm-tools", "/dev/nvidia-modeset"}
+	"/dev/dri", "/dev/kfd", "/dev/nvidiactl", "/dev/nvidia-uvm", "/dev/nvidia-uvm-tools", "/dev/nvidia-modeset", "/dev/dxg"}
 
 // devSteps is the view's /dev: the devices above that exist, the NVIDIA
 // GPUs (nvidia0, nvidia1...), and a private /dev/shm.
-func devSteps() []viewStep {
+func devSteps() []viewStep { return devStepsWith(os.Stat, filepath.Glob) }
+
+// devStepsWith is devSteps with the host's view passed in (tests).
+func devStepsWith(stat func(string) (os.FileInfo, error), glob func(string) ([]string, error)) []viewStep {
 	var out []viewStep
 	paths := append([]string{}, viewDevices...)
-	if gpus, err := filepath.Glob("/dev/nvidia[0-9]*"); err == nil {
+	if gpus, err := glob("/dev/nvidia[0-9]*"); err == nil {
 		paths = append(paths, gpus...)
 	}
 	for _, p := range paths {
-		if fi, err := os.Stat(p); err == nil {
+		if fi, err := stat(p); err == nil {
 			out = append(out, viewStep{path: p, write: true, isFile: !fi.IsDir()})
 		}
 	}

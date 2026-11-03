@@ -51,9 +51,10 @@ type Policy struct {
 // systemRead is what a program needs from the system to run, on any Linux.
 // /proc is only the machine's own facts: /proc/<pid>/environ would hand over
 // the secrets of every process this user runs, Brainiac's first of all.
+// /proc/driver/nvidia is what NVIDIA's user-space driver reads about its GPUs.
 var systemRead = []string{"/usr", "/lib", "/lib32", "/lib64", "/bin", "/sbin", "/opt", "/etc", "/sys",
 	"/proc/cpuinfo", "/proc/meminfo", "/proc/stat", "/proc/filesystems", "/proc/version", "/proc/sys",
-	"/nix/store", "/run/opengl-driver"}
+	"/proc/driver/nvidia", "/nix/store", "/run/opengl-driver"}
 
 // systemWrite is the devices: null and random, and the GPU's nodes, which a
 // server opens read-write.
