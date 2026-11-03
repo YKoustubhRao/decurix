@@ -34,8 +34,10 @@ var hostTouchingRoutes = []string{
 func TestTheGatedListenerServesNoHostSurface(t *testing.T) {
 	_, gated := listenerMuxes(fullServer(t))
 	for _, path := range hostTouchingRoutes {
-		if _, pattern := gated.Handler(httptest.NewRequest(http.MethodGet, path, nil)); pattern == path {
-			t.Errorf("%s is served on the gated listener", path)
+		// Not itself, and not through a subtree or a mounted sub-mux either: only "no route" or the catch-all page
+		// may answer it (RW1-F-07).
+		if _, pattern := gated.Handler(httptest.NewRequest(http.MethodGet, path, nil)); pattern != "" && pattern != "/" {
+			t.Errorf("%s is served on the gated listener (as %q)", path, pattern)
 		}
 	}
 }
