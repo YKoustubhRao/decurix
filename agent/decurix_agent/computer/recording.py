@@ -368,13 +368,24 @@ def sessions():
     return found
 
 
-def load(session_id):
-    """(meta, events) of a recording. Raises FileNotFoundError."""
+class Unreadable(ValueError):
+    """A recording that is there and cannot be read whole (strict load): what it held is unknown, never "nothing"."""
+
+
+def load(session_id, strict=False):
+    """
+    (meta, events) of a recording. Raises FileNotFoundError when there is none. `strict` (what the checks read, N-1,
+    review round 4): a meta that is there and cannot be read, an events file that cannot be read, or a line that is no
+    event raises Unreadable - "nothing typed" must never stand in for "could not be read". Otherwise a line cut short by
+    a process killed mid-write is passed over, as the recordings page and replays need.
+    """
 
     directory = _dir(session_id)
     meta = _read_meta(directory)
 
     if meta is None:
+        if strict and (directory / "meta.json").exists():
+            raise Unreadable(f"the recording {session_id} cannot be read")
         raise FileNotFoundError(f"no recording {session_id}")
 
     events = []
@@ -389,9 +400,15 @@ def load(session_id):
                     events.append(json.loads(line))
                 except ValueError:
                     # A line cut short by a process killed mid-write.
+                    if strict:
+                        raise Unreadable(f"the recording {session_id} has a line that is no event") from None
                     continue
     except FileNotFoundError:
         pass
+    except OSError as exc:
+        if strict:
+            raise Unreadable(f"the recording {session_id}'s events cannot be read ({type(exc).__name__})") from exc
+        raise
 
     return meta, events
 

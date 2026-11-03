@@ -2547,6 +2547,10 @@ def _judge(run, claim, note=""):
     # A gathered run's files are a fact code decides (_documents_note), on every way the run ends - the replay's and
     # the model's alike (found live 2026-11-02: a month the model did itself after the gather was judged without them).
     found = "\n".join(x for x in (note, _documents_note(run), _assumed_note(run)) if x)
+    gone = _record_unread()
+    if gone:
+        return {"verdict": verify.UNSURE, "confidence": 0.0, "seen": "",
+                "why": verify.outcome(None, not_made=[gone])["why"]}
     return verify.judge(_with_said(run.get("context") or _engine_request(run)), claim=claim, found=found,
                         criteria=(_rows_note(run) + "\n" if _rows_note(run) else "")
                         + _criteria(skill, run["values"], since=run.get("began")),
@@ -3057,11 +3061,42 @@ def _with_said(task):
 UNCHECKED_ANSWER = "Not checked: nothing I did or read can confirm this - it is from what I know, not from a source."
 
 
-def _text_problems(reply):
+def _gate_inputs():
+    """
+    (drafts, not_made): this task's email drafts, read once for the gate, and what could not be read - the drafts' log
+    or the record of what the tools did. Either is a check not made, never "no drafts" or "nothing done" (N-1, review
+    round 4: a corrupt recording read as nothing typed, a torn drafts log as no drafts).
+    """
+
+    unread = []
+    try:
+        drafts = produced.drafts()
+    except Exception as exc:  # noqa: BLE001 - not made, never passed
+        log(f"Could not read this task's drafts: {exc}")
+        drafts = []
+        unread.append(f"this task's email drafts could not be read ({type(exc).__name__})")
+    gone = _record_unread()
+    if gone:
+        unread.append(gone)
+    return drafts, unread
+
+
+def _record_unread():
+    """"" when the record of what this task's tools did can be read (or there is none); else why not (N-1)."""
+
+    try:
+        evidence.observed()  # (its screen actions and its notes, both read strictly)
+        return ""
+    except Exception as exc:  # noqa: BLE001 - said, as a check not made
+        log(f"Could not read the record of what the tools did: {exc}")
+        return f"the record of what the tools did could not be read ({type(exc).__name__})"
+
+
+def _text_problems(reply, drafts=None):
     """What a program decides about a report's own text, with no model: sums it writes out that do not come to what
     they say, numbers written as a program prints them. [] when none (verify.false_sums, verify.program_numbers)."""
 
-    text = "\n".join((reply or "", produced.drafts_text()))
+    text = "\n".join((reply or "", produced.drafts_text(drafts)))
     return list(verify.false_sums(text)) + list(verify.program_numbers(reply or ""))
 
 
@@ -3086,6 +3121,9 @@ def _gate(reply, kind, engine):
         _playbook(False)
 
     guided = guidance.get()
+    # What the gate reads of this task's drafts and of its tools' record, once: one that cannot be read is a check
+    # not made (N-1).
+    drafts_now, unread = _gate_inputs()
     if guided is None:
         # (Not "or no hosted model": the checks a program decides need none, and a judgement nobody could make is
         # "not checked", never passed - verify.outcome. Review 2026-11-02: with no model the whole gate was skipped,
@@ -3106,7 +3144,7 @@ def _gate(reply, kind, engine):
         # A request that asks for named files is checked even when nothing was found written: found live
         # (2026-10-19), a request for error_summary.txt was answered by a built program, and the report went out
         # unchecked.
-        if not _did_screen_work() and not (produced.files(reply) or produced.drafts()
+        if not _did_screen_work() and not unread and not (produced.files(reply) or drafts_now
                                            or procedures.in_request(state.current_task)
                                            or produced.requested_names(state.current_task)
                                            or playbooks.changed_things()):
@@ -3116,7 +3154,8 @@ def _gate(reply, kind, engine):
             # judge with that evidence. One with nothing to check it against goes out said NOT checked - never as a
             # checked result (E-02, T-01, review 2026-11-03: a wrong sum in a chat answer went out verbatim, and a
             # DONE from memory after every command failed read as verified).
-            if not (_text_problems(reply) or evidence.observed() or evidence.files_read() or _commands_text()):
+            if not (_text_problems(reply, drafts_now) or evidence.observed() or evidence.files_read()
+                    or _commands_text()):
                 write_final_reply(f"{UNCHECKED_ANSWER}\n\n{(reply or '').strip()}", kind="final", engine=engine,
                                   checked=False, gated=True)
                 return True
@@ -3214,7 +3253,7 @@ def _gate(reply, kind, engine):
     # diff) and always for the person (where the original is kept). Nothing is put back while checking, and the
     # request's verbs decide nothing (E-12, review 2026-11-03: an in-place update the request asked for was reverted
     # as "you changed my file"). A check that cannot be made leaves the work not checked (E-01).
-    gate_not_made, changed_for_judge, changed_for_person = [], [], []
+    gate_not_made, changed_for_judge, changed_for_person = list(unread), [], []
     try:
         changes = source_guard.changed_sources(task_context.current(), state.current_task or "")
         changed_for_judge = source_guard.judge_lines(changes)
@@ -3237,7 +3276,7 @@ def _gate(reply, kind, engine):
                           "holds is unchanged.")
     facts = produced.FileFacts()
     if run is None:
-        facts = produced.file_facts(state.current_task or "", made, host_copies, drafts_made=produced.drafts())
+        facts = produced.file_facts(state.current_task or "", made, host_copies, drafts_made=drafts_now)
         # Filler typed into a form, from no source (long_task.invented_typing): a file fact like the others here.
         typed_found, typed_failed = _invented_typing()
         facts.file_faults.extend(f for f in typed_found if f not in facts.file_faults)
@@ -3347,18 +3386,18 @@ def _gate(reply, kind, engine):
                    "why": "The file the request asked for is not where it said on the person's computer. Save it again "
                           "with Save As, typing the whole name and choosing the file type the request asked for, then "
                           "read the dialog back before pressing Save."}
-    elif verify.false_sums("\n".join((reply or "", produced.drafts_text()))):
+    elif verify.false_sums("\n".join((reply or "", produced.drafts_text(drafts_now)))):
         # No model is asked: a sum the report (or an email it drafted) writes out either comes to what it says or not.
-        wrong = verify.false_sums("\n".join((reply or "", produced.drafts_text())))
+        wrong = verify.false_sums("\n".join((reply or "", produced.drafts_text(drafts_now))))
         verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "; ".join(wrong)[:600],
                    "why": "A sum you wrote is wrong. Work every total out with a command over the source figures, "
                           "correct whatever was decided from it (a status, an exception, a total in a file or an "
                           "email) where it is, and report the corrected figures."}
     elif verify.program_numbers("\n".join((reply or "", produced.text(made) if run is None else "",
-                                            produced.drafts_text()))):
+                                            produced.drafts_text(drafts_now)))):
         # No model is asked: a number written as a program prints it is in the report or file for anyone to see.
         odd = verify.program_numbers("\n".join((reply or "", produced.text(made) if run is None else "",
-                                                produced.drafts_text())))
+                                                produced.drafts_text(drafts_now))))
         verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0,
                    "seen": "these numbers are written as a program prints them: " + ", ".join(odd),
                    "why": "Write every figure the way a person writes it: money rounded to the cent (7,183.00), others "
@@ -3397,7 +3436,7 @@ def _gate(reply, kind, engine):
         verdict = (run.pop("_verdict", None) or _judge(run, reply, note=note)) if run is not None else verify.judge(
             _with_said(guided["task"]), claim=reply, live_png=evidence.live() if on_screen else None, observed=evidence.observed(),
             screen_text=evidence.live_text() if on_screen else "", screen=on_screen,
-            produced="\n".join(x for x in (produced.text(made, focus=notes + loud), produced.drafts_text(),
+            produced="\n".join(x for x in (produced.text(made, focus=notes + loud), produced.drafts_text(drafts_now),
                                            _commands_text(),
                                            sources.evidence(state.current_task or "", made),
                                            _bill_evidence(state.current_task or "", made),
@@ -3575,8 +3614,11 @@ def check_unchecked(claim, engine):
     """
 
     progress.emit("Checking the screen to see that the task was really done.")
-    verdict = verify.judge(_with_said(state.current_task or ""), claim=claim, live_png=evidence.live(),
-                           observed=evidence.observed(), screen_text=evidence.live_text())
+    gone = _record_unread()
+    verdict = ({"verdict": verify.UNSURE, "confidence": 0.0, "seen": "",
+                "why": verify.outcome(None, not_made=[gone])["why"]} if gone else
+               verify.judge(_with_said(state.current_task or ""), claim=claim, live_png=evidence.live(),
+                            observed=evidence.observed(), screen_text=evidence.live_text()))
     if verify.outcome(verdict)["status"] == verify.DONE:
         return write_final_reply(f"{claim}\n\nChecked on the screen: {verdict['seen']}", kind="final", engine=engine,
                                  checked=True)

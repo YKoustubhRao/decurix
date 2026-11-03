@@ -1176,15 +1176,12 @@ def _written_since(path, began):
 
 
 def drafts():
-    """The emails this task drafted into the Outbox (tools/outbox.py keeps a note of each)."""
+    """The emails this task drafted into the Outbox (tools/outbox.py keeps a note of each). A log that cannot be read
+    raises (outbox.Unreadable): the caller makes it a check not made, never "no drafts" (N-1, review round 4)."""
 
     from decurix_agent.tools import outbox
 
-    try:
-        return outbox.drafted()
-    except Exception as exc:
-        log(f"produced: could not read this task's drafts: {exc}")
-        return []
+    return outbox.drafted()
 
 
 # ============================================================

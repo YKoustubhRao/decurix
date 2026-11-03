@@ -919,7 +919,10 @@ def _same_drafts(sandbox):
 
     from decurix_agent.tools import outbox
 
-    task, trial = produced.drafts(), outbox.read_log(sandbox / "drafts.jsonl")
+    try:
+        task, trial = produced.drafts(), outbox.read_log(sandbox / "drafts.jsonl")
+    except Exception as exc:  # noqa: BLE001 - not compared: the tool is not kept on a guess (N-1)
+        return f"The drafts could not be read to compare them ({type(exc).__name__})."
     if len(task) != len(trial):
         return (f"The task drafted {len(task)} email(s) with `office email`; the script drafted {len(trial)}. It "
                 "must draft exactly what the task did.")
@@ -963,7 +966,11 @@ def _prove(tool):
         wrong = _same_drafts(sandbox)
         if wrong:
             return wrong
-        if not written and not produced.drafts():
+        try:
+            drafted = produced.drafts()
+        except Exception as exc:  # noqa: BLE001 - not known: the tool is not kept (N-1)
+            return f"The task's drafts could not be read ({type(exc).__name__})."
+        if not written and not drafted:
             return ("It wrote no file in the work folder it was run in. It must write where its arguments say, "
                     "not to a fixed path.")
         for relative in written:

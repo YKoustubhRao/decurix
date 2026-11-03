@@ -229,7 +229,11 @@ def _dry_drafts(log_path, work, out):
 
     from decurix_agent.tools import outbox
 
-    for record in outbox.read_log(log_path):
+    try:
+        records = outbox.read_log(log_path)
+    except Exception as exc:  # noqa: BLE001 - what the script drafted is unknown: nothing is drafted (N-1)
+        return f"What it drafted could not be read ({type(exc).__name__}): nothing was drafted."
+    for record in records:
         attached = []
         for name in record.get("attachments") or []:
             found = [p for p in work.rglob("*") if p.name == name and p.is_file() and not p.is_symlink()]
@@ -264,8 +268,12 @@ def _draft_once(records):
 
     from decurix_agent.tools import outbox
 
+    try:
+        already = produced.drafts()
+    except Exception as exc:  # noqa: BLE001 - which are made is unknown: nothing is drafted twice on a guess (N-1)
+        return f"the task's drafts could not be read ({type(exc).__name__}), so nothing was drafted"
     for record in records:
-        if any(_same_draft(made, record) for made in produced.drafts()):
+        if any(_same_draft(made, record) for made in already):
             continue
         try:
             outbox.draft(record.get("to") or [], record.get("subject") or "", record.get("body") or "",
@@ -351,7 +359,15 @@ def perform(content, task_file=None):
                  f"{printed[:MAX_OUTPUT_CHARS]}")
         made = produced.files(reply, request=content)
         # The same code-decided facts about the files as the final gate's (produced.file_facts), with no model.
-        facts = produced.file_facts(content, made, drafts_made=dry or produced.drafts())
+        # The task's drafts, read once: a log that cannot be read is a check not made (N-1).
+        drafts_unread = ""
+        try:
+            task_drafts = dry or produced.drafts()
+        except Exception as exc:  # noqa: BLE001
+            task_drafts, drafts_unread = [], f"this task's email drafts could not be read ({type(exc).__name__})"
+        facts = produced.file_facts(content, made, drafts_made=task_drafts)
+        if drafts_unread:
+            facts.could_not.append(drafts_unread)
         from decurix_agent import source_guard, task_context
         # The person's given files that changed: facts for the judge and lines for the person, never put back while
         # checking (E-12); a check that cannot be made leaves the result not checked (E-01).
@@ -376,7 +392,7 @@ def perform(content, task_file=None):
                               "left, or a value is on no record"}
         else:
             verdict = verify.judge(content, claim=reply, screen=False,
-                                   produced="\n".join(x for x in (produced.text(made), produced.drafts_text(dry or None),
+                                   produced="\n".join(x for x in (produced.text(made), produced.drafts_text(task_drafts),
                                                                   produced.notes_text(facts.notes() + changed_for_judge
                                                                                       + changed_for_person)) if x),
                                    look_up=lambda terms: produced.lines_with(made, terms))

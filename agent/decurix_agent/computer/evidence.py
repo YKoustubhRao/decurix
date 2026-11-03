@@ -260,14 +260,18 @@ def _prune():
 
 
 def _task_events(task_id):
-    """The actions a task's tools took on the screen, as recorded, oldest first; [] when there are none."""
+    """
+    The actions a task's tools took on the screen, as recorded, oldest first; [] when there is no task or no recording.
+    A recording that is there and cannot be read raises (recording.Unreadable): the checks that read it make that a
+    check not made, never "nothing typed" (N-1, review round 4).
+    """
 
     task_id = task_id or task_context.current()
     if not task_id:
         return []
     try:
-        return recording.load(recording.session_for_task(task_id))[1]
-    except (FileNotFoundError, OSError, ValueError):
+        return recording.load(recording.session_for_task(task_id), strict=True)[1]
+    except FileNotFoundError:
         return []
 
 
@@ -309,19 +313,25 @@ def looks(task_id=None):
 
 
 def _notes(task_id, last=None):
-    """The texts noted for a task, oldest first: of its `last` lines only, when given."""
+    """The texts noted for a task, oldest first: of its `last` lines only, when given; [] when none were noted. Notes
+    that are there and cannot be read, or a line that is no note, raise recording.Unreadable: what the tools read is
+    then unknown, never "nothing" (N-1, review round 4)."""
 
     try:
         with open(NOTES_DIR / f"{task_id}.jsonl", encoding="utf-8") as f:
             lines = f.readlines()
-    except OSError:
+    except FileNotFoundError:
         return []
+    except OSError as exc:
+        raise recording.Unreadable(f"the notes of task {task_id} cannot be read ({type(exc).__name__})") from exc
     texts = []
     for line in lines[-last:] if last else lines:
+        if not line.strip():
+            continue
         try:
             texts.append(json.loads(line)["text"])
-        except (ValueError, KeyError):
-            continue
+        except (ValueError, KeyError, TypeError):
+            raise recording.Unreadable(f"a note of task {task_id} is no note") from None
     return texts
 
 
