@@ -16,6 +16,12 @@
 # A step that fails is counted, not fatal: the rest still runs, and the script
 # ends non-zero naming what is left, so a caller never reports a clean slate
 # that is not one.
+#
+# Every listing must answer. `inventory` prints nothing and exits 1 if any one
+# fails: a partial list saved as "what was here first" would turn into removing
+# another project's containers or volumes at uninstall (A-04). A name is
+# decided from one full listing, never from an inspect that fails, since a
+# failed inspect cannot tell "absent" from "the engine did not answer".
 set -u
 mode=${1:-}
 [ $# -gt 0 ] && shift
@@ -31,50 +37,74 @@ docker version >/dev/null || { echo 'the Docker Engine did not answer' >&2; exit
 failed=''
 fail() { failed="$failed $1"; }
 
+# Each listing returns non-zero when a docker call in it fails (no pipeline
+# hides a failure: POSIX sh has no pipefail).
 containers() {
     for filter in label=decurix=true label=desktop-manager=true label=decurix.hop=1 \
         label=decurix-practice=true label=decurix-qualification=true label=com.docker.compose.project=decurix; do
-        docker ps -a --filter "$filter" --format '{{.Names}}'
-    done | sort -u
+        docker ps -a --filter "$filter" --format '{{.Names}}' || return 1
+    done
 }
 
 # Volumes the workers mount (desktop_<id>_home and their other per-desktop
 # volumes), read before the workers are removed.
 worker_volumes() {
-    for container in $(docker ps -a --filter label=desktop-manager=true --format '{{.Names}}'); do
-        docker inspect --format '{{range .Mounts}}{{if eq .Type "volume"}}{{println .Name}}{{end}}{{end}}' "$container"
-    done | while read -r name; do
-        case "$name" in desktop_*) echo "$name";; esac
-    done | sort -u
+    workers=$(docker ps -a --filter label=desktop-manager=true --format '{{.Names}}') || return 1
+    for container in $workers; do
+        mounts=$(docker inspect --format '{{range .Mounts}}{{if eq .Type "volume"}}{{println .Name}}{{end}}{{end}}' "$container") || return 1
+        for name in $mounts; do
+            case "$name" in desktop_*) echo "$name";; esac
+        done
+    done
+}
+
+# pick prints each of the wanted names (after the list) that appears in list.
+pick() {
+    list=$1
+    shift
+    for name in "$@"; do
+        case "
+$list
+" in *"
+$name
+"*) echo "$name";; esac
+    done
 }
 
 named_volumes() {
-    for name in "$@"; do
-        if docker volume inspect "$name" >/dev/null 2>&1; then echo "$name"; fi
-    done
+    all=$(docker volume ls -q) || return 1
+    pick "$all" "$@"
 }
+
+labelled_volumes() { docker volume ls -q --filter label=decurix=true; }
 
 images() {
-    for image in decurix-desktop:basic decurix-desktop:developer decurix-desktop:ai decurix-tools:latest; do
-        if docker image inspect "$image" >/dev/null 2>&1; then echo "$image"; fi
-    done
+    all=$(docker image ls --format '{{.Repository}}:{{.Tag}}') || return 1
+    pick "$all" decurix-desktop:basic decurix-desktop:developer decurix-desktop:ai decurix-tools:latest
 }
 
-all_containers=$(containers)
-homes=$(worker_volumes)
+unique() { printf '%s\n' $1 | sort -u; }
+
+listing_failed=''
+all_containers=$(containers) || listing_failed=1
+all_containers=$(unique "$all_containers")
+homes=$(worker_volumes) || listing_failed=1
+homes=$(unique "$homes")
 
 if [ "$mode" = inventory ]; then
-    {
-        echo "$all_containers"
-        echo "$homes"
-        docker volume ls -q --filter label=decurix=true
-        named_volumes decurix-data decurix-tools decurix-cache decurix_ollama
-        images
-    } | sort -u | while read -r name; do
-        [ -n "$name" ] && echo "decurix-resource $name"
+    labelled=$(labelled_volumes) || listing_failed=1
+    named=$(named_volumes decurix-data decurix-tools decurix-cache decurix_ollama) || listing_failed=1
+    ours=$(images) || listing_failed=1
+    if [ -n "$listing_failed" ]; then
+        echo 'the Docker Engine did not answer every listing, so nothing is listed' >&2
+        exit 1
+    fi
+    for name in $(unique "$all_containers $homes $labelled $named $ours"); do
+        echo "decurix-resource $name"
     done
     exit 0
 fi
+[ -n "$listing_failed" ] && fail 'a listing (some resources may be left)'
 
 if [ "$mode" = stop ]; then
     for container in $all_containers; do docker stop "$container" >/dev/null || fail "$container"; done
@@ -83,9 +113,12 @@ else
         kept "$container" && continue
         docker rm -f "$container" >/dev/null || fail "$container"
     done
-    volumes="$homes $(named_volumes decurix-data)"
+    data=$(named_volumes decurix-data) || fail 'the volume listing'
+    volumes="$homes $data"
     if [ "$mode" = delete ]; then
-        volumes="$volumes $(docker volume ls -q --filter label=decurix=true) $(named_volumes decurix-tools decurix-cache decurix_ollama)"
+        labelled=$(labelled_volumes) || fail 'the labelled volume listing'
+        named=$(named_volumes decurix-tools decurix-cache decurix_ollama) || fail 'the volume listing'
+        volumes="$volumes $labelled $named"
     fi
     for name in $(printf '%s\n' $volumes | sort -u); do
         kept "$name" && continue
@@ -93,7 +126,8 @@ else
     done
     if [ "$mode" = delete ]; then
         # Only our own image tags; never prune a shared daemon.
-        for image in $(images); do
+        ours=$(images) || fail 'the image listing'
+        for image in $ours; do
             kept "$image" && continue
             docker image rm "$image" >/dev/null || fail "$image"
         done

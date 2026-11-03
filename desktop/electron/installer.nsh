@@ -49,10 +49,10 @@
       nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\wsl\cleanup-existing.ps1" -Action delete`
       Pop $R8
       ${if} $R8 == "3"
-        ; An install from before Decurix recorded what that runtime already
-        ; held: its own resources cannot be told from the person's, so none
-        ; were removed.
-        MessageBox MB_OK|MB_ICONINFORMATION "Nothing was removed from your own WSL runtime: Decurix began using it before it kept a record of what was already there, so it cannot tell its resources from yours. If its desktop_* containers and volumes and the decurix-data volume are Decurix's, delete them there yourself." /SD IDOK
+        ; An install from before Decurix kept a complete record of what that
+        ; runtime already held: its own resources cannot be told from the
+        ; person's, so none were removed.
+        MessageBox MB_OK|MB_ICONINFORMATION "Nothing was removed from your own WSL runtime: Decurix has no complete record of what was already there when it began using it, so it cannot tell its resources from yours. If its desktop_* containers and volumes and the decurix-data volume are Decurix's, delete them there yourself." /SD IDOK
       ${elseIf} $R8 != "0"
         ; That runtime's Docker did not answer, or a removal failed: Decurix's
         ; workers there may stay, and the person is told. Everything Decurix

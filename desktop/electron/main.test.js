@@ -842,7 +842,7 @@ test('new Windows installs reuse a compatible existing WSL runtime, once the per
   assert.ok(Array.from(up.args).includes('unix:///var/run/docker.sock'));
   const saved = result.written.find((w) => w.file === path.join(data, 'windows-runtime.json'));
   // What the engine held before Decurix used it is kept by an uninstall.
-  assert.deepEqual(JSON.parse(saved.content), { distro: 'Ubuntu', adopted: true, preexisting: ['decurix-data', 'desktop_old'] });
+  assert.deepEqual(JSON.parse(saved.content), { distro: 'Ubuntu', adopted: true, preexisting: ['decurix-data', 'desktop_old'], preexistingComplete: true });
 });
 
 test("a person who declines sharing their WSL runtime gets Decurix's own Linux", async () => {

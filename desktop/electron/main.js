@@ -475,6 +475,9 @@ async function selectWindowsRuntime() {
     record.distro = candidate;
     record.adopted = true;
     record.preexisting = await inventoryOf(candidate);
+    // inventoryOf throws unless every listing answered; an uninstall keeps
+    // everything when a record lacks this (wsl/cleanup-existing.ps1, A-04).
+    record.preexistingComplete = true;
   }
   runtimeDistro = record.distro;
   fs.mkdirSync(dataDir(), { recursive: true });
@@ -506,7 +509,8 @@ async function askToAdopt(name) {
 // inventoryOf lists the Decurix-looking resources (containers, volumes,
 // images) an engine already holds before Decurix first uses it, so an
 // uninstall keeps them (wsl/maintain-existing.sh). A runtime whose inventory
-// cannot be read is not adopted.
+// cannot be read in full is not adopted: the script fails when any one listing
+// does.
 async function inventoryOf(name) {
   const found = [];
   const code = await wsl(['-d', name, '-u', 'root', '--cd', '/', '-e', 'sh', linuxPath(resource(path.join('wsl', 'maintain-existing.sh'))), 'inventory'],

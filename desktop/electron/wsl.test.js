@@ -10,11 +10,13 @@ const skip = !fs.existsSync(shell);
 
 // A docker stand-in for one shared engine: Decurix's resources (a worker, the
 // stack, the model server, their volumes, an image, the network) beside
-// another project's. MOCK_DOCKER_FAIL names a resource whose removal fails.
+// another project's. MOCK_DOCKER_FAIL names a resource whose removal fails;
+// MOCK_DOCKER_LIST_FAIL is one docker command (a listing) that fails.
 const mockDocker = `#!/bin/sh
 if [ "$1" != --host ] || [ "$2" != unix:///var/run/docker.sock ]; then exit 9; fi
 shift 2
 printf '%s\\n' "$*" >> "$MOCK_DOCKER_LOG"
+if [ -n "$MOCK_DOCKER_LIST_FAIL" ] && [ "$*" = "$MOCK_DOCKER_LIST_FAIL" ]; then exit 1; fi
 case "$*" in
   version) exit 0;;
   'ps -a --filter label=desktop-manager=true --format {{.Names}}') echo desktop_worker;;
@@ -22,11 +24,9 @@ case "$*" in
   'ps -a --filter label=decurix=true --format {{.Names}}') echo decurix-ollama;;
   'ps -a'*) ;;
   inspect*) printf '%s\\n' desktop_worker_home decurix-cache unrelated-volume;;
-  'volume inspect decurix-data'|'volume inspect decurix-cache'|'volume inspect decurix_ollama') exit 0;;
-  'volume inspect'*) exit 1;;
   'volume ls -q --filter label=decurix=true') echo decurix-tools;;
-  'image inspect decurix-desktop:basic') exit 0;;
-  'image inspect'*) exit 1;;
+  'volume ls -q') printf '%s\\n' decurix-data decurix-cache decurix_ollama desktop_worker_home unrelated-volume;;
+  'image ls --format {{.Repository}}:{{.Tag}}') printf '%s\\n' decurix-desktop:basic other:latest;;
   'network ls --filter label=decurix=true --format {{.Name}}') echo decurix-network;;
   'network ls'*) ;;
   *" $MOCK_DOCKER_FAIL") exit 1;;
@@ -36,7 +36,7 @@ exit 0
 
 // run runs maintain-existing.sh with args against the stand-in, and returns
 // its result and the docker commands it ran.
-function run(args, { failOn = 'nothing-fails' } = {}) {
+function run(args, { failOn = 'nothing-fails', listFails = '' } = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'decurix-runtime-test-'));
   const log = path.join(temp, 'commands.log');
   const mock = path.join(temp, 'docker');
@@ -45,7 +45,7 @@ function run(args, { failOn = 'nothing-fails' } = {}) {
   try {
     const result = spawnSync(shell, [...(process.platform === 'win32' ? ['--noprofile', '--norc'] : []), path.join(__dirname, 'wsl/maintain-existing.sh').replace(/\\/g, '/'), ...args], {
       env: { ...process.env, PATH: temp.replace(/\\/g, '/') + (process.platform === 'win32' ? ';' : ':') + process.env.PATH,
-        MOCK_DOCKER_LOG: log.replace(/\\/g, '/'), MOCK_DOCKER_FAIL: failOn }, encoding: 'utf8', timeout: 30000,
+        MOCK_DOCKER_LOG: log.replace(/\\/g, '/'), MOCK_DOCKER_FAIL: failOn, MOCK_DOCKER_LIST_FAIL: listFails }, encoding: 'utf8', timeout: 30000,
     });
     return { result, commands: fs.readFileSync(log, 'utf8') };
   } finally {
@@ -99,6 +99,25 @@ test('inventory lists Decurix resources only, and changes nothing', { skip }, ()
   assert.ok(!/\b(rm|stop)\b/.test(commands));
 });
 
+// A partial inventory saved as "what was here first" would make an uninstall
+// remove another project's resources that the failed listing missed (A-04).
+for (const listing of ['ps -a --filter label=decurix=true --format {{.Names}}', 'inspect --format {{range .Mounts}}{{if eq .Type "volume"}}{{println .Name}}{{end}}{{end}} desktop_worker',
+  'volume ls -q', 'volume ls -q --filter label=decurix=true', 'image ls --format {{.Repository}}:{{.Tag}}']) {
+  test('inventory lists nothing and fails when one listing fails: ' + listing.split(' {{')[0], { skip }, () => {
+    const { result } = run(['inventory'], { listFails: listing });
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /did not answer every listing/);
+  });
+}
+
+test('a listing that fails during a reset is reported, never taken as nothing there', { skip }, () => {
+  const { result, commands } = run(['reset'], { listFails: 'volume ls -q' });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /could not reset:.*volume listing/);
+  assert.ok(!commands.includes('volume rm decurix-data'));
+});
+
 test('a removal that fails does not stop the rest, and the script says what is left', { skip }, () => {
   const { result, commands } = run(['reset'], { failOn: 'decurix-stack' });
   assert.equal(result.status, 1);
@@ -111,3 +130,26 @@ test('a name to keep that is not a resource name is refused before anything runs
   assert.equal(result.status, 2);
   assert.equal(commands, '');
 });
+
+// cleanup-existing.ps1 removes nothing from a shared runtime unless its record
+// says the list of what was there first is complete (A-04). Both cases exit
+// before any wsl.exe call, so the test never touches a real runtime.
+const powershell = path.join(process.env.SystemRoot || 'C:/Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe');
+for (const [label, record] of [
+  ['no list', { distro: 'Ubuntu', adopted: true }],
+  ['a list not known to be complete', { distro: 'Ubuntu', adopted: true, preexisting: ['decurix-data'] }],
+]) {
+  test('an uninstall removes nothing from a shared runtime whose record has ' + label, { skip: process.platform !== 'win32' || !fs.existsSync(powershell) }, () => {
+    const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'decurix-cleanup-test-'));
+    try {
+      fs.mkdirSync(path.join(appData, 'decurix'));
+      fs.writeFileSync(path.join(appData, 'decurix', 'windows-runtime.json'), JSON.stringify(record));
+      const result = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'wsl', 'cleanup-existing.ps1'), '-Action', 'delete'],
+        { env: { ...process.env, APPDATA: appData }, encoding: 'utf8', timeout: 60000 });
+      assert.equal(result.status, 3, result.stderr);
+      assert.match(result.stderr, /Nothing was removed/);
+    } finally {
+      fs.rmSync(appData, { recursive: true, force: true });
+    }
+  });
+}

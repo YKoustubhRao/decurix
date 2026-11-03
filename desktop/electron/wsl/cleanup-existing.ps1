@@ -2,8 +2,10 @@
 #
 # Only what Decurix created there is removed: windows-runtime.json lists what
 # the engine already held when the app began using it (main.js, `inventory`),
-# and maintain-existing.sh keeps those. A record from before that list existed
-# cannot tell the two apart, so nothing is removed and the exit code is 3.
+# and maintain-existing.sh keeps those. A record from before that list existed,
+# or from before the list was known to be complete (preexistingComplete: an
+# older inventory took a failed listing for an empty one), cannot tell the two
+# apart, so nothing is removed and the exit code is 3 (A-04).
 param([ValidateSet('stop', 'reset', 'delete')][string]$Action = 'stop')
 $ErrorActionPreference = 'Stop'
 $record = Join-Path $env:APPDATA 'decurix/windows-runtime.json'
@@ -16,8 +18,8 @@ if ($distro -isnot [string] -or [string]::IsNullOrWhiteSpace($distro) -or $distr
 }
 $keep = @()
 if ($Action -ne 'stop') {
-    if ($null -eq $runtime.preexisting) {
-        [Console]::Error.WriteLine("Nothing was removed from WSL runtime '$distro': this install began using it before Decurix recorded what was already there, so its own resources cannot be told from yours.")
+    if ($null -eq $runtime.preexisting -or $runtime.preexistingComplete -ne $true) {
+        [Console]::Error.WriteLine("Nothing was removed from WSL runtime '$distro': Decurix has no complete record of what was already there when it began using it, so its own resources cannot be told from yours.")
         exit 3
     }
     $keep = @($runtime.preexisting | ForEach-Object { [string]$_ })
