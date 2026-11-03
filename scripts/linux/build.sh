@@ -207,7 +207,8 @@ fi
 echo ""
 echo "=== Starting Cloudflare Tunnel ==="
 
-if ! command -v cloudflared >/dev/null 2>&1; then
+# cloudflared is needed only for the public link, which is off unless DECURIX_PUBLIC_LINK=1 (lib/lan-tunnel.sh).
+if public_link_enabled && ! command -v cloudflared >/dev/null 2>&1; then
     echo "ERROR: cloudflared is not installed."
     echo "Decurix is still running locally at http://127.0.0.1:8080."
     exit 1

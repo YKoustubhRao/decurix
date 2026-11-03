@@ -191,7 +191,8 @@ try {
 
     Write-Host ""
     Write-Host "=== Starting Cloudflare Tunnel ==="
-    if (-not (Test-CommandAvailable "cloudflared")) {
+    # cloudflared is needed only for the public link, which is off unless DECURIX_PUBLIC_LINK=1 (lib/Lan-Tunnel.ps1).
+    if ((Test-PublicLinkEnabled) -and -not (Test-CommandAvailable "cloudflared")) {
         Write-Host "ERROR: cloudflared is not installed. Decurix is still running"
         Write-Host "locally; install cloudflared (.\scripts\windows\setup.ps1) for"
         Write-Host "access from other devices."
