@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"thebot/internal/atomizer"
+	"thebot/internal/memory"
 )
 
 // fakeEmbedder stands in for a real embedder: skillLibraryFor must not need one to say no.
@@ -57,5 +59,28 @@ func TestABuildRequestGoesToTheOperatorWhenCodingIsOff(t *testing.T) {
 	atomizer.CodingAvailable = true
 	if got := atomizer.Classify(p); got != "coding" {
 		t.Errorf("standalone Classify = %q, want coding", got)
+	}
+}
+
+// A chat request's body is bounded (review T-23): an oversized one is refused before it is read whole.
+func TestAnOversizedChatBodyIsRefused(t *testing.T) {
+	s := newTestServer(t)
+	body := `{"prompt": "` + strings.Repeat("x", maxChatBody+10) + `"}`
+	if rec := serve(s, http.MethodPost, "/api/chat", body); rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+// A store error reaches the log, never the client (review T-23, CLAUDE.md: jsonError never echoes err.Error()).
+func TestAnUnknownSkillIsAnsweredWithoutTheError(t *testing.T) {
+	s := newTestServer(t)
+	lib, err := memory.NewSkillLibrary(s.ws.Root(), nil, "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.sched.SkillLib = lib
+	rec := serve(s, http.MethodPost, "/api/skills/no-such-skill/confirm", "")
+	if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), s.ws.Root()) {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
 	}
 }

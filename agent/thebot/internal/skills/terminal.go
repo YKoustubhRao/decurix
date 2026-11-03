@@ -76,9 +76,10 @@ func looksLikeCommand(s string) bool {
 
 // TerminalSkill runs a real shell command in the workspace directory -
 // real stdout/stderr/exit code, never a claimed success without checking
-// the real exit code. Safety boundary is structural (non-root container
-// user, cwd confinement to the workspace) rather than command filtering,
-// which would be both bypassable and block legitimate use.
+// the real exit code. A command goes through the same guard rail the
+// operator's do (safety.AssessCommand: a person's yes for what it flags),
+// which is a rail, not a boundary - the boundary is the OS (the gate user,
+// docs/gate-boundary.md). Review T-26: this said the opposite.
 type TerminalSkill struct{}
 
 func NewTerminal() *TerminalSkill { return &TerminalSkill{} }

@@ -230,7 +230,8 @@ func (s *server) handleRAGStats(w http.ResponseWriter, r *http.Request) {
 	}
 	chunks, files, err := s.sched.RAG.Stats(r.Context())
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		log.Printf("[soul] %s: %v", r.URL.Path, err)
+		writeJSON(w, 500, map[string]any{"error": "could not read the index"})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"totalChunks": chunks, "totalFiles": files})
@@ -243,7 +244,8 @@ func (s *server) handleFeedbackStats(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := s.sched.Feedback.Count(r.Context())
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		log.Printf("[soul] %s: %v", r.URL.Path, err)
+		writeJSON(w, 500, map[string]any{"error": "could not read the feedback store"})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"negativeCount": n})
@@ -332,12 +334,14 @@ func (s *server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	}
 	confirmed, err := s.sched.SkillLib.ListConfirmed()
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		log.Printf("[soul] %s: %v", r.URL.Path, err)
+		writeJSON(w, 500, map[string]any{"error": "could not list the skills"})
 		return
 	}
 	pending, err := s.sched.SkillLib.ListPending()
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		log.Printf("[soul] %s: %v", r.URL.Path, err)
+		writeJSON(w, 500, map[string]any{"error": "could not list the skills"})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"confirmed": confirmed, "pending": pending})
@@ -368,13 +372,15 @@ func (s *server) handleSkillAction(w http.ResponseWriter, r *http.Request) {
 	case "confirm":
 		skill, err := s.sched.SkillLib.Confirm(r.Context(), slug)
 		if err != nil {
-			writeJSON(w, 404, map[string]any{"error": err.Error()})
+			log.Printf("[soul] %s: %v", r.URL.Path, err)
+			writeJSON(w, 404, map[string]any{"error": "no such skill"})
 			return
 		}
 		writeJSON(w, 200, map[string]any{"confirmed": skill})
 	case "reject":
 		if err := s.sched.SkillLib.Reject(slug); err != nil {
-			writeJSON(w, 404, map[string]any{"error": err.Error()})
+			log.Printf("[soul] %s: %v", r.URL.Path, err)
+			writeJSON(w, 404, map[string]any{"error": "no such skill"})
 			return
 		}
 		writeJSON(w, 200, map[string]any{"rejected": slug})
@@ -382,6 +388,9 @@ func (s *server) handleSkillAction(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]any{"error": "unknown action - use /confirm or /reject"})
 	}
 }
+
+// maxChatBody bounds a chat request's body.
+const maxChatBody = 4 << 20
 
 func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -411,6 +420,8 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// which can hold pasted content (review T-32).
 		PlanAgreed bool `json:"planAgreed"`
 	}
+	// Bounded: a request is a prompt and its host context, never megabytes (review T-23).
+	r.Body = http.MaxBytesReader(w, r.Body, maxChatBody)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Prompt) == "" {
 		writeJSON(w, 400, map[string]any{"error": "prompt is required"})
 		return
