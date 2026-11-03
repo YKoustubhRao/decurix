@@ -1,14 +1,19 @@
 package web
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 const article = `<!doctype html><html><head><title>Qwen3.9 released &amp; benchmarks</title>
@@ -160,5 +165,45 @@ func TestLiveSearchAndRender(t *testing.T) {
 			t.Fatalf("render: %v", err)
 		}
 		t.Logf("rendered %q: %d chars", rp.Title, len(rp.Text))
+	}
+}
+
+// The headless browser's proxy dials with Fetch's guard: a loopback target
+// is refused over plain http and over CONNECT, and reached only when the
+// guard is lifted (tests).
+func TestTheBrowserProxyRefusesWhatFetchRefuses(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "inside") }))
+	defer target.Close()
+	for _, allow := range []bool{false, true} {
+		c := New()
+		c.AllowPrivate = allow
+		addr, stop, err := c.startProxy()
+		if err != nil {
+			t.Fatal(err)
+		}
+		proxyURL, _ := url.Parse("http://" + addr)
+		hc := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 5 * time.Second}
+		resp, err := hc.Get(target.URL)
+		got := ""
+		if err == nil {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			got = string(b)
+		}
+		if allow != (got == "inside") {
+			t.Errorf("allow %v: plain http got %q (%v)", allow, got, err)
+		}
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		host := strings.TrimPrefix(target.URL, "http://")
+		fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", host, host)
+		line, _ := bufio.NewReader(conn).ReadString('\n')
+		conn.Close()
+		if allow != strings.Contains(line, " 200 ") {
+			t.Errorf("allow %v: CONNECT answered %q", allow, line)
+		}
+		stop()
 	}
 }

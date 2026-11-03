@@ -84,8 +84,10 @@ type Config struct {
 	SearxURL string `json:"searx_url,omitempty"`
 	// BraveKeyEnv names the variable holding a Brave Search API key.
 	BraveKeyEnv string `json:"brave_key_env,omitempty"`
-	// WebRender lets a headless browser read pages that need JavaScript.
-	// Default on; it costs a few hundred MB for a few seconds.
+	// WebRender lets a client ask for a page to be read with a headless
+	// browser (/v1/brainiac/fetch "render": true), for pages that need
+	// JavaScript. Default on; answers never use it on their own. It costs
+	// a few hundred MB for a few seconds.
 	WebRender *bool `json:"web_render,omitempty"`
 	// UpdateEvery is how often `serve` looks for better open models ("off"
 	// by default; "24h" for daily): it reads public evaluations, installs a

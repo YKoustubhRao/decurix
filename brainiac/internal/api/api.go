@@ -718,6 +718,10 @@ func (s *Server) fetch(w http.ResponseWriter, r *http.Request) {
 	}
 	var p web.Page
 	var err error
+	if in.Render && !s.engine().RenderAllowed() {
+		writeError(w, http.StatusForbidden, "render_off", "the headless browser is off in this Brainiac's settings (web_render: false)")
+		return
+	}
 	if in.Render {
 		p, err = b.Render(r.Context(), in.URL)
 	} else {

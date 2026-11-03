@@ -217,6 +217,10 @@ func (e *Engine) Retire(logf func(string, ...any)) {
 // Web is the engine's browser (nil when the web is off).
 func (e *Engine) Web() *web.Client { return e.web }
 
+// RenderAllowed reports whether a client may ask for a page to be read
+// with the headless browser (web_render).
+func (e *Engine) RenderAllowed() bool { return e.cfg.Render() }
+
 // Store is where the engine keeps its files.
 func (e *Engine) Store() *store.Store { return e.st }
 

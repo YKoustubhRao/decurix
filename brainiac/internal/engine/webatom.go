@@ -23,7 +23,6 @@ const (
 	webResults      = 6
 	webPagesRead    = 3
 	webPassageChars = 2500
-	webMinText      = 400 // a page with less text than this probably needs JavaScript
 )
 
 // wantsWeb decides whether a request reads the web. The second value says
@@ -137,8 +136,8 @@ func (e *Engine) webEvidence(ctx context.Context, req Request, rec *trace.Record
 	return out
 }
 
-// readPage fetches one result, through the cache, with the headless browser
-// when the plain page has almost no text.
+// readPage fetches one result, through the cache. It never runs the headless
+// browser: that runs only when a client asks for one page by name.
 func (e *Engine) readPage(ctx context.Context, link, hour string) (*web.Page, trace.Atom) {
 	t0 := time.Now()
 	host := link
@@ -153,12 +152,6 @@ func (e *Engine) readPage(ctx context.Context, link, hour string) (*web.Page, tr
 		return &p, a
 	}
 	p, err := e.web.Fetch(ctx, link)
-	if (err != nil || len(p.Text) < webMinText) && e.cfg.Render() && web.FindBrowser() != "" {
-		if rp, rerr := e.web.Render(ctx, link); rerr == nil && len(rp.Text) > len(p.Text) {
-			p, err = rp, nil
-			a.Runtime = "headless-browser"
-		}
-	}
 	a.Ms = time.Since(t0).Milliseconds()
 	if err != nil {
 		a.Error = err.Error()
