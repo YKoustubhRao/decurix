@@ -1320,11 +1320,14 @@ func envValue(env []string, name string) string {
 // SendRequest posts a JSON request to a running desktop's internal request
 // endpoint. taskID is the control plane's record the request belongs to; the
 // desktop echoes it back on every step and outcome it reports for that task.
+// secret says the person marked the message secret: the agent is told
+// ("secret": true), so it too keeps it out of its logs and records (F-2).
 func (m *Manager) SendRequest(
 	ctx context.Context,
 	id string,
 	content string,
 	taskID string,
+	secret bool,
 ) error {
 
 	desktopID := sanitizeName(id)
@@ -1358,12 +1361,16 @@ func (m *Manager) SendRequest(
 		}
 	}
 
-	payload := map[string]string{
+	payload := map[string]any{
 		"content": content,
 	}
 
 	if taskID != "" {
 		payload["task_id"] = taskID
+	}
+
+	if secret {
+		payload["secret"] = true
 	}
 
 	body, err := json.Marshal(payload)

@@ -281,7 +281,10 @@ func (s *Server) routeRequest(desktopID, content string) tasks.Route {
 // block the human/automation on the desktop's reply anyway - there is
 // nothing better to do while it boots than wait for it.
 func (s *Server) deliverRequest(ctx context.Context, desktopID, content, taskID string) error {
-	err := s.Desktops.SendRequest(ctx, desktopID, content, taskID)
+	// A message the person marked secret says so to the agent too (F-2): the control plane withholds it in its own
+	// stores, and the agent must not keep it as typed either.
+	secret, _ := ctx.Value(sentSecretKey{}).(bool)
+	err := s.Desktops.SendRequest(ctx, desktopID, content, taskID, secret)
 
 	switch {
 	case err == nil:
@@ -315,7 +318,7 @@ func (s *Server) deliverRequest(ctx context.Context, desktopID, content, taskID 
 		case <-time.After(autoStartPoll):
 		}
 
-		err = s.Desktops.SendRequest(ctx, desktopID, content, taskID)
+		err = s.Desktops.SendRequest(ctx, desktopID, content, taskID, secret)
 
 		switch {
 		case err == nil:
