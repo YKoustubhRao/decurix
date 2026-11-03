@@ -508,6 +508,53 @@ def page_break_findings(request, made):
     return out
 
 
+# What `office update` filled, noted by the tool itself (review round 2, 2026-11-03): {output (real path): {"source":
+# the document it was filled from, "placeholders": what that source held when it was filled, "at"}}. A template
+# filled into a separately named output, or a document filled in place with no shared-folder snapshot, is then still a
+# filled source: its placeholder left unfilled is a mechanical fact, as the tool's own "Placeholders still in it" says.
+FILLED_MAX = 500
+
+
+def _filled_file():
+    return config.DECURIX_DIR / "filled-documents.json"
+
+
+def note_filled(output, source, placeholders):
+    """Note that `output` was filled from `source`, which then held `placeholders` (office update). Never raises: a
+    note that cannot be kept must not fail the tool (the check then reads the request's sources only)."""
+
+    try:
+        path = _filled_file()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+        data[os.path.realpath(str(output))] = {"source": os.path.realpath(str(source)),
+                                               "placeholders": [str(x) for x in placeholders or ()][:200],
+                                               "at": time.time()}
+        if len(data) > FILLED_MAX:
+            data = dict(sorted(data.items(), key=lambda kv: kv[1].get("at") or 0)[-FILLED_MAX:])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception as exc:  # noqa: BLE001
+        log(f"produced: could not note what {output} was filled from: {exc}")
+
+
+def filled_from(output):
+    """The note office update kept for `output` ({"source", "placeholders"}), or None."""
+
+    try:
+        data = json.loads(_filled_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    found = data.get(os.path.realpath(str(output))) if isinstance(data, dict) else None
+    return found if isinstance(found, dict) else None
+
+
 def _filled_sources(request, made, root=None):
     """The Word documents the task worked from: the request's attached or named .docx/.dotx files that it did not
     make, and the copy kept from before the task of a made document that was there already (filled in place)."""
@@ -532,17 +579,26 @@ def _filled_sources(request, made, root=None):
     return [p for p in dict.fromkeys(found) if os.path.realpath(p) not in made_set and Path(p).is_file()]
 
 
-def _source_placeholders(request, made, root=None):
-    """Every placeholder the documents the task filled hold (a set), read with no model."""
+def _source_placeholders(request, made, root=None, failed=None):
+    """Every placeholder the documents the task filled hold (a set), read with no model: the request's sources, and
+    what office update noted each made document's source held when it filled it (filled_from). A source that cannot
+    be read is a check not made, put in `failed` (FileFacts.could_not) - never quietly a pass (review round 2)."""
 
     from decurix_agent.tools import office
 
     held = set()
+    for m in made:
+        note = filled_from(m)
+        if note:
+            held.update(str(x) for x in note.get("placeholders") or ())
     for path in _filled_sources(request, made, root=root):
         try:
             held.update(office.docx_placeholders(path))
-        except Exception as exc:  # noqa: BLE001 - a source that cannot be read decides nothing
+        except Exception as exc:  # noqa: BLE001
             log(f"produced: could not look for placeholders in {path}: {exc}")
+            if failed is not None:
+                failed.append(f"the placeholders of {Path(path).name}, a document the work was filled from, could not "
+                              f"be read ({type(exc).__name__})")
     return held
 
 
@@ -582,7 +638,7 @@ def template_placeholder_notes(request, made, root=None):
     return out
 
 
-def document_findings(request, made, root=None):
+def document_findings(request, made, root=None, failed=None):
     """
     What is wrong with the Word documents a task saved, decided without reading the request: a "\\f" typed as text where
     a break was meant, and a placeholder left that a document the task filled held (the template's own placeholder
@@ -611,7 +667,7 @@ def document_findings(request, made, root=None):
             log(f"produced: could not look for placeholders in {path}: {exc}")
             left = []
         if left:
-            held = _source_placeholders(request, made, root=root) if held is None else held
+            held = _source_placeholders(request, made, root=root, failed=failed) if held is None else held
             unfilled = [p for p in left if p in held]
             if unfilled:
                 out.append(f"{Path(path).name} still holds the template's placeholder(s) {', '.join(unfilled[:6])} - "
@@ -870,7 +926,8 @@ def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_m
         # Blocking only for names from structure (a planned stage's outputs); otherwise evidence (E-10).
         missing_files=missing_requested(named, every, root=root, only=own_outputs) if own_outputs is not None else "",
         missing_named=named_not_written(named, every, root=root) if own_outputs is None else [],
-        file_faults=[s for st, s in opened.values() if st == "broken"] + document_findings(named, every, root=root)
+        file_faults=[s for st, s in opened.values() if st == "broken"] + document_findings(named, every, root=root,
+                                                                                            failed=failed)
         + named_kind_faults(every),
         placeholder_notes=template_placeholder_notes(named, every, root=root),
         unchecked=[s for st, s in opened.values() if st in ("protected", "unchecked") and s],

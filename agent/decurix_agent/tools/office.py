@@ -4004,6 +4004,7 @@ def update_document(path, replace, output_path=None):
             for paragraph in root.iter(_W + "p"):
                 _replace_in_paragraph(paragraph, replace, counts)
             parts[info.filename] = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+    held = docx_placeholders(p)  # what the source holds before it is filled (the final check's provenance)
     if out == p:
         _keep_original(p, ".docx")
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -4012,6 +4013,8 @@ def update_document(path, replace, output_path=None):
         for info, data in items:
             z.writestr(info, parts.get(info.filename, data))
     tmp.replace(out)
+    from decurix_agent import produced
+    produced.note_filled(out, p, held)
     left = docx_placeholders(out)
     lines = [f"Wrote {out}."]
     lines.append("Replaced: " + (", ".join(f"{k} x{n}" for k, n in counts.items()) or "nothing"))

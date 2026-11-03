@@ -165,7 +165,7 @@ class FactsAtTheGate(FileWorkIsChecked):
                     "missing_requested": lambda request, made, root=None, only=None: "",
                     "named_not_written": lambda request, made, root=None: [],
                     "image_findings": lambda request, made, sources: [], "source_images": lambda request, made: [],
-                    "document_findings": lambda request, made, root=None: [],
+                    "document_findings": lambda request, made, root=None, failed=None: [],
                     "page_break_findings": lambda request, made: []}
         defaults.update(patches)
         with mock.patch.multiple(skill_task.produced, **defaults):
