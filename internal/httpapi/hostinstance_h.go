@@ -1,11 +1,7 @@
 package httpapi
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
@@ -18,19 +14,10 @@ import (
 // instanceFlag is the helper's command-line parameter that carries the tag (bridge.ps1's -DecurixInstance).
 const instanceFlag = "-DecurixInstance"
 
-// hostInstanceTag is this control plane's tag: a short hash of its data directory, which is what makes it this
-// instance (two control planes cannot share one database).
-var hostInstanceTag = sync.OnceValue(func() string { return instanceTagFor(sqlitedb.DataDir()) })
-
-// instanceTagFor is the tag of the control plane whose data directory is dir: twelve hex digits, so it is one shell
-// word and, being of fixed length, never a prefix of another instance's tag.
-func instanceTagFor(dir string) string {
-	if abs, err := filepath.Abs(dir); err == nil {
-		dir = abs
-	}
-	sum := sha256.Sum256([]byte(filepath.Clean(dir)))
-	return hex.EncodeToString(sum[:6])
-}
+// hostInstanceTag is this control plane's tag: the random instance ID kept in its data directory
+// (sqlitedb.InstanceID). A hash of the directory's path was used before; every containerised control plane has the
+// same path, /data, so they all shared one tag and one's sweep ended another's helpers (review RW1-C-03).
+var hostInstanceTag = sqlitedb.InstanceID
 
 // ownHelperMatch is how the command line of a helper started by the instance tagged tag reads, as a PowerShell -like
 // pattern: the helper script, then the tag, then the rest of its parameters (hostGUIStarter puts the tag first).

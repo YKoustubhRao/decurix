@@ -97,7 +97,7 @@ func TestReleaseEndsOnlyOurHolders(t *testing.T) {
 // and the app it had open (W-04). The patterns the scripts are given, read as -like reads them, match this instance's
 // helpers only; another instance's are not ours, and an untagged (older build's) helper is only named, never ended.
 func TestTheSweepEndsOnlyThisInstancesHelpers(t *testing.T) {
-	mine, theirs := instanceTagFor(t.TempDir()), instanceTagFor(t.TempDir())
+	mine, theirs := "0a1b2c3d4e5f", "f5e4d3c2b1a0"
 	if mine == theirs || len(mine) != 12 {
 		t.Fatalf("two data directories must give two fixed-length tags: %q %q", mine, theirs)
 	}
