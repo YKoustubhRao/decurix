@@ -90,6 +90,22 @@ class WhoMayCall(unittest.TestCase):
 class Approvals(unittest.TestCase):
     PAY = 'click "Pay now" on shop.example'
 
+    def test_a_gated_desktop_takes_no_approval_here(self):
+        # Round-5 recheck: the worker reads the agent token from /proc, so a token is no proof of the gate's yes.
+        approvals = guard.Approvals()
+        approvals.stopped(self.PAY)
+        with mock.patch.dict(os.environ, {"DECURIX_GATE_REQUIRED": "1"}):
+            self.assertTrue(guard.gate_required())
+            self.assertEqual(approvals.grant([self.PAY], trusted=True), [])
+        with mock.patch.object(guard, "GATE_DIR", str(Path(__file__).parent)):
+            self.assertTrue(guard.gate_required(), "the gate's directory alone means a gate")
+
+    def setUp(self):
+        if self._testMethodName != "test_a_gated_desktop_takes_no_approval_here":
+            patch = mock.patch.object(guard, "gate_required", lambda: False)
+            patch.start()
+            self.addCleanup(patch.stop)
+
     def test_only_the_gates_own_stop_with_the_token_is_let_through_once(self):
         approvals = guard.Approvals()
         self.assertEqual(approvals.grant([self.PAY], trusted=True), [], "nothing was stopped: nothing to approve")

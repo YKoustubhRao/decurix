@@ -5213,7 +5213,7 @@ def _report_message(run_id, work, parts, head, done, not_done, needs, changes, d
         folder = Path(work) / messaging.REPORTS_DIR
         folder.mkdir(parents=True, exist_ok=True)
         saved = folder / f"run-report-{time.strftime('%Y%m%d-%H%M%S')}-{run_id[:8]}.txt"
-        saved.write_text(whole, encoding="utf-8")
+        saved.write_text(messaging._withheld(whole), encoding="utf-8")  # no secret in a saved report either
     except OSError as exc:
         log(f"long_task: could not save the full report: {exc}")
         saved = None

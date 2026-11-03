@@ -77,8 +77,10 @@ type Harness struct {
 	// approvedAction is the proposal the person's yes ran in this build, so
 	// settleLearning can keep it as a proven fix once its check passes.
 	approvedAction string
-	attempts       int
-	deadline       time.Time
+	// project is this build's own folder: the scope a proven fix stands in.
+	project  string
+	attempts int
+	deadline time.Time
 	// fixesApplied records every real environment fix that worked, so the
 	// final report can say what it actually had to do to get the build
 	// running (install uv, create a venv, add a package).
@@ -196,6 +198,7 @@ func (h *Harness) Run(ctx context.Context, request, knownContext string) (*Build
 		return nil, fmt.Errorf("could not create the project directory: %w", err)
 	}
 
+	h.project = projectDir
 	runner := &Runner{Dir: projectDir, OnLog: h.OnLog}
 	env := h.probeEnvironment(runCtx, runner)
 	report := &BuildReport{Design: design, Dir: projectDir}

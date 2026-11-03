@@ -491,6 +491,8 @@ The agent is currently blocked.
 
 Please send instructions through the Decurix control plane.
 """.strip()
+    # The local copy and the log get what the chat gets: no secret (round-5 recheck: the file was written unredacted).
+    content = _withheld(content)
 
     path = config.QUERYTEXT_DIR / filename
 
@@ -709,7 +711,7 @@ Completed at:
 
     log("========================================")
     log("TASK COMPLETED")
-    log(final_note)
+    log(_withheld(final_note))
 
     # What the sources said that a later task will need, kept in the worker's memory (kept_facts.py) before the report
     # goes out - for at most kept_facts.WAIT_S: a worker restarted for its next task as soon as it reports would
@@ -731,7 +733,7 @@ Completed at:
         path = config.QUERYTEXT_DIR / filename
 
         path.write_text(
-            final_note,
+            _withheld(final_note),
             encoding="utf-8"
         )
 

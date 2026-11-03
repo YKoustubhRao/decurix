@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import subprocess
 import threading
 from pathlib import Path
@@ -134,7 +135,11 @@ MCP_CONFIG = json.dumps({
 # reply channel. A GUARD RAIL, NOT A BOUNDARY: the shell runs as the same Linux user as the gate, so a determined
 # command gets past words; the boundary is a separate user for the gate and its state (not built yet).
 GUARD_SCRIPT = Path(__file__).resolve().parent / "claude_guard.py"
-_GUARD_HOOK = [{"type": "command", "command": f"python3 {GUARD_SCRIPT.as_posix()}"}]
+# Claude Code blocks a call only on exit 2; any other failure lets it run. So the guard failing to start (a crash on
+# import, no python3) is turned into exit 2 here. The interpreter is named by its full path (the worker's ~/.local/bin
+# is first on PATH, so a planted python3 there could answer "allow"), and -I keeps a planted module in the work folder
+# out of its imports (round-5 recheck: the guard failed open if it crashed on import).
+_GUARD_HOOK = [{"type": "command", "command": f"/usr/bin/python3 -I {shlex.quote(GUARD_SCRIPT.as_posix())} || exit 2"}]
 GUARD_SETTINGS = json.dumps({
     "hooks": {"PreToolUse": [{"matcher": tool, "hooks": _GUARD_HOOK}
                              for tool in ("Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch")]},

@@ -144,6 +144,48 @@ message bound to no request: it grants nothing.
 signed question; it now uses a fixed one (`gate_server.GATE_REASON`). The worker's text reaches the person only as
 the worker's note.
 
+## Round 5 (2026-11-03, after the round-5 recheck)
+
+Guard rails, not the boundary, but each closed a hole the recheck found:
+- **The shell checks read words, not text.** `commands._rm_wipe_reason` (agent) and `safety.wipeConcern` (TheBot) split
+  a command as the shell does, unquote it, follow `sh -c`, `env -S` and shell-fed here-documents, track `cd`, and resolve
+  each path rm is given. The Python side also steps over wrappers (sudo, env, nohup, timeout N, xargs...) to the program.
+- **A request is local only when every target is.** `safety.onlyLocalTargets` reads each curl and wget's targets, and a
+  proxy, `--resolve`, `--connect-to`, `-K`, a proxy variable or a curl/wget rc file in the home means not local.
+- **The Claude guard fails closed when it cannot start**: `/usr/bin/python3 -I <guard> || exit 2`.
+- **The browser extension (:8092) takes no approval on a gated desktop** (`guard.gate_required`), and TheBot's browser
+  skill leaves that step to the person on the screen.
+- **Question files, the final-reply file, the log banner and the saved run report** go through `privacy.withhold_known`.
+- **A proven fix stands in the build's own folder**, not the workspace that holds every project.
+
+## Next: the input broker (proposed, not built)
+
+The gate decides whether a yes exists; nothing yet stands between the worker and the screen. The worker's Linux user
+owns everything that can act on the screen or as the person, so each of these is a click on Pay without asking:
+1. XTEST from any X client of the worker (`xdotool`, python-xlib), and XSendEvent to the browser's windows.
+2. The VNC server itself: the worker can connect on localhost with the password in `VNC_PW` and send RFB input.
+3. Chrome's DevTools port (9222), which `computer/cdp.py` uses.
+4. AT-SPI: the accessibility bus offers `doAction` on any button of any app.
+5. The browser's profile: its cookies are the worker's files, so `curl` can act with the person's session directly.
+6. `ptrace` and `/proc` of the browser and the agent (same user): the agent token is one such read.
+
+Proposed shape:
+- A screen user (`decurixscreen`) runs Xvnc, the window manager, the browser and the accessibility bus. The VNC
+  password is a file only that user and the control plane hold (the key is placed like the gate's).
+- The worker's own X clients (terminal, office) get an *untrusted* X cookie (SECURITY extension): no XTEST, no events to
+  and no reading of trusted windows. To check live: which apps misbehave as untrusted clients.
+- `gui` becomes a client of a broker that runs as the screen user: it observes (screenshot, accessibility tree, CDP over
+  `--remote-debugging-pipe`, no port), describes the action itself, asks the gate `check` with that description, and
+  injects. That also closes "what the gate is told": the description comes from the screen side, not the worker's.
+- Files reach the browser only through one shared folder (group `decurix-share`); the browser cannot read the rest of
+  `$HOME`, and the worker cannot read the browser's profile.
+- The agent process moves to its own user too (or reads the token from a file only it can read), so `/proc` gives the
+  worker nothing.
+
+Order: (1) a probe row in `boundary.sh` for each of the six paths, failing today; (2) the screen user and an untrusted
+cookie, with the desktop's apps checked live; (3) the broker and `gui` through it; (4) CDP by pipe and the
+accessibility bus under the screen user; (5) the agent's own user; every row passes.
+
 ## What this does not cover (said plainly)
 
 - **Direct input.** The gate decides whether a *yes* exists. It does not stand between the worker and the screen: a
@@ -154,8 +196,11 @@ the worker's note.
   A lying caller can only get a grant for the action it described, but with direct input it needs none.
 - **The agent token** is still in the agent's environment and readable by the worker (`/proc/<agent>/environ`). With it
   the worker can start tasks as a "person" and call the agent's API. It can no longer make a yes.
-- **The browser extension server** (:8092, off unless `THEBOT_BROWSER_EXTENSION=1`) still takes the approvals it
-  stopped on from any caller with the agent token.
+- **The browser extension server** (:8092, off unless `THEBOT_BROWSER_EXTENSION=1`) takes no approval on a gated
+  desktop (round 5). On a desktop without a gate it still takes them from any caller with the agent token.
+- **The script sandbox only cuts the network, and offered tools run unsandboxed.** Neither is part of the boundary.
+- **Every desktop shares one cache volume** (`decurix-cache` at `/var/cache/decurix`: pip, npm, Go, Hugging Face), so
+  one desktop can leave a poisoned package or model there for the next.
 - **A root `docker exec` by a person.** `docker exec -u 0 <desktop> sh` finds `sh` through the container's PATH, which
   puts the worker's `~/.local/bin` first: it runs the worker's code as root. The control plane never execs as root.
   Anyone else uses absolute paths and `env -i` (the bench caught itself doing this).

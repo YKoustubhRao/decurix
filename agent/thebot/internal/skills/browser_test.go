@@ -128,6 +128,30 @@ func TestBrowserSkillAsksBeforeWhatTheGateStopped(t *testing.T) {
 	}
 }
 
+// On a desktop with an approval gate a yes is never sent to the extension's server (a token holder could send the
+// same), so the step ends asking the person to do it on the screen instead of asking again (round-5 recheck).
+func TestBrowserSkillSendsNoApprovalOnAGatedDesktop(t *testing.T) {
+	t.Setenv("DECURIX_GATE_REQUIRED", "1")
+	send := `click "Send" on mail.google.com`
+	ext := &fakeExtServer{status: "done", result: &extResult{Status: "needs_approval",
+		Approval: &browserCheckpoint{Action: send, Reason: "it sends"}}}
+	server := httptest.NewServer(ext.handler())
+	defer server.Close()
+
+	skill := NewBrowser()
+	skill.BaseURL = server.URL
+	step := Subtask{Step: "reply to Priya", Type: "browser"}
+	cp := &browserCheckpoint{Action: send, Reason: "it sends"}
+	res, _ := skill.Run(RunContext{Ctx: context.Background(), OnLog: func(string) {}, Resume: cp,
+		Approved: func(a string) bool { return a == send }}, step)
+	if _, ok := ext.submitted["approved"]; ok {
+		t.Fatalf("an approval was sent to the extension on a gated desktop: %v", ext.submitted)
+	}
+	if res.Verified || res.Meta["needsUserInput"] != true || !strings.Contains(res.Output, "on the screen") {
+		t.Fatalf("result = %+v, want the step left to the person on the screen", res)
+	}
+}
+
 // Only a run the extension finished with an answer is a success. An error, a
 // captcha, a stall, a timeout or a "done" with nothing to report is a failure
 // the scheduler must not retry - never a verified answer.

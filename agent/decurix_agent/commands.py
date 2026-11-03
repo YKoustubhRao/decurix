@@ -80,6 +80,197 @@ def _find_rm_outside_work(text):
             return True
     return False
 
+# The rm rule above reads the text as written, so every new spelling of the same command got past it (round-5
+# recheck: rm -rf "$HOME", bash -c 'rm -rf ~', /bin/rm, env/nohup/timeout before rm, ~/.., cd / && rm -rf *). The
+# word reader below splits a command the way the shell does, unquotes each word, follows bash -c into its script and
+# cd into its folder, and resolves each path rm is given before deciding. It is still a guard rail, not the gate.
+_SYSTEM_DIRS = ("/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib32", "/lib64", "/libx32", "/media", "/mnt",
+                "/opt", "/proc", "/root", "/run", "/sbin", "/srv", "/sys", "/usr", "/var")
+_SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "su"}
+# Programs that run the program after them: the letters of their options that take a value, and how many plain words
+# come before that program ("timeout 5 rm ...", "sudo -u root rm ...", "xargs -I {} rm ..."). Shell keywords too.
+_WRAPPERS = {"sudo": ("ugCDhprtUT", 0), "doas": ("uC", 0), "env": ("uC", 0), "nohup": ("", 0), "nice": ("n", 0),
+             "ionice": ("cnp", 0), "timeout": ("sk", 1), "time": ("fo", 0), "command": ("", 0), "builtin": ("", 0),
+             "exec": ("a", 0), "setsid": ("", 0), "stdbuf": ("ioe", 0), "chrt": ("", 1), "taskset": ("", 1),
+             "xargs": ("IEdLnPsa", 0), "unbuffer": ("", 0), "flock": ("wE", 1), "chroot": ("", 1), "busybox": ("", 0),
+             "watch": ("nd", 0), "strace": ("eopsu", 0), "ltrace": ("eou", 0),
+             "if": ("", 0), "then": ("", 0), "else": ("", 0), "elif": ("", 0), "do": ("", 0), "while": ("", 0),
+             "until": ("", 0), "!": ("", 0), "{": ("", 0)}
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_SEPARATORS = set(";&|()\n")
+_GLOB = re.compile(r"[*?\[]")
+
+
+def _home():
+    return posixpath.normpath(os.environ.get("HOME") or posixpath.expanduser("~") or "/home/headless")
+
+
+def _words(text):
+    """The simple commands of a shell text, each as its list of unquoted words; None when the text cannot be split."""
+
+    import shlex
+
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    commands, current = [], []
+    try:
+        for token in lexer:
+            if token and set(token) <= _SEPARATORS:
+                if current:
+                    commands.append(current)
+                current = []
+                continue
+            # A substitution's opening ("$(rm", "`rm") starts a command of its own.
+            parts = re.split(r"\$\(|`", token)
+            for k, part in enumerate(parts):
+                if k and current:
+                    commands.append(current)
+                    current = []
+                if part:
+                    current.append(part)
+    except ValueError:
+        return None
+    if current:
+        commands.append(current)
+    return commands
+
+
+def _resolve(word, cwd):
+    """The absolute path a word names, or None when it is decided at run time (another variable, a substitution)."""
+
+    home = _home()
+    path = re.sub(r"^(?:\$\{HOME\}|\$HOME|~)(?=/|$)", lambda _: home, word)
+    path = re.sub(r"^~root(?=/|$)", "/root", path)
+    path = re.sub(r"^~([a-z_][a-z0-9_-]*)(?=/|$)", r"/home/\1", path)
+    if "$" in path or "`" in path or path.startswith("~"):
+        return None
+    if not path.startswith("/"):
+        path = posixpath.join(cwd, path)
+    return "/" + posixpath.normpath(path).lstrip("/")
+
+
+def _protected_path(path):
+    """Whether deleting a resolved path (or everything a glob in it matches) wipes the root, a system directory, a
+    home or the home itself."""
+
+    parts = path.split("/")
+    for i, part in enumerate(parts):
+        if _GLOB.search(part):
+            # What a glob matches lies in the folder above it: "/h*" and "~/*" match what is in / and in the home.
+            parent = "/".join(parts[:i]) or "/"
+            return _protected_path(parent)
+    home = _home()
+    if path in ("/",) + _SYSTEM_DIRS or path == home or home.startswith(path.rstrip("/") + "/"):
+        return True
+    return bool(re.fullmatch(r"/home/[^/]+|/(?:usr|var|etc)/[^/]+", path))
+
+
+def _rm_wipes(words, start, cwd):
+    """Whether `rm` at words[start] deletes recursively something protected."""
+
+    recursive, operands, options_done = False, [], False
+    for word in words[start + 1:]:
+        if not options_done and word == "--":
+            options_done = True
+        elif not options_done and word.startswith("--") and len(word) > 2:
+            recursive = recursive or "--recursive".startswith(word.split("=", 1)[0])
+        elif not options_done and word.startswith("-") and len(word) > 1:
+            recursive = recursive or "r" in word or "R" in word
+        else:
+            operands.append(word)
+    if not recursive:
+        return False
+    for word in operands:
+        path = _resolve(word, cwd)
+        if path is not None and _protected_path(path):
+            return True
+    return False
+
+
+def _rm_wipe_reason(text, depth=0):
+    """Why a command deletes a system directory, the root or the home, read word by word; or None."""
+
+    if depth > 4:
+        return "it nests shells too deeply to be checked"
+    # A here-document's body is data, unless a shell reads it (bash <<EOF): then its lines are commands.
+    bodies = []
+
+    def _blank(m):
+        head, _, body = m.group(0).partition("\n")
+        line = m.string[m.string.rfind("\n", 0, m.start()) + 1:m.start()]
+        if re.search(r"(?:^|[\s;&|(])(?:\S*/)?(?:ba|z|da|k|mk)?sh\b", line):
+            bodies.append(body)
+        return head + "\n"
+
+    text = _HEREDOC.sub(_blank, text or "")
+    for body in bodies:
+        inner = _rm_wipe_reason(body, depth + 1)
+        if inner:
+            return inner
+    commands = _words(text)
+    if commands is None:
+        # Unbalanced quotes: read each line alone, so one line of prose does not hide the next.
+        commands = [c for line in text.splitlines() for c in (_words(line) or [])]
+    cwd = posixpath.normpath(str(config.WORK_DIR).replace("\\", "/"))
+    for words in commands:
+        i, scripts = _program(words)
+        for script in scripts:
+            inner = _rm_wipe_reason(script, depth + 1)
+            if inner:
+                return inner
+        if i >= len(words):
+            continue
+        name = posixpath.basename(words[i])
+        if name == "cd":
+            args = [w for w in words[i + 1:] if w != "--" and not re.fullmatch(r"-[LPe@]+", w)]
+            path = _resolve(args[0] if args else "~", cwd)
+            cwd = path if path is not None else cwd
+        elif name == "rm" and _rm_wipes(words, i, cwd):
+            return "it deletes a system directory, the filesystem root or the whole home directory"
+        elif name in _SHELLS:
+            # bash -c 'script', bash -lc "...", su -c '...': the script is a command too.
+            for j in range(i + 1, len(words) - 1):
+                if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", words[j]):
+                    inner = _rm_wipe_reason(words[j + 1], depth + 1)
+                    if inner:
+                        return inner
+                    break
+    return None
+
+
+def _program(words):
+    """Where the program of a simple command stands, past assignments and wrappers (sudo, env, timeout 5, xargs -I {}),
+    and the scripts a wrapper runs from a string of its own (env -S '...')."""
+
+    i, scripts = 0, []
+    while i < len(words):
+        if _ASSIGNMENT.match(words[i]):
+            i += 1
+            continue
+        wrapper = posixpath.basename(words[i])
+        if wrapper not in _WRAPPERS:
+            return i, scripts
+        value_letters, plain = _WRAPPERS[wrapper]
+        i += 1
+        while i < len(words) and words[i].startswith("-") and words[i] != "-":
+            word = words[i]
+            i += 1
+            if word == "--":
+                break
+            if wrapper == "env" and (word.startswith("-S") or word.startswith("--split-string")):
+                script = word.partition("=")[2] if word.startswith("--") else word[2:]
+                if not script and i < len(words):
+                    script, i = words[i], i + 1
+                scripts.append(script)
+            elif not word.startswith("--") and len(word) == 2 and word[1] in value_letters:
+                i += 1  # the option's value is the next word
+        while i < len(words) and _ASSIGNMENT.match(words[i]):
+            i += 1
+        i += min(plain, max(0, len(words) - i - 1))
+    return i, scripts
+
+
 _OTHER_DANGEROUS = (
     (re.compile(r"--no-preserve-root"), "it disables rm's protection for the filesystem root"),
     (re.compile(r"\bmkfs(\.\w+)?\b"), "it formats a filesystem"),
@@ -110,6 +301,9 @@ def dangerous_reason(command):
 
     if _RM_RECURSIVE.search(text):
         return "it deletes a system directory, the filesystem root or the whole home directory"
+    wipe = _rm_wipe_reason(text)
+    if wipe:
+        return wipe
 
     for pattern, reason in _OTHER_DANGEROUS:
         if pattern.search(text):

@@ -375,13 +375,11 @@ func matchKnownFix(failure string, d *Design, env *EnvFacts, tc *Toolchain) (Dia
 	return Diagnosis{}, false
 }
 
-// fixScope is the project a proven fix stands in: the build's own folder ("" when there is none, and then no fix is
-// kept or read back).
+// fixScope is the project a proven fix stands in: the build's own folder ("" before the build has one, and then no fix
+// is kept or read back). Not the workspace: every project of the desktop lives in that one (round-5 recheck: a fix
+// approved in one project stood in every other).
 func (h *Harness) fixScope() string {
-	if h.Workspace == nil {
-		return ""
-	}
-	return h.Workspace.Root()
+	return h.project
 }
 
 // provenFix is the proven fix recorded for the failure signature sig in this project, as a diagnosis to run.

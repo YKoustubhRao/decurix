@@ -77,7 +77,8 @@ def _paid_column(label):
     words = re.findall(r"[a-z]+", text)
     if not words or _NOT_PAID.search(text):
         return False
-    return words[-1] in _PAID_HEAD or _PAID_WORD.search(text) is not None
+    # Money going back out counts too (round-5 recheck: "Employee, Acc, Reimbursement" was no payment file).
+    return words[-1] in _PAID_HEAD or _PAID_WORD.search(text) is not None or _OUTGOING.search(text) is not None
 
 
 def bank_columns(header):

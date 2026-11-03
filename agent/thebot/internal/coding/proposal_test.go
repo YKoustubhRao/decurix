@@ -26,6 +26,7 @@ func newProposalHarness(t *testing.T) (*Harness, *Runner, *memory.L1) {
 	t.Cleanup(func() { l1.Close() })
 	h.L1 = l1
 	h.applyDefaults()
+	h.project = root
 	return h, &Runner{Dir: root, OnLog: func(string) {}}, l1
 }
 
@@ -166,7 +167,7 @@ func TestAnApprovedFixThatWorkedRunsAgainForTheSameFailure(t *testing.T) {
 	// A later build: nobody approves anything, the same failure comes back.
 	h2, r2, _ := newProposalHarness(t)
 	h2.L1 = l1
-	h2.Workspace, r2.Dir = h.Workspace, r.Dir // the same project
+	h2.Workspace, r2.Dir, h2.project = h.Workspace, r.Dir, h.project // the same project
 	got := h2.Diagnose(ctx, failure, &Design{}, &EnvFacts{}, &Toolchain{})
 	if got.Action() != diag.Action() || !got.proven {
 		t.Fatalf("Diagnose = %+v, want the proven fix", got)
@@ -181,7 +182,7 @@ func TestAnApprovedFixThatWorkedRunsAgainForTheSameFailure(t *testing.T) {
 	// The record no longer holds this command (edited, or replaced): it asks.
 	h3, r3, _ := newProposalHarness(t)
 	h3.L1 = l1
-	h3.Workspace, r3.Dir = h.Workspace, r.Dir
+	h3.Workspace, r3.Dir, h3.project = h.Workspace, r.Dir, h.project
 	edited := got
 	edited.FixCommands = []string{"echo other > ran-it.txt"}
 	if h3.applyFix(ctx, r3, edited, &BuildReport{}) || h3.pending == nil {
@@ -194,7 +195,7 @@ func TestAnApprovedFixThatWorkedRunsAgainForTheSameFailure(t *testing.T) {
 	}
 	h4, r4, _ := newProposalHarness(t)
 	h4.L1 = l1
-	h4.Workspace, r4.Dir = h.Workspace, r.Dir
+	h4.Workspace, r4.Dir, h4.project = h.Workspace, r.Dir, h.project
 	push, ok := h4.provenFix(ctx, "E: other")
 	if !ok {
 		t.Fatal("no proven fix read back")
@@ -242,6 +243,12 @@ func TestAProvenFixStandsOnlyInItsProjectAndForAWhile(t *testing.T) {
 	other.L1 = l1
 	if _, ok := other.provenFix(ctx, "E: y"); ok {
 		t.Fatal("a fix approved in one project ran without asking in another")
+	}
+	// Round-5 recheck: two projects in the same workspace are two scopes.
+	sibling, _, _ := newProposalHarness(t)
+	sibling.L1, sibling.Workspace, sibling.project = l1, h.Workspace, filepath.Join(h.project, "other-project")
+	if _, ok := sibling.provenFix(ctx, "E: y"); ok {
+		t.Fatal("a fix approved in one project ran without asking in another project of the same workspace")
 	}
 	if err := l1.RecordProvenFix(ctx, "E: y", "", "echo fixed"); err == nil {
 		t.Fatal("a fix with no project was kept")

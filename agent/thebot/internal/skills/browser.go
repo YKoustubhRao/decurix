@@ -138,6 +138,18 @@ type extRequestsStatus struct {
 // when it is set.
 const agentTokenEnv = "DECURIX_AGENT_TOKEN"
 
+// gateDirPath is where a desktop's approval gate lives; a var so a test can point it elsewhere.
+var gateDirPath = "/run/decurix-gate"
+
+// gateDesktop reports whether this desktop has, or must have, an approval gate (the same test as soul's gatePresent).
+func gateDesktop() bool {
+	if os.Getenv("DECURIX_GATE_REQUIRED") == "1" {
+		return true
+	}
+	st, err := os.Stat(gateDirPath)
+	return err == nil && st.IsDir()
+}
+
 // maxExtReply bounds what one reply of the extension's server may hold in memory.
 const maxExtReply = 8 << 20
 
@@ -256,6 +268,13 @@ func (b *BrowserSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	// failure to recover from, it is an answer.
 	request := map[string]any{"kind": "instruction", "task": task}
 	if cp, ok := rc.Resume.(*browserCheckpoint); ok && cp.Action != "" && rc.IsApproved(cp.Action) {
+		// On a desktop with an approval gate the extension's server takes no approval (anyone holding the agent
+		// token could send one), so asking again would only loop: the person does this one step on the screen.
+		if gateDesktop() {
+			return finish("This desktop's approval gate does not let the browser extension act on a yes: "+cp.Action+
+				" is left for you to do on the screen.", false, map[string]any{"needsUserInput": true,
+				"error": "approvals are not taken through the browser extension on a gated desktop"})
+		}
 		request["approved"] = []string{cp.Action}
 	}
 	if err := b.postJSON(rc.Ctx, "/requests", request, &submitted); err != nil {

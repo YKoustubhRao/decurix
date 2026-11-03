@@ -868,3 +868,10 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): The gate's signed question carried the worker's reason
 - [part-5.md](gotchas/part-5.md): "Could this have changed something" was a list of writers
 - [part-5.md](gotchas/part-5.md): Refund files and "Acc" columns were not payment files
+- [part-5.md](gotchas/part-5.md): The rm check read the text, so each review found a new spelling
+- [part-5.md](gotchas/part-5.md): A local address beside an outside one passed as local
+- [part-5.md](gotchas/part-5.md): "Reimbursement" was no money paid out
+- [part-5.md](gotchas/part-5.md): claude_guard failed open when it could not start
+- [part-5.md](gotchas/part-5.md): Question and final-reply files were written unredacted
+- [part-5.md](gotchas/part-5.md): The browser extension took a yes from anyone with the agent token
+- [part-5.md](gotchas/part-5.md): A proven fix stood in every project of the desktop

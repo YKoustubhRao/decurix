@@ -34,6 +34,18 @@ EXTENSION_SCHEME = "chrome-extension://"
 BROWSER_MARKS = ("sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest")
 
 
+GATE_DIR = "/run/decurix-gate"
+
+
+def gate_required():
+    """Whether this desktop has, or must have, an approval gate (docs/gate-boundary.md). There a yes is made only by the
+    gate's own process from a reply the control plane signed, and a caller holding the agent token - the worker's
+    shell can read it from /proc - is no proof of one. So the extension takes no approval at all on such a desktop:
+    the person does that step on the screen (round-5 recheck: :8092 still took approvals from any token holder)."""
+
+    return os.environ.get("DECURIX_GATE_REQUIRED") == "1" or os.path.isdir(GATE_DIR)
+
+
 def token():
     """This desktop's agent token, "" when it was created without one."""
 
@@ -133,9 +145,10 @@ class Approvals:
             del self._held[:-self.LIMIT]
 
     def grant(self, actions, trusted):
-        """The actions among `actions` that may go through once, each taken off the held list; [] unless `trusted`."""
+        """The actions among `actions` that may go through once, each taken off the held list; [] unless `trusted`,
+        and always [] on a desktop with an approval gate."""
 
-        if not trusted or not isinstance(actions, list):
+        if not trusted or not isinstance(actions, list) or gate_required():
             return []
         granted = []
         with self._lock:
