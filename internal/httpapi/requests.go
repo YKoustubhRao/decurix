@@ -166,6 +166,27 @@ type gateNotice struct {
 // gateNoticeKey carries a request's gateNotice (markWithheld) to deliverRequest.
 type gateNoticeKey struct{}
 
+// withParamSecrets adds to ctx's gateNotice, and to the call recorder, the values of a replay's or a skill run's
+// parameters that are secret by the C14 decision: what the records would withhold of "<name>: <value>" (a value
+// whose name labels a secret, such as a password field, or whose shape is one). They travel to the desktop in the
+// request body only, never in its text, so markWithheld cannot see them.
+func (s *Server) withParamSecrets(ctx context.Context, desktopID string, params map[string]string) context.Context {
+	var values []string
+	for name, value := range params {
+		line := name + ": " + value
+		if held := withhold.Text(line); held != line {
+			values = append(values, withhold.Values(line, held)...)
+		}
+	}
+	if len(values) == 0 {
+		return ctx
+	}
+	s.secretsSeen.Remember(desktopID, values...)
+	notice, _ := ctx.Value(gateNoticeKey{}).(gateNotice)
+	notice.values = append(notice.values, values...)
+	return context.WithValue(ctx, gateNoticeKey{}, notice)
+}
+
 // tellGate gives desktopID's approval gate the notice ctx carries. It fails closed: an error means the gate does not
 // know what it must, and the request is then not sent.
 func (s *Server) tellGate(ctx context.Context, desktopID string) error {
@@ -175,13 +196,15 @@ func (s *Server) tellGate(ctx context.Context, desktopID string) error {
 	}
 	gateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
 	defer cancel()
-	if notice.sendCopy {
-		if err := s.Desktops.SendGateRequest(gateCtx, desktopID, notice.taskID, notice.copy); err != nil {
+	// The values first: a copy the gate accepted must never stand for a request whose values it was refused (the
+	// send then stops, and the gate keeps the earlier copy, which H-CP-5 binds to its own task).
+	if len(notice.values) > 0 {
+		if err := s.Desktops.SendGateSecrets(gateCtx, desktopID, notice.taskID, notice.values); err != nil {
 			return err
 		}
 	}
-	if len(notice.values) > 0 {
-		if err := s.Desktops.SendGateSecrets(gateCtx, desktopID, notice.taskID, notice.values); err != nil {
+	if notice.sendCopy {
+		if err := s.Desktops.SendGateRequest(gateCtx, desktopID, notice.taskID, notice.copy); err != nil {
 			return err
 		}
 	}

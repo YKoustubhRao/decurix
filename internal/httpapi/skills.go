@@ -175,6 +175,21 @@ func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content,
 	ctx, cancel := context.WithTimeout(r.Context(), recordingsRequestTimeout)
 	defer cancel()
 
+	// As every other door (review CP-A-3 B1): the gate gets its copy (the withheld form, which for a "/replay" or
+	// "/skill" line names no site, so it asks) and the withheld values, a replay's or skill's secret parameters among
+	// them, before the agent has anything; the recorder holds the same values. A gate that cannot be told stops it.
+	ctx = s.markWithheld(ctx, worker, route, content)
+	if params, ok := payload["params"].(map[string]string); ok {
+		ctx = s.withParamSecrets(ctx, worker, params)
+	}
+	if s.Desktops.HasGate(ctx, worker) {
+		if err := s.tellGate(ctx, worker); err != nil {
+			log.Printf("%s to %s: not sent, its approval gate could not be told: %v", what, worker, err)
+			sendRequestError(w, err)
+			return
+		}
+	}
+
 	payload["task_id"] = route.TaskID
 
 	resp, ok := s.askAgent(ctx, w, id, http.MethodPost, agentPath, payload)

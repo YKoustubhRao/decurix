@@ -57,11 +57,8 @@ func newGateDesktop(t *testing.T, s *Server, state string) *gateDesktop {
 			w.WriteHeader(status)
 			return
 		}
-		var b map[string]any
-		_ = json.Unmarshal(raw, &b)
-		if _, ok := b["content"]; ok {
-			g.record("agent")
-		}
+		_ = raw
+		g.record("agent") // the agent's :8081, a request or a taught door's call
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	t.Cleanup(stubSrv.Close)
@@ -77,8 +74,13 @@ func newGateDesktop(t *testing.T, s *Server, state string) *gateDesktop {
 			w.Header().Set("Content-Type", "application/json")
 			st := &container.State{Running: g.state != "stopped", Paused: g.state == "paused", Status: g.state,
 				StartedAt: "2026-11-04T10:00:00Z"}
+			labels := map[string]string{}
+			if g.noGate {
+				labels[desktop.GateLabel] = "0"
+			}
 			_ = json.NewEncoder(w).Encode(container.InspectResponse{
 				ContainerJSONBase: &container.ContainerJSONBase{ID: "box", Name: "/desktop_box", State: st},
+				Config:            &container.Config{Labels: labels},
 				NetworkSettings:   &container.NetworkSettings{Networks: map[string]*network.EndpointSettings{desktop.NetworkName: {IPAddress: stub}}},
 			})
 		case strings.HasSuffix(p, "/start"):
@@ -147,7 +149,7 @@ func TestTheGateIsToldAfterTheDesktopIsUp(t *testing.T) {
 				t.Fatalf("send: %d %s", rec.Code, rec.Body)
 			}
 			got := strings.Join(g.events(), ",")
-			want := "gate /request,gate /secrets,agent"
+			want := "gate /secrets,gate /request,agent"
 			switch state {
 			case "stopped":
 				want = "start," + want
@@ -161,7 +163,7 @@ func TestTheGateIsToldAfterTheDesktopIsUp(t *testing.T) {
 	}
 }
 
-// A desktop made before the gate (its image has no gate user) gets its request as before, and no gate post.
+// A desktop the control plane made without a gate (its label says so) gets its request as before, and no gate post.
 func TestADesktopWithNoGateGetsItsRequest(t *testing.T) {
 	s := chatServer(t)
 	g := newGateDesktop(t, s, "running")
@@ -172,5 +174,54 @@ func TestADesktopWithNoGateGetsItsRequest(t *testing.T) {
 	}
 	if got := strings.Join(g.events(), ","); got != "agent" {
 		t.Fatalf("events = %s", got)
+	}
+}
+
+// replayWith posts a replay of a recording on box with params, as a person at this machine.
+func replayWith(t *testing.T, s *Server, params map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, _ := json.Marshal(params)
+	form := url.Values{"id": {"box"}, "session": {"task-20261104-101500"}, "params": {string(raw)}}
+	req := httptest.NewRequest(http.MethodPost, "/api/desktops/recordings/replay", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = "127.0.0.1:40000"
+	rec := httptest.NewRecorder()
+	s.replayRecordingHandler(rec, req)
+	return rec
+}
+
+// A replay's secret parameter is told to the gate before the agent has it, with the gate's copy, and held by the
+// call recorder; an ordinary parameter is neither (review CP-A-3 B1, P6). A gate that cannot be told stops the
+// replay.
+func TestAReplayTellsTheGateFirst(t *testing.T) {
+	s := recordingServer(t)
+	g := newGateDesktop(t, s, "running")
+	const v = "Tulip-31-Quay"
+	if rec := replayWith(t, s, map[string]string{"password": v, "invoice": "INV-0042"}); rec.Code != http.StatusOK {
+		t.Fatalf("replay: %d %s", rec.Code, rec.Body)
+	}
+	if got := strings.Join(g.events(), ","); got != "gate /secrets,gate /request,agent" {
+		t.Fatalf("events = %s: the gate is told first", got)
+	}
+	held := strings.Join(s.secretsSeen.For("box"), "|")
+	if !strings.Contains(held, v) || strings.Contains(held, "INV-0042") {
+		t.Fatalf("the recorder holds %q", held)
+	}
+	body, _ := json.Marshal(map[string]any{"messages": []any{map[string]any{"role": "assistant", "content": `Running: gui type e3 "` + v + `"`}}})
+	proxyCall(t, s, "azure", "box", string(body), map[string]string{"X-Decurix-Purpose": "operator.turn"})
+	if hits := blobsHolding(t, s, v); len(hits) > 0 {
+		t.Fatalf("the replay's password is in a blob: %s", hits[0])
+	}
+
+	s2 := recordingServer(t)
+	g2 := newGateDesktop(t, s2, "running")
+	g2.gateStatus = http.StatusInternalServerError
+	if rec := replayWith(t, s2, map[string]string{"password": v}); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a replay whose gate cannot be told: %d %s", rec.Code, rec.Body)
+	}
+	for _, e := range g2.events() {
+		if e == "agent" || strings.HasPrefix(e, "agent") {
+			t.Fatalf("the replay reached the agent: %v", g2.events())
+		}
 	}
 }
