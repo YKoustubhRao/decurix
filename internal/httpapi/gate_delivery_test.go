@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +29,7 @@ type gateDesktop struct {
 	state      string
 	noGate     bool
 	gateStatus int
+	recording  string   // what GET /recordings/<session> answers ("" a 404)
 	log        []string // "start", "unpause", "gate /request", "gate /secrets", "agent"
 }
 
@@ -58,6 +60,17 @@ func newGateDesktop(t *testing.T, s *Server, state string) *gateDesktop {
 			return
 		}
 		_ = raw
+		if r.Method == http.MethodGet && strings.Contains(r.URL.RawQuery, "/recordings/") {
+			g.mu.Lock()
+			program := g.recording
+			g.mu.Unlock()
+			if program == "" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = w.Write([]byte(program))
+			return
+		}
 		g.record("agent") // the agent's :8081, a request or a taught door's call
 		_, _ = w.Write([]byte(`{}`))
 	}))
@@ -196,6 +209,7 @@ func replayWith(t *testing.T, s *Server, params map[string]string) *httptest.Res
 func TestAReplayTellsTheGateFirst(t *testing.T) {
 	s := recordingServer(t)
 	g := newGateDesktop(t, s, "running")
+	g.recording = `{"program":{"params":[{"name":"password","secret":true},{"name":"invoice","secret":false}]}}`
 	const v = "Tulip-31-Quay"
 	if rec := replayWith(t, s, map[string]string{"password": v, "invoice": "INV-0042"}); rec.Code != http.StatusOK {
 		t.Fatalf("replay: %d %s", rec.Code, rec.Body)
@@ -223,5 +237,55 @@ func TestAReplayTellsTheGateFirst(t *testing.T) {
 		if e == "agent" || strings.HasPrefix(e, "agent") {
 			t.Fatalf("the replay reached the agent: %v", g2.events())
 		}
+	}
+}
+
+// A replay's parameters are secret by structure: the recording's program marks them (the recorder withheld what was
+// typed, or the field is a password field), whatever they are called, and an ordinary one is not held; a program
+// that cannot be read holds every value given (review CP-A-4 B1).
+func TestAReplaysSecretParametersAreReadFromItsProgram(t *testing.T) {
+	names := []string{"confirm_password", "password_2", "login_pin", "one_time_password", "user_password"}
+	params := map[string]string{"invoice_no": "INV-0042"}
+	var programParams []string
+	for i, n := range names {
+		params[n] = fmt.Sprintf("Val%d-xq-%d", i, i*7+3)
+		programParams = append(programParams, fmt.Sprintf(`{"name":%q,"secret":true}`, n))
+	}
+	programParams = append(programParams, `{"name":"invoice_no","secret":false}`)
+
+	s := recordingServer(t)
+	g := newGateDesktop(t, s, "running")
+	g.recording = `{"meta":{},"events":[],"program":{"params":[` + strings.Join(programParams, ",") + `]}}`
+	if rec := replayWith(t, s, params); rec.Code != http.StatusOK {
+		t.Fatalf("replay: %d %s", rec.Code, rec.Body)
+	}
+	held := strings.Join(s.secretsSeen.For("box"), "|")
+	for _, n := range names {
+		if !strings.Contains(held, params[n]) {
+			t.Errorf("%s (marked secret by the program) is not held: %q", n, held)
+		}
+	}
+	if strings.Contains(held, "INV-0042") {
+		t.Errorf("an ordinary parameter is held: %q", held)
+	}
+
+	// The program cannot be read: every value given is held.
+	s2 := recordingServer(t)
+	newGateDesktop(t, s2, "running")
+	if rec := replayWith(t, s2, map[string]string{"invoice_no": "INV-0042", "user_password": "Val9-xq-9"}); rec.Code != http.StatusOK {
+		t.Fatalf("replay: %d %s", rec.Code, rec.Body)
+	}
+	held = strings.Join(s2.secretsSeen.For("box"), "|")
+	if !strings.Contains(held, "INV-0042") || !strings.Contains(held, "Val9-xq-9") {
+		t.Fatalf("with no program, the recorder holds %q", held)
+	}
+}
+
+// A desktop that may have been made before its gate is told to be recreated, not to try again.
+func TestADesktopWithoutAGateIsToldToBeRecreated(t *testing.T) {
+	rec := httptest.NewRecorder()
+	sendRequestError(rec, fmt.Errorf("x: %w: %w", desktop.ErrGateNotTold, desktop.ErrGateMaybeMissing))
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "Recreate this desktop") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 }

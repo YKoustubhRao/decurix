@@ -232,9 +232,13 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
 - **Pass rates** (`/api/tasks/pass-rates`) count every ended attempt under its own skill version x model x origin
   class (production, practice, eval); the headline is the first-attempt rate, `checked_independent` counts only code,
   ledger or person bases, and a person's verdict joins only the attempt it judged. Wilson bounds are the reader's.
+- **The `decurix.gate` label's "0"** is a branch nothing takes today: no code makes a desktop without a gate. It stays
+  as the one explicit "no" HasGate honours. A desktop with no label (made before 718220f) is gated; if its gate does
+  not answer, the person is told to recreate it.
 - **Teach, replay and run-skill give the gate only their request line as its copy** (a `/replay ...` or `/skill ...`
   line, withheld), plus their secret parameters as values, before the agent has anything; a gate that cannot be told
-  stops them. The line names no site, so the gate asks about every password a taught skill types: fail closed, but a
+  stops them. A replay's secret parameters are those its recording's program marks secret (structure); when the
+  program cannot be read, every value given is held. The line names no site, so the gate asks about every password a taught skill types: fail closed, but a
   taught skill asks each time. Proposal: the control plane sends the gate the taught skill's named sites, signed the
   same way as `/request` (its own label, the task id, the time, a one-use nonce, the gate key), from the skill as the
   control plane holds it, never from the worker's files. What makes any door that leaves out the copy safe is the
@@ -345,3 +349,15 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
 - **A date the save waits on** is asked through the next question the engine puts to the person
   (`messaging.ask_for_query`); an engine that reports instead of asking leaves the record unsaved (not done), and the
   question is not asked by itself.
+- **Secrets, round 2 leftovers** (the security review of 2026-11-04):
+  - The task's secret values as they are live in the task file's `.secrets` (tmpfs, 0600) until the task's final
+    report; a container restart loses them (the interrupted task is then reported, not resumed). The word hashes stay
+    desktop-wide.
+  - Writers listed in `agent/tests/test_writers_withhold.py` with "follow-up" hold model- or document-derived text
+    that is not yet withheld: app guides, methods, procedures, email-draft records, the record ledger (which needs a
+    literal-only withholding, since shape matching would withhold a 16-digit account as a card number).
+  - `resend_learned` can post a line twice when two threads read it at once (no client id for the control plane to
+    dedupe on).
+  - The gate's nonces are in memory: after a gate restart a signed body still within its 120 s window replays (the
+    worker cannot capture the traffic: NET_RAW is dropped). Say so in gate-boundary.md.
+  - Soul's step text (`Running: gui type e3 "<value>"`) has the same escaped-form exposure the gate had: relay to SOUL.

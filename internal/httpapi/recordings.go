@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -416,7 +417,63 @@ func (s *Server) replayRecordingHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	s.sendTaught(w, r, id, replayContent(session, from), "/recordings/"+session+"/replay", map[string]any{"from": from, "params": params}, "replay")
+	s.sendTaught(w, r, id, replayContent(session, from), "/recordings/"+session+"/replay", map[string]any{"from": from, "params": params}, "replay",
+		s.replaySecrets(r.Context(), id, session, params)...)
+}
+
+// maxProgramBytes bounds the recording read for its program's parameters.
+const maxProgramBytes = 16 << 20
+
+// replaySecrets is the values of params that are secret by structure (review CP-A-4 B1): the recording's program
+// says which of its parameters are, because the recorder withheld what was typed or the field was a password field
+// (replay.compile_program's params[].secret). No word list decides it. A program that cannot be read holds every
+// value given (fail closed: some ordinary values withheld for one task, never a password kept).
+func (s *Server) replaySecrets(ctx context.Context, id, session string, params map[string]string) []string {
+	if len(params) == 0 {
+		return nil
+	}
+	all := func(why string) []string {
+		log.Printf("replay of %s on %s: %s, so every parameter value is held as a secret", session, id, why)
+		out := make([]string, 0, len(params))
+		for _, v := range params {
+			out = append(out, v)
+		}
+		return out
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	resp, err := s.Desktops.AgentRequest(readCtx, id, http.MethodGet, "/recordings/"+session, nil)
+	if err != nil {
+		return all("its program could not be read")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return all(fmt.Sprintf("its program could not be read (HTTP %d)", resp.StatusCode))
+	}
+	var rec struct {
+		Program *struct {
+			Params []struct {
+				Name   string `json:"name"`
+				Secret bool   `json:"secret"`
+			} `json:"params"`
+		} `json:"program"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxProgramBytes)).Decode(&rec); err != nil || rec.Program == nil {
+		return all("its program could not be read")
+	}
+	secret := map[string]bool{}
+	for _, p := range rec.Program.Params {
+		if p.Secret {
+			secret[p.Name] = true
+		}
+	}
+	var out []string
+	for name, v := range params {
+		if secret[name] {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // replayContent is the request a replay is sent and recorded as. The desktop's

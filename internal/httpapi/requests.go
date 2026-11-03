@@ -166,6 +166,23 @@ type gateNotice struct {
 // gateNoticeKey carries a request's gateNotice (markWithheld) to deliverRequest.
 type gateNoticeKey struct{}
 
+// withHeldValues adds values to ctx's gateNotice and to the call recorder.
+func (s *Server) withHeldValues(ctx context.Context, desktopID string, values []string) context.Context {
+	var kept []string
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			kept = append(kept, v)
+		}
+	}
+	if len(kept) == 0 {
+		return ctx
+	}
+	s.secretsSeen.Remember(desktopID, kept...)
+	notice, _ := ctx.Value(gateNoticeKey{}).(gateNotice)
+	notice.values = append(notice.values, kept...)
+	return context.WithValue(ctx, gateNoticeKey{}, notice)
+}
+
 // withParamSecrets adds to ctx's gateNotice, and to the call recorder, the values of a replay's or a skill run's
 // parameters that are secret by the C14 decision: what the records would withhold of "<name>: <value>" (a value
 // whose name labels a secret, such as a password field, or whose shape is one). They travel to the desktop in the
@@ -577,6 +594,11 @@ func sendRequestError(w http.ResponseWriter, err error) {
 			http.StatusServiceUnavailable,
 			"that desktop is still being created - try again in a few seconds",
 		)
+
+	case errors.Is(err, desktop.ErrGateMaybeMissing):
+		jsonStatusError(w, http.StatusServiceUnavailable,
+			"this desktop's approval gate does not answer, and the desktop may have been made before it had one: "+
+				"nothing was sent. Recreate this desktop to give it its gate.")
 
 	case errors.Is(err, desktop.ErrGateNotTold):
 		jsonStatusError(w, http.StatusServiceUnavailable,

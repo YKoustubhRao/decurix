@@ -156,7 +156,10 @@ func (s *Server) learnRecordingHandler(w http.ResponseWriter, r *http.Request) {
 // as a task: refused while the desktop is busy (refuseBusy, which logs a
 // records error under what), otherwise Plan, hand it with payload and its
 // task ID to the desktop's own endpoint agentPath, Commit.
-func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content, agentPath string, payload map[string]any, what string) {
+//
+// held are values secret by structure (a replay's parameters its program marks secret): held by the recorder and
+// told to the gate, beside whatever the shape check finds.
+func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content, agentPath string, payload map[string]any, what string, held ...string) {
 	worker := desktop.SanitizeID(id)
 
 	// Held until the request is handed over, so no automated send can
@@ -179,8 +182,9 @@ func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content,
 	// "/skill" line names no site, so it asks) and the withheld values, a replay's or skill's secret parameters among
 	// them, before the agent has anything; the recorder holds the same values. A gate that cannot be told stops it.
 	ctx = s.markWithheld(ctx, worker, route, content)
+	ctx = s.withHeldValues(ctx, worker, held)
 	if params, ok := payload["params"].(map[string]string); ok {
-		ctx = s.withParamSecrets(ctx, worker, params)
+		ctx = s.withParamSecrets(ctx, worker, params) // a second wall: a value secret by its form
 	}
 	if s.Desktops.HasGate(ctx, worker) {
 		if err := s.tellGate(ctx, worker); err != nil {

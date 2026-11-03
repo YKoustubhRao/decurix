@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"errors"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -167,5 +168,35 @@ func TestHasGateReadsTheControlPlanesLabel(t *testing.T) {
 	cfg, _, _ := buildContainerConfigs("img", "desktop_box", "basic", "thebot", 1, 1024, nil, "vol", nil)
 	if cfg.Labels[GateLabel] != "1" {
 		t.Errorf("a new desktop is not labelled as gated: %v", cfg.Labels)
+	}
+}
+
+type refusingTransport struct{}
+
+func (refusingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("connection refused")
+}
+
+// A gate that does not answer on a desktop with no gate label may be missing (made before the gate): said so, so
+// the person is told to recreate it; on a labelled desktop it is only not answering (review CP-A-4 N1).
+func TestAnUnansweringGateOnAnUnlabelledDesktopMayBeMissing(t *testing.T) {
+	for label, maybeMissing := range map[string]bool{"": true, "1": false} {
+		fake := &fakeAPI{}
+		l := map[string]string{}
+		if label != "" {
+			l[GateLabel] = label
+		}
+		fake.inspect = func(string) (container.InspectResponse, error) {
+			return container.InspectResponse{ContainerJSONBase: &container.ContainerJSONBase{ID: "c", State: &container.State{Running: true}},
+				Config: &container.Config{Labels: l}, NetworkSettings: &container.NetworkSettings{Networks: map[string]*network.EndpointSettings{
+					NetworkName: {IPAddress: "10.0.0.5"}}}}, nil
+		}
+		m := newManagerWith(fake)
+		m.HostGUISecret = []byte("secret")
+		m.httpClient = &http.Client{Transport: refusingTransport{}}
+		err := m.SendGateRequest(context.Background(), "box", "t1", "x")
+		if !errors.Is(err, ErrGateNotTold) || !errors.Is(err, ErrAgentUnreachable) || errors.Is(err, ErrGateMaybeMissing) != maybeMissing {
+			t.Errorf("label %q: %v", label, err)
+		}
 	}
 }

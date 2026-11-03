@@ -153,6 +153,10 @@ func (m *Manager) SendGateSecrets(ctx context.Context, id, taskID string, values
 	})
 }
 
+// ErrGateMaybeMissing is a gate that does not answer on a desktop made before the control plane labelled its gated
+// desktops: it may have none (made before the gate), and recreating it is what fixes that.
+var ErrGateMaybeMissing = errors.New("this desktop may have been made before its approval gate")
+
 // ErrGateNotTold is a desktop's approval gate that could not be given what it must know before the agent has a
 // request (its copy, the withheld values): the request is then not sent at all.
 var ErrGateNotTold = errors.New("the approval gate could not be told what was asked")
@@ -177,7 +181,8 @@ func GateText(s string) string {
 	return b.String()
 }
 
-// GateLabel is the label the control plane puts on every desktop it creates with an approval gate.
+// GateLabel is the label the control plane puts on every desktop it creates with an approval gate ("1"). Nothing
+// writes "0" today; HasGate keeps it as the one explicit "no" for a desktop the control plane would make without one.
 const GateLabel = "decurix.gate"
 
 // HasGate reports whether desktop id runs an approval gate, from what the control plane itself wrote: the label set
@@ -243,6 +248,11 @@ func (m *Manager) postToGate(ctx context.Context, id, path string, body func(key
 	}
 	resp, err := cli.Do(req)
 	if err != nil {
+		if inspect.Config == nil || inspect.Config.Labels[GateLabel] == "" {
+			// No label: a desktop made before the label, perhaps before the gate itself. Said so, so the person is
+			// told what fixes it (review CP-A-4 N1).
+			return fmt.Errorf("%w: %w: %w: send %s to desktop %s's gate: %v", ErrGateNotTold, ErrGateMaybeMissing, ErrAgentUnreachable, path, desktopID, err)
+		}
 		return fmt.Errorf("%w: %w: send %s to desktop %s's gate: %v", ErrGateNotTold, ErrAgentUnreachable, path, desktopID, err)
 	}
 	defer resp.Body.Close()
