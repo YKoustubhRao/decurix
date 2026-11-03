@@ -91,6 +91,7 @@ class PanelStateTests(unittest.TestCase):
             calls.append((a, k))
             return type("P", (), {"stdout": '{"pass": true}', "stderr": "", "returncode": 0})()
         with patch.object(run, "docker", side_effect=fake_docker), \
+                patch.object(run, "check_panel_owner"), \
                 patch.object(run.subprocess, "run", side_effect=lambda cmd, **k: calls.append((tuple(cmd), k))):
             run.reset_task("c", {"id": "web-login", "start": {"browser": "/login"}})
             run.check_task("c", {"id": "web-login"}, "")
