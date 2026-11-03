@@ -61,9 +61,11 @@ func (st *operatorState) untracedSendBack() bool {
 
 // noteTracedTyping starts the refusals' count again when a command typing values passed the trace.
 func (st *operatorState) noteTracedTyping(command string) {
-	if len(typedValues(command)) > 0 {
+	values := typedValues(command)
+	if len(values) > 0 {
 		st.UntracedNudges = 0
 	}
+	st.noteComputedTyped(values)
 }
 
 // maxSeenChars bounds what is kept of the request and command outputs. Long enough for the longest goals measured: a

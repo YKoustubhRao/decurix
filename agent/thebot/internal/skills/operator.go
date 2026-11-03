@@ -739,6 +739,10 @@ type operatorState struct {
 	folderFacts []string
 	// PlanAgreed is the host's word that the request is a stage of a plan the person agreed (RunContext.PlanAgreed).
 	PlanAgreed bool `json:",omitempty"`
+	// ComputedOnly are values first printed by code the work wrote itself (an interpreter's inline code), and
+	// ComputedTyped those of them it then typed: a fact for the reviewer (computed.go).
+	ComputedOnly  map[string]bool `json:",omitempty"`
+	ComputedTyped []string        `json:",omitempty"`
 }
 
 // outputChars is OutputChars, or the local default for a checkpoint written
@@ -1142,6 +1146,9 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	// web page is never where a record's or a document's figures come from (grounding.go).
 	if !isLookup(command) || researchRe.MatchString(st.Request) || st.fetchesPersonLink(command) {
 		shown := withoutCommandValues(res.Output, run)
+		if res.ExitCode == 0 {
+			st.noteComputed(run, shown) // before noteSeen: what it prints that nothing showed before
+		}
 		st.noteSeen(shown)
 		st.noteEvidence(run, shown)
 		st.noteListing(command, res.Output)

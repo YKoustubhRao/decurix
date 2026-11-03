@@ -180,6 +180,10 @@ func (st *operatorState) reviewFacts(report string, items []string, action strin
 		b.WriteString("\nVALUES TYPED THAT NO TEXT HOLDS, OCR OF THE PICTURES INCLUDED (read off a picture, or not read " +
 			"at all): " + strings.Join(st.PictureOnly, ", ") + "\n")
 	}
+	if len(st.ComputedTyped) > 0 {
+		b.WriteString("\nVALUES TYPED THAT ONLY CODE THE WORK WROTE ITSELF PRINTED (its own arithmetic or text - a fact, no " +
+			"verdict: check each against the sources it was worked from): " + strings.Join(st.ComputedTyped, ", ") + "\n")
+	}
 	if len(st.UntracedWrites) > 0 {
 		b.WriteString("\nVALUES WRITTEN INTO FILES THAT NO TEXT THE WORK WAS SHOWN HOLDS (read off a picture, worked out in " +
 			"the head, or not read at all - check each against its source): " + strings.Join(st.UntracedWrites, ", ") + "\n")
