@@ -44,6 +44,8 @@ func (s *Store) ResolveModel(execID string, lookup DeploymentLookup) (string, er
 	if resolved == "" {
 		resolved = strings.TrimSpace(engine) + ":" + strings.TrimSpace(model)
 	}
+	// The read above is outside the store's lock on purpose: the fields read never change once the execution exists,
+	// so only the write, which another outcome could race, is under it.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, err := s.db.Exec(`UPDATE executions SET resolved_model = ? WHERE id = ?`, clipText(resolved, 160), execID); err != nil {

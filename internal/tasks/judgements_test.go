@@ -141,10 +141,10 @@ func TestAVerdictIsAJudgementAndOutlivesItsWorker(t *testing.T) {
 
 // Nothing anywhere in the control plane changes or removes a judgement: no UPDATE or DELETE names the table.
 func TestJudgementsAreAppendOnly(t *testing.T) {
-	bad := regexp.MustCompile(`(?i)(UPDATE\s+judgements|DELETE\s+FROM\s+judgements|DROP\s+TABLE\s+judgements|INSERT\s+OR\s+REPLACE\s+INTO\s+judgements|REPLACE\s+INTO\s+judgements)`)
+	bad := regexp.MustCompile(`(?is)(UPDATE\s+judgements|DELETE\s+FROM\s+judgements|DROP\s+TABLE\s+judgements|INSERT\s+OR\s+REPLACE\s+INTO\s+judgements|REPLACE\s+INTO\s+judgements|INTO\s+judgements[^;]{0,600}?ON\s+CONFLICT)`)
 	inserts := 0
-	root := filepath.Join("..")
-	err := filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+	walk := func(root string, fn filepath.WalkFunc) error { return filepath.Walk(root, fn) }
+	err := walk(filepath.Join(".."), func(p string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 			return err
 		}
@@ -161,6 +161,17 @@ func TestJudgementsAreAppendOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// cmd/ too: main or a tool there must not touch the table either.
+	_ = walk(filepath.Join("..", "..", "cmd"), func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+			return err
+		}
+		b, _ := os.ReadFile(p)
+		if loc := bad.FindIndex(b); loc != nil || strings.Contains(string(b), "INTO judgements") {
+			t.Errorf("%s writes the judgements table", p)
+		}
+		return nil
+	})
 	if inserts != 1 {
 		t.Fatalf("%d statements insert into judgements, want 1 (insertJudgement)", inserts)
 	}
