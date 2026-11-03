@@ -1,3 +1,4 @@
+from needs import needs
 import tempfile
 import unittest
 from pathlib import Path
@@ -107,6 +108,7 @@ class AnEntryTheDocumentsNameIsNotAStandIn(unittest.TestCase):
         core._DOCUMENT_WORDS.clear()
 
 
+@needs("python-docx")
 class AWordDocumentIsMadeByTheTool(unittest.TestCase):
     """office create DOC.docx: a valid document from headings, paragraphs, bullets and tables (found live: hand-written XML)."""
 
@@ -179,6 +181,7 @@ class AFileSavedOverTheAttachmentIsNotInTheWorkFolder(unittest.TestCase):
                 self.assertIn("already_paid.csv", produced.misplaced(request, root=root))
 
 
+@needs("openpyxl")
 class AChartIsMadeByTheTool(unittest.TestCase):
     def test_a_workbook_with_a_chart_reads_back_with_it(self):
         from decurix_agent.tools import office

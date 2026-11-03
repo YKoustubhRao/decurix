@@ -10,7 +10,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import openpyxl
+from needs import needs, optional
+
+openpyxl = optional("openpyxl")
 
 from decurix_agent import stage_facts
 
@@ -25,6 +27,7 @@ AMENDMENT = [{"n": 1, "text": "Exclude bill NS-0457 from everything - Nova Stati
 
 
 @fixture_paths.skip_unless(WORKBOOK.is_file() and BILL.is_file(), "round 5 P1's files are not on this machine")
+@needs("openpyxl")
 class TheRoundsOwnFiles(TempDirCase):
 
     def setUp(self):
@@ -86,6 +89,7 @@ class AReCheckKeepsEarlierFindings(TempDirCase):
         self.assertEqual(stage_facts.earlier_findings(["NS-0457 held: cancelled by vendor"], CHANGE), [])
 
 
+@needs("openpyxl")
 class AStatusEveryOutputAgreesOn(TempDirCase):
     """Round 5 P6 (2026-10-20), Finding BZ1: the tracker said "assess" for refunds the drafts approved."""
 
@@ -150,6 +154,7 @@ class AStatusEveryOutputAgreesOn(TempDirCase):
 P6_INBOX = Path(r"C:\Users\Administrator\decurix-tests\wide\process\out\P6\20261020-154917\host\inbox")
 
 
+@needs("openpyxl")
 class WorkLeftUndoneInATable(TempDirCase):
     """Round 5 P6 (2026-10-20), Finding CC: an Action left as "calculate ... and process per policy", and an automatic
     reply given another email's order number."""
@@ -194,6 +199,7 @@ class WorkLeftUndoneInATable(TempDirCase):
         self.assertEqual(stage_facts.unsupported_references(made, messages), [])
 
 
+@needs("openpyxl")
 class ComputedAmountsHold(TempDirCase):
     """Round 5 P6 (2026-10-20), Finding CF: "Approve refund Rs 1,800.00" for 60 lanyards at Rs 35 (Rs 2,100), with no
     working; and E07 filed as Refund while its own Action says "no refund requested"."""
@@ -277,6 +283,7 @@ class RemovedRecordsAreTheModelsReading(unittest.TestCase):
         self.assertEqual(stage_facts.removed_records(changes), [])
 
 
+@needs("openpyxl")
 class ARemovedRecordStillInTheOutputs(unittest.TestCase):
     # Round 5 P1 on pc3 (2026-10-21, series 13): "Bill NS-0457 from Nova Stationers was cancelled - leave it out of
     # everything" - and the Purchase Register still had "08/10/2026 | Nova Stationers | NS-0457 | 66700 | 4533 | ...".

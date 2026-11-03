@@ -3,6 +3,7 @@ The `office` shell command as TheBot uses it: spreadsheet changes that keep
 the workbook's charts, and email drafts that go to the Outbox, never out.
 """
 
+from needs import needs
 import io
 import json
 import os
@@ -43,6 +44,7 @@ def run(argv, stdin=None):
     return code, out.getvalue()
 
 
+@needs("openpyxl")
 class UpdatingASpreadsheetKeepsItsChart(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()

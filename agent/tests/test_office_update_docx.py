@@ -5,6 +5,7 @@ template in one command: in the body, tables, headers and footers, also where Wo
 keeping the formatting; and what is still left is a code-decided fact.
 """
 
+from needs import needs
 import os
 import tempfile
 import unittest
@@ -34,6 +35,7 @@ def make_template(path):
     document.save(path)
 
 
+@needs("python-docx")
 class FillingATemplate(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

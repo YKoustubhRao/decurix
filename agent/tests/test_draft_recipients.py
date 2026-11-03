@@ -12,6 +12,9 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
+from needs import require
+
+require("openpyxl")  # every test here reads or writes workbooks
 import openpyxl
 
 from temp_case import TempDirCase

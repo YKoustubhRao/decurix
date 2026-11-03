@@ -36,8 +36,30 @@ def missing(*names):
     return [name for name in names if not have(name)]
 
 
+def _reason(lacking):
+    return f"needs {', '.join(lacking)} (not installed in this Python)"
+
+
 def needs(*names):
     """A skip decorator (for a test or a TestCase) for when any of the packages `names` is missing."""
 
     lacking = missing(*names)
-    return unittest.skipIf(bool(lacking), f"needs {', '.join(lacking)} (not installed in this Python)")
+    return unittest.skipIf(bool(lacking), _reason(lacking))
+
+
+def require(*names):
+    """Skip the whole test module, at its import, when any of the packages `names` is missing - for a module whose
+    every test reads or writes office files. Unittest reports the module as skipped, with the reason."""
+
+    lacking = missing(*names)
+    if lacking:
+        raise unittest.SkipTest(_reason(lacking))
+
+
+def optional(name):
+    """The package `name` imported, or None when this Python lacks it (pair with @needs on the tests that use it)."""
+
+    try:
+        return importlib.import_module(_IMPORT.get(name, name))
+    except ImportError:
+        return None

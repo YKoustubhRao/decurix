@@ -12,6 +12,9 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
+from needs import require
+
+require("openpyxl")  # every test here reads or writes workbooks
 import openpyxl
 
 from temp_case import TempDirCase

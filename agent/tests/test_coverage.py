@@ -5,6 +5,7 @@ Excel): Unit Price and Line Total were filled for rows 2 to 24 of a table that r
 was there. Decided in code from the saved file, never by the judge.
 """
 
+from needs import needs
 import os
 import sys
 import unittest
@@ -151,6 +152,7 @@ from test_produced_files import FileWorkIsChecked  # noqa: E402  (the gate's har
 
 
 class TheGateSendsBackAShortFill(FileWorkIsChecked):
+    @needs("openpyxl")
     def test_a_column_that_stops_short_is_evidence_for_the_judge(self):
         self.verdicts = [{"verdict": verify.NOT_DONE, "confidence": 0.9, "seen": "D25 is empty", "why": ""}]
         gaps = ["orders.xlsx: Orders!D25 is empty, but D2:D24 hold one formula filled down and the table beside it runs "
@@ -171,6 +173,7 @@ class TheGateSendsBackAShortFill(FileWorkIsChecked):
         self.assertEqual(self.judged, [])
         self.assertIn("Orders!E5 shows #REF!", self.asked[-1][0])
 
+    @needs("openpyxl")
     def test_a_complete_table_goes_on_to_the_judge(self):
         self.verdicts = [{"verdict": verify.DONE, "confidence": 0.95, "seen": "all 24 rows", "why": ""}]
         with mock.patch.object(skill_task.produced, "store_results", lambda paths: []), \
@@ -298,6 +301,7 @@ class WhatTheRequestAskedGatesThem(TempDirCase):
 
 
 class TheGateSendsBackALayoutFault(FileWorkIsChecked):
+    @needs("openpyxl")
     def test_typed_rows_are_evidence_for_the_judge(self):
         from test_apprentice import verdict
         from decurix_agent import verify

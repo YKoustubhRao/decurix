@@ -17,7 +17,9 @@ import test_long_requests as base
 from decurix_agent import long_task, payees, verify
 from test_payees import EMAIL, proposal
 
-import openpyxl
+from needs import needs, optional
+
+openpyxl = optional("openpyxl")
 
 FINDING = "A figure given as a source's own is not what that source states (register.csv: 1,000.00 against 1,250.00)."
 KEPT = ("\nKept register.csv total as it is: the bank statement's closing balance on page 2 is 1,000.00 - the check "
@@ -167,6 +169,7 @@ class APartialAnswerIsAskedAboutOnce(base.LongRun):
         self.assertIn("Rs 840 withheld", report)
 
 
+@needs("openpyxl")
 class PaymentDetailsTheRequestGivesInMessages(unittest.TestCase):
     """#7: a request that names messages as the source of payment details - the person approves; a message that would
     change an account on record is still a change request."""

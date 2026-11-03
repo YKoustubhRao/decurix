@@ -7,6 +7,7 @@ the work hands in opens with a strict reader - the stage's own and every file th
 broken file is broken.
 """
 
+from needs import needs
 import json
 import re
 import tempfile
@@ -47,6 +48,7 @@ def break_shared_strings(path):
             z.writestr(name, data)
 
 
+@needs("openpyxl")
 class OfficeFilesOpen(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)  # (other file checks of a broken file may leave it open on Windows)
@@ -99,6 +101,7 @@ class OfficeFilesOpen(unittest.TestCase):
         self.assertEqual(openpyxl.load_workbook(out).sheetnames, [s["name"] for s in spec["sheets"]])
 
 
+@needs("openpyxl")
 class TheRunsFiles(unittest.TestCase):
     """long_task.files_open: an earlier stage's file a later stage broke fails the later stage (blocking)."""
 

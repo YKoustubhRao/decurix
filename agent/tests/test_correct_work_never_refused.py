@@ -7,6 +7,7 @@ Every new check passes this in the spirit of the replay gate: if it would refuse
 Data is built in code; no fixture files.
 """
 
+from needs import needs
 import datetime
 import tempfile
 import unittest
@@ -48,6 +49,7 @@ class World(unittest.TestCase):
         self.assertEqual([f for f in findings if f], [], f"{what}: correct work was refused")
 
 
+@needs("openpyxl")
 class CorrectWorkPasses(World):
 
     def test_a_travel_booking_reply_with_a_computed_trip_total(self):
@@ -132,6 +134,7 @@ class CorrectWorkPasses(World):
         self.assertNothingBlocks(stage_facts.removed_still_present(amendments, [str(book)]), "a removal reversed")
 
 
+@needs("openpyxl")
 class WrongWorkIsStillBlocked(World):
 
     def test_an_invented_amount_in_a_draft(self):

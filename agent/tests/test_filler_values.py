@@ -4,6 +4,7 @@ her number, "+91 90040 55318". A filler value that is in no source is refused be
 done if it was typed anyway (a planned stage's check, the final gate).
 """
 
+from needs import needs
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,6 +32,7 @@ class Tracker(unittest.TestCase):
         self.request = "Onboard the joiners in the portal.\n\n" + attachments.MARK + f"\n  {self.tracker}\n"
 
 
+@needs("openpyxl")
 class WhatIsAFiller(Tracker):
     def test_fillers_and_real_values(self):
         for v in ("9999999999", "0000000000", "1234567890", "987654", "test", "N/A", "xxx", "a@example.com", "TBD"):
@@ -48,6 +50,7 @@ class WhatIsAFiller(Tracker):
         self.assertIn("digits only, without the country code", said)
 
 
+@needs("openpyxl")
 class TheFormIsNotSent(Tracker):
     def test_the_live_form_is_refused_even_checked(self):
         tmp = tempfile.TemporaryDirectory()
@@ -65,6 +68,7 @@ class TheFormIsNotSent(Tracker):
                 self.assertIn("Mobile phone: '9999999999' (Mobile is a column of joiners_tracker_Nov2026.xlsx)", said)
 
 
+@needs("openpyxl")
 class TypedAnyway(Tracker):
     def test_a_stage_or_task_that_typed_a_filler_is_not_done(self):
         found = long_task.invented_typing(["Sneha", "Iyer", "9999999999", "9004055318"], self.request)

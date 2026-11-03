@@ -14,7 +14,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import openpyxl
+from needs import needs, optional
+
+openpyxl = optional("openpyxl")
 
 from temp_case import TempDirCase
 
@@ -72,6 +74,7 @@ def proposal(path, sgp_account="002501234567", sgp_ifsc="ICIC0000025"):
     return str(path)
 
 
+@needs("openpyxl")
 class Fixture(TempDirCase):
 
     def setUp(self):
@@ -202,6 +205,7 @@ from test_produced_files import FileWorkIsChecked  # noqa: E402  (the gate's har
 from decurix_agent import skill_task  # noqa: E402
 
 
+@needs("openpyxl")
 class AtTheFinalCheck(FileWorkIsChecked):
     """A payment to an account not on record is not done, decided before any model is asked."""
 
@@ -231,6 +235,7 @@ class AtTheFinalCheck(FileWorkIsChecked):
 
 
 @fixture_paths.skip_unless(LIVE_IN.is_dir() and LIVE_OUT.is_dir(), "the round's P3 files are not on this machine")
+@needs("openpyxl")
 class TheRoundsOwnFiles(TempDirCase):
 
     def setUp(self):

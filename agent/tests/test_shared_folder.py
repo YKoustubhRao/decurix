@@ -4,6 +4,7 @@ writes under it - any case, / or \\, or the WSL spelling - is that file here; th
 asking the host; nothing outside the mount is ever read through it.
 """
 
+from needs import needs
 import os
 import sys
 import tempfile
@@ -173,10 +174,18 @@ class TheFileAsTheControlPlaneWouldSayIt(SharedBase):
 
 
 class EveryRouteReadsTheSharedFile(SharedBase):
+    @needs("python-docx")
     def test_office_reads_and_writes_the_path_the_person_wrote(self):
         self.put("people.csv", b"name,age\nAnn,31\n")
-        for spelling in ("C:\\Users\\Administrator\\Documents\\Decurix demo\\people.csv",
-                         "c:/users/administrator/documents/decurix demo/PEOPLE.CSV"):
+        spellings = ["C:\\Users\\Administrator\\Documents\\Decurix demo\\people.csv"]
+        # The file's name in another case is the same file on the person's PC (Windows) and on its share, but not on
+        # a case-sensitive temp folder (Linux tmpfs, ext4), which this test's stand-in mount is there.
+        probe = self.mount / "case-probe"
+        probe.write_bytes(b"")
+        if (self.mount / "CASE-PROBE").exists():
+            spellings.append("c:/users/administrator/documents/decurix demo/PEOPLE.CSV")
+        probe.unlink()
+        for spelling in spellings:
             self.assertIn("Ann", office.read_document(spelling)["text"], spelling)
         made = office.create_document(HOST + "\\letter.docx", [{"paragraph": "Dear Ann"}])
         self.assertTrue((self.mount / "letter.docx").exists(), made)

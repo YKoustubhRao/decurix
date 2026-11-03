@@ -7,6 +7,7 @@ needs the same thing again after an answer does not ask the identical question i
     PYTHONPATH="agent;agent/tests" python -m unittest test_long_decisions
 """
 
+from needs import needs
 import tempfile
 import unittest
 from pathlib import Path
@@ -80,6 +81,7 @@ class DecisionCheck(unittest.TestCase):
         self.assertEqual(long_task.decision_problem({"id": "x"}, {}, {"decisions": []}, [LIVE_DRAFT]), "")
 
 
+@needs("openpyxl")
 class Disclosure(unittest.TestCase):
     def setUp(self):
         import openpyxl

@@ -7,6 +7,7 @@ they are, and a cross-check of figures across outputs before the report.
     PYTHONPATH="agent;agent/tests" python -m unittest test_long_requests
 """
 
+from needs import needs
 import json
 import sys
 import tempfile
@@ -736,6 +737,7 @@ class LongRun(LongRunBase):
         self.runner.complete(rid, "s3-allocate-and-plan")
         return rid, work / "P2_orders_19Oct" / "portal_order_entry_log.csv"
 
+    @needs("openpyxl")
     def test_a_removal_recheck_recomputes_what_was_built_on_it(self):
         # Round 5 P1 (2026-10-20), Finding BB: the cancelled bill left the register, its ITC stayed in the return.
         rid, _ = self.p2_run()
@@ -912,6 +914,7 @@ class LongRun(LongRunBase):
         self.assertNotIn("every stage was made and checked", final["reply"])
         self.assertIn("it was NOT checked (the check kept counting Priya", final["reply"])
 
+    @needs("openpyxl")
     def test_the_retry_prompt_never_pushes_the_excluded_person_back_in(self):
         rid, _ = self.p2_run()
         long_task._update(rid, lambda d: d["decisions"].append(
@@ -1263,6 +1266,7 @@ class LongRun(LongRunBase):
         long_task.final_report(run_state)
         self.assertIn(kept[0], self.finals()[-1]["reply"])
 
+    @needs("openpyxl")
     def test_a_retry_that_changes_nothing_is_asked_again_in_plain_words(self):
         # Round 5 P4, Finding BH2: after "try again" the retry left the file as it was, and the run ended.
         rid, log_file = self.p2_run()
@@ -1306,6 +1310,7 @@ class LongRun(LongRunBase):
             facts = produced.file_facts(LONG, [str(memo)], root=work, named_in=memo_stage, own_outputs=own)
         self.assertEqual(facts.missing_files, "")
 
+    @needs("openpyxl")
     def test_every_approved_record_must_be_in_the_entry_log(self):
         rid, log_file = self.p2_run()
         log_file.write_text(self.P2_LOG, encoding="utf-8")
@@ -1341,6 +1346,7 @@ class LongRun(LongRunBase):
         "shown): \"payment_proposal.xlsx: the bills to pay in this run, in order, with amount, bank account and the "
         "total.\"")
 
+    @needs("openpyxl")
     def test_a_selection_is_never_held_to_every_record(self):
         import openpyxl
         spec = {"id": "p3", "planned": True, "steps": [
@@ -1375,6 +1381,7 @@ class LongRun(LongRunBase):
         # The P2 entry stage is still held to every approved order.
         self.assertTrue(long_task.covers_every({"instruction": self.P2_ENTRY, "checks": []}))
 
+    @needs("openpyxl")
     def test_an_answer_part_way_never_narrows_the_stage(self):
         rid, _ = self.p2_run()
         self.runner.claim(rid)
@@ -2478,6 +2485,7 @@ class LongRun(LongRunBase):
         self.assertEqual(status["s2-credit-hold"]["status"], "completed")
         self.assertFalse(status["s1-extract"].get("reopened"))
 
+    @needs("openpyxl")
     def test_only_work_the_decision_affects_is_redone_after_it_and_never_on_a_retry(self):
         # CM: the planner says which stages a decision affects ("affects"); no word list reads the stage's text or its
         # file names. With "affects" missing, nothing is redone. "Try again" decides nothing.
@@ -2509,6 +2517,7 @@ class LongRun(LongRunBase):
                                           "Release Cafe Bloom this once, hold Harbour Hotels Group.")
         self.assertNotEqual(self.runner.status(rid)["steps"]["s1-allocate"]["status"], "completed")
 
+    @needs("openpyxl")
     def test_a_restatement_never_adds_a_word_nobody_said(self):
         # Round 5 P2 on pc3 (2026-10-20), Finding CN: after "hold Harbour Hotels Group until they clear their dues", the
         # judge required "every line of held order HH/PO/7781 to show allocated quantity 0 and full ordered quantity as
@@ -2608,6 +2617,7 @@ class LongRun(LongRunBase):
         spec = long_task.spec_from_plan(plan, [], request=P2_REQUEST)
         self.assertFalse(spec["steps"][0].get("before_decision"))
 
+    @needs("openpyxl")
     def test_a_recheck_after_a_decision_refuses_only_on_what_was_decided(self):
         rid, _ = self.p2_run()
         answer = "Release Cafe Bloom this once, hold Harbour Hotels Group until they clear their dues."
@@ -2738,6 +2748,7 @@ class LongRun(LongRunBase):
         self.assertEqual(long_task.without_asking("Ask the person to approve the payment run."),
                          "Record what the person decided.")
 
+    @needs("openpyxl")
     def test_a_rechecked_stage_is_judged_on_its_own_sheets(self):
         import openpyxl
         rid, _ = self.p2_run()

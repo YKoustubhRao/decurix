@@ -5,6 +5,7 @@ letters "each on its own page" were joined by "\\f" typed as text; a request for
 built program, and the report went out unchecked.
 """
 
+from needs import needs
 import io
 import os
 import sys
@@ -161,21 +162,26 @@ from test_apprentice import verdict  # noqa: E402
 class FactsAtTheGate(FileWorkIsChecked):
     def gate(self, report, **patches):
         defaults = {"store_results": lambda paths: [], "typed_totals": lambda paths, request="": [],
-                    "missing_requested": lambda request, made, root=None: "",
+                    "missing_requested": lambda request, made, root=None, only=None: "",
+                    "named_not_written": lambda request, made, root=None: [],
                     "image_findings": lambda request, made, sources: [], "source_images": lambda request, made: [],
-                    "document_findings": lambda request, made: [],
+                    "document_findings": lambda request, made, root=None: [],
                     "page_break_findings": lambda request, made: []}
         defaults.update(patches)
         with mock.patch.multiple(skill_task.produced, **defaults):
             return skill_task._gate(report, "final", "thebot")
 
-    def test_a_requested_file_not_made_is_not_done_without_a_model(self):
-        self.verdicts = []
+    def test_a_file_the_requests_words_name_and_nothing_wrote_is_evidence_the_judge_weighs(self):
+        # Review 2026-11-03 (E-10): read from the words alone, "Do not create report.pdf" asked for report.pdf and was
+        # refused at certainty; such a name is evidence for the judge, which decides.
+        self.verdicts = [verdict(verify.NOT_DONE, seen="no error_summary.txt was written")]
+        said = ["The request's words name error_summary.txt, and no file of that name was written during this task"]
         self.assertTrue(self.gate("Built and tested: decurix-error-summary.",
-                                  missing_requested=lambda request, made, root=None: "error_summary.txt was not made"))
-        self.assertEqual(self.judged, [])
-        self.assertIn("error_summary.txt was not made", self.asked[-1][0])
+                                  named_not_written=lambda request, made, root=None: said))
+        self.assertIn("error_summary.txt", self.judged[0]["produced"])
+        self.assertEqual(self.finals, [])
 
+    @needs("openpyxl")
     def test_a_picture_at_its_old_size_is_evidence_for_the_judge(self):
         # Harness audit (2026-10-21): the size asked is a reading of the request - the judge weighs it.
         self.verdicts = [verdict(verify.NOT_DONE, seen="logo_small.png is 1200 x 600, not 50%")]
@@ -198,9 +204,12 @@ class FactsAtTheGate(FileWorkIsChecked):
         self.made = []
         self.verdicts = []
         skill_task.state.current_task = "Write a summary, saved in my work folder as error_summary.txt."
+        self.verdicts = [verdict(verify.NOT_DONE, seen="no error_summary.txt was written")]
+        said = ["The request's words name error_summary.txt, and no file of that name was written during this task"]
         self.assertTrue(self.gate("Built and tested a program.",
-                                  missing_requested=lambda request, made, root=None: "error_summary.txt was not made"))
-        self.assertIn("error_summary.txt was not made", self.asked[-1][0])
+                                  named_not_written=lambda request, made, root=None: said))
+        self.assertIn("error_summary.txt", self.judged[0]["produced"])
+        self.assertEqual(self.finals, [])
 
 
 class OneSetOfChecksForEveryRoute(TempDirCase):
@@ -211,12 +220,20 @@ class OneSetOfChecksForEveryRoute(TempDirCase):
 
         instruction = "Write the summary and save it as error_summary.txt in the work folder."
         whole = instruction + " Then make the deck deck.pptx and the register register.xlsx."
-        found = long_task.code_problems([], "done", [], whole, instruction=instruction, root=str(self.dir))
+        # A planned stage's own outputs are structure: a missing one blocks.
+        found = long_task.code_problems([], "done", [], whole, instruction=instruction, root=str(self.dir),
+                                        outputs=["error_summary.txt"])
         self.assertEqual(len(found), 1)
         self.assertIn("error_summary.txt was not made", found[0])
+        # A name read only from the words is evidence for the judge (review 2026-11-03, E-10), never a block.
+        notes = []
+        self.assertEqual(long_task.code_problems([], "done", [], whole, instruction=instruction, root=str(self.dir),
+                                                 notes=notes), [])
+        self.assertIn("error_summary.txt", " ".join(notes))
         (self.dir / "error_summary.txt").write_text("api: 3")
         self.assertEqual(long_task.code_problems([str(self.dir / "error_summary.txt")], "done", [], whole,
-                                                 instruction=instruction, root=str(self.dir)), [])
+                                                 instruction=instruction, root=str(self.dir),
+                                                 outputs=["error_summary.txt"]), [])
 
     @unittest.skipIf(Image is None, "Pillow is not installed")
     def test_a_stages_picture_and_document_are_measured_like_the_gates(self):

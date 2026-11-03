@@ -9,6 +9,9 @@ file had no fill and no conditional format.
 
 import unittest
 
+from needs import require
+
+require("openpyxl")  # every test here reads or writes workbooks
 import openpyxl
 from openpyxl.formatting.rule import CellIsRule, ColorScaleRule, FormulaRule
 from openpyxl.styles import Font, PatternFill

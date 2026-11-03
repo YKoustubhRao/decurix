@@ -7,6 +7,7 @@ an app's save emptied is found, put back, and the stage is told; a save into a r
     PYTHONPATH="agent;agent/tests" python -m unittest test_tool_made
 """
 
+from needs import needs
 import json
 import tempfile
 import unittest
@@ -26,6 +27,7 @@ MEMO = [{"heading": "Exceptions Memo - October 2026", "level": 1}] + [
 HOST = r"C:\Users\Person\Documents\Shared\Exceptions_memo_Oct2026.docx"
 
 
+@needs("python-docx")
 class WhatTheToolsMadeIsKept(unittest.TestCase):
 
     def setUp(self):

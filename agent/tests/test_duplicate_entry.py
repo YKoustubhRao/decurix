@@ -6,6 +6,7 @@ record shows both saves in the same attempt. A save that would enter, as new, a 
 refused in code; and a read-back showing a record twice is not done, the person told to delete the extra one.
 """
 
+from needs import needs
 import json
 import tempfile
 import unittest
@@ -132,6 +133,7 @@ class TheSaveGuard(unittest.TestCase):
 TRACKER = Path(r"C:\Users\Administrator\decurix-tests\wide\process\data\P4\joiners_tracker_Nov2026.xlsx")
 
 
+@needs("openpyxl")
 class AnotherRecordsValues(unittest.TestCase):
     """CY (round 5 P4 on pc3, 2026-10-21): Rohit Kulkarni's form was saved with Mohammed Arif Khan's department and job
     title. A save whose form holds another record's values from the request's own table is refused."""

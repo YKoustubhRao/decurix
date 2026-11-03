@@ -3,6 +3,7 @@ A task that ends in a file is checked against the file: what the worker wrote
 is read back and judged beside its report, before anyone is told it is done.
 """
 
+from needs import needs
 import os
 import sys
 import tempfile
@@ -118,6 +119,7 @@ class FileWorkIsChecked(ts.TeachingBase):
             self.addCleanup(patch.stop)
         state.current_task = "compare the two lists into result.xlsx"
 
+    @needs("openpyxl")
     def test_the_file_is_what_the_check_is_shown_and_no_screen(self):
         self.verdicts = [verdict(verify.DONE, seen="result.xlsx lists 8 entries")]
         self.assertTrue(skill_task._gate("Made result.xlsx.", "final", "thebot"))
@@ -126,6 +128,7 @@ class FileWorkIsChecked(ts.TeachingBase):
         self.assertIsNone(self.judged[0]["live_png"])
         self.assertIn("Checked against the files I wrote: result.xlsx lists 8 entries", self.finals[-1][0])
 
+    @needs("openpyxl")
     def test_a_report_its_own_file_contradicts_is_not_sent_as_done(self):
         self.verdicts = [verdict(verify.NOT_DONE, seen="the file lists REF-077 as only in the first list")]
         self.assertTrue(skill_task._gate("Matched REF-077 with REF-77.", "final", "thebot"))
@@ -133,6 +136,7 @@ class FileWorkIsChecked(ts.TeachingBase):
         self.assertIn("What I wrote shows: the file lists REF-077 as only in the first list", self.asked[-1][0])
         self.assertIn("Look at the files", self.asked[-1][0])
 
+    @needs("openpyxl")
     def test_it_is_sent_back_once_when_the_engine_can_correct_it(self):
         self.verdicts = [verdict(verify.NOT_DONE, seen="the summary sheet has no difference row")]
         sent = []
@@ -143,6 +147,7 @@ class FileWorkIsChecked(ts.TeachingBase):
         self.assertIn("the summary sheet has no difference row", sent[0])
         self.assertIn("correct what is wrong where it is", sent[0])
 
+    @needs("openpyxl")
     def test_a_wrong_sum_in_the_report_is_not_done_without_asking_a_model(self):
         self.verdicts = []
         self.assertTrue(skill_task._gate("Atlas total matches: 750.00 + 300.00 + 84.00 = 1143.00, so it is OK.",
@@ -151,6 +156,7 @@ class FileWorkIsChecked(ts.TeachingBase):
         self.assertEqual(self.finals, [])
         self.assertIn("it comes to 1,134.00", self.asked[-1][0])
 
+    @needs("openpyxl")
     def test_a_number_written_as_a_program_prints_it_is_not_done_without_asking_a_model(self):
         self.verdicts = []
         with mock.patch.object(skill_task.produced, "text", lambda paths, focus=(): "Hours: 3E+1  Net: 1,672.74"):
@@ -159,6 +165,7 @@ class FileWorkIsChecked(ts.TeachingBase):
         self.assertEqual(self.finals, [])
         self.assertIn("3E+1", self.asked[-1][0])
 
+    @needs("openpyxl")
     def test_a_report_that_says_it_could_not_be_done_goes_to_the_person(self):
         self.verdicts = [verdict(verify.CANNOT, seen="the workbook has no November targets")]
         self.assertTrue(skill_task._gate("The workbook has no November targets, so the deck cannot be completed.",
@@ -225,6 +232,7 @@ class NoModelAtTheGate(ts.TeachingBase):
             self.addCleanup(patch.stop)
         state.current_task = "compare the two lists into result.xlsx"
 
+    @needs("openpyxl")
     def test_a_wrong_sum_is_still_not_done(self):
         self.assertTrue(skill_task._gate("Atlas total: 750.00 + 300.00 + 84.00 = 1143.00, so it is OK.",
                                          "final", "thebot"))
@@ -242,6 +250,7 @@ class NoModelAtTheGate(ts.TeachingBase):
         self.assertEqual(restored, ["compare the two lists into result.xlsx"])
         self.assertIn("list_a.xlsx is the person's and was changed", self.asked[-1][0])
 
+    @needs("openpyxl")
     def test_file_work_no_one_could_judge_is_said_not_checked_never_done(self):
         self.assertTrue(skill_task._gate("Made result.xlsx.", "final", "thebot"))
         text, kw = self.said[-1]
@@ -399,6 +408,7 @@ class FormulaResultsAtTheGate(FileWorkIsChecked):
         self.assertEqual(self.finals, [])
         self.assertIn("50 formula cell(s) with no stored result", self.asked[-1][0])
 
+    @needs("openpyxl")
     def test_the_results_are_stored_before_the_file_is_judged(self):
         stored = []
         self.verdicts = [verdict(verify.DONE, seen="priced.xlsx prices every line")]

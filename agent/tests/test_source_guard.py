@@ -5,6 +5,7 @@ a source the task changed is put back and reported in plain words; and the check
 source.
 """
 
+from needs import needs
 import os
 import sys
 import time
@@ -61,6 +62,7 @@ class Guard(SharedBase):
         self.assertEqual((self.mount / "receivables_review.xlsx").read_bytes(), b"PK\x03\x04 the result")
         self.assertEqual(source_guard.check_and_restore(TASK, LIVE), "")
 
+    @needs("openpyxl")
     def test_an_app_saving_a_workbook_again_with_the_same_cells_is_a_note_not_a_change(self):
         import openpyxl
         path = self.mount / "monthly_revenue.xlsx"

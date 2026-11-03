@@ -8,6 +8,9 @@ with the one working row its full key ties it to, or holds as a sum of one order
 import shutil
 import unittest
 
+from needs import require
+
+require("openpyxl")  # every test here reads or writes workbooks
 import openpyxl
 
 import test_long_requests as base  # noqa: F401 - stubs config first

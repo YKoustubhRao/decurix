@@ -4,6 +4,7 @@ joiners' mobile numbers - a column of joiners_tracker_Nov2026.xlsx, which the re
 told the request's own input files, and a question for a column of one of them goes back to the stage with where it is.
 """
 
+from needs import needs
 import unittest
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from decurix_agent import attachments, config, long_task
 HEADERS = ["Employee", "Department", "Mobile", "DOB", "Personal email", "Bank", "Account no", "IFSC"]
 
 
+@needs("openpyxl")
 class Stages(base.LongRunBase):
     def request(self):
         import openpyxl
