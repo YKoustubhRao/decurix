@@ -242,3 +242,19 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
   `gatedAgentRoutes` with a reason, never `/api/chat` (it would drive the worker with no task record or author).
 - **The tools image is re-checked by its ID**, not its sentinel: a tools image rebuilt with the same tree but a new
   ID is applied again (a cheap no-op copy, since the tools CMD compares sentinels).
+
+## Phase 2: soul and run record, review round 3
+
+- **Existing desktops keep values written before the C14 fixes (review M4).** L2 lines (`~/.decurix/ai/.memory/
+  l2.jsonl`) written before FIX-SOUL-1 hold raw values, and after a soul restart `/api/memory`'s second wall has only
+  the shape filter for them. Every desktop made before this build must be recreated (or its `l2.jsonl` cleared).
+  LIVE-1's `live1` (4 copies) is deleted after the L1 recheck.
+- **Full command outputs in `/tmp/thebot-outputs-*`** (`internal/skills/screen_digest.go`, `keepOutput`, 0600) are
+  kept as printed, not withheld: the model reads them back. They never leave the desktop, but they are not withheld.
+- **A value written in shell-escaped form** (`'\''`, backslashes) is not matched by the withholding. The stdin rule
+  covers `gui type`; other commands are not covered.
+- **The coding harness's log lines** (`internal/coding`, standalone soul only) cut commands and outputs without
+  withholding; it is off inside Decurix (O-8).
+- **`GuardRefused`** is never written by soul: the trace's guard is worked out again from `AssessCommand` after the
+  command runs, not recorded from the decision taken.
+- **A trace at its cap** gets one more `truncated` line after each soul restart.
