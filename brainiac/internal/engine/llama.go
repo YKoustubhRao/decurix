@@ -246,7 +246,7 @@ func (p *LlamaProc) waitHealthy(ctx context.Context, client *backend.OpenAI, don
 // command is the server process: none of Brainiac's secrets in its environment.
 func (p *LlamaProc) command(host string, port int, logf *os.File) *exec.Cmd {
 	cmd := exec.Command(p.Bin, p.args(host, port)...)
-	cmd.Dir = filepath.Dir(p.Bin) // shared libraries sit beside the binary
+	cmd.Dir = buildDir(p.Bin) // where ggml looks for its backends when it cannot read /proc/self/exe
 	cmd.Env = isolate.Env()
 	if logf != nil {
 		cmd.Stdout, cmd.Stderr = logf, logf
@@ -265,10 +265,19 @@ func (p *LlamaProc) policy(write ...string) isolate.Policy {
 	if p.MMProj != "" {
 		read = append(read, p.MMProj)
 	}
-	build := filepath.Dir(p.Bin)
+	build := buildDir(p.Bin)
 	pol := isolate.ForProgram(p.Bin, read, write, ggmlBackends(build)...)
 	pol.List = append(pol.List, build)
 	return pol
+}
+
+// buildDir is the directory of the real server program, behind any
+// symlink: where its build's libraries and backends are.
+func buildDir(bin string) string {
+	if real, err := filepath.EvalSymlinks(bin); err == nil {
+		return filepath.Dir(real)
+	}
+	return filepath.Dir(bin)
 }
 
 // ggmlBackends are the backend modules in a llama.cpp build

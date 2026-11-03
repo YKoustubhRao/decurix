@@ -14,7 +14,8 @@ import (
 
 // fixture is a tiny ELF file: a dynamic section naming needed libraries and
 // a search path, which is all the walk reads. static makes one with no
-// dynamic section at all; exec makes an executable, not a shared object.
+// dynamic section at all; exec makes an ET_EXEC executable (not position
+// independent, so not ET_DYN).
 type fixture struct {
 	needed         []string
 	rpath, runpath string
@@ -173,8 +174,9 @@ func TestALibraryOutsideTheBuildIsNotGranted(t *testing.T) {
 	}
 }
 
-// A plugin (a ggml backend, opened at run time) has its own libraries
-// walked from its own $ORIGIN; one already granted is named once.
+// A plugin (a ggml backend, opened at run time) in the build is granted,
+// and its own libraries are walked from its own $ORIGIN; one already
+// granted is named once.
 func TestAPluginsLibrariesAreGranted(t *testing.T) {
 	dir := realTempDir(t)
 	prog := filepath.Join(dir, "server")
@@ -187,7 +189,7 @@ func TestAPluginsLibrariesAreGranted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sameSet(got.files, []string{filepath.Join(dir, "libbase.so"), filepath.Join(dir, "libgpu-runtime.so")}) {
+	if !sameSet(got.files, []string{plugin, filepath.Join(dir, "libbase.so"), filepath.Join(dir, "libgpu-runtime.so")}) {
 		t.Fatalf("granted %v", got.files)
 	}
 }
@@ -256,8 +258,8 @@ func TestBuildRoot(t *testing.T) {
 
 // A static program names no library and is no error, and a file that is
 // not ELF is, so the caller falls back to its directory. A library or a
-// plugin that is not a shared object (not ELF, or an executable) is skipped
-// and named, never granted.
+// plugin whose header is not ET_DYN (not ELF, or an ET_EXEC executable) is
+// skipped and named, never granted.
 func TestStaticAndUnreadablePrograms(t *testing.T) {
 	dir := realTempDir(t)
 	static := filepath.Join(dir, "static")
@@ -281,8 +283,186 @@ func TestStaticAndUnreadablePrograms(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{plugin, filepath.Join(dir, "libbad.so"), filepath.Join(dir, "libexec.so")}
-	if len(got.files) != 0 || len(got.plugins) != 0 || !sameSet(got.skipped, want) {
-		t.Fatalf("granted %v, plugins %v, skipped %v", got.files, got.plugins, got.skipped)
+	if len(got.files) != 0 || !sameSet(got.skipped, want) {
+		t.Fatalf("granted %v, skipped %v", got.files, got.skipped)
+	}
+}
+
+// symlinkOrSkip makes link point at target, or skips where symlinks cannot
+// be made.
+func symlinkOrSkip(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+}
+
+// A library in the build that is a symlink to an ELF file outside it is
+// refused, by its real path, and reported: the path the loader opens being
+// in the build is not enough.
+func TestALibrarySymlinkOutOfTheBuildIsRefused(t *testing.T) {
+	top := realTempDir(t)
+	build, other := filepath.Join(top, "build"), filepath.Join(top, "other")
+	writeELF(t, filepath.Join(other, "libprivate.so"), fixture{})
+	prog := filepath.Join(build, "server")
+	writeELF(t, prog, fixture{needed: []string{"libA.so"}, runpath: "$ORIGIN"})
+	symlinkOrSkip(t, filepath.Join(other, "libprivate.so"), filepath.Join(build, "libA.so"))
+	got, err := ownLibraries(prog, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.files) != 0 || !slices.Equal(got.outside, []string{filepath.Join(build, "libA.so")}) {
+		t.Fatalf("granted %v, outside %v", got.files, got.outside)
+	}
+}
+
+// A library the search path finds outside the build is refused even when
+// the file behind it is in the build: the path the loader opens must be in
+// the build too.
+func TestALibraryReachedFromOutsideTheBuildIsRefused(t *testing.T) {
+	top := realTempDir(t)
+	build := filepath.Join(top, "build")
+	writeELF(t, filepath.Join(build, "libA-real.so"), fixture{})
+	prog := filepath.Join(build, "server")
+	writeELF(t, prog, fixture{needed: []string{"libA.so"}, runpath: "$ORIGIN/../ext"})
+	symlinkOrSkip(t, filepath.Join(build, "libA-real.so"), filepath.Join(top, "ext", "libA.so"))
+	got, err := ownLibraries(prog, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.files) != 0 || !slices.Equal(got.outside, []string{filepath.Join(top, "ext", "libA.so")}) {
+		t.Fatalf("granted %v, outside %v", got.files, got.outside)
+	}
+}
+
+// A plugin is held to the same rule as a library: one in the build that is
+// a symlink out of it, and one outside the build, are both refused and
+// reported, and nothing they link is walked.
+func TestAPluginOutsideTheBuildIsRefused(t *testing.T) {
+	top := realTempDir(t)
+	build, other := filepath.Join(top, "build"), filepath.Join(top, "other")
+	writeELF(t, filepath.Join(other, "libprivate.so"), fixture{needed: []string{"libdep.so"}, runpath: "$ORIGIN"})
+	writeELF(t, filepath.Join(other, "libdep.so"), fixture{})
+	prog := filepath.Join(build, "server")
+	writeELF(t, prog, fixture{})
+	link := filepath.Join(build, "libggml-evil.so")
+	symlinkOrSkip(t, filepath.Join(other, "libprivate.so"), link)
+	away := filepath.Join(other, "libdep.so")
+	got, err := ownLibraries(prog, []string{link, away})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.files) != 0 || !slices.Equal(got.outside, []string{link, away}) {
+		t.Fatalf("granted %v, outside %v", got.files, got.outside)
+	}
+	if runtime.GOOS == "linux" {
+		p := ForProgram(prog, nil, nil, link, away)
+		for _, f := range []string{link, away, filepath.Join(other, "libprivate.so")} {
+			if slices.Contains(p.Read, f) {
+				t.Fatalf("%s granted:\n%s", f, strings.Join(p.Read, "\n"))
+			}
+		}
+	}
+}
+
+// An absolute DT_NEEDED is looked for there alone and granted only inside
+// the build ("build/../x" is outside); a relative one with a slash would be
+// the working directory's, and is not looked for.
+func TestAnAbsoluteNeededIsGrantedOnlyInsideTheBuild(t *testing.T) {
+	top := realTempDir(t)
+	build := filepath.Join(top, "build")
+	writeELF(t, filepath.Join(top, "outside.so"), fixture{})
+	writeELF(t, filepath.Join(build, "inside.so"), fixture{})
+	prog := filepath.Join(build, "server")
+	slash := filepath.ToSlash // a DT_NEEDED path is the ELF's, with "/" on any system
+	writeELF(t, prog, fixture{needed: []string{slash(filepath.Join(top, "outside.so")), slash(build) + "/../outside.so",
+		slash(filepath.Join(build, "inside.so")), "../outside.so", "sub/../../outside.so"}})
+	got, err := ownLibraries(prog, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.files, []string{filepath.Join(build, "inside.so")}) {
+		t.Fatalf("granted %v", got.files)
+	}
+}
+
+// $ORIGIN is a substitution only as glibc reads it: braced anywhere,
+// unbraced only before a "/" or the end.
+func TestOriginExpandsAsTheLoaderDoes(t *testing.T) {
+	for in, want := range map[string]string{
+		"$ORIGIN":           "/b",
+		"$ORIGIN/lib":       "/b/lib",
+		"${ORIGIN}x/lib":    "/bx/lib",
+		"$ORIGINx/lib":      "$ORIGINx/lib",
+		"/a:$ORIGIN":        "/a:/b",
+		"$ORIGIN/$ORIGIN/x": "/b//b/x",
+	} {
+		if got, _ := expandOrigin(in, "/b"); got != want {
+			t.Errorf("expandOrigin(%q) = %q, want %q", in, got, want)
+		}
+	}
+	dir := realTempDir(t)
+	prog := filepath.Join(dir, "server")
+	writeELF(t, prog, fixture{needed: []string{"ox.so"}, runpath: "$ORIGINx"})
+	writeELF(t, filepath.Join(dir+"x", "ox.so"), fixture{})
+	defer os.RemoveAll(dir + "x")
+	got, err := ownLibraries(prog, nil)
+	if err != nil || len(got.files) != 0 || len(got.origin) != 0 {
+		t.Fatalf("$ORIGINx expanded: %+v %v", got, err)
+	}
+}
+
+// A panic in the ELF parser is an ELF it cannot read, not a crash.
+func TestAPanicReadingAnELFIsAnError(t *testing.T) {
+	old := openELF
+	openELF = func(string) (*elf.File, error) { panic("crafted input") }
+	defer func() { openELF = old }()
+	prog := filepath.Join(realTempDir(t), "server")
+	mustWrite(t, prog, "x")
+	if _, err := ownLibrariesSafe(prog, nil); err == nil || !strings.Contains(err.Error(), "crafted input") {
+		t.Fatalf("err %v", err)
+	}
+}
+
+// withInstallRoots sets the install roots for one test.
+func withInstallRoots(t *testing.T, dirs ...string) {
+	t.Helper()
+	rootsMu.RLock()
+	old := append([]string{}, installRoots...)
+	rootsMu.RUnlock()
+	SetInstallRoots(dirs...)
+	t.Cleanup(func() { SetInstallRoots(old...) })
+}
+
+// The directory fallback is allowed only strictly beneath an install root,
+// and never for a filesystem root, the home directory or the temporary
+// directory, whatever the roots say.
+func TestTheDirectoryFallbackIsOnlyInsideTheInstallStore(t *testing.T) {
+	store := realTempDir(t)
+	withInstallRoots(t, filepath.Join(store, "bin"), "")
+	if ok, why := directoryFallback(filepath.Join(store, "bin", "llama")); !ok {
+		t.Fatalf("refused inside the store: %s", why)
+	}
+	home, _ := os.UserHomeDir()
+	for _, dir := range []string{filepath.Join(store, "bin"), store, filepath.Join(store, "logs"), realTempDir(t),
+		filepath.VolumeName(store) + string(filepath.Separator), home, os.TempDir()} {
+		if dir == "" {
+			continue
+		}
+		if ok, _ := directoryFallback(dir); ok {
+			t.Errorf("%s allowed", dir)
+		}
+	}
+	// Even an install root at the home or temporary directory does not
+	// make those directories a fallback.
+	withInstallRoots(t, filepath.Dir(home), filepath.Dir(realPath(os.TempDir())))
+	for _, dir := range []string{home, os.TempDir()} {
+		if ok, why := directoryFallback(dir); ok || why == "not inside Brainiac's install store" {
+			t.Errorf("%s: %v %q", dir, ok, why)
+		}
 	}
 }
 

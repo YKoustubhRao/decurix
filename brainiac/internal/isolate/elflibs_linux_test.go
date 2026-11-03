@@ -3,6 +3,7 @@
 package isolate
 
 import (
+	"debug/elf"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,16 +13,28 @@ import (
 	"testing"
 )
 
-// A program whose ELF cannot be read gets its directory, read-only, and
-// that is said once; nothing is granted writable.
-func TestAnUnreadableProgramFallsBackToItsDirectoryReadOnly(t *testing.T) {
-	dir := realTempDir(t)
-	prog := filepath.Join(dir, "server")
-	mustWrite(t, prog, "#!/bin/sh\n")
+// captureLog collects what the package logs during one test.
+func captureLog(t *testing.T) *[]string {
+	t.Helper()
 	var logged []string
 	old := logf
 	logf = func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
-	defer func() { logf = old }()
+	t.Cleanup(func() { logf = old })
+	return &logged
+}
+
+// A program in Brainiac's install store whose ELF cannot be read gets its
+// directory, read-only, and that is said once; nothing is granted writable.
+func TestAnUnreadableProgramFallsBackToItsDirectoryReadOnly(t *testing.T) {
+	store := realTempDir(t)
+	withInstallRoots(t, store)
+	dir := filepath.Join(store, "build")
+	prog := filepath.Join(dir, "server")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, prog, "#!/bin/sh\n")
+	logged := captureLog(t)
 	p := ForProgram(prog, nil, nil)
 	if !slices.Contains(p.Read, dir) {
 		t.Fatalf("the directory was not granted:\n%s", strings.Join(p.Read, "\n"))
@@ -29,8 +42,35 @@ func TestAnUnreadableProgramFallsBackToItsDirectoryReadOnly(t *testing.T) {
 	if slices.Contains(p.Write, dir) || len(p.LibraryPath) != 0 {
 		t.Fatalf("write %v, library path %v", p.Write, p.LibraryPath)
 	}
-	if len(logged) != 1 || !strings.Contains(logged[0], "granting its directory") {
-		t.Fatalf("logged %q", logged)
+	if len(*logged) != 1 || !strings.Contains((*logged)[0], "granting its directory") {
+		t.Fatalf("logged %q", *logged)
+	}
+}
+
+// Outside the install store the fallback is refused: the program alone is
+// granted, and the log says why it may not start. A panic while reading
+// the ELF is treated the same way.
+func TestAnUnreadableProgramOutsideTheStoreGetsOnlyItself(t *testing.T) {
+	withInstallRoots(t, filepath.Join(realTempDir(t), "store"))
+	dir := realTempDir(t)
+	prog := filepath.Join(dir, "server")
+	mustWrite(t, prog, "#!/bin/sh\n")
+	logged := captureLog(t)
+	p := ForProgram(prog, nil, nil)
+	if slices.Contains(p.Read, dir) || !slices.Contains(p.Read, prog) || len(p.LibraryPath) != 0 {
+		t.Fatalf("read %v, library path %v", p.Read, p.LibraryPath)
+	}
+	if len(*logged) != 1 || !strings.Contains((*logged)[0], "not inside Brainiac's install store") ||
+		!strings.Contains((*logged)[0], "granting the program alone") {
+		t.Fatalf("logged %q", *logged)
+	}
+	old := openELF
+	openELF = func(string) (*elf.File, error) { panic("crafted input") }
+	defer func() { openELF = old }()
+	elfProg := filepath.Join(dir, "elfserver")
+	writeELF(t, elfProg, fixture{})
+	if p := ForProgram(elfProg, nil, nil); slices.Contains(p.Read, dir) || !slices.Contains(p.Read, elfProg) {
+		t.Fatalf("after a panic: read %v", p.Read)
 	}
 }
 

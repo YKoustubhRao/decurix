@@ -245,6 +245,9 @@ func New(opt Options) (*Engine, error) {
 	}
 	e := &Engine{cfg: opt.Config, st: opt.Store, lock: opt.Lock, threads: threads, log: lg,
 		cache: cache.New(opt.Store.Path("cache")), traces: trace.NewStore(opt.Store.Path("traces"))}
+	// A program Brainiac installed may fall back to its directory in the
+	// sandbox when its ELF cannot be read; nothing else may.
+	isolate.SetInstallRoots(opt.Store.Path("bin"), opt.Store.Venv())
 	if opt.Lock.Python != "" && opt.Lock.WorkerScript != "" {
 		// The worker's own venv is writable because its OCR package may fetch
 		// its default models there on first use; its temp files stay in the store.

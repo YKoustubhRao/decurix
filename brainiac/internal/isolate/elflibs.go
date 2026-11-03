@@ -3,6 +3,7 @@ package isolate
 import (
 	"debug/elf"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,19 +24,26 @@ type elfObject struct {
 	needed, rpath, runpath []string
 }
 
-// errNotShared is a library that is not an ELF shared object: the loader
+// errNotShared is a library whose ELF header is not ET_DYN: the loader
 // cannot load it, so it is not granted.
-var errNotShared = errors.New("not an ELF shared object")
+var errNotShared = errors.New("not an ELF shared object (ET_DYN)")
+
+// openELF parses an ELF file (tests replace it).
+var openELF = elf.Open
 
 // readELF reads an ELF file's DT_NEEDED, DT_RPATH and DT_RUNPATH. A file
 // with no dynamic section (a static program) names nothing.
 func readELF(path string) (elfObject, error) { return readELFOf(path, false) }
 
-// readLib is readELF for a library, which must be a shared object.
+// readLib is readELF for a library, whose ELF header must say ET_DYN. That
+// is a sanity filter on the header, not proof of a library: a
+// position-independent executable is ET_DYN too, and so is any file that
+// starts with such a header. What makes a grant safe is where the file is
+// and that an ELF names it (ownLibraries), not its contents.
 func readLib(path string) (elfObject, error) { return readELFOf(path, true) }
 
 func readELFOf(path string, shared bool) (elfObject, error) {
-	f, err := elf.Open(path)
+	f, err := openELF(path)
 	if err != nil {
 		return elfObject{}, err
 	}
@@ -79,20 +87,48 @@ type searchDir struct {
 func expandDirs(dirs []string, origin string) []searchDir {
 	var out []searchDir
 	for _, d := range dirs {
-		e := strings.NewReplacer("${ORIGIN}", origin, "$ORIGIN", origin).Replace(d)
+		e, expanded := expandOrigin(d, origin)
 		if strings.Contains(e, "$") || !filepath.IsAbs(e) {
 			continue
 		}
-		out = append(out, searchDir{path: filepath.Clean(e), origin: e != d})
+		out = append(out, searchDir{path: filepath.Clean(e), origin: expanded})
 	}
 	return out
 }
 
+// expandOrigin replaces $ORIGIN in d as glibc does: "${ORIGIN}" anywhere,
+// and "$ORIGIN" only where a "/" or the end follows it ("$ORIGINx" is not
+// a substitution, and is left as it is).
+func expandOrigin(d, origin string) (string, bool) {
+	var b strings.Builder
+	expanded := false
+	for i := 0; i < len(d); {
+		if strings.HasPrefix(d[i:], "${ORIGIN}") {
+			b.WriteString(origin)
+			i += len("${ORIGIN}")
+			expanded = true
+			continue
+		}
+		if j := i + len("$ORIGIN"); strings.HasPrefix(d[i:], "$ORIGIN") && (j == len(d) || d[j] == '/') {
+			b.WriteString(origin)
+			i = j
+			expanded = true
+			continue
+		}
+		b.WriteByte(d[i])
+		i++
+	}
+	return b.String(), expanded
+}
+
 // buildRoot is where a program's own libraries may resolve: the program's
 // directory, or, when that is a bin directory (an install tree with its
-// libraries in ../lib), its parent. Never a filesystem root, /usr or
-// /usr/local, which every policy already reads. Only the exact libraries
-// the program's search path reaches there are granted, never the directory.
+// libraries in ../lib), its parent. Not a filesystem root, /usr or
+// /usr/local, which every policy already reads. The root is a bound on
+// which exact files may be granted, never itself a grant, and the guards
+// are not the boundary: ~/bin gives $HOME, and that is safe only because
+// nothing but the files an ELF names, reached by its search path, is ever
+// granted from it. Never grant the root.
 func buildRoot(real string) string {
 	dir := filepath.Dir(real)
 	if filepath.Base(dir) != "bin" {
@@ -124,25 +160,28 @@ type ownLibs struct {
 	// inside its build.
 	origin []string
 	// outside are libraries the build's own $ORIGIN path finds outside the
-	// build: not granted, so a program that needs them will not load.
+	// build, and plugins outside it: not granted, so a program that needs
+	// them will not load.
 	outside []string
-	// skipped are files in the build the loader was sent to that are not
-	// ELF shared objects (nor plugins that are): not granted.
+	// skipped are files in the build the loader was sent to, and plugins,
+	// whose ELF header is not ET_DYN: not granted.
 	skipped []string
-	// plugins are the plugins that are ELF shared objects, granted.
-	plugins []string
 }
 
 // ownLibraries finds the shared libraries a program loads from its own
 // build: those its ELF names (DT_NEEDED), looked up as the dynamic loader
 // does (DT_RPATH of the object and of what loaded it, unless it has
-// DT_RUNPATH, then DT_RUNPATH), and theirs in turn. The build is
-// buildRoot's; a library found outside it is the system's, which the
-// policy's system paths already hold, and is not walked. plugins are
-// libraries the program opens itself at run time (a ggml backend), which no
-// DT_NEEDED names; their own libraries are walked the same way. A library
-// or plugin that is not an ELF shared object is skipped. It fails only when
-// the program is not an ELF file it can read.
+// DT_RUNPATH, then DT_RUNPATH), and theirs in turn. plugins are libraries
+// the program opens itself at run time (a ggml backend), which no
+// DT_NEEDED names; their own libraries are walked the same way.
+//
+// What it guarantees: every file granted is beneath buildRoot both by the
+// path the loader opens and by its real path (a symlink in the build that
+// points out is refused), is named by an ELF's own DT_NEEDED or is a
+// plugin, and has an ET_DYN header. It never grants a directory. A library
+// found outside the build is the system's, which the policy's system paths
+// already hold, and is not walked. It fails only when the program is not
+// an ELF file it can read.
 func ownLibraries(program string, plugins []string) (ownLibs, error) {
 	real, err := filepath.EvalSymlinks(program)
 	if err != nil {
@@ -170,23 +209,36 @@ func ownLibraries(program string, plugins []string) (ownLibs, error) {
 			out.origin = append(out.origin, d.path)
 		}
 	}
-	exeRpath := rpathOf(exe, home)
-	queue := []item{{path: real, o: exe}}
-	for _, p := range plugins {
-		o, err := readLib(p)
-		if err != nil {
-			out.skipped = append(out.skipped, p)
-			continue
-		}
-		out.plugins = append(out.plugins, p)
-		queue = append(queue, item{path: p, o: o, inherited: exeRpath})
-	}
 	granted, found := map[string]bool{}, map[string]bool{}
 	grant := func(p string) {
 		if !granted[p] {
 			granted[p] = true
 			out.files = append(out.files, p)
 		}
+	}
+	// inBuild is the containment rule, for libraries and plugins alike:
+	// the path the loader opens and the file behind it are both beneath
+	// the build.
+	inBuild := func(p string) (string, bool) {
+		r, err := filepath.EvalSymlinks(p)
+		return r, err == nil && within(root, p) && within(root, r)
+	}
+	exeRpath := rpathOf(exe, home)
+	queue := []item{{path: real, o: exe}}
+	for _, p := range plugins {
+		r, ok := inBuild(p)
+		if !ok {
+			out.outside = append(out.outside, p)
+			continue
+		}
+		o, err := readLib(r)
+		if err != nil {
+			out.skipped = append(out.skipped, p)
+			continue
+		}
+		grant(p)
+		grant(r)
+		queue = append(queue, item{path: p, o: o, inherited: exeRpath})
 	}
 	for n := 0; len(queue) > 0; n++ {
 		if n >= maxObjects {
@@ -201,27 +253,29 @@ func ownLibraries(program string, plugins []string) (ownLibs, error) {
 			dirs = expandDirs(it.o.runpath, origin)
 		}
 		children := append(append([]searchDir{}, own...), it.inherited...)
-		for _, name := range it.o.needed {
-			if found[name] {
+		for _, needed := range it.o.needed {
+			if found[needed] {
 				continue // the loader loads a name once
 			}
-			var cands []searchDir
-			if strings.Contains(name, "/") {
-				if filepath.IsAbs(name) {
-					cands = []searchDir{{path: filepath.Dir(name)}}
-					name = filepath.Base(name)
+			// A name with a slash is a path: an absolute one is looked
+			// for there alone; a relative one would be the working
+			// directory's, not the build's, and is not looked for.
+			name, cands := needed, dirs
+			if strings.Contains(needed, "/") {
+				cands = nil
+				if filepath.IsAbs(needed) {
+					cands = []searchDir{{path: filepath.Dir(needed)}}
+					name = filepath.Base(needed)
 				}
-			} else {
-				cands = dirs
 			}
 			for _, d := range cands {
 				cand := filepath.Join(d.path, name)
 				if fi, err := os.Stat(cand); err != nil || fi.IsDir() {
 					continue
 				}
-				found[name] = true
-				r, err := filepath.EvalSymlinks(cand)
-				if err != nil || !within(root, cand) || !within(root, r) {
+				found[needed] = true
+				r, ok := inBuild(cand)
+				if !ok {
 					if d.origin && !systemPath(r) {
 						out.outside = append(out.outside, cand)
 					}
@@ -240,6 +294,18 @@ func ownLibraries(program string, plugins []string) (ownLibs, error) {
 		}
 	}
 	return out, nil
+}
+
+// ownLibrariesSafe is ownLibraries with a panic in the ELF parser (crafted
+// input; debug/elf has had such bugs) turned into an error: Brainiac reads
+// these files unconfined, and a file is then simply one it cannot read.
+func ownLibrariesSafe(program string, plugins []string) (libs ownLibs, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			libs, err = ownLibs{}, fmt.Errorf("reading its ELF failed: %v", r)
+		}
+	}()
+	return ownLibraries(program, plugins)
 }
 
 // systemPath says p is beneath a path every policy already reads.

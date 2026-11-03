@@ -223,79 +223,75 @@ func TestLiveServerOnLoopbackUnderLandlockAlone(t *testing.T) {
 
 func filepathProc(pid int, name string) string { return "/proc/" + strconv.Itoa(pid) + "/" + name }
 
-// The server's policy grants ggml's backends, which ggml opens itself and
-// no DT_NEEDED names, and lets it list its build to find them. Other
-// programs' libraries and other files are not backends. The files here are
-// not ELF, so on Linux the backends are reached through the fallback (the
-// build read-only); isolate's tests check the per-file grant.
-func TestThePolicyGrantsTheGGMLBackendsAndListsTheBuild(t *testing.T) {
-	dir := t.TempDir()
-	for _, n := range []string{"llama-server", "libggml-cpu-haswell.so", "libggml-cuda.so", "libllama-cli-impl.so", "libggml-base.so.0", "notes.txt"} {
-		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o755); err != nil {
+// A shared object every Linux has, standing in for a ggml backend.
+func aSharedObject(t *testing.T) []byte {
+	t.Helper()
+	for _, c := range []string{"/lib/x86_64-linux-gnu/libc.so.6", "/lib64/libc.so.6", "/lib/aarch64-linux-gnu/libc.so.6", "/usr/lib/libc.so.6"} {
+		if b, err := os.ReadFile(c); err == nil {
+			return b
+		}
+	}
+	t.Skip("no libc.so.6 found to stand in for a backend")
+	return nil
+}
+
+// The server's policy grants each ggml backend, which ggml opens itself and
+// no DT_NEEDED names, by its own path, and lets the server list its build to
+// find them; not the build's directory, not another program's library, and
+// on Linux not a "backend" that is no shared object. The build is the real
+// program's, behind a symlinked Bin.
+func TestThePolicyGrantsEachGGMLBackendAndListsTheBuild(t *testing.T) {
+	top := t.TempDir()
+	if real, err := filepath.EvalSymlinks(top); err == nil {
+		top = real
+	}
+	dir := filepath.Join(top, "build")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	program, backend := []byte("x"), []byte("x")
+	if runtime.GOOS == "linux" {
+		self, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if program, err = os.ReadFile(self); err != nil { // an ELF program with nothing of its own
+			t.Fatal(err)
+		}
+		backend = aSharedObject(t)
+	}
+	files := map[string][]byte{"llama-server": program, "libggml-cpu-haswell.so": backend, "libggml-cuda.so": backend,
+		"libggml-bad.so": []byte("x"), "libllama-cli-impl.so": backend, "libggml-base.so.0": backend, "notes.txt": []byte("x")}
+	for n, b := range files {
+		if err := os.WriteFile(filepath.Join(dir, n), b, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	want := []string{filepath.Join(dir, "libggml-cpu-haswell.so"), filepath.Join(dir, "libggml-cuda.so")}
-	if got := ggmlBackends(dir); strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("backends %v, want %v", got, want)
+	good := []string{filepath.Join(dir, "libggml-cpu-haswell.so"), filepath.Join(dir, "libggml-cuda.so")}
+	bad := filepath.Join(dir, "libggml-bad.so")
+	if got := ggmlBackends(dir); strings.Join(got, "|") != strings.Join([]string{bad, good[0], good[1]}, "|") {
+		t.Fatalf("backends %v", got)
 	}
-	p := &LlamaProc{Bin: filepath.Join(dir, "llama-server"), Model: filepath.Join(dir, "m.gguf")}
-	pol := p.policy()
+	bin := filepath.Join(dir, "llama-server")
+	if link := filepath.Join(top, "elsewhere", "llama-server"); os.MkdirAll(filepath.Dir(link), 0o755) == nil && os.Symlink(bin, link) == nil {
+		bin = link
+	}
+	pol := (&LlamaProc{Bin: bin, Model: filepath.Join(top, "m.gguf")}).policy()
 	if strings.Join(pol.List, "|") != dir {
-		t.Fatalf("list %v", pol.List)
+		t.Fatalf("list %v, want the real build %s", pol.List, dir)
 	}
 	read := "|" + strings.Join(pol.Read, "|") + "|"
-	for _, w := range want {
-		if !strings.Contains(read, "|"+w+"|") && !strings.Contains(read, "|"+dir+"|") {
+	for _, w := range good {
+		if !strings.Contains(read, "|"+w+"|") {
 			t.Fatalf("%s not granted: %v", w, pol.Read)
 		}
 	}
-}
-
-// With real ELF files, each backend that is a shared object is granted by
-// itself, and the build's directory is not.
-func TestThePolicyGrantsEachGGMLBackendNotTheBuild(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the per-file grant is Linux's")
-	}
-	dir := t.TempDir()
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(self)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bin := filepath.Join(dir, "llama-server")
-	if err := os.WriteFile(bin, data, 0o755); err != nil { // an ELF program with nothing of its own
-		t.Fatal(err)
-	}
-	// A shared object every Linux has stands in for a backend.
-	var lib string
-	for _, c := range []string{"/lib/x86_64-linux-gnu/libc.so.6", "/lib64/libc.so.6", "/lib/aarch64-linux-gnu/libc.so.6", "/usr/lib/libc.so.6"} {
-		if _, err := os.Stat(c); err == nil {
-			lib = c
-			break
+	for _, n := range []string{dir, filepath.Join(dir, "libllama-cli-impl.so"), filepath.Join(dir, "notes.txt")} {
+		if strings.Contains(read, "|"+n+"|") {
+			t.Fatalf("%s granted: %v", n, pol.Read)
 		}
 	}
-	if lib == "" {
-		t.Skip("no libc.so.6 found to stand in for a backend")
-	}
-	so, err := os.ReadFile(lib)
-	if err != nil {
-		t.Fatal(err)
-	}
-	backend := filepath.Join(dir, "libggml-cpu-x64.so")
-	if err := os.WriteFile(backend, so, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "libggml-bad.so"), []byte("x"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	pol := (&LlamaProc{Bin: bin, Model: filepath.Join(dir, "m.gguf")}).policy()
-	read := "|" + strings.Join(pol.Read, "|") + "|"
-	if !strings.Contains(read, "|"+backend+"|") || strings.Contains(read, "|"+dir+"|") || strings.Contains(read, "libggml-bad.so") {
-		t.Fatalf("read %v", pol.Read)
+	if runtime.GOOS == "linux" && strings.Contains(read, "|"+bad+"|") {
+		t.Fatalf("a backend that is no shared object was granted: %v", pol.Read)
 	}
 }

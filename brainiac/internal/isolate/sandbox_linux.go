@@ -278,20 +278,26 @@ func CanConfine() (bool, error) {
 // libllama*.so and libggml*.so next to llama-server, found through
 // $ORIGIN). Not the whole directory: a program in a shared directory (a
 // download folder, /tmp) must not be handed everything else in it. Only
-// when the ELF cannot be read is the directory granted, read-only, and
-// that is logged. libPath is the program's own $ORIGIN search path, which
-// a mount view leaves the loader unable to expand.
+// when the program's ELF cannot be read is the directory granted,
+// read-only, and only where directoryFallback allows (elsewhere the
+// program alone); either way it is logged. libPath is the program's own
+// $ORIGIN search path, which a mount view leaves the loader unable to
+// expand.
 func resolved(program string, plugins []string) (files, libPath []string) {
 	files = []string{program}
 	real, err := filepath.EvalSymlinks(program)
 	if err == nil && real != program {
 		files = append(files, real)
 	}
-	libs, err := ownLibraries(program, plugins)
+	libs, err := ownLibrariesSafe(program, plugins)
 	if err != nil {
 		dir := filepath.Dir(program)
 		if real != "" {
 			dir = filepath.Dir(real)
+		}
+		if ok, why := directoryFallback(dir); !ok {
+			logf("isolate: cannot read the libraries %s links (%v), and its directory %s is %s: granting the program alone, so it may not start", program, err, dir, why)
+			return files, nil
 		}
 		logf("isolate: cannot read the libraries %s links (%v); granting its directory %s read-only", program, err, dir)
 		return append(files, dir), nil
@@ -300,7 +306,7 @@ func resolved(program string, plugins []string) (files, libPath []string) {
 		logf("isolate: %s loads %s from outside its build; not granted", program, strings.Join(libs.outside, ", "))
 	}
 	if len(libs.skipped) > 0 {
-		logf("isolate: %s: %s not ELF shared objects; not granted", program, strings.Join(libs.skipped, ", "))
+		logf("isolate: %s: %s not ELF shared objects (ET_DYN); not granted", program, strings.Join(libs.skipped, ", "))
 	}
-	return append(append(files, libs.plugins...), libs.files...), libs.origin
+	return append(files, libs.files...), libs.origin
 }

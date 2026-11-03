@@ -9,8 +9,10 @@ package isolate
 import (
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 // allowed are the variables a model process may see: what the system needs to
@@ -41,14 +43,19 @@ type Policy struct {
 	Read  []string `json:"read,omitempty"`  // read and execute, beneath each path
 	Write []string `json:"write,omitempty"` // and create, change and delete
 	// List are directories whose entries it may list, not read: a program
-	// that finds its own plugins by listing its directory (ggml). In a mount
-	// view such a directory holds only what Read grants; without one the
-	// names of everything in it are visible, never the contents.
+	// that finds its own plugins by listing its directory (ggml). The right
+	// holds beneath each, so subdirectories are listed too. In a mount view
+	// such a directory holds only what Read grants; without one the names
+	// of everything beneath it are visible, never the contents.
 	List []string `json:"list,omitempty"`
 	// LibraryPath is the program's own $ORIGIN search path, expanded. A
 	// mount view has no /proc/self/exe, from which the loader expands
 	// $ORIGIN for the program, so the helper passes it as LD_LIBRARY_PATH
-	// there, after whatever that already holds.
+	// there, after whatever that already holds. LD_LIBRARY_PATH is searched
+	// before DT_RUNPATH and the loader's cache, and for every object, the
+	// system's libraries' own dependencies too. That is safe only because
+	// these directories are inside the build and, in a view, hold nothing
+	// but granted files; it is never set without a view.
 	LibraryPath []string `json:"library_path,omitempty"`
 	BlockTCP    bool     `json:"block_tcp,omitempty"`
 	// BindTCP are the ports it may listen on when TCP is blocked. It may
@@ -73,6 +80,61 @@ var systemWrite = []string{"/dev"}
 
 // logf reports what a policy grants beyond its usual shape (tests replace it).
 var logf = log.Printf
+
+var (
+	rootsMu      sync.RWMutex
+	installRoots []string
+)
+
+// SetInstallRoots names the directories Brainiac installs programs into
+// (its llama.cpp builds, its Python environment). A program beneath one
+// whose ELF Brainiac cannot read gets its directory, read-only, instead of
+// the libraries it would name; anywhere else it gets only itself.
+func SetInstallRoots(dirs ...string) {
+	var roots []string
+	for _, d := range dirs {
+		if d != "" {
+			roots = append(roots, realPath(d))
+		}
+	}
+	rootsMu.Lock()
+	installRoots = roots
+	rootsMu.Unlock()
+}
+
+// realPath is p with its symlinks resolved, or p cleaned when it cannot be.
+func realPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
+}
+
+// directoryFallback says whether dir, the directory of a program whose ELF
+// cannot be read, may be granted read-only in its place, and why not. Never
+// a filesystem root, the home directory or the temporary directory, and
+// only beneath an install root: the fallback grants a directory and all
+// beneath it, which nothing else in a policy does.
+func directoryFallback(dir string) (bool, string) {
+	dir = realPath(dir)
+	if filepath.Dir(dir) == dir {
+		return false, "a filesystem root"
+	}
+	if home, err := os.UserHomeDir(); err == nil && dir == realPath(home) {
+		return false, "the home directory"
+	}
+	if dir == realPath(os.TempDir()) {
+		return false, "the temporary directory"
+	}
+	rootsMu.RLock()
+	defer rootsMu.RUnlock()
+	for _, r := range installRoots {
+		if within(r, dir) {
+			return true, ""
+		}
+	}
+	return false, "not inside Brainiac's install store"
+}
 
 // ForProgram is the policy for a program that reads the given paths and
 // writes the given ones, with what the system needs added: the program, and
