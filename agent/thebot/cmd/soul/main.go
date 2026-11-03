@@ -15,6 +15,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -30,6 +31,7 @@ import (
 	"thebot/internal/scheduler"
 	"thebot/internal/session"
 	"thebot/internal/skills"
+	"thebot/internal/trace"
 	"thebot/internal/workspace"
 	"thebot/web"
 )
@@ -171,6 +173,8 @@ type server struct {
 	paused   map[string]*scheduler.Checkpoint
 	// storesOff are the stores this run started without (storeOff), shown by /api/health.
 	storesOff []string
+	// tracer writes each task's trace (internal/trace); nil writes none.
+	tracer *trace.Writer
 }
 
 // pausedJobTTL is how long a paused job waits for its reply before the next
@@ -487,7 +491,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	tags := llm.Tags{Task: taskID, Job: id}
 	job.TaskID = taskID
 
-	ctx, cancel := context.WithCancel(llm.WithTags(context.Background(), tags))
+	ctx, cancel := context.WithCancel(trace.WithWriter(llm.WithTags(context.Background(), tags), s.tracer))
 	ctx, used := llm.WithUsage(ctx)
 	job.mu.Lock()
 	job.cancel = cancel
@@ -551,7 +555,8 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// next request queues behind, and it evicts that request's cached
 		// prompt prefix on the way.
 		if s.sched.L1 != nil && memory.LooksMemorable(body.Prompt) {
-			go s.sched.L1.ConsiderExchange(llm.WithTags(context.Background(), tags), body.Prompt, finalAnswer, job.appendLog)
+			go s.sched.L1.ConsiderExchange(trace.WithWriter(llm.WithTags(context.Background(), tags), s.tracer), body.Prompt,
+				finalAnswer, job.appendLog)
 		}
 
 		job.finish()
@@ -815,7 +820,9 @@ func main() {
 	rawProvider, models, embedder := buildProvider(cfg)
 	// Every chat call in the process - scheduler steps running side by
 	// side, L1's judge, the coding harness - shares one concurrency limit.
-	provider := llm.Limited(llm.Metered(rawProvider), modelConcurrency(cfg))
+	// Each call of a task leaves a line in that task's trace (trace.Calls,
+	// inside Metered, which settles the call's purpose first).
+	provider := llm.Limited(llm.Metered(trace.Calls(rawProvider)), modelConcurrency(cfg))
 	log.Printf("[soul] model concurrency: %d", modelConcurrency(cfg))
 
 	// Which model does which job, said out loud at startup. A hybrid setup
@@ -915,6 +922,7 @@ func main() {
 	sched.SkillLib = skillLib
 	s := newServer(cfg, provider, ws, sched)
 	s.storesOff = storesOff
+	s.tracer = trace.New(filepath.Join(ws.Root(), "traces"))
 
 	// Binds all interfaces (0.0.0.0), not just 127.0.0.1 - a real bug
 	// caught running this inside a container: a process bound to

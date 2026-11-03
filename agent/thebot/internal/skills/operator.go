@@ -16,6 +16,7 @@ import (
 	"thebot/internal/llm"
 	"thebot/internal/prompt"
 	"thebot/internal/safety"
+	"thebot/internal/trace"
 )
 
 // OperatorSkill works a goal out on this machine, one shell command at a
@@ -1112,6 +1113,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 		}
 	}
 	res := runShell(rc.Ctx, rc.Dir(), run, o.commandTimeout(), st.guiEnv()...)
+	st.traceCommand(rc, command, res, time.Since(started))
 	noteFilesRead(run)
 	// (The host's "recorded working" is what is noted here: never what the command printed back of its own text.)
 	noteCommandOutput(run, withoutCommandValues(res.Output, run))
@@ -1311,6 +1313,35 @@ func (st *operatorState) guiEnv() []string {
 		env = append(env, "DECURIX_TURN_ID="+st.turnID)
 	}
 	return env
+}
+
+// traceCommand writes the trace line of a command the operator ran (internal/trace): the guard's decision is
+// "asked" when soul's guard or the screen's approval gate wanted a person's yes for it, else "allowed".
+func (st *operatorState) traceCommand(rc RunContext, command string, res shellResult, took time.Duration) {
+	w := trace.From(rc.Ctx)
+	if w == nil {
+		return
+	}
+	guard := trace.GuardAllowed
+	if safety.AssessCommand(command) != nil || screenApprovalReason(command, res) != "" {
+		guard = trace.GuardAsked
+	}
+	exit := res.ExitCode
+	w.CommandRun(rc.Ctx, command, guard, &exit, took, res.Output, st.traceClean(command))
+}
+
+// traceClean is the trace's first filter for command: every secret the task gave, or typed into a password field,
+// replaced as the person's own messages replace it (secretValues); the trace's shape filter runs after it.
+func (st *operatorState) traceClean(command string) func(string) string {
+	secrets := secretValues(st, command)
+	return func(text string) string {
+		for secret := range secrets {
+			if len(secret) >= 3 {
+				text = strings.ReplaceAll(text, secret, secretShown)
+			}
+		}
+		return text
+	}
 }
 
 // maxScreenshotBytes bounds one attached screenshot; a full-size PNG of a
@@ -1977,6 +2008,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 
 			if concern := safety.AssessCommand(value); concern != nil && !rc.IsApproved(value) {
 				rc.Logf("operator", "approval needed before `%s` - %s", value, concern.Reason)
+				trace.From(rc.Ctx).CommandRun(rc.Ctx, value, trace.GuardAsked, nil, 0, "", st.traceClean(value))
 				st.Pending, st.PendingWhat = value, value+" - "+concern.Reason
 				return o.pause(subtask, st, concern.Reason+st.reviewInProgress()), nil
 			}

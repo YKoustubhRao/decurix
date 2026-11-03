@@ -157,6 +157,46 @@ func LooksSecret(text string) bool {
 	return false
 }
 
+// Withheld is what RedactSecrets writes in place of a secret.
+const Withheld = "[withheld]"
+
+// RedactSecrets is text with every secret LooksSecret would find replaced by Withheld: a token or key by its shape,
+// credentials in a link, the value after a credential's name (decided by kind, as LooksSecret decides it), and a long
+// random-looking run. It uses LooksSecret's own rules, so what is withheld and what is judged a secret never drift.
+func RedactSecrets(text string) string {
+	text = tokenShapeRe.ReplaceAllString(text, Withheld)
+	text = secretNamedRe.ReplaceAllStringFunc(text, func(match string) string {
+		m := secretNamedRe.FindStringSubmatchIndex(match)
+		if m == nil || m[8] < 0 {
+			return match
+		}
+		separated := m[4] >= 0 || m[6] >= 0
+		raw := match[m[8]:m[9]]
+		value := strings.TrimRight(raw, ".!?:")
+		if !secretValue(kindOf(match[m[2]:m[3]]), separated, value) {
+			return match
+		}
+		return match[:m[8]] + Withheld + raw[len(value):] + match[m[9]:]
+	})
+	return longRunRe.ReplaceAllStringFunc(text, func(run string) string {
+		var upper, lower, digit bool
+		for _, r := range run {
+			switch {
+			case unicode.IsUpper(r):
+				upper = true
+			case unicode.IsLower(r):
+				lower = true
+			case unicode.IsDigit(r):
+				digit = true
+			}
+		}
+		if upper && lower && digit {
+			return Withheld
+		}
+		return run
+	})
+}
+
 // valueRe is a value-shaped token of a fact: anything with a digit in it
 // (an amount, an identifier, a phone number, a date) or an email address.
 var valueRe = regexp.MustCompile(`[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}|[\p{L}\p{N}._/#+-]*\p{N}[\p{L}\p{N}._/#+-]*`)
