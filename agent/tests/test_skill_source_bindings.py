@@ -43,5 +43,16 @@ class SourceBindings(unittest.TestCase):
                 skills.bind_sources(self.program, {source: target})
 
 
+class AFileNameIsReplacedOnlyWhereItStandsWhole(unittest.TestCase):
+    # D-36 (review round 3): a substring replace rewrote another file's name that only ends with the bound one's.
+    def test_a_longer_name_holding_it_is_left_alone(self):
+        self.assertEqual(skills._rename_file("prebill.xlsx - Calc", "bill.xlsx", "oct.xlsx"), "prebill.xlsx - Calc")
+        self.assertEqual(skills._rename_file("bill.xlsx.bak", "bill.xlsx", "oct.xlsx"), "bill.xlsx.bak")
+
+    def test_the_name_itself_is_replaced(self):
+        self.assertEqual(skills._rename_file("bill.xlsx - Calc", "bill.xlsx", "oct.xlsx"), "oct.xlsx - Calc")
+        self.assertEqual(skills._rename_file("C:/books/bill.xlsx", "bill.xlsx", "oct.xlsx"), "C:/books/oct.xlsx")
+
+
 if __name__ == "__main__":
     unittest.main()

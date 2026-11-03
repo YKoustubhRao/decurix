@@ -8,6 +8,13 @@ from decurix_agent import config
 from decurix_agent.computer import experience, recording, replay
 
 
+def _rename_file(text, old, new):
+    """`text` with the file name `old` replaced by `new` where it stands whole - never inside a longer name
+    ("bill.xlsx" is not in "prebill.xlsx"; D-36, review round 3: a substring replace rewrote other files' titles)."""
+
+    return re.sub(r"(?<![\w.-])" + re.escape(old) + r"(?![\w-]|\.\w)", lambda m: new, text)
+
+
 def bind_sources(skill, bindings):
     """Explicitly bind recorded local input opens to new files, on a run copy.
 
@@ -27,16 +34,16 @@ def bind_sources(skill, bindings):
         if not old.suffix or old.suffix.lower() != new.suffix.lower():
             raise ValueError("source-file binding must preserve file type")
         if isinstance((bound.get("starts") or {}).get("window"), str):
-            bound["starts"]["window"] = bound["starts"]["window"].replace(old.name, new.name)
+            bound["starts"]["window"] = _rename_file(bound["starts"]["window"], old.name, new.name)
         for step in bound["steps"]:
             if step.get("kind") == "open" and step.get("open") == source:
                 step["open"] = str(new)
             for key in ("window", "phase_label"):
                 if isinstance(step.get(key), str):
-                    step[key] = step[key].replace(old.name, new.name)
+                    step[key] = _rename_file(step[key], old.name, new.name)
             for check in step.get("expect", []):
                 if check.get("type") in {"window", "active_window"}:
-                    check["value"] = check["value"].replace(old.name, new.name)
+                    check["value"] = _rename_file(check["value"], old.name, new.name)
     return bound
 
 
