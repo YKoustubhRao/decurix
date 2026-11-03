@@ -362,9 +362,9 @@ func (m *Manager) runProvisioning(
 		return
 	}
 	// The approval key goes in as a root-only file before the first start, never in the environment. A desktop whose
-	// key could not be placed is not started: its gate would allow nothing.
-	if err := m.putGateKey(ctx, resp.ID, m.GateKey(name)); err != nil {
-		fail(fmt.Errorf("give the desktop its approval key: %w", err))
+	// image has no gate, or whose key could not be placed, is not started: it would allow nothing.
+	if err := m.prepareGate(ctx, resp.ID, m.GateKey(name)); err != nil {
+		fail(fmt.Errorf("give the desktop its approval gate: %w", err))
 		return
 	}
 

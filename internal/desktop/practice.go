@@ -378,6 +378,7 @@ func practiceEnvironment(inherited []string, spec PracticeSpec, vncPassword stri
 		"AGENT_HARNESS="+spec.Harness,
 		"DECURIX_BRAIN="+spec.Brain,
 		"DECURIX_PRACTICE=1",
+		GateRequiredEnv+"=1",
 		"PYTHONDONTWRITEBYTECODE=1", "PYTHONUNBUFFERED=1",
 	)
 	if (Brain{Kind: spec.Brain}).Hosted() {
@@ -488,6 +489,11 @@ func (m *Manager) CreatePractice(ctx context.Context, spec PracticeSpec) (d Prac
 			_ = m.RemovePractice(context.WithoutCancel(ctx), created.ID)
 		}
 	}()
+	// A practice desktop has the same approval gate as the worker's own: practice tests what will run, and without a
+	// gate its agent would keep approvals in a store the worker can write. The practice broker never grants one.
+	if err = m.prepareGate(ctx, created.ID, m.GateKey(PracticeDesktopID(spec.RunID))); err != nil {
+		return d, fmt.Errorf("give the practice desktop its approval gate: %w", err)
+	}
 	if flags != "" {
 		if err = m.appendBrowserFlags(ctx, created.ID, flags); err != nil {
 			return d, err

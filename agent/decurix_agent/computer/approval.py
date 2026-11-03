@@ -1315,15 +1315,26 @@ GATE_REPLY_WAIT_SECONDS = 45
 IN_GATE = False
 
 
+# Set by the control plane on every desktop it makes (desktop.GateRequiredEnv). It can only turn the gate on: without
+# it, the directory above still decides. Not a secret.
+GATE_REQUIRED_ENV = "DECURIX_GATE_REQUIRED"
+
+
+def gate_required():
+    """Whether the control plane said this desktop must have a gate."""
+
+    return os.environ.get(GATE_REQUIRED_ENV, "").strip() == "1"
+
+
 def remote():
     """
     Whether this process asks a gate for its decisions: the desktop has one (its directory exists - the entrypoint
-    makes it, as the gate's user, and the worker cannot remove it) and this is not the gate itself. A gate that is
-    down is then a gate that answers nothing, and nothing is allowed; it is never a reason to fall back to a store
-    the worker can write.
+    makes it, as the gate's user, and the worker cannot remove it) or the control plane said it must, and this is not
+    the gate itself. A gate that is down, or was never started, is then a gate that answers nothing, and nothing is
+    allowed; it is never a reason to fall back to a store the worker can write.
     """
 
-    return not IN_GATE and os.path.isdir(GATE_DIR)
+    return not IN_GATE and (os.path.isdir(GATE_DIR) or gate_required())
 
 
 def gate_call(op, timeout=GATE_CALL_SECONDS, **args):

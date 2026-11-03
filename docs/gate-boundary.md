@@ -114,6 +114,36 @@ layered image of this checkout).
 Desktops made from the round-3 image have a gate that checks the round-3 signature, so the control plane's replies no
 longer verify there: nothing is approved on them until they are recreated. Desktops from before round 3 have no gate.
 
+## Round 4 (2026-11-03, after the round-4 recheck)
+
+**No silent fallback.** "This desktop has a gate" was read only from `/run/decurix-gate`, which existed only when a key
+arrived, so a desktop without one kept approvals in the worker's own store.
+- The entrypoint makes `/run/decurix-gate` on every image that has the `decurixgate` user, key or not. A gate that never
+  started (no key) is then a gate that answers nothing, and nothing gated is allowed.
+- The control plane sets `DECURIX_GATE_REQUIRED=1` in every desktop it makes (`desktop.GateRequiredEnv`, not a secret).
+  The agent (`approval.remote`) and TheBot (`gatePresent`) read it as "a gate is required": it can only turn the gate
+  on, never off.
+- No desktop or practice desktop is made from an image without the gate's user (`desktop.prepareGate`, `ErrNoGate`):
+  the control plane reads the created container's `/etc/passwd` before the first start.
+- Practice desktops get a key and a gate of their own, like any desktop. The practice broker never grants an approval.
+- `boundary.sh` has a row for it: a second desktop started with no key has the directory, and a gated click is refused.
+
+Existing desktops from before round 3 keep their old agent and image until recreated; the control plane does not
+refuse to start them.
+
+**A reply is bound to the approval it answers** (`httpapi.replyBinding`). A reply is signed with the gate's request id
+only when it is bound to that approval:
+- typed under that approval's card on the dashboard (`note_id`, held to the newest open question as before), or
+- typed in the desktop's chat with that approval on screen (the chat sends `seen_at`, when its newest entry was
+  posted) and no other question open.
+A chat reply that would land on an approval posted after what the person saw, or on one of several open questions,
+is refused with a reason. Every other door (the requests page, the concierge, an API call) delivers the reply as a
+message bound to no request: it grants nothing.
+
+**The gate's question is the gate's words only.** With no reason of its own the gate used the caller's reason in its
+signed question; it now uses a fixed one (`gate_server.GATE_REASON`). The worker's text reaches the person only as
+the worker's note.
+
 ## What this does not cover (said plainly)
 
 - **Direct input.** The gate decides whether a *yes* exists. It does not stand between the worker and the screen: a
@@ -129,5 +159,9 @@ longer verify there: nothing is approved on them until they are recreated. Deskt
 - **A root `docker exec` by a person.** `docker exec -u 0 <desktop> sh` finds `sh` through the container's PATH, which
   puts the worker's `~/.local/bin` first: it runs the worker's code as root. The control plane never execs as root.
   Anyone else uses absolute paths and `env -i` (the bench caught itself doing this).
-- **Practice desktops** get no key, so they have no gate (unchanged).
+- **The chat binds to what was on screen, not to what the person meant.** With one approval open and on screen, a chat
+  "yes" is its yes, even if the person was answering an earlier question the worker had since closed. The approval's
+  card is the unambiguous door.
+- **What `gui` describes.** `about` (what an action acts on) and the control's name come from the worker's side of
+  the screen; the gate words its question from them. A misleading description gets a grant only for that description.
 - **A fixed `hostgui.key`** change (e.g. after a restore onto another machine) changes every derived key: recreate desktops.

@@ -10,7 +10,6 @@ import (
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/ollama"
-	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"github.com/YKoustubhRao/decurix/internal/webui"
 	"github.com/YKoustubhRao/decurix/internal/withhold"
@@ -95,6 +94,9 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := s.ActorContext(r)
 	if noteID := strings.TrimSpace(r.FormValue("note_id")); noteID != "" {
 		ctx = context.WithValue(ctx, replyNoteKey{}, noteID)
+	} else if seen, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(r.FormValue("seen_at"))); err == nil {
+		// The desktop's chat says what was on screen: when its newest entry was posted (replyBinding).
+		ctx = context.WithValue(ctx, replySeenKey{}, seen)
 	}
 	route, sent, err := s.submitRequestWithFiles(ctx, desktopID, content, files)
 	if err != nil {
@@ -152,24 +154,15 @@ func (s *Server) replyStillAnswers(desktopID, noteID string) error {
 	if s.QueryNotes == nil {
 		return nil
 	}
-	var newest *querynotes.QueryNote
+	open := s.openQuestions(desktopID)
 	found := false
-	for _, note := range s.QueryNotes.List() {
-		if desktop.SanitizeID(note.DesktopID) != desktopID || (note.Kind != querynotes.KindQuery && note.Kind != querynotes.KindApproval) {
-			continue
-		}
-		if note.ID == noteID {
-			found = true
-		}
-		if newest == nil || note.CreatedAt.After(newest.CreatedAt) {
-			n := note
-			newest = &n
-		}
+	for _, note := range open {
+		found = found || note.ID == noteID
 	}
 	if !found {
 		return &errUpload{http.StatusConflict, "that question is already answered or closed"}
 	}
-	if newest.ID != noteID {
+	if open[0].ID != noteID {
 		return &errUpload{http.StatusConflict, "this worker has asked something newer since: answer that card instead"}
 	}
 	return nil
@@ -197,6 +190,15 @@ func (s *Server) submitLocked(ctx context.Context, desktopID, content string) (t
 
 	route := s.routeRequest(id, content)
 
+	// Which question a reply answers, and whether it is bound to the gate's request: only then can it grant anything.
+	var asked, kind, request string
+	if route.Kind == tasks.RouteReply {
+		var err error
+		if asked, kind, request, err = s.replyBinding(ctx, id); err != nil {
+			return tasks.Route{}, err
+		}
+	}
+
 	// A reply that settles a pending approval is held to the approval policy: who may approve this action
 	// (docs/access.md). Every door passes here; an automated one carries no actor and never approves under a policy.
 	if err := s.gateApprovalReply(ctx, id, route, content); err != nil {
@@ -205,7 +207,7 @@ func (s *Server) submitLocked(ctx context.Context, desktopID, content string) (t
 
 	// A reply to an open question goes to the desktop's approval gate first, signed: that is the only way a yes is made.
 	if route.Kind == tasks.RouteReply {
-		s.signReplyToGate(ctx, id, route.TaskID, content)
+		s.signReplyToGate(ctx, id, route.TaskID, content, asked, kind, request)
 	}
 
 	if err := s.deliverRequest(ctx, desktopID, content, route.TaskID); err != nil {

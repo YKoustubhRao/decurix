@@ -33,6 +33,7 @@ type practiceDaemon struct {
 	caseTar         map[string]string
 	image           string
 	execs           map[string][]string // exec id -> container, kind ("tarin"/"tarout"/"run"), path
+	noGateUser      bool                // the image is one from before the approval gate
 }
 
 func tarFiles(b []byte) map[string]string {
@@ -124,6 +125,12 @@ func (d *practiceDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case at == "/opt/decurix-chromium.init":
 			body = tarBody(map[string]string{"decurix-chromium.init": "CHROMIUM_FLAGS=\"--x\"\n"})
+		case at == "/etc/passwd":
+			users := "root:x:0:0::/root:/bin/bash\nheadless:x:1001:1001::/home/headless:/bin/bash\n"
+			if !d.noGateUser {
+				users += "decurixgate:x:999:999::/nonexistent:/usr/sbin/nologin\n"
+			}
+			body = tarBody(map[string]string{"passwd": users})
 		case strings.HasPrefix(at, PracticeWorkDir+"/"):
 			c := strings.TrimPrefix(at, PracticeWorkDir+"/")
 			body = tarBody(map[string]string{c + "/in.csv": d.caseTar["in.csv"], c + "/out.txt": d.caseTar["out.txt"]}, c+"/")
@@ -317,6 +324,33 @@ func TestCreatePracticeIsIsolated(t *testing.T) {
 	// home folder under .decurix/, which the tar itself creates.
 	if d.copiedTo["desk:/home/headless"][0][".decurix/skills/a.json"] != "{}" {
 		t.Fatalf("snapshot not restored under .decurix: %v", d.copiedTo)
+	}
+}
+
+// TestPracticeDesktopsHaveTheGate checks a practice desktop is told it must have an approval gate, gets its own key
+// before its first start, and is not made from an image without the gate (round-4 recheck).
+func TestPracticeDesktopsHaveTheGate(t *testing.T) {
+	m, d := practiceManager(t)
+	spec := PracticeSpec{RunID: "x1", Image: d.image, Harness: "thebot", Brain: BrainAzure, Model: "m", BrokerURL: "http://172.30.0.1:8091"}
+	if _, err := m.CreatePractice(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range d.created[0]["Env"].([]any) {
+		found = found || e.(string) == GateRequiredEnv+"=1"
+	}
+	if !found {
+		t.Fatal("a practice desktop is not told it must have a gate")
+	}
+	keys := d.copiedTo["desk:/"]
+	if len(keys) != 1 || keys[0]["etc/decurix-gate/key"] != m.GateKey("practice-x1") || m.GateKey("practice-x1") == "" {
+		t.Fatalf("the practice desktop's key was not put in place: %v", keys)
+	}
+
+	m2, d2 := practiceManager(t)
+	d2.noGateUser = true
+	if _, err := m2.CreatePractice(context.Background(), spec); !errors.Is(err, ErrNoGate) {
+		t.Fatalf("an image without the gate: %v, want ErrNoGate", err)
 	}
 }
 

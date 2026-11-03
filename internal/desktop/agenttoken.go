@@ -64,6 +64,14 @@ func (m *Manager) withScreenPassword(env []string, id string) []string {
 // it (the memory route) could read the key from there (round-3 recheck).
 const GateKeyFile = "/etc/decurix-gate/key"
 
+// GateRequiredEnv is set to "1" in every desktop the control plane makes (not a secret): the agent and TheBot then
+// treat a missing or silent gate as one that allows nothing, never as a desktop without a gate whose decisions live in
+// a store the worker can write (round-4 recheck). It can only turn the gate on.
+const GateRequiredEnv = "DECURIX_GATE_REQUIRED"
+
+// GateUser is the Linux user an image's approval gate runs as. An image without it has no gate and makes no desktop.
+const GateUser = "decurixgate"
+
 // GatePort is where a desktop's approval gate listens for the control plane's signed replies.
 const GatePort = "8083"
 

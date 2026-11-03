@@ -37,7 +37,7 @@ SWIFT = re.compile(r"\b[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b")
 UPI = re.compile(r"\b[\w.-]{2,}@[a-z]{2,}\b(?![.\w])")
 # Words of an account or a bank identifier (a cell that holds one is not a payee's name). Which columns hold where
 # money goes is bank_columns'.
-ID_COLUMN = re.compile(r"\b(?:a/?c|acc(?:oun)?t|account\s*(?:no|number|#)?|ifsc|iban|swift|bic|upi|vpa|routing|sort\s*code)\b",
+ID_COLUMN = re.compile(r"\b(?:a/?c|acc(?:oun)?t|acc|account\s*(?:no|number|#)?|ifsc|iban|swift|bic|upi|vpa|routing|sort\s*code)\b",
                        re.I)
 # A column naming who is paid.
 PAYEE_COLUMN = re.compile(r"\b(?:vendor|supplier|payee|beneficiary|party|customer|employee|name|account\s*name)\b", re.I)
@@ -53,7 +53,8 @@ _BANK_DETAIL = re.compile(r"\b(?:ifsc|iban|swift|bic|micr|upi|vpa|routing|sort\s
 _LEDGER_ACCOUNT = re.compile(r"\b(?:gl|g/l|ledger|head|group|code|name|type|category|class|stock|expense|income|revenue"
                              r"|sales|purchases?|cost|control|sub|parent|nature|description|holder|opening|closing"
                              r"|balance)\b", re.I)
-_ACCOUNT_WORD = re.compile(r"\b(?:a/?c|acc(?:oun)?t|account)\b", re.I)
+# ("Acc" too: round-4 recheck, a column headed "Acc" was no account, so a wrong one went unchecked.)
+_ACCOUNT_WORD = re.compile(r"\b(?:a/?c|acc(?:oun)?t|acc|account)\b", re.I)
 # Who an account is for, or a bank, in its own label: "Bank Account", "Beneficiary A/c".
 _BANK_ACCOUNT = re.compile(r"\b(?:bank|beneficiary|payee|vendor|supplier|employee|party|creditor)\b", re.I)
 _ACCOUNT_NUMBER = re.compile(r"\b(?:no|number|num|#)\b|#", re.I)
@@ -62,6 +63,9 @@ _ACCOUNT_NUMBER = re.compile(r"\b(?:no|number|num|#)\b|#", re.I)
 _PAID_HEAD = {"amount", "amt", "payable", "payment", "pay", "paid", "transfer", "refund", "remittance", "disbursement",
               "net", "total"}
 _PAID_WORD = re.compile(r"\b(?:pay|payment|payable|paid|transfer|remit(?:tance)?|refund|disburse(?:ment)?)\b", re.I)
+# A column of money going back out to whoever is in the table: a customer refunded is a customer paid.
+_OUTGOING = re.compile(r"\b(?:refunds?|refunded|disburse(?:d|ments?)?|payouts?|reimburse(?:d|ments?)?|remit(?:ted|tances?)?"
+                       r"|transfer(?:red|s)?)\b", re.I)
 _NOT_PAID = re.compile(r"\b(?:sales|revenue|turnover|taxable|tax|gst|cgst|sgst|igst|cess|stock|opening|closing|limit"
                        r"|budget)\b", re.I)
 
@@ -86,8 +90,10 @@ def bank_columns(header):
     has_bank = any(_BANK_DETAIL.search(h) or re.search(r"\b(?:bank|branch)\b", h, re.I) for h in labels)
     has_payee = any(PAYEE_COLUMN.search(h) or re.search(r"\bholder\b", h, re.I) for h in labels)
     # Someone who is paid, not only billed: a customer's account beside sales figures is a report's, not a payment's.
+    # A customer beside a refund is paid (round-4 recheck: "Customer, Account, Refund" was no payment file).
     pays_someone = any((PAYEE_COLUMN.search(h) or re.search(r"\bholder\b", h, re.I))
-                       and not re.search(r"\bcustomers?\b", h, re.I) for h in labels)
+                       and not re.search(r"\bcustomers?\b", h, re.I) for h in labels) or (
+        has_payee and any(_OUTGOING.search(h) for h in labels))
     cols = []
     for i, h in enumerate(labels):
         if _BANK_DETAIL.search(h):

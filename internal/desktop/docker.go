@@ -280,6 +280,10 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 
 	env = append(env, "DECURIX_BRAIN="+brain.kind())
 
+	// Every desktop the control plane makes must have an approval gate: its agent and TheBot allow nothing gated
+	// rather than fall back to a store the worker can write (agenttoken.go's GateRequiredEnv).
+	env = append(env, GateRequiredEnv+"=1")
+
 	// The one folder of the person's computer this desktop may use, when they chose one (sharedfolder.go).
 	if len(shared) > 0 && shared[0] != nil {
 		env = append(env, shared[0].Env()...)

@@ -1256,7 +1256,13 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     render(lastThread);
     scrollToBottom();
 
-    Decurix.postFiles("/api/desktops/send", {id: desktopId, content: text}, item.files).then(function(data){
+    /* seen_at says what was on screen: when the newest entry shown was posted. The control plane binds a reply to an
+       approval only when the person had it in front of them (httpapi replyBinding). */
+    var seenAt = (lastThread && lastThread.entries || []).reduce(function(latest, e){
+      return e.created_at && (!latest || Date.parse(e.created_at) > Date.parse(latest)) ? e.created_at : latest;
+    }, "");
+
+    Decurix.postFiles("/api/desktops/send", {id: desktopId, content: text, seen_at: seenAt}, item.files).then(function(data){
       if(pending.indexOf(item) === -1){ return; }
 
       item.state = "delivered";

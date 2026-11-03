@@ -125,3 +125,22 @@ func TestAGateThatAnswersNonsenseOrNothingApprovesNothing(t *testing.T) {
 		t.Fatalf("an unreachable gate read as %q", r.Decision)
 	}
 }
+
+// TestADesktopThatMustHaveAGateNeverBelievesTheRequest checks the control plane's flag makes soul treat a missing gate
+// as one that settles nothing (round-4 recheck: no gate directory meant the request's own reading was believed).
+func TestADesktopThatMustHaveAGateNeverBelievesTheRequest(t *testing.T) {
+	old := gateDir
+	gateDir = filepath.Join(os.TempDir(), "no-such-gate-dir")
+	defer func() { gateDir = old }()
+	t.Setenv(gateRequiredEnv, "1")
+	if !gatePresent() {
+		t.Fatal("a desktop that must have a gate was taken for one without")
+	}
+	if r := gateSettled(pausedOn("x")); r.Decision != "unclear" {
+		t.Fatalf("a missing gate read as %q", r.Decision)
+	}
+	t.Setenv(gateRequiredEnv, "0")
+	if gatePresent() {
+		t.Fatal("the flag can only turn the gate on")
+	}
+}

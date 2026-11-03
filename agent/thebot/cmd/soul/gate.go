@@ -30,8 +30,16 @@ var gateDir = "/run/decurix-gate"
 // arrives just before the agent's request, but a model reads it. Waited for in the job, never in the HTTP call.
 const gateReplyWait = 45 * time.Second
 
-// gatePresent reports whether this desktop has an approval gate.
+// gateRequiredEnv is set to "1" by the control plane on every desktop it makes. It can only turn the gate on.
+const gateRequiredEnv = "DECURIX_GATE_REQUIRED"
+
+// gatePresent reports whether this desktop has, or must have, an approval gate: its directory exists, or the control
+// plane said so. A gate that is down then settles nothing, so no reply resumes a paused approval as a yes; soul never
+// falls back to believing a reading sent in the request.
 func gatePresent() bool {
+	if os.Getenv(gateRequiredEnv) == "1" {
+		return true
+	}
 	st, err := os.Stat(gateDir)
 	return err == nil && st.IsDir()
 }

@@ -35,6 +35,7 @@ a password - and this run has its own.
 
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -331,8 +332,141 @@ _CODE_WRITES = re.compile(
     r"|\bfs\.|writeFile|child_process|\bexec|\bsystem\b|\bFile\.|\bIO\.|`|\$\(|\brm\b")
 
 
+# Round-4 recheck: CHANGES_THINGS is a list of writers, and any list of writers misses some - mutt, msmtp, rclone, lp,
+# pandoc -o, convert, crontab all ran "read-only", so a shell-only task that sent or converted files went out
+# unchecked. So it is turned round: a command changes nothing only when every program in it is one that only reads or
+# prints (what it prints can still be redirected, which CHANGES_THINGS sees), with git, curl and interpreters judged by
+# what they do as above. Any other program might change something, and the task goes to the final check.
+_READS = frozenset("""
+ls dir vdir cat tac nl head tail less more grep egrep fgrep zgrep zcat bzcat xzcat rg ag ack wc sort uniq cut tr paste
+join comm fold fmt expand unexpand rev column file stat du df free uptime ps pgrep pidof whoami id groups uname arch
+nproc lscpu lsblk date cal pwd echo printf true false test [ [[ ]] sleep which whereis type hash basename dirname
+realpath readlink printenv locale lsof ss netstat ping dig nslookup host getent jq yq xmllint md5sum sha1sum sha224sum
+sha256sum sha384sum sha512sum cksum b2sum sum diff cmp od xxd hexdump strings seq awk gawk mawk sed find cd pushd popd
+export unset read local declare typeset readonly let shift wait exit return break continue : tree base64 base32 numfmt
+expr bc factor tput w who journalctl dmesg identify ffprobe pdfinfo pdffonts lsattr getfacl ldd readelf iconv shuf look
+man help pdftotext set
+""".split())
+# Words that start a command without being its program, and which of their options take the next word as a value (the
+# program comes after them).
+_PREFIX_ARGS = {"sudo": {"-u", "-g", "-C", "-p", "-h"}, "env": {"-u", "-C", "-S"}, "nice": {"-n"}, "nohup": set(),
+                "time": set(), "stdbuf": set(), "ionice": {"-c", "-n", "-p"}, "command": set(), "builtin": set(),
+                "exec": {"-a"}, "xargs": {"-I", "-n", "-P", "-L", "-d", "-s", "-E", "-a"}, "timeout": {"-s", "-k"},
+                "then": set(), "do": set(), "else": set(), "elif": set(), "if": set(), "while": set(), "until": set(),
+                "!": set(), "{": set(), "}": set(), "coproc": set()}
+# Words that end a compound command (`done < list` only reads), and ones whose segment names no program to run.
+_CLOSERS = {"fi", "done", "esac"}
+_NOT_COMMANDS = {"for", "case", "select", "function", "in"}
+_SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+_JUDGED_ABOVE = {"git", "curl", "node", "nodejs", "ruby", "perl", "php"}
+_FIND_ACTS = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
+_HEREDOC = re.compile(r"(<<-?\s*(['\"]?)(\w+)\2[^\n]*)\n.*?\n[ \t]*\3[ \t]*(?=\n|$)", re.S)
+_ASSIGNMENT = re.compile(r"[A-Za-z_]\w*=")
+
+
+def _substitutions(text):
+    """The commands inside $( ), <( ), >( ) and backticks in text (each outermost one; _simple_commands recurses)."""
+
+    found = re.findall(r"`([^`]*)`", text)
+    i = 0
+    while True:
+        starts = [p for p in (text.find("$(", i), text.find("<(", i), text.find(">(", i)) if p >= 0]
+        if not starts:
+            return found
+        i = min(starts)
+        depth, j = 1, i + 2
+        while j < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[j], 0)
+            j += 1
+        found.append(text[i + 2:j - 1] if not depth else text[i + 2:])
+        i = j
+
+
+def _program_of(words):
+    """[(program, its words)] of one simple command's words, or [] when it runs none."""
+
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if _ASSIGNMENT.match(word):
+            i += 1
+        elif word in _NOT_COMMANDS:
+            return []
+        elif word in _PREFIX_ARGS:
+            takes = _PREFIX_ARGS[word]
+            i += 1
+            while i < len(words) and (words[i].startswith("-") or (word == "env" and _ASSIGNMENT.match(words[i]))):
+                i += 2 if words[i] in takes else 1
+            if word == "timeout" and i < len(words):
+                i += 1  # its duration
+        else:
+            break
+    if i >= len(words) or words[i] in _CLOSERS:
+        return []
+    return [(posixpath.basename(words[i].lstrip("\\")), words[i + 1:])]
+
+
+def _simple_commands(command):
+    """(program, its words) of each simple command in a shell command: every pipeline part, list item and
+    substitution. Raises ValueError when the quoting cannot be read."""
+
+    text = _HEREDOC.sub(lambda m: m.group(1), command or "")
+    out = []
+    for inner in _substitutions(text):
+        out.extend(_simple_commands(inner))
+    lex = shlex.shlex(text.replace("\n", " ; "), posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    segment, skip = [], False
+    for token in list(lex) + [";"]:
+        if skip:
+            skip = False
+            continue
+        if token and all(c in "();<>|&" for c in token):
+            if any(c in "<>" for c in token) and not any(c in "();|" for c in token):
+                skip = True  # a redirect: the next word is its file, not a command
+                continue
+            out.extend(_program_of(segment))
+            segment = []
+            continue
+        segment.append(token)
+    return out
+
+
+def _program_changes(program, args):
+    """Whether one program run with args could change something (git, curl and interpreters are judged in _changes)."""
+
+    if program in _JUDGED_ABOVE or re.fullmatch(r"python[0-9.]*", program) or program == "gui":
+        return False  # (gui's acts are on the screen, which the final gate reads from the screen work)
+    if program in _SHELLS:
+        if "-c" in args and args.index("-c") + 1 < len(args):
+            return _changes(args[args.index("-c") + 1])
+        return False  # a script or stdin: the interpreter rule in _changes counted it
+    if program == "office":
+        return not args or args[0] != "read"
+    positional = [a for a in args if a == "-" or not a.startswith("-")]
+    if program == "find":
+        return any(a in _FIND_ACTS for a in args)
+    if program == "sed":
+        return any(re.fullmatch(r"-[a-zA-Z]*i\S*|--in-place\S*", a) for a in args)
+    if program in ("sort", "iconv"):
+        return any(a in ("-o", "--output") or a.startswith(("--output=", "-o")) for a in args)
+    if program == "xmllint":
+        return any(a == "--output" or a.startswith("--output=") for a in args)
+    if program in ("awk", "gawk", "mawk"):
+        return any(re.search(r"\bsystem\s*\(|\|\s*getline|\bprintf?\b[^;}]*\|", a) for a in args)
+    if program == "uniq":
+        return len(positional) >= 2
+    if program == "xxd":
+        return "-r" in args
+    if program == "date":
+        return any(a in ("-s", "--set") or a.startswith("--set=") for a in args)
+    if program == "pdftotext":
+        return not positional or positional[-1] != "-"
+    return program not in _READS
+
+
 def _changes(command):
-    """Whether one command an engine ran could have changed something (see CHANGES_THINGS)."""
+    """Whether one command an engine ran could have changed something (see CHANGES_THINGS and _READS)."""
 
     command = command or ""
     if CHANGES_THINGS.search(command):
@@ -351,14 +485,18 @@ def _changes(command):
         # program or reaches the network, is.
         if not _INLINE_CODE.search(command) or _CODE_WRITES.search(command):
             return True
-    return False
+    try:
+        return any(_program_changes(program, args) for program, args in _simple_commands(command))
+    except ValueError:
+        return True  # quoting that cannot be read: what it runs cannot be told
 
 
 def note_command(command):
     """A shell command an engine ran in this task, whichever engine (its own runner calls this): the final gate's
-    "could this have changed something" sees every engine's commands, not only TheBot's (round-3 recheck)."""
+    "could this have changed something" sees every engine's commands, not only TheBot's (round-3 recheck). Its lines
+    stay lines: two commands on two lines are two commands, not one with the second's words as its arguments."""
 
-    command = " ".join(str(command or "").split())
+    command = "\n".join(" ".join(line.split()) for line in str(command or "").splitlines() if line.strip())
     if command:
         with _lock:
             if len(_run["shell"]) < 500:

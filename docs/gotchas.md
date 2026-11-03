@@ -863,3 +863,8 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): Read-only answers and shell clean-up were over-asked
 - [part-5.md](gotchas/part-5.md): Proven fixes were an always-allow
 - [part-5.md](gotchas/part-5.md): Bare account columns stopped making a payment file
+- [part-5.md](gotchas/part-5.md): A desktop with no gate fell back silently to the worker's store
+- [part-5.md](gotchas/part-5.md): A "yes" typed in the chat landed on the newest question, whichever it was
+- [part-5.md](gotchas/part-5.md): The gate's signed question carried the worker's reason
+- [part-5.md](gotchas/part-5.md): "Could this have changed something" was a list of writers
+- [part-5.md](gotchas/part-5.md): Refund files and "Acc" columns were not payment files

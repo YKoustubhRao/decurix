@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"path"
 	"strings"
@@ -43,4 +44,39 @@ func (m *Manager) putGateKey(ctx context.Context, containerID, key string) error
 		return errors.New("the control plane has no secret to derive the key from")
 	}
 	return m.client.CopyToContainer(ctx, containerID, "/", gateKeyArchive(key), container.CopyToContainerOptions{CopyUIDGID: true})
+}
+
+// ErrNoGate is returned for an image that has no approval gate (no GateUser): an image from before the gate, or one
+// built without it. Its desktops would keep approvals where the worker can write them, so none is made.
+var ErrNoGate = errors.New("this desktop image has no approval gate; rebuild the image")
+
+// prepareGate checks a created (not yet started) desktop's image has an approval gate and puts its key in place.
+func (m *Manager) prepareGate(ctx context.Context, containerID, key string) error {
+	passwd, err := m.copyOut(ctx, containerID, "/etc/passwd", 1<<20)
+	if err != nil {
+		return fmt.Errorf("read the image's users: %w", err)
+	}
+	if !tarHasUser(passwd, GateUser) {
+		return ErrNoGate
+	}
+	return m.putGateKey(ctx, containerID, key)
+}
+
+// tarHasUser reports whether the passwd file in a tar (as CopyFromContainer gives it) has a line for user.
+func tarHasUser(archive []byte, user string) bool {
+	tr := tar.NewReader(bytes.NewReader(archive))
+	h, err := tr.Next()
+	if err != nil || h.Typeflag != tar.TypeReg {
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(tr, 1<<20))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.HasPrefix(line, user+":") {
+			return true
+		}
+	}
+	return false
 }

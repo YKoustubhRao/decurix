@@ -44,6 +44,8 @@ OUTCOME_KEEP_SECONDS = 600
 # At most this many calls at once on each door: a flood waits, it does not grow threads without end.
 MAX_CALLS = 32
 KEY_FILE = "key"
+# The reason in the gate's question when it finds none of its own in the action (never the caller's words).
+GATE_REASON = "it needs your approval"
 
 _lock = threading.Condition()
 _nonces = {}   # nonce -> expiry: one use each
@@ -204,7 +206,10 @@ def handle(call):
         if not isinstance(material, dict):
             return {"error": "no material"}
         fingerprint, description, element, about = approval.from_material(material)
-        reason = approval.reason_from_material(material) or str(call.get("reason") or "it needs your approval")
+        # The gate's own reason, or a fixed one: the caller's reason is the worker's words, and these words are the
+        # gate's signed question (round-4 recheck: "it only saves a draft" could stand in the gate's voice). The
+        # worker's text still reaches the person, as the worker's note.
+        reason = approval.reason_from_material(material) or GATE_REASON
         return decision_json(approval._decide_local(fingerprint, description, reason, element, about))
     if op == "pending":
         return {"pending": with_question(approval._local_pending())}

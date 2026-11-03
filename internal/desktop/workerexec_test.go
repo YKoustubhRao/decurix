@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"archive/tar"
+	"bytes"
 	"io"
 	"strings"
 	"testing"
@@ -58,4 +59,43 @@ func TestNewDesktopEnvHoldsNoGateKey(t *testing.T) {
 			t.Fatalf("gate key in env: %s", kv)
 		}
 	}
+}
+
+// passwdTar is /etc/passwd as CopyFromContainer gives it.
+func passwdTar(body string) []byte {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	_ = tw.WriteHeader(&tar.Header{Name: "passwd", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(body))})
+	_, _ = tw.Write([]byte(body))
+	_ = tw.Close()
+	return buf.Bytes()
+}
+
+// TestAnImageWithoutTheGateUserHasNoGate checks only an image whose passwd names the gate's user counts as having one
+// (round-4 recheck: desktops from older images fell back to a store the worker can write).
+func TestAnImageWithoutTheGateUserHasNoGate(t *testing.T) {
+	with := "root:x:0:0::/root:/bin/bash\nheadless:x:1001:1001::/home/headless:/bin/bash\ndecurixgate:x:999:999::/nonexistent:/usr/sbin/nologin\n"
+	without := "root:x:0:0::/root:/bin/bash\nheadless:x:1001:1001::/home/headless:/bin/bash\n"
+	if !tarHasUser(passwdTar(with), GateUser) {
+		t.Fatal("the gate's user was not found")
+	}
+	for name, archive := range map[string][]byte{
+		"no gate user":                    passwdTar(without),
+		"a name that only starts like it": passwdTar("decurixgatex:x:5:5::/:/bin/sh\n"),
+		"not a tar":                       []byte("decurixgate:x:999:999::/:/bin/sh\n"),
+	} {
+		if tarHasUser(archive, GateUser) {
+			t.Fatalf("%s: taken for an image with a gate", name)
+		}
+	}
+}
+
+// TestEveryDesktopIsToldItMustHaveAGate checks the control plane's flag is in a new desktop's environment.
+func TestEveryDesktopIsToldItMustHaveAGate(t *testing.T) {
+	for _, kv := range buildDesktopEnv("d1", "", "", "", Brain{}) {
+		if kv == GateRequiredEnv+"=1" {
+			return
+		}
+	}
+	t.Fatal("no " + GateRequiredEnv + " in a new desktop's environment")
 }

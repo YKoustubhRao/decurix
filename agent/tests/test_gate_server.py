@@ -157,6 +157,15 @@ class GateStateTests(unittest.TestCase):
         self.assertEqual(again["id"], first["id"])
         self.assertEqual(again["question"], first["question"])
 
+    def test_the_gates_question_never_carries_the_callers_reason(self):
+        # Round-4 recheck: with no reason of the gate's own, the worker's reason went into the signed question.
+        plain = {"kind": "click", "element": {"role": "button", "name": "Open", "window_title": "Files"},
+                 "context": {}, "about": "", "sends": ""}
+        with mock.patch.object(approval, "reason_from_material", return_value=None):
+            request = self.ask(plain, reason="it only saves a draft, nothing is paid")["request"]
+        self.assertNotIn("draft", request["question"])
+        self.assertIn(gate.GATE_REASON, request["question"])
+
     def test_one_signed_yes_is_taken_once_between_the_agent_and_thebot(self):
         request = self.ask()["request"]
         self.reply("yes", request)
@@ -210,6 +219,18 @@ class AgentSideTests(unittest.TestCase):
     def test_without_a_gate_the_local_store_is_used(self):
         with mock.patch.object(approval, "GATE_DIR", "/nonexistent/gate"):
             self.assertFalse(approval.remote())
+
+    def test_a_desktop_that_must_have_a_gate_never_falls_back(self):
+        # Round-4 recheck: a desktop whose gate never came up (no key, an older image) fell back silently to the store
+        # the worker can write. The control plane's flag says a gate is required; then a missing gate allows nothing.
+        with mock.patch.object(approval, "GATE_DIR", "/nonexistent/gate"),                 mock.patch.dict(os.environ, {approval.GATE_REQUIRED_ENV: "1"}):
+            self.assertTrue(approval.remote())
+            with mock.patch.object(approval, "_decide_local") as local,                     mock.patch.object(approval, "gate_call", side_effect=OSError("no socket")):
+                decision = approval._decide("fp", "click Pay", "it pays", {"name": "Pay"}, "", material=PAY)
+            local.assert_not_called()
+            self.assertFalse(decision.allowed)
+        with mock.patch.object(approval, "GATE_DIR", "/nonexistent/gate"),                 mock.patch.dict(os.environ, {approval.GATE_REQUIRED_ENV: "0"}):
+            self.assertFalse(approval.remote(), "the flag only turns the gate on")
 
     def test_no_environment_variable_turns_the_gate_off(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.object(approval, "GATE_DIR", d), \

@@ -21,6 +21,7 @@
 #   restart   after planting a fake `id` (and every other command the entrypoint runs) in ~/.local/bin, hard links to
 #             the entrypoint, the gate's code and /etc/passwd in folders root used to chown, and a ~/tempfile.py, two
 #             restarts later nothing ran as root or as the gate, and those files are still root's and unwritable
+#   no key    a second desktop started without a key has the gate's directory, and a gated click is not allowed
 
 set -u
 IMAGE=decurix-desktop:basic
@@ -56,8 +57,8 @@ as_root() { docker exec -i -u 0 "$RUN" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/
 
 cleanup() {
     if [ "$KEEP" = 0 ]; then
-        docker rm -f -v "$RUN" >/dev/null 2>&1
-        docker volume rm "$VOL" >/dev/null 2>&1
+        docker rm -f -v "$RUN" "$RUN-nokey" >/dev/null 2>&1
+        docker volume rm "$VOL" "$VOL-nokey" >/dev/null 2>&1
         [ "$LAYER" = 1 ] && docker rmi "$RUN-image" >/dev/null 2>&1
     else
         echo "kept: container $RUN, volume $VOL"
@@ -246,6 +247,29 @@ p=$(ls /var/tmp/.bench-proof-* 2>/dev/null | while read f; do [ "$(stat -c %u "$
 [ -z "$p" ] && echo ok || echo "ran:" $p
 EOF
 )"
+
+# ---- no key: a desktop whose gate never started allows nothing (round-4 recheck: it fell back to the worker's store)
+docker stop "$RUN" >/dev/null   # one desktop at a time (WSL memory)
+docker volume create "$VOL-nokey" >/dev/null
+docker create --name "$RUN-nokey" --cap-drop NET_RAW \
+    --tmpfs /run:rw,nosuid,size=64m,mode=755 --tmpfs /tmp:rw,nosuid,size=256m,mode=1777 \
+    -v "$VOL-nokey:/home/headless" -e PATH="$WPATH" -e VNC_PW=benchpw1 -m 1500m "$IMAGE" >/dev/null \
+    && docker start "$RUN-nokey" >/dev/null
+i=0
+while [ $i -lt 30 ] && ! docker exec -u 0 "$RUN-nokey" /usr/bin/test -d /run/decurix-gate 2>/dev/null; do sleep 2; i=$((i + 1)); done
+check "no key: the gate's directory exists, and a gated click is not allowed" "$(docker exec -i -u 1001:1001 "$RUN-nokey" \
+    /usr/bin/env -i PATH=/usr/bin:/bin HOME=/home/headless /usr/bin/python3 -I - <<'PY' 2>&1 | tail -1
+import os, sys
+sys.path.insert(0, "/opt")
+from decurix_agent.computer import approval
+d = approval.check("click", {"role": "button", "name": "Pay now", "window_title": "Bench bank"},
+                   context={"url": "https://bank.invalid/pay"})
+gate = os.path.isdir("/run/decurix-gate") and not os.path.exists("/run/decurix-gate/gate.sock")
+print("ok" if gate and approval.remote() and not d.allowed else f"dir {gate} remote {approval.remote()} allowed {d.allowed}")
+PY
+)"
+docker rm -f -v "$RUN-nokey" >/dev/null 2>&1
+docker volume rm "$VOL-nokey" >/dev/null 2>&1
 
 echo
 if [ "$FAILS" = 0 ]; then echo "boundary holds ($IMAGE)"; exit 0; fi

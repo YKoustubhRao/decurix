@@ -61,10 +61,15 @@ if /usr/bin/getent passwd decurixgate >/dev/null 2>&1; then
 fi
 unset DECURIX_GATE_KEY
 
-if [ -s "$GATE_DIR/key" ]; then
-    # /run/decurix-gate exists from here on: the agent reads that as "this desktop has a gate" and, with the gate down,
-    # allows nothing rather than falling back to a store the worker could write.
+# An image with the gate's user always has a gate: /run/decurix-gate is made whether or not a key arrived. The agent
+# and TheBot read that directory as "this desktop has a gate" and, with the gate down or never started (no key), allow
+# nothing rather than fall back to a store the worker could write (round-4 recheck: a desktop whose key was missing
+# fell back silently).
+if /usr/bin/getent passwd decurixgate >/dev/null 2>&1; then
     /usr/bin/install -d -m 755 -o decurixgate -g decurixgate /run/decurix-gate
+fi
+
+if [ -s "$GATE_DIR/key" ]; then
     GATE_UID=$(/usr/bin/id -u decurixgate)
     GATE_GID=$(/usr/bin/id -g decurixgate)
     # cd into its own directory and python3 -I: nothing on sys.path, and no file the gate opens by a relative name,
