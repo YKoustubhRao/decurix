@@ -43,6 +43,26 @@ func jsonError(w http.ResponseWriter, err error) {
 	)
 }
 
+// maxJSONBody bounds a small JSON control message - a persona, a resource request, a host-bridge command. A route
+// that takes more (an upload, a hosted model's prompt) sets its own cap; none reads a body unbounded (A-03).
+const maxJSONBody = 64 << 10
+
+// limitJSON caps r's body at maxJSONBody, before anything reads it.
+func limitJSON(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBody)
+}
+
+// badJSON answers a JSON body that did not decode: 413 when it ran over its cap, 400 otherwise. Neither echoes the
+// decoder's words.
+func badJSON(w http.ResponseWriter, err error) {
+	var tooBig *http.MaxBytesError
+	if errors.As(err, &tooBig) {
+		jsonStatusError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return
+	}
+	jsonStatusError(w, http.StatusBadRequest, "invalid json payload")
+}
+
 // jsonStatusError writes a curated client-facing reason with a specific
 // status. Like jsonError it never echoes err.Error() - the reason is one
 // this package chose, not one an internal error handed it.

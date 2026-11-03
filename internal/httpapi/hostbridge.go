@@ -138,8 +138,9 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 
 	var req hostBridgeExecRequest
 	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		limitJSON(w, r)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+			badJSON(w, err)
 			return
 		}
 	} else {

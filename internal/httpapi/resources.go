@@ -67,6 +67,7 @@ func (s *Server) resourceIncreaseHandler(w http.ResponseWriter, r *http.Request)
 			CPUs      int64  `json:"cpus"`
 			MemoryMB  int64  `json:"memory_mb"`
 		}
+		limitJSON(w, r)
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
 			if desktopID == "" {
 				desktopID = req.DesktopID
@@ -121,6 +122,7 @@ func (s *Server) resourceDismissHandler(w http.ResponseWriter, r *http.Request) 
 		var req struct {
 			DesktopID string `json:"desktop_id"`
 		}
+		limitJSON(w, r)
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.DesktopID != "" {
 			desktopID = req.DesktopID
 		}
@@ -154,8 +156,9 @@ func (s *Server) resourceReportHandler(w http.ResponseWriter, r *http.Request) {
 		MemoryPercent float64 `json:"memory_percent"`
 	}
 
+	limitJSON(w, r)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+		badJSON(w, err)
 		return
 	}
 

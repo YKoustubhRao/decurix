@@ -132,8 +132,9 @@ func (s *Server) createPersonaDesktopHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	var req createPersonaDesktopReq
+	limitJSON(w, r)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonStatusError(w, http.StatusBadRequest, "invalid json payload")
+		badJSON(w, err)
 		return
 	}
 
@@ -192,8 +193,9 @@ func (s *Server) deployTeamHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req deployTeamReq
+	limitJSON(w, r)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonStatusError(w, http.StatusBadRequest, "invalid json payload")
+		badJSON(w, err)
 		return
 	}
 
@@ -301,8 +303,9 @@ func (s *Server) installCatalogSkillHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req installCatalogSkillReq
+	limitJSON(w, r)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonStatusError(w, http.StatusBadRequest, "invalid json payload")
+		badJSON(w, err)
 		return
 	}
 
@@ -341,8 +344,9 @@ func (s *Server) workerModeHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		var req map[string]any
+		limitJSON(w, r)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			jsonStatusError(w, http.StatusBadRequest, "invalid json payload")
+			badJSON(w, err)
 			return
 		}
 		s.callAgent(w, r, desktopID, http.MethodPost, "/mode", req, true)

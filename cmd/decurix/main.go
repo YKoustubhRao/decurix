@@ -505,6 +505,8 @@ func main() {
 			Handler:           handler,
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       60 * time.Second,
+			// No request needs more than this of headers; the 1 MiB default is memory a caller chooses (A-03).
+			MaxHeaderBytes: 64 << 10,
 		}
 	}
 
