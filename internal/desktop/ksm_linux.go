@@ -5,7 +5,10 @@ package desktop
 import (
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
+
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 const (
@@ -21,9 +24,20 @@ const (
 // worth that unless the owner chooses it. DECURIX_DISABLE_KSM=1, or DECURIX_ENABLE_KSM=0, turns it off explicitly.
 func OptimizeHostKSM() {
 	if !ksmWanted(os.Getenv("DECURIX_ENABLE_KSM"), os.Getenv("DECURIX_DISABLE_KSM")) {
-		// Not wanted: turned off when an earlier build left it on (it stays on until the kernel restarts otherwise,
-		// RW1-D-03). DisableHostKSM writes only when it is on, and only where this process may.
-		DisableHostKSM()
+		explicit := os.Getenv("DECURIX_ENABLE_KSM") == "0" || os.Getenv("DECURIX_ENABLE_KSM") == "false" || os.Getenv("DECURIX_DISABLE_KSM") != ""
+		on := false
+		if data, err := os.ReadFile(ksmRunPath); err == nil {
+			on = strings.TrimSpace(string(data)) == "1"
+		}
+		switch ksmOffDecision(explicit, on, ksmMarked()) {
+		case ksmTurnOff:
+			// Decurix turned it on (its marker says so), or the person asked: it goes off. KSM an owner enabled for
+			// other work is never touched unasked (REVIEW-3 follow-up 4).
+			DisableHostKSM()
+			clearKSMMark()
+		case ksmSayOn:
+			log.Printf("[ksm] Kernel Samepage Merging is on, and Decurix did not turn it on, so it is left as it is. It merges memory across desktops that distrust each other; set DECURIX_DISABLE_KSM=1 to turn it off.")
+		}
 		return
 	}
 
@@ -46,6 +60,8 @@ func OptimizeHostKSM() {
 		return
 	}
 
+	markKSM() // so a later start that does not want it turns off only what Decurix turned on
+
 	// Configure gentle scan parameters if writable
 	_ = os.WriteFile(ksmPagesPath, []byte("100"), 0644)
 	_ = os.WriteFile(ksmSleepPath, []byte("20"), 0644)
@@ -67,6 +83,15 @@ func DisableHostKSM() {
 		}
 	}
 }
+
+// ksmMarkFile is the marker in the data directory that says this control plane turned KSM on.
+func ksmMarkFile() string { return filepath.Join(sqlitedb.DataDir(), "ksm-enabled-by-decurix") }
+
+func ksmMarked() bool { _, err := os.Stat(ksmMarkFile()); return err == nil }
+
+func markKSM() { _ = os.WriteFile(ksmMarkFile(), []byte("1\n"), 0o600) }
+
+func clearKSMMark() { _ = os.Remove(ksmMarkFile()) }
 
 // ksmWanted reports whether KSM is to be turned on: only on an explicit DECURIX_ENABLE_KSM=1 (or true), and never
 // when DECURIX_DISABLE_KSM says otherwise.
