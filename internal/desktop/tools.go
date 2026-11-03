@@ -35,7 +35,7 @@ func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
 		log.Printf("Tools image %s not present yet; volume ready for future population", ToolsImage)
 		return nil
 	}
-	if img.ID != "" && img.ID == m.toolsApplied && !m.toolsWaiting.Load() {
+	if img.ID != "" && img.ID == m.appliedTools() && !m.toolsWaiting.Load() {
 		return nil
 	}
 
@@ -49,7 +49,7 @@ func (m *Manager) populateFrom(ctx context.Context, imageID string) error {
 		return err
 	}
 	if !m.toolsWaiting.Load() {
-		m.toolsApplied = imageID
+		m.toolsApplied.Store(&imageID)
 	}
 	return nil
 }
@@ -91,10 +91,8 @@ func (m *Manager) ToolsRefreshWaiting(ctx context.Context) bool {
 	if m.toolsWaiting.Load() {
 		return true
 	}
-	m.toolsMu.Lock()
-	applied, skip := m.toolsApplied, m.toolsPopulated
-	m.toolsMu.Unlock()
-	if skip || applied == "" {
+	applied := m.appliedTools()
+	if m.toolsPopulated || applied == "" {
 		return false
 	}
 	img, _, err := m.client.ImageInspectWithRaw(ctx, ToolsImage)
@@ -121,8 +119,19 @@ func (m *Manager) desktopsRunning(ctx context.Context) string {
 	return "0"
 }
 
-// PopulateToolsVolume populates the decurix-tools volume using the tools image.
+// appliedTools is the tools image ID the volume was last filled from ("" none yet).
+func (m *Manager) appliedTools() string {
+	if p := m.toolsApplied.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// PopulateToolsVolume populates the decurix-tools volume using the tools image. No desktop starts while it runs
+// (toolsRW): it counts the running desktops and copies under the same exclusive hold.
 func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
+	m.toolsRW.Lock()
+	defer m.toolsRW.Unlock()
 
 	log.Printf("Populating %s from %s...", ToolsVolumeName, ToolsImage)
 

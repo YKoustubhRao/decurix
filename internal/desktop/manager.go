@@ -88,8 +88,11 @@ type Manager struct {
 	// again only when the image changed (a tools image built after start, F-T), never on every creation.
 	// toolsPopulated skips the check altogether (tests whose daemon has no tools image).
 	toolsMu        sync.Mutex
-	toolsApplied   string
+	toolsApplied   atomic.Pointer[string] // read without toolsMu: the status route never waits on a copy
 	toolsPopulated bool
+	// toolsRW keeps a tools refresh and a desktop start apart: every start of a desktop holds it shared, a populate
+	// holds it alone and counts the running desktops under it, so no desktop boots while /opt/tools is replaced.
+	toolsRW sync.RWMutex
 	// toolsWaiting: the last populate found a newer tools image but left the volume as it was, because desktops
 	// were running (tools.go); the status banner says so until a later populate applies it.
 	toolsWaiting atomic.Bool
@@ -445,7 +448,7 @@ func (m *Manager) runProvisioning(
 
 	// 6. Start Container
 	updateStage("starting", "Starting desktop environment...", 80)
-	if err := m.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if err := m.startDesktopContainer(ctx, resp.ID); err != nil {
 		fail(fmt.Errorf("start container: %w", err))
 		return
 	}
@@ -962,11 +965,14 @@ func (m *Manager) Start(
 		return notFound(id, m.client.ContainerUnpause(ctx, name))
 	}
 
-	return notFound(id, m.client.ContainerStart(
-		ctx,
-		name,
-		container.StartOptions{},
-	))
+	return notFound(id, m.startDesktopContainer(ctx, name))
+}
+
+// startDesktopContainer starts a desktop's container, never while a tools refresh replaces /opt/tools (toolsRW).
+func (m *Manager) startDesktopContainer(ctx context.Context, name string) error {
+	m.toolsRW.RLock()
+	defer m.toolsRW.RUnlock()
+	return m.client.ContainerStart(ctx, name, container.StartOptions{})
 }
 
 // Pause pauses the Docker container processes backing the given desktop ID using the cgroup freezer.
@@ -1025,7 +1031,13 @@ func (m *Manager) Stop(
 		}
 	}
 
-	return notFound(id, m.stopContainer(ctx, "desktop_"+sanitizedID, timeout))
+	err := m.stopContainer(ctx, "desktop_"+sanitizedID, timeout)
+	// A tools refresh that waited for running desktops applies once the last of them has stopped (F-T). Only a stop
+	// starts it; a restart's start, or any other, waits for it (toolsRW).
+	if err == nil {
+		m.refreshToolsWhenIdle()
+	}
+	return notFound(id, err)
 }
 
 // stopContainer stops a desktop's container, unpausing it first, with timeout seconds to end, and forgets when it
@@ -1051,10 +1063,6 @@ func (m *Manager) stopContainer(ctx context.Context, name string, timeout int) e
 	delete(m.startedCache, name)
 	m.startedMu.Unlock()
 
-	// A tools refresh that waited for running desktops applies once the last of them has stopped (F-T).
-	if err == nil {
-		m.refreshToolsWhenIdle()
-	}
 	return err
 }
 
@@ -1069,14 +1077,11 @@ func (m *Manager) Restart(
 	m.InvalidateProxyTarget(sanitizedID)
 	name := "desktop_" + sanitizedID
 
-	// Container may already be stopped.
+	// Container may already be stopped. A restart never applies a waiting tools refresh: the desktop is back at once
+	// (only Stop does, review CP-B B2).
 	_ = m.stopContainer(ctx, name, 10)
 
-	return notFound(id, m.client.ContainerStart(
-		ctx,
-		name,
-		container.StartOptions{},
-	))
+	return notFound(id, m.startDesktopContainer(ctx, name))
 }
 
 // Delete removes the Docker container and persistent volume backing the given desktop ID.
