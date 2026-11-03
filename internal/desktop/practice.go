@@ -528,7 +528,7 @@ func (m *Manager) CreatePractice(ctx context.Context, spec PracticeSpec) (d Prac
 			return d, fmt.Errorf("restore the worker's state: %w", err)
 		}
 	}
-	if err = m.client.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
+	if err = m.startDesktopContainer(ctx, created.ID); err != nil {
 		return d, err
 	}
 	d.IP, err = m.practiceIP(ctx, created.ID)
@@ -683,7 +683,7 @@ func (m *Manager) ResetPractice(ctx context.Context, id string, snapshot []byte)
 			return fmt.Errorf("restore the worker's state: %w", err)
 		}
 	}
-	return m.client.ContainerStart(ctx, id, container.StartOptions{})
+	return m.startDesktopContainer(ctx, id)
 }
 
 // practiceExec runs a command as user ("headless" or "root") in a practice desktop and waits for it to end.
@@ -860,7 +860,7 @@ func (m *Manager) StartPracticeMock(ctx context.Context, image, runID string, so
 			_ = m.RemovePractice(context.WithoutCancel(ctx), created.ID)
 		}
 	}()
-	if err = m.client.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
+	if err = m.startDesktopContainer(ctx, created.ID); err != nil {
 		return "", err
 	}
 	// ready goes last, so the entrypoint never starts on a half-copied folder.

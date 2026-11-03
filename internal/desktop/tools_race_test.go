@@ -176,22 +176,22 @@ func TestAStartWaitsForAPopulate(t *testing.T) {
 	}
 }
 
-// Every start of a desktop's container in this package goes through startDesktopContainer, which holds the tools
-// lock: a create (runProvisioning), a Start or a Restart that called the client directly would boot under a copy.
-// The starts named here are of containers that never mount the shared tools volume.
+// Every start of a container in this package goes through startDesktopContainer, which holds the tools lock: a
+// desktop's create (runProvisioning), Start or Restart, a practice desktop's create and reset, a practice mock, and
+// the Claude login container (which mounts /opt/tools). A start that called the client directly would boot under a
+// copy. The starts named here are of containers that never mount the shared tools volume.
 func TestEveryDesktopStartTakesTheToolsLock(t *testing.T) {
 	allowed := map[string]string{
 		"startDesktopContainer": "the one desktop start, under toolsRW",
 		"PopulateToolsVolume":   "the tools init container itself",
-		"StartClaudeLogin":      "the throwaway Claude login container",
 		"homeHelper":            "the home-copy helper, which mounts no tools",
 		"RunQualification":      "a readiness container, with no tools volume",
 	}
 	files, _ := filepath.Glob("*.go")
-	found := 0
+	found, locked := 0, 0
 	for _, file := range files {
-		if strings.HasSuffix(file, "_test.go") || strings.HasPrefix(file, "practice") {
-			continue // practice desktops are the EVAL lane's (their own sandbox, reset between cases)
+		if strings.HasSuffix(file, "_test.go") {
+			continue
 		}
 		f, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
 		if err != nil {
@@ -208,6 +208,9 @@ func TestEveryDesktopStartTakesTheToolsLock(t *testing.T) {
 					return true
 				}
 				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if ok && sel.Sel.Name == "startDesktopContainer" {
+					locked++
+				}
 				if !ok || sel.Sel.Name != "ContainerStart" {
 					return true
 				}
@@ -219,7 +222,8 @@ func TestEveryDesktopStartTakesTheToolsLock(t *testing.T) {
 			})
 		}
 	}
-	if found < 3 {
-		t.Fatalf("only %d container starts found: the walk is not reading the package", found)
+	// Create, Start, Restart, a practice desktop's create and reset, a practice mock, the Claude login.
+	if found < 4 || locked < 7 {
+		t.Fatalf("%d direct and %d locked container starts found: the walk is not reading the package", found, locked)
 	}
 }

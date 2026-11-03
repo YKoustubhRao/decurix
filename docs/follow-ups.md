@@ -232,6 +232,11 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
 - **Pass rates** (`/api/tasks/pass-rates`) count every ended attempt under its own skill version x model x origin
   class (production, practice, eval); the headline is the first-attempt rate, `checked_independent` counts only code,
   ledger or person bases, and a person's verdict joins only the attempt it judged. Wilson bounds are the reader's.
+- **Teach, replay and run-skill give the gate no copy** (they reach the agent through the recordings route, not
+  `deliverRequest`), so the gate names no site and asks about every password they type: fail closed, but a taught
+  skill asks each time. Proposal: the control plane sends the gate the taught skill's named sites, signed the same
+  way as `/request` (its own label, the task id, the time, a one-use nonce, the gate key), from the skill as the
+  control plane holds it, never from the worker's files.
 - **`withhold.Reply` takes a username for a secret.** "sure, the password is Fern42Kite and the user is mira.k" withholds
   `mira.k` too (any word with a digit or a mark), and since round 2 that value is held for 24 h by the call recorder
   and given to the gate, so the username is withheld from that desktop's calls and the gate's questions. Narrow the

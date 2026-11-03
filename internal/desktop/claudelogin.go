@@ -211,7 +211,7 @@ func (m *Manager) StartClaudeLogin(ctx context.Context) (loginID string, signInU
 		return "", "", fmt.Errorf("create claude login container: %w", err)
 	}
 
-	if err := m.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if err := m.startDesktopContainer(ctx, resp.ID); err != nil {
 		m.destroyClaudeLoginContainer(context.Background(), resp.ID)
 		return "", "", fmt.Errorf("start claude login container: %w", err)
 	}
