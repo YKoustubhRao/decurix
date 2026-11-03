@@ -352,7 +352,7 @@ func TestGoldenLocal(t *testing.T) {
 		traj.Models[0].Provider != "ollama" || traj.Usage.InputTokens != 6000 {
 		t.Fatalf("a local brain's calls from the trace: %+v / %+v / %+v", traj.Calls, traj.Models, traj.Usage)
 	}
-	if s := traj.Steps[0]; s.Call == nil || *s.Call != 0 || s.PromptSHA256 != "local-p1" || s.Label != "unlabelled" {
+	if s := traj.Steps[0]; s.Call == nil || *s.Call != 0 || s.PromptSHA256 != "local-p1" || s.Label != "ok" {
 		t.Fatalf("step = %+v", s)
 	}
 }
@@ -431,42 +431,131 @@ func TestCommandGate(t *testing.T) {
 }
 
 func TestStepLabels(t *testing.T) {
-	done := json.RawMessage(`{"verdict":"done","basis":["code"]}`)
-	modelOnly := json.RawMessage(`{"verdict":"done","basis":["model","screen"]}`)
-	unchecked := json.RawMessage(`{"verdict":"unchecked","basis":[]}`)
+	zero, one, three := 0, 1, 3
 	target := json.RawMessage(`{"name":"Total"}`)
 	ledger := []LedgerRecord{{Key: "INV-1", Fields: []LedgerField{{Label: "Total", Status: "differs"}}}}
 	okLedger := []LedgerRecord{{Key: "INV-1", Fields: []LedgerField{{Label: "Total", Status: "matched"}}}}
+	emptyKey := []LedgerRecord{{Key: "", Fields: []LedgerField{{Label: "Total", Status: "matched"}}}}
 	person := tasks.Actor{ID: "u", Kind: tasks.ActorPerson}
 	cases := []struct {
-		name    string
-		step    Step
-		ledger  []LedgerRecord
-		verdict json.RawMessage
-		js      []JudgementRow
-		want    string
+		name   string
+		step   Step
+		ledger []LedgerRecord
+		js     []JudgementRow
+		want   string
 	}{
-		{"agent step, done by code", Step{Action: &Action{Actor: "agent"}}, nil, done, nil, "ok"},
-		{"done by a model and the screen only", Step{Action: &Action{Actor: "agent"}}, nil, modelOnly, nil, "unlabelled"},
-		{"unchecked run", Step{Action: &Action{Actor: "agent"}}, nil, unchecked, nil, "unlabelled"},
-		{"no verdict", Step{}, nil, json.RawMessage("null"), nil, "unlabelled"},
-		{"a person acted", Step{Action: &Action{Actor: "human"}}, nil, done, nil, "overridden"},
-		{"approval denied", Step{Gate: Gate{Decision: "denied"}}, nil, done, nil, "overridden"},
-		{"a correction names the field", Step{At: rfc3339(at(1)), Action: &Action{Target: target}}, okLedger, done,
+		{"an action done", Step{Action: &Action{Actor: "agent", Outcome: "done"}}, nil, nil, "ok"},
+		{"an action failed", Step{Action: &Action{Actor: "agent", Outcome: "failed"}}, nil, nil, "failed"},
+		{"a command that exited 0", Step{Command: &Command{Text: "office read a.pdf", Exit: &zero}}, nil, nil, "ok"},
+		{"a command that failed", Step{Command: &Command{Text: "office read a.pdf", Exit: &one}}, nil, nil, "failed"},
+		{"exit 3 of another command is its own", Step{Command: &Command{Text: "grep x f", Exit: &three}}, nil, nil, "failed"},
+		{"a gui command the gate held, never answered", Step{Command: &Command{Text: "gui click e1", Exit: &three},
+			Gate: Gate{Decision: "asked"}}, nil, nil, "unlabelled"},
+		{"asked and never answered", Step{Action: &Action{Outcome: "needs_approval"}, Gate: Gate{Decision: "asked"}}, nil, nil, "unlabelled"},
+		{"the gate refused it", Step{Action: &Action{Outcome: "done"}, Gate: Gate{Decision: "refused"}}, nil, nil, "refused"},
+		{"nothing says how it ended", Step{}, nil, nil, "unlabelled"},
+		{"a person acted", Step{Action: &Action{Actor: "human", Outcome: "done"}}, nil, nil, "overridden"},
+		{"approval denied", Step{Gate: Gate{Decision: "denied"}}, nil, nil, "overridden"},
+		{"a correction names the field", Step{At: rfc3339(at(1)), Action: &Action{Target: target, Outcome: "done"}}, okLedger,
 			[]JudgementRow{{Kind: tasks.JudgementCorrection, Text: "the total is wrong", Actor: person, At: at(5)}}, "corrected"},
-		{"a correction names the record", Step{At: rfc3339(at(1)), Action: &Action{Target: target}}, okLedger, done,
+		{"a correction names the record", Step{At: rfc3339(at(1)), Action: &Action{Target: target, Outcome: "done"}}, okLedger,
 			[]JudgementRow{{Kind: tasks.JudgementCorrection, Text: "INV-1 should be another payee", Actor: person, At: at(5)}}, "corrected"},
-		{"a field that differs, then a person answered", Step{At: rfc3339(at(1)), Action: &Action{Target: target}}, ledger, done,
+		{"an empty ledger key names nothing", Step{At: rfc3339(at(1)), Action: &Action{Target: target, Outcome: "done"}}, emptyKey,
+			[]JudgementRow{{Kind: tasks.JudgementCorrection, Text: "another record entirely", Actor: person, At: at(5)}}, "ok"},
+		{"a field that differs, then a person answered", Step{At: rfc3339(at(1)), Action: &Action{Target: target, Outcome: "done"}}, ledger,
 			[]JudgementRow{{Kind: tasks.JudgementAnswer, Text: "use 5,900", Actor: person, At: at(5)}}, "corrected"},
-		{"a field that differs, answered before the step", Step{At: rfc3339(at(10)), Action: &Action{Target: target}}, ledger, done,
+		{"a field that differs, answered before the step", Step{At: rfc3339(at(10)), Action: &Action{Target: target, Outcome: "done"}}, ledger,
 			[]JudgementRow{{Kind: tasks.JudgementAnswer, Text: "use 5,900", Actor: person, At: at(5)}}, "ok"},
 	}
 	for _, c := range cases {
 		steps := []Step{c.step}
-		labelSteps(steps, c.ledger, c.verdict, c.js)
+		labelSteps(steps, c.ledger, c.js)
 		if steps[0].Label != c.want {
 			t.Errorf("%s: label %q, want %q", c.name, steps[0].Label, c.want)
 		}
+	}
+}
+
+// M6: the run's verdict is its own label; it never decides a step's.
+func TestTheRunLabelIsTheVerdictAndNotTheSteps(t *testing.T) {
+	traj := hostedScenario().build(t)
+	if traj.Labels.Run != "done" {
+		t.Fatalf("labels.run = %q", traj.Labels.Run)
+	}
+	stopped := stoppedScenario().build(t)
+	if stopped.Labels.Run != "stopped" || stopped.Steps[0].Label != "overridden" {
+		t.Fatalf("stopped: run %q, step %q", stopped.Labels.Run, stopped.Steps[0].Label)
+	}
+}
+
+// B6: two attempts of one task share its recording, trace and ledger; each trajectory has only its own steps, calls
+// and records, and says what it left out.
+func TestEachAttemptHasOnlyItsOwnSteps(t *testing.T) {
+	sc := hostedScenario()
+	rec := ".decurix/recordings/task-t_h/"
+	// A first attempt, an hour earlier, left an event, a trace command and a ledger record.
+	early := t0.Add(-time.Hour)
+	first := jsonLines(map[string]any{"i": 0, "t": 1, "at": early.Format("2006-01-02T15:04:05-0700"),
+		"id": "20261104T090212-0a0b0c0d", "kind": "type", "turn": "j41:1", "element": map[string]any{"name": "Total"},
+		"text": "5800.00", "outcome": "failed", "actor": "agent"})
+	sc.home.files[rec+"events.jsonl"] = append(first, sc.home.files[rec+"events.jsonl"]...)
+	oldCmd := traceCommand(0, "j41:1", "gui type e1 '5800.00'", "allowed", 1, 500)
+	oldCmd["at"] = early.Add(time.Second).Format(time.RFC3339Nano)
+	sc.home.files[".decurix/ai/traces/t_h.jsonl"] = append(jsonLines(oldCmd), sc.home.files[".decurix/ai/traces/t_h.jsonl"]...)
+	sc.home.files[".decurix/computer/evidence/t_h.records.json"] = []byte(`[{"key":"INV-0041","source":"bill.pdf",
+		"fields":{"Total":{"intent":"5,800.00"}},"declared_at":` + fmt.Sprint(early.Unix()) + `,"saved_at":null,"readback":{}},` +
+		strings.TrimPrefix(string(sc.home.files[".decurix/computer/evidence/t_h.records.json"]), "["))
+	// The earlier execution is the task's attempt 1; the scenario's is attempt 2.
+	attempt1 := tasks.Execution{ID: "e_h0", TaskID: "t_h", Attempt: 1, WorkerID: "eve", Status: tasks.StatusError,
+		StartedAt: early.Add(-time.Second), EndedAt: early.Add(time.Minute)}
+	sc.tasks.detail.Executions[0].Attempt = 2
+	sc.tasks.detail.Executions = append([]tasks.Execution{attempt1}, sc.tasks.detail.Executions...)
+
+	second := sc.build(t)
+	for _, s := range second.Steps {
+		if s.Turn == "j41:1" {
+			t.Fatalf("attempt 2 holds attempt 1's step: %+v", s)
+		}
+	}
+	if len(second.Steps) != 3 || len(second.Ledger) != 1 || second.Ledger[0].Key != "INV-0042" {
+		t.Fatalf("attempt 2: %d steps, ledger %+v", len(second.Steps), second.Ledger)
+	}
+	for _, want := range []string{"1 event(s) of other attempts", "1 line(s) of other attempts", "1 record(s) of other attempts"} {
+		if !strings.Contains(strings.Join(second.Integrity.Missing, "\n"), want) {
+			t.Fatalf("integrity does not say %q: %v", want, second.Integrity.Missing)
+		}
+	}
+
+	// Attempt 1's trajectory, from the same bundle, has only its own step, labelled by its own outcome.
+	p, blobs := newPuller(t, sc.home)
+	if _, err := p.Pull(context.Background(), ExecutionRef{ExecID: "e_h0", TaskID: "t_h", Worker: "eve"}); err != nil {
+		t.Fatal(err)
+	}
+	firstTraj, err := Build(context.Background(), Sources{Tasks: sc.tasks, Calls: sc.calls, Store: p.Store, Blobs: blobs}, "e_h0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstTraj.Steps) != 1 || firstTraj.Steps[0].Turn != "j41:1" || firstTraj.Steps[0].Label != "failed" ||
+		len(firstTraj.Ledger) != 1 || firstTraj.Ledger[0].Key != "INV-0041" {
+		t.Fatalf("attempt 1: steps %+v ledger %+v", firstTraj.Steps, firstTraj.Ledger)
+	}
+}
+
+// Build reads the execution's verdict, origin and skill from the task records' own fields.
+func TestViewReadsTheExecutionsFields(t *testing.T) {
+	e := tasks.Execution{ID: "e1", Verdict: &tasks.GateVerdict{Schema: tasks.VerdictSchema, Verdict: tasks.GateDone, By: "verify",
+		Basis: []string{"code"}}, Origin: tasks.Origin{Kind: tasks.OriginSchedule, Ref: "s1"},
+		Skill: tasks.Skill{Name: "enter-bill", Version: 3}, ResolvedModel: "azure:gpt-6.1-sol"}
+	v := viewOf(e)
+	if !strings.Contains(string(v.Verdict), `"verdict":"done"`) || v.Origin.Kind != "schedule" || v.Skill.Version != 3 {
+		t.Fatalf("view = %+v / %s", v, v.Verdict)
+	}
+	traj := assemble(runInput{view: v})
+	if traj.Origin.Kind != "schedule" || traj.Skill.Name != "enter-bill" || traj.Labels.Run != "done" {
+		t.Fatalf("trajectory head = %+v %+v %+v", traj.Origin, traj.Skill, traj.Labels)
+	}
+	if string(viewOf(tasks.Execution{ID: "e2"}).Verdict) != "" {
+		t.Fatal("an execution with no verdict has one")
 	}
 }
 

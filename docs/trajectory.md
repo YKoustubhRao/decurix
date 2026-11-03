@@ -48,13 +48,22 @@ execution ends and before a desktop is deleted. Paths are under the worker's hom
 - A part that is not there is listed in `missing` by name (`soul_trace: not present`); a read that fails, with a short
   reason. Never silently empty.
 - Only regular files are kept. A tar entry outside its part, a link or a device is refused and listed.
-- One limit per run (64 MB): over it, the recording's frames are dropped first, oldest first by the events, each
-  named in `missing`. Nothing else is dropped.
-- A later pull of the same execution replaces the manifest (a task's files only grow). Rows and blobs are never
-  deleted (plan rule 4).
+- **The labels come first and are kept whole.** The run folder, ledger, notes, files, outputs and soul's trace, then
+  the recording's `meta.json` and `events.jsonl`, are each read on their own (up to 64 MB a part; one past that is
+  cut, and said). Nothing the recording holds can crowd them out.
+- **The recording's observations, `program.json` and frames share one limit** (64 MB a run), each folder read as its
+  own bounded tar. Over the limit, frames are dropped first, then observations, oldest first by the events, each
+  named in `missing`. A tar cut at its read bound keeps what was read before the cut, and says so.
+- **At most 2000 files a label part and 20000 of the recording** are kept, each part counted on its own; `missing`
+  stops at 200 lines and a count.
+- **A later pull of the same execution merges with the earlier one by path**: a file the desktop has pruned since
+  stays referenced (its `not present` line says it was kept from an earlier pull), and a path whose content changed
+  keeps the new file, with the old one in the bundle's `history`. Rows and blobs are never deleted (plan rule 4).
+- A desktop that is not there saves nothing (`runs.ErrDesktopGone`), as a pull that finds no part at all does
+  (`runs.ErrNothingFound`).
 - After the bundle is saved, the control plane writes `~/.decurix/runs/<task>/EXPORTED` (the execution id, then the
   manifest SHA, one line each). The desktop's prune keeps a labelled run until that file is there (W0.8).
-- A pull that finds no part at all saves no bundle: the run then reads "no bundle".
+- An execution with no bundle still has a trajectory: no steps, and `integrity.missing` says "no bundle".
 
 ## The document
 
@@ -79,7 +88,9 @@ execution ends and before a desktop is deleted. Paths are under the worker's hom
                  "answer": {"judgement_id", "at", "text", "actor"} | null}],
   "judgements": [{"id", "kind", "actor", "at", "derived_from", "payload"}],
   "ledger": [{"key", "source", "status", "fields": [{"label", "intended", "at_save", "shown", "status"}]}],
-  "labels": {"person_verdict": "", "eval": null},   // eval: {suite, case, arm, repeat, passed, false_done}
+  "labels": {"run": "done", "person_verdict": "", "eval": null},
+             // run: the run's verdict (done | not_done | unchecked | stopped | "" before verdicts), never a step's;
+             // eval: {suite, case, arm, repeat, passed, false_done}
   "integrity": {"bundle_sha256", "parts": {"recording": "sha256:..", ...}, "missing": [...], "worker_written": [...]}
 }
 ```
@@ -91,6 +102,11 @@ execution ends and before a desktop is deleted. Paths are under the worker's hom
   With no proxy rows (a local brain the proxy never sees), the calls are soul's trace's call lines
   (`source: "soul_trace"`, no bodies, `deployment` = the model soul asked for).
 - **models** and **usage** are summed from `calls`.
+- **Only this execution's own part of the task's files.** The recording, soul's trace and the ledger are kept per
+  task and grow over its attempts (a retry is a new execution of the same task). A trajectory keeps the events and
+  trace lines from its execution's start (less 2 s) to a minute after its end, and the ledger records declared in
+  that window; `integrity.missing` says how many of other attempts it left out. An event or record with no time is
+  left out too.
 - **ledger** status: `matched` (saved, every intended value read back), `differs` (saved, a value not shown),
   `saved` (not read back), `declared` (never saved). A field is `matched`, `differs` or `unchecked`.
 - **integrity.parts**: a part's SHA (a one-file part: the file's; a folder: the manifest SHA of its files);
@@ -114,7 +130,7 @@ time order; a tie is broken by turn.
   "gate": {"decision", "request_id", "judgement_id"},
   "diff": {"before", "after", "change", "expect"} | null,
   "ledger_delta": [],
-  "label": "ok"                    // ok | corrected | overridden | unlabelled
+  "label": "ok"                    // ok | failed | refused | corrected | overridden | unlabelled
 }
 ```
 
@@ -133,15 +149,21 @@ How the parts are joined:
 
 ### Step labels
 
-Derived by `runs.Build`, never written by the desktop:
+A step's label is **that step's own outcome**, derived by `runs.Build` and never written by the desktop. The run's
+verdict is the run's label (`labels.run`); it is never copied onto steps. The first that holds:
 
 - `overridden`: the event's actor is `human` (a person acted on the screen), or the approval for the step was
   denied;
 - `corrected`: a `correction` judgement on the run names the step's record (its ledger key) or field (the label of
   the element the step acted on), or that ledger field ended `differs` and a person answered after the step;
-- `ok`: neither, and the run's verdict is `done` with a basis of `code`, `ledger` or `person` (a model's or the
-  screen's word alone does not make a step ok, as it does not earn trust: W0.5);
-- `unlabelled`: everything else, for example a run that ended `unchecked`.
+- `refused`: the gate held it and nobody was asked;
+- `unlabelled`: it was asked about and never answered, or nothing says how it ended;
+- `failed`: its action failed, or its command exited non-zero (a `gui` command's exit 3, the gate holding it, is not a
+  failure);
+- `ok`: its action was done, or its command exited 0.
+
+A training export takes steps by their own label and runs by `labels.run` (with the verdict's basis: W0.5 counts
+`code`, `ledger` and `person`).
 
 ## decurix.verdict/v1
 
@@ -189,8 +211,14 @@ before it is written; files are 0600 and capped at 32 MB, past which one last li
 ```
 
 The turn is the same one soul sends the proxy (`X-Decurix-Turn`) and gives each command (`DECURIX_TURN_ID`), so the
-three records join on it. A trace call's `prompt_sha256` is over soul's own message list; a proxy row's is over the
-stored message hashes. They are not compared.
+three records join on it. A trace call's `prompt_sha256` is the SHA-256 of Go's JSON of soul's `[]llm.Message`, not of
+the bytes the provider was sent; a proxy row's is over the stored message hashes. The two can never be compared: join
+on the turn.
+
+What soul writes or serves keeps no secret value (C14): a job's own values (`secrets` on `/api/chat`, plus those of
+the paused job it resumes) and what soul knows by structure (a value given after a credential's name, a value typed
+into a password field) are withheld before anything is shortened or quoted, by one filter for the step line, the trace,
+the outputs file and an approval's quoted action. Another job's values never touch this job's text.
 
 ## v1 limits
 

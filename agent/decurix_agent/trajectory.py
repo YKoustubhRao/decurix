@@ -16,7 +16,9 @@ SCHEMA = "decurix.trajectory/v1"
 
 # The enums of the document (docs/trajectory.md).
 OUTCOMES = ("done_checked", "done_unchecked", "needs_you", "stopped", "failed", "running", "queued", "")
-LABELS = ("ok", "corrected", "overridden", "unlabelled")
+# A step's label is its own outcome; the run's verdict is labels.run, never copied onto steps.
+LABELS = ("ok", "failed", "refused", "corrected", "overridden", "unlabelled")
+RUN_LABELS = ("done", "not_done", "unchecked", "stopped", "")
 GATE_DECISIONS = ("not_needed", "asked", "granted", "denied", "refused")
 ORIGIN_KINDS = ("person", "concierge", "schedule", "mail", "dag", "queue", "handoff", "recording", "practice", "eval",
                 "unknown")
@@ -245,6 +247,10 @@ def validate(doc):
             out.append(f"judgement {n} has no id")
             continue
         out += _actor_problems(j.get("actor"), f"judgement {n}")
+
+    run_label = doc["labels"].get("run", "")
+    if run_label not in RUN_LABELS:
+        out.append(f"labels run {run_label!r} is not one of {', '.join(r for r in RUN_LABELS if r)}")
 
     integrity = doc["integrity"]
     for key, kind in (("missing", list), ("worker_written", list), ("parts", dict)):

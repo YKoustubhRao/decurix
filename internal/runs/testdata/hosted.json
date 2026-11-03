@@ -396,6 +396,7 @@
     }
   ],
   "labels": {
+    "run": "done",
     "person_verdict": "",
     "eval": null
   },

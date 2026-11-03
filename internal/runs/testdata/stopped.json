@@ -187,6 +187,7 @@
   ],
   "ledger": [],
   "labels": {
+    "run": "stopped",
     "person_verdict": "",
     "eval": null
   },

@@ -100,16 +100,12 @@ func build(ctx context.Context, src Sources, execID string, view func(tasks.Exec
 		bundle: b, blobs: blobs}), nil
 }
 
-// execView is one execution with the phase-2 fields the run record reads: each intervention's reply judgement and
-// replier (CP-3), and the verdict, origin, skill and resolved model (CP-4/5). Those four are read through the
-// execution's JSON form, by the names the task records give them, so the record is built the same before and after
-// the fields land; an old row has them empty.
+// execView is one execution with what the run record reads of it, and each intervention's reply judgement and
+// replier by intervention id.
 type execView struct {
 	tasks.Execution
-	Verdict       json.RawMessage
-	Origin        tasks.Origin
-	Skill         tasks.Skill
-	ResolvedModel string
+	// Verdict is the execution's decurix.verdict/v1 as JSON, or nil for an old row.
+	Verdict json.RawMessage
 	// Replies maps an intervention to its reply's judgement id and replier.
 	Replies map[string]reply
 }
@@ -122,23 +118,11 @@ func viewOf(e tasks.Execution) execView {
 	for _, iv := range e.Interventions {
 		v.Replies[iv.ID] = reply{JudgementID: iv.JudgementID, ReplierID: iv.ReplierID}
 	}
-	raw, err := json.Marshal(e)
-	if err != nil {
-		return v
+	if e.Verdict != nil {
+		if raw, err := json.Marshal(e.Verdict); err == nil {
+			v.Verdict = raw
+		}
 	}
-	var extra struct {
-		Verdict       json.RawMessage `json:"verdict"`
-		Origin        tasks.Origin    `json:"origin"`
-		Skill         tasks.Skill     `json:"skill"`
-		ResolvedModel string          `json:"resolved_model"`
-	}
-	if json.Unmarshal(raw, &extra) != nil {
-		return v
-	}
-	if len(extra.Verdict) > 0 && !bytes.Equal(bytes.TrimSpace(extra.Verdict), []byte("null")) {
-		v.Verdict = extra.Verdict
-	}
-	v.Origin, v.Skill, v.ResolvedModel = extra.Origin, extra.Skill, extra.ResolvedModel
 	return v
 }
 
@@ -228,12 +212,76 @@ func assemble(in runInput) Trajectory {
 		t.Worker.AgentSHA, t.Worker.SoulSHA, t.Worker.RulesSHA = p.manifest.AgentSHA, p.manifest.SoulSHA, p.manifest.RulesSHA
 	}
 
+	// The recording, trace and ledger are the task's, cumulative over its attempts: only this execution's own part of
+	// them is its run (review B6), and what was left out is said.
+	t.Integrity.Missing = append(t.Integrity.Missing, p.keepWindow(e.StartedAt, e.EndedAt)...)
 	t.Calls = callsOf(in.calls, p.trace)
 	t.Models, t.Usage = modelsOf(t.Calls)
 	t.Ledger = ledgerOf(p.ledger)
 	t.Steps = stepsOf(p, t.Calls, e, byID)
-	labelSteps(t.Steps, t.Ledger, t.Verdict, own)
+	labelSteps(t.Steps, t.Ledger, own)
+	t.Labels.Run = runLabel(t.Verdict)
 	return t
+}
+
+// windowSlack widens an execution's start: events carry whole seconds.
+const windowSlack = 2 * time.Second
+
+// keepWindow keeps the events, trace lines and ledger records of the execution that ran from started to ended (ended
+// zero: still running), plus callWindowAfter for a last check that lands after its reply. It returns what it left
+// out, as integrity lines. Something with no time cannot be placed in a run, so it is left out too, and said.
+func (p *parsed) keepWindow(started, ended time.Time) []string {
+	in := func(t time.Time) bool {
+		if t.IsZero() {
+			return false
+		}
+		if t.Before(started.Add(-windowSlack)) {
+			return false
+		}
+		return ended.IsZero() || !t.After(ended.Add(callWindowAfter))
+	}
+	var out []string
+	var events []recEvent
+	for _, ev := range p.events {
+		if in(ev.at) {
+			events = append(events, ev)
+		}
+	}
+	if n := len(p.events) - len(events); n > 0 {
+		out = append(out, fmt.Sprintf("recording: %d event(s) of other attempts of the task left out", n))
+	}
+	var lines []traceLine
+	for _, l := range p.trace {
+		if in(l.at) {
+			lines = append(lines, l)
+		}
+	}
+	if n := len(p.trace) - len(lines); n > 0 {
+		out = append(out, fmt.Sprintf("soul_trace: %d line(s) of other attempts of the task left out", n))
+	}
+	var recs []ledgerRec
+	for _, r := range p.ledger {
+		if r.DeclaredAt != nil && in(unixTime(*r.DeclaredAt)) {
+			recs = append(recs, r)
+		}
+	}
+	if n := len(p.ledger) - len(recs); n > 0 {
+		out = append(out, fmt.Sprintf("ledger: %d record(s) of other attempts of the task left out", n))
+	}
+	p.events, p.trace, p.ledger = events, lines, recs
+	return out
+}
+
+// unixTime is Unix seconds (with a fraction) as a time.
+func unixTime(sec float64) time.Time { return time.Unix(0, int64(sec*1e9)).UTC() }
+
+// runLabel is the run's own label: its verdict ("" for a run from before verdicts). It is never copied onto steps.
+func runLabel(verdict json.RawMessage) string {
+	var v struct {
+		Verdict string `json:"verdict"`
+	}
+	_ = json.Unmarshal(verdict, &v)
+	return v.Verdict
 }
 
 // ownJudgements is the judgements of this execution, and the task's own ones (a verdict on the task names no
@@ -420,11 +468,12 @@ type traceCmd struct {
 
 // ledgerRec is one record of the ledger (<task>.records.json, computer/records.py).
 type ledgerRec struct {
-	Key      string                 `json:"key"`
-	Source   string                 `json:"source"`
-	Fields   map[string]ledgerField `json:"fields"`
-	SavedAt  *float64               `json:"saved_at"`
-	Readback struct {
+	Key        string                 `json:"key"`
+	DeclaredAt *float64               `json:"declared_at"`
+	Source     string                 `json:"source"`
+	Fields     map[string]ledgerField `json:"fields"`
+	SavedAt    *float64               `json:"saved_at"`
+	Readback   struct {
 		Seen   []string `json:"seen"`
 		Absent []string `json:"absent"`
 	} `json:"readback"`
@@ -476,10 +525,14 @@ func parseBundle(b Bundle, blobs Blobs) parsed {
 			return nil, false
 		}
 		defer rc.Close()
-		data, err := io.ReadAll(io.LimitReader(rc, maxPartRead))
+		data, err := io.ReadAll(io.LimitReader(rc, maxPartRead+1))
 		if err != nil {
 			p.problems = append(p.problems, rel+": could not be read from the blob store")
 			return nil, false
+		}
+		if len(data) > maxPartRead {
+			p.problems = append(p.problems, fmt.Sprintf("%s: only its first %d bytes were read", rel, maxPartRead))
+			data = data[:maxPartRead]
 		}
 		return data, true
 	}
@@ -491,7 +544,7 @@ func parseBundle(b Bundle, blobs Blobs) parsed {
 	}
 	if data, ok := read(rec + "/events.jsonl"); ok {
 		bad := 0
-		eachLine(data, func(line []byte) {
+		p.lineProblem(rec+"/events.jsonl", eachLine(data, func(line []byte) {
 			var ev recEvent
 			if json.Unmarshal(line, &ev) != nil {
 				bad++
@@ -499,14 +552,14 @@ func parseBundle(b Bundle, blobs Blobs) parsed {
 			}
 			ev.at = eventTime(ev, p.meta)
 			p.events = append(p.events, ev)
-		})
+		}))
 		if bad > 0 {
 			p.problems = append(p.problems, fmt.Sprintf("recording: %d line(s) of events.jsonl are not JSON", bad))
 		}
 	}
 	if data, ok := read(".decurix/ai/traces/" + b.TaskID + ".jsonl"); ok {
 		bad := 0
-		eachLine(data, func(line []byte) {
+		p.lineProblem("soul_trace", eachLine(data, func(line []byte) {
 			var l traceLine
 			if json.Unmarshal(line, &l) != nil {
 				bad++
@@ -518,7 +571,7 @@ func parseBundle(b Bundle, blobs Blobs) parsed {
 			}
 			l.at, _ = time.Parse(time.RFC3339Nano, l.At)
 			p.trace = append(p.trace, l)
-		})
+		}))
 		if bad > 0 {
 			p.problems = append(p.problems, fmt.Sprintf("soul_trace: %d line(s) are not JSON", bad))
 		}
@@ -538,14 +591,22 @@ func parseBundle(b Bundle, blobs Blobs) parsed {
 	return p
 }
 
-// eachLine calls fn with every non-blank line of data.
-func eachLine(data []byte, fn func([]byte)) {
+// eachLine calls fn with every non-blank line of data, and returns why it stopped early (a line over 16 MB), or nil.
+func eachLine(data []byte, fn func([]byte)) error {
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 1<<20), 16<<20)
 	for sc.Scan() {
 		if line := bytes.TrimSpace(sc.Bytes()); len(line) > 0 {
 			fn(line)
 		}
+	}
+	return sc.Err()
+}
+
+// lineProblem says that a file's lines stopped being read part way.
+func (p *parsed) lineProblem(what string, err error) {
+	if err != nil {
+		p.problems = append(p.problems, what+": its lines stopped being read part way (a line too long to read)")
 	}
 }
 
@@ -687,8 +748,15 @@ const (
 	gateRefused   = "refused"
 )
 
-// guiApprovalExit is the exit code of a gui command the approval gate held (docs/computer-use.md).
+// guiApprovalExit is the exit code of a gui command the approval gate held (docs/computer-use.md). Another command's
+// exit 3 is its own.
 const guiApprovalExit = 3
+
+// isGui reports whether a command is a gui command.
+func isGui(command string) bool {
+	fields := strings.Fields(command)
+	return len(fields) > 0 && fields[0] == "gui"
+}
 
 // commandSlack widens a command's run when an event is matched to it: events carry whole seconds.
 const commandSlack = 2 * time.Second
@@ -824,7 +892,7 @@ func gateOf(outcome string, c *traceCmd, at time.Time, e execView, byID map[stri
 			return g
 		case "asked":
 			// It ran after a yes, unless what ran is a gui command the approval gate held (the gui contract's exit 3).
-			if c.Exit != nil && *c.Exit != guiApprovalExit {
+			if c.Exit != nil && !(*c.Exit == guiApprovalExit && isGui(c.Text)) {
 				g.Decision = gateGranted
 				return g
 			}
@@ -879,36 +947,25 @@ func baseOrEmpty(p string) string {
 
 // ---------------------------------------------------------------- labels
 
-// Step labels.
+// Step labels: each is the step's own outcome, never the run's verdict (that is labels.run).
 const (
 	labelOK         = "ok"
+	labelFailed     = "failed"
+	labelRefused    = "refused"
 	labelCorrected  = "corrected"
 	labelOverridden = "overridden"
 	labelUnlabelled = "unlabelled"
 )
 
-// independentBasis are the kinds of check that make a step "ok" when the run's verdict is done (W0.5: a check by code,
-// the ledger read back, or a person; a model or the screen alone does not).
-var independentBasis = map[string]bool{"code": true, "ledger": true, "person": true}
-
-// labelSteps labels every step (docs/trajectory.md, "Step labels"):
+// labelSteps labels every step by its own outcome (docs/trajectory.md, "Step labels"), first that holds:
 //   - overridden: a person acted on the screen (the event's actor is human), or the approval for it was denied;
 //   - corrected: a correction judgement on the run names the step's record or field, or the step's ledger field ended
 //     "differs" and a person answered after it;
-//   - ok: neither, and the run's verdict is done on a check by code, the ledger or a person;
-//   - unlabelled: everything else.
-func labelSteps(steps []Step, ledger []LedgerRecord, verdict json.RawMessage, judgements []JudgementRow) {
-	var v struct {
-		Verdict string   `json:"verdict"`
-		Basis   []string `json:"basis"`
-	}
-	_ = json.Unmarshal(verdict, &v)
-	doneIndependently := false
-	if v.Verdict == tasks.GateDone {
-		for _, b := range v.Basis {
-			doneIndependently = doneIndependently || independentBasis[b]
-		}
-	}
+//   - refused: the gate held it and nobody was asked;
+//   - unlabelled: it was asked about and never answered, or nothing says how it ended;
+//   - failed: its command exited non-zero (other than a gui command the gate held), or its action failed;
+//   - ok: its command exited 0, or its action was done.
+func labelSteps(steps []Step, ledger []LedgerRecord, judgements []JudgementRow) {
 	var corrections, answers []JudgementRow
 	for _, j := range judgements {
 		switch {
@@ -925,12 +982,36 @@ func labelSteps(steps []Step, ledger []LedgerRecord, verdict json.RawMessage, ju
 			s.Label = labelOverridden
 		case corrected(s, ledger, corrections, answers):
 			s.Label = labelCorrected
-		case doneIndependently:
-			s.Label = labelOK
-		default:
+		case s.Gate.Decision == gateRefused:
+			s.Label = labelRefused
+		case s.Gate.Decision == gateAsked:
 			s.Label = labelUnlabelled
+		default:
+			s.Label = ownOutcome(s)
 		}
 	}
+}
+
+// ownOutcome is ok, failed or unlabelled from what the step itself left: its action's outcome, else its command's
+// exit.
+func ownOutcome(s *Step) string {
+	if s.Action != nil {
+		switch s.Action.Outcome {
+		case "done":
+			return labelOK
+		case "failed", "error":
+			return labelFailed
+		}
+	}
+	if s.Command != nil && s.Command.Exit != nil {
+		if *s.Command.Exit == 0 {
+			return labelOK
+		}
+		if !(*s.Command.Exit == guiApprovalExit && isGui(s.Command.Text)) {
+			return labelFailed
+		}
+	}
+	return labelUnlabelled
 }
 
 // corrected reports whether a step's record or field was corrected by a person (labelSteps).
@@ -947,7 +1028,8 @@ func corrected(s *Step, ledger []LedgerRecord, corrections, answers []JudgementR
 			}
 			for _, c := range corrections {
 				text := strings.ToLower(c.Text)
-				if strings.Contains(text, strings.ToLower(rec.Key)) || strings.Contains(text, strings.ToLower(f.Label)) {
+				key, field := strings.ToLower(strings.TrimSpace(rec.Key)), strings.ToLower(strings.TrimSpace(f.Label))
+				if (key != "" && strings.Contains(text, key)) || (field != "" && strings.Contains(text, field)) {
 					return true
 				}
 			}

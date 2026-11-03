@@ -248,8 +248,11 @@ type LedgerField struct {
 	Status   string `json:"status"`
 }
 
-// Labels are the run's labels: a person's verdict, and the eval's when an eval made the run.
+// Labels are the run's labels: its own verdict (Run: done, not_done, unchecked, stopped, or "" from before verdicts),
+// a person's verdict, and the eval's when an eval made the run. A step's label is that step's own outcome; the run's
+// is never copied onto its steps.
 type Labels struct {
+	Run           string          `json:"run"`
 	PersonVerdict string          `json:"person_verdict"`
 	Eval          json.RawMessage `json:"eval"`
 }

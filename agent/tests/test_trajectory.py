@@ -51,9 +51,21 @@ class TrajectoryExamples(unittest.TestCase):
         bad_verdict["verdict"]["verdict"] = "great"
         self.assertTrue(any(p.startswith("verdict:") for p in trajectory.validate(bad_verdict)))
 
+        bad_run = copy.deepcopy(doc)
+        bad_run["labels"]["run"] = "great"
+        self.assertTrue(any("labels run 'great'" in p for p in trajectory.validate(bad_run)))
+
         bad_call = copy.deepcopy(doc)
         bad_call["steps"][0]["call"] = 99
         self.assertTrue(any("does not point into calls" in p for p in trajectory.validate(bad_call)))
+
+    def test_step_labels_are_the_steps_own(self):
+        self.assertEqual(load("hosted.json")["labels"]["run"], "done")
+        self.assertEqual(load("stopped.json")["labels"]["run"], "stopped")
+        doc = load("local.json")
+        for label in ("failed", "refused"):
+            doc["steps"][0]["label"] = label
+            self.assertEqual(trajectory.validate(doc), [])
 
     def test_unknown_keys_pass(self):
         doc = load("local.json")
