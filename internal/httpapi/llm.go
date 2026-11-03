@@ -66,6 +66,12 @@ func (s *Server) llmSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	settings.Vision = vision
 
 	if err := s.LLM.Save(provider, settings); err != nil {
+		if errors.Is(err, llm.ErrUnsealed) {
+			jsonStatusError(w, http.StatusServiceUnavailable, "Not saved - Decurix could not create the key file it seals "+
+				"API keys with ("+llm.KeyFile+" in its data folder), and it does not store a key unencrypted. Make sure "+
+				"that folder is writable, then restart Decurix and save again.")
+			return
+		}
 		jsonError(w, err)
 		return
 	}

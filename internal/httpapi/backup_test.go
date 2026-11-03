@@ -82,11 +82,9 @@ func TestBackupHoldsASnapshotAndNoKeys(t *testing.T) {
 	if err := sealedHub.Save(llm.ProviderClaude, llm.Settings{Key: "sk-ant-sealed-secret"}); err != nil {
 		t.Fatal(err)
 	}
-	plainHub, err := llm.NewHub(db, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := plainHub.Save(llm.ProviderAzure, llm.Settings{Endpoint: "https://mine.services.ai.azure.com/models", Key: "azure-plain-secret"}); err != nil {
+	// A key stored unsealed by a build from before Save refused to (C-19): written as such a build left it.
+	if _, err := db.Exec(`INSERT INTO llm_providers (provider, endpoint, api_key, model, fast_model, vision, updated_ns)
+		VALUES (?, ?, ?, '', '', 0, 1)`, llm.ProviderAzure, "https://mine.services.ai.azure.com/models", "azure-plain-secret"); err != nil {
 		t.Fatal(err)
 	}
 	logins, err := claudeauth.NewStore(db)

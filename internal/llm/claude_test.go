@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -333,19 +334,40 @@ func TestVisionSurvivesAReload(t *testing.T) {
 	}
 	defer db.Close()
 
-	hub, _ := NewHub(db, nil)
+	key := make([]byte, 32)
+	hub, _ := NewHub(db, key)
 	if err := hub.Save(ProviderAzure, Settings{Endpoint: "https://x.example", Key: "k", Vision: false}); err != nil {
 		t.Fatal(err)
 	}
-	again, _ := NewHub(db, nil)
+	again, _ := NewHub(db, key)
 	if st := again.Status()[ProviderAzure]; !st.Configured || st.Vision {
 		t.Fatalf("reloaded azure = %+v, want configured and text-only", st)
 	}
 	if err := again.Save(ProviderAzure, Settings{Vision: true}); err != nil {
 		t.Fatal(err)
 	}
-	third, _ := NewHub(db, nil)
+	third, _ := NewHub(db, key)
 	if !third.Status()[ProviderAzure].Vision {
 		t.Fatal("vision was not saved")
+	}
+}
+
+// Without a key file to seal it, an API key is not stored at all - never in plain text (C-19).
+func TestAKeyIsNeverSavedUnsealed(t *testing.T) {
+	db, err := sqlitedb.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	hub, err := NewHub(db, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.Save(ProviderClaude, Settings{Key: "sk-ant-plain-value"}); !errors.Is(err, ErrUnsealed) {
+		t.Fatalf("Save without a sealing key = %v, want ErrUnsealed", err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM llm_providers`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("%d rows stored (%v)", n, err)
 	}
 }

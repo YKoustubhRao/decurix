@@ -340,7 +340,12 @@ func (h *Hub) savedEndpointIs(provider, endpoint string) bool {
 	return true
 }
 
-// Save stores a provider's settings (Complete first) and puts them in use.
+// ErrUnsealed is Save's refusal when the key file that seals saved API keys could not be loaded or written: a key is
+// never stored in plain text without a word (review 2026-11-03, C-19).
+var ErrUnsealed = errors.New("llm: no key file to seal API keys with")
+
+// Save stores a provider's settings (Complete first) and puts them in use. With a database but no sealing key it
+// stores nothing and returns ErrUnsealed.
 func (h *Hub) Save(provider string, s Settings) error {
 	s, err := h.Complete(provider, s)
 	if err != nil {
@@ -350,11 +355,12 @@ func (h *Hub) Save(provider string, s Settings) error {
 	now := time.Now()
 
 	if h.db != nil {
-		stored := s.Key
-		if h.key != nil {
-			if stored, err = sealed.Seal(h.key, s.Key); err != nil {
-				return err
-			}
+		if h.key == nil {
+			return ErrUnsealed
+		}
+		stored, err := sealed.Seal(h.key, s.Key)
+		if err != nil {
+			return err
 		}
 
 		if _, err := h.db.Exec(
