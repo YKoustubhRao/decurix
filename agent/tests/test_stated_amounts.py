@@ -1,5 +1,5 @@
 """
-Finding CI (2026-10-20, round 5 P6 on pc3): stage 1 was refused twice for "Action states 1,490.00 with no working" (and
+Finding CI (2026-10-20, round 5 P6): stage 1 was refused twice for "Action states 1,490.00 with no working" (and
 35,960, 6,900, 745, 7,600) - every one stated in the customer's own email ("Please refund the 10 mugs, that is Rs
 1,490"). The "no working" finding never looked at the messages, and the other check read the .eml raw (quoted-printable
 soft breaks). A row is tied to its message by its file name, then sender + subject; an amount that message states is
@@ -22,7 +22,7 @@ import fixture_paths  # noqa: E402 - live-run fixtures live outside the repo
 from decurix_agent import stage_facts
 
 INBOX = Path(r"C:\Users\Administrator\decurix-tests\wide\process\data\P6\inbox")
-LIVE = fixture_paths.fixture("p6_tracker_live.xlsx")  # the run's tracker (pc3, read only)
+LIVE = fixture_paths.fixture("p6_tracker_live.xlsx")  # the run's tracker (read only)
 
 
 @fixture_paths.skip_unless(INBOX.is_dir(), "round 5 P6's inbox is not on this machine")

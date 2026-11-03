@@ -1783,7 +1783,7 @@ def _select_for_typing(page, object_id, replace):
 # ============================================================
 # Number fields: set whole, never stepped by accident
 #
-# Found live (2026-10-20, P2 on a portal): typing "24" into an order line's Quantity (an <input type=number>) opened
+# Found live (2026-10-20, on a web portal): typing "24" into an order line's Quantity (an <input type=number>) opened
 # the browser's list of earlier entries under it; the worker clicked "option 24" by its picture, at a point that was
 # the field's up/down arrows, and each click stepped the quantity (24 -> 25 ...). Confused, it typed another line's
 # quantity into the field and saved the order with 60 where 24 was meant.
@@ -1994,7 +1994,7 @@ def enter_form_fields(element):
 # ============================================================
 # Enter in a form's line field submits the form
 #
-# Found live (2026-10-20, P2 on a portal): a unit price typed into one line of an order form "and Enter" submitted the
+# Found live (2026-10-20, on a web portal): a unit price typed into one line of an order form "and Enter" submitted the
 # whole form at once - an order saved with one line of several, which the portal cannot edit. A browser submits a
 # <form> when Enter is pressed in one of its single-line inputs (implicit submission). So Enter is held back there
 # while the form still has other empty fields: the text is typed, and the operator is told to move on with Tab or a

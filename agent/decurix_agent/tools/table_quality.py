@@ -238,7 +238,7 @@ def input_record(paths):
     """
     The record office read keeps of tables ({path: {"sig", "repeated", "totals", "groups"}}), made here from the
     request's own input tables - CSV/TSV files and each workbook sheet whose header is row 1 - whatever the worker read
-    them with. Cached by file and its modification time. Found live (round 5 P5 on pc3, 2026-10-21, series 11): the
+    them with. Cached by file and its modification time. Found live (round 5 P5, 2026-10-21, series 11): the
     worker read the exports with python, office read never saw them, and the inflated quarter passed.
     """
 

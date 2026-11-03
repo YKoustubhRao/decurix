@@ -1,5 +1,5 @@
 """
-DA (round 5 P2 on pc3, 2026-10-21, series 12): the blocking entry check refused the portal stage twice - "do not show:
+DA (round 5 P2, 2026-10-21, series 12): the blocking entry check refused the portal stage twice - "do not show:
 WA-1810, WA-1810, WA-1810, OS/PUR/2026/118" - though the portal held all five orders (SO-5101..SO-5105). The only page
 read after the last entry was that order's "Saved" page; each other order's own "Saved ... SO-510x" page had been read
 when it was saved. Now a record counts where the system showed it during the stage (by its own number when the log

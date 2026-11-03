@@ -1483,7 +1483,7 @@ def create_workbook(path, sheets):
 
 
 # A float as a program prints its rounding error: a run of 0s or 9s, then a digit or two, at the end of its digits
-# ("7640.220000000001", "40123.60000000001", "1.9999999999999998"). Found live (round 5 P2 on pc3, 2026-10-21, series
+# ("7640.220000000001", "40123.60000000001", "1.9999999999999998"). Found live (round 5 P2, 2026-10-21, series
 # 12): such figures went into a workbook through office, and the stage was refused twice for them.
 _FLOAT_ARTIFACT = re.compile(r"(?<![\d.])(-?\d+\.\d*?)(0{6,}|9{6,})\d{1,2}(?![\d.])")
 

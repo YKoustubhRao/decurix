@@ -1,5 +1,5 @@
 """
-Series 14 P3 on pc3 (2026-10-21): all three workbooks the run handed in were corrupt - the worker's own python script
+Series 14 P3 (2026-10-21): all three workbooks the run handed in were corrupt - the worker's own python script
 rewrote their XML (Decision / Reason columns as shared-string cells) and never registered xl/sharedStrings.xml in the
 workbook's relationships, so openpyxl ("IndexError: list index out of range") and Excel could not open them. The stages
 were reported checked; the stage that broke them handed in another file. Hygiene, certain, blocking: every Office file

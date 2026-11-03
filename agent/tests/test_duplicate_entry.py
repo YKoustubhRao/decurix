@@ -1,5 +1,5 @@
 """
-CX (round 5 P4 on pc3, 2026-10-21, series 11): Rohit Kulkarni was onboarded twice in the portal. In ONE attempt the
+CX (round 5 P4, 2026-10-21, series 11): Rohit Kulkarni was onboarded twice in the portal. In ONE attempt the
 worker saved him with another joiner's department (EMP-2043), saw it, could not edit it, and entered him again
 (EMP-2044) - a duplicate in a live system is worse than a missing record. Not a refusal of the entry check: its tool
 record shows both saves in the same attempt. A save that would enter, as new, a record this task already saved is now
@@ -135,7 +135,7 @@ TRACKER = Path(r"C:\Users\Administrator\decurix-tests\wide\process\data\P4\joine
 
 @needs("openpyxl")
 class AnotherRecordsValues(unittest.TestCase):
-    """CY (round 5 P4 on pc3, 2026-10-21): Rohit Kulkarni's form was saved with Mohammed Arif Khan's department and job
+    """CY (round 5 P4, 2026-10-21): Rohit Kulkarni's form was saved with Mohammed Arif Khan's department and job
     title. A save whose form holds another record's values from the request's own table is refused."""
 
     HEADER = ["Full name", "Personal email", "Mobile", "Department", "Job title", "Date of birth"]

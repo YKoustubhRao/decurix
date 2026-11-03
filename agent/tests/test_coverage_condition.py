@@ -1,5 +1,5 @@
 """
-CW (round 5 P6 on pc3, 2026-10-21): the blocking coverage check refused "List refunds over Rs 5,000 for approval" twice
+CW (round 5 P6, 2026-10-21): the blocking coverage check refused "List refunds over Rs 5,000 for approval" twice
 - "its log has 3 of 12: no row for Cafe Bloom, Lotus Yoga Centre ..." - taking the tracker's 12 customers for "every
 record". A stage that selects by a condition is checked only against the records meeting it, where code can decide
 the condition; otherwise nothing is decided. A file-making stage is told to add the missing rows.

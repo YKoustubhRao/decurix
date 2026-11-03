@@ -1,5 +1,5 @@
 """
-CS (round 5 P1 on pc3, 2026-10-20): the memo the tools made in the person's shared folder was saved over from Word -
+CS (round 5 P1, 2026-10-20): the memo the tools made in the person's shared folder was saved over from Word -
 a stale copy Word still held, then a blank one - and read back with 0 headings. What the tools save there is kept
 aside; an app of ours holding the file lets it go before the tools write it and before an app is opened; a document
 an app's save emptied is found, put back, and the stage is told; a save into a read-only or blank document is refused.

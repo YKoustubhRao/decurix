@@ -74,7 +74,7 @@ class TheLiveP5Exports(Isolated):
         self.assertFalse(long_task.is_blocking("repeated_rows"))
 
     def test_the_live_series_10_report_and_figures_are_caught(self):
-        # Round 5 P5 on pc3 (2026-10-21): "Removed the prior `Expenses status` note sheet" switched the check off; the
+        # Round 5 P5 (2026-10-21): "Removed the prior `Expenses status` note sheet" switched the check off; the
         # outputs showed the quarter as 3.64 crore in the deck and West/North August in the commentary.
         self.read_all()
         report = "Removed the prior `Expenses status` note sheet. Added `Expenses by branch` with quarter totals."

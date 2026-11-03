@@ -173,7 +173,7 @@ class TheBounceCap(unittest.TestCase):
         self.assertIn("could not get past", pipeline.to_person[-1])
 
     def test_a_question_about_something_not_yet_checked_is_sent_back_once(self):
-        # Round 5 P4 on pc3 (2026-10-21, DD): asked again after checking, it reaches the person.
+        # Round 5 P4 (2026-10-21, DD): asked again after checking, it reaches the person.
         case = {"request": "P4", "question": "I have not yet confirmed whether that exact manager exists as a selectable "
                                              "option in the portal. Which manager should I choose if it is not available?"}
         pipeline = Pipeline(case, routes=["UNCHECKED", "UNCHECKED"])

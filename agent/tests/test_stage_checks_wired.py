@@ -1,5 +1,5 @@
 """
-Every code check a planned stage goes through is wired, by name, with its maturity. Found live (round 5 P5 on pc3,
+Every code check a planned stage goes through is wired, by name, with its maturity. Found live (round 5 P5,
 2026-10-21): the repeated-rows check (BK3) sat inside another check and was switched off by a report saying "Removed
 the prior note sheet" - the inflated quarter was reported done. A check dropped or renamed in a refactor shows here.
 """

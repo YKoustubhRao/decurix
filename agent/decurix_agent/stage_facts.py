@@ -64,7 +64,7 @@ def removed_records(amendments):
     removing ("removed", whole records - a line of a record is "removed_lines" and never here) less what a later change
     put back ("restored"). long_task.classify keeps only references the person's own message writes. An amendment with
     no such field removes nothing: no word list reads the person's words (harness review, 2026-10-21 - "Don't remove
-    INV-2026-001 after all" and "Exclude the freight line from PO-7781's total" were both read as removals).
+    INV-0001 after all" and "Exclude the freight line from PO-0001's total" were both read as removals).
     """
 
     out = []
@@ -418,7 +418,7 @@ _REF_FIRST = re.compile(r"\b(?:order|invoice|so|po|reference|ref|ticket|case|rec
 def _key_columns(header, rows):
     """
     The table's key columns (KEY_COLUMN, not NOT_KEY_COLUMN) whose every value names one item only: a value shared by
-    rows that differ in another key column ("WA-1810" for two customers' chats) identifies nothing. An order or
+    rows that differ in another key column ("REF-0001" for two customers' chats) identifies nothing. An order or
     reference column first, the source file after.
     """
 

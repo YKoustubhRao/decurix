@@ -1357,7 +1357,7 @@ HEAD_LINES = 12
 
 
 def focus_tokens(findings):
-    """The references and figures that findings name ("SO-5103", "1,800.00", "Orders!D25"), to find their rows by."""
+    """The references and figures that findings name ("ORD-0003", "1,800.00", "Orders!D25"), to find their rows by."""
 
     out = []
     for finding in findings or ():

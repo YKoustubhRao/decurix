@@ -11,8 +11,8 @@ from decurix_agent.computer import elements as el
 # ============================================================
 # Secrets a request gives in plain words
 #
-# Found live (2026-10-20, round 5 P2): a request said "user clerk, password Northwind#2026"; a refused typing asked
-# the person 'I was about to type "clerk", "Northwind#2026", ...' - the password in the chat. And every command the
+# Found live (2026-10-20, round 5 P2): a request gave a user name and its password; a refused typing asked the
+# person 'I was about to type "<the user>", "<the password>", ...' - the password in the chat. And every command the
 # worker runs is shown as a step ("Running: gui type e5 ..."). So the secrets a request spells out are remembered at
 # the start of its task - as SHA-256 hashes only, never the text - and every line that reaches the chat, a step, a task
 # record or a recording has any word that is one of them replaced by [withheld].

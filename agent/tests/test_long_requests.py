@@ -2450,7 +2450,7 @@ class LongRun(LongRunBase):
         self.assertTrue(allocate and answer in allocate[0])  # the stage after carries the decision
 
     def test_an_answered_decision_stage_is_judged_on_its_file_not_on_asking(self):
-        # Round 5 P2 on pc3 (2026-10-20), Finding CM: after the person answered, the decision stage was refused twice -
+        # Round 5 P2 (2026-10-20), Finding CM: after the person answered, the decision stage was refused twice -
         # "The stage also required asking the user in chat ... no chat question from this run is shown" - and the
         # extraction stage before it was reopened for the "dispatch" in dispatch_plan.xlsx.
         self.plan["stages"] = [
@@ -2527,7 +2527,7 @@ class LongRun(LongRunBase):
 
     @needs("openpyxl")
     def test_a_restatement_never_adds_a_word_nobody_said(self):
-        # Round 5 P2 on pc3 (2026-10-20), Finding CN: after "hold Harbour Hotels Group until they clear their dues", the
+        # Round 5 P2 (2026-10-20), Finding CN: after "hold Harbour Hotels Group until they clear their dues", the
         # judge required "every line of held order HH/PO/7781 to show allocated quantity 0 and full ordered quantity as
         # backorder"; the code fact requires a held line with 0 backordered. Each attempt failed one of them.
         answer = "Release Cafe Bloom this once, hold Harbour Hotels Group until they clear their dues."
@@ -2595,7 +2595,7 @@ class LongRun(LongRunBase):
         self.assertIn("it keeps 0 of the 40 words", " ".join(self.engine.prompts[3:]))
         self.assertNotIn(long_task.PLEASE_CHECK, " ".join(s["reply"] for s in self.finals()))
 
-    # Round 5 P2 on pc3 (2026-10-20), after CM: the live plan's stage 1, word for word from its checkpoint.
+    # Round 5 P2 (2026-10-20), after CM: the live plan's stage 1, word for word from its checkpoint.
     LIVE_EXTRACT = (
         "Read the 4 WhatsApp chat exports, the 2 POs that came by email (.eml, the PO PDF is inside), the price list, "
         "today's stock and the customer master, using the copies in P2_orders_19Oct. Work out every order per customer "
@@ -2649,7 +2649,7 @@ class LongRun(LongRunBase):
         # A first check (no decision re-check) is never softened.
         self.assertEqual(long_task._recheck_refusal(rid, step, {"reopened": ""}, live)["verdict"], verify.NOT_DONE)
 
-    # Round 5 P6 on pc3 (2026-10-21), Finding CU: the live email and the live refusal.
+    # Round 5 P6 (2026-10-21), Finding CU: the live email and the live refusal.
     E18 = ("Your invoice for SO-5114 charges the compact umbrellas at Rs 329 each, but the agreed rate on our PO NSL/4502 "
            "is Rs 299. Please correct and reissue.")
     CU_REFUSAL = ("An email asking for money back must be categorized as Refund ... 1019_E18.eml as Complaint ... instead "
@@ -2684,7 +2684,7 @@ class LongRun(LongRunBase):
         self.assertIn("never on the worker's working notes alone", seen[0])
         self.assertIn("The worker's working notes are not a source", " ".join(verify.JUDGE_SYSTEM.split()))
 
-    # Round 5 P1 on pc3 (2026-10-21), Finding DB: the stage's own report, as the parked question quoted it.
+    # Round 5 P1 (2026-10-21), Finding DB: the stage's own report, as the parked question quoted it.
     DB_DONE = ("Done. - Checked what was already in place in P1_month_end/outputs/month_end_close_Oct2026.xlsx. - Updated "
                "the Bank Rec sheet with the reconciling items. - Recalculated and read the saved workbook back.")
 

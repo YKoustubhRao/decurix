@@ -1,5 +1,5 @@
 """
-Finding CK (2026-10-20, round 5 P2 on pc3): stage 1 was refused for "Decision reason says 50,123.60, its working gives
+Finding CK (2026-10-20, round 5 P2): stage 1 was refused for "Decision reason says 50,123.60, its working gives
 17,980.00" - the reason states the ORDER's total incl GST (for the credit check), the working rows are its LINES, and
 they were tied by references several lines share (the PO, a chat's id, a product code). A stated amount is compared
 with the one working row its full key ties it to, or holds as a sum of one order's rows; otherwise nothing is decided.
@@ -19,7 +19,7 @@ from temp_case import TempDirCase
 
 from decurix_agent import stage_facts
 
-LIVE = fixture_paths.fixture("p2_order_working_live.xlsx")  # the run's order_working.xlsx (pc3)
+LIVE = fixture_paths.fixture("p2_order_working_live.xlsx")  # the run's order_working.xlsx
 
 
 class OrderTotals(TempDirCase):

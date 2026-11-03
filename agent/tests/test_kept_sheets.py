@@ -156,7 +156,7 @@ class CellsByMeaning(unittest.TestCase):
 
 
 class AdditionsAreNoChange(TempDirCase):
-    """CO (round 5 P2 on pc3, 2026-10-20): stage 3 added column N to stage 1's "Working" sheet in dispatch_plan.xlsx and
+    """CO (round 5 P2, 2026-10-20): stage 3 added column N to stage 1's "Working" sheet in dispatch_plan.xlsx and
     was refused for "changed (N1, N10, N11 ...)". Adding cells is allowed; changing or clearing a value, removing a row
     or reordering rows is not."""
 
@@ -220,7 +220,7 @@ class AdditionsAreNoChange(TempDirCase):
 
 
 class AfterARecordWasRemoved(TempDirCase):
-    """CP2 (round 5 P1 on pc3, 2026-10-20): the person cancelled bill NS-0457 mid-run; the Purchase Register stage, re-run,
+    """CP2 (round 5 P1, 2026-10-20): the person cancelled bill NS-0457 mid-run; the Purchase Register stage, re-run,
     was refused for the totals still holding NS-0457 AND for changing "Purchase Working" and "GSTR-3B" - reported as the
     AR Ageing stage's sheets. A sheet is the stage's whose completion first held it; after a change to a record, the
     figures built on it may change everywhere and its rows may go. fixtures/p1_cancelled: the live workbook, the run's

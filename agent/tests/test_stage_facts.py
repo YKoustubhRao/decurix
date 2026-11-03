@@ -285,7 +285,7 @@ class RemovedRecordsAreTheModelsReading(unittest.TestCase):
 
 @needs("openpyxl")
 class ARemovedRecordStillInTheOutputs(unittest.TestCase):
-    # Round 5 P1 on pc3 (2026-10-21, series 13): "Bill NS-0457 from Nova Stationers was cancelled - leave it out of
+    # Round 5 P1 (2026-10-21, series 13): "Bill NS-0457 from Nova Stationers was cancelled - leave it out of
     # everything" - and the Purchase Register still had "08/10/2026 | Nova Stationers | NS-0457 | 66700 | 4533 | ...".
 
     @fixture_paths.skip_unless(LIVE_P1_S13.is_file(), f"fixture not here: {LIVE_P1_S13}")
