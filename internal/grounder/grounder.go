@@ -58,6 +58,18 @@ var ErrNoPoint = errors.New("the grounding model did not give a position")
 // MaxImageBytes bounds one request's screenshot.
 const MaxImageBytes = 12 << 20
 
+// MaxPixels bounds a screenshot's declared size, checked before anything decodes it: a small, flat PNG can declare
+// tens of thousands of pixels a side and gigabytes once decoded (C-12; stepimages has the same cap).
+const MaxPixels = 4096 * 4096
+
+// ErrTooLarge is a screenshot that declares more than MaxPixels.
+var ErrTooLarge = errors.New("the screenshot is larger than a screen")
+
+// TooLarge reports whether a declared width and height are more than MaxPixels (or not a size at all).
+func TooLarge(width, height int) bool {
+	return width <= 0 || height <= 0 || width > MaxPixels/height
+}
+
 // Client asks one grounding model.
 type Client struct {
 	API    string // "ollama" or "openai"
@@ -299,6 +311,14 @@ func SmartResize(width, height int) (int, int) {
 func Shrink(data []byte, width, height, maxSide int) ([]byte, int, int, error) {
 	if maxSide <= 0 || (width <= maxSide && height <= maxSide) {
 		return data, width, height, nil
+	}
+	// What the PNG itself declares, not what the caller said, decides whether it is decoded at all.
+	config, err := png.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("the screenshot is not a PNG: %w", err)
+	}
+	if TooLarge(config.Width, config.Height) {
+		return nil, 0, 0, ErrTooLarge
 	}
 	src, err := png.Decode(bytes.NewReader(data))
 	if err != nil {
