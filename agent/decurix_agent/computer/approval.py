@@ -819,7 +819,18 @@ def site_known(host):
         request = (task_context.current_request() or "").lower()
     except Exception:  # noqa: BLE001 - no request to read is no request naming it
         request = ""
-    return host in request or host in _taught_text()
+    return _names_host(request, host) or _names_host(_taught_text(), host)
+
+
+def _names_host(text, host):
+    """Whether `text` names `host` itself or a domain it is under, on label boundaries: "example.com" names
+    example.com and www.example.com, never ample.com or example.com.evil.test. Found in review (2026-11-03, E-47): a
+    substring test let a password go unasked to a host whose name was part of a named one."""
+
+    for named in re.findall(r"(?<![\w.-])((?:[a-z0-9-]+\.)+[a-z]{2,})(?![\w-])", text or ""):
+        if host == named or host.endswith("." + named):
+            return True
+    return False
 
 
 # A dialog's plain yes, and what such a dialog asks when the act cannot be

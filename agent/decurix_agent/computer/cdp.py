@@ -134,6 +134,9 @@ class _Socket:
                 length = struct.unpack(">H", self._need(2))[0]
             elif length == 127:
                 length = struct.unpack(">Q", self._need(8))[0]
+            if length > MAX_FRAME_BYTES:
+                # A length no page's answer has: never allocated (review 2026-11-03, D-33).
+                raise ComputerError(f"the browser sent a frame of {length} bytes, more than {MAX_FRAME_BYTES}")
             payload = self._need(length)
             opcode = b0 & 0x0F
 
@@ -179,6 +182,8 @@ class Page:
             if message.get("id") != mine:
                 if "method" in message and "id" not in message:
                     self.events.append(message)
+                    # Events nobody waits for are kept only so many (D-33: they grew while a domain was enabled).
+                    del self.events[:-MAX_EVENTS]
                 continue
 
             if "error" in message:
@@ -1936,6 +1941,12 @@ def _without_secrets(found):
         if not secret:
             fields.append([label, value])
     return dict(found, fields=fields)
+
+
+# The largest WebSocket frame read from the browser (a screenshot of a large page is a few MB), and how many
+# unawaited events a page keeps.
+MAX_FRAME_BYTES = 64 * 1024 * 1024
+MAX_EVENTS = 500
 
 
 def submit_form_fields(element, min_fields=None, unreadable=None):
