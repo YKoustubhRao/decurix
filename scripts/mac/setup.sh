@@ -40,14 +40,21 @@ fi
 
 echo ""
 echo "=== Configuring Ollama host binding ==="
-# Allow containers to reach Ollama via host.docker.internal
-launchctl setenv OLLAMA_HOST 0.0.0.0 || true
-echo "Set OLLAMA_HOST=0.0.0.0 via launchctl."
-
-if ! grep -qs "OLLAMA_HOST" "$HOME/.zshrc" 2>/dev/null; then
-    echo 'export OLLAMA_HOST="0.0.0.0"' >> "$HOME/.zshrc"
-    echo "Added 'export OLLAMA_HOST=0.0.0.0' to ~/.zshrc."
+# Nothing to change: Docker Desktop forwards host.docker.internal to this
+# Mac's 127.0.0.1, where Ollama listens by default. Ollama has no login, so it
+# is never put on every address. An earlier version of this script did that;
+# it is taken back here.
+if [ "$(launchctl getenv OLLAMA_HOST 2>/dev/null)" = "0.0.0.0" ]; then
+    launchctl unsetenv OLLAMA_HOST || true
+    echo "Removed launchctl's OLLAMA_HOST set to 0.0.0.0 (an earlier Decurix set it); restart the Ollama app."
 fi
+if [ -f "$HOME/.zshrc" ] && grep -qx 'export OLLAMA_HOST="0[.]0[.]0[.]0"' "$HOME/.zshrc"; then
+    zshrc_tmp="$(mktemp "${TMPDIR:-/tmp}/decurix-zshrc.XXXXXX")"
+    grep -vx 'export OLLAMA_HOST="0[.]0[.]0[.]0"' "$HOME/.zshrc" > "$zshrc_tmp" && cat "$zshrc_tmp" > "$HOME/.zshrc" \
+        && echo "Removed the OLLAMA_HOST line an earlier Decurix added to ~/.zshrc."
+    rm -f "$zshrc_tmp"
+fi
+echo "Ollama stays on 127.0.0.1; desktops reach it through Docker Desktop."
 
 echo ""
 echo "=== Checking Cloudflare cloudflared ==="

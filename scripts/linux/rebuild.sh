@@ -197,7 +197,7 @@ if [ -n "$DECURIX_BUILD_BUILDER" ]; then
 else
     docker compose build
 fi
-docker compose up -d --no-build
+docker compose -f docker-compose.yaml ${DECURIX_COMPOSE_OVERRIDE:+-f "$DECURIX_COMPOSE_OVERRIDE"} up -d --no-build
 
 echo ""
 echo "=== Waiting for dashboard ==="

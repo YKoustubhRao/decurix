@@ -140,7 +140,7 @@ try {
     # No --build: an already-built control plane image starts as-is.
     # Existing desktop_* containers and volumes, and the decurix-data
     # volume (task history, chats, worker memory), are untouched.
-    docker compose up -d
+    docker compose $script:ComposeFiles up -d
     if ($LASTEXITCODE -ne 0) { Exit-Build $LASTEXITCODE }
 
     Write-Host ""

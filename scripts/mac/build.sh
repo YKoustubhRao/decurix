@@ -77,7 +77,7 @@ export_host_mounts
 
 # No --build: existing desktop_* containers and volumes, and the decurix-data
 # volume (task history, chats, worker memory), are untouched.
-docker compose up -d
+docker compose -f docker-compose.yaml ${DECURIX_COMPOSE_OVERRIDE:+-f "$DECURIX_COMPOSE_OVERRIDE"} up -d
 
 echo ""
 echo "=== Waiting for dashboard ==="

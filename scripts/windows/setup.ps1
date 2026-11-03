@@ -47,13 +47,15 @@ foreach ($package in $packages) {
 Write-Host ""
 
 Write-Host "=== Configuring Ollama host binding ==="
-try {
-    [System.Environment]::SetEnvironmentVariable("OLLAMA_HOST", "0.0.0.0", "User")
-    Write-Host "Configured OLLAMA_HOST=0.0.0.0 for host-to-container connectivity."
+# Nothing to change: Docker Desktop forwards host.docker.internal to this
+# computer's 127.0.0.1, where Ollama listens by default. Ollama has no login,
+# so it is never put on every address. An earlier version of this script did
+# that; it is taken back here.
+if ([System.Environment]::GetEnvironmentVariable("OLLAMA_HOST", "User") -eq "0.0.0.0") {
+    [System.Environment]::SetEnvironmentVariable("OLLAMA_HOST", $null, "User")
+    Write-Host "Removed OLLAMA_HOST set to 0.0.0.0 for your user (an earlier Decurix set it); restart Ollama."
 }
-catch {
-    Write-Host "WARNING: Failed to set OLLAMA_HOST environment variable."
-}
+Write-Host "Ollama stays on 127.0.0.1; desktops reach it through Docker Desktop."
 Write-Host ""
 
 Write-Host "=== Installing Docker ==="

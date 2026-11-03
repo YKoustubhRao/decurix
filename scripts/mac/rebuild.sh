@@ -142,7 +142,7 @@ echo ""
 echo "=== Starting Decurix ==="
 
 export_host_mounts
-docker compose up -d --build
+docker compose -f docker-compose.yaml ${DECURIX_COMPOSE_OVERRIDE:+-f "$DECURIX_COMPOSE_OVERRIDE"} up -d --build
 
 echo ""
 echo "=== Waiting for dashboard ==="

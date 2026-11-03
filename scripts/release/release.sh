@@ -201,8 +201,12 @@ Setup
          ollama pull qwen2.5-coder:3b
          ollama pull nomic-embed-text   (only the thebot harness needs this)
 
-     On Linux, Ollama must listen on more than 127.0.0.1 for desktop
-     containers to reach it: set OLLAMA_HOST=0.0.0.0 on its service.
+     On Linux, Ollama must listen where desktop containers reach this host:
+     the docker0 bridge address (often 172.17.0.1; check with
+     `ip -4 addr show docker0`). Set OLLAMA_HOST=<that address> on its
+     service - never 0.0.0.0, which hands Ollama (it has no login) to the
+     whole network. On a Mac or Windows with Docker Desktop, leave it on
+     127.0.0.1: Docker Desktop reaches it there.
 
   3. Run:
 

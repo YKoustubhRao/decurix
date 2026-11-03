@@ -192,7 +192,7 @@ try {
 
     Write-Host ""
     Write-Host "=== Starting Decurix ==="
-    docker compose up -d --build
+    docker compose $script:ComposeFiles up -d --build
     if ($LASTEXITCODE -ne 0) { Exit-Build $LASTEXITCODE }
 
     Write-Host ""
