@@ -293,6 +293,8 @@ type queryNoteView struct {
 	querynotes.QueryNote
 	Task    string `json:"task,omitempty"`
 	Message string `json:"message,omitempty"`
+	// Gated says the desktop's approval gate worded this approval: a button bound to it (note_id) can grant it.
+	Gated bool `json:"gated,omitempty"`
 }
 
 // viewQueryNotes adds each note's task and message, read out of its text so
@@ -300,7 +302,7 @@ type queryNoteView struct {
 func viewQueryNotes(notes []querynotes.QueryNote) []queryNoteView {
 	views := make([]queryNoteView, 0, len(notes))
 	for _, note := range notes {
-		views = append(views, queryNoteView{QueryNote: note, Task: note.Task(), Message: note.Message()})
+		views = append(views, queryNoteView{QueryNote: note, Task: note.Task(), Message: note.Message(), Gated: note.GateRequest != ""})
 	}
 	return views
 }

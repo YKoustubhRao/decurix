@@ -161,3 +161,31 @@ test("the access code is fetched only while its menu is open, and forgotten when
     assert.strictEqual(hits, name === "theme.html" ? 2 : 0, name + " asks for the access code");
   }
 });
+
+// The desktop chat's seen_at is when the person began the reply, not when they sent it (W-07): an approval that the
+// stream showed while they typed is newer than seen_at, so the control plane refuses to bind their yes to it.
+test("a draft begun before an approval appeared says it saw only what came before", () => {
+  const code = scripts(read("desktop.html")).join("\n");
+  const sandbox = {};
+  vm.createContext(sandbox);
+  vm.runInContext('var NOTHING_SEEN = "1970-01-01T00:00:00Z";\n' + fnSource(code, "newestPosted") + "\n" +
+    fnSource(code, "draftSeen") + "\nthis.newestPosted = newestPosted; this.draftSeen = draftSeen;", sandbox);
+  const { draftSeen } = sandbox;
+
+  const question = { created_at: "2026-11-03T10:00:00Z" };
+  const approval = { created_at: "2026-11-03T10:00:05Z" };
+
+  // First keystroke with only the question on screen.
+  let seen = draftSeen("", "y", [question]);
+  assert.strictEqual(seen, question.created_at);
+  // The approval arrives; more keystrokes keep the draft's seen_at.
+  seen = draftSeen(seen, "ye", [question, approval]);
+  seen = draftSeen(seen, "yes", [question, approval]);
+  assert.ok(Date.parse(seen) < Date.parse(approval.created_at), "seen_at must predate the approval");
+  // Emptying the draft starts over; the next draft sees the approval.
+  seen = draftSeen(seen, "", [question, approval]);
+  assert.strictEqual(seen, "");
+  assert.strictEqual(draftSeen(seen, "y", [question, approval]), approval.created_at);
+  // A draft begun with nothing on screen has seen nothing.
+  assert.strictEqual(draftSeen("", "y", []), "1970-01-01T00:00:00Z");
+});

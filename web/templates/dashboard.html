@@ -89,6 +89,7 @@
 
 .reply-foot{display:flex;align-items:center;gap:10px}
 .reply-foot .hint{flex:1}
+.reply-secret{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text-2);white-space:nowrap;cursor:pointer}
 .reply-foot kbd{
   font-family:var(--mono);
   font-size:10.5px;
@@ -221,6 +222,7 @@
         <textarea class="textarea" placeholder="Reply to this desktop…" rows="1" required></textarea>
 
         <div class="reply-foot">
+          <label class="reply-secret" title="It reaches the desktop as typed, and is kept nowhere as typed: the chat and the records show [secret withheld]"><input type="checkbox" data-secret> This is a secret</label>
           <div class="hint"><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line</div>
           <button type="submit" class="btn btn-primary btn-sm">
             <svg width="14" height="14"><use href="#i-send"/></svg>
@@ -381,7 +383,15 @@
     send.type = "submit";
     send.append(icon("send", 14), document.createTextNode(" Send reply"));
 
-    foot.append(hint, send);
+    /* Marked a secret: delivered as typed, kept nowhere as typed (the server stores "[secret withheld]"). */
+    var secret = el("label", "reply-secret");
+    secret.title = "It reaches the desktop as typed, and is kept nowhere as typed: the chat and the records show [secret withheld]";
+    var box = document.createElement("input");
+    box.type = "checkbox";
+    box.dataset.secret = "";
+    secret.append(box, document.createTextNode(" This is a secret"));
+
+    foot.append(secret, hint, send);
     form.append(textarea, foot);
     card.appendChild(form);
 
@@ -560,9 +570,13 @@
           "Not sent - answer it on its own card.", "error");
       }
 
-      await post("/api/desktops/send", {id: form.dataset.desktop, content: content, note_id: card.dataset.id});
+      var secretBox = form.querySelector("[data-secret]");
+      var fields = {id: form.dataset.desktop, content: content, note_id: card.dataset.id};
+      if(secretBox && secretBox.checked){ fields.secret = "1"; }
+      await post("/api/desktops/send", fields);
 
       textarea.value = "";
+      if(secretBox){ secretBox.checked = false; }
       grow(textarea);
       Decurix.markSent(form.querySelector(".hint"), "Delivered to the desktop");
       setTimeout(syncOpen, 600);
