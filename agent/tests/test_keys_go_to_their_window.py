@@ -33,6 +33,9 @@ class KeysGoToTheirWindow(unittest.TestCase):
     def test_a_window_that_is_gone_refuses(self):
         self.assertIsNone(self.focus("Another - Sheets"))
 
+    def test_one_window_whose_title_holds_another_number_is_not_its_window(self):
+        self.assertIsNone(self.focus("Invoice 104 - Sheets", windows=[{"id": "3", "title": "Invoice 1042 - Sheets"}]))
+
     def test_one_near_title_is_its_window(self):
         self.assertEqual(self.focus("Untitled 1 - Sheets (copy)*", windows=WINDOWS[1:]), "2")
 

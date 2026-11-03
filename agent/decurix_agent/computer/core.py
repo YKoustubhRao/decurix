@@ -363,8 +363,11 @@ def _window_id_for(element):
     for w in windows:
         if w["title"] == title:
             return w["id"]
-    near = [w for w in windows if title and w["title"] and (title in w["title"] or w["title"] in title)]
-    # Only one window may be meant: "Untitled 1" is inside "Untitled 10" (review 2026-11-03, D-27).
+    # A near title is the same window drawn differently (a "*" for unsaved changes), never another name: other digits
+    # or other words are another document ("Invoice 104" is inside "Invoice 1042"); and only one window may be meant
+    # (review 2026-11-03, D-27).
+    near = [w for w in windows if title and w["title"] and (title in w["title"] or w["title"] in title)
+            and not identity.changes_identity(title, w["title"])]
     return near[0]["id"] if len(near) == 1 else None
 
 
