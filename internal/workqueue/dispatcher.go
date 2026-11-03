@@ -327,12 +327,22 @@ func contains(list []string, v string) bool {
 	return false
 }
 
-// overBudget says why a worker is at or over a spend limit for the current
-// day or month, "" when it is under every limit that applies.
-func (d *Dispatcher) overBudget(st *tickState, worker string) (string, error) {
-	if why, ok := st.spend[worker]; ok {
-		return why, nil
+// OverBudget says why worker is at or over a spend limit for the current day or month, "" when it is under every
+// limit that applies, read now - what the model proxy asks before it forwards a call (C-08).
+func (d *Dispatcher) OverBudget(worker string) (string, error) {
+	limits, err := d.Store.Limits()
+	if err != nil {
+		return "", err
 	}
+	return d.overBudget(&tickState{limits: limits}, worker)
+}
+
+// overBudget says why a worker is at or over a spend limit for the current
+// day or month, "" when it is under every limit that applies. It is read
+// afresh for every item, never from a reading taken earlier in the tick: with
+// spend metered as it happens, a second item must see what the first one's
+// worker has used by then (C-08).
+func (d *Dispatcher) overBudget(st *tickState, worker string) (string, error) {
 	why := ""
 	now := d.now()
 	for _, period := range []string{PeriodDay, PeriodMonth} {
@@ -357,7 +367,6 @@ func (d *Dispatcher) overBudget(st *tickState, worker string) (string, error) {
 			break
 		}
 	}
-	st.spend[worker] = why
 	return why, nil
 }
 

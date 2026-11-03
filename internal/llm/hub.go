@@ -70,6 +70,15 @@ var schema = []string{
 		updated_ns INTEGER NOT NULL
 	)`,
 	`ALTER TABLE llm_providers ADD COLUMN vision INTEGER NOT NULL DEFAULT 0`,
+	// What each worker's hosted calls used, per local day, as the providers reported it (usage.go, C-08). Tokens
+	// only: no price is known here, and tokens per task is the measure that matters.
+	`CREATE TABLE llm_usage (
+		worker        TEXT NOT NULL,
+		day           TEXT NOT NULL,
+		input_tokens  INTEGER NOT NULL DEFAULT 0,
+		output_tokens INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (worker, day)
+	)`,
 }
 
 // Hub holds the configured hosted providers and forwards the desktops'

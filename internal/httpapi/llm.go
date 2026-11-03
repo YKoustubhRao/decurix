@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/llm"
@@ -153,6 +154,21 @@ func (s *Server) llmChat(w http.ResponseWriter, r *http.Request, provider string
 		return
 	}
 
+	// A worker at a hard spend limit gets no more hosted calls: the limit is real where the money is spent (C-08).
+	worker, fromDesktop := requestDesktop(r)
+	if fromDesktop && s.QueueDispatcher != nil {
+		why, err := s.QueueDispatcher.OverBudget(worker)
+		if err != nil {
+			log.Printf("llm %s: reading the spend of %s: %v", provider, worker, err)
+			http.Error(w, "the spend limit could not be read, so the call was not made", http.StatusServiceUnavailable)
+			return
+		}
+		if why != "" {
+			http.Error(w, "over its spend limit: "+why, http.StatusPaymentRequired)
+			return
+		}
+	}
+
 	status, answer, retry, err := s.LLM.Chat(r.Context(), provider, body)
 	if err != nil {
 		if errors.Is(err, llm.ErrNotConfigured) {
@@ -163,6 +179,12 @@ func (s *Server) llmChat(w http.ResponseWriter, r *http.Request, provider string
 		log.Printf("llm %s: %v", provider, err)
 		http.Error(w, "the hosted model could not be reached", http.StatusBadGateway)
 		return
+	}
+
+	if fromDesktop {
+		if err := s.LLM.Meter(worker, time.Now(), llm.ParseUsage(answer)); err != nil {
+			log.Printf("llm %s: %v", provider, err)
+		}
 	}
 
 	// A rate limit's "try again in N seconds" goes through to the desktop.

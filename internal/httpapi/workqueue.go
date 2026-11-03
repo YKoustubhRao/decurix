@@ -82,8 +82,13 @@ func (a queueAdapter) TaskState(taskID string) (workqueue.TaskState, error) {
 	return st, nil
 }
 
-// NewQueueDispatcher builds the work queue's dispatcher on this server's plumbing; spend is read from db's task records.
+// NewQueueDispatcher builds the work queue's dispatcher on this server's plumbing; spend is read from db's task records
+// and from what the model proxy metered (llm.Hub.Metered).
 func (s *Server) NewQueueDispatcher(store *workqueue.Store, db *sql.DB) *workqueue.Dispatcher {
 	a := queueAdapter{s}
-	return &workqueue.Dispatcher{Store: store, Workers: a, Submitter: a, Tasks: a, Spend: workqueue.TaskSpend{DB: db}}
+	spend := workqueue.TaskSpend{DB: db}
+	if s.LLM != nil {
+		spend.Metered = s.LLM.Metered
+	}
+	return &workqueue.Dispatcher{Store: store, Workers: a, Submitter: a, Tasks: a, Spend: spend}
 }
