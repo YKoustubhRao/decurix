@@ -114,6 +114,8 @@ type Row struct {
 	Invalid bool `json:"invalid"`
 	// Infra is a row whose case the runner could not run as written; it says nothing of the worker.
 	Infra bool `json:"infra"`
+	// Served is the model the upstream's answers said served the case (kept in the row's checks).
+	Served []string `json:"served,omitempty"`
 }
 
 // Store keeps eval runs and their rows in SQLite.

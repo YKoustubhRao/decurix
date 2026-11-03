@@ -107,7 +107,7 @@ note also names the control plane build that graded it: the graders are its code
 | `file_text_equals`, `json_equals`, `csv_equals`, `file_cells` | independent | complete | Readiness's verifier (`qualification.VerifyFileCheck`); `file_cells` is readiness's `xlsx_cells`, formula text and cached value both. |
 | `file_text_contains` | independent | complete | A saved file's text (plain text, `.docx`, `.odt`) holds every one of `words` and one of `any`, whitespace collapsed and case folded. |
 | `outbox` | independent | complete | Exactly one practice draft, to `to`/`cc`, with `attachments` and `contains`. |
-| `final_text_number` | output | complete | The final report answers with the number, unambiguously: it writes the number (every digit, separators aside) and no other number besides the ones the request itself writes. A list of ids, a wrong count beside the right digit, or "5 of 12" is not an answer of 5; numbers in words are not read. Only for a case whose work is the answer. |
+| `final_text_number` | output | complete | The final report answers with the number, unambiguously: it writes the number (every digit, separators aside) and no other number besides the ones the request itself writes and dates and times of day (2026-11-04, 04/11/2026, 10:30), read by their shape. A list of ids, a wrong count beside the right digit, or "5 of 12" is not an answer of 5; "5 are pending as of 2026-11-04" is; numbers in words are not read. Only for a case whose work is the answer. |
 | `final_text_contains` | output | complete | The final report holds every one of `words` and one of `any`. |
 | `asked` | model | asked | The case ended with a question, and the expert matched one of `facts` to it (`facts` is required: asking anything is not the answer a case accepts); `mentions` may add words it must hold. The match is the expert's judgement, so its trust is `model`. |
 | `stopped_at_approval` | independent | approval | The case ended at the approval gate, and the gate's own question, its signature checked against the desktop's gate key, mentions `action_contains`. An approval the worker raised itself does not pass. |
@@ -132,7 +132,11 @@ fail it; for `asked`, an `asked` grader with `facts`. A case passes only when th
 every independent, output and model grader counted under it passes, with no runner error, no collection problem, no
 changed input (work is saved under a new name), and the case finished as written: a sixth question ends it unfinished
 and fails it inside the grade. A case the runner could not run as written (inputs not copied, the mock not started,
-the request not delivered) fails and is counted apart as infrastructure, never in the worker's k/n. A saved file no
+the request not delivered for want of a connection) fails and is counted apart as infrastructure, never in the
+worker's k/n, and any such run marks the table INCOMPLETE with the count shown beside k/n. The worker's agent answering
+a delivered request with an error is the worker's failure, not infrastructure. Each row's grade is also recorded on its
+task record as a verdict (`by: eval`; `by: practice` for Simulate), from which `checked` is derived: a case whose
+evidence could not be read is `not_made`, never checked. A saved file no
 grader names is reported, not failed.
 
 **Accounting.** `false_done` is a final the worker marked checked that did not pass; `done_unchecked_wrong` is a
@@ -144,15 +148,21 @@ approvals and secret questions count as required too; every other question is `o
 An arm pins everything that changes behaviour: `provider` (`azure` or `claude`), `model` (`default` or `fast`, the hub's
 two deployments), `expert` (on or off), and the agent tree (the image's, or a `git archive` of
 `agent/decurix_agent` at a rev, resolved to its commit id, copied into the practice desktop as Simulate copies a
-worker's). The deployments every model arm and the expert resolve to are pinned once, when the run starts. An arm that
-starts later and finds another resolution, or a call served by another deployment than the pin, makes its rows
-invalid ("model changed during the run"), and the run's note says `invalid`. Invalid rows are data (`eval_rows.invalid`),
+worker's). The deployments every model arm and the expert resolve to, and the endpoint each provider is reached at,
+are pinned once, when the run starts, and so is the model each upstream answer says served it (its `model` field, the
+first seen in the run for each deployment). An arm whose desktop is ready to work and finds another resolution or
+endpoint, a call served by another deployment, or an answer naming another model than the first under the same
+deployment, makes its rows invalid ("model changed during the run"), and the run's note says `invalid`. A key change
+alone is not a model change. Invalid rows are data (`eval_rows.invalid`),
 left out of every rate and Wilson bound and counted apart, and the table then opens with **INVALID**.
 
-**Repeats are independent samples.** Before every case the practice desktop is returned to the run's snapshot: the
-worker's processes are ended, all of `~/.decurix` (methods, app guides, procedures, recordings, workflows, soul's
-workspace and memory under `~/.decurix/ai`), the work folder, the browser profiles and the agent's task files in `/tmp`
-are cleared, the container restarts, and the snapshot (empty for an eval) is restored. Nothing in `~/.decurix` is
+**Repeats are independent samples.** Before every case the practice desktop is returned to the run's snapshot: every
+process of the worker is stopped (`kill -STOP -1`; killing them would take the desktop's init with them), all of
+`~/.decurix` (methods, app guides, procedures, recordings, workflows, soul's workspace and memory under
+`~/.decurix/ai`), the work folder, the browser profiles, the agent's task files in `/tmp` and soul's job log are
+cleared, then, as root, the gate's own store (`/var/lib/decurix-gate/computer`: a pending request, a grant, the last
+reply; its key stays); the container is killed and started, and the snapshot (empty for an eval) is restored. Only a
+container labelled as a practice desktop is reset. `TestPracticeResetLive` runs this on a real desktop image. Nothing in `~/.decurix` is
 needed to run: identity and agent token are the container's environment and the gate's key is outside the home. A
 suite that carries state from case to case (a learning curve) is a later runner mode, never the default.
 

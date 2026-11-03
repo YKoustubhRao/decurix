@@ -58,8 +58,13 @@ type Arm struct {
 	AgentTreeRev string `json:"agent_tree_rev,omitempty"`
 	AgentTree    []byte `json:"-"`
 	// Pinned when the arm starts.
-	Image            string `json:"image,omitempty"`
-	Deployment       string `json:"deployment,omitempty"`
+	Image      string `json:"image,omitempty"`
+	Deployment string `json:"deployment,omitempty"`
+	// Endpoint is the provider's endpoint when the run started; Served is the model the upstream's answers said
+	// served the arm (the first seen in the run for its deployment).
+	Endpoint         string `json:"endpoint,omitempty"`
+	Served           string `json:"served,omitempty"`
+	ExpertEndpoint   string `json:"expert_endpoint,omitempty"`
 	AgentTreeSHA     string `json:"agent_tree_sha,omitempty"`
 	ExpertDeployment string `json:"expert_deployment,omitempty"`
 }
@@ -196,17 +201,18 @@ func (s *Service) Start(ctx context.Context, req MatrixRequest) (Run, error) {
 // arm that starts later is held to what the run started with, so a settings change mid-run shows as invalid rows,
 // never as a quiet comparison of two models (review EVAL-1, B4).
 func (s *Service) pinDeployments(arms []Arm) error {
-	expert := ""
+	expert, expertEndpoint := "", ""
 	if s.Hub != nil && s.Hub.Configured(ExpertProvider) {
 		if dep, err := s.Hub.Resolve(ExpertProvider, ExpertModel); err == nil {
-			expert = dep
+			expert, expertEndpoint = dep, s.endpoint(ExpertProvider)
 		}
 	}
 	for i := range arms {
-		arms[i].ExpertDeployment = expert
+		arms[i].ExpertDeployment, arms[i].ExpertEndpoint = expert, expertEndpoint
 		if arms[i].Kind != ArmModel {
 			continue
 		}
+		arms[i].Endpoint = s.endpoint(arms[i].Provider)
 		dep, err := s.Hub.Resolve(arms[i].Provider, arms[i].Model)
 		if err != nil || dep == "" {
 			return BadRequest(fmt.Sprintf("Arm %s: its model could not be resolved.", arms[i].Name))
@@ -214,6 +220,36 @@ func (s *Service) pinDeployments(arms []Arm) error {
 		arms[i].Deployment = dep
 	}
 	return nil
+}
+
+// endpoint is where the hub sends a provider's calls now ("" when it says nothing).
+func (s *Service) endpoint(provider string) string {
+	if s.Hub == nil {
+		return ""
+	}
+	return s.Hub.Status()[provider].Endpoint
+}
+
+// servedPins holds, per deployment, the model the upstream first said served it in this run: a later answer naming
+// another model under the same deployment is a model change.
+type servedPins struct {
+	mu  sync.Mutex
+	pin map[string]string
+}
+
+// check pins served for deployment the first time, and reports whether it matches the pin.
+func (p *servedPins) check(deployment, served string) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pin == nil {
+		p.pin = map[string]string{}
+	}
+	pinned, ok := p.pin[deployment]
+	if !ok {
+		p.pin[deployment] = served
+		return served, true
+	}
+	return pinned, pinned == served
 }
 
 // graderNote names the control plane build that graded the run: the graders are its code, so a score is bound to it
@@ -438,6 +474,7 @@ func (s *Service) execute(ctx context.Context, run Run, suite Suite, cases []Cas
 		delete(s.active, run.ID)
 		s.mu.Unlock()
 	}()
+	served := &servedPins{}
 	var expert *Expert
 	if len(arms) > 0 && arms[0].ExpertDeployment != "" {
 		expert = &Expert{Hub: s.Hub, Recorder: s.Recorder, Deployment: arms[0].ExpertDeployment}
@@ -448,7 +485,7 @@ func (s *Service) execute(ctx context.Context, run Run, suite Suite, cases []Cas
 		if ctx.Err() != nil {
 			return
 		}
-		bad, err := s.runArm(ctx, run, suite, cases, &arms[i], i, expert)
+		bad, err := s.runArm(ctx, run, suite, cases, &arms[i], i, expert, served)
 		_ = s.Store.SetArms(run.ID, arms)
 		invalid = invalid || bad
 		if err != nil {
@@ -477,25 +514,12 @@ func publicError(err error) string {
 
 // runArm makes the arm's practice desktop, runs every repeat of every case in it and removes it. It reports whether
 // any row was invalid.
-func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case, arm *Arm, index int, expert *Expert) (bool, error) {
+func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case, arm *Arm, index int, expert *Expert, served *servedPins) (bool, error) {
 	image, err := s.Sandbox.DesktopImageID(ctx, "basic")
 	if err != nil {
 		return false, practice.Sentence("The desktop image could not be read.")
 	}
 	arm.Image = image
-	// What the arm's model and the expert resolve to now, against the run's pins: a change since the run started makes
-	// every row of this arm invalid.
-	drift := ""
-	if arm.Kind == ArmModel {
-		if now, err := s.Hub.Resolve(arm.Provider, arm.Model); err != nil || now != arm.Deployment {
-			drift = fmt.Sprintf("%s: the arm's model resolves to %q at its start, not %q as when the run started", modelChanged, now, arm.Deployment)
-		}
-	}
-	if expert != nil && drift == "" {
-		if now, err := s.Hub.Resolve(ExpertProvider, ExpertModel); err != nil || now != expert.Deployment {
-			drift = fmt.Sprintf("%s: the expert resolves to %q at this arm's start, not %q as when the run started", modelChanged, now, expert.Deployment)
-		}
-	}
 	broker, err := s.BrokerURL(ctx)
 	if err != nil {
 		return false, practice.Sentence("The practice broker could not start.")
@@ -542,6 +566,23 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 	if err := s.waitAgent(ctx, d); err != nil {
 		return false, practice.Sentence("The practice desktop's agent never became ready.")
 	}
+	// What the arm's model and the expert resolve to now, against the run's pins, once its desktop is ready to
+	// work: a change since the run started makes every row of this arm invalid, calls or none.
+	drift := ""
+	if arm.Kind == ArmModel {
+		if now, err := s.Hub.Resolve(arm.Provider, arm.Model); err != nil || now != arm.Deployment {
+			drift = fmt.Sprintf("%s: the arm's model resolves to %q at its start, not %q as when the run started", modelChanged, now, arm.Deployment)
+		} else if now := s.endpoint(arm.Provider); now != arm.Endpoint {
+			drift = fmt.Sprintf("%s: the arm's provider is reached at another endpoint than when the run started", modelChanged)
+		}
+	}
+	if expert != nil && drift == "" {
+		if now, err := s.Hub.Resolve(ExpertProvider, ExpertModel); err != nil || now != expert.Deployment {
+			drift = fmt.Sprintf("%s: the expert resolves to %q at this arm's start, not %q as when the run started", modelChanged, now, expert.Deployment)
+		} else if now := s.endpoint(ExpertProvider); now != arm.ExpertEndpoint {
+			drift = fmt.Sprintf("%s: the expert's provider is reached at another endpoint than when the run started", modelChanged)
+		}
+	}
 	invalid := false
 	first := true
 	for rep := 1; rep <= run.Repeats; rep++ {
@@ -563,7 +604,10 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 				}
 			}
 			first = false
-			row := s.runCase(ctx, run, suite, *arm, armRun, d, c, rep, expert)
+			row := s.runCase(ctx, run, suite, *arm, armRun, d, c, rep, expert, served)
+			if arm.Served == "" && len(row.Served) > 0 {
+				arm.Served = row.Served[0]
+			}
 			if ctx.Err() != nil {
 				return invalid, nil
 			}
@@ -619,9 +663,25 @@ func (s *Service) post(ctx context.Context, d desktop.PracticeDesktop, path stri
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("the agent answered %d", resp.StatusCode)
+		return agentRefused(resp.StatusCode)
 	}
 	return nil
+}
+
+// agentRefused is the worker's agent answering a delivered request with an error: the worker's failure.
+type agentRefused int
+
+func (a agentRefused) Error() string { return fmt.Sprintf("the agent answered %d", int(a)) }
+
+// notDelivered records why something was not delivered: the agent's own refusal is the worker failing the case; a
+// connection the runner could not make is infrastructure, counted apart.
+func notDelivered(ev *Evidence, err error, what string) {
+	var refused agentRefused
+	if errors.As(err, &refused) {
+		ev.Unfinished = append(ev.Unfinished, what+" The worker's agent answered "+fmt.Sprint(int(refused))+".")
+		return
+	}
+	ev.Infra = append(ev.Infra, what)
 }
 
 // rowChecks is what a row keeps of how its case was decided.
@@ -632,11 +692,13 @@ type rowChecks struct {
 	WorkerSaid string  `json:"worker_said,omitempty"`
 	// Verdict is the worker's own decurix.verdict/v1 on its final, as it sent it.
 	Verdict json.RawMessage `json:"verdict,omitempty"`
+	// Served is the model the upstream's answers said served the case.
+	Served []string `json:"served,omitempty"`
 }
 
 // runCase runs one case in the arm's desktop and returns its row: inputs in, a fresh mock, the arm's work, then a
 // pause before anything is read, collection, the grade, and the mock removed.
-func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, armRun string, d desktop.PracticeDesktop, c Case, rep int, expert *Expert) Row {
+func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, armRun string, d desktop.PracticeDesktop, c Case, rep int, expert *Expert, served *servedPins) Row {
 	started := time.Now()
 	desktopID := desktop.PracticeDesktopID(armRun)
 	budget := suite.CaseBudget(c)
@@ -717,9 +779,18 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 		QRequired: res.Questions.Required, QOther: res.Questions.Other, TokensIn: usage.Input, TokensCached: usage.Cached, TokensOut: usage.Output,
 		Minutes: ev.Minutes, Deployments: usage.Deployments, At: s.Store.now(), Infra: res.Infra}
 	row.Problems = append(append([]string{}, res.Problems...), problems...)
+	row.Served = usage.Served
 	if arm.Kind == ArmModel && servedByOther(usage.Deployments, arm.Deployment) {
 		row.Invalid = true
 		row.Problems = append(row.Problems, fmt.Sprintf("%s: calls served by %s, the run pinned %q", modelChanged, strings.Join(usage.Deployments, ", "), arm.Deployment))
+	}
+	if arm.Kind == ArmModel {
+		for _, m := range usage.Served {
+			if pinned, ok := served.check(arm.Deployment, m); !ok {
+				row.Invalid = true
+				row.Problems = append(row.Problems, fmt.Sprintf("%s: %q answered as %q, the run's first answer from it said %q", modelChanged, arm.Deployment, m, pinned))
+			}
+		}
 	}
 	if containsString(problems, modelChanged) {
 		row.Invalid = true
@@ -732,7 +803,7 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 		questions = []Asked{}
 	}
 	checks, _ := json.Marshal(rowChecks{Expected: res.Expected, Graders: res.Checks, Questions: questions,
-		WorkerSaid: clipText(ev.FinalText, 2000), Verdict: ev.Verdict})
+		WorkerSaid: clipText(ev.FinalText, 2000), Verdict: ev.Verdict, Served: usage.Served})
 	row.Checks = json.RawMessage(suite.Withhold(string(checks)))
 	s.recordOutcome(desktopID, route.TaskID, c, ev, res)
 	return row
@@ -791,9 +862,12 @@ func (s *Service) recordOutcome(desktopID, taskID string, c Case, ev Evidence, r
 	if res.Passed {
 		verdict = "passed its graders"
 	}
-	passed := res.Passed
-	_, _ = s.Tasks.RecordOutcome(desktopID, taskID, tasks.Outcome{Kind: kind, Engine: "eval", Checked: &passed,
-		Reply: "Eval case " + c.ID + " " + verdict + ". The worker said: " + clipText(ev.FinalText, 2000)})
+	// The grade is the eval's verdict, and checked is derived from it (H-CP-2). A case the runner could not run as
+	// written, or whose evidence could not be read, is not graded: its check was not made.
+	graded := !res.Infra && ev.RunErr == nil && len(ev.CollectProblems) == 0
+	_, _ = s.Tasks.RecordOutcome(desktopID, taskID, tasks.Outcome{Kind: kind, Engine: "eval",
+		Verdict: practice.GraderVerdict(tasks.ByEval, res.Passed, graded, "eval.graders", "Eval case "+c.ID+" "+verdict+".", "case:"+c.ID),
+		Reply:   "Eval case " + c.ID + " " + verdict + ". The worker said: " + clipText(ev.FinalText, 2000)})
 }
 
 // readLedger reads the worker's record ledger for the task through the worker's own user; nil when there is none.
@@ -813,7 +887,7 @@ func (s *Service) readLedger(ctx context.Context, d desktop.PracticeDesktop, tas
 func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, desktopID, taskID string, c Case, arm Arm, expert *Expert, obs <-chan practice.Observation, ev *Evidence) []string {
 	var problems []string
 	if err := s.post(ctx, d, "/request", map[string]string{"content": c.Request, "task_id": taskID}); err != nil {
-		ev.Infra = append(ev.Infra, "The request could not be sent to the worker.")
+		notDelivered(ev, err, "The request could not be sent to the worker.")
 		return problems
 	}
 	questions := 0
@@ -844,7 +918,7 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 				ev.Questions = append(ev.Questions, asked)
 				if err := s.post(ctx, d, "/request", map[string]string{"content": asked.Reply, "task_id": taskID}); err != nil {
 					ev.Observation, ev.FinalText = ObservedQuery, o.Text
-					ev.Infra = append(ev.Infra, "The expert's reply could not be sent to the worker.")
+					notDelivered(ev, err, "The expert's reply could not be sent to the worker.")
 					return problems
 				}
 			case qualification.ObservedApproval:

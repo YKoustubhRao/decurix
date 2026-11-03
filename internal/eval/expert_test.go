@@ -19,7 +19,10 @@ type scriptedHub struct {
 	bodies  [][]byte
 }
 
-func (h *scriptedHub) Configured(string) bool                 { return true }
+func (h *scriptedHub) Configured(string) bool { return true }
+func (h *scriptedHub) Status() map[string]llm.ProviderStatus {
+	return map[string]llm.ProviderStatus{"azure": {Configured: true, Endpoint: "https://models.example.test"}}
+}
 func (h *scriptedHub) Resolve(string, string) (string, error) { return "big-1", nil }
 func (h *scriptedHub) ChatResult(_ context.Context, _ string, body []byte) (llm.ChatResult, error) {
 	h.mu.Lock()

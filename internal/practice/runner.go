@@ -563,12 +563,17 @@ func (s *Service) runCase(ctx context.Context, run qualification.PracticeRun, su
 	}()
 	// Freeze the desktop and the mock before reading anything, so the worker
 	// cannot change what the checker sees.
+	// graded is false when the evidence could not be read: the checker then decided nothing, and the case's record
+	// says its check was not made (unchecked), never that it was checked.
+	graded := ev.RunErr == nil
 	if err := s.Sandbox.PausePractice(ctx, d.ContainerID, mockID); err != nil {
 		problems = append(problems, "The practice desktop could not be paused before collection.")
+		graded = false
 	} else {
 		outputs, changed, collect, err := s.Sandbox.CollectPractice(ctx, d.ContainerID, c.ID, c.Files)
 		if err != nil {
 			problems = append(problems, "The case's files could not be collected.")
+			graded = false
 		}
 		ev.Outputs, ev.ChangedInputs = outputs, changed
 		problems = append(problems, collect...)
@@ -610,10 +615,30 @@ func (s *Service) runCase(ctx context.Context, run qualification.PracticeRun, su
 		if f.Passed {
 			verdict = "passed its independent checks"
 		}
-		checked := f.Passed
-		_, _ = s.Tasks.RecordOutcome(workerID, route.TaskID, tasks.Outcome{Kind: kind, Reply: "Practice case " + c.ID + " " + verdict + ". The worker said: " + clip(ev.Text, 2000), Engine: "practice", Checked: &checked})
+		// The grade is the practice checker's verdict, and checked is derived from it (H-CP-2), never set bare.
+		_, _ = s.Tasks.RecordOutcome(workerID, route.TaskID, tasks.Outcome{Kind: kind, Reply: "Practice case " + c.ID + " " + verdict + ". The worker said: " + clip(ev.Text, 2000), Engine: "practice",
+			Verdict: graderVerdict(tasks.ByPractice, f.Passed, graded, "practice.checks", "Practice case "+c.ID+" "+verdict+".", "case:"+c.ID)})
 	}
 	return f, files
+}
+
+// graderVerdict is a practice or eval grade as a verdict: pass, fail, or not made when the evidence could not be
+// graded. Its basis is code: the checker decided in Go from state read back.
+func graderVerdict(by string, passed, graded bool, id, detail, ref string) *tasks.GateVerdict {
+	result := "fail"
+	switch {
+	case !graded:
+		result = "not_made"
+	case passed:
+		result = "pass"
+	}
+	return tasks.GraderVerdict(by, result, "code", id, detail, []string{ref})
+}
+
+// GraderVerdict is a practice or eval grade as a decurix.verdict/v1 (exported for the eval runner, which records its
+// rows' grades the same way).
+func GraderVerdict(by string, passed, graded bool, id, detail, ref string) *tasks.GateVerdict {
+	return graderVerdict(by, passed, graded, id, detail, ref)
 }
 
 // evidenceFiles lists what is kept of a case: inputs, outputs, the mock's state

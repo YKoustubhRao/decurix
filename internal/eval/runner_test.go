@@ -80,6 +80,9 @@ type fakeHub struct {
 	expertCalls [][]byte
 	workerCalls int
 	switchAfter int // after this many worker calls the default deployment changes (0: never)
+	endpoint    string
+	// served is the model string each worker answer reports ("" reports the deployment's own name).
+	served string
 }
 
 func newHub() *fakeHub {
@@ -87,6 +90,17 @@ func newHub() *fakeHub {
 }
 
 func (h *fakeHub) Configured(p string) bool { return p == "azure" }
+
+// Status says the endpoint each provider is reached at (endpoint, else a fixed one).
+func (h *fakeHub) Status() map[string]llm.ProviderStatus {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ep := h.endpoint
+	if ep == "" {
+		ep = "https://models.example.test"
+	}
+	return map[string]llm.ProviderStatus{"azure": {Configured: true, Endpoint: ep}}
+}
 
 func (h *fakeHub) Resolve(provider, asked string) (string, error) {
 	h.mu.Lock()
@@ -132,8 +146,13 @@ func (h *fakeHub) ChatResult(_ context.Context, provider string, body []byte) (l
 	if req.MaxTokens > 0 {
 		used = req.MaxTokens
 	}
-	return llm.ChatResult{Status: 200, Deployment: h.deployments[provider+"/"+label],
-		Body: []byte(fmt.Sprintf(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":%d,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":40}}}`, used))}, nil
+	dep := h.deployments[provider+"/"+label]
+	served := h.served
+	if served == "" {
+		served = dep + "-2026-01-01"
+	}
+	return llm.ChatResult{Status: 200, Deployment: dep,
+		Body: []byte(fmt.Sprintf(`{"model":%q,"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":%d,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":40}}}`, served, used))}, nil
 }
 
 // worker is the fake agent's behaviour: what it does with each /request of a case.
@@ -184,7 +203,8 @@ func (f *fakeSandbox) CreatePractice(_ context.Context, spec desktop.PracticeSpe
 	return desktop.PracticeDesktop{ContainerID: id, Name: f.desktopID, IP: "172.30.0.5"}, nil
 }
 
-// ResetPractice clears what the real reset clears (desktop.PracticeResetPaths) from the fake home.
+// ResetPractice is a stand-in: it drops from the fake home the paths the real reset is given
+// (desktop.PracticeResetPaths). What the real reset does on a desktop is TestPracticeResetLive's to prove.
 func (f *fakeSandbox) ResetPractice(context.Context, string, []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

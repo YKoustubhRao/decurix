@@ -68,6 +68,8 @@ type Table struct {
 	NotResult bool            `json:"not_a_result"`
 	// Invalid counts the rows whose model changed under them; any makes the table say so first.
 	Invalid int `json:"invalid"`
+	// Infra counts the rows the runner could not run as written; any makes the result INCOMPLETE.
+	Infra int `json:"infra"`
 }
 
 // Summarise builds a run's table from its rows, cases in the run's order and arms as the run named them.
@@ -99,6 +101,7 @@ func Summarise(run Run, rows []Row) Table {
 	for _, a := range run.Arms {
 		t.Totals[a.Name] = cell(byArm[a.Name])
 		t.Invalid += t.Totals[a.Name].Invalid
+		t.Infra += t.Totals[a.Name].Infra
 	}
 	return t
 }
@@ -182,6 +185,10 @@ func (t Table) Markdown() string {
 		fmt.Fprintf(&b, "**INVALID: a model changed during the run.** %d row(s) were served by another deployment than the "+
 			"run pinned; they are left out of every rate below and counted apart.\n\n", t.Invalid)
 	}
+	if t.Infra > 0 {
+		fmt.Fprintf(&b, "**INCOMPLETE: %d case run(s) could not be run as written** (inputs, the mock or a delivery failed). "+
+			"They are left out of k/n and shown beside it as \"+N infra\"; the rates cover fewer runs than were asked.\n\n", t.Infra)
+	}
 	if t.NotResult {
 		fmt.Fprintf(&b, "**n=%d: not a result.** Fewer than %d repeats show what happened, not a rate.\n\n", t.Repeats, MinRepeats)
 	}
@@ -224,15 +231,15 @@ func (t Table) Markdown() string {
 	}
 	section("Pass (k/n, Wilson 95% lower bound)", func(c Cell) string {
 		if c.N == 0 {
-			return "-"
+			return "-" + infraNote(c)
 		}
-		return fmt.Sprintf("%d/%d (lo %.2f)", c.Pass, c.N, c.PassLo)
+		return fmt.Sprintf("%d/%d (lo %.2f)", c.Pass, c.N, c.PassLo) + infraNote(c)
 	})
 	section("False done (k/n, Wilson 95% upper bound); done unchecked and wrong", func(c Cell) string {
 		if c.N == 0 {
-			return "-"
+			return "-" + infraNote(c)
 		}
-		return fmt.Sprintf("%d/%d (hi %.2f); %d", c.FalseDone, c.N, c.FalseDoneHi, c.DoneUncheckedWrong)
+		return fmt.Sprintf("%d/%d (hi %.2f); %d", c.FalseDone, c.N, c.FalseDoneHi, c.DoneUncheckedWrong) + infraNote(c)
 	})
 	section("Questions per run (required / other)", func(c Cell) string {
 		if c.N == 0 {
@@ -259,6 +266,14 @@ func (t Table) Markdown() string {
 	return b.String()
 }
 
+// infraNote is the count of a cell's runs left out as infrastructure, shown beside its k/n.
+func infraNote(c Cell) string {
+	if c.Infra == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" +%d infra", c.Infra)
+}
+
 // armPins says what an arm pinned: its kind and model as resolved, the agent tree, the image and the expert.
 func armPins(a Arm) string {
 	var parts []string
@@ -268,7 +283,11 @@ func armPins(a Arm) string {
 		if dep == "" {
 			dep = "not resolved"
 		}
-		parts = append(parts, fmt.Sprintf("%s %s → %s", a.Provider, a.Model, dep))
+		served := ""
+		if a.Served != "" && a.Served != dep {
+			served = fmt.Sprintf(" (answers say %s)", a.Served)
+		}
+		parts = append(parts, fmt.Sprintf("%s %s → %s%s", a.Provider, a.Model, dep, served))
 		if a.Expert {
 			parts = append(parts, "with the expert ("+orDash(a.ExpertDeployment)+")")
 		} else {

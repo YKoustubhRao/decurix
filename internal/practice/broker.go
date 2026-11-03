@@ -53,6 +53,9 @@ type CaseUsage struct {
 	Output      int64    `json:"output"`
 	Calls       int      `json:"calls"`
 	Deployments []string `json:"deployments"`
+	// Served is the model each answer says served it (its "model" field), in the order first seen: a deployment's
+	// name can stay while the model behind it is upgraded.
+	Served []string `json:"served"`
 }
 
 // ObservationBuffer is how many end-of-turn reports one case keeps waiting: every report of the case is passed on,
@@ -135,7 +138,7 @@ func (b *Broker) StartCase(taskID string) <-chan Observation {
 		return nil
 	}
 	b.run.taskID, b.run.obs, b.run.drafts = taskID, make(chan Observation, ObservationBuffer), nil
-	b.run.caseMax, b.run.caseUsage, b.run.caseOver, b.run.caseClosed = 0, CaseUsage{Deployments: []string{}}, make(chan struct{}), false
+	b.run.caseMax, b.run.caseUsage, b.run.caseOver, b.run.caseClosed = 0, CaseUsage{Deployments: []string{}, Served: []string{}}, make(chan struct{}), false
 	return b.run.obs
 }
 
@@ -168,6 +171,7 @@ func (b *Broker) CaseUsage() CaseUsage {
 	}
 	u := b.run.caseUsage
 	u.Deployments = append([]string{}, u.Deployments...)
+	u.Served = append([]string{}, u.Served...)
 	return u
 }
 
@@ -293,7 +297,7 @@ func (b *Broker) llm(w http.ResponseWriter, r *http.Request) {
 	}
 	status, answer, retry := res.Status, res.Body, res.Retry
 	usage := llm.ParseUsage(answer)
-	b.count(run, usage, res.Deployment)
+	b.count(run, usage, res.Deployment, ServedModel(answer))
 	b.record(r, run, provider, body, res, usage, started)
 	for name, values := range retry {
 		for _, v := range values {
@@ -318,7 +322,7 @@ func (b *Broker) caseOver(run *brokerRun) bool {
 }
 
 // count adds a call's usage to the run and to its case, and the deployment that served it to the case's.
-func (b *Broker) count(run *brokerRun, u llm.Usage, deployment string) {
+func (b *Broker) count(run *brokerRun, u llm.Usage, deployment, served string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	run.tokens += u.Tokens()
@@ -338,10 +342,28 @@ func (b *Broker) count(run *brokerRun, u llm.Usage, deployment string) {
 	if !seen {
 		c.Deployments = append(c.Deployments, deployment)
 	}
+	seen = false
+	for _, m := range c.Served {
+		seen = seen || m == served
+	}
+	if !seen {
+		c.Served = append(c.Served, served)
+	}
 	if run.caseMax > 0 && c.Input+c.Output >= run.caseMax && !run.caseClosed && run.caseOver != nil {
 		run.caseClosed = true
 		close(run.caseOver)
 	}
+}
+
+// ServedModel is the model an OpenAI-shaped answer says served it ("" when it says none).
+func ServedModel(answer []byte) string {
+	var a struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(answer, &a) != nil {
+		return ""
+	}
+	return clip(strings.TrimSpace(a.Model), 200)
 }
 
 // servedModel serves a call that asks for the default model with the run's model label, when the run names one.

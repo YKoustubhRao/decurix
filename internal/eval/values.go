@@ -132,10 +132,14 @@ func numbersIn(text string) []*big.Rat {
 	return out
 }
 
+// datesAndTimes are digits that write a date or a time of day, not a quantity: 2026-11-04, 04/11/2026, 4.11.26,
+// 10:30, 10:30:15. They are read by their shape alone, whatever the answer is about.
+var datesAndTimes = regexp.MustCompile(`\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b|\b\d{1,2}:\d{2}(?::\d{2})?\b`)
+
 // answersNumber says why a final report does not answer with the number ("" when it does). The answer must be
-// unambiguous: leaving aside the numbers the request itself writes, every number in the report is that number, and
-// there is at least one. A list of ids, a wrong count beside the right digit, or "5 of 12" is not an answer of 5.
-// Numbers written as words are not read.
+// unambiguous: leaving aside the numbers the request itself writes, and dates and times of day, every number in the
+// report is that number, and there is at least one. A list of ids, a wrong count beside the right digit, or "5 of 12"
+// is not an answer of 5; "5 are pending as of 2026-11-04" is. Numbers written as words are not read.
 func answersNumber(final, request, number string) string {
 	want, ok := parseNumber(number)
 	if !ok {
@@ -143,7 +147,7 @@ func answersNumber(final, request, number string) string {
 	}
 	asked := numbersIn(request)
 	found, other := false, []string{}
-	for _, n := range numbersIn(final) {
+	for _, n := range numbersIn(datesAndTimes.ReplaceAllString(final, " ")) {
 		inRequest := false
 		for _, a := range asked {
 			inRequest = inRequest || a.Cmp(n) == 0

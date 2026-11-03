@@ -12,6 +12,7 @@ import (
 
 	"github.com/YKoustubhRao/decurix/internal/llm"
 	"github.com/YKoustubhRao/decurix/internal/llmrec"
+	"github.com/YKoustubhRao/decurix/internal/practice"
 )
 
 // The scripted expert (D9) only chooses: shown a worker's question and the facts the person knows, it names one fact
@@ -23,6 +24,8 @@ type Hub interface {
 	ChatResult(ctx context.Context, provider string, body []byte) (llm.ChatResult, error)
 	Resolve(provider, asked string) (string, error)
 	Configured(provider string) bool
+	// Status says each provider's endpoint, pinned with the deployment (a key change alone is not a model change).
+	Status() map[string]llm.ProviderStatus
 }
 
 // The expert's model: the hub's Azure heavy deployment, pinned for a whole run.
@@ -49,6 +52,8 @@ type Expert struct {
 	Recorder llmrec.Recorder
 	// Deployment is what served "default" when the run started; a call served by another is reported.
 	Deployment string
+	// Served is the model the expert's first answer said served it; a later answer naming another is reported.
+	Served string
 
 	mu            sync.Mutex
 	noTemperature bool
@@ -161,7 +166,14 @@ func (e *Expert) ChooseFor(ctx context.Context, desktopID, taskID, question stri
 		log.Printf("eval: expert: %s", why)
 		c.Problem = why
 	}
-	if e.Deployment != "" && res.Deployment != e.Deployment {
+	served := practice.ServedModel(res.Body)
+	e.mu.Lock()
+	if e.Served == "" {
+		e.Served = served
+	}
+	pinned := e.Served
+	e.mu.Unlock()
+	if (e.Deployment != "" && res.Deployment != e.Deployment) || served != pinned {
 		c.Problem = strings.TrimLeft(c.Problem+"; ", "; ") + modelChanged
 	}
 	return c, nil
