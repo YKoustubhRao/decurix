@@ -137,6 +137,8 @@ type Request struct {
 	// Reading is the host's one reading of Prompt when it answers a paused approval (skills.Reading), or nil: set, it
 	// decides whether the action was approved, not soul's own word list.
 	Reading *skills.Reading
+	// PlanAgreed is the host's word that the request is a stage of a plan the person agreed (skills.RunContext).
+	PlanAgreed bool
 }
 
 type Scheduler struct {

@@ -70,6 +70,8 @@ type Checkpoint struct {
 	// a gate (soul's gate.go): the reply that resumes it is the gate's settlement of that one request.
 	GateRequest     string
 	GateFingerprint string
+	// PlanAgreed is the paused request's own (Request.PlanAgreed): the reply that resumes it does not carry it.
+	PlanAgreed bool
 
 	nodes []node
 	seq   int
@@ -222,6 +224,7 @@ func (e *execution) restore(cp *Checkpoint) bool {
 	if e.req.WorkDir == "" {
 		e.req.WorkDir = cp.WorkDir
 	}
+	e.req.PlanAgreed = e.req.PlanAgreed || cp.PlanAgreed
 	e.route, e.usedSkill, e.replans, e.seq = cp.Route, cp.UsedSkill, cp.Replans, cp.seq
 	e.setSystem(cp.System)
 	for i := range cp.nodes {
@@ -363,6 +366,10 @@ func (e *execution) run() {
 			break
 		}
 	}
+	// A step that paused while another was with the person is asked now (review T-13).
+	if e.stopReason == "" && e.ctx.Err() == nil {
+		e.nextWaiting()
+	}
 
 	if e.pause == nil {
 		for _, n := range e.nodes {
@@ -482,7 +489,7 @@ func (e *execution) runContext(n *node) skills.RunContext {
 		// a real error message, and writes back what it had to research.
 		L1: s.L1, SkillLib: s.SkillLib,
 		System: e.system, WorkDir: e.req.WorkDir, Approved: approvalFor(n),
-		Resume: n.resume, HumanReply: n.reply, HumanReading: n.reading,
+		Resume: n.resume, HumanReply: n.reply, HumanReading: n.reading, PlanAgreed: e.req.PlanAgreed,
 	}
 }
 
@@ -505,9 +512,7 @@ func (e *execution) complete(n *node, res skills.Result) {
 	switch {
 	case flag("needsApproval"):
 		n.state = StepPaused
-		action, _ := res.Meta["action"].(string)
-		reason, _ := res.Meta["approvalReason"].(string)
-		e.pause = &pause{node: n, kind: pauseApproval, action: action, reason: reason}
+		e.setPause(pauseFor(n))
 
 	case res.Verified:
 		n.state = StepDone
@@ -520,17 +525,58 @@ func (e *execution) complete(n *node, res skills.Result) {
 		case flag("fatal"):
 			e.stopReason = "a step failed in a way retrying cannot fix"
 		case flag("needsUserInput"):
-			question, _ := res.Meta["question"].(string)
-			if question == "" {
-				question, _ = res.Meta["failureReasoning"].(string)
+			if e.pause != nil {
+				// Another step is already with the person: this one waits its turn, paused, and is asked next.
+				n.state = StepPaused
 			}
-			if question == "" {
-				question = truncate(res.Output, 1500)
-			}
-			e.pause = &pause{node: n, kind: pauseInput, question: question}
+			e.setPause(pauseFor(n))
 		case len(e.nodes) > 1 && e.replans < e.s.maxReplans() && e.wantReplan == nil:
 			e.wantReplan = n
 		}
+	}
+}
+
+// pauseFor is the pause n's result asks for: its approval, or its question.
+func pauseFor(n *node) *pause {
+	res := n.result
+	if v, _ := res.Meta["needsApproval"].(bool); v {
+		action, _ := res.Meta["action"].(string)
+		reason, _ := res.Meta["approvalReason"].(string)
+		return &pause{node: n, kind: pauseApproval, action: action, reason: reason}
+	}
+	question, _ := res.Meta["question"].(string)
+	if question == "" {
+		question, _ = res.Meta["failureReasoning"].(string)
+	}
+	if question == "" {
+		question = truncate(res.Output, 1500)
+	}
+	return &pause{node: n, kind: pauseInput, question: question}
+}
+
+// setPause makes p the job's pause unless one is already with the person: a second pause never overwrites the first
+// (review T-13). Its step stays StepPaused and is asked after the first is answered (nextWaiting).
+func (e *execution) setPause(p *pause) {
+	if e.pause == nil {
+		e.pause = p
+		return
+	}
+	e.log(fmt.Sprintf("scheduler: step %d also needs you - it is asked after the question already with you", p.node.step.ID))
+}
+
+// nextWaiting makes the earliest-finished step still waiting to be asked the job's pause, when nothing else is.
+func (e *execution) nextWaiting() {
+	if e.pause != nil {
+		return
+	}
+	var first *node
+	for _, n := range e.nodes {
+		if n.state == StepPaused && n.hasResult && (first == nil || n.seq < first.seq) {
+			first = n
+		}
+	}
+	if first != nil {
+		e.pause = pauseFor(first)
 	}
 }
 
@@ -638,7 +684,7 @@ func (e *execution) checkpoint() *Checkpoint {
 		Prompt: e.req.Prompt, Context: e.req.Context, WorkDir: e.req.WorkDir,
 		Route: e.route, System: e.system,
 		Kind: e.pause.kind, Action: e.pause.action, Question: e.pause.question,
-		Replans: e.replans, UsedSkill: e.usedSkill, CreatedAt: time.Now(), seq: e.seq,
+		Replans: e.replans, UsedSkill: e.usedSkill, CreatedAt: time.Now(), seq: e.seq, PlanAgreed: e.req.PlanAgreed,
 	}
 	if e.pause.node != nil {
 		cp.PausedID = e.pause.node.step.ID

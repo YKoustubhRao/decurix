@@ -318,17 +318,23 @@ func TestOperatorResumesWithoutTheCommandWhenNotApproved(t *testing.T) {
 	}
 }
 
-// A refusal is about the command, not the task: told why the person was asked, the model does the step another way and
-// says what it understood - it does not ask them what they meant (round 5, 2026-10-19).
-func TestDeclinedAdviceTellsTheModelNotToAskWhatWasMeant(t *testing.T) {
-	advice := declinedAdvice("git push origin main")
-	for _, want := range []string{"continue the task without it", "publishes commits", "do not ask them to clarify", "say what you understood"} {
-		if !strings.Contains(advice, want) {
-			t.Errorf("advice lacks %q: %s", want, advice)
+// After a person's no, the note to the model never tells it to reach the refused step some other way (review T-02):
+// not run; continue without it; if the task needs it, say so in the report. A property of the advice text.
+func TestDeclinedAdviceNeverPointsAroundTheRefusal(t *testing.T) {
+	for _, pending := range []string{"git push origin main", "echo hi | mail -s report boss@example.com", "ls ~/work"} {
+		advice := strings.ToLower(declinedAdvice(pending))
+		for _, around := range []string{"another way", "script", "instead", "clarify"} {
+			if strings.Contains(advice, around) {
+				t.Errorf("advice for %q points around the refusal (%q): %s", pending, around, advice)
+			}
+		}
+		if !strings.Contains(advice, "do not run that command now") || !strings.Contains(advice, "continue the task without it") {
+			t.Errorf("advice for %q lacks not-run / continue-without-it: %s", pending, advice)
 		}
 	}
-	if got := declinedAdvice("ls ~/work"); !strings.HasSuffix(got, "remains undone, and why.") || strings.Contains(got, "clarify") {
-		t.Errorf("a command that raised no concern got the concern advice: %q", got)
+	if got := declinedAdvice("git push origin main"); !strings.Contains(got, "publishes commits") ||
+		!strings.Contains(got, "say so in your report") {
+		t.Errorf("a flagged command's advice does not say what was refused and to report it: %s", got)
 	}
 }
 

@@ -53,18 +53,17 @@ func changesSomething(command string) bool {
 // put to the person again.
 const methodMarker = "A METHOD FOR THIS KIND OF TASK"
 
-// planAgreedMarker opens the note a planned run puts in each stage's request (the agent's long_task.stage_prompt): the
-// run's plan is shown to the person with every question it asks, so a stage does not put one of its own.
-const planAgreedMarker = "THE PLAN OF THIS REQUEST IS AGREED"
-
-// hasMethod reports whether the goal's fixed context holds a learned method for its kind of task, or the request says
-// its plan was agreed already (a stage of a planned run).
+// hasMethod reports whether the host said the request's plan was agreed already (a stage of a planned run:
+// RunContext.PlanAgreed, a flag in the job request), or the frame soul built from the host's context holds a learned
+// method for its kind of task. Never from the request's own text: a pasted email holding a marker must not skip the
+// plan question (review T-32). The method marker counts only in a system message - the frame - never in the user
+// message that carries the request.
 func (st *operatorState) hasMethod() bool {
-	if strings.Contains(st.Request, planAgreedMarker) {
+	if st.PlanAgreed {
 		return true
 	}
 	for _, m := range st.Messages[:st.prefixEnd()] {
-		if strings.Contains(m.Content, methodMarker) || strings.Contains(m.Content, planAgreedMarker) {
+		if m.Role == "system" && strings.Contains(m.Content, methodMarker) {
 			return true
 		}
 	}

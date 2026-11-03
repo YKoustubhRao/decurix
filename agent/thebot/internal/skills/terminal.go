@@ -258,7 +258,7 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		// live: run from here it was reported as the command's ordinary
 		// result, the task ended, and the yes had nothing to resume. The
 		// approved command is run again, and the gate lets that one through.
-		if reason := screenApprovalReason(shellResult{ExitCode: exitCode, Output: string(stdout)}); reason != "" {
+		if reason := screenApprovalReason(command, shellResult{ExitCode: exitCode, Output: string(stdout)}); reason != "" {
 			rc.Logf("terminal", "approval needed on screen - %s", reason)
 			return NeedsApproval(subtask, t.Name(), command, reason, nil), nil
 		}

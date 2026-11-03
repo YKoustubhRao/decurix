@@ -427,3 +427,46 @@ func TestSchedulerResumesAnOperatorQuestionWithTheAnswer(t *testing.T) {
 		t.Fatalf("resumed = %+v", resumed)
 	}
 }
+
+var registerAskFixtureOnce sync.Once
+
+// Two steps running side by side that both need the person - one an approval, one a question - are both asked, one
+// after the other, and the job finishes: a second pause never overwrites the first (review T-13).
+func TestTwoPausedStepsAreBothAsked(t *testing.T) {
+	registerGraphFixtures()
+	registerAskFixtureOnce.Do(func() {
+		atomizer.Register("fx-ask", func(s string) bool { return strings.HasPrefix(s, "fx-ask") })
+		skills.Register(&fixtureSkill{typ: "fx-ask", run: func(rc skills.RunContext, st skills.Subtask) skills.Result {
+			if rc.HumanReply == "" {
+				return skills.Result{Output: "Which one?", Checkpoint: "asked",
+					Meta: map[string]any{"needsUserInput": true, "question": "fx-ask: which one?"}}
+			}
+			return skills.Result{Output: "answered " + rc.HumanReply, Verified: true}
+		}})
+	})
+	provider := &funcProvider{fn: func(m []llm.Message) string {
+		if strings.Contains(lastUser(m), "Plan the request below") {
+			return "1. fx-pay acme\n2. fx-ask which (independent)"
+		}
+		return "Combined reply."
+	}}
+	sched := newTestScheduler(t, provider)
+	sched.MaxParallel = 3
+	paidBefore := payments.Load()
+
+	job, _ := sched.Run(context.Background(), "run fx work and then write the fx answer to a file", nil, func(string) {})
+	asked := map[Outcome]bool{}
+	for round := 0; round < 3 && job.Checkpoint != nil; round++ {
+		asked[job.Outcome] = true
+		job, _ = sched.Execute(context.Background(), Request{Prompt: "yes", Resume: job.Checkpoint}, func(string) {})
+	}
+	if !asked[OutcomeNeedsApproval] || !asked[OutcomeNeedsInput] {
+		t.Fatalf("not both asked: %v", asked)
+	}
+	if job.Outcome != OutcomeAnswered {
+		t.Fatalf("job = %s %q, want answered after both were asked", job.Outcome, job.FinalAnswer)
+	}
+	if got := payments.Load() - paidBefore; got != 1 {
+		t.Errorf("paid %d time(s), want once", got)
+	}
+}

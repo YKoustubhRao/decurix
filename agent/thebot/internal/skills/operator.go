@@ -737,6 +737,8 @@ type operatorState struct {
 	// FailedOutputs are the last few failed commands' outputs (with what the command itself held masked): what a
 	// DONE after every command failed may quote to stand (quotesFailure).
 	FailedOutputs []string `json:",omitempty"`
+	// PlanAgreed is the host's word that the request is a stage of a plan the person agreed (RunContext.PlanAgreed).
+	PlanAgreed bool `json:",omitempty"`
 }
 
 // outputChars is OutputChars, or the local default for a checkpoint written
@@ -840,6 +842,7 @@ func (o *OperatorSkill) start(rc RunContext, subtask Subtask) *operatorState {
 	st.Messages = append(messages, llm.Message{Role: "user", Content: fmt.Sprintf(operatorContract, rc.Dir(), vision, findings, subtask.Step)})
 	st.PrefixLen = len(st.Messages)
 	st.Request = subtask.Step
+	st.PlanAgreed = rc.PlanAgreed
 	st.notePersonLinks(subtask.Step)
 	// Only what earlier steps read or ran is a source a typed value may be traced to: a model's own reply (a chat
 	// answer, a summary of web pages) is shown above as context, never noted as seen (skills.go, MetaModelReply).
@@ -1056,11 +1059,10 @@ func notApprovedNote(rc RunContext, pending, reply string) string {
 	return fmt.Sprintf("The human did not approve running this now:\n$ %s", pending) + theirs + declinedAdvice(pending)
 }
 
-// declinedAdvice is what the model is told after a person refused a command: a refusal is about that command, never
-// about the task. When the reason the gate gave does not describe what the command did (it only read or wrote
-// files), the step is done another way and the report says what was understood - the person is not asked to explain
-// their wording. Found live (round 5, 2026-10-19): a refusal of a command wrongly held as "sends a message" was
-// answered with "what do you mean by 'leave it as a draft'?", and the task parked on it.
+// declinedAdvice is what the model is told after a person refused a command: not run; continue without it; if the
+// task needs it, say so in the report. A refusal is never routed around: the harness does not tell the model to reach
+// the same result some other way the guard cannot see (review T-02). Where the guard flags a command wrongly, the
+// guard is fixed - not the model's path around it.
 func declinedAdvice(pending string) string {
 	// A no can be "not yet": found live (2026-10-23), asked to approve an action a check still doubted,
 	// the person said settle the points first - "without running that command" would have dropped the action.
@@ -1070,10 +1072,9 @@ func declinedAdvice(pending string) string {
 		"action would have got (a code, a reply, a value), ask the person for it directly - they may give it themselves, " +
 		"as they did before - and go on; report only what truly remains undone, and why."
 	if c := safety.AssessCommand(pending); c != nil {
-		advice += fmt.Sprintf(" The person was told it %s. If that is not what the command does, do not ask them to clarify "+
-			"what they meant: take their reply as \"not that command\", do the same step another way that plainly does "+
-			"not do that (for instance write the file in a script and run the file), and in your report say what you "+
-			"understood and what you did. If it does, leave that part undone and say so.", strings.TrimPrefix(c.Reason, "it "))
+		advice += fmt.Sprintf(" The person was told it %s. Their no is to that action, whatever command or file would "+
+			"carry it out: do not reach the same result by other means. If the task needs it, leave that part undone "+
+			"and say so in your report.", strings.TrimPrefix(c.Reason, "it "))
 	}
 	return advice
 }
@@ -1112,7 +1113,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 		// it, and the review never saw it). A read-only command; nothing reaches the model.
 		st.noteTaught("gui skill "+name, runShell(rc.Ctx, rc.Dir(), "gui skill '"+name+"'", 30*time.Second, st.guiEnv()...))
 	}
-	if reason := screenApprovalReason(res); reason != "" {
+	if reason := screenApprovalReason(run, res); reason != "" {
 		rc.Logf("operator", "approval needed on screen - %s", reason)
 		return reason
 	}
@@ -1353,19 +1354,22 @@ const (
 	guiApprovalMarker = "NEEDS_APPROVAL:"
 )
 
-// screenApprovalReason finds the gate's marker on any line of the output, not
-// only the first: a small model chains several gui commands into one, and
-// the shell's exit code is then the last command's, not the stopped one's.
-func screenApprovalReason(r shellResult) string {
+// screenApprovalReason is the on-screen action Decurix's gate stopped, or "": only gui's own exit code 3 raises one,
+// from a command that runs gui, with the gate's marker on a line of its output (not only the first: gui may print the
+// screen before it). A marker line with any other exit code is output like any other - a file the command printed can
+// hold that sentence, and a person must never be asked to approve a "click" that was really a read (review T-29).
+// A chain whose stopped gui action was not last exits with the last command's code: the model sees the gate's own
+// "Nothing was clicked" and runs the action alone to be asked.
+func screenApprovalReason(command string, r shellResult) string {
+	if r.ExitCode != guiApprovalExit || !guiCommandRe.MatchString(command) {
+		return ""
+	}
 	for _, raw := range strings.Split(r.Output, "\n") {
 		line := strings.TrimSpace(raw)
 		if !strings.HasPrefix(line, guiApprovalMarker) {
 			continue
 		}
 		line = strings.TrimSpace(strings.TrimPrefix(line, guiApprovalMarker))
-		if r.ExitCode != guiApprovalExit && !strings.HasPrefix(line, "Approval needed before I ") {
-			continue
-		}
 		line = strings.TrimPrefix(line, "Approval needed before I ")
 		if i := strings.Index(line, ". Nothing was"); i >= 0 {
 			line = line[:i]
