@@ -968,12 +968,17 @@ def resolve(step, observation):
                                     "and a replay does not guess which")
             if seen["status"] == visual.FOUND:
                 held = visual.digits_hold(step["look"], observation["frame"], seen["point"])
-                if held is False:
+                if held == visual.OTHER:
                     return None, None, ("what is there looks like what was clicked but reads other numbers - another "
                                         "record, and a replay does not take it")
-                # Not read: found by its picture alone, which a one-digit difference passes - a candidate, and the
-                # run cannot be verified (D-15).
-                seen["unconfirmed"] = held is None
+                if held == visual.UNREAD:
+                    # Its text could not be read to confirm its numbers: a picture alone passes a one-digit
+                    # difference, so it is not acted on (D-15).
+                    return None, None, ("what is there looks like what was clicked, but its text could not be read to "
+                                        "confirm it is the same record, and a replay does not take it on its picture "
+                                        "alone")
+                # A desktop that reads no text: found by its picture alone - a candidate, and the run is unverified.
+                seen["unconfirmed"] = held == visual.NO_OCR
                 return None, seen["point"], None
 
         return None, point, None
