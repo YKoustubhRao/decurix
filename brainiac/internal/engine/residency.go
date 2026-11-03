@@ -212,19 +212,44 @@ func (r *Residency) Forget(key string) {
 
 func (r *Residency) forgetLocked(key string) { delete(r.loaded, key) }
 
-// UnloadIdle unloads every resident no one holds now; held ones stay.
+// UnloadIdle unloads every resident no one holds now; held ones stay. Each
+// pool is done under its load lock, the one eviction and loading hold, so a
+// request that acquires the same model meanwhile waits for the unload and
+// then loads it again, instead of having it stopped under it.
 func (r *Residency) UnloadIdle() {
 	r.mu.Lock()
-	var idle []loadable
-	for k, e := range r.loaded {
-		if e.refs == 0 {
-			idle = append(idle, e.u)
-			delete(r.loaded, k)
-		}
+	pools := map[string]bool{}
+	for _, e := range r.loaded {
+		pools[e.u.pool()] = true
 	}
 	r.mu.Unlock()
-	for _, u := range idle {
-		u.unload()
+	names := make([]string, 0, len(pools))
+	for p := range pools {
+		names = append(names, p)
+	}
+	sort.Strings(names) // one pool at a time, in a fixed order
+	for _, pool := range names {
+		r.mu.Lock()
+		lm := r.loadMu[pool]
+		if lm == nil {
+			lm = &sync.Mutex{}
+			r.loadMu[pool] = lm
+		}
+		r.mu.Unlock()
+		lm.Lock()
+		r.mu.Lock()
+		var idle []loadable
+		for k, e := range r.loaded {
+			if e.refs == 0 && e.u.pool() == pool {
+				idle = append(idle, e.u)
+				delete(r.loaded, k)
+			}
+		}
+		r.mu.Unlock()
+		for _, u := range idle {
+			u.unload()
+		}
+		lm.Unlock()
 	}
 }
 

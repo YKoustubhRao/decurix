@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -491,5 +492,64 @@ func TestRetireFreesWhatNoRequestHolds(t *testing.T) {
 	<-retired
 	if held.unloads != 1 {
 		t.Fatalf("held unloads %d after the request left", held.unloads)
+	}
+}
+
+// slowUnit's unload waits until the test lets it finish.
+type slowUnit struct {
+	loads, unloads atomic.Int32
+	unloading      chan struct{}
+	finish         chan struct{}
+}
+
+func (s *slowUnit) key() string                    { return "slow" }
+func (s *slowUnit) pool() string                   { return "host" }
+func (s *slowUnit) memGB() float64                 { return 1 }
+func (s *slowUnit) alive() bool                    { return true }
+func (s *slowUnit) load(ctx context.Context) error { s.loads.Add(1); return nil }
+func (s *slowUnit) unload() {
+	s.unloading <- struct{}{}
+	<-s.finish
+	s.unloads.Add(1)
+}
+
+// A request that acquires a model while a retiring engine is unloading it
+// waits for the unload, then loads it again: the model is never stopped
+// under a request that holds it.
+func TestUnloadIdleAndAcquireDoNotInterleave(t *testing.T) {
+	u := &slowUnit{unloading: make(chan struct{}), finish: make(chan struct{})}
+	r := NewResidency(map[string]float64{"host": 10}, nil)
+	rel, _, err := r.Acquire(context.Background(), u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel()
+	go r.UnloadIdle()
+	<-u.unloading // the unload is under way
+	acquired := make(chan error, 1)
+	go func() {
+		_, _, err := r.Acquire(context.Background(), u)
+		acquired <- err
+	}()
+	select {
+	case err := <-acquired:
+		t.Fatalf("the model was acquired while it was being unloaded (loads %d): %v", u.loads.Load(), err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if u.loads.Load() != 1 {
+		t.Fatalf("loaded again before the unload finished: %d loads", u.loads.Load())
+	}
+	close(u.finish)
+	if err := <-acquired; err != nil {
+		t.Fatal(err)
+	}
+	if u.loads.Load() != 2 || u.unloads.Load() != 1 {
+		t.Fatalf("loads %d unloads %d", u.loads.Load(), u.unloads.Load())
+	}
+	r.mu.Lock()
+	e := r.loaded["slow"]
+	r.mu.Unlock()
+	if e == nil || e.refs != 1 {
+		t.Fatalf("the request's hold is gone: %+v", e)
 	}
 }
