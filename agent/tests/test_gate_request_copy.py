@@ -63,9 +63,18 @@ class InTheGate(Base):
 
     def test_the_signed_copy_names_the_site(self):
         gate.keep_request(TASK, NAMED)
-        self.assertTrue(approval.site_known("portal.example.test"))
-        self.assertFalse(approval.site_known("portal.example.test.other.test"))
-        self.assertEqual(gate.handle({"op": "site_known", "host": "portal.example.test"}), {"known": True})
+        self.assertTrue(approval.site_known("portal.example.test", task_id=TASK))
+        self.assertFalse(approval.site_known("portal.example.test.other.test", task_id=TASK))
+        self.assertEqual(gate.handle({"op": "site_known", "host": "portal.example.test", "task_id": TASK}),
+                         {"known": True})
+
+    def test_a_copy_of_another_task_names_nothing(self):
+        # Review round 2: a new task whose copy did not arrive read the last task's request, and its sites.
+        gate.keep_request("t00000000000000e9", NAMED)
+        self.assertFalse(approval.site_known("portal.example.test", task_id=TASK))
+        self.assertFalse(approval.site_known("portal.example.test"))
+        self.assertEqual(gate.handle({"op": "site_known", "host": "portal.example.test", "task_id": TASK}),
+                         {"known": False})
 
 
 class TheSignature(unittest.TestCase):
@@ -113,9 +122,9 @@ class OverHTTP(Base):
 
     def test_a_signed_request_is_kept_and_an_unsigned_one_is_refused(self):
         self.assertEqual(self.post({"task_id": TASK, "text": NAMED}), 403)
-        self.assertFalse(approval.site_known("portal.example.test"))
+        self.assertFalse(approval.site_known("portal.example.test", task_id=TASK))
         self.assertEqual(self.post(signed_request(NAMED)), 204)
-        self.assertTrue(approval.site_known("portal.example.test"))
+        self.assertTrue(approval.site_known("portal.example.test", task_id=TASK))
 
 
 class TheWorkersSide(Base):
@@ -142,3 +151,19 @@ class TheWorkersSide(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheControlPlanesVectors(unittest.TestCase):
+    """The control plane signs requests and secret values the way the gate verifies them, byte for byte (H-CP-3:
+    internal/desktop/testdata/gate-signatures.json, non-ASCII text and a value with a quote and a backslash)."""
+
+    def test_both_bodies_verify(self):
+        path = Path(__file__).resolve().parents[2] / "internal" / "desktop" / "testdata" / "gate-signatures.json"
+        if not path.exists():
+            self.skipTest(f"{path} is not in this tree")
+        vectors = json.loads(path.read_text(encoding="utf-8"))
+        key, request, secrets = vectors["key"], vectors["request"], vectors["secrets"]
+        self.assertEqual(gate.verify_request(key, request, now=float(request["ts"])), "")
+        self.assertEqual(gate.verify_secrets(key, secrets, now=float(secrets["ts"])), "")
+        self.assertEqual(gate.verify_request(key, dict(request, text=request["text"] + " "), now=float(request["ts"])),
+                         "bad signature")

@@ -32,7 +32,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from decurix_agent.computer import approval
+from decurix_agent.computer import approval, privacy
 
 MAX_BODY = 64 * 1024
 # A check describes the action with the page's controls beside it (approval._for_gate cuts them short).
@@ -136,36 +136,93 @@ def verify_secrets(key, data, now=None):
 
 
 # How many tasks' secret values the gate keeps, and how many values a task.
-SECRET_TASKS = 50
-SECRET_VALUES = 200
+# The tasks whose secret values the gate keeps: the open ones, as far as the gate can tell - the task of the latest
+# request and the one before it (a reply or an amendment may still come on it). A task further back has ended; its
+# values are let go (review round 2: the gate's plaintext store kept 50 tasks for good).
+SECRET_TASKS = 2
+SECRET_VALUES = 1000
+_store_lock = threading.Lock()
+
+
+class _locked_store:
+    """The gate's stores, one writer at a time: a lock for this process's threads, and a file lock beside them."""
+
+    def __enter__(self):
+        from decurix_agent import filelock
+        _store_lock.acquire()
+        try:
+            self.handle = open(str(approval.gate_secrets_path()) + ".lock", "a+")
+            filelock.exclusive(self.handle)
+        except BaseException:
+            _store_lock.release()
+            raise
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            self.handle.close()
+        finally:
+            _store_lock.release()
+
+
+def _write_private(path, data):
+    """Write the gate's own file whole: a temporary file of this writer's, mode 0600, flushed, then put in place."""
+
+    import tempfile
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, ensure_ascii=False))
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _read_store(path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def keep_secrets(task_id, values):
-    """Add a task's signed secret values to the gate's own copy (approval.shown_by_gate withholds them)."""
+    """Add a task's signed secret values to the gate's own copy (approval.shown_by_gate withholds them). Read, merge
+    and write under one lock: two posts at once both keep their values (review round 2, B5)."""
 
     path = approval.gate_secrets_path()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        data = data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        data = {}
-    kept = data.pop(task_id, [])
-    kept = list(dict.fromkeys(kept + [v.strip() for v in values if v.strip()]))[-SECRET_VALUES:]
-    data[task_id] = kept
-    data = dict(list(data.items())[-SECRET_TASKS:])
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
+    with _locked_store():
+        data = _read_store(path)
+        kept = data.pop(task_id, [])
+        kept = list(dict.fromkeys(kept + [v.strip() for v in values if v.strip()]))[-SECRET_VALUES:]
+        data[task_id] = kept
+        _write_private(path, data)
 
 
 def keep_request(task_id, text):
     """Keep the latest signed request as the gate's own copy (approval.gate_request_text): what a site the request
-    names is read from, never the worker's task file."""
+    names is read from, never the worker's task file. A new task's request lets go of the values of tasks before the
+    last two."""
 
-    path = approval.gate_request_path()
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps({"task_id": task_id, "text": text, "at": time.time()}), encoding="utf-8")
-    os.replace(tmp, path)
+    with _locked_store():
+        path = approval.gate_request_path()
+        previous = _read_store(path).get("task_id") or ""
+        _write_private(path, {"task_id": task_id, "text": text, "at": time.time(), "previous": previous})
+        secrets = approval.gate_secrets_path()
+        data = _read_store(secrets)
+        open_tasks = {task_id, previous}
+        if data and set(data) - open_tasks:
+            _write_private(secrets, {t: v for t, v in data.items() if t in open_tasks})
 
 
 def verify(key, data, now=None):
@@ -293,14 +350,24 @@ def handle(call):
         if not isinstance(material, dict):
             return {"error": "no material"}
         fingerprint, description, element, about = approval.from_material(material)
+        if privacy.HELD_BACK in (description, about):
+            # Words that could not be checked for secrets are never shown, and a person is never asked to approve an
+            # action they cannot see: it is refused (review round 2).
+            return decision_json(approval.Decision(False, reason="the action could not be shown without its secrets, "
+                                                                 "so it is refused"))
         # The gate's own reason, or a fixed one: the caller's reason is the worker's words, and these words are the
         # gate's signed question (round-4 recheck: "it only saves a draft" could stand in the gate's voice). The
         # worker's text still reaches the person, as the worker's note.
-        reason = approval.reason_from_material(material) or GATE_REASON
+        approval._gate_task.id = str(material.get("task_id") or "")
+        try:
+            reason = approval.reason_from_material(material) or GATE_REASON
+        finally:
+            approval._gate_task.id = ""
         return decision_json(approval._decide_local(fingerprint, description, reason, element, about))
     if op == "site_known":
         # From the gate's own copy of the signed request only (approval.site_known in the gate).
-        return {"known": approval.site_known(str(call.get("host") or ""))}
+        return {"known": approval.site_known(str(call.get("host") or ""), task_id=str(call.get("task_id") or ""),
+                                             url=str(call.get("url") or "") or None)}
     if op == "pending":
         return {"pending": with_question(approval._local_pending())}
     if op == "has_grant":

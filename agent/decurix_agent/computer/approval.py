@@ -721,7 +721,7 @@ def assess(kind, element, text=None, keys=None, context=None):
 
     if kind == "type" and text and element is not None and privacy.secret_field(element):
         host = _host(context.get("url"))
-        if host and not site_known(host):
+        if host and not site_known(host, url=context.get("url")):
             return (f"this types a password or code into {host}, a site that neither the request nor anything a person "
                     "taught on this desktop names - make sure it is the right site before a secret goes there")
 
@@ -779,12 +779,22 @@ KNOWN_SECONDS = 30
 
 
 def _host(url):
+    """The site a URL is: its host name - or, for a host that is an address (an IP literal), the endpoint
+    "scheme://address:port" with the scheme's default port when none is written (an address is one listener, not
+    every one on it: review round 2, B10)."""
+
     import urllib.parse
 
     try:
-        return (urllib.parse.urlparse(url or "").hostname or "").lower()
+        host = (urllib.parse.urlparse(url or "").hostname or "").lower()
     except ValueError:
         return ""
+    endpoint = _endpoint(url) if _ip(host) is not None else None
+    if endpoint:
+        scheme, address, port = endpoint
+        shown = f"[{address}]" if address.version == 6 else str(address)
+        return f"{scheme}://{shown}:{port}"
+    return "" if _ip(host) is not None else host
 
 
 def _taught_text():
@@ -810,7 +820,7 @@ def _taught_text():
     return _KNOWN_CACHE["text"]
 
 
-def site_known(host):
+def site_known(host, task_id=None, url=None):
     """
     Whether this host is named by the request (or, on a desktop with no gate, by what a person taught or recorded on
     it). On a desktop with an approval gate the gate answers, from its own copy of the request the control plane signed
@@ -823,10 +833,11 @@ def site_known(host):
     if not host:
         return True
     if IN_GATE:
-        return _names_host(gate_request_text().lower(), host)
+        return _names_host(gate_request_text(task_id or _gate_task.id).lower(), host, url)
     if remote():
         try:
-            return bool(gate_call("site_known", host=host).get("known"))
+            from decurix_agent import task_context
+            return bool(gate_call("site_known", host=host, task_id=task_context.current(), url=url or "").get("known"))
         except (OSError, ValueError):
             return False
     try:
@@ -834,7 +845,7 @@ def site_known(host):
         request = (task_context.current_request() or "").lower()
     except Exception:  # noqa: BLE001 - no request to read is no request naming it
         request = ""
-    return _names_host(request, host) or _names_host(_taught_text(), host)
+    return _names_host(request, host, url) or _names_host(_taught_text(), host, url)
 
 
 # The gate's own copy of the latest request the control plane sent this desktop, signed (gate_server.keep_request),
@@ -846,17 +857,33 @@ def gate_request_path():
     return Path(config.DECURIX_DIR) / GATE_REQUEST_FILE
 
 
-def gate_request_text():
-    """The text of the request the gate keeps (only ever read in the gate), or "" when it has none."""
+# The task the gate is deciding for now (gate_server.handle sets it from the call): the request copy read is that
+# task's, never the copy of another (review round 2: a new task's copy that did not arrive left the last task's sites
+# named).
+class _GateTask(__import__("threading").local):
+    """Per thread (the gate answers calls on threads of their own)."""
+
+    def __init__(self):
+        self.id = ""
+
+
+_gate_task = _GateTask()
+
+
+def gate_request_text(task_id):
+    """The text of the request the gate keeps for `task_id` (only ever read in the gate); "" when it has none for that
+    task - a copy of another task names nothing."""
 
     try:
         data = json.loads(gate_request_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return ""
-    return str(data.get("text") or "") if isinstance(data, dict) else ""
+    if not isinstance(data, dict) or not task_id or str(data.get("task_id") or "") != str(task_id):
+        return ""
+    return str(data.get("text") or "")
 
 
-def _names_host(text, host):
+def _names_host(text, host, url=None):
     """Whether `text` names `host` itself or a domain it is under, on label boundaries: "example.com" names
     example.com and www.example.com, never ample.com or example.com.evil.test. Found in review (2026-11-03, E-47): a
     substring test let a password go unasked to a host whose name was part of a named one."""
@@ -868,13 +895,39 @@ def _names_host(text, host):
     # "http://192.168.1.20:8080/login" - and only exactly: an address mentioned as data ("the server 10.0.0.5") names no
     # site, and an address has no subdomains (2026-11-04: a request could never name an IP site, so a password typed
     # into one was always asked).
-    ip = _ip(host.strip("[]"))
+    # And an address is one endpoint: its scheme, address and port, all three (review round 2, B10: naming one port
+    # of 127.0.0.1 named every listener on it, one the worker started itself included). The action's own URL gives its
+    # endpoint; with none, the address names nothing.
+    wanted = _endpoint(host) if "://" in host else None
+    ip = wanted[1] if wanted else _ip(host.strip("[]"))
     if ip is not None:
-        for v6, v4 in re.findall(r"(?i)\b[a-z][a-z0-9+.-]*://(?:\[([0-9a-f:.]+)\]|(\d{1,3}(?:\.\d{1,3}){3}))"
-                                 r"(?=[:/?#\s\"')\]]|$)", text or ""):
-            if _ip(v6 or v4) == ip:
+        for found in re.findall(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s\"'<>]+", text or ""):
+            named = _endpoint(found.rstrip(".,;:!?)"))
+            # An endpoint matches all three of its parts; a bare address (no endpoint known) its address only.
+            if named and (named == wanted if wanted else named[1] == ip):
                 return True
     return False
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443, "ftp": 21, "ws": 80, "wss": 443}
+
+
+def _endpoint(url):
+    """(scheme, address, port) of a URL whose host is an IP literal, the scheme's default port when none is written;
+    None for any other URL (or one that does not parse). Read by urlsplit, so text before an "@" is never the host."""
+
+    import urllib.parse
+    try:
+        parts = urllib.parse.urlsplit(str(url))
+        address = _ip(parts.hostname or "")
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = (parts.scheme or "").lower()
+    if address is None or not scheme:
+        return None
+    port = port if port is not None else _DEFAULT_PORTS.get(scheme)
+    return (scheme, address, port) if port is not None else None
 
 
 def _ip(text):
@@ -1120,9 +1173,17 @@ def check(kind, element, text=None, keys=None, point=None, context=None, about="
     # What the gate makes this action's fingerprint and words from, both from the same description of it.
     material = {"kind": kind, "element": element, "text": text, "keys": list(keys or []) or None,
                 "point": list(point) if point else None, "context": _for_gate(context), "about": about or "",
-                "sends": sent_digest(sends)}
+                "sends": sent_digest(sends), "task_id": _task_now()}
 
     return _decide(fingerprint, description, reason, element, about, material=material)
+
+
+def _task_now():
+    try:
+        from decurix_agent import task_context
+        return task_context.current()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 GATE_CONTROLS = 150
@@ -1154,10 +1215,11 @@ def from_material(material):
         request = " ".join(str(material.get("request") or "").split())
         workdir = str(material.get("workdir") or "")
         fingerprint = hashlib.sha256("".join(["command", command, request, workdir]).encode("utf-8")).hexdigest()[:24]
+        # The words are withheld whole, then cut (review round 2, B4): a secret across the cut leaves nothing of itself.
         if command:
-            description = f"run the command `{command[:600]}`" + (f" in {workdir}" if workdir else "")
+            description = f"run the command `{shown_by_gate(command)[:600]}`" + (f" in {workdir}" if workdir else "")
         else:
-            description = f"start this request: {request[:600]}"
+            description = f"start this request: {shown_by_gate(request)[:600]}"
         return fingerprint, shown_by_gate(description), None, ""
     element = material.get("element") if isinstance(material.get("element"), dict) else None
     text = material.get("text")
@@ -1169,7 +1231,9 @@ def from_material(material):
     about = str(material.get("about") or "")
     fingerprint = _fingerprint(kind, element, text, keys, point, context=context, about=about,
                                sends=str(material.get("sends") or ""))
-    return (fingerprint, shown_by_gate(describe_action(kind, element, text=text, keys=keys, point=point)), element,
+    # The typed text is withheld before describe_action cuts it to its quote (review round 2, B4).
+    shown = None if text is None else shown_by_gate(text)
+    return (fingerprint, shown_by_gate(describe_action(kind, element, text=shown, keys=keys, point=point)), element,
             shown_by_gate(about))
 
 
@@ -1204,11 +1268,31 @@ def shown_by_gate(text):
         return text
     try:
         text = str(text)
-        for value in sorted(gate_secret_values(), key=len, reverse=True):
-            text = text.replace(value, "[withheld]")
+        for form in sorted({f for value in gate_secret_values() for f in written_forms(value) if f}, key=len,
+                           reverse=True):
+            text = text.replace(form, "[withheld]")
         return privacy.withhold_spoken_secrets(text)
     except Exception:  # noqa: BLE001
         return privacy.HELD_BACK
+
+
+def written_forms(value):
+    """
+    The forms a value takes in a command or a URL, each withheld as the value is (review round 2, B4): as it is; as a
+    shell writes it (shlex.quote; inside double quotes, with \\ \" $ ` escaped; inside single quotes, with '\\''
+    for a quote); as JSON writes it; percent-encoded (as a path and as a form field).
+    """
+
+    import json as _json
+    import shlex
+    import urllib.parse as _url
+    value = str(value or "")
+    if not value:
+        return []
+    double = "".join("\\" + c if c in '\\"$`' else c for c in value)
+    return list(dict.fromkeys([value, shlex.quote(value), double, value.replace("'", "'\\''"),
+                               _json.dumps(value, ensure_ascii=False)[1:-1], _json.dumps(value)[1:-1],
+                               _url.quote(value, safe=""), _url.quote_plus(value), _url.quote(value)]))
 
 
 def reason_from_material(material):
