@@ -726,3 +726,21 @@ func TestRowsAreOnlyInserted(t *testing.T) {
 		}
 	}
 }
+
+// A git archive starts with a pax global header (the commit id); the tree is still rooted at decurix_agent/.
+func TestAGitArchiveTreeIsAccepted(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	_ = tw.WriteHeader(&tar.Header{Name: "pax_global_header", Typeflag: tar.TypeXGlobalHeader, PAXRecords: map[string]string{"comment": "eb15981"}})
+	_ = tw.WriteHeader(&tar.Header{Name: "decurix_agent/", Typeflag: tar.TypeDir, Mode: 0o755})
+	body := []byte("x = 1\n")
+	_ = tw.WriteHeader(&tar.Header{Name: "decurix_agent/app.py", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(body))})
+	_, _ = tw.Write(body)
+	_ = tw.Close()
+	if !treeRooted(buf.Bytes()) {
+		t.Fatal("a git archive of the agent tree was refused")
+	}
+	if treeRooted(tarFrom(t, map[string][]byte{"other/app.py": body}, nil)) {
+		t.Fatal("a tree outside decurix_agent/ was accepted")
+	}
+}

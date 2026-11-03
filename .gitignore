@@ -23,3 +23,4 @@ agent/tests/fixtures/*
 .claude/settings.local.json
 # The investor deck is business material, not product documentation; it stays on disk, out of the repository.
 docs/antler-deck.pdf
+evals/results/
