@@ -138,3 +138,24 @@ The writers could not run these. Run them on the next build, before calling this
 **Windows and the phone.**
 - B-09 and the "Public link" switch in the Windows app; the Private-profile LAN firewall rule.
 - Phone setup over Wireless debugging on a real phone, including a Wi-Fi change.
+
+## Phase 2: soul and run record
+
+What the SOUL lane left for later (PLAN-P2 §9; schema and limits in [trajectory.md](trajectory.md)).
+
+- **`ledger_delta` is `[]` on every step.** The ledger does not name the recording event of its save. To fill it,
+  `computer/records.py` would stamp the save's record id (the event's `id`) on the record it marks saved.
+- **A local brain's calls have no bodies.** Soul's trace keeps their model, prompt hash and usage only. Bodies need a
+  recording proxy in front of Ollama or soul writing them; measure the size and the `num_ctx`/prefix effect first.
+- **The bundle limit is a fixed 64 MB a run** (`runs.DefaultLimit`); past it frames go, oldest first, and are named
+  in `integrity.missing`. Make it a setting once real runs show their sizes.
+- **Bundles of practice and eval desktops are not pulled yet.** They have no home volume to read after a reset;
+  collect them by exec tar before the reset.
+- **Soul's traces are never pruned on the desktop** (`~/.decurix/ai/traces/`, at most 32 MB a task, any number of
+  tasks). Prune an exported one by the W0.8 rule (`EXPORTED` present).
+- **`request.files` and `worker.image` are empty** in v1: neither is kept per execution.
+- **Build reads an execution's verdict, origin, skill and resolved model by their JSON names** until CP-4/CP-5 land;
+  then a test with the real fields. An execution with no bundle builds only once `tasks.Store` can name its task
+  (`TaskOfExecution`).
+- **Live check (L0):** `/api/llm/calls/stats` shows no `untagged` from `caller=soul`; a task's
+  `~/.decurix/ai/traces/<task>.jsonl` exists, and its call lines' turns are the turns on that task's `llm_calls` rows.
