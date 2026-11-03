@@ -514,6 +514,12 @@ func (s *Server) qualificationEvidenceHandler(w http.ResponseWriter, r *http.Req
 		qualificationError(w, err)
 		return
 	}
+	// The page lists each case's files by name and fetches one when asked (qualificationArtifactHandler).
+	if run.CaseFiles, err = s.Qualification.CaseFiles(run.ID); err != nil {
+		qualificationError(w, err)
+		return
+	}
+	run.CaseArtifacts = nil
 	jsonResponse(w, run)
 }
 
@@ -552,7 +558,10 @@ func (s *Server) qualificationArtifactHandler(w http.ResponseWriter, r *http.Req
 	}
 	b, ok := run.Artifacts[name]
 	if caseID := r.URL.Query().Get("case"); caseID != "" {
-		b, ok = run.CaseArtifacts[caseID][name]
+		if b, ok, err = s.Qualification.CaseArtifact(run.ID, caseID, name); err != nil {
+			qualificationError(w, err)
+			return
+		}
 	}
 	if !ok {
 		jsonStatusError(w, 404, "No such saved artifact.")

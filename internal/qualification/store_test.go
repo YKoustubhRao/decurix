@@ -321,7 +321,15 @@ func TestCaseEvidenceSurvivesInterruption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e.Status != "interrupted" || len(e.Findings) != 1 || string(e.CaseArtifacts[f.CaseID]["result.txt"]) != "correct" {
+	saved, ok, err := restarted.CaseArtifact(run.ID, f.CaseID, "result.txt")
+	if e.Status != "interrupted" || len(e.Findings) != 1 || err != nil || !ok || string(saved) != "correct" {
 		t.Fatal("completed case evidence lost on restart")
+	}
+	// The case's bytes are in their own row, not re-marshalled with the run on every case (C-18).
+	if len(e.CaseArtifacts) != 0 {
+		t.Fatalf("case files kept in the run's JSON: %v", e.CaseArtifacts)
+	}
+	if names, err := restarted.CaseFiles(run.ID); err != nil || len(names[f.CaseID]) != 1 || names[f.CaseID][0] != "result.txt" {
+		t.Fatalf("CaseFiles = %v, %v", names, err)
 	}
 }

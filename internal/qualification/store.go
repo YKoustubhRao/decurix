@@ -24,6 +24,9 @@ var schema = []string{
 	 CREATE INDEX simulation_findings_task ON simulation_findings(task_id);
 	 CREATE TABLE simulation_files (run_id TEXT NOT NULL, case_id TEXT NOT NULL, role TEXT NOT NULL, name TEXT NOT NULL, sha256 TEXT NOT NULL, body BLOB NOT NULL, PRIMARY KEY (run_id, case_id, role, name));
 	 CREATE TABLE simulation_holds (id TEXT PRIMARY KEY, worker_id TEXT NOT NULL, request_key TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL, UNIQUE(worker_id, request_key));`,
+	// Step 3: each case's saved files in rows of their own, as simulation_files are, instead of inside the run's
+	// JSON - which was re-marshalled whole, every byte of every earlier case, on each case (review 2026-11-03, C-18).
+	`CREATE TABLE qualification_files (run_id TEXT NOT NULL, case_id TEXT NOT NULL, name TEXT NOT NULL, body BLOB NOT NULL, PRIMARY KEY (run_id, case_id, name));`,
 }
 
 // Store owns durable readiness records and serializes state transitions.
@@ -336,11 +339,16 @@ func (s *Store) RecordCase(id string, finding Finding, artifacts map[string][]by
 		return ErrConflict
 	}
 	total := 0
-	for _, files := range run.CaseArtifacts {
+	for _, files := range run.CaseArtifacts { // a run begun by a build that kept them in its JSON
 		for _, b := range files {
 			total += len(b)
 		}
 	}
+	var stored int
+	if err := s.db.QueryRow(`SELECT COALESCE(SUM(LENGTH(body)),0) FROM qualification_files WHERE run_id=?`, id).Scan(&stored); err != nil {
+		return err
+	}
+	total += stored
 	for n, b := range artifacts {
 		if !FileName(n) || len(b) > MaxFileBytes {
 			return ErrInvalid
@@ -350,12 +358,67 @@ func (s *Store) RecordCase(id string, finding Finding, artifacts map[string][]by
 	if total > MaxEvidenceBytes {
 		return ErrInvalid
 	}
-	if run.CaseArtifacts == nil {
-		run.CaseArtifacts = map[string]map[string][]byte{}
-	}
-	run.CaseArtifacts[finding.CaseID] = artifacts
 	run.Findings = append(run.Findings, finding)
-	return s.saveRun(run)
+	b, err := json.Marshal(run)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for name, body := range artifacts {
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO qualification_files(run_id,case_id,name,body) VALUES(?,?,?,?)`, id, finding.CaseID, name, body); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE qualification_runs SET status=?,data=? WHERE id=?`, run.Status, string(b), run.ID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// CaseFiles names each case's saved files of a run, by case - what the evidence page lists.
+func (s *Store) CaseFiles(runID string) (map[string][]string, error) {
+	out := map[string][]string{}
+	rows, err := sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) ([2]string, error) {
+		var c [2]string
+		err := r.Scan(&c[0], &c[1])
+		return c, err
+	}, `SELECT case_id, name FROM qualification_files WHERE run_id=? ORDER BY case_id, name`, runID)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range rows {
+		out[c[0]] = append(out[c[0]], c[1])
+	}
+	if run, err := s.Run(runID); err == nil {
+		for caseID, files := range run.CaseArtifacts {
+			for name := range files {
+				out[caseID] = append(out[caseID], name)
+			}
+		}
+	}
+	return out, nil
+}
+
+// CaseArtifact returns one saved file of one case of a run, and false when there is none.
+func (s *Store) CaseArtifact(runID, caseID, name string) ([]byte, bool, error) {
+	var body []byte
+	err := s.db.QueryRow(`SELECT body FROM qualification_files WHERE run_id=? AND case_id=? AND name=?`, runID, caseID, name).Scan(&body)
+	if err == nil {
+		return body, true, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, false, err
+	}
+	run, err := s.Run(runID)
+	if err != nil {
+		return nil, false, err
+	}
+	body, ok := run.CaseArtifacts[caseID][name]
+	return body, ok, nil
 }
 
 // FinishRun accepts only findings for every frozen case and never auto-enables.
