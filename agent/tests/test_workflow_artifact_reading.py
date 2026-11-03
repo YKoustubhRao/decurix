@@ -49,6 +49,20 @@ class ArtifactReading(unittest.TestCase):
         self.assertTrue(self.passes("v.txt", b"Total: Rs.1500", {"contains": [1500.0]}))
         self.assertFalse(self.passes("w.txt", b"Total: 15000", {"contains": [1500]}))
 
+    def test_a_number_written_as_text_in_the_spec_is_matched_as_an_amount(self):
+        # Review rework: a digit string took the word path, and "500" passed on "1,500.00".
+        self.assertFalse(self.passes("s1.txt", b"Total: 1,500.00", {"contains": ["500"]}))
+        self.assertTrue(self.passes("s2.txt", b"Total: 1,500.00", {"contains": ["1500"]}))
+        self.assertTrue(self.passes("s3.txt", b"Total: 1500", {"contains": ["1,500.00"]}))
+
+    def test_a_drafts_contains_is_whole_too(self):
+        from decurix_agent.workflow_runner import _draft_evidence
+        drafts = [{"id": "d1", "to": "a@example.com", "subject": "Statement", "body": "Balance 1500, status unpaid"}]
+        for needle in ("500", "paid"):
+            with self.assertRaises(ValueError, msg=needle):
+                _draft_evidence({"path": "drafts", "format": "drafts", "contains": [needle]}, {"drafts": drafts}, {})
+        _draft_evidence({"path": "drafts", "format": "drafts", "contains": ["1500", "unpaid"]}, {"drafts": drafts}, {})
+
     def test_words_are_matched_as_whole_tokens(self):
         self.assertFalse(self.passes("x.txt", b"Status: Unpaid", {"contains": ["paid"]}))
         self.assertTrue(self.passes("y.txt", b"Status: paid in full", {"contains": ["paid"]}))

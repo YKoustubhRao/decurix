@@ -406,6 +406,7 @@ def _decoded(data, name):
         raise ValueError(f"{name} is not readable as text") from None
 
 
+_PLAIN_NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 _NUMBER_IN_TEXT = re.compile(r"(?<!\w)(?<!\d[.,])-?\d[\d,]*(?:\.\d+)?(?![\w]|[.,]\d)")
 
 
@@ -415,6 +416,9 @@ def _contains(text, needle):
     "15000" or the 500 inside "1500"), and words as whole tokens ("paid" is not in "unpaid"). Review 2026-11-03 (E-46):
     a substring test passed a total of 1500 for a check of 500.
     """
+    if isinstance(needle, str) and _PLAIN_NUMBER.fullmatch(needle.strip()):
+        # A number written as text in the spec is a number all the same (review rework: "500" passed on "1,500.00").
+        needle = float(needle.strip().replace(",", ""))
     if isinstance(needle, (int, float)) and not isinstance(needle, bool):
         for found in _NUMBER_IN_TEXT.findall(text):
             try:
@@ -455,7 +459,8 @@ def _draft_evidence(check, result, context):
     if len(usable) < check.get("min_count", 1):
         raise ValueError(f"expected at least {check.get('min_count', 1)} email draft(s) with recipients and a subject, found {len(usable)}")
     for needle in check.get("contains", []):
-        if not any(str(needle) in str(d.get("subject") or "") + "\n" + str(d.get("body") or "") for d in usable):
+        # Whole, as a file's contains is (review 2026-11-03 rework: "500" was found in "1500", "paid" in "unpaid").
+        if not any(_contains(str(d.get("subject") or "") + "\n" + str(d.get("body") or ""), needle) for d in usable):
             raise ValueError(f"no draft contains required content: {needle}")
     digest = hashlib.sha256(json.dumps([[d.get("id"), d.get("to"), d.get("subject")] for d in usable],
                                        sort_keys=True, default=str).encode()).hexdigest()
