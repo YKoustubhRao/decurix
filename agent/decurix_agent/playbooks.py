@@ -202,7 +202,13 @@ def _alike(mine, theirs):
 
 
 def find(request, skill=None):
-    """The playbook for this kind of request (a taught skill's own, when `skill` names one), or None."""
+    """The playbook for this kind of request (a taught skill's own, when `skill` names one), or None.
+
+    Without a skill this is a pre-filter by shared words, never the decision: "Create a credit note" shares enough
+    words with "Create a sales invoice" to be found (review 2026-11-03, E-44). Nothing runs on it alone - the context
+    it gives the engine is a suggestion the engine weighs, and a tool runs with no engine only when the worker's own
+    model reads the request as exactly what the tool does, every argument in the request's words
+    (tool_task.read_args)."""
 
     if not ENABLED:
         return None
