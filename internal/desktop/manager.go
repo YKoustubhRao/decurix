@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -106,6 +107,10 @@ type Manager struct {
 	resourceOverrides map[string]ResourceAllocation
 	// lastCPU is each desktop's previous CPU sample (Stats), under resourceMu.
 	lastCPU map[string]container.CPUStats
+
+	// oomMu guards oom, each stopped container's OOM verdict (oomKilled).
+	oomMu sync.Mutex
+	oom   map[string]bool
 
 	// lifecycleMu guards lifecycle, one lock per desktop (LockDesktop).
 	lifecycleMu sync.Mutex
@@ -570,6 +575,10 @@ func (m *Manager) invalidateList() {
 	m.listGen++
 	m.listVal = nil
 	m.listMu.Unlock()
+	// A start or stop can make a new exit: OOM verdicts are asked again (oomKilled).
+	m.oomMu.Lock()
+	m.oom = nil
+	m.oomMu.Unlock()
 }
 
 // List returns every desktop container plus the ones still being provisioned.
@@ -602,18 +611,24 @@ func (m *Manager) List(ctx context.Context) ([]Desktop, error) {
 
 	// Detached from this caller's context: the answer is shared, so one
 	// impatient client hanging up must not fail everyone waiting on it.
-	shared, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	call.val, call.err = m.listUncached(shared)
-	cancel()
-
-	m.listMu.Lock()
-	m.listFlight = nil
-	if call.err == nil && gen == m.listGen {
-		m.listVal = call.val
-		m.listAt = time.Now()
-	}
-	m.listMu.Unlock()
-	close(call.done)
+	// The flight is always ended, a panic included (B-32): left set, every later List waited on it until its own
+	// context ended.
+	func() {
+		call.err = errors.New("listing desktops failed")
+		defer func() {
+			m.listMu.Lock()
+			m.listFlight = nil
+			if call.err == nil && gen == m.listGen {
+				m.listVal = call.val
+				m.listAt = time.Now()
+			}
+			m.listMu.Unlock()
+			close(call.done)
+		}()
+		shared, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		call.val, call.err = m.listUncached(shared)
+	}()
 
 	return append([]Desktop(nil), call.val...), call.err
 }
@@ -738,6 +753,36 @@ func crashReason(state, status string, oomKilled func() bool) string {
 	return fmt.Sprintf("it exited with code %d", code)
 }
 
+// oomKilled reports whether container id's last exit was the kernel's OOM killer. The answer is kept per container
+// and exit code until the next lifecycle change (invalidateList), so a desktop that stopped with 137 costs one inspect,
+// not one on every uncached List (B-33). A failed inspect is not kept.
+func (m *Manager) oomKilled(ctx context.Context, id, status string) bool {
+	if i := strings.Index(status, ")"); i >= 0 {
+		status = status[:i] // "Exited (137": the time since the exit is not part of it
+	}
+	key := id + "\x00" + status
+	m.oomMu.Lock()
+	v, ok := m.oom[key]
+	m.oomMu.Unlock()
+	if ok {
+		return v
+	}
+	inspectCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	inspect, err := m.client.ContainerInspect(inspectCtx, id)
+	if err != nil {
+		return false
+	}
+	v = inspect.State != nil && inspect.State.OOMKilled
+	m.oomMu.Lock()
+	if m.oom == nil || len(m.oom) > 1024 {
+		m.oom = map[string]bool{}
+	}
+	m.oom[key] = v
+	m.oomMu.Unlock()
+	return v
+}
+
 // desktopFromContainer builds one Desktop from a ContainerList entry plus its
 // metadata labels, falling back to ContainerInspect only for legacy containers
 // or on first boot to cache StartedAt.
@@ -835,12 +880,7 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 		status = "paused"
 	}
 
-	crash := crashReason(c.State, c.Status, func() bool {
-		inspectCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		defer cancel()
-		inspect, err := m.client.ContainerInspect(inspectCtx, c.ID)
-		return err == nil && inspect.State != nil && inspect.State.OOMKilled
-	})
+	crash := crashReason(c.State, c.Status, func() bool { return m.oomKilled(ctx, c.ID, c.Status) })
 
 	id := strings.TrimPrefix(
 		name,

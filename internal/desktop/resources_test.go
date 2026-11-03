@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
@@ -42,5 +43,37 @@ func TestResourcesAreClampedToTheMachine(t *testing.T) {
 	}
 	if got := m.resourceOverrides["box"]; got.CPUs != 4 || got.MemoryMB != 8192 {
 		t.Fatalf("the shown size must be what was given: %+v", got)
+	}
+}
+
+// TestAListThatPanicsDoesNotHoldUpTheNext: the shared List call ends its flight even when it panics (B-32).
+func TestAListThatPanicsDoesNotHoldUpTheNext(t *testing.T) {
+	m := newManagerWith(&fakeAPI{}) // ContainerList is not implemented: the list panics
+	for i := 0; i < 2; i++ {
+		func() {
+			defer func() { _ = recover() }()
+			_, _ = m.List(context.Background())
+		}()
+	}
+	m.listMu.Lock()
+	defer m.listMu.Unlock()
+	if m.listFlight != nil {
+		t.Fatal("a panicked list left its flight set; every later List would wait on it")
+	}
+}
+
+// TestAnOOMVerdictIsAskedOncePerExit: a stopped desktop costs one inspect, not one per List (B-33).
+func TestAnOOMVerdictIsAskedOncePerExit(t *testing.T) {
+	fake := &fakeAPI{inspect: func(string) (container.InspectResponse, error) {
+		return container.InspectResponse{ContainerJSONBase: &container.ContainerJSONBase{State: &container.State{OOMKilled: true}}}, nil
+	}}
+	m := newManagerWith(fake)
+	for i := 0; i < 3; i++ {
+		if !m.oomKilled(context.Background(), "c1", fmt.Sprintf("Exited (137) %d minutes ago", 5+i)) {
+			t.Fatal("verdict lost")
+		}
+	}
+	if n := len(fake.called("ContainerInspect")); n != 1 {
+		t.Fatalf("inspected %d times, want once", n)
 	}
 }

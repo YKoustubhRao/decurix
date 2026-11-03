@@ -173,9 +173,19 @@ func primaryListenAddrs(gateways func() []string) []string {
 	return addrs
 }
 
-// lanListenAddr reads DECURIX_LAN_PORT, the port internal/lanaccess's gated
-// listener binds; unset or invalid means defaultLANAddr.
+// lanListenAddr is where internal/lanaccess's gated listener binds:
+// DECURIX_LAN_ADDR (host:port) when set - a binary run on the host can keep the
+// gated listener off the LAN, e.g. 127.0.0.1:8090 behind a tunnel (W-18) -
+// else every address on DECURIX_LAN_PORT; unset or invalid means defaultLANAddr.
 func lanListenAddr() string {
+	if addr := strings.TrimSpace(os.Getenv("DECURIX_LAN_ADDR")); addr != "" {
+		if _, port, err := net.SplitHostPort(addr); err == nil {
+			if _, err := strconv.Atoi(port); err == nil {
+				return addr
+			}
+		}
+		log.Printf("warning: DECURIX_LAN_ADDR=%q is not host:port; ignoring it", addr)
+	}
 	port := os.Getenv("DECURIX_LAN_PORT")
 	if port == "" {
 		return defaultLANAddr

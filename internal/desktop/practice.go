@@ -420,11 +420,10 @@ func practiceConfigs(spec PracticeSpec, env, securityOpt []string) (*container.C
 			Labels: map[string]string{PracticeLabel: "true", "decurix-practice-run": spec.RunID},
 		}, &container.HostConfig{
 			NetworkMode: container.NetworkMode(PracticeNetworkName),
-			// The worker's own desktop's options, without no-new-privileges: the
-			// image's startup uses sudo once to hand /dockerstartup and $HOME to
-			// the desktop user, and dies without it (found live 2026-10-28). The
-			// boundary is the internal network, no binds and no host gateway.
-			SecurityOpt: append([]string{}, securityOpt...),
+			// The worker's own desktop's options, no-new-privileges included as on every desktop (B-21): the
+			// image's startup no longer uses sudo (the entrypoint drops privileges with setpriv; B-35 corrected the
+			// old comment). The boundary is also the internal network, no binds and no host gateway.
+			SecurityOpt: append(append([]string{}, securityOpt...), "no-new-privileges:true"),
 			ShmSize:     256 << 20,
 			Resources:   resources,
 			Tmpfs:       map[string]string{"/tmp": "rw,nosuid,size=256m,mode=1777", "/run": "rw,nosuid,size=64m,mode=755"},

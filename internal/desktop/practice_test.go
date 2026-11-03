@@ -298,7 +298,7 @@ func TestCreatePracticeIsIsolated(t *testing.T) {
 		t.Fatal("resources not capped")
 	}
 	opts, _ := json.Marshal(host["SecurityOpt"])
-	if !strings.Contains(string(opts), "seccomp=") {
+	if !strings.Contains(string(opts), "seccomp=") || !strings.Contains(string(opts), "no-new-privileges:true") {
 		t.Fatalf("security options lost: %s", opts)
 	}
 	if body["Labels"].(map[string]any)[PracticeLabel] != "true" {

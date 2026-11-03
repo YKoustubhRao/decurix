@@ -1,4 +1,5 @@
-FROM golang:1.26-bookworm AS builder
+# The same Go as the desktop image's builder (docker/desktop.basic.Dockerfile), so one toolchain builds both (B-38).
+FROM golang:1.27 AS builder
 
 WORKDIR /app
 
@@ -13,9 +14,12 @@ RUN go generate .
 
 # Two cores and one package at a time (GOMAXPROCS, -p 1): an unbounded
 # build inside Docker brought down the 8 GB WSL host this is developed on.
+# -trimpath keeps the build machine's paths out of the binary, and the version is stamped as release.sh stamps it
+# (DECURIX_VERSION, a build arg; "dev" when not given), so a running container says which build it is (B-38).
 ENV GOMAXPROCS=2
+ARG DECURIX_VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -p 1 -o decurix ./cmd/decurix
+    go build -p 1 -trimpath -ldflags "-X main.version=${DECURIX_VERSION}" -o decurix ./cmd/decurix
 
 # The phone build of the same binary, handed out by /phone/decurix when a
 # phone sets up its link from its own browser (httpapi/phonelink.go).

@@ -24,7 +24,8 @@ services:
       # access code, unlike 8080 above. What a Cloudflare tunnel or a direct
       # LAN address should be pointed at. DECURIX_LAN_PORT in .env changes
       # the port on both sides at once (compose's own variable substitution
-      # here; the binary reads the same .env, copied into the image).
+      # here; the binary reads the same .env, handed in by env_file below -
+      # never copied into the image).
       # DECURIX_LAN_BIND picks the address it is published on. The Windows
       # app sets 127.0.0.1: its LAN link and tunnel come in through Windows'
       # own 127.0.0.1 (windows-lan.js), and a port published on every address
