@@ -89,6 +89,11 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		// which leaves it unknown rather than "not checked".
 		Checked *bool `json:"checked"`
 
+		// Secret marks a question raised for a secret (a password or code field): the person's reply to it is kept
+		// withheld whole in every record, and still reaches the desktop as typed (X-6). Ignored on anything but a
+		// question or an approval.
+		Secret bool `json:"secret"`
+
 		// What the task records need from the end of a turn: which task it
 		// was, and what the desktop knows about the model and the spend so
 		// far. All optional, and absent from older images.
@@ -185,11 +190,8 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		chatText = withGateQuestion(question, chatText)
 	}
 
-	if !req.Quiet && note.Kind != tasks.OutcomeDone {
-		s.QueryNotes.Add(note)
-	}
-
-	taskID, err := s.Tasks.RecordOutcome(desktopID, reportedTaskID(req.TaskID), tasks.Outcome{
+	named := reportedTaskID(req.TaskID)
+	taskID, err := s.Tasks.RecordOutcome(desktopID, named, tasks.Outcome{
 		Kind:              note.Kind,
 		Reply:             chatText,
 		Engine:            clip(req.Engine, 32),
@@ -199,9 +201,23 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		OutputTokens:      nonNegative(req.OutputTokens),
 		CachedInputTokens: cachedWithin(nonNegative(req.CachedInputTokens), nonNegative(req.InputTokens)),
 		Checked:           req.Checked,
+		Secret:            req.Secret && (note.Kind == tasks.OutcomeQuery || note.Kind == tasks.OutcomeApproval),
 	})
 	if err != nil {
 		log.Printf("querytext from %s: %v", desktopID, err)
+	}
+
+	// An outcome for a task that is not open here (it ended, or is not this desktop's) is refused, with nothing
+	// shown: it must not close another task, and a resent copy must not land in the chat again. A 4xx is the
+	// desktop's sign to let it go (messaging.resend_unsent drops a refused outcome) - review 2026-11-03, C-01/L-03.
+	if err == nil && named != "" && taskID == "" {
+		log.Printf("querytext from %s: task %s is not open, so its %s outcome was refused", desktopID, named, note.Kind)
+		jsonStatusError(w, http.StatusConflict, "That task is not open on this desktop, so this outcome was not recorded.")
+		return
+	}
+
+	if !req.Quiet && note.Kind != tasks.OutcomeDone {
+		s.QueryNotes.Add(note)
 	}
 
 	if chatText != "" {

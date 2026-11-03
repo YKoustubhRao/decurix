@@ -182,7 +182,7 @@ func TraceText(detail tasks.Detail) string {
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "Engine: %s\n", tasks.EngineLabel(detail.Engine))
 	fmt.Fprintf(&b, "Type: %s\n", tasks.TypeLabel(detail.Type))
-	fmt.Fprintf(&b, "Status: %s\n", tasks.StatusLabel(detail.Status))
+	fmt.Fprintf(&b, "Status: %s\n", tasks.DisplayOutcome(detail.Status, detail.Checked).Label)
 	fmt.Fprintf(&b, "Created: %s\n", stamp(detail.CreatedAt))
 	if detail.Verdict != "" {
 		fmt.Fprintf(&b, "Verdict: %s (%s)\n", detail.Verdict, stamp(detail.VerdictAt))
@@ -193,7 +193,8 @@ func TraceText(detail tasks.Detail) string {
 	fmt.Fprintf(&b, "\nRequest:\n%s\n", detail.Request)
 
 	for _, e := range detail.Executions {
-		fmt.Fprintf(&b, "\n==== Attempt %d: %s", e.Attempt, tasks.StatusLabel(e.Status))
+		shown := tasks.DisplayOutcome(e.Status, e.Checked)
+		fmt.Fprintf(&b, "\n==== Attempt %d: %s", e.Attempt, shown.Label)
 		fmt.Fprintf(&b, " ====\nEngine: %s", tasks.EngineLabel(e.Engine))
 		if e.Model != "" {
 			fmt.Fprintf(&b, " · %s", e.Model)
@@ -208,8 +209,8 @@ func TraceText(detail tasks.Detail) string {
 		if e.CostUSD != nil {
 			fmt.Fprintf(&b, "Cost: %s\n", tasks.FormatCost(e.CostUSD))
 		}
-		if e.Checked != nil {
-			fmt.Fprintf(&b, "Final check: %s\n", map[bool]string{true: "judged the result", false: "not run"}[*e.Checked])
+		if e.Checked != nil || e.Status == tasks.StatusDone {
+			fmt.Fprintf(&b, "%s\n", FinalCheck(e.Checked))
 		}
 
 		b.WriteString("\n-- Steps --\n")
@@ -259,11 +260,24 @@ func TraceText(detail tasks.Detail) string {
 		}
 
 		if e.FinalReply != "" {
-			fmt.Fprintf(&b, "\n-- Final report (%s) --\n%s\n", tasks.StatusLabel(e.Status), e.FinalReply)
+			fmt.Fprintf(&b, "\n-- Final report (%s) --\n%s\n", shown.Label, e.FinalReply)
 		}
 	}
 
 	return b.String()
+}
+
+// FinalCheck says what a desktop's final check did with a result, from the records' flag: judged it, did not run,
+// or said nothing (an older image).
+func FinalCheck(checked *bool) string {
+	switch {
+	case checked == nil:
+		return "Final check: not reported"
+	case *checked:
+		return "Final check: judged"
+	default:
+		return "Final check: not run"
+	}
 }
 
 // indent writes text with every line indented four spaces, ending in a newline.
@@ -311,6 +325,9 @@ var taskFuncs = template.FuncMap{
 	"engineLabel": tasks.EngineLabel,
 	"typeLabel":   tasks.TypeLabel,
 	"statusLabel": tasks.StatusLabel,
+	// outcome is what a person is shown for a status and the final check's word together: the only label a page
+	// puts on how a task ended (a done nobody's check judged reads "Done, not checked").
+	"outcome": tasks.DisplayOutcome,
 	"contains":    strings.Contains,
 	"reasonLabel": tasks.ReasonLabel,
 	"duration":    tasks.FormatDuration,
@@ -349,6 +366,9 @@ var taskFuncs = template.FuncMap{
 		}
 		return *value
 	},
+	// finalCheck says what the final check did, from the *bool the records keep (deref is for *int64 figures:
+	// using it on Checked crashed the trace page on every reported check, W-02).
+	"finalCheck": FinalCheck,
 	"live": func(status string) bool {
 		return status == tasks.StatusQueued || status == tasks.StatusRunning || status == tasks.StatusWaiting
 	},

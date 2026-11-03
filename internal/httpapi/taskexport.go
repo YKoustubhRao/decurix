@@ -25,6 +25,8 @@ var exportColumns = []string{
 	"task_id", "created_at", "worker", "request", "type", "status", "attempts",
 	"engine", "model", "checked", "autonomous", "stepped_in", "interventions",
 	"approvals", "verdict", "verdict_note", "cost_usd", "tokens", "duration_seconds", "final_reply",
+	// outcome is what the pages show (tasks.DisplayOutcome): status and checked read together.
+	"outcome",
 }
 
 // taskExportHandler serves the export.
@@ -126,6 +128,7 @@ func exportRow(sum tasks.Summary, d tasks.Detail) []string {
 		fmt.Sprint(sum.Executions), sum.Engine, sum.Model, checked, autonomy(sum),
 		strings.Join(sum.SteppedIn, "; "), fmt.Sprint(sum.Interventions), fmt.Sprint(sum.Approvals),
 		sum.Verdict, sum.VerdictNote, cost, used, fmt.Sprintf("%.0f", sum.Duration.Seconds()), last.FinalReply,
+		tasks.DisplayOutcome(sum.Status, sum.Checked).Label,
 	}
 	for i := range row {
 		row[i] = spreadsheetSafe(row[i])

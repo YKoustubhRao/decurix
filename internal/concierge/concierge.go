@@ -13,6 +13,8 @@ import (
 
 	"github.com/YKoustubhRao/decurix/internal/conversation"
 	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
+	"github.com/YKoustubhRao/decurix/internal/withhold"
 )
 
 // Deps is everything the concierge needs from the rest of the control plane,
@@ -34,6 +36,12 @@ type Deps struct {
 	// TaskStatus is a task record's status (tasks.Store.Get); optional. It
 	// is how a session learns its desktop was stopped under it.
 	TaskStatus func(taskID string) (string, error)
+	// TaskOutcome is what a person is shown of how a task stands (tasks.DisplayOutcome over its record). A reply is
+	// called done only when this says the final check judged it; without it, a reply is "finished, not confirmed".
+	TaskOutcome func(taskID string) (tasks.Display, error)
+	// OpenQuestion is the question a task waits on a person for, and whether its desktop asked it for a secret
+	// (tasks.Store.OpenQuestion); optional. A reply to it is stored the way the task records keep it.
+	OpenQuestion func(taskID string) (question string, secret, ok bool)
 	// Suggest names the desktop best suited to a request; optional.
 	Suggest func(ctx context.Context, content string) (desktopID string, ok bool)
 	// Stop stops a desktop (the dashboard's Stop); optional.
@@ -70,7 +78,9 @@ func (c *Concierge) Handle(ctx context.Context, text string) (Message, error) {
 	if text == "" {
 		return Message{}, errors.New("empty message")
 	}
-	msg, err := c.Store.AddMessage(RoleUser, 0, "", text)
+	// What a person typed is kept with its secrets withheld, a reply to a question asked for a secret whole; the
+	// desktop still gets it as typed (review 2026-11-03, C-04).
+	msg, err := c.Store.AddMessage(RoleUser, 0, "", c.recordable(text))
 	if err != nil {
 		return Message{}, err
 	}
@@ -133,6 +143,30 @@ var (
 	// when every desktop is busy it read as a refusal.
 	smallTalk = regexp.MustCompile(`(?i)^(hi|hey|hello|hiya|yo|hey there|hi there|hello there|good (morning|afternoon|evening)|thanks|thank you|thx|ty|cool|nice|great)[.!,? ]*(decurix)?[.!? ]*$`)
 )
+
+// recordable is text as the conversation keeps it: withhold.Text, or - for "#N <reply>" to a job waiting on a person
+// - the reply as the task records keep it (withhold.Reply against the question, or withhold.Secret when the desktop
+// asked the question for a secret).
+func (c *Concierge) recordable(text string) string {
+	m := sessionRef.FindStringSubmatch(text)
+	if m == nil || c.Deps.OpenQuestion == nil {
+		return withhold.Text(text)
+	}
+	n, _ := strconv.ParseInt(m[1], 10, 64)
+	sess, err := c.Store.Session(n)
+	if err != nil || sess.Status != StatusNeedsYou {
+		return withhold.Text(text)
+	}
+	question, secret, ok := c.Deps.OpenQuestion(sess.TaskID)
+	switch {
+	case !ok:
+		return withhold.Text(text)
+	case secret:
+		return "#" + m[1] + " " + withhold.Secret
+	default:
+		return "#" + m[1] + " " + withhold.Reply(question, m[2])
+	}
+}
 
 // Process handles one message a person typed. Exported for tests and for a
 // caller that wants to wait for the outcome.
@@ -226,7 +260,7 @@ func (c *Concierge) reply(ctx context.Context, n int64, text string) {
 	if taskID != sess.TaskID {
 		// The desktop was no longer waiting on this job, so it took the
 		// words as a new request - say so rather than pretend it answered.
-		ns, err := c.Store.CreateSession(sess.DesktopID, sess.DesktopName, taskID, text)
+		ns, err := c.Store.CreateSession(sess.DesktopID, sess.DesktopName, taskID, withhold.Text(text))
 		if err != nil {
 			c.fail(err)
 			return
@@ -244,17 +278,79 @@ func (c *Concierge) reply(ctx context.Context, n int64, text string) {
 		verb = "Trying again:"
 	}
 	c.say(sess.ID, "", fmt.Sprintf("%s #%d on %s.", verb, sess.ID, sess.DesktopName))
+	if sess.Kind == conversation.KindApproval && !bound(ctx) {
+		// A typed answer here cannot say which action the person read, so it approves nothing (httpapi replyBinding).
+		c.say(sess.ID, "", fmt.Sprintf("That went to #%d as a message: it approves nothing. To approve, use its Approve button, or answer it on its card on the dashboard.", sess.ID))
+	}
 }
 
-// answerWaiting sends a short yes/no to the one session waiting on a person.
+// boundKey marks a context whose reply is bound to the approval a person was shown (Answer's caller set the note).
+type boundKey struct{}
+
+// WithBoundAnswer marks ctx as carrying an answer bound to the approval the person was shown - the server sets this
+// only with that approval's note id on the same context.
+func WithBoundAnswer(ctx context.Context) context.Context {
+	return context.WithValue(ctx, boundKey{}, true)
+}
+
+// bound reports whether ctx carries an answer bound to its approval (WithBoundAnswer).
+func bound(ctx context.Context) bool {
+	v, _ := ctx.Value(boundKey{}).(bool)
+	return v
+}
+
+// Answer answers job n's approval from its Approve or Deny button: yes or no, sent with ctx, which the server has
+// bound to the approval the button was shown for (its note id). Only a job waiting on its approval is answered; any
+// other is refused with ErrNotWaitingApproval.
+func (c *Concierge) Answer(ctx context.Context, n int64, yes bool) error {
+	c.work.Lock()
+	defer c.work.Unlock()
+
+	sess, err := c.Store.Session(n)
+	if err != nil {
+		return err
+	}
+	if sess.Status != StatusNeedsYou || sess.Kind != conversation.KindApproval {
+		return ErrNotWaitingApproval
+	}
+	word := "no"
+	if yes {
+		word = "yes"
+	}
+	if _, err := c.Store.AddMessage(RoleUser, sess.ID, "", fmt.Sprintf("#%d %s", n, word)); err != nil {
+		return err
+	}
+	c.reply(WithBoundAnswer(ctx), n, word)
+	return nil
+}
+
+// ErrNotWaitingApproval is Answer's refusal: the job is not waiting on an approval (it moved on, or asked a question).
+var ErrNotWaitingApproval = errors.New("that job is not waiting on an approval")
+
+// answerWaiting sends a short yes/no to the one session waiting on a person's answer to a question. A bare word
+// ("ok", "sure", "go") is never taken as the answer to an approval: which action it would approve is not something a
+// word list may decide (review 2026-11-03, C-15). An approval is answered by its button, or "#N yes" (sent as a message).
 func (c *Concierge) answerWaiting(ctx context.Context, text string) {
-	waiting, err := c.waiting()
+	all, err := c.waiting()
 	if err != nil {
 		c.fail(err)
 		return
 	}
+	var waiting, approvals []Session
+	for _, s := range all {
+		if s.Kind == conversation.KindApproval {
+			approvals = append(approvals, s)
+		} else {
+			waiting = append(waiting, s)
+		}
+	}
 	switch len(waiting) {
 	case 0:
+		if len(approvals) > 0 {
+			s := approvals[0]
+			c.say(0, "", fmt.Sprintf("#%d on %s is waiting for your approval - use its Approve or Deny button, or answer it on its card on the dashboard.", s.ID, s.DesktopName))
+			return
+		}
 		c.say(0, "", "Nothing is waiting on you right now.")
 	case 1:
 		c.reply(ctx, waiting[0].ID, text)
@@ -364,7 +460,7 @@ func (c *Concierge) newTask(ctx context.Context, desktopID, text string) {
 		c.say(0, "error", fmt.Sprintf("Could not start that on %s: %v", target.Name, err))
 		return
 	}
-	sess, err := c.Store.CreateSession(target.ID, target.Name, taskID, text)
+	sess, err := c.Store.CreateSession(target.ID, target.Name, taskID, withhold.Text(text))
 	if err != nil {
 		c.fail(err)
 		return
@@ -508,18 +604,20 @@ func (c *Concierge) Tick(ctx context.Context) {
 		}
 
 		if e, ok := latestReply(th, s.TaskID); ok && e.ID != s.LastEntryID {
-			status := StatusDone
+			status, kind := StatusNeedsYou, e.Kind
 			switch e.Kind {
 			case conversation.KindQuery, conversation.KindApproval:
-				status = StatusNeedsYou
 			case conversation.KindError:
 				status = StatusFailed
+			default:
+				// A reply is done only when the task record says its final check judged it (W-01, C-15).
+				status, kind = c.replyStatus(s.TaskID)
 			}
-			if err := c.Store.UpdateSession(s.ID, status, e.Kind, e.ID); err != nil {
+			if err := c.Store.UpdateSession(s.ID, status, kind, e.ID); err != nil {
 				log.Printf("concierge: %v", err)
 				continue
 			}
-			if _, err := c.Store.AddMessage(RoleAgent, s.ID, e.Kind, e.Content); err != nil {
+			if _, err := c.Store.AddMessage(RoleAgent, s.ID, kind, e.Content); err != nil {
 				log.Printf("concierge: %v", err)
 			}
 			continue
@@ -532,6 +630,39 @@ func (c *Concierge) Tick(ctx context.Context) {
 				c.say(s.ID, "error", fmt.Sprintf("#%d ended without an answer: %s was stopped or restarted.", s.ID, s.DesktopName))
 			}
 		}
+	}
+}
+
+// Message kinds for a reply, by how its task stands: unchecked is a finished reply whose final check did not judge
+// it, note one the worker sent while it goes on working.
+const (
+	KindUnchecked = "unchecked"
+	KindNote      = "note"
+)
+
+// replyStatus is a job's status after a plain reply, and the kind its message is shown with, from the task record:
+// done only when the final check judged the result. With no record to ask (or a failed read) it is not confirmed.
+func (c *Concierge) replyStatus(taskID string) (status, kind string) {
+	if c.Deps.TaskOutcome == nil {
+		return StatusUnchecked, KindUnchecked
+	}
+	outcome, err := c.Deps.TaskOutcome(taskID)
+	if err != nil {
+		return StatusUnchecked, KindUnchecked
+	}
+	switch outcome.State {
+	case tasks.StateDoneChecked:
+		return StatusDone, conversation.KindEntry
+	case tasks.StateRunning, tasks.StateQueued:
+		return StatusRunning, KindNote
+	case tasks.StateNeedsYou:
+		return StatusNeedsYou, conversation.KindQuery
+	case tasks.StateFailed:
+		return StatusFailed, conversation.KindError
+	case tasks.StateStopped:
+		return StatusStopped, conversation.KindError
+	default:
+		return StatusUnchecked, KindUnchecked
 	}
 }
 
@@ -655,6 +786,8 @@ func statusWord(status string) string {
 		return "failed"
 	case StatusStopped:
 		return "stopped"
+	case StatusUnchecked:
+		return "finished, not confirmed"
 	}
 	return status
 }

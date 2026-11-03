@@ -45,6 +45,9 @@ const (
 	StatusDone     = "done"
 	StatusFailed   = "failed"
 	StatusStopped  = "stopped"
+	// StatusUnchecked is a job the worker says it finished but whose final check did not judge the result: shown as
+	// "finished, not confirmed", never as done (tasks.DisplayOutcome).
+	StatusUnchecked = "unchecked"
 )
 
 // maxMessages bounds the conversation kept; the oldest go first. The task
@@ -91,6 +94,11 @@ type Session struct {
 	// LiveStep is what the desktop is doing right now; filled in on read,
 	// never stored.
 	LiveStep string `json:"live_step,omitempty"`
+
+	// ApprovalNote is the open approval this job's Approve/Deny buttons answer - the desktop's newest open question,
+	// worded by its approval gate - or "" when there is none and the approval is answered on its card. Filled in on
+	// read by the server, never stored.
+	ApprovalNote string `json:"approval_note,omitempty"`
 }
 
 // Active reports whether the session can still change on its own.

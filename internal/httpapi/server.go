@@ -221,6 +221,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/chat", s.humansOnly(s.conciergePageHandler))
 	mux.HandleFunc("/api/concierge", s.humansOnly(s.conciergeStateHandler))
 	mux.HandleFunc("/api/concierge/send", s.humansOnly(s.conciergeSendHandler))
+	mux.HandleFunc("/api/concierge/answer", s.humansOnly(s.conciergeAnswerHandler))
 	mux.HandleFunc("/desktop/", s.desktopProxyHandler)
 	mux.HandleFunc("/agent/", s.agentProxyHandler)
 	mux.HandleFunc("/api/desktops", s.desktopsAPIHandler)

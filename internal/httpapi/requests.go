@@ -12,7 +12,6 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/ollama"
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"github.com/YKoustubhRao/decurix/internal/webui"
-	"github.com/YKoustubhRao/decurix/internal/withhold"
 )
 
 // maxRequestBytes is the longest request a human can send a desktop.
@@ -92,32 +91,39 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// newer, that newer question is what the reply would land on, so it is refused (review 2026-11-02: a "yes" under
 	// an old card approved a newer action).
 	ctx := s.ActorContext(r)
+	if r.FormValue("secret") == "1" {
+		// The person marked this a secret: it reaches the desktop as typed and is kept nowhere as typed.
+		ctx = context.WithValue(ctx, sentSecretKey{}, true)
+	}
 	if noteID := strings.TrimSpace(r.FormValue("note_id")); noteID != "" {
 		ctx = context.WithValue(ctx, replyNoteKey{}, noteID)
 	} else if seen, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(r.FormValue("seen_at"))); err == nil {
 		// The desktop's chat says what was on screen: when its newest entry was posted (replyBinding).
 		ctx = context.WithValue(ctx, replySeenKey{}, seen)
 	}
-	route, sent, err := s.submitRequestWithFiles(ctx, desktopID, content, files)
+	route, stored, err := s.submitRequestWithFiles(ctx, desktopID, content, files)
 	if err != nil {
 		uploadError(w, err)
 		return
 	}
 
-	// content is the request as it was sent - with the files it brought named
-	// in it - so the chat can tell its own copy from the transcript's.
+	// content is the request as the records and the chat keep it - with the files it brought named in it, and any
+	// secret withheld (tasks.Store.CommitReply) - so the chat can tell its own copy from the transcript's.
 	jsonResponse(w, map[string]string{
 		"status":  "sent",
 		"task_id": route.TaskID,
-		"content": withhold.Text(sent), // as the chat keeps it
-
+		"content": stored,
 	})
 }
+
+// sentSecretKey marks a request the person sent as a secret (the compose box's toggle).
+type sentSecretKey struct{}
 
 // submitRequestWithFiles is submitLocked for a request a person attached
 // files to: under the desktop's send lock the files are written into the
 // desktop first, so they are there when its agent reads the request that
-// names them. It returns the request as sent.
+// names them. It returns the request as the records keep it (secrets
+// withheld), which is what anything shown or stored afterwards must use.
 func (s *Server) submitRequestWithFiles(ctx context.Context, desktopID, content string, files []desktop.File) (tasks.Route, string, error) {
 	id := desktop.SanitizeID(desktopID)
 
@@ -140,9 +146,9 @@ func (s *Server) submitRequestWithFiles(ctx context.Context, desktopID, content 
 		return tasks.Route{}, "", &errUpload{http.StatusBadRequest, "request too long"}
 	}
 
-	route, err := s.submitLocked(ctx, desktopID, content)
+	route, stored, err := s.submitStored(ctx, desktopID, content)
 
-	return route, content, err
+	return route, stored, err
 }
 
 // replyNoteKey carries the question card a reply was typed under (sendRequestHandler's note_id).
@@ -176,12 +182,18 @@ func (s *Server) replyStillAnswers(desktopID, noteID string) error {
 // the task records and chat exactly the way a typed one does. The caller
 // already holds the desktop's send lock (lockDesktop).
 func (s *Server) submitLocked(ctx context.Context, desktopID, content string) (tasks.Route, error) {
+	route, _, err := s.submitStored(ctx, desktopID, content)
+	return route, err
+}
+
+// submitStored is submitLocked, also returning the request as the records keep it.
+func (s *Server) submitStored(ctx context.Context, desktopID, content string) (tasks.Route, string, error) {
 	id := desktop.SanitizeID(desktopID)
 
 	// A desktop still being created has no container yet, which would read
 	// as "no longer exists" below - say what is actually happening.
 	if prov, ok := s.Desktops.GetProvisioning(id); ok && prov.Status == "provisioning" {
-		return tasks.Route{}, errStillProvisioning
+		return tasks.Route{}, "", errStillProvisioning
 	}
 
 	// A request to a stopped desktop waits for it to boot; load the model
@@ -195,14 +207,14 @@ func (s *Server) submitLocked(ctx context.Context, desktopID, content string) (t
 	if route.Kind == tasks.RouteReply {
 		var err error
 		if asked, kind, request, err = s.replyBinding(ctx, id); err != nil {
-			return tasks.Route{}, err
+			return tasks.Route{}, "", err
 		}
 	}
 
 	// A reply that settles a pending approval is held to the approval policy: who may approve this action
 	// (docs/access.md). Every door passes here; an automated one carries no actor and never approves under a policy.
 	if err := s.gateApprovalReply(ctx, id, route, content); err != nil {
-		return tasks.Route{}, err
+		return tasks.Route{}, "", err
 	}
 
 	// A reply to an open question goes to the desktop's approval gate first, signed: that is the only way a yes is made.
@@ -211,10 +223,11 @@ func (s *Server) submitLocked(ctx context.Context, desktopID, content string) (t
 	}
 
 	if err := s.deliverRequest(ctx, desktopID, content, route.TaskID); err != nil {
-		return tasks.Route{}, err
+		return tasks.Route{}, "", err
 	}
 
-	return s.recordDelivered(ctx, id, content, route), nil
+	route, stored := s.recordDelivered(ctx, id, content, route)
+	return route, stored, nil
 }
 
 // Submit implements internal/schedule's Submitter: it is the fourth door
@@ -333,22 +346,25 @@ func (s *Server) recentlyStarted(ctx context.Context, desktopID string) bool {
 }
 
 // recordDelivered records a request the desktop has accepted, in the task
-// records and in the chat, and returns the route it was recorded under.
+// records and in the chat, and returns the route it was recorded under and the
+// text kept: one rule for both copies (tasks.Store.CommitReply decides what of
+// it is withheld; the chat keeps exactly that, C-05).
 //
 // Recorded only once the desktop has actually accepted it, so the chat never
 // shows a request that was never delivered and no task exists for one. Every
 // human-to-desktop path routes through here — the chat page, the requests
 // page, and a reply to a query — so all three show up in the transcript and
 // the records alike.
-func (s *Server) recordDelivered(ctx context.Context, desktopID, content string, route tasks.Route) tasks.Route {
-	committed, err := s.Tasks.Commit(route, s.workerFor(ctx, desktopID), content)
+func (s *Server) recordDelivered(ctx context.Context, desktopID, content string, route tasks.Route) (tasks.Route, string) {
+	secret, _ := ctx.Value(sentSecretKey{}).(bool)
+	committed, stored, err := s.Tasks.CommitReply(route, s.workerFor(ctx, desktopID), content, secret)
 	if err != nil {
 		log.Printf("sendRequest: %v", err)
 	} else {
 		route = committed
 	}
 
-	s.Chat.AppendUserRequest(desktopID, route.TaskID, content)
+	s.Chat.AppendUserRequest(desktopID, route.TaskID, stored)
 
 	// A request that reached the desktop as the reply to its open query is
 	// the answer: the Queries tab should not go on asking for it. This is the
@@ -358,7 +374,7 @@ func (s *Server) recordDelivered(ctx context.Context, desktopID, content string,
 		s.QueryNotes.ResolveAnswered(desktopID)
 	}
 
-	return route
+	return route, stored
 }
 
 // workerFor describes a desktop for its task records: what the records already

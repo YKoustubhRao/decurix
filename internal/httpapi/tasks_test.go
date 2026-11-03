@@ -42,7 +42,8 @@ func deliver(t *testing.T, s *Server, desktopID, content string) tasks.Route {
 		t.Fatal(err)
 	}
 
-	return s.recordDelivered(context.Background(), desktopID, content, s.routeRequest(desktopID, content))
+	route, _ := s.recordDelivered(context.Background(), desktopID, content, s.routeRequest(desktopID, content))
+	return route
 }
 
 // One task end to end as the control plane sees it - a chat request, the
@@ -214,7 +215,7 @@ func TestTaskTracePageAndDesktopTasksAPI(t *testing.T) {
 		t.Fatalf("trace.txt: status %d, type %q", text.Code, text.Header().Get("Content-Type"))
 	}
 	body := text.Body.String()
-	for _, want := range []string{"Request:\ntidy up /work", "[1] ", "Command\n    $ ls /work", "[2] ", "Output\n    Output: a.txt\n    b.txt", "[?] ", "Query asked", "    Delete b.txt too?", "    yes, delete it", "Final report (Done) --\nTidied /work."} {
+	for _, want := range []string{"Request:\ntidy up /work", "[1] ", "Command\n    $ ls /work", "[2] ", "Output\n    Output: a.txt\n    b.txt", "[?] ", "Query asked", "    Delete b.txt too?", "    yes, delete it", "Final report (Done, not checked) --\nTidied /work."} {
 		if !strings.Contains(body, want) {
 			t.Errorf("trace.txt is missing %q in:\n%s", want, body)
 		}

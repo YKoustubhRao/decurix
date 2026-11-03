@@ -181,14 +181,17 @@ const maxTaskPicks = 50
 // maxTaskPickIDs bounds one /api/desktops/tasks call, like the activity poll.
 const maxTaskPickIDs = 200
 
-// TaskPick is one entry of a dashboard card's task dropdown.
+// TaskPick is one entry of a dashboard card's task dropdown. StatusLabel is the derived outcome's label
+// (tasks.DisplayOutcome), so a done nobody's check judged reads "Done, not checked" there too.
 type TaskPick struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Request     string    `json:"request"`
-	Status      string    `json:"status"`
-	StatusLabel string    `json:"status_label"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string        `json:"id"`
+	Title       string        `json:"title"`
+	Request     string        `json:"request"`
+	Status      string        `json:"status"`
+	StatusLabel string        `json:"status_label"`
+	Checked     *bool         `json:"checked"`
+	Outcome     tasks.Display `json:"outcome"`
+	CreatedAt   time.Time     `json:"created_at"`
 }
 
 // desktopTasksHandler answers GET /api/desktops/tasks?ids=a,b,c with each
@@ -224,7 +227,9 @@ func (s *Server) desktopTasksHandler(w http.ResponseWriter, r *http.Request) {
 				Title:       tasks.ShortTitle(t.Request, webui.ShortTitleRunes),
 				Request:     t.Request,
 				Status:      t.Status,
-				StatusLabel: tasks.StatusLabel(t.Status),
+				StatusLabel: t.Outcome.Label,
+				Checked:     t.Checked,
+				Outcome:     t.Outcome,
 				CreatedAt:   t.CreatedAt,
 			})
 		}

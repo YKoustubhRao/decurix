@@ -23,9 +23,11 @@
   font-size:11.5px;font-weight:600;white-space:nowrap;
   background:var(--idle-soft);color:var(--text-2)
 }
-.tstatus.done{background:var(--live-soft);color:var(--live)}
-.tstatus.waiting,.tstatus.query{background:var(--accent-soft);color:var(--accent)}
-.tstatus.error,.tstatus.abandoned{background:var(--danger-soft);color:var(--danger)}
+/* Keyed by the derived outcome (tasks.DisplayOutcome): a done nobody's check judged is amber, never green. */
+.tstatus.done_checked{background:var(--live-soft);color:var(--live)}
+.tstatus.done_unchecked{background:var(--busy-soft);color:var(--busy)}
+.tstatus.needs_you{background:var(--accent-soft);color:var(--accent)}
+.tstatus.failed,.tstatus.stopped{background:var(--danger-soft);color:var(--danger)}
 
 .verdict{margin-top:8px;font-size:12.5px;color:var(--text-2)}
 .verdict b.correct{color:var(--live)}
@@ -127,7 +129,7 @@
     <h1>{{$task.Request}}</h1>
 
     <div class="meta">
-      <span class="tstatus {{$task.Status}}">{{statusLabel $task.Status}}</span>
+      <span class="tstatus {{(outcome $task.Status $task.Checked).State}}">{{(outcome $task.Status $task.Checked).Label}}</span>
       <span><b>{{$task.WorkerName}}</b>{{if not $task.Worker.DeletedAt.IsZero}} (deleted){{end}}</span>
       <span>{{engineLabel $task.Engine}}</span>
       <span><time data-created="{{iso $task.CreatedAt}}">{{clock $task.CreatedAt}}</time></span>
@@ -157,13 +159,13 @@
     <div class="attempt-head">
       <h2>{{if gt (len $task.Executions) 1}}Attempt {{.Attempt}}{{else}}What happened{{end}}</h2>
       <div class="meta">
-        <span class="tstatus {{.Status}}">{{statusLabel .Status}}</span>
+        <span class="tstatus {{(outcome .Status .Checked).State}}">{{(outcome .Status .Checked).Label}}</span>
         <span>{{engineLabel .Engine}}{{with .Model}} · {{.}}{{end}}</span>
         <span><time data-created="{{iso .StartedAt}}">{{clock .StartedAt}}</time>{{if not .EndedAt.IsZero}} → <time data-created="{{iso .EndedAt}}">{{clock .EndedAt}}</time>{{end}}</span>
         <span>{{duration (.Duration now)}}</span>
         {{if or .InputTokens .OutputTokens}}<span>{{tokens .InputTokens}} in{{with .CachedInputTokens}} ({{tokens .}} of them from the cache){{end}} / {{tokens .OutputTokens}} out tokens</span>{{end}}
         {{if .CostUSD}}<span>{{cost .CostUSD}}</span>{{end}}
-        {{if .Checked}}<span>{{if deref .Checked | not}}Final check: not run{{else}}Final check: judged{{end}}</span>{{end}}
+        {{if or .Checked (eq .Status "done")}}<span>{{finalCheck .Checked}}</span>{{end}}
       </div>
     </div>
 
@@ -243,7 +245,7 @@
 
     {{if .FinalReply}}
     <div class="final{{if or (eq .Status "error") (eq .Status "abandoned")}} is-error{{end}}">
-      <div class="eyebrow">{{if eq .Status "done"}}Final report{{else if eq .Status "error"}}Failed{{else}}Ended{{end}}</div>
+      <div class="eyebrow">{{if eq (outcome .Status .Checked).State "done_checked"}}Final report{{else if eq (outcome .Status .Checked).State "done_unchecked"}}Final report, not checked{{else if eq .Status "error"}}Failed{{else}}Ended{{end}}</div>
       <pre>{{.FinalReply}}</pre>
     </div>
     {{end}}

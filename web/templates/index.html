@@ -1177,7 +1177,7 @@
       {{$id := .ID}}{{$picks := index $.TasksByDesktop .ID}}
       <div class="dcard-trace" data-task-pick="{{.ID}}">
         <select class="select dcard-trace-select" data-task-select aria-label="Tasks given to {{.Name}}"{{if not $picks}} disabled{{end}}>
-          {{range $picks}}<option value="{{.ID}}">{{shortTitle .Request}} · {{statusLabel .Status}} · {{clock .CreatedAt}}</option>{{else}}<option value="">No tasks yet</option>{{end}}
+          {{range $picks}}<option value="{{.ID}}">{{shortTitle .Request}} · {{(outcome .Status .Checked).Label}} · {{clock .CreatedAt}}</option>{{else}}<option value="">No tasks yet</option>{{end}}
         </select>
         <a class="btn btn-default btn-sm" data-task-trace {{with $picks}}href="/tasks/{{(index . 0).ID}}/trace"{{else}}aria-disabled="true" tabindex="-1"{{end}} target="_blank" rel="noopener" title="Open the full trace of the task picked: every step, question, answer and the final report">
           <svg width="14" height="14"><use href="#i-clock"/></svg>

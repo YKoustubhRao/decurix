@@ -348,8 +348,12 @@ func chatKindFor(reported string) string {
 		return conversation.KindError
 	case "final", "message":
 		return conversation.KindEntry
-	default:
+	case "":
 		return ""
+	default:
+		// A kind this control plane does not know is a question for a person, as the task records count it
+		// (outcomeKindFor) - never a plain answer the chat would show as done (W-06).
+		return conversation.KindQuery
 	}
 }
 

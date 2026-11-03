@@ -5,18 +5,24 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
 // finishedKeep is how many finished tasks the feed remembers: enough for a page that polls every few seconds.
 const finishedKeep = 50
 
-// FinishedTask is one task that ended with its work done, as the pages' "it is done" notification tells it.
+// FinishedTask is one task the worker said it finished, as the pages' notification tells it. Checked is the final
+// check's word (nil: not said) and Phrase how the notification ends "<desktop> ...": a result nobody's check judged
+// is announced as "finished its task, not checked", never as plain success (W-10).
 type FinishedTask struct {
 	Seq       int64     `json:"seq"`
 	DesktopID string    `json:"desktop_id"`
 	VMName    string    `json:"vm_name"`
 	Task      string    `json:"task"`
 	Message   string    `json:"message"`
+	Checked   *bool     `json:"checked"`
+	Phrase    string    `json:"phrase"`
 	At        time.Time `json:"at"`
 }
 
@@ -56,15 +62,17 @@ func (f *finishedFeed) since(after int64) (int64, []FinishedTask) {
 // recordFinished adds a task that just ended done to the feed, named by the request that started it.
 func (s *Server) recordFinished(desktopID, vmName, taskID, message string) {
 	task := ""
+	var checked *bool
 	if taskID != "" && s.Tasks != nil {
 		if d, err := s.Tasks.Get(taskID); err == nil {
-			task = d.Request
+			task, checked = d.Request, d.Checked
 		}
 	}
 	if vmName == "" {
 		vmName = desktopID
 	}
-	s.finished.add(FinishedTask{DesktopID: desktopID, VMName: vmName, Task: clip(task, 200), Message: clip(message, 400)})
+	s.finished.add(FinishedTask{DesktopID: desktopID, VMName: vmName, Task: clip(task, 200), Message: clip(message, 400),
+		Checked: checked, Phrase: tasks.FinishedPhrase(checked)})
 }
 
 // finishedTasksHandler answers GET /api/tasks/finished?after=<seq>: the tasks finished since that one, and the latest

@@ -1652,7 +1652,8 @@ body.busy{cursor:progress}
   function noteHeadline(note){
     var who = note.vm_name || note.desktop_id || "A desktop";
     switch(note.kind){
-      case "done": return who + " finished its task";
+      /* A result the worker's own final check did not judge says so (phrase from /api/tasks/finished). */
+      case "done": return who + " " + (note.phrase || "finished its task, not checked");
       case "error": return who + " could not finish its task";
       case "approval": return who + " needs your approval";
       default: return who + " needs you";
@@ -1704,7 +1705,7 @@ body.busy{cursor:progress}
       finishedAfter = data.latest || 0;
       if(first){ return; }
       (data.items || []).forEach(function(item){
-        announce({id: "finished-" + item.seq, kind: "done", desktop_id: item.desktop_id, vm_name: item.vm_name,
+        announce({id: "finished-" + item.seq, kind: "done", phrase: item.phrase, desktop_id: item.desktop_id, vm_name: item.vm_name,
                   task: item.task, message: item.message});
       });
     }catch(e){ /* try again on the next tick */ }

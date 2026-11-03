@@ -14,10 +14,19 @@ import (
 // Marker replaces a withheld value.
 const Marker = "[withheld]"
 
+// Secret is what is kept, everywhere, of a reply to a question asked for a secret, or of anything a person marked as
+// a secret when they sent it: the whole text, not a value in it. The desktop still receives it as typed.
+//
+// That flag - set by the agent from where its question came from, or by the person's own "secret" toggle - is what
+// the "secrets never reach the records" invariant rests on. Text below is only a backstop: a word list cannot know
+// every way a person writes a password (review 2026-11-03, C-03), so it may grow only where withholding more is
+// harmless, never as the fix for a leak.
+const Secret = "[secret withheld]"
+
 // labelled is a secret's label, the separator after it, and its value: quoted (all of it, spaces included), or
 // running to a space or a quote, so a password with a ";" or "," in it is withheld whole (review 2026-11-03:
 // "password: Abc;123xyz" kept ";123xyz", and `password: "my pass 1"` kept "pass 1").
-var labelled = regexp.MustCompile(`(?i)\b(passwords?|passwd|pwd|passcodes?|pass\s+codes?|otps?|one[- ]time\s+(?:password|code)|verification\s+code|(?:login|sign[- ]?in|access|auth(?:entication)?)\s+codes?|cvv2?|cvc2?|api[ _-]?keys?|secret(?:\s+key)?|client[ _-]?secret|access[ _-]?tokens?|auth[ _-]?tokens?|token)(\s*(?:is|was|=|:|-)\s*|\s+)(?:"([^"\n]{1,200})"|'([^'\n]{1,200})'|([^\s"']+))`)
+var labelled = regexp.MustCompile(`(?i)\b(passwords?|passwd|pwd|passcodes?|pass\s+codes?|otps?|one[- ]time\s+(?:password|code)|verification\s+code|(?:login|sign[- ]?in|access|auth(?:entication)?)\s+codes?|cvv2?|cvc2?|api[ _-]?keys?|secret(?:\s+key)?|client[ _-]?secret|access[ _-]?tokens?|auth[ _-]?tokens?|token|pass|pw|creds|key)(\s*(?:is|was|=|:|-)\s*|\s+)(?:"([^"\n]{1,200})"|'([^'\n]{1,200})'|([^\s"']+))`)
 
 // pinLabelled is a PIN's label and its value: "UPI PIN 4821", "ATM PIN code: 1234", "PIN: 576104", "PIN-560001". A
 // PIN is digits only, four to eight of them (never "Mumbai" in "Pin: Mumbai 400001").
@@ -140,9 +149,10 @@ func withholdLabelled(text string) string {
 	return b.String()
 }
 
-// labelledSecret reports whether value, after label and sep (quoted or not), is a secret's value.
+// labelledSecret reports whether value, after label and sep (quoted or not), is a secret's value. A dash is as
+// explicit as a colon ("Password - Tiger"): withholding a word too many there is harmless.
 func labelledSecret(label, sep, value string, quoted bool) bool {
-	explicit := strings.ContainsAny(sep, ":=")
+	explicit := strings.ContainsAny(sep, ":=-")
 	if label == "token" {
 		// A bare "token" names a queue's or a counter's number as often ("Token: 45", "token number: 7781"): only a
 		// machine's token is withheld, or with ":" a value of letters and digits or marks.

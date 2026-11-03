@@ -185,7 +185,7 @@ func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content,
 	}
 	resp.Body.Close()
 
-	route = s.recordDelivered(r.Context(), worker, content, route)
+	route, _ = s.recordDelivered(r.Context(), worker, content, route)
 
 	jsonResponse(w, map[string]string{"status": "sent", "task_id": route.TaskID, "content": content})
 }

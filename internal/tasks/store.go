@@ -15,13 +15,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/YKoustubhRao/decurix/internal/withhold"
+	"log"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/withhold"
 )
 
 // Execution statuses. queued, running and waiting are live; the rest are how
@@ -163,6 +164,8 @@ type Intervention struct {
 	Reply       string    `json:"reply"`
 	RequestedAt time.Time `json:"requested_at"`
 	RepliedAt   time.Time `json:"replied_at"`
+	// Secret says the desktop asked this for a secret (a password or code field): its reply is kept withheld whole.
+	Secret bool `json:"secret"`
 }
 
 // Event is one entry of an execution's timeline: a step or an intervention.
@@ -224,6 +227,9 @@ type Outcome struct {
 	CachedInputTokens *int64
 	// Checked: whether the final check judged a finished result (nil: not said).
 	Checked *bool
+	// Secret: a query raised for a secret (the agent knows where its question came from); the person's reply to it
+	// is kept as withhold.Secret in every record, and reaches the desktop as typed.
+	Secret bool
 }
 
 // Route is where a human request goes: a new task, the reply to a task's open
@@ -314,6 +320,8 @@ var schema = []string{
 	// at a fraction): what a task really cost, beside the raw count. NULL when
 	// the desktop did not say.
 	`ALTER TABLE executions ADD COLUMN cached_input_tokens INTEGER`,
+	// Whether the desktop asked this question for a secret (review 2026-11-03, X-6): its reply is withheld whole.
+	`ALTER TABLE interventions ADD COLUMN secret INTEGER NOT NULL DEFAULT 0`,
 }
 
 // Store is the SQLite-backed record of every worker's tasks.
@@ -545,6 +553,36 @@ func (s *Store) Working() bool {
 	return n > 0
 }
 
+// OpenQuestion returns the question a task is waiting on a person for - its live execution's newest unanswered
+// intervention - and whether the desktop asked it for a secret. ok is false when the task waits on nothing. It is how
+// another door (the concierge) keeps a reply to it the way Commit does.
+func (s *Store) OpenQuestion(taskID string) (question string, secret, ok bool) {
+	err := s.db.QueryRow(
+		`SELECT i.request, i.secret FROM interventions i JOIN executions e ON e.id = i.execution_id
+		 WHERE e.task_id = ? AND e.status = ? AND i.replied_ns = 0 ORDER BY i.requested_ns DESC LIMIT 1`,
+		taskID, StatusWaiting,
+	).Scan(&question, &secret)
+	if err != nil {
+		return "", false, false
+	}
+	return question, secret, true
+}
+
+// LiveWorkers returns every worker that has a live execution - queued, running or waiting on a human - so the
+// control plane can close those whose desktop is gone (internal/idlepause, C-17).
+func (s *Store) LiveWorkers() ([]string, error) {
+	workers, err := sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) (string, error) {
+		var id string
+		err := r.Scan(&id)
+		return id, err
+	}, `SELECT DISTINCT worker_id FROM executions WHERE status IN (?, ?, ?) ORDER BY worker_id`,
+		StatusQueued, StatusRunning, StatusWaiting)
+	if err != nil {
+		return nil, fmt.Errorf("tasks: listing workers with live tasks: %w", err)
+	}
+	return workers, nil
+}
+
 // IsOpen reports whether a task still has a live execution on a worker -
 // queued, running or waiting on a human. A desktop that restarted on its own
 // reports the task it lost; one restarted through the API had that task
@@ -602,9 +640,31 @@ func NewRoute() Route {
 // returns the route actually taken - which differs when the situation moved in
 // between (the intervention it replied to was closed, say).
 func (s *Store) Commit(route Route, worker Worker, text string) (Route, error) {
+	route, _, err := s.CommitReply(route, worker, text, false)
+	return route, err
+}
+
+// CommitReply is Commit that also returns the text it stored - what the chat, the send response and every other copy
+// must keep, so there is one rule for what a person typed (review 2026-11-03, C-05). secret is the person's own mark
+// ("this is a secret"): the whole text is kept as withhold.Secret, as is a reply to a question the desktop asked for
+// a secret. Otherwise the text is withheld by withhold.Text, and a reply by withhold.Reply against its question.
+func (s *Store) CommitReply(route Route, worker Worker, text string, secret bool) (Route, string, error) {
 	// A secret the person typed (a password, an OTP) reaches the desktop as written, never these records: they are
 	// shown in traces, reports and exports (review 2026-11-02).
-	text = withhold.Text(text)
+	if secret {
+		text = withhold.Secret
+	} else {
+		text = withhold.Text(text)
+	}
+	stored := text
+	route, err := s.commit(route, worker, &stored)
+	return route, stored, err
+}
+
+// commit is Commit's body. It may withhold *stored further (a reply to a question asked for a secret), and leaves in
+// it what it recorded.
+func (s *Store) commit(route Route, worker Worker, stored *string) (Route, error) {
+	text := *stored
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -655,11 +715,18 @@ func (s *Store) Commit(route Route, worker Worker, text string) (Route, error) {
 			}
 		}
 
-		// An answer to a question that asked for a secret (an OTP, a password, a PIN) is kept withheld even when it
-		// is a bare value (withhold.Reply); text is already withheld as any request is.
+		// An answer to a question the desktop asked for a secret is kept withheld whole; one whose words ask for a
+		// secret (an OTP, a password, a PIN) is kept withheld even when it is a bare value (withhold.Reply). text is
+		// already withheld as any request is.
 		var question string
-		if err := tx.QueryRow(`SELECT request FROM interventions WHERE id = ?`, interventionID).Scan(&question); err == nil {
-			text = withhold.Reply(question, text)
+		var askedSecret bool
+		if err := tx.QueryRow(`SELECT request, secret FROM interventions WHERE id = ?`, interventionID).Scan(&question, &askedSecret); err == nil {
+			if askedSecret {
+				*stored = withhold.Secret
+			} else {
+				*stored = withhold.Reply(question, *stored)
+			}
+			text = *stored
 		}
 
 		// A second reply landing before the agent resumed joins the first.
@@ -765,10 +832,14 @@ func Live(status string) bool {
 	return status == StatusQueued || status == StatusRunning || status == StatusWaiting
 }
 
-// resolve finds the execution a desktop's report belongs to: the one named by
-// the task ID it echoed back, or - for a desktop built before task IDs, or a
-// report that has none - the worker's oldest live execution, or the one that
-// ended moments ago.
+// resolve finds the execution a desktop's report belongs to. A report that
+// names a task belongs to that task's latest attempt on this worker, live or
+// not - never to whatever else is live: a stale or resent outcome for a task
+// that ended must not close another one (review 2026-11-03, C-01; the agent
+// resends a kept outcome for a day). A named task this worker never had
+// matches nothing. Only a report with no task ID (a desktop built before task
+// IDs) falls back to the worker's oldest live execution, or the one that ended
+// moments ago.
 func resolve(tx *sql.Tx, workerID, taskID string, now time.Time) (executionRef, bool, error) {
 	scan := func(row *sql.Row) (executionRef, bool, error) {
 		var ref executionRef
@@ -796,12 +867,10 @@ func resolve(tx *sql.Tx, workerID, taskID string, now time.Time) (executionRef, 
 		if err != nil {
 			return executionRef{}, false, err
 		}
-
-		// A task that ended long ago is not what a desktop is working on now,
-		// whatever ID it last wrote down; fall through to what is live.
-		if ok && (Live(ref.status) || now.Sub(ref.endedAt) < lateWindow) {
-			return ref, true, nil
+		if !ok {
+			log.Printf("tasks: %s reported on task %s, which it never had: not recorded", workerID, taskID)
 		}
+		return ref, ok, nil
 	}
 
 	ref, ok, err := scan(tx.QueryRow(
@@ -874,7 +943,10 @@ func (s *Store) AddStep(workerID, taskID string, step Step) (bool, error) {
 		return false, fmt.Errorf("tasks: recording step: %w", err)
 	}
 
-	if !ok {
+	// A step for a task that ended is that task's only in the moments after (its last line can trail the reply);
+	// later it is work nobody asked for, such as a `gui` command typed by hand while the desktop still names its
+	// last task. It is left out - never moved onto whatever task is live now.
+	if !ok || !Live(ref.status) && now.Sub(ref.endedAt) >= lateWindow {
 		return false, nil
 	}
 
@@ -929,7 +1001,8 @@ func (s *Store) AddStep(workerID, taskID string, step Step) (bool, error) {
 }
 
 // RecordOutcome records how a desktop's turn ended, and returns the ID of the
-// task it belonged to ("" when it matched none).
+// task it belonged to: "" when it matched none, or named a task that has
+// already ended (a closed execution takes no second end).
 func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -981,8 +1054,8 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 		}
 
 		if _, err := tx.Exec(
-			`INSERT INTO interventions (id, execution_id, kind, reason, request, requested_ns) VALUES (?, ?, ?, ?, ?, ?)`,
-			newID("i"), ref.id, kind, InterventionReason(kind, outcome.Reply), outcome.Reply, sqlitedb.ToNS(now),
+			`INSERT INTO interventions (id, execution_id, kind, reason, request, requested_ns, secret) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			newID("i"), ref.id, kind, InterventionReason(kind, outcome.Reply), outcome.Reply, sqlitedb.ToNS(now), outcome.Secret,
 		); err != nil {
 			return "", fmt.Errorf("tasks: recording intervention: %w", err)
 		}
@@ -1356,13 +1429,13 @@ func (s *Store) loadInterventions(where string, args ...any) ([]Intervention, er
 		var requested, replied int64
 
 		err := r.Scan(&intervention.ID, &intervention.ExecutionID, &intervention.Kind, &intervention.Reason,
-			&intervention.Request, &intervention.Reply, &requested, &replied)
+			&intervention.Request, &intervention.Reply, &requested, &replied, &intervention.Secret)
 
 		intervention.RequestedAt = sqlitedb.FromNS(requested)
 		intervention.RepliedAt = sqlitedb.FromNS(replied)
 
 		return intervention, err
-	}, `SELECT i.id, i.execution_id, i.kind, i.reason, i.request, i.reply, i.requested_ns, i.replied_ns
+	}, `SELECT i.id, i.execution_id, i.kind, i.reason, i.request, i.reply, i.requested_ns, i.replied_ns, i.secret
 		 FROM interventions i JOIN executions e ON e.id = i.execution_id JOIN tasks t ON t.id = e.task_id `+
 		where+` ORDER BY i.requested_ns`, args...)
 	if err != nil {
