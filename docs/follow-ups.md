@@ -302,3 +302,10 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   restarting. L2 should check `ls -A ~/.decurix` after a reset holds only the snapshot.
 - **`approval.site_known` reads the request from a file the worker's user can write** (`/tmp/decurix-current-task.request`),
   so a worker's command could name a site there and skip the "password to an unnamed site" question. For PY / O-1.
+- **A checked-only final with no verdict still records as checked** (an image from before R6, D5's one release).
+  After this build every desktop sends a verdict: switch it to fail closed (checked-without-verdict stored unchecked)
+  at the next release.
+- **A judgement id is chosen before delivery** (C6). If delivery errs after the desktop accepted the request, the
+  desktop holds an id never committed, and what it keeps from that reply answers 409 (fails closed).
+- **`tools_waiting` says nothing after a failed populate**, though the tools CMD empties the volume first: report
+  "tools not ready" too.
