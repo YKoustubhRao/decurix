@@ -289,9 +289,13 @@ RUN rm -f /etc/sudoers.d/headless /dockerstartup/.initial_sudo_password \
     && find / -xdev \( -perm -4000 -o -perm -2000 \) -type f -exec chmod ug-s {} + \
     && useradd --system --no-create-home --shell /usr/sbin/nologin decurixgate \
     && chmod 644 /etc/passwd /etc/group \
+    && chown root:root /etc && chmod 755 /etc \
     && chown -R 1001:1001 /dockerstartup
 # (/dockerstartup is handed to the desktop user here, at build time, and never by root at runtime: with hard-link
 # protection off, a root `chown -R` of a folder the worker can write into hands over whatever it linked there.)
+# /etc itself is root's, 755: the base image leaves it owned by a build user and group (984:980, 775). Nothing writes
+# /etc at runtime but the entrypoint, as root (the gate key, the passwd/group modes); the desktop user's start scripts
+# only test whether /etc/passwd is writable, which it is not either way.
 
 # The X server answers only on its own socket, never on TCP: anything on the Docker network that reached X on port
 # 6001 could drive this screen around the approval gate. Xvnc's own default is already no TCP; the mandatory config
