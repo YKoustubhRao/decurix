@@ -732,6 +732,7 @@ def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted
     # Before the report is sent, so the control plane's pull, which the report starts, finds the mark.
     from decurix_agent import retention
     retention.mark_labelled(task_id or task_context.current(), "final")
+    retention.write_manifest(task_id or task_context.current())
 
     # ddmmyyyyhhmmss.txt
     filename = time.strftime("%d%m%Y%H%M%S") + ".txt"

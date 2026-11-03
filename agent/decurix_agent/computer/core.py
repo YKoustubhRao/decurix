@@ -4016,7 +4016,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             "reason": decision.reason,
             "summary": f"{described} - paused for approval: {decision.reason}",
         })
-        audit.record(entry, before=before["frame"], masks=masks)
+        audit.record(entry, before=before["frame"], masks=masks, observation=before)
         return {
             "status": "needs_approval",
             "text": "NEEDS_APPROVAL: " + text,
@@ -4084,7 +4084,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             "reason": str(exc),
             "summary": f"{described} - failed: {exc}",
         })
-        audit.record(entry, before=before["frame"], masks=masks)
+        audit.record(entry, before=before["frame"], masks=masks, observation=before)
         raise
     except OSError as exc:
         # A connection that broke mid-action (a browser tab that crashed: BrokenPipeError on its DevTools socket) is a
@@ -4093,7 +4093,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         reason = (f"the connection to the app broke while acting ({type(exc).__name__}: {exc}) - it may or may not "
                   "have happened; observe before doing anything again")
         entry.update({"outcome": "failed", "reason": reason, "summary": f"{described} - failed: {reason}"})
-        audit.record(entry, before=before["frame"], masks=masks)
+        audit.record(entry, before=before["frame"], masks=masks, observation=before)
         raise ActedError(reason) from exc
 
     settled = _wait_for_settle(before["frame"])
@@ -4134,7 +4134,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             entry.update({"outcome": "failed", "backend": backend, "reason": reason,
                           "summary": described + " - failed: " + reason})
             audit.record(entry, before=before["frame"], after=after["frame"] or settled,
-                         masks=masks + privacy.secret_boxes(after["elements"]))
+                         masks=masks + privacy.secret_boxes(after["elements"]), observation=before)
             raise ActedError(reason)
 
     block_note, unverified = "", []
@@ -4195,7 +4195,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         entry["summary"] += " - " + "; ".join(_resolved)
 
     audit.record(entry, before=before["frame"], after=after["frame"] or settled,
-                 masks=masks + privacy.secret_boxes(after["elements"]))
+                 masks=masks + privacy.secret_boxes(after["elements"]), observation=before)
 
     verb = {
         "click": "Clicked", "double_click": "Double-clicked", "right_click": "Right-clicked",

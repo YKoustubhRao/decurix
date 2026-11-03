@@ -88,6 +88,11 @@ program.json  the recording compiled for replay: its parameters (the text
               checks before it moves on.
 frames/       the screenshots, named by their content. Password fields are
               painted over.
+obs/          what an action was resolved against: the active window's
+              elements (role, name, value, states, box) as JSON, named by
+              the first 16 hex digits of their SHA-256 and stored once; an
+              event names its blob as "obs". A secret field's value is never
+              kept. An event's "turn" is the model turn (soul's) that chose it.
 """
 
 
@@ -465,7 +470,12 @@ def _size(meta):
         events = (ROOT / meta["id"] / "events.jsonl").stat().st_size
     except OSError:
         events = 0
-    return (meta.get("frame_bytes") or 0) + events
+    obs = 0
+    try:
+        obs = sum(p.stat().st_size for p in (ROOT / meta["id"] / "obs").glob("*.json"))
+    except OSError:
+        pass
+    return (meta.get("frame_bytes") or 0) + events + obs
 
 
 def prune(keep=None):

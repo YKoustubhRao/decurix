@@ -18,9 +18,11 @@ vanishing silently, and the export clears it. Exported runs are pruned as before
 None of this ever raises into a task: what cannot be marked is logged, and what cannot be read is held.
 """
 
+import hashlib
 import json
 import os
 import time
+from pathlib import Path
 
 from decurix_agent import config, task_context
 from decurix_agent.logging_utils import log
@@ -61,6 +63,91 @@ def _write_manifest(task_id, data):
     tmp = folder / (MANIFEST + ".tmp")
     tmp.write_text(json.dumps(data, sort_keys=True, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, folder / MANIFEST)
+
+
+# ------------------------------------------------------------------ the run's manifest (PLAN-P2 §5.3, R1)
+
+_agent_sha = []
+
+
+def agent_sha():
+    """
+    "sha256:<hex>" of the agent's code as this process loaded it: SHA-256 over the sorted (relative path, SHA-256 of
+    the file) of the decurix_agent tree (/opt/decurix_agent on a desktop), .pyc and __pycache__ left out. Computed once
+    per process (app.main asks at start), so a tree copied in later is not mistaken for what is running.
+    """
+
+    if not _agent_sha:
+        _agent_sha.append(tree_sha(Path(__file__).resolve().parent))
+    return _agent_sha[0]
+
+
+def tree_sha(root):
+    """"sha256:<hex>" over the sorted (relative path, SHA-256 of the file) of a folder, .pyc and __pycache__ aside."""
+
+    root = Path(root)
+    digest = hashlib.sha256()
+    for path in sorted(p for p in root.rglob("*") if p.is_file() and p.suffix != ".pyc"
+                       and "__pycache__" not in p.parts):
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        digest.update(f"{path.relative_to(root).as_posix()}\0{hashlib.sha256(data).hexdigest()}\n".encode("utf-8"))
+    return "sha256:" + digest.hexdigest()
+
+
+def soul_sha():
+    """"sha256:<hex>" of the soul binary, or "" when there is none."""
+
+    try:
+        digest = hashlib.sha256()
+        with open(config.THEBOT_SOUL_PATH, "rb") as f:
+            for block in iter(lambda: f.read(1 << 20), b""):
+                digest.update(block)
+        return "sha256:" + digest.hexdigest()
+    except (OSError, AttributeError):
+        return ""
+
+
+def _parts(task_id):
+    """The run's parts that exist, as paths under ~/.decurix (C8)."""
+
+    root = config.DECURIX_DIR
+    found = {}
+    for name, rel in (("recording", f"recordings/task-{task_id}"), ("notes", f"computer/evidence/{task_id}.jsonl"),
+                      ("ledger", f"computer/evidence/{task_id}.records.json"),
+                      ("soul_trace", f"ai/traces/{task_id}.jsonl")):
+        if (root / rel).exists():
+            found[name] = rel
+    return found
+
+
+def write_manifest(task_id):
+    """
+    Write ~/.decurix/runs/<task>/run.json (decurix.run-manifest/v1): the task, the desktop, the code that ran (agent
+    and soul by hash), the harness and brain, when, the parts of the run that exist, and why it is labelled. Never
+    raises: a manifest that cannot be written is logged, and the control plane says the part is missing.
+    """
+
+    if not task_context.valid(task_id):
+        return None
+    try:
+        data = read_manifest(task_id)
+        started = task_context.since() if task_id == task_context.current() else None
+        data.update({
+            "schema": MANIFEST_SCHEMA, "task_id": task_id, "desktop_id": config.DESKTOP_ID,
+            "agent_sha": agent_sha(), "soul_sha": soul_sha(), "harness": config.AGENT_HARNESS,
+            "brain": getattr(config, "BRAIN", ""), "parts": _parts(task_id), "ended_at": int(time.time()),
+            "labelled_by": list(data.get("labelled_by") or []),
+        })
+        if started and "started_at" not in data:
+            data["started_at"] = int(started)
+        _write_manifest(task_id, data)
+        return data
+    except Exception as exc:  # noqa: BLE001 - decoration for the task
+        log(f"retention: could not write the run's manifest for {task_id}: {exc}")
+        return None
 
 
 def mark_labelled(task_id, why):

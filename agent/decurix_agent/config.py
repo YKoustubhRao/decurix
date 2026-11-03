@@ -56,6 +56,8 @@ THEBOT_URL = os.environ.get(
     "THEBOT_URL",
     "http://127.0.0.1:4900"
 )
+# The soul binary itself (start_agent_terminal.sh starts /opt/soul): a run's manifest names it by its hash.
+THEBOT_SOUL_PATH = os.environ.get("DECURIX_SOUL_PATH", "/opt/soul")
 
 # Where the control plane reaches this agent. A desktop container is a machine
 # of its own, so every agent there has :8081 on every interface. Native Windows
