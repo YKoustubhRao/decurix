@@ -212,6 +212,9 @@ type withholder struct {
 func (w *withholder) value(v any) any {
 	switch t := v.(type) {
 	case string:
+		if inner, ok := w.jsonString(t); ok {
+			return inner
+		}
 		return w.text(t)
 	case []any:
 		out := make([]any, len(t))
@@ -230,6 +233,31 @@ func (w *withholder) value(v any) any {
 		return out
 	}
 	return v
+}
+
+// jsonString withholds inside a string that is itself JSON (a tool call's arguments, a tool's result), by its parsed
+// values, so every escaping a writer may use is covered and not only the ones listed (review CP-A N3; the listed
+// forms stay as a second wall). The string is written again only when something in it was withheld, so it otherwise
+// keeps the bytes the model saw. ok is false for a string that is not a JSON object or array.
+func (w *withholder) jsonString(s string) (string, bool) {
+	t := strings.TrimSpace(s)
+	if len(t) < 2 || (t[0] != '{' && t[0] != '[') {
+		return "", false
+	}
+	var parsed any
+	if decode([]byte(t), &parsed) != nil {
+		return "", false
+	}
+	before, err1 := json.Marshal(parsed)
+	withheld := w.value(parsed)
+	after, err2 := json.Marshal(withheld)
+	if err1 != nil || err2 != nil {
+		return "", false
+	}
+	if bytes.Equal(before, after) {
+		return w.text(s), true
+	}
+	return w.text(string(after)), true
 }
 
 // image stores an OpenAI image part whose URL is a base64 data: URL, and returns the part that replaces it.

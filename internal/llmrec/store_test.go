@@ -281,3 +281,27 @@ func TestAHeldValueIsWithheldInsideJSONStrings(t *testing.T) {
 		t.Errorf("text with no held value changed: %q", got)
 	}
 }
+
+// A held value inside a JSON string field is withheld by its parsed value, whatever escaping the writer used: an
+// upper-case \u escape, an escaped slash, DEL as \u007f (review CP-A N3). A JSON string with nothing to withhold
+// keeps its bytes.
+func TestAHeldValueIsWithheldInsideParsedJSON(t *testing.T) {
+	s := testStore(t)
+	args := `{"command":"gui type e3 p\u00C4ss\/w\u007frd-77","note":"x"}`
+	plain := `{"command": "gui click e4",  "n": 1}`
+	body := chatBody(t, []any{map[string]any{"role": "assistant", "tool_calls": []any{
+		map[string]any{"function": map[string]any{"name": "shell", "arguments": args}},
+		map[string]any{"function": map[string]any{"name": "shell", "arguments": plain}},
+	}}}, nil)
+	s.Record(context.Background(), Call{Provider: "azure", Desktop: "eve", Task: "t9", Purpose: "operator.turn",
+		Request: body, Status: 200, Secrets: []string{"pÄss/w\x7frd-77"}})
+	for _, p := range blobFiles(t, s) {
+		data, _ := os.ReadFile(p)
+		if strings.Contains(string(data), "rd-77") {
+			t.Fatalf("the value is in a blob: %s", data)
+		}
+		if strings.Contains(string(data), "gui click e4") && !strings.Contains(string(data), `\"gui click e4\",  \"n\": 1`) {
+			t.Fatalf("a JSON string with nothing withheld was rewritten: %s", data)
+		}
+	}
+}

@@ -178,9 +178,24 @@ func TestDeleteFlushesRunsBeforeTheDesktopGoes(t *testing.T) {
 		t.Fatalf("order = %v, want the flush first", order)
 	}
 	if len(f.flushed) != 2 || f.flushed[0].ExecID != a.ExecutionID || f.flushed[1].ExecID != c.ExecutionID {
-		t.Fatalf("flushed %v, want the ended run with no bundle and the open one (closed first)", f.flushed)
+		t.Fatalf("flushed %v, want the ended run with no bundle and the open one", f.flushed)
 	}
 	if d, _ := s.Tasks.Get(c.TaskID); d.Executions[0].EndedAt.IsZero() {
-		t.Fatal("the open run was not closed before the flush")
+		t.Fatal("the open run was not closed after the delete")
+	}
+
+	// A delete that fails leaves the open runs open (the desktop still runs them).
+	open, _ := s.Tasks.Commit(tasks.NewRoute(), w, "four", tasks.Origin{Kind: tasks.OriginPerson})
+	_, _ = s.Tasks.RecordOutcome("box", open.TaskID, tasks.Outcome{Kind: tasks.OutcomeQuery, Reply: "Which year?"})
+	s.deleteDesktop = func(context.Context, string) error { return errors.New("the daemon said no") }
+	req = httptest.NewRequest(http.MethodPost, "/api/desktops/delete", strings.NewReader(url.Values{"id": {"box"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	s.deleteDesktopHandler(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatal("a failed delete answered 200")
+	}
+	if d, _ := s.Tasks.Get(open.TaskID); !d.Executions[0].EndedAt.IsZero() {
+		t.Fatal("a failed delete closed the desktop's open run")
 	}
 }

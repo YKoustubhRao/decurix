@@ -69,7 +69,7 @@ func (s *Server) desktopLearnedHandler(w http.ResponseWriter, r *http.Request) {
 	// A kept rule stands on someone known: not on an input whose author holds no role (someone with the access code,
 	// not signed in), and only on the person's own input, never on another derived row.
 	if len(source.Actor.Roles) == 0 {
-		jsonStatusError(w, http.StatusConflict, "that judgement's author is not signed in, so nothing is kept from it")
+		jsonStatusError(w, http.StatusConflict, "that judgement's author holds no role, so nothing is kept from it")
 		return
 	}
 	if source.DerivedFrom != "" {

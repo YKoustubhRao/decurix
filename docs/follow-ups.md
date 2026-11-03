@@ -232,9 +232,14 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
 - **Pass rates** (`/api/tasks/pass-rates`) count every ended attempt under its own skill version x model x origin
   class (production, practice, eval); the headline is the first-attempt rate, `checked_independent` counts only code,
   ledger or person bases, and a person's verdict joins only the attempt it judged. Wilson bounds are the reader's.
+- **`withhold.Reply` takes a username for a secret.** "sure, the password is Fern42Kite and the user is mira.k" withholds
+  `mira.k` too (any word with a digit or a mark), and since round 2 that value is held for 24 h by the call recorder
+  and given to the gate, so the username is withheld from that desktop's calls and the gate's questions. Narrow the
+  rule by the question's structure (the field it asks for), never by a word list.
 - **A secret reply whose question changes between Plan and commit** (a faster reply resumed the task and it asked
   again) can be told "secret" by one intervention and stored by another (C14.1 decides before delivery, the store at
-  commit). The window is the length of a delivery.
+  commit). The window is the length of a delivery. The late remember in `recordDelivered` feeds the call recorder
+  but not the gate, so for that window the gate's question may also lack the value.
 - **A gated reply without a sign-in** is authored by "someone with the access code" (`access-code`, no roles): rule 5
   holds in that the input says who it could be, not who it was. Nothing is kept as a lesson or correction from such
   an input (`/api/desktops/learned` answers 409). **Trigger:** when the first user account is created in the access
@@ -309,3 +314,27 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   desktop holds an id never committed, and what it keeps from that reply answers 409 (fails closed).
 - **`tools_waiting` says nothing after a failed populate**, though the tools CMD empties the volume first: report
   "tools not ready" too.
+
+## Phase 2: Python agent, review round 2
+
+- **Comparators still outside `values.py`** (known divergences, each to move as its area is next touched):
+  - `long_task._same_value` / `_scalar` (`long_task.py`, a kept cell's value): its own date logic reads `a > 12` as day
+    first even under MM/DD, and compares numbers within their written precision (a deliberate tolerance for a cell and
+    its computed value).
+  - `provenance.fact_value` / `same_figure` (`provenance.py`): figures within the coarser precision, and an ambiguous
+    date with no convention compared as written.
+  - `stage_facts`: amounts as floats (`round(..., 2)`, `abs(...) <= 0.011`).
+- **The control plane does not yet send `execution_id` on `/request`** (handoff H-PY-7). Until it does, a run is held
+  by time: a label written after the last EXPORTED is held again.
+- **A run open or paused for days is not held** before it has a label: `evidence._prune` can take its notes after 2
+  days (review round 2, non-blocking 10). Hold an open task's run as well.
+- **The person's own delete of a recording** (`recording.delete`) removes a held run's recording before its export:
+  their explicit act; say so in recordings.md or check `held` there.
+- **The skill a run noted on its task** (`task_context.set_skill`) stays when the skill run hands the task to the
+  general harness; the outcome then names a skill that did not drive its end.
+- **The `code` basis of trust** now needs a fact the request states (a figure, a reference code) compared against the
+  files made and held (`produced.compared_facts`); a request that states none earns no `code` basis however clean
+  its files read. Watch the L3 matrix for skills that can no longer earn trust by code alone.
+- **A date the save waits on** is asked through the next question the engine puts to the person
+  (`messaging.ask_for_query`); an engine that reports instead of asking leaves the record unsaved (not done), and the
+  question is not asked by itself.

@@ -486,17 +486,23 @@ func (s *Server) restartDesktopHandler(w http.ResponseWriter, r *http.Request) {
 // deleteDesktopHandler deletes a desktop and its persistent storage by ID.
 func (s *Server) deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	// Every run not yet pulled leaves the desktop first (R9): deleting it would lose what labels those runs. Under the
-	// one lifecycle lock desktopAction holds: the open runs are closed first (they can only end now), then every run
-	// with no bundle, the just-closed ones included, is pulled, then the desktop goes. Neither the flush nor the
-	// delete is cut short by the browser going away (review CP-A B3, N10).
+	// one lifecycle lock desktopAction holds: every run with no bundle, the open ones included, is pulled, then the
+	// desktop goes, and only once it has gone are its open runs closed (a delete that fails leaves them as they are,
+	// still running). Neither the flush nor the delete is cut short by the browser going away (review CP-A B3, N9,
+	// N10).
 	closeFlushDelete := func(ctx context.Context, id string) error {
 		ctx = context.WithoutCancel(ctx)
-		s.closeOpenTasks(id, "The desktop was deleted before this task finished.")
 		s.flushRuns(ctx, desktop.SanitizeID(id))
+		del := s.Desktops.Delete
 		if s.deleteDesktop != nil {
-			return s.deleteDesktop(ctx, id)
+			del = s.deleteDesktop
 		}
-		return s.Desktops.Delete(ctx, id)
+		if err := del(ctx, id); err != nil {
+			log.Printf("deleteDesktop: %s was not deleted, and its open tasks stay open: %v", id, err)
+			return err
+		}
+		s.closeOpenTasks(id, "The desktop was deleted before this task finished.")
+		return nil
 	}
 	id, ok := s.desktopAction(w, r, false, closeFlushDelete)
 	if !ok {
@@ -560,6 +566,8 @@ func (s *Server) closeOpenTasks(id, why string) {
 	if err := s.Tasks.CloseOpen(desktop.SanitizeID(id), why); err != nil {
 		log.Printf("closing tasks for %s: %v", id, err)
 	}
+	// Its tasks open at start are over too: its calls keep their text again (secretslost.go).
+	s.desktopTasksEnded(desktop.SanitizeID(id))
 
 	// And the chat's turn for it, which nothing else would close now.
 	s.Chat.EndTurn(desktop.SanitizeID(id), why)

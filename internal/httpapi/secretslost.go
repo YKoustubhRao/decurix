@@ -44,6 +44,13 @@ func (s *Server) secretsUnknown(desktop string) bool {
 	return len(s.lostSecrets.byDesk[desktop]) > 0
 }
 
+// desktopTasksEnded lets a desktop's calls keep their text again once its open tasks were closed (a stop, a delete).
+func (s *Server) desktopTasksEnded(desktop string) {
+	s.lostSecrets.mu.Lock()
+	defer s.lostSecrets.mu.Unlock()
+	delete(s.lostSecrets.byDesk, desktop)
+}
+
 // taskEnded lets a desktop's calls keep their text again once the last task it had open at start has ended.
 func (s *Server) taskEnded(desktop, taskID string) {
 	s.lostSecrets.mu.Lock()

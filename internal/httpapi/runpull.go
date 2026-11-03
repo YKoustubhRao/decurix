@@ -99,8 +99,9 @@ func (s *Server) pullWithRetries(ctx context.Context, ref runs.ExecutionRef) {
 	}
 }
 
-// unpulledRuns is every ended execution of worker ("" every worker) since since whose bundle is not stored.
-func (s *Server) unpulledRuns(worker string, since time.Time) []runs.ExecutionRef {
+// unpulledRuns is every ended execution of worker ("" every worker) since since whose bundle is not stored, and,
+// with open, the worker's open ones too (a delete pulls what an open run has so far).
+func (s *Server) unpulledRuns(worker string, since time.Time, open bool) []runs.ExecutionRef {
 	if s.RunBundles == nil {
 		return nil
 	}
@@ -108,6 +109,17 @@ func (s *Server) unpulledRuns(worker string, since time.Time) []runs.ExecutionRe
 	if err != nil {
 		log.Printf("runs: listing ended runs: %v", err)
 		return nil
+	}
+	if open {
+		live, err := s.Tasks.OpenExecutions()
+		if err != nil {
+			log.Printf("runs: listing open runs: %v", err)
+		}
+		for _, e := range live {
+			if e.WorkerID == worker {
+				ended = append(ended, e)
+			}
+		}
 	}
 	var out []runs.ExecutionRef
 	for _, e := range ended {
@@ -118,13 +130,14 @@ func (s *Server) unpulledRuns(worker string, since time.Time) []runs.ExecutionRe
 	return out
 }
 
-// flushRuns pulls every run of a desktop about to be deleted that has no bundle yet, within runFlushWithin. What it
+// flushRuns pulls every run of a desktop about to be deleted that has no bundle yet (an open one too), within
+// runFlushWithin. What it
 // could not pull is named in the log: the one way a run's labels can be lost, said, never silent.
 func (s *Server) flushRuns(ctx context.Context, worker string) {
 	if s.Runs == nil {
 		return
 	}
-	refs := s.unpulledRuns(worker, time.Time{})
+	refs := s.unpulledRuns(worker, time.Time{}, true)
 	if len(refs) == 0 {
 		return
 	}
@@ -140,7 +153,7 @@ func (s *Server) CatchUpRunPulls(ctx context.Context) {
 		return
 	}
 	exists := map[string]bool{}
-	for _, ref := range s.unpulledRuns("", time.Now().Add(-runCatchUp)) {
+	for _, ref := range s.unpulledRuns("", time.Now().Add(-runCatchUp), false) {
 		there, seen := exists[ref.Worker]
 		if !seen {
 			_, err := s.Desktops.Get(ctx, ref.Worker)
