@@ -1916,6 +1916,19 @@ def _unsearched_record(element):
     return ""
 
 
+def _typed_fields(fields):
+    """
+    [(label, value)] of a form's fields whose value this task's tools typed or chose (evidence.entered): the worker's
+    values. What the application filled in itself (an existing record's email on its edit form) is the application's,
+    and the checks of the worker's values never judge it. Raises when the task's recording cannot be read (the caller
+    makes that a check not made).
+    """
+
+    from decurix_agent.computer import evidence
+    typed = {" ".join(str(v).split()) for v in evidence.entered()}
+    return [(label, value) for label, value in fields if " ".join(str(value or "").split()) in typed]
+
+
 def _unsourced_fields(fields):
     """
     [(label, value)] of a form's fields whose value the tools typed during this task and that states a fact (an
@@ -1925,9 +1938,7 @@ def _unsourced_fields(fields):
     """
 
     from decurix_agent import long_task, task_context
-    from decurix_agent.computer import evidence
-    typed = {" ".join(str(v).split()) for v in evidence.entered()}
-    mine = [(label, value) for label, value in fields if " ".join(str(value or "").split()) in typed]
+    mine = _typed_fields(fields)
     if not mine:
         return []
     sources = long_task.work_sources(task_context.current_request())
@@ -2016,7 +2027,9 @@ def _form_check(element, checked=False, found=None, confirm=None, listing=True):
     try:
         from decurix_agent import filler, task_context
         files = task_context.current_files()
-        made_up = filler.invented(found["fields"], task_context.current_request(), files)
+        # Only the worker's own values (_typed_fields): a filler-looking value the application holds is its record's,
+        # not one the worker made up (found in the GUI bench, 2026-11-03: an edit form's existing @example.com email).
+        made_up = filler.invented(_typed_fields(found["fields"]), task_context.current_request(), files)
         unsourced = _unsourced_fields(found["fields"])
         if listing == "ask":
             # A replay types what the person demonstrated where today's request gives nothing (replay.run): their own

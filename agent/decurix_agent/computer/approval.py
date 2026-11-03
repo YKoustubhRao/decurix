@@ -831,7 +831,27 @@ def _names_host(text, host):
     for named in re.findall(r"(?<![\w.-])((?:[a-z0-9-]+\.)+[a-z]{2,})(?![\w-])", text or ""):
         if host == named or host.endswith("." + named):
             return True
+    # A site with no name, only an address (an IP literal), counts only as the host of a URL the text writes out -
+    # "http://192.168.1.20:8080/login" - and only exactly: an address mentioned as data ("the server 10.0.0.5") names no
+    # site, and an address has no subdomains (2026-11-04: a request could never name an IP site, so a password typed
+    # into one was always asked).
+    ip = _ip(host.strip("[]"))
+    if ip is not None:
+        for v6, v4 in re.findall(r"(?i)\b[a-z][a-z0-9+.-]*://(?:\[([0-9a-f:.]+)\]|(\d{1,3}(?:\.\d{1,3}){3}))"
+                                 r"(?=[:/?#\s\"')\]]|$)", text or ""):
+            if _ip(v6 or v4) == ip:
+                return True
     return False
+
+
+def _ip(text):
+    """The IP address `text` writes (v4 or v6), or None."""
+
+    import ipaddress
+    try:
+        return ipaddress.ip_address(text)
+    except ValueError:
+        return None
 
 
 # A dialog's plain yes, and what such a dialog asks when the act cannot be

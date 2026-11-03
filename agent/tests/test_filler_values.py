@@ -52,7 +52,7 @@ class WhatIsAFiller(Tracker):
 
 @needs("openpyxl")
 class TheFormIsNotSent(Tracker):
-    def test_the_live_form_is_refused_even_checked(self):
+    def check(self, typed, checked):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         form = {"form": "Onboard new employee", "fields": [["First name", "Sneha"], ["Last name", "Iyer"],
@@ -60,12 +60,22 @@ class TheFormIsNotSent(Tracker):
         save = {"ref": "e1961", "name": "Next", "path": "/form/next", "source": "cdp"}
         with mock.patch.object(core, "FORM_CHECK_FILE", Path(tmp.name) / "check.json"), \
                 mock.patch.object(cdp, "submit_form_fields", return_value=form), \
+                mock.patch("decurix_agent.computer.evidence.entered", lambda task_id=None: list(typed)), \
                 mock.patch("decurix_agent.task_context.current_request", return_value="Onboard the joiners."), \
                 mock.patch("decurix_agent.task_context.current_files", return_value=[str(self.tracker)]):
-            for checked in (False, True):
-                said = core._form_check(save, checked=checked)
-                self.assertIn("Not pressed: these values look invented", said)
-                self.assertIn("Mobile phone: '9999999999' (Mobile is a column of joiners_tracker_Nov2026.xlsx)", said)
+            return core._form_check(save, checked=checked) or ""
+
+    def test_the_live_form_is_refused_even_checked(self):
+        for checked in (False, True):
+            said = self.check(["Sneha", "Iyer", "18/09/1999", "9999999999"], checked)
+            self.assertIn("Not pressed: these values look invented", said)
+            self.assertIn("Mobile phone: '9999999999' (Mobile is a column of joiners_tracker_Nov2026.xlsx)", said)
+
+    def test_a_filler_the_application_filled_in_itself_is_not_the_workers(self):
+        # An existing record's own value on its edit form (found in the GUI bench, 2026-11-03): the worker never typed
+        # it, so it is not judged as invented.
+        said = self.check(["Sneha", "Iyer"], checked=True)
+        self.assertNotIn("look invented", said)
 
 
 @needs("openpyxl")
