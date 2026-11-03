@@ -1172,8 +1172,14 @@ const maxNotedOutput = 6000
 // check that a typed or written fact has a source). Found live (2026-10-21): the category totals a
 // script summed from the invoices and printed were refused at the final check as "held by no source" - the agent saw
 // files and screens, never what the work's commands printed. A figure only the model's head holds stays unsourced.
-func noteCommandOutput(command, output string) {
+//
+// What is written is withheld first (clean: the job's secret values and soul's structural ones, withholdFor), then
+// cut; the file is the worker's alone (0600), and the run's bundle carries it off the desktop (C14).
+func noteCommandOutput(command, output string, clean func(string) string) {
 	task := currentTaskID()
+	if clean != nil {
+		output = clean(output)
+	}
 	output = strings.TrimSpace(output)
 	if task == "" || output == "" || guiCommandRe.MatchString(command) {
 		return // (what gui shows is noted by the gui command itself)
@@ -1190,11 +1196,13 @@ func noteCommandOutput(command, output string) {
 	if err != nil {
 		return
 	}
-	f, err := os.OpenFile(filepath.Join(dir, task+".outputs"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	path := filepath.Join(dir, task+".outputs")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}
 	defer f.Close()
+	_ = os.Chmod(path, 0o600) // one made before this rule keeps its old mode otherwise
 	_, _ = f.Write(append(line, '\n'))
 }
 

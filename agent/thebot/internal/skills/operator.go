@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"thebot/internal/prompt"
 	"thebot/internal/safety"
 	"thebot/internal/trace"
+	"thebot/internal/withheld"
 )
 
 // OperatorSkill works a goal out on this machine, one shell command at a
@@ -532,6 +534,9 @@ type operatorState struct {
 	// taskID and turnID are the control plane's task and the operator's current turn ("<job>:<n>", llm.NextTurn):
 	// what every command of the turn is told (guiEnv) and its trace line names. Neither goes into a prompt.
 	taskID, turnID string
+	// jobSecrets are the job's own secret values (C14, withheld.From the job's context): withholdFor takes them out
+	// of everything soul emits. Never in a prompt.
+	jobSecrets withheld.Values
 	// ScreenMsgs are the indexes in Messages of screen outputs not shortened yet; OutputsDir is where shortened
 	// outputs' full text is kept (screen_digest.go).
 	ScreenMsgs    []int
@@ -804,6 +809,7 @@ func (o *OperatorSkill) commandTimeout() time.Duration {
 func (o *OperatorSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	st, resumed := rc.Resume.(*operatorState)
 	if resumed && st != nil {
+		st.jobSecrets = withheld.From(rc.Ctx)
 		var blocked string
 		st, blocked = o.resume(rc, subtask, st)
 		if blocked != "" {
@@ -811,6 +817,7 @@ func (o *OperatorSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		}
 	} else {
 		st = o.start(rc, subtask)
+		st.jobSecrets = withheld.From(rc.Ctx)
 	}
 	return o.loop(rc, subtask, st)
 }
@@ -820,6 +827,11 @@ func (o *OperatorSkill) pause(subtask Subtask, st *operatorState, reason string)
 	st.LastAsked = "approve running: " + st.Pending + " - " + reason
 	res := NeedsApproval(subtask, o.Name(), st.Pending, reason, st)
 	res.Meta["commands"] = st.Commands
+	// What the person is shown of the action: withheld as the step line is (the action itself stays whole, for the
+	// approval to match it).
+	shown := st.withholdFor(st.Pending)(st.Pending)
+	res.Meta["actionShown"] = shown
+	res.Output = fmt.Sprintf("Paused before `%s` - %s. Waiting for approval.", shown, reason)
 	return res
 }
 
@@ -1099,7 +1111,8 @@ var screenConfirmRe = regexp.MustCompile(`(?i)^\s*(done|yes|y|yep|yeah|ok|okay|c
 // action that Decurix's approval gate stopped - the caller pauses for
 // approval exactly as it does for a command internal/safety stops.
 func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string) string {
-	rc.Logf("operator", "$ %s", command)
+	clean := st.withholdFor(command)
+	rc.Logf("operator", "$ %s", clean(command))
 	started := time.Now()
 	run := command
 	if literal := literalTyping(run); literal != run {
@@ -1108,7 +1121,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	}
 	if sharedFolderHost() != "" {
 		if inside := intoSharedLink(command); inside != command {
-			rc.Logf("operator", "find from the shared folder's link looks inside it: $ %s", inside)
+			rc.Logf("operator", "find from the shared folder's link looks inside it: $ %s", clean(inside))
 			run = inside
 		}
 	}
@@ -1116,7 +1129,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	st.traceCommand(rc, command, res, time.Since(started))
 	noteFilesRead(run)
 	// (The host's "recorded working" is what is noted here: never what the command printed back of its own text.)
-	noteCommandOutput(run, withoutCommandValues(res.Output, run))
+	noteCommandOutput(run, withoutCommandValues(res.Output, run), clean)
 	st.noteLedger(command, res)
 	st.noteScreenDocs(command, res.Output)
 	st.noteTaught(command, res)
@@ -1130,7 +1143,8 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 		rc.Logf("operator", "approval needed on screen - %s", reason)
 		return reason
 	}
-	rc.Logf("operator", "%s", traceLine(res)) // the task's trace carries the output, bounded, not its first line alone
+	// The task's trace carries the output, bounded, not its first line alone; withheld before it is bounded.
+	rc.Logf("operator", "%s", traceLine(shellResult{ExitCode: res.ExitCode, TimedOut: res.TimedOut, Output: clean(res.Output)}))
 	st.CommandsRun++
 	if guiOpenRe.MatchString(command) {
 		st.Opens = append(st.Opens, strings.TrimSpace(command)+" -> "+headline(res))
@@ -1327,18 +1341,27 @@ func (st *operatorState) traceCommand(rc RunContext, command string, res shellRe
 		guard = trace.GuardAsked
 	}
 	exit := res.ExitCode
-	w.CommandRun(rc.Ctx, command, guard, &exit, took, res.Output, st.traceClean(command))
+	w.CommandRun(rc.Ctx, command, guard, &exit, took, res.Output, st.withholdFor(command))
 }
 
-// traceClean is the trace's first filter for command: every secret the task gave, or typed into a password field,
-// replaced as the person's own messages replace it (secretValues); the trace's shape filter runs after it.
-func (st *operatorState) traceClean(command string) func(string) string {
-	secrets := secretValues(st, command)
+// withholdFor is the one filter for everything soul emits about command or what came of it: the job log's step line
+// ("$ ..."), the bounded output line after it, the trace, the run's outputs file and the action an approval quotes.
+// It takes out the job's own secret values (C14), then what soul knows by structure is secret (secretValues: a value
+// the request gives after a credential's name, a value typed into a field the screen lists as a password field),
+// longest first. One function, so the emitters can never disagree. Apply it before shortening or quoting.
+func (st *operatorState) withholdFor(command string) func(string) string {
+	var structural []string
+	for secret := range secretValues(st, command) {
+		if len(secret) >= 3 {
+			structural = append(structural, secret)
+		}
+	}
+	sort.Slice(structural, func(i, j int) bool { return len(structural[i]) > len(structural[j]) })
+	job := st.jobSecrets
 	return func(text string) string {
-		for secret := range secrets {
-			if len(secret) >= 3 {
-				text = strings.ReplaceAll(text, secret, secretShown)
-			}
+		text = job.Text(text)
+		for _, secret := range structural {
+			text = strings.ReplaceAll(text, secret, secretShown)
 		}
 		return text
 	}
@@ -1536,7 +1559,9 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 	// ask pauses on question for the person, with the goal kept so their reply carries it on.
 	ask := func(question string) (Result, error) {
 		st.LastAsked = question
-		res, _ := finish(question, false, map[string]any{"needsUserInput": true, "question": question, "failureReasoning": question})
+		// What the person is shown is withheld as the step lines are (withholdFor); the model keeps its own words.
+		shown := st.withholdFor("")(question)
+		res, _ := finish(shown, false, map[string]any{"needsUserInput": true, "question": shown, "failureReasoning": shown})
 		res.Checkpoint = st
 		return res, nil
 	}
@@ -1570,6 +1595,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		rc.Ctx = llm.NextTurn(jobCtx)
 		tags := llm.TagsFrom(rc.Ctx)
 		st.taskID, st.turnID = tags.Task, tags.Turn
+		st.jobSecrets = withheld.From(rc.Ctx)
 		if st.Hosted && st.maintenanceDue() {
 			before := transcriptChars(st)
 			did := st.maintain()
@@ -1660,7 +1686,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		}
 		reply := llm.Message{Role: "assistant", Content: resp.Text}
 		if logReplies {
-			rc.Logf("operator", "model replied: %s", truncateText(strings.Join(strings.Fields(resp.Text), " "), 300))
+			rc.Logf("operator", "model replied: %s", truncateText(strings.Join(strings.Fields(st.withholdFor("")(resp.Text)), " "), 300))
 		}
 
 		if st.AwaitingJudge == "approval" && st.Settling && action == "command" {
@@ -1986,7 +2012,8 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			}
 			if nudge != "" {
 				if st.untracedSendBack() {
-					rc.Logf("operator", "would have typed values it never read - sent back to find them (%s)", truncateText(nudge, 300))
+					rc.Logf("operator", "would have typed values it never read - sent back to find them (%s)",
+						truncateText(st.withholdFor(value)(nudge), 300))
 					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
 					continue
 				}
@@ -2008,7 +2035,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 
 			if concern := safety.AssessCommand(value); concern != nil && !rc.IsApproved(value) {
 				rc.Logf("operator", "approval needed before `%s` - %s", value, concern.Reason)
-				trace.From(rc.Ctx).CommandRun(rc.Ctx, value, trace.GuardAsked, nil, 0, "", st.traceClean(value))
+				trace.From(rc.Ctx).CommandRun(rc.Ctx, value, trace.GuardAsked, nil, 0, "", st.withholdFor(value))
 				st.Pending, st.PendingWhat = value, value+" - "+concern.Reason
 				return o.pause(subtask, st, concern.Reason+st.reviewInProgress()), nil
 			}

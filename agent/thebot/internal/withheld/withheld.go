@@ -18,15 +18,20 @@ const Mark = "[secret withheld]"
 // MinLen is the shortest value withheld: a shorter one would blank ordinary text everywhere it occurs.
 const MinLen = 3
 
-// MaxValues bounds the values one job carries.
-const MaxValues = 64
+// MaxValues bounds the values one job may be told: a job sent more is refused (soul's /api/chat), never cut, so a
+// job's own value is never dropped to make room.
+const MaxValues = 1000
+
+// MaxValueLen bounds one value a job may be told.
+const MaxValueLen = 64 << 10
 
 type key struct{}
 
 // Values is a job's secret values, longest first (so a value inside another is never left half-replaced).
 type Values []string
 
-// Clean is values trimmed, without blanks, values under MinLen or repeats, longest first, at most MaxValues.
+// Clean is values trimmed, without blanks, values under MinLen or repeats, longest first. It never drops a value
+// for room: the caller bounds what it accepts (MaxValues, MaxValueLen).
 func Clean(values []string) Values {
 	seen := map[string]bool{}
 	var out Values
@@ -39,9 +44,6 @@ func Clean(values []string) Values {
 		out = append(out, v)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
-	if len(out) > MaxValues {
-		out = out[:MaxValues]
-	}
 	return out
 }
 
@@ -72,6 +74,15 @@ func (v Values) Text(text string) string {
 		}
 	}
 	return text
+}
+
+// Shown is text as it may leave soul: Mark when the whole of it is secret, else Text. Withhold first, then shorten
+// or quote: a value cut or escaped before it is withheld no longer matches, and its part leaks.
+func (v Values) Shown(text string) string {
+	if v.Whole(text) {
+		return Mark
+	}
+	return v.Text(text)
 }
 
 // Holds reports whether text holds any of values.

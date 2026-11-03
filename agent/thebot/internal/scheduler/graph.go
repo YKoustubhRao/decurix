@@ -67,6 +67,9 @@ type Checkpoint struct {
 	Replans   int
 	UsedSkill string
 	CreatedAt time.Time
+	// Secrets are the paused job's own secret values (C14), so the job that resumes it withholds them too. Kept in
+	// memory with the checkpoint, never written.
+	Secrets []string
 	// GateRequest and GateFingerprint are the approval gate's request for this paused approval, when the desktop has
 	// a gate (soul's gate.go): the reply that resumes it is the gate's settlement of that one request.
 	GateRequest     string
@@ -94,6 +97,7 @@ type pause struct {
 	node     *node
 	kind     string
 	action   string
+	shown    string // the action as the person may be shown it (its skill's Meta "actionShown"); "" for action
 	reason   string
 	question string
 }
@@ -233,7 +237,7 @@ func (e *execution) restore(cp *Checkpoint) bool {
 		e.nodes = append(e.nodes, &n)
 	}
 
-	e.log(fmt.Sprintf("scheduler: resuming the paused job %q with your reply", truncate(cp.Prompt, 70)))
+	e.log(fmt.Sprintf("scheduler: resuming the paused job %q with your reply", e.cut(cp.Prompt, 70)))
 
 	switch {
 	case cp.Kind == pauseApproval && cp.Action == requestAction:
@@ -440,7 +444,7 @@ func (e *execution) runGraph() {
 				n.state, n.started = StepRunning, time.Now()
 				running++
 				if len(e.nodes) > 1 {
-					e.log(fmt.Sprintf("scheduler: step %d/%d [%s] %s", n.step.ID, len(e.nodes), n.step.Type, truncate(n.step.Text, 80)))
+					e.log(fmt.Sprintf("scheduler: step %d/%d [%s] %s", n.step.ID, len(e.nodes), n.step.Type, e.cut(n.step.Text, 80)))
 				}
 				rc := e.runContext(n)
 				subtask := skills.Subtask{Step: n.step.Text, Type: n.step.Type}
@@ -513,7 +517,7 @@ func (e *execution) complete(n *node, res skills.Result) {
 	switch {
 	case flag("needsApproval"):
 		n.state = StepPaused
-		e.setPause(pauseFor(n))
+		e.setPause(pauseFor(n, withheld.From(e.ctx)))
 
 	case res.Verified:
 		n.state = StepDone
@@ -530,7 +534,7 @@ func (e *execution) complete(n *node, res skills.Result) {
 				// Another step is already with the person: this one waits its turn, paused, and is asked next.
 				n.state = StepPaused
 			}
-			e.setPause(pauseFor(n))
+			e.setPause(pauseFor(n, withheld.From(e.ctx)))
 		case len(e.nodes) > 1 && e.replans < e.s.maxReplans() && e.wantReplan == nil:
 			e.wantReplan = n
 		}
@@ -538,19 +542,20 @@ func (e *execution) complete(n *node, res skills.Result) {
 }
 
 // pauseFor is the pause n's result asks for: its approval, or its question.
-func pauseFor(n *node) *pause {
+func pauseFor(n *node, secrets withheld.Values) *pause {
 	res := n.result
 	if v, _ := res.Meta["needsApproval"].(bool); v {
 		action, _ := res.Meta["action"].(string)
+		shown, _ := res.Meta["actionShown"].(string)
 		reason, _ := res.Meta["approvalReason"].(string)
-		return &pause{node: n, kind: pauseApproval, action: action, reason: reason}
+		return &pause{node: n, kind: pauseApproval, action: action, shown: shown, reason: reason}
 	}
 	question, _ := res.Meta["question"].(string)
 	if question == "" {
 		question, _ = res.Meta["failureReasoning"].(string)
 	}
 	if question == "" {
-		question = truncate(res.Output, 1500)
+		question = truncate(secrets.Shown(res.Output), 1500)
 	}
 	return &pause{node: n, kind: pauseInput, question: question}
 }
@@ -577,7 +582,7 @@ func (e *execution) nextWaiting() {
 		}
 	}
 	if first != nil {
-		e.pause = pauseFor(first)
+		e.pause = pauseFor(first, withheld.From(e.ctx))
 	}
 }
 
@@ -720,7 +725,7 @@ func (e *execution) finish() *Job {
 		job.Checkpoint = e.checkpoint()
 		if e.pause.kind == pauseApproval {
 			job.Outcome = OutcomeNeedsApproval
-			job.Question = approvalQuestion(e.pause, e.req.Prompt)
+			job.Question = approvalQuestion(e.pause, e.req.Prompt, withheld.From(e.ctx))
 		} else {
 			job.Outcome = OutcomeNeedsInput
 			job.Question = e.pause.question
@@ -752,12 +757,21 @@ func l2Entry(secrets withheld.Values, job *Job) memory.L2Entry {
 	return memory.L2Entry{Prompt: secrets.Text(job.Prompt), Status: string(job.Outcome), Plan: plan}
 }
 
-func approvalQuestion(p *pause, request string) string {
+// approvalQuestion is what the person is asked to approve. What it quotes is withheld first, then shortened (C14): the
+// job's secret values, and for a command the form its skill says may be shown (Meta "actionShown").
+func approvalQuestion(p *pause, request string, secrets withheld.Values) string {
 	if p.action == requestAction {
-		return fmt.Sprintf("Before I do anything: %s.\n\n> %s\n\nReply **yes** and I'll go ahead, or tell me what you'd like instead.", p.reason, truncate(request, 400))
+		return fmt.Sprintf("Before I do anything: %s.\n\n> %s\n\nReply **yes** and I'll go ahead, or tell me what you'd like instead.", p.reason, truncate(secrets.Shown(request), 400))
 	}
-	return fmt.Sprintf("I need your OK before I run this, because %s:\n\n```\n%s\n```\n\nReply **yes** to run it, or tell me what to do instead.", p.reason, p.action)
+	action := p.action
+	if p.shown != "" {
+		action = p.shown
+	}
+	return fmt.Sprintf("I need your OK before I run this, because %s:\n\n```\n%s\n```\n\nReply **yes** to run it, or tell me what to do instead.", p.reason, secrets.Shown(action))
 }
+
+// cut is s as a line of the job may carry it: the job's secret values withheld first, then shortened to n (C14).
+func (e *execution) cut(s string, n int) string { return truncate(withheld.From(e.ctx).Shown(s), n) }
 
 func stepStrings(plan []skills.Subtask) []string {
 	out := make([]string, len(plan))

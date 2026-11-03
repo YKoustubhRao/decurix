@@ -117,7 +117,7 @@ func TestSecretsNeverChangeWhatTheModelIsSent(t *testing.T) {
 // The memory API withholds every secret value soul was told, from what an earlier job left in a store.
 func TestTheMemoryAPIIsASecondWall(t *testing.T) {
 	s := newTestServer(t)
-	s.secrets.add([]string{testSecret})
+	s.secrets.add(testSecret)
 	if err := s.sched.L2.Append(l2Line("enter " + testSecret + " in the form")); err != nil {
 		t.Fatal(err)
 	}

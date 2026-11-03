@@ -61,7 +61,9 @@ type jobRecord struct {
 	Log     []string
 	// Usage is what this job's model calls read and wrote (llm.Metered).
 	Usage *llm.Usage
-	// secrets are the secret values withheld from everything this job logs and answers (C14).
+	// secrets are this job's own secret values (C14): what its request was sent with, and those of the paused job it
+	// resumes (scheduler.Checkpoint.Secrets). They are withheld from everything the job logs and answers, and never
+	// cut for room. Another job's values never touch this job's text.
 	secrets withheld.Values
 	// TaskID is the control plane's task the job was sent for ("" when none was named).
 	TaskID      string
@@ -152,13 +154,31 @@ func (j *jobRecord) snapshot() map[string]any {
 	promptTokens, responseTokens, calls := j.Usage.Snapshot()
 	return scrubbed(map[string]any{
 		"id": j.ID, "prompt": j.Prompt, "status": j.Status,
-		"plan": j.Plan, "results": j.Results, "finalAnswer": j.FinalAnswer,
+		"plan": j.Plan, "results": servedResults(j.Results), "finalAnswer": j.FinalAnswer,
 		"usedSkill": j.UsedSkill, "proposedSkill": j.ProposedSkill,
 		"outcome": j.Outcome, "question": j.Question, "secret": j.Secret, "route": j.Route,
 		"steps": j.Steps, "resumed": j.Resumed,
 		"usage": map[string]int{"promptTokens": promptTokens, "responseTokens": responseTokens, "calls": calls,
 			"cachedTokens": j.Usage.Cached()},
 	}, j.secrets.Text)
+}
+
+// servedResults is results as soul serves them: a paused action is the form its skill says may be shown
+// (Meta "actionShown", withheld as the step line is), never the raw command the approval matches on.
+func servedResults(results []skills.Result) []skills.Result {
+	out := make([]skills.Result, len(results))
+	for i, r := range results {
+		out[i] = r
+		if shown, ok := r.Meta["actionShown"].(string); ok {
+			meta := make(map[string]any, len(r.Meta))
+			for k, v := range r.Meta {
+				meta[k] = v
+			}
+			meta["action"] = shown
+			out[i].Meta = meta
+		}
+	}
+	return out
 }
 
 // scrubbed is v as its JSON reads, with fix applied to every string in it (keys too): what soul answers is filtered
@@ -196,8 +216,8 @@ func scrubAny(x any, fix func(string) string) any {
 }
 
 // secretSet is every secret value soul has been told this process, at most maxSecrets, oldest dropped first. It is
-// never written anywhere: it lets a job resumed in a session, and the memory API, withhold values an earlier job was
-// told.
+// never written anywhere, and it is only the memory API's second wall over what the stores hold: a job withholds its
+// own values (jobRecord.secrets), never the whole process's.
 type secretSet struct {
 	mu   sync.Mutex
 	vals []string
@@ -206,7 +226,7 @@ type secretSet struct {
 const maxSecrets = 256
 
 // add keeps values and returns every value known.
-func (s *secretSet) add(values []string) withheld.Values {
+func (s *secretSet) add(values ...string) withheld.Values {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, v := range withheld.Clean(values) {
@@ -221,7 +241,7 @@ func (s *secretSet) add(values []string) withheld.Values {
 }
 
 // all is every value known.
-func (s *secretSet) all() withheld.Values { return s.add(nil) }
+func (s *secretSet) all() withheld.Values { return s.add() }
 
 // server holds everything the HTTP handlers need - deliberately a struct,
 // not package-level globals, so tests can construct isolated instances
@@ -245,7 +265,7 @@ type server struct {
 	storesOff []string
 	// tracer writes each task's trace (internal/trace); nil writes none.
 	tracer *trace.Writer
-	// secrets is every secret value a job was told this process (C14), withheld from all soul answers.
+	// secrets is every secret value a job was told this process (C14): the memory API's second wall.
 	secrets secretSet
 }
 
@@ -528,10 +548,20 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"error": "prompt is required"})
 		return
 	}
+	// A job's own secrets are never cut to make room, so what a job may be told is bounded here instead: a job sent
+	// more is refused, not run with some of them unwithheld.
+	if len(body.Secrets) > withheld.MaxValues || slices.ContainsFunc(body.Secrets, func(v string) bool {
+		return len(v) > withheld.MaxValueLen
+	}) {
+		writeJSON(w, 400, map[string]any{"error": fmt.Sprintf("too many or too long secret values (at most %d, each at most %d bytes)",
+			withheld.MaxValues, withheld.MaxValueLen)})
+		return
+	}
 
 	id := genID()
 	job := newJobRecord(id, body.Prompt)
-	job.secrets = s.secrets.add(body.Secrets)
+	job.secrets = withheld.Clean(body.Secrets)
+	s.secrets.add(body.Secrets...)
 	s.jobsMu.Lock()
 	running := 0
 	for _, j := range s.jobs {
@@ -555,12 +585,16 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	req := scheduler.Request{Prompt: body.Prompt, Context: body.Context, WorkDir: body.WorkDir, History: history,
 		Reading: body.ApprovalReading, PlanAgreed: body.PlanAgreed}
 	if paused := s.takePaused(body.SessionID); paused != nil {
+		// The paused job's prompt is withheld by its own values and this request's, before it is cut or quoted.
+		pausedSecrets := withheld.Clean(append(append([]string{}, body.Secrets...), paused.Secrets...))
+		quoted := truncateLog(pausedSecrets.Shown(paused.Prompt), 80)
 		if body.Reply == nil || *body.Reply {
 			req.Resume = paused
 			job.Resumed = true
-			job.appendLog(fmt.Sprintf("scheduler: this request answers the paused job %q", truncateLog(paused.Prompt, 80)))
+			job.secrets = pausedSecrets // a reply carries on the paused job: its values stay withheld
+			job.appendLog(fmt.Sprintf("scheduler: this request answers the paused job %q", quoted))
 		} else {
-			job.appendLog(fmt.Sprintf("scheduler: dropping the paused job %q - this is a new request", truncateLog(paused.Prompt, 80)))
+			job.appendLog(fmt.Sprintf("scheduler: dropping the paused job %q - this is a new request", quoted))
 		}
 	}
 
@@ -620,6 +654,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 			if gatePresent() {
 				gateAsk(result.Checkpoint)
 			}
+			result.Checkpoint.Secrets = append([]string(nil), job.secrets...) // a reply resuming it keeps them
 			s.storePaused(body.SessionID, result.Checkpoint)
 		}
 

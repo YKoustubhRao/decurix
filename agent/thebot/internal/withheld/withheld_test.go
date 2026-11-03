@@ -24,11 +24,17 @@ func TestValues(t *testing.T) {
 	if From(context.Background()) != nil || With(context.Background(), nil) != context.Background() {
 		t.Fatal("an empty list changes the context")
 	}
-	many := make([]string, 100)
+	many := make([]string, 300)
 	for i := range many {
 		many[i] = strings.Repeat("x", i+MinLen)
 	}
-	if len(Clean(many)) != MaxValues {
-		t.Fatal("not bounded")
+	if got := Clean(many); len(got) != 300 || got[len(got)-1] != "xxx" {
+		t.Fatalf("Clean dropped values for room: %d kept", len(got))
+	}
+	if got := v.Shown(" abcdef "); got != Mark {
+		t.Fatalf("Shown of a wholly secret text = %q", got)
+	}
+	if got := v.Shown("is abc"); got != "is "+Mark {
+		t.Fatalf("Shown = %q", got)
 	}
 }

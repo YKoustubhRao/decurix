@@ -160,8 +160,8 @@ func TestWhatACommandPrintedIsKept(t *testing.T) {
 	}
 	t.Setenv("DECURIX_TASK_FILE", taskFile)
 	t.Setenv("DECURIX_DIR", filepath.Join(root, "state"))
-	noteCommandOutput(`python3 -c 'print(4350+25423.72+25423.72+12711.86)'`, "67909.3\n")
-	noteCommandOutput(`gui observe`, "Screen 1280x720 ...")
+	noteCommandOutput(`python3 -c 'print(4350+25423.72+25423.72+12711.86)'`, "67909.3\n", nil)
+	noteCommandOutput(`gui observe`, "Screen 1280x720 ...", nil)
 	data, err := os.ReadFile(filepath.Join(root, "state", "computer", "evidence", "t7out.outputs"))
 	if err != nil {
 		t.Fatal(err)

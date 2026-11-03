@@ -12,6 +12,7 @@ import (
 	"thebot/internal/llm"
 	"thebot/internal/memory"
 	"thebot/internal/skills"
+	"thebot/internal/withheld"
 )
 
 func (s *Scheduler) runOnce(skill skills.Skill, rc skills.RunContext, subtask skills.Subtask, onLog func(string)) skills.Result {
@@ -23,7 +24,8 @@ func (s *Scheduler) runOnce(skill skills.Skill, rc skills.RunContext, subtask sk
 			Verified: false, Meta: map[string]any{},
 		}
 	}
-	onLog(fmt.Sprintf("scheduler: %q [%s] -> skill=%s model=%s", truncate(subtask.Step, 70), subtask.Type, skill.Name(), rc.Model))
+	onLog(fmt.Sprintf("scheduler: %q [%s] -> skill=%s model=%s", truncate(withheld.From(rc.Ctx).Shown(subtask.Step), 70),
+		subtask.Type, skill.Name(), rc.Model))
 	result, err := skill.Run(rc, subtask)
 	if err != nil {
 		onLog(fmt.Sprintf("skill %s returned an error: %s", skill.Name(), err.Error()))

@@ -7,6 +7,7 @@ import (
 
 	"thebot/internal/llm"
 	"thebot/internal/skills"
+	"thebot/internal/withheld"
 )
 
 // synthesisInstruction closes the final call of a multi-step job. The old
@@ -43,7 +44,7 @@ func (e *execution) compose() (Outcome, string) {
 	if len(e.nodes) == 1 {
 		n := e.nodes[0]
 		if n.state == StepDone {
-			return OutcomeAnswered, singleAnswer(n.result)
+			return OutcomeAnswered, singleAnswer(n.result, withheld.From(e.ctx))
 		}
 		return OutcomeFailed, e.failureAnswer(n)
 	}
@@ -56,7 +57,7 @@ func (e *execution) compose() (Outcome, string) {
 	if answer := e.synthesize(live); answer != "" {
 		return outcome, e.prefixStop(answer)
 	}
-	return outcome, e.prefixStop(deterministicSummary(live))
+	return outcome, e.prefixStop(deterministicSummary(live, withheld.From(e.ctx)))
 }
 
 func (e *execution) prefixStop(answer string) string {
@@ -69,7 +70,7 @@ func (e *execution) prefixStop(answer string) string {
 // singleAnswer is a one-step job's reply. Most skills already produce one;
 // the terminal skill produces a log, which is reformatted rather than sent
 // back to a model just to be reworded.
-func singleAnswer(r skills.Result) string {
+func singleAnswer(r skills.Result, secrets withheld.Values) string {
 	if r.SkillName != "terminal" {
 		return r.Output
 	}
@@ -82,7 +83,7 @@ func singleAnswer(r skills.Result) string {
 	if strings.TrimSpace(stdout) == "" {
 		return fmt.Sprintf("Ran `%s` - it finished with exit code %d and printed nothing.", command, exit)
 	}
-	return fmt.Sprintf("Ran `%s` (exit code %d):\n\n```\n%s\n```", command, exit, truncate(stdout, 6000))
+	return fmt.Sprintf("Ran `%s` (exit code %d):\n\n```\n%s\n```", command, exit, truncate(secrets.Text(stdout), 6000))
 }
 
 func (e *execution) failureAnswer(n *node) string {
@@ -97,7 +98,7 @@ func (e *execution) failureAnswer(n *node) string {
 		b.WriteString(" " + reason)
 	}
 	if out := strings.TrimSpace(r.Output); out != "" {
-		b.WriteString("\n\n" + truncate(out, 2000))
+		b.WriteString("\n\n" + truncate(withheld.From(e.ctx).Text(out), 2000))
 	}
 	return b.String()
 }
@@ -163,7 +164,7 @@ func (e *execution) synthesize(live []*node) string {
 	return answer
 }
 
-func deterministicSummary(live []*node) string {
+func deterministicSummary(live []*node, secrets withheld.Values) string {
 	var b strings.Builder
 	for _, n := range live {
 		status := "done"
@@ -173,9 +174,9 @@ func deterministicSummary(live []*node) string {
 		case StepBlocked:
 			status = "not run"
 		}
-		fmt.Fprintf(&b, "**Step %d** - %s (%s)\n", n.step.ID, truncate(n.step.Text, 200), status)
+		fmt.Fprintf(&b, "**Step %d** - %s (%s)\n", n.step.ID, truncate(secrets.Shown(n.step.Text), 200), status)
 		if out := strings.TrimSpace(n.result.Output); out != "" && n.state != StepBlocked {
-			b.WriteString(truncate(out, 1200) + "\n")
+			b.WriteString(truncate(secrets.Text(out), 1200) + "\n")
 		}
 		b.WriteString("\n")
 	}
