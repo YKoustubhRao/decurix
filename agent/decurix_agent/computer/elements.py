@@ -176,11 +176,14 @@ def _inside(box, outer):
     return outer[0] <= cx <= outer[0] + outer[2] and outer[1] <= cy <= outer[1] + outer[3]
 
 
-def find(elements, ref=None, role=None, name=None, path=None, active_group=None, gone=None):
+def find(elements, ref=None, role=None, name=None, path=None, active_group=None, gone=None, exact=False):
     """
     Resolve a target against a fresh observation, or raise a ComputerError
     that tells the engine what to do instead. `gone`: where refs no longer on
     the screen were last seen (the observation's "gone", core.observe).
+    `exact`: a name is matched only as itself (or as a name quoted cut short),
+    never as words inside a longer name - what a check of the screen needs
+    ("Submitted" is not "Not Submitted", review 2026-11-03 D-14).
     """
 
     if ref:
@@ -239,9 +242,12 @@ def find(elements, ref=None, role=None, name=None, path=None, active_group=None,
         tiers = [
             [e for e in candidates if shown(e) == wanted],
             [e for e in candidates if cut and shown(e).startswith(cut)],
-            [e for e in candidates if whole and whole.match(shown(e))],
-            [e for e in candidates if whole and whole.search(shown(e))],
         ]
+        if not exact:
+            tiers += [
+                [e for e in candidates if whole and whole.match(shown(e))],
+                [e for e in candidates if whole and whole.search(shown(e))],
+            ]
         matches = next((tier for tier in tiers if tier), [])
     else:
         matches = candidates

@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from decurix_agent import config, filelock, progress
-from decurix_agent.computer import approval, atspi, audit, browser, cdp, grounder, launchers, privacy, screen, session, volatility, xinput
+from decurix_agent.computer import approval, atspi, audit, browser, cdp, grounder, identity, launchers, privacy, screen, session, volatility, xinput
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ActedError, ComputerError
 
@@ -4605,17 +4605,20 @@ def verify(expect_text=None, role=None, name=None):
     detail = ""
 
     if expect_text:
-        needle = expect_text.lower()
+        # Whole words, in order (identity.holds), in what the screen shows - never the values of fields that take
+        # typing, which the worker may have typed itself. Found in review (2026-11-03, D-14): a substring over every
+        # name and value passed `--text paid` on "Unpaid", and on a notes box the worker had filled.
         haystack = [after.get("active_title") or ""] + [w["title"] for w in after["windows"]]
         for e in after["elements"]:
             haystack.append(e.get("name") or "")
-            haystack.append(e.get("value") or "")
-        ok = any(needle in (h or "").lower() for h in haystack)
+            if e.get("role") not in TYPING_ROLES:
+                haystack.append(e.get("value") or "")
+        ok = any(identity.holds(h, expect_text) for h in haystack)
         detail = f"text {el._quote(expect_text)} is {'on' if ok else 'NOT on'} the screen"
 
     if role or name:
         try:
-            match = el.find(after["elements"], role=role, name=name)
+            match = el.find(after["elements"], role=role, name=name, exact=True)
             hit = True
             found = el.describe(match)
         except ComputerError:

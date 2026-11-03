@@ -21,6 +21,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from decurix_agent import config, task_context
+from decurix_agent.computer import identity
 from decurix_agent.computer.errors import ComputerError
 
 LEDGER_DIR = config.DECURIX_DIR / "computer" / "evidence"
@@ -141,9 +142,10 @@ def stands_in(value, text):
         # digits in order (punctuation and spaces between them aside), with no letter or digit glued on at either end.
         # Recheck (2026-11-02): "INV-1234" was found in "Invoice INV-12345" - another document's number counted as
         # read back.
-        pattern = r"(?<![a-z0-9])" + r"[^a-z0-9]*".join(re.escape(c) for c in key) + r"(?![a-z0-9])"
-        return bool(re.search(pattern, str(text).lower()))
-    return key in _text_key(text)
+        return identity.holds_identifier(text, value)
+    # Words stand in the text whole and in order (identity.holds). Found in review (2026-11-03, D-13): the squashed
+    # letters were looked for anywhere, so "Paid" was read back on a page that says "Unpaid", and "Ravi" in "Ravindra".
+    return identity.holds(text, value)
 
 
 _JOINED_TOKEN = r"[A-Za-z0-9][A-Za-z0-9/\-]*"

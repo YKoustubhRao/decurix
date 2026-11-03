@@ -25,7 +25,7 @@ the code checks.
 import re
 
 from decurix_agent import task_context
-from decurix_agent.computer import evidence
+from decurix_agent.computer import evidence, identity
 
 LEAD = "resolved "
 _FACT = re.compile(r'^resolved (?P<id>.+?): (?:matched "(?P<name>.*)" by identifier$|(?P<none>no record holds it)\b|'
@@ -61,10 +61,11 @@ def digits(value):
 
 
 def holds(text, identifier):
-    """Whether `text` holds the identifier (key for key: spaces, dashes and case apart)."""
+    """Whether `text` holds the identifier as a whole token (spaces, dashes and case apart; identity.holds_identifier).
+    Found in review (2026-11-03, D-35): any 3 characters of a key inside the text's counted, so a short identifier
+    matched unrelated rows."""
 
-    k = key(identifier)
-    return len(k) >= 3 and k in key(text)
+    return len(key(identifier)) >= 3 and identity.holds_identifier(text, identifier)
 
 
 def searches(identifier):
