@@ -3,13 +3,15 @@
 ```bash
 ./scripts/mac/setup.sh           # macOS host setup: Docker, cloudflared, Ollama, QEMU, jq
 ./scripts/mac/build-images.sh    # builds desktop images with --platform linux/amd64
-./scripts/mac/build.sh           # "open the app": builds only missing images, starts compose, opens tunnel
+./scripts/mac/build.sh           # "open the app": builds only missing images, starts compose, opens the
+                                  # public link only with DECURIX_PUBLIC_LINK=1
 ./scripts/mac/rebuild.sh         # "reinstall": removes desktop containers/volumes, wipes decurix-data, rebuilds
 ./scripts/linux/setup.sh         # Linux host setup: Docker, cloudflared, QEMU (needs sudo)
 ./scripts/linux/build-images.sh  # builds decurix-desktop:basic and decurix-tools:latest
 ./scripts/linux/build.sh         # "open the app": builds only missing images, starts the control
                                   # plane if it isn't already running, waits for :8080, opens a
-                                  # tunnel. Leaves existing desktop_* containers/volumes and the
+                                  # tunnel to the gated listener only with DECURIX_PUBLIC_LINK=1
+                                  # (off by default). Leaves existing desktop_* containers/volumes and the
                                   # decurix-data volume (the DB) untouched. --cli opens the CLI
                                   # (below) against it instead of the tunnel
 ./scripts/linux/rebuild.sh       # "reinstall": removes every desktop_* container/volume, and
@@ -94,7 +96,12 @@ See [README.md](README.md#-getting-started-running-it-locally) for full step-by-
 | `DESKTOP_STOP_TIMEOUT_SECONDS` | `desktop.Manager.Stop` | `10` | Parsed with `strconv.Atoi`; invalid/`<=0` values are ignored. |
 | `DECURIX_DATA_DIR` | `sqlitedb.DataDir` | `os.UserConfigDir()/decurix` (`/data` in `docker/Dockerfile`) | Where `decurix.db` lives. |
 | `DECURIX_STEP_IMAGES_MB` | `cmd/decurix.stepImagesMaxBytes` | `1024` | Byte budget of `stepimages`; oldest screenshots evicted first. |
-| `DECURIX_LAN_PORT` | `cmd/decurix.lanListenAddr` | `8090` | Port of the second, `lanaccess`-gated listener; also what `docker-compose.yaml`'s `ports:` publishes (`${DECURIX_LAN_PORT:-8090}`, compose's own substitution from the same `.env`). `build.sh`/`rebuild.sh` point their primary `cloudflared` tunnel at `:8080` instead, but also open a second tunnel at this port — see "Two listeners, one process, one set of routes" above. |
+| `DECURIX_LAN_PORT` | `cmd/decurix.lanListenAddr` | `8090` | Port of the second, `lanaccess`-gated listener; also what `docker-compose.yaml`'s `ports:` publishes (`${DECURIX_LAN_PORT:-8090}`, compose's own substitution from the same `.env`). With `DECURIX_PUBLIC_LINK=1`, `build.sh`/`rebuild.sh` open one Cloudflare tunnel, to this port only; nothing tunnels `:8080` (architecture.md, "Two listeners, one process, one set of routes"). |
+| `DECURIX_LAN_ADDR` | `cmd/decurix.lanListenAddr` | unset | `host:port` the gated listener of a host-run binary binds. Not `host:port` is ignored with a warning. |
+| `DECURIX_PUBLIC_LINK` | `scripts/*/lib/lan-tunnel.*` | off | `1` (env or `.env`) turns the build/rebuild scripts' public tunnel on. It only ever points at a port serving the access-code page. `cloudflared` is needed only then. The Electron app has its own switch (Mobile menu, "Public link"). |
+| `DECURIX_IDLE_ACTION` | `cmd/decurix` | pause | `stop` stops idle desktops; anything else pauses them. |
+| `DECURIX_ENABLE_KSM` | `internal/desktop/ksm_linux.go`, the scripts | off | `1` turns KSM on. It merges memory pages across desktops that do not trust each other, so it is the owner's choice. At start KSM is turned off only when Decurix's own marker (`<data dir>/ksm-enabled-by-decurix`) says Decurix turned it on, or with `DECURIX_DISABLE_KSM=1` / `DECURIX_ENABLE_KSM=0`. KSM an owner enabled is left on, with a log line. |
+| `DECURIX_IMPORT_HOST_BROWSER_PROFILE` | `internal/winhost` | off | `1` lets the Windows bridge seed a host app's private browser from the person's own profile. Without it, a private profile with an old import marker is deleted once before launch. |
 | `DECURIX_ADMIN_ADDR` | `cmd/decurix.primaryListenAddrs` | loopback + Docker gateways (host), `:8080` (container) | Comma-separated `host:port` list the unauthenticated primary listener binds; the first is required. Widening it puts full control of the machine on that network. |
 | `DECURIX_ADMIN_BIND` | `docker-compose.yaml` | `127.0.0.1` | Host interface compose publishes `:8080` on. Leave it on loopback. |
 | `DECURIX_CONTROL_PLANE_URL` | `desktop.controlPlaneURL` | `http://host.docker.internal:8080` (compose sets `http://decurix:8080`) | The callback address baked into each new desktop's `CONTROL_PLANE_URL`. |
@@ -124,12 +131,32 @@ See [README.md](README.md#-getting-started-running-it-locally) for full step-by-
 | `OLLAMA_KEEP_ALIVE` | `ollama.KeepAlive` (Go), `ollama_client.py`, TheBot's `llm.NewOllama` | `60m` (`ollama.DefaultKeepAlive`) | How long Ollama holds the model in memory. See the prompt-cache gotcha below — this is the single biggest lever on how fast a desktop feels. |
 | `EMBED_MODEL` | TheBot's `config.Load` / `llm.NewOllama` | `nomic-embed-text` | The embedding model, a separate dependency from the chat model. |
 
+`docker/Dockerfile` takes the build arg `DECURIX_VERSION` (default `dev`).
+
 **Recordings**, also read inside the container:
 
 | Var | Read in | Default | Purpose |
 |---|---|---|---|
 | `DECURIX_RECORDINGS_DIR` | `computer/recording.py` | `~/.decurix/recordings` | Where recordings live. |
 | `DECURIX_RECORDINGS_MB` | `computer/recording.py` | `1024` | Disk budget; task and hand-run recordings are pruned oldest first past it, demonstrations never. |
+| `DECURIX_RECORDING_LOCK_S` | `computer/recording.py` | `30` | How long a write waits for a recording's lock. Then it raises `TimeoutError` (an `OSError`) and the action is logged, never blocked forever. |
 | `DECURIX_REPLAY_FIND_SECONDS` | `computer/replay.py` | `12` | How long a replay step looks for its target before halting. |
 | `DECURIX_REPLAY_EXPECT_SECONDS` | `computer/replay.py` | `10` | How long a replay step waits for its expected result. |
 | `DECURIX_SKILLS_DIR` | `computer/skills.py` | `~/.decurix/skills` | Where taught skills live (one JSON file each; a skill carries its own steps, so it outlives the recordings it came from). |
+## Since the review of 2026-11-03
+
+**Start-up without Docker.** The control plane no longer exits when Docker is down. The listeners start, every page shows a "Docker is not running" banner, and the Docker-dependent start-up (`cmd/decurix/dockerstartup.go`) runs once Docker answers (`Manager.WatchDocker`, every 10 s; `Manager.DockerReachable()`).
+
+**The public link and the phone.** The public link (a Cloudflare quick tunnel to the gated listener) is off by default (owner decision O-5). In the app it starts only after the person turns on "Public link" at the top of the dashboard's Mobile menu; the choice is kept in `public-link.json` in the data folder. The scripts start it only with `DECURIX_PUBLIC_LINK=1`. The LAN link is unchanged. Phone setup uses Wireless debugging only; it never runs `adb tcpip 5555` (unencrypted, on every network, until reboot). Wireless debugging's port can change with the network, and setup keeps the new serial. If the phone cannot hear mDNS, a Wi-Fi change needs `adb connect localhost:<new port>` again (a live check on a real phone is still owed). The setup one-liner checks the script's SHA-256 (sent with the setup token) before running it, and the script checks the helper binary's. Over plain http this does not protect the page itself, and the page says so.
+
+**The Windows app on a shared WSL runtime.** Adopting an existing distro's Docker Engine is now asked; the default is the app's own Linux. What the engine already held is recorded as `preexisting` in `windows-runtime.json`, and uninstall or reset remove only the rest (`wsl/maintain-existing.sh`, `cleanup-existing.ps1`). `maintain-existing.sh inventory` fails (prints nothing, exit 1) when any one Docker listing fails, so a partial list is never saved; the app then does not adopt the runtime. A complete record has `preexistingComplete: true`. An uninstall or `-Fresh` removes nothing from a shared runtime whose record lacks it (exit 3, and the uninstaller says so); records saved by earlier versions included. Reset and delete report a failed listing as "could not ...", never as nothing there.
+
+**Ollama setup.** No script sets `OLLAMA_HOST=0.0.0.0` any more. On Mac and Windows Ollama stays on loopback (Docker Desktop reaches it). On native Linux it binds the address that `host.docker.internal` resolves to inside a desktop (Docker's host-gateway). A fallback server or model is used for **one run only**: it goes in a compose override file with a "THIS RUN ONLY" warning, and `.env` keeps the person's choice. The bundled `ollama/ollama` image is pinned to 0.40.1.
+
+**Images and tools.** A failing install in the tools image fails the build. The tools volume's sentinel is a hash of the tools tree, so a rebuilt tools image replaces an old volume's contents. A refresh waits while any desktop is running, paused or restarting (architecture.md, "The tools volume"). Rebuild the desktop and tools images, then **recreate desktops**, to pick up this review's container changes (no-new-privileges, the setuid strip, per-desktop caches, `-nolisten tcp`, no `xhost +`, new host session ids).
+
+**Upgrading to the random instance tag.** The instance tag is now a random `instance-id` file in the data folder (architecture.md, "The instance tag"). On the first start after upgrading, this instance's own home-copy helpers and hops tagged with the old path hash look foreign and are left running, once. When no other control plane runs, remove them by hand: `docker ps -a --filter label=decurix.hop.instance` and `--filter label=decurix.homefs.instance` list them.
+
+**Python tests without the office libraries.** Office tests skip with their reason when openpyxl, python-docx or lxml is missing (`agent/tests/needs.py`: `@needs`, `require` for an office-only module, `optional`). On WSL's system `python3` the suite runs with skips, not failures; the Windows `py -3` (3.11) runs everything. The replay gate's in-repo corpus always runs; run once with `DECURIX_REQUIRE_FIXTURES=1` on the machine that has the private corpus.
+
+**What the owner runs after a build.** The live checks the writers could not run are listed in [follow-ups.md](follow-ups.md), "Live checks after the next build".

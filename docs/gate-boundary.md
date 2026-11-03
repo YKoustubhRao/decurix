@@ -72,8 +72,9 @@ Both are closed, and `bench/security/boundary.sh` replays the attacks against an
 layered image of this checkout).
 
 **The image and the entrypoint** (`agent/decurix-entrypoint.sh`, `docker/desktop.basic.Dockerfile`):
-- The worker cannot become root: no sudo, no setuid helpers but chrome-sandbox, `/etc/passwd` 644, `NET_RAW` dropped,
-  and every desktop process runs with no capabilities and no-new-privileges.
+- The worker cannot become root: no sudo, no setuid or setgid bit anywhere in the image (chrome-sandbox included, since
+  the review of 2026-11-03), `/etc/passwd` 644, `NET_RAW` dropped, and every desktop process runs with no capabilities
+  and no-new-privileges.
 - The entrypoint runs as root on every start, so it trusts nothing the worker can write. PATH is the system's only
   and every command is named by absolute path: the container's PATH puts `~/.local/bin` first, and a planted `id` there
   ran as root. Root never runs a recursive chown on a folder the worker can write into. Hard-link protection is off in
@@ -137,8 +138,10 @@ only when it is bound to that approval:
 - typed in the desktop's chat with that approval on screen (the chat sends `seen_at`, when its newest entry was
   posted) and no other question open.
 A chat reply that would land on an approval posted after what the person saw, or on one of several open questions,
-is refused with a reason. Every other door (the requests page, the concierge, an API call) delivers the reply as a
-message bound to no request: it grants nothing.
+is refused with a reason. Since the review of 2026-11-03 the chat's `seen_at` is frozen at the first keystroke of a
+draft, approval bubbles carry Approve and Deny bound to the note id, and the concierge binds a reply by `note_id` only
+when the newest open question is a gate-worded approval (a bare ok, sure, go or yes never answers one there). Every
+other door (the requests page, an API call) delivers the reply as a message bound to no request: it grants nothing.
 
 **The gate's question is the gate's words only.** With no reason of its own the gate used the caller's reason in its
 signed question; it now uses a fixed one (`gate_server.GATE_REASON`). The worker's text reaches the person only as
@@ -153,8 +156,8 @@ Guard rails, not the boundary, but each closed a hole the recheck found:
 - **A request is local only when every target is.** `safety.onlyLocalTargets` reads each curl and wget's targets, and a
   proxy, `--resolve`, `--connect-to`, `-K`, a proxy variable or a curl/wget rc file in the home means not local.
 - **The Claude guard fails closed when it cannot start**: `/usr/bin/python3 -I <guard> || exit 2`.
-- **The browser extension (:8092) takes no approval on a gated desktop** (`guard.gate_required`), and TheBot's browser
-  skill leaves that step to the person on the screen.
+- **The browser extension (:8092) took no approval on a gated desktop** (`guard.gate_required`). It has since been
+  deleted with `agent/browser-agent` (review 2026-11-03); soul's browser skill remains, off by default.
 - **Question files, the final-reply file, the log banner and the saved run report** go through `privacy.withhold_known`.
 - **A proven fix stands in the build's own folder**, not the workspace that holds every project.
 
@@ -196,11 +199,18 @@ accessibility bus under the screen user; (5) the agent's own user; every row pas
   A lying caller can only get a grant for the action it described, but with direct input it needs none.
 - **The agent token** is still in the agent's environment and readable by the worker (`/proc/<agent>/environ`). With it
   the worker can start tasks as a "person" and call the agent's API. It can no longer make a yes.
-- **The browser extension server** (:8092, off unless `THEBOT_BROWSER_EXTENSION=1`) takes no approval on a gated
-  desktop (round 5). On a desktop without a gate it still takes them from any caller with the agent token.
-- **The script sandbox only cuts the network, and offered tools run unsandboxed.** Neither is part of the boundary.
-- **Every desktop shares one cache volume** (`decurix-cache` at `/var/cache/decurix`: pip, npm, Go, Hugging Face), so
-  one desktop can leave a poisoned package or model there for the next.
+- **The script sandbox cuts the network and ends what a script started, but not its files.** It runs
+  `unshare --user --map-root-user --net --ipc --pid --fork --kill-child`, so nothing a script starts outlives it. A
+  pathname Unix socket stays reachable with `unshare` alone; `script_sandbox.status()` reports it. A kernel that
+  refuses a pid namespace fails the probe, and then no learned script runs unattended. Offered tools run unsandboxed.
+  Neither is part of the boundary.
+- **Each desktop has its own cache volume** since the review of 2026-11-03 (`desktop_<id>_cache` at
+  `/var/cache/decurix`), and the shared model cache is read-only, so one desktop can no longer leave a poisoned package
+  for the next.
+- **Input sent to a viewer is the viewer's.** The gate sees an agent's clicks on the host-app or phone viewer in the
+  desktop. It does not see input sent to the phone link directly. Phone viewers pass only ordinary typing and
+  navigation keycodes (`phonehost.OrdinaryKey`, an allowlist); system keys are refused at the control plane and on the
+  phone. The input broker (owner decision O-1) is what closes this.
 - **A root `docker exec` by a person.** `docker exec -u 0 <desktop> sh` finds `sh` through the container's PATH, which
   puts the worker's `~/.local/bin` first: it runs the worker's code as root. The control plane never execs as root.
   Anyone else uses absolute paths and `env -i` (the bench caught itself doing this).
@@ -210,3 +220,36 @@ accessibility bus under the screen user; (5) the agent's own user; every row pas
 - **What `gui` describes.** `about` (what an action acts on) and the control's name come from the worker's side of
   the screen; the gate words its question from them. A misleading description gets a grant only for that description.
 - **A fixed `hostgui.key`** change (e.g. after a restore onto another machine) changes every derived key: recreate desktops.
+## The deep review (2026-11-03)
+
+**One rule for an approval-class reply.** Keeping a parked finding, starting a workflow stage, and running a held
+command are each one action's yes. Each goes through `gated_command.granted(held, reply, question)` plus
+`watchers.is_reply_file`. The reply mark says which way a message came, not who wrote it: the command folder is the
+worker's, so a reply file alone is a channel, never a person. On a gated desktop the gate's one-shot grant is needed
+too.
+- **A keep** of a parked finding is asked in the gate's words ("To keep the work of stage X as it is ... confirm it
+  here"; `long_task._keep_allowed` / `_keep_confirmed`).
+- **A workflow stage** that needs a go-ahead is asked as an approval question ("may I start stage X?"). Only the reply
+  to it starts it, and on a gated desktop only the gate's grant (kind `command`, request "start stage X of workflow R:
+  ..."). `/workflow approve` starts nothing, and the workflow page has no approve control. Starting a stage approves
+  nothing inside it.
+- **Legacy harnesses** (Azure, the Ollama task runner; owner decision O-4): on a gated desktop a held dangerous command
+  is the gate's (kind `command` material, as soul sends). It runs only when a fresh `check` finds the one-shot grant
+  the person's signed reply made. A gate that does not answer allows nothing, and nobody is asked. Deleting these
+  harnesses is a follow-up.
+
+**Guard rails, frozen.** The shell guards are filters, not the boundary (owner decision O-1). After this review:
+- `commands.py`: a change of folder the guard cannot follow makes the folder unknown, and a recursive delete of a
+  relative path or pattern then waits for a person. No new words are added after this.
+- TheBot's `internal/safety` carries a FROZEN note. Its last five structural fixes are written by input class in
+  [follow-ups.md](follow-ups.md), O-1.a.
+- The Claude harness's PreToolUse guard runs for `mcp__computer__.*` too. `open` may not name an input program, a local
+  port or the gate's state, and a call the guard cannot read is refused.
+- Commands soul runs start without `DECURIX_AGENT_TOKEN`, `*_TOKEN` and `*_API_KEY` (`OPENAI_API_KEY` and
+  `OLLAMA_API_KEY` stay, because the gui tool reads them), so a publish or push the guard misses has no credential.
+
+**X.** Xvnc is told `-nolisten tcp`, and the agent terminal no longer runs `xhost +`: X access control stays on, with
+only the worker's local user (`+SI:localuser:headless`). Recreate desktops to pick both up.
+
+**Checks the owner runs.** `bench/security/boundary.sh` and `bench/security/gate_flow.py` (the keep-it confirmation
+through the gate) on the next image; see [follow-ups.md](follow-ups.md).

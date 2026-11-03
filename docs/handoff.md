@@ -54,8 +54,9 @@ The sender cannot see the receiver's screen, so the only evidence that the work 
 - A receiving task that ended `error` or `abandoned` is `failed`.
 - A receiver waiting on a person stays `running`; its unanswered questions are in `open_questions`.
 - `evidence` is what the receiver's gate wrote it saw (its `Checked ...:` lines and its "Values read from" block).
-  `files` are the home-folder paths the report names, copied back to the sender under
-  `/home/headless/handoffs/<id>/returned/` (or named on the receiver when they cannot be copied).
+  `files` are the files the receiver saved in `~/handoffs/<id>/out/`, copied back to the sender under
+  `/home/headless/handoffs/<id>/returned/`. The request tells the receiver to save there. Only a verified result
+  returns files, and only from that folder: never a file a report merely names (C-06, review 2026-11-03).
 
 On the sender, the `handoff` command prints one fixed block (`=== HANDOFF <id>: DONE (verified) ===` ... `=== END
 HANDOFF <id> ===`). Anything but `DONE (verified)` tells the model not to report that part as done. The soul's report
@@ -85,7 +86,11 @@ machine does), and creating a handoff starts work on another desktop and moves f
   person), only the sender's own `--wait`.
 - Chains are at most 3 deep and never hand back to a worker waiting up the chain.
 - Files: at most 20 paths under `/home/headless`, 64 MB in all; folders and links are not carried.
-- `checked` says the gate ran, not which way it went: a report the gate wrote after an approval the person refused
-  ("Stopped there, as you said") also arrives `done` + `checked`. Until the agent sends its gate's verdict as data on
-  the final note, such a result reads as verified; the receiver's report says what happened.
+- A stop ("Stopped, as you said") is reported `kind="error"`, not checked, since the review of 2026-11-03, so a
+  receiver that stopped at a person's no fails the handoff instead of reading as verified.
+- A receiving task that ended `query` fails the handoff. Delegated work has a 24 h ceiling.
+- A queued handoff is claimed `sending` (shown as queued in JSON) and submitted without the service lock. A stale
+  claim fails after 15 minutes.
+- Knowledge GETs from a desktop are bound to the caller: its own worker scope, its own tasks only. Org skill and
+  knowledge writes are host-operator only (owner decision O-7).
 - One control-plane process: the service's mutex serialises the read-then-write of a handoff row.

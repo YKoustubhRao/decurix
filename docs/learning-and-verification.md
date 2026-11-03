@@ -20,5 +20,31 @@ Three rules, from the person running this: while a worker is learning its range 
 
 ## The person's files stay as they were
 
-On a desktop with a shared folder, `source_guard.take` notes and copies the folder's files when a task starts. At the final gate (and a planned stage's check, and a script tool's), a file the request gives (attached, named, or in a folder it names: `source_guard.given`) that was there before and changed without the request asking for it is put back from its copy and the result is "not done", saying "The task changed your file X, which should have stayed as it was; I put the original back". Such a file is a source, never checked as an output (`is_source`). Any other file of the shared folder is the person's own business (they, or another worker, may change it meanwhile): never judged, never put back (2026-10-21).
+On a desktop with a shared folder, `source_guard.take` notes and copies the folder's files when a task starts. At the final gate (and a planned stage's check, and a script tool's), a file the request gives (attached, named, or in a folder it names: `source_guard.given`) that was there before and changed is reported as a fact, not a verdict (since 2026-11-03, E-12): `source_guard.changed_sources` gives each such file with a short diff and whether the original is kept, and the judge and the person both see it. Nothing is put back inside the check: only a structured judge verdict or the person's "put back X" restores it (`restore_sources`). The old verb list (`may_change`) is evidence only. Such a file is a source, never checked as an output (`is_source`). Any other file of the shared folder is the person's own business (they, or another worker, may change it meanwhile): never judged, never put back (2026-10-21).
 - **The judge sees the whole task, and looks closer when it needs to (2026-10-21).** `verify.judge` keeps up to `MAX_TASK_CHARS` (20,000) of the task it is given - a planned stage's check puts the person's binding answers, the system's read-back, the code checks' evidence and the other stages' context after the instruction, and the old 1,500-character cut dropped them. A judge that is unsure only because a part of a file was not shown names up to `MAX_LOOK` words to find (`"look"`); the caller's `look_up` (`produced.lines_with`: each file's first lines and every line holding a term) is shown and the judge decides once more - once only. Wired for the planned stage's check, the final gate and the tool route. Found live: series 16 H1 stage 1 passed "checked in code only" because the CL-4142 row it needed was not in the sample.
+## Since the review of 2026-11-03
+
+**One definition of what blocks.** `produced.FileFacts.BLOCKING` / `blocking()` / `not_made()` hold for every route: the final gate, a taught run's read-back, a desktop tool's run and a long request's stage. `not_made()` is `could_not` plus Office files that could not be opened (`unchecked`). A check that raises is NOT_MADE (`long_task._checked`; [long-requests.md](long-requests.md)).
+
+**In `skill_task._gate`, "not checked" ranks below every definite finding**, so it never hides one. A check not made, or a host file not read, is "not checked", said once.
+
+**An engine answer with no screen work and no file** has the sums it writes out, and any program-printed numbers, checked in code. When the tools read anything (observed evidence, files read, commands), it is judged with that evidence. Otherwise it goes out with the first line `UNCHECKED_ANSWER` ("Not checked: nothing I did or read can confirm this ..."), `checked=False`.
+
+**A stop is never kind "final".** `skill_task._stopped` sends kind "error", not checked, starting "Stopped, as you said". Every route does the same (`replay_task`, the watchers, `thebot_harness`).
+
+**What else blocks, and what is evidence.**
+- A missing file blocks only when a planned stage's own outputs name it. A file name read from the request's words is evidence (`FileFacts.missing_named`).
+- A placeholder blocks only when a document the task filled held it (E-10, E-11).
+- A source figure the result does not hold is evidence (`source_mismatch` is in `notes()`), and no sign or line-order convention decides (E-13).
+- Indian digit grouping (1,00,000) and ₹ are notation; `verify.false_sums` reads them, and also a sum that ends a sentence with a full stop.
+- Payee checks decide by where each bank identifier comes from, never by header words (F-01; [long-requests.md](long-requests.md), "Where money goes, since F-01").
+
+**TheBot's operator.**
+- A DONE given again after every command failed is put to the person as "Not checked". The only exception is a DONE that quotes a failed command's output (a mechanical check). This holds on local and hosted brains.
+- Triage: anything that is not conversation goes to the operator, including questions about the person's own data. The tool-less chat skill keeps only greetings and talk about TheBot or the user.
+- A decomposed recovery is verified only when every step verified. A retry of another kind, or one whose result is a model's own words, is reported as "tried instead" and is not verified.
+- An unread reply to a vouch or source question vouches for nothing. The question tells the person that a plain "yes" settles it.
+- An unverified handoff result fails closed when no review weighed the report.
+- Values count as "only the work's own code printed" only when the file was written from the command's own text and then run as the program.
+
+**Recall is not a filter.** Raw nomic-embed-text cosine, as soul calls it (with no query or document prefix), does not separate relevant from unrelated facts: measured on 2026-11-03, relevant facts scored 0.44-0.69 and unrelated ones 0.28-0.56. No fixed floor works, so frames say "may be relevant" instead.

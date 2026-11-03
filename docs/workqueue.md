@@ -67,7 +67,11 @@ Items that cannot be placed do not block lower-priority items that can go elsewh
 ## Over budget
 
 Spend is what the task records already hold: each execution's `cost_usd` and `input_tokens + output_tokens`
-(`TaskSpend` sums them per worker since the period's start). Over budget, an item is **held with a reason, never
+(`TaskSpend` sums them per worker since the period's start). **Tokens are metered by the control plane; dollars are
+not** (review 2026-11-03). The model proxy meters tokens per worker per day (`llm_usage`) and enforces token limits
+itself: 402 over the limit, 503 when spend cannot be read. A **dollar limit is only the desktops' self-reported cost**
+(no price is in code); the API (`enforcement` in `GET /api/queue/limits`), the form and the hold reason say so.
+Done items' files are dropped after 7 days. Over budget, an item is **held with a reason, never
 dropped**; it goes back to the queue by itself when a qualifying worker is under its limits again, or a person can
 retry or cancel it. Spend is checked before a send, not during a task: a task that is already running may take a
 worker past its limit; the next item then waits. Spend a worker made outside the queue (a person's chat) counts too,

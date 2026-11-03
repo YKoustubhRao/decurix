@@ -141,7 +141,7 @@ A rundown of what's actually built and working, grouped by area. See [`docs/`](d
 
 **Access & connectivity**
 * An always-on primary listener for local/dashboard use and desktop callbacks, plus a second, access-code-gated listener for exposing Decurix safely off-network — the code rotates on demand and automatically every 48 hours
-* Cloudflare quick tunnels (one per listener) plus direct LAN URLs, all surfaced together in the dashboard's Mobile menu
+* An opt-in public link (one Cloudflare quick tunnel, to the access-code-gated listener only; the unauthenticated `:8080` is never tunnelled) plus a direct LAN URL, surfaced together in the dashboard's Mobile menu
 * An interactive `--cli` terminal client for driving a running control plane without a browser
 
 **Distribution**
@@ -227,7 +227,7 @@ Everything scripted lives under [`scripts/`](scripts/), split by who runs it. `l
 | **One-shot** | `scripts/linux/quickstart.sh` | `scripts/mac/quickstart.sh` | `scripts\windows\quickstart.ps1` | Fresh machine to running dashboard in one command: host setup (if Docker's missing) then Start, below. |
 | **Host setup** | `scripts/linux/setup.sh` | `scripts/mac/setup.sh` | `scripts\windows\setup.ps1` | One-time: Docker, `cloudflared`, Ollama / QEMU. |
 | **Desktop images** | `scripts/linux/build-images.sh` | `scripts/mac/build-images.sh` | `scripts\windows\build-images.ps1` | Builds `decurix-desktop:basic` and `decurix-tools:latest`. |
-| **Start** | `scripts/linux/build.sh` | `scripts/mac/build.sh` | `scripts\windows\build.ps1` | Like opening the app: builds only missing images, starts the control plane if it isn't already running, opens a tunnel. Leaves existing desktops and the database untouched. |
+| **Start** | `scripts/linux/build.sh` | `scripts/mac/build.sh` | `scripts\windows\build.ps1` | Like opening the app: builds only missing images, starts the control plane if it isn't already running, and opens the public link only with `DECURIX_PUBLIC_LINK=1`. Leaves existing desktops and the database untouched. |
 | **Rebuild** | `scripts/linux/rebuild.sh` | `scripts/mac/rebuild.sh` | `scripts\windows\rebuild.ps1` | Like reinstalling: rebuilds every image and the control plane (still cached, so it's fast), every `desktop_*` container/volume removed, and (after a confirmation prompt) the app database wiped. |
 | **Standalone VM test** | `scripts/linux/test-vm.sh` | `scripts/mac/test-vm.sh` | `scripts\windows\test-vm.ps1` | One throwaway desktop container + a dummy control-plane stub, no full Decurix stack needed. See below. |
 | **Release** | `scripts/release/release.sh` | `scripts/release/release.sh` | `scripts\release\release.ps1` | Cross-compiles the downloadable executables into `dist/`. |
@@ -237,7 +237,7 @@ Starting from nothing?
 - **Linux:** `./scripts/linux/quickstart.sh`
 - **Windows:** `.\scripts\windows\quickstart.ps1`
 
-This is the one-shot version of steps 1-4 below — it checks Docker/`cloudflared`/Ollama, builds every image, and starts the dashboard with a tunnel.
+This is the one-shot version of steps 1-4 below — it checks Docker/Ollama (and `cloudflared` when the public link is on), builds every image, and starts the dashboard.
 
 Every script figures out the repo root on its own, so it doesn't matter where you run it from.
 
@@ -251,7 +251,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\windows\quickstart.ps1
 ```
 
-`build.sh` / `build.ps1` do everything: build any missing images, set up Ollama, start the control plane if it isn't already running, and open the tunnel. `rebuild.sh` / `rebuild.ps1` mirror this and rebuild from scratch.
+`build.sh` / `build.ps1` do everything: build any missing images, set up Ollama, start the control plane if it isn't already running, and open the public link when `DECURIX_PUBLIC_LINK=1`. `rebuild.sh` / `rebuild.ps1` mirror this and rebuild from scratch.
 
 ### 1. Clone and configure
 
@@ -358,11 +358,11 @@ Hit **Chat** on a desktop to talk to its agent: one conversation per worker, wit
 .\scripts\windows\build.ps1     # Windows (PowerShell)
 ```
 
-This is the "open the app" script: it builds only whichever desktop images don't exist yet, [sets up Ollama](#-setting-up-ollama) (creating `.env` if needed), starts the control plane if it isn't already running, and waits for the dashboard to respond. It does **not** touch any existing `desktop_*` container/volume or the app database — running it again is like reopening an app, not reinstalling it. If `cloudflared` is installed, it opens a public tunnel at the end and shows the tunnel's URL in the dashboard's Mobile menu. Without `cloudflared` the script stops with an error at that last step, but the dashboard is already running on `:8080`. Install `cloudflared` (via `setup.sh` / `setup.ps1`), or ignore the error if you only want local access. Ctrl+C stops watching the tunnel; Decurix keeps running (`docker compose down` to stop it).
+This is the "open the app" script: it builds only whichever desktop images don't exist yet, [sets up Ollama](#-setting-up-ollama) (creating `.env` if needed), starts the control plane if it isn't already running, and waits for the dashboard to respond. It does **not** touch any existing `desktop_*` container/volume or the app database — running it again is like reopening an app, not reinstalling it. The public link is off by default. With `DECURIX_PUBLIC_LINK=1` (in the environment or `.env`) it opens one Cloudflare tunnel at the end, to the access-code-gated listener only, and shows its URL in the dashboard's Mobile menu; it then needs `cloudflared` (via `setup.sh` / `setup.ps1`), and stops with an error without it, though the dashboard is already running on `:8080`. Ctrl+C stops watching the tunnel; Decurix keeps running (`docker compose down` to stop it).
 
-The tunnel link points at the same unauthenticated listener as `localhost:8080` — full control of this machine to whoever has the link, so treat it like a password and don't post it anywhere public. If you'd rather hand out a link that needs a one-time code instead, the script also opens a *second* Cloudflare tunnel to a gated listener on `:8090` and shows that one in the Mobile menu too, right above the code — so the code-protected link works from anywhere, not only your own network. The code itself is always in the dashboard's Mobile menu, next to a button to generate a new one on demand (which signs out anything already connected); it also rotates itself automatically every 48 hours, so a code that leaked doesn't stay valid indefinitely. See [Environment variables](#-environment-variables) for `DECURIX_LAN_PORT` if `:8090` collides with something else on your machine.
+The tunnel only ever points at the gated listener on `:8090`, which asks for a one-time code; the script checks that the port serves the access-code page before it opens the tunnel. The unauthenticated `:8080` (full control of this machine) is never tunnelled. The link is shown in the Mobile menu, right above the code, so the code-protected link works from anywhere, not only your own network. The code itself is always in the dashboard's Mobile menu, next to a button to generate a new one on demand (which signs out anything already connected); it also rotates itself automatically every 48 hours, so a code that leaked doesn't stay valid indefinitely. See [Environment variables](#-environment-variables) for `DECURIX_LAN_PORT` if `:8090` collides with something else on your machine.
 
-The script also prints (and the Mobile menu also shows) two more addresses built from the machine's own network IP: an **Admin URL** (`:8080`, no code — full control, same as sitting at this machine, so keep it to yourself) and a **LAN access URL** (the gated `:8090` — needs the code, like its tunnel link above — reachable on your own network without going through either Cloudflare tunnel at all). All four — the two tunnel links, LAN, and admin — live in the one Mobile menu, kept current if the code is ever rotated.
+The script also prints (and the Mobile menu also shows) a **LAN access URL** built from the machine's own network IP: the gated `:8090`, which needs the code like the tunnel link above and is reachable on your own network without the tunnel. The primary `:8080` is not reachable from the LAN, so no admin URL is reported. Both links live in the one Mobile menu, kept current if the code is ever rotated.
 
 Idle desktops stop themselves automatically after 5 minutes with no task running and no screen open (`DECURIX_IDLE_STOP_MINUTES`, on by default) — it only ever does what the dashboard's own Stop button does. Set it to `0` in `.env` to turn that off. Sending a stopped desktop a request starts it back up and waits for it automatically, so this is meant to be the normal state for a desktop between tasks, not something you have to work around — this is what makes running many desktops practical: a stopped container costs Decurix (and your machine) essentially nothing, and each one only actually runs while it has something to do.
 
@@ -488,7 +488,7 @@ Set these in your own `.env` (copied from `.env.example`) — the control plane 
 | `DESKTOP_STOP_TIMEOUT_SECONDS` | No | `10` | Seconds to wait for a desktop container to stop gracefully before force-killing it. |
 | `DECURIX_DATA_DIR` | No | your user config dir + `/decurix` (`/data` in the Docker image) | Where `decurix.db` lives: task records, chats, queries, worker memory, action screenshots, and the shared Claude session (see [Setting up the Claude harness](#-setting-up-the-claude-harness)). `docker compose` keeps it on the `decurix-data` volume. |
 | `DECURIX_STEP_IMAGES_MB` | No | `1024` | Disk budget for the before/after screenshots of on-screen actions. The oldest are dropped first. A desktop keeps its full-size originals regardless. |
-| `DECURIX_LAN_PORT` | No | `8090` | Port of the second, access-code-gated listener — the **LAN access URL**, reachable directly on your own network. Changes which host port `docker compose` publishes it on too. `build.sh`/`rebuild.sh` open their primary tunnel against `:8080` instead, but also open a second tunnel against this port for the gated URL. |
+| `DECURIX_LAN_PORT` | No | `8090` | Port of the second, access-code-gated listener — the **LAN access URL**, reachable directly on your own network. Changes which host port `docker compose` publishes it on too. With `DECURIX_PUBLIC_LINK=1`, `build.sh`/`rebuild.sh` open one tunnel, to this port only; nothing tunnels `:8080`. |
 | `DECURIX_IDLE_STOP_MINUTES` | No | `5` (on) | Stop a desktop automatically once it's sat idle — no task running, queued, or waiting on a reply, and no screen/thumbnail open — for this many minutes. Set to `0` to turn it off. It only ever does what the dashboard's own Stop button does. |
 
 Every other setting (the agent harness, the control-plane URL a desktop calls home to, etc.) is set up for each desktop when you create it. See [`docs/architecture.md`](docs/architecture.md) if you're changing that wiring.
@@ -672,9 +672,11 @@ keeps everything. Deleting a single worker from the
 dashboard deletes its files, its chat and everything it learned; take a backup
 first (**Back up**) to restore its skills and memory into another worker.
 
-For a phone, the app opens a temporary Cloudflare link to the access-code-gated
-listener while its window is open (`cloudflared` ships with the app). The
-unauthenticated dashboard on port 8080 is never exposed.
+For a phone, the app can open a temporary Cloudflare link to the access-code-gated
+listener while its window is open (`cloudflared` ships with the app). It is off
+by default: turn on "Public link" at the top of the dashboard's Mobile menu (the
+choice is kept in `public-link.json` in the data folder). The unauthenticated
+dashboard on port 8080 is never exposed.
 
 The desktop checks that the public URL serves Decurix's access-code page before
 showing it. With `DECURIX_TUNNEL_PROVIDER=auto`, if Cloudflare cannot connect or

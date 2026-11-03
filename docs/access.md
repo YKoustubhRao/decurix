@@ -58,7 +58,11 @@ Use `\b` for whole words: `file` alone also matches "profile".
 **Money figures.** A figure counts when a currency symbol (any Unicode `Sc`),
 an uppercase three-letter code (`USD 75`, `2500 EUR`), or `Rs`/`amount`/`total`/`sum`
 stands next to it. Commas are grouping (`1,00,000` = 100000). Text with **no**
-money figure is treated as over the threshold: the stricter reading.
+money figure is treated as over the threshold: the stricter reading. When a policy applies only because no amount
+could be read for certain, the refusal, the held message and the Workforce check say "the amount could not be read
+for certain, so the policy for larger amounts applied" (`Requirement.AmountUnknown`, JSON `amount_unknown`). An
+identifier-labelled figure larger than every money figure also makes the amount unknown, so a payment that names a
+larger account or invoice number meets its amount policy.
 
 ## Enforcement
 

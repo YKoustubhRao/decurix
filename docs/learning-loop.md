@@ -78,3 +78,9 @@ A cold start on the hardest task measures luck. The bar is a curve:
 - One extra model pass per commit for the matrix (correctness first).
 - A method that fits one client too closely: it is stated in terms of sources and checks, never values; values never enter a method (as playbooks do with `<value>`); and a method is kept only when it reproduces a checked result.
 - A wrong lesson spreading: methods carry the person's words with their date, and a correction replaces, never appends silently.
+## Kept facts and memory, since the review of 2026-11-03
+
+- **Places are kept for the client the request was for** (`Where (for <client>): ...`) and shown only to that client's tasks. A place with no client is shown to no task's view.
+- **A client is named only whole** (`memory_context.names_whole`): a capitalised word right before (unless at a sentence start) or right after continues the name, and the longest name wins, in any case. It fails closed: a fact may be hidden, never shown to another client. An all-capitals request can hide the client's own facts.
+- **Kept facts run after the report is sent**, not before it, still before the task lets go of the desktop, and from the whole request.
+- **Lessons are the whole worker's** (every client's). They are context for the model, never grounding for a run's values (`request_reading`, E-28).
