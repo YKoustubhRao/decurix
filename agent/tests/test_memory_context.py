@@ -92,7 +92,7 @@ class TestMemoryChosenForTheTask(unittest.TestCase):
             self.assertNotIn("Bill 455", out, request)
             self.assertNotIn("courier", out, "a fact kept with no party is no task's")
             self.assertIn("Always ask before saving", out)
-            self.assertIn("2 fact(s) kept about parties this request does not name are not shown", out)
+            self.assertIn("2 fact(s) or place(s) kept about parties this request does not name are not shown", out)
         self.assertIn("Bill 455", get_memory_context("Enter Tunga Pipes' bills for September"))
 
     def test_an_old_fact_about_the_party_the_request_names_survives_many_newer_entries(self):

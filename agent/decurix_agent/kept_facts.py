@@ -160,7 +160,9 @@ def client_of(answer, request):
     words = _words(client)
     if not words or len(" ".join(words)) < 3:
         return ""
-    return client if f" {' '.join(words)} " in f" {' '.join(_words(request))} " else ""
+    # Whole, as the request names it: a part of a longer name ("Ram" of "Ram Kumar") is not the client (E-29).
+    from decurix_agent.memory_context import names_whole
+    return client if names_whole(client, request) else ""
 
 
 def _holds_secret(*texts):
@@ -207,7 +209,10 @@ def keep(task_id, request):
         if messaging.remember(title, text, category="fact"):
             n += 1
     for place in places:
-        if messaging.remember(f"Where: {place['what'] or place['where']}"[:120], f"{place['what']}: {place['where']}",
+        # A place is one client's too (a chat's address, their folder): kept for that client and shown only to a task
+        # about them (memory_context._scoped); with no client named it is kept unscoped, which no task's view shows.
+        title = f"Where (for {client}): " if client else "Where: "
+        if messaging.remember((title + (place['what'] or place['where']))[:120], f"{place['what']}: {place['where']}",
                               category="place"):
             n += 1
     log(f"Facts: kept {len(facts)} fact(s) and {len(places)} place(s) a later task may need")
