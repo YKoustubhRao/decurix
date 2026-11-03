@@ -104,3 +104,93 @@ func (m *Manager) SendGateReply(ctx context.Context, id, taskID, text, asked, ki
 	}
 	return nil
 }
+
+// SignGateRequest is the signature on a request the control plane gives the gate (/request): its own label, so a
+// signed request can never stand as a signed reply, nor a reply as a request (gate_server.sign_request).
+func SignGateRequest(key, taskID, ts, nonce, text string) string {
+	th := sha256.Sum256([]byte(text))
+	return gateMAC(key, "request", taskID, ts, nonce, hex.EncodeToString(th[:]))
+}
+
+// SignGateSecrets is the signature on a task's secret values given to the gate (/secrets): its own label, over the
+// SHA-256 of each value's SHA-256 followed by a NUL, in order, so nothing of JSON has to match across the two
+// languages (gate_server.sign_secrets).
+func SignGateSecrets(key, taskID, ts, nonce string, values []string) string {
+	var digests strings.Builder
+	for _, v := range values {
+		h := sha256.Sum256([]byte(v))
+		digests.WriteString(hex.EncodeToString(h[:]))
+		digests.WriteByte(0)
+	}
+	d := sha256.Sum256([]byte(digests.String()))
+	return gateMAC(key, "secrets", taskID, ts, nonce, hex.EncodeToString(d[:]))
+}
+
+// SendGateRequest gives desktop id's approval gate its own copy of a new request, signed, so whether a site is named
+// is decided from that copy and never from a file the worker could write (docs/gate-boundary.md). text is the
+// request as the person sent it, or its withheld form for one marked secret (the gate then names no site for it).
+func (m *Manager) SendGateRequest(ctx context.Context, id, taskID, text string) error {
+	return m.postToGate(ctx, id, "/request", func(key, ts, nonce string) map[string]any {
+		return map[string]any{"task_id": taskID, "ts": ts, "nonce": nonce, "text": text,
+			"sig": SignGateRequest(key, taskID, ts, nonce, text)}
+	})
+}
+
+// SendGateSecrets gives desktop id's approval gate the values the records withheld from a task's request or reply,
+// signed, so the gate's own wording of an approval question withholds them (C14).
+func (m *Manager) SendGateSecrets(ctx context.Context, id, taskID string, values []string) error {
+	if values == nil {
+		values = []string{}
+	}
+	return m.postToGate(ctx, id, "/secrets", func(key, ts, nonce string) map[string]any {
+		return map[string]any{"task_id": taskID, "ts": ts, "nonce": nonce, "secrets": values,
+			"sig": SignGateSecrets(key, taskID, ts, nonce, values)}
+	})
+}
+
+// postToGate posts one signed body to desktop id's gate at path: body makes it from the key, the time and a fresh
+// one-use nonce. A desktop with no gate key (made before the gate) gets nothing, and the error says so.
+func (m *Manager) postToGate(ctx context.Context, id, path string, body func(key, ts, nonce string) map[string]any) error {
+	key := m.GateKey(id)
+	if key == "" {
+		return fmt.Errorf("no secret to sign with")
+	}
+	desktopID := sanitizeName(id)
+	name := "desktop_" + desktopID
+	inspect, err := m.client.ContainerInspect(ctx, name)
+	if err != nil {
+		return fmt.Errorf("find desktop %s: %w", desktopID, ErrNotFound)
+	}
+	host := name
+	if inspect.NetworkSettings != nil {
+		if n, ok := inspect.NetworkSettings.Networks[NetworkName]; ok && n != nil && n.IPAddress != "" {
+			host = n.IPAddress
+		}
+	}
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return err
+	}
+	payload, err := json.Marshal(body(key, strconv.FormatInt(time.Now().Unix(), 10), hex.EncodeToString(raw)))
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+host+":"+GatePort+path, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	cli := m.httpClient
+	if cli == nil {
+		cli = &http.Client{Timeout: 10 * time.Second}
+	}
+	resp, err := cli.Do(req)
+	if err != nil {
+		return fmt.Errorf("send %s to desktop %s's gate: %w", path, desktopID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("desktop %s's gate returned HTTP %d for %s", desktopID, resp.StatusCode, path)
+	}
+	return nil
+}

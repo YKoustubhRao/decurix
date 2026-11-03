@@ -138,3 +138,47 @@ func TestATaskOpenAtStartKeepsNoText(t *testing.T) {
 		t.Fatalf("after the task ended, calls still keep no text (%d)", len(hits))
 	}
 }
+
+// The desktop's approval gate gets its own signed copy of a new request (never of a reply), and the values the
+// records withheld, before the agent has the text (H-PY-5, H-PY-6). A marked request reaches it withheld.
+func TestTheGateGetsTheRequestCopyAndTheWithheldValues(t *testing.T) {
+	s := recordingServer(t)
+	bodies := fakeAgentDesktop(t, s)
+	if rec := sendAs(t, s, url.Values{"id": {"box"}, "content": {"sign in to records.example.test, password: Plum7Orbit"}}, false, ""); rec.Code != http.StatusOK {
+		t.Fatalf("send: %d %s", rec.Code, rec.Body)
+	}
+	all := bodies()
+	copies, secrets := requestsWith(all, "text"), requestsWith(all, "secrets")
+	if len(copies) != 1 || copies[0]["text"] != "sign in to records.example.test, password: Plum7Orbit" || copies[0]["sig"] == "" {
+		t.Fatalf("the gate's copy = %v", copies)
+	}
+	if len(secrets) != 1 || len(secrets[0]["secrets"].([]any)) != 1 || secrets[0]["secrets"].([]any)[0] != "Plum7Orbit" {
+		t.Fatalf("the gate's secrets = %v", secrets)
+	}
+	// The gate is told before the agent: its bodies come first.
+	if _, isAgent := all[0]["content"]; isAgent {
+		t.Fatalf("the agent had the request before the gate: %v", all)
+	}
+
+	askedQuestion(t, s, tasks.OutcomeQuery, "Which ledger?")
+	before := len(requestsWith(bodies(), "text"))
+	if rec := sendAs(t, s, url.Values{"id": {"box"}, "content": {"purchases"}}, false, ""); rec.Code != http.StatusOK {
+		t.Fatalf("reply: %d %s", rec.Code, rec.Body)
+	}
+	if after := len(requestsWith(bodies(), "text")); after != before+1 { // the signed reply carries "text" too
+		t.Fatalf("a reply sent %d bodies with text to the gate, want only its signed reply", after-before)
+	}
+	for _, b := range bodies() {
+		if _, ok := b["asked"]; !ok && b["text"] == "purchases" {
+			t.Fatalf("a reply was given to the gate as a request copy: %v", b)
+		}
+	}
+
+	if rec := sendAs(t, s, url.Values{"id": {"box"}, "content": {"the vault code is Zq9-plum"}, "secret": {"1"}}, false, ""); rec.Code != http.StatusOK {
+		t.Fatalf("send: %d %s", rec.Code, rec.Body)
+	}
+	copies = requestsWith(bodies(), "text")
+	if last := copies[len(copies)-1]; last["text"] != "[secret withheld]" {
+		t.Fatalf("a marked request reached the gate as %v", last)
+	}
+}

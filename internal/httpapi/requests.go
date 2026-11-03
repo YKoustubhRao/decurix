@@ -131,25 +131,50 @@ type withheldKey struct{}
 // desktop is then told "secret" (C14.1), so the two sides never disagree on what a secret is. A withheld reply, or a
 // marked request, is also known to the call recorder before the desktop has it, so no model call that carries it is
 // recorded as typed.
+//
+// The desktop's approval gate is told the same, signed, before the desktop has the text (H-PY-5, H-PY-6): its own copy
+// of a new request (so whether a site is named is decided from that copy, never from a file the worker could write;
+// a request marked secret is given in its withheld form, naming no site), and the values withheld (so the gate's
+// own approval question withholds them). A desktop with no gate logs and goes on.
 func (s *Server) markWithheld(ctx context.Context, desktopID string, route tasks.Route, content string) context.Context {
 	marked, _ := ctx.Value(sentSecretKey{}).(bool)
 	stored, withheld := s.Tasks.StoredForm(route, content, marked)
-	if !withheld {
-		return ctx
+	var values []string
+	if withheld {
+		values = s.rememberWithheld(desktopID, content, stored)
+		ctx = context.WithValue(ctx, withheldKey{}, true)
 	}
-	s.rememberWithheld(desktopID, content, stored)
-	return context.WithValue(ctx, withheldKey{}, true)
+	if s.Desktops != nil {
+		gateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
+		defer cancel()
+		if route.Kind != tasks.RouteReply {
+			copyText := content
+			if marked {
+				copyText = stored
+			}
+			if err := s.Desktops.SendGateRequest(gateCtx, desktopID, route.TaskID, copyText); err != nil {
+				log.Printf("request to %s: its approval gate has no copy (it names no site, so it asks): %v", desktopID, err)
+			}
+		}
+		if len(values) > 0 {
+			if err := s.Desktops.SendGateSecrets(gateCtx, desktopID, route.TaskID, values); err != nil {
+				log.Printf("request to %s: its approval gate was not told the withheld values: %v", desktopID, err)
+			}
+		}
+	}
+	return ctx
 }
 
 // rememberWithheld tells the call recorder the values the records withheld from content (stored is the form they
 // keep): each withheld value, and the whole text only when it was withheld whole, plus any labelled value inside it.
 // Never a word around a value: the recorder replaces what it is told everywhere in that desktop's calls.
-func (s *Server) rememberWithheld(desktopID, content, stored string) {
+func (s *Server) rememberWithheld(desktopID, content, stored string) []string {
 	values := withhold.Values(content, stored)
 	if stored == withhold.Secret {
 		values = append(values, withhold.Values(content, withhold.Text(content))...)
 	}
 	s.secretsSeen.Remember(desktopID, values...)
+	return values
 }
 
 // sentAsSecret reports whether what ctx carries goes to the desktop marked secret: the person marked it, or the

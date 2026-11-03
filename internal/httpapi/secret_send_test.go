@@ -80,6 +80,7 @@ func TestAComposeSecretReachesTheAgentMarked(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+	bodies = requestsWith(bodies, "content") // the gate's signed copies go to the same stand-in
 	if len(bodies) != 2 {
 		t.Fatalf("the agent got %d requests, want 2", len(bodies))
 	}
