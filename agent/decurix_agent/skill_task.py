@@ -2706,6 +2706,8 @@ def _correct(run, text):
     fresh["corrections"] = ((fresh.get("corrections") or []) + [{"at": int(time.time()), "text": text}])[-MAX_CORRECTIONS:]
     skills.save(fresh)
     run["skill"]["corrections"] = fresh["corrections"]
+    # Copied to the control plane under the person who said it (R8): a recreated desktop still has it.
+    messaging.post_learned("correction", fresh["name"], fresh.get("version", 1), "", text)
 
 
 # ------------------------------------------------------------
@@ -2966,6 +2968,7 @@ def learn_answer(reply):
     skills.save(fresh)
     run["skill"]["run_answers"] = fresh["run_answers"]
     log(f"Skill {fresh['name']}: kept the person's answer to {said['q'][:120]!r}")
+    messaging.post_learned("run_answer", fresh["name"], fresh.get("version", 1), said["q"], said["a"])
 
 
 messaging.set_query_gate(_question_gate)

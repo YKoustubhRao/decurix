@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -877,6 +878,118 @@ def _keep_facts(task_id, quiet=False, interrupted=False):
             thread.join(kept_facts.WAIT_S)
     except Exception as exc:  # noqa: BLE001 - what is kept for later must never cost this report
         log(f"Could not keep this task's facts: {exc}")
+
+
+# ============================================================
+# What a desktop keeps from a person's reply, copied to the control plane (R8; PLAN-P2 C7, D4)
+#
+# A correction, a run answer or a lesson the worker keeps from what a person said lived only on the desktop: deleting
+# or recreating the desktop lost it, and no record said who taught it. Each is now posted as it is kept, citing the
+# control plane's judgement of the reply it came from (derived_from) - the control plane decides the author from that
+# judgement, never from this desktop. With no reply to cite nothing is posted. It never blocks the run: a thread, a
+# 5-second timeout, and an unposted line kept in the task's run folder (learned.jsonl) to be tried again at the next
+# post or when the agent starts. A 409 (the control plane does not take the citation) is dropped, not retried.
+# ============================================================
+
+LEARNED_KINDS = ("correction", "run_answer", "lesson")
+LEARNED_TIMEOUT = 5
+LEARNED_FILE = "learned.jsonl"
+_learned_lock = threading.Lock()
+
+
+def post_learned(kind, skill, version, question, text, task_id=None):
+    """Post what was kept from a reply (C7) in the background; the thread, or None when there is nothing to post."""
+
+    task_id = task_id or task_context.current()
+    if kind not in LEARNED_KINDS or not task_context.valid(task_id):
+        return None
+    derived = task_context.reply_judgement(task_id)
+    if not derived:
+        log(f"Kept on this desktop only: no reply to cite for the {kind}.")
+        return None
+    body = {"task_id": task_id, "kind": kind, "skill": str(skill or ""), "skill_version": int(version or 0),
+            "derived_from": derived, "question": _withheld(" ".join(str(question or "").split())[:2000]),
+            "text": _withheld(" ".join(str(text or "").split())[:4000])}
+    try:
+        from decurix_agent.computer import privacy
+        body = privacy.scrub(body)
+    except Exception:  # noqa: BLE001 - withheld above already
+        pass
+    if not isinstance(body, dict) or "held_back" in body:
+        log(f"The {kind} could not be checked for secrets, so it is kept on this desktop only.")
+        return None
+    _queue_learned(task_id, body)
+    thread = threading.Thread(target=resend_learned, daemon=True, name="post-learned")
+    thread.start()
+    return thread
+
+
+def _learned_path(task_id):
+    folder = task_context.run_dir(task_id)
+    return None if folder is None else folder / LEARNED_FILE
+
+
+def _queue_learned(task_id, body):
+    path = _learned_path(task_id)
+    try:
+        with _learned_lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(body, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log(f"Could not keep the {body['kind']} to post later: {exc}")
+
+
+def _post_learned(body):
+    """"posted", "refused" (409 or another 4xx: not retried) or "later" (unreachable, 5xx)."""
+
+    request = urllib.request.Request(
+        config.CONTROL_PLANE_URL.rstrip("/") + "/api/desktops/learned",
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=LEARNED_TIMEOUT) as response:
+            return "posted" if 200 <= response.status < 300 else "later"
+    except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            log(f"The control plane did not take the {body.get('kind')} (409: its citation is not a person's reply on "
+                "this task); kept on this desktop only.")
+            return "refused"
+        return "later" if exc.code >= 500 else "refused"
+    except Exception:  # noqa: BLE001 - not reachable now: tried again later
+        return "later"
+
+
+def resend_learned():
+    """Try every unposted line of every run folder once; keep what could not be posted yet. Never raises."""
+
+    try:
+        root = config.DECURIX_DIR / "runs"
+        paths = sorted(root.glob("*/" + LEARNED_FILE)) if root.is_dir() else []
+    except OSError:
+        return
+    for path in paths:
+        try:
+            with _learned_lock:
+                lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            left = []
+            for line in lines:
+                try:
+                    body = json.loads(line)
+                except ValueError:
+                    continue
+                if _post_learned(body) == "later":
+                    left.append(line)
+            with _learned_lock:
+                # (A line queued meanwhile is kept: only the lines read here are settled.)
+                now = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+                rest = left + [line for line in now if line not in lines]
+                if rest:
+                    path.write_text("\n".join(rest) + "\n", encoding="utf-8")
+                else:
+                    path.unlink()
+        except Exception as exc:  # noqa: BLE001
+            log(f"Could not post what was kept from a reply: {exc}")
 
 
 def post_question(problem, kind="query"):

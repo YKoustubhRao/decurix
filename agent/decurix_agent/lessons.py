@@ -189,7 +189,7 @@ def distil(question, reply, task="", skill=""):
                    + (f" (Task: {_squash(skill or task, 120)})" if skill or task else ""))
 
 
-def _keep(question, reply, task, skill):
+def _keep(question, reply, task, skill, task_id=""):
     try:
         found = distil(question, reply, task=task, skill=skill)
         if found is None:
@@ -197,6 +197,9 @@ def _keep(question, reply, task, skill):
         title, text = found
         if remember(f"Lesson: {title}", text, category=CATEGORY):
             log(f"lessons: kept {title!r}")
+            # Copied to the control plane under the person whose reply it came from (R8).
+            from decurix_agent import messaging
+            messaging.post_learned("lesson", skill or "", 0, question, text, task_id=task_id or None)
     except Exception as exc:
         log(f"lessons: could not keep what the person said: {exc}")
 
@@ -218,6 +221,8 @@ def note(question, reply, kind="query", outcome=None, task="", skill="", mechani
     if mechanical and not llm_client.available():
         return None
 
-    thread = threading.Thread(target=_keep, args=(question, reply, task, skill), daemon=True)
+    # (The task is taken now: the thread may finish after the next task began.)
+    from decurix_agent import task_context
+    thread = threading.Thread(target=_keep, args=(question, reply, task, skill, task_context.current()), daemon=True)
     thread.start()
     return thread
