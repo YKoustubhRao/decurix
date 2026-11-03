@@ -66,19 +66,46 @@ func TestFramesPastTheReadCapLeaveTheEventsWhole(t *testing.T) {
 	}
 }
 
-// Frames are dropped before observations, and observations before nothing else.
+// Frames are dropped before observations: with room for the observation and one frame, an observation larger than a
+// frame is kept and only the newest frame with it (kept the other way round, two frames would fill the room first).
 func TestFramesGoBeforeObservations(t *testing.T) {
 	h := fixtureHome()
 	obs := ".decurix/recordings/task-t_1/obs/0123456789abcdef.json"
+	h.files[obs] = bytes.Repeat([]byte{'o'}, 1500) // the frames are 1000 bytes each
 	p, _ := newPuller(t, h)
-	p.Limit = int64(len(h.files[obs])) + 1000 // the observation and one frame of 1000
+	p.Limit = 1500 + 1000
 	b, err := p.Pull(context.Background(), ref1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !has(b, obs) || !has(b, ".decurix/recordings/task-t_1/frames/f3.png") || has(b, ".decurix/recordings/task-t_1/frames/f1.png") {
+	frames := 0
+	for _, f := range b.Files {
+		if strings.Contains(f.Path, "/frames/") {
+			frames++
+		}
+	}
+	if !has(b, obs) || frames != 1 || !has(b, ".decurix/recordings/task-t_1/frames/f3.png") {
 		t.Fatalf("kept %v", paths(b))
 	}
+}
+
+// A label is read under LabelLimit, never under the recording's Limit: a ledger far larger than Limit is kept whole.
+func TestALabelIsReadUnderItsOwnLimit(t *testing.T) {
+	h := fixtureHome()
+	ledger := ".decurix/computer/evidence/t_1.records.json"
+	h.files[ledger] = bytes.Repeat([]byte{' '}, 3<<20) // past Limit + the tar slack
+	p, _ := newPuller(t, h)
+	p.Limit = 1000
+	b, err := p.Pull(context.Background(), ref1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range b.Files {
+		if f.Path == ledger && f.Bytes == 3<<20 {
+			return
+		}
+	}
+	t.Fatalf("the ledger was not kept whole: %v / %v", paths(b), b.Missing)
 }
 
 // A desktop that is not there saves nothing (it is not a run with every part missing).

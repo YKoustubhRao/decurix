@@ -135,6 +135,9 @@ func TestEmbeddedHostedBrainMustBeTheProxy(t *testing.T) {
 	ok := []string{cp + "/api/llm/azure", cp + "/api/llm/claude/", "HTTP://HOST.docker.internal:8080/api/llm/x"}
 	bad := []string{"", "https://api.openai.com", "http://host.docker.internal:8080", cp + "/api/other",
 		"http://host.docker.internal:8080.example.test/api/llm/azure", "http://host.docker.internal:9999/api/llm/azure",
+		// Parses, and shares the control plane's URL as a string prefix, but is another host: only the host
+		// comparison refuses it.
+		"http://host.docker.internal:80800/api/llm/azure", "http://host.docker.internal.example.test:8080/api/llm/azure",
 		"http://u:p@host.docker.internal:8080/api/llm/azure", cp + "/api/llm/../../v1"}
 	for _, base := range ok {
 		if err := (Config{Provider: "openai", OpenAIAPIKey: "k", OpenAIBaseURL: base, ControlPlaneURL: cp}).Validate(); err != nil {
