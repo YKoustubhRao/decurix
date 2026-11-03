@@ -148,7 +148,7 @@ func (e *execution) synthesize(live []*node) string {
 	messages = append(messages, llm.Message{Role: "user", Content: b.String()})
 
 	e.log("scheduler: writing the reply from what the steps found...")
-	resp, err := e.s.Provider.Chat(e.ctx, e.s.Models.Default, messages, llm.Options{TimeoutMs: 180000, Temperature: 0.3})
+	resp, err := e.s.Provider.Chat(e.ctx, e.s.Models.Default, messages, llm.Options{TimeoutMs: 180000, Temperature: 0.3, Purpose: llm.PurposeCompose})
 	if err != nil {
 		e.log("scheduler: could not write a combined reply (" + err.Error() + ") - summarising the steps instead")
 		return ""

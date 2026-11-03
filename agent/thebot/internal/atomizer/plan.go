@@ -519,11 +519,14 @@ func (p Planner) messages(user string) []llm.Message {
 	return []llm.Message{{Role: "user", Content: user}}
 }
 
-// planOptions are shared by every planning call: low temperature, because
-// a plan is a structured artifact, not prose. The same planning prompt sent
-// twice at Ollama's default temperature (~0.8) came back with different
-// answers to the same question.
-var planOptions = llm.Options{TimeoutMs: 120000, Temperature: 0.15}
+// planOptions, decomposeOptions and replanOptions are the planning calls' options, each with its purpose: low
+// temperature, because a plan is a structured artifact, not prose. The same planning prompt sent twice at Ollama's
+// default temperature (~0.8) came back with different answers to the same question.
+var (
+	planOptions      = llm.Options{TimeoutMs: 120000, Temperature: 0.15, Purpose: llm.PurposePlan}
+	decomposeOptions = llm.Options{TimeoutMs: 120000, Temperature: 0.15, Purpose: llm.PurposePlanDecompose}
+	replanOptions    = llm.Options{TimeoutMs: 120000, Temperature: 0.15, Purpose: llm.PurposePlanReplan}
+)
 
 func single(prompt, taskType string, isTask bool, route Route) Plan {
 	return Plan{
@@ -595,7 +598,7 @@ func (p Planner) Decompose(ctx context.Context, description string) Plan {
 	if p.Provider == nil {
 		return Plan{Route: route, Reason: "no model available to decompose with"}
 	}
-	resp, err := p.Provider.Chat(ctx, p.Model, p.messages(fmt.Sprintf(decomposePrompt, description)), planOptions)
+	resp, err := p.Provider.Chat(ctx, p.Model, p.messages(fmt.Sprintf(decomposePrompt, description)), decomposeOptions)
 	if err != nil {
 		p.log("atomizer: decomposition call failed (" + err.Error() + ")")
 		return Plan{Route: route, Reason: "decomposition call failed"}
@@ -616,7 +619,7 @@ func (p Planner) Replan(ctx context.Context, goal, history string) Plan {
 	if p.Provider == nil {
 		return Plan{Route: route}
 	}
-	resp, err := p.Provider.Chat(ctx, p.Model, p.messages(fmt.Sprintf(replanPrompt, goal, history)), planOptions)
+	resp, err := p.Provider.Chat(ctx, p.Model, p.messages(fmt.Sprintf(replanPrompt, goal, history)), replanOptions)
 	if err != nil {
 		p.log("atomizer: replanning call failed (" + err.Error() + ")")
 		return Plan{Route: route, Reason: "replanning call failed"}

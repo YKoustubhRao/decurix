@@ -418,7 +418,7 @@ RETRY_STEP: <the new step (RETRY) or plain description of what needs to happen (
 	if system != nil && system.Content != "" {
 		messages = append([]llm.Message{*system}, messages...)
 	}
-	resp, err := s.Provider.Chat(ctx, s.Models.Judgment, messages, llm.Options{TimeoutMs: 120000, Temperature: 0.2})
+	resp, err := s.Provider.Chat(ctx, s.Models.Judgment, messages, llm.Options{TimeoutMs: 120000, Temperature: 0.2, Purpose: llm.PurposeRecover})
 	if err != nil {
 		return fmt.Sprintf("could not reason about the failure (%s) - stopping here", err.Error()), "", recoverAskUser
 	}

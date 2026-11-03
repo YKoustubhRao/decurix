@@ -55,6 +55,7 @@ func codeGenOptions() llm.Options {
 		NumCtx:      codeGenNumCtx,
 		MaxTokens:   codeGenMaxTokens,
 		KeepAlive:   codeGenKeepAlive,
+		Purpose:     llm.PurposeCodingGen,
 	}
 }
 

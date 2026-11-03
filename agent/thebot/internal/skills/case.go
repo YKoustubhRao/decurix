@@ -66,7 +66,7 @@ func (o *OperatorSkill) caseMatrix(rc RunContext, st *operatorState, action stri
 		"\n\nTHE SCREEN ABOUT TO BE COMMITTED:\n" + truncateText(listing, 20_000) + "\n"}
 	facts.Images, facts.ImageLabels = st.documentPicturesKept(3)
 	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{{Role: "system", Content: caseSystem}, facts},
-		llm.Options{TimeoutMs: verifyTimeoutMs, Temperature: reviewTemperature})
+		llm.Options{TimeoutMs: verifyTimeoutMs, Temperature: reviewTemperature, Purpose: llm.PurposeCase})
 	if err != nil {
 		rc.Logf("operator", "could not list the records before the action: %v", err)
 		return []reviewIssue{notChecked("the records the action covers were not set against every source read", err)}

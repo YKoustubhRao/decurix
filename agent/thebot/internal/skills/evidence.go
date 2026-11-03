@@ -1112,7 +1112,7 @@ func (o *OperatorSkill) verifyFigures(rc RunContext, st *operatorState, masked s
 		rc.Logf("operator", "the same screen and sources were worked out already - that working stands")
 	} else {
 		resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{{Role: "system", Content: verifierSystem}, facts},
-			llm.Options{TimeoutMs: verifyTimeoutMs, Temperature: reviewTemperature})
+			llm.Options{TimeoutMs: verifyTimeoutMs, Temperature: reviewTemperature, Purpose: llm.PurposeVerifyCommit})
 		if err != nil {
 			rc.Logf("operator", "could not verify the figures before the action: %v", err)
 			return []reviewIssue{notChecked("the figures on "+strings.ToLower(heading)+" were not worked out again from the sources", err)}

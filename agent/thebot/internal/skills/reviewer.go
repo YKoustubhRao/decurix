@@ -396,7 +396,7 @@ func (o *OperatorSkill) review(rc RunContext, st *operatorState, said string, it
 	}
 	for try := 1; try <= 2; try++ {
 		resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{{Role: "system", Content: reviewSystem}, facts},
-			llm.Options{TimeoutMs: reviewTimeoutMs, Temperature: reviewTemperature})
+			llm.Options{TimeoutMs: reviewTimeoutMs, Temperature: reviewTemperature, Purpose: llm.PurposeReview})
 		if err != nil {
 			rc.Logf("operator", "could not review the work (try %d): %v", try, err)
 			continue

@@ -71,6 +71,7 @@ func (m *meteredProvider) IsReachable(ctx context.Context) bool { return m.inner
 // Chat delegates, then counts what the call used - a failed call too, when
 // the provider reported counts for it.
 func (m *meteredProvider) Chat(ctx context.Context, model string, messages []Message, opts Options) (Result, error) {
+	opts = tagPurpose(opts)
 	res, err := m.inner.Chat(ctx, model, messages, opts)
 	if u, ok := ctx.Value(usageKey{}).(*Usage); ok && u != nil && (err == nil || res.PromptTokens > 0) {
 		u.add(res)

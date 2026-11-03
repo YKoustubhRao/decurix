@@ -110,7 +110,7 @@ func planFile(rc RunContext, step string) (path, content string, err error) {
 
 	resp, callErr := rc.Provider.Chat(rc.Ctx, rc.Model,
 		[]llm.Message{rc.SystemMessage(), {Role: "user", Content: prompt}},
-		llm.Options{TimeoutMs: 180000})
+		llm.Options{TimeoutMs: 180000, Purpose: llm.PurposeFileWrite})
 	if callErr != nil {
 		return "", "", callErr
 	}

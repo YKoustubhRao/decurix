@@ -158,7 +158,7 @@ func Architect(ctx context.Context, provider llm.Provider, model, request, known
 		// Low but non-zero: architecture benefits from a little freedom,
 		// but this output is parsed as JSON and fed to a build system, so
 		// wandering is expensive.
-		llm.Options{TimeoutMs: 180000, Temperature: 0.2, NumCtx: codeGenNumCtx, MaxTokens: codeGenMaxTokens, KeepAlive: codeGenKeepAlive})
+		llm.Options{TimeoutMs: 180000, Temperature: 0.2, NumCtx: codeGenNumCtx, MaxTokens: codeGenMaxTokens, KeepAlive: codeGenKeepAlive, Purpose: llm.PurposeCodingArchitect})
 	if err != nil {
 		return nil, fmt.Errorf("architecture call failed: %w", err)
 	}

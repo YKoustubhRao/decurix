@@ -154,7 +154,7 @@ func (l *L1) ConsiderExchange(ctx context.Context, prompt, answer string, onLog 
 
 	resp, err := l.provider.Chat(ctx, l.model, []llm.Message{
 		{Role: "user", Content: fmt.Sprintf(judgePrompt, prompt, answer)},
-	}, llm.Options{TimeoutMs: 60000})
+	}, llm.Options{TimeoutMs: 60000, Purpose: llm.PurposeMemoryL1})
 	if err != nil {
 		log("could not judge whether this is worth remembering: " + err.Error())
 		return

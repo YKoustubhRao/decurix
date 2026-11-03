@@ -1562,7 +1562,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			appendToLastUser(st, fmt.Sprintf(closingNote, left))
 		}
 
-		resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, st.Messages, llm.Options{TimeoutMs: 180000, Temperature: 0.2})
+		resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, st.Messages, llm.Options{TimeoutMs: 180000, Temperature: 0.2, Purpose: llm.PurposeOperatorTurn})
 		for try := 2; err != nil && try <= maxModelTries && rc.Ctx.Err() == nil && transientModelError(err); try++ {
 			// A chat call changes nothing anywhere: one that ran out of its time or met an outage (llm.Transient) is asked
 			// again with a fresh deadline after a wait that grows, so an outage of minutes is ridden out, not ended on.
@@ -1575,7 +1575,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			if rc.Ctx.Err() != nil {
 				break
 			}
-			resp, err = rc.Provider.Chat(rc.Ctx, rc.Model, st.Messages, llm.Options{TimeoutMs: 180000, Temperature: 0.2})
+			resp, err = rc.Provider.Chat(rc.Ctx, rc.Model, st.Messages, llm.Options{TimeoutMs: 180000, Temperature: 0.2, Purpose: llm.PurposeOperatorTurn})
 		}
 		if err != nil {
 			// The model itself is unusable. Retrying the same goal through
@@ -2037,7 +2037,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		question := fmt.Sprintf("I ran out of steps (%d commands) before this was finished, and stopped rather than "+
 			"start over.", st.CommandsRun)
 		appendToLastUser(st, outOfTurnsNote)
-		resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, st.Messages, llm.Options{TimeoutMs: 120000, Temperature: 0.2})
+		resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, st.Messages, llm.Options{TimeoutMs: 120000, Temperature: 0.2, Purpose: llm.PurposeOperatorOutOfTurns})
 		if err == nil {
 			if _, said := parseControl(resp.Text); strings.TrimSpace(said) != "" {
 				st.Messages = append(st.Messages, llm.Message{Role: "assistant", Content: resp.Text})

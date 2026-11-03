@@ -481,7 +481,7 @@ func (h *Harness) diagnoseFromWeb(ctx context.Context, failure string, d *Design
 
 	resp, err := h.Provider.Chat(ctx, h.Model,
 		[]llm.Message{{Role: "user", Content: fmt.Sprintf(webDiagnosisPrompt, tailOf(failure, 2500), b.String())}},
-		llm.Options{TimeoutMs: 120000, Temperature: 0.1})
+		llm.Options{TimeoutMs: 120000, Temperature: 0.1, Purpose: llm.PurposeCodingDiagnose})
 	if err != nil {
 		return Diagnosis{}, false
 	}
@@ -509,7 +509,7 @@ CODE_FIX: <what specifically to change in the code, or NONE if this is an ENVIRO
 func (h *Harness) diagnoseFromModel(ctx context.Context, failure string) Diagnosis {
 	resp, err := h.Provider.Chat(ctx, h.Model,
 		[]llm.Message{{Role: "user", Content: fmt.Sprintf(modelDiagnosisPrompt, tailOf(failure, 3000))}},
-		llm.Options{TimeoutMs: 90000, Temperature: 0.1})
+		llm.Options{TimeoutMs: 90000, Temperature: 0.1, Purpose: llm.PurposeCodingDiagnose})
 	if err != nil {
 		return Diagnosis{Kind: DiagCode, Cause: "could not diagnose the failure (" + err.Error() + ")", Source: "none"}
 	}

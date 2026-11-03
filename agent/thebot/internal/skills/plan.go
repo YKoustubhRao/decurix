@@ -85,7 +85,7 @@ func (o *OperatorSkill) planBeforeChange(rc RunContext, st *operatorState, comma
 	facts := llm.Message{Role: "user", Content: st.commitSources() + "\nWHAT THE WORKER HAS RUN SO FAR:\n" +
 		tailText(strings.Join(st.Ledger, "\n"), 6000) + "\n\nTHE COMMAND IT IS ABOUT TO RUN:\n" + truncateText(command, 600) + "\n"}
 	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{{Role: "system", Content: planSystem}, facts},
-		llm.Options{TimeoutMs: verifyTimeoutMs, Temperature: reviewTemperature})
+		llm.Options{TimeoutMs: verifyTimeoutMs, Temperature: reviewTemperature, Purpose: llm.PurposeOperatorPlan})
 	if err != nil {
 		rc.Logf("operator", "could not write the plan of the work: %v", err)
 		return ""

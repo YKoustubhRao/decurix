@@ -76,7 +76,7 @@ func (g *GeneralSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	messages = append(messages, rc.SessionHistory...)
 	messages = append(messages, llm.Message{Role: "user", Content: subtask.Step})
 
-	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, messages, llm.Options{TimeoutMs: 120000})
+	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, messages, llm.Options{TimeoutMs: 120000, Purpose: llm.PurposeGeneral})
 	if err != nil {
 		return Result{
 			Subtask: subtask, SkillName: g.Name(),

@@ -163,7 +163,7 @@ func (w *WebSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		subtask.Step, context.String())
 
 	rc.Logf("web", "synthesizing an answer from %d result(s) and %d deep-read page(s)", len(results), len(reads))
-	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{rc.SystemMessage(), {Role: "user", Content: prompt}}, llm.Options{TimeoutMs: 180000})
+	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{rc.SystemMessage(), {Role: "user", Content: prompt}}, llm.Options{TimeoutMs: 180000, Purpose: llm.PurposeWebSearch})
 	if err != nil {
 		return Result{
 			Subtask: subtask, SkillName: w.Name(),
@@ -217,7 +217,7 @@ func (w *WebSkill) readPage(rc RunContext, subtask Subtask, target string) (Resu
 		"You already fetched this real page with your own tools, successfully - never say you can't access web "+
 			"pages, you just did. Answer using ONLY this real page content from %s.\n\nRequest: %s\n\nPage content:\n%s",
 		target, subtask.Step, text)
-	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{rc.SystemMessage(), {Role: "user", Content: prompt}}, llm.Options{TimeoutMs: 180000})
+	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{rc.SystemMessage(), {Role: "user", Content: prompt}}, llm.Options{TimeoutMs: 180000, Purpose: llm.PurposeWebRead})
 	if err != nil {
 		return Result{
 			Subtask: subtask, SkillName: w.Name(),

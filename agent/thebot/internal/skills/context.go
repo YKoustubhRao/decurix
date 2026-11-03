@@ -425,7 +425,7 @@ func (o *OperatorSkill) compact(rc RunContext, st *operatorState, why string) {
 	} else {
 		ask = append(ask, llm.Message{Role: "user", Content: strings.TrimSpace(compactNoteRequest)})
 	}
-	if resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, ask, llm.Options{TimeoutMs: 180000, Temperature: 0.2}); err == nil {
+	if resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, ask, llm.Options{TimeoutMs: 180000, Temperature: 0.2, Purpose: llm.PurposeCompact}); err == nil {
 		notes = strings.TrimSpace(resp.Text)
 		if i := strings.Index(strings.ToUpper(notes), "NOTES:"); i >= 0 {
 			notes = strings.TrimSpace(notes[i+len("NOTES:"):])
