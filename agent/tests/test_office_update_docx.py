@@ -68,8 +68,15 @@ class FillingATemplate(unittest.TestCase):
                                       str(self.dir / "out.docx"))
         self.assertIn("Not found anywhere in the document: {{PAN}}", said)
         self.assertIn("Placeholders still in it: {{DESIGNATION}}, {{BASIC}}, {{HRA}}", said)
-        facts = produced.document_findings("Write the offer letters.", [str(self.dir / "out.docx")])
+        # The template the letter was filled from held the placeholders: left unfilled, they block (E-11).
+        facts = produced.document_findings(f"Fill {self.template.name} and write the offer letters.",
+                                           [str(self.dir / "out.docx")], root=str(self.dir))
         self.assertTrue(any("still holds the template's placeholder(s) {{DESIGNATION}}" in f for f in facts), facts)
+        # A request that gives no source document: a placeholder left is evidence for the judge, never a block.
+        self.assertEqual(produced.document_findings("Write the offer letters.", [str(self.dir / "out.docx")],
+                                                    root=str(self.dir / "elsewhere")), [])
+        self.assertTrue(produced.template_placeholder_notes("Write the offer letters.", [str(self.dir / "out.docx")],
+                                                            root=str(self.dir / "elsewhere")))
 
     def test_in_place_keeps_the_original(self):
         office.update_document(str(self.template), {"{{HRA}}": "1"})
