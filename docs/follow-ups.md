@@ -235,8 +235,13 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
   again) can be told "secret" by one intervention and stored by another (C14.1 decides before delivery, the store at
   commit). The window is the length of a delivery.
 - **A gated reply without a sign-in** is authored by "someone with the access code" (`access-code`, no roles): rule 5
-  holds in that the input says who it could be, not who it was. Require a sign-in on the gated listener for replies
-  once the pilot has users.
+  holds in that the input says who it could be, not who it was. Nothing is kept as a lesson or correction from such
+  an input (`/api/desktops/learned` answers 409). **Trigger:** when the first user account is created in the access
+  store, the gated listener must require a sign-in for replies.
+- **Open owner decision: purging a leaked secret from the never-delete stores** (the blob store, `llm_calls`,
+  `judgements`, run bundles). Rule 4 protects labels, and a secret is not a label. Recommendation: a purge-by-value
+  tool (primary listener, humansOnly) that replaces each blob holding the value with a tombstone that keeps the hash
+  (so rows and prefixes still join), and records a judgement of who purged it and why.
 - **No control-plane page links to soul at `/agent/<id>/`.** The gated listener forwards only its health; the primary
   one forwards all of soul. If soul's own page is to be shown on a phone, add each route it needs to
   `gatedAgentRoutes` with a reason, never `/api/chat` (it would drive the worker with no task record or author).
@@ -258,3 +263,41 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
 - **`GuardRefused`** is never written by soul: the trace's guard is worked out again from `AssessCommand` after the
   command runs, not recorded from the decision taken.
 - **A trace at its cap** gets one more `truncated` line after each soul restart.
+
+## Phase 2: evals
+
+What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
+
+- **Concurrency 2.** The runner is sequential, one practice desktop at a time (the broker serves one run; the host has
+  room for one desktop). Two arms at once need a broker run per desktop and measured headroom of 5 GB or more; it would
+  halve L3. Key 3 matters only then.
+- **E5: local brains.** Practice and evals refuse Ollama and Brainiac brains (`practice.ErrHostedOnly`); the broker would
+  proxy an OpenAI-compatible local endpoint, and soul's trace is then the only record of a call.
+- **Bundles from practice and eval desktops.** They have no home volume, so R9's puller does not run there; collect the
+  run folder by an exec tar before each reset, so an eval row links to its trajectory.
+- **More suites:** `docs-v1` (documents becoming records), `gst-v1` (a returns portal and a client chat mock, written by
+  someone who does not tune the harness) and `learn-v1` (memory kept between cases; needs a runner mode that skips the
+  snapshot reset).
+- **D7 waits on the owner.** Dev suites live in `evals/` with fictional data only. The CLAUDE.md working-agreement line
+  ("Test data and checkers live outside the repo") still says otherwise: the writer did not edit CLAUDE.md, since only
+  the owner may approve that. Proposed line: "Dev eval suites with fictional data live in `evals/`; the sealed held-out
+  set stays outside the repo and is backed up off-host."
+- **Calibration L2 needs the live stack.** Offline, `TestCoreSuiteLoads` passes the oracle on 10 of 12 core-v1 cases,
+  and the nothing arm (false-done 12/12) and the ask arm on none. The offline oracle interprets the oracle's shell itself
+  (curl posts become form posts; its read assertions are skipped), so the real lines are proved only at L2. `web-pay-approval` (the gate must stop `gui click Pay` with exit 3) and
+  `calc-sum` (`office update` must recalculate so the SUM cell has a saved value) are proved only by
+  `py -3 evals/run.py run --suite evals/suites/core-v1 --arm oracle --arm nothing --arm ask --repeats 1`.
+- **The duplicate case still reads words.** `bill-already-entered` passes a final that names the bill and says it is
+  already there by one of a few words, or the right question (the expert matches it to the fact that the bill was
+  entered). A worker that says it in other words fails it; widen the case, never the grader library.
+- **The GUI bench's approve-then-done tasks** (`web-pay-approved`, `web-delete-user`) are skipped by its oracle: a yes is
+  the gate's, from a reply the control plane signed for an approval on a task it opened, and the oracle opens none.
+  Engines cover them.
+- **Learning curves (learn-v1) need a runner mode that keeps state.** By default every case starts from the run's
+  snapshot (`ResetPractice` clears all of `~/.decurix`, the work folder, the browser profiles and `/tmp/decurix-*`). A
+  suite that carries state between cases must say so explicitly (a suite or run flag that skips the clear), never by
+  default; not built.
+- **Practice and eval desktops are reset by ending the worker's processes and clearing its home's agent state**, then
+  restarting. L2 should check `ls -A ~/.decurix` after a reset holds only the snapshot.
+- **`approval.site_known` reads the request from a file the worker's user can write** (`/tmp/decurix-current-task.request`),
+  so a worker's command could name a site there and skip the "password to an unnamed site" question. For PY / O-1.
