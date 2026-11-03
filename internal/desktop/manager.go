@@ -84,10 +84,11 @@ type Manager struct {
 	secOpt         []string
 	secOptResolved bool
 
-	// toolsMu/toolsPopulated ensure the shared decurix-tools volume is
-	// populated at most once in-process, preventing redundant init containers
-	// and disk I/O on every VM creation.
+	// toolsMu/toolsApplied: the tools image ID the shared decurix-tools volume was last filled from, so it is filled
+	// again only when the image changed (a tools image built after start, F-T), never on every creation.
+	// toolsPopulated skips the check altogether (tests whose daemon has no tools image).
 	toolsMu        sync.Mutex
+	toolsApplied   string
 	toolsPopulated bool
 	// toolsWaiting: the last populate found a newer tools image but left the volume as it was, because desktops
 	// were running (tools.go); the status banner says so until a later populate applies it.
@@ -1050,6 +1051,10 @@ func (m *Manager) stopContainer(ctx context.Context, name string, timeout int) e
 	delete(m.startedCache, name)
 	m.startedMu.Unlock()
 
+	// A tools refresh that waited for running desktops applies once the last of them has stopped (F-T).
+	if err == nil {
+		m.refreshToolsWhenIdle()
+	}
 	return err
 }
 

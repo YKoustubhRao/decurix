@@ -421,7 +421,7 @@ func (s *Server) dockerStatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	checked, reachable, toolsWaiting := false, false, false
 	if s.Desktops != nil {
-		checked, reachable, toolsWaiting = s.Desktops.DockerChecked(), s.Desktops.DockerReachable(), s.Desktops.ToolsRefreshWaiting()
+		checked, reachable, toolsWaiting = s.Desktops.DockerChecked(), s.Desktops.DockerReachable(), s.Desktops.ToolsRefreshWaiting(r.Context())
 	}
 	jsonResponse(w, map[string]bool{"checked": checked, "reachable": reachable, "tools_waiting": toolsWaiting})
 }

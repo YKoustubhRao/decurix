@@ -4,14 +4,17 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/volume"
 )
 
-// EnsureToolsVolume ensures the shared decurix-tools volume exists and is populated
-// with the executables from decurix-tools:latest.
+// EnsureToolsVolume ensures the shared decurix-tools volume exists and is filled from decurix-tools:latest as it is
+// now. It is called at start, at each desktop's creation and when the last desktop stops: whenever the tools image
+// is not the one the volume was last filled from (a tools image built after start, F-T), it fills the volume again,
+// or (desktops running) says the refresh waits; when it is, it does nothing.
 func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
 
 	m.toolsMu.Lock()
@@ -27,31 +30,54 @@ func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
 		return err
 	}
 
-	if _, _, err := m.client.ImageInspectWithRaw(ctx, ToolsImage); err != nil {
+	img, _, err := m.client.ImageInspectWithRaw(ctx, ToolsImage)
+	if err != nil {
 		log.Printf("Tools image %s not present yet; volume ready for future population", ToolsImage)
 		return nil
 	}
+	if img.ID != "" && img.ID == m.toolsApplied && !m.toolsWaiting.Load() {
+		return nil
+	}
 
+	return m.populateFrom(ctx, img.ID)
+}
+
+// populateFrom is PopulateToolsVolume, noting the tools image it applied (EnsureToolsVolume then has nothing left
+// to do until the image changes). The caller holds toolsMu.
+func (m *Manager) populateFrom(ctx context.Context, imageID string) error {
 	if err := m.PopulateToolsVolume(ctx); err != nil {
 		return err
 	}
-
-	// A refresh that waited for running desktops is tried again on the next call (a desktop's creation), so it is
-	// applied once none runs, not only at the next start.
-	m.toolsPopulated = !m.toolsWaiting.Load()
+	if !m.toolsWaiting.Load() {
+		m.toolsApplied = imageID
+	}
 	return nil
 }
 
-// populateToolsLocked is PopulateToolsVolume under toolsMu, noting whether it applied (EnsureToolsVolume then has
-// nothing left to do) or waits for running desktops.
+// populateToolsLocked is PopulateToolsVolume under toolsMu, noting whether it applied or waits for running desktops.
 func (m *Manager) populateToolsLocked(ctx context.Context) error {
 	m.toolsMu.Lock()
 	defer m.toolsMu.Unlock()
-	if err := m.PopulateToolsVolume(ctx); err != nil {
-		return err
+	imageID := ""
+	if img, _, err := m.client.ImageInspectWithRaw(ctx, ToolsImage); err == nil {
+		imageID = img.ID
 	}
-	m.toolsPopulated = !m.toolsWaiting.Load()
-	return nil
+	return m.populateFrom(ctx, imageID)
+}
+
+// refreshToolsWhenIdle tries a waiting tools refresh again once a desktop has stopped: if it was the last one
+// running, the refresh applies now rather than at the next creation. In the background; a failure is logged.
+func (m *Manager) refreshToolsWhenIdle() {
+	if !m.toolsWaiting.Load() {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := m.EnsureToolsVolume(ctx); err != nil {
+			log.Printf("Shared tools volume %s: the waiting refresh failed: %v", ToolsVolumeName, err)
+		}
+	}()
 }
 
 // toolsWaitExit is the tools image's exit status when it left the volume as it was because desktops were running
@@ -59,8 +85,21 @@ func (m *Manager) populateToolsLocked(ctx context.Context) error {
 const toolsWaitExit = 75
 
 // ToolsRefreshWaiting reports whether a newer tools image is waiting for the running desktops to stop before it
-// replaces the shared tools volume (REVIEW-3 follow-up 2).
-func (m *Manager) ToolsRefreshWaiting() bool { return m.toolsWaiting.Load() }
+// replaces the shared tools volume (REVIEW-3 follow-up 2): a populate said so, or the tools image is no longer the
+// one the volume was filled from (built after start, F-T) and has not been applied yet.
+func (m *Manager) ToolsRefreshWaiting(ctx context.Context) bool {
+	if m.toolsWaiting.Load() {
+		return true
+	}
+	m.toolsMu.Lock()
+	applied, skip := m.toolsApplied, m.toolsPopulated
+	m.toolsMu.Unlock()
+	if skip || applied == "" {
+		return false
+	}
+	img, _, err := m.client.ImageInspectWithRaw(ctx, ToolsImage)
+	return err == nil && img.ID != "" && img.ID != applied
+}
 
 // desktopsRunning is "1" when any desktop may use /opt/tools now or on resume (or Docker cannot say), "0" when none
 // may. Paused counts: desktops are idle-paused routinely, and one resumed mid-task would find its tools replaced
