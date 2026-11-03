@@ -229,8 +229,9 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
   flush takes; consider refusing the delete instead while unpulled runs remain.
 - **`resolved_model` for a local brain** is `"<engine>:<model the desktop said>"`, not a deployment the proxy saw
   (Ollama calls never pass it). Local-brain call bodies are a later phase (PLAN-P2 §9).
-- **The pass-rate query counts each task by its latest attempt** (the one a person's verdict judges). An earlier
-  attempt's outcome is not in it.
+- **Pass rates** (`/api/tasks/pass-rates`) count every ended attempt under its own skill version x model x origin
+  class (production, practice, eval); the headline is the first-attempt rate, `checked_independent` counts only code,
+  ledger or person bases, and a person's verdict joins only the attempt it judged. Wilson bounds are the reader's.
 - **A secret reply whose question changes between Plan and commit** (a faster reply resumed the task and it asked
   again) can be told "secret" by one intervention and stored by another (C14.1 decides before delivery, the store at
   commit). The window is the length of a delivery.

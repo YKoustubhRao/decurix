@@ -256,8 +256,8 @@ func TestResolvedModelAndPassRates(t *testing.T) {
 	rr = httptest.NewRecorder()
 	s.passRatesHandler(rr, httptest.NewRequest(http.MethodGet, "/api/tasks/pass-rates", nil))
 	out := rr.Body.String()
-	for _, want := range []string{`"skill_name":"bill-count","skill_version":3,"model":"thebot:qwen3:8b","runs":1,"checked_done":1,"person_correct":0,"person_wrong":1,"wrong_but_checked":1`,
-		`"model":"big-1","runs":1,"checked_done":1`} {
+	for _, want := range []string{`"skill_name":"bill-count","skill_version":3,"model":"thebot:qwen3:8b","origin_class":"production","runs":1,"abandoned":0,"checked_done":1,"checked_independent":0,`,
+		`"person_wrong":1,"wrong_but_checked":1`, `"model":"big-1","origin_class":"production","runs":1,"abandoned":0,"checked_done":1,"checked_independent":1`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("pass rates lack %s:\n%s", want, out)
 		}

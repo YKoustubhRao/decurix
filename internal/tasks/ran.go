@@ -70,37 +70,64 @@ func (s *Store) ResolveModel(execID string, lookup DeploymentLookup) (string, er
 	return resolved, nil
 }
 
-// PassRate is how one skill version did on one model, over the executions that ended: how many ran, how many ended
-// checked done, how many a person marked correct or wrong, and how many were checked done yet marked wrong (a false
-// done in production).
+// PassRate is how one skill version did on one model, in one class of origin, over its ended attempts (plan R7).
+// The attempt is the unit: one trial of one skill version on one model, counted under its own version and model,
+// however the task went on. Runs counts attempts that ended done, error or query (it stopped waiting on a person);
+// Abandoned (the infrastructure gave out) is apart, never in Runs. FirstAttempt* is the headline pass@1: a task's
+// first attempt is the independent trial, later ones are correlated with it. CheckedIndependent counts a checked done
+// that rests on code, a ledger read-back or a person, the kinds W0.5 counts. A person's verdict judges the attempt
+// it was given on (a task's latest), and only that attempt carries PersonCorrect, PersonWrong and WrongButChecked.
+// Counts only: the reader puts Wilson bounds on them, as the eval report does.
 type PassRate struct {
-	SkillName     string `json:"skill_name"`
-	SkillVersion  int    `json:"skill_version"`
-	Model         string `json:"model"`
-	Runs          int    `json:"runs"`
-	CheckedDone   int    `json:"checked_done"`
-	PersonCorrect int    `json:"person_correct"`
-	PersonWrong   int    `json:"person_wrong"`
-	WrongButDone  int    `json:"wrong_but_checked"`
+	SkillName           string `json:"skill_name"`
+	SkillVersion        int    `json:"skill_version"`
+	Model               string `json:"model"`
+	OriginClass         string `json:"origin_class"` // production | practice | eval
+	Runs                int    `json:"runs"`
+	Abandoned           int    `json:"abandoned"`
+	CheckedDone         int    `json:"checked_done"`
+	CheckedIndependent  int    `json:"checked_independent"`
+	FirstAttemptRuns    int    `json:"first_attempt_runs"`
+	FirstAttemptChecked int    `json:"first_attempt_checked"`
+	PersonCorrect       int    `json:"person_correct"`
+	PersonWrong         int    `json:"person_wrong"`
+	WrongButDone        int    `json:"wrong_but_checked"`
 }
 
-// PassRates is the pass rate per skill version and model, from one query over the ended executions: each task
-// counted once, by its latest attempt, which is the one a person's verdict judges.
+// Origin classes of a pass rate: a person's or an automation's work, Simulate or a readiness run, an eval case.
+const (
+	ClassProduction = "production"
+	ClassPractice   = "practice"
+	ClassEval       = "eval"
+)
+
+// PassRates is the pass rate per skill version, model and origin class, from one query over the ended attempts
+// (PassRate says how each is counted).
 func (s *Store) PassRates() ([]PassRate, error) {
 	return sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) (PassRate, error) {
 		var p PassRate
-		err := r.Scan(&p.SkillName, &p.SkillVersion, &p.Model, &p.Runs, &p.CheckedDone, &p.PersonCorrect, &p.PersonWrong,
+		err := r.Scan(&p.SkillName, &p.SkillVersion, &p.Model, &p.OriginClass, &p.Runs, &p.Abandoned, &p.CheckedDone,
+			&p.CheckedIndependent, &p.FirstAttemptRuns, &p.FirstAttemptChecked, &p.PersonCorrect, &p.PersonWrong,
 			&p.WrongButDone)
 		return p, err
-	}, `SELECT e.skill_name, e.skill_version, e.resolved_model, COUNT(*),
-			SUM(CASE WHEN e.checked = 1 AND e.status = 'done' THEN 1 ELSE 0 END),
-			SUM(CASE WHEN t.verdict = 'correct' THEN 1 ELSE 0 END),
-			SUM(CASE WHEN t.verdict = 'wrong' THEN 1 ELSE 0 END),
-			SUM(CASE WHEN t.verdict = 'wrong' AND e.checked = 1 AND e.status = 'done' THEN 1 ELSE 0 END)
-		 FROM executions e JOIN tasks t ON t.id = e.task_id
-		 WHERE e.status IN ('done', 'error') AND e.attempt = (SELECT MAX(x.attempt) FROM executions x WHERE x.task_id = e.task_id)
-		 GROUP BY e.skill_name, e.skill_version, e.resolved_model
-		 ORDER BY e.skill_name, e.skill_version, e.resolved_model`)
+	}, `WITH a AS (
+			SELECT e.skill_name, e.skill_version, e.resolved_model, e.attempt, e.status,
+				e.checked = 1 AND e.status = 'done' AS checked_done,
+				CASE e.origin WHEN 'practice' THEN 'practice' WHEN 'eval' THEN 'eval' ELSE 'production' END AS class,
+				e.attempt = (SELECT MAX(x.attempt) FROM executions x WHERE x.task_id = e.task_id) AS latest,
+				EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(e.verdict) THEN e.verdict ELSE '{}' END, '$.basis')
+					WHERE value IN ('code', 'ledger', 'person')) AS independent,
+				t.verdict AS person
+			FROM executions e JOIN tasks t ON t.id = e.task_id
+			WHERE e.status IN ('done', 'error', 'query', 'abandoned'))
+		SELECT skill_name, skill_version, resolved_model, class,
+			SUM(status != 'abandoned'), SUM(status = 'abandoned'),
+			SUM(checked_done), SUM(checked_done AND independent),
+			SUM(attempt = 1 AND status != 'abandoned'), SUM(attempt = 1 AND checked_done),
+			SUM(latest AND person = 'correct'), SUM(latest AND person = 'wrong'),
+			SUM(latest AND person = 'wrong' AND checked_done)
+		FROM a GROUP BY skill_name, skill_version, resolved_model, class
+		ORDER BY class, skill_name, skill_version, resolved_model`)
 }
 
 // ExecutionKey names one execution: its id, its task and its worker.
