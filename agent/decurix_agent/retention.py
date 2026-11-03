@@ -58,11 +58,25 @@ def read_manifest(task_id):
 
 
 def _write_manifest(task_id, data):
+    """run.json, whole or not at all: a temporary file of this writer's own, flushed to disk, then put in place (two
+    processes writing at once never share a temporary file, and a crash never leaves it half written)."""
+
+    import tempfile
     folder = _dir(task_id)
     folder.mkdir(parents=True, exist_ok=True)
-    tmp = folder / (MANIFEST + ".tmp")
-    tmp.write_text(json.dumps(data, sort_keys=True, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, folder / MANIFEST)
+    fd, tmp = tempfile.mkstemp(prefix=MANIFEST + ".", suffix=".tmp", dir=str(folder))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, sort_keys=True, ensure_ascii=False))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, folder / MANIFEST)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 # ------------------------------------------------------------------ the run's manifest (PLAN-P2 §5.3, R1)
@@ -167,7 +181,9 @@ def mark_labelled(task_id, why):
         return False
     try:
         folder.mkdir(parents=True, exist_ok=True)
-        (folder / LABELLED).touch()
+        # The execution labelled (the control plane's id for this attempt, when it sent one): an earlier attempt's
+        # export does not cover it (review round 2, B8). Written anew every time, so its time is the latest label's.
+        (folder / LABELLED).write_text(task_context.execution_id(task_id), encoding="utf-8")
         data = read_manifest(task_id) or {"schema": MANIFEST_SCHEMA, "task_id": task_id}
         if why in LABELS and why not in (data.get("labelled_by") or []):
             data["labelled_by"] = list(data.get("labelled_by") or []) + [why]
@@ -196,14 +212,60 @@ def exported(task_id):
 
 
 def held(task_id):
-    """Whether the run's evidence must be kept: labelled and not yet exported. A run that cannot be read is held."""
+    """
+    Whether the run's evidence must be kept: labelled, and its latest label not yet covered by an export. An export
+    covers a label when it names the same execution (when both name one) and was written after it: a later attempt
+    under the same task (a retry, a reply after the export) is held again until its own export (review round 2, B8).
+    A run that cannot be read is held.
+    """
 
     if not task_context.valid(task_id):
         return False
     try:
-        return labelled(task_id) and not exported(task_id)
+        if not labelled(task_id):
+            return False
+        if not exported(task_id):
+            return True
+        folder = _dir(task_id)
+        mark = (folder / LABELLED).read_text(encoding="utf-8").strip()
+        done = (folder / EXPORTED).read_text(encoding="utf-8").split("\n", 1)[0].strip()
+        if mark and done and mark != done:
+            return True
+        return (folder / LABELLED).stat().st_mtime_ns > (folder / EXPORTED).stat().st_mtime_ns
     except Exception:  # noqa: BLE001 - when in doubt, keep
         return True
+
+
+# Past this many bytes of recordings, with labelled runs still waiting for their export, the desktop takes no new work
+# and says why (D12: it fills visibly, and never deletes a label to make room). DECURIX_HELD_CEILING_MB, default three
+# times the recordings' budget.
+def ceiling_bytes():
+    from decurix_agent.computer import recording
+    try:
+        return int(os.environ.get("DECURIX_HELD_CEILING_MB", "")) * 1024 * 1024
+    except ValueError:
+        return 3 * recording.MAX_BYTES
+
+
+def over_ceiling():
+    """A sentence saying the desktop is full of runs not yet exported, when it is; "" otherwise. Never raises."""
+
+    try:
+        from decurix_agent.computer import recording
+        found = recording.sessions()
+        total = sum(recording._size(meta) for meta in found)
+        if total <= ceiling_bytes():
+            return ""
+        waiting = sum(1 for meta in found if held(str(meta.get("task_id") or "")
+                                                  or (meta["id"][5:] if meta["id"].startswith("task-") else "")))
+        if not waiting:
+            return ""
+        return (f"This desktop is full: {total // (1024 * 1024)} MB of recordings, {waiting} of them runs the control "
+                "plane has not taken yet, so nothing is deleted and no new work is started. Check that the control "
+                "plane is pulling this desktop's runs (its run records), then send the request again.")
+    except Exception as exc:  # noqa: BLE001
+        log(f"retention: could not measure the disk ceiling: {exc}")
+        return ""
 
 
 def warn_kept(count, what):

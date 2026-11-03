@@ -314,7 +314,20 @@ def _mark_handled(path):
             path.unlink()
             return
     except (OSError, UnicodeDecodeError) as exc:
-        log(f"Could not withhold the handled copy of {path.name}: {exc}")
+        # What could not be read cannot be shown to hold no secret: the copy is held back, never kept as it was
+        # (review round 2: this fell back to keeping the file verbatim).
+        log(f"Could not withhold the handled copy of {path.name}: {exc}; it is held back.")
+        try:
+            done.write_text("[held back: this request could not be checked for secrets]", encoding="utf-8")
+            path.unlink()
+            return
+        except OSError as exc2:
+            log(f"Could not hold back {path.name}: {exc2}")
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return
     try:
         path.rename(done)
     except OSError as exc:
@@ -477,13 +490,13 @@ def _not_the_reply(content):
     command watcher's thread (a long request's message thread). Never raises.
     """
 
-    said = " ".join(str(content or "").split())
-    said = said[:120] + ("..." if len(said) > 120 else "")
+    # Withheld whole, then cut (review round 2, B4): a secret across the cut leaves nothing of itself.
     try:
         from decurix_agent.computer import privacy
-        said = privacy.withhold_known(said)
+        said = privacy.withhold_known(" ".join(str(content or "").split()))
     except Exception:  # noqa: BLE001 - the quote is withheld whole rather than risked
         said = "[withheld]"
+    said = said[:120] + ("..." if len(said) > 120 else "")
     asked, kind = state.last_query_text or "", state.last_query_kind or "query"
     try:
         if state.waiting_for_query and asked:
@@ -535,6 +548,16 @@ def answer_waiting(path, content, already_marked=False):
     from decurix_agent import retention
     retention.mark_labelled(task_context.current(), "reply")
 
+    # A save waiting on a date's order (task_context.ask_date_order) is settled by the reply that picks one of the
+    # question's numbered options, kept with the reply's judgement; any other reply leaves the question open.
+    try:
+        judged = state.message_facts.get(path.name.removesuffix(HANDLED_SUFFIX), {}).get("judgement") or ""
+        taken = task_context.take_date_answer(task_context.current(), attachments.text(content or ""), judged)
+        if taken:
+            log(f"The person said the dates are written {taken} first; the save that waited on it can go on.")
+    except Exception as exc:  # noqa: BLE001
+        log(f"Could not take the reply as the date order: {exc}")
+
     if workflow_task.query_control(content):
         if not already_marked:
             _mark_handled(path)
@@ -549,7 +572,13 @@ def answer_waiting(path, content, already_marked=False):
     # the action finds the grant already in place.
     # The reply to a question raised for a secret may be the secret itself: it is remembered as one first - before
     # anything here notes, logs or keeps it - and never kept as a lesson (review 2026-11-03, X-6 and its rework).
-    secret = getattr(state, "last_query_secret", False)
+    # One fact, whoever knew it (review round 2, B3): soul marked the question it answers, or the control plane withheld
+    # this message (its "secret" on /request, kept by the message's own file).
+    facts = state.message_facts.pop(path.name.removesuffix(HANDLED_SUFFIX), {})
+    secret = bool(getattr(state, "last_query_secret", False) or facts.get("secret"))
+    # The judgement this very reply is on the control plane: what is kept from it cites this one, never a later one.
+    state.reply_judgement = facts.get("judgement") or ""
+    state.reply_secret = secret
     if secret:
         _remember_reply_secret(content)
     outcome = None
@@ -588,7 +617,7 @@ def answer_waiting(path, content, already_marked=False):
         try:
             lessons.note(state.last_query_text, content, kind=state.last_query_kind, outcome=outcome,
                          task=state.current_task or "", skill=skill_task.guided_skill_title(),
-                         mechanical=mechanical)
+                         mechanical=mechanical, judgement_id=state.reply_judgement)
         except Exception as exc:
             log(f"Could not keep what the person said: {exc}")
 
@@ -616,7 +645,7 @@ def answer_waiting(path, content, already_marked=False):
         # (not a yes or no to an approval) is kept on the skill.
         if outcome is None:
             try:
-                skill_task.learn_answer(content)
+                skill_task.learn_answer(content, secret=secret, judgement_id=state.reply_judgement)
             except Exception as exc:
                 log(f"Could not keep the answer on the skill: {exc}")
         target, args = continue_after_query, (content,)
@@ -644,12 +673,10 @@ def _remember_reply_secret(content):
         from decurix_agent.computer import privacy
         text = attachments.text(content or "").strip()
         privacy.remember_secrets(text)
-        values = list(privacy.request_secrets(text))
-        words = text.split()
-        if len(words) == 1:
-            privacy.remember_value(words[0].rstrip(".:!?,;"))
-            values.append(words[0].rstrip(".:!?,;"))
-        task_context.note_secret_values(task_context.current(), values)
+        privacy.remember_value(text)
+        # The whole reply is the secret (a passphrase, a value with a quote mark, two characters): kept as it is, for
+        # this task (review round 2, B1).
+        task_context.note_secret_values(task_context.current(), privacy.marked_values(text) + [text])
     except Exception as exc:  # noqa: BLE001 - the control plane withholds the reply too ("secret" on the question)
         log(f"Could not remember the reply's secret: {exc}")
 
@@ -691,6 +718,16 @@ def _start_request(path, content):
         task_context.start(task_id, request=content)
         _mark_handled(path)
         write_final_reply("Nothing is running or waiting on you, so there is nothing to stop.")
+        return
+
+    # A desktop full of runs the control plane has not taken yet starts no new work, and says so (retention: it never
+    # deletes a label to make room).
+    from decurix_agent import retention
+    full = retention.over_ceiling()
+    if full:
+        task_context.start(task_context.task_id_from_filename(path.name), request=content)
+        _mark_handled(path)
+        write_final_reply(full, kind="error", gated=True)
         return
 
     # Reports from here on belong to this request's task record,

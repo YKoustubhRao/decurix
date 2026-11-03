@@ -80,10 +80,14 @@ class UnsentOutcomes(unittest.TestCase):
         self.assertEqual(len(self.kept()), 2)
         with self.post(("refused", "HTTP 409 the task is closed"), ("sent", "")):
             self.assertEqual(messaging.resend_unsent(), 1)
+        # (Review round 2, B7: a refused outcome is kept once more in its least form, then let go if refused again.)
+        self.assertEqual([p.name.endswith(".min.json") for p in self.kept()], [True])
+        with self.post(("refused", "HTTP 409 the task is closed")):
+            self.assertEqual(messaging.resend_unsent(), 0)
         self.assertEqual(self.kept(), [])
         with self.post():
             self.assertEqual(messaging.resend_unsent(), 0)
-        self.assertEqual([p["reply"] for p in self.posted], ["stale", "fresh", "stale", "fresh"])
+        self.assertEqual([p["reply"] for p in self.posted], ["stale", "fresh", "stale", "fresh", "stale"])
 
     def test_still_unreachable_keeps_them_all_in_order(self):
         with self.post(("unreachable", "x"), ("unreachable", "x")):

@@ -230,7 +230,161 @@ def withhold_known(text):
         return HELD_BACK
 
 
+# ============================================================
+# The task's secret values themselves (review round 2, B1)
+#
+# A hash per word cannot hold most secrets: a long message the person marked, a passphrase, a value with a quote mark
+# in it. So the values the task's requests and replies made secret are also kept as they are, for this task only, in a
+# file only the worker's processes share (the task file's ".secrets", in /tmp: memory, mode 0600), cleared when the
+# task ends. Every writer withholds them first: a value of 4 or more characters wherever it stands (whitespace aside),
+# a shorter one only where it stands as a whole token.
+# ============================================================
+
+MIN_SUBSTRING = 4
+_literal_cache = {}
+
+
+def _literal_file():
+    from decurix_agent import task_context
+    return Path(task_context.CURRENT_FILE + ".secrets")
+
+
+def _read_literals():
+    """{task id: [values]} of the tasks whose secret values are kept now."""
+
+    import json
+    path = _literal_file()
+    try:
+        stamp = path.stat().st_mtime_ns
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise _Unreadable(str(exc)) from exc
+    if _literal_cache.get("stamp") != stamp or _literal_cache.get("path") != str(path):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8") or "{}")
+        except (OSError, ValueError) as exc:
+            raise _Unreadable(str(exc)) from exc
+        tasks = {str(t): [" ".join(str(v).split()) for v in vs if str(v or "").strip()]
+                 for t, vs in (data.get("tasks") or {}).items() if isinstance(vs, list)}
+        _literal_cache.update(stamp=stamp, path=str(path), data=tasks)
+    return _literal_cache["data"]
+
+
+def _write_literals(tasks):
+    import json
+    import tempfile
+    path = _literal_file()
+    if not tasks:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"tasks": tasks}, ensure_ascii=False))
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, path)
+
+
+def _with_literals(change):
+    """Read, change and write the literal file under its lock (several processes keep values at once)."""
+
+    from decurix_agent import filelock
+    path = _literal_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(path) + ".lock", "a+") as lock:
+        filelock.exclusive(lock)
+        try:
+            tasks = dict(_read_literals())
+        except _Unreadable:
+            tasks = {}
+        _write_literals(change(tasks))
+    _literal_cache.clear()
+
+
+def clean_values(values):
+    """Values as kept: whitespace collapsed, empties dropped, and never a withheld mark ("[withheld]" read back from a
+    withheld text, or one of its words) - withholding those would withhold the marks themselves."""
+
+    out = [" ".join(str(v).split()) for v in values or () if str(v or "").strip()]
+    return [v for v in out if v.strip("[]:").lower() not in _MARK_WORDS and "[withheld" not in v.lower()
+            and "[held back" not in v.lower()]
+
+
+def remember_literals(values, task_id=""):
+    """Keep `values` as the task's secret values, as they are. Never raises; a value that cannot be kept is still
+    withheld in this process (_unsaved_literals)."""
+
+    values = clean_values(values)
+    if not values:
+        return
+
+    def add(tasks):
+        tasks[task_id or ""] = list(dict.fromkeys(tasks.get(task_id or "", []) + values))
+        return tasks
+    try:
+        _with_literals(add)
+    except Exception:  # noqa: BLE001 - kept in this process all the same
+        _unsaved_literals.update(values)
+
+
+def literals(task_id=None):
+    """The secret values kept for the task (every kept task's when None): as noted, whitespace collapsed."""
+
+    try:
+        tasks = _read_literals()
+    except _Unreadable:
+        return sorted(_unsaved_literals)
+    if task_id is not None:
+        return list(tasks.get(task_id, []))
+    return list(dict.fromkeys(v for vs in tasks.values() for v in vs))
+
+
+def clear_literals(task_id):
+    """The task is over: its secret values are let go."""
+
+    def drop(tasks):
+        tasks.pop(task_id or "", None)
+        return tasks
+    try:
+        _with_literals(drop)
+        _unsaved_literals.clear()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_unsaved_literals = set()
+_MARK_WORDS = {"withheld", "held", "back", "withheld:", "marked", "secret"}
+_TOKEN_EDGE = r"\s\"'\u201c\u201d\u2018\u2019(),;<>\[\]{}=`"
+
+
+def _literal_pattern(values):
+    long = sorted({v for v in values if len(v) >= MIN_SUBSTRING}, key=len, reverse=True)
+    short = sorted({v for v in values if len(v) < MIN_SUBSTRING}, key=len, reverse=True)
+    parts = [r"\s+".join(map(re.escape, v.split())) for v in long]
+    parts += [rf"(?<![^{_TOKEN_EDGE}]){re.escape(v)}(?![^{_TOKEN_EDGE}.:!?])" for v in short]
+    return re.compile("|".join(parts)) if parts else None
+
+
+def _withhold_literals(text):
+    tasks = _read_literals()  # raises _Unreadable: the callers fail closed
+    values = [v for vs in tasks.values() for v in vs] + sorted(_unsaved_literals)
+    if not values:
+        return text
+    key = tuple(values)
+    if _literal_cache.get("pattern_key") != key:
+        _literal_cache.update(pattern_key=key, pattern=_literal_pattern(values))
+    pattern = _literal_cache.get("pattern")
+    return pattern.sub("[withheld]", text) if pattern else text
+
+
 def _withhold_known(text):
+    text = _withhold_literals(text)
     text = _withhold_shapes(text)
     known = _known()
     if not known:
@@ -610,9 +764,10 @@ def marked_values(text):
         if not text:
             return []
         values = list(request_secrets(text)) + [text]
+        # Every word of 4 or more characters, however long the message (review round 2, B1: a long marked message's
+        # unlabelled secret word was never withheld) - for this task only (remember_literals).
         words = [w.strip(".,:;!?'\"()[]{}") for w in text.split()]
-        if len(words) <= SHORT_MARKED_WORDS:
-            values += [w for w in words if len(w) >= 4]
+        values += [w for w in words if len(w) >= 4]
         return list(dict.fromkeys(v for v in values if v))
     except Exception:  # noqa: BLE001
         return [str(text or "")] if text else []
@@ -621,16 +776,18 @@ def marked_values(text):
 def remember_marked(text):
     """
     A message the person marked secret (the control plane's "secret" on /request, F-2): the secrets it spells out,
-    the whole message, and - in a short one - each of its words of 4 characters or more (marked_values), so
-    withhold_known keeps them out of every line, record and recording from here on. Withholding a common word too is
-    the safe side. Never raises.
+    the whole message, and each of its words of 4 characters or more (marked_values), so withhold_known keeps them out
+    of every line, record and recording from here on. Withholding a common word too is the safe side. Never raises.
     """
 
     try:
         text = " ".join(str(text or "").split())
         remember_secrets(text)
-        for value in marked_values(text):
-            remember_value(value)
+        remember_value(text)
+        # The message and its words as they are, for this task (remember_literals: substrings, cleared at its end) -
+        # not as desktop-wide word hashes, which withheld common words in every later task (review round 2).
+        from decurix_agent import task_context
+        remember_literals(marked_values(text), task_context.current())
     except Exception:  # noqa: BLE001 - remembering is a safety net; the control plane withholds the message too
         pass
 

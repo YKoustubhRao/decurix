@@ -103,6 +103,20 @@ def _shortened(payload, saved=None):
     return _with_text(payload, cut_text(whole, SHORT_TEXT) + _where(saved)), saved
 
 
+def _minimal(payload):
+    """The least an outcome must say: who, which task, its kind, a few words, and its verdict cut to the bone (its
+    verdict itself never changed)."""
+
+    from decurix_agent import verdict as verdicts
+    keep = {k: payload[k] for k in ("desktop_id", "vm_name", "filename", "kind", "task_id", "engine", "checked")
+            if k in payload}
+    text = cut_text(payload.get("reply") or payload.get("content") or "", 600)
+    keep.update(content=text, reply=text)
+    if isinstance(payload.get("verdict"), dict):
+        keep["verdict"] = verdicts.bound(payload["verdict"], limit=2000)
+    return keep
+
+
 def _fallback(payload, fallback, saved):
     """The short plain version sent when the control plane refused a task's outcome or a question."""
 
@@ -114,7 +128,7 @@ def _fallback(payload, fallback, saved):
     return _with_text(payload, cut_text(text, SHORT_TEXT)), saved
 
 
-def save_request(request, task_id=""):
+def save_request(request, task_id="", secret=False):
     """
     Save an incoming request/task into command/, with the control plane's
     task ID (if it sent one) in the file name for the watcher to pick up.
@@ -147,7 +161,8 @@ def save_request(request, task_id=""):
         privacy.remember_secrets(str(request or ""))
     except Exception:  # noqa: BLE001 - withheld below all the same
         pass
-    log(f"Received request: {_withheld(request)}")
+    # A message the person marked secret as a whole is never logged, in any form (review round 2, B1).
+    log("Received request: [withheld: marked secret]" if secret else f"Received request: {_withheld(request)}")
     log(f"Saved to {path}")
 
     return path
@@ -250,7 +265,9 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
     if kind in ("final", "error"):
         payload["checked"] = bool(checked)
         if verdict is not None:
-            payload["verdict"] = verdict
+            # Within what the control plane reads, its verdict never changed (verdict.bound; review round 2, B7).
+            from decurix_agent import verdict as verdicts
+            payload["verdict"] = verdicts.bound(verdict)
         ran = task_context.skill(task_id or task_context.current())
         if ran:
             payload["skill"] = ran
@@ -262,7 +279,7 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
     if not _fits(payload):
         payload, saved = _shortened(payload)
         log(f"A {kind or 'note'} too long for the control plane was shortened; the whole of it is in {saved}.")
-    short_sent = False
+    short_sent = minimal_sent = False
 
     # A control plane that is restarting (an update, a crash it comes back from) is unreachable for seconds: the
     # outcome is sent again until it answers. Found live (2026-10-15): a task's final reply met a restart, was never
@@ -282,9 +299,15 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
             log(f"The control plane refused the {kind} ({detail}); sending a short plain version.")
             payload, saved = _fallback(payload, fallback, saved)
             continue
+        if outcome == "refused" and kind in ("final", "error") and not minimal_sent:
+            minimal_sent = True
+            log(f"The control plane refused the short {kind} too ({detail}); sending the least it needs.")
+            payload = _minimal(payload)
+            continue
         if outcome == "refused" or time.monotonic() + wait > deadline:
             log(f"Failed to send query: {detail}")
-            if outcome != "refused" and kind in ("final", "error"):
+            if kind in ("final", "error"):
+                # Kept and sent again either way: a task must never stay "running" because its outcome did not land.
                 _keep_unsent(payload)
             return False
         log(f"Could not reach the control plane ({detail}); sending again in {int(wait)} s.")
@@ -385,6 +408,16 @@ def resend_unsent():
                 log(f"Giving up sending {path.name} after a day: {detail}")
                 path.unlink(missing_ok=True)
             break  # the control plane is not there: the rest wait for the next round, in order
+        if outcome == "refused" and not path.name.endswith(".min.json"):
+            # Kept once more as the least it must say, sent at the next round (review round 2, B7).
+            log(f"The control plane refused the kept outcome {path.name} ({detail}); keeping its least form to send.")
+            try:
+                smaller = path.with_name(path.name[:-len(".json")] + ".min.json")
+                smaller.write_text(json.dumps(_minimal(payload)), encoding="utf-8")
+            except OSError as exc:
+                log(f"Could not keep the least form of {path.name}: {exc}")
+            path.unlink(missing_ok=True)
+            continue
         if outcome == "refused":
             log(f"The control plane refused the kept outcome {path.name}: {detail}")
         else:
@@ -472,7 +505,20 @@ def ask_for_query(problem, kind="query", engine=None, secret=False):
     except Exception as exc:  # noqa: BLE001 - the question still goes out
         log(f"Could not show where the payments go: {exc}")
 
-    if _query_gate is not None:
+    # A save waiting on which order a date is written in (task_context.ask_date_order) is asked here, with both
+    # readings, whatever the engine's own question is: only the person's numbered choice settles it (watchers), so
+    # nothing may answer this question for them.
+    asks_date = False
+    if kind != "approval":
+        try:
+            pending = task_context.date_question()
+            if pending:
+                problem = f"{problem}\n\n{task_context.date_question_text(pending)}"
+                asks_date = True
+        except Exception as exc:  # noqa: BLE001 - the question still goes out
+            log(f"Could not add the date question: {exc}")
+
+    if _query_gate is not None and not asks_date:
         try:
             if _query_gate(problem, kind, engine):
                 return None
@@ -799,6 +845,15 @@ Completed at:
 
     _keep_facts(task_id, quiet=quiet, interrupted=interrupted)
 
+    # The task is over: its secret values as they are let go (privacy.remember_literals; the word hashes stay).
+    try:
+        from decurix_agent.computer import privacy
+        ended = task_id or task_context.current()
+        privacy.clear_literals(ended)
+        task_context._secret_values.pop(ended, None)
+    except Exception as exc:  # noqa: BLE001
+        log(f"Could not let go of the task's secret values: {exc}")
+
     if task_id and task_id != task_context.current():
         # The report of a task that is not the one in hand (a stopped run's, sent on its own task): the task in hand
         # keeps its state.
@@ -897,19 +952,22 @@ LEARNED_FILE = "learned.jsonl"
 _learned_lock = threading.Lock()
 
 
-def post_learned(kind, skill, version, question, text, task_id=None):
-    """Post what was kept from a reply (C7) in the background; the thread, or None when there is nothing to post."""
+def post_learned(kind, skill, version, question, text, task_id=None, derived_from=""):
+    """Post what was kept from a reply (C7) in the background; the thread, or None when there is nothing to post.
+    `derived_from` is the judgement of the very reply it was kept from, captured with that reply (watchers): never the
+    task's latest, which a later reply may have replaced (review round 2, B7)."""
 
     task_id = task_id or task_context.current()
     if kind not in LEARNED_KINDS or not task_context.valid(task_id):
         return None
-    derived = task_context.reply_judgement(task_id)
-    if not derived:
+    if not task_context.valid_judgement(derived_from):
         log(f"Kept on this desktop only: no reply to cite for the {kind}.")
         return None
+    # Withheld whole, then cut (review round 2, B4): a secret across the cut leaves nothing of itself.
     body = {"task_id": task_id, "kind": kind, "skill": str(skill or ""), "skill_version": int(version or 0),
-            "derived_from": derived, "question": _withheld(" ".join(str(question or "").split())[:2000]),
-            "text": _withheld(" ".join(str(text or "").split())[:4000])}
+            "derived_from": derived_from,
+            "question": cut_text(_withheld(" ".join(str(question or "").split())), 2000),
+            "text": cut_text(_withheld(" ".join(str(text or "").split())), 4000)}
     try:
         from decurix_agent.computer import privacy
         body = privacy.scrub(body)
@@ -1014,5 +1072,10 @@ def reply_on_task(task_id, text, kind="final", still_working=False):
     """
 
     filename = time.strftime("%d%m%Y%H%M%S") + "_r.txt"
+    # An outcome carries a verdict (R6): an answer on a message's own task is not checked work - unchecked.
+    from decurix_agent import verdict as verdicts
+    verdict = None
+    if kind in ("final", "error"):
+        verdict = verdicts.derive(False, kind, why=" ".join(str(text or "").split())[:300])
     return send_query(filename, text, kind=kind, reply=text, quiet=True, checked=False, task_id=task_id,
-                      with_usage=False, still_working=still_working)
+                      with_usage=False, still_working=still_working, verdict=verdict)

@@ -60,3 +60,12 @@ def begin(task, task_file):
 
     global current_task, current_task_file, waiting_for_query
     current_task, current_task_file, waiting_for_query = task, task_file, False
+
+
+# What the control plane said about each message it sent, by the message's command file (http_api._request):
+# {"secret": bool, "judgement": id or ""}. The watcher reads it for exactly that message.
+message_facts = {}
+# The judgement of the reply being handled now (watchers.answer_waiting): what is kept from it cites this one.
+reply_judgement = ""
+# Whether the reply being handled now is secret (watchers.answer_waiting): nothing keeps its words.
+reply_secret = False

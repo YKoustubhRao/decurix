@@ -141,10 +141,11 @@ def answer_start(reply, outcome=None):
         return
     run_id, step_id = asked["run_id"], asked["step_id"]
     if not gated_command.granted(asked["material"], reply, asked["question"]):
+        # The person did not say yes to the stage: the work stopped there, as they said (a stop, never not_done).
         from decurix_agent.messaging import write_final_reply
         write_final_reply(f"Workflow {run_id}: stage {step_id} was not started - your reply was not a yes to starting "
                           f"it. Nothing of that stage was done. To be asked again: /workflow resume {run_id}. To stop: "
-                          f"/workflow cancel {run_id}.", kind="error", checked=False, gated=True)
+                          f"/workflow cancel {run_id}.", kind="error", checked=False, gated=True, stopped=True)
         return
     try:
         _dispatch(run_id, None, [f"{run_id}:{step_id}"])

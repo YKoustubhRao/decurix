@@ -1532,14 +1532,14 @@ def _words_of(label):
     return {w for w in re.findall(r"[a-z]+", re.sub(r"\(.*?\)", " ", str(label or "").lower())) if w not in _LABEL_NOISE}
 
 
-def _same_value(a, b, order=None):
+def _same_value(a, b, a_order=None, b_order=None):
     """Two values of one field, decidedly the same whatever their form (values.same_value is True): case, spaces,
-    punctuation, a date's format under the task's date order, a phone's leading country code. Every digit of a number
+    punctuation, a date's format under each side's date order, a phone's leading country code. Every digit of a number
     counts (W0.3: two account numbers that share their last 10 digits are two accounts), and a date whose day and
-    month could be either way matches only a date written the same way (W0.2)."""
+    month could be either way is never decided by its layout (W0.2, review round 2)."""
 
     from decurix_agent import values
-    return values.same_value(a, b, order) is True
+    return values.same_value(a, b, a_order=a_order, b_order=b_order) is True
 
 
 def crossed_values(form, tables):
@@ -1554,7 +1554,8 @@ def crossed_values(form, tables):
     mails = [v.strip().lower() for v in values if re.fullmatch(r"\S+@\S+\.\S+", v.strip())]
     words = [v.strip().lower() for v in values if re.fullmatch(r"[A-Za-z][A-Za-z .'-]{1,40}", v.strip())][:2]
     from decurix_agent import task_context
-    order = task_context.date_order()
+    # What was typed is the application's; the table is the request's source (two date orders, review round 2).
+    app, source = task_context.app_date_order(), task_context.source_date_order()
     out = []
     for header, rows in tables:
         cells = lambda row: [str(c).strip().lower() for c in row if c not in (None, "")]  # noqa: E731
@@ -1574,9 +1575,9 @@ def crossed_values(form, tables):
             lw = _words_of(label)
             col = next((i for i, h in enumerate(header) if h and lw and (_words_of(h) and (_words_of(h) <= lw
                                                                                           or lw <= _words_of(h)))), None)
-            if col is None or col >= len(own) or _same_value(typed, own[col], order):
+            if col is None or col >= len(own) or _same_value(typed, own[col], app, source):
                 continue
-            others = [r for r in rows if r is not own and col < len(r) and _same_value(typed, r[col], order)]
+            others = [r for r in rows if r is not own and col < len(r) and _same_value(typed, r[col], app, source)]
             if others:
                 whose = str(others[0][name_col] if name_col < len(others[0]) else "another record")
                 out.append((str(label), typed, whose, "" if own[col] is None else str(own[col])))
@@ -1917,16 +1918,76 @@ def _unsearched_record(element):
 
 
 def _typed_fields(fields):
+    """[(label, value)] of a form's fields that are the worker's: every one but a value the application itself showed
+    there before the worker acted (_not_the_apps; review round 2, B9 - an exact-string match let a reformatted,
+    re-cased, pasted or picked value pass as the application's)."""
+
+    return _not_the_apps(fields)
+
+
+def _entered_fields(fields):
     """
-    [(label, value)] of a form's fields whose value this task's tools typed or chose (evidence.entered): the worker's
-    values. What the application filled in itself (an existing record's email on its edit form) is the application's,
-    and the checks of the worker's values never judge it. Raises when the task's recording cannot be read (the caller
-    makes that a check not made).
+    [(label, value)] of a form's fields whose value this task's tools typed or chose exactly (evidence.entered): what
+    the source check (_unsourced_fields) holds against the request's sources - an application's own default it never
+    judges. Raises when the task's recording cannot be read (the caller makes that a check not made).
     """
 
     from decurix_agent.computer import evidence
     typed = {" ".join(str(v).split()) for v in evidence.entered()}
     return [(label, value) for label, value in fields if " ".join(str(value or "").split()) in typed]
+
+
+# Events by which the worker puts something into the field it acts on (a paste is a key event on that field).
+_INPUT_KINDS = ("type", "select", "key")
+_PICK_ROLES = ("option", "listitem", "menuitem", "menuitemradio", "treeitem", "gridcell")
+
+
+def _shown_by_app(task_id=None):
+    """
+    {field label: value} that the application itself showed in a field before any worker input into it: read from the
+    observations kept with this task's actions (audit.keep_observation - each is the screen an action was resolved
+    against, so the first one holding a field shows it before that action). A field the worker typed, chose, pasted
+    or picked an entry into from then on is the worker's (review round 2, B9). Raises when the recording cannot be read.
+    """
+
+    import json as _json
+    from decurix_agent import task_context
+    from decurix_agent.computer import evidence, recording
+    task_id = task_id or task_context.current()
+    events = evidence._task_events(task_id)
+    folder = recording._dir(recording.session_for_task(task_id)) / "obs"
+    shown, touched, last = {}, set(), ""
+    for event in events:
+        name = str((event.get("element") or {}).get("name") or "")
+        role = str((event.get("element") or {}).get("role") or "")
+        if event.get("obs"):
+            try:
+                doc = _json.loads((folder / f"{event['obs']}.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                doc = {}
+            for element in doc.get("elements") or []:
+                label, value = str(element.get("name") or ""), element.get("value")
+                if label and value not in (None, "") and label not in touched and label not in shown:
+                    shown[label] = str(value)
+        if event.get("kind") in _INPUT_KINDS:
+            touched.add(name or last)
+        elif event.get("kind") in ("click", "double_click") and role in _PICK_ROLES and last:
+            touched.add(last)  # an entry picked from a field's list (autocomplete) is put into that field
+        if name and role not in _PICK_ROLES:
+            last = name
+    touched.discard("")
+    return {label: value for label, value in shown.items() if label not in touched}
+
+
+def _not_the_apps(fields):
+    """The form's fields the filler check judges: every one, except a value the application itself showed in that
+    field before the worker put anything there (_shown_by_app), compared by values.compare - a value the application
+    reformatted or re-cased is the same value, so neither dodges the check."""
+
+    from decurix_agent import values
+    shown = _shown_by_app()
+    return [(label, value) for label, value in fields
+            if not (label in shown and values.same_value(value, shown[label]) is True)]
 
 
 def _unsourced_fields(fields):
@@ -1938,7 +1999,7 @@ def _unsourced_fields(fields):
     """
 
     from decurix_agent import long_task, task_context
-    mine = _typed_fields(fields)
+    mine = _entered_fields(fields)
     if not mine:
         return []
     sources = long_task.work_sources(task_context.current_request())
@@ -2027,9 +2088,10 @@ def _form_check(element, checked=False, found=None, confirm=None, listing=True):
     try:
         from decurix_agent import filler, task_context
         files = task_context.current_files()
-        # Only the worker's own values (_typed_fields): a filler-looking value the application holds is its record's,
-        # not one the worker made up (found in the GUI bench, 2026-11-03: an edit form's existing @example.com email).
-        made_up = filler.invented(_typed_fields(found["fields"]), task_context.current_request(), files)
+        # Every field, except a value the application itself showed there before the worker acted (an edit form's
+        # existing record, found in the GUI bench 2026-11-03): decided by the observations, not by what was typed -
+        # a reformatted, re-cased, pasted or picked value is judged (review round 2, B9).
+        made_up = filler.invented(_not_the_apps(found["fields"]), task_context.current_request(), files)
         unsourced = _unsourced_fields(found["fields"])
         if listing == "ask":
             # A replay types what the person demonstrated where today's request gives nothing (replay.run): their own

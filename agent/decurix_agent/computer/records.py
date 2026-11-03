@@ -51,20 +51,33 @@ as_number = values.parse_number
 
 def as_date(value, order=None):
     """The day a value names as YYYY-MM-DD, or None - None also for a digit date whose day and month could be either
-    way when no date order is known (values.parse_date)."""
+    way when no date order is known (values.parse_date). `order` defaults to the source documents' (task_context)."""
 
-    return values.as_iso(value, task_context.date_order() if order is None else order)
+    return values.as_iso(value, task_context.source_date_order() if order is None else order)
+
+
+def compare_shown(shown, wanted, source_order=None):
+    """values.compare of what the application shows (`shown`, read under the application's date order) against what
+    the record wants (`wanted`, read under its source's order: `source_order`, else the task's) - two orders, never one
+    for both (review round 2, B4)."""
+
+    return values.compare(shown, wanted, task_context.app_date_order(),
+                          source_order or task_context.source_date_order())
 
 
 def same_value(a, b, order=None):
-    """Two values of one field, the same whatever their form (values.same_value): True, False, or None when the date
-    order this task writes in is not known and decides it. `order` defaults to the task's (task_context.date_order)."""
+    """Two values of one field (values.same_value): `a` as the application shows it, `b` as the record's source writes
+    it, each under its own date order - or both under `order` when given (two values written the same way)."""
 
-    return values.same_value(a, b, task_context.date_order() if order is None else order)
+    if order is not None:
+        return values.same_value(a, b, order)
+    return compare_shown(a, b).same
 
 
-def stands_in(value, text):
-    """Whether a value is written in a text: as a number (any formatting), a date (any format), or its words."""
+def stands_in(value, text, value_order=None, text_order=None):
+    """Whether a value is written in a text: as a number (any formatting), a date (any format), or its words.
+    `value_order` / `text_order`: the date orders the value and the text are written in (default: the source's for the
+    value, the application's for the text - a page read back)."""
 
     if not text:
         return False
@@ -78,8 +91,15 @@ def stands_in(value, text):
             return bool(re.search(r"(?<!\d)" + re.escape(str(value).strip()) + r"(?!\d)", text))
         return False
     if values.parse_date(value):
-        order = task_context.date_order()
-        return any(values.same_value(value, m.group(0), order) is True for m in _DATE_TOKEN.finditer(text))
+        # The date written exactly as the value writes it is shown (a read-back of what was typed); a date written
+        # otherwise is read under each side's order (review round 2, B4).
+        literal = " ".join(str(value).split())
+        if re.search(r"(?<![\w/.-])" + re.escape(literal) + r"(?![\w/-])", " ".join(text.split())):
+            return True
+        value_order = value_order or task_context.source_date_order()
+        text_order = text_order or task_context.app_date_order()
+        return any(values.same_value(value, m.group(0), a_order=value_order, b_order=text_order) is True
+                   for m in _DATE_TOKEN.finditer(text))
     key = _text_key(value)
     if len(key) < 2:
         return False
@@ -217,7 +237,8 @@ def _key_number_on_form(rec, form):
         return False
     own = [label for label, f in (rec.get("fields") or {}).items()
            if isinstance(f, dict) and f.get("intent") not in (None, "")
-           and (same_value(f["intent"], m.group(1)) or same_value(f["intent"], rec.get("key")))]
+           and (same_value(f["intent"], m.group(1), order=_source_order(rec))
+                or same_value(f["intent"], rec.get("key"), order=_source_order(rec)))]
     if len(own) != 1:
         return False
     return any(label_matches(own[0], flabel) and as_number(str(fvalue if fvalue is not None else "")) == n
@@ -338,6 +359,10 @@ def declare(key, source, fields, scope="", task_id=None):
     if not source:
         raise ComputerError("a record needs its source: --from PATH (the document it comes from) or --from screen")
     text = _source_text(source)
+    # The order this source writes its digit dates in, from its own dates that cannot be read the other way (a bill
+    # writing 28/09/2026 is day first), else the task's: kept on the record, so the save reads its dates by it.
+    from decurix_agent import binding
+    source_order = binding.date_order([text]) or task_context.source_date_order()
     picture = is_picture(source)
     elsewhere = chosen = None
     kept, unsourced, partial = {}, [], []
@@ -353,17 +378,17 @@ def declare(key, source, fields, scope="", task_id=None):
         if whole:
             partial.append(f"{label}: '{value}' - the document writes it as '{whole}'")
             continue
-        if stands_in(value, text):
+        if stands_in(value, text, source_order, source_order):
             kept[label] = {"intent": value, "from": "source"}
             continue
         if chosen is None:
             chosen = chosen_values(task_id)
-        if any(same_value(value, c) for c in chosen):
+        if any(compare_shown(c, value, source_order).same is True for c in chosen):
             kept[label] = {"intent": value, "from": "chosen"}  # an entry of the application's own list
             continue
         if elsewhere is None:
             elsewhere = _elsewhere_text()
-        if stands_in(value, elsewhere):
+        if stands_in(value, elsewhere, source_order):
             kept[label] = {"intent": value, "from": "seen"}
         elif picture:
             # OCR of a photograph misses words and figures; what the worker read off the picture is kept as read off a
@@ -384,7 +409,7 @@ def declare(key, source, fields, scope="", task_id=None):
     records = load(task_id)
     records = [r for r in records if not (r.get("key") == key and not r.get("saved_at"))]  # declared again: replaced
     rec = {"key": key, "source": source, "scope": " ".join(str(scope or "").split()), "fields": kept,
-           "declared_at": time.time(), "saved_at": None, "saved": "", "window": "", "readback": {}, "checks": 0}
+           "source_order": source_order, "declared_at": time.time(), "saved_at": None, "saved": "", "window": "", "readback": {}, "checks": 0}
     records.append(rec)
     _save(task_id, records)
     lines = [f"Record {key} declared from {source}" + (f" in {rec['scope']}" if rec["scope"] else "")
@@ -429,6 +454,28 @@ def scope_missing(scope, title, page_text):
 _IDENT_RE = re.compile(r"^(?:(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{10,20}|[^\s@]+@[^\s@]+\.[A-Za-z]{2,})$")
 
 
+def _source_order(rec):
+    return rec.get("source_order") or task_context.source_date_order()
+
+
+def _undecided(flabel, fvalue, want, why):
+    """The line a save waits on when a field cannot be compared - and, for a date whose order is not known, the
+    question to the person it waits on (task_context.ask_date_order: both readings, an option each)."""
+
+    if str(why).startswith("date_order:"):
+        side, value = ("app", fvalue) if why.endswith(":a") else ("source", want)
+        question = task_context.ask_date_order(task_context.current(), side, value)
+        if question:
+            return (f"{flabel} holds {fvalue!r} and the record says {want!r}, and which day {value!r} is cannot be told "
+                    "from here - this needs the person: " + task_context.date_question_text(question)
+                    + " (ask them; do not retype the field: a date written the same way is no answer).")
+        return (f"{flabel} holds {fvalue!r} and the record says {want!r}: the dates cannot be compared under the date "
+                "order known for this task - this needs the person.")
+    return (f"{flabel} holds {fvalue!r} and the record says {want!r}, and they cannot be compared ({why}: a number "
+            "against text, separators that read two ways, or a unit on one side only) - type the value as the "
+            "document writes it, or ask the person.")
+
+
 def presave(rec, form_fields):
     """
     The intent against a form about to be saved: (blocking, advisory) lines. A matched field whose value is not the
@@ -450,15 +497,12 @@ def presave(rec, form_fields):
                 blocking.append(f"{flabel} is empty where the record says {want!r} - a record is saved with its identifier")
             else:
                 advisory.append(f"{flabel} is empty where the record says {want}")
-        elif (same := same_value(fvalue, want)) is None:
-            # Fails closed (W0.2): a digit date whose day and month could be either way is never taken as the date
-            # wanted, nor as another; the save waits until the order is known.
-            blocking.append(f"{flabel} holds {fvalue!r} where the record says {want!r} - the date in the form and the "
-                            "date wanted could not be compared: which order are dates written in here?")
-        elif not same:
+        elif (decided := compare_shown(fvalue, want, _source_order(rec))).same is None:
+            blocking.append(_undecided(flabel, fvalue, want, decided.why))
+        elif not decided.same:
             if chosen is None:
                 chosen = chosen_values()
-            if any(same_value(fvalue, c) for c in chosen):
+            if any(same_value(fvalue, c, order=task_context.app_date_order() or "") for c in chosen):
                 # The application's own entry for what the document names (a party found by its identifier under
                 # another spelling): the application holds it so, and that is right - and it is what the page will
                 # show after the save, so the read-back looks for it (records.readback).
@@ -505,7 +549,8 @@ def readback(rec, title, page_text, change, task_id=None):
         if not f.get("intent"):
             continue
         # (The application's own entry for the document's value, when the form held one, is what the page shows.)
-        shown = stands_in(f["intent"], page_text) or (f.get("entered") and stands_in(f["entered"], page_text))
+        shown = (stands_in(f["intent"], page_text, _source_order(rec))
+                 or (f.get("entered") and stands_in(f["entered"], page_text, task_context.app_date_order())))
         (seen if shown else absent).append(label)
     key_shown = stands_in(rec.get("key", ""), page_text)
     for r in records:

@@ -38,7 +38,9 @@ class Values(unittest.TestCase):
         self.assertTrue(records.same_value("76,700.00", "76700"))
         self.assertTrue(records.same_value("Rs. 5,850.00", "5850"))
         self.assertFalse(records.same_value("1", "1188"))
-        self.assertTrue(records.same_value("01-10-2026", "1/10/2026"))
+        self.assertTrue(records.same_value("01-10-2026", "1/10/2026", order="day"))
+        # (With no order known for either side, a date that reads two ways is never decided by its layout: W0.2.)
+        self.assertIsNone(records.same_value("01-10-2026", "1/10/2026"))
         self.assertTrue(records.same_value("1-Oct-26", "2026-10-01"))
         self.assertFalse(records.same_value("01-10-2026", "10-01-2026"))
         self.assertTrue(records.same_value("Coastal  Infra Projects", "coastal infra projects"))
@@ -48,12 +50,14 @@ class Values(unittest.TestCase):
         self.assertTrue(records.stands_in("76700", BILL))
         self.assertTrue(records.stands_in("5850.00", BILL))
         self.assertTrue(records.stands_in("1188", BILL))
-        self.assertTrue(records.stands_in("1-10-2026", BILL))
-        with mock.patch("decurix_agent.task_context.date_order", lambda task_id=None: "day"):
+        with mock.patch("decurix_agent.task_context.source_date_order", lambda task_id=None: "day"), \
+                mock.patch("decurix_agent.task_context.app_date_order", lambda task_id=None: "day"):
+            self.assertTrue(records.stands_in("1-10-2026", BILL))
             self.assertTrue(records.stands_in("2026-10-01", BILL))
         # With no order known, the bill's 01/10/2026 may be 10 January: an ISO date is not taken as standing in it
         # (W0.2 - it was read day first by default).
-        with mock.patch("decurix_agent.task_context.date_order", lambda task_id=None: None):
+        with mock.patch("decurix_agent.task_context.source_date_order", lambda task_id=None: None), \
+                mock.patch("decurix_agent.task_context.app_date_order", lambda task_id=None: None):
             self.assertFalse(records.stands_in("2026-10-01", BILL))
         self.assertTrue(records.stands_in("Coastal Infra Projects", BILL))
         self.assertTrue(records.stands_in("29AAGFC5512K1ZC", BILL))
@@ -104,7 +108,8 @@ class Declaring(unittest.TestCase):
                   mock.patch("decurix_agent.computer.evidence.looks", lambda task_id=None: []),
                   # The books of an org whose dates are written day first (the control plane's date_order, W0.2): the
                   # bill's 01/10/2026 could be read either way, and only the order decides it is 1 October.
-                  mock.patch("decurix_agent.task_context.date_order", lambda task_id=None: "day")):
+                  mock.patch("decurix_agent.task_context.source_date_order", lambda task_id=None: "day"),
+                  mock.patch("decurix_agent.task_context.app_date_order", lambda task_id=None: "day")):
             p.start()
             self.addCleanup(p.stop)
 

@@ -54,7 +54,7 @@ class TheRequestBodysExtraFields(unittest.TestCase):
         self.root = Path(tmp.name)
         for p in (mock.patch.dict(os.environ, {config.AGENT_TOKEN_ENV: TOKEN}),
                   mock.patch.object(config, "DECURIX_DIR", self.root),
-                  mock.patch.object(http_api, "save_request", lambda content, task_id="": Path("1.txt"))):
+                  mock.patch.object(http_api, "save_request", lambda content, task_id="", secret=False: Path("1.txt"))):
             p.start()
             self.addCleanup(p.stop)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), http_api.Handler)
@@ -84,9 +84,11 @@ class TheRequestBodysExtraFields(unittest.TestCase):
     def test_a_reply_judgement_is_kept_and_a_malformed_one_is_not(self):
         self.send(judgement_id="j_abc123DEF")
         self.assertEqual(task_context.reply_judgement(TASK), "j_abc123DEF")
+        # A message with no well-shaped judgement clears it: no later answer cites an earlier reply's (review round 2).
         for value in ("j_", "x_abc123DEF", "j_abc/../../x", 7):
+            self.send(judgement_id="j_abc123DEF")
             self.send(judgement_id=value)
-        self.assertEqual(task_context.reply_judgement(TASK), "j_abc123DEF")
+            self.assertEqual(task_context.reply_judgement(TASK), "", value)
 
     def test_an_invalid_task_keeps_nothing(self):
         self.send(task_id="../../etc", date_order="day")

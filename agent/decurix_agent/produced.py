@@ -738,6 +738,17 @@ class FileFacts:
         self.totals_note = list(totals_note)
         self.missing_files = missing_files
         self.file_faults = list(file_faults)
+        # How many facts the request states were looked for in the files made, and how many of them the files hold
+        # (compared_facts). A read-back that compared nothing is no check of what the files say (review round 2, B5).
+        self.compared = 0
+        self.held = 0
+        self.not_held = []
+
+    def compared_clean(self):
+        """Whether the files were checked against what the request states, and held it: at least one fact compared,
+        every one held, nothing blocking and nothing left unchecked. What the `code` basis of trust rests on."""
+
+        return self.compared > 0 and self.held == self.compared and not self.blocking() and not self.not_made()
 
     # The facts that fail the work by themselves, in one place for every route (the final gate, a taught run's
     # read-back, a desktop tool's run, a long request's stage). Found (review 2026-11-03, E-27): four routes each listed
@@ -896,6 +907,63 @@ def notes_text(notes):
             "wrong)\n" + "\n".join(f"- {n}" for n in notes[:12]))
 
 
+# A figure a request states (an amount, a count, a reference number): three or more digits, or written with a decimal.
+_STATED_FIGURE = re.compile(r"(?<![\w.,/-])\d[\d,]*(?:\.\d+)?(?![\w/-])")
+_FIGURE_IN_FILE = re.compile(r"(?<![\w.])\(?[-\u2212]?\d[\d,]*(?:\.\d+)?\)?-?(?![\w])")
+_STATED_CODE = re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-]*\d)(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9][A-Za-z0-9-]{5,}"
+                          r"(?![A-Za-z0-9])")
+
+
+def stated_facts(request):
+    """The facts a request states that a file it asks for can be checked against, in code: figures of three or more
+    digits or with decimals (dates aside), and reference codes of letters and digits."""
+
+    from decurix_agent import values
+    text = attachments.text(request or "")
+    figures = []
+    for m in _STATED_FIGURE.finditer(text):
+        token = m.group(0)
+        digits = re.sub(r"\D", "", token)
+        if len(digits) < 3 and "." not in token:
+            continue
+        if values.parse_number(token) is None:
+            continue
+        figures.append(token)
+    codes = [c for c in _STATED_CODE.findall(text) if not values.parse_date(c)]
+    return list(dict.fromkeys(figures)), list(dict.fromkeys(codes))
+
+
+def compared_facts(request, made):
+    """
+    (compared, held, not_held): the facts the request states (stated_facts) looked for in the text of the files made -
+    a figure by value (values.compare, every digit and its sign), a code as a whole token. What a read-back compared,
+    never only that the files opened.
+    """
+
+    from decurix_agent import values
+    from decurix_agent.tools import office
+    figures, codes = stated_facts(request)
+    if not (figures or codes) or not made:
+        return 0, 0, []
+    texts = []
+    for path in dict.fromkeys(str(p) for p in made):
+        try:
+            texts.append(office.read_document(path).get("text") or "")
+        except Exception as exc:  # noqa: BLE001 - a file not read holds nothing compared
+            log(f"produced: could not read {path} to compare it: {exc}")
+    whole = "\n".join(texts)
+    tokens = _FIGURE_IN_FILE.findall(whole)
+    not_held = []
+    for figure in figures:
+        if not any(values.same_value(figure, t) is True for t in tokens):
+            not_held.append(figure)
+    for code in codes:
+        if not re.search(r"(?<![A-Za-z0-9])" + re.escape(code) + r"(?![A-Za-z0-9])", whole, re.I):
+            not_held.append(code)
+    compared = len(figures) + len(codes)
+    return compared, compared - len(not_held), not_held
+
+
 def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_made=None, own_outputs=None):
     """
     The code-decided checks of the files made for `request`, shared by every route that reports work: the final gate
@@ -915,7 +983,7 @@ def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_m
     every = list(dict.fromkeys(list(made) + [str(c) for c in host_copies]))
     opened = open_statuses(every)
     failed = []  # the blocking checks that could not be made: FileFacts.could_not
-    return FileFacts(
+    facts = FileFacts(
         # Needs the formula results stored (above): they say which empty cells a text result explains.
         gaps=formula_errors(every, failed=failed) if not unstored else [],
         gap_notes=coverage_gaps(every) if not unstored else [],
@@ -945,6 +1013,11 @@ def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_m
         **(_draft_facts(request, every, drafts_made, failed) if drafts_made else {}),
         # (Evaluated last: every check above has run, so `failed` holds each one that could not be made.)
         could_not=failed)
+    try:
+        facts.compared, facts.held, facts.not_held = compared_facts(request, every)
+    except Exception as exc:  # noqa: BLE001 - nothing compared is no read-back: it counts for nothing
+        log(f"produced: could not compare the files with the request: {exc}")
+    return facts
 
 
 def reference_breaks(paths):

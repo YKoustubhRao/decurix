@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 
 
@@ -46,8 +47,28 @@ def log_banner(*lines):
     log("=" * 40)
 
 
+_withholding = threading.local()
+
+
+def _withheld(text):
+    """A log line with every secret known on this desktop withheld (privacy.withhold_known): the log is a file the
+    worker's tools and the support zip read, so it is one more writer that withholds (review round 2, B1). Never
+    raises; a line that cannot be checked is held back."""
+
+    if getattr(_withholding, "on", False):  # (privacy itself may log: that line is not withheld again)
+        return str(text)
+    _withholding.on = True
+    try:
+        from decurix_agent.computer import privacy
+        return privacy.withhold_known(str(text))
+    except Exception:  # noqa: BLE001 - fail closed
+        return "[held back: this log line could not be checked for secrets]"
+    finally:
+        _withholding.on = False
+
+
 def log(text):
-    line = f"[{timestamp()}] {text}"
+    line = f"[{timestamp()}] {_withheld(text)}"
 
     if _log_path is None:
         print(line, flush=True)

@@ -605,10 +605,19 @@ class Handler(BaseHTTPRequestHandler):
             if task_context.valid(task_id):
                 task_context.set_date_order(task_id, data.get("date_order"))
                 task_context.set_reply_judgement(task_id, data.get("judgement_id"))
+                task_context.set_execution(task_id, data.get("execution_id"))
 
             # The control plane's record for this request; it comes back
-            # on every report about it (task_context.py).
-            path = save_request(content, task_id)
+            # on every report about it (task_context.py). What it said about this one message - secret or not, and the
+            # judgement it is - is kept by the message's own file, so the watcher reads it for exactly this message
+            # (review round 2: one secret fact; a lesson cites its own reply's judgement).
+            secret = data.get("secret", False) is True
+            path = save_request(content, task_id, secret=secret)
+            from decurix_agent import state as agent_state
+            judgement = data.get("judgement_id")
+            agent_state.message_facts[path.name] = {
+                "secret": secret,
+                "judgement": judgement if isinstance(judgement, str) and task_context.valid_judgement(judgement) else ""}
 
             self._json(200, {"status": "received", "file": path.name})
 

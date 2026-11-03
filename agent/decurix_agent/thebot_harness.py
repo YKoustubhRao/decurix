@@ -285,10 +285,23 @@ JOB_SECRET_BYTES = 64 * 1024
 
 
 def _job_secrets():
-    """The task's secret values for soul's job, within soul's limits (a longer value stays withheld on this side)."""
+    """The task's secret values for soul's job (soul takes at most JOB_SECRETS, each at most JOB_SECRET_BYTES)."""
 
-    values = [v for v in task_context.secret_values() if len(v.encode("utf-8")) <= JOB_SECRET_BYTES]
-    return values[-JOB_SECRETS:]
+    return task_context.secret_values()[-JOB_SECRETS:]
+
+
+def _secrets_too_big():
+    """Why the task's secret values cannot be handed to soul whole, or "": a value soul cannot take would go into its
+    records unredacted, so the job is not sent at all (fails closed; review round 2)."""
+
+    values = task_context.secret_values()
+    if any(len(v.encode("utf-8")) > JOB_SECRET_BYTES for v in values):
+        return (f"a secret value of this task is longer than {JOB_SECRET_BYTES // 1024} KB, too long to keep out of the "
+                "engine's records, so the task was not started. Send the secret as a file instead, or shorter.")
+    if len(values) > JOB_SECRETS:
+        return (f"this task has more than {JOB_SECRETS} secret values, more than the engine can keep out of its "
+                "records, so it was not started.")
+    return ""
 
 
 class SoulRefused(str):
@@ -306,7 +319,7 @@ def _refusal(exc):
         said = json.loads(raw).get("error") or raw
     except (ValueError, AttributeError):
         said = raw
-    return SoulRefused(withheld(" ".join(str(said or "it gave no reason").split())[:600]))
+    return SoulRefused(withheld(" ".join(str(said or "it gave no reason").split()))[:600])  # (withheld, then cut)
 
 
 def _cancel_job(base, job_id):
@@ -578,6 +591,10 @@ def _run_thebot(request, reply, extra_context="", approval_reading=None):
     """
 
     base = config.THEBOT_URL.rstrip("/")
+
+    too_big = _secrets_too_big()
+    if too_big:
+        return None, SoulRefused(too_big)
 
     try:
         submitted = _post_json(

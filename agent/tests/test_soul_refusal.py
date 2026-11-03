@@ -41,10 +41,15 @@ class SoulsRefusal(unittest.TestCase):
         self.assertIn("too many secret values", finals[-1][0])
         self.assertEqual(finals[-1][1]["kind"], "error")
 
-    def test_only_values_within_souls_limits_are_sent(self):
+    def test_a_secret_too_long_for_soul_refuses_the_task_and_sends_nothing(self):
+        # Review round 2: dropping the long value let soul keep it unredacted. It fails closed instead.
         task_context._secret_values[TASK] = ["short", "x" * (thebot_harness.JOB_SECRET_BYTES + 1)]
         self.addCleanup(task_context._secret_values.pop, TASK, None)
-        self.assertEqual(thebot_harness._job_secrets(), ["short"])
+        with mock.patch.object(thebot_harness, "_post_json") as post:
+            job, error = thebot_harness._run_thebot("do the work", reply=False)
+        post.assert_not_called()
+        self.assertIsInstance(error, thebot_harness.SoulRefused)
+        self.assertIn("not started", error)
 
 
 if __name__ == "__main__":

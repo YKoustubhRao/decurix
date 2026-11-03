@@ -622,6 +622,15 @@ class WorkflowRunner:
                 raise ValueError("invalid checkpoint step record")
         return state
 
+    def withhold_inputs(self, run_id, hide):
+        """Replace each text input of a run's checkpoint by hide(text): the run is over, and its inputs (the
+        person's request) are kept only withheld (long_task._withhold_request)."""
+
+        with self._lock(run_id):
+            state = self.status(run_id)
+            state["inputs"] = {k: hide(v) if isinstance(v, str) else v for k, v in state["inputs"].items()}
+            self._save(state)
+
     def context(self, state):
         return {"run_id": state["run_id"], "inputs": state["inputs"],
                 "work_dir": state.get("work_dir") or str(self._path(state["run_id"]).parent / "artifacts"),

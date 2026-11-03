@@ -5,6 +5,7 @@ done if it was typed anyway (a planned stage's check, the final gate).
 """
 
 from needs import needs
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,7 +14,7 @@ from unittest import mock
 import test_long_requests as base  # noqa: F401 - stubs config first
 
 from decurix_agent import attachments, filler, long_task
-from decurix_agent.computer import cdp, core
+from decurix_agent.computer import cdp, core, recording
 
 HEADERS = ["Employee", "Department", "Mobile", "Personal email"]
 
@@ -52,30 +53,68 @@ class WhatIsAFiller(Tracker):
 
 @needs("openpyxl")
 class TheFormIsNotSent(Tracker):
-    def check(self, typed, checked):
+    def check(self, events, checked, mobile="9999999999", shown=None, obs_at=0):
+        """_form_check on a form whose Mobile phone holds `mobile`; `events` the task's recorded actions, `shown` what
+        the observation kept with the first of them showed (label: value)."""
+
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         form = {"form": "Onboard new employee", "fields": [["First name", "Sneha"], ["Last name", "Iyer"],
-                                                           ["Date of birth", "18/09/1999"], ["Mobile phone", "9999999999"]]}
+                                                           ["Date of birth", "18/09/1999"], ["Mobile phone", mobile]]}
         save = {"ref": "e1961", "name": "Next", "path": "/form/next", "source": "cdp"}
+        session = Path(tmp.name) / "recordings" / "task-t0123456789abcdef"
+        (session / "obs").mkdir(parents=True)
+        if shown is not None:
+            (session / "obs" / "0123456789abcdef.json").write_text(json.dumps(
+                {"elements": [{"role": "textbox", "name": k, "value": v} for k, v in shown.items()]}), encoding="utf-8")
+            events = [dict(e, obs="0123456789abcdef") if i == obs_at else e for i, e in enumerate(events)]
         with mock.patch.object(core, "FORM_CHECK_FILE", Path(tmp.name) / "check.json"), \
                 mock.patch.object(cdp, "submit_form_fields", return_value=form), \
-                mock.patch("decurix_agent.computer.evidence.entered", lambda task_id=None: list(typed)), \
+                mock.patch.object(recording, "ROOT", Path(tmp.name) / "recordings"), \
+                mock.patch("decurix_agent.computer.evidence._task_events", lambda task_id=None: list(events)), \
+                mock.patch("decurix_agent.task_context.current", return_value="t0123456789abcdef"), \
                 mock.patch("decurix_agent.task_context.current_request", return_value="Onboard the joiners."), \
                 mock.patch("decurix_agent.task_context.current_files", return_value=[str(self.tracker)]):
             return core._form_check(save, checked=checked) or ""
 
+    @staticmethod
+    def typed(label, text):
+        return {"kind": "type", "outcome": "done", "text": text, "element": {"role": "textbox", "name": label}}
+
     def test_the_live_form_is_refused_even_checked(self):
         for checked in (False, True):
-            said = self.check(["Sneha", "Iyer", "18/09/1999", "9999999999"], checked)
+            said = self.check([self.typed("Mobile phone", "9999999999")], checked)
             self.assertIn("Not pressed: these values look invented", said)
             self.assertIn("Mobile phone: '9999999999' (Mobile is a column of joiners_tracker_Nov2026.xlsx)", said)
 
-    def test_a_filler_the_application_filled_in_itself_is_not_the_workers(self):
-        # An existing record's own value on its edit form (found in the GUI bench, 2026-11-03): the worker never typed
-        # it, so it is not judged as invented.
-        said = self.check(["Sneha", "Iyer"], checked=True)
+    def test_a_filler_the_application_showed_before_the_worker_acted_is_the_applications(self):
+        # An existing record's own value on its edit form (found in the GUI bench, 2026-11-03), seen in the observation
+        # the task's first action was resolved against; compared by value, so the app's own reformatting is the same.
+        click = {"kind": "click", "outcome": "done", "element": {"role": "button", "name": "Edit"}}
+        said = self.check([click], checked=True, mobile="99999 99999", shown={"Mobile phone": "9999999999"})
         self.assertNotIn("look invented", said)
+
+    def test_every_other_way_in_is_judged(self):
+        # Review round 2, B9: reformatted by the app, re-cased, pasted, or picked from a list - none takes the value
+        # out of judgement any more.
+        cases = {
+            "reformatted": [self.typed("Mobile phone", "99999-99999")],
+            "pasted": [{"kind": "key", "outcome": "done", "keys": ["ctrl+v"], "element": {"role": "textbox",
+                                                                                        "name": "Mobile phone"}}],
+            "picked": [self.typed("Mobile phone", "99"), {"kind": "click", "outcome": "done",
+                                                          "element": {"role": "option", "name": "9999999999"}}],
+            "nothing recorded": [],
+        }
+        for case, events in cases.items():
+            with self.subTest(case):
+                self.assertIn("look invented", self.check(events, checked=True))
+
+    def test_a_value_shown_after_the_worker_typed_into_the_field_is_the_workers(self):
+        events = [self.typed("Mobile phone", "9999999999"),
+                  {"kind": "click", "outcome": "done", "element": {"role": "button", "name": "Check"}}]
+        # The observation kept with the second action shows the worker's own value: never the application's.
+        said = self.check(events, checked=True, shown={"Mobile phone": "9999999999"}, obs_at=1)
+        self.assertIn("look invented", said)
 
 
 @needs("openpyxl")

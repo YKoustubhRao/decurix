@@ -130,8 +130,12 @@ def take(request, task_id, notify=None):
                 skipped.append(rel)
         except OSError as exc:
             log(f"source_guard: could not note {rel}: {exc}")
-    manifest = {"task_id": task_id, "at": time.time(), "request": attachments.text(request or "")[:4000], "files": files}
-    _manifest_path(task_id).write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+    # The request kept beside the snapshot is withheld whole, then cut, and the whole manifest scrubbed: it outlives
+    # the task (review round 2, B2: a marked request was kept here verbatim).
+    from decurix_agent.computer import privacy
+    manifest = {"task_id": task_id, "at": time.time(),
+                "request": task_context.withhold(attachments.text(request or ""), task_id)[:4000], "files": files}
+    _manifest_path(task_id).write_text(json.dumps(privacy.scrub(manifest), indent=1), encoding="utf-8")
     _prune(task_id)
     if skipped and notify:
         notify("Too large to keep a copy of before I start (I will still notice if it changes): " + ", ".join(skipped))

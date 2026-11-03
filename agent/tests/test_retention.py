@@ -152,3 +152,60 @@ class WhatLabelsARun(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AnExportCoversItsOwnAttempt(Base):
+    """Review round 2, B8: attempts share the task's run folder; an earlier attempt's EXPORTED covered a later one."""
+
+    def test_a_label_after_the_export_is_held_again(self):
+        retention.mark_labelled(A, "final")
+        self.export(A)
+        self.assertFalse(retention.held(A))
+        folder = self.root / "runs" / A
+        later = (folder / "EXPORTED").stat().st_mtime + 5
+        retention.mark_labelled(A, "final")          # attempt 2's final
+        os.utime(folder / "LABELLED", (later, later))
+        self.assertTrue(retention.held(A))
+        self.export(A)
+        os.utime(folder / "EXPORTED", (later + 5, later + 5))
+        self.assertFalse(retention.held(A))
+
+    def test_an_export_of_another_execution_does_not_cover_this_one(self):
+        from decurix_agent import task_context
+        task_context.set_execution(A, "e_attempt2")
+        retention.mark_labelled(A, "final")
+        folder = self.root / "runs" / A
+        (folder / "EXPORTED").write_text("e_attempt1\nabc\n", encoding="utf-8")
+        later = (folder / "LABELLED").stat().st_mtime + 5
+        os.utime(folder / "EXPORTED", (later, later))
+        self.assertTrue(retention.held(A))
+        (folder / "EXPORTED").write_text("e_attempt2\nabc\n", encoding="utf-8")
+        os.utime(folder / "EXPORTED", (later, later))
+        self.assertFalse(retention.held(A))
+
+
+class TheCeiling(Base):
+    def test_full_of_unexported_runs_starts_no_new_work_and_says_why(self):
+        retention.mark_labelled(A, "final")
+        recording.append(f"task-{A}", {"kind": "click", "actor": "agent"},
+                         before=screen.Frame(4, 4, bytearray(bytes([1]) * 48)), at=1000)
+        with mock.patch.dict(os.environ, {"DECURIX_HELD_CEILING_MB": "0"}):
+            said = retention.over_ceiling()
+        self.assertIn("nothing is deleted and no new work is started", said)
+        self.assertTrue(recording.sessions())  # nothing was deleted
+        self.export(A)
+        with mock.patch.dict(os.environ, {"DECURIX_HELD_CEILING_MB": "0"}):
+            self.assertEqual(retention.over_ceiling(), "")
+
+
+class TheManifestIsWrittenWhole(Base):
+    """Review round 2 (mutation M22): run.json written in place could be left half written."""
+
+    def test_a_failed_write_leaves_the_old_manifest_and_no_temporary_file(self):
+        retention.mark_labelled(A, "reply")
+        folder = self.root / "runs" / A
+        before = (folder / "run.json").read_text(encoding="utf-8")
+        with mock.patch.object(retention.os, "replace", side_effect=OSError("disk full")):
+            retention.mark_labelled(A, "final")
+        self.assertEqual((folder / "run.json").read_text(encoding="utf-8"), before)
+        self.assertEqual([p.name for p in folder.iterdir() if p.name.endswith(".tmp")], [])

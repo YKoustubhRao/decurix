@@ -1054,7 +1054,7 @@ class Endpoints(unittest.TestCase):
 
         self.sent = []
         patch = mock.patch.object(http_api, "save_request",
-                                  lambda content, task_id="": self.sent.append((content, task_id)) or Path(f"{len(self.sent)}.txt"))
+                                  lambda content, task_id="", secret=False: self.sent.append((content, task_id)) or Path(f"{len(self.sent)}.txt"))
         patch.start()
         self.addCleanup(patch.stop)
 

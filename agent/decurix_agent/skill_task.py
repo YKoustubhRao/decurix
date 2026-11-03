@@ -1340,9 +1340,11 @@ def _finish(run, result):
     if verdict["verdict"] == verify.DONE:
         return _succeed(run, result, "model", seen=verdict["seen"])
     if spot and verdict["verdict"] == verify.NOT_DONE:
-        # A trusted skill the spot check finds not done is learning again from here (W0.5), whatever comes next.
-        _record_verdict(run, False, why=("spot check: " + " ".join(x for x in (verdict.get("seen"), verdict.get("why"))
-                                                                    if x))[:300], basis=["model"])
+        # A trusted skill the spot check finds not done is learning again from here (W0.5), whatever comes next. Kept
+        # on the saved skill now, and on the run, so its outcome still says so if a person later confirms it.
+        said = " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x)
+        run["spot_not_done"] = said[:300]
+        _record_verdict(run, False, why=("spot check: " + said)[:300], basis=["model"])
     if screen_checked and verdict["verdict"] == verify.UNSURE:
         # Every step's own result was on the screen; the model could not tell
         # more than that. The screen is the proof it always was.
@@ -1444,6 +1446,7 @@ def _read_back(run, text):
 
     request = state.current_task or ""
     run["_read_back_files"] = 0
+    run["_read_back_compared"] = False
     try:
         made = [m for m in produced.files(text, request=request)
                 if not source_guard.is_source(m, task_context.current(), request)]
@@ -1451,6 +1454,9 @@ def _read_back(run, text):
         if not made and not produced.drafts():
             return [], []
         facts = produced.file_facts(request, made, drafts_made=produced.drafts())
+        # (What the request states, compared against the files and held: the `code` basis rests on this, never on the
+        # files opening - review round 2, B5.)
+        run["_read_back_compared"] = facts.compared_clean()
     except Exception as exc:  # noqa: BLE001 - a read-back that breaks is a check not made
         log(f"Skill {run['skill']['name']}: could not read the run's files back: {exc}")
         return [], [f"the files it wrote could not be read back ({' '.join(str(exc).split())[:160]})"]
@@ -1503,6 +1509,23 @@ def _basis(checked_by, code=False):
     return sorted(basis)
 
 
+def _keep_noted_since(skill):
+    """Merge into `skill` (a run's copy) the verdicts the saved skill holds that the copy does not: noted while the run
+    went on, by _record_verdict on a fresh copy. Never raises."""
+
+    try:
+        fresh = skills.load(skill["name"])
+    except Exception:  # noqa: BLE001 - nothing saved to merge
+        return
+    mine = (skill.setdefault("experience", {"runs": [], "steps": {}})).setdefault("verdicts", [])
+    seen = {json.dumps(v, sort_keys=True, default=str) for v in mine}
+    later = [v for v in (fresh.get("experience") or {}).get("verdicts") or []
+             if json.dumps(v, sort_keys=True, default=str) not in seen]
+    if later:
+        merged = sorted(mine + later, key=lambda v: v.get("at") or 0)
+        mine[:] = merged[-experience.RUN_HISTORY:]
+
+
 def _success_verdict(checked_by, basis, seen=""):
     """
     The verdict of a taught run that succeeded (R6): what checked it - the screen (every step's result seen), the
@@ -1530,8 +1553,10 @@ def _succeed(run, result, checked_by, seen="", helped=False):
     if checked_by != "person":
         # checked=True only when the files the run made were read back (review 2026-11-03).
         problems, not_made = _read_back(run, text)
-        # Code read at least one file the run made, and found nothing wrong and nothing it could not check.
-        read_clean = bool(run.get("_read_back_files")) and not problems and not not_made
+        # Code compared what the request states against at least one file the run made, every fact held, and it
+        # found nothing wrong and nothing it could not check.
+        read_clean = (bool(run.get("_read_back_files")) and bool(run.get("_read_back_compared")) and not problems
+                      and not not_made)
         decided = verify.outcome({"verdict": verify.DONE, "seen": seen} if not problems else
                                  {"verdict": verify.NOT_DONE, "seen": "; ".join(problems)}, problems, not_made)
         if decided["status"] != verify.DONE:
@@ -1550,6 +1575,9 @@ def _succeed(run, result, checked_by, seen="", helped=False):
     _own_run(run, True)
     basis = _basis(checked_by, code=read_clean)
     verdict = _success_verdict(checked_by, basis, seen)
+    if run.get("spot_not_done"):
+        # The judge's dissent stays on the outcome: the person's confirmation decides, and the record says both.
+        verdict["evidence"].append(verdicts._text(f"The spot check had found it not done: {run['spot_not_done']}"))
 
     if skill.get("own"):
         # Its steps were held to their controls only, so "0 were confirmed, look at the result" is not
@@ -1585,6 +1613,9 @@ def _succeed(run, result, checked_by, seen="", helped=False):
         text += " I have learned from this run: " + "; ".join(learned) + "."
 
     skill["runs"] = skill.get("runs", 0) + 1
+    # What was noted on the saved skill while this run went on (a spot check's "not done", review round 2, B6) is kept:
+    # the run's own copy is older, and saving it whole would erase that.
+    _keep_noted_since(skill)
     experience.note_verdict(skill, "replay", True, checked_by=checked_by,
                             helped=helped or bool(run["asked_ids"]) or bool(run.get("taken_over")),
                             basis=basis)
@@ -2064,13 +2095,15 @@ def _rows_note(run):
 
 def _same_value(wanted, typed):
     """Whether what was typed is decidedly the value wanted (values.same_value is True): the same text, the same number
-    to its last digit however it is written, the same day under the task's date order. (It went through float(), which
+    to its last digit however it is written, the same day under each side's date order. (It went through float(), which
     loses every digit past the 15th: two 17-digit account numbers were one, W0.3.)"""
 
     a, b = " ".join(str(wanted).split()).casefold(), " ".join(str(typed).split()).casefold()
     if a == b:
         return True
-    return field_values.same_value(wanted, typed, task_context.date_order()) is True
+    # The value wanted is the documents' (the source's date order), what was typed the application's.
+    return field_values.same_value(wanted, typed, a_order=task_context.source_date_order(),
+                                   b_order=task_context.app_date_order()) is True
 
 
 def _never_entered(run):
@@ -2696,7 +2729,11 @@ def _record_verdict(run, ok, checked_by=None, helped=False, why="", mode=None, b
 def _correct(run, text):
     """Keep what a person said was wrong, for every later run's model (and the check)."""
 
-    text = " ".join((text or "").split())[:500]
+    # A secret reply is never kept as a correction (review round 2, B3); what is kept is withheld whole, then cut.
+    if getattr(state, "reply_secret", False):
+        return
+    from decurix_agent.computer import privacy
+    text = privacy.withhold_known(" ".join((text or "").split()))[:500]
     if run.get("one_off") or not text:
         return
     try:
@@ -2707,7 +2744,8 @@ def _correct(run, text):
     skills.save(fresh)
     run["skill"]["corrections"] = fresh["corrections"]
     # Copied to the control plane under the person who said it (R8): a recreated desktop still has it.
-    messaging.post_learned("correction", fresh["name"], fresh.get("version", 1), "", text)
+    messaging.post_learned("correction", fresh["name"], fresh.get("version", 1), "", text,
+                           derived_from=state.reply_judgement)
 
 
 # ------------------------------------------------------------
@@ -2934,11 +2972,12 @@ def _plan_approved_as_is(asked, reply):
     return said["choice"] == "as_planned" and not said.get("instruction")
 
 
-def learn_answer(reply):
+def learn_answer(reply, secret=False, judgement_id=""):
     """
     Keep a person's answer to a question the engine asked during a taught
     task (the watcher calls this as it hands the reply to the engine), so no
-    later run asks it again.
+    later run asks it again. A secret reply is kept only as withheld, never its
+    words (review round 2, B3). `judgement_id`: the reply's own (watchers).
     """
 
     guided = guidance.get()
@@ -2962,13 +3001,17 @@ def learn_answer(reply):
     except FileNotFoundError:
         return
 
+    if secret:
+        reply = "[withheld: a secret]"
     said = {"at": int(time.time()), "q": " ".join(asked.split())[:500], "a": reply}
     kept = [x for x in fresh.get("run_answers") or [] if (x.get("q"), x.get("a")) != (said["q"], said["a"])]
     fresh["run_answers"] = (kept + [said])[-MAX_RUN_ANSWERS:]
     skills.save(fresh)
     run["skill"]["run_answers"] = fresh["run_answers"]
     log(f"Skill {fresh['name']}: kept the person's answer to {said['q'][:120]!r}")
-    messaging.post_learned("run_answer", fresh["name"], fresh.get("version", 1), said["q"], said["a"])
+    if not secret:
+        messaging.post_learned("run_answer", fresh["name"], fresh.get("version", 1), said["q"], said["a"],
+                               derived_from=judgement_id)
 
 
 messaging.set_query_gate(_question_gate)
@@ -3580,7 +3623,7 @@ def _gate(reply, kind, engine):
             _record_verdict(run, True, checked_by="model",
                             helped=guided["mode"] == "takeover" or run.get("attempts", 1) > 1
                             or bool(run.get("asked_person")),
-                            basis=_basis("model", code=bool(made) and not facts.blocking() and not facts.not_made()))
+                            basis=_basis("model", code=bool(made) and facts.compared_clean()))
         where = "Checked on the screen" if on_screen else "Checked against the files I wrote"
         text = f"{reply}\n\n{where}: {verdict['seen']}" if verdict.get("seen") else reply
         if facts.totals_note:
@@ -3594,9 +3637,9 @@ def _gate(reply, kind, engine):
                     + "\n".join(f"- Please check this figure: {item}" for item in loud[:12]) + "\n\n" + text)
         text = _first_attempt_text(run) + _suspicious_note(state.current_task or "", made) + text
         gate_checks = list(decided.get("checks") or [])
-        if made and not facts.blocking() and not facts.not_made():
+        if made and facts.compared_clean():
             gate_checks.append(verdicts.check("files.read_back", verdicts.PASS, "code",
-                                              f"{len(made)} file(s) the work made read back"))
+                                              f"{facts.held} fact(s) the request states held in {len(made)} file(s)"))
         if "ledger" in _basis(None):
             gate_checks.append(verdicts.check("ledger.read_back", verdicts.PASS, "ledger",
                                               "every declared record read back from the application"))

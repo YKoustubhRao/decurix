@@ -92,7 +92,7 @@ class ServerTest(unittest.TestCase):
         self.sent = []
         patches = [
             mock.patch.object(http_api, "save_request",
-                              lambda content, task_id="": self.sent.append((content, task_id)) or Path("1.txt")),
+                              lambda content, task_id="", secret=False: self.sent.append((content, task_id)) or Path("1.txt")),
             mock.patch.dict(os.environ, {config.AGENT_TOKEN_ENV: TOKEN}),
         ]
         for patch in patches:

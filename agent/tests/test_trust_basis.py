@@ -85,8 +85,36 @@ class TheBasisOfATaughtRun(unittest.TestCase):
             skill_task._succeed(self.run_dict(), {"text": "Saved it."}, checked_by)
         return noted.get("basis")
 
-    def test_files_read_back_clean_are_code(self):
-        self.assertEqual(self.basis(), ["code", "screen"])
+    @staticmethod
+    def compared(n, held):
+        facts = produced.FileFacts()
+        facts.compared, facts.held = n, held
+        return facts
+
+    def test_files_whose_stated_facts_were_compared_and_held_are_code(self):
+        self.assertEqual(self.basis(facts=self.compared(2, 2)), ["code", "screen"])
+
+    def test_files_that_only_opened_are_no_code(self):
+        # Review round 2, B5: a read-back that compared nothing is no check of what the files say.
+        self.assertEqual(self.basis(facts=self.compared(0, 0)), ["screen"])
+        self.assertEqual(self.basis(facts=self.compared(2, 1)), ["screen"])
+
+    def test_the_comparison_reads_the_file_against_the_request(self):
+        import os
+        import tempfile
+        folder = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, folder, True)
+        path = os.path.join(folder, "summary.txt")
+        request = "Pay the vendor 12,500.00 and write summary.txt"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("Total paid: 99,999.00")
+        self.assertEqual(produced.compared_facts(request, [path])[:2], (1, 0))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("Total paid: 12,500.00")
+        self.assertEqual(produced.compared_facts(request, [path])[:2], (1, 1))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("done")
+        self.assertEqual(produced.compared_facts("Write a note.", [path])[:2], (0, 0))
 
     def test_no_file_made_is_no_code(self):
         self.assertEqual(self.basis(files=()), ["screen"])

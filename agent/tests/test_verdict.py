@@ -274,3 +274,108 @@ class TheLegacyCallersOnlyShrink(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AVerdictAlwaysFits(unittest.TestCase):
+    """Review round 2, B7: a schema-valid verdict could be ~660 KB; the control plane reads 32 KB, so the outcome was
+    refused and dropped. A verdict is now bounded, its verdict never changed, failing checks kept first."""
+
+    def big(self, verdict_kind="not_done"):
+        detail, ref = "d" * 600, "r" * 600
+        checks = [verdict.check(f"code.{n}", "fail" if n % 3 == 0 else "pass", "code", detail, refs=[ref] * 16)
+                  for n in range(64)]
+        if verdict_kind == "done":
+            checks = [dict(c, result="pass") for c in checks]
+        return {"schema": verdict.SCHEMA, "verdict": verdict_kind, "by": "verify", "why": "w" * 600, "basis": ["code"],
+                "checks": checks, "evidence": ["e" * 600] * 64}
+
+    def test_bound_keeps_the_verdict_and_every_failing_check_first(self):
+        for kind in ("not_done", "done"):
+            v = verdict.bound(self.big(kind))
+            self.assertLessEqual(len(json.dumps(v, ensure_ascii=False).encode("utf-8")), verdict.MAX_BYTES)
+            self.assertEqual(v["verdict"], kind)
+            self.assertTrue(v["truncated"])
+            self.assertEqual(verdict.validate(v), [], kind)
+        v = verdict.bound(self.big("not_done"))
+        self.assertTrue(any(c["result"] == "fail" for c in v["checks"]))
+
+    def test_more_than_64_checks_are_summed_up_not_dropped_silently(self):
+        checks = [verdict.check(f"c{n}", "pass", "code") for n in range(70)] + [verdict.check("bad", "fail", "code")]
+        v = verdict.make("not_done", "verify", checks=checks)
+        self.assertLessEqual(len(v["checks"]), verdict.MAX_CHECKS)
+        self.assertIn("bad", [c["id"] for c in v["checks"]])
+        self.assertTrue(any(c["id"].startswith("more.") for c in v["checks"]))
+
+    def test_evidence_lines_are_counted_like_the_control_plane(self):
+        v = dict(verdict.make("unchecked", "none"), evidence=["e"] * 65)
+        self.assertTrue(verdict.validate(v))
+
+    def test_the_outcome_is_delivered_by_a_32_kb_control_plane(self):
+        from decurix_agent import messaging
+        delivered = []
+
+        def poster(payload):
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            if len(body) > 32768:
+                return "refused", "too big"
+            delivered.append(payload)
+            return "sent", ""
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(messaging, "_post_querytext", poster), \
+                mock.patch.object(messaging.progress, "flush", lambda: None), \
+                mock.patch.object(config, "DECURIX_DIR", Path(tmp)), mock.patch.object(config, "WORK_DIR", Path(tmp)):
+            self.assertTrue(messaging.send_query("f.txt", "x" * 40000, kind="error", reply="y" * 40000,
+                                                 checked=False, verdict=self.big("not_done"), task_id="t0123456789abcdef"))
+        self.assertEqual(delivered[-1]["verdict"]["verdict"], "not_done")
+        self.assertEqual(verdict.validate(delivered[-1]["verdict"]), [])
+
+    def test_a_refused_outcome_is_kept_to_send_again(self):
+        from decurix_agent import messaging
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(messaging, "_post_querytext", lambda p: ("refused", "no")), \
+                mock.patch.object(messaging.progress, "flush", lambda: None), \
+                mock.patch.object(config, "DECURIX_DIR", Path(tmp)), mock.patch.object(config, "WORK_DIR", Path(tmp)):
+            self.assertFalse(messaging.send_query("f.txt", "done", kind="final", reply="done", checked=False,
+                                                  task_id="t0123456789abcdef"))
+            self.assertEqual(len(list((Path(tmp) / "unsent").glob("*.json"))), 1)
+
+
+class TheSharedFixtures(unittest.TestCase):
+    """The control plane's own test vectors, read by both languages (H-CP-1)."""
+
+    def test_the_600_character_unicode_verdict_validates(self):
+        path = Path(__file__).resolve().parents[2] / "internal" / "tasks" / "testdata" / "verdict-unicode-600.json"
+        if not path.exists():
+            self.skipTest(f"{path} is not in this tree")
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(verdict.validate(doc), [])
+        longer = dict(doc, why=doc["why"] + "x")
+        self.assertTrue(verdict.validate(longer))  # 601 characters
+
+    def test_the_control_planes_graders_are_known(self):
+        for by in ("readiness", "practice", "eval"):
+            v = verdict.make("not_done", by, checks=[verdict.check("grade", "fail", "code")])
+            self.assertEqual(verdict.validate(v), [], by)
+
+
+class MoreOutcomes(unittest.TestCase):
+    """Review round 2: a declined workflow stage is a stop; an answer on a message's own task carries a verdict."""
+
+    def test_a_declined_stage_is_stopped(self):
+        from decurix_agent import gated_command, workflow_task
+        sent = []
+        with mock.patch.object(workflow_task, "_awaiting_start", {"run_id": "r1", "step_id": "s2", "material": {},
+                                                                 "question": "May I start s2?"}), \
+                mock.patch.object(gated_command, "granted", lambda *a: False), \
+                mock.patch("decurix_agent.messaging.write_final_reply", lambda t, **k: sent.append(k)):
+            workflow_task.answer_start("no", None)
+        self.assertTrue(sent[-1]["stopped"])
+        self.assertEqual(sent[-1]["kind"], "error")
+
+    def test_reply_on_task_sends_a_verdict(self):
+        from decurix_agent import messaging
+        sent = []
+        with mock.patch.object(messaging, "send_query", lambda *a, **k: sent.append(k) or True):
+            messaging.reply_on_task("t0123456789abcdef", "Noted: the change is taken.")
+        self.assertEqual(sent[-1]["verdict"]["verdict"], "unchecked")
+        self.assertEqual(verdict.validate(sent[-1]["verdict"]), [])

@@ -31,8 +31,10 @@ class AMarkedMessageIsWithheldFromThenOn(unittest.TestCase):
         self.saved = []
         for patch in (mock.patch.dict(os.environ, {"DECURIX_DIR": str(self.root), config.AGENT_TOKEN_ENV: TOKEN}),
                       mock.patch.object(http_api, "save_request",
-                                        lambda content, task_id="": self.saved.append(content) or Path("1.txt")),
-                      mock.patch.object(recording, "ROOT", self.root / "recordings")):
+                                        lambda content, task_id="", secret=False: self.saved.append(content) or Path("1.txt")),
+                      mock.patch.object(recording, "ROOT", self.root / "recordings"),
+                      # (the task's own secret values live beside its task file: one of each test's own)
+                      mock.patch("decurix_agent.task_context.CURRENT_FILE", str(self.root / "current-task"))):
             patch.start()
             self.addCleanup(patch.stop)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), http_api.Handler)

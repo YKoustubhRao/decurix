@@ -647,6 +647,27 @@ def ledger(run_id):
     return data
 
 
+def _withhold_request(run_id, task_id):
+    """
+    The run is reported: the request it kept to resume by (the ledger's, and the checkpoint's inputs) is replaced by
+    its withheld form, then scrubbed - nothing resumes a reported run, and the request's secrets must not outlive it
+    (review round 2, B2). Never raises.
+    """
+
+    from decurix_agent.computer import privacy
+
+    def hide(text):
+        return privacy.scrub(task_context.withhold(str(text or ""), task_id))
+    try:
+        _update(run_id, lambda d: d.__setitem__("request", hide(d.get("request"))))
+    except Exception as exc:  # noqa: BLE001
+        log(f"long_task: could not withhold the reported run's request in its ledger: {exc}")
+    try:
+        _runner().withhold_inputs(run_id, hide)
+    except Exception as exc:  # noqa: BLE001
+        log(f"long_task: could not withhold the reported run's request in its checkpoint: {exc}")
+
+
 def _save_ledger(run_id, data):
     """
     Write the run's ledger whole: its derived records withheld first (a failure there skips the save - the file on disk
@@ -5257,6 +5278,8 @@ def final_report(run_state):
     # stands for "every stage done", which the stage checks already say).
     run_checks = stage_checks + [c for c in decided.get("checks") or [] if c.get("id") != "judge"]
     verdict = verdicts.from_outcome(dict(decided, checks=run_checks, basis=()), "long_task")
+    # (Before the report: the report ends the task, and the task's secret values are let go with it.)
+    _withhold_request(run_id, data.get("task_id") or "")
     write_final_reply(text, kind=decided["kind"], checked=decided["checked"], gated=True, fallback=fallback,
                       task_id=data.get("task_id") or None, verdict=verdict,
                       stopped=run_state["status"] == "cancelled")
@@ -5295,9 +5318,12 @@ def _remember_reported(data, report, outputs):
     """Keep the planned run just reported, for a change the person sends about it afterwards (follow_up)."""
 
     try:
-        _follow_up_path().write_text(json.dumps({
-            "task_id": data.get("task_id") or "", "request": str(data.get("request") or "")[:20000],
-            "report": str(report or "")[:4000], "outputs": list(outputs)[:40], "at": time.time()}), encoding="utf-8")
+        from decurix_agent.computer import privacy
+        task_id = data.get("task_id") or ""
+        kept = {"task_id": task_id, "request": task_context.withhold(str(data.get("request") or ""), task_id)[:20000],
+                "report": task_context.withhold(str(report or ""), task_id)[:4000], "outputs": list(outputs)[:40],
+                "at": time.time()}
+        _follow_up_path().write_text(json.dumps(privacy.scrub(kept)), encoding="utf-8")
     except OSError as exc:
         log(f"long_task: could not keep the reported run for a follow-up: {exc}")
 

@@ -1754,12 +1754,12 @@ def _value_of(page, object_id):
 
 
 def _formatted(text, value):
-    """Whether `value` is `text` as a field formats a number ("12" -> "12.000", "1,200")."""
+    """Whether `value` is `text` as a field formats a number ("12" -> "12.000", "1,200"): every digit, by value
+    (values.parse_number - never float, which loses digits past the 15th: W0.3)."""
 
-    try:
-        return float(text.replace(",", "")) == float((value or "").replace(",", ""))
-    except ValueError:
-        return False
+    from decurix_agent import values
+    a, b = values.parse_number(text), values.parse_number(value or "")
+    return a is not None and a == b
 
 
 def _select_for_typing(page, object_id, replace):
@@ -1814,12 +1814,14 @@ def set_number(page, object_id, text):
 
 
 def same_number(a, b):
-    """Whether two written numbers are the same number ("24" and "24.0"); text compared as text."""
+    """Whether two written numbers are the same number ("24" and "24.0"), to their last digit (values.parse_number,
+    never float: W0.3); anything else compared as text."""
 
-    try:
-        return float(str(a).replace(",", "")) == float(str(b).replace(",", ""))
-    except ValueError:
-        return str(a).strip() == str(b).strip()
+    from decurix_agent import values
+    x, y = values.parse_number(str(a)), values.parse_number(str(b))
+    if x is not None and y is not None:
+        return x == y
+    return str(a).strip() == str(b).strip()
 
 
 SPINNER_AT = """function(x, y) {

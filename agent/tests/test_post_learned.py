@@ -58,6 +58,8 @@ class PostLearned(unittest.TestCase):
             self.addCleanup(p.stop)
 
     def post(self, *args, **kw):
+        # (The reply's own judgement, captured with it: here, the one the test's reply came with.)
+        kw.setdefault("derived_from", task_context.reply_judgement(TASK))
         thread = messaging.post_learned(*args, **kw)
         if thread is not None:
             thread.join(10)
@@ -102,7 +104,9 @@ class PostLearned(unittest.TestCase):
     def test_a_correction_during_a_skill_run_is_posted(self):
         task_context.set_reply_judgement(TASK, "j_0123456789abcdef")
         skill = {"name": "enter-a-bill", "version": 2, "steps": []}
-        with mock.patch.object(skills, "load", lambda name: dict(skill)), mock.patch.object(skills, "save"):
+        with mock.patch.object(skills, "load", lambda name: dict(skill)), mock.patch.object(skills, "save"), \
+                mock.patch.object(state, "reply_judgement", "j_0123456789abcdef"), \
+                mock.patch.object(state, "reply_secret", False):
             skill_task._correct({"skill": dict(skill)}, "use the Purchases ledger")
         for _ in range(100):
             if _ControlPlane.posts:

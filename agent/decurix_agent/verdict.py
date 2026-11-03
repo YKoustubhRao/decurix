@@ -26,13 +26,18 @@ from decurix_agent.computer import privacy
 SCHEMA = "decurix.verdict/v1"
 DONE, NOT_DONE, UNCHECKED, STOPPED = "done", "not_done", "unchecked", "stopped"
 VERDICTS = (DONE, NOT_DONE, UNCHECKED, STOPPED)
-BY = ("verify", "skill_gate", "long_task", "replay", "workflow", "worker", "none", "legacy")
+BY = ("verify", "skill_gate", "long_task", "replay", "workflow", "worker", "none", "legacy",
+      "readiness", "practice", "eval")  # (the last three: the control plane's own graders, H-CP-1)
 PASS, FAIL, NOT_MADE = "pass", "fail", "not_made"
 RESULTS = (PASS, FAIL, NOT_MADE)
 BASES = ("code", "ledger", "screen", "model", "person")
 MAX_CHECKS = 64
 MAX_REFS = 16
 MAX_TEXT = 600
+MAX_EVIDENCE = 64  # (the control plane's own cap on evidence lines)
+# A verdict's whole size, as JSON: the control plane reads a callback body of 32 KB at most (review round 2, B7: a
+# schema-valid verdict of ~660 KB made the outcome unsendable, and it was dropped). bound() keeps a verdict under this.
+MAX_BYTES = 12000
 
 
 def _text(value):
@@ -55,11 +60,77 @@ def make(verdict, by, why="", checks=(), evidence=(), basis=()):
     (a person's confirmation has no check of its own).
     """
 
-    checks = list(checks or ())[:MAX_CHECKS]
+    checks = list(checks or ())
     passed = {c.get("basis") for c in checks if c.get("result") == PASS}
-    return {"schema": SCHEMA, "verdict": verdict, "by": by, "why": _text(why),
+    made = {"schema": SCHEMA, "verdict": verdict, "by": by, "why": _text(why),
             "basis": sorted(b for b in passed | set(basis or ()) if b in BASES),
-            "checks": checks, "evidence": [_text(e) for e in list(evidence or ())[:MAX_CHECKS] if str(e or "").strip()]}
+            "checks": checks, "evidence": [_text(e) for e in list(evidence or ()) if str(e or "").strip()]}
+    return bound(made)
+
+
+def _size(v):
+    import json
+    return len(json.dumps(v, ensure_ascii=False).encode("utf-8"))
+
+
+def _summary_check(checks, what):
+    """One check standing for `checks` (not listed): not_made when any of them was not a pass, else a pass."""
+
+    results = {c.get("result") for c in checks}
+    bases = [c.get("basis") for c in checks if c.get("basis") in BASES]
+    basis = max(set(bases), key=bases.count) if bases else "code"
+    result = PASS if results <= {PASS} else NOT_MADE
+    return check(f"more.{what}", result, basis, f"... and {len(checks)} more check(s) {what}"
+                 + ("" if result == PASS else " (some of them did not pass)"))
+
+
+def bound(v, limit=MAX_BYTES):
+    """
+    `v` within the schema's counts and `limit` bytes, its verdict never changed: the checks that failed or were not
+    made, and the why, kept first; then refs and details clipped; then the passing checks folded into one; then the
+    evidence cut. A verdict that had to be cut says so ("truncated": true).
+    """
+
+    v = dict(v)
+    checks = list(v.get("checks") or [])
+    evidence = list(v.get("evidence") or [])
+    cut = False
+    if len(checks) > MAX_CHECKS:
+        keep = sorted(checks, key=lambda c: c.get("result") == PASS)[:MAX_CHECKS - 1]
+        dropped = [c for c in checks if c not in keep]
+        checks = keep + [_summary_check(dropped, "not listed")]
+        cut = True
+    if len(evidence) > MAX_EVIDENCE:
+        evidence, cut = evidence[:MAX_EVIDENCE], True
+    v["checks"], v["evidence"] = checks, evidence
+    for step in ("refs", "detail", "fold", "evidence", "hard"):
+        if _size(v) <= limit:
+            break
+        cut = True
+        if step == "refs":
+            v["checks"] = [dict(c, refs=list(c.get("refs") or [])[:2]) for c in v["checks"]]
+        elif step == "detail":
+            v["checks"] = [dict(c, detail=str(c.get("detail") or "")[:160]) for c in v["checks"]]
+        elif step == "fold":
+            passing = [c for c in v["checks"] if c.get("result") == PASS]
+            others = [c for c in v["checks"] if c.get("result") != PASS]
+            if len(passing) > 1:
+                v["checks"] = others + [passing[0], _summary_check(passing[1:], "passed")]
+        elif step == "evidence":
+            v["evidence"] = [str(e)[:160] for e in v["evidence"][:8]]
+        else:
+            # Still too big: only failing checks are many. The first ones, the rest summed up as not made.
+            others = [c for c in v["checks"] if c.get("result") != PASS]
+            passing = [c for c in v["checks"] if c.get("result") == PASS][:1]
+            while others and _size(dict(v, checks=passing + others)) > limit:
+                others = others[:max(1, len(others) // 2)] if len(others) > 1 else []
+            dropped = [c for c in v["checks"] if c not in passing + others]
+            v["checks"] = passing + others + ([_summary_check(dropped, "not listed")] if dropped else [])
+            v["evidence"] = []
+            v["why"] = str(v.get("why") or "")[:300]
+    if cut:
+        v["truncated"] = True
+    return v
 
 
 def validate(v):
@@ -101,8 +172,9 @@ def validate(v):
         if not isinstance(refs, list) or len(refs) > MAX_REFS or any(len(str(r)) > MAX_TEXT for r in refs):
             out.append(f"check {n}: refs must be at most {MAX_REFS} strings of at most {MAX_TEXT}")
     evidence = v.get("evidence", [])
-    if not isinstance(evidence, list) or any(not isinstance(e, str) or len(e) > MAX_TEXT for e in evidence):
-        out.append(f"evidence must be a list of strings of at most {MAX_TEXT}")
+    if not isinstance(evidence, list) or len(evidence) > MAX_EVIDENCE or any(
+            not isinstance(e, str) or len(e) > MAX_TEXT for e in evidence):
+        out.append(f"evidence must be a list of at most {MAX_EVIDENCE} strings of at most {MAX_TEXT}")
     if v.get("verdict") == DONE and v.get("by") != "legacy":
         results = [c.get("result") for c in checks if isinstance(c, dict)]
         if PASS not in results:
