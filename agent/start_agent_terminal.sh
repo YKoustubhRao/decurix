@@ -183,17 +183,6 @@ setsid nice -n 10 python3 /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
 
 echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"
 
-# extension_pipeline/ext_server.py: the backend the browser-agent extension
-# talks to on 127.0.0.1:8092. No desktop loads the extension today (the
-# browser's launcher passes no --load-extension) and soul uses it only with
-# THEBOT_BROWSER_EXTENSION=1, so it starts only then: idle it was 48 MB nothing
-# talked to.
-if [ "${THEBOT_BROWSER_EXTENSION:-}" = "1" ] && [ -x /opt/browser-agent-venv/bin/python3 ]; then
-    setsid /opt/browser-agent-venv/bin/python3 /opt/browser-agent/extension_pipeline/ext_server.py \
-        >> /tmp/decurix-ext-server.log 2>&1 < /dev/null &
-    echo "[$(date)] ext_server.py started as background daemon (pid $!)" >> "$LOG"
-fi
-
 # TheBot harness only - its soul binary is a persistent HTTP server
 # thebot_harness.py talks to (see decurix_agent/thebot_harness.py), not a
 # per-task CLI like claude, so it needs to already be running before any

@@ -1,9 +1,0 @@
-# extension_pipeline/ext_server.py + the core/ modules it imports. Ollama is
-# reached via OLLAMA_URL (core/models.py), not a package dependency -- the
-# desktop's Ollama is whatever OLLAMA_URL points at.
-fastapi
-uvicorn[standard]
-pydantic
-beautifulsoup4
-psutil
-requests
