@@ -87,31 +87,17 @@ func TestTriageKeepsCodingWhole(t *testing.T) {
 	}
 }
 
-// Measured live: "content-type" read as a request to type sent a terminal job
-// to the browser extension, which was not running, for 16 minutes.
-func TestTriageSendsOnlyRealPageWorkToTheBrowser(t *testing.T) {
-	notBrowser := []string{
-		"run curl -sI https://example.com in the terminal and tell me the content-type header",
-		"check the content-type example.com returns",
-		"from the shell, search example.com's robots.txt for sitemap lines",
-		// An address is not a website (live: waited on the browser extension).
-		"Create invoices.xlsx in my work folder with three invoices. Then draft an email to ap@example.com with the workbook attached.",
-	}
-	for _, prompt := range notBrowser {
-		if got := Triage(prompt); got.Kind == RouteBrowser {
-			t.Errorf("Triage(%q) = browser, want anything else", prompt)
-		}
-	}
-	browser := []string{
+// Work in a real web page is the operator's, worked on the screen with gui.
+func TestTriageSendsPageWorkToTheOperator(t *testing.T) {
+	for _, prompt := range []string{
 		"open google.com and search for addis ababa",
 		"go to amazon.com and add a kettle to the cart",
 		"browse to example.com then click More information",
 		"on github.com type decurix into the search box",
 		"email sam@acme.com, then open acme.com and click Pricing",
-	}
-	for _, prompt := range browser {
-		if got := Triage(prompt); got.Kind != RouteBrowser {
-			t.Errorf("Triage(%q) = %s, want browser", prompt, got.Kind)
+	} {
+		if got := Triage(prompt); got.Kind != RouteOperate {
+			t.Errorf("Triage(%q) = %s, want operate", prompt, got.Kind)
 		}
 	}
 }
@@ -190,24 +176,14 @@ func TestTriageSendsOfficeDocumentsToTheOperator(t *testing.T) {
 	}
 }
 
-// Without the browser extension, web work goes to the operator: found live,
-// a step sent to the browser skill waited 30 s for a listener that was never
-// there and failed the task.
-func TestWebPageWorkGoesToTheOperatorWithoutTheExtension(t *testing.T) {
-	was := BrowserAvailable
-	defer func() { BrowserAvailable = was }()
-
+// Web page work goes to the operator, planned or not: a [browser] step runs as the operator's.
+func TestWebPageWorkGoesToTheOperator(t *testing.T) {
 	req := "Open https://opensource-demo.orangehrmlive.com, log in and add the new employee"
-	BrowserAvailable = true
-	if r := Triage(req); r.Kind != RouteBrowser {
-		t.Fatalf("with the extension: %+v", r)
-	}
-	BrowserAvailable = false
 	if r := Triage(req); r.Kind != RouteOperate || r.TaskType != "operator" {
-		t.Fatalf("without the extension: %+v", r)
+		t.Fatalf("triage: %+v", r)
 	}
 	if typ := shapeStep("browser", "Open the project portal and create the request").Type; typ != "operator" {
-		t.Errorf("a planned [browser] step without the extension runs as %q", typ)
+		t.Errorf("a planned [browser] step runs as %q", typ)
 	}
 }
 

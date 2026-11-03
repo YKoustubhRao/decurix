@@ -49,22 +49,16 @@ func Classify(step string) string {
 	return "general"
 }
 
-// BrowserAvailable says whether the browser-agent extension is installed on
-// this machine (soul sets it at startup). Without it, work in a web page is
-// the operator's, driving the browser with gui: found live, a recovery plan
-// sent "create the request in the web app" to the browser skill on a desktop with
-// no extension, which waited 30 s and failed the whole task.
-var BrowserAvailable = true
-
 // CodingAvailable says whether the coding harness is on (soul sets it at startup). Inside Decurix it is off, and on
 // only behind THEBOT_STANDALONE=1 (review T-07/T-21, owner decision O-8): a request to build software is then the
 // operator's, never a skill that is not there.
 var CodingAvailable = true
 
-// withoutMissingSkill turns a task type whose skill is off on this machine (the browser extension not installed, the
-// coding harness off) into the operator's.
+// withoutMissingSkill turns a task type whose skill is not on this machine into the operator's: work in a web page
+// (the browser extension it once went to is gone - the operator drives the browser with gui), and coding when the
+// harness is off.
 func withoutMissingSkill(taskType string) string {
-	if (taskType == "browser" && !BrowserAvailable) || (taskType == "coding" && !CodingAvailable) {
+	if taskType == "browser" || (taskType == "coding" && !CodingAvailable) {
 		return "operator"
 	}
 	return taskType
@@ -327,8 +321,8 @@ func init() {
 	Register("file-write", fileWriteRe.MatchString)
 	// browser before web: a step that names a destination AND an action on
 	// it ("search google.com for X") is interactive browsing, not a fetch -
-	// see wantsBrowser in triage.go for the same distinction at the whole-
-	// request level.
+	// the operator's, on the screen (withoutMissingSkill); see wantsBrowser in
+	// triage.go for the same distinction at the whole-request level.
 	Register("browser", wantsBrowser)
 	Register("web", func(step string) bool {
 		return webRe.MatchString(step) || urlOnlyRe.MatchString(step) || siteRe.MatchString(step)

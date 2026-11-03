@@ -547,8 +547,6 @@ func (p Planner) Atomize(ctx context.Context, prompt string) Plan {
 		return single(prompt, route.TaskType, true, route)
 	case RouteOperate:
 		return single(prompt, "operator", true, route)
-	case RouteBrowser:
-		return single(prompt, "browser", true, route)
 	}
 
 	// Planning failed or produced nothing: run the whole request as one

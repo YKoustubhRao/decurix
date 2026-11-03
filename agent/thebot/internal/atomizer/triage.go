@@ -27,15 +27,6 @@ const (
 	// RoutePlan is several genuinely different jobs ("find out X on the web
 	// and write it to Y"). The only route that asks a model to plan.
 	RoutePlan RouteKind = "plan"
-	// RouteBrowser is one interactive session in a real, live web page -
-	// "Open google.com. Search for this. Do that." - handed whole to the
-	// browser skill, which drives it through the browser-agent Chrome
-	// extension (agent/browser-agent/extension) rather than the operator's
-	// coordinate/xdotool loop. Like RouteOperate, it deliberately skips
-	// planning: the extension's own atomize -> act -> verify loop already
-	// decides its next action from what the last one actually did to the
-	// page, which a plan written before the first page load cannot.
-	RouteBrowser RouteKind = "browser"
 )
 
 // Route is Triage's decision, with the reason it gives in the live log.
@@ -229,9 +220,8 @@ var (
 // live web page - opening a site and then doing something on it - as
 // opposed to reading the web at large (the web skill) or working some other
 // app on the screen (the operator, via wantsScreen). Checked before both:
-// a named destination plus an action on it is squarely what the
-// browser-agent extension exists for, and it drives the actual DOM through
-// selector-grounded actions rather than the operator's coordinates/xdotool.
+// a named destination plus an action on it is one goal on one page, which the
+// operator works through on the screen with gui.
 func wantsBrowser(prompt string) bool {
 	if browsePhraseRe.MatchString(prompt) {
 		return true
@@ -340,24 +330,14 @@ func Triage(prompt string) Route {
 		return Route{Kind: RouteOperate, TaskType: matched, Reason: "files were attached - the operator reads them with office read"}
 	}
 
-	// Before wantsScreen and the compound check, for the same reason
-	// wantsScreen already goes first: "Open google.com. Search for this.
-	// Do that." is one goal on one page, worked through by the extension's
-	// own loop - not a plan written before the first page has even loaded,
-	// and not the operator's generic, coordinate-driven screen loop when a
-	// page-aware, selector-grounded tool is exactly what this is.
-	// A page to work in that is one part of desk work - files to make, email drafts - is the operator's: it works
-	// the page with gui and makes the files with office; the browser extension makes no files. Found by the live
-	// requests corpus (2026-10-20, requests_corpus_test.go): "enter every approved order in the portal ... a tax
-	// invoice PDF for each order, dispatch_plan.xlsx ..." was handed whole to the browser extension.
+	// Before wantsScreen and the compound check, for the same reason wantsScreen already goes first: "Open
+	// google.com. Search for this. Do that." is one goal on one page, worked through by one loop that sees each
+	// result - the operator's, with gui - not a plan written before the first page has even loaded.
 	if wantsBrowser(p) && (wantsDocument(p) || wantsEmailDraft(p)) {
 		return Route{Kind: RouteOperate, TaskType: matched, Reason: "work in a web page and files to make - the operator does both (gui for the page, office for the files)"}
 	}
 	if wantsBrowser(p) {
-		if !BrowserAvailable {
-			return Route{Kind: RouteOperate, TaskType: matched, Reason: "an interactive task in a real web page - the operator works the browser with the gui command"}
-		}
-		return Route{Kind: RouteBrowser, TaskType: "browser", Reason: "an interactive task in a real web page - handing it to the browser extension"}
+		return Route{Kind: RouteOperate, TaskType: matched, Reason: "an interactive task in a real web page - the operator works the browser with the gui command"}
 	}
 
 	// Before the compound check: "fill in the name, then press Save" is one
