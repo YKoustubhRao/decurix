@@ -191,6 +191,40 @@ class AnArchiveIsNotTrusted(ArchiveBase):
         self.assertIn("leaves the folder", notes[1])
 
 
+class AFolderOfTheSameNameIsNotTheArchives(ArchiveBase):
+    """Review 2026-11-03 (N-F1): a damaged archive deleted a folder of its name the person already had, with their
+    files; a good one wrote into it. An archive unpacks into a folder the unpack itself makes."""
+
+    def setUp(self):
+        super().setUp()
+        (self.inbox / "close").mkdir()
+        self.own = self.inbox / "close" / "own.xlsx"
+        self.own.write_bytes(b"the person's")
+
+    def test_a_damaged_archive_leaves_the_persons_folder_alone(self):
+        archive = make_zip(self.inbox / "close.zip", {"ok.txt": b"fine", "a.bin": b"x" * 5000})
+        real = zipfile.ZipFile.infolist
+
+        def understated(z):
+            infos = real(z)
+            for i in infos:
+                if i.filename == "a.bin":
+                    i.file_size = 10
+            return infos
+
+        with mock.patch.object(zipfile.ZipFile, "infolist", understated):
+            with self.assertRaises(attachments.ArchiveError):
+                attachments.unpack_archive(archive)
+        self.assertEqual(self.own.read_bytes(), b"the person's")
+        self.assertFalse((self.inbox / "close_2").exists())
+
+    def test_a_good_archive_unpacks_beside_it_without_writing_into_it(self):
+        archive = make_zip(self.inbox / "close.zip", {"own.xlsx": b"the archive's"})
+        made = attachments.unpack_archive(archive)
+        self.assertEqual(made, [(self.inbox / "close_2" / "own.xlsx").as_posix()])
+        self.assertEqual(self.own.read_bytes(), b"the person's")
+
+
 class TheWatcherUnpacksBeforeAnythingReadsTheRequest(ArchiveBase):
     def test_a_new_request_goes_to_its_handler_with_the_unpacked_files_named(self):
         archive = make_zip(self.inbox / "close.zip", {"a.xlsx": b"1", "sub/b.xlsx": b"2"})
