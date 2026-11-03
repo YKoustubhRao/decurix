@@ -266,7 +266,8 @@ func sharedNotDataDir(path, shown string) error {
 			p = real
 		}
 		p = filepath.ToSlash(filepath.Clean(p))
-		if runtime.GOOS == "windows" || strings.HasPrefix(strings.ToLower(p), "/mnt/") {
+		// Windows and macOS (APFS by default) do not tell names apart by case, nor does a WSL /mnt/ path (RW1-D).
+		if runtime.GOOS == "windows" || runtime.GOOS == "darwin" || strings.HasPrefix(strings.ToLower(p), "/mnt/") {
 			p = strings.ToLower(p)
 		}
 		return strings.TrimRight(p, "/") + "/"
