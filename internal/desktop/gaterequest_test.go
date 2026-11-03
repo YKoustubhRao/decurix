@@ -141,3 +141,31 @@ func TestInvalidUTF8IsSignedAsItIsSent(t *testing.T) {
 		t.Fatalf("signature %s, the gate computes %s", got, f.Case.Sig)
 	}
 }
+
+// Whether a desktop has a gate is read from what the control plane wrote: its label ("0" is the only no; none, an
+// older desktop, is gated), and the key; never from a file inside the desktop.
+func TestHasGateReadsTheControlPlanesLabel(t *testing.T) {
+	for labels, want := range map[string]bool{"": true, "1": true, "0": false} {
+		fake := &fakeAPI{}
+		l := map[string]string{}
+		if labels != "" {
+			l[GateLabel] = labels
+		}
+		fake.inspect = func(string) (container.InspectResponse, error) {
+			return container.InspectResponse{ContainerJSONBase: &container.ContainerJSONBase{ID: "c"}, Config: &container.Config{Labels: l}}, nil
+		}
+		m := newManagerWith(fake)
+		m.HostGUISecret = []byte("secret")
+		if got := m.HasGate(context.Background(), "box"); got != want {
+			t.Errorf("label %q: HasGate = %v", labels, got)
+		}
+	}
+	if newManagerWith(&fakeAPI{}).HasGate(context.Background(), "box") {
+		t.Error("a control plane with no key to sign with says a desktop has a gate")
+	}
+	_, _, _ = buildContainerConfigs("img", "desktop_box", "basic", "thebot", 1, 1024, nil, "vol", nil)
+	cfg, _, _ := buildContainerConfigs("img", "desktop_box", "basic", "thebot", 1, 1024, nil, "vol", nil)
+	if cfg.Labels[GateLabel] != "1" {
+		t.Errorf("a new desktop is not labelled as gated: %v", cfg.Labels)
+	}
+}

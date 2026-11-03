@@ -367,6 +367,9 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 		"desktop-model":          desktopModel(env),
 		"desktop-specialization": envValue(env, "DESKTOP_SPECIALIZATION"),
 		"desktop-parent-id":      envValue(env, "DESKTOP_PARENT_ID"),
+		// The control plane's own record that this desktop runs an approval gate (prepareGate refuses an image
+		// without one): what HasGate reads, never a file inside the desktop.
+		GateLabel: "1",
 	}
 	if len(shared) > 0 && shared[0] != nil {
 		labels[sharedLabel] = shared[0].Host

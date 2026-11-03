@@ -26,7 +26,7 @@ import (
 // SignGateReply is the signature the gate checks: over the task, the time, a one-use nonce, digests of the reply and
 // of the question it answers, its kind and the id of the gate's request it answers ("" for any other question).
 func SignGateReply(key, taskID, ts, nonce, text, asked, kind, requestID string) string {
-	th, ah := sha256.Sum256([]byte(text)), sha256.Sum256([]byte(asked))
+	th, ah := sha256.Sum256([]byte(GateText(text))), sha256.Sum256([]byte(GateText(asked)))
 	return gateMAC(key, "reply", taskID, ts, nonce, hex.EncodeToString(th[:]), hex.EncodeToString(ah[:]), kind, requestID)
 }
 
@@ -81,7 +81,7 @@ func (m *Manager) SendGateReply(ctx context.Context, id, taskID, text, asked, ki
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	n := hex.EncodeToString(nonce)
 	body, err := json.Marshal(map[string]string{
-		"task_id": taskID, "ts": ts, "nonce": n, "text": text, "asked": asked, "kind": kind, "request_id": requestID,
+		"task_id": taskID, "ts": ts, "nonce": n, "text": GateText(text), "asked": GateText(asked), "kind": kind, "request_id": requestID,
 		"sig": SignGateReply(key, taskID, ts, n, text, asked, kind, requestID),
 	})
 	if err != nil {
@@ -177,27 +177,22 @@ func GateText(s string) string {
 	return b.String()
 }
 
-// HasGate reports whether desktop id runs an approval gate: its image has the gate's user. A desktop made before the
-// gate (its image has none) is told nothing and keeps today's behaviour. The answer is kept per container; one that
-// cannot be read is taken as gated (fail closed).
+// GateLabel is the label the control plane puts on every desktop it creates with an approval gate.
+const GateLabel = "decurix.gate"
+
+// HasGate reports whether desktop id runs an approval gate, from what the control plane itself wrote: the label set
+// at create, and the key it signs with. "0" (a desktop the control plane made without one) is the only "no"; a
+// desktop with no label (made before the label) is taken as gated (fail closed), never decided by a file inside the
+// desktop, which its worker could rewrite (review CP-A-3 N2).
 func (m *Manager) HasGate(ctx context.Context, id string) bool {
 	if m.GateKey(id) == "" {
 		return false
 	}
 	inspect, err := m.client.ContainerInspect(ctx, "desktop_"+sanitizeName(id))
-	if err != nil {
+	if err != nil || inspect.Config == nil {
 		return true
 	}
-	if v, ok := m.gated.Load(inspect.ID); ok {
-		return v.(bool)
-	}
-	passwd, err := m.copyOut(ctx, inspect.ID, "/etc/passwd", 1<<20)
-	if err != nil {
-		return true
-	}
-	has := tarHasUser(passwd, GateUser)
-	m.gated.Store(inspect.ID, has)
-	return has
+	return inspect.Config.Labels[GateLabel] != "0"
 }
 
 // postToGate posts one signed body to desktop id's gate at path: body makes it from the key, the time and a fresh

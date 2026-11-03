@@ -305,3 +305,25 @@ func TestAHeldValueIsWithheldInsideParsedJSON(t *testing.T) {
 		}
 	}
 }
+
+// The backstop: a held value that needs escaping, inside JSON that is a string literal, after prose, or NDJSON, is
+// withheld whole when the parser does not reach it (review CP-A-3 N1).
+func TestAHeldValueUnderEscapesTheParserMissedIsWithheldWhole(t *testing.T) {
+	v := `Qz"9-lämp\Hx`
+	inner, _ := json.Marshal(map[string]string{"command": "gui type e3 " + v})
+	literal, _ := json.Marshal(string(inner)) // arguments double-encoded as a string
+	for name, in := range map[string]string{
+		"a string literal": string(literal),
+		"after prose":      "exit 0\n" + string(inner),
+		"NDJSON":           string(inner) + "\n" + string(inner),
+		"upper-case hex":   `{"c":"Qz\"9-l\u00E4mp\Hx"} trailing`,
+	} {
+		out := WithholdValues(in, []string{v})
+		if strings.Contains(out, "9-l") {
+			t.Errorf("%s: %q keeps the value", name, out)
+		}
+	}
+	if got := WithholdValues(`{"c":"gui click e4"} tail`, []string{v}); got != `{"c":"gui click e4"} tail` {
+		t.Errorf("a string with no held value was changed: %q", got)
+	}
+}

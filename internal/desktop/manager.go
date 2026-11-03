@@ -93,8 +93,6 @@ type Manager struct {
 	// toolsRW keeps a tools refresh and a desktop start apart: every start of a desktop holds it shared, a populate
 	// holds it alone and counts the running desktops under it, so no desktop boots while /opt/tools is replaced.
 	toolsRW sync.RWMutex
-	// gated is, per container id, whether its image has the approval gate's user (HasGate).
-	gated sync.Map
 	// toolsWaiting: the last populate found a newer tools image but left the volume as it was, because desktops
 	// were running (tools.go); the status banner says so until a later populate applies it.
 	toolsWaiting atomic.Bool

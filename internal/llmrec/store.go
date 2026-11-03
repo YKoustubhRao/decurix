@@ -11,10 +11,12 @@ import (
 	"io"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/YKoustubhRao/decurix/internal/blobstore"
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
@@ -79,7 +81,7 @@ func (s *Store) record(c Call) error {
 		return errors.New("no store")
 	}
 	problems := append([]string(nil), c.Problems...)
-	w := withholder{secrets: secretForms(c.Secrets), put: s.blobs.PutBytes}
+	w := withholder{secrets: secretForms(c.Secrets), raw: c.Secrets, put: s.blobs.PutBytes}
 	if c.NoBodies {
 		// Hashes only: the row and its prefix are kept, the text is not (its secrets may be unknown here).
 		w.put = func(b []byte) (string, error) { return blobstore.SHA256(b), nil }
@@ -123,8 +125,6 @@ func (s *Store) record(c Call) error {
 		}
 		params = string(b)
 	}
-	problems = append(problems, w.problems...)
-
 	responseSHA := ""
 	if len(c.Response) > 0 {
 		var answer any
@@ -144,6 +144,8 @@ func (s *Store) record(c Call) error {
 		}
 		responseSHA = sha
 	}
+
+	problems = append(problems, w.problems...)
 
 	at := c.At
 	if at.IsZero() {
@@ -204,6 +206,7 @@ func orUntagged(p string) string {
 // withhold.Text finds. An image sent as a data: URL is stored as a blob and replaced by a reference to it.
 type withholder struct {
 	secrets  []string
+	raw      []string                     // the held values themselves, for the backstop (text)
 	put      func([]byte) (string, error) // stores a body and names it by its hash
 	problems []string
 }
@@ -295,15 +298,105 @@ func (w *withholder) image(part map[string]any) (map[string]any, bool) {
 	return map[string]any{"type": "image_ref", "sha256": sha, "mime": mime}, true
 }
 
-// text is s with the marked secrets and what withhold.Text finds withheld.
+// text is s with the marked secrets and what withhold.Text finds withheld. Last, a backstop that fails closed: if a
+// held value still shows once JSON escapes are undone (up to three layers: a string literal holding JSON, NDJSON,
+// JSON after prose, any escaping the parser and the listed forms did not reach), the whole string is withheld and a
+// problem says so (review CP-A-3 N1).
 func (w *withholder) text(s string) string {
-	return withhold.Text(replaceForms(s, w.secrets))
+	out := withhold.Text(replaceForms(s, w.secrets))
+	if len(w.raw) == 0 || !strings.Contains(out, "\\") {
+		return out
+	}
+	layer := out
+	for i := 0; i < 3; i++ {
+		next := unescapeJSON(layer)
+		if next == layer {
+			break
+		}
+		for _, v := range w.raw {
+			if strings.TrimSpace(v) != "" && strings.Contains(next, v) {
+				w.problems = append(w.problems, "a string was withheld whole: a held value was under JSON escapes")
+				return withhold.Marker
+			}
+		}
+		layer = next
+	}
+	return out
+}
+
+// unescapeJSON is s with every JSON string escape in it undone (\", \\, \/, \b, \f, \n, \r, \t, \uXXXX in either
+// case, surrogate pairs joined); anything else is left as it is.
+func unescapeJSON(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c != '\\' || i+1 >= len(s) {
+			b.WriteByte(c)
+			continue
+		}
+		switch e := s[i+1]; e {
+		case '"', '\\', '/':
+			b.WriteByte(e)
+			i++
+		case 'b':
+			b.WriteByte('\b')
+			i++
+		case 'f':
+			b.WriteByte('\f')
+			i++
+		case 'n':
+			b.WriteByte('\n')
+			i++
+		case 'r':
+			b.WriteByte('\r')
+			i++
+		case 't':
+			b.WriteByte('\t')
+			i++
+		case 'u':
+			r, n := hexRune(s[i+2:])
+			if n == 0 {
+				b.WriteByte(c)
+				continue
+			}
+			if utf16.IsSurrogate(r) && strings.HasPrefix(s[i+2+n:], "\\u") {
+				if r2, n2 := hexRune(s[i+4+n:]); n2 > 0 {
+					if joined := utf16.DecodeRune(r, r2); joined != utf8.RuneError {
+						b.WriteRune(joined)
+						i += 1 + n + 2 + n2
+						continue
+					}
+				}
+			}
+			b.WriteRune(r)
+			i += 1 + n
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// hexRune reads four hex digits (either case) at the start of s: the rune and 4, or 0 when there are none.
+func hexRune(s string) (rune, int) {
+	if len(s) < 4 {
+		return 0, 0
+	}
+	v, err := strconv.ParseUint(s[:4], 16, 32)
+	if err != nil {
+		return 0, 0
+	}
+	return rune(v), 4
 }
 
 // WithholdValues is text with every one of values withheld (as written, and as it reads inside a JSON string), then
 // what withhold.Text finds: the wall the recorder puts in front of what it stores, for other stores to use too.
 func WithholdValues(text string, values []string) string {
-	return withhold.Text(replaceForms(text, secretForms(values)))
+	w := withholder{secrets: secretForms(values), raw: values}
+	return w.text(text)
 }
 
 // replaceForms is s with each of forms (secretForms: longest first) replaced by withhold.Marker.
