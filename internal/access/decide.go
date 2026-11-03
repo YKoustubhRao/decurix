@@ -112,7 +112,7 @@ func (s *Store) Decide(actor User, worker string, workerRoles []string, taskID, 
 
 	case !CanApprove(actor, req):
 		d.Outcome = OutcomeRefused
-		d.Message = "This needs approval from " + describe(req) + "."
+		d.Message = "This needs approval from " + describe(req) + "." + amountNote(req)
 		if actor.ID == "" {
 			d.Message += " Sign in with your own name to approve it."
 		}
@@ -137,7 +137,7 @@ func (s *Store) Decide(actor User, worker string, workerRoles []string, taskID, 
 			d.Allowed, d.Outcome = true, OutcomeAllowed
 		default:
 			d.Outcome = OutcomeHeld
-			d.Message = "Your yes is recorded. This needs a second approver (" + describe(req) + ") before it goes ahead."
+			d.Message = "Your yes is recorded. This needs a second approver (" + describe(req) + ") before it goes ahead." + amountNote(req)
 		}
 	}
 

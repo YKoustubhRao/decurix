@@ -1,6 +1,9 @@
 package access
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // An approval threshold errs high: a small marked figure never hides a large one, and with no money at all the
 // amount is unknown, so the policy applies.
@@ -126,5 +129,30 @@ func TestLargestAmountSkipsDatesAndIdentifiers(t *testing.T) {
 		if got == nil || *got != c.want {
 			t.Errorf("%q: got %v want %v", c.text, deref(got), c.want)
 		}
+	}
+}
+
+// An amount policy that applies only because no amount could be read says so to the approver: the card and the
+// refusal name the reason, so a stricter rule firing is not a mystery (REVIEW-3 follow-up 6).
+func TestAnUnknownAmountIsToldToTheApprover(t *testing.T) {
+	s := newStore(t)
+	_, _ = s.SavePolicy(Policy{ActionMatch: `\bpay\b`, AmountOver: f(1000), ApproverRoles: []string{"finance"}})
+	clerk, _ := s.CreateUser("clerk", "password-1", []string{"clerk"})
+
+	known, _ := s.Required("w1", nil, "Approval needed: pay $5,000 to the supplier.")
+	if known.AmountUnknown {
+		t.Fatalf("an amount that was read is not unknown: %+v", known)
+	}
+	unknown, _ := s.Required("w1", nil, "Approval needed: pay the supplier's invoice.")
+	if len(unknown.Policies) != 1 || !unknown.AmountUnknown {
+		t.Fatalf("the policy applies because the amount is unknown, and says so: %+v", unknown)
+	}
+	d, _ := s.Decide(clerk, "w1", nil, "t1", "Approval needed: pay the supplier's invoice.", "yes")
+	if d.Allowed || !strings.Contains(d.Message, "amount could not be read") {
+		t.Fatalf("the refusal must say the amount was unknown: %+v", d)
+	}
+	d, _ = s.Decide(clerk, "w1", nil, "t2", "Approval needed: pay $5,000 to the supplier.", "yes")
+	if strings.Contains(d.Message, "amount could not be read") {
+		t.Fatalf("a known amount must not be called unknown: %+v", d)
 	}
 }

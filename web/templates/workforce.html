@@ -1180,6 +1180,7 @@ td.actions{white-space:nowrap;text-align:right}
       }else{
         out.appendChild(node("div", null, "Needs approval from " + r.approvers + (req.min_approvers > 1 ? ", " + req.min_approvers + " different people" : "") + "."));
         if(req.amount !== undefined && req.amount !== null){ out.appendChild(node("div", "wf-muted", "Largest amount read: " + req.amount)); }
+        if(req.amount_unknown){ out.appendChild(node("div", "wf-muted", "Amount unknown, so the policy for larger amounts applied.")); }
         ps.forEach(function(p){
           out.appendChild(node("div", "wf-muted", "Policy: " + (p.note || p.action_match || "every approval") + " → " + (p.approver_roles || []).join(" or ")));
         });
