@@ -416,7 +416,7 @@ def _payment_findings(request, made, found=None):
     for payee, ident, _where, path in rows:
         paid_to.setdefault((path, ident), set()).add(payee)
 
-    wrong, approve, unsure, nothing = {}, [], [], []
+    wrong, approving, unsure, nothing = {}, {}, [], []
     for payee, ident, where, path in rows:
         places = on_record.get(ident, [])
         own, files_on_record = recorded_for(payee)
@@ -438,9 +438,8 @@ def _payment_findings(request, made, found=None):
                               "before this is used; it is not checked until you do.")
         elif ident in in_messages:
             if given and not own:
-                approve.append(f"PAYMENT DETAILS FROM A MESSAGE, FOR YOUR APPROVAL: {where} pays {payee or 'a payee'} "
-                               f"to {ident}, taken from the message \"{in_messages[ident]}\" (the request gives "
-                               "messages as the source of these details; no record holds an account for this payee).")
+                entry = approving.setdefault((where, payee), {"idents": [], "message": in_messages[ident]})
+                entry["idents"].append(ident)
             elif own or on_record:
                 entry = wrong.setdefault((where, payee), {"idents": [], "kind": "message", "detail": ""})
                 entry["idents"].append(ident)
@@ -463,6 +462,10 @@ def _payment_findings(request, made, found=None):
         else:
             nothing.append((payee, path))
 
+    approve = [f"PAYMENT DETAILS FROM A MESSAGE, FOR YOUR APPROVAL: {where} pays {payee or 'a payee'} to "
+               f"{' / '.join(dict.fromkeys(entry['idents']))}, taken from the message \"{entry['message']}\" (the "
+               "request gives messages as the source of these details; no record holds an account for this payee)."
+               for (where, payee), entry in approving.items()]
     out = []
     for (where, payee), entry in wrong.items():
         idents = " / ".join(dict.fromkeys(entry["idents"]))

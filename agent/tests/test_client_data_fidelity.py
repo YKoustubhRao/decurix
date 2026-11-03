@@ -6,6 +6,7 @@ docx replace that never ended, two document numbers taken for one, a leading zer
 power in a formula, "po1" taken for "po12.pdf", and an address's PIN code withheld as a secret.
 """
 
+from needs import needs
 import threading
 import unittest
 
@@ -20,12 +21,17 @@ from decurix_agent.tools import office
 
 class LongDigitsStayText(unittest.TestCase):
     def test_identifiers_in_digits_are_not_made_numbers(self):
-        for ident in ("123456789012345678", "234567890123", "0012345", "9876543210123456"):
+        # Digits a number would change stay text: more than 15 digits, a leading zero (review 2026-11-03, F-08: by
+        # what a number would lose, not by a length or a label). 12-15 digits are kept exactly as a number, shown whole.
+        for ident in ("123456789012345678", "0012345", "9876543210123456"):
             self.assertEqual(office._cell_value(ident), ident)
+        self.assertEqual(office._cell_value("234567890123"), 234567890123)
+        self.assertTrue(office._shown_whole(office._cell_value("234567890123")))
         self.assertEqual(office._cell_value("125000000"), 125000000)  # a 12.5 crore amount is still a number
         self.assertEqual(office._cell_value("4500.50"), 4500.5)
 
 
+@needs("lxml")
 class DocxReplaceEnds(unittest.TestCase):
     def test_a_value_holding_its_key_is_replaced_once(self):
         from lxml import etree
