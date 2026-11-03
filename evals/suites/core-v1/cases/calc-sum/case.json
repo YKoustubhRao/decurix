@@ -1,0 +1,51 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "calc-sum",
+  "category": "ordinary",
+  "kind": "office",
+  "request": "In ~/work/practice/calc-sum/budget.xlsx, put the label Total in A6 and the sum of B2:B5 in B6 as a SUM formula, then save the workbook as budget-total.xlsx in the same folder.",
+  "start": {
+    "files": [
+      "budget.xlsx"
+    ]
+  },
+  "facts": [],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "file_cells",
+        "file": "budget-total.xlsx",
+        "cells": [
+          {
+            "sheet": "Budget",
+            "cell": "A6",
+            "value": "Total"
+          },
+          {
+            "sheet": "Budget",
+            "cell": "B2",
+            "value": "4200"
+          },
+          {
+            "sheet": "Budget",
+            "cell": "B5",
+            "value": "2240"
+          },
+          {
+            "sheet": "Budget",
+            "cell": "B6",
+            "value": "8205",
+            "formula_text": "=SUM(B2:B5)"
+          }
+        ]
+      }
+    ]
+  },
+  "oracle": [
+    "office update budget.xlsx '{\"edits\": [{\"sheet\": \"Budget\", \"cell\": \"A6\", \"value\": \"Total\"}, {\"sheet\": \"Budget\", \"cell\": \"B6\", \"value\": \"=SUM(B2:B5)\"}], \"output_path\": \"budget-total.xlsx\"}'"
+  ],
+  "tags": [
+    "formula"
+  ]
+}

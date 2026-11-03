@@ -1,0 +1,41 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "web-edit-email",
+  "category": "varied",
+  "kind": "web_form",
+  "request": "In the Records app (http://records.example.test/users), change Raj Mehta's email address to raj.mehta@example.org.",
+  "start": {
+    "files": [],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "mock_records",
+        "collection": "users",
+        "exact_count": true,
+        "records": [
+          {
+            "id": {
+              "number": "2"
+            },
+            "name": "Raj Mehta",
+            "email": {
+              "id": "raj.mehta@example.org"
+            },
+            "role": "Editor"
+          }
+        ]
+      }
+    ]
+  },
+  "oracle": [
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode 'name=Raj Mehta' --data-urlencode email=raj.mehta@example.org --data-urlencode role=Editor http://records.example.test/users/2/edit"
+  ],
+  "tags": [
+    "edit"
+  ]
+}

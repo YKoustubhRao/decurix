@@ -1,0 +1,70 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "bill-needs-ledger",
+  "category": "missing_input",
+  "kind": "doc_to_record",
+  "request": "Enter the bill in ~/work/practice/bill-needs-ledger/bill.pdf into the Records app (http://records.example.test/bills/new).",
+  "start": {
+    "files": [
+      "bill.pdf"
+    ],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [
+    {
+      "id": "cost-centre",
+      "about": "which cost centre this bill is charged to",
+      "answer": "Charge it to Project Birch.",
+      "required": true
+    }
+  ],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "mock_records",
+        "collection": "bills",
+        "exact_count": true,
+        "records": [
+          {
+            "number": {
+              "id": "FJ-1190"
+            },
+            "vendor": {
+              "text": "Finch Joinery Works"
+            },
+            "date": {
+              "date": "2026-06-02"
+            },
+            "due": {
+              "date": "2026-07-02"
+            },
+            "total": {
+              "number": "3540.00"
+            },
+            "cost_centre": "Project Birch"
+          }
+        ]
+      },
+      {
+        "kind": "asked",
+        "facts": [
+          "cost-centre"
+        ]
+      },
+      {
+        "kind": "absent",
+        "collection": "bills",
+        "when": "asked"
+      }
+    ]
+  },
+  "oracle": [
+    "office read bill.pdf | grep -q FJ-1190",
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode number=FJ-1190 --data-urlencode 'vendor=Finch Joinery Works' --data-urlencode date=2026-06-02 --data-urlencode due=2026-07-02 --data-urlencode total=3,540.00 --data-urlencode 'cost_centre=Project Birch' --data-urlencode notes= http://records.example.test/bills/new"
+  ],
+  "tags": [
+    "question"
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "web-create-user",
+  "category": "ordinary",
+  "kind": "web_form",
+  "request": "In the Records app (http://records.example.test/users), add a new user: Lena Ortiz, email lena.ortiz@example.test, role Editor.",
+  "start": {
+    "files": [],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "mock_records",
+        "collection": "users",
+        "exact_count": true,
+        "records": [
+          {
+            "name": {
+              "text": "Lena Ortiz"
+            },
+            "email": {
+              "id": "lena.ortiz@example.test"
+            },
+            "role": "Editor"
+          }
+        ]
+      }
+    ]
+  },
+  "oracle": [
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode 'name=Lena Ortiz' --data-urlencode email=lena.ortiz@example.test --data-urlencode role=Editor http://records.example.test/users/new"
+  ],
+  "tags": [
+    "form"
+  ]
+}

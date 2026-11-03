@@ -28,3 +28,7 @@ agent/chromium-browser text eol=lf
 # Becomes .env, which docker/Dockerfile copies into the Linux control plane.
 .env.example text eol=lf
 agent/handoff text eol=lf
+# Eval suites: inputs are the exact bytes their graders and the case-set hash (Suite.SHA) are computed from. A
+# text-only PDF has no NUL byte, so git would take it for text and rewrite its line ends on a Windows checkout,
+# breaking its offsets; nothing under a suite is converted.
+evals/suites/** -text

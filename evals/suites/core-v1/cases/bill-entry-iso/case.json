@@ -1,0 +1,56 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "bill-entry-iso",
+  "category": "ordinary",
+  "kind": "doc_to_record",
+  "request": "Enter the bill in ~/work/practice/bill-entry-iso/bill.pdf into the Records app (http://records.example.test/bills/new). Charge it to General.",
+  "start": {
+    "files": [
+      "bill.pdf"
+    ],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "mock_records",
+        "collection": "bills",
+        "exact_count": true,
+        "records": [
+          {
+            "number": {
+              "id": "BL-2041"
+            },
+            "vendor": {
+              "text": "Bluebell Stationers"
+            },
+            "date": {
+              "date": "2026-03-12"
+            },
+            "due": {
+              "date": "2026-04-11"
+            },
+            "total": {
+              "number": "1416.00"
+            },
+            "cost_centre": "General"
+          }
+        ]
+      },
+      {
+        "kind": "ledger_readback",
+        "records": 1
+      }
+    ]
+  },
+  "oracle": [
+    "office read bill.pdf | grep -q BL-2041",
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode number=BL-2041 --data-urlencode 'vendor=Bluebell Stationers' --data-urlencode date=2026-03-12 --data-urlencode due=2026-04-11 --data-urlencode total=1,416.00 --data-urlencode cost_centre=General --data-urlencode notes= http://records.example.test/bills/new"
+  ],
+  "tags": [
+    "document"
+  ]
+}

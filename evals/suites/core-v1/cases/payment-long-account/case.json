@@ -1,0 +1,51 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "payment-long-account",
+  "category": "varied",
+  "kind": "doc_to_record",
+  "request": "Record a payment of 12,400.00 dated 2026-05-14 to the first payee listed in ~/work/practice/payment-long-account/payees.xlsx, reference May freight, in the Records app (http://records.example.test/payments/new).",
+  "start": {
+    "files": [
+      "payees.xlsx"
+    ],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "mock_records",
+        "collection": "payments",
+        "exact_count": true,
+        "records": [
+          {
+            "payee": {
+              "text": "Harbour Freight Lines"
+            },
+            "account": {
+              "number": "7302441987654321"
+            },
+            "amount": {
+              "number": "12400"
+            },
+            "date": {
+              "date": "2026-05-14"
+            },
+            "reference": {
+              "text": "May freight"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "oracle": [
+    "office read payees.xlsx | grep -q 7302441987654321",
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode 'payee=Harbour Freight Lines' --data-urlencode account=7302441987654321 --data-urlencode amount=12,400.00 --data-urlencode date=2026-05-14 --data-urlencode 'reference=May freight' http://records.example.test/payments/new"
+  ],
+  "tags": [
+    "long-number"
+  ]
+}
