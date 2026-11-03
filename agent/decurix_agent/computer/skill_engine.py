@@ -154,7 +154,8 @@ def run(skill, params=None, start=1, source_files=None):
     """
 
     REPLAYED_DIR.mkdir(parents=True, exist_ok=True)
-    lock_path = REPLAYED_DIR / f".lock-{_scope()}-{_note_key(skill, params).replace('#', '-')}"
+    # One run of a skill at a time in a scope, whatever its values (its note is kept by values: _note_key).
+    lock_path = REPLAYED_DIR / f".lock-{_scope()}-{skill.get('name') or 'skill'}"
     try:
         handle = open(lock_path, "a+")
     except OSError as exc:
@@ -345,15 +346,24 @@ def _note_replayed(name, last, stopped=None):
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        done = _read_replayed(path) if path.exists() else {}
-        done["#at"] = time.time()
-        if stopped is not None:
-            done[f"{name}#stopped"] = stopped
-        else:
-            done[name] = last
-            done.pop(f"{name}#stopped", None)
-        path.write_text(json.dumps(done), encoding="utf-8")
-        for old in sorted(REPLAYED_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime)[:-KEEP_REPLAYED]:
-            old.unlink()
+        # The note file is read, changed and written back: one writer at a time, across processes (review round 2).
+        with open(REPLAYED_DIR / ".notes.lock", "a+") as guard:
+            filelock.exclusive(guard)
+            _write_note(path, name, last, stopped)
     except (OSError, ValueError):
         pass
+
+
+def _write_note(path, name, last, stopped):
+    """_note_replayed's change to the note file, under its lock."""
+
+    done = _read_replayed(path) if path.exists() else {}
+    done["#at"] = time.time()
+    if stopped is not None:
+        done[f"{name}#stopped"] = stopped
+    else:
+        done[name] = last
+        done.pop(f"{name}#stopped", None)
+    path.write_text(json.dumps(done), encoding="utf-8")
+    for old in sorted(REPLAYED_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime)[:-KEEP_REPLAYED]:
+        old.unlink()

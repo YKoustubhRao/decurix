@@ -637,6 +637,16 @@ def run_rows(skill, values):
     return len(names), names
 
 
+def _per_row(step, twin):
+    """Whether a row's step acts on a control of its own row: its twin in the row before is the same kind of control
+    (role and name) at another path. Unknown (no twin, or no path) is not."""
+
+    a, b = (step or {}).get("target") or {}, (twin or {}).get("target") or {}
+    if not a or not b or not a.get("path") or not b.get("path"):
+        return False
+    return a.get("role") == b.get("role") and a.get("name") == b.get("name") and a["path"] != b["path"]
+
+
 def fit(skill, program, values):
     """This run's program: `program` with this run's number of rows and this run's choices from lists (see above)."""
 
@@ -664,10 +674,17 @@ def fit(skill, program, values):
                     params.pop(name, None)
             else:
                 template = steps[last[demo - 2] + 1:last[demo - 1] + 1]
+                # Each template step's twin in the row before it (aligned from the row's end): a control that is
+                # another one in each row (another path) is that row's, and is found by its place among its name.
+                floor = last[demo - 3] if demo >= 3 else -1
+                twin = {}
+                for o in range(len(template)):
+                    i = last[demo - 2] - (len(template) - 1 - o)
+                    twin[o] = steps[i] if i > floor else None
                 extra = []
                 for r in range(demo, count):
                     rename = dict(zip(group["rows"][demo - 1], names[r]))
-                    for original in template:
+                    for o, original in enumerate(template):
                         each = copy.deepcopy(original)
                         old = each.get("param")
                         if old in rename:
@@ -675,12 +692,15 @@ def fit(skill, program, values):
                             base_of[rename[old]] = old
                             params[rename[old]] = dict(params.get(old) or {"label": old, "example": None},
                                                        name=rename[old], default=None)
-                        # Which row a control is in was the demonstration's row: this one is the same control in
-                        # row r + 1 - the (r + 1)th of its name, never the first one found by name alone, which is
-                        # an earlier row's (review 2026-11-03, D-30: a row's value went over the first row's).
+                        # Which row a control is in was the demonstration's row. A control that is another one in
+                        # each demonstrated row (_per_row) is row r + 1's: the (r + 1)th of its name, never the first
+                        # one found by name alone, an earlier row's (review 2026-11-03, D-30). One the rows share (an
+                        # add-row press, an editor drawn only in the active row) is found by what it is.
                         if each.get("target"):
+                            per_row = _per_row(original, twin.get(o))
                             each["target"] = {k: v for k, v in each["target"].items() if k not in ("path", "row", "nth")}
-                            each["target"]["nth"] = r + 1
+                            if per_row:
+                                each["target"]["nth"] = r + 1
                         each["expect"] = []
                         each["summary"] = f"{replay._summary(each)} (row {r + 1})"
                         extra.append(each)

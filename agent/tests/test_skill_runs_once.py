@@ -28,8 +28,8 @@ class OneRunAtATime(unittest.TestCase):
 
     def test_a_second_run_while_one_runs_is_refused(self):
         skill = {"name": "add-a-thing", "title": "Add a thing", "steps": []}
-        key = skill_engine._note_key(skill, None).replace("#", "-")
-        held = open(Path(self.tmp.name) / f".lock-no-task-{key}", "a+")
+        # The lock is the skill's in its scope, whatever the values (other values are refused while it runs too).
+        held = open(Path(self.tmp.name) / ".lock-no-task-add-a-thing", "a+")
         self.addCleanup(held.close)
         self.assertTrue(filelock.try_exclusive(held))
         with mock.patch.object(skill_engine, "_run") as run:
