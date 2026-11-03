@@ -62,7 +62,7 @@ const (
 
 // LocalOwner is the actor of a request on the primary listener with access control off: the person at this
 // machine, who owns it.
-var LocalOwner = Actor{ID: "local", Roles: []string{"owner"}, Kind: ActorPerson}
+var LocalOwner = Actor{ID: "local-owner", Name: "Owner (this computer)", Roles: []string{"owner"}, Kind: ActorPerson}
 
 // Judgement kinds (plan R5).
 const (

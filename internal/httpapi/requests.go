@@ -91,7 +91,7 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// A reply typed under one question card answers that question only: if the desktop has since asked something
 	// newer, that newer question is what the reply would land on, so it is refused (review 2026-11-02: a "yes" under
 	// an old card approved a newer action).
-	ctx := s.ActorContext(r)
+	ctx := withDoor(s.ActorContext(r), requestDoor(r))
 	if r.FormValue("secret") == "1" {
 		// The person marked this a secret: it reaches the desktop as typed and is kept nowhere as typed.
 		ctx = context.WithValue(ctx, sentSecretKey{}, true)
@@ -203,6 +203,15 @@ func (s *Server) submitStored(ctx context.Context, desktopID, content string) (t
 
 	route := s.routeRequest(id, content)
 
+	// A reply is a person's judgement (plan R5): it needs its author, and its id is chosen now so the desktop is told
+	// it with the reply (C6). No door that sends a reply lacks an actor; a reply with none is refused before delivery.
+	if route.Kind == tasks.RouteReply {
+		if _, ok := actorFrom(ctx); !ok {
+			return tasks.Route{}, "", errNoReplier
+		}
+		route.JudgementID = tasks.NewJudgementID()
+	}
+
 	// Which question a reply answers, and whether it is bound to the gate's request: only then can it grant anything.
 	var asked, kind, request string
 	if route.Kind == tasks.RouteReply {
@@ -214,8 +223,12 @@ func (s *Server) submitStored(ctx context.Context, desktopID, content string) (t
 
 	// A reply that settles a pending approval is held to the approval policy: who may approve this action
 	// (docs/access.md). Every door passes here; an automated one carries no actor and never approves under a policy.
-	if err := s.gateApprovalReply(ctx, id, route, content); err != nil {
+	approval, err := s.decideApprovalReply(ctx, id, route, content)
+	if err != nil {
 		return tasks.Route{}, "", err
+	}
+	if approval != nil {
+		ctx = context.WithValue(ctx, approvalKey{}, approval)
 	}
 
 	// A reply to an open question goes to the desktop's approval gate first, signed: that is the only way a yes is made.
@@ -373,7 +386,10 @@ func (s *Server) recentlyStarted(ctx context.Context, desktopID string) bool {
 // the records alike.
 func (s *Server) recordDelivered(ctx context.Context, desktopID, content string, route tasks.Route) (tasks.Route, string) {
 	secret, _ := ctx.Value(sentSecretKey{}).(bool)
-	committed, stored, err := s.Tasks.CommitReply(route, s.workerFor(ctx, desktopID), content, secret)
+	by := tasks.ReplyBy{Door: doorFrom(ctx)}
+	by.Actor, _ = actorFrom(ctx)
+	by.Approval, _ = ctx.Value(approvalKey{}).(map[string]any)
+	committed, stored, err := s.Tasks.CommitReply(route, s.workerFor(ctx, desktopID), content, secret, by)
 	if err != nil {
 		log.Printf("sendRequest: %v", err)
 	} else {

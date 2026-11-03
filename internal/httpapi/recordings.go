@@ -281,13 +281,21 @@ func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	route := s.routeRequest(worker, content)
+	ctx := withDoor(s.ActorContext(r), "chat")
+	if route.Kind == tasks.RouteReply {
+		if _, ok := actorFrom(ctx); !ok {
+			uploadError(w, errNoReplier)
+			return
+		}
+		route.JudgementID = tasks.NewJudgementID()
+	}
 
-	if err := s.deliverRequest(r.Context(), id, content, route.TaskID); err != nil {
+	if err := s.deliverRequest(ctx, id, content, route.TaskID); err != nil {
 		sendRequestError(w, err)
 		return
 	}
 
-	route, _ = s.recordDelivered(r.Context(), worker, content, route)
+	route, _ = s.recordDelivered(ctx, worker, content, route)
 
 	jsonResponse(w, map[string]string{"status": "sent", "task_id": route.TaskID, "content": content})
 }

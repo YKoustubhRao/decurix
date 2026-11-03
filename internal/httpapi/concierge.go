@@ -137,7 +137,7 @@ func (s *Server) conciergeAnswerHandler(w http.ResponseWriter, r *http.Request) 
 		jsonStatusError(w, http.StatusConflict, "This approval can't be answered here - answer it on its card on the dashboard.")
 		return
 	}
-	ctx := context.WithValue(s.ActorContext(r), replyNoteKey{}, noteID)
+	ctx := context.WithValue(withDoor(s.ActorContext(r), "concierge"), replyNoteKey{}, noteID)
 	if err := s.Concierge.Answer(context.WithoutCancel(ctx), n, answer == "yes"); err != nil {
 		if errors.Is(err, concierge.ErrNotWaitingApproval) {
 			jsonStatusError(w, http.StatusConflict, "That job is no longer waiting on this approval.")
@@ -166,7 +166,7 @@ func (s *Server) conciergeSendHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	// Queued, not processed here: waking a stopped desktop can take a minute. Typed words answer no approval
 	// (replyBinding); the bound Approve/Deny buttons go through conciergeAnswerHandler, with who answered.
-	msg, err := s.Concierge.Handle(context.WithoutCancel(s.ActorContext(r)), text)
+	msg, err := s.Concierge.Handle(context.WithoutCancel(withDoor(s.ActorContext(r), "concierge")), text)
 	if err != nil {
 		jsonStatusError(w, http.StatusBadRequest, "type a message first")
 		return

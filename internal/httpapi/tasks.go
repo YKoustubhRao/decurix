@@ -336,7 +336,14 @@ func (s *Server) taskVerdictHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := s.Tasks.SetVerdict(id, verdict, note)
+	// A verdict is a person's judgement (plan R5): it is stored with who gave it, and a request with nobody to author
+	// it (a desktop's own) is refused.
+	actor, ok := s.actorOf(r)
+	if !ok {
+		jsonStatusError(w, http.StatusForbidden, "a verdict is a person's to give")
+		return
+	}
+	task, err := s.Tasks.SetVerdict(id, verdict, note, actor)
 	if errors.Is(err, tasks.ErrNotFound) {
 		jsonStatusError(w, http.StatusNotFound, "no such task")
 		return

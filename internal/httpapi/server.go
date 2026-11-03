@@ -470,6 +470,8 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/llm/calls", s.humansOnly(s.llmCallsHandler))
 	mux.HandleFunc("/api/llm/calls/stats", s.humansOnly(s.llmCallStatsHandler))
 	mux.HandleFunc("/api/llm/blobs/", s.humansOnly(s.llmBlobHandler))
+	// Every human input with its author (plan R5): a person's to read, at this machine (judgements.go).
+	mux.HandleFunc("/api/judgements", s.humansOnly(s.judgementsHandler))
 	// Where something is on a screenshot, for a desktop's `gui` (grounder.go).
 	mux.HandleFunc("/api/grounder", s.grounderStatusHandler)
 	mux.HandleFunc("/api/grounder/locate", s.grounderLocateHandler)

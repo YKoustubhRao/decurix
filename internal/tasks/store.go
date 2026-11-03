@@ -166,6 +166,9 @@ type Intervention struct {
 	RepliedAt   time.Time `json:"replied_at"`
 	// Secret says the desktop asked this for a secret (a password or code field): its reply is kept withheld whole.
 	Secret bool `json:"secret"`
+	// ReplierID is who answered it, and JudgementID the judgement that answer is ("" before plan R5).
+	ReplierID   string `json:"replier_id"`
+	JudgementID string `json:"judgement_id"`
 }
 
 // Event is one entry of an execution's timeline: a step or an intervention.
@@ -239,6 +242,9 @@ type Route struct {
 	TaskID         string `json:"task_id"`
 	ExecutionID    string `json:"execution_id"`
 	InterventionID string `json:"intervention_id,omitempty"`
+	// JudgementID is the judgement a reply is: chosen before delivery (NewJudgementID), so the desktop is told it
+	// with the reply, and after CommitReply the one actually made ("" for none).
+	JudgementID string `json:"judgement_id,omitempty"`
 	// Origin is what started the execution this route opens or continues (C12); written on a new execution.
 	Origin Origin `json:"origin"`
 }
@@ -324,6 +330,28 @@ var schema = []string{
 	`ALTER TABLE executions ADD COLUMN cached_input_tokens INTEGER`,
 	// Whether the desktop asked this question for a secret (review 2026-11-03, X-6): its reply is withheld whole.
 	`ALTER TABLE interventions ADD COLUMN secret INTEGER NOT NULL DEFAULT 0`,
+	// Every human input with its author (plan R5), append-only: answers, approvals, verdicts, and what a desktop kept
+	// from a person's reply (citing it in derived_from). Written by insertJudgement only; never updated or deleted,
+	// and kept when its worker is deleted (judgements.go).
+	`CREATE TABLE judgements (
+		id TEXT PRIMARY KEY, at_ns INTEGER NOT NULL,
+		actor_id TEXT NOT NULL, actor_name TEXT NOT NULL DEFAULT '', actor_roles TEXT NOT NULL DEFAULT '[]',
+		actor_kind TEXT NOT NULL,
+		door TEXT NOT NULL DEFAULT '',
+		kind TEXT NOT NULL,
+		worker_id TEXT NOT NULL DEFAULT '', task_id TEXT NOT NULL DEFAULT '', execution_id TEXT NOT NULL DEFAULT '',
+		intervention_id TEXT NOT NULL DEFAULT '', skill_name TEXT NOT NULL DEFAULT '', skill_version INTEGER NOT NULL DEFAULT 0,
+		text TEXT NOT NULL DEFAULT '',
+		secret INTEGER NOT NULL DEFAULT 0,
+		payload TEXT NOT NULL DEFAULT '{}',
+		changed TEXT NOT NULL DEFAULT '{}',
+		derived_from TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX judgements_task ON judgements (task_id, at_ns)`,
+	`CREATE INDEX judgements_worker ON judgements (worker_id, at_ns)`,
+	// Who answered an intervention, and the judgement that answer is.
+	`ALTER TABLE interventions ADD COLUMN replier_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE interventions ADD COLUMN judgement_id TEXT NOT NULL DEFAULT ''`,
 }
 
 // Store is the SQLite-backed record of every worker's tasks.
@@ -644,15 +672,28 @@ func NewRoute() Route {
 // returns the route actually taken - which differs when the situation moved in
 // between (the intervention it replied to was closed, say).
 func (s *Store) Commit(route Route, worker Worker, text string) (Route, error) {
-	route, _, err := s.CommitReply(route, worker, text, false)
+	route, _, err := s.CommitReply(route, worker, text, false, ReplyBy{})
 	return route, err
+}
+
+// ReplyBy is who sent a human request and through which door: a reply's judgement is made from it. Approval is the
+// access log's decision on an approval reply ({"approval_id": ..., "outcome": ...}), merged into its payload.
+type ReplyBy struct {
+	Actor    Actor
+	Door     string
+	Approval map[string]any
 }
 
 // CommitReply is Commit that also returns the text it stored - what the chat, the send response and every other copy
 // must keep, so there is one rule for what a person typed (review 2026-11-03, C-05). secret is the person's own mark
 // ("this is a secret"): the whole text is kept as withhold.Secret, as is a reply to a question the desktop asked for
 // a secret. Otherwise the text is withheld by withhold.Text, and a reply by withhold.Reply against its question.
-func (s *Store) CommitReply(route Route, worker Worker, text string, secret bool) (Route, string, error) {
+//
+// A reply to an open intervention is also a judgement (kind answer, or approval when it answers an approval) by
+// by.Actor, written in the same transaction under route.JudgementID when the caller chose one (it went to the desktop
+// with the reply); the intervention keeps the replier and the judgement id. The route returned carries the
+// judgement's id, "" when none was made (a new task, or a reply with no actor, which no door sends).
+func (s *Store) CommitReply(route Route, worker Worker, text string, secret bool, by ReplyBy) (Route, string, error) {
 	// A secret the person typed (a password, an OTP) reaches the desktop as written, never these records: they are
 	// shown in traces, reports and exports (review 2026-11-02).
 	if secret {
@@ -661,13 +702,15 @@ func (s *Store) CommitReply(route Route, worker Worker, text string, secret bool
 		text = withhold.Text(text)
 	}
 	stored := text
-	route, err := s.commit(route, worker, &stored)
+	route, err := s.commit(route, worker, &stored, by, secret)
 	return route, stored, err
 }
 
 // commit is Commit's body. It may withhold *stored further (a reply to a question asked for a secret), and leaves in
 // it what it recorded.
-func (s *Store) commit(route Route, worker Worker, stored *string) (Route, error) {
+func (s *Store) commit(route Route, worker Worker, stored *string, by ReplyBy, secret bool) (Route, error) {
+	judgementID := route.JudgementID
+	route.JudgementID = ""
 	text := *stored
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -722,15 +765,42 @@ func (s *Store) commit(route Route, worker Worker, stored *string) (Route, error
 		// An answer to a question the desktop asked for a secret is kept withheld whole; one whose words ask for a
 		// secret (an OTP, a password, a PIN) is kept withheld even when it is a bare value (withhold.Reply). text is
 		// already withheld as any request is.
-		var question string
+		var question, interventionKind string
 		var askedSecret bool
-		if err := tx.QueryRow(`SELECT request, secret FROM interventions WHERE id = ?`, interventionID).Scan(&question, &askedSecret); err == nil {
+		if err := tx.QueryRow(`SELECT request, secret, kind FROM interventions WHERE id = ?`, interventionID).Scan(&question, &askedSecret, &interventionKind); err == nil {
 			if askedSecret {
 				*stored = withhold.Secret
 			} else {
 				*stored = withhold.Reply(question, *stored)
 			}
 			text = *stored
+		}
+
+		// The reply is a judgement by whoever sent it (plan R5). A reply with no actor is still recorded (it has
+		// been delivered), without one: every door that sends a reply carries its actor (httpapi refuses otherwise).
+		if by.Actor.ID != "" && interventionID != "" {
+			kind, payload := JudgementAnswer, map[string]any{}
+			if interventionKind == InterventionApproval {
+				kind = JudgementApproval
+				for k, v := range by.Approval {
+					payload[k] = v
+				}
+			}
+			var workerID string
+			_ = tx.QueryRow(`SELECT worker_id FROM executions WHERE id = ?`, route.ExecutionID).Scan(&workerID)
+			raw, _ := json.Marshal(payload)
+			id, err := insertJudgement(tx, Judgement{ID: judgementID, At: now, Actor: by.Actor, Door: by.Door,
+				Kind: kind, WorkerID: workerID, TaskID: route.TaskID, ExecutionID: route.ExecutionID,
+				InterventionID: interventionID, Text: text, Secret: secret || askedSecret, Payload: raw})
+			if err != nil {
+				return route, err
+			}
+			if _, err := tx.Exec(`UPDATE interventions SET replier_id = CASE WHEN replier_id = '' THEN ? ELSE replier_id END,
+				judgement_id = CASE WHEN judgement_id = '' THEN ? ELSE judgement_id END WHERE id = ?`,
+				by.Actor.ID, id, interventionID); err != nil {
+				return route, fmt.Errorf("tasks: recording who replied: %w", err)
+			}
+			route.JudgementID = id
 		}
 
 		// A second reply landing before the agent resumed joins the first.
@@ -1186,39 +1256,6 @@ func (s *Store) CloseOpen(workerID, why string) error {
 	return tx.Commit()
 }
 
-// SetVerdict records a human's verdict on a task: "correct", "wrong", or "" to
-// withdraw one. The note is optional, and kept only with a verdict.
-func (s *Store) SetVerdict(taskID, verdict, note string) (Task, error) {
-	switch verdict {
-	case VerdictCorrect, VerdictWrong, "":
-	default:
-		return Task{}, fmt.Errorf("tasks: unknown verdict %q", verdict)
-	}
-
-	verdictAt := int64(0)
-	if verdict != "" {
-		verdictAt = sqlitedb.ToNS(s.now())
-	} else {
-		note = ""
-	}
-
-	result, err := s.db.Exec(
-		`UPDATE tasks SET verdict = ?, verdict_note = ?, verdict_ns = ? WHERE id = ?`,
-		verdict, strings.TrimSpace(note), verdictAt, taskID,
-	)
-	if err != nil {
-		return Task{}, fmt.Errorf("tasks: recording verdict: %w", err)
-	}
-
-	if changed, _ := result.RowsAffected(); changed == 0 {
-		return Task{}, ErrNotFound
-	}
-
-	detail, err := s.Get(taskID)
-
-	return detail.Task, err
-}
-
 // ---------------------------------------------------------------------------
 // reading
 // ---------------------------------------------------------------------------
@@ -1433,13 +1470,15 @@ func (s *Store) loadInterventions(where string, args ...any) ([]Intervention, er
 		var requested, replied int64
 
 		err := r.Scan(&intervention.ID, &intervention.ExecutionID, &intervention.Kind, &intervention.Reason,
-			&intervention.Request, &intervention.Reply, &requested, &replied, &intervention.Secret)
+			&intervention.Request, &intervention.Reply, &requested, &replied, &intervention.Secret,
+			&intervention.ReplierID, &intervention.JudgementID)
 
 		intervention.RequestedAt = sqlitedb.FromNS(requested)
 		intervention.RepliedAt = sqlitedb.FromNS(replied)
 
 		return intervention, err
-	}, `SELECT i.id, i.execution_id, i.kind, i.reason, i.request, i.reply, i.requested_ns, i.replied_ns, i.secret
+	}, `SELECT i.id, i.execution_id, i.kind, i.reason, i.request, i.reply, i.requested_ns, i.replied_ns, i.secret,
+		i.replier_id, i.judgement_id
 		 FROM interventions i JOIN executions e ON e.id = i.execution_id JOIN tasks t ON t.id = e.task_id `+
 		where+` ORDER BY i.requested_ns`, args...)
 	if err != nil {

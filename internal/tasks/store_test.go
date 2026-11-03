@@ -403,7 +403,7 @@ func TestVerdict(t *testing.T) {
 	route := send(t, s, box, "how much disk is free?")
 	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "1.6T available"})
 
-	task, err := s.SetVerdict(route.TaskID, VerdictWrong, "  df says 835G  ")
+	task, err := s.SetVerdict(route.TaskID, VerdictWrong, "  df says 835G  ", LocalOwner)
 	if err != nil || task.Verdict != VerdictWrong || task.VerdictNote != "df says 835G" {
 		t.Fatalf("SetVerdict = %+v, %v", task, err)
 	}
@@ -413,15 +413,15 @@ func TestVerdict(t *testing.T) {
 		t.Fatal("an answer marked wrong is not autonomous")
 	}
 
-	if task, _ := s.SetVerdict(route.TaskID, "", "ignored"); task.Verdict != "" || task.VerdictNote != "" {
+	if task, _ := s.SetVerdict(route.TaskID, "", "ignored", LocalOwner); task.Verdict != "" || task.VerdictNote != "" {
 		t.Fatalf("withdrawing the verdict left %+v", task)
 	}
 
-	if _, err := s.SetVerdict("t0000000000000000", VerdictCorrect, ""); err != ErrNotFound {
+	if _, err := s.SetVerdict("t0000000000000000", VerdictCorrect, "", LocalOwner); err != ErrNotFound {
 		t.Fatalf("unknown task: err = %v", err)
 	}
 
-	if _, err := s.SetVerdict(route.TaskID, "meh", ""); err == nil {
+	if _, err := s.SetVerdict(route.TaskID, "meh", "", LocalOwner); err == nil {
 		t.Fatal("an unknown verdict was accepted")
 	}
 }
@@ -446,7 +446,7 @@ func TestRecordsSurviveRestart(t *testing.T) {
 	}
 
 	outcome(t, reopened, "box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "Sent.", CostUSD: ptrFloat(0.31)})
-	reopened.SetVerdict(route.TaskID, VerdictCorrect, "")
+	reopened.SetVerdict(route.TaskID, VerdictCorrect, "", LocalOwner)
 
 	detail := get(t, reopened, route.TaskID)
 	execution := detail.Executions[0]
@@ -488,7 +488,7 @@ func TestReportAnswersWhichEngineAndWhy(t *testing.T) {
 	// Ollama: one done but wrong, one stuck, one timed out, one right.
 	wrong := send(t, s, ollama, "how much disk is free?")
 	outcome(t, s, "ollama-box", wrong.TaskID, Outcome{Kind: OutcomeDone, Reply: "1.6T"})
-	s.SetVerdict(wrong.TaskID, VerdictWrong, "invented numbers")
+	s.SetVerdict(wrong.TaskID, VerdictWrong, "invented numbers", LocalOwner)
 
 	stuck := send(t, s, ollama, "sign in to the admin panel")
 	outcome(t, s, "ollama-box", stuck.TaskID, Outcome{Kind: OutcomeQuery, Reply: "I need the admin password to sign in."})
@@ -500,7 +500,7 @@ func TestReportAnswersWhichEngineAndWhy(t *testing.T) {
 
 	right := send(t, s, ollama, "uname -r")
 	outcome(t, s, "ollama-box", right.TaskID, Outcome{Kind: OutcomeDone, Reply: "6.6.87.2", Checked: &checkedTrue})
-	s.SetVerdict(right.TaskID, VerdictCorrect, "")
+	s.SetVerdict(right.TaskID, VerdictCorrect, "", LocalOwner)
 
 	// A person recording themselves doing a task is not Ollama being autonomous,
 	// even with a screen step attributed to it.
