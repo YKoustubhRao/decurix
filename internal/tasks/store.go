@@ -694,8 +694,11 @@ func NewRoute() Route {
 // Commit records a delivered human request along the route Plan chose, and
 // returns the route actually taken - which differs when the situation moved in
 // between (the intervention it replied to was closed, say).
-func (s *Store) Commit(route Route, worker Worker, text string) (Route, error) {
-	route, _, err := s.CommitReply(route, worker, text, false, ReplyBy{})
+//
+// origin is what started the request: a required argument, so no producer can open an execution without saying
+// (plan R7); one stored unknown is logged.
+func (s *Store) Commit(route Route, worker Worker, text string, origin Origin) (Route, error) {
+	route, _, err := s.CommitReply(route, worker, text, false, ReplyBy{}, origin)
 	return route, err
 }
 
@@ -716,7 +719,8 @@ type ReplyBy struct {
 // by.Actor, written in the same transaction under route.JudgementID when the caller chose one (it went to the desktop
 // with the reply); the intervention keeps the replier and the judgement id. The route returned carries the
 // judgement's id, "" when none was made (a new task, or a reply with no actor, which no door sends).
-func (s *Store) CommitReply(route Route, worker Worker, text string, secret bool, by ReplyBy) (Route, string, error) {
+func (s *Store) CommitReply(route Route, worker Worker, text string, secret bool, by ReplyBy, origin Origin) (Route, string, error) {
+	route.Origin = origin
 	// A secret the person typed (a password, an OTP) reaches the desktop as written, never these records: they are
 	// shown in traces, reports and exports (review 2026-11-02).
 	stored := requestForm(text, secret)
@@ -918,6 +922,9 @@ func (s *Store) insertTask(tx *sql.Tx, route Route, worker Worker, text string, 
 // worker is already busy: its desktop runs one task at a time and holds the
 // request until the current one ends.
 func (s *Store) insertExecution(tx *sql.Tx, route Route, attempt int, worker Worker, now time.Time) error {
+	if originKind(route.Origin) == OriginUnknown {
+		log.Printf("tasks: execution %s of %s on %s has no origin: stored as unknown", route.ExecutionID, route.TaskID, worker.ID)
+	}
 	status := StatusRunning
 
 	var busy int

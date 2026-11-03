@@ -3,6 +3,7 @@ package schedule
 import (
 	"context"
 	"errors"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +45,7 @@ func TestCronFieldsReadAsVixieReadsThem(t *testing.T) {
 
 type failingSubmitter struct{ contents []string }
 
-func (f *failingSubmitter) Submit(_ context.Context, _, content string) error {
+func (f *failingSubmitter) Submit(_ context.Context, _, content string, _ tasks.Origin) error {
 	f.contents = append(f.contents, content)
 	return errors.New("desktop did not start")
 }

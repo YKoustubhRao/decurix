@@ -1,7 +1,6 @@
 package tasks
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -11,23 +10,6 @@ import (
 
 // What each execution ran (plan R7): where it came from, the taught skill and version that drove it, and the model
 // deployment that served it, so one query gives the pass rate per skill version and model.
-
-// originKey carries the origin of what is sent with a context (WithOrigin).
-type originKey struct{}
-
-// WithOrigin returns ctx naming what started the request sent with it: a producer (a schedule, a DAG node, a mail
-// rule, a queue item, a handoff) sets it before it submits, and the control plane writes it on the execution.
-func WithOrigin(ctx context.Context, o Origin) context.Context {
-	return context.WithValue(ctx, originKey{}, o)
-}
-
-// OriginFrom is the origin ctx names, and OriginUnknown when none.
-func OriginFrom(ctx context.Context) Origin {
-	if o, ok := ctx.Value(originKey{}).(Origin); ok && ValidOriginKind(o.Kind) {
-		return o
-	}
-	return Origin{Kind: OriginUnknown}
-}
 
 // originKind is the kind an execution is stored with: unknown for none or one not on the list.
 func originKind(o Origin) string {

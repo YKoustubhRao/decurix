@@ -94,7 +94,7 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 	door := requestDoor(r)
 	ctx := withDoor(s.ActorContext(r), door)
 	actor, _ := actorFrom(ctx)
-	ctx = tasks.WithOrigin(ctx, tasks.Origin{Kind: tasks.OriginPerson, Ref: door, ActorID: actor.ID})
+	origin := tasks.Origin{Kind: tasks.OriginPerson, Ref: door, ActorID: actor.ID}
 	if r.FormValue("secret") == "1" {
 		// The person marked this a secret: it reaches the desktop as typed and is kept nowhere as typed.
 		ctx = context.WithValue(ctx, sentSecretKey{}, true)
@@ -105,7 +105,7 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 		// The desktop's chat says what was on screen: when its newest entry was posted (replyBinding).
 		ctx = context.WithValue(ctx, replySeenKey{}, seen)
 	}
-	route, stored, err := s.submitRequestWithFiles(ctx, desktopID, content, files)
+	route, stored, err := s.submitRequestWithFiles(ctx, desktopID, content, files, origin)
 	if err != nil {
 		uploadError(w, err)
 		return
@@ -165,7 +165,7 @@ func sentAsSecret(ctx context.Context) bool {
 // desktop first, so they are there when its agent reads the request that
 // names them. It returns the request as the records keep it (secrets
 // withheld), which is what anything shown or stored afterwards must use.
-func (s *Server) submitRequestWithFiles(ctx context.Context, desktopID, content string, files []desktop.File) (tasks.Route, string, error) {
+func (s *Server) submitRequestWithFiles(ctx context.Context, desktopID, content string, files []desktop.File, origin tasks.Origin) (tasks.Route, string, error) {
 	id := desktop.SanitizeID(desktopID)
 
 	unlock := s.lockDesktop(id)
@@ -187,7 +187,7 @@ func (s *Server) submitRequestWithFiles(ctx context.Context, desktopID, content 
 		return tasks.Route{}, "", &errUpload{http.StatusBadRequest, "request too long"}
 	}
 
-	route, stored, err := s.submitStored(ctx, desktopID, content)
+	route, stored, err := s.submitStored(ctx, desktopID, content, origin)
 
 	return route, stored, err
 }
@@ -222,13 +222,13 @@ func (s *Server) replyStillAnswers(desktopID, noteID string) error {
 // Submit, so a cron-triggered request (internal/schedule's Runner) lands in
 // the task records and chat exactly the way a typed one does. The caller
 // already holds the desktop's send lock (lockDesktop).
-func (s *Server) submitLocked(ctx context.Context, desktopID, content string) (tasks.Route, error) {
-	route, _, err := s.submitStored(ctx, desktopID, content)
+func (s *Server) submitLocked(ctx context.Context, desktopID, content string, origin tasks.Origin) (tasks.Route, error) {
+	route, _, err := s.submitStored(ctx, desktopID, content, origin)
 	return route, err
 }
 
 // submitStored is submitLocked, also returning the request as the records keep it.
-func (s *Server) submitStored(ctx context.Context, desktopID, content string) (tasks.Route, string, error) {
+func (s *Server) submitStored(ctx context.Context, desktopID, content string, origin tasks.Origin) (tasks.Route, string, error) {
 	id := desktop.SanitizeID(desktopID)
 
 	// A desktop still being created has no container yet, which would read
@@ -242,8 +242,8 @@ func (s *Server) submitStored(ctx context.Context, desktopID, content string) (t
 	ollama.WarmAsync()
 
 	route := s.routeRequest(id, content)
-	// What started it (plan R7): the door's or producer's origin, written on a new execution (unknown when none).
-	route.Origin = tasks.OriginFrom(ctx)
+	// What started it (plan R7): the door's or producer's origin, a required argument, written on a new execution.
+	route.Origin = origin
 
 	// A reply is a person's judgement (plan R5): it needs its author, and its id is chosen now so the desktop is told
 	// it with the reply (C6). No door that sends a reply lacks an actor; a reply with none is refused before delivery.
@@ -299,8 +299,8 @@ func (s *Server) submitStored(ctx context.Context, desktopID, content string) (t
 // see that package's Runner for when this is called. Like every automated
 // door it sends only to a free desktop (submitWhenFree), returning a
 // *DesktopBusyError otherwise.
-func (s *Server) Submit(ctx context.Context, desktopID, content string) error {
-	_, err := s.submitWhenFree(ctx, desktopID, content)
+func (s *Server) Submit(ctx context.Context, desktopID, content string, origin tasks.Origin) error {
+	_, err := s.submitWhenFree(ctx, desktopID, content, origin)
 	return err
 }
 
@@ -308,8 +308,8 @@ func (s *Server) Submit(ctx context.Context, desktopID, content string) error {
 // Submitter: the same door Submit is, but also hands back the task ID the
 // request landed under, since a DAG run has to watch that specific task to
 // know when its node is done.
-func (s *Server) SubmitTracked(ctx context.Context, desktopID, content string) (string, error) {
-	route, err := s.submitWhenFree(ctx, desktopID, content)
+func (s *Server) SubmitTracked(ctx context.Context, desktopID, content string, origin tasks.Origin) (string, error) {
+	route, err := s.submitWhenFree(ctx, desktopID, content, origin)
 	return route.TaskID, err
 }
 
@@ -428,7 +428,7 @@ func (s *Server) recordDelivered(ctx context.Context, desktopID, content string,
 	by := tasks.ReplyBy{Door: doorFrom(ctx)}
 	by.Actor, _ = actorFrom(ctx)
 	by.Approval, _ = ctx.Value(approvalKey{}).(map[string]any)
-	committed, stored, err := s.Tasks.CommitReply(route, s.workerFor(ctx, desktopID), content, secret, by)
+	committed, stored, err := s.Tasks.CommitReply(route, s.workerFor(ctx, desktopID), content, secret, by, route.Origin)
 	if err != nil {
 		log.Printf("sendRequest: %v", err)
 	} else {

@@ -18,7 +18,7 @@ import (
 func askedQuestion(t *testing.T, s *Server, kind, question string) string {
 	t.Helper()
 	w := tasks.Worker{ID: "box", Name: "box", Engine: "thebot"}
-	route, err := s.Tasks.Commit(tasks.NewRoute(), w, "file the bills")
+	route, err := s.Tasks.Commit(tasks.NewRoute(), w, "file the bills", tasks.Origin{Kind: tasks.OriginPerson})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestAReplyWithNoActorIsRefused(t *testing.T) {
 	s := chatServer(t)
 	bodies := fakeAgentDesktop(t, s)
 	task := askedQuestion(t, s, tasks.OutcomeQuery, "Which ledger?")
-	_, _, err := s.submitStored(context.Background(), "box", "purchases")
+	_, _, err := s.submitStored(context.Background(), "box", "purchases", tasks.Origin{Kind: tasks.OriginPerson})
 	var refused *errUpload
 	if err == nil || !errors.As(err, &refused) || refused.status != http.StatusForbidden {
 		t.Fatalf("a reply with no actor = %v", err)
@@ -178,7 +178,7 @@ func TestAReplyWithNoActorIsRefused(t *testing.T) {
 // A verdict is stored with who gave it; a desktop cannot give one; the judgements outlive their worker.
 func TestAVerdictHasItsAuthorAndOutlivesTheWorker(t *testing.T) {
 	s := chatServer(t)
-	route, _ := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "box", Name: "box"}, "count the bills")
+	route, _ := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "box", Name: "box"}, "count the bills", tasks.Origin{Kind: tasks.OriginPerson})
 	_, _ = s.Tasks.RecordOutcome("box", route.TaskID, tasks.Outcome{Kind: tasks.OutcomeDone, Reply: "12"})
 	verdict := func(remote string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/api/tasks/verdict",

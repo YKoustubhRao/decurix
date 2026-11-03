@@ -14,11 +14,11 @@ import (
 func TestTheProxyStoresAndChecksCallTags(t *testing.T) {
 	s := recordingServer(t)
 	route := tasks.NewRoute()
-	if _, err := s.Tasks.Commit(route, tasks.Worker{ID: "box", Name: "box"}, "file the bills"); err != nil {
+	if _, err := s.Tasks.Commit(route, tasks.Worker{ID: "box", Name: "box"}, "file the bills", tasks.Origin{Kind: tasks.OriginPerson}); err != nil {
 		t.Fatal(err)
 	}
 	other := tasks.NewRoute()
-	if _, err := s.Tasks.Commit(other, tasks.Worker{ID: "eve", Name: "eve"}, "something of eve's"); err != nil {
+	if _, err := s.Tasks.Commit(other, tasks.Worker{ID: "eve", Name: "eve"}, "something of eve's", tasks.Origin{Kind: tasks.OriginPerson}); err != nil {
 		t.Fatal(err)
 	}
 	body := `{"messages":[{"role":"user","content":"hi"}]}`

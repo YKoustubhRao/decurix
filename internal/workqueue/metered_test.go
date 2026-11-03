@@ -18,9 +18,9 @@ type meteringSubmitter struct {
 	now   func() time.Time
 }
 
-func (m *meteringSubmitter) Submit(ctx context.Context, worker, request, dir string, files []File) (string, error) {
+func (m *meteringSubmitter) Submit(ctx context.Context, worker, request, dir string, files []File, origin tasks.Origin) (string, error) {
 	m.spend.entries = append(m.spend.entries, spendEntry{worker, m.now(), Spend{Tokens: 600}})
-	return m.fakeSubmitter.Submit(ctx, worker, request, dir, files)
+	return m.fakeSubmitter.Submit(ctx, worker, request, dir, files, origin)
 }
 
 // Two items in one tick do not both pass on one reading of a worker's spend: the second sees what the first used

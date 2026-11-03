@@ -121,7 +121,7 @@ func TestALessonFromAWithheldReplyKeepsNoValue(t *testing.T) {
 // memory) until that task ends; then its calls keep their text again.
 func TestATaskOpenAtStartKeepsNoText(t *testing.T) {
 	s := recordingServer(t)
-	route, _ := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "box", Name: "box"}, "sign in for me")
+	route, _ := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "box", Name: "box"}, "sign in for me", tasks.Origin{Kind: tasks.OriginPerson})
 	s.ForgetSecretsAtStart()
 	const v = "Tulip-31-Quay"
 	recordTurn(t, s, map[string]any{"role": "assistant", "content": `Running: gui type e3 "` + v + `"`})

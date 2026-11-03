@@ -19,7 +19,7 @@ type fakeSubmitter struct {
 	errFor map[string]error // desktopID -> error to return instead of dispatching
 }
 
-func (f *fakeSubmitter) SubmitTracked(_ context.Context, desktopID, content string) (string, error) {
+func (f *fakeSubmitter) SubmitTracked(_ context.Context, desktopID, content string, _ tasks.Origin) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 

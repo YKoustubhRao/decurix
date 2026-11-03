@@ -49,15 +49,15 @@ func (a queueAdapter) Workers(ctx context.Context) ([]workqueue.Worker, error) {
 func (a queueAdapter) Busy(id string) (string, error) { return a.s.Tasks.Busy(id) }
 
 // Submit sends a queued request to a worker through the automated door, with its files when it has any.
-func (a queueAdapter) Submit(ctx context.Context, worker, request, dir string, files []workqueue.File) (string, error) {
+func (a queueAdapter) Submit(ctx context.Context, worker, request, dir string, files []workqueue.File, origin tasks.Origin) (string, error) {
 	if len(files) == 0 {
-		return a.s.SubmitTracked(ctx, worker, request)
+		return a.s.SubmitTracked(ctx, worker, request, origin)
 	}
 	att := make([]mailtrigger.Attachment, len(files))
 	for i, f := range files {
 		att[i] = mailtrigger.Attachment{Name: f.Name, Data: f.Data}
 	}
-	return a.s.SubmitTrackedWithFiles(ctx, worker, request, dir, att)
+	return a.s.SubmitTrackedWithFiles(ctx, worker, request, dir, att, origin)
 }
 
 // TaskState reads a queued item's task: latest execution status, whether its final was checked, and a person's verdict.

@@ -58,7 +58,7 @@ func (e *DesktopBusyError) DesktopBusy() string { return e.Reason }
 // desktop with nothing running, queued or waiting, and says so with a
 // *DesktopBusyError otherwise. A records error is also a refusal - sending
 // blind is what this exists to prevent - and the caller simply tries again.
-func (s *Server) submitWhenFree(ctx context.Context, desktopID, content string) (tasks.Route, error) {
+func (s *Server) submitWhenFree(ctx context.Context, desktopID, content string, origin tasks.Origin) (tasks.Route, error) {
 	id := desktop.SanitizeID(desktopID)
 
 	unlock := s.lockDesktop(id)
@@ -73,7 +73,7 @@ func (s *Server) submitWhenFree(ctx context.Context, desktopID, content string) 
 		return tasks.Route{}, &DesktopBusyError{Reason: why}
 	}
 
-	return s.submitLocked(ctx, desktopID, content)
+	return s.submitLocked(ctx, desktopID, content, origin)
 }
 
 // SubmitTrackedWithFiles is SubmitTracked for a request that names files it
@@ -81,7 +81,7 @@ func (s *Server) submitWhenFree(ctx context.Context, desktopID, content string) 
 // and busy check, the files are written into dir on the desktop first, so
 // they are there when the agent reads the request. Implements
 // mailtrigger.FileSubmitter.
-func (s *Server) SubmitTrackedWithFiles(ctx context.Context, desktopID, content, dir string, files []mailtrigger.Attachment) (string, error) {
+func (s *Server) SubmitTrackedWithFiles(ctx context.Context, desktopID, content, dir string, files []mailtrigger.Attachment, origin tasks.Origin) (string, error) {
 	id := desktop.SanitizeID(desktopID)
 
 	unlock := s.lockDesktop(id)
@@ -105,7 +105,7 @@ func (s *Server) SubmitTrackedWithFiles(ctx context.Context, desktopID, content,
 		return "", err
 	}
 
-	route, err := s.submitLocked(ctx, desktopID, content)
+	route, err := s.submitLocked(ctx, desktopID, content, origin)
 	return route.TaskID, err
 }
 

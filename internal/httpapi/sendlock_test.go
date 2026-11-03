@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"testing"
 )
 
@@ -17,9 +18,11 @@ func TestAutomatedSendsWaitForAFreeDesktop(t *testing.T) {
 	route := deliver(t, s, "bordu", "pay the invoice")
 
 	for _, send := range []func() error{
-		func() error { return s.Submit(context.Background(), "bordu", "check the mail") },
 		func() error {
-			_, err := s.SubmitTracked(context.Background(), "bordu", "an email arrived")
+			return s.Submit(context.Background(), "bordu", "check the mail", tasks.Origin{Kind: tasks.OriginSchedule})
+		},
+		func() error {
+			_, err := s.SubmitTracked(context.Background(), "bordu", "an email arrived", tasks.Origin{Kind: tasks.OriginMail})
 			return err
 		},
 	} {

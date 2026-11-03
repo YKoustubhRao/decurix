@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -34,7 +35,7 @@ func InboxDir(jobID string) string { return "/home/headless/work/inbox/" + jobID
 // before sending the request (*httpapi.Server). A job with files sent through
 // a plain Submitter goes out without them.
 type FileSubmitter interface {
-	SubmitTrackedWithFiles(ctx context.Context, desktopID, content, dir string, files []Attachment) (string, error)
+	SubmitTrackedWithFiles(ctx context.Context, desktopID, content, dir string, files []Attachment, origin tasks.Origin) (string, error)
 }
 
 // mayHaveAttachments reports whether a message's header says it is a

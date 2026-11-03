@@ -23,7 +23,9 @@ func (s *Server) ConciergeDeps() concierge.Deps {
 		Desktops: func(ctx context.Context) ([]desktop.Desktop, error) { return s.Desktops.List(ctx) },
 		Busy:     func(id string) (string, error) { return s.Tasks.Busy(desktop.SanitizeID(id)) },
 		Send: func(ctx context.Context, id, content string) (string, string, error) {
-			route, _, err := s.submitRequestWithFiles(ctx, id, content, nil)
+			actor, _ := actorFrom(ctx)
+			route, _, err := s.submitRequestWithFiles(ctx, id, content, nil,
+				tasks.Origin{Kind: tasks.OriginConcierge, ActorID: actor.ID})
 			return route.TaskID, route.Kind, err
 		},
 		Transcript: func(id string) conversation.Thread { return s.Chat.Snapshot(id) },
@@ -52,11 +54,9 @@ func (s *Server) ConciergeDeps() concierge.Deps {
 	return deps
 }
 
-// conciergeContext is ctx (a person's, from ActorContext) naming the concierge as the door and the origin of what is
-// sent with it.
+// conciergeContext is ctx (a person's, from ActorContext) naming the concierge as the door of what is sent with it.
 func conciergeContext(ctx context.Context) context.Context {
-	actor, _ := actorFrom(ctx)
-	return tasks.WithOrigin(withDoor(ctx, "concierge"), tasks.Origin{Kind: tasks.OriginConcierge, ActorID: actor.ID})
+	return withDoor(ctx, "concierge")
 }
 
 // conciergePageHandler renders the chat-first page (/chat).

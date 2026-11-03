@@ -26,7 +26,7 @@ type File struct {
 // method (httpapi's *DesktopBusyError): that keeps the handoff queued, not
 // failed. Backed by *httpapi.Server's SubmitTracked / SubmitTrackedWithFiles.
 type Submitter interface {
-	SubmitHandoff(ctx context.Context, workerID, content, dir string, files []File) (taskID string, err error)
+	SubmitHandoff(ctx context.Context, workerID, content, dir string, files []File, origin tasks.Origin) (taskID string, err error)
 }
 
 // FileReader reads files (absolute paths under the worker's home) out of a
@@ -573,7 +573,7 @@ func (s *Service) dispatch(ctx context.Context, h Handoff) Handoff {
 		// (an unlock of an unlocked mutex is fatal, past any recover: RW1-F-09).
 		s.mu.Unlock()
 		defer s.mu.Lock()
-		taskID, err = s.Submit.SubmitHandoff(tasks.WithOrigin(ctx, tasks.Origin{Kind: tasks.OriginHandoff, Ref: h.ID}), to, content, dir, files)
+		taskID, err = s.Submit.SubmitHandoff(ctx, to, content, dir, files, tasks.Origin{Kind: tasks.OriginHandoff, Ref: h.ID})
 	}()
 	h.Status = StatusQueued
 	var busy busyError

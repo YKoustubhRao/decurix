@@ -30,12 +30,12 @@ func TestALearnedRowIsKeptUnderThePersonWhoSaidIt(t *testing.T) {
 	s := chatServer(t)
 	// A person answers box's question: that answer is the judgement a correction cites.
 	reply := tasks.Route{}
-	route, _ := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "box", Name: "box"}, "enter the bills")
+	route, _ := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "box", Name: "box"}, "enter the bills", tasks.Origin{Kind: tasks.OriginPerson})
 	_, _ = s.Tasks.RecordOutcome("box", route.TaskID, tasks.Outcome{Kind: tasks.OutcomeQuery, Reply: "Which ledger?"})
 	reply, _ = s.Tasks.Plan("box", "purchases, always")
 	asha := tasks.Actor{ID: "u_asha", Name: "Asha", Roles: []string{"operator"}, Kind: tasks.ActorPerson}
 	reply, _, err := s.Tasks.CommitReply(reply, tasks.Worker{ID: "box", Name: "box"}, "purchases, always", false,
-		tasks.ReplyBy{Actor: asha, Door: "chat"})
+		tasks.ReplyBy{Actor: asha, Door: "chat"}, tasks.Origin{Kind: tasks.OriginPerson})
 	if err != nil || reply.JudgementID == "" {
 		t.Fatalf("reply = %+v, %v", reply, err)
 	}
@@ -43,7 +43,7 @@ func TestALearnedRowIsKeptUnderThePersonWhoSaidIt(t *testing.T) {
 	workerJ, _ := s.Tasks.AddJudgement(tasks.Judgement{Actor: tasks.Actor{ID: "eve", Kind: tasks.ActorWorker},
 		Kind: tasks.JudgementAnswer, WorkerID: "box", TaskID: route.TaskID, Text: "x"})
 	// Another desktop's task and a person's answer on it.
-	other, _ := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "eve", Name: "eve"}, "something of eve's")
+	other, _ := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "eve", Name: "eve"}, "something of eve's", tasks.Origin{Kind: tasks.OriginPerson})
 
 	body := func(task, from string) map[string]any {
 		return map[string]any{"task_id": task, "kind": "correction", "skill": "bill-entry", "skill_version": 2,

@@ -24,7 +24,7 @@ import (
 // with nothing running, queued or waiting, and otherwise refuses with an
 // error that has a DesktopBusy method - "try again later", not "failed".
 type Submitter interface {
-	SubmitTracked(ctx context.Context, desktopID, content string) (string, error)
+	SubmitTracked(ctx context.Context, desktopID, content string, origin tasks.Origin) (string, error)
 }
 
 const (
@@ -928,15 +928,15 @@ func (r *Runner) send(ctx context.Context, job Job) {
 
 	files, ferr := r.Store.JobFiles(job.ID)
 	fs, canFiles := r.Submitter.(FileSubmitter)
-	ctx = tasks.WithOrigin(ctx, tasks.Origin{Kind: tasks.OriginMail, Ref: job.RuleID})
+	origin := tasks.Origin{Kind: tasks.OriginMail, Ref: job.RuleID}
 
 	switch {
 	case ferr != nil:
 		err = ferr
 	case len(files) > 0 && canFiles:
-		taskID, err = fs.SubmitTrackedWithFiles(ctx, job.DesktopID, job.Content, InboxDir(job.ID), files)
+		taskID, err = fs.SubmitTrackedWithFiles(ctx, job.DesktopID, job.Content, InboxDir(job.ID), files, origin)
 	default:
-		taskID, err = r.Submitter.SubmitTracked(ctx, job.DesktopID, job.Content)
+		taskID, err = r.Submitter.SubmitTracked(ctx, job.DesktopID, job.Content, origin)
 	}
 
 	if err == nil {

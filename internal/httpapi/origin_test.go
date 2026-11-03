@@ -57,7 +57,7 @@ func TestEveryDoorStoresItsOrigin(t *testing.T) {
 	}
 	_, _ = s.Tasks.RecordOutcome("box", task, tasks.Outcome{Kind: tasks.OutcomeDone, Reply: "ok"})
 
-	task, err = s.SubmitTracked(tasks.WithOrigin(context.Background(), tasks.Origin{Kind: tasks.OriginDAG, Ref: "r1/n2"}), "box", "next step")
+	task, err = s.SubmitTracked(context.Background(), "box", "next step", tasks.Origin{Kind: tasks.OriginDAG, Ref: "r1/n2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,8 +66,8 @@ func TestEveryDoorStoresItsOrigin(t *testing.T) {
 	}
 	_, _ = s.Tasks.RecordOutcome("box", task, tasks.Outcome{Kind: tasks.OutcomeDone, Reply: "ok"})
 
-	// A producer that names none is stored as unknown, never as a person.
-	task, err = s.SubmitTracked(context.Background(), "box", "unlabelled")
+	// A producer that names an empty origin is stored as unknown (and logged), never as a person.
+	task, err = s.SubmitTracked(context.Background(), "box", "unlabelled", tasks.Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,81 +83,61 @@ func between(s, from, to string) string {
 	return out
 }
 
-// Every automated producer names its origin on the context of its submit: the first argument of each submit call
-// outside httpapi is tasks.WithOrigin(...), or a context the same function assigned from it.
-func TestEveryProducerNamesItsOrigin(t *testing.T) {
-	submits := map[string]bool{"Submit": true, "SubmitTracked": true, "SubmitTrackedWithFiles": true, "SubmitHandoff": true}
+// The origin is a required argument of every submit and commit (the compiler holds a producer to it); this checks
+// that no call anywhere under internal/ fills it with an origin literal that names no kind.
+func TestNoProducerPassesAnEmptyOrigin(t *testing.T) {
+	takes := map[string]bool{"Submit": true, "SubmitTracked": true, "SubmitTrackedWithFiles": true, "SubmitHandoff": true,
+		"submitStored": true, "submitLocked": true, "submitRequestWithFiles": true, "submitWhenFree": true,
+		"Commit": true, "CommitReply": true}
 	found := 0
-	for _, pkg := range []string{"schedule", "mailtrigger", "dag", "workqueue", "handoff"} {
-		files, _ := filepath.Glob(filepath.Join("..", pkg, "*.go"))
-		for _, file := range files {
-			if strings.HasSuffix(file, "_test.go") {
-				continue
-			}
-			f, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, decl := range f.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok || fn.Body == nil {
-					continue
-				}
-				labelled := map[string]bool{} // contexts this function assigned from tasks.WithOrigin
-				ast.Inspect(fn.Body, func(n ast.Node) bool {
-					if as, ok := n.(*ast.AssignStmt); ok && len(as.Lhs) == 1 && len(as.Rhs) == 1 && isWithOrigin(as.Rhs[0]) {
-						if id, ok := as.Lhs[0].(*ast.Ident); ok {
-							labelled[id.Name] = true
-						}
-					}
-					return true
-				})
-				ast.Inspect(fn.Body, func(n ast.Node) bool {
-					call, ok := n.(*ast.CallExpr)
-					if !ok || len(call.Args) == 0 {
-						return true
-					}
-					sel, ok := call.Fun.(*ast.SelectorExpr)
-					if !ok || !submits[sel.Sel.Name] {
-						return true
-					}
-					if _, isType := sel.X.(*ast.Ident); !isType && !isField(sel.X) {
-						return true
-					}
-					found++
-					arg := call.Args[0]
-					if id, ok := arg.(*ast.Ident); ok && labelled[id.Name] || isWithOrigin(arg) {
-						return true
-					}
-					t.Errorf("%s: %s calls %s without naming its origin (tasks.WithOrigin)", file, fn.Name.Name, sel.Sel.Name)
-					return true
-				})
-			}
+	_ = filepath.Walk("..", func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+			return nil
 		}
-	}
-	if found < 6 {
-		t.Fatalf("only %d submit calls found: the walk is not reading the producers", found)
+		f, err := parser.ParseFile(token.NewFileSet(), p, nil, 0)
+		if err != nil {
+			return nil
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok || len(call.Args) == 0 {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || !takes[sel.Sel.Name] {
+				return true
+			}
+			lit, ok := call.Args[len(call.Args)-1].(*ast.CompositeLit)
+			if !ok || !isOriginType(lit.Type) {
+				return true
+			}
+			found++
+			for _, e := range lit.Elts {
+				if kv, ok := e.(*ast.KeyValueExpr); ok {
+					if k, ok := kv.Key.(*ast.Ident); ok && k.Name == "Kind" {
+						return true
+					}
+				}
+			}
+			t.Errorf("%s: %s is given an origin with no kind", p, sel.Sel.Name)
+			return true
+		})
+		return nil
+	})
+	if found < 5 {
+		t.Fatalf("only %d origin literals found: the walk is not reading the producers", found)
 	}
 }
 
-// isWithOrigin reports whether e is a call to tasks.WithOrigin.
-func isWithOrigin(e ast.Expr) bool {
-	call, ok := e.(*ast.CallExpr)
-	if !ok {
-		return false
+// isOriginType reports whether e names tasks.Origin (or Origin inside package tasks).
+func isOriginType(e ast.Expr) bool {
+	switch t := e.(type) {
+	case *ast.SelectorExpr:
+		return t.Sel.Name == "Origin"
+	case *ast.Ident:
+		return t.Name == "Origin"
 	}
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok || sel.Sel.Name != "WithOrigin" {
-		return false
-	}
-	pkg, ok := sel.X.(*ast.Ident)
-	return ok && pkg.Name == "tasks"
-}
-
-// isField reports whether e is a field selection (r.Submitter, s.Submit).
-func isField(e ast.Expr) bool {
-	_, ok := e.(*ast.SelectorExpr)
-	return ok
+	return false
 }
 
 // Every caller that writes a task record directly is one of these, each of which sets the route's origin first; a
@@ -227,7 +207,7 @@ func TestEveryCommitCallerIsKnown(t *testing.T) {
 func TestResolvedModelAndPassRates(t *testing.T) {
 	s := recordingServer(t)
 	w := tasks.Worker{ID: "box", Name: "box", Engine: "thebot", Model: "default"}
-	route, _ := s.Tasks.Commit(tasks.NewRoute(), w, "count the bills")
+	route, _ := s.Tasks.Commit(tasks.NewRoute(), w, "count the bills", tasks.Origin{Kind: tasks.OriginPerson})
 	for _, c := range []struct{ dep, purpose string }{{"small-1", "review"}, {"small-1", "review"}, {"big-1", "operator.turn"}} {
 		s.LLMRec.Record(context.Background(), llmrec.Call{Provider: "azure", Deployment: c.dep, Desktop: "box",
 			Task: route.TaskID, Purpose: c.purpose, Request: []byte(`{"messages":[]}`), Status: 200, At: time.Now()})
@@ -238,7 +218,7 @@ func TestResolvedModelAndPassRates(t *testing.T) {
 	}
 
 	// A local brain's run (no recorded call) is named by the engine and the model the desktop said.
-	local, _ := s.Tasks.Commit(tasks.NewRoute(), w, "count again")
+	local, _ := s.Tasks.Commit(tasks.NewRoute(), w, "count again", tasks.Origin{Kind: tasks.OriginPerson})
 	body := `{"desktop_id":"box","kind":"final","content":"12","task_id":"` + local.TaskID + `","engine":"thebot","model":"qwen3:8b","checked":true,` +
 		`"skill":{"name":"bill-count","version":3}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/querytext", strings.NewReader(body))

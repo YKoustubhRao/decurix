@@ -87,7 +87,7 @@ func TestCheckedFollowsTheVerdict(t *testing.T) {
 	}
 	for _, c := range cases {
 		s := openStore(t, newClock())
-		route, _ := s.Commit(NewRoute(), Worker{ID: "box", Name: "box"}, "count the rows")
+		route, _ := s.Commit(NewRoute(), Worker{ID: "box", Name: "box"}, "count the rows", Origin{Kind: OriginPerson})
 		v, _ := ParseVerdict(c.verdict)
 		task, exec, err := s.RecordOutcomeExec("box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "3", Checked: c.checked, Verdict: v})
 		if err != nil || task != route.TaskID || exec != route.ExecutionID {

@@ -35,7 +35,7 @@ func TestHostFileStatAnswersOnlyForTheOpenTasksOwnFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Tasks.Commit(route, tasks.Worker{ID: "office"}, request); err != nil {
+	if _, err := s.Tasks.Commit(route, tasks.Worker{ID: "office"}, request, tasks.Origin{Kind: tasks.OriginPerson}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -132,7 +132,7 @@ func TestHostFilesDecideOnTheResolvedPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Tasks.Commit(route, tasks.Worker{ID: "office"}, request); err != nil {
+	if _, err := s.Tasks.Commit(route, tasks.Worker{ID: "office"}, request, tasks.Origin{Kind: tasks.OriginPerson}); err != nil {
 		t.Fatal(err)
 	}
 	read := func(path string) int {
@@ -203,7 +203,7 @@ func TestHostFilesDecideOnTheResolvedPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Tasks.Commit(route2, tasks.Worker{ID: "office"}, request2); err != nil {
+	if _, err := s.Tasks.Commit(route2, tasks.Worker{ID: "office"}, request2, tasks.Origin{Kind: tasks.OriginPerson}); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(`C:\Users\me\Documents\jroaming\Browser\secrets.json`); got != http.StatusForbidden {

@@ -55,7 +55,7 @@ func send(t *testing.T, s *Store, w Worker, text string) Route {
 		t.Fatal(err)
 	}
 
-	route, err = s.Commit(route, w, text)
+	route, err = s.Commit(route, w, text, Origin{Kind: OriginPerson})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestSlowReplyAttachesToTheInterventionOpenAtCommitTime(t *testing.T) {
 	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeQuery, Reply: "light or dark?"})
 
 	// A's stale route finally reaches Commit.
-	if _, err := s.Commit(routeA, box, "blue"); err != nil {
+	if _, err := s.Commit(routeA, box, "blue", Origin{Kind: OriginPerson}); err != nil {
 		t.Fatal(err)
 	}
 

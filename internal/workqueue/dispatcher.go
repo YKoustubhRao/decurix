@@ -34,7 +34,7 @@ type WorkerSource interface {
 // landed under. A refusal because the worker is busy is an error with a
 // DesktopBusy() string method: "try again later", not a failure.
 type TaskSubmitter interface {
-	Submit(ctx context.Context, worker, request, dir string, files []File) (taskID string, err error)
+	Submit(ctx context.Context, worker, request, dir string, files []File, origin tasks.Origin) (taskID string, err error)
 }
 
 // TaskState is what the task records say about a submitted task.
@@ -557,7 +557,7 @@ func (d *Dispatcher) send(ctx context.Context, st *tickState, it Item, worker st
 		request += "\n\nFiles for this request are in " + dir + ": " + strings.Join(names, ", ")
 	}
 
-	taskID, err := d.Submitter.Submit(tasks.WithOrigin(ctx, tasks.Origin{Kind: tasks.OriginQueue, Ref: it.ID}), worker, request, dir, files)
+	taskID, err := d.Submitter.Submit(ctx, worker, request, dir, files, tasks.Origin{Kind: tasks.OriginQueue, Ref: it.ID})
 	if err == nil && taskID == "" {
 		err = errors.New("no task id came back")
 	}

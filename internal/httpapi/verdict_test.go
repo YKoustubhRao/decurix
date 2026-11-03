@@ -42,7 +42,7 @@ func TestTheVerdictDecidesHandoffAndQueueOutcomes(t *testing.T) {
 	s := chatServer(t)
 	w := tasks.Worker{ID: "box", Name: "box", Engine: "thebot"}
 	open := func() string {
-		route, err := s.Tasks.Commit(tasks.NewRoute(), w, "summarise the sheet")
+		route, err := s.Tasks.Commit(tasks.NewRoute(), w, "summarise the sheet", tasks.Origin{Kind: tasks.OriginPerson})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -95,7 +95,7 @@ func TestAReadinessRunIsStoredByItsGrade(t *testing.T) {
 		want   string
 	}{{nil, "passed", tasks.GateDone}, {nil, "failed", tasks.GateNotDone}, {errors.New("disk full"), "", tasks.GateUnchecked}} {
 		s := chatServer(t)
-		route, _ := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "readiness-r1", Name: "r"}, "Readiness run")
+		route, _ := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "readiness-r1", Name: "r"}, "Readiness run", tasks.Origin{Kind: tasks.OriginPerson})
 		v := readinessVerdict(c.err, c.status, "r1")
 		_, _ = s.Tasks.RecordOutcome("readiness-r1", route.TaskID, tasks.Outcome{Kind: tasks.OutcomeDone, Reply: "x", Verdict: v})
 		d, _ := s.Tasks.Get(route.TaskID)

@@ -70,7 +70,7 @@ func TestAnOutcomeEnqueuesItsBundlePull(t *testing.T) {
 	f := &fakePuller{log: &order}
 	s.Runs, s.RunBundles = f, f
 
-	route, _ := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "box", Name: "box"}, "count the bills")
+	route, _ := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "box", Name: "box"}, "count the bills", tasks.Origin{Kind: tasks.OriginPerson})
 	post := func(body map[string]any) {
 		t.Helper()
 		raw, _ := json.Marshal(body)
@@ -83,7 +83,7 @@ func TestAnOutcomeEnqueuesItsBundlePull(t *testing.T) {
 		t.Fatalf("a question enqueued %v", got)
 	}
 	reply, _ := s.Tasks.Plan("box", "October")
-	_, _, _ = s.Tasks.CommitReply(reply, tasks.Worker{ID: "box", Name: "box"}, "October", false, tasks.ReplyBy{Actor: tasks.LocalOwner})
+	_, _, _ = s.Tasks.CommitReply(reply, tasks.Worker{ID: "box", Name: "box"}, "October", false, tasks.ReplyBy{Actor: tasks.LocalOwner}, tasks.Origin{Kind: tasks.OriginPerson})
 	post(map[string]any{"desktop_id": "box", "kind": "final", "content": "12", "task_id": route.TaskID, "checked": true})
 	got := queued(s)
 	if len(got) != 1 || got[0].ExecID != route.ExecutionID || got[0].TaskID != route.TaskID || got[0].Worker != "box" {
@@ -158,13 +158,13 @@ func TestDeleteFlushesRunsBeforeTheDesktopGoes(t *testing.T) {
 		return nil
 	}
 	w := tasks.Worker{ID: "box", Name: "box"}
-	a, _ := s.Tasks.Commit(tasks.NewRoute(), w, "one")
+	a, _ := s.Tasks.Commit(tasks.NewRoute(), w, "one", tasks.Origin{Kind: tasks.OriginPerson})
 	_, _ = s.Tasks.RecordOutcome("box", a.TaskID, tasks.Outcome{Kind: tasks.OutcomeDone, Reply: "ok"})
-	b, _ := s.Tasks.Commit(pulledAlready, w, "two")
+	b, _ := s.Tasks.Commit(pulledAlready, w, "two", tasks.Origin{Kind: tasks.OriginPerson})
 	_, _ = s.Tasks.RecordOutcome("box", b.TaskID, tasks.Outcome{Kind: tasks.OutcomeDone, Reply: "ok"})
 	f.stored[b.ExecutionID] = true
 	// A run still waiting on a person when the desktop is deleted: the most labelled kind of run there is.
-	c, _ := s.Tasks.Commit(tasks.NewRoute(), w, "three")
+	c, _ := s.Tasks.Commit(tasks.NewRoute(), w, "three", tasks.Origin{Kind: tasks.OriginPerson})
 	_, _ = s.Tasks.RecordOutcome("box", c.TaskID, tasks.Outcome{Kind: tasks.OutcomeQuery, Reply: "Which month?"})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/desktops/delete", strings.NewReader(url.Values{"id": {"box"}}.Encode()))

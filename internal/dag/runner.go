@@ -25,7 +25,7 @@ import (
 // returns no task ID), and Go match interfaces by method name - reusing
 // "Submit" here would collide with that existing, differently-shaped method.
 type Submitter interface {
-	SubmitTracked(ctx context.Context, desktopID, content string) (taskID string, err error)
+	SubmitTracked(ctx context.Context, desktopID, content string, origin tasks.Origin) (taskID string, err error)
 }
 
 // TaskResults is what this package needs from internal/tasks.Store: a
@@ -388,8 +388,8 @@ func (r *Runner) dispatch(ctx context.Context, runID string, rn RunNode, node No
 
 	content := substitute(node.Content, node.ID, edges, nodes, runNodes)
 
-	taskID, err := r.Submitter.SubmitTracked(tasks.WithOrigin(ctx, tasks.Origin{Kind: tasks.OriginDAG, Ref: runID + "/" + node.ID}),
-		node.DesktopID, content)
+	taskID, err := r.Submitter.SubmitTracked(ctx, node.DesktopID, content,
+		tasks.Origin{Kind: tasks.OriginDAG, Ref: runID + "/" + node.ID})
 
 	// The desktop became busy after the check above (a person sent it
 	// something): the same "back off and retry next tick", not a failure.

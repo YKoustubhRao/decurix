@@ -16,7 +16,7 @@ import (
 func waitingTask(t *testing.T, s *Store, worker, kind string, secret bool) Route {
 	t.Helper()
 	w := Worker{ID: worker, Name: worker, Engine: "thebot"}
-	route, err := s.Commit(NewRoute(), w, "file the bills")
+	route, err := s.Commit(NewRoute(), w, "file the bills", Origin{Kind: OriginPerson})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestAReplyIsAJudgementByItsActor(t *testing.T) {
 	reply.JudgementID = NewJudgementID()
 	operator := Actor{ID: "u_1", Name: "Asha", Roles: []string{"operator"}, Kind: ActorPerson}
 	got, stored, err := s.CommitReply(reply, Worker{ID: "box", Name: "box"}, "the purchases ledger", false,
-		ReplyBy{Actor: operator, Door: "chat"})
+		ReplyBy{Actor: operator, Door: "chat"}, Origin{Kind: OriginPerson})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestASecretAnswersJudgementIsWithheldWhole(t *testing.T) {
 	s := openStore(t, newClock())
 	reply := waitingTask(t, s, "box", OutcomeQuery, true)
 	got, _, err := s.CommitReply(reply, Worker{ID: "box", Name: "box"}, "Plum-Orbit-7731", false,
-		ReplyBy{Actor: LocalOwner, Door: "card"})
+		ReplyBy{Actor: LocalOwner, Door: "card"}, Origin{Kind: OriginPerson})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestASecretAnswersJudgementIsWithheldWhole(t *testing.T) {
 
 	// A message the person marked secret is withheld whole too.
 	reply = waitingTask(t, s, "eve", OutcomeQuery, false)
-	got, _, _ = s.CommitReply(reply, Worker{ID: "eve", Name: "eve"}, "Zq9 plum", true, ReplyBy{Actor: LocalOwner})
+	got, _, _ = s.CommitReply(reply, Worker{ID: "eve", Name: "eve"}, "Zq9 plum", true, ReplyBy{Actor: LocalOwner}, Origin{Kind: OriginPerson})
 	j, _, _ = s.Judgement(got.JudgementID)
 	if j.Text != withhold.Secret || !j.Secret {
 		t.Fatalf("a marked message's judgement = %+v", j)
@@ -84,7 +84,7 @@ func TestAnApprovalReplyCarriesTheAccessDecision(t *testing.T) {
 	s := openStore(t, newClock())
 	reply := waitingTask(t, s, "box", OutcomeApproval, false)
 	got, _, err := s.CommitReply(reply, Worker{ID: "box", Name: "box"}, "yes", false, ReplyBy{Actor: LocalOwner,
-		Door: "concierge", Approval: map[string]any{"approval_id": "a_1", "outcome": "allowed", "decision": "yes"}})
+		Door: "concierge", Approval: map[string]any{"approval_id": "a_1", "outcome": "allowed", "decision": "yes"}}, Origin{Kind: OriginPerson})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestNoJudgementWithoutAnActor(t *testing.T) {
 	}
 	// A reply recorded with no actor (no door sends one) keeps the reply and makes no judgement.
 	reply := waitingTask(t, s, "box", OutcomeQuery, false)
-	got, _, err := s.CommitReply(reply, Worker{ID: "box", Name: "box"}, "ok", false, ReplyBy{})
+	got, _, err := s.CommitReply(reply, Worker{ID: "box", Name: "box"}, "ok", false, ReplyBy{}, Origin{Kind: OriginPerson})
 	if err != nil || got.JudgementID != "" {
 		t.Fatalf("a reply without an actor = %+v, %v", got, err)
 	}
@@ -120,7 +120,7 @@ func TestNoJudgementWithoutAnActor(t *testing.T) {
 
 func TestAVerdictIsAJudgementAndOutlivesItsWorker(t *testing.T) {
 	s := openStore(t, newClock())
-	route, _ := s.Commit(NewRoute(), Worker{ID: "box", Name: "box"}, "count the bills")
+	route, _ := s.Commit(NewRoute(), Worker{ID: "box", Name: "box"}, "count the bills", Origin{Kind: OriginPerson})
 	_, _ = s.RecordOutcome("box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "12"})
 	if _, err := s.SetVerdict(route.TaskID, VerdictWrong, "it is 13; password: Hunter2Hunter2", LocalOwner); err != nil {
 		t.Fatal(err)

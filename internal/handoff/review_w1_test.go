@@ -103,10 +103,10 @@ type blockingSubmit struct {
 	release chan struct{}
 }
 
-func (b *blockingSubmit) SubmitHandoff(ctx context.Context, worker, content, dir string, files []File) (string, error) {
+func (b *blockingSubmit) SubmitHandoff(ctx context.Context, worker, content, dir string, files []File, origin tasks.Origin) (string, error) {
 	b.entered <- struct{}{}
 	<-b.release
-	return b.fakeSubmit.SubmitHandoff(ctx, worker, content, dir, files)
+	return b.fakeSubmit.SubmitHandoff(ctx, worker, content, dir, files, origin)
 }
 
 // The service's lock is not held while a request is submitted: another handoff's status read goes on meanwhile, and

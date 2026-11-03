@@ -16,7 +16,7 @@ import (
 // interface so this package needs no import of net/http or any of httpapi's
 // other dependencies, and can be tested with a fake instead of a real server.
 type Submitter interface {
-	Submit(ctx context.Context, desktopID, content string) error
+	Submit(ctx context.Context, desktopID, content string, origin tasks.Origin) error
 }
 
 // defaultInterval is how often Run checks for due schedules when Interval is
@@ -133,7 +133,7 @@ func (r *Runner) fire(ctx context.Context, sch Schedule, now time.Time) {
 	}
 	content := sch.Content + timeField(occurrence)
 
-	err := r.Submitter.Submit(tasks.WithOrigin(ctx, tasks.Origin{Kind: tasks.OriginSchedule, Ref: sch.ID}), sch.DesktopID, content)
+	err := r.Submitter.Submit(ctx, sch.DesktopID, content, tasks.Origin{Kind: tasks.OriginSchedule, Ref: sch.ID})
 
 	var busy interface{ DesktopBusy() string }
 	if errors.As(err, &busy) {

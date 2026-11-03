@@ -37,7 +37,7 @@ type fakeSubmit struct {
 	n     int
 }
 
-func (f *fakeSubmit) SubmitHandoff(_ context.Context, worker, content, dir string, files []File) (string, error) {
+func (f *fakeSubmit) SubmitHandoff(_ context.Context, worker, content, dir string, files []File, _ tasks.Origin) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.busy[worker] {

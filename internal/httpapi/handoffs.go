@@ -18,15 +18,15 @@ import (
 type handoffAdapter struct{ s *Server }
 
 // SubmitHandoff sends a handed-on request to a worker, with its files when it has any.
-func (a handoffAdapter) SubmitHandoff(ctx context.Context, id, content, dir string, files []handoff.File) (string, error) {
+func (a handoffAdapter) SubmitHandoff(ctx context.Context, id, content, dir string, files []handoff.File, origin tasks.Origin) (string, error) {
 	if len(files) == 0 {
-		return a.s.SubmitTracked(ctx, id, content)
+		return a.s.SubmitTracked(ctx, id, content, origin)
 	}
 	att := make([]mailtrigger.Attachment, len(files))
 	for i, f := range files {
 		att[i] = mailtrigger.Attachment{Name: f.Name, Data: f.Data}
 	}
-	return a.s.SubmitTrackedWithFiles(ctx, id, content, dir, att)
+	return a.s.SubmitTrackedWithFiles(ctx, id, content, dir, att, origin)
 }
 
 // ReadFiles copies files out of a worker's desktop, within the handoff's carry budget.

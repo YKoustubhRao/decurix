@@ -162,7 +162,7 @@ func TestGateFindsAnApprovalTheTaskRecordHolds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if route, err = s.Tasks.Commit(route, w, "pay the vendor"); err != nil {
+	if route, err = s.Tasks.Commit(route, w, "pay the vendor", tasks.Origin{Kind: tasks.OriginPerson}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Tasks.RecordOutcome(w.ID, route.TaskID, tasks.Outcome{Kind: "approval", Reply: "Approval needed before I click Pay: pays $900."}); err != nil {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -135,7 +136,7 @@ type fakeSubmitter struct {
 	stickBusy bool
 }
 
-func (f *fakeSubmitter) SubmitTracked(ctx context.Context, desktopID, content string) (string, error) {
+func (f *fakeSubmitter) SubmitTracked(ctx context.Context, desktopID, content string, _ tasks.Origin) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
