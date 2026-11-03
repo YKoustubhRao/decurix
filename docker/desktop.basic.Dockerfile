@@ -292,6 +292,12 @@ RUN rm -f /etc/sudoers.d/headless /dockerstartup/.initial_sudo_password \
     && chown -R 1001:1001 /dockerstartup
 # (/dockerstartup is handed to the desktop user here, at build time, and never by root at runtime: with hard-link
 # protection off, a root `chown -R` of a folder the worker can write into hands over whatever it linked there.)
+
+# The X server answers only on its own socket, never on TCP: anything on the Docker network that reached X on port
+# 6001 could drive this screen around the approval gate. Xvnc's own default is already no TCP; the mandatory config
+# of TigerVNC's vncserver (which the base image's startup runs) makes it explicit, as `-nolisten tcp`. A desktop
+# picks this up only when it is recreated. TestDesktopXServerHasNoTCPLive checks a running desktop.
+RUN mkdir -p /etc/tigervnc && echo 'nolisten=tcp' >> /etc/tigervnc/vncserver-config-mandatory
 COPY agent/decurix-entrypoint.sh /opt/decurix-entrypoint.sh
 RUN chmod 755 /opt/decurix-entrypoint.sh \
     && chown -R root:root /opt/decurix_agent /opt/decurix-entrypoint.sh \
