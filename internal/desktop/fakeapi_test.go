@@ -10,6 +10,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/system"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
@@ -71,6 +72,15 @@ func (f *fakeAPI) ContainerCreate(_ context.Context, cfg *container.Config, host
 		return f.create(name, cfg, host)
 	}
 	return container.CreateResponse{ID: "id-" + name}, nil
+}
+
+func (f *fakeAPI) Info(context.Context) (system.Info, error) {
+	return system.Info{NCPU: 4, MemTotal: 8 << 30}, nil
+}
+
+func (f *fakeAPI) ContainerUpdate(_ context.Context, name string, cfg container.UpdateConfig) (container.UpdateResponse, error) {
+	f.record("ContainerUpdate %s cpus=%d mem=%d", name, cfg.NanoCPUs/1_000_000_000, cfg.Memory>>20)
+	return container.UpdateResponse{}, nil
 }
 
 func (f *fakeAPI) ContainerRemove(_ context.Context, name string, _ container.RemoveOptions) error {

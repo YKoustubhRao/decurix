@@ -104,6 +104,12 @@ type Manager struct {
 	// sync even though Docker labels cannot be altered after container creation.
 	resourceMu        sync.Mutex
 	resourceOverrides map[string]ResourceAllocation
+	// lastCPU is each desktop's previous CPU sample (Stats), under resourceMu.
+	lastCPU map[string]container.CPUStats
+
+	// lifecycleMu guards lifecycle, one lock per desktop (LockDesktop).
+	lifecycleMu sync.Mutex
+	lifecycle   map[string]*sync.Mutex
 
 	// httpClient pools persistent HTTP connections (Keep-Alive) to desktop
 	// agent APIs on port 8081, eliminating TCP handshake overhead on every
@@ -377,6 +383,10 @@ func (m *Manager) runProvisioning(
 
 	// 3. Container Configuration & Creation
 	updateStage("container", "Creating container environment...", 45)
+	cpus, memoryMB := m.clampResources(ctx, prov.CPUs, prov.MemoryMB)
+	m.provisioningMu.Lock()
+	prov.CPUs, prov.MemoryMB = cpus, memoryMB
+	m.provisioningMu.Unlock()
 	env := buildDesktopEnv(name, prov.Harness, prov.Specialization, prov.ParentID, brain, shared)
 	if token := m.AgentToken(name); token != "" {
 		env = append(env, AgentTokenEnv+"="+token)
@@ -1103,6 +1113,7 @@ func (m *Manager) Delete(
 	m.resourceMu.Lock()
 	delete(m.resourceOverrides, sanitizedID)
 	delete(m.resourceOverrides, inspect.ID)
+	delete(m.lastCPU, sanitizedID)
 	m.resourceMu.Unlock()
 
 	// Delete persistent storage too.
@@ -1472,6 +1483,7 @@ func (m *Manager) UpdateResources(
 	sanitizedID := sanitizeName(id)
 	name := "desktop_" + sanitizedID
 
+	cpus, memoryMB = m.clampResources(ctx, cpus, memoryMB)
 	resp, err := m.client.ContainerUpdate(ctx, name, container.UpdateConfig{Resources: desktopResources(cpus, memoryMB)})
 	if err != nil {
 		return fmt.Errorf("update container resources for %s: %w", name, err)
@@ -1505,6 +1517,43 @@ func (m *Manager) Stats(
 	if err := json.NewDecoder(reader.Body).Decode(&stats); err != nil {
 		return nil, fmt.Errorf("decode container stats for %s: %w", name, err)
 	}
+	m.withPreviousCPU(sanitizedID, &stats)
 
 	return &stats, nil
+}
+
+// withPreviousCPU gives a one-shot sample the CPU reading to measure against. Docker's one-shot stats leave
+// PreCPUStats empty, so the "delta" was everything used since boot and a pegged desktop read 0.35% (B-25): the
+// previous sample of the same desktop is used instead, and the first sample of a desktop measures nothing (0%).
+func (m *Manager) withPreviousCPU(id string, stats *container.StatsResponse) {
+	m.resourceMu.Lock()
+	defer m.resourceMu.Unlock()
+	if m.lastCPU == nil {
+		m.lastCPU = map[string]container.CPUStats{}
+	}
+	if stats.PreCPUStats.SystemUsage == 0 {
+		if prev, ok := m.lastCPU[id]; ok && prev.SystemUsage <= stats.CPUStats.SystemUsage {
+			stats.PreCPUStats = prev
+		} else {
+			stats.PreCPUStats = stats.CPUStats
+		}
+	}
+	m.lastCPU[id] = stats.CPUStats
+}
+
+// clampResources keeps a desktop's CPUs and memory within what the machine has (B-25): asking Docker for more CPUs
+// than exist fails, and more memory than exists only promises what cannot be given. Without an answer from Docker
+// the request stands as asked.
+func (m *Manager) clampResources(ctx context.Context, cpus, memoryMB int64) (int64, int64) {
+	info, err := m.client.Info(ctx)
+	if err != nil {
+		return cpus, memoryMB
+	}
+	if n := int64(info.NCPU); n > 0 && cpus > n {
+		cpus = n
+	}
+	if total := info.MemTotal / (1024 * 1024); total > 0 && memoryMB > total {
+		memoryMB = total
+	}
+	return cpus, memoryMB
 }

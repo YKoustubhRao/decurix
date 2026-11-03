@@ -77,7 +77,7 @@ func TestBusyDesktopIsNeverStopped(t *testing.T) {
 	desktops := &fakeDesktops{list: []desktop.Desktop{d}}
 	tasks := &fakeTasks{busy: map[string]string{"bordu": "a task is still running"}}
 
-	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Hour, now: func() time.Time { return now }}
+	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Hour, Action: "stop", now: func() time.Time { return now }}
 	c.sweep(context.Background())
 
 	if len(desktops.stopped) != 0 {
@@ -92,7 +92,7 @@ func TestIdlePastThresholdIsStopped(t *testing.T) {
 	desktops := &fakeDesktops{list: []desktop.Desktop{d}}
 	tasks := &fakeTasks{activity: map[string]time.Time{"bordu": now.Add(-2 * time.Hour)}}
 
-	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Hour, now: func() time.Time { return now }}
+	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Hour, Action: "stop", now: func() time.Time { return now }}
 	c.sweep(context.Background())
 
 	if len(desktops.stopped) != 1 || desktops.stopped[0] != "bordu" {
@@ -111,7 +111,7 @@ func TestLastActivityErrorFailsSafeRatherThanStopping(t *testing.T) {
 	desktops := &fakeDesktops{list: []desktop.Desktop{d}}
 	tasks := &fakeTasks{activityErrs: map[string]error{"bordu": errors.New("database is locked")}}
 
-	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Hour, now: func() time.Time { return now }}
+	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Hour, Action: "stop", now: func() time.Time { return now }}
 	c.sweep(context.Background())
 
 	if len(desktops.stopped) != 0 {
@@ -126,7 +126,7 @@ func TestNotYetIdleEnoughIsLeftAlone(t *testing.T) {
 	desktops := &fakeDesktops{list: []desktop.Desktop{d}}
 	tasks := &fakeTasks{activity: map[string]time.Time{"bordu": now.Add(-30 * time.Minute)}}
 
-	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Hour, now: func() time.Time { return now }}
+	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Hour, Action: "stop", now: func() time.Time { return now }}
 	c.sweep(context.Background())
 
 	if len(desktops.stopped) != 0 {
@@ -142,7 +142,7 @@ func TestNoStartTimeSignalIsLeftAlone(t *testing.T) {
 	desktops := &fakeDesktops{list: []desktop.Desktop{d}}
 	tasks := &fakeTasks{}
 
-	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Minute, now: func() time.Time { return now }}
+	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Minute, Action: "stop", now: func() time.Time { return now }}
 	c.sweep(context.Background())
 
 	if len(desktops.stopped) != 0 {
@@ -160,7 +160,7 @@ func TestRecentlyViewedDesktopIsNotStoppedEvenWithOldTaskActivity(t *testing.T) 
 	}
 	tasks := &fakeTasks{activity: map[string]time.Time{"bordu": now.Add(-3 * day)}}
 
-	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Hour, now: func() time.Time { return now }}
+	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Hour, Action: "stop", now: func() time.Time { return now }}
 	c.sweep(context.Background())
 
 	if len(desktops.stopped) != 0 {
@@ -175,7 +175,7 @@ func TestStoppedDesktopIsNeverConsidered(t *testing.T) {
 	desktops := &fakeDesktops{list: []desktop.Desktop{d}}
 	tasks := &fakeTasks{activity: map[string]time.Time{"bordu": now.Add(-3 * day)}}
 
-	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Minute, now: func() time.Time { return now }}
+	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Minute, Action: "stop", now: func() time.Time { return now }}
 	c.sweep(context.Background())
 
 	if len(desktops.stopped) != 0 {
@@ -223,7 +223,7 @@ func TestSweepChecksManyDesktopsConcurrentlyAndStopsAllThatAreIdle(t *testing.T)
 	desktops := &fakeDesktops{list: list}
 	tasks := &fakeTasks{activity: activity}
 
-	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Hour, now: func() time.Time { return now }}
+	c := &Checker{Desktops: desktops, Tasks: tasks, Threshold: time.Hour, Action: "stop", now: func() time.Time { return now }}
 	c.sweep(context.Background())
 
 	got := append([]string(nil), desktops.stopped...)
