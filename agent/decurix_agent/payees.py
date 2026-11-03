@@ -33,6 +33,32 @@ MESSAGE_KINDS = {".eml", ".msg", ".txt"}
 ACCOUNT = re.compile(r"(?<![\d])\d{9,18}(?![\d])")
 IFSC = re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b")
 IBAN = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b")
+# An IBAN's length by its country (the ISO 13616 registry). A token of IBAN shape is one only when its country's length
+# and the mod-97 check hold: found in review (2026-11-03, round 2), a reference of two letters and digits in a summary
+# table read as an IBAN in no input and blocked correct work.
+_IBAN_LENGTH = {
+    "AD": 24, "AE": 23, "AL": 28, "AT": 20, "AZ": 28, "BA": 20, "BE": 16, "BG": 22, "BH": 22, "BI": 27, "BR": 29,
+    "BY": 28, "CH": 21, "CR": 22, "CY": 28, "CZ": 24, "DE": 22, "DJ": 27, "DK": 18, "DO": 28, "EE": 20, "EG": 29,
+    "ES": 24, "FI": 18, "FK": 18, "FO": 18, "FR": 27, "GB": 22, "GE": 22, "GI": 23, "GL": 18, "GR": 27, "GT": 28,
+    "HR": 21, "HU": 28, "IE": 22, "IL": 23, "IQ": 23, "IS": 26, "IT": 27, "JO": 30, "KW": 30, "KZ": 20, "LB": 28,
+    "LC": 32, "LI": 21, "LT": 20, "LU": 20, "LV": 21, "LY": 25, "MC": 27, "MD": 24, "ME": 22, "MK": 19, "MN": 20,
+    "MR": 27, "MT": 31, "MU": 30, "NI": 28, "NL": 18, "NO": 15, "OM": 23, "PK": 24, "PL": 28, "PS": 29, "PT": 25,
+    "QA": 29, "RO": 24, "RS": 22, "RU": 33, "SA": 24, "SC": 31, "SD": 18, "SE": 24, "SI": 19, "SK": 24, "SM": 27,
+    "SO": 23, "ST": 25, "SV": 28, "TL": 23, "TN": 24, "TR": 26, "UA": 29, "VA": 22, "VG": 24, "XK": 20,
+}
+
+
+def _is_iban(code):
+    """Whether a token of IBAN shape is an IBAN: its country's length, and the ISO 13616 mod-97 check."""
+
+    if _IBAN_LENGTH.get(code[:2]) != len(code):
+        return False
+    digits = "".join(str(int(ch, 36)) for ch in code[4:] + code[:4])
+    return int(digits) % 97 == 1
+
+
+def _ibans(text):
+    return {code for code in IBAN.findall(text) if _is_iban(code)}
 SWIFT = re.compile(r"\b[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b")
 UPI = re.compile(r"\b[\w.-]{2,}@[a-z]{2,}\b(?![.\w])")
 # Words of an account or a bank identifier (a cell that holds one is not a payee's name). Which columns hold where
@@ -131,7 +157,7 @@ def _identifiers(text, column=""):
     """Account-like identifiers in a cell: digit runs of 9-18 digits, IFSC, IBAN, SWIFT/BIC (in such a column), UPI."""
 
     text = str(text if text is not None else "")
-    found = set(IFSC.findall(text)) | set(IBAN.findall(text)) | set(ACCOUNT.findall(text.replace(" ", "")))
+    found = set(IFSC.findall(text)) | _ibans(text) | set(ACCOUNT.findall(text.replace(" ", "")))
     if re.search(r"swift|bic", column or "", re.I):
         found |= set(SWIFT.findall(text))
     if re.search(r"upi|vpa", column or "", re.I):
@@ -263,7 +289,7 @@ def _by_format(text):
     """The bank identifiers a cell holds by their own format, whatever its column: IFSC and IBAN codes."""
 
     text = str(text or "")
-    return set(IFSC.findall(text)) | set(IBAN.findall(text))
+    return set(IFSC.findall(text)) | _ibans(text)
 
 
 def _payment_rows(path):
@@ -386,6 +412,17 @@ def _sourced(request, records, documents):
     return out
 
 
+def _screen_identifiers():
+    """Every bank identifier the task's tools read off the screen (computer/evidence.observed), or an empty set."""
+
+    try:
+        from decurix_agent.computer import evidence
+        return _text_identifiers("\n".join(evidence.observed()))
+    except Exception as exc:  # noqa: BLE001 - nothing read is nothing read off the screen
+        log(f"payees: could not read what the task saw on the screen: {exc}")
+        return set()
+
+
 def _payment_findings(request, made, found=None):
     """(mismatches, for approval, unchecked) - see mismatches, message_payments and unchecked. Each bank identifier a
     produced table holds is decided by where it comes from, never by the table's headers (review 2026-11-03, F-01)."""
@@ -402,6 +439,7 @@ def _payment_findings(request, made, found=None):
     given = bool(_MESSAGE_DETAILS.get(_request_key(request)))
     in_messages = _message_identifiers(messages)
     sourced = _sourced(request, records, documents)
+    screen = _screen_identifiers()
     any_input = bool(records or messages or documents)
 
     def recorded_for(payee):
@@ -455,6 +493,17 @@ def _payment_findings(request, made, found=None):
             else:
                 unsure.append(f"PAYEE NOT CONFIRMED: {where} pays {payee or 'a payee'} to {ident}, taken from "
                               f"{sourced[ident]}; no record the request gave holds an account for "
+                              f"{payee or 'this payee'} to confirm it. It is not checked until you confirm it.")
+        elif ident in screen:
+            # Read off an application's screen during the task (computer/evidence.observed): a source, but not one
+            # that says whose the account is - never passed, never refused for being "in no input" (review
+            # 2026-11-03, round 2). Only a record that holds another account for this payee refuses it.
+            if own:
+                entry = wrong.setdefault((where, payee), {"idents": [], "kind": "nowhere", "detail": ""})
+                entry["idents"].append(ident)
+            else:
+                unsure.append(f"PAYEE NOT CONFIRMED: {where} pays {payee or 'a payee'} to {ident}, read off the screen "
+                              f"during the task; no record the request gave holds an account for "
                               f"{payee or 'this payee'} to confirm it. It is not checked until you confirm it.")
         elif any_input:
             entry = wrong.setdefault((where, payee), {"idents": [], "kind": "nowhere", "detail": ""})
@@ -552,6 +601,7 @@ def payments_summary(request, made, found=None):
             on_record.setdefault(ident, (Path(record).name, texts))
     in_messages = _message_identifiers(messages)
     sourced = _sourced(request, records, documents)
+    screen = _screen_identifiers()
     grouped = {}
     for payee, ident, _ in rows:
         if ident in on_record and (not payee or any(names_payee(payee, t) for t in on_record[ident][1])):
@@ -563,6 +613,8 @@ def payments_summary(request, made, found=None):
             source = f"NOT ON RECORD - from the message \"{in_messages[ident]}\""
         elif ident in sourced:
             source = f"NOT ON RECORD - from {sourced[ident]}"
+        elif ident in screen:
+            source = "NOT ON RECORD - read off the screen"
         else:
             source = "NOT IN ANY INPUT"
         idents = grouped.setdefault((payee or "(no payee)", source), [])
