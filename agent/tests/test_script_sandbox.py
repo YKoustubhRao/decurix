@@ -113,6 +113,36 @@ class TheNamespaceHolds(unittest.TestCase):
         done = script_sandbox.run([sys.executable, "-c", probe], scratch, 20)
         self.assertEqual(done.stdout.strip(), "isolated")
 
+    def test_a_child_left_running_in_the_background_ends_with_the_run(self):
+        # Review 2026-11-03 (F-11): a detached child outlived the run. It writes a mark a moment after the script ends.
+        import time
+
+        holding = [(name, prefix_of) for name, prefix_of in script_sandbox._candidates()
+                   if script_sandbox._isolates(prefix_of)[0]]
+        if not holding:
+            raise fixture_paths.missing("user and network namespaces are not allowed here", kind="sandbox")
+        script = ("import subprocess, sys\n"
+                  "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(2); open(\"late.txt\", \"w\")"
+                  ".write(\"x\")'], start_new_session=True)\n"
+                  "print('left')\n")
+        for name, prefix_of in holding:  # each sandbox this machine has, unshare's too where bubblewrap also works
+            with self.subTest(sandbox=name):
+                scratch = Path(tempfile.mkdtemp())
+                (scratch / "work").mkdir()
+                with mock.patch.object(script_sandbox, "prefix", lambda s, p=prefix_of: p(Path(s))):
+                    done = script_sandbox.run([sys.executable, "-c", script], scratch, 20)
+                self.assertEqual(done.stdout.strip(), "left")
+                time.sleep(4)
+                self.assertFalse((scratch / "work" / "late.txt").exists(), "a child of the script outlived the run")
+
+    def test_the_probe_says_whether_unix_sockets_are_reachable(self):
+        with mock.patch.object(script_sandbox, "_probed", {"at": 0.0, "how": None, "unix": None}):
+            chosen = script_sandbox.how()
+            if not chosen:
+                raise fixture_paths.missing("user and network namespaces are not allowed here", kind="sandbox")
+            self.assertIsNotNone(script_sandbox._probed["unix"])
+            self.assertIn("unix sockets", script_sandbox.status())
+
 
 if __name__ == "__main__":
     unittest.main()

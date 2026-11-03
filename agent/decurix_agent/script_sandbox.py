@@ -8,8 +8,9 @@ xdotool, urllib, ...): a review (2026-11-02) walked past it with `/usr/bin/curl`
 import, a subprocess list and shutil.rmtree. A list of forbidden words is not a boundary. This is:
 
   - the script runs inside a network namespace of its own (bubblewrap's --unshare-all when it works here, else
-    util-linux `unshare --user --map-root-user --net`): no network at all - not the internet, not the control plane,
-    not the browser's DevTools port, not the agent's or soul's ports on localhost;
+    util-linux `unshare --user --map-root-user --net --pid --fork --kill-child`): no network at all - not the internet,
+    not the control plane, not the browser's DevTools port, not the agent's or soul's ports on localhost - and nothing
+    it starts outlives it;
   - with an environment built from nothing (PATH, locale, Python's path), HOME and the worker's own folder pointed
     into a scratch copy, no display, no session bus, no agent token, no proxy, no control plane address;
   - in a copy of the work folder; what it writes there is copied back into the task's work folder only (regular
@@ -51,7 +52,9 @@ _KEPT_ENV = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "PYTHONPATH", "PYTHONIO
              # (a Windows development host's, for the tests' stand-in: a process there does not start without them)
              "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT")
 
-# What the probe's child runs: it connects to the port the parent listens on, and must not reach it.
+# What the probe's child runs: it connects to the port the parent listens on, and must not reach it; then it tries a
+# unix socket the parent listens on by its path, and says whether that was reached (reported, not required: with
+# unshare alone the filesystem - and so the display's and the session bus's sockets - is still the worker's).
 _PROBE = (
     "import socket, sys\n"
     "try:\n"
@@ -59,9 +62,17 @@ _PROBE = (
     "    print('reached')\n"
     "except OSError:\n"
     "    print('isolated')\n"
+    "try:\n"
+    "    s = socket.socket(socket.AF_UNIX)\n"
+    "    s.settimeout(3)\n"
+    "    s.connect(sys.argv[2])\n"
+    "    s.close()\n"
+    "    print('unix-reached')\n"
+    "except (OSError, AttributeError, IndexError):\n"
+    "    print('unix-isolated')\n"
 )
 
-_probed = {"at": 0.0, "how": None}
+_probed = {"at": 0.0, "how": None, "unix": None}
 _probe_lock = threading.Lock()
 
 
@@ -79,7 +90,10 @@ def _bwrap_prefix(bwrap, scratch):
 
 
 def _unshare_prefix(unshare, scratch):
-    return [unshare, "--user", "--map-root-user", "--net", "--ipc", "--"]
+    # A pid namespace of its own, with the script as its first process (--fork): when the script ends, the kernel ends
+    # everything it started, and --kill-child ends the script when the run is cut off (a timeout kills unshare). Found
+    # in review (2026-11-03, F-11): a child the script left running in the background outlived the run.
+    return [unshare, "--user", "--map-root-user", "--net", "--ipc", "--pid", "--fork", "--kill-child", "--"]
 
 
 def _candidates():
@@ -93,23 +107,40 @@ def _candidates():
 
 
 def _isolates(prefix_of):
-    """Whether a child started with this prefix cannot reach a port this process listens on."""
+    """(whether a child started with this prefix cannot reach a port this process listens on, whether it can reach a
+    unix socket this process listens on by its path - None when that could not be tried)."""
 
     if os.name == "nt":
-        return False
+        return False, None
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     scratch = Path(tempfile.mkdtemp(prefix=".sandbox-probe-"))
+    unix, unix_path = None, ""
     try:
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
         port = listener.getsockname()[1]
-        done = subprocess.run(prefix_of(scratch) + [sys.executable, "-c", _PROBE, str(port)], capture_output=True,
-                              text=True, timeout=PROBE_SECONDS, env=clean_env(scratch), cwd=str(scratch))
-        return done.returncode == 0 and done.stdout.strip() == "isolated"
+        try:
+            unix = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            unix_path = str(Path(tempfile.mkdtemp(prefix=".sandbox-sock-")) / "s")
+            unix.bind(unix_path)
+            unix.listen(1)
+        except (OSError, AttributeError):
+            unix, unix_path = None, ""
+        done = subprocess.run(prefix_of(scratch) + [sys.executable, "-c", _PROBE, str(port), unix_path],
+                              capture_output=True, text=True, timeout=PROBE_SECONDS, env=clean_env(scratch),
+                              cwd=str(scratch))
+        said = done.stdout.split()
+        isolated = done.returncode == 0 and said[:1] == ["isolated"]
+        reached = None if not unix_path else ("unix-reached" in said)
+        return isolated, reached
     except (OSError, subprocess.SubprocessError):
-        return False
+        return False, None
     finally:
         listener.close()
+        if unix is not None:
+            unix.close()
+        if unix_path:
+            shutil.rmtree(Path(unix_path).parent, ignore_errors=True)
         shutil.rmtree(scratch, ignore_errors=True)
 
 
@@ -119,14 +150,17 @@ def how():
     with _probe_lock:
         if time.time() - _probed["at"] < PROBE_KEEP_SECONDS:
             return _probed["how"] or ""
-        chosen = ""
+        chosen, unix = "", None
         for name, prefix_of in _candidates():
-            if _isolates(prefix_of):
+            isolated, unix = _isolates(prefix_of)
+            if isolated:
                 chosen = name
                 break
-        _probed.update(at=time.time(), how=chosen)
+        _probed.update(at=time.time(), how=chosen, unix=unix if chosen else None)
         if not chosen:
             log("Sandbox: neither bubblewrap nor unshare can cut a script off from the network here")
+        else:
+            log(f"Sandbox: {status()}")
         return chosen
 
 
@@ -134,6 +168,21 @@ def available():
     """Whether a learned script can be run unattended on this desktop (how)."""
 
     return bool(how())
+
+
+def status():
+    """What the sandbox chosen here holds and what it does not, in words for the person and the log."""
+
+    chosen = _probed.get("how")
+    if not chosen:
+        return "no sandbox: " + why_not()
+    said = f"{chosen}: no network"
+    if _probed.get("unix"):
+        said += ("; unix sockets on this machine (the display's, the session bus's) are still reachable from inside "
+                 "it - only the early reading of a script (playbooks._sound) stands before them")
+    elif _probed.get("unix") is False:
+        said += "; unix sockets are not reachable"
+    return said
 
 
 def why_not():
