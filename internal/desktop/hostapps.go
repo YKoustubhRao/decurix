@@ -5,6 +5,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -400,11 +402,6 @@ func checkHostTargets(targets []winhost.Target) map[winhost.Target]string {
 	return out
 }
 
-// needsSound reports whether an app is mainly for playing audio or video. The desktop VMs have no sound device, so such
-// an app would open, look right and say nothing.
-func needsSound(name string) bool {
-	return categorizeAppName(name) == "Media & Entertainment"
-}
 
 // vetHostApps says how each discovered Windows app can be used. A service with a web version opens in the VM's browser;
 // anything else must be a program the host confirms it can run on a private desktop. Apps that cannot be launched remain
@@ -414,13 +411,6 @@ func vetHostApps(apps []HostAppItem) []HostAppItem {
 	var pending []HostAppItem
 	var targets []winhost.Target
 	for _, app := range apps {
-		if needsSound(app.Name) {
-			app.Mode = ModeUnavailable
-			app.UnavailableReason = "This desktop has no audio device, so this app cannot be used here."
-			app.Description = app.UnavailableReason
-			kept = append(kept, app)
-			continue
-		}
 		if getWebAppURLForApp(app.Name, app.HostCmd) != "" {
 			app.Mode = ModeWeb
 			app.Description = "Opens the web version in the VM's browser; you sign in there"
@@ -474,7 +464,7 @@ func vetHostApps(apps []HostAppItem) []HostAppItem {
 		if localPageFor(targets[i].Target, targets[i].Args) != "" {
 			app.Description = "A web app: opens in the VM's browser, its server runs on this computer"
 		} else if isBrowserApp(app.Name) {
-			app.Description = "Runs privately on this computer; your signed-in browser profile is copied the first time it opens"
+			app.Description = "Runs privately on this computer with a profile of its own; nothing of your own browser is copied"
 		} else {
 			app.Description = "Runs on this computer on a hidden desktop; you see and use it in the VM"
 		}
@@ -839,7 +829,7 @@ Exec=/home/headless/.local/bin/%[1]s-host %%U
 Icon=/home/headless/.local/share/icons/hicolor/scalable/apps/%[1]s.svg
 Terminal=false
 Categories=Office;Utility;Network;
-`, slug, name)
+`, slug, desktopValue(name))
 	return writeHostLauncher(tw, slug, desktop)
 }
 
@@ -1057,105 +1047,25 @@ func isIgnoredWindowsApp(name string) bool {
 	return false
 }
 
-func categorizeAppName(name string) string {
-	lower := strings.ToLower(name)
-	switch {
-	case strings.Contains(lower, "chrome") || strings.Contains(lower, "edge") ||
-		strings.Contains(lower, "firefox") || strings.Contains(lower, "brave") ||
-		strings.Contains(lower, "opera") || strings.Contains(lower, "browser") ||
-		strings.Contains(lower, "vivaldi") || strings.Contains(lower, "arc"):
-		return "Browsers & Web"
-	case strings.Contains(lower, "youtube") || strings.Contains(lower, "spotify") ||
-		strings.Contains(lower, "music") || strings.Contains(lower, "video") ||
-		strings.Contains(lower, "vlc") || strings.Contains(lower, "media") ||
-		strings.Contains(lower, "netflix") || strings.Contains(lower, "twitch"):
-		return "Media & Entertainment"
-	case strings.Contains(lower, "code") || strings.Contains(lower, "visual studio") ||
-		strings.Contains(lower, "git") || strings.Contains(lower, "terminal") ||
-		strings.Contains(lower, "powershell") || strings.Contains(lower, "bash") ||
-		strings.Contains(lower, "sublime") || strings.Contains(lower, "intellij") ||
-		strings.Contains(lower, "pycharm") || strings.Contains(lower, "docker"):
-		return "Development"
-	case strings.Contains(lower, "discord") || strings.Contains(lower, "slack") ||
-		strings.Contains(lower, "teams") || strings.Contains(lower, "telegram") ||
-		strings.Contains(lower, "whatsapp") || strings.Contains(lower, "zoom"):
-		return "Communication"
-	case strings.Contains(lower, "word") || strings.Contains(lower, "excel") ||
-		strings.Contains(lower, "powerpoint") || strings.Contains(lower, "office") ||
-		strings.Contains(lower, "notion") || strings.Contains(lower, "obsidian") ||
-		strings.Contains(lower, "notes") || strings.Contains(lower, "calc"):
-		return "Productivity"
-	default:
-		return "Desktop Apps"
-	}
-}
+// categorizeAppName is the group an app is listed under. It is the same for every app: guessing a product's kind, or
+// its web address, from words in its name rerouted a local app whose name held a vendor's word to that vendor's site
+// (B-20). The name is kept as a parameter for the callers' shape; nothing is read from it.
+func categorizeAppName(string) string { return "Desktop Apps" }
 
-// getWebAppURLForApp detects if an application name or host command/AppID represents
-// an AI service, PWA, or cloud application that should render directly in the VM
-// desktop using Chromium standalone app mode instead of popping up on the host physical monitor.
-func getWebAppURLForApp(name, cmdOrId string) string {
-	lowerCmd := strings.ToLower(cmdOrId)
-	lowerName := strings.ToLower(name)
-
-	// Direct URL shortcuts
+// getWebAppURLForApp is the web address an app opens, when it is one: its resolved command or AppID is itself an
+// http(s) target (a URL, or a command that starts one). Never a guess from its name - that is data, not a rule.
+func getWebAppURLForApp(_ string, cmdOrId string) string {
 	for _, prefix := range []string{"https://", "http://"} {
 		if strings.HasPrefix(cmdOrId, prefix) {
-			return cmdOrId
+			return strings.Fields(cmdOrId)[0]
 		}
-		if idx := strings.Index(cmdOrId, prefix); idx != -1 {
-			fields := strings.Fields(cmdOrId[idx:])
-			if len(fields) > 0 {
+		if idx := strings.Index(cmdOrId, " "+prefix); idx != -1 {
+			if fields := strings.Fields(cmdOrId[idx:]); len(fields) > 0 {
 				return fields[0]
 			}
 		}
 	}
-
-	// Known AI, cloud, and productivity applications
-	switch {
-	case strings.Contains(lowerName, "claude") || strings.Contains(lowerCmd, "claude"):
-		return "https://claude.ai"
-	case strings.Contains(lowerName, "chatgpt") || strings.Contains(lowerName, "chat gpt") ||
-		strings.Contains(lowerCmd, "openai.codex") || strings.Contains(lowerCmd, "chatgpt"):
-		return "https://chatgpt.com"
-	case strings.Contains(lowerName, "copilot"):
-		return "https://copilot.microsoft.com"
-	case strings.Contains(lowerName, "perplexity"):
-		return "https://www.perplexity.ai"
-	case strings.Contains(lowerName, "youtube") || strings.Contains(lowerCmd, "youtube"):
-		return "https://www.youtube.com"
-	case strings.Contains(lowerName, "whatsapp") || strings.Contains(lowerCmd, "whatsapp"):
-		return "https://web.whatsapp.com"
-	case strings.Contains(lowerName, "discord"):
-		return "https://discord.com/app"
-	case strings.Contains(lowerName, "slack"):
-		return "https://app.slack.com"
-	case strings.Contains(lowerName, "spotify"):
-		return "https://open.spotify.com"
-	case strings.Contains(lowerName, "notion"):
-		return "https://www.notion.so"
-	case strings.Contains(lowerName, "figma"):
-		return "https://www.figma.com"
-	case strings.Contains(lowerName, "linear"):
-		return "https://linear.app"
-	case strings.Contains(lowerName, "github"):
-		return "https://github.com"
-	case strings.Contains(lowerName, "telegram"):
-		return "https://web.telegram.org"
-	case strings.Contains(lowerName, "reddit"):
-		return "https://www.reddit.com"
-	case strings.Contains(lowerName, "gmail") || strings.Contains(lowerName, "google mail"):
-		return "https://mail.google.com"
-	case strings.Contains(lowerName, "google drive"):
-		return "https://drive.google.com"
-	case strings.Contains(lowerName, "google docs"):
-		return "https://docs.google.com"
-	case strings.Contains(lowerName, "google sheets"):
-		return "https://sheets.google.com"
-	case strings.Contains(lowerName, "google meet"):
-		return "https://meet.google.com"
-	default:
-		return ""
-	}
+	return ""
 }
 
 func pickAppIcon(name string) string {
@@ -1537,7 +1447,7 @@ func exploreDynamicApps(seen map[string]bool) []HostAppItem {
 			hostCmd := fmt.Sprintf(`cmd.exe /c start explorer.exe shell:AppsFolder\%s`, app.AppID)
 			desc := "Windows application (runs on host desktop)"
 			if getWebAppURLForApp(app.Name, app.AppID) != "" {
-				desc = "AI & cloud application (renders directly in VM desktop)"
+				desc = "Web application (opens in the VM's browser)"
 			}
 			items = append(items, HostAppItem{
 				ID:              id,
@@ -1641,17 +1551,24 @@ type packContext struct {
 
 // sessionID names the host session for an app on this desktop, so two desktops never share one app.
 func (pc packContext) sessionID(slug string) string {
-	id := pc.DesktopID
-	if id == "" {
-		id = "vm"
+	return hostSessionID(pc.DesktopID, slug)
+}
+
+// hostSessionID is the host session of app slug on desktop: a readable prefix plus a hash of the pair, so no two
+// (desktop, app) pairs share one - "a-b" with "c" and "a" with "b-c" did, and long names cut to the same prefix did
+// (B-19). At most 46 characters of [A-Za-z0-9_-], so the host's 48-character desktop name keeps all of it.
+func hostSessionID(desktop, slug string) string {
+	if desktop == "" {
+		desktop = "vm"
 	}
-	if len(slug) > 24 {
-		slug = slug[:24]
+	sum := sha256.Sum256([]byte(desktop + "\x00" + slug))
+	short := func(s string, n int) string {
+		if len(s) > n {
+			return s[:n]
+		}
+		return s
 	}
-	if id = id + "-" + slug; len(id) > 64 {
-		id = id[:64]
-	}
-	return id
+	return short(desktop, 16) + "-" + short(slug, 16) + "-" + hex.EncodeToString(sum[:6])
 }
 
 // hostGUILauncher is the shell that shows a Windows app which runs on the host with no window there: it opens the
@@ -1963,6 +1880,8 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 			return err
 		}
 
+		// Every value is one line of plain text: a name or description from a host or a phone (untrusted) could
+		// otherwise end its line and add keys of its own, an Exec among them (B-22).
 		launcherContent := fmt.Sprintf(`[Desktop Entry]
 Version=1.0
 Type=Application
@@ -1972,7 +1891,7 @@ Exec=/home/headless/.local/bin/%s-host %%U
 Icon=%s
 Terminal=false
 Categories=%s
-%s`, app.Name, suffix, app.Description, slug, icon, cat, startup)
+%s`, desktopValue(app.Name), suffix, desktopValue(app.Description), slug, desktopValue(icon), cat, startup)
 
 		if err := writeHostLauncher(tw, slug, launcherContent); err != nil {
 			return err
@@ -2278,4 +2197,15 @@ func writeStringToTar(tw *tar.Writer, tarPath, content string, mode int64) error
 // WindowsCDrives returns where this process can read the host's C: drive (a WSL or container mount, or C:\ itself).
 func WindowsCDrives() []string {
 	return getWindowsCDriveCandidates()
+}
+
+// desktopValue makes s safe as one value of a .desktop entry: control characters (line breaks included) become spaces,
+// so a value can never end its line and start a key of its own.
+func desktopValue(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == 0x2028 || r == 0x2029 {
+			return ' '
+		}
+		return r
+	}, s)
 }

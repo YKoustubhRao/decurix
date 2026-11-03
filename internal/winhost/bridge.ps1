@@ -3602,6 +3602,22 @@ $ProfileSkipDirs = @(
 )
 $ProfileSkipFiles = @('Singleton*', '*lock*', '*.tmp', 'Lock*', 'Parent.lock', '*.pma')
 
+# A private profile an older build imported from the person's own browser (it carries an import marker) still holds
+# their cookies, saved passwords and the key they are encrypted with, and launches kept using it after the import was
+# made opt-in (B-19). Without the opt-in such a profile is deleted once, before the browser starts, so it starts empty
+# like any other; the worker signs in on its own screen. With the opt-in it is left as it is.
+function Remove-ImportedHostProfile([string]$dir) {
+    if ($env:DECURIX_IMPORT_HOST_BROWSER_PROFILE -eq '1') { return }
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return }
+    $marks = @(Get-ChildItem -LiteralPath $dir -Force -Filter '.decurix-host-profile-imported-*' -ErrorAction SilentlyContinue)
+    if ($marks.Count -eq 0) { return }
+    Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $dir) {
+        # Not removable (held open): never launched with it.
+        throw "the private browser profile imported from your own browser could not be removed: $dir"
+    }
+}
+
 function Initialize-PrivateBrowserProfile([string]$base, [string]$dir, [string]$requestedProfile) {
     # Not imported any more (review 2026-11-02): the copy carried the person's cookies, saved passwords and Local State
     # (the key they are encrypted with) into a browser a worker drives, and anything that steers the worker - a web
@@ -3669,6 +3685,7 @@ function Complete-Launch($p) {
             $m = [regex]::Match($argLine, '(?i)--profile-directory=(?:"([^"]*)"|(\S+))')
             if ($m.Success) { $requested = $m.Groups[1].Value + $m.Groups[2].Value }
         }
+        if ($Browsers -contains $p.Base) { Remove-ImportedHostProfile $dir }
         Initialize-PrivateBrowserProfile $p.Base $dir $requested
         $argLine = (($argLine + " --user-data-dir=`"$dir`"").Trim())
         # Chromium (a browser, an Electron app) builds the accessibility tree of what a page shows only once something

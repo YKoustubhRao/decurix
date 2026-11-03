@@ -194,3 +194,32 @@ func TestADesktopWithNoSharedFolderMountsNothingOfThePC(t *testing.T) {
 		}
 	}
 }
+
+// TestTheSharedFolderRefusesTheOSsOwnPlacesAndDecurixsData: classes a shared folder may not be (B-04) - per-user
+// application data folders, short names that hide the real one, and the control plane's own data folder (which
+// holds the key every desktop's tokens come from) or a folder holding it.
+func TestTheSharedFolderRefusesTheOSsOwnPlacesAndDecurixsData(t *testing.T) {
+	old := sharedFS
+	defer func() { sharedFS = old }()
+	sharedFS.Stat = func(string) (os.FileInfo, error) { return fakeSharedDir{}, nil }
+	sharedFS.EvalSymlinks = func(p string) (string, error) { return p, nil }
+	sharedFS.CDrives = func() []string { return []string{"/mnt/c"} }
+	sharedFS.Home = func() (string, error) { return "/home/other", nil }
+	sharedFS.DataDir = func() string { return "/mnt/c/Users/me/Documents/decurix-data" }
+	for _, p := range []string{
+		"/Users/me/Library/Keys", "/home/me/.local/share", "/home/me/.cache/x", "/home/me/snap/app",
+		`C:\PROGRA~1`, `C:\Users\me\SSH~1`,
+		`C:\Users\me\Documents\decurix-data`, `C:\Users\me\Documents\decurix-data\sub`, `C:\Users\me\Documents`,
+	} {
+		if sf, err := ParseSharedFolder(p); err == nil {
+			t.Errorf("%q was accepted as %+v", p, sf)
+		}
+	}
+	if _, err := ParseSharedFolder(`C:\Users\me\Documents\Shared`); err != nil {
+		t.Errorf("an ordinary folder was refused: %v", err)
+	}
+}
+
+type fakeSharedDir struct{ os.FileInfo }
+
+func (fakeSharedDir) IsDir() bool { return true }

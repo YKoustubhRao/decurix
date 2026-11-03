@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -222,7 +223,7 @@ func TestPackDynamicApp(t *testing.T) {
 	if !strings.Contains(desktopContent, "Exec=/home/headless/.local/bin/spotify-music-host %U") {
 		t.Errorf("unexpected desktop content: %s", desktopContent)
 	}
-	if !strings.Contains(wrapperContent, "/host-gui/view?") || !strings.Contains(wrapperContent, "id=work-vm-spotify-music") ||
+	if !strings.Contains(wrapperContent, "/host-gui/view?") || !strings.Contains(wrapperContent, "id="+hostSessionID("work-vm", "spotify-music")) ||
 		!strings.Contains(wrapperContent, "token=") ||
 		!strings.Contains(wrapperContent, "target=shell%3AAppsFolder%5CSpotify.exe") {
 		t.Errorf("a Windows app must open the host-gui viewer with its target, got: %s", wrapperContent)
@@ -374,14 +375,11 @@ func TestGetWebAppURLForApp(t *testing.T) {
 		cmdOrId  string
 		expected string
 	}{
-		{"Claude", "Claude_pzs8sxrjxfjjc!Claude", "https://claude.ai"},
-		{"ChatGPT", "OpenAI.Codex_2p2nqsd0c76g0!App", "https://chatgpt.com"},
-		{"Chat GPT", "chatgpt.exe", "https://chatgpt.com"},
-		{"Microsoft Copilot", "Microsoft.Copilot_8wekyb3d8bbwe!App", "https://copilot.microsoft.com"},
-		{"YouTube", "Chrome._crx_agimnkijcaiengbajagbfclojfljnakf", "https://www.youtube.com"},
-		{"WhatsApp", "5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App", "https://web.whatsapp.com"},
-		{"Discord", "com.squirrel.Discord.Discord", "https://discord.com/app"},
-		{"Slack", "slack.exe", "https://app.slack.com"},
+		// A local app is a local app whatever its name says: no product's web address is guessed from words (B-20).
+		{"Claude", "Claude_pzs8sxrjxfjjc!Claude", ""},
+		{"Chat GPT", "chatgpt.exe", ""},
+		{"Discord", "com.squirrel.Discord.Discord", ""},
+		{"Invoice Notes (Slack export)", "notes.exe", ""},
 		{"Custom Web App", "https://example.com/myapp", "https://example.com/myapp"},
 		{"Start URL", "cmd.exe /c start https://linear.app", "https://linear.app"},
 		{"Regular Windows App", "notepad.exe", ""},
@@ -397,21 +395,53 @@ func TestGetWebAppURLForApp(t *testing.T) {
 }
 
 func TestPackDynamicAppWebAppMode(t *testing.T) {
+	// An app is a web app only when its command is a web address: then it opens in the VM's browser.
 	app := HostAppItem{
-		ID:          "win_claude",
-		Name:        "Claude",
-		Category:    "Productivity",
-		Description: "AI assistant",
-		HostCmd:     `cmd.exe /c start explorer.exe shell:AppsFolder\Claude_pzs8sxrjxfjjc!Claude`,
+		ID:          "win_tracker",
+		Name:        "Tracker",
+		Category:    "Desktop Apps",
+		Description: "web app",
+		HostCmd:     `cmd.exe /c start https://tracker.example.com/app`,
 	}
 
-	wrapper, foundWrapper := packApp(t, app)[".local/bin/claude-host"]
+	wrapper, foundWrapper := packApp(t, app)[".local/bin/tracker-host"]
 	wrapperContent := wrapper.data
 	if !foundWrapper {
-		t.Fatal("expected .local/bin/claude-host to be packed")
+		t.Fatal("expected .local/bin/tracker-host to be packed")
 	}
-	if !strings.Contains(wrapperContent, `APP='https://claude.ai'`) || !strings.Contains(wrapperContent, `--app="$APP"`) {
-		t.Errorf("expected wrapper to use chromium-browser --app mode for Claude, got:\n%s", wrapperContent)
+	if !strings.Contains(wrapperContent, `APP='https://tracker.example.com/app'`) || !strings.Contains(wrapperContent, `--app="$APP"`) {
+		t.Errorf("expected the wrapper to open the app's own address in --app mode, got:\n%s", wrapperContent)
+	}
+}
+
+// TestADesktopEntryValueStaysOnItsLine: a name or description from a host or a phone cannot add keys (B-22).
+func TestADesktopEntryValueStaysOnItsLine(t *testing.T) {
+	app := HostAppItem{ID: "win_x", Name: "Notes\nExec=/bin/false", Description: "a\rb", HostCmd: `cmd.exe /c start notes.exe`}
+	entry := packApp(t, app)["Desktop/notes-exec-bin-false-host.desktop"].data
+	for _, f := range packApp(t, app) {
+		if strings.Contains(f.data, "[Desktop Entry]") {
+			entry = f.data
+		}
+	}
+	if strings.Count(entry, "\nExec=") != 1 {
+		t.Fatalf("a value broke its line:\n%s", entry)
+	}
+	if got := desktopValue("a\nb\x00c\u2028d"); strings.ContainsAny(got, "\n\x00\u2028") {
+		t.Fatalf("desktopValue left a control character: %q", got)
+	}
+}
+
+// TestHostSessionIDsNeverCollide: ids from (desktop, app) pairs are distinct even where joined names were not (B-19).
+func TestHostSessionIDsNeverCollide(t *testing.T) {
+	pairs := [][2]string{{"a-b", "c"}, {"a", "b-c"}, {strings.Repeat("x", 70), "one"}, {strings.Repeat("x", 70), "two"},
+		{"box", strings.Repeat("y", 40) + "1"}, {"box", strings.Repeat("y", 40) + "2"}}
+	seen := map[string]bool{}
+	for _, p := range pairs {
+		id := hostSessionID(p[0], p[1])
+		if seen[id] || len(id) > 46 || !regexp.MustCompile(`^[A-Za-z0-9_-]+$`).MatchString(id) {
+			t.Errorf("hostSessionID(%q, %q) = %q: collides, too long or unsafe", p[0], p[1], id)
+		}
+		seen[id] = true
 	}
 }
 
@@ -686,31 +716,38 @@ func TestAWebServiceOpensInTheVMWithoutAskingTheHost(t *testing.T) {
 		asked = true
 		return nil, nil
 	})
-	got := vetHostApps([]HostAppItem{windowsApp("Claude", `cmd.exe /c start explorer.exe shell:AppsFolder\Anthropic.Claude_x!Claude`)})
+	got := vetHostApps([]HostAppItem{windowsApp("Tracker", `cmd.exe /c start https://tracker.example.com/app`)})
 	if len(got) != 1 || got[0].Mode != ModeWeb {
-		t.Fatalf("offered %+v, want Claude opened as its web version", got)
+		t.Fatalf("offered %+v, want an app whose command is a web address opened in the VM", got)
 	}
 	if asked {
 		t.Error("the host was asked about an app that never runs there")
 	}
 }
 
-func TestAppsThatNeedSoundAreShownButDisabled(t *testing.T) {
+// TestAnAppIsNotJudgedByTheWordsInItsName: a local app named like a web service, or like a media player, is a local
+// app the host is asked about - never rerouted to a vendor's site or refused for its name (B-20).
+func TestAnAppIsNotJudgedByTheWordsInItsName(t *testing.T) {
 	useHostChecker(t, allowEverything)
 	got := vetHostApps([]HostAppItem{
-		windowsApp("Spotify", `cmd.exe /c start "" "C:\Users\a\AppData\Roaming\Spotify\Spotify.exe"`),
+		windowsApp("Claude", `cmd.exe /c start explorer.exe shell:AppsFolder\Anthropic.Claude_x!Claude`),
 		windowsApp("VLC media player", `cmd.exe /c start "" "C:\Program Files\VideoLAN\VLC\vlc.exe"`),
 	})
-	if len(got) != 2 || got[0].Mode != ModeUnavailable || got[1].Mode != ModeUnavailable {
-		t.Errorf("audio-only apps should remain visible but disabled: %+v", got)
+	if len(got) != 2 {
+		t.Fatalf("got %+v", got)
+	}
+	for _, app := range got {
+		if app.Mode == ModeWeb || app.Mode == ModeUnavailable {
+			t.Errorf("%s was judged by its name: mode %s (%s)", app.Name, app.Mode, app.UnavailableReason)
+		}
 	}
 }
 
-func TestBrowserDescriptionPromisesTheSeededSignedInProfile(t *testing.T) {
+func TestABrowserIsNotPromisedThePersonsProfile(t *testing.T) {
 	useHostChecker(t, allowEverything)
 	got := vetHostApps([]HostAppItem{windowsApp("Google Chrome", `cmd.exe /c start "" "C:\Program Files\Google\Chrome\chrome.exe"`)})
-	if len(got) != 1 || got[0].Mode != ModeHostGUI || !strings.Contains(got[0].Description, "signed-in browser profile") {
-		t.Fatalf("Chrome discovery did not describe its profile import: %+v", got)
+	if len(got) != 1 || got[0].Mode != ModeHostGUI || strings.Contains(got[0].Description, "signed-in browser profile") {
+		t.Fatalf("Chrome must be described with a profile of its own, not the person's: %+v", got)
 	}
 }
 
