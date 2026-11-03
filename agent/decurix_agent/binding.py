@@ -366,6 +366,11 @@ def _clean(params, answer, texts=(), strict=False):
             if strict and not held_by(written, texts):
                 log(f"binding: {name} = {written!r} is in nothing this run was given; left for the work to read")
                 continue
+            if sign_differs(written, texts):
+                # Held by its amount (held_by is sign-blind on purpose), but this run's documents write it only with
+                # the other sign: said to the check, never decided here (review 2026-11-03 rework, E-45).
+                log(f"binding: {name} = {written!r} - the documents show this amount only with the other sign; kept, and said")
+                evidence[name] = OTHER_SIGN
             if numbered_like_example(written, param, texts):
                 log(f"binding: {name} = {written!r} numbers this run's words the way the taught "
                     f"{param.get('example')!r} did, and nothing of this run says it - kept, and said")
@@ -547,6 +552,25 @@ def held_by(value, texts):
         # dropped from the texts only, so a negative value was never held, and strict fill dropped every one.
         return any(_plain(n) == plain.lstrip("-") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", joined))
     return re.search(r"(?<!\w)" + re.escape(plain) + r"(?!\w)", joined) is not None
+
+
+OTHER_SIGN = "this run's documents show this amount only with the other sign"
+
+
+def sign_differs(value, texts):
+    """Whether `value` is a bare number whose amount this run's texts hold only with the other sign ("-500" where they
+    say 500, or 500 where they say -500). The fact goes to the check as evidence; nothing is refused on it."""
+
+    plain = _plain(value)
+    if not plain or not BARE_NUMBER.match(plain) or not held_by(value, texts):
+        return False
+    joined = " ".join(" ".join(t.split()) for t in texts if t).casefold()
+    signed = []
+    for m in re.finditer(r"(-?)(\d[\d,]*(?:\.\d+)?)", joined):
+        # A minus right after a word ("inv-500") joins the word; it is no sign.
+        minus = m.group(1) and not (m.start() and re.match(r"\w", joined[m.start() - 1]))
+        signed.append(_plain(("-" if minus else "") + m.group(2)))
+    return plain not in signed
 
 
 def _own_spelling(value, example, texts):

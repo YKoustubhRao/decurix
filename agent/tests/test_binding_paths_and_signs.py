@@ -49,6 +49,17 @@ class NegativeFigures(unittest.TestCase):
         self.assertTrue(binding.held_by("-500", ["Credit note amount 500"]))
         self.assertTrue(binding.held_by("500", ["Discount -500"]))
 
+    def test_a_sign_flip_is_said_to_the_check_not_refused(self):
+        self.assertTrue(binding.sign_differs("-500", ["Credit note amount 500"]))
+        self.assertTrue(binding.sign_differs("500", ["Discount -500"]))
+        self.assertFalse(binding.sign_differs("-500", ["Adjustment -500"]))
+        self.assertFalse(binding.sign_differs("500", ["Invoice INV-500 for 500"]))
+        self.assertFalse(binding.sign_differs("500", ["Invoice INV-500"]), "a hyphen after a word is no minus")
+        values, evidence = binding._clean([{"name": "amount", "example": "100"}], {"values": {"amount": "-500"}},
+                                          ["Credit note amount 500"], strict=True)
+        self.assertEqual(values, {"amount": "-500"})
+        self.assertEqual(evidence["amount"], binding.OTHER_SIGN)
+
     def test_another_amount_is_still_not_held(self):
         self.assertFalse(binding.held_by("-500", ["Amount 5000"]))
         self.assertFalse(binding.held_by("-1,250.50", ["Balance 125.05"]))
