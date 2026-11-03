@@ -360,6 +360,8 @@ func main() {
 	lanAccess := lanaccess.NewStore()
 	pairedDevices := must(devices.NewStore(db))
 	lanAccess.SetDevices(pairedDevices)
+	// Unpairing a device also ends the screens and streams it has open through the gate (RW1-B-04).
+	pairedDevices.OnRevoke(func(id string) { lanAccess.CloseDevice(id) })
 
 	// The fixed link on the person's own domain, when they set one up
 	// (internal/cftunnel). A key that cannot be written leaves the tokens

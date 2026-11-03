@@ -172,6 +172,10 @@ func (s *Store) Valid(token string) bool {
 	return true
 }
 
+// DeviceID returns the id of the paired device token belongs to, whichever of its tokens it is: how the gate tracks
+// what a device holds open, to end it when the device is unpaired (lanaccess.CloseDevice).
+func (s *Store) DeviceID(token string) (string, bool) { return s.deviceFor(token) }
+
 // deviceFor returns the id of the device token belongs to, whichever of its
 // tokens it is.
 func (s *Store) deviceFor(token string) (string, bool) {

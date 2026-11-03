@@ -89,6 +89,9 @@ type DeviceRegistry interface {
 // the primary listener a desktop agent's callbacks and a human at the control
 // plane's own machine use (see the package doc).
 type Store struct {
+	// streams are the paired devices' live requests (streams.go).
+	streams streams
+
 	mu       sync.Mutex
 	password string
 	sessions map[string]time.Time
@@ -376,7 +379,8 @@ func (s *Store) Middleware(next http.Handler) http.Handler {
 		}
 
 		if s.validDevice(r) {
-			next.ServeHTTP(w, r)
+			// Tracked under its device, so unpairing it ends what this request holds open (CloseDevice).
+			s.serveDevice(next, w, r)
 			return
 		}
 
