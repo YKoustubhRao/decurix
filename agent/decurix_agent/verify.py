@@ -145,8 +145,37 @@ def outcome(verdict=None, problems=(), not_made=(), error=None):
                   what was not checked;
       "done"      only the judge's done (its confidence, when given, at least DONE_CONFIDENCE) with no problem, no
                   check left unmade and no error: checked=True, kind "final".
+    Also "checks" (decurix.verdict/v1 checks, verdict.check: each problem a failed code check, each check not made,
+    the judge's answer as the model's check, an error as a check not made) and "basis" (the kinds that passed), for the
+    structured verdict the report carries (R6).
     """
 
+    decided = _outcome(verdict, problems, not_made, error)
+    from decurix_agent import verdict as verdicts
+    checks = [verdicts.check(f"code.{n}", verdicts.FAIL, "code", p)
+              for n, p in enumerate(" ".join(str(p).split()) for p in problems or () if str(p or "").strip())]
+    checks += [verdicts.check(f"not_made.{n}", verdicts.NOT_MADE, "code", t)
+               for n, t in enumerate(" ".join(str(t).split()) for t in not_made or () if str(t or "").strip())]
+    given = verdict if isinstance(verdict, dict) else {}
+    if given:
+        name = str(given.get("verdict") or "").strip().lower()
+        seen = " ".join(str(x) for x in (given.get("seen"), given.get("why")) if x)
+        try:
+            sure = float(given["confidence"]) >= DONE_CONFIDENCE if "confidence" in given else True
+        except (TypeError, ValueError):
+            sure = False
+        # The judge's own answer: a confident done passed, a not done or cannot failed, anything else was not made.
+        judged = (verdicts.PASS if name == DONE and sure else
+                  verdicts.FAIL if name in (NOT_DONE, CANNOT) else verdicts.NOT_MADE)
+        checks.append(verdicts.check("judge", judged, "model", seen))
+    if error is not None:
+        checks.append(verdicts.check("check.error", verdicts.NOT_MADE, "code", str(error)))
+    decided["checks"] = checks[:verdicts.MAX_CHECKS]
+    decided["basis"] = sorted({c["basis"] for c in decided["checks"] if c["result"] == verdicts.PASS})
+    return decided
+
+
+def _outcome(verdict, problems, not_made, error):
     problems = [" ".join(str(p).split()) for p in problems or () if str(p or "").strip()]
     if problems:
         return {"status": NOT_DONE, "checked": True, "kind": "error", "why": "; ".join(problems)[:600]}

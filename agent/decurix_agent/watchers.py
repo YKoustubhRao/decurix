@@ -8,7 +8,7 @@ from decurix_agent import (ask_task, attachments, config, guidance, lessons, lon
 from decurix_agent.computer import approval, browser
 from decurix_agent.harness import continue_after_query, perform_task
 from decurix_agent.logging_utils import log
-from decurix_agent.messaging import REPLY_MARK, resend_unsent_loop, write_final_reply
+from decurix_agent.messaging import REPLY_MARK, resend_unsent_loop, write_final_reply, write_stopped
 
 
 def _run_handler(target, args):
@@ -28,9 +28,9 @@ def _called_off(reply):
     state.paused_replay = None
     progress.emit("Stopping, as you said. Nothing more is done.")
     # A stop is not a finished task (review 2026-11-03, E-36): not done, never "final", and not judged.
-    write_final_reply(f"Stopped, as you said: I did nothing more after your \"{' '.join(str(reply).split())[:100]}\". "
-                      f"Anything done before the question is still as it was left.", kind="error", checked=False,
-                      gated=True)
+    write_stopped(f"Stopped, as you said: I did nothing more after your "
+                  f"\"{' '.join(str(reply).split())[:100]}\". "
+                  f"Anything done before the question is still as it was left.", send=write_final_reply)
 
 
 # ============================================================

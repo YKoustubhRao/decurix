@@ -157,7 +157,7 @@ def save_request(request, task_id=""):
 # ============================================================
 
 def send_query(filename, content, kind="", reply="", engine=None, quiet=False, interrupted=False, checked=False,
-               task_id=None, with_usage=True, fallback=None, still_working=False, secret=False):
+               task_id=None, with_usage=True, fallback=None, still_working=False, secret=False, verdict=None):
     """
     Send a query to the Decurix control plane.
 
@@ -184,6 +184,9 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
                     may be the secret, and the control plane keeps none of it.
                     A structural fact from where the question came from, never a
                     reading of its words (review 2026-11-03, X-6)
+        verdict   - on a final or error: the structured verdict (decurix.verdict/v1,
+                    verdict.py), beside `checked`, which always equals
+                    verdict == "done" (C5)
 
     `content` is the whole formatted note, which the dashboard's Query rail
     still shows verbatim. `kind`/`reply` are what the chat renders: the
@@ -243,6 +246,8 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
     # "done" from one nobody looked at.
     if kind in ("final", "error"):
         payload["checked"] = bool(checked)
+        if verdict is not None:
+            payload["verdict"] = verdict
 
     if with_usage:
         payload.update(usage.snapshot())
@@ -669,7 +674,7 @@ def _task_name():
 
 
 def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted=False, checked=False, fallback=None,
-                      task_id=None, gated=False):
+                      task_id=None, gated=False, verdict=None, stopped=False):
     """
     Write the final result into querytext/ so the existing
     querytext watcher sends it to the Decurix control plane.
@@ -687,6 +692,11 @@ def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted
     `checked` says the result was judged by a check (recorded on the task as such) and skips the final gate; `gated`
     skips the gate for a report the gate (or a run's own checks) already settled WITHOUT judging it done - recorded as
     not checked (verify.outcome).
+
+    `verdict` is the structured verdict of the checks that settled it (verdict.py, R6), sent as given; `checked` then
+    follows it, and a caller's `checked` that disagrees makes it not checked (fail closed, logged). Without one the
+    verdict is derived (verdict.derive): checked=True is a `legacy` done, which never counts towards trust.
+    `stopped`: the person said no and the work stopped there (write_stopped) - never done.
     """
 
     # Durable workflow stages report through the same harness as ordinary work.
@@ -710,6 +720,8 @@ def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted
             if kind == "final":
                 reply = (f"Not checked - the final check itself failed ({type(exc).__name__}). Look at the screen "
                          f"and the files before relying on this.\n\n{reply}")
+
+    checked, verdict = _settle_verdict(reply, kind, checked, gated, verdict, stopped)
 
     # The run now has an outcome: its evidence is kept until the control plane has pulled it (retention.py, W0.8).
     # Before the report is sent, so the control plane's pull, which the report starts, finds the mark.
@@ -770,6 +782,7 @@ Completed at:
         checked=checked,
         fallback=fallback,
         task_id=task_id,
+        verdict=verdict,
     )
 
     if sent:
@@ -787,6 +800,50 @@ Completed at:
     state.current_task_file = None
     state.waiting_for_query = False
     task_context.clear_active()
+
+
+def _settle_verdict(reply, kind, checked, gated, given, stopped):
+    """(checked, verdict) for an outcome: a stop is "stopped"; a given verdict is sent when valid and `checked` follows
+    it - one that is invalid, or that the caller's `checked` disagrees with, is sent as "unchecked" and not checked, and
+    logged; with none, it is derived. Never raises: a verdict that cannot be built is "unchecked"."""
+
+    from decurix_agent import verdict as verdicts
+    try:
+        why = " ".join(str(reply or "").split())[:300]
+        if stopped:
+            return False, verdicts.derive(False, kind, stopped=True, why=why)
+        if given is None:
+            derived = verdicts.derive(bool(checked), kind, gated=gated, why=why)
+            return derived["verdict"] == verdicts.DONE, derived
+        problems = verdicts.validate(given)
+        if problems:
+            log(f"The verdict given for this report is not valid ({'; '.join(problems)[:300]}); sent as unchecked.")
+            by = given.get("by") if isinstance(given, dict) and given.get("by") in verdicts.BY else "none"
+            return False, verdicts.make(verdicts.UNCHECKED, by, why="the check's own verdict could not be read")
+        if given["verdict"] != verdicts.DONE:
+            if checked and kind != "error":
+                log(f"A report sent as checked has the verdict {given['verdict']}; sent as not checked.")
+            return False, given  # (checked=True on an error is "a check saw it not done": the verdict says so now)
+        if not checked:
+            log("A done verdict came with a report not marked checked; the two disagree, so it is sent as not checked.")
+            return False, verdicts.make(verdicts.UNCHECKED, given["by"], why="the verdict (done) and the report "
+                                        "disagree on whether it was checked", checks=given.get("checks") or ())
+        return True, given
+    except Exception as exc:  # noqa: BLE001 - an outcome is never lost to its verdict
+        log(f"Could not build this report's verdict: {exc}")
+        return False, {"schema": "decurix.verdict/v1", "verdict": "unchecked", "by": "none", "why": "", "basis": [],
+                       "checks": [], "evidence": []}
+
+
+def write_stopped(text, engine=None, task_id=None, send=None):
+    """
+    The one way to report that the person stopped the work (E-36): kind "error", not checked, verdict "stopped" -
+    never done, whatever was checked before the stop. `send` is the caller's own write_final_reply (the name its
+    module holds), so the report goes the way that module's reports go.
+    """
+
+    return (send or write_final_reply)(text, kind="error", engine=engine, task_id=task_id, stopped=True, checked=False,
+                                       gated=True)
 
 
 def _keep_facts(task_id, quiet=False, interrupted=False):

@@ -16,6 +16,7 @@ from decurix_agent.messaging import (
     backend_failure_note,
     withheld,
     write_final_reply,
+    write_stopped,
 )
 from decurix_agent.ollama_client import ensure_model_resident
 from decurix_agent.readiness import wait_for_http_ok
@@ -806,8 +807,7 @@ def _handle_job(job, error, resuming=False):
         called_off = guidance.refused()
         if called_off:
             # A stop is not a finished task (review 2026-11-03, N-F3): not done, never "final", and not judged.
-            write_final_reply(f"Stopped, as you said (\"{called_off}\"). {answer or ''}".strip(), kind="error",
-                              checked=False, gated=True)
+            write_stopped(f"Stopped, as you said (\"{called_off}\"). {answer or ''}".strip(), send=write_final_reply)
             return
         _escalate(question, secret=secret)
         return

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from decurix_agent import org_knowledge
 from decurix_agent import values as field_values
+from decurix_agent import verdict as verdicts
 from decurix_agent import (app_skills, attachments, binding, config, guidance, lessons, llm_client, messaging, playbooks, procedures, produced,
                            progress, request_reading, source_guard, sources, state, study, task_context, usage, verify)
 from decurix_agent.computer import (approval, constraints, core, escalation, evidence, experience, launchers, learning,
@@ -539,9 +540,9 @@ def _learn_reply(paused, reply):
         r"\b(stop|cancel|abort|quit)\b", question.get("text") or "", re.I)
     if ABANDON_RE.match(reply or "") and len((reply or "").split()) <= 2 and not offered:
         skills.save(skill)
-        write_final_reply(
+        messaging.write_stopped(
             f"Stopped. What you have told me about \"{skill['title']}\" is kept - send `/learn {skill['sources'][0]}` "
-            "to carry on where we left off.", kind="final", engine=LEARN_ENGINE)
+            "to carry on where we left off.", engine=LEARN_ENGINE, send=write_final_reply)
         return
 
     # A correction to what the model understood, given at the last question,
@@ -1499,6 +1500,26 @@ def _basis(checked_by, code=False):
     return sorted(basis)
 
 
+def _success_verdict(checked_by, basis, seen=""):
+    """
+    The verdict of a taught run that succeeded (R6): what checked it - the screen (every step's result seen), the
+    model looking at it, or a person - and, beside it, the run's files read back by code and its records read back
+    from the application, when those passed (`basis`, _basis).
+    """
+
+    checks = [verdicts.check({"screen": "screen.every_step", "model": "judge", "person": "person"}.get(checked_by,
+                                                                                                    "check"),
+                             verdicts.PASS, checked_by if checked_by in verdicts.BASES else "model", seen)]
+    if "code" in basis:
+        checks.append(verdicts.check("files.read_back", verdicts.PASS, "code", "the files the run made read back"))
+    if "ledger" in basis:
+        checks.append(verdicts.check("ledger.read_back", verdicts.PASS, "ledger",
+                                     "every declared record read back from the application"))
+    evidence = [f"Checked on the screen: {seen}"] if seen and checked_by == "model" else []
+    return verdicts.make(verdicts.DONE, "replay" if checked_by == "screen" else "skill_gate", checks=checks,
+                         evidence=evidence)
+
+
 def _succeed(run, result, checked_by, seen="", helped=False):
     skill = run["skill"]
     text = result["text"]
@@ -1520,9 +1541,12 @@ def _succeed(run, result, checked_by, seen="", helped=False):
             head = ("Not done - the files it wrote do not hold up: " if decided["status"] == verify.NOT_DONE
                     else "Not checked - ")
             write_final_reply(f"{head}{decided['why']}" + chr(10) * 2 + text, kind=decided["kind"], engine=SKILL_ENGINE,
-                              checked=decided["checked"], gated=True)
+                              checked=decided["checked"], gated=True,
+                              verdict=verdicts.from_outcome(decided, "skill_gate"))
             return
     _own_run(run, True)
+    basis = _basis(checked_by, code=read_clean)
+    verdict = _success_verdict(checked_by, basis, seen)
 
     if skill.get("own"):
         # Its steps were held to their controls only, so "0 were confirmed, look at the result" is not
@@ -1543,7 +1567,7 @@ def _succeed(run, result, checked_by, seen="", helped=False):
         # person has not said which parts change - Learn is how they do.
         write_final_reply(text + f" (Done from your recording of \"{run['mimic']['text']}\". Teach it with Learn "
                                  "and I will also know which parts change.)", kind="final", engine=SKILL_ENGINE,
-                          checked=True)
+                          checked=True, verdict=verdict)
         return
 
     if run["patches"]:
@@ -1560,11 +1584,11 @@ def _succeed(run, result, checked_by, seen="", helped=False):
     skill["runs"] = skill.get("runs", 0) + 1
     experience.note_verdict(skill, "replay", True, checked_by=checked_by,
                             helped=helped or bool(run["asked_ids"]) or bool(run.get("taken_over")),
-                            basis=_basis(checked_by, code=read_clean))
+                            basis=basis)
     skills.save(skill)
     text += experience.advice(skill)
 
-    write_final_reply(text, kind="final", engine=SKILL_ENGINE, checked=True)
+    write_final_reply(text, kind="final", engine=SKILL_ENGINE, checked=True, verdict=verdict)
 
 
 def _stopped(text, engine=None):
@@ -1574,8 +1598,8 @@ def _stopped(text, engine=None):
     words start "Stopped, as you said".
     """
 
-    return write_final_reply(f"Stopped, as you said, {text}", kind="error", engine=engine or SKILL_ENGINE,
-                             checked=False, gated=True)
+    return messaging.write_stopped(f"Stopped, as you said, {text}", engine=engine or SKILL_ENGINE,
+                                   send=write_final_reply)
 
 
 def _stop(step, run=None):
@@ -3243,14 +3267,16 @@ def _gate(reply, kind, engine):
                 write_final_reply("The work is done, though my model stopped answering before I could report it. "
                                   f"Checked on the screen and in what my tools read: {verdict.get('seen') or verdict.get('why')}"
                                   f"\n\n(What went wrong at the end: {(reply or '').strip()[:400]})" + _evidence_text(run),
-                                  kind="final", engine=engine, checked=True)
+                                  kind="final", engine=engine, checked=True,
+                                  verdict=verdicts.from_outcome(verify.outcome(verdict), "skill_gate"))
                 return True
             _record_verdict(run, False, why=(reply or "")[:300])
             write_final_reply(f"{(reply or '').strip()}\n\nBefore you send this again: this attempt had already worked on "
                               "the screen, so part of it may be in place"
                               + (f" ({verdict['seen']})" if verdict.get("seen") else "")
                               + ". Look at what it left first, or the same thing may be entered twice.",
-                              kind="error", engine=engine, checked=verify.outcome(verdict)["checked"], gated=True)
+                              kind="error", engine=engine, checked=verify.outcome(verdict)["checked"], gated=True,
+                              verdict=verdicts.from_outcome(verify.outcome(verdict), "skill_gate"))
             return True
         if run is not None:
             _record_verdict(run, False, why=(reply or "")[:300])
@@ -3511,7 +3537,8 @@ def _gate(reply, kind, engine):
         if notes:
             text += "\n\nPlease check (a check in code saw this):\n" + "\n".join(
                 f"- {' '.join(str(n).split())[:400]}" for n in notes[:12])
-        write_final_reply(text, kind=decided["kind"], engine=engine, checked=decided["checked"], gated=True)
+        write_final_reply(text, kind=decided["kind"], engine=engine, checked=decided["checked"], gated=True,
+                          verdict=verdicts.from_outcome(decided, "verify"))
         return True
 
     if verdict["verdict"] == verify.CANNOT:
@@ -3526,7 +3553,8 @@ def _gate(reply, kind, engine):
             # (2026-10-21: "I could not finish this" came back nine times).
             write_final_reply("I could not finish this, and I have asked you about it "
                               f"{MAX_CONFIRM_ROUNDS} times now - it is NOT done.\n\n" + (report[:REPORT_CHARS] or verdict.get("why") or ""),
-                              kind="error", engine=engine, checked=True)
+                              kind="error", engine=engine, checked=True,
+                              verdict=verdicts.make(verdicts.NOT_DONE, "skill_gate", why="it could not be finished"))
             return True
         state.paused_skill = {"mode": "confirm", "run": run, "claim": reply, "verdict": verdict, "engine": engine,
                               "task": guided["task"], "blocked": True}
@@ -3559,7 +3587,17 @@ def _gate(reply, kind, engine):
                     f"{'include' if len(loud) != 1 else 'includes'} rows the input repeats. Needs you:\n"
                     + "\n".join(f"- Please check this figure: {item}" for item in loud[:12]) + "\n\n" + text)
         text = _first_attempt_text(run) + _suspicious_note(state.current_task or "", made) + text
-        write_final_reply(text + _evidence_text(run), kind="final", engine=engine, checked=True)
+        gate_checks = list(decided.get("checks") or [])
+        if made and not facts.blocking() and not facts.not_made():
+            gate_checks.append(verdicts.check("files.read_back", verdicts.PASS, "code",
+                                              f"{len(made)} file(s) the work made read back"))
+        if "ledger" in _basis(None):
+            gate_checks.append(verdicts.check("ledger.read_back", verdicts.PASS, "ledger",
+                                              "every declared record read back from the application"))
+        shown = [f"{where}: {verdict['seen']}"] if verdict.get("seen") else []
+        write_final_reply(text + _evidence_text(run), kind="final", engine=engine, checked=True,
+                          verdict=verdicts.make(verdicts.DONE, "skill_gate" if run is not None else "verify",
+                                                checks=gate_checks, evidence=shown))
         return True
 
     # The model said done and the screen says not: one more go, told what the
@@ -3582,7 +3620,9 @@ def _gate(reply, kind, engine):
     if _confirm_round() > MAX_CONFIRM_ROUNDS:
         if run is not None:
             _record_verdict(run, False, why="not confirmed after repeated checks")
-        write_final_reply(_given_up_text(reply, verdict, on_screen), kind="error", engine=engine, checked=verify.outcome(verdict)["checked"], gated=True)
+        write_final_reply(_given_up_text(reply, verdict, on_screen), kind="error", engine=engine,
+                          checked=verify.outcome(verdict)["checked"], gated=True,
+                          verdict=verdicts.from_outcome(verify.outcome(verdict), "verify"))
         return True
     state.paused_skill = {"mode": "confirm", "run": run, "claim": reply, "verdict": verdict, "engine": engine,
                           "task": guided["task"]}
@@ -3673,7 +3713,7 @@ def check_unchecked(claim, engine):
                             observed=evidence.observed(), screen_text=evidence.live_text()))
     if verify.outcome(verdict)["status"] == verify.DONE:
         return write_final_reply(f"{claim}\n\nChecked on the screen: {verdict['seen']}", kind="final", engine=engine,
-                                 checked=True)
+                                 checked=True, verdict=verdicts.from_outcome(verify.outcome(verdict), "verify"))
     state.paused_skill = {"mode": "confirm", "run": None, "claim": claim, "verdict": verdict, "engine": engine,
                           "task": state.current_task or ""}
     ask_for_query(_doubt_text(claim, verdict), kind="query", engine=engine)
@@ -3808,7 +3848,8 @@ def _confirm_reply(paused, reply):
             return _succeed(run, paused["result"], "person", helped=True)
         if run is not None:
             _record_verdict(run, True, checked_by="person", helped=True, basis=["person"])
-        return write_final_reply(f"{claim}\n\nYou confirmed it was done.", kind="final", engine=engine, checked=True)
+        return write_final_reply(f"{claim}\n\nYou confirmed it was done.", kind="final", engine=engine, checked=True,
+                                 verdict=_success_verdict("person", ["person"]))
 
     if choice == "stop":
         if run is not None:

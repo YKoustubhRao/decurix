@@ -5073,10 +5073,22 @@ def final_report(run_state):
     # (A "<name>.orig" copy kept of a file the run made is a stale version beside its output: removed, round 5 P5.)
     source_guard.tidy_own_backups(data.get("request") or "")
     work = Path(_runner().context(run_state)["work_dir"])
+    from decurix_agent import verdict as verdicts
     done, done_short, not_done, needs, unchecked = [], [], [], [], []
+    # Each stage's checks, rolled up into the run's verdict (R6): a completed stage passed its code checks, and its
+    # model check passed or was not made; a failed stage failed; one waiting or never started was not checked.
+    stage_checks = []
     for n, step in enumerate(_steps(run_state), 1):
         record = run_state["steps"][step["id"]]
         title = step.get("title", step["id"])
+        if record["status"] == "completed":
+            stage_checks.append(verdicts.check(f"stage.{step['id']}.code", verdicts.PASS, "code", title))
+            stage_checks.append(verdicts.check(f"stage.{step['id']}.judge",
+                                               verdicts.PASS if record.get("checked_by") == "model" else
+                                               verdicts.NOT_MADE, "model", record.get("check_note") or title))
+        else:
+            stage_checks.append(verdicts.check(f"stage.{step['id']}", verdicts.FAIL if record["status"] == "failed"
+                                               else verdicts.NOT_MADE, "code", f"{title}: {record['status']}"))
         if record["status"] == "completed":
             files = [str(work / i["path"]) for i in record["evidence"] if not i.get("drafts")]
             drafts = sum(i["bytes"] for i in record["evidence"] if i.get("drafts"))
@@ -5241,8 +5253,13 @@ def final_report(run_state):
         agent_state.current_task = data.get("request") or agent_state.current_task
     if run_state["status"] != "cancelled":
         _remember_reported(data, text, [p for _, p in _outputs(run_state)])
+    # The run's verdict: the stages' own checks, and the run-level checks not made (verify.outcome's "judge" here only
+    # stands for "every stage done", which the stage checks already say).
+    run_checks = stage_checks + [c for c in decided.get("checks") or [] if c.get("id") != "judge"]
+    verdict = verdicts.from_outcome(dict(decided, checks=run_checks, basis=()), "long_task")
     write_final_reply(text, kind=decided["kind"], checked=decided["checked"], gated=True, fallback=fallback,
-                      task_id=data.get("task_id") or None)
+                      task_id=data.get("task_id") or None, verdict=verdict,
+                      stopped=run_state["status"] == "cancelled")
     _release_hold(run_id)
     return None
 
@@ -6729,7 +6746,7 @@ def _report_stopped(run_id):
     """A stopped run's report, whatever stands in its way: a report that cannot be put together is said plainly."""
 
     from decurix_agent import workflow_task
-    from decurix_agent.messaging import write_final_reply
+    from decurix_agent.messaging import write_stopped
 
     global _stopping
     if run_id in _reported:
@@ -6752,10 +6769,9 @@ def _report_stopped(run_id):
             done = [s.get("title", s["id"]) for s in _steps(run_state) if run_state["steps"][s["id"]]["status"] == "completed"]
         except Exception:  # noqa: BLE001
             done = []
-        write_final_reply("Stopped, as you said. Nothing more is started. "
-                          + ("Done before the stop: " + "; ".join(done) + "." if done else "No stage was finished.")
-                          + f" (The full report could not be put together: {str(exc)[:200]}.)", kind="error", checked=False, gated=True,
-                          task_id=task_id)
+        write_stopped("Stopped, as you said. Nothing more is started. "
+                      + ("Done before the stop: " + "; ".join(done) + "." if done else "No stage was finished.")
+                      + f" (The full report could not be put together: {str(exc)[:200]}.)", task_id=task_id)
     finally:
         if _stopping == run_id:
             _stopping = None

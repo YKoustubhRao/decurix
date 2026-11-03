@@ -293,8 +293,10 @@ class OneDecision(unittest.TestCase):
     """verify.outcome: the one place a check's result becomes what a report may say - failing closed."""
 
     def test_only_a_confident_done_is_done(self):
-        self.assertEqual(verify.outcome({"verdict": "done", "confidence": 0.9}),
+        decided = verify.outcome({"verdict": "done", "confidence": 0.9})
+        self.assertEqual({k: decided[k] for k in ("status", "checked", "kind", "why")},
                          {"status": "done", "checked": True, "kind": "final", "why": ""})
+        self.assertEqual(decided["basis"], ["model"])  # (and its checks, for the structured verdict: R6)
         for unsure in ({"verdict": "done", "confidence": 0.5}, {"verdict": "unsure"}, {"verdict": "maybe"}, None, {}):
             decided = verify.outcome(unsure)
             self.assertEqual((decided["status"], decided["checked"]), (verify.UNCHECKED, False), unsure)

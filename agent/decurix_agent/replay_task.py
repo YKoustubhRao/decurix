@@ -5,7 +5,7 @@ import traceback
 from decurix_agent import state, usage
 from decurix_agent.computer import approval, replay
 from decurix_agent.logging_utils import log
-from decurix_agent.messaging import ask_for_query, write_final_reply
+from decurix_agent.messaging import ask_for_query, write_final_reply, write_stopped
 
 
 # ============================================================
@@ -221,9 +221,9 @@ def resume(reply, approval_outcome=None):
 
     if stop:
         # A stop is not a finished task (review 2026-11-03, E-36): it is reported as not done, never "final".
-        write_final_reply(
+        write_stopped(
             f"Stopped, as you said: the replay stopped before step {paused['step']}. Nothing from that step on was "
-            f"done.", kind="error", engine=ENGINE, checked=False, gated=True,
+            f"done.", engine=ENGINE, send=write_final_reply,
         )
         return
 
