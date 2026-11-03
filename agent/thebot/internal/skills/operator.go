@@ -729,14 +729,14 @@ type operatorState struct {
 	lastWork      []reviewIssue
 	// UnseenTold is each window the report was once told it typed into without looking again (evidence.go unseenTyping).
 	UnseenTold map[string]bool `json:",omitempty"`
-	// FolderNudged is each new folder path the work was once told to name like its siblings (folder_names.go).
-	FolderNudged map[string]bool `json:",omitempty"`
 	// AnswerUnreviewed is set when the person answered a question about the calls and no round has weighed it since:
 	// the next approval is reviewed whatever work came between (judgements.go).
 	AnswerUnreviewed bool `json:",omitempty"`
 	// FailedOutputs are the last few failed commands' outputs (with what the command itself held masked): what a
 	// DONE after every command failed may quote to stand (quotesFailure).
 	FailedOutputs []string `json:",omitempty"`
+	// folderFacts are the folders this task named unlike their siblings, read before a review (folder_names.go).
+	folderFacts []string
 	// PlanAgreed is the host's word that the request is a stage of a plan the person agreed (RunContext.PlanAgreed).
 	PlanAgreed bool `json:",omitempty"`
 }
@@ -1911,11 +1911,6 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				return ask(question)
 			}
 			st.noteTracedTyping(value)
-			if nudge := o.folderNameNudge(rc, st, value); nudge != "" {
-				// A new month folder named unlike the ones beside it (folder_names.go): sent back once, not run.
-				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: nudge})
-				continue
-			}
 			st.Messages = append(st.Messages, reply)
 
 			if concern := safety.AssessCommand(value); concern != nil && !rc.IsApproved(value) {

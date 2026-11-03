@@ -22,18 +22,25 @@ func TestAQuestionForNamesTheApplicationListsIsPushedBack(t *testing.T) {
 	}
 }
 
-func TestAPointThatSaysNotDoneIsTheWorkersAndAHelpToContinueIsPushedBack(t *testing.T) {
-	for _, w := range []string{
-		"The requested task was not completed: December sales bill 431 was not entered as a Sales voucher",
-		"Bill 457 was never saved - the ledger shows no save for it",
-		"Two of the six bills were left out of the register",
-	} {
-		if !saysNotDone(w) {
-			t.Errorf("not seen as not done: %q", w)
-		}
+// Whose a review point is comes from the reviewer's settle, never from words in the point (review T-18): "recheck"
+// is the worker's, "person" the person's, however it is worded.
+func TestAPointGoesWhereItsSettleSaysAndAHelpToContinueIsPushedBack(t *testing.T) {
+	st := &operatorState{}
+	points := []reviewIssue{
+		{What: "Bill 457 was never saved - the ledger shows no save for it", Settle: "recheck"},
+		{What: "Two of the six bills were left out of the register", Settle: "person"},
+		{What: "The party on bill 1188 is matched by name only", Settle: "recheck"},
 	}
-	if saysNotDone("The party on bill 1188 is matched by name only, not by its identifier") {
-		t.Errorf("a judgement seen as not done")
+	work, person := st.workPoints(points), st.notWorkPoints(points)
+	if len(work) != 2 || work[0].What != points[0].What || work[1].What != points[2].What {
+		t.Errorf("worker's points = %+v", work)
+	}
+	found := false
+	for _, p := range person {
+		found = found || p.What == points[1].What
+	}
+	if !found {
+		t.Errorf("a point the reviewer gave the person did not reach them: %+v", person)
 	}
 	for _, q := range []string{
 		"I need the current command outputs to continue. Please resend the task in command mode, or let me continue with commands.",

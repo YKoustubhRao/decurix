@@ -30,14 +30,23 @@ func TestAMessageFromAnOpenedSenderThatWasNeverOpenedIsThePersonsWorkNotTheirQue
 	}
 }
 
-func TestAMessageFromAnotherSenderIsNotRaisedUnlessItRevisesThisTasksDocument(t *testing.T) {
+// A row from another sender counts only when it names a number this task's work holds - by that mechanical fact, never
+// by words in it that sound like a revision (review T-18).
+func TestAMessageFromAnotherSenderIsNotRaisedUnlessItNamesThisTasksNumber(t *testing.T) {
+	plain := &operatorState{Hosted: true, Listings: []string{`e20 row "Office - Note on 4417 | the file for 4417 is attached | 2026-12-04"`,
+		`e21 row "Office - Revised plan, updated and corrected | see attached | 2026-12-04"`}}
+	plain.Worked = append(plain.Worked, `office read '/w/B-4417.pdf'`)
+	got := plain.unopenedMessageIssues("Done.")
+	if len(got) != 1 || !strings.Contains(got[0].What, "Note on 4417") {
+		t.Fatalf("want only the row naming the task's number, got %+v", got)
+	}
 	st := &operatorState{Hosted: true, Listings: []string{inboxListing}}
-	// Nothing opened yet: no sender is this task's; only a revision of a document this task read counts.
+	// Nothing opened yet: no sender is this task's; only a row naming a document this task read counts.
 	if got := st.unopenedMessageIssues("Done."); len(got) != 0 {
 		t.Errorf("rows raised with nothing opened and nothing read: %+v", got)
 	}
 	st.Worked = append(st.Worked, `office read '/w/ABC-0201.pdf'`)
-	got := st.unopenedMessageIssues("Done.")
+	got = st.unopenedMessageIssues("Done.")
 	if len(got) != 1 || !strings.Contains(got[0].What, "Revised invoice 0201") {
 		t.Fatalf("a revision of a document read is not a point: %+v", got)
 	}

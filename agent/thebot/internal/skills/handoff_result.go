@@ -16,9 +16,6 @@ var handoffHeadRe = regexp.MustCompile(`(?m)^=== HANDOFF (\S+): (.+?) ===\s*$`)
 // handoffFieldRe is one "name: value" line of a printed handoff result.
 var handoffFieldRe = regexp.MustCompile(`(?m)^(status|verified|worker|reason): (.*)$`)
 
-// notDoneWordRe is wording with which a report says a part is not done.
-var notDoneWordRe = regexp.MustCompile(`(?i)\b(not (?:yet )?(?:done|verified|confirmed|finished|complete[d]?)|could not|couldn't|unverified|failed|still running|cancel\w*|unconfirmed)\b`)
-
 // maxHandoffIssues bounds the points raised.
 const maxHandoffIssues = 4
 
@@ -74,32 +71,50 @@ func handedBackResults(text string) []handedBack {
 }
 
 // handoffResultIssues are Work points for each part handed to another worker whose latest result the receiver did
-// not verify - unless the report names that handoff and says it is not done.
+// not verify and the report does not name (by its handoff ID): the report does not account for it. Whether a report
+// that names it says rightly what became of it is the reviewer's to judge, from handoffFacts - never decided here by
+// the report's wording (review T-18: a list of "not done/could not/failed" words let a report settle the point).
 func handoffResultIssues(seen, report string) []reviewIssue {
-	saysNotDone := notDoneWordRe.MatchString(report)
 	var out []reviewIssue
 	for _, r := range handedBackResults(seen) {
-		if r.Verified {
+		if r.Verified || strings.Contains(report, r.ID) {
 			continue
-		}
-		if saysNotDone && strings.Contains(report, r.ID) {
-			continue // the report says what became of it
 		}
 		who := "another worker"
 		if r.Worker != "" && !strings.HasPrefix(r.Worker, "(") {
 			who = "worker " + r.Worker
 		}
-		why := "only a result the receiving worker's own final check confirmed is done; this one reads " + r.Verdict
-		if r.Reason != "" {
-			why += " (" + truncateText(r.Reason, 200) + ")"
-		}
 		out = append(out, reviewIssue{
 			What: "the part handed to " + who + " (handoff " + r.ID + ") came back not verified",
-			Why:  why,
+			Why:  handoffWhy(r),
 			Settle: "check that part yourself and do what is missing, run `handoff status " + r.ID + "` if it was still " +
 				"running, or say in the report that handoff " + r.ID + " is not done and why",
 			Work: true,
 		})
+		if len(out) == maxHandoffIssues {
+			break
+		}
+	}
+	return out
+}
+
+// handoffWhy is why an unverified handoff result is not done: its verdict and the receiver's reason.
+func handoffWhy(r handedBack) string {
+	why := "only a result the receiving worker's own final check confirmed is done; this one reads " + r.Verdict
+	if r.Reason != "" {
+		why += " (" + truncateText(r.Reason, 200) + ")"
+	}
+	return why
+}
+
+// handoffFacts are the parts handed to other workers that came back not verified, as facts for the reviewer: a report
+// that rests on one as done claims what nobody saw.
+func handoffFacts(seen string) []string {
+	var out []string
+	for _, r := range handedBackResults(seen) {
+		if !r.Verified {
+			out = append(out, "handoff "+r.ID+" came back NOT verified - "+handoffWhy(r))
+		}
 		if len(out) == maxHandoffIssues {
 			break
 		}

@@ -660,6 +660,10 @@ func TestClassifyBusinessWordsAreNotCode(t *testing.T) {
 		"Create the new price list. Rules: the supplier's code is ours without the dash.",
 		"Build the monthly model. Posted lines whose Dept Code is not in Depts do not go into the model.",
 		"make the product codes match the supplier list and write the result",
+		// "code" as data next to a maintenance verb, with no list of business nouns to take it out (review T-18).
+		"fix the code column in the sheet",
+		"rewrite the status code field",
+		"write the code for each item into column B",
 		"write a summary of the quarter and let it go to the board",
 		"create the summary sheet, then react to the overdue items and express the totals in euros",
 	} {

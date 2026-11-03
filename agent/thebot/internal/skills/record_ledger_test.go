@@ -93,30 +93,29 @@ func TestReadFilesNoRecordCameFromArePointsWhenTheWorkDeclaresRecords(t *testing
 	}
 }
 
-func TestARateLineThatFitsNoAmountIsAMisreadFigure(t *testing.T) {
+// A rate line that holds its rate of none of its record's amounts is a fact for the reviewer, with the share it implies
+// - never a code verdict or a point (review T-18).
+func TestARateLineThatFitsNoAmountIsAFactForTheReviewer(t *testing.T) {
 	ledger := "2 record(s) declared in this task:\n" +
-		"- VAI-3307 (from /home/h/Downloads/IMG-0022.jpg; scope Nov): saved and read back\n" +
-		"    No.: VAI-3307 [source; read back: seen]\n" +
-		"    Particulars 1: Sales@5% [screen; read back: seen]\n" +
+		"- R-1 (from /w/one.jpg): saved and read back\n" +
+		"    Particulars 1: Item@5% [screen; read back: seen]\n" +
 		"    Amount 1: 32700.00 [source; read back: seen]\n" +
-		"    Particulars 2: CGST@2.5% [source; read back: seen]\n" +
+		"    Particulars 2: Levy@2.5% [source; read back: seen]\n" +
 		"    Amount 2: 737.50 [source; read back: seen]\n" +
-		"    Particulars 3: SGST@2.5% [source; read back: seen]\n" +
-		"    Amount 3: 737.50 [source; read back: seen]\n" +
-		"- VAI-3308 (from /home/h/Downloads/VAI-3308.docx): saved and read back\n" +
-		"    Particulars 1: Sales@18% [screen; read back: seen]\n" +
+		"- R-2 (from /w/two.docx): saved and read back\n" +
+		"    Particulars 1: Item@18% [screen; read back: seen]\n" +
 		"    Amount 1: 1,48,000.00 [source; read back: seen]\n" +
-		"    Particulars 2: IGST@18% [source; read back: seen]\n" +
+		"    Particulars 2: Levy@18% [source; read back: seen]\n" +
 		"    Amount 2: 26,640.00 [source; read back: seen]\n" +
-		"    Particulars 3: Discount 10% [source; read back: seen]\n" +
+		"    Particulars 3: Off 10% [source; read back: seen]\n" +
 		"    Amount 3: 14,800.00 [source; read back: seen]\n"
-	issues := rateMismatchIssues(ledger)
-	if len(issues) != 2 {
-		t.Fatalf("want the two misread tax lines of VAI-3307 only, got %d: %+v", len(issues), issues)
+	facts := rateLineFacts(ledger)
+	if len(facts) != 1 || !strings.Contains(facts[0], "R-1") || !strings.Contains(facts[0], "29500.00") {
+		t.Fatalf("want the one line of R-1 with the base it implies, got %q", facts)
 	}
-	for _, i := range issues {
-		if !strings.Contains(i.What, "VAI-3307") || !strings.Contains(i.What, "29500.00") || !i.Advisory {
-			t.Fatalf("point does not name the record and the base it implies, or is not advisory: %+v", i)
-		}
+	st := &operatorState{RecordLedger: ledger}
+	if brief := st.reviewFacts("Done.", nil, ""); !strings.Contains(brief, "RATE LINES OF THE LEDGER") ||
+		!strings.Contains(brief, "29500.00") {
+		t.Errorf("the reviewer is not shown the fact:\n%s", brief)
 	}
 }

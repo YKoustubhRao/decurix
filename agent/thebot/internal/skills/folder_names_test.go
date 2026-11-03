@@ -1,6 +1,9 @@
 package skills
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -63,5 +66,26 @@ func TestAMonthFolderTakesTheNumberingOfTheOnesBesideIt(t *testing.T) {
 	m := typedFolderRe.FindAllStringSubmatch(`gui key ctrl+shift+n && gui type "11. NOVEMBER" && gui key Return && gui type "/home/h/PC/A/2026-27/11. NOVEMBER"`, -1)
 	if len(m) != 1 || m[0][1] != "11. NOVEMBER" {
 		t.Fatalf("typed folder names = %v", m)
+	}
+}
+
+// A folder named unlike its siblings is a fact handed to the reviewer - never a block on the mkdir or a point sent
+// back as the worker's to do (review T-18).
+func TestAFolderNamedUnlikeItsSiblingsIsAFactForTheReviewer(t *testing.T) {
+	dir := filepath.ToSlash(t.TempDir())
+	for _, name := range []string{"APR 2026", "MAY 2026", "JUN 2026", "November"} {
+		if err := os.Mkdir(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st := &operatorState{Commands: []string{"mkdir -p '" + dir + "/November'"}}
+	rc := RunContext{Ctx: context.Background(), OnLog: func(string) {}, WorkDir: dir}
+	facts := (&OperatorSkill{}).folderNameFacts(rc, st)
+	if len(facts) != 1 || !strings.Contains(facts[0], `"November"`) || !strings.Contains(facts[0], `"APR 2026"`) {
+		t.Fatalf("facts = %q", facts)
+	}
+	st.folderFacts = facts
+	if brief := st.reviewFacts("Done.", nil, ""); !strings.Contains(brief, "FOLDERS THIS TASK NAMED") {
+		t.Errorf("the reviewer is not shown the fact:\n%s", brief)
 	}
 }

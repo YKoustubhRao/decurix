@@ -109,13 +109,13 @@ func ledgerAmount(v string) (float64, bool) {
 	return f, true
 }
 
-// rateMismatchIssues are a declared record's rate lines that hold no such share of any of its amounts: a row whose
-// label names a rate ("Tax@2.5%") and whose amount is not the largest of the record holds that rate of one of the
-// other amounts (or of their sum) - when none fits, one of the figures was misread. Advisory: the worker is told once
-// to read the document again; it never goes to the person. Found live (2026-10-29): from a phone photo of a bill,
-// a 5% sale line of 12,500.00 was entered with a 2.5% tax line of 287.50 - 2.5% of 11,500 - and saved.
-func rateMismatchIssues(ledger string) []reviewIssue {
-	var out []reviewIssue
+// rateLineFacts are arithmetic facts about a declared record's rate lines, for the reviewer to weigh - no verdict: a
+// row whose label names a rate ("@2.5%", "10 %") and whose amount is not the largest of the record, when that rate of
+// none of the other amounts (nor of their sum) is its amount. The share it does imply is stated; whether a figure was
+// misread, or the line is charged on something the record does not hold, is the reviewer's to judge with the document
+// (review T-18: a code verdict on a "rate line" sent the worker back by a word in a label).
+func rateLineFacts(ledger string) []string {
+	var out []string
 	lines := strings.Split(ledger, "\n")
 	for i := 0; i < len(lines); i++ {
 		m := ledgerRecordRe.FindStringSubmatch(lines[i])
@@ -178,14 +178,8 @@ func rateMismatchIssues(ledger string) []reviewIssue {
 			if fits || within(base*l.rate/100, l.amount) {
 				continue
 			}
-			out = append(out, reviewIssue{
-				What: fmt.Sprintf("record %s: the line %q holds %.2f, which is %.4g%% of %.2f - not %.4g%% of any amount "+
-					"in the record", key, l.label, l.amount, l.rate, l.amount*100/l.rate, l.rate),
-				Why:      "a rate line holds that share of an amount it is charged on; when none fits, one of the figures was misread",
-				Settle:   "read the document again for that row and the amount it is charged on, and correct the record",
-				Work:     true,
-				Advisory: true,
-			})
+			out = append(out, fmt.Sprintf("record %s: the line %q holds %.2f, which is %.4g%% of %.2f; no amount in "+
+				"the record, nor their sum, is %.2f", key, l.label, l.amount, l.rate, l.amount*100/l.rate, l.amount*100/l.rate))
 		}
 	}
 	return out
