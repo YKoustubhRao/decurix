@@ -67,17 +67,19 @@ class TheReplyToASecretQuestion(unittest.TestCase):
         state.waiting_for_query, state.last_query_secret = True, True
         state.last_query_text, state.current_task_id = "Type the portal's sign-in code.", "t0123456789abcdef"
         from decurix_agent.computer import privacy
+        order = []
         with mock.patch.object(watchers, "is_reply_file", return_value=True), \
                 mock.patch.object(watchers, "_mark_handled"), \
-                mock.patch.object(watchers.approval, "note_reply"), \
+                mock.patch.object(watchers.approval, "note_reply", side_effect=lambda *a, **k: order.append("note_reply")), \
                 mock.patch.object(watchers.approval, "resolve_reply", return_value=None), \
                 mock.patch.object(watchers.lessons, "note") as note, \
                 mock.patch.object(watchers.skill_task, "learn_answer"), \
                 mock.patch.object(watchers.threading, "Thread"), \
-                mock.patch.object(privacy, "remember_value") as remember:
+                mock.patch.object(privacy, "remember_value", side_effect=lambda v: order.append("remembered")) as remember:
             watchers.answer_waiting(path, "Zq7-41xk")
         note.assert_not_called()
         remember.assert_called_once_with("Zq7-41xk")
+        self.assertEqual(order[:2], ["remembered", "note_reply"], "remembered before anything else sees the reply")
 
 
 class BannersAreWithheld(unittest.TestCase):
@@ -93,6 +95,15 @@ class BannersAreWithheld(unittest.TestCase):
                 source = inspect.getsource(getattr(module, name))
                 for line in [l for l in source.splitlines() if "log_banner(" in l]:
                     self.assertIn("withheld(", line, f"{module.__name__}.{name}: {line.strip()}")
+
+    def test_a_received_request_is_logged_withheld(self):
+        logged = []
+        with mock.patch.object(messaging, "log", side_effect=logged.append), \
+                mock.patch.object(messaging, "_withheld", side_effect=lambda t: "[W]"), \
+                mock.patch("decurix_agent.computer.privacy.remember_secrets"), \
+                mock.patch.object(messaging.config, "COMMAND_DIR", __import__("pathlib").Path(config_stub._OWN)):
+            messaging.save_request("log in with the code Zq7-41xk", "")
+        self.assertTrue(logged and all("Zq7-41xk" not in line for line in logged), logged)
 
     def test_withheld_hides_a_remembered_secret(self):
         from decurix_agent.computer import privacy

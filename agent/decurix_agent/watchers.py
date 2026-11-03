@@ -528,6 +528,11 @@ def answer_waiting(path, content, already_marked=False):
     # anything else withdraws it. Done here, before the
     # harness sees the reply, so whichever engine repeats
     # the action finds the grant already in place.
+    # The reply to a question raised for a secret may be the secret itself: it is remembered as one first - before
+    # anything here notes, logs or keeps it - and never kept as a lesson (review 2026-11-03, X-6 and its rework).
+    secret = getattr(state, "last_query_secret", False)
+    if secret:
+        _remember_reply_secret(content)
     outcome = None
     try:
         approval.note_reply(content, asked=state.last_query_text)  # (the latest reply: the next gated action's yes when it says so)
@@ -555,12 +560,7 @@ def answer_waiting(path, content, already_marked=False):
     # What the person just told the worker is kept for later
     # tasks (lessons.py) - except the answers of a lesson being
     # taught, which the skill itself keeps, question by question.
-    # The reply to a question raised for a secret may be the secret itself: it is remembered as one (withheld from every
-    # later note, step and report) and never kept as a lesson (review 2026-11-03, X-6).
-    secret = getattr(state, "last_query_secret", False)
-    if secret:
-        _remember_reply_secret(content)
-    teaching = (state.paused_skill or {}).get("mode") == "learn"
+    teaching =(state.paused_skill or {}).get("mode") == "learn"
     if not teaching and not secret:
         # A replay's or a skill run's own question (a value, a
         # stuck step); "is it done?" is not one of those.

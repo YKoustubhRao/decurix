@@ -342,12 +342,30 @@ def drop_stale():
     2026-11-03, E-05).
     """
     global _active, _pending, _awaiting_start
-    active, _active, _pending, _awaiting_start = _active, None, None, None
+    active, pending, _active, _pending, _awaiting_start = _active, _pending, None, None, None
+    if active is None and pending is not None:
+        # Only a next stage queued, none claimed: the run is saved as "pending" and waits. It is said, never dropped
+        # in silence (review 2026-11-03 rework).
+        _say_not_carried_on(pending[0])
     if active is None:
         return
     try:
         runner().complete(active[0], active[1], error="left unfinished: a new request started while it was paused")
     except Exception:  # noqa: BLE001 - the checkpoint keeps what it had; /workflow status shows it
+        pass
+
+
+def _say_not_carried_on(run_id):
+    """Log, and tell the person, that a workflow's next stage was not started because a new request came first.
+    Never raises (progress is decoration)."""
+    text = (f"Workflow {run_id} was not carried on: a new request started before its next stage did. Its stages "
+            f"so far are saved; continue it with /workflow resume {run_id}.")
+    try:
+        from decurix_agent.logging_utils import log
+        log(text)
+        from decurix_agent import progress
+        progress.emit(text)
+    except Exception:  # noqa: BLE001
         pass
 
 

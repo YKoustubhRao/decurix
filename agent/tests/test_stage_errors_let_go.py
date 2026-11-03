@@ -24,7 +24,9 @@ from decurix_agent import long_task, verify, workflow_runner, workflow_task
 
 class AVerificationThatRaises(LongRunBase):
     def test_the_run_is_let_go_and_the_person_is_told(self):
-        with mock.patch.object(verify, "program_numbers", side_effect=RuntimeError("a check broke")):
+        # Whatever raises inside a stage's verification (a check's own bug is now caught as "not made" by the check
+        # runner, so the verification step itself is made to raise here).
+        with mock.patch.object(long_task, "stage_finished", side_effect=RuntimeError("verification broke")):
             long_task.perform(LONG, None)
         self.assertIsNone(long_task._run, "the run is no longer in hand")
         self.assertFalse(long_task.takes("20261019_new.txt"), "a later message is not taken as the run's")
@@ -88,6 +90,13 @@ class AStageThatCannotBindItsInput(unittest.TestCase):
         self.assertIsNone(workflow_task._active)
         self.assertNotEqual(self.runner.status(run_id)["steps"][step_id]["status"], "running")
         self.assertFalse(workflow_task.final_gate("An unrelated task's report.", "final"))
+
+    def test_a_queued_next_stage_dropped_by_a_new_request_is_said_not_silent(self):
+        workflow_task._pending = ("run-q", None, ())
+        with patch("decurix_agent.progress.emit") as emit:
+            workflow_task.drop_stale()
+        self.assertIsNone(workflow_task._pending)
+        self.assertIn("/workflow resume run-q", emit.call_args.args[0])
 
     def test_a_binding_that_is_not_a_plain_input_name_is_refused(self):
         case = self.spec()

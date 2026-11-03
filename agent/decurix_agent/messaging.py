@@ -139,7 +139,14 @@ def save_request(request, task_id=""):
     pending.write_text(request, encoding="utf-8")
     pending.replace(path)
 
-    log(f"Received request: {request}")
+    # The request's secrets are remembered before its first echo, and the log gets it withheld (review 2026-11-03
+    # rework: it was logged raw; watchers remembers them again when the request starts, which is harmless).
+    try:
+        from decurix_agent.computer import privacy
+        privacy.remember_secrets(str(request or ""))
+    except Exception:  # noqa: BLE001 - withheld below all the same
+        pass
+    log(f"Received request: {_withheld(request)}")
     log(f"Saved to {path}")
 
     return path
@@ -789,6 +796,10 @@ def _keep_facts(task_id, quiet=False, interrupted=False):
     """
 
     if interrupted or quiet or str(state.current_task or "").lstrip().startswith("/"):
+        return
+    if task_id and task_id != task_context.current():
+        # The report of another task (a stopped run's, sent on its own task): its reading is not the request in hand,
+        # so nothing is kept from pairing the two (review 2026-11-03 rework).
         return
     try:
         from decurix_agent import kept_facts

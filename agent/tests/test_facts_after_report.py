@@ -30,6 +30,18 @@ class FactsAfterTheReport(unittest.TestCase):
         self.assertEqual(order[1][0], "facts")
         self.assertIn("North Mills", order[1][1], "the whole request, not its first lines")
 
+    def test_another_tasks_report_keeps_no_facts_against_this_request(self):
+        saved = state.current_task
+        self.addCleanup(setattr, state, "current_task", saved)
+        state.current_task = "the request in hand"
+        with mock.patch.object(messaging, "send_query", return_value=True), \
+                mock.patch.object(messaging, "progress"), mock.patch.object(messaging, "_final_gate", None), \
+                mock.patch.object(messaging.config, "QUERYTEXT_DIR", mock.MagicMock()), \
+                mock.patch.object(task_context, "current", return_value="t1111111111111111"), \
+                mock.patch.object(kept_facts, "after_task") as after:
+            messaging.write_final_reply("Stopped, as you said.", kind="error", gated=True, task_id="t2222222222222222")
+        after.assert_not_called()
+
     def test_a_quiet_ending_keeps_no_facts(self):
         saved = state.current_task
         self.addCleanup(setattr, state, "current_task", saved)
