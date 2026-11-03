@@ -9,7 +9,8 @@
 //	brainiac up [--yes]          census + plan + pull + serve: what build.sh runs
 //	brainiac ask "..." [--image f] [--audio f]   ask a running Brainiac
 //	brainiac status              what a running Brainiac holds
-//	brainiac update [--apply]    what serve would switch to, from public evaluations
+//	brainiac update [--apply]    a better plan from public evaluations: shown, or installed, checked and staged
+//	brainiac update promote      switch to the staged plan (a person's decision)
 package main
 
 import (
@@ -103,8 +104,9 @@ func usage() {
   status [--url u]
   paths  [--url u]                                 per field: what could answer here, and why each does or does not
   eval   --cases file.jsonl [--models a,b] [--learn]  measure models field by field on checked cases
-  update [--apply] [--json]                       find better open models from public evaluations; serve
-                                                 switches to them on its own, after checking them
+  update [--apply] [--json]                       find better open models from public evaluations; --apply
+                                                 installs, checks and stages them, changing nothing served
+  update promote                                  switch to the staged plan; a running serve follows
   update approve-template <model>                 accept a model's changed chat template, after reading it
   scout  [--days 120]                              find open models newer than the catalog, checked
   scout adopt <repo> --roles code=72               add a scouted model to the local catalog
@@ -372,11 +374,25 @@ func serve(ctx context.Context, st *store.Store, cfg config.Config, lock *instal
 	}
 	as := &api.Server{Eng: eng, APIKey: cfg.APIKey(), Log: lg}
 	defer func() { as.Current().Close() }()
-	// The updater reads public evaluations on the web; with the web off it
-	// does not run, and the models change only by hand.
-	if every, err := time.ParseDuration(cfg.UpdateEvery); err == nil && every > 0 && cfg.Web != config.WebOff {
+	// The updater reads public evaluations on the web and only stages what it
+	// finds; it is off unless update_every is set, and off with the web.
+	if every, ok := updateEvery(cfg); ok {
 		go updateLoop(ctx, st, cfg, as, every, lg)
 	}
+	// What is served changes when a person changes lock.json.
+	follow := &lockFollower{path: st.Path("lock.json"), seen: lockSHA(st.Path("lock.json")), swap: as.SetEngine, logf: lg.Printf,
+		build: func() (*engine.Engine, error) {
+			l, err := install.ReadLock(st)
+			if err != nil {
+				return nil, err
+			}
+			c, err := loadCatalog(st)
+			if err != nil {
+				return nil, err
+			}
+			return engine.New(engine.Options{Config: cfg, Store: st, Lock: l, Logger: lg, Catalog: c})
+		}}
+	go follow.run(ctx, 30*time.Second)
 	srv := &http.Server{Addr: cfg.Listen, Handler: as.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {

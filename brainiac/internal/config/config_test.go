@@ -63,3 +63,13 @@ func TestWebDefaultsToOnRequestAndLocalRefusesAuto(t *testing.T) {
 		t.Fatalf("hybrid with web auto: %v", err)
 	}
 }
+
+func TestUpdatesAreOffByDefault(t *testing.T) {
+	c, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.UpdateEvery != "off" {
+		t.Fatalf("update_every defaults to %q", c.UpdateEvery)
+	}
+}

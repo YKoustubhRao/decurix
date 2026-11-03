@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"brainiac/internal/catalog"
 	"brainiac/internal/config"
@@ -159,5 +160,30 @@ func TestACutAnswerIsNeverFinished(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if strings.Contains(string(body), `"finish_reason":"stop"`) || !strings.Contains(string(body), `"error"`) {
 		t.Fatalf("stream: %s", body)
+	}
+}
+
+// While the updater's canary holds the server, a new work request waits and
+// then runs; reading status does not wait.
+func TestAHoldMakesWorkWait(t *testing.T) {
+	s := &Server{Eng: replyEngine(t, "after the hold", nil, nil)}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	release := s.Hold()
+	got := make(chan string, 1)
+	go func() { got <- answerOf(t, post(t, srv, "/v1/chat/completions", hello, "")) }()
+	st, err := http.Get(srv.URL + "/v1/brainiac/status")
+	if err != nil || st.StatusCode != 200 {
+		t.Fatalf("status during a hold: %v %v", st, err)
+	}
+	st.Body.Close()
+	select {
+	case a := <-got:
+		t.Fatalf("a work request ran during the hold: %q", a)
+	case <-time.After(300 * time.Millisecond):
+	}
+	release()
+	if a := <-got; a != "after the hold" {
+		t.Fatalf("after the hold: %q", a)
 	}
 }

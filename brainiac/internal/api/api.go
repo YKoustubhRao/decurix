@@ -44,6 +44,7 @@ type Server struct {
 	Log    *log.Logger
 
 	cur    atomic.Pointer[engine.Engine]
+	hold   sync.RWMutex // work requests share it; Hold takes it alone
 	active atomic.Int64 // work requests being answered
 	last   atomic.Int64 // when the last one ended (unix nanoseconds)
 
@@ -108,13 +109,24 @@ func (s *Server) IdleFor() time.Duration {
 	return time.Since(time.Unix(0, last))
 }
 
-// track counts work requests for IdleFor.
+// Hold makes new work requests wait, once the ones running have finished,
+// until release is called: for a short job that must have the machine to
+// itself (the updater's canary).
+func (s *Server) Hold() (release func()) {
+	s.hold.Lock()
+	var once sync.Once
+	return func() { once.Do(s.hold.Unlock) }
+}
+
+// track counts work requests for IdleFor, and makes them wait while held.
 func (s *Server) track(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			next.ServeHTTP(w, r)
 			return
 		}
+		s.hold.RLock()
+		defer s.hold.RUnlock()
 		s.active.Add(1)
 		defer func() {
 			s.last.Store(time.Now().UnixNano())

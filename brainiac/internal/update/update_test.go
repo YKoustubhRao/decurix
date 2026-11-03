@@ -180,27 +180,26 @@ func TestDryRunFindsTheBetterModelAndChangesNothing(t *testing.T) {
 	}
 }
 
-func TestApplySwitchesOnlyAfterTheCheckPasses(t *testing.T) {
+// Applying installs, checks and stages a better plan; what is served does
+// not change until a person promotes it.
+func TestApplyStagesAndOnlyAPersonPromotes(t *testing.T) {
 	f := setup(t, novaCard)
 	f.opt.Apply = true
 	res, err := Run(context.Background(), f.opt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != OutcomeSwitched || res.Lock == nil {
+	if res.Outcome != OutcomeStaged {
 		t.Fatalf("%s: %s (changes %+v)", res.Outcome, res.Why, res.Changes)
 	}
 	if len(f.checked) != 1 || !strings.Contains(strings.Join(f.checked[0], ","), catalog.RoleBrain) {
 		t.Fatalf("checked %v", f.checked)
 	}
-	if got := brainOf(t, f.st, "lock.json"); got != "nova-2b" {
-		t.Fatalf("lock.json brain %s", got)
+	if got := brainOf(t, f.st, "lock.json"); got != "qwen3.5-2b" {
+		t.Fatalf("the updater switched lock.json to %s by itself", got)
 	}
-	if got := brainOf(t, f.st, PrevLock); got != "qwen3.5-2b" {
-		t.Fatalf("lock.prev.json brain %s", got)
-	}
-	if f.st.Exists(NextLock) {
-		t.Error("lock.next.json left behind")
+	if got := brainOf(t, f.st, NextLock); got != "nova-2b" || !f.st.Exists(StagedFile) || f.st.Exists(PrevLock) {
+		t.Fatalf("staged %s, staged file %v", got, f.st.Exists(StagedFile))
 	}
 	o, err := catalog.ReadOverlay(f.st.Path(OverlayFile))
 	if err != nil || len(o.Models) != 1 || !o.Models[0].Auto || !strings.Contains(o.Models[0].Basis, "livebench reasoning 50 vs qwen3.5-2b 40 (livebench)") {
@@ -209,16 +208,50 @@ func TestApplySwitchesOnlyAfterTheCheckPasses(t *testing.T) {
 	if _, err := catalog.WithOverlay(f.st.Path(OverlayFile)); err != nil {
 		t.Fatalf("the overlay does not validate: %v", err)
 	}
-	if s := ReadState(f.st); len(s.History) != 1 || s.History[0].Outcome != OutcomeSwitched {
+	// The next cycle sees the same plan staged and does not install it again.
+	res, err = Run(context.Background(), f.opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomeStaged || f.install != 1 {
+		t.Fatalf("second cycle: %s: %s, installs %d", res.Outcome, res.Why, f.install)
+	}
+	// A lock.next.json that changed after its check is not promoted.
+	good, _ := os.ReadFile(f.st.Path(NextLock))
+	os.WriteFile(f.st.Path(NextLock), append(append([]byte{}, good...), ' '), 0o644)
+	if _, _, err := Promote(f.st, now); err == nil {
+		t.Fatal("a changed lock.next.json was promoted")
+	}
+	os.WriteFile(f.st.Path(NextLock), good, 0o644)
+	// A person promotes: lock.json is the staged plan, the old one is kept.
+	lock, staged, err := Promote(f.st, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := lock.Plan.Pick(catalog.RoleBrain); b.Model != "nova-2b" || len(staged.Changes) == 0 {
+		t.Fatalf("promoted %s %+v", b.Model, staged)
+	}
+	if got := brainOf(t, f.st, "lock.json"); got != "nova-2b" {
+		t.Fatalf("lock.json brain %s", got)
+	}
+	if got := brainOf(t, f.st, PrevLock); got != "qwen3.5-2b" {
+		t.Fatalf("lock.prev.json brain %s", got)
+	}
+	if f.st.Exists(NextLock) || f.st.Exists(StagedFile) {
+		t.Error("lock.next.json or the staged record left behind")
+	}
+	if s := ReadState(f.st); len(s.History) != 3 || s.History[2].Outcome != OutcomePromoted {
 		t.Fatalf("state %+v", s)
 	}
-	// The next cycle finds nothing new to do.
+	if _, _, err := Promote(f.st, now); !errors.Is(err, ErrNothingStaged) {
+		t.Fatalf("promoting twice: %v", err)
+	}
 	res, err = Run(context.Background(), f.opt)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Outcome != OutcomeCurrent {
-		t.Fatalf("second cycle: %s: %s %+v", res.Outcome, res.Why, res.Changes)
+		t.Fatalf("after the promote: %s: %s %+v", res.Outcome, res.Why, res.Changes)
 	}
 }
 

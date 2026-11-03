@@ -87,10 +87,10 @@ type Config struct {
 	// WebRender lets a headless browser read pages that need JavaScript.
 	// Default on; it costs a few hundred MB for a few seconds.
 	WebRender *bool `json:"web_render,omitempty"`
-	// UpdateEvery is how often `serve` looks for better open models and
-	// switches to them on its own ("24h" by default, "off" never): it reads
-	// public evaluations, installs a better plan beside the running one,
-	// checks it, and switches only when the check passes.
+	// UpdateEvery is how often `serve` looks for better open models ("off"
+	// by default; "24h" for daily): it reads public evaluations, installs a
+	// better plan beside the running one, checks it and stages it. It never
+	// switches what is served: a person runs `brainiac update promote`.
 	UpdateEvery string `json:"update_every,omitempty"`
 	// Sandbox "off" lets model processes read and write what this user can.
 	// It is for a GPU whose driver needs a path the sandbox does not allow.
@@ -163,7 +163,7 @@ func Load(home string) (Config, error) {
 		c.Web = WebOnRequest
 	}
 	if c.UpdateEvery == "" {
-		c.UpdateEvery = "24h"
+		c.UpdateEvery = "off"
 	}
 	return c, c.Validate()
 }
