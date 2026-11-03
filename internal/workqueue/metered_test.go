@@ -67,3 +67,18 @@ func TestMeteredTokensCountWhenTheDesktopSaidNothing(t *testing.T) {
 		t.Fatalf("spend = %+v, %v", got, err)
 	}
 }
+
+// A done item's files go after a week; an item that may still be retried keeps its own (C-28).
+func TestDoneItemsLoseTheirFilesAfterAWeek(t *testing.T) {
+	e := newEnv(t, Worker{ID: "w1"})
+	done := e.add(t, NewItem{Files: []File{{Name: "a.txt", Data: []byte("x")}}})
+	failed := e.add(t, NewItem{Files: []File{{Name: "b.txt", Data: []byte("y")}}})
+	e.store.db.Exec(`UPDATE workqueue_items SET status = ?, updated_ns = 1 WHERE id = ?`, StatusDone, done.ID)
+	e.store.db.Exec(`UPDATE workqueue_items SET status = ?, updated_ns = 1 WHERE id = ?`, StatusFailed, failed.ID)
+	if n, err := e.store.PruneFiles(time.Now()); err != nil || n != 1 {
+		t.Fatalf("pruned %d, %v", n, err)
+	}
+	if fs, _ := e.store.Files(failed.ID); len(fs) != 1 {
+		t.Fatal("a retriable item lost its files")
+	}
+}

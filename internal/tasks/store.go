@@ -351,10 +351,12 @@ func newID(prefix string) string {
 	return sqlitedb.NewID(prefix, 8)
 }
 
-// ValidID reports whether id has the shape of an ID this store issues, which
-// is how a value reported back by a desktop is checked before it is used.
+// ValidID reports whether id has the shape of a task ID this store issues
+// ("t" and 16 hex digits), which is how a value reported back by a desktop is
+// checked before it is used - it travels into a file name (C-23: the prefix
+// was not checked).
 func ValidID(id string) bool {
-	if len(id) != 17 {
+	if len(id) != 17 || id[0] != 't' {
 		return false
 	}
 

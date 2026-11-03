@@ -434,6 +434,17 @@ func (s *Store) inStatus(statuses ...string) ([]Item, error) {
 }
 
 // Files returns the files an item carries, with their bytes.
+// PruneFiles drops the files of items done before a moment, and says how many it dropped (C-28).
+func (s *Store) PruneFiles(before time.Time) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM workqueue_files WHERE item_id IN (SELECT id FROM workqueue_items WHERE status = ? AND updated_ns < ?)`,
+		StatusDone, sqlitedb.ToNS(before))
+	if err != nil {
+		return 0, fmt.Errorf("workqueue: pruning files: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// Files returns an item's files.
 func (s *Store) Files(id string) ([]File, error) {
 	files, err := sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) (File, error) {
 		var f File

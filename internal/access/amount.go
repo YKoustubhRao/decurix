@@ -95,6 +95,10 @@ func moneyScale(word string) bool {
 func LargestAmount(text string) *float64 {
 	var best *float64
 	sawMoney := false
+	// The largest figure set aside as an identifier ("No. 4500012345"): when it is larger than every money figure,
+	// which one is the money is not something words can settle, so the amount is unknown and the policy applies
+	// (A-05) - never the smaller figure, which would let a large action pass a lower bar.
+	var identifier float64
 	for _, loc := range figureRe.FindAllStringIndex(text, -1) {
 		raw, before, after := text[loc[0]:loc[1]], text[:loc[0]], text[loc[1]:]
 		v, grouped, ok := readFigure(raw)
@@ -121,7 +125,11 @@ func LargestAmount(text string) *float64 {
 				marked = true
 			}
 		}
-		if !marked && (isDatePart(raw, v, before, after) || identifierBeforeRe.MatchString(before)) {
+		if !marked && isDatePart(raw, v, before, after) {
+			continue
+		}
+		if !marked && identifierBeforeRe.MatchString(before) {
+			identifier = max(identifier, v)
 			continue
 		}
 		if marked {
@@ -132,7 +140,7 @@ func LargestAmount(text string) *float64 {
 			best = &val
 		}
 	}
-	if !sawMoney {
+	if !sawMoney || best != nil && identifier > *best {
 		return nil
 	}
 	return best

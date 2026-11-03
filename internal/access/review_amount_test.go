@@ -82,6 +82,27 @@ func TestLargestAmountGluedAndGrouped(t *testing.T) {
 
 // Dates, times, units, firm prefixes and identifiers beside an amount are not amounts, so a small payment that
 // mentions them does not ask for a second approver; a marked figure next to them still counts.
+// A figure set aside as an identifier but larger than every money figure leaves the amount unknown, so the approval
+// policy applies (A-05): which figure is the money is not something the words settle, and the smaller one must never
+// win - "Rs 50 fee; pay No. 4500012345" read as 50 let a large payment pass a lower bar.
+func TestALargerIdentifierLeavesTheAmountUnknown(t *testing.T) {
+	for _, text := range []string{
+		"Rs 50 fee; pay No. 4500012345",
+		"Pay Rs 500 to a/c 50100123456789",
+		"Pay Rs 500, Ref: 778899123",
+		"Pay Rs 500 against invoice no. 45000",
+		"Pay Rs 500 against PO 4500012345",
+	} {
+		if got := LargestAmount(text); got != nil {
+			t.Errorf("%q: got %v, want unknown (nil)", text, *got)
+		}
+	}
+	// An identifier smaller than the money figure settles nothing either way: the money figure stands.
+	if got := LargestAmount("Pay Rs 5,000 against invoice no. 45"); got == nil || *got != 5000 {
+		t.Errorf("small identifier: got %v, want 5000", deref(got))
+	}
+}
+
 func TestLargestAmountSkipsDatesAndIdentifiers(t *testing.T) {
 	cases := []struct {
 		text string
@@ -94,13 +115,6 @@ func TestLargestAmountSkipsDatesAndIdentifiers(t *testing.T) {
 		{"Pay Rs 500 at 10:30", 500},
 		{"Pay Rs 500 for 5kg of rice", 500},
 		{"Pay Rs 45,000 M/s Sharma Traders", 45000},
-		{"Pay Rs 500 to a/c 50100123456789", 500},
-		{"Pay Rs 500, Ref: 778899123", 500},
-		{"Pay Rs 500 to Acme, phone 9876543210", 500},
-		{"Pay Rs 500 against invoice no. 45000", 500},
-		{"Pay Rs 500 against invoice #45000", 500},
-		{"Pay Rs 500 against PO 4500012345", 500},
-		{"Pay Rs 500 for order no 1234567890", 500},
 		{"Pay bill 45000, fee Rs 50", 45000}, // "bill 45000" may be the amount: it counts
 		// A marked or unmistakable amount beside a month or a label still counts.
 		{"Pay Rs 50000 March rent", 50000},

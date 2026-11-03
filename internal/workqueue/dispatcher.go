@@ -82,9 +82,11 @@ type Dispatcher struct {
 	// Backoff is how long an item waits after a failed send; 0 means a minute.
 	Backoff time.Duration
 
-	mu   sync.Mutex // one Tick at a time
-	wake chan struct{}
-	once sync.Once
+	mu sync.Mutex // one Tick at a time
+	// lastPrune is when done items' files were last pruned (pruneFiles).
+	lastPrune time.Time
+	wake      chan struct{}
+	once      sync.Once
 }
 
 // now is the dispatcher's clock.
@@ -161,6 +163,7 @@ func (d *Dispatcher) Tick(ctx context.Context) error {
 	if err := d.follow(); err != nil {
 		return err
 	}
+	d.pruneFiles()
 
 	workers, err := d.Workers.Workers(ctx)
 	if err != nil {
@@ -190,6 +193,24 @@ func (d *Dispatcher) Tick(ctx context.Context) error {
 		return err
 	}
 	return d.assign(ctx, st)
+}
+
+// doneFilesKept is how long a done item keeps the files it was sent with (up to 25 MiB each, in the database): long
+// enough to look at, not for good (C-28). An item that may still be retried keeps its files.
+const doneFilesKept = 7 * 24 * time.Hour
+
+// pruneFiles drops the files of items done more than doneFilesKept ago, at most once an hour.
+func (d *Dispatcher) pruneFiles() {
+	now := d.now()
+	if !d.lastPrune.IsZero() && now.Sub(d.lastPrune) < time.Hour {
+		return
+	}
+	d.lastPrune = now
+	if n, err := d.Store.PruneFiles(now.Add(-doneFilesKept)); err != nil {
+		log.Printf("workqueue: %v", err)
+	} else if n > 0 {
+		log.Printf("workqueue: dropped %d file(s) of items done more than %s ago", n, doneFilesKept)
+	}
 }
 
 // follow moves running items forward as their tasks end, and holds any item
