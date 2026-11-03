@@ -36,7 +36,12 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 FIXTURES = HERE / "fixtures"
+# What the desktop's apps need (the admin panel, the reset half) lives in the
+# agent's home. The answer key (tasks.json) and the checker live where the
+# agent's user cannot read them, and checks run as root.
 REMOTE = "/home/headless/bench/gui"
+ORACLE = "/opt/decurix-bench-gui"
+AGENT_FILES = ("adminpanel.py", "bench.py", "odf.py")
 
 ENGINES = ("oracle", "ollama", "claude", "thebot")
 
@@ -95,14 +100,33 @@ def keep_awake(plane, desktop_id, container):
 
 
 def install_fixtures(container):
+    # The agent's copy: the apps' files only. An older install's answer key goes.
     docker(container, "mkdir", "-p", REMOTE, check=True)
-    subprocess.run(["docker", "cp", f"{FIXTURES}/.", f"{container}:{REMOTE}/"], check=True, capture_output=True)
-    subprocess.run(["docker", "cp", str(HERE / "tasks.json"), f"{container}:{REMOTE}/tasks.json"], check=True, capture_output=True)
+    docker(container, "rm", "-f", f"{REMOTE}/tasks.json", user="root", check=True)
+    for name in AGENT_FILES:
+        subprocess.run(["docker", "cp", str(FIXTURES / name), f"{container}:{REMOTE}/{name}"], check=True, capture_output=True)
     docker(container, "chown", "-R", "headless:headless", "/home/headless/bench", user="root", check=True)
+
+    # The checker's copy, with the answer key: root's, mode 0700.
+    docker(container, "sh", "-c", f"rm -rf {ORACLE} && mkdir -p {ORACLE}", user="root", check=True)
+    subprocess.run(["docker", "cp", f"{FIXTURES}/.", f"{container}:{ORACLE}/"], check=True, capture_output=True)
+    subprocess.run(["docker", "cp", str(HERE / "tasks.json"), f"{container}:{ORACLE}/tasks.json"], check=True, capture_output=True)
+    docker(container, "sh", "-c", f"chown -R root:root {ORACLE} && chmod -R go-rwx {ORACLE}", user="root", check=True)
+
+
+def reset_command(task):
+    """The reset, run as the desktop's user: it is handed the task's starting
+    state, so it never needs the answer key."""
+    return ["python3", f"{REMOTE}/bench.py", "reset", task["id"], "--start", json.dumps(task.get("start") or {})]
+
+
+def check_command(task):
+    """The check, run as root from the root-only copy, with the answer key."""
+    return ["python3", f"{ORACLE}/bench.py", "check", task["id"], "--answer-file", f"{ORACLE}/answer.txt"]
 
 
 def reset_task(container, task):
-    process = docker(container, "python3", f"{REMOTE}/bench.py", "reset", task["id"], timeout=600)
+    process = docker(container, *reset_command(task), timeout=600)
     if process.returncode != 0:
         raise RuntimeError(f"reset {task['id']} failed: {process.stdout[-500:]}{process.stderr[-500:]}")
 
@@ -120,8 +144,8 @@ def own_words(answer):
 
 def check_task(container, task, answer):
     answer = own_words(answer)
-    docker(container, "sh", "-c", "cat > /tmp/bench-answer.txt", stdin=answer or "", check=True)
-    process = docker(container, "python3", f"{REMOTE}/bench.py", "check", task["id"], "--answer-file", "/tmp/bench-answer.txt")
+    docker(container, "sh", "-c", f"cat > {ORACLE}/answer.txt", stdin=answer or "", user="root", check=True)
+    process = docker(container, *check_command(task), user="root")
     try:
         return json.loads(process.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):

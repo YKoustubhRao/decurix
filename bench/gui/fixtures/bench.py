@@ -2,10 +2,13 @@
 The in-desktop half of the GUI benchmark: puts the screen into a task's
 starting state, and decides afterwards whether the task was really done.
 
-Copied into a desktop (with tasks.json, odf.py and adminpanel.py) by
-bench/gui/run.py and run there as the headless user:
+Copied into a desktop by bench/gui/run.py twice: into the agent's home with
+odf.py and adminpanel.py, where `reset` runs as the headless user and is
+handed the task's starting state; and with tasks.json, the answer key, into a
+root-only directory, where `check` runs as root. The agent under test can
+read neither the answer key nor the checker's copy.
 
-    python3 bench.py reset <task-id>
+    python3 bench.py reset <task-id> --start '{"calc": "budget.ods"}'
     python3 bench.py check <task-id> [--answer-file PATH]
 
 `check` prints one JSON object, {"pass": bool, "detail": "..."}. It judges
@@ -430,7 +433,13 @@ def main():
     parser.add_argument("command", choices=["reset", "check", "list"])
     parser.add_argument("task", nargs="?")
     parser.add_argument("--answer-file")
+    parser.add_argument("--start", help="reset: the task's starting state, as JSON (no answer key needed)")
     args = parser.parse_args()
+
+    if args.command == "reset" and args.start is not None:
+        reset({"id": args.task, "start": json.loads(args.start) or None})
+        print(json.dumps({"reset": args.task}))
+        return
 
     tasks = load_tasks()
 

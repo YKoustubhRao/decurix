@@ -37,5 +37,37 @@ class BenchmarkExitTests(unittest.TestCase):
         self.assertEqual((report["passed"], report["total"]), (2, 2))
 
 
+class AnswerKeyTests(unittest.TestCase):
+    """The agent's home gets the apps' files, never the answer key; the check
+    runs as root from a root-only copy."""
+
+    def test_the_agent_copy_holds_no_answer_key(self):
+        self.assertNotIn("tasks.json", run.AGENT_FILES)
+        self.assertFalse(run.ORACLE.startswith("/home/"))
+        commands = []
+        with patch.object(run, "docker", side_effect=lambda *a, **k: commands.append((a, k))), \
+                patch.object(run.subprocess, "run", side_effect=lambda cmd, **k: commands.append((tuple(cmd), k))):
+            run.install_fixtures("c")
+        copies = [c[0] for c in commands if c[0][:2] == ("docker", "cp")]
+        for cmd in copies:
+            if cmd[-1].startswith("c:" + run.REMOTE):
+                self.assertNotIn("tasks.json", cmd[2], cmd)
+        self.assertTrue(any(cmd[-1] == f"c:{run.ORACLE}/tasks.json" for cmd in copies))
+        self.assertTrue(any("go-rwx" in " ".join(c[0]) and c[1].get("user") == "root" for c in commands))
+
+    def test_reset_is_handed_its_start_and_check_runs_from_the_root_copy(self):
+        task = {"id": "calc-sum", "start": {"calc": "budget.ods"}, "check": {"type": "answer_number", "value": 5}}
+        reset = run.reset_command(task)
+        self.assertTrue(reset[1].startswith(run.REMOTE))
+        self.assertEqual(json.loads(reset[reset.index("--start") + 1]), {"calc": "budget.ods"})
+        self.assertNotIn("answer_number", " ".join(reset))
+        self.assertTrue(run.check_command(task)[1].startswith(run.ORACLE))
+        calls = []
+        with patch.object(run, "docker", side_effect=lambda *a, **k: calls.append((a, k)) or
+                          type("P", (), {"stdout": '{"pass": true, "detail": ""}', "stderr": "", "returncode": 0})()):
+            run.check_task("c", task, "5")
+        self.assertTrue(all(k.get("user") == "root" for _, k in calls))
+
+
 if __name__ == "__main__":
     unittest.main()
