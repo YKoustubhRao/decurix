@@ -25,11 +25,28 @@ from decurix_agent import filelock
 MAX_REPORT_CHARS = 2000
 
 
+def bound_inputs(spec):
+    """The run inputs a learned-skill stage binds ({"input": name} in its params or source_files): each is required, as
+    the stage cannot run without it."""
+    names = []
+    for step in spec.get("steps", []) if isinstance(spec, dict) else []:
+        skill = step.get("skill") if isinstance(step, dict) else None
+        if not isinstance(skill, dict):
+            continue
+        for value in list((skill.get("params") or {}).values()) + list((skill.get("source_files") or {}).values()):
+            if isinstance(value, dict) and set(value) == {"input"} and value["input"] not in names:
+                names.append(value["input"])
+    return names
+
+
 def missing_inputs(spec, inputs):
-    """Zero and False are supplied values; absence and empty data are not."""
+    """Zero and False are supplied values; absence and empty data are not. An input a stage binds is required too: a
+    run started without it failed only at that stage, and left the stage pointed at (review 2026-11-03, E-05)."""
     def absent(value):
         return value is None or (isinstance(value, str) and not value.strip()) or (isinstance(value, (list, dict, tuple)) and not value)
-    return [key for key in spec.get("required_inputs", []) if key not in inputs or absent(inputs[key])]
+    wanted = list(spec.get("required_inputs", []))
+    wanted += [name for name in bound_inputs(spec) if name not in wanted]
+    return [key for key in wanted if key not in inputs or absent(inputs[key])]
 
 
 def _attempt_limit(step, record):
@@ -149,6 +166,9 @@ def validate(spec):
                 raise ValueError(f"{key} must be boolean")
         if "skill" in s and (not isinstance(s["skill"], dict) or not isinstance(s["skill"].get("name"), str) or not s["skill"]["name"].strip() or not isinstance(s["skill"].get("params", {}), dict)):
             raise ValueError("skill needs a name and parameter object")
+        if "skill" in s and any(isinstance(v, dict) and "input" in v and (set(v) != {"input"} or not isinstance(v["input"], str) or not v["input"].strip())
+                                for v in s["skill"].get("params", {}).values()):
+            raise ValueError("a skill parameter's input binding is {\"input\": NAME}")
         if "skill" in s:
             sources = s["skill"].get("source_files", {})
             if not isinstance(sources, dict) or any(not isinstance(k, str) or not k.strip() or not (

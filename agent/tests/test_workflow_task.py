@@ -155,7 +155,8 @@ class WorkflowHarnessIntegration(unittest.TestCase):
         import decurix_agent
         with patch.dict(sys.modules, {"decurix_agent.skill_task": skill}), patch.object(decurix_agent, "skill_task", skill, create=True):
             workflow_task.perform('/workflow start-json ' + json.dumps({"spec": case}))
-        self.assertIn("missing learned-skill input", self.reports[0][0])
+        # Refused before any stage runs: an input a stage binds is a required input (review 2026-11-03, E-05).
+        self.assertIn("Missing workflow inputs: customer", self.reports[0][0])
         self.assertIsNone(workflow_task._active)
 
     def test_skill_only_workflow_needs_no_model_backend(self):

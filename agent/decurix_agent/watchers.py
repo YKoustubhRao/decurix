@@ -625,6 +625,10 @@ def _start_request(path, content):
         _answer_stale_reply(path, content)
         return
 
+    # The slot was free, so a workflow stage still pointed at is not being worked on: it is closed as unfinished, or it
+    # would take this request's report as its own (review 2026-11-03, E-05).
+    workflow_task.drop_stale()
+
     # A bare "stop" with nothing running or waiting has nothing to stop. Found live (2026-10-15): sent after the
     # desktop restarted under an open question, it went to TheBot as a task, the engine answered "Stopped.", and
     # the final check asked the person what to do about a task that could not be finished.

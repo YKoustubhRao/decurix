@@ -145,38 +145,60 @@ def _dispatch_one(run_id, task_file=None, approvals=(), recover=False):
     return _execute_claimed(r, state, step, task_file)
 
 
+def _skill_bindings(step, context):
+    """(params, source_files or None) of a learned-skill stage, its input bindings resolved. Raises ValueError for a
+    binding to an input the run was not given."""
+
+    params = {}
+    for key, value in step["skill"].get("params", {}).items():
+        if isinstance(value, dict) and set(value) == {"input"}:
+            if value["input"] not in context["inputs"]:
+                raise ValueError(f"missing learned-skill input: {value['input']}")
+            value = context["inputs"][value["input"]]
+        params[key] = value
+    if "source_files" not in step["skill"]:
+        return params, None
+    sources = {}
+    for recorded_path, value in step["skill"]["source_files"].items():
+        if isinstance(value, dict):
+            if value["input"] not in context["inputs"]:
+                raise ValueError(f"missing learned-skill source input: {value['input']}")
+            value = context["inputs"][value["input"]]
+        sources[recorded_path] = value
+    return params, sources
+
+
 def _execute_claimed(r, state, step, task_file):
     global _active
     from decurix_agent import harness
     from decurix_agent import task_context
     run_id = state["run_id"]
+    context = r.context(state)
+    bindings = None
+    if step.get("skill"):
+        # The stage is this desktop's (_active) only once it can run: a binding that does not resolve fails the stage
+        # here, and nothing is left pointing at it to swallow the next task's report (review 2026-11-03, E-05).
+        try:
+            bindings = _skill_bindings(step, context)
+        except ValueError as exc:
+            try:
+                r.complete(run_id, step["id"], error=str(exc))
+            except Exception:  # noqa: BLE001 - the report still goes; the checkpoint keeps what it had
+                pass
+            raise
     _active = (run_id, step["id"], task_file)
     task_id = task_context.current()
     if task_id:
         r.bind_task(run_id, task_id)
     # Every process the stage's engine starts can tell which stage and attempt it works for (outbox drafts).
     task_context.set_stage(f"{run_id}:{step['id']}", state["steps"][step["id"]]["attempts"])
-    context = r.context(state)
     if step.get("skill"):
         from decurix_agent import skill_task
-        params = {}
-        for key, value in step["skill"].get("params", {}).items():
-            if isinstance(value, dict) and set(value) == {"input"}:
-                if value["input"] not in context["inputs"]:
-                    raise ValueError(f"missing learned-skill input: {value['input']}")
-                value = context["inputs"][value["input"]]
-            params[key] = value
+        params, sources = bindings
         request = skill_task.request_text(step["skill"]["name"], params)
         request += "\nWorkflow context: " + json.dumps(context)
         request += "\nRequired artifact checks: " + json.dumps(step["checks"])
-        if "source_files" in step["skill"]:
-            sources = {}
-            for recorded_path, value in step["skill"]["source_files"].items():
-                if isinstance(value, dict):
-                    if value["input"] not in context["inputs"]:
-                        raise ValueError(f"missing learned-skill source input: {value['input']}")
-                    value = context["inputs"][value["input"]]
-                sources[recorded_path] = value
+        if sources is not None:
             return skill_task.perform(request, task_file, source_files=sources)
         return skill_task.perform(request, task_file)
     if state["spec"].get("planned"):
@@ -207,11 +229,58 @@ def _dispatch(run_id, task_file=None, approvals=(), recover=False):
 
 
 def engine_returned():
-    """Harness hook after its globals/finally cleanup, also after a query reply."""
+    """Harness hook after its globals/finally cleanup, also after a query reply. Never raises: it runs in a harness's
+    `finally` or on the reply thread, where an exception reached nobody and left the stage pointed at for good - the
+    next task's report was then taken as that stage's (review 2026-11-03, E-05)."""
     global _pending
     if _pending and not _driving:
         pending, _pending = _pending, None
-        _dispatch(*pending)
+        try:
+            _dispatch(*pending)
+        except Exception as exc:  # noqa: BLE001 - reported and the run let go
+            _stop_on_error(exc, f"Workflow {pending[0]} stopped: {exc}")
+
+
+def _stop_on_error(exc, text):
+    """
+    A stage that raised: its record gets the error, nothing is left pointing at it (_active, _pending, a long
+    request's run in hand), and the person is told. Never raises.
+    """
+    global _active, _pending
+    active, _active, _pending = _active, None, None
+    run_id = active[0] if active else ""
+    if active:
+        try:
+            runner().complete(active[0], active[1], error=exc)
+        except Exception:  # noqa: BLE001 - the stage may already be closed; the report below still goes
+            pass
+    try:
+        from decurix_agent import long_task
+        if long_task._run is not None and (not run_id or long_task._run.get("run_id") == run_id):
+            long_task._end()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from decurix_agent.messaging import write_final_reply
+        write_final_reply(text, kind="error", checked=False, gated=True)
+    except Exception:  # noqa: BLE001 - nothing more can be done from here
+        pass
+
+
+def drop_stale():
+    """
+    A new request starts (watchers._start_request, with the desktop's slot free): a stage still pointed at is no longer
+    being worked on. It is closed as not finished, so its run never takes the new task's report as its own (review
+    2026-11-03, E-05).
+    """
+    global _active, _pending
+    active, _active, _pending = _active, None, None
+    if active is None:
+        return
+    try:
+        runner().complete(active[0], active[1], error="left unfinished: a new request started while it was paused")
+    except Exception:  # noqa: BLE001 - the checkpoint keeps what it had; /workflow status shows it
+        pass
 
 
 def cancel_active():
@@ -339,7 +408,10 @@ def final_gate(reply, kind, engine=None):
             _report(state)
         else:
             _pending = (run_id, task_file, ())
-    except Exception as exc:
-        from decurix_agent.messaging import write_final_reply
-        write_final_reply(f"Workflow {run_id} stopped during verification: {exc}. Resume after inspecting the checkpoint.", kind="error", checked=False, gated=True)
+    except Exception as exc:  # noqa: BLE001
+        # The stage gets the error and the run is let go - a long request's too: a run left in hand took every later
+        # message as its own (review 2026-11-03, E-04).
+        _active = (run_id, step_id, task_file)
+        _stop_on_error(exc, f"Workflow {run_id} stopped during verification: {exc}. Resume after inspecting the "
+                            f"checkpoint.")
     return True
