@@ -27,6 +27,8 @@ This file holds only what must be in your head for every change. The detail live
 | The learning loop: a task is a case (scope, sources, matrix), a kind of task is a learned method; learning curves | [docs/learning-loop.md](docs/learning-loop.md) |
 | Harness v3: the record ledger (`gui record`), party resolution by identifier (`gui select --id`), the scope on the window, questions the screen answers; why four days of rules did not converge | [docs/harness-v3-plan.md](docs/harness-v3-plan.md) |
 | The workforce: org skill registry and scoped knowledge with provenance; typed handoff between workers and asking a taught worker before a person; users, roles and approval policy as data; a work queue with capacity and spend limits; the Workforce page (`/workforce`) | [docs/skillhub.md](docs/skillhub.md), [docs/handoff.md](docs/handoff.md), [docs/access.md](docs/access.md), [docs/workqueue.md](docs/workqueue.md) |
+| The run record: `decurix.trajectory/v1` (steps, calls, judgements, verdict, bundle) and how a run is assembled from what the control plane and the desktop kept | [docs/trajectory.md](docs/trajectory.md) |
+| Evals: the case format, graders, the matrix runner with Wilson bounds, the scripted expert, suites in `evals/` | [docs/evals.md](docs/evals.md) |
 | Brainiac: many open models behind one OpenAI-compatible endpoint, chosen per machine (own Go module, imports nothing from Decurix) | [brainiac/README.md](brainiac/README.md), [brainiac/DESIGN.md](brainiac/DESIGN.md) |
 | Every lesson learned the hard way (about 950 entries) | [docs/gotchas.md](docs/gotchas.md): one line each, grep it, then open the named part file |
 | Open owner decisions, deferred review items, and the live checks owed after the next build | [docs/follow-ups.md](docs/follow-ups.md) |
@@ -73,4 +75,4 @@ Live benches (Docker, minutes each) are listed in [docs/running.md](docs/running
 - **Never run `build_app.ps1`**: they run builds (two at once collide). Fix the code; they build.
 - Azure GPT may be used for tests through a dev control plane (key in the repo `.env`).
 - Use the headless dev loop for live checks (start the Decurix distro's Docker, `docker cp` agent code, build soul in a Go container).
-- Test data and checkers live outside the repo in `C:\Users\Administrator\decurix-tests`.
+- Dev eval suites, with fictional data only, live in `evals/`; a boundary test keeps harness code from naming them. The sealed held-out set stays outside the repo and is backed up off-host.
