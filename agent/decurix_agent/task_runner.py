@@ -683,19 +683,34 @@ def compact_history(history, max_recent=MAX_RECENT_FULL_TURNS, max_chars=MAX_HIS
     Crucially, avoid eagerly mutating history when total prompt characters are
     well within context limits. Mutating earlier messages destroys llama.cpp's
     KV prefix cache, turning ~0.5s cached turns into ~30s full-prompt evaluations on CPU.
+
+    Size decides, whatever the number of turns: twelve turns of 4,000-character outputs are past num_ctx, and Ollama
+    then drops the oldest messages - the task itself first (ask_agent sends it before the history). Review 2026-11-03
+    (E-32): a history of up to twelve turns was returned whole however large. Old outputs are cut first; the newest
+    turns are cut only when that is not enough, and the last exchange is always kept whole. The task message is not
+    in `history` and is never touched.
     """
-    if len(history) <= max_recent * 2:
+    total_chars = _chars(history)
+    if total_chars <= max_chars and (len(history) <= max_recent * 2 or max_recent >= MAX_RECENT_FULL_TURNS):
+        # Within budget: the exact history, to keep the KV cache prefix intact.
         return history
 
-    total_chars = sum(len(m.get("content", "")) for m in history)
-    # If using default max_recent and character count is well within safety budget,
-    # preserve the exact history to keep KV cache prefix intact.
-    if total_chars <= max_chars and max_recent >= MAX_RECENT_FULL_TURNS:
-        return history
+    keep = min(max_recent * 2, len(history))
+    compacted = _compact_before(history, len(history) - keep)
+    while _chars(compacted) > max_chars and keep > 2:
+        keep -= 2
+        compacted = _compact_before(history, len(history) - keep)
+    return compacted
 
-    cutoff = len(history) - (max_recent * 2)
+
+def _chars(history):
+    return sum(len(m.get("content", "")) for m in history)
+
+
+def _compact_before(history, cutoff):
+    """history with each command output before index `cutoff` cut to OLD_COMMAND_OUTPUT_CHARS."""
+
     compacted = []
-
     for i, msg in enumerate(history):
         if i >= cutoff or msg.get("role") != "user":
             compacted.append(msg)
