@@ -27,8 +27,10 @@ def _called_off(reply):
     state.paused_skill = None
     state.paused_replay = None
     progress.emit("Stopping, as you said. Nothing more is done.")
-    write_final_reply(f"I did nothing more after your \"{' '.join(str(reply).split())[:100]}\". "
-                      f"Anything done before the question is still as it was left.")
+    # A stop is not a finished task (review 2026-11-03, E-36): not done, never "final", and not judged.
+    write_final_reply(f"Stopped, as you said: I did nothing more after your \"{' '.join(str(reply).split())[:100]}\". "
+                      f"Anything done before the question is still as it was left.", kind="error", checked=False,
+                      gated=True)
 
 
 # ============================================================

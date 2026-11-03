@@ -774,7 +774,9 @@ def _handle_job(job, error, resuming=False):
         # and then asked whether its stopping counted as the task done.
         called_off = guidance.refused()
         if called_off:
-            write_final_reply(f"Stopped, as you said (\"{called_off}\"). {answer or ''}".strip())
+            # A stop is not a finished task (review 2026-11-03, N-F3): not done, never "final", and not judged.
+            write_final_reply(f"Stopped, as you said (\"{called_off}\"). {answer or ''}".strip(), kind="error",
+                              checked=False, gated=True)
             return
         _escalate(question)
         return

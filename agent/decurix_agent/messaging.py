@@ -676,11 +676,14 @@ def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted
             if _final_gate(reply, kind, engine):
                 return
         except Exception as exc:
-            # A check that breaks must not lose the report - nor pass it off as
-            # checked: it goes out saying it was not.
+            # A check that breaks must not lose the report - nor pass it off as checked: it goes out not checked
+            # (checked=False), saying so first, where the person reads before the worker's own words (review
+            # 2026-11-03, E-35: the note came last, after a report that read as done).
             log(f"The final check failed, reporting unchecked: {exc!r}")
+            checked = False
             if kind == "final":
-                reply = f"{reply}\n\n(Not checked: the check itself failed. Look at the screen before relying on this.)"
+                reply = (f"Not checked - the final check itself failed ({type(exc).__name__}). Look at the screen "
+                         f"and the files before relying on this.\n\n{reply}")
 
     # ddmmyyyyhhmmss.txt
     filename = time.strftime("%d%m%Y%H%M%S") + ".txt"

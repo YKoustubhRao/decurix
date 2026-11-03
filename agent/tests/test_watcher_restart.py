@@ -61,7 +61,7 @@ class Base(unittest.TestCase):
             mock.patch.object(task_context, "_active_path", lambda: self.active),
             mock.patch.object(task_context, "CURRENT_FILE", str(root / "current-task")),
             mock.patch.object(watchers, "write_final_reply",
-                              lambda text, kind="final", engine=None, quiet=False, interrupted=False:
+                              lambda text, kind="final", engine=None, quiet=False, interrupted=False, **_:
                               self.finals.append((text, kind, interrupted, state.current_task, task_context.current()))),
             mock.patch.object(watchers.threading, "Thread", FakeThread),
             # Never a real browser in a test, and the request's handler stays the first thread started.

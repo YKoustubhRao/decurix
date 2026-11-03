@@ -181,9 +181,10 @@ def resume(reply, approval_outcome=None):
         stop = said["choice"] == "stop"
 
     if stop:
+        # A stop is not a finished task (review 2026-11-03, E-36): it is reported as not done, never "final".
         write_final_reply(
-            f"Stopped the replay before step {paused['step']}, as you asked. Nothing from that step on was done.",
-            kind="final", engine=ENGINE,
+            f"Stopped, as you said: the replay stopped before step {paused['step']}. Nothing from that step on was "
+            f"done.", kind="error", engine=ENGINE, checked=False, gated=True,
         )
         return
 

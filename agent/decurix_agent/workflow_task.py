@@ -249,7 +249,7 @@ def perform(content, task_file=None):
         r = runner()
         if action == "list":
             return write_final_reply("\n".join(f"{key}: {value['title']}" for key, value in CATALOG.items()) +
-                                     '\nUse /workflow start NAME {"source_files":[...],"instructions":"..."}; /workflow resume RUN_ID; /workflow status RUN_ID; /workflow cancel RUN_ID.', checked=True)
+                                     '\nUse /workflow start NAME {"source_files":[...],"instructions":"..."}; /workflow resume RUN_ID; /workflow status RUN_ID; /workflow cancel RUN_ID.', gated=True)
         if action in {"start", "start-json"}:
             if action == "start-json":
                 payload = json.loads(rest)
