@@ -171,6 +171,23 @@ func (s *Server) llmChat(w http.ResponseWriter, r *http.Request, provider string
 	}
 
 	tags := callTags(r)
+	s.checkTaskTag(&tags, worker, fromDesktop)
+
+	// Off by default (D3): an untagged call is stored and counted, and refused only once a clean live round shows
+	// none are left.
+	if s.RequirePurpose && tags.purpose == llmrec.PurposeUntagged {
+		if s.LLMRec != nil {
+			call := llmrec.Call{Provider: provider, Task: tags.task, Turn: tags.turn, Purpose: tags.purpose,
+				Caller: tags.caller, Request: body, Status: http.StatusBadRequest, At: time.Now(),
+				Problems: append(tags.problems, "refused: no purpose")}
+			if fromDesktop {
+				call.Desktop, call.Secrets = worker, s.secretsSeen.For(worker)
+			}
+			s.LLMRec.Record(r.Context(), call)
+		}
+		jsonStatusError(w, http.StatusBadRequest, untaggedRefusal)
+		return
+	}
 
 	started := time.Now()
 	res, err := s.LLM.ChatResult(r.Context(), provider, body)
@@ -239,12 +256,47 @@ type proxyTags struct {
 	problems                    []string
 }
 
-// callTags reads a call's tag headers. The desktop is never one of them: it is the connection's (requestDesktop).
+// callTags reads a call's tag headers (C1). The desktop is never one of them: it is the connection's
+// (requestDesktop). A missing purpose is stored as "untagged", and a malformed value of any tag as "invalid", each
+// with a problem saying so: never rejected here (D3).
 func callTags(r *http.Request) proxyTags {
 	h := func(name string) string { return strings.TrimSpace(r.Header.Get(name)) }
-	return proxyTags{purpose: h(llmrec.HeaderPurpose), task: h(llmrec.HeaderTask), turn: h(llmrec.HeaderTurn),
+	t := proxyTags{purpose: h(llmrec.HeaderPurpose), task: h(llmrec.HeaderTask), turn: h(llmrec.HeaderTurn),
 		caller: h(llmrec.HeaderCaller)}
+	switch {
+	case t.purpose == "":
+		t.purpose = llmrec.PurposeUntagged
+		t.problems = append(t.problems, "untagged")
+	case !llmrec.ValidPurpose(t.purpose):
+		t.purpose = llmrec.PurposeInvalid
+		t.problems = append(t.problems, "invalid purpose")
+	}
+	for _, tag := range []struct {
+		value *string
+		name  string
+		valid func(string) bool
+	}{{&t.task, "task", llmrec.ValidTask}, {&t.turn, "turn", llmrec.ValidTurn}, {&t.caller, "caller", llmrec.ValidCaller}} {
+		if *tag.value != "" && !tag.valid(*tag.value) {
+			*tag.value = llmrec.PurposeInvalid
+			t.problems = append(t.problems, "invalid "+tag.name)
+		}
+	}
+	return t
 }
+
+// checkTaskTag adds a problem when a call names a task that is not the calling desktop's: the row keeps the tag, but
+// a run record joins only rows whose desktop is the execution's worker, so it is never trusted for a join.
+func (s *Server) checkTaskTag(t *proxyTags, worker string, fromDesktop bool) {
+	if !fromDesktop || t.task == "" || t.task == llmrec.PurposeInvalid || s.Tasks == nil {
+		return
+	}
+	if owner, ok := s.Tasks.TaskWorker(t.task); !ok || owner != worker {
+		t.problems = append(t.problems, "task not this desktop's")
+	}
+}
+
+// untaggedRefusal is the answer to an untagged call when DECURIX_LLM_REQUIRE_PURPOSE is on.
+const untaggedRefusal = "say what this call is for (X-Decurix-Purpose)"
 
 // errBrain is a create request's harness or brain refused, in words for the
 // person who chose it.

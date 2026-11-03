@@ -199,3 +199,12 @@ func (s *Store) AskedSecret(interventionID string) bool {
 	}
 	return secret
 }
+
+// TaskWorker is the worker a task belongs to, and false when there is no such task.
+func (s *Store) TaskWorker(taskID string) (string, bool) {
+	var worker string
+	if err := s.db.QueryRow(`SELECT worker_id FROM tasks WHERE id = ?`, taskID).Scan(&worker); err != nil {
+		return "", false
+	}
+	return worker, true
+}
