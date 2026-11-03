@@ -858,7 +858,7 @@ def _ledger_text(state, data, step):
             made = ", ".join(i["path"] for i in state["steps"][s["id"]]["evidence"] if not i.get("drafts"))
             lines.append(f"- {s.get('title', s['id'])}" + (f": {made} (in the work folder)" if made else ""))
         parts.append("Stages already done and checked:\n" + "\n".join(lines))
-    # Found live (series 15 H3, 2026-10-21): "leave Ishaan out" came after the fee demand stage had recorded the Rao
+    # Found live (series 15 H3, 2026-10-21): "leave <one child> out" came after the fee demand stage had recorded the
     # family's total with him in it; "use it; do not work it out again" outranked the change and three attempts at the
     # fee letters kept billing him. A finding made before a change the person made since is marked as such.
     known = len(data["amendments"])
@@ -899,7 +899,7 @@ def stage_prompt(state, step):
     _stage_start[(run_id, step["id"])] = {"t": time.time(), "tokens": usage.spent(), "output": _output(), "asked": _asked(),
                                           "drafts": _draft_base(run_id, step["id"]),
                                           "amendments": len(data["amendments"]), "attempt": record["attempts"],
-                                          "viewers": _stage_viewers(run_id, step["id"]), "entered": len(_entered())}
+                                          "viewers": _stage_viewers(run_id, step["id"]), "entered": _typed_count()}
     _show(state)
 
     made = []
@@ -1384,11 +1384,14 @@ def _masters(request, made=()):
 
 
 def _draft_ids():
+    """The Outbox's draft ids now, or None when it cannot be read (unknown - never "no drafts", R-1)."""
+
     try:
         from decurix_agent.tools import outbox
         return [d.get("id") or json.dumps([d.get("to"), d.get("subject")]) for d in outbox.drafted()]
-    except Exception:
-        return []
+    except Exception as exc:  # noqa: BLE001 - unknown, said as such
+        log(f"long_task: could not read the Outbox: {exc}")
+        return None
 
 
 def _draft_base(run_id, step_id):
@@ -1399,9 +1402,9 @@ def _draft_base(run_id, step_id):
 
     def keep(data):
         bases = data.setdefault("draft_base", {})
-        if step_id not in bases:
+        if bases.get(step_id) is None:
             bases[step_id] = _draft_ids()
-        return list(bases[step_id])
+        return None if bases[step_id] is None else list(bases[step_id])
 
     try:
         return _update(run_id, keep)
@@ -1412,22 +1415,23 @@ def _draft_base(run_id, step_id):
 def _stage_drafts(began, stage=""):
     """
     The drafts a stage made over all its attempts: those tagged to it (outbox records carry "run:stage"), and untagged
-    ones not in the Outbox when it began. A replaced draft is already left out (outbox.drafted).
+    ones not in the Outbox when it began. A replaced draft is already left out (outbox.drafted). An Outbox that cannot
+    be read raises, and so does an untagged draft when the Outbox was not read as the stage began (`began` None): which
+    drafts are the stage's is then unknown, never "none" (R-1, review round 3).
     """
 
-    try:
-        from decurix_agent.tools import outbox
-        drafts = outbox.drafted()
-    except Exception:
-        return []
-    before = set(began or [])
+    from decurix_agent.tools import outbox
+    drafts = outbox.drafted()
     out = []
     for d in drafts:
         tag = d.get("stage") or ""
         if tag and stage:
             if tag == stage:
                 out.append(d)
-        elif (d.get("id") or json.dumps([d.get("to"), d.get("subject")])) not in before:
+            continue
+        if began is None:
+            raise LookupError("the Outbox was not read when the stage began, so its own drafts cannot be told apart")
+        if (d.get("id") or json.dumps([d.get("to"), d.get("subject")])) not in set(began):
             out.append(d)
     return out
 
@@ -2349,7 +2353,7 @@ def restatement_adds(restated, old, stated):
     """
     The words a restated stage text adds that are neither in the stage's own text nor in the question and the person's
     answer (nor a few words for saying who is in or out): [] when it adds none. A restatement says who or what is in or
-    out, in the person's words; it never brings in a rule of its own (round 5 P2 on pc3, 2026-10-21, CN: a restatement
+    out, in the person's words; it never brings in a rule of its own (round 5 P2, 2026-10-21, CN: a restatement
     added "full ordered quantity as backorder", which nobody had said).
     """
 
@@ -2742,7 +2746,7 @@ def asks_person(check):
 
 # ------------------------------------------------------------ records entered in a system: seen in that system
 #
-# CR (round 5 P2 on pc3, 2026-10-20): "Enter every approved order in the portal and log entries" was reported done,
+# CR (round 5 P2, 2026-10-20): "Enter every approved order in the portal and log entries" was reported done,
 # "checked by reading the files back" - the portal had no order and the run no screen action; the worker had written a
 # log claiming the entries. A record entered in a system is done only with what the tools saw there.
 
@@ -3058,7 +3062,7 @@ def system_entry_findings(run_id, step, made, request, start, record=None):
     listed = shown >= 2 or any(len(set(shape.findall(read))) >= 2 for shape in shapes)
     if not listed:
         # The system's list was not read after the last entry: asked for, never taken for records missing (round 5 P2
-        # on pc3, 2026-10-21, series 12: five orders the portal held were "not shown" - the only page read after the
+        #, 2026-10-21, series 12: five orders the portal held were "not shown" - the only page read after the
         # last entry was that order's "Saved" page).
         return out + [(check, f"The system's list of records was not read after the last entry, and its pages during "
                        f"the stage did not show: {', '.join(missing[:8])}. Open {name}'s list of records once, read it, "
@@ -3209,7 +3213,7 @@ def draft_checks(drafts, request, made=()):
     (unsourced, fields) for a stage's or task's drafts. `unsourced` - provenance, blocking: a fact a draft states (an
     address, a date, a code, a figure of 100 or more) that no source and no recorded work holds. `fields` - evidence: a
     draft's fact against its recipient's own row of the request's table (stage_facts.draft_field_facts), and a name it
-    gives as a field of its recipient's record that no source holds. Found live (round 5 P4 on pc3, 2026-10-21, DE):
+    gives as a field of its recipient's record that no source holds. Found live (round 5 P4, 2026-10-21, DE):
     welcome drafts named managers no source has. Which capitalised words are a name is a guess at meaning ("report to
     our Engineering Lead, <a name>, at the Head Office" gave "Engineering Lead" and "Head Office"), so a name is
     evidence for the judge and the person, never a verdict (harness review, 2026-10-21).
@@ -3281,7 +3285,12 @@ def stage_code_findings(run_id, run_state, step, made, drafts, request, reply, s
     def add(check, fn, *args, **kwargs):
         found.extend((check, p) for p in _checked(check, not_made, fn, *args, **kwargs))
 
-    typed = _entered()[start.get("entered", 0):]
+    def typed():
+        # What this stage typed: read inside each check, so a record that cannot be read is a check not made (R-1).
+        began = start.get("entered", 0)
+        if began is None:
+            raise LookupError("what was typed before the stage began could not be read")
+        return _entered()[began:]
     add("file_facts", code_problems, made, reply, drafts, request, instruction=step.get("instruction"),
         root=_runner().context(run_state)["work_dir"],
         outputs=list(step.get("outputs") or []) + [c["path"] for c in step.get("checks", [])
@@ -3296,8 +3305,8 @@ def stage_code_findings(run_id, run_state, step, made, drafts, request, reply, s
     add("removed_still_there", removed_still_there, run_id, made)
     add("status_conflicts", _status_conflicts, run_state, step, made, drafts)
     found.extend(_left_undone_found(made, request, not_made))
-    add("filler_values", invented_typing, typed, request)
-    add("typed_doubtful", doubtful_typing, typed, request, made)
+    add("filler_values", lambda: invented_typing(typed(), request))
+    add("typed_doubtful", lambda: doubtful_typing(typed(), request, made))
     if CHANGED_REQUEST in (run_state["steps"][step["id"]].get("reopened") or ""):
         # (Only for a change the person made: a decision may well undo a hold - AW's redo.)
         add("lost_findings", _lost_findings, run_id, step, run_state["steps"][step["id"]], made)
@@ -3331,7 +3340,7 @@ def _reply_coverage(request, drafts, reply):
 def files_open(run_state, made):
     """
     Every Office file the run hands in - this stage's and every completed stage's - that opened when it was handed in
-    still opens with a strict reader (produced.no_longer_open). Run-wide on purpose: found live (series 14 P3 on pc3, 2026-10-21), the approval stage's own
+    still opens with a strict reader (produced.no_longer_open). Run-wide on purpose: found live (series 14 P3, 2026-10-21), the approval stage's own
     script rewrote the three workbooks earlier stages had handed in, and none of them opened any more; that stage handed
     in only its log, so no check of its own files could see it.
     """
@@ -3346,7 +3355,7 @@ def files_open(run_state, made):
 def app_emptied(made):
     """
     A document of this stage that an app of the person's computer saved with most of what the tools wrote gone: the
-    tools' version is put back, and the stage is told (tool_made.py). Found live (round 5 P1 on pc3, 2026-10-20, CS):
+    tools' version is put back, and the stage is told (tool_made.py). Found live (round 5 P1, 2026-10-20, CS):
     the memo, saved from Word, read back with 0 headings.
     """
 
@@ -3408,7 +3417,7 @@ def loud_advisories(data):
 
 DECISION_RECHECK = "it was made while your question was open"
 
-# A retry after a refusal: the sources decide, not the check. Found live (round 5 P6 on pc3, 2026-10-21, CU): E18 asked
+# A retry after a refusal: the sources decide, not the check. Found live (round 5 P6, 2026-10-21, CU): E18 asked
 # for an invoice to be corrected and reissued - no money back - and was rightly filed Complaint; the check, reading the
 # worker's own "refund amount 329" working note, refused it as a Refund, and the retry obeyed and filed it wrong.
 KEEP_AGAINST_CHECK = (
@@ -3616,7 +3625,7 @@ def _recheck_refusal(run_id, step, record, verdict):
     """
     A refusal of a stage re-checked only because the person decided after it was made: it stands only when it is about
     what the decision names (its customers, orders, records); anything else is kept as advisory ("Please check") and the
-    stage stands, since it had passed its check before the decision. Found live (round 5 P2 on pc3, 2026-10-20): the
+    stage stands, since it had passed its check before the decision. Found live (round 5 P2, 2026-10-20): the
     extraction stage, re-checked after "Release <customer A>, hold <customer B>", was refused for its order references.
     """
 
@@ -3665,7 +3674,11 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
     start = _stage_start.pop((run_id, step_id), {"t": time.time(), "tokens": usage.spent(), "output": _output(), "asked": _asked(), "drafts": [],
                                                  "amendments": len(ledger(run_id)["amendments"]), "attempt": 0})
     base = ledger(run_id).get("draft_base", {}).get(step_id)
-    drafts = _stage_drafts(base if base is not None else start["drafts"], f"{run_id}:{step_id}")
+    try:
+        drafts, drafts_unread = _stage_drafts(base if base is not None else start["drafts"], f"{run_id}:{step_id}"), ""
+    except Exception as exc:  # noqa: BLE001 - the draft checks are then not made, never passed (R-1)
+        log(f"long_task: could not read the stage's drafts: {exc}")
+        drafts, drafts_unread = [], f"the stage's email drafts could not be read ({type(exc).__name__})"
     made = _stage_files(run_state, step)
     request = ledger(run_id).get("request") or ""
 
@@ -3679,6 +3692,8 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
         _declare_payment_sources(run_state, request)
         findings = without_overrides(run_id, step_id,
                                      stage_code_findings(run_id, run_state, step, made, drafts, request, reply, start))
+        if drafts_unread:
+            findings.append((NOT_MADE, drafts_unread))
         _keep_advisories(run_id, step, findings)
         blocking = [(check, text) for check, text in findings if is_blocking(check)]
         problems = [text for _, text in blocking]
@@ -3735,7 +3750,7 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
                 error = "The check found: " + " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x)
             if verdict["verdict"] == verify.CANNOT and claims_done(reply):
                 # The stage says it is done: that is judged like any finished attempt, never parked as "could not be
-                # finished" (round 5 P1 on pc3, 2026-10-21, DB). Judged once more, told so; still "cannot" - the code
+                # finished" (round 5 P1, 2026-10-21, DB). Judged once more, told so; still "cannot" - the code
                 # checks passed and the report claims it: checked in code only.
                 verdict = _judge(run_state, step, reply, made, drafts, evidence=advice, note=(
                     "The worker's report says this stage is DONE and names no obstacle: answer done, not_done or unsure - "
@@ -3824,14 +3839,22 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
 
 
 def _entered():
-    """What this task's tools have typed into fields so far (computer/evidence.py), oldest first."""
+    """What this task's tools have typed into fields so far (computer/evidence.py), oldest first. A record that cannot
+    be read raises: "nothing typed" would pass the typed-values checks on input they never saw (R-1, review round 3).
+    The checks call it inside _checked, which makes the failure a check not made."""
+
+    from decurix_agent.computer import evidence
+    return evidence.entered()
+
+
+def _typed_count():
+    """How many values were typed so far, or None when the record cannot be read (a stage's start: unknown, never 0)."""
 
     try:
-        from decurix_agent.computer import evidence
-        return evidence.entered()
-    except Exception as exc:  # noqa: BLE001
+        return len(_entered())
+    except Exception as exc:  # noqa: BLE001 - unknown; the stage's typed-values checks are then not made
         log(f"long_task: could not read what was typed: {exc}")
-        return []
+        return None
 
 
 def invented_typing(typed, request):
@@ -4415,7 +4438,7 @@ def _send_back_unchecked(run_id, step_id, question):
     """
     A question that says the worker has not yet checked what it can check itself is sent back once: check it first
     and use the source's value if it is there; ask only if it truly is not (saying what was seen). A question that
-    says it looked and what it saw is never sent back. Found live (round 5 P4 on pc3, 2026-10-21, DD): "I have not yet
+    says it looked and what it saw is never sent back. Found live (round 5 P4, 2026-10-21, DD): "I have not yet
     confirmed whether that exact manager exists as a selectable option in the portal. Please tell me which manager to
     choose ... if "Pete Sandoval" is not available."
     """
@@ -6413,7 +6436,7 @@ def stuck_replies(message, data):
     """
     A short "try again" / "skip it" / "stop" while the open questions are all stages that did not get done (refused by
     their check, or stopped): each is answered with the person's words - a new attempt, a skip or a stop follows - and
-    never asked back. Found live (round 5 P1 on pc3, 2026-10-21, DB): "try again" to "Stage ... could not be finished"
+    never asked back. Found live (round 5 P1, 2026-10-21, DB): "try again" to "Stage ... could not be finished"
     was met with "Do you want me to retry the bank reconciliation stage, or were you referring to a different part ...?"
     """
 
@@ -6581,7 +6604,7 @@ def amend(run_id, text, affects, said=None, to_decision=False, keeps=None, recor
 
     run_state = _runner().status(run_id)
 
-    # Found live (round 5 P3 on pc3, 2026-10-21, CD): "Approved as proposed ... No, don't change anything ... keep the
+    # Found live (round 5 P3, 2026-10-21, CD): "Approved as proposed ... No, don't change anything ... keep the
     # account in our vendor master" - a paraphrase no keep-clause word list matched - reopened a finished stage, which
     # lost two of its findings. Whether words change what is done is a reading: the model's, of the person's own words.
     keeps = bool(keeps)

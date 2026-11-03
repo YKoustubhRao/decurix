@@ -77,6 +77,51 @@ class ARunWhoseCheckRaisesIsNotChecked(LongRunBase):
         self.assertNotIn("stopped during verification", final["reply"])
 
 
+# The inputs the checks read, as long_task reads them (R-1, review round 3): a read that fails is a check not made, never
+# "nothing typed" or "no drafts".
+_REAL_STAGE_DRAFTS = long_task._stage_drafts
+READS = {
+    "typed values": ("decurix_agent.computer.evidence.entered", None),
+    "the Outbox": ("decurix_agent.tools.outbox.drafted", _REAL_STAGE_DRAFTS),
+}
+
+
+class AnInputThatCannotBeReadIsNotMade(LongRunBase):
+    def read_row(self, what):
+        target, stage_drafts = READS[what]
+        sure = {"verdict": "done", "confidence": 0.95, "seen": "the files are right", "why": ""}
+        patches = [mock.patch.object(verify, "judge", lambda task, **k: dict(sure)),
+                   mock.patch(target, side_effect=OSError("cannot be read"))]
+        if stage_drafts is not None:
+            patches.append(mock.patch.object(long_task, "_stage_drafts", stage_drafts))
+            patches.append(mock.patch.object(long_task, "_draft_ids", lambda: []))
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        long_task.perform(LONG, None)
+        steps, final = self.runner.status(self.run_id())["steps"], self.finals()[-1]
+        self.assertFalse(any(r.get("checked_by") == "model" for r in steps.values()),
+                         {k: r.get("checked_by") for k, r in steps.items()})
+        self.assertIs(final["checked"], False)
+        self.assertNotIn("every stage was made and checked", final["reply"])
+
+    def test_typed_values_that_cannot_be_read_leave_the_run_not_checked(self):
+        self.read_row("typed values")
+
+    def test_an_outbox_that_cannot_be_read_leaves_the_run_not_checked(self):
+        self.read_row("the Outbox")
+
+    def test_a_start_whose_typed_values_were_not_read_is_not_counted_as_nothing(self):
+        with mock.patch.object(long_task, "_entered", side_effect=OSError("cannot be read")):
+            self.assertIsNone(long_task._typed_count())
+
+    def test_untagged_drafts_with_no_start_reading_are_unknown(self):
+        with mock.patch("decurix_agent.tools.outbox.drafted", lambda: [{"id": "d1", "to": ["a@x.test"]}]):
+            with self.assertRaises(LookupError):
+                _REAL_STAGE_DRAFTS(None, "run:s1")
+            self.assertEqual(_REAL_STAGE_DRAFTS([], "run:s1"), [{"id": "d1", "to": ["a@x.test"]}])
+
+
 def _row(check):
     return lambda self: self.check_row(check)
 
