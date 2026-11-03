@@ -163,6 +163,9 @@ func TestDeleteFlushesRunsBeforeTheDesktopGoes(t *testing.T) {
 	b, _ := s.Tasks.Commit(pulledAlready, w, "two")
 	_, _ = s.Tasks.RecordOutcome("box", b.TaskID, tasks.Outcome{Kind: tasks.OutcomeDone, Reply: "ok"})
 	f.stored[b.ExecutionID] = true
+	// A run still waiting on a person when the desktop is deleted: the most labelled kind of run there is.
+	c, _ := s.Tasks.Commit(tasks.NewRoute(), w, "three")
+	_, _ = s.Tasks.RecordOutcome("box", c.TaskID, tasks.Outcome{Kind: tasks.OutcomeQuery, Reply: "Which month?"})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/desktops/delete", strings.NewReader(url.Values{"id": {"box"}}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -174,7 +177,10 @@ func TestDeleteFlushesRunsBeforeTheDesktopGoes(t *testing.T) {
 	if len(order) != 2 || order[0] != "flush box" || order[1] != "delete box" {
 		t.Fatalf("order = %v, want the flush first", order)
 	}
-	if len(f.flushed) != 1 || f.flushed[0].ExecID != a.ExecutionID {
-		t.Fatalf("flushed %v, want only the run with no bundle", f.flushed)
+	if len(f.flushed) != 2 || f.flushed[0].ExecID != a.ExecutionID || f.flushed[1].ExecID != c.ExecutionID {
+		t.Fatalf("flushed %v, want the ended run with no bundle and the open one (closed first)", f.flushed)
+	}
+	if d, _ := s.Tasks.Get(c.TaskID); d.Executions[0].EndedAt.IsZero() {
+		t.Fatal("the open run was not closed before the flush")
 	}
 }

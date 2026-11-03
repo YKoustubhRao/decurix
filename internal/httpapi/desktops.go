@@ -485,15 +485,20 @@ func (s *Server) restartDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 // deleteDesktopHandler deletes a desktop and its persistent storage by ID.
 func (s *Server) deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	// Every run not yet pulled leaves the desktop first (R9): deleting it would lose what labels those runs.
-	deleteAfterFlush := func(ctx context.Context, id string) error {
+	// Every run not yet pulled leaves the desktop first (R9): deleting it would lose what labels those runs. Under the
+	// one lifecycle lock desktopAction holds: the open runs are closed first (they can only end now), then every run
+	// with no bundle, the just-closed ones included, is pulled, then the desktop goes. Neither the flush nor the
+	// delete is cut short by the browser going away (review CP-A B3, N10).
+	closeFlushDelete := func(ctx context.Context, id string) error {
+		ctx = context.WithoutCancel(ctx)
+		s.closeOpenTasks(id, "The desktop was deleted before this task finished.")
 		s.flushRuns(ctx, desktop.SanitizeID(id))
 		if s.deleteDesktop != nil {
 			return s.deleteDesktop(ctx, id)
 		}
 		return s.Desktops.Delete(ctx, id)
 	}
-	id, ok := s.desktopAction(w, r, false, s.thenClose(deleteAfterFlush, "The desktop was deleted before this task finished."))
+	id, ok := s.desktopAction(w, r, false, closeFlushDelete)
 	if !ok {
 		return
 	}
