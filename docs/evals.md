@@ -17,8 +17,8 @@ Code: `internal/eval` (format, loader, graders, runner, store, report, expert), 
   The sealed set (plan E8) is built by someone who does not tune the harness, kept outside the repo and backed up
   off-host, and reported separately; it is never used to pick a fix.
 - **Harness code never names a suite.** `internal/eval/boundary_test.go` walks `agent/` and `internal/` (all but
-  `internal/eval` and `internal/httpapi/eval_routes*`) and fails on the path `evals/`, and on any suite name, case id,
-  mock name or mock host found under `evals/suites`. The one test that reads a suite from the repo is
+  `internal/eval` and `internal/httpapi/eval_routes*`) and fails on the path `evals/`, and on any suite name, case id
+  or mock name found under `evals/suites`. The one test that reads a suite from the repo is
   `TestCoreSuiteLoads`.
 - **Single runs are not results.** A table with one repeat says "n=1: not a result".
 

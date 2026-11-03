@@ -19,7 +19,7 @@ func repoRoot(t *testing.T) string {
 	return root
 }
 
-// suiteNames lists every name a dev suite gives itself: suite names, case ids, mock names and mock hosts.
+// suiteNames lists every name a dev suite gives itself: suite names, case ids and mock names.
 func suiteNames(t *testing.T, root string) []string {
 	t.Helper()
 	var names []string
@@ -43,16 +43,16 @@ func suiteNames(t *testing.T, root string) []string {
 		}
 		names = append(names, doc.Name)
 		names = append(names, doc.CaseIDs...)
-		for m, spec := range doc.Mocks {
+		// Mock hosts are generic example names (RFC 2606 .test), which docs and other tests may use as examples too.
+		for m := range doc.Mocks {
 			names = append(names, m)
-			names = append(names, spec.Hosts...)
 		}
 	}
 	return names
 }
 
 // TestHarnessNeverNamesSuites is the dev-suite boundary (D7): no code or text under agent/ or internal/ (apart from
-// this package and its routes) reads evals/ or names a suite, a case, a suite's mock or its hosts. Harness code
+// this package and its routes) reads evals/ or names a suite, a case or a suite's mock. Harness code
 // that knew a case could be fitted to it.
 func TestHarnessNeverNamesSuites(t *testing.T) {
 	root := repoRoot(t)
