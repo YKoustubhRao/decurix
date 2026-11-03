@@ -212,3 +212,9 @@ test("workflow buttons are built from structured parts, never the desktop's text
   assert.strictEqual(JSON.stringify(got), JSON.stringify(["/workflow retry wf1 s1", "/workflow cancel wf1"]));
   sandbox.workflowActions(run).forEach((a) => assert.ok(a.confirm, a.command + " must ask first"));
 });
+
+// What the desktop puts on its clipboard never reaches this computer's clipboard without the person's click (W-12).
+test("the screen copies the desktop's clipboard only on a click", () => {
+  // The viewer is a module script, which scripts() leaves out: its source is read as it is.
+  assert.doesNotMatch(fnSource(read("screen.html"), "onRemoteClipboard"), /clipboard\.writeText/);
+});

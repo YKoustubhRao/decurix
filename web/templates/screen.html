@@ -668,12 +668,10 @@ let remoteClip = "";
 
 function onRemoteClipboard(e){
   remoteClip = e.detail.text || "";
+  // It waits in the pop-over, and reaches this computer's clipboard only when the person presses "Copy to this
+  // computer" (W-12): the desktop's clipboard is the worker's, and text it put there silently replacing what the
+  // person had copied could be pasted somewhere it runs.
   $("clip-text").value = remoteClip;
-  // Straight onto this computer's clipboard when the browser allows it (a
-  // secure page with focus); otherwise it waits in the pop-over.
-  if(remoteClip && navigator.clipboard && window.isSecureContext && document.hasFocus()){
-    navigator.clipboard.writeText(remoteClip).then(() => toast("Copied from the desktop")).catch(() => {});
-  }
 }
 
 $("clip-copy").addEventListener("click", async () => {
