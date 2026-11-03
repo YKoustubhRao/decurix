@@ -50,6 +50,13 @@ func fakeDesktopManager(t *testing.T, existingIDs ...string) *desktop.Manager {
 
 		http.NotFound(w, r)
 	}))
+	return managerOn(t, ts)
+}
+
+// managerOn builds a *desktop.Manager whose Docker client talks to the given stand-in daemon, closing it when the test
+// ends.
+func managerOn(t *testing.T, ts *httptest.Server) *desktop.Manager {
+	t.Helper()
 	t.Cleanup(ts.Close)
 
 	cli, err := client.NewClientWithOpts(

@@ -12,8 +12,38 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 )
 
+// TestCreateDesktopAsyncAndStatusPoll pins that creating a desktop answers 202 while the creation itself is still
+// running. It used to time the handler against 500ms, which a loaded machine broke with nothing wrong; now the stand-in
+// Docker daemon holds every request the creation makes (everything but the handler's own listing and "does it exist"
+// inspect) until the test lets go, so a handler that waited for the creation would never answer at all.
 func TestCreateDesktopAsyncAndStatusPoll(t *testing.T) {
-	mgr := fakeDesktopManager(t)
+	release := make(chan struct{})
+	held := make(chan string, 64)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// What the handler itself asks before it answers: the desktops there are (none), and whether this one exists
+		// (no such container yet).
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/json") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("[]"))
+			return
+		}
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/desktop_async-desk-1/json") {
+			http.NotFound(w, r)
+			return
+		}
+		select {
+		case held <- r.Method + " " + r.URL.Path:
+		default:
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		http.Error(w, "released", http.StatusServiceUnavailable)
+	}))
+	mgr := managerOn(t, ts)
+	// Cleanups run last-registered first: let the held requests go before the stand-in daemon is closed.
+	t.Cleanup(func() { close(release) })
 	srv := &Server{
 		Desktops: mgr,
 	}
@@ -21,18 +51,30 @@ func TestCreateDesktopAsyncAndStatusPoll(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	// 1. Send POST /api/desktops/create - must return HTTP 202 Accepted immediately (< 200ms)
+	// 1. POST /api/desktops/create answers 202 without waiting for the creation.
 	body := strings.NewReader("name=async-desk-1&profile=basic&brain=ollama&cpus=2&memory_mb=2048")
 	req := httptest.NewRequest(http.MethodPost, "/api/desktops/create", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 
-	start := time.Now()
-	mux.ServeHTTP(rec, req)
-	elapsed := time.Since(start)
-
-	if elapsed > 500*time.Millisecond {
-		t.Fatalf("expected immediate 202 response, took %v", elapsed)
+	answered := make(chan struct{})
+	go func() {
+		defer close(answered)
+		mux.ServeHTTP(rec, req)
+	}()
+	// The bound only turns a regression (a handler that waits for the held creation) from a hang into a failure; it is
+	// not a speed claim, so it is set far above any load this suite meets.
+	select {
+	case <-answered:
+	case <-time.After(time.Minute):
+		t.Fatal("the create handler did not answer while the creation was held: it waits for the creation")
+	}
+	// The creation really is in flight and held: it has reached Docker and is waiting there.
+	select {
+	case call := <-held:
+		t.Logf("the creation is held at %s", call)
+	case <-time.After(time.Minute):
+		t.Fatal("the creation never reached Docker, so the 202 proves nothing about not waiting for it")
 	}
 
 	if rec.Code != http.StatusAccepted {
@@ -68,8 +110,9 @@ func TestCreateDesktopAsyncAndStatusPoll(t *testing.T) {
 	if statusResp["id"] != "async-desk-1" {
 		t.Errorf("expected status response id 'async-desk-1', got %v", statusResp["id"])
 	}
-	if statusResp["status"] != "provisioning" && statusResp["status"] != "failed" {
-		t.Errorf("expected status 'provisioning', got %v", statusResp["status"])
+	// Every Docker call of the creation is held, so it can be neither done nor failed yet.
+	if statusResp["status"] != "provisioning" {
+		t.Errorf("expected status 'provisioning' while the creation is held, got %v", statusResp["status"])
 	}
 
 	// 3. GET /desktop/async-desk-1/ while provisioning should serve Launch Screen

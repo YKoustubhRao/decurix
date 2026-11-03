@@ -104,3 +104,7 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
 - **A test request from `httptest.NewRequest` comes from 192.0.2.1, which is not the host once the server has a
   desktop manager.** `fromContainer` then holds and `ActorContext` carries no actor: a reply is refused as "a desktop
   cannot answer its own question". Set `req.RemoteAddr = "127.0.0.1:..."` in a test that plays a person.
+- **A test that times a handler or a subprocess against a wall-clock number fails under load with nothing wrong.**
+  The async-create test held 500ms, and the icon test ran PowerShell (it compiles C# per call) under the 20s a
+  creation allows. Assert the behaviour: hold the stand-in daemon until the test lets go and check the 202 came
+  back meanwhile; give a test of output the test's own deadline and pin the production bound in its own test.

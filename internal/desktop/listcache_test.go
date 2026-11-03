@@ -44,6 +44,44 @@ func listCounter(t *testing.T, delay time.Duration) (*Manager, *atomic.Int32) {
 	return NewManager(cli), &calls
 }
 
+// heldListCounter is listCounter whose ContainerList waits until the test lets go, and which says when one has
+// reached it: a test of what happens while a list is in flight then knows it is, instead of sleeping and hoping the
+// call has started (a loaded machine started it late, and the change meant to land mid-flight landed before it).
+func heldListCounter(t *testing.T) (m *Manager, calls *atomic.Int32, started <-chan struct{}, release func()) {
+	t.Helper()
+
+	var count atomic.Int32
+	reached := make(chan struct{}, 64)
+	gate := make(chan struct{})
+	var once sync.Once
+	let := func() { once.Do(func() { close(gate) }) }
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/containers/json") {
+			count.Add(1)
+			reached <- struct{}{}
+			<-gate
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("[]"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	t.Cleanup(let) // runs before ts.Close: a held call is let go before the server waits on it
+
+	cli, err := client.NewClientWithOpts(
+		client.WithHTTPClient(ts.Client()),
+		client.WithHost("tcp://"+strings.TrimPrefix(ts.URL, "http://")),
+		client.WithVersion("1.43"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return NewManager(cli), &count, reached, let
+}
+
 func TestListCollapsesConcurrentCallersIntoOneDaemonCall(t *testing.T) {
 	m, calls := listCounter(t, 100*time.Millisecond)
 
@@ -104,7 +142,7 @@ func TestListSeesTheStateAfterALifecycleChange(t *testing.T) {
 }
 
 func TestListResultComputedBeforeAChangeIsNotCachedOverIt(t *testing.T) {
-	m, calls := listCounter(t, 150*time.Millisecond)
+	m, calls, started, release := heldListCounter(t)
 
 	done := make(chan struct{})
 	go func() {
@@ -112,8 +150,9 @@ func TestListResultComputedBeforeAChangeIsNotCachedOverIt(t *testing.T) {
 		_, _ = m.List(t.Context())
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	<-started          // the list is at the daemon, and held there
 	m.invalidateList() // a lifecycle change lands while the list is in flight
+	release()
 	<-done
 
 	if _, err := m.List(t.Context()); err != nil {
@@ -125,20 +164,21 @@ func TestListResultComputedBeforeAChangeIsNotCachedOverIt(t *testing.T) {
 }
 
 func TestAWaitingListCallerCanHangUpWithoutFailingTheOthers(t *testing.T) {
-	m, _ := listCounter(t, 200*time.Millisecond)
+	m, _, started, release := heldListCounter(t)
 
 	leaderDone := make(chan error, 1)
 	go func() {
 		_, err := m.List(t.Context())
 		leaderDone <- err
 	}()
-	time.Sleep(30 * time.Millisecond)
+	<-started // the leader's list is in flight and held, so the next caller is a follower
 
 	ctx, cancel := contextWithCancel(t)
 	cancel()
 	if _, err := m.List(ctx); err == nil {
 		t.Fatal("a caller whose context is already cancelled should get its own error")
 	}
+	release()
 
 	if err := <-leaderDone; err != nil {
 		t.Fatalf("the leader must not be failed by a follower hanging up: %v", err)

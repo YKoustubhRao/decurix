@@ -5,6 +5,8 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -16,17 +18,32 @@ var windowsAppIconScript string
 
 // Copy pixels, never an exe/lnk or a Windows-only theme name, into Linux.
 func windowsAppIcon(app HostAppItem) []byte {
+	ctx, cancel := context.WithTimeout(context.Background(), windowsAppIconTimeout)
+	defer cancel()
+	png, _ := extractWindowsAppIcon(ctx, app)
+	return png
+}
+
+// windowsAppIconTimeout bounds one icon extraction while a desktop's launchers are packed: past it the launcher gets
+// its drawn icon instead, so a slow or stuck PowerShell never holds up the creation.
+const windowsAppIconTimeout = 20 * time.Second
+
+// errNoWindowsIcon says the extraction ran and gave no PNG: not a Windows app, no target, no icon in it, or no shell
+// to ask.
+var errNoWindowsIcon = errors.New("no icon")
+
+// extractWindowsAppIcon asks the Windows shell for the app's icon as PNG bytes, within ctx, and says why when it gives
+// none.
+func extractWindowsAppIcon(ctx context.Context, app HostAppItem) ([]byte, error) {
 	if app.AppType != "windows_app" {
-		return nil
+		return nil, errNoWindowsIcon
 	}
 	target, _, ok := windowsTarget(app.HostCmd)
 	if !ok {
-		return nil
+		return nil, errNoWindowsIcon
 	}
 	request, _ := json.Marshal(map[string]string{"target": target, "name": app.Name})
 	script := "& {\n" + windowsAppIconScript + "\n} -Request '" + base64.StdEncoding.EncodeToString(request) + "'"
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
 	var cmd *exec.Cmd
 	// A Windows executable on /mnt/c is visible in a Linux container but
 	// cannot run there. Cross to WSL's host namespace before invoking it.
@@ -37,16 +54,21 @@ func windowsAppIcon(app HostAppItem) []byte {
 		cmd = exec.CommandContext(ctx, ps, "-NoProfile", "-NonInteractive", "-Command", script)
 		HideWindow(cmd)
 	} else {
-		return nil
+		return nil, errNoWindowsIcon
 	}
 	cmd.Stdin = strings.NewReader("")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 	output, err := cmd.Output()
 	if err != nil {
-		return nil
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	png, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(output)))
 	if err != nil || len(png) < 8 || string(png[:8]) != "\x89PNG\r\n\x1a\n" {
-		return nil
+		return nil, errNoWindowsIcon
 	}
-	return png
+	return png, nil
 }
