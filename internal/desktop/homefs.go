@@ -215,6 +215,10 @@ func homeHelperConfigs(image, volume, desktopContainer string) (*container.Confi
 	return cfg, host
 }
 
+// ErrPathNotFound is a path not there in a desktop that is: errors.Is(err, ErrNotFound) holds for it too, so every
+// caller that only asks "not found" is unchanged, and one that must tell the two apart (the run puller) can.
+var ErrPathNotFound = fmt.Errorf("path not there: %w", ErrNotFound)
+
 // readHomeTar streams one path out of container target as the worker, without stopping anything there. The first
 // exec settles whether the path is there (ErrNotFound) before any byte is returned; the second streams tar. done runs
 // once the stream has ended or been closed.
@@ -223,7 +227,7 @@ func (m *Manager) readHomeTar(ctx context.Context, target, clean string, limit i
 	if code, err := m.execWorker(ctx, target, nil, "/bin/sh", "-c", `[ -e "$1" ]`, "sh", clean); err != nil {
 		return nil, err
 	} else if code != 0 {
-		return nil, ErrNotFound
+		return nil, ErrPathNotFound
 	}
 	cmd := homeCmd("tar", "-c", "-C", path.Dir(clean), "--", path.Base(clean))
 	exec, err := m.client.ContainerExecCreate(ctx, target, container.ExecOptions{

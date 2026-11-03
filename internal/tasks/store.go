@@ -130,11 +130,10 @@ type Execution struct {
 	// Verdict is the final check as the desktop reported it (decurix.verdict/v1); nil for an older image's, which
 	// said only Checked. Checked is derived from it.
 	Verdict *GateVerdict `json:"verdict"`
-	// Origin is what started this execution (unknown before R7); SkillName and SkillVersion the taught skill that
-	// drove it ("" / 0: none said); ResolvedModel the deployment that served its model calls (R7).
+	// Origin is what started this execution (unknown before R7); Skill the taught skill and version that drove it
+	// (empty: none said); ResolvedModel the deployment that served its model calls (R7).
 	Origin        Origin         `json:"origin"`
-	SkillName     string         `json:"skill_name"`
-	SkillVersion  int            `json:"skill_version"`
+	Skill         Skill          `json:"skill"`
 	ResolvedModel string         `json:"resolved_model"`
 	Steps         []Step         `json:"steps"`
 	Interventions []Intervention `json:"interventions"`
@@ -1513,7 +1512,7 @@ func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 			&execution.Engine, &execution.Model, &execution.Status, &execution.FinalReply,
 			&started, &ended, &cost, &input, &output, &cached, &checked, &verdict,
 			&execution.Origin.Kind, &execution.Origin.Ref, &execution.Origin.ActorID,
-			&execution.SkillName, &execution.SkillVersion, &execution.ResolvedModel); err != nil {
+			&execution.Skill.Name, &execution.Skill.Version, &execution.ResolvedModel); err != nil {
 			return Execution{}, err
 		}
 		if execution.Origin.Kind == "" {

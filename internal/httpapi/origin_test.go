@@ -246,7 +246,7 @@ func TestResolvedModelAndPassRates(t *testing.T) {
 	rr := httptest.NewRecorder()
 	s.queryTextHandler(rr, req)
 	e := latestExecution(t, s, local.TaskID)
-	if e.ResolvedModel != "thebot:qwen3:8b" || e.SkillName != "bill-count" || e.SkillVersion != 3 {
+	if e.ResolvedModel != "thebot:qwen3:8b" || e.Skill.Name != "bill-count" || e.Skill.Version != 3 {
 		t.Fatalf("a local run = %+v", e)
 	}
 	if _, err := s.Tasks.SetVerdict(local.TaskID, tasks.VerdictWrong, "", tasks.LocalOwner); err != nil {

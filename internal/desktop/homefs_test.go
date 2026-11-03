@@ -226,3 +226,10 @@ func TestOnlyPathsUnderTheHomeAreCopied(t *testing.T) {
 		t.Errorf("WriteTar outside the home must be refused: %v", err)
 	}
 }
+
+// A path not there is told from a desktop not there, and still reads as not found to every older caller.
+func TestAMissingPathIsStillNotFound(t *testing.T) {
+	if !errors.Is(ErrPathNotFound, ErrNotFound) || errors.Is(ErrNotFound, ErrPathNotFound) {
+		t.Fatal("ErrPathNotFound must wrap ErrNotFound, and not the other way round")
+	}
+}
