@@ -81,7 +81,7 @@ async function boot(initialState, {
   backendStarts = true, stopFails = false, platform = 'win32', dockerRun = () => 0, files = [], staged = platform === 'win32' ? 'build-2' : null,
   wsl = {}, pickedFolders = [], canceledPicker = false, savedRuntime, hosting = false, holdOllama = false, ollamaFails = false,
   release = '10.0.26200', arch = 'x64', freeGB = 100, restartAsked = null, restartedSince = true,
-  lanAddress = null, lanForwards = true, settings = '', publicLink = null,
+  lanAddress = null, lanForwards = true, settings = '', publicLink = null, adopt = true,
 } = {}) {
   const machine = { installed: true, installedAfterAsking: false, distro: true, daemon: true, setupFails: false, existing: {}, ...wsl };
   const intervals = [];
@@ -93,6 +93,7 @@ async function boot(initialState, {
   const external = [];
   const mobileCalls = [];
   const pickerCalls = [];
+  const questions = [];
   const ipcMain = new EventEmitter();
   const ipcHandlers = new Map();
   ipcMain.handle = (name, handler) => ipcHandlers.set(name, handler);
@@ -199,6 +200,9 @@ async function boot(initialState, {
     }
     if (distro !== 'Decurix' && !machine.existing[distro]) { say('Docker is not running', 1); return; }
     if (program[0] === 'cat') { say(staged, staged === null ? 1 : 0); return; }
+    if (program[0] === 'sh' && /maintain-existing\.sh$/.test(program[1] || '')) {
+      say((machine.inventory || []).map((name) => `decurix-resource ${name}`).join('\n'), machine.inventoryFails ? 1 : 0); return;
+    }
     if (program[0] === 'sh') { say('decurix-setup: ready', machine.setupFails ? 1 : 0); return; }
     if (program[0] === '/opt/decurix/dockerd.sh') { machine.daemon = true; return; }
     let docker = program[0] === 'env' ? program.slice(program.indexOf('docker') + 1) : program.slice(1);
@@ -264,7 +268,10 @@ async function boot(initialState, {
   const modules = {
     electron: {
       app, BrowserWindow: FakeWindow, ipcMain, shell: { openExternal: (url) => external.push(url) },
-      dialog: { showOpenDialog: async (owner, options) => {
+      dialog: { showMessageBox: async (owner, options) => {
+        questions.push(options || owner);
+        return { response: adopt ? 0 : 1 };
+      }, showOpenDialog: async (owner, options) => {
         pickerCalls.push({ owner, options });
         return { canceled: canceledPicker, filePaths: pickedFolders };
       } },
@@ -309,7 +316,7 @@ async function boot(initialState, {
   await settle(40);
   const wslWords = (s) => Array.from(s.args).join(' ');
   return {
-    window: windows[0], app, spawns, children, copied, written, external, mobileCalls, posts, lanCalls, intervals, settle, blockers, stack, home, machine, pickerCalls,
+    window: windows[0], app, spawns, questions, children, copied, written, external, mobileCalls, posts, lanCalls, intervals, settle, blockers, stack, home, machine, pickerCalls,
     titleBarTheme: (palette, url = 'http://127.0.0.1:8080/', { childFrame = false, otherWindow = false } = {}) => {
       const sender = windows[0].webContents;
       sender.mainFrame = { url };
@@ -819,8 +826,11 @@ test('caption colors follow the dashboard theme and reject untrusted frames or i
   assert.equal(result.window.captionPalette.color, light.color);
 });
 
-test('new Windows installs reuse a compatible existing WSL runtime without importing or installing Linux', async () => {
-  const result = await boot('absent', { wsl: { distro: false, existing: { Ubuntu: true } } });
+test('new Windows installs reuse a compatible existing WSL runtime, once the person agrees, without importing or installing Linux', async () => {
+  const result = await boot('absent', { wsl: { distro: false, existing: { Ubuntu: true }, inventory: ['decurix-data', 'desktop_old'] } });
+  assert.equal(result.questions.length, 1);
+  assert.match(result.questions[0].message, /Use the Docker Engine in your WSL distro "Ubuntu"/);
+  assert.equal(result.questions[0].defaultId, 1);
   assert.equal(result.window.url, 'http://127.0.0.1:8080');
   assert.ok(!result.wsl.some((w) => w.startsWith('--import')));
   assert.ok(!result.spawns.some((s) => Array.from(s.args).join(' ').includes('--install')));
@@ -831,7 +841,25 @@ test('new Windows installs reuse a compatible existing WSL runtime without impor
   assert.equal(up.args[1], 'Ubuntu');
   assert.ok(Array.from(up.args).includes('unix:///var/run/docker.sock'));
   const saved = result.written.find((w) => w.file === path.join(data, 'windows-runtime.json'));
-  assert.deepEqual(JSON.parse(saved.content), { distro: 'Ubuntu' });
+  // What the engine held before Decurix used it is kept by an uninstall.
+  assert.deepEqual(JSON.parse(saved.content), { distro: 'Ubuntu', adopted: true, preexisting: ['decurix-data', 'desktop_old'] });
+});
+
+test("a person who declines sharing their WSL runtime gets Decurix's own Linux", async () => {
+  const result = await boot('absent', { adopt: false, wsl: { distro: false, existing: { Ubuntu: true } } });
+  assert.equal(result.questions.length, 1);
+  assert.ok(result.wsl.some((w) => w.startsWith('--import Decurix')));
+  assert.ok(!result.wsl.some((w) => w.includes('maintain-existing.sh')));
+  const saved = result.written.find((w) => w.file === path.join(data, 'windows-runtime.json'));
+  assert.deepEqual(JSON.parse(saved.content), { distro: 'Decurix' });
+});
+
+test('a runtime whose existing resources cannot be listed is not adopted, and nothing is saved', async () => {
+  const result = await boot('absent', { wsl: { distro: false, existing: { Ubuntu: true }, inventoryFails: true } });
+  assert.equal(result.window.url, undefined);
+  assert.match(result.window.lastStatus.value.message, /Could not list what "Ubuntu"/);
+  assert.ok(!result.written.some((w) => w.file === path.join(data, 'windows-runtime.json')));
+  assert.equal(result.ups, 0);
 });
 
 test('existing app-owned workers stay in Decurix even when another WSL runtime is available', async () => {

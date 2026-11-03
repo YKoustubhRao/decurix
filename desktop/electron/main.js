@@ -444,6 +444,7 @@ async function selectWindowsRuntime() {
   }
 
   const names = [];
+  let candidate = '';
   const listed = await wsl(['--list', '--quiet'], (line) => names.push(line.replace(/\0/g, '').trim()), { timeout: 15000 });
   if (listed === 0 && !names.includes(DISTRO)) {
     update('Checking existing WSL runtimes…');
@@ -457,14 +458,54 @@ async function selectWindowsRuntime() {
         'os=$(docker --host unix:///var/run/docker.sock info --format "{{.OperatingSystem}}") && ' +
         'case "$os" in *[Dd]ocker" "[Dd]esktop*) exit 1;; *) exit 0;; esac';
       if (await wsl(['-d', name, '-u', 'root', '--cd', '/', '-e', 'sh', '-c', probe], undefined, { timeout: 15000 }) === 0) {
-        runtimeDistro = name;
+        candidate = name;
         break;
       }
     }
   }
+  const record = { distro: DISTRO };
+  if (candidate && await askToAdopt(candidate)) {
+    record.distro = candidate;
+    record.adopted = true;
+    record.preexisting = await inventoryOf(candidate);
+  }
+  runtimeDistro = record.distro;
   fs.mkdirSync(dataDir(), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ distro: runtimeDistro }) + '\n', 'utf8');
+  fs.writeFileSync(file, JSON.stringify(record) + '\n', 'utf8');
   runtimeSelected = true;
+}
+
+// askToAdopt asks the person whether Decurix may use the Docker Engine an
+// existing WSL distro already runs - its containers, volumes and compose
+// project live beside theirs - or should set up a Linux of its own. The
+// default is its own: sharing is a choice, never a silent takeover.
+async function askToAdopt(name) {
+  const options = {
+    type: 'question',
+    title: 'Decurix',
+    message: `Use the Docker Engine in your WSL distro "${name}"?`,
+    detail: `Decurix can run its control plane and workers in "${name}"'s Docker Engine, beside what you run there, `
+      + 'or set up a Linux of its own. If it uses yours, uninstalling Decurix later removes only what Decurix created there; '
+      + 'what is there now stays.',
+    buttons: [`Use "${name}"`, 'Set up Decurix\'s own Linux'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  };
+  const { response } = window && !window.isDestroyed() ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
+  return response === 0;
+}
+
+// inventoryOf lists the Decurix-looking resources (containers, volumes,
+// images) an engine already holds before Decurix first uses it, so an
+// uninstall keeps them (wsl/maintain-existing.sh). A runtime whose inventory
+// cannot be read is not adopted.
+async function inventoryOf(name) {
+  const found = [];
+  const code = await wsl(['-d', name, '-u', 'root', '--cd', '/', '-e', 'sh', linuxPath(resource(path.join('wsl', 'maintain-existing.sh'))), 'inventory'],
+    (line) => { const match = /^decurix-resource ([A-Za-z0-9_.:/-]+)$/.exec(line.trim()); if (match) found.push(match[1]); }, { timeout: 60000 });
+  if (code !== 0) throw new Error(`Could not list what "${name}"'s Docker Engine already holds, so Decurix did not start using it. Start its Docker Engine, then retry.`);
+  return found;
 }
 
 // dockerReady waits for a Docker that answers. On a Mac, Docker Desktop is
