@@ -256,7 +256,7 @@ _SUM_TOKEN = re.compile(rf"[ \t]*(?:({_AMOUNT})|([-+×x*@]))", re.I)
 def _sum_terms(left):
     """[amount, op, amount, op, ...] of the left side of a written sum, read token by token - or None when any part of
     it is not an amount or an operator in turn (then the sum is not decided: a blocking fact must be certain). Found live
-    (round 5 P6 on pc3, 2026-10-21): "60 x Rs 35 = Rs 2,100" was read as one number 6035 - the currency's lower-case
+    (2026-10-21): "60 x Rs 35 = Rs 2,100" was read as one number 6035 - the currency's lower-case
     letters fell outside the old split - and a right line was refused twice."""
 
     tokens, pos = [], 0
@@ -292,8 +292,8 @@ _TAX_RATE = re.compile(r"(\d{1,2}(?:\.\d+)?)\s*%")
 def false_item_totals(text):
     """
     Each stated total of a list of "qty @ rate" items that the items do not come to, as a sentence. Found live
-    (2026-10-20, P2): a stage told the person a saved order was wrong because the lines "should total 13129.00 ex tax
-    from WB-500 40 @ 175.75, MUG-12 24 @ 149, NB-A5 30 @ 95" - they come to 13,456.00, the record's own total. A total
+    (2026-10-20): a stage told the person a saved order was wrong because the lines "should total 13129.00 ex tax
+    from AB-100 40 @ 175.75, CD-12 24 @ 149, EF-30 30 @ 95" - they come to 13,456.00, the record's own total. A total
     stated with a tax rate nearby may be with or without it.
     """
 
@@ -360,8 +360,16 @@ def false_sums(text):
         # Rounded to the result's own precision is right: 33.333 + 33.333 = 66.67.
         shown = len(stated.split(".")[1]) if "." in stated else 0
         if abs(total - want) > Decimal(1).scaleb(-shown) / 2 + Decimal("0.0001"):
-            out.append(f"{m.group(0).strip()} is wrong: it comes to {_written_like(total, places, m.group(0))}")
+            out.append(f"{m.group(0).strip()} is wrong: it comes to {_currency_of(stated)}"
+                       f"{_written_like(total, places, m.group(0))}")
     return out
+
+
+def _currency_of(stated):
+    """The currency the stated total is written with ("₹", "Rs ", "$"), so the right total is written the same way."""
+
+    m = re.match(r"\s*(" + _CURRENCY + r")(\s?)", stated or "", re.I)
+    return (m.group(1) + m.group(2)) if m else ""
 
 
 def _written_like(total, places, text):

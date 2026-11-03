@@ -564,18 +564,18 @@ def unsupported_references(made, messages):
 
 QTY_COLUMN = re.compile(r"\b(?:qty|quantity|units?|count|no\.? of)\b", re.I)
 PRICE_COLUMN = re.compile(r"\b(?:unit price|price|rate|unit cost|cost per|per unit)\b", re.I)
-RESULT_COLUMN = re.compile(r"\b(?:result|amount|refund|total|value|line total|computed)\b", re.I)
+RESULT_COLUMN = re.compile(r"\b(?:result|amount|total|value|line total|computed)\b", re.I)
 SOURCE_COLUMN = re.compile(r"\b(?:source|from|where|taken from)\b", re.I)
 MONEY_IN_TEXT = re.compile(r"(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d{1,2})?)", re.I)
-# Which amounts a status cell states that need a working is not told by the kind of amount (review 2026-11-03, E-28:
-# a list of business words): any amount it states is one (the checks that read it are evidence, never a block).
-DERIVED_AMOUNT = re.compile(r"\S")
+# Which amounts a status cell states need a working is not told by the kind of amount (review 2026-11-03, E-28: a
+# list of business words decided it): any money amount a status cell states is one. Evidence only, never a block.
 # The factors a working may record besides quantity and price, and the columns that are no factor at all.
 # A percentage factor: a column whose header says it is a percentage - whatever the percentage is of (review
-# 2026-11-03, E-28: a list of tax names decided it).
-TAX_COLUMN = re.compile(r"%|\bpct\b|\bper ?cent\b", re.I)
+# 2026-11-03, E-28: a list of tax names decided it). A working applies it on top of quantity x price, as it does a
+# discount below it (reproduces); a discount column is told first (_working_columns).
+PERCENT_COLUMN = re.compile(r"%|\bpct\b|\bper ?cent\b", re.I)
 DISCOUNT_COLUMN = re.compile(r"\b(?:discount|disc\.?|rebate)\b", re.I)
-SUBTOTAL_COLUMN = re.compile(r"\b(?:taxable|subtotal|sub-total|net|gross|base|before tax|ex[- ]gst|excl\w*)\b", re.I)
+SUBTOTAL_COLUMN = re.compile(r"\b(?:taxable|subtotal|sub-total|net|gross|base|before tax|excl\w*)\b", re.I)
 IDENT_COLUMN = re.compile(r"\b(?:line|no\.?|number|row|id|code|#|days?|terms|year|month|page|sl|sr|s\.no)\b", re.I)
 
 
@@ -590,7 +590,7 @@ def _working_columns(header):
             kinds["source"].append(i)  # (before the rest: "Unit Price Source" says where, it is no price)
         elif DISCOUNT_COLUMN.search(h):  # (before a percentage: "Discount %" is a discount)
             kinds["discount"].append(i)
-        elif TAX_COLUMN.search(h):
+        elif PERCENT_COLUMN.search(h):
             kinds["tax"].append(i)
         elif PRICE_COLUMN.search(h):  # (before quantity: "Unit price" is a price)
             kinds["price"].append(i)
@@ -931,7 +931,7 @@ def working_problems(made, sources=(), messages=()):
             prices = [v for _, v in w["price"]]
             named = [t for t in source_tables if names_in(Path(t[0].split(" (")[0]).stem, w["source"])]
             for t_label, header, rows in named:
-                pcols = [i for i, h in enumerate(header) if PRICE_COLUMN.search(h or "") and not TAX_COLUMN.search(h or "")]
+                pcols = [i for i, h in enumerate(header) if PRICE_COLUMN.search(h or "") and not PERCENT_COLUMN.search(h or "")]
                 if not pcols:
                     continue
                 for row in rows:
@@ -944,7 +944,7 @@ def working_problems(made, sources=(), messages=()):
                                    f"has {_fmt(theirs[0])}")
     for label, header, row, i, cell in _status_cells(made):
         m = MONEY_IN_TEXT.search(cell)
-        if not m or not DERIVED_AMOUNT.search(cell):
+        if not m:
             continue
         amount = _number(m.group(1))
         refs = _refs(row)
@@ -1004,7 +1004,7 @@ _ITEM_CODE = re.compile(r"[A-Z][A-Z0-9]{1,7}(?:-[A-Z0-9]{1,6}){1,2}")
 
 
 def unworked_amounts(made, messages=()):
-    """Sentences for amounts a status/action cell states for an item (a refund, a credit ...) that the row's own source
+    """Sentences for amounts a status/action cell states for an item (any money amount) that the row's own source
     message does not state (so the stage computed it) when no table of the made files records any working (quantity,
     price, result) at all."""
 
@@ -1014,7 +1014,7 @@ def unworked_amounts(made, messages=()):
     out = []
     for label, header, row, i, cell in _status_cells(made):
         m = MONEY_IN_TEXT.search(cell)
-        if m and DERIVED_AMOUNT.search(cell):
+        if m:
             # An amount the item's own message states was read, not computed; a row tied to no message is
             # not decided.
             amount = _number(m.group(1).rstrip("."))

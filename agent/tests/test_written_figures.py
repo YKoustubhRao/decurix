@@ -11,7 +11,8 @@ from decurix_agent import verify
 class IndianGroupingAndTheRupeeSign(unittest.TestCase):
     def test_a_wrong_sum_in_indian_grouping_or_rupees_is_found(self):
         for text, said in (("1,00,000 + 50,000 = 1,60,000", "it comes to 1,50,000"),
-                           ("₹1,200 + ₹300 = ₹1,600", "it comes to 1,500"),
+                           ("₹1,200 + ₹300 = ₹1,600", "it comes to ₹1,500"),
+                           ("Rs 1,200 + Rs 300 = Rs 1,600", "it comes to Rs 1,500"),
                            ("12,34,567 - 34,567 = 12,10,000", "it comes to 12,00,000")):
             with self.subTest(text=text):
                 found = verify.false_sums(text)
