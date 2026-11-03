@@ -11,7 +11,7 @@ type RouteKind string
 
 const (
 	// RouteChat is conversation: a greeting, a question about TheBot or
-	// the user, general knowledge. One model call, no tools. If that call
+	// the user. One model call, no tools. If that call
 	// discovers it needs to look at the machine after all, it says so
 	// (prompt.NeedsToolsMarker) and the scheduler reroutes it to the
 	// operator - so a miss here costs one short call, never a wrong answer.
@@ -280,9 +280,8 @@ func touchesMachine(prompt string) bool {
 // "find out the newest Go version and save a note" matched file-write and
 // never searched anything). Conversation is recognised before machine
 // signals, so "what's your name?" is answered rather than looked up. And
-// whatever is left - no classifier, not conversation - goes to the operator
-// only when it names something on this machine or reads as an instruction;
-// otherwise it is a question for chat.
+// whatever is left - no classifier, not conversation - goes to the operator,
+// which looks first when it needs to (a question included: review T-04).
 func Triage(prompt string) Route {
 	p := strings.TrimSpace(prompt)
 	matched := Classify(p)
