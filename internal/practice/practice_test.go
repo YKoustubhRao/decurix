@@ -159,9 +159,12 @@ type fakeTasks struct {
 	steps    []string
 }
 
-func (f *fakeTasks) CommitTyped(route tasks.Route, w tasks.Worker, text, typ string) (tasks.Route, error) {
+func (f *fakeTasks) CommitTyped(route tasks.Route, w tasks.Worker, text, typ string, origin tasks.Origin) (tasks.Route, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if origin.Kind != tasks.OriginPractice {
+		return route, errors.New("a practice task must say it is practice")
+	}
 	if typ != tasks.TypePractice || !strings.HasPrefix(w.ID, "practice-") {
 		return route, errors.New("practice tasks must be practice-typed")
 	}

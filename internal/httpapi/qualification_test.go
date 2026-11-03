@@ -127,7 +127,7 @@ func TestAgentCallbacksCannotForgeQualificationEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	worker := "readiness-" + run.ID
-	_, err = s.Tasks.CommitTyped(route, tasks.Worker{ID: worker}, "exam", tasks.TypePractice)
+	_, err = s.Tasks.CommitTyped(route, tasks.Worker{ID: worker}, "exam", tasks.TypePractice, tasks.Origin{Kind: tasks.OriginPractice, Ref: "readiness"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestWrongTaskVerdictRevokesLinkedResponsibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	worker := "readiness-" + run.ID
-	_, _ = s.Tasks.CommitTyped(route, tasks.Worker{ID: worker}, "exam", tasks.TypePractice)
+	_, _ = s.Tasks.CommitTyped(route, tasks.Worker{ID: worker}, "exam", tasks.TypePractice, tasks.Origin{Kind: tasks.OriginPractice, Ref: "readiness"})
 	_, _ = s.Tasks.RecordOutcome(worker, route.TaskID, tasks.Outcome{Kind: tasks.OutcomeDone, Reply: "done"})
 	req := httptest.NewRequest("POST", "/api/tasks/verdict", strings.NewReader("task_id="+route.TaskID+"&verdict=wrong"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

@@ -40,8 +40,8 @@ func TestPassRatesCountEveryAttempt(t *testing.T) {
 	}
 
 	practice := NewRoute()
-	practice.Origin = Origin{Kind: OriginPractice, Ref: "run/case"}
-	if _, err := s.CommitTyped(practice, worker("practice-r1", "practice"), "practice case", TypePractice); err != nil {
+	if _, err := s.CommitTyped(practice, worker("practice-r1", "practice"), "practice case", TypePractice,
+		Origin{Kind: OriginPractice, Ref: "run/case"}); err != nil {
 		t.Fatal(err)
 	}
 	outcome(t, s, "practice-r1", practice.TaskID, Outcome{Kind: OutcomeDone, Reply: "graded", Skill: v4,

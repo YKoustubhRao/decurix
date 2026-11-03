@@ -97,7 +97,9 @@ func (s *Store) PassRates() ([]PassRate, error) {
 	}, `WITH a AS (
 			SELECT e.skill_name, e.skill_version, e.resolved_model, e.attempt, e.status,
 				e.checked = 1 AND e.status = 'done' AS checked_done,
-				CASE e.origin WHEN 'practice' THEN 'practice' WHEN 'eval' THEN 'eval' ELSE 'production' END AS class,
+				CASE WHEN e.origin = 'eval' THEN 'eval'
+					WHEN e.origin = 'practice' OR t.task_type = 'practice' THEN 'practice'
+					ELSE 'production' END AS class,
 				e.attempt = (SELECT MAX(x.attempt) FROM executions x WHERE x.task_id = e.task_id) AS latest,
 				EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(e.verdict) THEN e.verdict ELSE '{}' END, '$.basis')
 					WHERE value IN ('code', 'ledger', 'person')) AS independent,

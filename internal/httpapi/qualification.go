@@ -407,7 +407,7 @@ func (s *Server) qualificationRunHandler(w http.ResponseWriter, r *http.Request)
 		taskType = tasks.TypePractice
 	}
 	route.Origin = tasks.Origin{Kind: tasks.OriginPractice, Ref: "readiness/" + run.ID}
-	_, err = s.Tasks.CommitTyped(route, worker, "Readiness "+body.Mode+": "+resp.Definition.Name, taskType)
+	_, err = s.Tasks.CommitTyped(route, worker, "Readiness "+body.Mode+": "+resp.Definition.Name, taskType, route.Origin)
 	if err != nil {
 		_, _ = s.Qualification.FinishRun(run.ID, nil, nil)
 		jsonError(w, err)

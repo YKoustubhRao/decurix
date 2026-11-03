@@ -156,7 +156,7 @@ type evalTasks struct {
 	outcomes map[string]tasks.Outcome
 }
 
-func (e *evalTasks) CommitTyped(route tasks.Route, _ tasks.Worker, _, _ string) (tasks.Route, error) {
+func (e *evalTasks) CommitTyped(route tasks.Route, _ tasks.Worker, _, _ string, _ tasks.Origin) (tasks.Route, error) {
 	return route, nil
 }
 func (e *evalTasks) AddStep(string, string, tasks.Step) (bool, error) { return true, nil }

@@ -35,6 +35,9 @@ const (
 	OriginUnknown   = "unknown"
 )
 
+// ErrNoOrigin is an execution offered with an origin that names no kind: every producer says what started its work.
+var ErrNoOrigin = errors.New("tasks: an execution needs its origin")
+
 // ValidOriginKind reports whether k is one of the origin kinds.
 func ValidOriginKind(k string) bool {
 	switch k {

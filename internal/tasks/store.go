@@ -922,8 +922,13 @@ func (s *Store) insertTask(tx *sql.Tx, route Route, worker Worker, text string, 
 // worker is already busy: its desktop runs one task at a time and holds the
 // request until the current one ends.
 func (s *Store) insertExecution(tx *sql.Tx, route Route, attempt int, worker Worker, now time.Time) error {
+	// Every producer names what started its work (plan R7): an origin with no kind is refused, loudly, and one named
+	// unknown on purpose is stored and logged.
+	if route.Origin.Kind == "" {
+		return fmt.Errorf("%w: execution %s of %s on %s", ErrNoOrigin, route.ExecutionID, route.TaskID, worker.ID)
+	}
 	if originKind(route.Origin) == OriginUnknown {
-		log.Printf("tasks: execution %s of %s on %s has no origin: stored as unknown", route.ExecutionID, route.TaskID, worker.ID)
+		log.Printf("tasks: execution %s of %s on %s has no known origin (%q): stored as unknown", route.ExecutionID, route.TaskID, worker.ID, route.Origin.Kind)
 	}
 	status := StatusRunning
 

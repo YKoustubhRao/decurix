@@ -48,7 +48,7 @@ type Sandbox interface {
 // Tasks keeps each practice case's task record (*tasks.Store); practice tasks
 // are tasks.TypePractice, which never count toward autonomy.
 type Tasks interface {
-	CommitTyped(route tasks.Route, worker tasks.Worker, text, taskType string) (tasks.Route, error)
+	CommitTyped(route tasks.Route, worker tasks.Worker, text, taskType string, origin tasks.Origin) (tasks.Route, error)
 	AddStep(workerID, taskID string, step tasks.Step) (bool, error)
 	RecordOutcome(workerID, taskID string, outcome tasks.Outcome) (string, error)
 	CloseOpen(workerID, why string) error

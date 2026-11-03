@@ -4,11 +4,14 @@ import "fmt"
 
 // CommitTyped records control-plane-owned work without inferring type from prose.
 // Qualification tasks use a separate worker identity and cannot attach to a
-// desktop's live turn. Practice must never inflate production autonomy.
-func (s *Store) CommitTyped(route Route, worker Worker, text, taskType string) (Route, error) {
+// desktop's live turn. Practice must never inflate production autonomy. origin
+// is what started it (practice, eval, a readiness run): a required argument, as
+// for Commit, and one with no kind is refused (ErrNoOrigin).
+func (s *Store) CommitTyped(route Route, worker Worker, text, taskType string, origin Origin) (Route, error) {
 	if route.Kind != RouteNew || (taskType != TypePractice && taskType != TypeFiles) {
 		return route, fmt.Errorf("tasks: invalid isolated task type or route")
 	}
+	route.Origin = origin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.UpsertWorker(worker); err != nil {

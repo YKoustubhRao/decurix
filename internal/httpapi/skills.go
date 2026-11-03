@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"github.com/YKoustubhRao/decurix/internal/webui"
 )
 
@@ -167,7 +168,9 @@ func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content,
 		return
 	}
 
-	route := s.routeRequest(worker, content)
+	// A person's teaching, replay or skill run, from this door (plan R7).
+	teacher, _ := s.actorOf(r)
+	route := s.routeRequest(worker, content, tasks.Origin{Kind: tasks.OriginPerson, Ref: what, ActorID: teacher.ID})
 
 	ctx, cancel := context.WithTimeout(r.Context(), recordingsRequestTimeout)
 	defer cancel()

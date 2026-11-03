@@ -109,7 +109,7 @@ func TestAReplyToASecretQuestionIsKeptNowhere(t *testing.T) {
 	postJSON(t, s.queryTextHandler, "/api/querytext",
 		`{"desktop_id":"box","task_id":"`+r.TaskID+`","content":"What is the password?","kind":"query","reply":"What is the password?","secret":true}`)
 
-	route, stored := s.recordDelivered(context.Background(), "box", "Sunshine", s.routeRequest("box", "Sunshine"))
+	route, stored := s.recordDelivered(context.Background(), "box", "Sunshine", s.routeRequest("box", "Sunshine", tasks.Origin{Kind: tasks.OriginPerson}))
 	if route.Kind != tasks.RouteReply || stored != withhold.Secret {
 		t.Fatalf("route %s, stored %q", route.Kind, stored)
 	}
@@ -132,7 +132,7 @@ func TestASendMarkedSecretIsStoredWithheld(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.WithValue(context.Background(), sentSecretKey{}, true)
-	route, stored := s.recordDelivered(ctx, "box", "the code is plainword", s.routeRequest("box", "the code is plainword"))
+	route, stored := s.recordDelivered(ctx, "box", "the code is plainword", s.routeRequest("box", "the code is plainword", tasks.Origin{Kind: tasks.OriginPerson}))
 	if stored != withhold.Secret {
 		t.Fatalf("stored %q", stored)
 	}

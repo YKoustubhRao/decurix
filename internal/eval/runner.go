@@ -707,7 +707,7 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 	var problems []string
 	if s.Tasks != nil {
 		if _, err := s.Tasks.CommitTyped(route, tasks.Worker{ID: desktopID, Name: "Eval " + arm.Name, Engine: "eval", Profile: "practice"},
-			"Eval ("+c.Category+"): "+clipText(suite.Withhold(c.Request), 200), tasks.TypePractice); err != nil {
+			"Eval ("+c.Category+"): "+clipText(suite.Withhold(c.Request), 200), tasks.TypePractice, route.Origin); err != nil {
 			problems = append(problems, "The case's task record could not be opened.")
 		}
 	}

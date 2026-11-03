@@ -447,7 +447,8 @@ func (s *Service) calibrate(ctx context.Context, run qualification.PracticeRun, 
 	}()
 	route := tasks.NewRoute()
 	if s.Tasks != nil {
-		_, _ = s.Tasks.CommitTyped(route, tasks.Worker{ID: desktop.PracticeDesktopID(run.ID), Name: su.Source.Title, Engine: "practice", Profile: "practice"}, "Practice calibration: "+su.Source.Title, tasks.TypePractice)
+		_, _ = s.Tasks.CommitTyped(route, tasks.Worker{ID: desktop.PracticeDesktopID(run.ID), Name: su.Source.Title, Engine: "practice", Profile: "practice"}, "Practice calibration: "+su.Source.Title, tasks.TypePractice,
+			tasks.Origin{Kind: tasks.OriginPractice, Ref: run.ID + "/calibration"})
 	}
 	obs := s.Broker.StartCase(route.TaskID)
 	defer s.Broker.EndCase()
@@ -529,7 +530,8 @@ func (s *Service) runCase(ctx context.Context, run qualification.PracticeRun, su
 	var problems []string
 	route := tasks.NewRoute()
 	if s.Tasks != nil {
-		if _, err := s.Tasks.CommitTyped(route, tasks.Worker{ID: workerID, Name: su.Source.Title, Engine: "practice", Profile: "practice"}, "Practice ("+c.Category+"): "+clip(c.Request, 200), tasks.TypePractice); err != nil {
+		if _, err := s.Tasks.CommitTyped(route, tasks.Worker{ID: workerID, Name: su.Source.Title, Engine: "practice", Profile: "practice"}, "Practice ("+c.Category+"): "+clip(c.Request, 200), tasks.TypePractice,
+			tasks.Origin{Kind: tasks.OriginPractice, Ref: run.ID + "/" + c.ID}); err != nil {
 			problems = append(problems, "The case's task record could not be opened.")
 		}
 	}

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -34,7 +35,7 @@ func latestExecution(t *testing.T, s *Server, taskID string) tasks.Execution {
 // the same way, which TestEveryProducerNamesItsOrigin checks).
 func TestEveryDoorStoresItsOrigin(t *testing.T) {
 	s := chatServer(t)
-	fakeAgentDesktop(t, s)
+	bodies := fakeAgentDesktop(t, s)
 
 	rec := sendAs(t, s, url.Values{"id": {"box"}, "content": {"count the bills"}, "door": {"card"}}, false, "")
 	if rec.Code != http.StatusOK {
@@ -66,13 +67,13 @@ func TestEveryDoorStoresItsOrigin(t *testing.T) {
 	}
 	_, _ = s.Tasks.RecordOutcome("box", task, tasks.Outcome{Kind: tasks.OutcomeDone, Reply: "ok"})
 
-	// A producer that names an empty origin is stored as unknown (and logged), never as a person.
-	task, err = s.SubmitTracked(context.Background(), "box", "unlabelled", tasks.Origin{})
-	if err != nil {
-		t.Fatal(err)
+	// A producer that names no origin is refused before anything reaches the desktop, and nothing is recorded.
+	before := len(requestsWith(bodies(), "content"))
+	if _, err := s.SubmitTracked(context.Background(), "box", "unlabelled", tasks.Origin{}); !errors.Is(err, tasks.ErrNoOrigin) {
+		t.Fatalf("an unlabelled send = %v", err)
 	}
-	if o := latestExecution(t, s, task).Origin; o.Kind != tasks.OriginUnknown {
-		t.Fatalf("an unlabelled send = %+v", o)
+	if len(requestsWith(bodies(), "content")) != before {
+		t.Fatal("an unlabelled request reached the desktop")
 	}
 }
 
@@ -88,7 +89,7 @@ func between(s, from, to string) string {
 func TestNoProducerPassesAnEmptyOrigin(t *testing.T) {
 	takes := map[string]bool{"Submit": true, "SubmitTracked": true, "SubmitTrackedWithFiles": true, "SubmitHandoff": true,
 		"submitStored": true, "submitLocked": true, "submitRequestWithFiles": true, "submitWhenFree": true,
-		"Commit": true, "CommitReply": true}
+		"Commit": true, "CommitReply": true, "CommitTyped": true}
 	found := 0
 	_ = filepath.Walk("..", func(p string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {

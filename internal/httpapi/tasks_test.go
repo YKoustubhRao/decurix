@@ -42,7 +42,7 @@ func deliver(t *testing.T, s *Server, desktopID, content string) tasks.Route {
 		t.Fatal(err)
 	}
 
-	route, _ := s.recordDelivered(context.Background(), desktopID, content, s.routeRequest(desktopID, content))
+	route, _ := s.recordDelivered(context.Background(), desktopID, content, s.routeRequest(desktopID, content, tasks.Origin{Kind: tasks.OriginPerson}))
 	return route
 }
 

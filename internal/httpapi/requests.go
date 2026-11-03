@@ -256,6 +256,12 @@ func (s *Server) submitLocked(ctx context.Context, desktopID, content string, or
 func (s *Server) submitStored(ctx context.Context, desktopID, content string, origin tasks.Origin) (tasks.Route, string, error) {
 	id := desktop.SanitizeID(desktopID)
 
+	// Refused before anything is sent: the records would refuse to open its execution (tasks.ErrNoOrigin), and a
+	// request delivered but never recorded is a run with no record.
+	if origin.Kind == "" {
+		return tasks.Route{}, "", tasks.ErrNoOrigin
+	}
+
 	// A desktop still being created has no container yet, which would read
 	// as "no longer exists" below - say what is actually happening.
 	if prov, ok := s.Desktops.GetProvisioning(id); ok && prov.Status == "provisioning" {
@@ -266,9 +272,7 @@ func (s *Server) submitStored(ctx context.Context, desktopID, content string, or
 	// during that wait rather than after it.
 	ollama.WarmAsync()
 
-	route := s.routeRequest(id, content)
-	// What started it (plan R7): the door's or producer's origin, a required argument, written on a new execution.
-	route.Origin = origin
+	route := s.routeRequest(id, content, origin)
 
 	// A reply is a person's judgement (plan R5): it needs its author, and its id is chosen now so the desktop is told
 	// it with the reply (C6). No door that sends a reply lacks an actor; a reply with none is refused before delivery.
@@ -341,13 +345,16 @@ func (s *Server) SubmitTracked(ctx context.Context, desktopID, content string, o
 // routeRequest decides which task record a human request belongs to before it
 // is sent, because the desktop is told the task ID along with the request. A
 // records failure never stops a request: it is sent as a new task regardless.
-func (s *Server) routeRequest(desktopID, content string) tasks.Route {
+//
+// origin is what started the request (plan R7): a required argument of every door, written on the execution a new
+// request or a retry opens.
+func (s *Server) routeRequest(desktopID, content string, origin tasks.Origin) tasks.Route {
 	route, err := s.Tasks.Plan(desktopID, content)
 	if err != nil {
 		log.Printf("sendRequest: %v", err)
-		return tasks.NewRoute()
+		route = tasks.NewRoute()
 	}
-
+	route.Origin = origin
 	return route
 }
 
