@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -82,5 +83,25 @@ func TestTheVerdictDecidesHandoffAndQueueOutcomes(t *testing.T) {
 	finalWithVerdict(t, s, old, "Done.", `null`, true)
 	if o, _ := ha.TaskOutcome(old); o.Checked == nil || !*o.Checked || o.Evidence != nil {
 		t.Fatalf("an old image's checked done = %+v", o)
+	}
+}
+
+// A readiness run is stored by its grade: only a passed run is done and checked; a failed one is not done, never
+// checked (it was, whenever the run finished), and one that could not be finished is unchecked.
+func TestAReadinessRunIsStoredByItsGrade(t *testing.T) {
+	for _, c := range []struct {
+		err    error
+		status string
+		want   string
+	}{{nil, "passed", tasks.GateDone}, {nil, "failed", tasks.GateNotDone}, {errors.New("disk full"), "", tasks.GateUnchecked}} {
+		s := chatServer(t)
+		route, _ := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "readiness-r1", Name: "r"}, "Readiness run")
+		v := readinessVerdict(c.err, c.status, "r1")
+		_, _ = s.Tasks.RecordOutcome("readiness-r1", route.TaskID, tasks.Outcome{Kind: tasks.OutcomeDone, Reply: "x", Verdict: v})
+		d, _ := s.Tasks.Get(route.TaskID)
+		e := d.Executions[0]
+		if e.Verdict == nil || e.Verdict.Verdict != c.want || e.Verdict.By != tasks.ByReadiness || (*e.Checked) != (c.want == tasks.GateDone) {
+			t.Errorf("%v %q: stored %+v checked %v", c.err, c.status, e.Verdict, *e.Checked)
+		}
 	}
 }

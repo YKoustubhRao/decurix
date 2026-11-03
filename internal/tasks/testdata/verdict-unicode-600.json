@@ -1,0 +1,23 @@
+{
+  "schema": "decurix.verdict/v1",
+  "verdict": "done",
+  "by": "verify",
+  "why": "Total ₹5,900.00 — matched “as written”; जीएसटी ठीक है. Total ₹5,900.00 — matched “as written”; जीएसटी ठीक है. Total ₹5,900.00 — matched “as written”; जीएसटी ठीक है. Total ₹5,900.00 — matched “as written”; जीएसटी ठीक है. Total ₹5,900.00 — matched “as written”; जीएसटी ठीक है. Total ₹5,900.00 — matched “as written”; जीएसटी ठीक है. Total ₹5,900.00 — matched “as written”; जीएसटी ठीक है. Total ₹5,900.00 — matched “as written”; जीएसटी ठीक है. Total ₹5,900.00 — matched “as written”; जीएसटी ठीक है. Total ₹5,900.00 — matched “as written”; जीएसटी ठीक है. Total ₹5,900.00 — matched “as written”; जीएसटी ठीक",
+  "basis": [
+    "code"
+  ],
+  "checks": [
+    {
+      "id": "files.read_back",
+      "result": "pass",
+      "basis": "code",
+      "detail": "बिल का कुल ₹ 1,18,000 — read back from the record “INV-0042”. बिल का कुल ₹ 1,18,000 — read back from the record “INV-0042”. बिल का कुल ₹ 1,18,000 — read back from the record “INV-0042”. बिल का कुल ₹ 1,18,000 — read back from the record “INV-0042”. बिल का कुल ₹ 1,18,000 — read back from the record “INV-0042”. बिल का कुल ₹ 1,18,000 — read back from the record “INV-0042”. बिल का कुल ₹ 1,18,000 — read back from the record “INV-0042”. बिल का कुल ₹ 1,18,000 — read back from the record “INV-0042”. बिल का कुल ₹ 1,18,000 — read back from the record “INV-0042”. बिल का कुल ₹ 1,18,000 — read back from the",
+      "refs": [
+        "file:out.xlsx"
+      ]
+    }
+  ],
+  "evidence": [
+    "Checked against the files I wrote: ₹ amounts — “all three” ✓ Checked against the files I wrote: ₹ amounts — “all three” ✓ Checked against the files I wrote: ₹ amounts — “all three” ✓ Checked against the files I wrote: ₹ amounts — “all three” ✓ Checked against the files I wrote: ₹ amounts — “all three” ✓ Checked against the files I wrote: ₹ amounts — “all three” ✓ Checked against the files I wrote: ₹ amounts — “all three” ✓ Checked against the files I wrote: ₹ amounts — “all three” ✓ Checked against the files I wrote: ₹ amounts — “all three” ✓ Checked against the files I wrote: ₹ amounts — “all"
+  ]
+}

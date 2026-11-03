@@ -200,8 +200,8 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	named := reportedTaskID(req.TaskID)
 	verdict, problems := tasks.ParseVerdict(req.Verdict)
 	if len(problems) > 0 {
-		log.Printf("querytext from %s: the verdict for task %s could not be read, so it is stored unchecked: %s",
-			desktopID, named, strings.Join(problems, "; "))
+		log.Printf("querytext from %s: the verdict for task %s (stored as %s): %s",
+			desktopID, named, verdict.Verdict, strings.Join(problems, "; "))
 	}
 	taskID, execID, err := s.Tasks.RecordOutcomeExec(desktopID, named, tasks.Outcome{
 		Verdict:           verdict,
