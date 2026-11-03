@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 func TestLoadDefaults(t *testing.T) {
 	t.Setenv("WORKSPACE_ROOT", "")
@@ -47,10 +51,10 @@ func TestValidateOllama(t *testing.T) {
 }
 
 func TestValidateAnthropic(t *testing.T) {
-	if err := (Config{Provider: "anthropic", AnthropicAPIKey: "sk-test"}).Validate(); err != nil {
+	if err := (Config{Provider: "anthropic", AnthropicAPIKey: "sk-test", Standalone: true}).Validate(); err != nil {
 		t.Errorf("Validate() error = %v, want nil for a valid anthropic config", err)
 	}
-	if err := (Config{Provider: "anthropic"}).Validate(); err == nil {
+	if err := (Config{Provider: "anthropic", Standalone: true}).Validate(); err == nil {
 		t.Error("Validate() = nil for anthropic with no API key, want an error")
 	}
 }
@@ -81,5 +85,44 @@ func TestLoadEnvOverride(t *testing.T) {
 	}
 	if cfg.Port != "9999" {
 		t.Errorf("Port = %q, want 9999 (env override ignored)", cfg.Port)
+	}
+}
+
+// Inside Decurix a hosted model is reached only through the control plane's proxy: LLM_PROVIDER=anthropic is a
+// configuration error there, key or not (plan R4). Standalone keeps it.
+func TestAnthropicIsRefusedWhenEmbedded(t *testing.T) {
+	err := (Config{Provider: "anthropic", AnthropicAPIKey: "sk-test"}).Validate()
+	if !errors.Is(err, ErrAnthropicEmbedded) {
+		t.Fatalf("Validate() = %v, want ErrAnthropicEmbedded", err)
+	}
+	if !strings.Contains(err.Error(), "through the control plane's proxy (LLM_PROVIDER=openai)") {
+		t.Errorf("the error does not say what to use instead: %v", err)
+	}
+	if err := (Config{Provider: "anthropic", AnthropicAPIKey: "sk-test", Standalone: true}).Validate(); err != nil {
+		t.Fatalf("standalone anthropic refused: %v", err)
+	}
+	if err := (Config{Provider: "openai", OpenAIAPIKey: "k"}).Validate(); err != nil {
+		t.Fatalf("embedded openai refused: %v", err)
+	}
+}
+
+func TestStandaloneIsReadFromTheEnvironment(t *testing.T) {
+	t.Setenv("THEBOT_STANDALONE", "")
+	if Load().Standalone {
+		t.Fatal("standalone with THEBOT_STANDALONE unset")
+	}
+	t.Setenv("THEBOT_STANDALONE", "true")
+	if Load().Standalone {
+		t.Fatal("standalone with THEBOT_STANDALONE=true (only 1 turns it on)")
+	}
+	t.Setenv("THEBOT_STANDALONE", "1")
+	t.Setenv("LLM_PROVIDER", "anthropic")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	if cfg := Load(); !cfg.Standalone || cfg.Validate() != nil {
+		t.Fatalf("standalone anthropic from the environment: %+v / %v", cfg.Standalone, cfg.Validate())
+	}
+	t.Setenv("THEBOT_STANDALONE", "")
+	if err := Load().Validate(); !errors.Is(err, ErrAnthropicEmbedded) {
+		t.Fatalf("embedded anthropic from the environment: %v", err)
 	}
 }

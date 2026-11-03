@@ -5,6 +5,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
@@ -90,7 +91,16 @@ type Config struct {
 	// runs from the repo root (true for local `go run ./cmd/soul` and will
 	// be true in the Docker image too); override for other layouts.
 	DoclingScript string
+	// Standalone is soul run as a product of its own (THEBOT_STANDALONE=1), not embedded in a Decurix desktop.
+	// Embedded, a hosted model is reached only through the control plane's recording proxy (LLM_PROVIDER=openai), so
+	// LLM_PROVIDER=anthropic is refused there (plan R4: one path for hosted calls).
+	Standalone bool
 }
+
+// ErrAnthropicEmbedded is LLM_PROVIDER=anthropic in a soul embedded in Decurix.
+var ErrAnthropicEmbedded = errors.New("LLM_PROVIDER=anthropic is not allowed inside Decurix: inside Decurix a hosted " +
+	"model is reached through the control plane's proxy (LLM_PROVIDER=openai); THEBOT_STANDALONE=1 keeps it for soul " +
+	"run on its own")
 
 func Load() Config {
 	return Config{
@@ -126,6 +136,7 @@ func Load() Config {
 		Port:          getenv("SOUL_PORT", "4900"),
 		AgentToken:    getenv("DECURIX_AGENT_TOKEN", ""),
 		DoclingScript: getenv("DOCLING_SCRIPT", "scripts/docling_convert.py"),
+		Standalone:    os.Getenv("THEBOT_STANDALONE") == "1",
 	}
 }
 
@@ -139,6 +150,10 @@ func (c Config) Validate() error {
 			return fmt.Errorf("LLM_PROVIDER=ollama requires OLLAMA_HOST to be set")
 		}
 	case "anthropic":
+		if !c.Standalone {
+			// The control plane never sets it (internal/desktop/docker.go); this holds for a hand edit too.
+			return ErrAnthropicEmbedded
+		}
 		if c.AnthropicAPIKey == "" {
 			return fmt.Errorf("LLM_PROVIDER=anthropic requires ANTHROPIC_API_KEY to be set")
 		}
