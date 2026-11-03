@@ -67,7 +67,7 @@ func Run(ctx context.Context, cfg Config) error {
 
 	for {
 		started := time.Now()
-		err := linkOnce(ctx, cfg, server)
+		err := linkOnce(ctx, &cfg, server)
 
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -106,12 +106,17 @@ type agent struct {
 }
 
 // linkOnce connects, serves the link until it drops, and closes every session.
-func linkOnce(ctx context.Context, cfg Config, server string) error {
+// When ADB has to be brought back, the serial it comes back under (Wireless
+// debugging's port can change with the network) is kept in cfg for the next
+// link too.
+func linkOnce(ctx context.Context, cfg *Config, server string) error {
 	if err := pushServer(ctx, cfg.Serial, server); err != nil {
 		// A restart or a new network drops ADB's connection; bring it back without asking.
-		if _, rerr := Reconnect(ctx); rerr != nil {
+		serial, rerr := Reconnect(ctx)
+		if rerr != nil {
 			return rerr
 		}
+		cfg.Serial = serial
 		if err := pushServer(ctx, cfg.Serial, server); err != nil {
 			return err
 		}
@@ -130,7 +135,7 @@ func linkOnce(ctx context.Context, cfg Config, server string) error {
 	}
 	defer conn.Close()
 
-	a := &agent{cfg: cfg, conn: conn, sessions: make(map[uint32]*session), kick: make(chan struct{}, 1)}
+	a := &agent{cfg: *cfg, conn: conn, sessions: make(map[uint32]*session), kick: make(chan struct{}, 1)}
 	defer a.closeAll()
 
 	// The phone's model and Android version, for the dashboard, and its API level (0 when it cannot be read).
@@ -626,8 +631,9 @@ func (s *session) stop() {
 }
 
 // PickSerial chooses the ADB device to use: the one given, else the phone's
-// own `adb tcpip 5555` port (it survives Wi-Fi changes, until a restart),
-// else the only device connected. It says what to do when there is none.
+// own `adb tcpip 5555` port when someone opened it by hand (Decurix no longer
+// does: it listens on every network, review 2026-11-03 B-26), else the only
+// device connected. It says what to do when there is none.
 func PickSerial(ctx context.Context, want string) (string, error) {
 	if _, err := exec.LookPath("adb"); err != nil {
 		return "", errors.New("adb is not installed; in Termux run: pkg install android-tools")
@@ -677,6 +683,5 @@ const noDeviceHelp = `adb is not connected to this phone. Once, in Termux:
      "Pair device with pairing code" (use split screen with Termux):
        adb pair localhost:<pairing port> <pairing code>
        adb connect localhost:<port shown on the Wireless debugging screen>
-  2. So it keeps working when Wi-Fi changes (until the phone restarts):
-       adb tcpip 5555
-       adb connect localhost:5555`
+  The port can change when Wi-Fi does; the link finds the new one by itself
+  where the phone allows it, otherwise run the connect line again.`

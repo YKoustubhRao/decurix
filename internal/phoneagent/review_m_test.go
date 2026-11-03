@@ -1,6 +1,7 @@
 package phoneagent
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -48,5 +49,29 @@ func TestAPasswordFieldsTextIsNotSent(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no password field in the tree")
+	}
+}
+
+// Setting up ADB never opens adb's legacy network port (review 2026-11-03,
+// B-26): it stays on Wireless debugging's own paired connection.
+func TestConnectingADBNeverOpensTheLegacyPort(t *testing.T) {
+	var calls [][]string
+	defer func(r func(context.Context, ...string) ([]byte, error), p func(context.Context, string) (string, error)) {
+		runADB, pickSerial = r, p
+	}(runADB, pickSerial)
+	runADB = func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, args)
+		return []byte("connected"), nil
+	}
+	pickSerial = func(_ context.Context, want string) (string, error) { return want, nil }
+
+	serial, err := connectWireless(context.Background(), "localhost:41234")
+	if err != nil || serial != "localhost:41234" {
+		t.Fatalf("serial %q, %v", serial, err)
+	}
+	for _, c := range calls {
+		if strings.Join(c, " ") != "connect localhost:41234" {
+			t.Fatalf("adb was asked to %v", c)
+		}
 	}
 }
