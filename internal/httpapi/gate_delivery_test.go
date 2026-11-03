@@ -245,7 +245,7 @@ func TestAReplayTellsTheGateFirst(t *testing.T) {
 // that cannot be read holds every value given (review CP-A-4 B1).
 func TestAReplaysSecretParametersAreReadFromItsProgram(t *testing.T) {
 	names := []string{"confirm_password", "password_2", "login_pin", "one_time_password", "user_password"}
-	params := map[string]string{"invoice_no": "INV-0042"}
+	params := map[string]string{"invoice_no": "INV-0042", "extra_field": "Unlisted-55"}
 	var programParams []string
 	for i, n := range names {
 		params[n] = fmt.Sprintf("Val%d-xq-%d", i, i*7+3)
@@ -267,6 +267,9 @@ func TestAReplaysSecretParametersAreReadFromItsProgram(t *testing.T) {
 	}
 	if strings.Contains(held, "INV-0042") {
 		t.Errorf("an ordinary parameter is held: %q", held)
+	}
+	if !strings.Contains(held, "Unlisted-55") {
+		t.Errorf("a parameter the program does not list is not held: %q", held)
 	}
 
 	// The program cannot be read: every value given is held.

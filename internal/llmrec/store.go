@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -423,7 +422,7 @@ func secretForms(values []string) []string {
 			add(f)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	sortByCodePoints(out)
 	return out
 }
 

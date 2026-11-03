@@ -1,5 +1,5 @@
 {
-  "rule": "A held value of 4 or more characters (code points) is withheld wherever it occurs, as a substring. A shorter value is withheld only as a whole token: where the character right before it and the one right after it are not a letter or a digit (Unicode), or are the start or end of the text. Longest value first. The marker is [withheld].",
+  "rule": "A held value of 4 or more Unicode code points is withheld wherever it occurs, as a substring. A shorter value is withheld only as a whole token: where the code point right before it and the one right after it are each not in Unicode general category L* (letters) or Nd (decimal digits), or are the start or end of the text; so No and Nl characters such as '²', '½' and 'Ⅵ' are boundaries (Python: not str.isalnum). Values are tried longest first by code-point count, ties in the order given, in one pass over the original text: an occurrence overlapping one already chosen, or a [withheld] marker already in the text, is skipped. Each occurrence becomes [withheld].",
   "cases": [
     {
       "text": "hash 9fab9c and ab9 alone",
@@ -57,6 +57,49 @@
         "Plum7Orbit2"
       ],
       "want": "the value [withheld] and [withheld]"
+    },
+    {
+      "text": "ab9² and ab9Ⅵ",
+      "values": [
+        "ab9"
+      ],
+      "want": "[withheld]² and [withheld]Ⅵ"
+    },
+    {
+      "text": "𝐀ab9 and ab9𝐀 and ab9",
+      "values": [
+        "ab9"
+      ],
+      "want": "𝐀ab9 and ab9𝐀 and [withheld]"
+    },
+    {
+      "text": "x𝐀b9 𝐀b9",
+      "values": [
+        "𝐀b9"
+      ],
+      "want": "x𝐀b9 [withheld]"
+    },
+    {
+      "text": "äääabcdef",
+      "values": [
+        "äääa",
+        "abcdef"
+      ],
+      "want": "äää[withheld]"
+    },
+    {
+      "text": "say [withheld] then held up",
+      "values": [
+        "held"
+      ],
+      "want": "say [withheld] then [withheld] up"
+    },
+    {
+      "text": "with a with",
+      "values": [
+        "with"
+      ],
+      "want": "[withheld] a [withheld]"
     }
   ]
 }

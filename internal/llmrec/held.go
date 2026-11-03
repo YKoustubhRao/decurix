@@ -11,9 +11,14 @@ import (
 // How a held value is found in text, the same rule on the Python side (handoff-CP H-CP-9, shared vectors in
 // testdata/held-values.json):
 //
-//   - a value of minHeldSubstring characters (code points) or more is withheld wherever it occurs, as a substring;
-//   - a shorter value is withheld only as a whole token: where the characters right before and after it are not a
-//     letter or a digit (or are the start or end of the text). A whole field that equals it is such a token.
+//   - a value of minHeldSubstring characters (Unicode code points) or more is withheld wherever it occurs, as a
+//     substring;
+//   - a shorter value is withheld only as a whole token: where the code point right before it and the one right after
+//     it are not in Unicode general category L* (a letter) or Nd (a decimal digit), or are the start or end of the
+//     text. A whole field that equals it is such a token. ("²", "½" and "Ⅵ" are No/Nl: boundaries.)
+//   - values are tried longest first, by code points (ties in the order given), in one pass over the original text:
+//     an occurrence that overlaps one already chosen, or a [withheld] marker already in the text, is not withheld
+//     again, so no value ever cuts into a marker.
 //
 // So a held "ab9" never cuts "9fab9c" inside a hash, and a held "Zq9X-77" is withheld inside anything.
 const minHeldSubstring = 4
@@ -23,34 +28,72 @@ func ReplaceHeld(text string, values []string) string {
 	return replaceForms(text, longestFirst(values))
 }
 
-// replaceForms is s with each of forms (longest first) replaced by withhold.Marker, by the rule above.
+// replaceForms is s with each of forms (longest first) replaced by withhold.Marker, by the rule above, in one pass
+// over s: every occurrence is found in the original text, and one that overlaps a chosen one or a marker is skipped.
 func replaceForms(s string, forms []string) string {
+	type span struct{ from, to int }
+	var taken []span
+	overlaps := func(from, to int) bool {
+		for _, t := range taken {
+			if from < t.to && t.from < to {
+				return true
+			}
+		}
+		return false
+	}
+	for i := 0; ; {
+		j := strings.Index(s[i:], withhold.Marker)
+		if j < 0 {
+			break
+		}
+		taken = append(taken, span{i + j, i + j + len(withhold.Marker)})
+		i += j + len(withhold.Marker)
+	}
+	markers := len(taken)
 	for _, f := range forms {
 		if f == "" {
 			continue
 		}
-		if utf8.RuneCountInString(f) >= minHeldSubstring {
-			s = strings.ReplaceAll(s, f, withhold.Marker)
-			continue
+		short := utf8.RuneCountInString(f) < minHeldSubstring
+		for from := 0; from <= len(s); {
+			j := strings.Index(s[from:], f)
+			if j < 0 {
+				break
+			}
+			i := from + j
+			from = i + 1
+			if short && !standsAlone(s, i, len(f)) || overlaps(i, i+len(f)) {
+				continue
+			}
+			taken = append(taken, span{i, i + len(f)})
+			from = i + len(f)
 		}
-		s = replaceTokens(s, f)
 	}
-	return s
+	if len(taken) == markers {
+		return s
+	}
+	chosen := taken[markers:]
+	for a := 1; a < len(chosen); a++ {
+		for b := a; b > 0 && chosen[b].from < chosen[b-1].from; b-- {
+			chosen[b], chosen[b-1] = chosen[b-1], chosen[b]
+		}
+	}
+	var out strings.Builder
+	last := 0
+	for _, c := range chosen {
+		out.WriteString(s[last:c.from])
+		out.WriteString(withhold.Marker)
+		last = c.to
+	}
+	out.WriteString(s[last:])
+	return out.String()
 }
 
-// replaceTokens replaces f in s only where it stands as a whole token.
-func replaceTokens(s, f string) string {
-	var b strings.Builder
-	for {
-		i := indexToken(s, f)
-		if i < 0 {
-			b.WriteString(s)
-			return b.String()
-		}
-		b.WriteString(s[:i])
-		b.WriteString(withhold.Marker)
-		s = s[i+len(f):]
-	}
+// standsAlone reports whether the n bytes at i in s stand as a whole token (the rule above).
+func standsAlone(s string, i, n int) bool {
+	before, _ := utf8.DecodeLastRuneInString(s[:i])
+	after, _ := utf8.DecodeRuneInString(s[i+n:])
+	return (i == 0 || !wordRune(before)) && (i+n == len(s) || !wordRune(after))
 }
 
 // indexToken is the first index of f in s where it stands as a whole token, or -1.
@@ -62,9 +105,7 @@ func indexToken(s, f string) int {
 			return -1
 		}
 		i := from + j
-		before, _ := utf8.DecodeLastRuneInString(s[:i])
-		after, _ := utf8.DecodeRuneInString(s[i+len(f):])
-		if (i == 0 || !wordRune(before)) && (i+len(f) == len(s) || !wordRune(after)) {
+		if standsAlone(s, i, len(f)) {
 			return i
 		}
 		from = i + 1
@@ -72,8 +113,8 @@ func indexToken(s, f string) int {
 	return -1
 }
 
-// wordRune reports whether r is a letter or a digit: what joins a short value to a longer word.
-func wordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+// wordRune reports whether r is a letter (L*) or a decimal digit (Nd): what joins a short value to a longer word.
+func wordRune(r rune) bool { return unicode.IsLetter(r) || unicode.Is(unicode.Nd, r) }
 
 // containsHeld reports whether text holds v by the rule above.
 func containsHeld(text, v string) bool {
@@ -94,12 +135,17 @@ func longestFirst(values []string) []string {
 			out = append(out, v)
 		}
 	}
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && len(out[j]) > len(out[j-1]); j-- {
-			out[j], out[j-1] = out[j-1], out[j]
+	sortByCodePoints(out)
+	return out
+}
+
+// sortByCodePoints orders values longest first by code points, ties keeping their order.
+func sortByCodePoints(values []string) {
+	for i := 1; i < len(values); i++ {
+		for j := i; j > 0 && utf8.RuneCountInString(values[j]) > utf8.RuneCountInString(values[j-1]); j-- {
+			values[j], values[j-1] = values[j-1], values[j]
 		}
 	}
-	return out
 }
 
 // jsonStringTokens is the spans [start, end) of every JSON string token in s, quotes included: from an unescaped

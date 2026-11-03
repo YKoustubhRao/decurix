@@ -232,6 +232,7 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
 - **Pass rates** (`/api/tasks/pass-rates`) count every ended attempt under its own skill version x model x origin
   class (production, practice, eval); the headline is the first-attempt rate, `checked_independent` counts only code,
   ledger or person bases, and a person's verdict joins only the attempt it judged. Wilson bounds are the reader's.
+- **What a recording's program can and cannot do (the trust statement).** The program (its `params[].secret`) can only *add* withholding: a parameter it does not list, or a program that cannot be read, is held. A worker that under-flags a parameter leaks only what it already holds. The call recorder's withholding and the gate's wording of its questions are walls for an honest worker; against a dishonest one, what holds is the gate's site check (from its own signed copy of the request) and the yes the gate alone makes from a signed reply, neither of which reads the program.
 - **The `decurix.gate` label's "0"** is a branch nothing takes today: no code makes a desktop without a gate. It stays
   as the one explicit "no" HasGate honours. A desktop with no label (made before 718220f) is gated; if its gate does
   not answer, the person is told to recreate it.

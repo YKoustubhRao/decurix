@@ -361,3 +361,12 @@ func TestTheBackstopWithholdsOnlyTheTokenThatHoldsIt(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// The backstop's last re-check holds: a held value whose token is withheld but which shows again, escaped, outside
+// any JSON string withholds the whole string (review CP-A-5 N2).
+func TestTheBackstopRechecksAfterWithholdingTokens(t *testing.T) {
+	in := `{"a":"p\u00E4ss-77"} then p\u00E4ss-77`
+	if got := WithholdValues(in, []string{"päss-77"}); got != "[withheld]" {
+		t.Fatalf("got %q", got)
+	}
+}

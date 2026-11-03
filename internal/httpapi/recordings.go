@@ -418,7 +418,7 @@ func (s *Server) replayRecordingHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	s.sendTaught(w, r, id, replayContent(session, from), "/recordings/"+session+"/replay", map[string]any{"from": from, "params": params}, "replay",
-		s.replaySecrets(r.Context(), id, session, params)...)
+		func() []string { return s.replaySecrets(r.Context(), id, session, params) })
 }
 
 // maxProgramBytes bounds the recording read for its program's parameters.
@@ -426,8 +426,10 @@ const maxProgramBytes = 16 << 20
 
 // replaySecrets is the values of params that are secret by structure (review CP-A-4 B1): the recording's program
 // says which of its parameters are, because the recorder withheld what was typed or the field was a password field
-// (replay.compile_program's params[].secret). No word list decides it. A program that cannot be read holds every
-// value given (fail closed: some ordinary values withheld for one task, never a password kept).
+// (replay.compile_program's params[].secret). No word list decides it. A parameter the program does not list is held
+// (unknown is secret), and a program that cannot be read holds every value given (fail closed: some ordinary values
+// withheld for one task, never a password kept). The program can only add withholding: a worker that under-flags
+// leaks only what it already holds (docs/follow-ups.md, the trust statement).
 func (s *Server) replaySecrets(ctx context.Context, id, session string, params map[string]string) []string {
 	if len(params) == 0 {
 		return nil
@@ -461,15 +463,15 @@ func (s *Server) replaySecrets(ctx context.Context, id, session string, params m
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxProgramBytes)).Decode(&rec); err != nil || rec.Program == nil {
 		return all("its program could not be read")
 	}
-	secret := map[string]bool{}
+	ordinary := map[string]bool{}
 	for _, p := range rec.Program.Params {
-		if p.Secret {
-			secret[p.Name] = true
+		if !p.Secret {
+			ordinary[p.Name] = true
 		}
 	}
 	var out []string
 	for name, v := range params {
-		if secret[name] {
+		if !ordinary[name] {
 			out = append(out, v)
 		}
 	}
