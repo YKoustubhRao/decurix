@@ -89,6 +89,10 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		// which leaves it unknown rather than "not checked".
 		Checked *bool `json:"checked"`
 
+		// Verdict is the final check, structured (decurix.verdict/v1, C5): stored beside the task, with checked
+		// derived from it. Absent from older images.
+		Verdict json.RawMessage `json:"verdict"`
+
 		// Secret marks a question raised for a secret (a password or code field): the person's reply to it is kept
 		// withheld whole in every record, and still reaches the desktop as typed (X-6). Ignored on anything but a
 		// question or an approval.
@@ -191,7 +195,13 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	named := reportedTaskID(req.TaskID)
+	verdict, problems := tasks.ParseVerdict(req.Verdict)
+	if len(problems) > 0 {
+		log.Printf("querytext from %s: the verdict for task %s could not be read, so it is stored unchecked: %s",
+			desktopID, named, strings.Join(problems, "; "))
+	}
 	taskID, err := s.Tasks.RecordOutcome(desktopID, named, tasks.Outcome{
+		Verdict:           verdict,
 		Kind:              note.Kind,
 		Reply:             chatText,
 		Engine:            clip(req.Engine, 32),

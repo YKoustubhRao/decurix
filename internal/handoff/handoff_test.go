@@ -214,8 +214,10 @@ func TestDelegateToNamedWorkerVerifiedIsDone(t *testing.T) {
 	}
 
 	r.fs.files["b"][OutDir(h.ID)+"/summary.txt"] = []byte("total 3")
+	// The evidence is the receiver's verdict's (R6), as the task records hand it over; the report text is not parsed.
 	r.tasks.set(h.TaskID, TaskOutcome{Status: tasks.StatusDone, Checked: yes(),
-		Report: "Wrote " + OutDir(h.ID) + "/summary.txt.\n\nChecked against the files I wrote: total 3 is in the file."})
+		Report:   "Wrote " + OutDir(h.ID) + "/summary.txt.\n\nChecked against the files I wrote: total 3 is in the file.",
+		Evidence: []string{"Checked against the files I wrote: total 3 is in the file."}})
 	got, err := r.svc.Get(context.Background(), h.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -590,16 +592,5 @@ func TestReadTarFiles(t *testing.T) {
 	}
 	if _, err := ReadTarFiles(bytes.NewReader(buf.Bytes()), 2); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("budget: %v", err)
-	}
-}
-
-func TestEvidenceAndFilesIn(t *testing.T) {
-	report := "Made ~/out/report.xlsx and /home/headless/out/notes.txt.\n" +
-		"Also looked at /home/headless/out (a folder) and /etc/hosts.\n\n" +
-		"Checked on the screen: the record shows total 1,200.\n\n" +
-		"Values read from the documents:\n- total: 1,200 (invoice.pdf)\n- date: 3 Oct\n\nThanks."
-	ev := EvidenceIn(report)
-	if len(ev) != 3 || !strings.HasPrefix(ev[0], "Checked on the screen:") || ev[2] != "- date: 3 Oct" {
-		t.Errorf("evidence: %q", ev)
 	}
 }

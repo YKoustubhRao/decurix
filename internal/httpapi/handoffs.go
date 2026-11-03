@@ -72,12 +72,13 @@ func (a handoffAdapter) TaskOutcome(taskID string) (handoff.TaskOutcome, error) 
 	o := handoff.TaskOutcome{Found: true, Status: d.Status}
 	if n := len(d.Executions); n > 0 {
 		e := d.Executions[n-1]
-		// Only a final the gate checked AND that is not a stop at a refusal counts as checked done: a report that the
-		// work stopped because a person said no is checked, but it is not the work done (handoff.md, Limits).
-		o.Report, o.Checked = e.FinalReply, e.Checked
-		if e.Checked != nil && *e.Checked && stoppedAtRefusal(e.FinalReply) {
-			no := false
-			o.Checked = &no
+		// Only a final the gate checked AND that is not a stop at a person's no counts as checked done: a report that
+		// the work stopped because a person said no can be checked, but it is not the work done (handoff.md, Limits).
+		// The structured verdict says which it is (R6); no report text is read for it.
+		done := e.WorkDone()
+		o.Report, o.Checked, o.Evidence = e.FinalReply, &done, verdictEvidence(e.Verdict)
+		if e.Checked == nil && e.Verdict == nil {
+			o.Checked = nil // an older image that said nothing: unknown, as before
 		}
 		for _, iv := range e.Interventions {
 			if iv.RepliedAt.IsZero() {
@@ -88,10 +89,26 @@ func (a handoffAdapter) TaskOutcome(taskID string) (handoff.TaskOutcome, error) 
 	return o, nil
 }
 
-// stoppedAtRefusal reports whether a final reply is the agent's "stopped, as you said" after a refusal.
-func stoppedAtRefusal(final string) bool {
-	head := strings.ToLower(strings.TrimSpace(final))
-	return strings.HasPrefix(head, "stopped there, as you said") || strings.HasPrefix(head, "stopped, as you said")
+// verdictEvidence is what a final check says it saw: its evidence lines, then each passing check's detail, at most 40.
+func verdictEvidence(v *tasks.GateVerdict) []string {
+	if v == nil {
+		return nil
+	}
+	out := []string{}
+	for _, e := range v.Evidence {
+		if e = strings.TrimSpace(e); e != "" {
+			out = append(out, e)
+		}
+	}
+	for _, c := range v.Checks {
+		if d := strings.TrimSpace(c.Detail); c.Result == "pass" && d != "" {
+			out = append(out, d)
+		}
+	}
+	if len(out) > 40 {
+		out = out[:40]
+	}
+	return out
 }
 
 // Busy says what a worker is busy with, "" when it is free.

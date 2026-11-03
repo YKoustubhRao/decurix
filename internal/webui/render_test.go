@@ -222,6 +222,11 @@ func TestRenderEveryPage(t *testing.T) {
 		tasks.Intervention{Kind: tasks.InterventionQuery, Reason: tasks.ReasonCredentials, Request: "Which account?", Reply: "The second one", RequestedAt: now.Add(5 * time.Second), RepliedAt: now.Add(6 * time.Second)},
 	)
 	traceDetail.Executions[1].FinalReply = "Paid INV-1042."
+	traceDetail.Executions[1].Verdict = &tasks.GateVerdict{Schema: tasks.VerdictSchema, Verdict: tasks.GateDone,
+		By: "verify", Why: "read back", Basis: []string{"code", "model"}, Checks: []tasks.CheckResult{
+			{ID: "files.read_back", Result: "pass", Basis: "code", Detail: "out.xlsx: 3 sheets read"},
+			{ID: "judge", Result: "pass", Basis: "model", Detail: "the screen shows it"},
+		}}
 	traceDetail.Verdict, traceDetail.VerdictNote, traceDetail.VerdictAt = tasks.VerdictWrong, "wrong account", now
 
 	var trace bytes.Buffer
@@ -233,6 +238,7 @@ func TestRenderEveryPage(t *testing.T) {
 		`<details class="fold">`, "13 lines · show all", "Which account?", "The second one", "Approval needed",
 		"Paid INV-1042.", "timed out", `href="/tasks/t0123456789abcdef/trace.txt?download=1"`, "data-copy-trace",
 		"Verdict: <b class=\"wrong\">wrong</b>", "wrong account", `href="/tasks/t0123456789abcdef"`,
+		"Final check: done · by verify · rests on code, model", "files.read_back", "out.xlsx: 3 sheets read",
 	} {
 		if !strings.Contains(trace.String(), want) {
 			t.Errorf("the trace page is missing %q", want)

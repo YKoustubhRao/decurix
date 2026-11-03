@@ -249,6 +249,18 @@
       <pre>{{.FinalReply}}</pre>
     </div>
     {{end}}
+    {{with .Verdict}}
+    <div class="final verdict">
+      <div class="eyebrow">Final check: {{.Verdict}}{{with .By}} · by {{.}}{{end}}{{with .Basis}} · rests on {{range $i, $b := .}}{{if $i}}, {{end}}{{$b}}{{end}}{{end}}</div>
+      {{with .Why}}<p>{{.}}</p>{{end}}
+      {{if .Checks}}
+      <ul class="checks">
+        {{range .Checks}}<li><span class="mono">{{.Result}}</span> · {{.Basis}} · <span class="mono">{{.ID}}</span>{{with .Detail}}: {{.}}{{end}}</li>
+        {{end}}
+      </ul>
+      {{else}}<p>No check is listed.</p>{{end}}
+    </div>
+    {{end}}
   </article>
   {{else}}
   <div class="panel none">No attempt was recorded for this task.</div>

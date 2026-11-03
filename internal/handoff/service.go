@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"path"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -51,8 +50,11 @@ type TaskOutcome struct {
 	Status string
 	// Report is the final reply of the task's latest attempt.
 	Report string
-	// Checked is the latest attempt's "final check judged it" flag (nil: not said).
+	// Checked is whether the latest attempt is the work done and checked (nil: not said): false for a stop at a
+	// person's no, whatever its own check said.
 	Checked *bool
+	// Evidence is what the receiver's final check said it saw (its verdict's evidence and passing checks).
+	Evidence []string
 	// OpenQuestions are the receiver's questions to a person not answered yet.
 	OpenQuestions []string
 }
@@ -614,7 +616,7 @@ func (s *Service) collect(ctx context.Context, h Handoff) Handoff {
 
 	switch out.Status {
 	case tasks.StatusDone:
-		r.Evidence = EvidenceIn(out.Report)
+		r.Evidence = out.Evidence
 		if out.Checked != nil && *out.Checked {
 			r.Verified = true
 			// Only a verified result hands files back, and only those saved in the handoff's out folder.
@@ -752,33 +754,4 @@ func composeRequest(h Handoff, files []File) string {
 	b.WriteString("\n\nIn your report, say what you did, what you saw that shows it is done, the full paths of any " +
 		"files you made, and plainly any part you could not do.")
 	return b.String()
-}
-
-// evidenceLineRe is a line in which a final check says what it saw ("Checked
-// on the screen: ...", "Checked against the files I wrote: ...").
-var evidenceLineRe = regexp.MustCompile(`(?m)^\s*(Checked [^:\n]{1,60}:.+)$`)
-
-// EvidenceIn returns what the receiver's final check said it saw: its
-// "Checked ...:" lines and the values block that follows a "Values read from"
-// heading.
-func EvidenceIn(report string) []string {
-	out := []string{}
-	for _, m := range evidenceLineRe.FindAllStringSubmatch(report, -1) {
-		out = append(out, strings.TrimSpace(m[1]))
-	}
-
-	lines := strings.Split(report, "\n")
-	for i := 0; i < len(lines); i++ {
-		if !strings.HasPrefix(strings.TrimSpace(lines[i]), "Values read from") {
-			continue
-		}
-		for j := i + 1; j < len(lines) && strings.TrimSpace(lines[j]) != ""; j++ {
-			out = append(out, strings.TrimSpace(lines[j]))
-		}
-	}
-
-	if len(out) > 40 {
-		out = out[:40]
-	}
-	return out
 }

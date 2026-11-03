@@ -73,10 +73,11 @@ func (a queueAdapter) TaskState(taskID string) (workqueue.TaskState, error) {
 	if n := len(d.Executions); n > 0 {
 		e := d.Executions[n-1]
 		st.Status, st.Reply, st.Checked = e.Status, e.FinalReply, e.Checked
-		// A checked stop at a person's refusal is not the work done (same rule as handoffAdapter.TaskOutcome).
-		if e.Checked != nil && *e.Checked && stoppedAtRefusal(e.FinalReply) {
-			no := false
-			st.Checked = &no
+		// A checked stop at a person's no is not the work done (same rule as handoffAdapter.TaskOutcome): the
+		// structured verdict says which it is (R6).
+		if e.Checked != nil || e.Verdict != nil {
+			done := e.WorkDone()
+			st.Checked = &done
 		}
 	}
 	return st, nil

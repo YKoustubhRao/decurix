@@ -1,7 +1,10 @@
 package tasks
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 )
 
@@ -207,4 +210,17 @@ func (s *Store) TaskWorker(taskID string) (string, bool) {
 		return "", false
 	}
 	return worker, true
+}
+
+// TaskOfExecution is the task an execution is an attempt at, or ErrNotFound.
+func (s *Store) TaskOfExecution(execID string) (string, error) {
+	var task string
+	err := s.db.QueryRow(`SELECT task_id FROM executions WHERE id = ?`, execID).Scan(&task)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("tasks: reading an execution: %w", err)
+	}
+	return task, nil
 }

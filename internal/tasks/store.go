@@ -126,7 +126,10 @@ type Execution struct {
 	// before it was reported; nil when the desktop did not say.
 	Checked *bool `json:"checked"`
 	// Outcome is what a person is shown from Status and Checked (DisplayOutcome).
-	Outcome       Display        `json:"outcome"`
+	Outcome Display `json:"outcome"`
+	// Verdict is the final check as the desktop reported it (decurix.verdict/v1); nil for an older image's, which
+	// said only Checked. Checked is derived from it.
+	Verdict       *GateVerdict   `json:"verdict"`
 	Steps         []Step         `json:"steps"`
 	Interventions []Intervention `json:"interventions"`
 }
@@ -230,6 +233,9 @@ type Outcome struct {
 	CachedInputTokens *int64
 	// Checked: whether the final check judged a finished result (nil: not said).
 	Checked *bool
+	// Verdict: the final check, structured (nil: an older image). When given, the stored checked flag is derived
+	// from it (done), and is false whenever Checked says otherwise.
+	Verdict *GateVerdict
 	// Secret: a query raised for a secret (the agent knows where its question came from); the person's reply to it
 	// is kept as withhold.Secret in every record, and reaches the desktop as typed.
 	Secret bool
@@ -352,6 +358,8 @@ var schema = []string{
 	// Who answered an intervention, and the judgement that answer is.
 	`ALTER TABLE interventions ADD COLUMN replier_id TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE interventions ADD COLUMN judgement_id TEXT NOT NULL DEFAULT ''`,
+	// The run's final check, structured (plan R6, decurix.verdict/v1): '' for an older image, which sent only checked.
+	`ALTER TABLE executions ADD COLUMN verdict TEXT NOT NULL DEFAULT ''`,
 }
 
 // Store is the SQLite-backed record of every worker's tasks.
@@ -1078,12 +1086,18 @@ func (s *Store) AddStep(workerID, taskID string, step Step) (bool, error) {
 // task it belonged to: "" when it matched none, or named a task that has
 // already ended (a closed execution takes no second end).
 func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string, error) {
+	task, _, err := s.RecordOutcomeExec(workerID, taskID, outcome)
+	return task, err
+}
+
+// RecordOutcomeExec is RecordOutcome, also returning the execution the outcome closed or paused ("" with the task).
+func (s *Store) RecordOutcomeExec(workerID, taskID string, outcome Outcome) (string, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return "", fmt.Errorf("tasks: recording outcome: %w", err)
+		return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -1091,16 +1105,29 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 
 	ref, ok, err := resolve(tx, workerID, taskID, now)
 	if err != nil {
-		return "", fmt.Errorf("tasks: recording outcome: %w", err)
+		return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
 	}
 
 	// A closed execution only takes steps after the fact, never a second end.
 	if !ok || !Live(ref.status) {
-		return "", nil
+		return "", "", nil
 	}
 
 	if err := promote(tx, &ref, now); err != nil {
-		return "", fmt.Errorf("tasks: recording outcome: %w", err)
+		return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
+	}
+
+	// The structured verdict decides checked; a callback whose own flag disagrees is stored not checked (fail closed).
+	checked, disagree := checkedFrom(outcome.Verdict, outcome.Checked)
+	if disagree {
+		log.Printf("tasks: verdict and checked disagree for %s (verdict %s, checked %v): stored as not checked",
+			ref.id, outcome.Verdict.Verdict, *outcome.Checked)
+	}
+	verdictJSON := ""
+	if outcome.Verdict != nil {
+		if b, err := json.Marshal(outcome.Verdict); err == nil {
+			verdictJSON = string(b)
+		}
 	}
 
 	if _, err := tx.Exec(
@@ -1111,13 +1138,14 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 			input_tokens = COALESCE(?, input_tokens),
 			output_tokens = COALESCE(?, output_tokens),
 			cached_input_tokens = COALESCE(?, cached_input_tokens),
-			checked = COALESCE(?, checked)
+			checked = COALESCE(?, checked),
+			verdict = CASE WHEN ? != '' THEN ? ELSE verdict END
 		 WHERE id = ?`,
 		outcome.Engine, outcome.Engine, outcome.Model, outcome.Model,
 		nullable(outcome.CostUSD), nullable(outcome.InputTokens), nullable(outcome.OutputTokens),
-		nullable(outcome.CachedInputTokens), nullBool(outcome.Checked), ref.id,
+		nullable(outcome.CachedInputTokens), nullBool(checked), verdictJSON, verdictJSON, ref.id,
 	); err != nil {
-		return "", fmt.Errorf("tasks: recording outcome: %w", err)
+		return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
 	}
 
 	switch outcome.Kind {
@@ -1131,11 +1159,11 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 			`INSERT INTO interventions (id, execution_id, kind, reason, request, requested_ns, secret) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			newID("i"), ref.id, kind, InterventionReason(kind, outcome.Reply), outcome.Reply, sqlitedb.ToNS(now), outcome.Secret,
 		); err != nil {
-			return "", fmt.Errorf("tasks: recording intervention: %w", err)
+			return "", "", fmt.Errorf("tasks: recording intervention: %w", err)
 		}
 
 		if err := setExecutionStatus(tx, ref.id, ref.taskID, StatusWaiting, now); err != nil {
-			return "", err
+			return "", "", err
 		}
 
 	default:
@@ -1148,25 +1176,25 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 			`UPDATE executions SET status = ?, final_reply = ?, ended_ns = ? WHERE id = ?`,
 			status, outcome.Reply, sqlitedb.ToNS(now), ref.id,
 		); err != nil {
-			return "", fmt.Errorf("tasks: recording outcome: %w", err)
+			return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
 		}
 
 		if _, err := tx.Exec(
 			`UPDATE tasks SET status = ?, updated_ns = ? WHERE id = ?`, status, sqlitedb.ToNS(now), ref.taskID,
 		); err != nil {
-			return "", fmt.Errorf("tasks: recording outcome: %w", err)
+			return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
 		}
 
 		if err := promoteNext(tx, workerID, now); err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return "", fmt.Errorf("tasks: recording outcome: %w", err)
+		return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
 	}
 
-	return ref.taskID, nil
+	return ref.taskID, ref.id, nil
 }
 
 // promoteNext starts the worker's oldest queued execution, if it has one and
@@ -1423,11 +1451,18 @@ func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 		var started, ended int64
 		var cost sql.NullFloat64
 		var input, output, cached, checked sql.NullInt64
+		var verdict string
 
 		if err := r.Scan(&execution.ID, &execution.TaskID, &execution.Attempt, &execution.WorkerID,
 			&execution.Engine, &execution.Model, &execution.Status, &execution.FinalReply,
-			&started, &ended, &cost, &input, &output, &cached, &checked); err != nil {
+			&started, &ended, &cost, &input, &output, &cached, &checked, &verdict); err != nil {
 			return Execution{}, err
+		}
+		if verdict != "" {
+			var v GateVerdict
+			if json.Unmarshal([]byte(verdict), &v) == nil {
+				execution.Verdict = &v
+			}
 		}
 
 		execution.StartedAt = sqlitedb.FromNS(started)
@@ -1455,7 +1490,8 @@ func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 
 		return execution, nil
 	}, `SELECT e.id, e.task_id, e.attempt, e.worker_id, e.engine, e.model, e.status, e.final_reply,
-			e.started_ns, e.ended_ns, e.cost_usd, e.input_tokens, e.output_tokens, e.cached_input_tokens, e.checked
+			e.started_ns, e.ended_ns, e.cost_usd, e.input_tokens, e.output_tokens, e.cached_input_tokens, e.checked,
+			e.verdict
 		 FROM executions e JOIN tasks t ON t.id = e.task_id `+where+` ORDER BY e.task_id, e.attempt`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("tasks: reading executions: %w", err)
