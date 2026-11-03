@@ -1339,8 +1339,8 @@ def placeholder_fields(fields):
 
 
 # A click that saves a new record, and what the application answers once it has.
-# ("Accept": an accounting application's save, found live 2026-10-26 - its duplicate check had never run.)
-_SAVE_CONTROL = re.compile(r"(?i)\b(?:submit|save|create|add|onboard|post|confirm|place|register|book|finish|accept)\b")
+# (The plain verbs of keeping a record, whatever the application: "Accept" keeps one too.)
+_SAVE_CONTROL = re.compile(r"(?i)\b(?:submit|save|create|add|post|confirm|place|register|book|finish|accept)\b")
 _SAVED_ANSWER = re.compile(r"(?i)/done/|/saved\b|/success|\bsaved\b|\bcreated\b|\bsubmitted\b|\badded\b")
 # What an application says when it did not save: an answer with one of these is no proof of a save, whatever page it
 # is on. Found live (2026-10-25): a form posted to ".../voucher/save" answered "ledger '<name>' does not exist"; the "/save"
@@ -1516,7 +1516,7 @@ def _current_form(events):
     return current
 
 
-_LABEL_NOISE = {"of", "the", "a", "no", "number", "dd", "mm", "yyyy", "rs", "usd", "inr", "per", "recruiter", "status"}
+_LABEL_NOISE = {"of", "the", "a", "no", "number", "dd", "mm", "yyyy", "rs", "usd", "inr", "per", "status"}
 
 
 def _words_of(label):
