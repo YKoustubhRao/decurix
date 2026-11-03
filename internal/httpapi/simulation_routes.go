@@ -502,12 +502,16 @@ func (h *simulationRoutes) file(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(f.Body)
 }
 
+// practiceGrantsUsed is whether anything consumes a practice grant (an unattended start). Until it does, enabling one
+// is refused (authorize).
+const practiceGrantsUsed = false
+
 // authorize enables the current revision after a clean run (rechecking that the
 // worker's skill and pins are unchanged), or suspends it. Enabling lets the
 // skill start unattended once that flag exists; it never relaxes the one-action
 // approval for sending, paying or publishing.
 func (h *simulationRoutes) authorize(w http.ResponseWriter, r *http.Request) {
-	if !requireMethodJSON(w, r, http.MethodPost) || !h.ready(w) {
+	if !requireMethodJSON(w, r, http.MethodPost) {
 		return
 	}
 	var body struct {
@@ -516,6 +520,17 @@ func (h *simulationRoutes) authorize(w http.ResponseWriter, r *http.Request) {
 		Action         string `json:"action"`
 	}
 	if !qualificationJSON(w, r, &body) {
+		return
+	}
+	// Nothing reads a practice grant yet (no caller of PracticeGrant or the holds), so enabling one would show the
+	// person a permission that changes no behaviour (review 2026-11-03, C-14). Refused, with the reason, until the
+	// unattended-start consumer exists; suspend still works. The store's grant code stays for that consumer, which
+	// must also check the live skill's hash against the grant's (C-14's second half).
+	if body.Action == "enable" && !practiceGrantsUsed {
+		jsonStatusError(w, http.StatusConflict, "Enabling a practised skill is not used yet: no worker starts unattended on it today, so there is nothing to enable.")
+		return
+	}
+	if !h.ready(w) {
 		return
 	}
 	if body.Action == "enable" {

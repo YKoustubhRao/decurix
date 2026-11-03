@@ -231,3 +231,19 @@ func TestSimulationDraftApproveAndRunRefusals(t *testing.T) {
 		t.Fatalf("path in a file name: %d", w.Code)
 	}
 }
+
+// Enabling a practised skill is refused, and says it is not used yet: nothing starts unattended on a grant (C-14).
+func TestEnablingPracticeSaysItIsNotUsedYet(t *testing.T) {
+	if practiceGrantsUsed {
+		t.Skip("practice grants have a consumer now")
+	}
+	h := &simulationRoutes{}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/readiness/simulation/authorize",
+		strings.NewReader(`{"responsibility":"r","revision":"v","action":"enable"}`))
+	req.Header.Set("Content-Type", "application/json")
+	h.authorize(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "not used yet") {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
