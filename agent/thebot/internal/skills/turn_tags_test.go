@@ -2,6 +2,8 @@ package skills
 
 import (
 	"context"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 
@@ -80,5 +82,50 @@ func TestTwoOperatorRunsInOneJobShareTheTurnCount(t *testing.T) {
 	}
 	if !seen["jy:1"] || !seen["jy:2"] {
 		t.Fatalf("turns = %v", seen)
+	}
+}
+
+// A command the operator runs is told its task and turn (PLAN-P2 C3); a job with no task tells it neither.
+func TestACommandSeesItsTaskAndTurn(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("reads the environment with env")
+	}
+	run := func(tags llm.Tags) string {
+		chat := &scriptedChat{replies: []string{"COMMAND:\nenv", "DONE:\nlisted"}}
+		rc := operatorContext(t, chat)
+		rc.Ctx = llm.WithTags(context.Background(), tags)
+		if _, err := NewOperator().Run(rc, Subtask{Step: "list the environment", Type: "operator"}); err != nil {
+			t.Fatal(err)
+		}
+		if len(chat.calls) < 2 {
+			t.Fatalf("the command's output never reached the model: %d calls", len(chat.calls))
+		}
+		return chat.calls[1][len(chat.calls[1])-1].Content
+	}
+	out := run(llm.Tags{Task: "t_env", Job: "jz"})
+	if !strings.Contains(out, "DECURIX_TASK_ID=t_env") || !strings.Contains(out, "DECURIX_TURN_ID=jz:1") {
+		t.Fatalf("the command did not see its task and turn:\n%s", out)
+	}
+	out = run(llm.Tags{})
+	if strings.Contains(out, "DECURIX_TASK_ID=") || strings.Contains(out, "DECURIX_TURN_ID=") {
+		t.Fatalf("a job with no task told the command one:\n%s", out)
+	}
+}
+
+func TestGuiEnvCarriesTheTaskAndTurnOnlyWhenSet(t *testing.T) {
+	has := func(env []string, prefix string) bool {
+		for _, kv := range env {
+			if strings.HasPrefix(kv, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	st := &operatorState{taskID: "t_1", turnID: "j:3"}
+	if env := st.guiEnv(); !has(env, "DECURIX_TASK_ID=t_1") || !has(env, "DECURIX_TURN_ID=j:3") {
+		t.Fatalf("guiEnv = %v", env)
+	}
+	if env := (&operatorState{}).guiEnv(); has(env, "DECURIX_TASK_ID=") || has(env, "DECURIX_TURN_ID=") {
+		t.Fatalf("guiEnv with no task = %v", env)
 	}
 }

@@ -1279,7 +1279,8 @@ func (st *operatorState) documentPictures(output string) ([][]byte, []string) {
 
 // guiEnv is what Decurix's gui command is told about this brain: how much of
 // the screen's element list to print, and - for a brain that can see -
-// where to leave a screenshot and at what size.
+// where to leave a screenshot and at what size; and the task and turn the
+// command runs in.
 func (st *operatorState) guiEnv() []string {
 	env := []string{"DECURIX_OFFICE_IMAGES=ocr"}
 	if st.Vision {
@@ -1300,6 +1301,14 @@ func (st *operatorState) guiEnv() []string {
 		if st.ScreenScale <= 1 {
 			env = append(env, "DECURIX_GUI_RULER=1")
 		}
+	}
+	// The task and the turn the command runs in (PLAN-P2 C3): the worker's tools stamp them on what they record, so a
+	// recording event is joined to the model call that chose it. Neither is a secret, and neither reaches a prompt.
+	if st.taskID != "" {
+		env = append(env, "DECURIX_TASK_ID="+st.taskID)
+	}
+	if st.turnID != "" {
+		env = append(env, "DECURIX_TURN_ID="+st.turnID)
 	}
 	return env
 }
