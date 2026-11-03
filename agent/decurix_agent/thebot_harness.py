@@ -699,10 +699,11 @@ def _backend_note(reason):
     )
 
 
-def _escalate(reason):
+def _escalate(reason, secret=False):
     """
     Send one reason to the human, rewritten if it is really about the
-    backend rather than about the task.
+    backend rather than about the task. `secret`: soul's job says the question is for a secret field (F-1), so the
+    person's reply is withheld whole wherever it is kept.
     """
 
     if _looks_like_backend_failure(reason):
@@ -712,7 +713,7 @@ def _escalate(reason):
     # A question is a question: an approval is only what a gate stopped (the "needs_approval" outcome), which names
     # the one action a yes allows. A word list over the model's question labelled "I need your rule or documentation
     # for ... approval" an approval, and it was answered "yes" (2026-10-23).
-    ask_for_query(reason, kind="query")
+    ask_for_query(reason, kind="query", secret=bool(secret))
 
 
 def _fail_on_backend(reason):
@@ -779,6 +780,9 @@ def _handle_job(job, error, resuming=False):
     outcome = job.get("outcome") or ""
     answer = (job.get("finalAnswer") or "").strip()
     question = (job.get("question") or "").strip() or answer
+    # soul marks a question for a value it was about to type into a password field (its job's "secret", F-1): a
+    # structural fact of the job, never read from the question's words. Absent on an older soul: not secret.
+    secret = job.get("secret", False) is True
 
     if outcome in ("needs_approval", "needs_input"):
         note_question(question)
@@ -788,7 +792,7 @@ def _handle_job(job, error, resuming=False):
         # the job paused. The human's reply comes back through
         # continue_after_query and resumes it.
         _approval_asked = question
-        ask_for_query(question, kind="approval")
+        ask_for_query(question, kind="approval", secret=secret)
         return
 
     if outcome == "needs_input":
@@ -801,7 +805,7 @@ def _handle_job(job, error, resuming=False):
             write_final_reply(f"Stopped, as you said (\"{called_off}\"). {answer or ''}".strip(), kind="error",
                               checked=False, gated=True)
             return
-        _escalate(question)
+        _escalate(question, secret=secret)
         return
 
     if outcome == "failed":

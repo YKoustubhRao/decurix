@@ -29,6 +29,33 @@ class TheQueryCarriesTheMark(unittest.TestCase):
         self.assertNotIn("secret", self.sent())
 
 
+class SoulsQuestionForASecretField(unittest.TestCase):
+    """F-1 (final review): soul's job says a question is for a value it was about to type into a password field
+    ("secret": true, beside "question"); the query the agent sends carries the mark."""
+
+    def payload(self, job):
+        posted = []
+        saved = (state.current_task, state.waiting_for_query)
+        self.addCleanup(lambda: (setattr(state, "current_task", saved[0]), setattr(state, "waiting_for_query", saved[1])))
+        state.current_task = "sign in to the portal and download the statement"
+        with mock.patch.object(messaging, "_post_querytext", side_effect=lambda p: posted.append(p) or ("sent", "")), \
+                mock.patch.object(messaging, "progress"), mock.patch.object(messaging.usage, "snapshot", return_value={}), \
+                mock.patch.object(messaging, "_query_gate", None), \
+                mock.patch.object(thebot_harness.guidance, "refused", lambda: None), \
+                mock.patch.object(thebot_harness.usage, "add"):
+            thebot_harness._handle_job(job, None)
+        return posted[-1]
+
+    def test_a_question_soul_marks_secret_is_sent_secret(self):
+        job = {"status": "done", "outcome": "needs_input", "question": "What is the portal's password?", "secret": True}
+        self.assertIs(self.payload(job).get("secret"), True)
+
+    def test_an_ordinary_question_and_an_older_soul_carry_no_mark(self):
+        for job in ({"status": "done", "outcome": "needs_input", "question": "Which month?", "secret": False},
+                    {"status": "done", "outcome": "needs_input", "question": "Which month?"}):
+            self.assertNotIn("secret", self.payload(job))
+
+
 class AReplayStoppedOnAPrivateStep(unittest.TestCase):
     PROGRAM = {"session": "s1", "steps": [
         {"n": 1, "kind": "click", "target": {"role": "button", "name": "Sign in"}},
