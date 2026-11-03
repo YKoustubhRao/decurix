@@ -15,13 +15,14 @@
 // tree), so a VM sees a phone app the way it sees a web page: named buttons
 // and fields, not only a picture.
 //
-// The desktops' approval gate does NOT see this input: a tap or key sent to a
-// phone app through its viewer goes straight to the phone, the same as the
-// person's own finger, so a Send or Pay tapped here is not stopped by the gate
-// (review 2026-11-03, B-05; gate-mediated phone input is the owner's input
-// broker decision). What is enforced here is narrower: only ordinary typing
-// and navigation keys are passed on (OrdinaryKey), never system keys that
-// would reach beyond the chosen app.
+// Nothing here checks approvals. The desktops' gate sees an agent's click on
+// the phone app's viewer in the VM, before the viewer sends it on; input that
+// reaches this link any other way - the viewer's connection driven directly
+// with its token, which the worker can read, or a person in the viewer - goes
+// to the phone without the gate (review 2026-11-03, B-05; gate-mediated phone
+// input is the owner's input-broker decision). What is enforced here is
+// narrower: only ordinary typing and navigation keys are passed on
+// (OrdinaryKey), never system keys that reach beyond the chosen app.
 //
 // Depends on nothing internal but wsconn.
 package phonehost

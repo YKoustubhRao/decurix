@@ -64,6 +64,7 @@ details{margin-top:10px;color:var(--text-2)}
         <li><b>Agents act only on a task you give them.</b> Every agent is told to stop and ask you before it pays, buys, sends a message for you, or does anything else with real-world consequences.</li>
         <li><b>Send, Pay and Buy are blocked until you approve them.</b> The VM reads the app&rsquo;s buttons and fields from Android itself, the same way a screen reader does. An agent&rsquo;s tap on a Send or Pay button, or pressing Enter in a messaging app, waits for your yes, just as it does in a desktop&rsquo;s browser.</li>
         <li><b>A few cases can&rsquo;t be read, and only the agent&rsquo;s instruction to ask you covers them:</b> apps that draw their own screen without labels (some games and custom-built apps), and phones older than Android 11. The app&rsquo;s window in the VM says &ldquo;Picture only&rdquo; when this is the case.</li>
+        <li><b>The check sees what an agent does on the VM&rsquo;s screen.</b> Input sent to the phone&rsquo;s connection any other way (by an agent that works around its screen, or by you in the viewer) reaches the phone without it.</li>
         <li>Your desktops can see whatever these apps show, including messages, balances and one-time codes. So can anyone who can use your Decurix dashboard or has this phone&rsquo;s pairing. Only link a Decurix you trust.</li>
         <li>Wireless debugging stays on and the phone stays awake while it is linked, which uses more battery.</li>
       </ul>
@@ -74,6 +75,7 @@ details{margin-top:10px;color:var(--text-2)}
     <button class="btn" id="yes" type="button" disabled>Yes, set it up</button>
     <a class="btn quiet" href="/">Not now</a>
     <p class="err small" id="askErr" hidden></p>
+    <p class="err small" id="plainHttp" hidden>This page reached Decurix over plain http, so someone else on this network could change what it shows or sends. The setup line checks the script and the helper it downloads, but it cannot check this page. Prefer the secure (https) link from the Decurix Mobile menu for the setup.</p>
   </section>
 
   <section id="steps" hidden>
@@ -122,6 +124,19 @@ details{margin-top:10px;color:var(--text-2)}
   }
 
   var ack = document.getElementById('ack'), yes = document.getElementById('yes');
+  if (location.protocol === 'http:' && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) {
+    document.getElementById('plainHttp').hidden = false;
+  }
+
+  // setupLine is the one line pasted into Termux. "yes |": a fresh Termux can stop to ask about a package's settings
+  // file. The script is saved, checked against the hash this page was given, and only then run; it checks the helper
+  // it downloads the same way (review 2026-11-03, W-13).
+  function setupLine(url, sha) {
+    var f = '"${TMPDIR:-$HOME}/decurix-setup.sh"';
+    return "command -v curl >/dev/null || yes | pkg install curl; curl -fsSL '" + url + "' -o " + f +
+      " && echo '" + sha + "  '" + f + " | sha256sum -c --status - && sh " + f +
+      " || echo 'The setup did not finish (or its script did not match); open the phone link page again.'";
+  }
   ack.onchange = function () { yes.disabled = !ack.checked; };
 
   yes.onclick = async function () {
@@ -131,13 +146,13 @@ details{margin-top:10px;color:var(--text-2)}
       var res = await fetch('/api/phones/setup-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'understood=1'
+        body: 'understood=1&b=' + encodeURIComponent(location.origin)
       });
       var data = await res.json();
       if (!res.ok) { throw new Error(data.error || 'failed'); }
+      if (!/^[0-9a-f]{64}$/.test(data.script_sha256 || '')) { throw new Error('the setup script could not be prepared'); }
       var url = location.origin + '/phone/setup.sh?t=' + data.token + '&b=' + encodeURIComponent(location.origin);
-      // "yes |": a fresh Termux can stop to ask about a package's settings file.
-      cmdEl.textContent = "command -v curl >/dev/null || yes | pkg install curl; curl -fsSL '" + url + "' | sh";
+      cmdEl.textContent = setupLine(url, data.script_sha256);
       document.getElementById('ask').hidden = true;
       document.getElementById('steps').hidden = false;
       poll();
