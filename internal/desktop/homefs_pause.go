@@ -16,9 +16,24 @@ type copyPauses struct {
 	mu      sync.Mutex
 	working map[string]int
 	repause map[string]bool
+	names   map[string]*sync.Mutex
 }
 
-var homeCopyPauses = &copyPauses{working: map[string]int{}, repause: map[string]bool{}}
+var homeCopyPauses = &copyPauses{working: map[string]int{}, repause: map[string]bool{}, names: map[string]*sync.Mutex{}}
+
+// lockName holds the start of copies into desktop container name, one at a time, and returns the unlock. The lock
+// is per desktop, so copies into different desktops never wait on each other; one entry is kept per desktop name.
+func (c *copyPauses) lockName(name string) func() {
+	c.mu.Lock()
+	l := c.names[name]
+	if l == nil {
+		l = &sync.Mutex{}
+		c.names[name] = l
+	}
+	c.mu.Unlock()
+	l.Lock()
+	return l.Unlock
+}
 
 // begin notes a copy into container id; unpaused says this copy resumed it.
 func (c *copyPauses) begin(id string, unpaused bool) {

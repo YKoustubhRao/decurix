@@ -106,6 +106,9 @@ func (m *Manager) homeAccess(ctx context.Context, id string) (string, func(), er
 // homeAccessOf is homeAccess for the container called name (a practice desktop's has its own name); id names the
 // desktop in a not-found error.
 func (m *Manager) homeAccessOf(ctx context.Context, name, id string) (string, func(), error) {
+	// One copy at a time decides how to reach a desktop: two that both read "paused" raced on the unpause, and the
+	// loser failed its copy instead of joining the first (REVIEW-3 follow-up 3).
+	defer homeCopyPauses.lockName(name)()
 	inspect, err := m.client.ContainerInspect(ctx, name)
 	if err != nil {
 		if nf := notFound(id, err); nf != err {
@@ -115,6 +118,8 @@ func (m *Manager) homeAccessOf(ctx context.Context, name, id string) (string, fu
 	}
 	state := inspect.State
 	repause := func() {
+		// Under the same lock, so a copy starting now either joins before this one ends or sees the desktop paused.
+		defer homeCopyPauses.lockName(name)()
 		if !homeCopyPauses.end(inspect.ID) {
 			return
 		}
@@ -127,7 +132,16 @@ func (m *Manager) homeAccessOf(ctx context.Context, name, id string) (string, fu
 	switch {
 	case state != nil && state.Running && state.Paused:
 		if err := m.client.ContainerUnpause(ctx, inspect.ID); err != nil {
-			return "", nil, fmt.Errorf("resume %s for a copy: %w", name, err)
+			// Resumed meanwhile from outside the copies (a person's Resume): read it again, and copy into it as into
+			// any running desktop. Still paused, or gone: the copy fails.
+			again, ierr := m.client.ContainerInspect(ctx, name)
+			if ierr != nil || again.State == nil || !again.State.Running || again.State.Paused {
+				return "", nil, fmt.Errorf("resume %s for a copy: %w", name, err)
+			}
+			if homeCopyPauses.joining(inspect.ID) {
+				return inspect.ID, repause, nil
+			}
+			return inspect.ID, func() {}, nil
 		}
 		homeCopyPauses.begin(inspect.ID, true)
 		return inspect.ID, repause, nil
@@ -235,9 +249,6 @@ func (m *Manager) readHomeTar(ctx context.Context, target, clean string, limit i
 		if errors.Is(err, io.EOF) {
 			err = nil
 		}
-		if err == nil && out.over {
-			err = errors.New("the desktop's files exceed the copy limit")
-		}
 		if err == nil {
 			state, ierr := m.client.ContainerExecInspect(context.WithoutCancel(ctx), exec.ID)
 			switch {
@@ -297,16 +308,15 @@ func homeCmd(cmd ...string) []string {
 	return append([]string{"/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "LANG=C.UTF-8"}, cmd...)
 }
 
-// limitWriter passes at most left bytes on to w and notes when more arrived.
+// limitWriter passes at most left bytes on to w, and stops the copy with errCapped when more arrive: the reader then
+// gets that error, never a cut archive.
 type limitWriter struct {
 	w    io.Writer
 	left int64
-	over bool
 }
 
 func (l *limitWriter) Write(p []byte) (int, error) {
 	if int64(len(p)) > l.left {
-		l.over = true
 		return 0, errCapped
 	}
 	l.left -= int64(len(p))
