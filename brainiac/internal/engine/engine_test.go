@@ -322,3 +322,47 @@ func TestFallbackNeverSendsTwoAnswers(t *testing.T) {
 		t.Fatalf("the finished remote answer reached the client as %q", sent)
 	}
 }
+
+// fakeProc counts starts and stops of a shared process.
+type fakeProc struct{ running, starts, stops int }
+
+func (f *fakeProc) Start(context.Context) error {
+	if f.running == 0 {
+		f.starts++
+	}
+	f.running = 1
+	return nil
+}
+func (f *fakeProc) Stop() error { f.running = 0; f.stops++; return nil }
+
+// Evicting one worker unit does not stop the process another one is using:
+// the worker stops when the last unit holding it is unloaded.
+func TestTheSharedWorkerStopsOnlyWithItsLastUnit(t *testing.T) {
+	p := &fakeProc{}
+	sw := &sharedProc{p: p}
+	ocr := &unit{k: "ocr", runtime: catalog.RuntimeWorker, pl: "host", mem: 1, sw: sw}
+	asr := &unit{k: "asr", runtime: catalog.RuntimeWorker, pl: "host", mem: 1, sw: sw}
+	r := NewResidency(map[string]float64{"host": 10}, nil)
+	relO, _, err := r.Acquire(context.Background(), ocr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relA, _, err := r.Acquire(context.Background(), asr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relO()
+	r.mu.Lock()
+	evicted := r.loaded["ocr"].u
+	delete(r.loaded, "ocr")
+	r.mu.Unlock()
+	evicted.unload() // memory pressure takes the idle OCR unit
+	if p.running != 1 || p.stops != 0 {
+		t.Fatal("evicting the idle OCR unit stopped the worker the speech unit is using")
+	}
+	relA()
+	r.UnloadAll()
+	if p.running != 0 || p.stops != 1 || p.starts != 1 {
+		t.Fatalf("starts %d stops %d running %d", p.starts, p.stops, p.running)
+	}
+}

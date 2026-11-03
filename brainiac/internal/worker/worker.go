@@ -40,8 +40,13 @@ type Worker struct {
 
 	// Logf, when set, receives each line the worker writes to stderr.
 	Logf func(format string, args ...any)
-	// Sandbox, when set and the kernel can, is what the worker may touch.
+	// Sandbox, when set and the kernel can, is what the worker may touch. On
+	// Linux the worker then also gets no network and a view of only those
+	// files (it talks over its pipes).
 	Sandbox *isolate.Policy
+	// Required refuses to start a worker that would reach more than its own
+	// files (sandbox: required).
+	Required bool
 
 	callMu sync.Mutex // one call at a time
 
@@ -53,6 +58,7 @@ type Worker struct {
 	running bool
 	nextID  int64
 	stderr  *tail
+	open    []string // what the running process can still reach
 }
 
 // New describes a worker run as `python -I -u script` with env added to the
@@ -78,19 +84,11 @@ func (w *Worker) startLocked() error {
 	if w.running {
 		return nil
 	}
-	// -I: isolated mode, so modules in the working directory or the user's
-	// site-packages are never imported; -u: unbuffered replies.
-	cmd := exec.Command(w.python, "-I", "-u", w.script)
-	cmd.Env = isolate.Env(w.env...)
-	if w.Sandbox != nil && isolate.CanSandbox() {
-		if err := isolate.Wrap(cmd, *w.Sandbox); err != nil {
-			if w.Logf != nil {
-				w.Logf("no file sandbox: %v", err)
-			}
-			cmd = exec.Command(w.python, "-I", "-u", w.script)
-			cmd.Env = isolate.Env(w.env...)
-		}
+	cmd, open := w.command()
+	if w.Required && len(open) > 0 {
+		return fmt.Errorf("worker: the sandbox is required here, and the worker would still reach: %s; not starting it", strings.Join(open, ", "))
 	}
+	isolate.DieWithParent(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("worker: stdin: %w", err)
@@ -101,8 +99,12 @@ func (w *Worker) startLocked() error {
 	}
 	w.stderr.reset()
 	cmd.Stderr = &lineSink{tail: w.stderr, logf: w.Logf}
-	if err := cmd.Start(); err != nil {
+	if err := isolate.StartLocked(cmd); err != nil {
 		return fmt.Errorf("worker: start %s: %w", w.python, err)
+	}
+	w.open = open
+	if len(open) > 0 && w.Logf != nil {
+		w.Logf("runs with access to: %s", strings.Join(open, ", "))
 	}
 	exited := make(chan struct{})
 	go func() {
@@ -116,6 +118,51 @@ func (w *Worker) startLocked() error {
 	}()
 	w.cmd, w.stdin, w.reader, w.exited, w.running = cmd, stdin, bufio.NewReaderSize(stdout, 1<<20), exited, true
 	return nil
+}
+
+// command is the worker process, confined as far as this system allows, and
+// what it could still reach: with namespaces, nothing but its files and its
+// pipes; with Landlock alone, the network and other programs' sockets too.
+func (w *Worker) command() (*exec.Cmd, []string) {
+	// -I: isolated mode, so modules in the working directory or the user's
+	// site-packages are never imported; -u: unbuffered replies.
+	plain := func() *exec.Cmd {
+		cmd := exec.Command(w.python, "-I", "-u", w.script)
+		cmd.Env = isolate.Env(w.env...)
+		return cmd
+	}
+	if w.Sandbox == nil {
+		return plain(), []string{"network", "files", "sockets"}
+	}
+	if ok, err := isolate.CanConfine(); ok {
+		cmd := plain()
+		isolate.NoNetwork(cmd)
+		if err := isolate.Wrap(cmd, *w.Sandbox); err == nil {
+			return cmd, nil
+		}
+	} else if w.Logf != nil {
+		w.Logf("no namespaces for the worker: %v", err)
+	}
+	if isolate.CanSandbox() {
+		cmd := plain()
+		if err := isolate.Wrap(cmd, *w.Sandbox); err == nil {
+			return cmd, []string{"network", "sockets"}
+		} else if w.Logf != nil {
+			w.Logf("no file sandbox: %v", err)
+		}
+	}
+	return plain(), []string{"network", "files", "sockets"}
+}
+
+// Open names what the running worker can still reach ("network", "files",
+// "sockets"); nothing when it is fully confined or not running.
+func (w *Worker) Open() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.running {
+		return nil
+	}
+	return w.open
 }
 
 // Running reports whether the worker process is alive.

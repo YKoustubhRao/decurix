@@ -155,3 +155,25 @@ func TestResidencyReloadsADeadUnit(t *testing.T) {
 	}
 	relNew()
 }
+
+// With sandbox: required, a model server that could not be fully confined
+// is refused, not started. The fake server has no Unix socket, so it could
+// only run on loopback, which is never fully confined.
+func TestARequiredSandboxRefusesAnUnconfinedServer(t *testing.T) {
+	e, u := llamaEngine(t, "die-after-health")
+	u.llama.NoSandbox, u.llama.Required = false, true
+	_, _, err := e.res.Acquire(context.Background(), u)
+	if err == nil || !strings.Contains(err.Error(), "required") {
+		t.Fatalf("an unconfined server started: %v", err)
+	}
+	if _, err := os.Stat(u.llama.Model + ".starts"); err == nil || u.llama.Running() {
+		t.Fatal("the server process ran")
+	}
+}
+
+func TestOnlyAnOrphanedServerIsSwept(t *testing.T) {
+	args := []string{"/store/bin/llama-server", "-m", "m.gguf", "--host", "/tmp/brainiac-llama-123/s.sock"}
+	if !orphanServer(args, "systemd") || orphanServer(args, "brainiac") || orphanServer([]string{"llama-server", "--host", "127.0.0.1"}, "systemd") {
+		t.Fatal("orphanServer")
+	}
+}

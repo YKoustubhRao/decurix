@@ -94,14 +94,26 @@ type Config struct {
 	UpdateEvery string `json:"update_every,omitempty"`
 	// Sandbox "off" lets model processes read and write what this user can.
 	// It is for a GPU whose driver needs a path the sandbox does not allow.
+	// "required" refuses to start a model process that cannot be fully
+	// confined (no network, only its own files): the default on an appliance
+	// (BRAINIAC_APPLIANCE set). Empty confines as far as the system allows
+	// and reports the rest in status.unconfined.
 	Sandbox string `json:"sandbox,omitempty"`
 	// MaxLocalSeconds keeps a field with the remote brain when a local model
 	// that earned it takes longer than this on average; 0 means no limit.
 	MaxLocalSeconds float64 `json:"max_local_seconds,omitempty"`
 }
 
-// SandboxOff turns the model processes' file sandbox off.
-const SandboxOff = "off"
+// The sandbox settings: SandboxOff turns the model processes' file sandbox
+// off; SandboxRequired starts none that cannot be fully confined.
+const (
+	SandboxOff      = "off"
+	SandboxRequired = "required"
+)
+
+// Appliance reports whether this Brainiac runs as an office appliance
+// (BRAINIAC_APPLIANCE set), where the safe settings are the defaults.
+func Appliance() bool { return strings.TrimSpace(os.Getenv("BRAINIAC_APPLIANCE")) != "" }
 
 // The web settings.
 const (
@@ -164,6 +176,9 @@ func Load(home string) (Config, error) {
 	}
 	if c.UpdateEvery == "" {
 		c.UpdateEvery = "off"
+	}
+	if c.Sandbox == "" && Appliance() {
+		c.Sandbox = SandboxRequired
 	}
 	return c, c.Validate()
 }
@@ -252,6 +267,14 @@ func (c Config) Validate() error {
 	case "", WebAuto, WebOnRequest, WebOff:
 	default:
 		return fmt.Errorf("web %q is not auto, on-request or off", c.Web)
+	}
+	switch c.Sandbox {
+	case "", SandboxOff, SandboxRequired:
+	default:
+		return fmt.Errorf("sandbox %q is not off or required", c.Sandbox)
+	}
+	if c.Sandbox == SandboxOff && Appliance() {
+		return fmt.Errorf("sandbox off is refused on an appliance: a model process there must not reach what this user can")
 	}
 	if c.Mode == ModeLocal && c.Web == WebAuto {
 		return fmt.Errorf("web auto is refused in local mode, which keeps everything on this machine: use on-request (a request sends \"web\": true and its own \"web_query\") or off")

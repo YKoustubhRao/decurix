@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -75,11 +77,21 @@ func CanBlockTCP() bool { return abi() >= 4 }
 
 // Wrap makes cmd start through this program's own helper, which confines
 // itself to the policy and then becomes the real program. The kernel keeps
-// the confinement across that exec, and no child can ever shed it.
+// the confinement across that exec, and no child can ever shed it. When cmd
+// already gets its own user namespace (NoNetwork), the helper also builds a
+// mount view of the policy's paths alone: for that it holds CAP_SYS_ADMIN in
+// that namespace, and gives it up before it becomes the program.
 func Wrap(cmd *exec.Cmd, p Policy) error {
 	self, err := os.Executable()
 	if err != nil {
 		return err
+	}
+	if a := cmd.SysProcAttr; a != nil && a.Cloneflags&syscall.CLONE_NEWUSER != 0 {
+		a.Cloneflags |= syscall.CLONE_NEWNS
+		a.AmbientCaps = []uintptr{capSysAdmin}
+		p.Mount = true
+	} else if !CanSandbox() {
+		return errors.New("this kernel offers no Landlock")
 	}
 	policy, err := json.Marshal(p)
 	if err != nil {
@@ -91,6 +103,9 @@ func Wrap(cmd *exec.Cmd, p Policy) error {
 }
 
 func init() {
+	if len(os.Args) == 2 && os.Args[1] == probeArg {
+		os.Exit(0) // CanConfine's helper got this far: confinement works here
+	}
 	if len(os.Args) < 4 || os.Args[1] != helperArg {
 		return
 	}
@@ -98,8 +113,14 @@ func init() {
 	runtime.LockOSThread()
 	var p Policy
 	err := json.Unmarshal([]byte(os.Args[2]), &p)
+	if err == nil && p.Mount {
+		err = enterView(planView(p))
+	}
 	if err == nil {
 		err = apply(p)
+	}
+	if err == nil {
+		err = dropHelperPowers()
 	}
 	if err == nil {
 		err = syscall.Exec(os.Args[3], append([]string{os.Args[3]}, os.Args[4:]...), os.Environ())
@@ -109,11 +130,19 @@ func init() {
 	os.Exit(126)
 }
 
-// apply confines the calling thread, and everything it starts, to the policy.
+// apply confines the calling thread, and everything it starts, to the
+// policy with Landlock, and forbids gaining privileges. With no Landlock
+// only a mount view (p.Mount) confines the files; without either it fails.
 func apply(p Policy) error {
 	version := abi()
 	if version == 0 {
-		return errors.New("this kernel offers no Landlock")
+		if !p.Mount {
+			return errors.New("this kernel offers no Landlock")
+		}
+		if _, _, errno := syscall.RawSyscall6(syscall.SYS_PRCTL, prNoNewPrivs, 1, 0, 0, 0, 0); errno != 0 {
+			return fmt.Errorf("no_new_privs: %w", errno)
+		}
+		return nil
 	}
 	handled := uint64(fsExecute | fsWriteFile | fsReadFile | fsReadDir | fsRemoveDir | fsRemoveFile | fsMakeChar |
 		fsMakeDir | fsMakeReg | fsMakeSock | fsMakeFifo | fsMakeBlock | fsMakeSym)
@@ -197,12 +226,67 @@ func allowPath(ruleset int, path string, rights uint64) error {
 	return nil
 }
 
-// resolved is a program's directory, and the real one behind a symlink (a
-// venv's python points at the system's or a managed install's).
+var (
+	probeOnce sync.Once
+	probeOK   bool
+	probeErr  error
+)
+
+// CanConfine reports whether a model process can be started with no network
+// and a view of only its own files, by starting this program that way once.
+// A host that refuses unprivileged user namespaces, or the capabilities in
+// them (an AppArmor rule, a container), says no here, before any model.
+func CanConfine() (bool, error) {
+	probeOnce.Do(func() {
+		self, err := os.Executable()
+		if err != nil {
+			probeErr = err
+			return
+		}
+		cmd := exec.Command(self, probeArg)
+		cmd.Env = Env()
+		NoNetwork(cmd)
+		if probeErr = Wrap(cmd, ForProgram(self, nil, nil)); probeErr != nil {
+			return
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			probeErr = fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+			return
+		}
+		probeOK = true
+	})
+	return probeOK, probeErr
+}
+
+// resolved is what running a program needs from where it lives: the program
+// file, the real one behind a symlink (a venv's python points at the
+// system's or a managed install's), and the shared libraries beside each
+// (llama.cpp ships its libggml*.so next to llama-server). Not the whole
+// directory: a program in a shared directory (a download folder, /tmp) must
+// not be handed everything else in it.
 func resolved(program string) []string {
-	out := []string{filepath.Dir(program)}
-	if real, err := filepath.EvalSymlinks(program); err == nil && filepath.Dir(real) != out[0] {
-		out = append(out, filepath.Dir(real))
+	files := []string{program}
+	if real, err := filepath.EvalSymlinks(program); err == nil && real != program {
+		files = append(files, real)
+	}
+	out := append([]string{}, files...)
+	seen := map[string]bool{}
+	for _, f := range files {
+		dir := filepath.Dir(f)
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if n := e.Name(); !e.IsDir() && (strings.HasSuffix(n, ".so") || strings.Contains(n, ".so.")) {
+				out = append(out, filepath.Join(dir, n))
+			}
+		}
 	}
 	return out
 }

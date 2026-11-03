@@ -73,3 +73,25 @@ func TestUpdatesAreOffByDefault(t *testing.T) {
 		t.Fatalf("update_every defaults to %q", c.UpdateEvery)
 	}
 }
+
+func TestTheApplianceRequiresTheSandbox(t *testing.T) {
+	t.Setenv("BRAINIAC_APPLIANCE", "")
+	if c, err := Load(t.TempDir()); err != nil || c.Sandbox != "" {
+		t.Fatalf("a laptop: %q %v", c.Sandbox, err)
+	}
+	t.Setenv("BRAINIAC_APPLIANCE", "1")
+	t.Setenv("TEST_BRAINIAC_KEY", "k")
+	t.Setenv("BRAINIAC_API_KEY_ENV", "TEST_BRAINIAC_KEY")
+	c, err := Load(t.TempDir())
+	if err != nil || c.Sandbox != SandboxRequired {
+		t.Fatalf("the appliance: %q %v", c.Sandbox, err)
+	}
+	c.Sandbox = SandboxOff
+	if err := c.Validate(); err == nil {
+		t.Fatal("sandbox off was accepted on the appliance")
+	}
+	c.Sandbox = "maybe"
+	if err := c.Validate(); err == nil {
+		t.Fatal("an unknown sandbox setting was accepted")
+	}
+}

@@ -34,7 +34,10 @@ type LlamaProc struct {
 	// that no longer carries it is not served. Empty for an older lock.
 	TemplateSHA string
 	NoSandbox   bool // the operator turned the file sandbox off
-	Logf        func(format string, a ...any)
+	// Required refuses to start a server that could reach anything beyond
+	// its own files and socket (sandbox: required).
+	Required bool
+	Logf     func(format string, a ...any)
 
 	mu     sync.Mutex
 	cmd    *exec.Cmd
@@ -75,7 +78,11 @@ func has(help, flag string) bool {
 // is what makes the next turn cheap), and loopback or a Unix socket only.
 func (p *LlamaProc) args(host string, port int) []string {
 	help := serverHelp(p.Bin)
-	a := []string{"-m", p.Model, "--host", host, "--port", strconv.Itoa(port), "-c", strconv.Itoa(p.Ctx)}
+	a := []string{"-m", p.Model, "--host", host}
+	if port > 0 { // a Unix socket needs no port
+		a = append(a, "--port", strconv.Itoa(port))
+	}
+	a = append(a, "-c", strconv.Itoa(p.Ctx))
 	if p.Threads > 0 {
 		a = append(a, "-t", strconv.Itoa(p.Threads))
 	}
@@ -125,24 +132,32 @@ func (p *LlamaProc) Start(ctx context.Context) error {
 				"After `brainiac update approve-template`, `brainiac pull --latest` installs it again", filepath.Base(p.Model))
 		}
 	}
-	port, err := freePort()
-	if err != nil {
-		return err
-	}
 	var logf *os.File
 	if p.LogPath != "" {
 		_ = os.MkdirAll(filepath.Dir(p.LogPath), 0o755)
 		logf, _ = os.Create(p.LogPath)
 	}
 	p.removeSock()
-	cmd, client, err := p.launchNoNetwork(port, logf)
-	if err != nil {
+	l, err := p.launchNoNetwork(logf)
+	if err == nil {
+		err = p.startLaunch(l)
+	}
+	if err != nil && !errors.Is(err, errUnconfined) {
 		p.logf("llama-server: %s cannot run without a network: %v", filepath.Base(p.Model), err)
 		p.removeSock()
-		if cmd, client, err = p.launchOnLoopback(port, logf); err != nil {
-			return fmt.Errorf("llama-server: %w", err)
+		if l, err = p.launchOnLoopback(logf); err == nil {
+			err = p.startLaunch(l)
 		}
 	}
+	if err != nil {
+		p.removeSock()
+		if logf != nil {
+			logf.Close()
+		}
+		return fmt.Errorf("llama-server: %w", err)
+	}
+	cmd, client := l.cmd, l.client
+	p.open = l.open
 	if len(p.open) > 0 {
 		p.logf("llama-server: %s runs with access to: %s", filepath.Base(p.Model), strings.Join(p.open, ", "))
 	}
@@ -205,12 +220,39 @@ func (p *LlamaProc) policy(write ...string) isolate.Policy {
 
 func (p *LlamaProc) sandboxes() bool { return !p.NoSandbox && isolate.CanSandbox() }
 
-// launchOnLoopback starts the server on a TCP port, the way that works
+// errUnconfined is a start refused because the sandbox is required and the
+// process would not be fully confined.
+var errUnconfined = errors.New("the sandbox is required here")
+
+// launch is a server process ready to start, and what it could still reach.
+type launch struct {
+	cmd    *exec.Cmd
+	client *backend.OpenAI
+	open   []string
+}
+
+// startLaunch starts a prepared server, unless the sandbox is required and
+// it would reach more than its own files. It dies with Brainiac.
+func (p *LlamaProc) startLaunch(l launch) error {
+	if p.Required && len(l.open) > 0 {
+		return fmt.Errorf("%w, and %s would still reach: %s; not starting it", errUnconfined, filepath.Base(p.Model), strings.Join(l.open, ", "))
+	}
+	isolate.DieWithParent(l.cmd)
+	return isolate.StartLocked(l.cmd)
+}
+
+// launchOnLoopback prepares the server on a TCP port, the way that works
 // everywhere. Where the kernel can, it still may not connect anywhere, and
-// may listen on that one port only. What stays open is named in p.open.
-func (p *LlamaProc) launchOnLoopback(port int, logf *os.File) (*exec.Cmd, *backend.OpenAI, error) {
+// may listen on that one port only. What stays open is named in open:
+// "sockets" always, since only a mount view hides other programs' Unix
+// sockets.
+func (p *LlamaProc) launchOnLoopback(logf *os.File) (launch, error) {
+	port, err := freePort()
+	if err != nil {
+		return launch{}, err
+	}
 	cmd := p.command("127.0.0.1", port, logf)
-	p.open = []string{"network", "files"}
+	open := []string{"network", "files", "sockets"}
 	if p.sandboxes() {
 		pol := p.policy()
 		pol.BlockTCP, pol.BindTCP = isolate.CanBlockTCP(), []int{port}
@@ -218,48 +260,49 @@ func (p *LlamaProc) launchOnLoopback(port int, logf *os.File) (*exec.Cmd, *backe
 			p.logf("llama-server: no file sandbox: %v", err)
 			cmd = p.command("127.0.0.1", port, logf)
 		} else if pol.BlockTCP {
-			p.open = []string{"udp"}
+			open = []string{"udp", "sockets"}
 		} else {
-			p.open = []string{"network"}
+			open = []string{"network", "sockets"}
 		}
 	}
-	if err := cmd.Start(); err != nil {
-		return nil, nil, err
-	}
-	return cmd, &backend.OpenAI{Name: "llama-server", BaseURL: fmt.Sprintf("http://127.0.0.1:%d", port), TemplateThinking: true}, nil
+	return launch{cmd: cmd, open: open,
+		client: &backend.OpenAI{Name: "llama-server", BaseURL: fmt.Sprintf("http://127.0.0.1:%d", port), TemplateThinking: true}}, nil
 }
 
-// launchNoNetwork starts the server with no network at all, reached through a
-// Unix socket in a directory only this user can open. It returns an error,
-// with nothing started, when this system or build cannot do that.
-func (p *LlamaProc) launchNoNetwork(port int, logf *os.File) (*exec.Cmd, *backend.OpenAI, error) {
+// launchNoNetwork prepares the server with no network at all and, unless
+// the operator turned the sandbox off, a view of nothing but its build, its
+// model and its socket's directory (a mount namespace). It is reached
+// through that Unix socket. It returns an error, with nothing started, when
+// this system or build cannot do that.
+func (p *LlamaProc) launchNoNetwork(logf *os.File) (launch, error) {
 	if !isolate.CanCutNetwork {
-		return nil, nil, errors.New("this system cannot start a process without a network")
+		return launch{}, errors.New("this system cannot start a process without a network")
 	}
 	if !strings.Contains(serverHelp(p.Bin), ".sock") {
-		return nil, nil, errors.New("this llama-server build has no Unix socket to be reached through")
+		return launch{}, errors.New("this llama-server build has no Unix socket to be reached through")
+	}
+	if !p.NoSandbox {
+		if ok, err := isolate.CanConfine(); !ok {
+			return launch{}, fmt.Errorf("this system refuses a process its own namespaces: %v", err)
+		}
 	}
 	dir, err := os.MkdirTemp("", "brainiac-llama-")
 	if err != nil {
-		return nil, nil, err
+		return launch{}, err
 	}
 	p.sock = dir
 	path := filepath.Join(dir, "s.sock")
 	if len(path) > 100 { // sun_path holds about 108 bytes
-		return nil, nil, fmt.Errorf("the socket path %s is too long", path)
+		return launch{}, fmt.Errorf("the socket path %s is too long", path)
 	}
-	cmd := p.command(path, port, logf)
+	cmd := p.command(path, 0, logf)
 	isolate.NoNetwork(cmd)
-	p.open = []string{"files"}
-	if p.sandboxes() {
+	open := []string{"files", "sockets"}
+	if !p.NoSandbox {
 		if err := isolate.Wrap(cmd, p.policy(dir)); err != nil {
-			p.logf("llama-server: no file sandbox: %v", err)
-		} else {
-			p.open = nil
+			return launch{}, err
 		}
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, nil, err
+		open = nil
 	}
 	client := &backend.OpenAI{Name: "llama-server", BaseURL: "http://llama-server", TemplateThinking: true, HTTP: &http.Client{
 		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -267,7 +310,7 @@ func (p *LlamaProc) launchNoNetwork(port int, logf *os.File) (*exec.Cmd, *backen
 			return d.DialContext(ctx, "unix", path)
 		}},
 	}}
-	return cmd, client, nil
+	return launch{cmd: cmd, client: client, open: open}, nil
 }
 
 func (p *LlamaProc) removeSock() {
@@ -283,8 +326,9 @@ func (p *LlamaProc) logf(f string, a ...any) {
 	}
 }
 
-// Open names what a running server can still reach: "files", "network", or
-// "udp" when only TCP could be blocked. Nothing for a fully confined one.
+// Open names what a running server can still reach: "files", "network",
+// "udp" when only TCP could be blocked, "sockets" for other programs' Unix
+// sockets. Nothing for a fully confined one.
 func (p *LlamaProc) Open() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()

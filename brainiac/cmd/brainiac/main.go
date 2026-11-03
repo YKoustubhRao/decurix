@@ -368,6 +368,8 @@ func serve(ctx context.Context, st *store.Store, cfg config.Config, lock *instal
 	if err != nil {
 		return err
 	}
+	// Model servers a crashed Brainiac left running hold memory this one plans with.
+	engine.SweepOrphans(lg.Printf)
 	eng, err := engine.New(engine.Options{Config: cfg, Store: st, Lock: lock, Logger: lg, Catalog: cat})
 	if err != nil {
 		return err

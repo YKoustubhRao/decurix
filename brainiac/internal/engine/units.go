@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"brainiac/internal/backend"
@@ -35,6 +36,45 @@ type unit struct {
 	// first used it, so Brainiac never unloads it.
 	shared bool
 	wk     *worker.Worker
+	sw     *sharedProc // the worker process this unit shares with the other worker units
+}
+
+// stoppable is a process several units share (the Python worker).
+type stoppable interface {
+	Start(ctx context.Context) error
+	Stop() error
+}
+
+// sharedProc is one process that several units use (OCR and speech run in
+// the same worker). Each unit's load is a hold on it, and the process stops
+// only when the last unit holding it is unloaded: evicting an idle OCR unit
+// never ends a transcription the speech unit is running.
+type sharedProc struct {
+	p     stoppable
+	mu    sync.Mutex
+	holds int
+}
+
+func (s *sharedProc) acquire(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.p.Start(ctx); err != nil {
+		return err
+	}
+	s.holds++
+	return nil
+}
+
+func (s *sharedProc) release() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.holds > 0 {
+		s.holds--
+	}
+	if s.holds == 0 {
+		// A process exit returns every byte; Python rarely gives a heap back.
+		_ = s.p.Stop()
+	}
 }
 
 func (u *unit) key() string    { return u.k }
@@ -57,7 +97,7 @@ func (u *unit) load(ctx context.Context) error {
 		}
 		return nil // Ollama loads on the first call
 	case catalog.RuntimeWorker:
-		return u.wk.Start(ctx)
+		return u.sw.acquire(ctx)
 	}
 	return nil
 }
@@ -83,8 +123,7 @@ func (u *unit) unload() {
 			_ = u.ollama.Unload(ctx, u.tag)
 		}
 	case catalog.RuntimeWorker:
-		// A process exit returns every byte; Python rarely gives a heap back.
-		_ = u.wk.Stop()
+		u.sw.release()
 	}
 }
 
@@ -142,6 +181,10 @@ func buildUnits(lock *install.Lock, cat *catalog.Catalog, ollamaURL, logDir stri
 	units := map[string]*unit{}
 	byRole := map[string]*unit{}
 	var ol *backend.Ollama
+	var sw *sharedProc
+	if wk != nil {
+		sw = &sharedProc{p: wk}
+	}
 	for _, p := range lock.Plan.Picks {
 		k := install.UnitKey(p.Model, p.Source)
 		u, ok := units[k]
@@ -167,7 +210,7 @@ func buildUnits(lock *install.Lock, cat *catalog.Catalog, ollamaURL, logDir stri
 				}
 				u.ollama, u.tag = ol, p.Source.Tag
 			case catalog.RuntimeWorker:
-				u.wk = wk
+				u.wk, u.sw = wk, sw
 			}
 			units[k] = u
 		}

@@ -130,7 +130,9 @@ func TestLiveServerWithoutASocketFallsBackAndSaysSo(t *testing.T) {
 	if bin == "" || model == "" || runtime.GOOS != "linux" {
 		t.Skip("set BRAINIAC_LIVE_LLAMA and BRAINIAC_LIVE_GGUF to run a real server on Linux")
 	}
-	// Beside the real one: the sandbox allows a server's own directory.
+	// A wrapper that hides the socket from --help. The sandbox grants a
+	// server's own file and libraries, not the wrapper's target, so this
+	// runs with the file sandbox off: what is checked is the fallback.
 	old := filepath.Join(filepath.Dir(bin), "old-server")
 	script := "#!/bin/sh\n[ \"$1\" = --help ] && exit 0\nexec \"" + bin + "\" \"$@\"\n"
 	if err := os.WriteFile(old, []byte(script), 0o755); err != nil {
@@ -139,7 +141,7 @@ func TestLiveServerWithoutASocketFallsBackAndSaysSo(t *testing.T) {
 	t.Cleanup(func() { os.Remove(old) })
 	t.Setenv("AZURE_KEY", "secret-that-must-not-leak")
 	var logged []string
-	p := &LlamaProc{Bin: old, Model: model, Ctx: 256, Threads: 1, LogPath: filepath.Join(t.TempDir(), "llama.log"),
+	p := &LlamaProc{Bin: old, Model: model, Ctx: 256, Threads: 1, LogPath: filepath.Join(t.TempDir(), "llama.log"), NoSandbox: true,
 		Logf: func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

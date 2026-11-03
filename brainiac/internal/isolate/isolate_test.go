@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -191,4 +192,39 @@ func asExit(err error, target **exec.ExitError) bool {
 		*target = e
 	}
 	return ok
+}
+
+// lockedBuffer collects a child's output from two pipes.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// ForProgram grants the program and the libraries beside it, not every
+// other file in its directory.
+func TestForProgramGrantsTheProgramNotItsWholeDirectory(t *testing.T) {
+	dir := t.TempDir()
+	prog := filepath.Join(dir, "server")
+	mustWrite(t, prog, "x")
+	mustWrite(t, filepath.Join(dir, "libggml.so"), "x")
+	mustWrite(t, filepath.Join(dir, "secret.txt"), "x")
+	got := strings.Join(ForProgram(prog, nil, nil).Read, "\n")
+	if strings.Contains(got, "secret.txt") || strings.Contains(got, "\n"+dir+"\n") || strings.HasSuffix(got, "\n"+dir) {
+		t.Fatalf("the program's directory was granted:\n%s", got)
+	}
+	if !strings.Contains(got, prog) {
+		t.Fatalf("the program was not granted:\n%s", got)
+	}
 }

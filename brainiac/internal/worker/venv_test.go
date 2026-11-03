@@ -4,8 +4,12 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"brainiac/internal/isolate"
 )
 
 // pip and venv run with no API key or token in their environment: a
@@ -35,5 +39,31 @@ func TestPipRunsWithoutSecrets(t *testing.T) {
 	}
 	if !strings.Contains(env, "PIP_INDEX_URL=") || !strings.Contains(env, "HTTPS_PROXY=") {
 		t.Errorf("pip lost its own settings:\n%s", env)
+	}
+}
+
+// A confined worker still answers over its pipes. Where the system allows
+// namespaces it has no network and sees only its own files, and says so.
+func TestAConfinedWorkerAnswers(t *testing.T) {
+	w := newTestWorker(t)
+	script := scriptPath(t)
+	pol := isolate.ForProgram(w.python, []string{filepath.Dir(script)}, []string{t.TempDir()})
+	w.Sandbox, w.Required = &pol, true
+	ok, _ := isolate.CanConfine()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	_, err := w.Hello(ctx)
+	if !ok {
+		// sandbox: required refuses a worker that cannot be confined.
+		if err == nil || !strings.Contains(err.Error(), "required") {
+			t.Fatalf("an unconfined worker started under sandbox: required: %v", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if open := w.Open(); len(open) != 0 {
+		t.Fatalf("the confined worker can still reach %v", open)
 	}
 }

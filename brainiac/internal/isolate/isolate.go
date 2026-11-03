@@ -28,8 +28,12 @@ func init() {
 	}
 }
 
-// helperArg marks this program being run as the sandbox helper (see Wrap).
-const helperArg = "__brainiac_sandbox"
+// helperArg marks this program being run as the sandbox helper (see Wrap);
+// probeArg is what the helper becomes when CanConfine tries it out.
+const (
+	helperArg = "__brainiac_sandbox"
+	probeArg  = "__brainiac_sandbox_probe"
+)
 
 // Policy is what a sandboxed process may touch; everything else is refused.
 type Policy struct {
@@ -39,6 +43,9 @@ type Policy struct {
 	// BindTCP are the ports it may listen on when TCP is blocked. It may
 	// connect to none.
 	BindTCP []int `json:"bind_tcp,omitempty"`
+	// Mount builds a view of the filesystem holding only Read and Write
+	// (Linux, set by Wrap when the process gets its own namespaces).
+	Mount bool `json:"mount,omitempty"`
 }
 
 // systemRead is what a program needs from the system to run, on any Linux.

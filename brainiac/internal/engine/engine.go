@@ -246,6 +246,7 @@ func New(opt Options) (*Engine, error) {
 			pol := isolate.ForProgram(opt.Lock.Python, []string{filepath.Dir(opt.Lock.WorkerScript), opt.Store.Path("models")}, []string{opt.Store.Venv(), tmp})
 			e.wk.Sandbox = &pol
 		}
+		e.wk.Required = opt.Config.Sandbox == config.SandboxRequired
 	}
 	e.cat = opt.Catalog
 	if e.cat == nil {
@@ -263,6 +264,7 @@ func New(opt Options) (*Engine, error) {
 		if u.llama != nil {
 			u.llama.Logf = lg.Printf
 			u.llama.NoSandbox = opt.Config.Sandbox == config.SandboxOff
+			u.llama.Required = opt.Config.Sandbox == config.SandboxRequired
 		}
 	}
 	e.rt = buildRouter(e.cat, opt.Store.Path(RouterExamplesFile))
@@ -949,8 +951,9 @@ type Status struct {
 	Loaded  []string          `json:"loaded"`
 	Catalog string            `json:"catalog"`
 	Machine string            `json:"machine"`
-	// Unconfined are the running model servers that can reach more than their
-	// own files: what each can still reach ("files", "network", "udp").
+	// Unconfined are the running model processes that can reach more than
+	// their own files: what each can still reach ("files", "network", "udp",
+	// "sockets" for other programs' Unix sockets).
 	Unconfined map[string][]string `json:"unconfined,omitempty"`
 }
 
@@ -962,10 +965,14 @@ func (e *Engine) Status() Status {
 		s.Roles[r] = u.model + " (" + u.runtime + ")"
 	}
 	for _, u := range e.units {
-		if u.llama == nil {
-			continue
+		var open []string
+		switch {
+		case u.llama != nil:
+			open = u.llama.Open()
+		case u.wk != nil:
+			open = u.wk.Open()
 		}
-		if open := u.llama.Open(); len(open) > 0 {
+		if len(open) > 0 {
 			if s.Unconfined == nil {
 				s.Unconfined = map[string][]string{}
 			}
