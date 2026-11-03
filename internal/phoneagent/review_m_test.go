@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/YKoustubhRao/decurix/internal/phonehost"
 )
 
 // A saved sign-in is offered only to the control plane it was made for
@@ -104,5 +106,16 @@ func TestSplitTextEndsOnBytesThatAreNotUTF8(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("splitText did not return")
+	}
+}
+
+// The phone's own encoder masks a key's meta state too, whoever sent it (RW1-B-06).
+func TestTheEncoderSendsOnlyTypingModifiers(t *testing.T) {
+	out, err := encodeInput(phonehost.Input{Kind: "key", Key: 29, Meta: 0x1 | 0x10000}) // A, with SHIFT and META
+	if err != nil || len(out) != 1 {
+		t.Fatalf("%v %v", out, err)
+	}
+	if got := binary.BigEndian.Uint32(out[0][10:]); got != 0x1 {
+		t.Fatalf("meta sent = %#x, want shift only", got)
 	}
 }

@@ -46,3 +46,12 @@ func TestOnlyOrdinaryKeysReachAPhone(t *testing.T) {
 		t.Fatal("a system key was passed to the phone")
 	}
 }
+
+// A key's meta state keeps only the typing modifiers: a system modifier (META, ALT) on an allowed letter never reaches
+// the phone (RW1-B-06).
+func TestAKeyCarriesOnlyTypingModifiers(t *testing.T) {
+	const shift, ctrl, alt, meta = 0x1, 0x1000, 0x2, 0x10000
+	if got := OrdinaryMeta(shift | ctrl | alt | meta); got != shift|ctrl {
+		t.Fatalf("OrdinaryMeta = %#x, want shift|ctrl", got)
+	}
+}

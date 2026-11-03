@@ -705,6 +705,7 @@ func (s *Session) Input(in Input) error {
 	if in.Kind == "key" && !OrdinaryKey(in.Key) {
 		return fmt.Errorf("key %d is not a typing or navigation key; it is not sent to the phone", in.Key)
 	}
+	in.Meta = OrdinaryMeta(in.Meta)
 	return s.phone.send(Message{Op: OpInput, Session: s.ID, Input: &in})
 }
 
@@ -736,6 +737,15 @@ var ordinaryKeys = func() map[int]bool {
 // OrdinaryKey reports whether an Android keycode is an ordinary typing or
 // navigation key, the only kind a phone viewer may send.
 func OrdinaryKey(code int) bool { return ordinaryKeys[code] }
+
+// ordinaryMeta are the modifier bits of android.view.KeyEvent's meta state that typing needs: SHIFT (and its left and
+// right), CTRL (likewise), CAPS_LOCK and NUM_LOCK. ALT, META, SYM and FUNCTION are not among them: the window manager
+// reads system shortcuts (an app switcher, the assistant) from an injected key's own meta state, so an allowed key
+// carrying one would reach beyond the chosen app (review RW1-B-06).
+const ordinaryMeta = 0x1 | 0x40 | 0x80 | 0x1000 | 0x2000 | 0x4000 | 0x100000 | 0x200000
+
+// OrdinaryMeta is a key event's meta state with every bit but the typing modifiers cleared.
+func OrdinaryMeta(meta int) int { return meta & ordinaryMeta }
 
 // Close ends the session and tells the phone to close the app's display.
 func (s *Session) Close() {

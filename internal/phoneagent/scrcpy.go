@@ -198,7 +198,8 @@ func encodeInput(in phonehost.Input) ([][]byte, error) {
 		b[0] = msgInjectKeycode
 		b[1] = byte(in.Action)
 		binary.BigEndian.PutUint32(b[2:], uint32(in.Key))
-		binary.BigEndian.PutUint32(b[10:], uint32(in.Meta))
+		// Only the typing modifiers go with a key, whoever sent it (phonehost.OrdinaryMeta).
+		binary.BigEndian.PutUint32(b[10:], uint32(phonehost.OrdinaryMeta(in.Meta)))
 		return [][]byte{b}, nil
 
 	case "text":
