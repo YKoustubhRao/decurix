@@ -3,12 +3,13 @@ package skills
 import (
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // A message the task listed and never opened. Found live (2026-10-26, twice): a client's bills came in one mail, and
 // "Revised invoice 0201" from the same sender stood in the same inbox listing, two rows down; the worker entered the
 // first mail's bill and the report never named the second. What is decided here is mechanical - a row never opened,
-// from a sender the task did open, or naming a number this task's work holds - never what the row's words mean
+// from a sender the task did open, or whose subject names a declared record - never what the row's words mean
 // (review T-18: a list of "revised/cancel/updated" words decided which rows counted).
 
 // listRowRe is a row of a list on the screen as the agent prints it: e12 row "Sender - Subject | preview | date".
@@ -82,20 +83,49 @@ func (st *operatorState) opened(row *listedMessage) bool {
 	return strings.Contains(seen, `heading "`+subject) || strings.Contains(seen, `text "`+subject)
 }
 
-// aboutThisTask reports whether a number in a message row (a run of three or more digits) is one this task's work
-// holds: a command that worked, or the record ledger.
+// aboutThisTask reports whether a message row's subject names a record this task declared: a whole token of the
+// subject equals a record key of the ledger, or a part of one that carries digits (the "0201" of "ABC-0201"). Only the
+// subject is read - never the row's preview or date - and only declared records count, never any number a command
+// held (review round 2, R-2: a date's "2026" made every unopened message a point).
 func (st *operatorState) aboutThisTask(row *listedMessage) bool {
-	worked := strings.Join(st.Worked, "\n") + "\n" + st.RecordLedger
-	for _, run := range digitRunRe.FindAllString(row.text, -1) {
-		if strings.Contains(worked, run) {
+	ids := declaredIdentifiers(st.RecordLedger)
+	if len(ids) == 0 {
+		return false
+	}
+	for _, tok := range identifierTokens(row.subject) {
+		if ids[tok] {
 			return true
 		}
 	}
 	return false
 }
 
+// identifierTokenRe is a run of letters and digits.
+var identifierTokenRe = regexp.MustCompile(`[\p{L}\p{N}]+`)
+
+// identifierTokens are the lower-cased letter-and-digit runs of s.
+func identifierTokens(s string) []string {
+	return identifierTokenRe.FindAllString(strings.ToLower(s), -1)
+}
+
+// declaredIdentifiers are the ledger's record keys, whole (as one token when the key is one) and by each part of
+// three or more characters that holds a digit.
+func declaredIdentifiers(ledger string) map[string]bool {
+	out := map[string]bool{}
+	for _, m := range ledgerRecordRe.FindAllStringSubmatch(ledger, -1) {
+		key := strings.ToLower(strings.TrimSpace(m[1]))
+		out[key] = true
+		for _, part := range identifierTokens(key) {
+			if len(part) >= 3 && strings.IndexFunc(part, unicode.IsDigit) >= 0 {
+				out[part] = true
+			}
+		}
+	}
+	return out
+}
+
 // unopenedMessageIssues are the points for messages the task listed and never opened: one from a sender whose other
-// message the task opened, or one that names a number this task's work holds - unless the report names it. Each is the worker's to do (reviewIssue.Work): open it, or say why it is not this task's.
+// message the task opened, or one whose subject names a record this task declared - unless the report names it. Each is the worker's to do (reviewIssue.Work): open it, or say why it is not this task's.
 func (st *operatorState) unopenedMessageIssues(report string) []reviewIssue {
 	rows := st.listedMessages()
 	if len(rows) == 0 {
