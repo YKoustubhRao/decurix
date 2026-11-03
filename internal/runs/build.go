@@ -109,7 +109,7 @@ func (w window) holds(t time.Time) bool {
 	return w.to.IsZero() || t.Before(w.to)
 }
 
-// windowOf is the window of e among all the task's executions (review B6, R1). It runs from e's start (less
+// windowOf is the window of e among the task's executions on e's worker (review B6, R1). It runs from e's start (less
 // windowSlack, for whole-second event times) to a minute after its end (callWindowAfter, for a last check that lands
 // after the reply), but never into a neighbour's: it starts no earlier than where the attempt before it stops, and
 // stops at the next attempt's start. A retry right after a failure is the next attempt's from its first second.
@@ -127,8 +127,8 @@ func windowOf(e tasks.Execution, all []tasks.Execution) window {
 	var prev, next *tasks.Execution
 	for i := range all {
 		o := &all[i]
-		if o.ID == e.ID {
-			continue
+		if o.ID == e.ID || o.WorkerID != e.WorkerID {
+			continue // another worker's attempt has its own bundle and calls: it never cuts this one's window
 		}
 		if o.StartedAt.Before(e.StartedAt) || (o.StartedAt.Equal(e.StartedAt) && o.Attempt < e.Attempt) {
 			if prev == nil || o.StartedAt.After(prev.StartedAt) {
@@ -288,7 +288,7 @@ func (p *parsed) keepWindow(w window) []string {
 		}
 	}
 	if n := len(p.events) - len(events); n > 0 {
-		out = append(out, fmt.Sprintf("recording: %d event(s) of other attempts of the task left out", n))
+		out = append(out, fmt.Sprintf("recording: %d event(s) outside this execution's window left out", n))
 	}
 	var lines []traceLine
 	for _, l := range p.trace {
@@ -297,7 +297,7 @@ func (p *parsed) keepWindow(w window) []string {
 		}
 	}
 	if n := len(p.trace) - len(lines); n > 0 {
-		out = append(out, fmt.Sprintf("soul_trace: %d line(s) of other attempts of the task left out", n))
+		out = append(out, fmt.Sprintf("soul_trace: %d line(s) outside this execution's window left out", n))
 	}
 	var recs []ledgerRec
 	for _, r := range p.ledger {
@@ -306,7 +306,7 @@ func (p *parsed) keepWindow(w window) []string {
 		}
 	}
 	if n := len(p.ledger) - len(recs); n > 0 {
-		out = append(out, fmt.Sprintf("ledger: %d record(s) of other attempts of the task left out", n))
+		out = append(out, fmt.Sprintf("ledger: %d record(s) outside this execution's window left out", n))
 	}
 	p.events, p.trace, p.ledger = events, lines, recs
 	return out
@@ -454,7 +454,7 @@ type recMeta struct {
 // recEvent is one line of the recording's events.jsonl (docs/recordings.md).
 type recEvent struct {
 	I        int             `json:"i"`
-	T        float64         `json:"t"`
+	T        *float64        `json:"t"`
 	At       string          `json:"at"`
 	ID       string          `json:"id"`
 	Kind     string          `json:"kind"`
@@ -650,15 +650,17 @@ func (p *parsed) lineProblem(what string, err error) {
 	}
 }
 
-// eventTime is when an event happened: its own "at", else the recording's start plus its "t".
+// eventTime is when an event happened: the recording's start plus its "t" (both on the desktop's clock, to the
+// millisecond), else its own "at", which is cut to the whole second and could put an event of a back-to-back retry's
+// first second in the attempt before it.
 func eventTime(ev recEvent, meta recMeta) time.Time {
+	if meta.StartedAt > 0 && ev.T != nil {
+		return time.Unix(0, int64((meta.StartedAt+*ev.T)*1e9)).UTC()
+	}
 	for _, layout := range []string{"2006-01-02T15:04:05-0700", time.RFC3339Nano} {
 		if t, err := time.Parse(layout, ev.At); err == nil {
 			return t.UTC()
 		}
-	}
-	if meta.StartedAt > 0 {
-		return time.Unix(0, int64((meta.StartedAt+ev.T)*1e9)).UTC()
 	}
 	return time.Time{}
 }

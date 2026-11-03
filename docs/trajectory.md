@@ -105,10 +105,11 @@ execution ends and before a desktop is deleted. Paths are under the worker's hom
 - **Only this execution's own part of the task's files.** The recording, soul's trace and the ledger are kept per
   task and grow over its attempts (a retry is a new execution of the same task). A trajectory keeps the events and
   trace lines from its execution's start (less 2 s) to a minute after its end, and the ledger records declared in
-  that window, but never into a neighbouring attempt's time: the window stops at the next attempt's start and begins
-  where the one before it stopped, so a retry started right after a failure is the retry's from its first second.
-  The proxy's calls are clipped to the same window. `integrity.missing` says how many of other attempts it left out;
-  an event or record with no time is left out too.
+  that window, but never into a neighbouring attempt's time on the same worker: the window stops at that worker's
+  next attempt's start and begins where its attempt before stopped, so a retry started right after a failure is the
+  retry's from its first second. An event's time is the recording's start plus its `t` (to the millisecond), not its
+  whole-second `at`. The proxy's calls are clipped to the same window. `integrity.missing` says how many records it
+  left out as "outside this execution's window"; an event or record with no time is left out too.
 - **ledger** status: `matched` (saved, every intended value read back), `differs` (saved, a value not shown),
   `saved` (not read back), `declared` (never saved). A field is `matched`, `differs` or `unchecked`.
 - **integrity.parts**: a part's SHA (a one-file part: the file's; a folder: the manifest SHA of its files);

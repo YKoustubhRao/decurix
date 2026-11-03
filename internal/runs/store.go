@@ -127,11 +127,34 @@ func sortedFiles(files []File) []File {
 // A "<part>: not present" line for a part the merged files still hold says it was kept from an earlier pull. Files
 // are kept sorted by path; ManifestSHA and TotalBytes are computed here; a nil Missing is stored as [].
 func (s *Store) SaveBundle(b Bundle) error {
+	_, err := s.SaveBundleThen(b, nil)
+	return err
+}
+
+// SaveBundleThen is SaveBundle, then then(saved) with the bundle as stored, under the same lock: the puller writes
+// EXPORTED there, so two pulls of one execution can never leave the older manifest in it. A then error is returned;
+// the bundle stays saved.
+func (s *Store) SaveBundleThen(b Bundle, then func(saved Bundle) error) (Bundle, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.saveBundle(b); err != nil {
+		return Bundle{}, err
+	}
+	saved, _, err := s.Bundle(b.ExecID)
+	if err != nil {
+		return Bundle{}, err
+	}
+	if then != nil {
+		return saved, then(saved)
+	}
+	return saved, nil
+}
+
+// saveBundle is SaveBundle's body; the caller holds s.mu.
+func (s *Store) saveBundle(b Bundle) error {
 	if b.ExecID == "" || b.TaskID == "" {
 		return errors.New("runs: a bundle needs its execution and task")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if old, ok, err := s.Bundle(b.ExecID); err != nil {
 		return err
 	} else if ok {

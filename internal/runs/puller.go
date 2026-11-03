@@ -207,14 +207,14 @@ func (p *Puller) Pull(ctx context.Context, ref ExecutionRef) (Bundle, error) {
 
 	b := Bundle{ExecID: ref.ExecID, TaskID: ref.TaskID, Worker: ref.Worker, PulledAt: time.Now(), Files: st.files,
 		Missing: st.missing}
-	if err := p.Store.SaveBundle(b); err != nil {
+	// EXPORTED is written under the store's lock, from the bundle as stored: the last pull saved is the last written.
+	saved, err := p.Store.SaveBundleThen(b, func(saved Bundle) error {
+		return p.writeExported(ctx, ref, saved.ManifestSHA)
+	})
+	if err != nil && saved.ExecID == "" {
 		return Bundle{}, err
 	}
-	saved, _, err := p.Store.Bundle(ref.ExecID)
 	if err != nil {
-		return Bundle{}, err
-	}
-	if err := p.writeExported(ctx, ref, saved.ManifestSHA); err != nil {
 		log.Printf("runs: the bundle of %s is saved, but EXPORTED could not be written on %s: %v", ref.ExecID,
 			ref.Worker, err)
 	}

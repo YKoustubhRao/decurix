@@ -16,7 +16,7 @@ func TestABackToBackRetryKeepsEachAttemptsOwn(t *testing.T) {
 	sc := hostedScenario() // attempt 2: starts at t0
 	rec := ".decurix/recordings/task-t_h/"
 	at1 := t0.Add(-2 * time.Minute)
-	old := jsonLines(map[string]any{"i": 0, "t": 1, "at": at1.Format("2006-01-02T15:04:05-0700"),
+	old := jsonLines(map[string]any{"i": 0, "t": at1.Sub(t0).Seconds(), "at": at1.Format("2006-01-02T15:04:05-0700"),
 		"id": "20261104T100011-0a0b0c0d", "kind": "type", "turn": "j41:1", "element": map[string]any{"name": "Total"},
 		"text": "5800.00", "outcome": "failed", "actor": "agent"})
 	sc.home.files[rec+"events.jsonl"] = append(old, sc.home.files[rec+"events.jsonl"]...)

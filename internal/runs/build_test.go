@@ -495,7 +495,7 @@ func TestEachAttemptHasOnlyItsOwnSteps(t *testing.T) {
 	rec := ".decurix/recordings/task-t_h/"
 	// A first attempt, an hour earlier, left an event, a trace command and a ledger record.
 	early := t0.Add(-time.Hour)
-	first := jsonLines(map[string]any{"i": 0, "t": 1, "at": early.Format("2006-01-02T15:04:05-0700"),
+	first := jsonLines(map[string]any{"i": 0, "t": early.Sub(t0).Seconds(), "at": early.Format("2006-01-02T15:04:05-0700"),
 		"id": "20261104T090212-0a0b0c0d", "kind": "type", "turn": "j41:1", "element": map[string]any{"name": "Total"},
 		"text": "5800.00", "outcome": "failed", "actor": "agent"})
 	sc.home.files[rec+"events.jsonl"] = append(first, sc.home.files[rec+"events.jsonl"]...)
@@ -520,7 +520,8 @@ func TestEachAttemptHasOnlyItsOwnSteps(t *testing.T) {
 	if len(second.Steps) != 3 || len(second.Ledger) != 1 || second.Ledger[0].Key != "INV-0042" {
 		t.Fatalf("attempt 2: %d steps, ledger %+v", len(second.Steps), second.Ledger)
 	}
-	for _, want := range []string{"1 event(s) of other attempts", "1 line(s) of other attempts", "1 record(s) of other attempts"} {
+	for _, want := range []string{"recording: 1 event(s) outside this execution's window", "soul_trace: 1 line(s) outside this execution's window",
+		"ledger: 1 record(s) outside this execution's window"} {
 		if !strings.Contains(strings.Join(second.Integrity.Missing, "\n"), want) {
 			t.Fatalf("integrity does not say %q: %v", want, second.Integrity.Missing)
 		}
