@@ -82,6 +82,10 @@ browser maps to the mock (`practice-mock:8000`).
   approval gate must stop it: exit 3, observed as an approval with the line's output as the gate's question) or
   `{"sleep": seconds}`. `oracle_secrets` lists a mock's demo password the oracle types; it is the one credential a case
   may hold, and it is withheld from every stored row.
+- An oracle line runs in the case's input folder with the desktop session's display and bus, the office tools on the
+  path, `DECURIX_TASK_ID` set to the case's task, and `$MOCK_ROUTE`, curl's `--connect-to` for the practice mock, so a
+  line can reach the case's mock under its own host name (`curl $MOCK_ROUTE ... http://app.example.test/...`). It proves
+  the case can be solved and its graders can pass; the model arms prove the pages can be driven.
 
 `Load` validates all of it and returns every problem, not the first: schema names, ids
 (`^[a-z0-9][a-z0-9-]{0,63}$`), categories, every named file present with a flat name, sizes (8 MB a file, 16 MB a
