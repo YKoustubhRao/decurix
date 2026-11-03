@@ -386,7 +386,7 @@ func TestRenderEveryPage(t *testing.T) {
 	for _, want := range []string{
 		`id="sec-workers"`, `id="sec-skills"`, `id="sec-queue"`, `id="sec-handoffs"`, `id="sec-knowledge"`, `id="sec-access"`,
 		"/api/skillhub/sync", "/api/queue/limits", "/api/handoffs/cancel", "/api/knowledge/why", "/api/access/policies/check",
-		`href="/workforce" class="active"`, "setInterval(refresh, POLL_MS)",
+		`href="/workforce" class="active"`, "D.poll(refresh, POLL_MS)",
 	} {
 		if !strings.Contains(workforce.String(), want) {
 			t.Errorf("the workforce page is missing %q", want)

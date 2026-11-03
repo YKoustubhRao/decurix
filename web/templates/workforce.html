@@ -405,9 +405,24 @@ td.actions{white-space:nowrap;text-align:right}
   }
 
   /* A poll leaves alone a block someone is typing in, so it never eats input. */
+  /* A row is left alone while the person is in one of its fields, and while a field of it holds a change they have not
+     saved (W-14): clicking elsewhere used to let the next poll put the server's old value back over what they typed.
+     A field is dirty from its first change until a button of its row (or form) is pressed. */
+  document.addEventListener("input", markDirty, true);
+  document.addEventListener("change", markDirty, true);
+  function markDirty(event){
+    if(event.target.matches && event.target.matches("input,select,textarea")){ event.target.dataset.dirty = "1"; }
+  }
+  document.addEventListener("click", function(event){
+    var b = event.target.closest && event.target.closest("button");
+    if(!b){ return; }
+    var scope = b.closest("tr,form,[data-row]") || b.parentElement;
+    if(scope){ scope.querySelectorAll("[data-dirty]").forEach(function(f){ delete f.dataset.dirty; }); }
+  }, true);
+
   function editing(el){
     var a = document.activeElement;
-    return !!(a && el.contains(a) && a.matches("input,select,textarea"));
+    return !!(a && el.contains(a) && a.matches("input,select,textarea")) || (el.matches && el.matches("[data-dirty]")) || !!el.querySelector("[data-dirty]");
   }
 
   var desktops = [];
@@ -1215,8 +1230,8 @@ td.actions{white-space:nowrap;text-align:right}
 
   show(location.hash.replace("#", ""));
   refresh(true);
-  setInterval(refresh, POLL_MS);
-  document.addEventListener("visibilitychange", function(){ refresh(false); });
+  /* The shared poll: nothing at all while the page is hidden, at once when it is seen again (W-14). */
+  D.poll(refresh, POLL_MS);
 })();
 </script>
 
