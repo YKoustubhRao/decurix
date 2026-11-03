@@ -258,3 +258,80 @@ def current_stage():
         return str(data.get("scope") or ""), int(data.get("attempt") or 0)
     except (OSError, ValueError, TypeError):
         return "", 0
+
+
+# ============================================================
+# What the control plane said about a task, beside its request
+#
+# The control plane's /request body carries more than the words (PLAN-P2 C6): the org's date order and, for a person's
+# reply, the judgement that reply is on the control plane. Both are kept in the task's run folder
+# (~/.decurix/runs/<task>/context.json, PLAN-P2 C8), on the persistent volume, so every process of the desktop reads
+# them - the `gui` command compares a form's dates on the save path, in a process of its own.
+# ============================================================
+
+DATE_ORDERS = ("day", "month")
+# The control plane's judgement ids (C6). Anything else is ignored, never kept.
+_JUDGEMENT_ID = re.compile(r"^j_[A-Za-z0-9]{6,32}$")
+
+
+def run_dir(task_id):
+    """The task's run folder (~/.decurix/runs/<task>), whether or not it exists; None for an invalid id."""
+
+    return config.DECURIX_DIR / "runs" / task_id if valid(task_id) else None
+
+
+def _context(task_id):
+    folder = run_dir(task_id)
+    if folder is None:
+        return {}
+    try:
+        data = json.loads((folder / "context.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _keep_context(task_id, **fields):
+    """Merge fields into the task's context.json. Never raises: what cannot be kept is only not known later."""
+
+    folder = run_dir(task_id)
+    if folder is None:
+        return
+    with _lock:
+        data = _context(task_id)
+        data.update(fields)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            tmp = folder / "context.json.tmp"
+            tmp.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+            os.replace(tmp, folder / "context.json")
+        except OSError:
+            pass
+
+
+def set_date_order(task_id, order):
+    """Keep the org's date order the control plane sent with a request (C6); anything but "day"/"month" is ignored."""
+
+    if order in DATE_ORDERS:
+        _keep_context(task_id, date_order=order)
+
+
+def set_reply_judgement(task_id, judgement_id):
+    """Keep the control plane's judgement id of the latest person's reply to the task (C6); a malformed one is ignored."""
+
+    if isinstance(judgement_id, str) and _JUDGEMENT_ID.match(judgement_id):
+        _keep_context(task_id, reply_judgement=judgement_id)
+
+
+def reply_judgement(task_id=None):
+    """The judgement id of the latest person's reply to the task (the current one by default), or ""."""
+
+    value = _context(task_id or current()).get("reply_judgement")
+    return value if isinstance(value, str) and _JUDGEMENT_ID.match(value) else ""
+
+
+def sent_date_order(task_id=None):
+    """The date order the control plane sent for the task, or None."""
+
+    value = _context(task_id or current()).get("date_order")
+    return value if value in DATE_ORDERS else None

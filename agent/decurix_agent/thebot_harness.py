@@ -5,7 +5,8 @@ import time
 import urllib.error
 import urllib.request
 
-from decurix_agent import app_skills, attachments, config, guidance, methods, playbooks, progress, state, usage
+from decurix_agent import (app_skills, attachments, config, guidance, methods, playbooks, progress, state, task_context,
+                           usage)
 from decurix_agent.computer import approval
 from decurix_agent.identity import get_identity_context
 from decurix_agent.logging_utils import log, log_banner
@@ -568,6 +569,9 @@ def _run_thebot(request, reply, extra_context="", approval_reading=None):
                 # job of a request whose plan the person already answered. Decided from structure here, never from
                 # the request's words (soul stopped reading the marker in the text: a pasted message could hold it).
                 "planAgreed": _plan_agreed(),
+                # The control plane's task this job works for (C2): soul tags every model call it makes for the job
+                # with it, so the proxy's record joins each call to its task.
+                "taskId": task_context.current(),
             },
         )
     except (urllib.error.URLError, OSError, ValueError) as exc:

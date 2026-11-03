@@ -595,6 +595,14 @@ class Handler(BaseHTTPRequestHandler):
                 from decurix_agent.computer import privacy
                 privacy.remember_marked(content)
 
+            # What the control plane says beside the words (C6): the org's date order, and the judgement this message
+            # is when it is a person's reply. Kept by task before the request is saved, so the watcher and every
+            # later process read them; a value of another shape is ignored, never an error.
+            from decurix_agent import task_context
+            if task_context.valid(task_id):
+                task_context.set_date_order(task_id, data.get("date_order"))
+                task_context.set_reply_judgement(task_id, data.get("judgement_id"))
+
             # The control plane's record for this request; it comes back
             # on every report about it (task_context.py).
             path = save_request(content, task_id)
