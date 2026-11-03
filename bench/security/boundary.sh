@@ -147,6 +147,10 @@ if [ -e /etc/decurix-gate/key ]; then echo "drop file still there"; exit; fi
 s=$(stat -c '%U %a' /var/lib/decurix-gate/key 2>&1); [ "$s" = "decurixgate 400" ] && echo ok || echo "key file is: $s"
 EOF
 )"
+check "/etc: root's, not group- or world-writable" "$(as_root <<'EOF'
+s=$(stat -c '%U:%G %a' /etc); m=$(stat -c '%a' /etc); case "$s" in root:root\ *) [ $((0$m & 022)) -eq 0 ] && echo ok || echo "/etc is $s" ;; *) echo "/etc is $s" ;; esac
+EOF
+)"
 
 # ---- gate ----
 # (Its working directory cannot be read even by root: a process that changed uid is not dumpable. The planted

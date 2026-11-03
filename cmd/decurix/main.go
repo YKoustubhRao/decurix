@@ -469,17 +469,25 @@ func main() {
 	// The eval matrix runner (E3, docs/evals.md): one suite x arms x repeats on the practice sandbox, one run at a
 	// time, sharing Simulate's slot. Its routes are the owner's, primary listener only. A run that was running when
 	// the control plane stopped is marked interrupted (NewStore).
-	evalSvc := &eval.Service{
-		Store:      must(eval.NewStore(db, blobs)),
-		Sandbox:    desktops,
-		Broker:     practiceSvc.Broker,
-		BrokerURL:  practiceSvc.BrokerURL,
-		Hub:        server.LLM,
-		Recorder:   llmrecStore,
-		Tasks:      tasksStore,
-		Practice:   practiceSvc,
-		Vision:     practiceSvc.Vision,
-		FreeMemory: practiceSvc.FreeMemory,
+	// A failure to open the eval store leaves the eval routes answering 503; the control plane runs on.
+	evalStore, err := eval.NewStore(db, blobs)
+	if err != nil {
+		log.Printf("eval store: %v; the eval routes are off", err)
+	}
+	var evalSvc *eval.Service
+	if evalStore != nil {
+		evalSvc = &eval.Service{
+			Store:      evalStore,
+			Sandbox:    desktops,
+			Broker:     practiceSvc.Broker,
+			BrokerURL:  practiceSvc.BrokerURL,
+			Hub:        server.LLM,
+			Recorder:   llmrecStore,
+			Tasks:      tasksStore,
+			Practice:   practiceSvc,
+			Vision:     practiceSvc.Vision,
+			FreeMemory: practiceSvc.FreeMemory,
+		}
 	}
 	practiceSubnets := &practice.SubnetCache{Lookup: desktops.PracticeSubnets}
 	// A GUI-grounding model, when .env names one (DECURIX_GROUNDER_MODEL):

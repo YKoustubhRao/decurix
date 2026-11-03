@@ -37,11 +37,15 @@ func (m *Manager) ExecPracticeAsWorker(ctx context.Context, containerID string, 
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	// The command is killed in the desktop when its time is up (coreutils timeout: TERM, then KILL 5 s later), not
+	// only left behind: a step that ran on would change the mock's state after it was graded (review CP-B N6). The
+	// wait here allows for that kill.
+	ctx, cancel := context.WithTimeout(ctx, timeout+10*time.Second)
 	defer cancel()
 
+	cmd := append([]string{"/usr/bin/timeout", "-k", "5", fmt.Sprintf("%ds", int(timeout.Round(time.Second)/time.Second)), "--"}, argv...)
 	exec, err := m.client.ContainerExecCreate(ctx, inspect.ID, container.ExecOptions{
-		User: "headless", Cmd: workerCmd(argv...), AttachStdout: true, AttachStderr: true,
+		User: "headless", Cmd: workerCmd(cmd...), AttachStdout: true, AttachStderr: true,
 	})
 	if err != nil {
 		return 0, nil, err
@@ -75,6 +79,9 @@ func (m *Manager) ExecPracticeAsWorker(ctx context.Context, containerID string, 
 	}
 	if state.Running {
 		return 0, out.result(), errors.New("desktop: the command did not finish")
+	}
+	if state.ExitCode == 124 || state.ExitCode == 137 {
+		return state.ExitCode, out.result(), fmt.Errorf("desktop: the command did not finish in %s, and was ended", timeout)
 	}
 	return state.ExitCode, out.result(), nil
 }

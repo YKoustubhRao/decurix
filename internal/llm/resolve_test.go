@@ -44,13 +44,15 @@ func TestOnChangeFiresOncePerSaveAndForget(t *testing.T) {
 	hub.OnChange(nil)
 
 	_ = hub.Save(ProviderAzure, Settings{Endpoint: "https://x.example.test", Key: "k"})
+	_ = hub.Save(ProviderAzure, Settings{Endpoint: "https://x.example.test", Key: "k2"}) // a key rotation: no change
 	_ = hub.Save(ProviderClaude, Settings{Key: "k"})
+	_ = hub.Save(ProviderAzure, Settings{Endpoint: "https://x.example.test", Key: "k2", Model: "big-2"})
 	if err := hub.Save(ProviderAzure, Settings{Endpoint: "http://plain.example.test", Key: "k"}); err == nil {
 		t.Fatal("a bad save was accepted")
 	}
 	_ = hub.Forget(ProviderAzure)
 
-	want := []string{ProviderAzure, ProviderClaude, ProviderAzure}
+	want := []string{ProviderAzure, ProviderClaude, ProviderAzure, ProviderAzure}
 	if len(seen) != len(want) {
 		t.Fatalf("OnChange saw %v, want %v", seen, want)
 	}

@@ -332,7 +332,7 @@ var taskFuncs = template.FuncMap{
 	"statusLabel": tasks.StatusLabel,
 	// outcome is what a person is shown for a status and the final check's word together: the only label a page
 	// puts on how a task ended (a done nobody's check judged reads "Done, not checked").
-	"outcome": tasks.DisplayOutcome,
+	"outcome":     tasks.DisplayOutcome,
 	"contains":    strings.Contains,
 	"reasonLabel": tasks.ReasonLabel,
 	"duration":    tasks.FormatDuration,

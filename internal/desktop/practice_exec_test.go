@@ -24,6 +24,7 @@ type execDaemon struct {
 	mu     sync.Mutex
 	labels map[string]map[string]string
 	output []byte
+	exit   int      // the command's exit status; 0 is 3
 	execs  []string // the users execs ran as
 	cmds   [][]string
 }
@@ -72,7 +73,11 @@ func (d *execDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = buff.Flush()
 		_, _ = stdcopy.NewStdWriter(conn, stdcopy.Stdout).Write(d.output)
 	case strings.HasPrefix(p, "/exec/") && strings.HasSuffix(p, "/json"):
-		_ = json.NewEncoder(w).Encode(map[string]any{"Running": false, "ExitCode": 3})
+		code := d.exit
+		if code == 0 {
+			code = 3
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"Running": false, "ExitCode": code})
 	default:
 		d.t.Errorf("unexpected Docker request: %s %s", r.Method, p)
 		w.WriteHeader(404)
@@ -120,7 +125,7 @@ func TestExecPracticeAsWorkerRefusesAnythingButAPracticeDesktop(t *testing.T) {
 		t.Fatalf("ran as %v", d.execs)
 	}
 	cmd := strings.Join(d.cmds[0], " ")
-	if !strings.HasPrefix(cmd, "/usr/bin/env -i ") || !strings.HasSuffix(cmd, " gui type x") {
+	if !strings.HasPrefix(cmd, "/usr/bin/env -i ") || !strings.HasSuffix(cmd, " /usr/bin/timeout -k 5 5s -- gui type x") {
 		t.Fatalf("command = %q, want the worker's empty environment", cmd)
 	}
 }
@@ -152,5 +157,18 @@ func TestDesktopImageIDIsTheImmutableID(t *testing.T) {
 	}
 	if _, err := m.DesktopImageID(context.Background(), "ai"); err == nil {
 		t.Fatal("a missing image resolved")
+	}
+}
+
+// A command that runs past its time is ended in the desktop by timeout (its 124), and said so, never left running.
+func TestATimedOutPracticeCommandIsEnded(t *testing.T) {
+	d := &execDaemon{t: t, exit: 124, output: []byte(""), labels: map[string]map[string]string{"practice": {PracticeLabel: "true"}}}
+	m := execManager(t, d)
+	exit, _, err := m.ExecPracticeAsWorker(context.Background(), "practice", []string{"sleep", "999"}, 2*time.Second)
+	if err == nil || exit != 124 {
+		t.Fatalf("a timed-out command = %d, %v", exit, err)
+	}
+	if cmd := strings.Join(d.cmds[0], " "); !strings.Contains(cmd, "/usr/bin/timeout -k 5 2s -- sleep 999") {
+		t.Fatalf("command = %q", cmd)
 	}
 }

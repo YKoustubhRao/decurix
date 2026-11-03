@@ -386,10 +386,24 @@ func (h *Hub) Save(provider string, s Settings) error {
 		}
 	}
 
+	before := h.identity(provider)
 	h.apply(provider, s, now)
-	h.changed(provider)
+	// Listeners hear of a change of what serves the provider's calls (its endpoint, model or fast model), not of a
+	// key rotation: a suite pins the deployment, and a new key sends it back to needs-retesting for nothing.
+	if h.identity(provider) != before {
+		h.changed(provider)
+	}
 
 	return nil
+}
+
+// identity is what serves provider's calls now: its endpoint and its two models ("" when not set up).
+func (h *Hub) identity(provider string) string {
+	st := h.Status()[provider]
+	if !st.Configured {
+		return ""
+	}
+	return st.Endpoint + "\x00" + st.Model + "\x00" + st.FastModel
 }
 
 // Forget removes a provider's settings. Desktops with that brain fail their
@@ -487,8 +501,9 @@ func (h *Hub) Resolve(provider, asked string) (string, error) {
 	return resolve(asked, model, fast)
 }
 
-// OnChange registers fn to be called, with the provider's name, after each Save or Forget of that provider. fn runs
-// outside the Hub's lock, on the saving goroutine, and must not block for long.
+// OnChange registers fn to be called, with the provider's name, after a Save that changes what serves the provider
+// (its endpoint, model or fast model; not a new key) and after a Forget. fn runs outside the Hub's lock, on the saving
+// goroutine, and must not block for long.
 func (h *Hub) OnChange(fn func(provider string)) {
 	if fn == nil {
 		return
