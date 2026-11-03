@@ -439,6 +439,7 @@ func (m *Manager) destroyClaudeLoginContainer(ctx context.Context, containerID s
 
 // readFileFromContainer reads one file out of a container via the same
 // mechanism `docker cp` uses (a tar stream of the path), returning its raw content.
+// Root-side: it reads the login container's fixed credentials path; that container runs only `claude auth login`.
 func (m *Manager) readFileFromContainer(ctx context.Context, containerID, path string) ([]byte, error) {
 	rc, _, err := m.client.CopyFromContainer(ctx, containerID, path)
 	if err != nil {

@@ -160,7 +160,13 @@ func (d *practiceDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		info := []string{ctr, "run", ""}
 		switch {
 		case strings.Contains(joined, "tar -x -C "):
-			info = []string{ctr, "tarin", body.Cmd[len(body.Cmd)-3]}
+			dir := ""
+			for i, a := range body.Cmd {
+				if a == "-C" && i+1 < len(body.Cmd) {
+					dir = body.Cmd[i+1]
+				}
+			}
+			info = []string{ctr, "tarin", dir}
 		case strings.Contains(joined, "kill -s STOP"):
 			info = []string{ctr, "tarout", body.Cmd[len(body.Cmd)-3]}
 		}

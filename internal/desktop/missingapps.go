@@ -207,7 +207,9 @@ func missingFileTar(apps []MissingApp) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// copyMissingFile copies MissingAppsFile into the container (created or running).
+// copyMissingFile copies MissingAppsFile into the container (created or running). A root-side copy, kept on
+// purpose: the file is a direct child of /home/headless, whose parent cannot be a link, Docker does not follow the last
+// component, and extracting replaces whatever entry is there (the live test in homefs_live_test.go covers it).
 func (m *Manager) copyMissingFile(ctx context.Context, containerID string, apps []MissingApp) error {
 	data, err := missingFileTar(apps)
 	if err != nil {
@@ -226,6 +228,7 @@ func (m *Manager) RestoreMissingApps(ctx context.Context) {
 		return
 	}
 	for _, d := range desktops {
+		// Root-side read of a direct child of /home/headless: see copyMissingFile.
 		rc, _, err := m.client.CopyFromContainer(ctx, "desktop_"+d.ID, "/home/headless/"+MissingAppsFile)
 		if err != nil {
 			continue

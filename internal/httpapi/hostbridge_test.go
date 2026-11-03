@@ -1,10 +1,8 @@
 package httpapi
 
 import (
-	"archive/tar"
 	"encoding/json"
 	"github.com/YKoustubhRao/decurix/internal/winhost"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -141,29 +139,26 @@ func TestCreateHostCmdWindowsCommand(t *testing.T) {
 	}
 }
 
-// archiveDocker is a stand-in Docker daemon that reports one desktop and keeps the tar it is asked to extract into it.
+// archiveDocker is a stand-in Docker daemon that reports one running desktop and keeps the tar it is asked to
+// extract into it - as the worker, by exec (workerTarDaemon), the only way files go into a desktop's home.
 func archiveDocker(t *testing.T, desktopID string) (*desktop.Manager, func() map[string]string) {
 	t.Helper()
 	var mu sync.Mutex
 	files := map[string]string{}
+	execs := &workerTarDaemon{onFile: func(name, data string) {
+		mu.Lock()
+		files[name] = data
+		mu.Unlock()
+	}}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if execs.serve(w, r) {
+			return
+		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/containers/desktop_"+desktopID+"/json"):
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(container.InspectResponse{ContainerJSONBase: &container.ContainerJSONBase{ID: desktopID}})
-		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/containers/"+desktopID+"/archive"):
-			tr := tar.NewReader(r.Body)
-			for {
-				hdr, err := tr.Next()
-				if err != nil {
-					break
-				}
-				data, _ := io.ReadAll(tr)
-				mu.Lock()
-				files[hdr.Name] = string(data)
-				mu.Unlock()
-			}
-			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(container.InspectResponse{ContainerJSONBase: &container.ContainerJSONBase{
+				ID: desktopID, State: &container.State{Running: true}}})
 		default:
 			http.NotFound(w, r)
 		}

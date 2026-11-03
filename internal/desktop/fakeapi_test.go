@@ -24,6 +24,7 @@ type fakeAPI struct {
 
 	mu    sync.Mutex
 	calls []string
+	ex    fakeExecs
 
 	inspect      func(name string) (container.InspectResponse, error)
 	create       func(name string, cfg *container.Config, host *container.HostConfig) (container.CreateResponse, error)

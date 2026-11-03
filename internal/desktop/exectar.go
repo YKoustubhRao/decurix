@@ -27,8 +27,10 @@ const execTarMissingCode = 44
 
 // execTarIn extracts a tar archive into dir inside a running container, as the
 // unprivileged user, in archive order (so a file written last can signal readiness).
-func (m *Manager) execTarIn(ctx context.Context, id, dir string, archive io.Reader) error {
-	cmd := []string{"/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "tar", "-x", "-C", dir, "-f", "-"}
+// flags go to tar before the archive.
+func (m *Manager) execTarIn(ctx context.Context, id, dir string, archive io.Reader, flags ...string) error {
+	cmd := append([]string{"/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "tar", "-x", "-C", dir}, flags...)
+	cmd = append(cmd, "-f", "-")
 	exec, err := m.client.ContainerExecCreate(ctx, id, container.ExecOptions{User: "1001:1001", Cmd: cmd, AttachStdin: true, AttachStdout: true, AttachStderr: true})
 	if err != nil {
 		return err
@@ -59,7 +61,9 @@ func (m *Manager) execTarIn(ctx context.Context, id, dir string, archive io.Read
 	return nil
 }
 
-// execTarOut reads one path of a running container as a tar, bounded by limit.
+// execTarOut reads one path of a running container as a tar, bounded by limit. Offline containers only (readiness,
+// Simulate's mock): it freezes every process of the worker's uid and never resumes them, so on a live desktop it
+// would stop the worker for good - a desktop's home is read with ReadTar (homefs.go) instead.
 // Every other process the unprivileged user owns is stopped first in the same
 // exec, so nothing can change the files while they are read. A paused container
 // is resumed for the read and paused again after it.

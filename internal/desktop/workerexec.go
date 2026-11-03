@@ -43,6 +43,8 @@ func (m *Manager) putGateKey(ctx context.Context, containerID, key string) error
 	if key == "" {
 		return errors.New("the control plane has no secret to derive the key from")
 	}
+	// Root-side on purpose, the one copy that must be: a root-only file outside the home, into a container that has
+	// never started, so nothing on the path is the worker's.
 	return m.client.CopyToContainer(ctx, containerID, "/", gateKeyArchive(key), container.CopyToContainerOptions{CopyUIDGID: true})
 }
 

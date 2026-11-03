@@ -223,7 +223,8 @@ func (m *Manager) PracticeSubnets(ctx context.Context) []netip.Prefix {
 	return out
 }
 
-// copyOut reads one path of a container as a tar, bounded.
+// copyOut reads one path of a container as a tar, bounded, by Docker's root-side copy. Only for a fixed root-owned
+// path (/opt, /etc/passwd) or a container that has never run: never a path under a worker's home (homefs.go).
 func (m *Manager) copyOut(ctx context.Context, containerID, from string, limit int64) ([]byte, error) {
 	rc, _, err := m.client.CopyFromContainer(ctx, containerID, from)
 	if err != nil {
@@ -298,9 +299,10 @@ func (m *Manager) PracticeSnapshot(ctx context.Context, workerID string) ([]byte
 	tw := tar.NewWriter(&out)
 	total := int64(0)
 	for _, part := range PracticeSnapshotParts {
-		b, err := m.copyOut(ctx, found.ContainerID, practiceDecurixDir+"/"+part, practiceMaxTar)
+		// The real worker's home, so read as the worker (homefs.go), never by Docker's root-side copy (N-B1).
+		b, err := m.readHomeBytes(ctx, found.ID, practiceDecurixDir+"/"+part, practiceMaxTar)
 		if err != nil {
-			if client.IsErrNotFound(err) {
+			if errors.Is(err, ErrNotFound) {
 				continue
 			}
 			return nil, "", err
@@ -499,6 +501,7 @@ func (m *Manager) CreatePractice(ctx context.Context, spec PracticeSpec) (d Prac
 			return d, err
 		}
 	}
+	// Root-side copies into a practice desktop that has never started: nothing in it is the worker's yet.
 	if len(spec.AgentTree) > 0 {
 		if err = m.client.CopyToContainer(ctx, created.ID, "/opt", bytes.NewReader(spec.AgentTree), container.CopyToContainerOptions{}); err != nil {
 			return d, fmt.Errorf("copy the agent tree: %w", err)
@@ -542,7 +545,11 @@ func (m *Manager) appendBrowserFlags(ctx context.Context, id, flags string) erro
 // folder) into a practice desktop. A desktop that never started has no .decurix
 // folder and Docker will not copy into a missing one, so the tar is rewritten
 // under .decurix/ with the folder's own entry, owned by the desktop user, and
-// copied into the home folder.
+// copied into the home folder. It is a root-side copy: on creation the desktop has never run; on a reset
+// (ResetPractice) the practice worker has, and its ~/.decurix could be a link - but the practice home has no volume a
+// helper could mount and an exec needs the desktop running, so it stays, and what it can write is confined to the
+// snapshot's own parts' names under that folder. Moving the reset's restore before the stop, as the worker, is the
+// follow-up (it needs a live practice run to check).
 func (m *Manager) restoreSnapshot(ctx context.Context, id string, snapshot []byte) error {
 	under, err := underFolder(snapshot, path.Base(practiceDecurixDir), practiceUID)
 	if err != nil {
@@ -711,10 +718,18 @@ func (m *Manager) CopyPracticeInputs(ctx context.Context, id, caseID string, fil
 	if err := tw.Close(); err != nil {
 		return err
 	}
-	return m.client.CopyToContainer(ctx, id, "/home/headless", &buf, container.CopyToContainerOptions{CopyUIDGID: true})
+	// The practice worker has run in this home, so the inputs go in as that worker (homefs.go), never root-side.
+	target, done, err := m.homeAccessOf(ctx, id, id)
+	if err != nil {
+		return err
+	}
+	defer done()
+	return m.execTarIn(ctx, target, homeDir, &buf, "--no-overwrite-dir")
 }
 
-// CollectPractice reads a case's folder after the desktop is paused. Inputs that
+// CollectPractice reads a case's folder after the desktop is paused. It stays a root-side copy on purpose: the
+// worker must stay frozen while its work is collected, and an exec needs it running. What a link there could reach
+// is the practice container's own (a disposable copy, its own key), and only flat regular files count as evidence. Inputs that
 // changed or went missing are listed, new files are outputs; anything that is not
 // a flat regular file, or over the limits, is a problem rather than evidence.
 func (m *Manager) CollectPractice(ctx context.Context, id, caseID string, inputs map[string][]byte) (outputs map[string][]byte, changed, problems []string, err error) {

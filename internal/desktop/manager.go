@@ -1,6 +1,8 @@
 package desktop
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -200,6 +203,11 @@ func (m *Manager) BeginProvisioning(
 	if sanitizedID == "" {
 		return nil, fmt.Errorf("invalid desktop name")
 	}
+	// Host paths are no longer copied into a new desktop (the copy ran as root on a path the worker could shape,
+	// B-01); a desktop's one way to the PC's files is its shared folder.
+	if len(hostPaths) > 0 {
+		return nil, fmt.Errorf("copying folders of this computer into a desktop is not offered; give it a shared folder instead")
+	}
 	// Without the control plane's secret a desktop would get no agent token and a guessable screen password: its
 	// agent would take requests and replies from anyone on the network (review 2026-11-02). Never made that way.
 	if len(m.HostGUISecret) == 0 {
@@ -260,7 +268,7 @@ func (m *Manager) BeginProvisioning(
 	snapshot := *prov
 	m.provisioningMu.Unlock()
 
-	go m.runProvisioning(prov, brain, claudeCredentialsJSON, selectedApps, hostPaths, onStarted, sharedFolder)
+	go m.runProvisioning(prov, brain, claudeCredentialsJSON, selectedApps, onStarted, sharedFolder)
 
 	return &snapshot, nil
 }
@@ -270,7 +278,6 @@ func (m *Manager) runProvisioning(
 	brain Brain,
 	claudeCredentialsJSON string,
 	selectedApps []string,
-	hostPaths []HostCopyPath,
 	onStarted func(d *Desktop) error,
 	shared *SharedFolder,
 ) {
@@ -391,14 +398,6 @@ func (m *Manager) runProvisioning(
 		m.provisioningMu.Lock()
 		prov.MissingApps = m.MissingApps(sanitizedID)
 		m.provisioningMu.Unlock()
-	}
-
-	// 5. Copy Files & Directories from Host
-	if len(hostPaths) > 0 {
-		updateStage("files", "Copying files and directories from host...", 75)
-		if err := m.CopyHostPaths(ctx, sanitizedID, hostPaths); err != nil {
-			log.Printf("copy host paths for %s: %v", containerName, err)
-		}
 	}
 
 	// 6. Start Container
@@ -1337,37 +1336,51 @@ func (m *Manager) SendRequest(
 	return nil
 }
 
-// PersistMemoryFile writes pre-formatted memory content into a desktop container's memory directory.
+// PersistMemoryFile writes pre-formatted memory content into a desktop's memory directory, as the worker: the
+// content goes in as a tar on the exec's stdin, never spliced into a shell command (B-31), so no text in it can end
+// the file early or run as a command. It works on a stopped desktop too (homefs.go).
 func (m *Manager) PersistMemoryFile(
 	ctx context.Context,
 	desktopID string,
 	filename string,
 	fileContent string,
 ) error {
+	name := path.Base(filename)
+	if name != filename || name == "." || name == ".." || name == "/" || name == "" {
+		return fmt.Errorf("memory file %q is not a file name", filename)
+	}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	body := []byte(strings.TrimSpace(fileContent) + "\n")
+	if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(body)), ModTime: time.Now()}); err != nil {
+		return err
+	}
+	if _, err := tw.Write(body); err != nil {
+		return err
+	}
+	if err := tw.Close(); err != nil {
+		return err
+	}
 
-	containerName := "desktop_" + sanitizeName(desktopID)
-	// A container keeps the image it was created from, so a desktop created
-	// before the agent's directories moved under ~/.decurix still runs an
-	// agent that reads ~/memory. Write there while it is the only memory
-	// directory the desktop has; a newer agent moves it in when it starts.
-	memoryDir := "/home/headless/.decurix/memory"
-	legacyMemoryDir := "/home/headless/memory"
-	delimiter := fmt.Sprintf("DECURIX_MEMORY_%d", time.Now().UnixNano())
-
-	cmd := fmt.Sprintf(`dir=%s; if [ -d %s ] && [ ! -d "$dir" ]; then dir=%s; fi
-mkdir -p "$dir" && cat <<'%s' > "$dir/%s"
-%s
-%s`,
-		memoryDir,
-		legacyMemoryDir,
-		legacyMemoryDir,
-		delimiter,
-		filename,
-		strings.TrimSpace(fileContent),
-		delimiter,
-	)
-
-	return m.execBash(ctx, containerName, cmd, "memory write exec")
+	target, done, err := m.homeAccess(ctx, desktopID)
+	if err != nil {
+		return err
+	}
+	defer done()
+	// A container keeps the image it was created from, so a desktop created before the agent's directories moved
+	// under ~/.decurix still runs an agent that reads ~/memory. Write there while it is the only memory directory the
+	// desktop has; a newer agent moves it in when it starts. The script is constant; only the archive varies.
+	const script = `dir=/home/headless/.decurix/memory
+if [ -d /home/headless/memory ] && [ ! -d "$dir" ]; then dir=/home/headless/memory; fi
+mkdir -p "$dir" && exec tar -x --no-overwrite-dir -C "$dir" -f -`
+	code, err := m.execWorker(ctx, target, &buf, "/bin/sh", "-c", script)
+	if err != nil {
+		return fmt.Errorf("write memory into desktop %s: %w", sanitizeName(desktopID), err)
+	}
+	if code != 0 {
+		return fmt.Errorf("write memory into desktop %s: exit %d", sanitizeName(desktopID), code)
+	}
+	return nil
 }
 
 // execBash runs cmd with bash (no profile, empty environment: workerCmd) as the worker in a container and polls until it exits or ctx is cancelled; a non-zero exit is an

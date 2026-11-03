@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/winhost"
-	"github.com/docker/docker/api/types/container"
 )
 
 // HostAppItem describes an application, session profile, or toolchain on the host system.
@@ -552,17 +551,14 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 		appMap[strings.ToLower(app.ID)] = app
 	}
 
-	// Stream archive directly into container at /home/headless via pipe (zero RAM duplication)
+	// Stream the archive into the home through a pipe (no copy of it in memory), extracted as the worker: the home
+	// is the worker's and may be one a desktop of the same name left, so nothing here runs as root (homefs.go).
 	pr, pw := io.Pipe()
-	copyOpts := container.CopyToContainerOptions{
-		AllowOverwriteDirWithFile: false,
-		CopyUIDGID:                false,
-	}
-
 	copyErrCh := make(chan error, 1)
 	go func() {
-		defer pr.Close()
-		copyErrCh <- m.client.CopyToContainer(ctx, inspect.ID, "/home/headless", pr, copyOpts)
+		err := m.WriteTar(ctx, sanitizedID, homeDir, pr)
+		_ = pr.CloseWithError(err)
+		copyErrCh <- err
 	}()
 
 	tw := tar.NewWriter(pw)
