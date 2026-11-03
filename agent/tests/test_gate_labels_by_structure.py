@@ -21,7 +21,8 @@ def control(role, name, path=None):
 
 class ACommittingButtonAsks(unittest.TestCase):
     def test_a_committing_verb_with_a_word_from_each_name_vocabulary_asks_on_a_button(self):
-        lists = {"read after": approval._READ_AFTER, "attributes": approval._ATTRIBUTES}
+        lists = {"read after": approval._READ_AFTER, "attributes": approval._ATTRIBUTES,
+                 "also nouns": approval._ALSO_NOUNS, "of words": approval._OF_WORDS}
         for verb in VERBS:
             for which, words in lists.items():
                 for word in sorted(words)[:6]:

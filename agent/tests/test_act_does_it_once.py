@@ -53,8 +53,16 @@ class AReDrawnControlIsJudgedAgain(unittest.TestCase):
     BUTTON = {"role": "button", "name": "Pay", "source": "cdp", "ref": "e3", "path": "site x > button Pay",
               "box": [10, 10, 40, 20], "states": [], "group": "g", "window_title": "Site", "handle": {"backend": 1}}
 
-    def act(self, fresh_url):
-        looks = [look(self.BUTTON), look(self.BUTTON, url=fresh_url), look(self.BUTTON, url=fresh_url)]
+    def act(self, fresh_url, amount_after="100"):
+        amount = {"role": "textbox", "name": "Amount", "source": "cdp", "ref": "e4", "path": "site x > textbox Amount",
+                  "box": [10, 40, 40, 20], "states": [], "group": "g", "window_title": "Site", "value": "100"}
+
+        def page(url, value):
+            seen = look(self.BUTTON, url=url)
+            seen["elements"].append(dict(amount, value=value))
+            return seen
+
+        looks = [page("https://site.example/a", "100"), page(fresh_url, amount_after), page(fresh_url, amount_after)]
         calls = []
 
         def perform(*a, **k):
@@ -73,6 +81,11 @@ class AReDrawnControlIsJudgedAgain(unittest.TestCase):
     def test_a_retry_on_a_page_whose_address_changed_is_refused(self):
         calls, raised = self.act("https://site.example/another-record")
         self.assertEqual(len(calls), 1, "pressed once, never again on another page")
+        self.assertIn("changed under the action", str(raised))
+
+    def test_a_retry_on_a_page_whose_filled_value_changed_is_refused(self):
+        calls, raised = self.act("https://site.example/a", amount_after="900")
+        self.assertEqual(len(calls), 1)
         self.assertIn("changed under the action", str(raised))
 
     def test_a_retry_on_the_same_page_goes_ahead(self):

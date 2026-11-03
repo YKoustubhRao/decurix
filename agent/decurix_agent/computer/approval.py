@@ -655,8 +655,9 @@ def _navigates(element):
 
 
 # Roles a click on only focuses or selects for reading (Observation stage, assess): a field, a cell, text.
-_ONLY_FOCUSES = {"textbox", "searchbox", "document", "paragraph", "heading", "cell", "row", "image", "img", "text",
-                 "statictext", "label", "group", "pane", "window", "terminal", "editbar"}
+# Only roles that plainly take the keyboard or a cell selection (review round 2: a row, an image or a pane may open
+# or choose something when clicked).
+_ONLY_FOCUSES = {"textbox", "searchbox", "document", "cell", "terminal", "editbar"}
 
 
 def assess(kind, element, text=None, keys=None, context=None):

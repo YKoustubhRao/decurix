@@ -34,10 +34,16 @@ def mcp(kind, kwargs):
     return act, False
 
 
+GUI_ARGS = {"click": lambda k: ["click", k["ref"]], "key": lambda k: ["key"] + list(k["keys"]),
+            "type": lambda k: ["type", "e5", k["text"]]}
+
+
 def gui(kind, kwargs):
-    with mock.patch.object(core, "act", return_value=DONE) as act:
+    """The same input through the gui command itself (cli.run), as an engine types it."""
+    with mock.patch.object(core, "act", return_value=DONE) as act, mock.patch.object(cli, "_print_act", create=True), \
+            mock.patch.object(core, "_load_state", return_value={}):
         try:
-            door.act(kind, **kwargs)
+            cli.run(GUI_ARGS[kind](kwargs))
         except ComputerError:
             return act, True
     return act, False

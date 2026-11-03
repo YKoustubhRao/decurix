@@ -4125,8 +4125,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     # live: an Impress subtitle came out twice).
     # Never typed again when the text pressed Enter or Tab (a field that empties because Enter sent it looks like one the
     # page cleared, and the retype sent it twice), nor when a person approved this typing: one yes is one action (D-07).
-    keyed = bool(text) and ("\n" in text or "\t" in text)
-    if kind == "type" and element is not None and text and not append and not relayed and not keyed \
+    typed_keys = bool(text) and ("\n" in text or "\t" in text)
+    if kind == "type" and element is not None and text and not append and not relayed and not typed_keys \
             and not getattr(decision, "approved", False) \
             and element.get("role") not in ("paragraph", "heading", "cell", "document"):
         again = _same_field(element, after)
@@ -4138,7 +4138,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             retyped = True
 
     if kind == "type" and element is not None and text and not append and element.get("role") == "textbox" \
-            and not relayed and not keyed:
+            and not relayed and not typed_keys:
         retained = _same_field(element, after)
         if retained is not None and _typing_lost(retained, text):
             reason = (f"{target} did not retain the requested text after retrying. Observe the field again and "

@@ -93,6 +93,8 @@ class TestModesAndLifecycle(unittest.TestCase):
                 target = None if kind == "click" else field
                 self.assertIn("Observation", approval.assess(kind, target, **kwargs) or "")
         self.assertIsNone(approval.assess("click", field), "a click that only focuses a field goes ahead")
+        self.assertIn("Observation", approval.assess("click", {"role": "row", "name": "Record 7"}) or "",
+                      "a row may open a record when clicked")
         self.assertIsNone(approval.assess("scroll", None))
 
         # In supervised mode, normal non-consequential internal clicks pass
