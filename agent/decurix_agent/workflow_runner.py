@@ -323,11 +323,14 @@ def artifact_evidence(step, result, context):
                 raise ValueError("invalid PDF")
             text = _pdf_text(p)
         else:
-            text = data.decode("utf-8")
+            text = _decoded(data, check["path"])
             if fmt in {"csv", "tsv"}:
                 import csv
                 import io
                 rows = list(csv.reader(io.StringIO(text), delimiter="\t" if fmt == "tsv" else ",", strict=True))
+                # Blank lines at the end are no rows (a file saved with a final empty line).
+                while rows and not any(cell.strip() for cell in rows[-1]):
+                    rows.pop()
                 if not rows or not rows[0] or any(len(row) != len(rows[0]) for row in rows):
                     raise ValueError("delimited file needs a header and consistent columns")
                 if any(column not in rows[0] for column in check.get("columns", [])):
@@ -366,16 +369,66 @@ def artifact_evidence(step, result, context):
                         raise ValueError("JSON assertions use RFC 6901 pointers")
                     for key in pointer.split("/")[1:] if pointer else []:
                         key = key.replace("~1", "/").replace("~0", "~")
-                        value = value[int(key)] if isinstance(value, list) else value[key]
+                        if isinstance(value, list):
+                            # RFC 6901: an index is digits, counted from the start - "-1" is no index (it read the
+                            # last item through Python's negative indexing; review 2026-11-03, E-46).
+                            if not re.fullmatch(r"0|[1-9]\d*", key) or int(key) >= len(value):
+                                raise ValueError(f"JSON pointer {pointer} names no item")
+                            value = value[int(key)]
+                        elif isinstance(value, dict) and key in value:
+                            value = value[key]
+                        else:
+                            raise ValueError(f"JSON pointer {pointer} names no value")
                     if type(value) is not type(expected) or value != expected:
                         raise ValueError(f"JSON value mismatch at {pointer}")
-            if fmt == "eml" and not all(re.search(rf"^{h}:", text, re.M | re.I) for h in ("To", "Subject")):
+            # The headers are what comes before the first blank line: a "To:" in the body is no header (E-46).
+            head = re.split(r"\r?\n\r?\n", text, maxsplit=1)[0] if fmt == "eml" else ""
+            if fmt == "eml" and not all(re.search(rf"^{h}:", head, re.M | re.I) for h in ("To", "Subject")):
                 raise ValueError("mail draft needs To and Subject headers")
         for needle in check.get("contains", []):
-            if str(needle) not in text:
+            if not _contains(text, needle):
                 raise ValueError(f"{check['path']} missing required content: {needle}")
         evidence.append({"path": check["path"], "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)})
     return evidence
+
+
+def _decoded(data, name):
+    """An artifact's text: UTF-8 (a byte-order mark, as Excel's "CSV UTF-8" writes, dropped), else Windows-1252, as a
+    file saved on an office PC often is. Review 2026-11-03 (E-26): strict UTF-8 refused both, and the BOM stayed in the
+    first column's name."""
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return data.decode("cp1252")
+    except UnicodeDecodeError:
+        raise ValueError(f"{name} is not readable as text") from None
+
+
+_NUMBER_IN_TEXT = re.compile(r"(?<!\w)(?<!\d[.,])-?\d[\d,]*(?:\.\d+)?(?![\w]|[.,]\d)")
+
+
+def _contains(text, needle):
+    """
+    Whether `text` holds `needle` whole: a number as an amount among the text's numbers (1500 is "1,500.00", never
+    "15000" or the 500 inside "1500"), and words as whole tokens ("paid" is not in "unpaid"). Review 2026-11-03 (E-46):
+    a substring test passed a total of 1500 for a check of 500.
+    """
+    if isinstance(needle, (int, float)) and not isinstance(needle, bool):
+        for found in _NUMBER_IN_TEXT.findall(text):
+            try:
+                if float(found.replace(",", "")) == float(needle):
+                    return True
+            except ValueError:
+                continue
+        return False
+    needle = str(needle)
+    if not needle:
+        return True
+    left = r"(?<!\w)" if re.match(r"\w", needle) else ""
+    right = r"(?!\w)" if re.search(r"\w$", needle) else ""
+    return re.search(left + re.escape(needle) + right, text) is not None
 
 
 def _pdf_text(path):
