@@ -32,11 +32,15 @@ type unit struct {
 	llama  *LlamaProc
 	ollama *backend.Ollama
 	tag    string
-	// shared: Ollama already held the model for someone else when Brainiac
-	// first used it, so Brainiac never unloads it.
+	// shared: someone else uses the model in Ollama (it was held when
+	// Brainiac first used it, or someone used it after Brainiac last did),
+	// so Brainiac never unloads it.
 	shared bool
-	wk     *worker.Worker
-	sw     *sharedProc // the worker process this unit shares with the other worker units
+	// lastCall is when Brainiac last sent the model a request.
+	lastCall time.Time
+	callMu   sync.Mutex
+	wk       *worker.Worker
+	sw       *sharedProc // the worker process this unit shares with the other worker units
 }
 
 // stoppable is a process several units share (the Python worker).
@@ -117,17 +121,48 @@ func (u *unit) unload() {
 	case catalog.RuntimeLlamaCpp:
 		u.llama.Stop()
 	case catalog.RuntimeOllama:
-		if !u.shared {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			_ = u.ollama.Unload(ctx, u.tag)
+		if u.shared {
+			return
 		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if u.usedByOthers(ctx) {
+			u.shared = true // a desktop started using it: never unload it from under them
+			return
+		}
+		_ = u.ollama.Unload(ctx, u.tag)
 	case catalog.RuntimeWorker:
 		u.sw.release()
 	}
 }
 
 // chat sends one conversation turn to the unit's model.
+// usedByOthers reports whether Ollama's copy of the model was used after
+// Brainiac's last call: its unload time is later than Brainiac's keep_alive
+// from that call. When Ollama cannot be asked, it is treated as used.
+func (u *unit) usedByOthers(ctx context.Context) bool {
+	exp, err := u.ollama.Expires(ctx)
+	if err != nil {
+		return true
+	}
+	u.callMu.Lock()
+	last := u.lastCall
+	u.callMu.Unlock()
+	for name, at := range exp {
+		if sameTag(name, u.tag) {
+			return !last.IsZero() && at.After(last.Add(u.ollama.KeepAliveFor()+time.Minute))
+		}
+	}
+	return false // not loaded at all: nothing to unload, nothing to take
+}
+
+// called notes a request Brainiac sent to an Ollama model.
+func (u *unit) called() {
+	u.callMu.Lock()
+	u.lastCall = time.Now()
+	u.callMu.Unlock()
+}
+
 func (u *unit) chat(ctx context.Context, req backend.ChatRequest) (backend.ChatResult, error) {
 	switch u.runtime {
 	case catalog.RuntimeLlamaCpp:
@@ -142,7 +177,9 @@ func (u *unit) chat(ctx context.Context, req backend.ChatRequest) (backend.ChatR
 		return c.Chat(ctx, req)
 	default:
 		req.Model = u.tag
-		return u.ollama.Chat(ctx, req)
+		res, err := u.ollama.Chat(ctx, req)
+		u.called()
+		return res, err
 	}
 }
 
@@ -157,7 +194,9 @@ func (u *unit) embed(ctx context.Context, inputs []string) ([][]float32, error) 
 		}
 		return c.Embed(ctx, u.model, inputs)
 	}
-	return u.ollama.Embed(ctx, u.tag, inputs)
+	v, err := u.ollama.Embed(ctx, u.tag, inputs)
+	u.called()
+	return v, err
 }
 
 // asrModel describes the unit's speech model for the worker.

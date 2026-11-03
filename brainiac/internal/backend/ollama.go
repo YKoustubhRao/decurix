@@ -170,6 +170,47 @@ func (o *Ollama) Unload(ctx context.Context, model string) error {
 
 // Loaded is what Ollama holds in memory now: model name to bytes.
 func (o *Ollama) Loaded(ctx context.Context) (map[string]int64, error) {
+	ps, err := o.ps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]int64{}
+	for _, m := range ps {
+		out[m.Name] = m.Size
+	}
+	return out, nil
+}
+
+// Expires is when Ollama will unload each model it holds: the last call's
+// keep_alive from the last time anyone used it.
+func (o *Ollama) Expires(ctx context.Context) (map[string]time.Time, error) {
+	ps, err := o.ps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]time.Time{}
+	for _, m := range ps {
+		out[m.Name] = m.ExpiresAt
+	}
+	return out, nil
+}
+
+// KeepAliveFor is the keep_alive Brainiac sends, as a duration.
+func (o *Ollama) KeepAliveFor() time.Duration {
+	d, err := time.ParseDuration(o.keepAlive())
+	if err != nil {
+		return 30 * time.Minute
+	}
+	return d
+}
+
+type psModel struct {
+	Name      string    `json:"name"`
+	Size      int64     `json:"size"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+func (o *Ollama) ps(ctx context.Context) ([]psModel, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.URL+"/api/ps", nil)
 	if err != nil {
 		return nil, err
@@ -183,19 +224,12 @@ func (o *Ollama) Loaded(ctx context.Context) (map[string]int64, error) {
 		return nil, readError("ollama", resp)
 	}
 	var ps struct {
-		Models []struct {
-			Name string `json:"name"`
-			Size int64  `json:"size"`
-		} `json:"models"`
+		Models []psModel `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&ps); err != nil {
 		return nil, err
 	}
-	out := map[string]int64{}
-	for _, m := range ps.Models {
-		out[m.Name] = m.Size
-	}
-	return out, nil
+	return ps.Models, nil
 }
 
 // Pull downloads a model into Ollama, reporting progress lines.

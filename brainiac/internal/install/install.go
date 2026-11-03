@@ -159,6 +159,11 @@ func Run(ctx context.Context, plan *selector.Plan, opt Options) (*Lock, error) {
 				u.Files[want.Role] = dest
 				if want.Role == "model" && src.Runtime == catalog.RuntimeLlamaCpp {
 					if u.TemplateSHA, err = checkTemplate(st, p.Model, src.Repo, commit, incoming, time.Now()); err != nil {
+						var changed *TemplateChanged
+						if errors.As(err, &changed) && incoming != dest {
+							// A file held for a person is not kept: it is gigabytes.
+							_ = os.Remove(incoming)
+						}
 						return nil, err
 					}
 					if u.TemplateSHA != "" {

@@ -214,3 +214,26 @@ func TestWorkWaitsForASlotAndOutcomesAreBounded(t *testing.T) {
 		t.Fatalf("a 100 KB outcome body: %d", resp.StatusCode)
 	}
 }
+
+// A fetched page cut to max_chars never ends in half a character.
+func TestFetchCutsAtACharacter(t *testing.T) {
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		io.WriteString(w, "ab€€€")
+	}))
+	defer page.Close()
+	e := replyEngine(t, "x", nil, nil)
+	e.Web().AllowPrivate = true
+	e.Web().HTTP = nil
+	srv := httptest.NewServer((&Server{Eng: e}).Handler())
+	defer srv.Close()
+	resp := post(t, srv, "/v1/brainiac/fetch", `{"url":"`+page.URL+`","max_chars":4}`, "")
+	defer resp.Body.Close()
+	var out struct {
+		Text string `json:"text"`
+	}
+	json.NewDecoder(resp.Body).Decode(&out)
+	if out.Text != "ab" {
+		t.Fatalf("cut to %q", out.Text)
+	}
+}

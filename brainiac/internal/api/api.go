@@ -29,6 +29,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"brainiac/internal/backend"
 	"brainiac/internal/engine"
@@ -743,7 +744,11 @@ func (s *Server) fetch(w http.ResponseWriter, r *http.Request) {
 	if in.Query != "" {
 		p.Text = web.Passages(p.Text, in.Query, in.Max)
 	} else if len(p.Text) > in.Max {
-		p.Text = p.Text[:in.Max]
+		cut := in.Max
+		for cut > 0 && !utf8.RuneStart(p.Text[cut]) {
+			cut-- // never half a character
+		}
+		p.Text = p.Text[:cut]
 	}
 	writeJSON(w, 200, p)
 }

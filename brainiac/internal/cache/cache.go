@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,6 +24,7 @@ type Cache struct {
 	Dir      string
 	MaxBytes int64 // default 256 MB
 	mu       sync.Mutex
+	puts     atomic.Int64
 }
 
 // New returns a cache in dir.
@@ -73,8 +75,15 @@ func (c *Cache) Put(key string, v any) {
 	if os.WriteFile(tmp, data, 0o644) == nil {
 		_ = os.Rename(tmp, p)
 	}
-	c.trim()
+	// Walking the whole cache costs O(files); once every trimEvery writes
+	// keeps it near its size without paying that on every OCR.
+	if c.puts.Add(1)%trimEvery == 1 {
+		c.trim()
+	}
 }
+
+// trimEvery is how many writes pass between trims (the first write trims).
+const trimEvery = 32
 
 // trim removes the oldest results once the cache is over MaxBytes.
 func (c *Cache) trim() {

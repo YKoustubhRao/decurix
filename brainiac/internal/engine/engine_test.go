@@ -13,7 +13,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"brainiac/internal/backend"
 	"brainiac/internal/catalog"
 	"brainiac/internal/config"
 	"brainiac/internal/install"
@@ -419,4 +421,33 @@ func TestAPictureWithTooManyPixelsIsNotDecoded(t *testing.T) {
 		t.Fatalf("the brain was not told, or got the picture: %s", msgs)
 	}
 	_ = res
+}
+
+// A model a desktop started using in Ollama after Brainiac's last call is
+// not unloaded from under it.
+func TestAnOllamaModelSomeoneElseUsesIsNotUnloaded(t *testing.T) {
+	var expires time.Time
+	unloads := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/ps":
+			fmt.Fprintf(w, `{"models":[{"name":"tiny:1b","size":1,"expires_at":%q}]}`, expires.Format(time.RFC3339Nano))
+		case "/api/generate":
+			unloads++
+		}
+	}))
+	defer srv.Close()
+	u := &unit{runtime: catalog.RuntimeOllama, ollama: backend.NewOllama(srv.URL), tag: "tiny:1b"}
+	u.called()
+	expires = time.Now().Add(30 * time.Minute) // only Brainiac's own keep_alive
+	u.unload()
+	if unloads != 1 || u.shared {
+		t.Fatalf("Brainiac's own model was not unloaded: %d %v", unloads, u.shared)
+	}
+	u.called()
+	expires = time.Now().Add(2 * time.Hour) // someone used it later, with a longer keep_alive
+	u.unload()
+	if unloads != 1 || !u.shared {
+		t.Fatalf("a model in use by someone else was unloaded: %d %v", unloads, u.shared)
+	}
 }

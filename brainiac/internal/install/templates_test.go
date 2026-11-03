@@ -230,6 +230,9 @@ func TestAPushNeverReachesTheRunningFileUnchecked(t *testing.T) {
 	if !bytes.Equal(read(dest), first) {
 		t.Fatal("the changed file replaced the running one before anyone accepted it")
 	}
+	if _, err := os.Stat(dest + ".incoming"); !os.IsNotExist(err) {
+		t.Errorf("the held download was kept on disk: %v", err)
+	}
 	if prev, _ := ReadLock(st); prev.Units[key].Commit != a {
 		t.Fatalf("the lock moved: %s", prev.Units[key].Commit)
 	}
