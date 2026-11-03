@@ -404,6 +404,21 @@ func (p *phone) shutdown(reason string) {
 	p.conn.Close()
 }
 
+// Drop ends the live link of the phone paired as deviceID, if it has one:
+// unpairing a device must end what it holds open, not only its next request
+// (review 2026-11-03, B-18). Its viewers' sessions end with it.
+func (h *Hub) Drop(deviceID string) {
+	h.mu.Lock()
+	p := h.phones[deviceID]
+	delete(h.phones, deviceID)
+	h.mu.Unlock()
+
+	if p != nil {
+		log.Printf("phonehost: %s was unpaired; its link is closed", p.name)
+		p.shutdown("the phone was unpaired")
+	}
+}
+
 func (h *Hub) phone(id string) *phone {
 	h.mu.Lock()
 	defer h.mu.Unlock()
