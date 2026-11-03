@@ -52,7 +52,7 @@ On a desktop with a shared folder, `source_guard.take` notes and copies the fold
 ## Trust rests on independent checks (W0.5, phase 2)
 
 A skill's streak (`experience.clean_streak`) counts a run only when it succeeded, needed no person, and a check
-independent of the worker passed: its own files read back clean by code (`code`), every record it declared read back
+independent of the worker passed: what the request states (a figure, a reference code) compared against its own files and held, with nothing blocking (`code`, `produced.compared_facts`: files that only opened are no check), every record it declared read back
 from the application with its values shown (`ledger`, `records.all_read_back`), or a person (`person`). The screen
 (every step's result appeared) and the model's judgement are kept on the verdict as `basis` and never advance the
 streak: a replay can show each step's result and still have entered the wrong thing. Verdicts written before `basis`
