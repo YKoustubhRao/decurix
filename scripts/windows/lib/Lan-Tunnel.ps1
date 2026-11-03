@@ -41,8 +41,44 @@ function Get-NamedTunnelUrl {
     return $null
 }
 
+# Test-PublicLinkEnabled says whether the person turned the public link on: DECURIX_PUBLIC_LINK=1 in the environment
+# or in .env. It is off by default (owner decision O-5), as in the app.
+function Test-PublicLinkEnabled {
+    if ($env:DECURIX_PUBLIC_LINK -eq "1") { return $true }
+    if (Test-Path ".env") {
+        foreach ($line in [System.IO.File]::ReadAllLines((Resolve-Path ".env"), [System.Text.Encoding]::UTF8)) {
+            if ($line -match '^\s*DECURIX_PUBLIC_LINK\s*=\s*"?1"?\s*$') { return $true }
+        }
+    }
+    return $false
+}
+
+# Test-GatedPort says whether port is the gated listener's: never the primary one (8080), and serving the access-code
+# page right now (the same check the app makes before it exposes anything, B-07).
+function Test-GatedPort {
+    param([string]$Port)
+    if ($Port -eq "8080") { return $false }
+    try {
+        $page = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/" -UseBasicParsing -TimeoutSec 5
+        return $page.Content -like "*Enter the access code*"
+    } catch {
+        return $false
+    }
+}
+
 function Start-LanTunnel {
     param([string]$LanPort)
+
+    if (-not (Test-PublicLinkEnabled)) {
+        Write-Host ""
+        Write-Host "Public link: off. Phones reach Decurix on this network only. For a link that works from anywhere (it still needs the access code), set DECURIX_PUBLIC_LINK=1 in .env and run this again."
+        return
+    }
+    if (-not (Test-GatedPort -Port $LanPort)) {
+        Write-Host ""
+        Write-Host "Public link: not started - 127.0.0.1:$LanPort is not serving the access-code page, and only that listener is ever tunnelled."
+        return
+    }
 
     $namedUrl = Get-NamedTunnelUrl
     if ($namedUrl) {
