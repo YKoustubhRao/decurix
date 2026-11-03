@@ -627,6 +627,28 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		result, err := s.sched.Execute(ctx, req, job.appendLog)
+		// A paused approval becomes the gate's request before anyone can be asked about it (gate.go). A gate that
+		// refuses to ask (it cannot show the question without the task's secrets) is a no to that one action: the
+		// job goes on at once with that no and why, rather than waiting on a question no reply could approve.
+		for refusals := 0; err == nil && result.Checkpoint != nil && gatePresent() && gateAsk(result.Checkpoint); refusals++ {
+			job.appendLog("scheduler: the approval gate refused to ask about this action (its question could not be " +
+				"shown without the task's secrets) - taken as a no to that one action")
+			if refusals+1 >= maxGateRefusals {
+				result.Checkpoint, result.Outcome, result.Status = nil, scheduler.OutcomeFailed, "error"
+				result.FinalAnswer = "I stopped: the approval gate refused to ask about " +
+					fmt.Sprint(maxGateRefusals) + " actions in a row, because their questions could not be shown " +
+					"without the task's secrets. Nothing they needed was done."
+				result.Question = ""
+				break
+			}
+			prompt := result.Prompt
+			result, err = s.sched.Execute(ctx, scheduler.Request{Prompt: gateRefusalNote, Context: req.Context,
+				WorkDir: req.WorkDir, History: req.History, Resume: result.Checkpoint,
+				Reading: &skills.Reading{Decision: "no"}}, job.appendLog)
+			if err == nil && result.Prompt == gateRefusalNote {
+				result.Prompt = prompt
+			}
+		}
 		job.mu.Lock()
 		if err != nil {
 			job.Status = "error"
@@ -652,10 +674,6 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		job.mu.Unlock()
 
 		if err == nil && result.Checkpoint != nil {
-			// A paused approval becomes the gate's request before anyone can be asked about it (gate.go).
-			if gatePresent() {
-				gateAsk(result.Checkpoint)
-			}
 			job.mu.Lock()
 			result.Checkpoint.Secrets = append([]string(nil), job.secrets...) // a reply resuming it keeps them
 			job.mu.Unlock()

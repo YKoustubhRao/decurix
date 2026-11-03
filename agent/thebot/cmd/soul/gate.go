@@ -72,12 +72,19 @@ func gateCall(call map[string]any, timeout time.Duration, out any) bool {
 
 // gateAsk makes a paused approval a request of the gate's: cp gets the gate's request id and fingerprint. A gate that
 // does not answer leaves them empty, and the reply that resumes the job is then never a yes.
-func gateAsk(cp *scheduler.Checkpoint) {
+//
+// refused reports that the gate answered and would not ask at all (handoff H-SOUL-8): it could not word the action's
+// question without the task's secrets, so no person can be asked and no reply could ever approve it. The gate's
+// answer is then {"allowed": false, "refused": true, "request": null}; an answer with allowed false and no request,
+// from a gate that predates the field, is read the same way. The caller treats it as a no to that one action.
+func gateAsk(cp *scheduler.Checkpoint) (refused bool) {
 	command, request, ok := cp.Approval()
 	if !ok {
-		return
+		return false
 	}
 	var said struct {
+		Allowed bool `json:"allowed"`
+		Refused bool `json:"refused"`
 		Request *struct {
 			ID          string `json:"id"`
 			Fingerprint string `json:"fingerprint"`
@@ -85,10 +92,27 @@ func gateAsk(cp *scheduler.Checkpoint) {
 	}
 	call := map[string]any{"op": "check", "reason": "it needs your approval",
 		"material": map[string]any{"kind": "command", "command": command, "request": request, "workdir": cp.WorkDir}}
-	if gateCall(call, 15*time.Second, &said) && said.Request != nil {
+	if !gateCall(call, 15*time.Second, &said) {
+		return false // no answer: the job waits, and no reply is ever a yes
+	}
+	if said.Refused || (!said.Allowed && said.Request == nil) {
+		return true
+	}
+	if said.Request != nil {
 		cp.GateRequest, cp.GateFingerprint = said.Request.ID, said.Request.Fingerprint
 	}
+	return false
 }
+
+// gateRefusalNote is what the operator is told when the gate refused to ask about its action: a no to that one
+// action, with why, so the worker can do the work another way or report what it could not do.
+const gateRefusalNote = "The action was not allowed and did not run: its approval question could not be shown to " +
+	"the person safely (the approval gate could not word it without the task's secrets), so nobody could be asked. " +
+	"Do not try the same action again. Do the work another way that needs no such approval, or report what you " +
+	"could not do and why."
+
+// maxGateRefusals bounds how many of a job's actions in a row the gate may refuse before the job ends.
+const maxGateRefusals = 3
 
 // gateSettled is the gate's reading of the person's reply to cp's own request: the decision, condition and what they
 // want first. Anything the gate did not settle for that request is "unclear": it approves nothing.
