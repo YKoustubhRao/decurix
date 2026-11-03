@@ -223,7 +223,8 @@ def _withhold_secret_values(elements):
     Every secret field's value (privacy.secret_field: a password, a one-time code, a key) replaced where it is read, at
     the look itself, so no renderer, note or record can show it: the field is shown filled, by SECRET_VALUE. Found in
     review (2026-11-03, D-18): `gui observe` printed a text-type code or key field's value, and the evidence notes the
-    final check reads kept it. The raw value stays only in the element's handle, which is what acting reads.
+    final check reads kept it. The value is not kept anywhere else: acting types what it is given and reads the page
+    itself, never this copy (review round 2: a raw copy in the handle was one more place a secret sat).
     """
 
     for e in elements:
@@ -235,7 +236,6 @@ def _withhold_secret_values(elements):
         except Exception:  # noqa: BLE001 - not known to be safe to show: withheld
             secret = True
         if secret:
-            e["handle"] = dict(e.get("handle") or {}, value=value)
             e["value"] = SECRET_VALUE
 
 

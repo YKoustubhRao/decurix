@@ -1,6 +1,6 @@
 """
 A secret field's value is withheld at the look itself (review 2026-11-03, D-18): no render of an observation, and no
-form listing, holds it. The raw value stays only in the handle acting reads.
+form listing, holds it - and no copy of it is kept in the element (review round 2).
 """
 
 import unittest
@@ -26,7 +26,7 @@ class TheLookWithholdsSecretValues(unittest.TestCase):
         self.assertNotIn("482913", rendered)
         self.assertIn("Vendor One", rendered)
         self.assertEqual(found[0]["value"], core.SECRET_VALUE)
-        self.assertEqual(found[0]["handle"]["value"], "482913")
+        self.assertNotIn("482913", repr(found[0]), "no copy of the secret is kept in the element")
 
     def test_a_password_labelled_field_is_withheld(self):
         found = [field("Password", "plain-text-value")]
