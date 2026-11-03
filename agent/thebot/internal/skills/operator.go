@@ -1517,6 +1517,18 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 		if st.Hosted && st.contextOverBudget() {
 			o.compact(rc, st, "context size")
 		}
+		if !st.Hosted && st.localOverBudget() {
+			// Past the local window Ollama would drop the contract and the task without a word (context.go): older
+			// outputs are masked first (one cache break, where the cache is lost anyway); if it still does not fit, the
+			// goal ends as not checked rather than run on without its instructions.
+			before := localTokens(st.Messages)
+			masked := st.maskOutputsBefore(localMaskKeepNewest)
+			rc.Logf("operator", "the local model's window is nearly full (~%d tokens) - %d older outputs masked, now ~%d",
+				before, masked, localTokens(st.Messages))
+			if st.localOverBudget() {
+				return unchecked(outOfLocalRoomWords, outOfLocalRoomWhy)
+			}
+		}
 		if err := rc.Ctx.Err(); err != nil {
 			return finish("Stopped before finishing: "+err.Error(), false, map[string]any{"error": err.Error(), "fatal": true})
 		}
