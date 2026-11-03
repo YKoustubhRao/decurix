@@ -29,6 +29,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"thebot/internal/llm"
+	"thebot/internal/migrate"
 )
 
 const (
@@ -69,6 +70,19 @@ type RAG struct {
 	doclingScript string
 }
 
+// Migrate is the Data RAG's schema, step by step: appended only, never edited (internal/migrate).
+var Migrate = []string{
+	`CREATE TABLE IF NOT EXISTS chunks (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	rel_path TEXT NOT NULL,
+	chunk_index INTEGER NOT NULL,
+	text TEXT NOT NULL,
+	embedding TEXT NOT NULL,
+	created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_relpath ON chunks(rel_path);`,
+}
+
 // New opens (creating if needed) the real SQLite-backed Data RAG at
 // <workspaceRoot>/.rag/data.db.
 func New(workspaceRoot string, embedder llm.Embedder, doclingScript string) (*RAG, error) {
@@ -86,19 +100,9 @@ func New(workspaceRoot string, embedder llm.Embedder, doclingScript string) (*RA
 	// separate ingestor process exists.
 	db.SetMaxOpenConns(1)
 
-	schema := `
-CREATE TABLE IF NOT EXISTS chunks (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	rel_path TEXT NOT NULL,
-	chunk_index INTEGER NOT NULL,
-	text TEXT NOT NULL,
-	embedding TEXT NOT NULL,
-	created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_chunks_relpath ON chunks(rel_path);
-`
-	if _, err := db.Exec(schema); err != nil {
-		return nil, fmt.Errorf("rag: create schema: %w", err)
+	if err := migrate.Migrate(db, Migrate); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("rag: %w", err)
 	}
 
 	return &RAG{db: db, workspaceRoot: workspaceRoot, embedder: embedder, doclingScript: doclingScript}, nil

@@ -15,6 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"thebot/internal/llm"
+	"thebot/internal/migrate"
 )
 
 // L1 is curated memory: the small set of things actually worth carrying
@@ -54,25 +55,28 @@ func NewL1(workspaceRoot string, provider llm.Provider, embedder llm.Embedder, m
 	}
 	db.SetMaxOpenConns(1)
 
-	schema := `
-CREATE TABLE IF NOT EXISTS facts (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	fact TEXT NOT NULL,
-	source TEXT NOT NULL,
-	embedding TEXT NOT NULL,
-	created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS facts_fact ON facts (fact);
-`
-	if _, err := db.Exec(schema); err != nil {
+	if err := migrate.Migrate(db, L1Migrate); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("l1: create schema: %w", err)
+		return nil, fmt.Errorf("l1: %w", err)
 	}
 	if _, err := PurgeSecrets(db, "facts", "fact"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("l1: purge secrets: %w", err)
 	}
 	return &L1{db: db, provider: provider, embedder: embedder, model: model}, nil
+}
+
+// L1Migrate is l1.db's schema, step by step: appended only, never edited (internal/migrate).
+var L1Migrate = []string{
+	`CREATE TABLE IF NOT EXISTS facts (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	fact TEXT NOT NULL,
+	source TEXT NOT NULL,
+	embedding TEXT NOT NULL,
+	created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS facts_fact ON facts (fact);`,
+	fixesSchema,
 }
 
 // PurgeSecrets deletes every row of table whose columns hold a secret-shaped value (LooksSecret) and returns how

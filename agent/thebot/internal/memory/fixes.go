@@ -27,7 +27,7 @@ import (
 // ProvenFixMaxAge is how long a person's yes to a fix stands for the same failure in the same project.
 const ProvenFixMaxAge = 30 * 24 * time.Hour
 
-// fixesSchema is the table the proven fixes are kept in, beside L1's facts.
+// fixesSchema is the table the proven fixes are kept in, beside L1's facts (L1Migrate's second step).
 const fixesSchema = `
 CREATE TABLE IF NOT EXISTS approved_fixes_scoped (
 	signature TEXT NOT NULL,
@@ -58,9 +58,6 @@ func (l *L1) RecordProvenFix(ctx context.Context, signature, scope, command stri
 	if command == "" || LooksSecret(command) {
 		return ErrSecret
 	}
-	if err := l.ensureFixes(ctx); err != nil {
-		return err
-	}
 	_, err := l.db.ExecContext(ctx,
 		`INSERT INTO approved_fixes_scoped (signature, scope, command, approved_at) VALUES (?, ?, ?, ?)
 		 ON CONFLICT(signature, scope) DO UPDATE SET command = excluded.command, approved_at = excluded.approved_at`,
@@ -82,9 +79,6 @@ func (l *L1) ProvenFixAt(ctx context.Context, signature, scope string) (string, 
 	if signature == "" || scope == "" {
 		return "", time.Time{}, nil
 	}
-	if err := l.ensureFixes(ctx); err != nil {
-		return "", time.Time{}, err
-	}
 	var command string
 	var at int64
 	err := l.db.QueryRowContext(ctx, `SELECT command, approved_at FROM approved_fixes_scoped WHERE signature = ? AND scope = ?`,
@@ -103,16 +97,7 @@ func (l *L1) ProvenFixAt(ctx context.Context, signature, scope string) (string, 
 
 // AgeProvenFix moves a proven fix's approval back by d (for tests of its expiry).
 func (l *L1) AgeProvenFix(ctx context.Context, signature, scope string, d time.Duration) error {
-	if err := l.ensureFixes(ctx); err != nil {
-		return err
-	}
 	_, err := l.db.ExecContext(ctx, `UPDATE approved_fixes_scoped SET approved_at = approved_at - ? WHERE signature = ? AND scope = ?`,
 		int64(d.Seconds()), signature, scope)
-	return err
-}
-
-// ensureFixes creates the proven-fix table on first use.
-func (l *L1) ensureFixes(ctx context.Context) error {
-	_, err := l.db.ExecContext(ctx, fixesSchema)
 	return err
 }
