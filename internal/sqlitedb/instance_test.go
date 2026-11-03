@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // Two data directories get two instance IDs - even ones whose path reads the same in two containers - and one data
@@ -46,5 +47,31 @@ func TestConcurrentStartsAgreeOnOneInstanceID(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 1 {
 		t.Fatalf("only the instance file is left in the data directory: %v", entries)
+	}
+}
+
+// An empty instance file left by a crash between the create and the write is made again once it is stale, instead
+// of every later start falling back to the shared path hash (RW1-G-05). A fresh one may be another start's, mid-write,
+// and is left alone.
+func TestAStaleEmptyInstanceFileIsMadeAgain(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, InstanceFile)
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := readInstanceID(path); ok {
+		t.Fatal("an empty file is not an ID")
+	}
+	_ = instanceIDIn(dir) // fresh: left alone, the path hash is used this once
+	if raw, _ := os.ReadFile(path); len(raw) != 0 {
+		t.Fatalf("a fresh file was replaced: %q", raw)
+	}
+	old := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	id := instanceIDIn(dir)
+	if got, ok := readInstanceID(path); !ok || got != id {
+		t.Fatalf("the stale file was not made again: id %q, file %q", id, got)
 	}
 }

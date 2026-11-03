@@ -38,6 +38,18 @@ func instanceIDIn(dir string) string {
 			// used, once it has written it). Unlike a hard link it works on every filesystem a data directory may be
 			// on, so the path's hash is no longer the fallback where links are not supported (REVIEW-3 follow-up 8).
 			f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			if errors.Is(err, os.ErrExist) {
+				if got, ok := awaitInstanceID(path); ok {
+					return got
+				}
+				// Still empty or not an ID: a crash between the create and the write left it. Once it is older than
+				// any start in progress could be, it is treated as absent and made again (RW1-G-05).
+				if info, serr := os.Stat(path); serr == nil && time.Since(info.ModTime()) > staleInstanceFile {
+					log.Printf("instance: %s in %s holds no instance ID; making a new one", InstanceFile, dir)
+					_ = os.Remove(path)
+					f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+				}
+			}
 			switch {
 			case err == nil:
 				_, werr := f.WriteString(id + "\n")
@@ -61,6 +73,9 @@ func instanceIDIn(dir string) string {
 	log.Printf("instance: could not keep %s in %s; this control plane is tagged by its data directory's path (%s), which another one with the same path shares", InstanceFile, dir, id)
 	return id
 }
+
+// staleInstanceFile is how old an instance file without an ID must be before it is taken as a crash's leftover.
+const staleInstanceFile = 5 * time.Second
 
 // awaitInstanceID reads the instance ID another process has just created, giving it a moment to write the twelve
 // digits after its exclusive create.
