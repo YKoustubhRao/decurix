@@ -79,6 +79,7 @@ def runner():
     root = (config.DECURIX_DIR / "workflows").resolve()
     if root not in _runners:
         _runners[root] = WorkflowRunner(root)
+        _runners[root].prune()  # (once per process: stale locks and temp files, E-43)
     return _runners[root]
 
 
@@ -354,9 +355,10 @@ def interrupted_note(task_id):
     if not (config.DECURIX_DIR / "workflows").is_dir():
         return None
     r = runner()
-    for checkpoint in r.root.glob("*/checkpoint.json"):
+    # Only the runs of this task are read whole (E-43: every checkpoint was validated on every call).
+    for run_id in r.task_runs(task_id):
         try:
-            state = r.status(checkpoint.parent.name)
+            state = r.status(run_id)
         except (OSError, ValueError, KeyError):
             continue
         if state.get("task_id") == task_id and state["status"] not in {"completed", "failed", "cancelled"}:

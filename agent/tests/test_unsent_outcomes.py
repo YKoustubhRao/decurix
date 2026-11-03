@@ -52,6 +52,21 @@ class UnsentOutcomes(unittest.TestCase):
         self.assertEqual(self.kept(), [])
         self.assertEqual(self.posted[-1]["task_id"], "t0123456789abcdef")
 
+    def test_a_kept_outcome_the_control_plane_refuses_is_dropped_not_retried(self):
+        # Lead review 2026-11-03 (L-03): once the control plane refuses an outcome for a task that is closed (or not
+        # this execution's), sending it again forever would only be refused forever. It is let go, and the next one
+        # behind it is still sent.
+        with self.post(("unreachable", "x"), ("unreachable", "x")):
+            messaging.send_query("a.txt", "stale", kind="final", reply="stale", task_id="t0123456789abcdef")
+            messaging.send_query("b.txt", "fresh", kind="final", reply="fresh", task_id="tfedcba9876543210")
+        self.assertEqual(len(self.kept()), 2)
+        with self.post(("refused", "HTTP 409 the task is closed"), ("sent", "")):
+            self.assertEqual(messaging.resend_unsent(), 1)
+        self.assertEqual(self.kept(), [])
+        with self.post():
+            self.assertEqual(messaging.resend_unsent(), 0)
+        self.assertEqual([p["reply"] for p in self.posted], ["stale", "fresh", "stale", "fresh"])
+
     def test_still_unreachable_keeps_them_all_in_order(self):
         with self.post(("unreachable", "x"), ("unreachable", "x")):
             messaging.send_query("a.txt", "first", kind="final", reply="first")

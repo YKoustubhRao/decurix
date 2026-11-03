@@ -517,6 +517,42 @@ class WorkflowRunner:
         temp.replace(p)
         return copy.deepcopy(state)
 
+    def prune(self, older_than=24 * 3600):
+        """
+        Remove what nothing will read again: lock files of runs whose folder is gone, and checkpoint temp files a crash
+        left, both older than `older_than` seconds (a run being created has its lock before its folder). Returns how
+        many were removed. Never raises. A run's own folder is not removed: it holds the person's outputs (review
+        2026-11-03, E-43: locks and temp files grew without bound).
+        """
+        removed = 0
+        now = time.time()
+        try:
+            runs = {hashlib.sha256(p.name.encode()).hexdigest() for p in self.root.iterdir() if p.is_dir()}
+            stale = [lock for lock in (self.root / ".locks").glob("*.lock") if lock.stem not in runs]
+            stale += list(self.root.glob("*/checkpoint.json.*.tmp"))
+        except OSError:
+            return 0
+        for path in stale:
+            try:
+                if now - path.stat().st_mtime > older_than:
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                continue
+        return removed
+
+    def task_runs(self, task_id):
+        """The run ids whose checkpoint names `task_id`, read cheaply (the raw JSON's task_id) before anything is
+        validated. Never raises."""
+        found = []
+        for checkpoint in self.root.glob("*/checkpoint.json"):
+            try:
+                if json.loads(checkpoint.read_text(encoding="utf-8")).get("task_id") == task_id:
+                    found.append(checkpoint.parent.name)
+            except (OSError, ValueError, AttributeError):
+                continue
+        return found
+
     def create(self, spec, inputs=None, run_id=None, work_dir=None):
         run_id = run_id or uuid.uuid4().hex
         with self._lock(run_id):
