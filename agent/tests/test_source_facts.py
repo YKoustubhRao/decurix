@@ -47,6 +47,7 @@ class ChangedSources(SharedBase):
                 self.assertEqual([f["name"] for f in facts], ["ledger.csv"])
                 self.assertIn("Beta Traders", facts[0]["diff"])
                 self.assertTrue(facts[0]["kept"])
+                self.assertTrue(facts[0]["copy"])
                 self.assertEqual((self.mount / "ledger.csv").read_bytes(), after)  # never put back by the check
 
     def test_the_judge_and_the_person_are_told(self):
@@ -58,7 +59,17 @@ class ChangedSources(SharedBase):
         self.assertTrue(judge[0].startswith("Checked in code (not a claim): the request's file"))
         person = source_guard.report_lines(facts)
         self.assertIn("Changed your file", person[0])
-        self.assertIn('say "put back ledger.csv"', person[0])
+        self.assertIn("the original is kept at " + facts[0]["copy"], person[0])
+        self.assertIn("ask me to copy it back if this change was not wanted", person[0])
+        self.assertTrue(Path(facts[0]["copy"]).is_file())
+        self.assertEqual(Path(facts[0]["copy"]).read_bytes(), BEFORE)
+
+    def test_with_no_copy_kept_the_person_is_told_it_cannot_be_undone(self):
+        fact = {"rel": "big.csv", "name": "big.csv", "path": "big.csv", "diff": "its bytes differ", "gone": False,
+                "kept": False, "copy": "", "asked": False}
+        said = source_guard.report_lines([fact])[0]
+        self.assertIn("no copy of the original was kept", said)
+        self.assertNotIn("copy it back", said)
 
     def test_a_file_the_request_does_not_give_and_an_unchanged_one_are_not_facts(self):
         request = "Record today's payments in ledger.csv."

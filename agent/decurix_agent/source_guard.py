@@ -563,7 +563,8 @@ def changed_sources(task_id, request):
     """
     The given files of the request (attached, named, or in a folder it names) that were in the shared folder before the
     task and now hold something else, or are gone - whatever the request's words, which decide nothing here:
-    [{"rel", "name", "path", "diff", "gone", "kept", "asked"}]. "asked" is may_change's reading (the request names
+    [{"rel", "name", "path", "diff", "gone", "kept", "copy", "asked"}] - "copy" is the full path of the original as it
+    was kept before the task ("" when none was kept: too large). "asked" is may_change's reading (the request names
     the file near an edit verb): evidence for the judge, never a verdict. [] when there is no shared folder or nothing
     changed; raises NotChecked when the check cannot be made. Never restores anything.
     """
@@ -580,9 +581,10 @@ def changed_sources(task_id, request):
         if rel not in mine and Path(rel).name.lower() not in named:
             continue  # (not a source this request gives: never judged)
         copy = _folder(task_id) / "files" / entry["copy"] if entry.get("copy") else None
+        kept = bool(copy and copy.is_file())
         fact = {"rel": rel, "name": Path(rel).name, "path": shared.to_host(str(Path(_root()) / rel)) or rel,
-                "gone": False, "kept": bool(copy and copy.is_file()), "asked": may_change(Path(rel).name, request),
-                "diff": ""}
+                "gone": False, "kept": kept, "copy": str(copy) if kept else "",
+                "asked": may_change(Path(rel).name, request), "diff": ""}
         now = _now(rel)
         if now is None:
             fact.update(gone=True, diff="the file is gone")
@@ -621,13 +623,14 @@ def judge_lines(facts):
 
 
 def report_lines(facts):
-    """The person's line for each changed file, always shown with the result (under "Please check")."""
+    """The person's line for each changed file, always shown with the result (under "Please check"). It says only
+    what is true: where the original is kept, and that they can ask for it back."""
 
     out = []
     for f in facts or ():
         if f.get("kept"):
-            out.append(f'Changed your file {f["path"]} ({f["diff"]}) - the original is kept; say "put back {f["name"]}" '
-                       "and I will restore it.")
+            out.append(f"Changed your file {f['path']} ({f['diff']}) - the original is kept at {f.get('copy')} for the "
+                       f"next {KEEP_TASKS} tasks; ask me to copy it back if this change was not wanted.")
         else:
             out.append(f"Changed your file {f['path']} ({f['diff']}) - no copy of the original was kept (it was too "
                        "large), so it cannot be undone from here.")
