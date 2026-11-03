@@ -1,7 +1,6 @@
 package runs
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"time"
@@ -291,11 +290,3 @@ type Sources struct {
 
 // ErrUnknownExecution is an execution Build cannot find.
 var ErrUnknownExecution = errors.New("runs: no such execution")
-
-// errNotYet marks a part of the API whose body lands in a later commit (SOUL-R1, SOUL-R2).
-var errNotYet = errors.New("runs: not built yet")
-
-// Build assembles the trajectory of execID from src.
-func Build(ctx context.Context, src Sources, execID string) (Trajectory, error) {
-	return Trajectory{}, errNotYet
-}

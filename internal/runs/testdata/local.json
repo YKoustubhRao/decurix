@@ -1,0 +1,197 @@
+{
+  "schema": "decurix.trajectory/v1",
+  "run_id": "e_l",
+  "task_id": "t_l",
+  "attempt": 1,
+  "worker": {
+    "id": "olga",
+    "name": "olga",
+    "harness": "thebot",
+    "brain": "ollama",
+    "image": "",
+    "agent_sha": "",
+    "soul_sha": "",
+    "rules_sha": ""
+  },
+  "origin": {
+    "kind": "unknown",
+    "ref": "",
+    "actor": null
+  },
+  "skill": {
+    "name": "",
+    "version": 0
+  },
+  "request": {
+    "text": "Add the user Ada Lovelace",
+    "sha256": "8102fdedb74766835c5263cfc384e1c919aceb1e169ffec19ac3f04bfe6e4465",
+    "files": []
+  },
+  "started_at": "2026-11-04T10:02:11Z",
+  "ended_at": "2026-11-04T10:03:11Z",
+  "status": "done",
+  "outcome": "done_unchecked",
+  "verdict": {
+    "schema": "decurix.verdict/v1",
+    "verdict": "unchecked",
+    "by": "verify",
+    "why": "no check could be made",
+    "basis": [],
+    "checks": [
+      {
+        "id": "judge",
+        "result": "not_made",
+        "basis": "model",
+        "detail": "a local brain",
+        "refs": []
+      }
+    ],
+    "evidence": []
+  },
+  "models": [
+    {
+      "provider": "ollama",
+      "deployment": "qwen2.5-coder:14b",
+      "calls": 2,
+      "purposes": {
+        "operator.turn": 2
+      }
+    }
+  ],
+  "usage": {
+    "input_tokens": 6000,
+    "cached_input_tokens": 4000,
+    "output_tokens": 180,
+    "calls": 2
+  },
+  "steps": [
+    {
+      "i": 0,
+      "at": "2026-11-04T10:02:31Z",
+      "turn": "j7:1",
+      "call": 0,
+      "model": {
+        "provider": "ollama",
+        "deployment": "qwen2.5-coder:14b"
+      },
+      "prompt_sha256": "local-p1",
+      "prefix_sha256": "",
+      "observation": {
+        "frame": "b1.png",
+        "ax": "",
+        "window": "Users - Chromium",
+        "url": "http://records.example.test/users/new"
+      },
+      "command": {
+        "text": "gui type 'textbox \"Name\"' 'Ada Lovelace'",
+        "tool": "gui",
+        "exit": 0,
+        "ms": 700,
+        "output_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "guard": "allowed"
+      },
+      "action": {
+        "record_id": "20261104T100231-9a8b7c6d",
+        "kind": "type",
+        "target": {
+          "name": "Name",
+          "role": "textbox"
+        },
+        "text": "Ada Lovelace",
+        "withheld": null,
+        "backend": "atspi",
+        "outcome": "done",
+        "actor": "agent"
+      },
+      "gate": {
+        "decision": "not_needed",
+        "request_id": "",
+        "judgement_id": ""
+      },
+      "diff": {
+        "before": "b1.png",
+        "after": "b2.png",
+        "change": "Name now Ada Lovelace",
+        "expect": null
+      },
+      "ledger_delta": [],
+      "label": "unlabelled"
+    }
+  ],
+  "calls": [
+    {
+      "i": 0,
+      "id": "",
+      "at": "2026-11-04T10:02:21Z",
+      "source": "soul_trace",
+      "provider": "ollama",
+      "deployment": "qwen2.5-coder:14b",
+      "purpose": "operator.turn",
+      "turn": "j7:1",
+      "caller": "soul",
+      "status": 0,
+      "ms": 2100,
+      "prompt_sha256": "local-p1",
+      "prefix_sha256": "",
+      "response_sha256": "",
+      "messages": 9,
+      "usage": {
+        "input_tokens": 3000,
+        "cached_input_tokens": 2000,
+        "output_tokens": 90,
+        "calls": 1
+      },
+      "problems": []
+    },
+    {
+      "i": 1,
+      "id": "",
+      "at": "2026-11-04T10:02:51Z",
+      "source": "soul_trace",
+      "provider": "ollama",
+      "deployment": "qwen2.5-coder:14b",
+      "purpose": "operator.turn",
+      "turn": "j7:2",
+      "caller": "soul",
+      "status": 0,
+      "ms": 2100,
+      "prompt_sha256": "local-p2",
+      "prefix_sha256": "",
+      "response_sha256": "",
+      "messages": 9,
+      "usage": {
+        "input_tokens": 3000,
+        "cached_input_tokens": 2000,
+        "output_tokens": 90,
+        "calls": 1
+      },
+      "problems": []
+    }
+  ],
+  "questions": [],
+  "judgements": [],
+  "ledger": [],
+  "labels": {
+    "person_verdict": "",
+    "eval": null
+  },
+  "integrity": {
+    "bundle_sha256": "8cacd4a7199b474f86fb70ed9c99e7892539e49ffe8d668dd727727ef8223118",
+    "parts": {
+      "manifest": "sha256:1cb733bd85c6c6e8a3051a36753c098ca7cd41b4140979a821fbe9a9f12864b8",
+      "recording": "sha256:4555bfa7d3c8621346ac5ff08bfde64fecc6c342c9e175a871de63dfab185509",
+      "soul_trace": "sha256:11c0ebcfd2894be1acaf593888ee23d979a85587977c2f61abf5294178eed06c"
+    },
+    "missing": [
+      "notes: not present",
+      "ledger: not present",
+      "files: not present",
+      "outputs: not present"
+    ],
+    "worker_written": [
+      "recording",
+      "manifest",
+      "soul_trace"
+    ]
+  }
+}
