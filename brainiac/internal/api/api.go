@@ -42,9 +42,14 @@ type Server struct {
 	Eng    *engine.Engine
 	APIKey string
 	Log    *log.Logger
+	// WorkSlots is how many work requests run at once (0 means 4); the rest
+	// wait their turn, so parallel large requests cannot exhaust memory.
+	WorkSlots int
 
 	cur    atomic.Pointer[engine.Engine]
 	hold   sync.RWMutex // work requests share it; Hold takes it alone
+	slots  chan struct{}
+	once   sync.Once
 	active atomic.Int64 // work requests being answered
 	last   atomic.Int64 // when the last one ended (unix nanoseconds)
 
@@ -123,6 +128,19 @@ func (s *Server) track(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			next.ServeHTTP(w, r)
+			return
+		}
+		s.once.Do(func() {
+			n := s.WorkSlots
+			if n <= 0 {
+				n = 4
+			}
+			s.slots = make(chan struct{}, n)
+		})
+		select {
+		case s.slots <- struct{}{}:
+			defer func() { <-s.slots }()
+		case <-r.Context().Done():
 			return
 		}
 		s.hold.RLock()
@@ -748,6 +766,7 @@ func (s *Server) paths(w http.ResponseWriter, r *http.Request) {
 // outcome files a client's final verdict on real answers: {"ok": false} with
 // "trace" for one answer, or "since" (RFC 3339) for every answer since then.
 func (s *Server) outcome(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var body struct {
 		Trace string    `json:"trace"`
 		Since time.Time `json:"since"`

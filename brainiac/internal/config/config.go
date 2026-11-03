@@ -300,6 +300,9 @@ func (c Config) Validate() error {
 	if err != nil {
 		return fmt.Errorf("listen %q: %w", c.Listen, err)
 	}
+	if Appliance() && c.APIKey() == "" {
+		return fmt.Errorf("an appliance is a shared office machine, so its Brainiac needs an API key (set BRAINIAC_API_KEY_ENV to a variable holding one), even on loopback")
+	}
 	if !Loopback(host) && c.APIKey() == "" {
 		return fmt.Errorf("listening on %s needs an API key (set BRAINIAC_API_KEY_ENV to a variable holding one): Brainiac can use this machine's memory and disk, so it is never open beyond it without one", host)
 	}

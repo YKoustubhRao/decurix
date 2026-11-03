@@ -95,3 +95,17 @@ func TestTheApplianceRequiresTheSandbox(t *testing.T) {
 		t.Fatal("an unknown sandbox setting was accepted")
 	}
 }
+
+func TestTheApplianceNeedsAKeyEvenOnLoopback(t *testing.T) {
+	t.Setenv("BRAINIAC_APPLIANCE", "1")
+	c := Default()
+	c.Mode, c.Sandbox = ModeLocal, SandboxRequired
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "API key") {
+		t.Fatalf("an appliance without a key: %v", err)
+	}
+	t.Setenv("TEST_BRAINIAC_KEY", "k")
+	c.APIKeyEnv = "TEST_BRAINIAC_KEY"
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}

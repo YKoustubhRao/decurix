@@ -187,3 +187,30 @@ func TestAHoldMakesWorkWait(t *testing.T) {
 		t.Fatalf("after the hold: %q", a)
 	}
 }
+
+// Work requests beyond the slots wait their turn; an outcome body is bounded.
+func TestWorkWaitsForASlotAndOutcomesAreBounded(t *testing.T) {
+	started, gate := make(chan struct{}, 2), make(chan struct{})
+	s := &Server{Eng: replyEngine(t, "ok", started, gate), WorkSlots: 1}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	got := make(chan string, 2)
+	for i := 0; i < 2; i++ {
+		go func() { got <- answerOf(t, post(t, srv, "/v1/chat/completions", hello, "")) }()
+	}
+	<-started
+	select {
+	case <-started:
+		t.Fatal("two work requests ran with one slot")
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(gate)
+	<-got
+	<-got
+	big := `{"ok":false,"trace":"` + strings.Repeat("x", 100<<10) + `"}`
+	resp := post(t, srv, "/v1/brainiac/outcomes", big, "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a 100 KB outcome body: %d", resp.StatusCode)
+	}
+}

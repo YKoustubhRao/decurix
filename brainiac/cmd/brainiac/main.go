@@ -374,7 +374,7 @@ func serve(ctx context.Context, st *store.Store, cfg config.Config, lock *instal
 	if err != nil {
 		return err
 	}
-	as := &api.Server{Eng: eng, APIKey: cfg.APIKey(), Log: lg}
+	as := &api.Server{Eng: eng, APIKey: cfg.APIKey(), Log: lg, WorkSlots: workSlots(lock)}
 	defer func() { as.Current().Close() }()
 	// The updater reads public evaluations on the web and only stages what it
 	// finds; it is off unless update_every is set, and off with the web.
@@ -395,7 +395,8 @@ func serve(ctx context.Context, st *store.Store, cfg config.Config, lock *instal
 			return engine.New(engine.Options{Config: cfg, Store: st, Lock: l, Logger: lg, Catalog: c})
 		}}
 	go follow.run(ctx, 30*time.Second)
-	srv := &http.Server{Addr: cfg.Listen, Handler: as.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	// A body must arrive within minutes; an answer may stream for longer.
+	srv := &http.Server{Addr: cfg.Listen, Handler: as.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 5 * time.Minute}
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return err
@@ -426,6 +427,21 @@ func serve(ctx context.Context, st *store.Store, cfg config.Config, lock *instal
 		}
 		return err
 	}
+}
+
+// workSlots is how many work requests serve runs at once: about one per GB
+// of the host pool's budget, since a request with pictures can hold
+// hundreds of MB while it is decoded, from 2 to 16.
+func workSlots(lock *install.Lock) int {
+	gb := 0.0
+	if lock != nil && lock.Plan != nil {
+		for _, b := range lock.Plan.Budgets {
+			if b.Pool == "host" && !b.Unmeasured {
+				gb = b.BudgetGB
+			}
+		}
+	}
+	return min(16, max(2, int(gb)))
 }
 
 func runUp(args []string) error {
