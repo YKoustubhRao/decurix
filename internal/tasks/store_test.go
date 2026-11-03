@@ -596,22 +596,23 @@ func TestTaskResult(t *testing.T) {
 	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeError, Reply: "did not finish answering in time"})
 
 	send(t, s, box, "Hello,  whats your name?")
-	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeDone, Reply: "I'm box."})
+	yes := true
+	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeDone, Reply: "I'm box.", Checked: &yes})
 
-	status, reply, ok := s.TaskResult(first.TaskID)
+	status, checked, reply, ok := s.TaskResult(first.TaskID)
 	if !ok {
 		t.Fatal("TaskResult ok = false, want true")
 	}
 
-	if status != StatusDone || reply != "I'm box." {
-		t.Fatalf("TaskResult = (%q, %q), want the latest attempt (%q, %q)", status, reply, StatusDone, "I'm box.")
+	if status != StatusDone || reply != "I'm box." || checked == nil || !*checked {
+		t.Fatalf("TaskResult = (%q, %v, %q), want the latest attempt (%q, checked, %q)", status, checked, reply, StatusDone, "I'm box.")
 	}
 }
 
 func TestTaskResultUnknownID(t *testing.T) {
 	s := openStore(t, newClock())
 
-	if _, _, ok := s.TaskResult("t0000000000000000"); ok {
+	if _, _, _, ok := s.TaskResult("t0000000000000000"); ok {
 		t.Fatal("TaskResult ok = true for an unknown task, want false")
 	}
 }

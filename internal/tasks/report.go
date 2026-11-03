@@ -82,8 +82,6 @@ type Summary struct {
 
 	// examples holds, per reason key, the words behind that stepping-in.
 	examples map[string]string
-	// checked is what the last attempt's final check said (nil: it said nothing).
-	checked *bool
 }
 
 // Filter narrows a task list. Zero values match everything.
@@ -212,7 +210,6 @@ func (s *Store) summaries(since time.Time) ([]Summary, error) {
 
 		summary.Executions++
 		summary.Model = execution.Model
-		summary.checked = execution.Checked
 
 		summary.Duration += execution.Duration(now)
 
@@ -272,9 +269,8 @@ func (s *Store) summaries(since time.Time) ([]Summary, error) {
 		summary.Settled = !Live(summary.Status) || len(summary.SteppedIn) > 0
 		// Done on the worker's word is not autonomous work: only a result its final check confirmed is
 		// (review 2026-11-02: unchecked "done" counted, so the rate rewarded what nobody had seen).
-		summary.Autonomous = summary.Status == StatusDone && summary.Executions == 1 &&
-			summary.Interventions == 0 && summary.Verdict != VerdictWrong &&
-			summary.checked != nil && *summary.checked
+		summary.Autonomous = summary.Outcome.Done() && summary.Executions == 1 &&
+			summary.Interventions == 0 && summary.Verdict != VerdictWrong
 	}
 
 	return summaries, nil

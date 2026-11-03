@@ -633,6 +633,27 @@
     main.appendChild(meta);
 
     row.appendChild(main);
+
+    if(run.status === "running"){
+      /* A run stuck on a node (a desktop that never answered) can be given up on. */
+      var cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "btn";
+      cancel.textContent = "Cancel";
+      cancel.addEventListener("click", async function(event){
+        event.stopPropagation();
+        if(!window.confirm("Cancel this run? Nothing more of it is sent; a task already on a desktop keeps running there.")){ return; }
+        try{
+          await post("/api/dags/runs/cancel", {id: run.id});
+          toast("Run cancelled");
+          loadRuns();
+        }catch(e){
+          toast(e.message, "error");
+        }
+      });
+      row.appendChild(cancel);
+    }
+
     row.addEventListener("click", function(){ openRun(run.id); });
 
     return row;

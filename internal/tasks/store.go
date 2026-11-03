@@ -97,6 +97,10 @@ type Task struct {
 	VerdictAt   time.Time `json:"verdict_at"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	// Checked is what the latest attempt's final check said (nil: it said nothing), and Outcome what a person is
+	// shown from Status and Checked together (DisplayOutcome): a "done" nobody checked is never shown as Done.
+	Checked *bool   `json:"checked"`
+	Outcome Display `json:"outcome"`
 }
 
 // Execution is one attempt at a task by one engine.
@@ -119,7 +123,9 @@ type Execution struct {
 	CachedInputTokens *int64 `json:"cached_input_tokens"`
 	// Checked says whether the desktop's final check judged the result
 	// before it was reported; nil when the desktop did not say.
-	Checked       *bool          `json:"checked"`
+	Checked *bool `json:"checked"`
+	// Outcome is what a person is shown from Status and Checked (DisplayOutcome).
+	Outcome       Display        `json:"outcome"`
 	Steps         []Step         `json:"steps"`
 	Interventions []Intervention `json:"interventions"`
 }
@@ -1141,16 +1147,24 @@ func (s *Store) SetVerdict(taskID, verdict, note string) (Task, error) {
 // ---------------------------------------------------------------------------
 
 const taskColumns = `t.id, t.worker_id, COALESCE(w.name, t.worker_id), t.engine, t.request, t.task_type,
-	t.status, t.verdict, t.verdict_note, t.verdict_ns, t.created_ns, t.updated_ns`
+	t.status, t.verdict, t.verdict_note, t.verdict_ns, t.created_ns, t.updated_ns,
+	(SELECT lx.checked FROM executions lx WHERE lx.task_id = t.id ORDER BY lx.attempt DESC LIMIT 1)`
 
 func scanTask(scanner sqlitedb.Scanner) (Task, error) {
 	var task Task
 	var verdictAt, created, updated int64
+	var checked sql.NullInt64
 
 	if err := scanner.Scan(&task.ID, &task.WorkerID, &task.WorkerName, &task.Engine, &task.Request, &task.Type,
-		&task.Status, &task.Verdict, &task.VerdictNote, &verdictAt, &created, &updated); err != nil {
+		&task.Status, &task.Verdict, &task.VerdictNote, &verdictAt, &created, &updated, &checked); err != nil {
 		return Task{}, err
 	}
+
+	if checked.Valid {
+		c := checked.Int64 != 0
+		task.Checked = &c
+	}
+	task.Outcome = DisplayOutcome(task.Status, task.Checked)
 
 	task.VerdictAt = sqlitedb.FromNS(verdictAt)
 	task.CreatedAt = sqlitedb.FromNS(created)
@@ -1191,19 +1205,25 @@ func ShortTitle(request string, limit int) string {
 	return clipText(request, limit)
 }
 
-// TaskResult returns a task's current status and, once an execution has
-// ended, the reply it ended with - what internal/dag polls to learn a
-// dispatched node's ticket has finished, and what a later node's output
-// placeholder pulls from. ok is false when taskID does not exist.
-func (s *Store) TaskResult(taskID string) (status, finalReply string, ok bool) {
+// TaskResult returns a task's current status, whether its final check judged
+// the result (nil: the desktop did not say) and, once an execution has ended,
+// the reply it ended with - what internal/dag polls to learn a dispatched
+// node's ticket has finished, and what a later node's output placeholder pulls
+// from. ok is false when taskID does not exist.
+func (s *Store) TaskResult(taskID string) (status string, checked *bool, finalReply string, ok bool) {
+	var c sql.NullInt64
 	err := s.db.QueryRow(
-		`SELECT status, final_reply FROM executions WHERE task_id = ? ORDER BY attempt DESC LIMIT 1`, taskID,
-	).Scan(&status, &finalReply)
+		`SELECT status, checked, final_reply FROM executions WHERE task_id = ? ORDER BY attempt DESC LIMIT 1`, taskID,
+	).Scan(&status, &c, &finalReply)
 	if err != nil {
-		return "", "", false
+		return "", nil, "", false
+	}
+	if c.Valid {
+		v := c.Int64 != 0
+		checked = &v
 	}
 
-	return status, finalReply, true
+	return status, checked, finalReply, true
 }
 
 // Get returns one task with its worker, executions, steps and interventions.
@@ -1317,6 +1337,7 @@ func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 			c := checked.Int64 != 0
 			execution.Checked = &c
 		}
+		execution.Outcome = DisplayOutcome(execution.Status, execution.Checked)
 
 		return execution, nil
 	}, `SELECT e.id, e.task_id, e.attempt, e.worker_id, e.engine, e.model, e.status, e.final_reply,

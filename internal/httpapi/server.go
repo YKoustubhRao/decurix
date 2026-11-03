@@ -429,6 +429,8 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	// The file chooser opens on this computer's own screen: for the person
 	// sitting at it, never a phone or a desktop's agent.
 	mux.HandleFunc("/api/host-paths/browse", s.humansOnly(s.browseHostPathHandler))
+	// Giving up on a DAG run is a person's call, at this machine (dag.Runner.Cancel).
+	mux.HandleFunc("/api/dags/runs/cancel", s.humansOnly(s.cancelDagRunHandler))
 	// Whether a file a task was asked to save on this computer is there - for the check of that task.
 	mux.HandleFunc("/api/host-files/stat", hostGUIDirectOnly(s.hostFileStatHandler))
 	mux.HandleFunc("/api/host-files/release", hostGUIDirectOnly(s.hostFileReleaseHandler))

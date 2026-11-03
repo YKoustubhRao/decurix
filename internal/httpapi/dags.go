@@ -238,6 +238,29 @@ func (s *Server) runDagHandler(w http.ResponseWriter, r *http.Request) {
 	dagReply(w, run, err, "no such DAG")
 }
 
+// cancelDagRunHandler ends a run a person gave up on (POST id=<run>): nothing more of it is sent, and what was in
+// flight is marked cancelled. A person's, on the primary listener only (RegisterLocalRoutes).
+func (s *Server) cancelDagRunHandler(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
+	if s.DagRunner == nil {
+		jsonStatusError(w, http.StatusServiceUnavailable, "DAG runs are not available")
+		return
+	}
+
+	cancelled, err := s.DagRunner.Cancel(strings.TrimSpace(r.FormValue("id")))
+	if err != nil {
+		jsonError(w, err)
+		return
+	}
+	if !cancelled {
+		jsonStatusError(w, http.StatusConflict, "That run is not running.")
+		return
+	}
+	jsonResponse(w, map[string]string{"status": "cancelled"})
+}
+
 // dagRunsHandler lists a DAG's run history, most recent first.
 func (s *Server) dagRunsHandler(w http.ResponseWriter, r *http.Request) {
 	if !requireGet(w, r) {
