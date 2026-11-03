@@ -56,7 +56,9 @@ type jobRecord struct {
 	Resumed bool
 	Log     []string
 	// Usage is what this job's model calls read and wrote (llm.Metered).
-	Usage       *llm.Usage
+	Usage *llm.Usage
+	// TaskID is the control plane's task the job was sent for ("" when none was named).
+	TaskID      string
 	startedAt   time.Time
 	cancel      context.CancelFunc
 	done        chan struct{}
@@ -433,6 +435,9 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// puts no plan of its own to them. A flag in the request body, never a marker read from the request's text,
 		// which can hold pasted content (review T-32).
 		PlanAgreed bool `json:"planAgreed"`
+		// TaskID is the control plane's task this request belongs to (PLAN-P2 C2). It tags every model call and command
+		// of the job (llm.WithTags) and names its trace; one not of llm.TaskIDShape is ignored.
+		TaskID string `json:"taskId"`
 	}
 	// Bounded: a request is a prompt and its host context, never megabytes (review T-23).
 	r.Body = http.MaxBytesReader(w, r.Body, maxChatBody)
@@ -475,7 +480,14 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	taskID := body.TaskID
+	if !llm.TaskIDShape.MatchString(taskID) {
+		taskID = ""
+	}
+	tags := llm.Tags{Task: taskID, Job: id}
+	job.TaskID = taskID
+
+	ctx, cancel := context.WithCancel(llm.WithTags(context.Background(), tags))
 	ctx, used := llm.WithUsage(ctx)
 	job.mu.Lock()
 	job.cancel = cancel
@@ -539,7 +551,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// next request queues behind, and it evicts that request's cached
 		// prompt prefix on the way.
 		if s.sched.L1 != nil && memory.LooksMemorable(body.Prompt) {
-			go s.sched.L1.ConsiderExchange(context.Background(), body.Prompt, finalAnswer, job.appendLog)
+			go s.sched.L1.ConsiderExchange(llm.WithTags(context.Background(), tags), body.Prompt, finalAnswer, job.appendLog)
 		}
 
 		job.finish()

@@ -63,6 +63,16 @@ func (o *OpenAIProvider) authHeader() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + o.APIKey}
 }
 
+// headers are a call's headers: the API key, and the proxy's tags for purpose under ctx (TagHeaders). The tags are
+// headers only: the request body is the same bytes whatever they are.
+func (o *OpenAIProvider) headers(ctx context.Context, purpose string) map[string]string {
+	h := TagHeaders(ctx, purpose)
+	for k, v := range o.authHeader() {
+		h[k] = v
+	}
+	return h
+}
+
 type openaiMessage struct {
 	Role string `json:"role"`
 	// Content is a string, or a list of text and image_url parts when the
@@ -172,13 +182,14 @@ func (o *OpenAIProvider) chatOnce(ctx context.Context, model string, messages []
 		CacheKey:    cacheKey(msgs),
 	}
 	do := func(req *http.Request) (*http.Response, error) { return rateLimitedRequest(o.Client, req) }
+	headers := o.headers(ctx, opts.Purpose)
 	var parsed openaiChatResponse
-	respBytes, err := postJSON(ctx, do, "openai", o.BaseURL+"/v1/chat/completions", o.authHeader(), reqBody, &parsed, &parsed.apiError)
+	respBytes, err := postJSON(ctx, do, "openai", o.BaseURL+"/v1/chat/completions", headers, reqBody, &parsed, &parsed.apiError)
 	if err != nil && reqBody.CacheKey != "" && strings.Contains(err.Error(), "prompt_cache_key") {
 		// A provider that does not know the key: the same request without it, and never again with it.
 		noCacheKey.Store(true)
 		reqBody.CacheKey, parsed = "", openaiChatResponse{}
-		respBytes, err = postJSON(ctx, do, "openai", o.BaseURL+"/v1/chat/completions", o.authHeader(), reqBody, &parsed, &parsed.apiError)
+		respBytes, err = postJSON(ctx, do, "openai", o.BaseURL+"/v1/chat/completions", headers, reqBody, &parsed, &parsed.apiError)
 	}
 	if err != nil {
 		return Result{}, err
@@ -236,7 +247,7 @@ func (o *OpenAIProvider) Embed(ctx context.Context, model string, text string) (
 	defer cancel()
 
 	var parsed openaiEmbedResponse
-	if _, err := postJSON(ctx, o.Client.Do, "openai embed", o.BaseURL+"/v1/embeddings", o.authHeader(), openaiEmbedRequest{Model: model, Input: text}, &parsed, &parsed.apiError); err != nil {
+	if _, err := postJSON(ctx, o.Client.Do, "openai embed", o.BaseURL+"/v1/embeddings", o.headers(ctx, PurposeEmbed), openaiEmbedRequest{Model: model, Input: text}, &parsed, &parsed.apiError); err != nil {
 		return nil, err
 	}
 	if len(parsed.Data) == 0 {

@@ -528,6 +528,9 @@ func unmarkedCommand(reply string) string {
 // on from exactly where it paused.
 type operatorState struct {
 	Messages []llm.Message
+	// taskID and turnID are the control plane's task and the operator's current turn ("<job>:<n>", llm.NextTurn):
+	// what every command of the turn is told (guiEnv) and its trace line names. Neither goes into a prompt.
+	taskID, turnID string
 	// ScreenMsgs are the indexes in Messages of screen outputs not shortened yet; OutputsDir is where shortened
 	// outputs' full text is kept (screen_digest.go).
 	ScreenMsgs    []int
@@ -1507,6 +1510,9 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 
 	began := time.Now()
 	windowStart := st.CommandsSucceeded
+	// Every model call and command of one turn carries that turn's tag (llm.NextTurn): the proxy's rows, the commands'
+	// environment and soul's trace are joined by it. The job's counter numbers turns across the whole job.
+	jobCtx := rc.Ctx
 	for turn := 0; ; turn++ {
 		if turn >= o.turns(st) {
 			// A spent budget that made progress is not a failing goal: shortened and given another (context.go).
@@ -1521,6 +1527,9 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			turn = 0
 		}
 		turnsUsed++
+		rc.Ctx = llm.NextTurn(jobCtx)
+		tags := llm.TagsFrom(rc.Ctx)
+		st.taskID, st.turnID = tags.Task, tags.Turn
 		if st.Hosted && st.maintenanceDue() {
 			before := transcriptChars(st)
 			did := st.maintain()
