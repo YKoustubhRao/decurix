@@ -104,5 +104,47 @@ class PanelStateTests(unittest.TestCase):
         self.assertTrue(any(k.get("user") == "root" and "check" in a for a, k in calls))
 
 
+class PanelStartTests(unittest.TestCase):
+    """The panel starts with a clean environment in isolated mode, and a reset
+    fails unless its port is held by the panel's user."""
+
+    TCP = ("  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+           "   0: 0100007F:223D 00000000:0000 0A 00000000:00000000 00:00000000 00000000   {uid}        0 1 1\n"
+           "   1: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 2 1\n")
+
+    def test_the_panel_starts_clean_and_isolated(self):
+        start = run.panel_start_command("c")
+        tail = start[start.index("c") + 1:]
+        self.assertEqual(tail[:3], ["env", "-i", "PATH=/usr/bin:/bin"])
+        self.assertEqual(tail[3:5], ["python3", "-I"])
+
+    def test_listener_uids_reads_only_the_listening_port(self):
+        self.assertEqual(run.listener_uids(8765, self.TCP.format(uid=999)), [999])
+        self.assertEqual(run.listener_uids(8765, self.TCP.replace(" 0A ", " 01 ").format(uid=999)), [])
+
+    def _owner_check(self, table):
+        def fake_docker(container, *args, **kw):
+            out = "999\n" if args[:2] == ("id", "-u") else table
+            return type("P", (), {"stdout": out, "stderr": "", "returncode": 0})()
+        with patch.object(run, "docker", side_effect=fake_docker), patch.object(run.time, "sleep"):
+            run.check_panel_owner("c", attempts=2)
+
+    def test_a_port_held_by_another_user_fails_the_reset(self):
+        self._owner_check(self.TCP.format(uid=999))  # the panel's own: passes
+        with self.assertRaises(RuntimeError):
+            self._owner_check(self.TCP.format(uid=1000))  # the agent's user took the port
+        with self.assertRaises(RuntimeError):
+            self._owner_check(self.TCP.replace("223D", "0050").format(uid=999))  # nothing listening
+
+    def test_reset_checks_the_owner_after_starting_the_panel(self):
+        order = []
+        with patch.object(run, "docker", side_effect=lambda *a, **k: order.append("docker") or
+                          type("P", (), {"stdout": "", "stderr": "", "returncode": 0})()), \
+                patch.object(run.subprocess, "run", side_effect=lambda cmd, **k: order.append("start")), \
+                patch.object(run, "check_panel_owner", side_effect=lambda c: order.append("owner")):
+            run.reset_task("c", {"id": "web-login", "start": {"browser": "/login"}})
+        self.assertLess(order.index("start"), order.index("owner"))
+
+
 if __name__ == "__main__":
     unittest.main()

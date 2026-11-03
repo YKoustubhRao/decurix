@@ -134,15 +134,53 @@ def panel_setup_script():
             f" && chown {PANEL_USER}:{PANEL_USER} {PANEL_STATE_DIR} && chmod 0700 {PANEL_STATE_DIR}")
 
 
+PANEL_PORT = 8765
+
+
 def panel_start_command(container):
-    """The panel, started fresh as its own user (it writes its starting state itself)."""
+    """The panel, started fresh as its own user (it writes its starting state
+    itself), with a clean environment and Python's isolated mode: no
+    PYTHONPATH or other variable from the container can make it import code
+    the agent's user could write."""
     return ["docker", "exec", "-d", "-u", PANEL_USER, container,
-            "python3", f"{PANEL_CODE}/adminpanel.py", "--state", PANEL_STATE, "--reset"]
+            "env", "-i", "PATH=/usr/bin:/bin", "python3", "-I", f"{PANEL_CODE}/adminpanel.py",
+            "--state", PANEL_STATE, "--port", str(PANEL_PORT), "--reset"]
+
+
+def listener_uids(port, *tables):
+    """The uids of the sockets listening on port, from /proc/net/tcp and
+    tcp6 text: local address column ends in the port in hex, state 0A is
+    LISTEN, and the eighth column is the socket's owner."""
+    want = f":{port:04X}"
+    uids = []
+    for table in tables:
+        for line in table.splitlines()[1:]:
+            cols = line.split()
+            if len(cols) > 7 and cols[1].upper().endswith(want) and cols[3] == "0A":
+                uids.append(int(cols[7]))
+    return uids
+
+
+def check_panel_owner(container, attempts=50):
+    """Fails unless the panel's port is held by the panel's user alone: a
+    process of the agent's user that took the port while the panel was
+    restarting would serve its own pages."""
+    uid = docker(container, "id", "-u", PANEL_USER, user="root", check=True).stdout.strip()
+    for _ in range(attempts):
+        tables = docker(container, "sh", "-c", "cat /proc/net/tcp; echo; cat /proc/net/tcp6 2>/dev/null", user="root").stdout
+        uids = listener_uids(PANEL_PORT, *tables.split("\n\n"))
+        if uids:
+            if any(str(u) != uid for u in uids):
+                raise RuntimeError(f"port {PANEL_PORT} is held by uid {sorted(set(uids))}, not the panel's user ({uid})")
+            return
+        time.sleep(0.2)
+    raise RuntimeError(f"the admin panel did not start listening on {PANEL_PORT}")
 
 
 def restart_panel(container):
     docker(container, "sh", "-c", f"pkill -u {PANEL_USER} -f adminpanel.py; sleep 0.5; true", user="root")
     subprocess.run(panel_start_command(container), check=True, capture_output=True, timeout=60)
+    check_panel_owner(container)
 
 
 def reset_command(task):
