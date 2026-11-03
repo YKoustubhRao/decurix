@@ -5,7 +5,7 @@ import sys
 import time
 
 from decurix_agent import logging_utils, progress
-from decurix_agent.computer import approval, cdp, core, replay, shown, skill_engine, skills
+from decurix_agent.computer import approval, cdp, core, door, replay, shown, skill_engine, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -752,8 +752,7 @@ def run(argv):
             print("The page shows almost nothing: it is still loading, or drawing itself. Wait and observe again - do not "
                   "reload it, close it or open it a second time; what was saved before stays saved.")
         # What this look read is evidence of the task: the page may be closed before the task is checked.
-        from decurix_agent.computer import evidence
-        evidence.note_look(shown, observation)
+        door.note_look(shown, observation)
         from decurix_agent.computer import grounder
         if grounder.available():
             # Said here, by the tool, only where it is true: told in an engine's fixed instructions, a worker
@@ -812,8 +811,7 @@ def run(argv):
     if command == "verify":
         result = core.verify(expect_text=args.text, role=args.role, name=args.name)
         print(result["text"])
-        from decurix_agent.computer import evidence
-        evidence.note("a check of the screen then - " + result["text"][:1200])
+        door.note_check(result["text"])
         return EXIT_VERIFY_FAILED if result["ok"] is False else EXIT_OK
 
     if command == "recordings":
@@ -948,8 +946,7 @@ def run(argv):
         target = _one_target(words, args)
         if not target:
             raise ComputerError(f"{command} what? Give a ref like e12 (run gui observe first).")
-        if command == "click" and target.get("ref"):
-            _refuse_native_dropdown(target["ref"])
+        door.refuse(command.replace("-", "_"), ref=target.get("ref"))
         # named: a press on a control that has a name is made by its ref, not by where it is (core.act).
         result = core.act(command.replace("-", "_"), named=True, check_form=_check_form(command, args), **target)
 
@@ -989,12 +986,13 @@ def run(argv):
                 f"{escape} in the document. Nothing was typed. Only \\n (Enter) and \\t (Tab) are read as keys. Type "
                 "the text in parts and press the key between them with gui key (a page break in a word processor "
                 "is gui key ctrl+Return).")
+        door.refuse("type", ref=target.get("ref"), text=text)
         result = core.act("type", text=text, append=args.append, replace_all=args.replace_all, keys_from_task=True,
                           check_form=True, **target)
 
     elif command == "key":
         target = _target(args.on, args) if args.on else {}
-        _refuse_blind_walk(args.keys)
+        door.refuse("key", ref=target.get("ref"), keys=args.keys)
         result = core.act("key", keys=args.keys, keys_from_task=True, check_form=True, **target)
 
     elif command == "scroll":

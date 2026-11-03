@@ -5,7 +5,7 @@ import sys
 import traceback
 
 from decurix_agent import logging_utils, progress
-from decurix_agent.computer import core, replay, skill_engine, skills
+from decurix_agent.computer import core, door, replay, skill_engine, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -240,6 +240,7 @@ def call_tool(name, arguments):
         observation = core.observe()
         core.report_observation(observation)
         tree = el.render(observation, budget=TREE_BUDGET, coords=True, only_group=arguments.get("window"))
+        door.note_look(tree, observation)  # what this look read is evidence of the task, as for `gui observe`
         return [_text(tree), _image(observation["frame"])], False
 
     if name == "act":
@@ -255,7 +256,8 @@ def call_tool(name, arguments):
         if arguments.get("end_x") is not None and arguments.get("end_y") is not None:
             end = (int(arguments["end_x"]), int(arguments["end_y"]))
 
-        result = core.act(
+        # The same guards and the same way of acting as the gui command's (door.py, D-23).
+        result = door.act(
             arguments.get("action"),
             ref=arguments.get("ref"),
             role=arguments.get("role"),
@@ -294,6 +296,7 @@ def call_tool(name, arguments):
             role=arguments.get("role"),
             name=arguments.get("name"),
         )
+        door.note_check(result["text"])
         return [_text(result["text"]), _image(result["observation"]["frame"])], result["ok"] is False
 
     if name == "open":
