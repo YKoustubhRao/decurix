@@ -943,3 +943,29 @@ test('Linux without a Windows drive mounts an empty folder as the control plane\
   const wsl = await boot('absent', { platform: 'linux', files: [dockerOnPath, '/mnt/c'] });
   assert.equal(wsl.spawns.find((s) => path.basename(s.file) === 'docker').options.env.DECURIX_HOST_MNT_C, '/mnt/c');
 });
+
+test('calls that only ask something are ended if they hang, so a start can always fail and be retried', async () => {
+  const result = await boot('absent');
+  const quick = (words) => result.spawns.filter((s) => Array.from(s.args).join(' ').includes(words));
+  for (const words of ['--version', '--list --quiet', 'ip -4 route show default', 'version --format']) {
+    const calls = quick(words);
+    assert.ok(calls.length > 0, `no call with ${words}`);
+    for (const call of calls) assert.ok(call.options.timeout > 0 && call.options.timeout <= 60000, words);
+  }
+  // A build is not a quick call.
+  for (const call of quick('compose build')) assert.equal(call.options.timeout, undefined);
+});
+
+test('Windows is asked to forward the LAN address once while the app runs, not every minute', async () => {
+  const result = await boot('ready', { lanAddress: '192.168.1.40', lanForwards: false });
+  await result.settle(20);
+  for (let minute = 0; minute < 3; minute += 1) { for (const tick of result.intervals) tick(); await result.settle(20); }
+  assert.equal(result.lanCalls.length, 1);
+});
+
+test('a full disk does not hide a dashboard that is already running; it is said beside it', async () => {
+  const result = await boot('ready', { freeGB: 1 });
+  await result.settle(20);
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.ok(result.questions.some((q) => q.type === 'warning' && /GB is free/.test(q.message)));
+});

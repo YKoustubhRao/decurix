@@ -357,9 +357,16 @@ function wsl(args, onLine, options = {}) {
 }
 
 // inDistro runs a program as root inside the selected WSL distro.
-function inDistro(args, onLine, cwd = '/') {
-  return wsl(['-d', runtimeDistro, '-u', 'root', '--cd', cwd, '-e', ...args], onLine);
+function inDistro(args, onLine, cwd = '/', options = {}) {
+  return wsl(['-d', runtimeDistro, '-u', 'root', '--cd', cwd, '-e', ...args], onLine, options);
 }
+
+// QUICK is the spawn option for a call that only asks something (a version,
+// a list, a file, a route): a wsl.exe or docker that hangs - WSL starting up,
+// a daemon that stopped answering - is ended after it, and counts as a
+// failure, instead of holding the start (and its Retry) for good. Calls that
+// install, build or pull legitimately take long and get none.
+const QUICK = { timeout: 30000 };
 
 // docker runs one docker command in the stack's folder - on Windows inside
 // the app's distro, given what stackEnv gives elsewhere as plain variables.
@@ -367,11 +374,11 @@ function inDistro(args, onLine, cwd = '/') {
 // (DECURIX_LAN_BIND): the LAN link and the tunnel reach it through Windows'
 // own 127.0.0.1 (windows-lan.js), and published on every address it let a
 // desktop come back in through Docker's proxy looking like this computer.
-function docker(args, onLine) {
+function docker(args, onLine, options = {}) {
   if (windows) {
-    return inDistro(['env', 'COMPOSE_PROJECT_NAME=decurix', 'DECURIX_HOST_HOME=/home', 'DECURIX_HOST_MNT_C=/mnt/c', 'DECURIX_LAN_BIND=127.0.0.1', 'docker', ...(runtimeDistro !== DISTRO ? ['--host', 'unix:///var/run/docker.sock'] : []), ...args], onLine, DISTRO_STACK);
+    return inDistro(['env', 'COMPOSE_PROJECT_NAME=decurix', 'DECURIX_HOST_HOME=/home', 'DECURIX_HOST_MNT_C=/mnt/c', 'DECURIX_LAN_BIND=127.0.0.1', 'docker', ...(runtimeDistro !== DISTRO ? ['--host', 'unix:///var/run/docker.sock'] : []), ...args], onLine, DISTRO_STACK, options);
   }
-  return run(findProgram('docker') || 'docker', args, onLine, { cwd: stackDir(), env: stackEnv() });
+  return run(findProgram('docker') || 'docker', args, onLine, { ...options, cwd: stackDir(), env: stackEnv() });
 }
 
 // ensureSettings makes the person's .env, the one file of settings they edit
@@ -420,7 +427,7 @@ async function stackIsStale() {
   try { shipped = fs.readFileSync(path.join(resource('stack'), 'VERSION'), 'utf8').trim(); } catch { return false; }
   if (windows) {
     let staged = '';
-    const code = await inDistro(['cat', `${DISTRO_STACK}/VERSION`], (line) => { staged = line; });
+    const code = await inDistro(['cat', `${DISTRO_STACK}/VERSION`], (line) => { staged = line; }, '/', QUICK);
     return code !== 0 || staged.trim() !== shipped;
   }
   try { return fs.readFileSync(path.join(stackDir(), 'VERSION'), 'utf8').trim() !== shipped; } catch { return false; }
@@ -525,7 +532,7 @@ async function dockerReady() {
   }
   const mac = process.platform === 'darwin';
   const needs = mac ? 'Docker Desktop' : 'Docker';
-  const ask = () => docker(['version', '--format', '{{.Server.Version}}']);
+  const ask = () => docker(['version', '--format', '{{.Server.Version}}'], undefined, QUICK);
   let answer = await ask();
   if (answer === 'missing') {
     throw new Error(`Decurix needs ${needs}: its workers are Linux desktops that run in it. Install ${needs}, start it, then retry.`);
@@ -548,7 +555,7 @@ async function dockerReady() {
 // wslInstalled: whether this Windows has WSL 2 - the Store version, which
 // answers --version (the older in-box one does not).
 async function wslInstalled() {
-  return await wsl(['--version']) === 0;
+  return await wsl(['--version'], undefined, QUICK) === 0;
 }
 
 // A restart is asked for at most once per reason. Found on a second PC: WSL
@@ -578,7 +585,7 @@ function askForRestart(reason, message) {
 // wslSays is the first thing WSL prints for these arguments, for a message.
 async function wslSays(args) {
   const lines = [];
-  await wsl(args, (line) => { const text = line.replace(/\0/g, '').trim(); if (text) lines.push(text); });
+  await wsl(args, (line) => { const text = line.replace(/\0/g, '').trim(); if (text) lines.push(text); }, QUICK);
   return lines.slice(0, 2).join(' ').slice(0, 300);
 }
 
@@ -677,7 +684,7 @@ async function importDistro() {
 
 async function distroExists() {
   const names = [];
-  const code = await wsl(['--list', '--quiet'], (line) => names.push(line.replace(/\0/g, '').trim()));
+  const code = await wsl(['--list', '--quiet'], (line) => names.push(line.replace(/\0/g, '').trim()), QUICK);
   // With no distro at all WSL answers with an error.
   return code === 0 && names.includes(DISTRO);
 }
@@ -691,7 +698,7 @@ async function stopEarlierWindowsApp() {
   const script = `$cp = ${folder}; Get-CimInstance Win32_Process | `
     + "? { $_.ExecutablePath -and $_.ExecutablePath -ieq $cp } | "
     + '% { Stop-Process -Id $_.ProcessId -Force }';
-  await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
+  await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], undefined, QUICK);
 }
 
 // The wsl.exe that runs the daemon (dockerd.sh) is what keeps the distro, the
@@ -727,7 +734,7 @@ async function linuxReady() {
   const setup = await inDistro(['sh', linuxPath(resource(path.join('wsl', 'setup.sh'))), linuxPath(resource('stack')), linuxPath(ensureSettings())], (line) => update(message, false, line));
   if (setup !== 0) throw new Error(`Could not prepare Linux for Decurix. Check ${logFile()}`);
 
-  const ask = () => inDistro(['docker', 'version', '--format', '{{.Server.Version}}']);
+  const ask = () => inDistro(['docker', 'version', '--format', '{{.Server.Version}}'], undefined, '/', QUICK);
   if (await ask() === 0) return;
   update('Starting Docker…');
   if (await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', startHiddenScript(DAEMON_COMMAND)]) !== 0) {
@@ -807,13 +814,13 @@ async function prepareWindowsModels() {
     throw new Error('Less than ' + minGB + ' GB is free on the Windows disk. Free space before starting more workers or downloading models.');
   }
   let freeKB = 0;
-  const checked = await inDistro(['sh', '-c', "docker_root=$(docker --host unix:///var/run/docker.sock info --format '{{.DockerRootDir}}') && df -Pk \"$docker_root\" | awk 'NR==2 {print $4}'"], line => { freeKB = Number(line); });
+  const checked = await inDistro(['sh', '-c', "docker_root=$(docker --host unix:///var/run/docker.sock info --format '{{.DockerRootDir}}') && df -Pk \"$docker_root\" | awk 'NR==2 {print $4}'"], line => { freeKB = Number(line); }, '/', QUICK);
   if (checked !== 0 || !freeKB) throw new Error('Could not check the worker disk capacity in WSL.');
   if (freeKB < minGB * 1024 ** 2) throw new Error('Less than ' + minGB + ' GB is free on the WSL worker disk. Free space or expand its VHD before starting more workers.');
   let host = '';
   if (windowsRuntime.usesWindowsOllama(settings)) {
     let route = '';
-    if (await inDistro(['sh', '-c', 'ip -4 route show default'], line => { route += line + '\n'; }) !== 0) {
+    if (await inDistro(['sh', '-c', 'ip -4 route show default'], line => { route += line + '\n'; }, '/', QUICK) !== 0) {
       throw new Error('Could not discover the Windows model server address from WSL.');
     }
     host = windowsRuntime.windowsHost(route, undefined, settings.DECURIX_WINDOWS_OLLAMA_HOST);
@@ -821,7 +828,7 @@ async function prepareWindowsModels() {
   }
   const derived = path.join(dataDir(), 'windows-stack.env');
   fs.writeFileSync(derived, windowsRuntime.stackSettings(original, settings, plan, host), 'utf8');
-  const copied = await inDistro(['sh', '-c', 'tr -d "\\r" < "$1" > "$2"', 'decurix-settings', linuxPath(derived), DISTRO_STACK + '/.env']);
+  const copied = await inDistro(['sh', '-c', 'tr -d "\\r" < "$1" > "$2"', 'decurix-settings', linuxPath(derived), DISTRO_STACK + '/.env'], undefined, '/', QUICK);
   if (copied !== 0) throw new Error('Could not stage the Windows model settings in WSL.');
   return host ? 'http://' + host + ':11435' : '';
 
@@ -844,7 +851,7 @@ async function startStack() {
   await step('Preparing Decurix…', ['compose', 'build'], 'Could not build Decurix in Docker.');
   // The compose file declares the network external (compose will not adopt one the control plane made), so it must
   // exist before compose runs anything. On a fresh install, or after a `compose down`, it does not.
-  if (await docker(['network', 'inspect', 'decurix-network']) !== 0) {
+  if (await docker(['network', 'inspect', 'decurix-network'], undefined, QUICK) !== 0) {
     await step('Preparing Decurix…', ['network', 'create', 'decurix-network'], 'Could not create the Docker network.');
   }
   // The desktop images are built by the control plane itself, from the build
@@ -880,9 +887,16 @@ function buildToolsLater() {
 // It is reported at every start - an earlier version reported it only when it
 // started the stack itself, so a PC whose stack was already running never got
 // the link - and again every LAN_REPORT_EVERY_MS. Whether the forward is in
-// place is asked once per address (lanForward), not every minute.
+// place is asked once per address (lanForward), not every minute: Windows is
+// asked to forward an address and port at most once while the app runs (a
+// failed or declined forward is tried again at the next start, as its log
+// line says), and never while an earlier ask is still open - a prompt that
+// came back every minute, and stacked behind one not yet answered, was the
+// fault (review 2026-11-03).
 const LAN_REPORT_EVERY_MS = 60000;
 let lanForward = { address: '', port: 0, ok: false };
+let lanAsking = null;
+const lanAsked = new Set();
 
 function publishLanURL(url) {
   const body = JSON.stringify({ lan_url: url });
@@ -912,10 +926,16 @@ function reportLanAddress() {
     try { settings = fs.readFileSync(path.join(dataDir(), '.env'), 'utf8'); } catch { /* the defaults */ }
     if (windows) {
       if (/^\s*DECURIX_WSL_LAN_FORWARD\s*=\s*['"]?0/m.test(settings)) { publishLanURL(''); return; }
+      const key = `${address}:${port}`;
       if (lanForward.address !== address || lanForward.port !== Number(port) || !lanForward.ok) {
+        if (lanAsking) { publishLanURL(''); return; }
         lanForward = { address, port: Number(port), ok: false };
-        try { lanForward.ok = await ensureLanForward(dataDir(), address, Number(port), logLine); }
-        catch (error) { logLine(`LAN link: could not forward ${address}: ${error.message}`); }
+        if (!lanAsked.has(key)) {
+          lanAsked.add(key);
+          lanAsking = ensureLanForward(dataDir(), address, Number(port), logLine)
+            .catch((error) => { logLine(`LAN link: could not forward ${address}: ${error.message}`); return false; });
+          try { lanForward.ok = await lanAsking; } finally { lanAsking = null; }
+        }
       }
       if (!lanForward.ok) { publishLanURL(''); return; }
     }
@@ -954,6 +974,7 @@ function watchKeepAwake() {
 async function start() {
   if (starting || !window || window.isDestroyed()) return;
   starting = true;
+  let refreshModels = false;
   try {
     const state = await checkDashboard();
     if (state === 'occupied') throw new Error('Port 8080 is in use. Close the other server, then retry.');
@@ -963,13 +984,23 @@ async function start() {
     if (state === 'absent' || await stackIsStale()) {
       if (!await startStack()) return;
     } else if (windows) {
-      // Refresh routing without installing or waiting for the model server.
-      await prepareWindowsModels();
+      refreshModels = true;
     }
     if (window && !window.isDestroyed()) {
       await window.loadURL(dashboard);
       showingDashboard = true;
-      if (windows) localModels.resume().catch(error => console.warn(error.message));
+      // A dashboard that is already running is shown first: the disk check
+      // and the model routing refresh (prepareWindowsModels) then run beside
+      // it, and what they find goes to the log, never in front of the
+      // workers the person came to see.
+      const ready = refreshModels
+        ? prepareWindowsModels().catch((error) => {
+          logLine(`Model routing not refreshed: ${error.message}`);
+          // Said, not hidden: a full disk matters before the next worker starts.
+          if (window && !window.isDestroyed()) dialog.showMessageBox(window, { type: 'warning', title: 'Decurix', message: error.message }).catch(() => {});
+        })
+        : Promise.resolve();
+      if (windows) ready.then(() => localModels.resume()).catch(error => console.warn(error.message));
       misses = 0;
       startMobileAccess();
       reportLanAddress();

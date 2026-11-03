@@ -82,7 +82,7 @@ if ($crlf.Count -gt 0) {
 }
 
 Write-Host 'Checking Electron launcher...'
-& node --test (Join-Path $electron 'main.test.js') (Join-Path $electron 'mobile-access.test.js') (Join-Path $electron 'windows-runtime.test.js') (Join-Path $electron 'local-models.test.js') (Join-Path $electron 'native-ollama.test.js') (Join-Path $electron 'preload.test.js') (Join-Path $electron 'wsl.test.js')
+& node --test (Join-Path $electron 'main.test.js') (Join-Path $electron 'mobile-access.test.js') (Join-Path $electron 'windows-runtime.test.js') (Join-Path $electron 'local-models.test.js') (Join-Path $electron 'native-ollama.test.js') (Join-Path $electron 'preload.test.js') (Join-Path $electron 'wsl.test.js') (Join-Path $electron 'windows-lan.test.js') (Join-Path $electron 'gated-port.test.js')
 if ($LASTEXITCODE -ne 0) { throw 'Electron launcher tests failed.' }
 
 $version = 'dev'
