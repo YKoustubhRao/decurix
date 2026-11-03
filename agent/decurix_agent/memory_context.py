@@ -225,15 +225,31 @@ def _scoped(entries, query):
     2026-11-03 for places and for a name inside a longer one). A fact or place kept with no party is shown to no task's
     view (gui recall still finds it). Everything else is shared as before."""
 
+    named = _named_subjects(entries, query)
     kept, hidden = [], 0
     for entry in entries:
         if _scoped_kind(entry):
             subject = _subject_of(entry)
-            if not subject or not names_whole(subject, query):
+            if not subject or subject not in named:
                 hidden += 1
                 continue
         kept.append(entry)
     return kept, hidden
+
+
+def _named_subjects(entries, query):
+    """
+    The kept parties the request is about: each named in it as whole words (case aside), and not one that sits inside
+    another party it names - for "abc traders pvt ltd", "ABC Traders Pvt Ltd" is named and "ABC Traders" is not, in any
+    case of writing (review 2026-11-03 rework: the capitals rule alone let a lower-case request see both). A party's
+    name must also pass names_whole, which hides a name a capitalised word continues even when that longer name is
+    no kept party.
+    """
+
+    text = f" {' '.join(_words(query))} "
+    subjects = {s for s in map(_subject_of, entries) if s and f" {s} " in text}
+    subjects = {s for s in subjects if not any(o != s and f" {s} " in f" {o} " for o in subjects)}
+    return {s for s in subjects if names_whole(s, query)}
 
 
 def search(words, limit=12):

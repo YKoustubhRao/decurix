@@ -45,6 +45,25 @@ class Scoped(unittest.TestCase):
         self.assertIn("invoice 12", get_memory_context("File the return for Kappa this month"))
         self.assertIn("invoice 12", get_memory_context("File Kappa's return"))
 
+    def test_a_lower_case_request_sees_only_the_longest_party_it_names(self):
+        # Review 2026-11-03 rework: with no capitals to go by, both parties' facts were shown.
+        self.keep(1, "About Kappa Traders", "fact", '"invoice 12 is cancelled"')
+        self.keep(2, "About Kappa Traders Pvt Ltd", "fact", '"invoice 99 is on hold"')
+        out = get_memory_context("file the return for kappa traders pvt ltd")
+        self.assertIn("invoice 99", out)
+        self.assertNotIn("invoice 12", out)
+        out = get_memory_context("file the return for kappa traders")
+        self.assertIn("invoice 12", out)
+        self.assertNotIn("invoice 99", out)
+
+    def test_a_lower_case_request_sees_only_the_longest_partys_places(self):
+        self.keep(1, "Where (for Ram): chats", "place", "chats: http://chat.example/ram")
+        self.keep(2, "Where (for Ram Kumar): chats", "place", "chats: http://chat.example/ram-kumar")
+        out = get_memory_context("send the po to ram kumar")
+        self.assertIn("chat.example/ram-kumar", out)
+        self.assertNotIn("chat.example/ram\n", out + "\n")
+        self.assertNotIn("http://chat.example/ram ", out.replace("\n", " ") + " ")
+
     def test_lessons_and_other_entries_are_shared_as_before(self):
         self.keep(1, "Lesson", "lesson", "Always ask before saving")
         self.assertIn("Always ask before saving", get_memory_context("anything for South Works"))
