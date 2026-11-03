@@ -568,6 +568,9 @@ class Teaching(TeachingBase):
 
         skill_task.perform("/skill add a customer")
         self.assertIn("I need: customer_name", self.asked[-1][0])
+        # The saved record shows its name (a value is read back from what the page shows, never from the field it
+        # was typed into: review round 2, D-25).
+        fake.after["adds"].append(field("heading", "Customer Globex"))
 
         skill_task.resume("Globex")
         self.assertIn("yourself", self.asked[-1][0])

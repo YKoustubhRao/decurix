@@ -1860,39 +1860,65 @@ def _run_program(program, params=None, start=1, report=None, ladder=None):
     return finish(COMPLETED_UNVERIFIED)
 
 
-def _screen_text(observation):
-    """Everything an observation shows as text: window titles, element names and values."""
+# The controls that take typing (core.TYPING_ROLES), kept here: a test or a caller may stand another `core` in.
+_TYPING_ROLES = frozenset(core.TYPING_ROLES)
+
+
+def _screen_parts(observation):
+    """What an observation shows as text, one part per window title or control: names, and the values of controls that
+    do not take typing. A typing field's value is left out - the replay may have typed it itself, and a field that
+    keeps what was typed after Save says nothing of what was saved (review round 2, D-25; core.verify reads the
+    screen the same way)."""
 
     observation = observation or {}
     parts = [observation.get("active_title") or ""] + [w.get("title") or "" for w in observation.get("windows") or []]
     for e in observation.get("elements") or []:
-        parts += [str(e.get("name") or ""), str(e.get("value") or "")]
-    return " | ".join(p for p in parts if p)
+        parts.append(str(e.get("name") or ""))
+        if e.get("role") not in _TYPING_ROLES:
+            parts.append(str(e.get("value") or ""))
+    return [p for p in parts if p]
+
+
+def _read_back_form(value):
+    """How a run value is looked for on the screen: a file path by its file name; a list or anything else not text
+    cannot be read back (None)."""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    if ("/" in value or "\\" in value) and os.path.basename(value.replace("\\", "/")):
+        return os.path.basename(value.replace("\\", "/"))
+    return value
 
 
 def _not_read_back(program, values, committed):
     """
-    The run's own values (its parameters typed before the last step that committed) that the screen does not show
-    after that step, by name; [] when every one is there, or nothing was committed. Found in review (2026-11-03,
-    D-25): VERIFIED meant the pages had the recorded shape - a run that saved another amount or customer was VERIFIED
-    whenever the pages looked alike. A value is read back as records.stands_in reads one: a number in any format, a
-    date in any format, words whole. The screen is looked at once more at the end; unreadable is not read back.
+    The run's own values (its parameters given before the last step that committed, or every one of them when no step
+    was recognised as committing) that the screen does not show at the run's end, by name; [] when every one is there.
+    Found in review (2026-11-03, D-25): VERIFIED meant the pages had the recorded shape - a run that saved another
+    amount or customer was VERIFIED whenever the pages looked alike. A value is read back as records.stands_in reads
+    one (a number in any format, a date in any format, words whole) within one control or title, never across two,
+    and never from a typing field (_screen_parts). A value that cannot be read back (a list) counts as not read back;
+    a file by its name. The screen is looked at once more at the end; unreadable is not read back.
     """
 
-    if not committed:
-        return []
+    until = committed["n"] if committed else float("inf")
     wanted = [p for p in program.get("params") or []
-              if not p.get("secret") and p.get("step", 0) <= committed["n"]
-              and isinstance(values.get(p["name"]), str) and values[p["name"]].strip()]
+              if not p.get("secret") and p.get("step", 0) <= until and p["name"] in values
+              and values[p["name"]] not in (None, "")]
     if not wanted:
         return []
     try:
-        shown = _screen_text(core.observe(remember=False))
+        parts = _screen_parts(core.observe(remember=False))
     except Exception:  # noqa: BLE001 - the end could not be looked at: what the committing step left is used
-        shown = _screen_text(committed.get("observation"))
+        parts = _screen_parts((committed or {}).get("observation"))
     from decurix_agent.computer import records
 
-    return [p["name"] for p in wanted if not records.stands_in(values[p["name"]], shown)]
+    unread = []
+    for p in wanted:
+        form = _read_back_form(values[p["name"]])
+        if form is None or not any(records.stands_in(form, part) for part in parts):
+            unread.append(p["name"])
+    return unread
 
 
 def _summary_text(program, result, step):

@@ -53,6 +53,27 @@ class AReadBackAfterTheSave(unittest.TestCase):
     def test_a_value_not_seen_after_the_save_is_unverified(self):
         self.assertEqual(self.run_on(screen(ClearsOnSave, None))["outcome"], replay.COMPLETED_UNVERIFIED)
 
+    def test_a_page_that_keeps_its_typed_values_after_the_save_is_not_a_read_back(self):
+        # The textbox still holds what the replay typed: that says nothing of what was saved (review round 2).
+        self.assertEqual(self.run_on(screen(FakeScreen, None))["outcome"], replay.COMPLETED_UNVERIFIED)
+
+    def test_a_value_is_read_within_one_control_never_across_two(self):
+        shown = {"elements": [{"role": "cell", "name": "Vendor"}, {"role": "cell", "name": "Two"}]}
+        with mock.patch.object(replay, "core", mock.Mock(observe=mock.Mock(return_value=shown))):
+            self.assertEqual(replay._not_read_back(PROGRAM, {"customer_name": "Vendor Two"}, {}), ["customer_name"])
+
+    def test_with_no_committing_step_the_values_are_read_back_at_the_end(self):
+        shown = {"elements": [{"role": "status", "name": "Vendor Two added"}]}
+        with mock.patch.object(replay, "core", mock.Mock(observe=mock.Mock(return_value=shown))):
+            self.assertEqual(replay._not_read_back(PROGRAM, {"customer_name": "Vendor Two"}, {}), [])
+            self.assertEqual(replay._not_read_back(PROGRAM, {"customer_name": "Vendor Three"}, {}), ["customer_name"])
+
+    def test_a_list_counts_as_not_read_back_and_a_file_by_its_name(self):
+        shown = {"elements": [{"role": "link", "name": "report.pdf"}]}
+        with mock.patch.object(replay, "core", mock.Mock(observe=mock.Mock(return_value=shown))):
+            self.assertEqual(replay._not_read_back(PROGRAM, {"customer_name": ["a", "b"]}, {}), ["customer_name"])
+            self.assertEqual(replay._not_read_back(PROGRAM, {"customer_name": "/home/x/work/report.pdf"}, {}), [])
+
     def test_a_run_with_a_repaired_step_is_never_verified(self):
         fake = screen(ClearsOnSave, "Customer Vendor Two saved")
         fake.elements[1] = field("button", "Save!", path="site x > button Save!")
