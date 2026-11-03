@@ -292,6 +292,7 @@ func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
 		route.JudgementID = tasks.NewJudgementID()
 	}
 
+	ctx = s.markWithheld(ctx, worker, route, content)
 	if err := s.deliverRequest(ctx, id, content, route.TaskID); err != nil {
 		sendRequestError(w, err)
 		return

@@ -190,19 +190,6 @@ type CheckResult struct {
 	Refs   []string `json:"refs"`
 }
 
-// AskedSecret reports whether the intervention was a question the desktop asked for a secret (a password or code
-// field): its reply is kept withheld whole, and the call recorder withholds it from that desktop's model calls.
-func (s *Store) AskedSecret(interventionID string) bool {
-	if interventionID == "" {
-		return false
-	}
-	var secret bool
-	if err := s.db.QueryRow(`SELECT secret FROM interventions WHERE id = ?`, interventionID).Scan(&secret); err != nil {
-		return false
-	}
-	return secret
-}
-
 // TaskWorker is the worker a task belongs to, and false when there is no such task.
 func (s *Store) TaskWorker(taskID string) (string, bool) {
 	var worker string

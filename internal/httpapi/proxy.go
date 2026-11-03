@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httputil"
+	"path"
 	"strconv"
 	"strings"
 
@@ -1653,6 +1654,20 @@ func (s *Server) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The gated listener (the tunnel, a phone) reaches soul only on gatedAgentRoutes: soul's memory, skills and stats
+	// read what soul keeps, and its chat would drive the worker with no task record and no author. They answer on the
+	// primary listener only (C14.4, F-S1).
+	if isGated(r) {
+		rest := "/"
+		if len(parts) == 2 {
+			rest = path.Clean("/" + parts[1])
+		}
+		if !gatedAgentRoute(r.Method, rest) {
+			http.NotFound(w, r)
+			return
+		}
+	}
+
 	proxyURL, desktopID, err := s.Desktops.AgentProxyTarget(r.Context(), parts[0])
 
 	if proxyTargetFailed(w, r, err) {
@@ -1992,4 +2007,14 @@ func proxyTargetFailed(w http.ResponseWriter, r *http.Request, err error) bool {
 	}
 
 	return true
+}
+
+// gatedAgentRoutes are the soul routes (under /agent/<id>) the gated listener forwards, each read-only: soul's health,
+// which reads nothing soul keeps. No page served on the gated listener needs more: the chat and the screen reach a
+// worker through /api/desktops/* (task records, authors, the approval gate), never soul directly.
+var gatedAgentRoutes = map[string]bool{"/api/health": true}
+
+// gatedAgentRoute reports whether the gated listener forwards method on soul's path p (already cleaned).
+func gatedAgentRoute(method, p string) bool {
+	return (method == http.MethodGet || method == http.MethodHead) && gatedAgentRoutes[p]
 }

@@ -720,14 +720,50 @@ type ReplyBy struct {
 func (s *Store) CommitReply(route Route, worker Worker, text string, secret bool, by ReplyBy) (Route, string, error) {
 	// A secret the person typed (a password, an OTP) reaches the desktop as written, never these records: they are
 	// shown in traces, reports and exports (review 2026-11-02).
-	if secret {
-		text = withhold.Secret
-	} else {
-		text = withhold.Text(text)
-	}
-	stored := text
+	stored := requestForm(text, secret)
 	route, err := s.commit(route, worker, &stored, by, secret)
 	return route, stored, err
+}
+
+// requestForm is how the records keep a request as sent: whole as withhold.Secret when the person marked it secret,
+// otherwise with what withhold.Text finds withheld.
+func requestForm(text string, marked bool) string {
+	if marked {
+		return withhold.Secret
+	}
+	return withhold.Text(text)
+}
+
+// replyForm is how the records keep a reply already in its request form (requestForm), against the question it
+// answers: whole as withhold.Secret when the question was asked for a secret, otherwise with the bare values a
+// question for a secret asks for withheld too (withhold.Reply).
+func replyForm(stored, question string, askedSecret bool) string {
+	if askedSecret {
+		return withhold.Secret
+	}
+	return withhold.Reply(question, stored)
+}
+
+// StoredForm is how the records will keep text sent along route, decided before it is sent by the same rules
+// CommitReply keeps it by (requestForm, then replyForm against the question open now), and whether anything of it
+// is withheld. The control plane tells the desktop "secret" exactly when this says withheld (contract C14), so the
+// two sides never disagree on what is a secret.
+func (s *Store) StoredForm(route Route, text string, marked bool) (string, bool) {
+	stored := requestForm(text, marked)
+	if route.Kind == RouteReply {
+		var question string
+		var askedSecret bool
+		err := s.db.QueryRow(`SELECT request, secret FROM interventions WHERE execution_id = ? AND replied_ns = 0
+			ORDER BY requested_ns DESC LIMIT 1`, route.ExecutionID).Scan(&question, &askedSecret)
+		if err != nil && route.InterventionID != "" {
+			err = s.db.QueryRow(`SELECT request, secret FROM interventions WHERE id = ?`, route.InterventionID).
+				Scan(&question, &askedSecret)
+		}
+		if err == nil {
+			stored = replyForm(stored, question, askedSecret)
+		}
+	}
+	return stored, stored != text
 }
 
 // commit is Commit's body. It may withhold *stored further (a reply to a question asked for a secret), and leaves in
@@ -792,11 +828,7 @@ func (s *Store) commit(route Route, worker Worker, stored *string, by ReplyBy, s
 		var question, interventionKind string
 		var askedSecret bool
 		if err := tx.QueryRow(`SELECT request, secret, kind FROM interventions WHERE id = ?`, interventionID).Scan(&question, &askedSecret, &interventionKind); err == nil {
-			if askedSecret {
-				*stored = withhold.Secret
-			} else {
-				*stored = withhold.Reply(question, *stored)
-			}
+			*stored = replyForm(*stored, question, askedSecret)
 			text = *stored
 		}
 

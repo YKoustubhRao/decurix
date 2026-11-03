@@ -123,6 +123,33 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 // sentSecretKey marks a request the person sent as a secret (the compose box's toggle).
 type sentSecretKey struct{}
 
+// withheldKey marks a request or reply the records will keep withheld, whatever the reason (markWithheld).
+type withheldKey struct{}
+
+// markWithheld decides, before anything is sent, whether the records will keep content withheld (tasks.StoredForm:
+// the person's mark, a question asked for a secret, or the words withhold finds), and returns ctx saying so: the
+// desktop is then told "secret" (C14.1), so the two sides never disagree on what a secret is. A withheld reply, or a
+// marked request, is also known to the call recorder before the desktop has it, so no model call that carries it is
+// recorded as typed.
+func (s *Server) markWithheld(ctx context.Context, desktopID string, route tasks.Route, content string) context.Context {
+	marked, _ := ctx.Value(sentSecretKey{}).(bool)
+	if _, withheld := s.Tasks.StoredForm(route, content, marked); !withheld {
+		return ctx
+	}
+	if marked || route.Kind == tasks.RouteReply {
+		s.secretsSeen.RememberMarked(desktopID, content)
+	}
+	return context.WithValue(ctx, withheldKey{}, true)
+}
+
+// sentAsSecret reports whether what ctx carries goes to the desktop marked secret: the person marked it, or the
+// records keep it withheld.
+func sentAsSecret(ctx context.Context) bool {
+	marked, _ := ctx.Value(sentSecretKey{}).(bool)
+	withheld, _ := ctx.Value(withheldKey{}).(bool)
+	return marked || withheld
+}
+
 // submitRequestWithFiles is submitLocked for a request a person attached
 // files to: under the desktop's send lock the files are written into the
 // desktop first, so they are there when its agent reads the request that
@@ -241,11 +268,7 @@ func (s *Server) submitStored(ctx context.Context, desktopID, content string) (t
 		s.signReplyToGate(ctx, id, route.TaskID, content, asked, kind, request)
 	}
 
-	// A secret is known to the call recorder before the desktop has it, so no model call it makes with it is
-	// recorded as typed: a message the person marked secret, or the answer to a question asked for one.
-	if sent, _ := ctx.Value(sentSecretKey{}).(bool); sent || route.Kind == tasks.RouteReply && s.Tasks.AskedSecret(route.InterventionID) {
-		s.secretsSeen.RememberMarked(id, content)
-	}
+	ctx = s.markWithheld(ctx, id, route, content)
 
 	// Delivered and recorded under the desktop's lifecycle lock: the idle sweep re-checks Busy under the same lock, so
 	// it cannot pause or stop a desktop between the delivery and the record that makes it busy, and a stop or delete
@@ -306,9 +329,9 @@ func (s *Server) routeRequest(desktopID, content string) tasks.Route {
 // block the human/automation on the desktop's reply anyway - there is
 // nothing better to do while it boots than wait for it.
 func (s *Server) deliverRequest(ctx context.Context, desktopID, content, taskID string) error {
-	// A message the person marked secret says so to the agent too (F-2): the control plane withholds it in its own
-	// stores, and the agent must not keep it as typed either.
-	secret, _ := ctx.Value(sentSecretKey{}).(bool)
+	// A message the records keep withheld says so to the agent too (F-2, C14): the control plane withholds it in its
+	// own stores, and the agent must not keep it as typed either.
+	secret := sentAsSecret(ctx)
 	err := s.Desktops.SendRequest(ctx, desktopID, content, taskID, secret)
 
 	switch {
