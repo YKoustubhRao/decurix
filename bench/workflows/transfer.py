@@ -4,6 +4,7 @@ No live application success is implied. Every family has a distinct business
 operation, UI route, unseen input and independently specified expected result.
 """
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -206,15 +207,60 @@ def run_case(case, root, variant="holdout", learned=None):
             "skill_status":learned["status"], "parameters":params, "reason":outcome.get("text", "")}
 
 
+@contextlib.contextmanager
+def own_home(root):
+    """
+    Everything a run writes lands under root, and the process is left as it
+    was found. The agent's modules compute their folders from DECURIX_DIR when
+    first imported, so setting the environment is not enough for modules
+    already loaded: every path attribute of a loaded decurix_agent module that
+    lies under the machine's DECURIX_DIR is moved under root for the run and
+    put back after it, and modules first imported during the run get the real
+    paths back. The task the process had current, and the current-task file,
+    are restored even when the run fails.
+    """
+    # Imported now, with the real paths, so the run patches them rather than
+    # caching a temporary folder in a module for the rest of the process.
+    from decurix_agent import config, state, task_context
+    from decurix_agent.computer import evidence, learning, recording, replay, skill_engine, skills  # noqa: F401
+    from decurix_agent.tools import outbox  # noqa: F401
+    real, fake = str(config.DECURIX_DIR), str(root / "decurix")
+    before = {name for name in sys.modules if name.startswith("decurix_agent")}
+    changed = []
+
+    def reroot(src, dst, only=None):
+        for name, module in list(sys.modules.items()):
+            if not name.startswith("decurix_agent") or module is None or (only is not None and name not in only):
+                continue
+            for attr, value in list(vars(module).items()):
+                if isinstance(value, (str, Path)) and str(value).startswith(src) and (str(value) == src or str(value)[len(src)] in "/\\"):
+                    setattr(module, attr, type(value)(dst + str(value)[len(src):]))
+                    if only is None:
+                        changed.append((module, attr, value))
+
+    saved = (state.current_task_id, state.current_task, state.current_task_file, task_context.CURRENT_FILE)
+    env = {"HOME": str(root / "home"), "USERPROFILE": str(root / "home"), "DECURIX_DIR": fake,
+           "DECURIX_TASK_FILE": str(root / "current-task")}
+    (root / "home").mkdir(parents=True, exist_ok=True)
+    try:
+        with patch.dict(os.environ, env):
+            reroot(real, fake)
+            task_context.CURRENT_FILE = env["DECURIX_TASK_FILE"]
+            yield
+    finally:
+        for module, attr, value in changed:
+            setattr(module, attr, value)
+        reroot(fake, real, only={n for n in sys.modules if n.startswith("decurix_agent")} - before)
+        state.current_task_id, state.current_task, state.current_task_file, task_context.CURRENT_FILE = saved
+
+
 def benchmark(cases=SCENARIOS):
     with tempfile.TemporaryDirectory(prefix="workflow-transfer-") as tmp:
         root = Path(tmp)
-        with patch.dict(os.environ, {"DECURIX_DIR":str(root/"runtime")}):
-            from decurix_agent import task_context
+        # The run's own home, state and current-task file: nothing reaches the
+        # machine's ~/.decurix, and the process's current task is put back.
+        with own_home(root):
             from decurix_agent.computer import recording, skills
-        # The current task lives in this run's own file, never the machine-wide one.
-        with patch.object(recording, "ROOT", root/"recordings"), patch.object(skills, "ROOT", root/"skills"), \
-                patch.object(task_context, "CURRENT_FILE", str(root/"current-task")):
             results = []
             for case in cases:
                 learned = learn(case, root)
