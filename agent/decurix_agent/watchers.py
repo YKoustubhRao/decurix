@@ -1,3 +1,4 @@
+import os
 import sys
 import threading
 import time
@@ -300,8 +301,22 @@ def _mark_handled(path):
     the desktop was asked stays on disk.
     """
 
+    # The copy kept is withheld (C14): the request's secrets, remembered when it arrived, never stay on the desktop's
+    # disk in the clear. The file was the transport; what it said has been read by now.
+    done = path.with_name(path.name + HANDLED_SUFFIX)
     try:
-        path.rename(path.with_name(path.name + HANDLED_SUFFIX))
+        text = path.read_text(encoding="utf-8")
+        kept = task_context.withhold(text, task_context.task_id_from_filename(path.name))
+        if kept != text:
+            tmp = done.with_name(done.name + ".tmp")
+            tmp.write_text(kept, encoding="utf-8")
+            os.replace(tmp, done)
+            path.unlink()
+            return
+    except (OSError, UnicodeDecodeError) as exc:
+        log(f"Could not withhold the handled copy of {path.name}: {exc}")
+    try:
+        path.rename(done)
     except OSError as exc:
         log(f"Could not mark {path.name} as handled: {exc}")
 
@@ -629,9 +644,12 @@ def _remember_reply_secret(content):
         from decurix_agent.computer import privacy
         text = attachments.text(content or "").strip()
         privacy.remember_secrets(text)
+        values = list(privacy.request_secrets(text))
         words = text.split()
         if len(words) == 1:
             privacy.remember_value(words[0].rstrip(".:!?,;"))
+            values.append(words[0].rstrip(".:!?,;"))
+        task_context.note_secret_values(task_context.current(), values)
     except Exception as exc:  # noqa: BLE001 - the control plane withholds the reply too ("secret" on the question)
         log(f"Could not remember the reply's secret: {exc}")
 

@@ -573,6 +573,9 @@ def _run_thebot(request, reply, extra_context="", approval_reading=None):
                 # The control plane's task this job works for (C2): soul tags every model call it makes for the job
                 # with it, so the proxy's record joins each call to its task.
                 "taskId": task_context.current(),
+                # The values this task's requests and replies made secret (C14): data for soul to keep out of
+                # everything it stores and shows - never in the prompt, whose bytes stay as they are.
+                **({"secrets": task_context.secret_values()} if task_context.secret_values() else {}),
             },
         )
     except (urllib.error.URLError, OSError, ValueError) as exc:

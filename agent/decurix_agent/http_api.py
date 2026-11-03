@@ -591,14 +591,17 @@ class Handler(BaseHTTPRequestHandler):
 
             # A message the person marked secret (F-2): remembered before anything keeps or shows it, so every later
             # line, record and recording withholds it (privacy.remember_marked).
+            from decurix_agent import task_context
+            from decurix_agent.computer import privacy
             if data.get("secret", False) is True:
-                from decurix_agent.computer import privacy
                 privacy.remember_marked(content)
+                task_context.note_secret_values(task_id, privacy.marked_values(content))
+            # A secret the words spell out ("password: ...") is one too, marked or not (C14): soul is told of it.
+            task_context.note_secret_values(task_id, privacy.request_secrets(content))
 
             # What the control plane says beside the words (C6): the org's date order, and the judgement this message
             # is when it is a person's reply. Kept by task before the request is saved, so the watcher and every
             # later process read them; a value of another shape is ignored, never an error.
-            from decurix_agent import task_context
             if task_context.valid(task_id):
                 task_context.set_date_order(task_id, data.get("date_order"))
                 task_context.set_reply_judgement(task_id, data.get("judgement_id"))

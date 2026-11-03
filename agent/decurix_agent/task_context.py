@@ -88,7 +88,8 @@ def start(task_id, request=None, continues=""):
             # When the task began (kept across a resume of the same task): what was there before it is the person's.
             writes.append((CURRENT_FILE + ".since", f"{task_id} {time.time():.3f}"))
         if request is not None:
-            writes.append((CURRENT_FILE + ".request", str(request)[:REQUEST_CHARS]))
+            # Withheld (C14): the copy outlives the task in /tmp, and every process reads it.
+            writes.append((CURRENT_FILE + ".request", _withheld(str(request), task_id)[:REQUEST_CHARS]))
             # The files the request brought, whole: the request above is cut at 500 characters, and its paths come
             # last. What the screen layer checks a chosen record against (core._in_documents).
             from decurix_agent import attachments
@@ -96,6 +97,58 @@ def start(task_id, request=None, continues=""):
 
         for path, value in writes:
             _write(path, value)
+
+
+def _withheld(text, task_id=None):
+    """withhold(text) for the current task (the copies this module keeps)."""
+
+    return withhold(text, task_id)
+
+
+def withhold(text, task_id=None):
+    """
+    text with the task's noted secret values withheld wherever they stand (a message the person marked secret is one
+    whole value: a long one is withheld whole, not word by word), then every secret remembered so far
+    (privacy.withhold_known). Never the text when it cannot be checked.
+    """
+
+    from decurix_agent.computer import privacy
+    try:
+        text = str(text if text is not None else "")
+        flat = " ".join(text.split())
+        for value in sorted(secret_values(task_id), key=len, reverse=True):
+            if value in text:
+                text = text.replace(value, "[withheld]")
+            elif value == flat:
+                text = "[withheld]"
+        return privacy.withhold_known(text)
+    except Exception:  # noqa: BLE001 - fail closed
+        return privacy.HELD_BACK
+
+
+# The secret values each task's requests and replies gave (C14), in this process's memory only - never on disk: the
+# job to soul names them (thebot_harness), so soul keeps none of them in what it stores and shows.
+_secret_values = {}
+
+
+def note_secret_values(task_id, values):
+    """Keep `values` as secret for the task's job to soul (memory only)."""
+
+    if not valid(task_id):
+        return
+    with _lock:
+        kept = _secret_values.setdefault(task_id, [])
+        for value in values or ():
+            value = str(value or "").strip()
+            if value and value not in kept:
+                kept.append(value)
+        del kept[:-200]
+
+
+def secret_values(task_id=None):
+    """The secret values the task's requests and replies gave, as noted in this process."""
+
+    return list(_secret_values.get(task_id or current(), ()))
 
 
 def _write(path, value):
@@ -161,8 +214,8 @@ def mark_active(task_id, request=None):
         path = _active_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"task_id": task_id, "request": str(request or "")[:500], "since": time.time()}),
-                       encoding="utf-8")
+        tmp.write_text(json.dumps({"task_id": task_id, "request": _withheld(str(request or ""), task_id)[:500],
+                                   "since": time.time()}), encoding="utf-8")
         tmp.replace(path)
     except OSError:
         pass

@@ -453,8 +453,8 @@ def _credential_in(text):
 # own words often carry one, and a recording's title and description are shown to
 # anyone who opens the page and exported with it. (A PIN is PIN_VALUE's: digits only, so "pin 'Mumbai'" is none.)
 SPOKEN_SECRET = re.compile(
-    r"(?i)\b(?:pass(?:word|code|phrase)|secret|token|api[ _-]?key|otp|cvv2?)\b[^\"'\u201c\u2018\n]{0,20}?"
-    r"[\"'\u201c\u2018]([^\"'\u201d\u2019\n]{1,200})[\"'\u201d\u2019]"
+    r"(?i)\b(?:pass(?:word|code|phrase)|secret|token|api[ _-]?key|otp|cvv2?)\b[\"'\u201d\u2019]?[^\"'\u201c\u2018\n]{0,20}?"
+    r"[\"'\u201c\u2018]((?=[^\s\"'\u201d\u2019])[^\"'\u201d\u2019\n]{1,200})[\"'\u201d\u2019]"
 )
 
 
@@ -598,22 +598,39 @@ def withhold_spoken_secrets(text):
 SHORT_MARKED_WORDS = 5
 
 
+def marked_values(text):
+    """
+    The values a message the person marked secret makes secret: the secrets it spells out, the whole message, and - in
+    a short one - each of its words of 4 characters or more. What remember_marked remembers, and what the job to soul
+    names as secret (C14). Never raises.
+    """
+
+    try:
+        text = " ".join(str(text or "").split())
+        if not text:
+            return []
+        values = list(request_secrets(text)) + [text]
+        words = [w.strip(".,:;!?'\"()[]{}") for w in text.split()]
+        if len(words) <= SHORT_MARKED_WORDS:
+            values += [w for w in words if len(w) >= 4]
+        return list(dict.fromkeys(v for v in values if v))
+    except Exception:  # noqa: BLE001
+        return [str(text or "")] if text else []
+
+
 def remember_marked(text):
     """
     A message the person marked secret (the control plane's "secret" on /request, F-2): the secrets it spells out,
-    the whole message, and - in a short one - each of its words of 4 characters or more, so withhold_known keeps them
-    out of every line, record and recording from here on. Withholding a common word too is the safe side. Never raises.
+    the whole message, and - in a short one - each of its words of 4 characters or more (marked_values), so
+    withhold_known keeps them out of every line, record and recording from here on. Withholding a common word too is
+    the safe side. Never raises.
     """
 
     try:
         text = " ".join(str(text or "").split())
         remember_secrets(text)
-        remember_value(text)
-        words = [w.strip(".,:;!?'\"()[]{}") for w in text.split()]
-        if len(words) <= SHORT_MARKED_WORDS:
-            for word in words:
-                if len(word) >= 4:
-                    remember_value(word)
+        for value in marked_values(text):
+            remember_value(value)
     except Exception:  # noqa: BLE001 - remembering is a safety net; the control plane withholds the message too
         pass
 
