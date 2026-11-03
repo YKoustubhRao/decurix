@@ -589,6 +589,12 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(task_id, str):
                 raise ValueError("task_id must be a string")
 
+            # A message the person marked secret (F-2): remembered before anything keeps or shows it, so every later
+            # line, record and recording withholds it (privacy.remember_marked).
+            if data.get("secret", False) is True:
+                from decurix_agent.computer import privacy
+                privacy.remember_marked(content)
+
             # The control plane's record for this request; it comes back
             # on every report about it (task_context.py).
             path = save_request(content, task_id)

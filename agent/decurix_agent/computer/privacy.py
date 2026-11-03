@@ -594,6 +594,30 @@ def withhold_spoken_secrets(text):
         return HELD_BACK
 
 
+# A message the person marked secret that is this short is likely the secret itself, or holds it as one of its words.
+SHORT_MARKED_WORDS = 5
+
+
+def remember_marked(text):
+    """
+    A message the person marked secret (the control plane's "secret" on /request, F-2): the secrets it spells out,
+    the whole message, and - in a short one - each of its words of 4 characters or more, so withhold_known keeps them
+    out of every line, record and recording from here on. Withholding a common word too is the safe side. Never raises.
+    """
+
+    try:
+        text = " ".join(str(text or "").split())
+        remember_secrets(text)
+        remember_value(text)
+        words = [w.strip(".,:;!?'\"()[]{}") for w in text.split()]
+        if len(words) <= SHORT_MARKED_WORDS:
+            for word in words:
+                if len(word) >= 4:
+                    remember_value(word)
+    except Exception:  # noqa: BLE001 - remembering is a safety net; the control plane withholds the message too
+        pass
+
+
 def remember_value(value):
     """Keep a secret typed into a password or code field (its hash), so withhold_known keeps it out of replies too.
     Never raises."""
