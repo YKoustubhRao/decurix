@@ -589,6 +589,9 @@
     if(run.error){ head.appendChild(node("p", "workflow-error", run.error)); }
     if(run.approval){
       head.appendChild(node("div", "workflow-preview", "Proposed stage: " + run.approval.stage + "\n" + run.approval.instruction + "\nRequired files: " + run.approval.files.join(", ")));
+      // A stage's go-ahead is the approval question in chat, which goes through the gate; this page has no approve
+      // control (W2 handoff H-R3).
+      head.appendChild(node("div", "hint", "It asks in chat before it starts this stage. Reply there."));
     }
     var actions = node("div", "skill-actions");
     workflowActions(run).forEach(function(action){

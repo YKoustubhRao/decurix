@@ -213,6 +213,13 @@ test("workflow buttons are built from structured parts, never the desktop's text
   sandbox.workflowActions(run).forEach((a) => assert.ok(a.confirm, a.command + " must ask first"));
 });
 
+// A stage's go-ahead is only the approval question in chat, which the gate decides: the page builds no approve command.
+test("the workflow page has no approve control", () => {
+  const page = read("skills.html");
+  assert.doesNotMatch(page, /\/workflow approve/);
+  assert.doesNotMatch(page, /\(retry\|resume\|cancel\|approve/);
+});
+
 // What the desktop puts on its clipboard never reaches this computer's clipboard without the person's click (W-12).
 test("the screen copies the desktop's clipboard only on a click", () => {
   // The viewer is a module script, which scripts() leaves out: its source is read as it is.
