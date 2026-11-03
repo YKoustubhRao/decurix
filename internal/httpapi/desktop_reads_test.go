@@ -16,6 +16,7 @@ var desktopReads = map[string]string{
 	"/api/agent/events":       "binds the caller: actingAs",
 	"/api/querytext":          "binds the caller: actingAs",
 	"/api/desktops/memory":    "binds the caller: a desktop reads its own memory (requestDesktop)",
+	"/api/desktops/learned":   "binds the caller: only its own tasks, citing a person's judgement there (desktopLearnedHandler)",
 	"/api/outbox":             "binds the caller: drafts are filed as the caller",
 	"/api/knowledge":          "binds the caller: worker forced to the caller, task only one of its own (knowledge.Handler.Caller)",
 	"/api/skillhub":           "org-public: the organisation's skill catalogue",

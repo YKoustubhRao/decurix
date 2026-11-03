@@ -474,6 +474,9 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/judgements", s.humansOnly(s.judgementsHandler))
 	// What each skill version did on each model (plan R7, ran.go).
 	mux.HandleFunc("/api/tasks/pass-rates", s.humansOnly(s.passRatesHandler))
+	// What a desktop keeps from a person's reply, kept here too when it is made (plan R8, learned.go): a desktop's
+	// callback, on this listener only.
+	mux.HandleFunc("/api/desktops/learned", s.desktopLearnedHandler)
 	// Where something is on a screenshot, for a desktop's `gui` (grounder.go).
 	mux.HandleFunc("/api/grounder", s.grounderStatusHandler)
 	mux.HandleFunc("/api/grounder/locate", s.grounderLocateHandler)
