@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"thebot/internal/atomizer"
 	"thebot/internal/memory"
+	"thebot/internal/rag"
 )
 
 // fakeEmbedder stands in for a real embedder: skillLibraryFor must not need one to say no.
@@ -82,5 +87,37 @@ func TestAnUnknownSkillIsAnsweredWithoutTheError(t *testing.T) {
 	rec := serve(s, http.MethodPost, "/api/skills/no-such-skill/confirm", "")
 	if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), s.ws.Root()) {
 		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A store a newer soul wrote is started without, and said so; any other store error still stops soul (N-W3-7).
+func TestAStoreANewerSoulWroteIsStartedWithout(t *testing.T) {
+	root := t.TempDir()
+	r, err := rag.New(root, fakeEmbedder{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+	// Move the store one step past what this soul knows, as a newer soul would have left it.
+	db, err := sql.Open("sqlite", filepath.Join(root, ".rag", "data.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", len(rag.Migrate)+1)); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	_, err = rag.New(root, fakeEmbedder{}, "")
+	var off []string
+	if err == nil || !storeOff("the Data RAG", err, &off) || len(off) != 1 {
+		t.Fatalf("a newer store: err %v, off %v", err, off)
+	}
+	if storeOff("x", errors.New("disk full"), &off) {
+		t.Error("an ordinary error was started through")
+	}
+	s := newTestServer(t)
+	s.storesOff = off
+	if rec := serve(s, http.MethodGet, "/api/health", ""); !strings.Contains(rec.Body.String(), "the Data RAG") {
+		t.Errorf("health does not say the store is off: %s", rec.Body.String())
 	}
 }

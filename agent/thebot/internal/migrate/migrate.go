@@ -4,8 +4,13 @@ package migrate
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 )
+
+// ErrNewer is why a store was not opened: its database was written by a newer soul (after an image rollback, say).
+// This soul never writes a schema it does not know; its caller may start without that store.
+var ErrNewer = errors.New("the database was written by a newer soul")
 
 // Migrate runs, in order, each step of steps the database has not had yet (its PRAGMA user_version counts those it
 // has), each in its own transaction with the version moved on in the same one. Steps are only ever appended: the first
@@ -16,7 +21,7 @@ func Migrate(db *sql.DB, steps []string) error {
 		return fmt.Errorf("migrate: read version: %w", err)
 	}
 	if have > len(steps) {
-		return fmt.Errorf("migrate: the database is at step %d, newer than this soul's %d", have, len(steps))
+		return fmt.Errorf("migrate: %w (it is at step %d, this soul knows %d)", ErrNewer, have, len(steps))
 	}
 	for i := have; i < len(steps); i++ {
 		tx, err := db.Begin()

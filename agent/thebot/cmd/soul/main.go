@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -24,6 +25,7 @@ import (
 	"thebot/internal/feedback"
 	"thebot/internal/llm"
 	"thebot/internal/memory"
+	"thebot/internal/migrate"
 	"thebot/internal/rag"
 	"thebot/internal/scheduler"
 	"thebot/internal/session"
@@ -163,6 +165,8 @@ type server struct {
 	// the host says it is not a reply, discards it.
 	pausedMu sync.Mutex
 	paused   map[string]*scheduler.Checkpoint
+	// storesOff are the stores this run started without (storeOff), shown by /api/health.
+	storesOff []string
 }
 
 // pausedJobTTL is how long a paused job waits for its reply before the next
@@ -224,7 +228,8 @@ func mustJSON(v any) string {
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	writeJSON(w, 200, map[string]any{"ollama": s.provider.IsReachable(ctx), "ollamaHost": s.cfg.OllamaHost, "workspace": s.ws.Root()})
+	writeJSON(w, 200, map[string]any{"ollama": s.provider.IsReachable(ctx), "ollamaHost": s.cfg.OllamaHost, "workspace": s.ws.Root(),
+		"storesOff": s.storesOff})
 }
 
 // handleRAGStats and handleFeedbackStats back the UI's live header
@@ -749,6 +754,18 @@ func buildProvider(cfg config.Config) (llm.Provider, llm.Models, llm.Embedder) {
 	}
 }
 
+// storeOff reports whether a store's init error is only that a newer soul wrote its database: then soul starts
+// without that store (it is memory or a cache, nil-safe everywhere), says so in the log, and lists it in off for
+// /api/health. Any other error is not one to start through (review N-W3-7).
+func storeOff(name string, err error, off *[]string) bool {
+	if !errors.Is(err, migrate.ErrNewer) {
+		return false
+	}
+	log.Printf("[soul] %s is OFF for this run: %v. Starting without it; a newer soul will open it again.", name, err)
+	*off = append(*off, name)
+	return true
+}
+
 // standaloneMode reports whether soul runs as a product of its own (THEBOT_STANDALONE=1): only then are the acquired
 // skill library and the coding harness on (owner decision O-8).
 func standaloneMode() bool {
@@ -797,18 +814,27 @@ func main() {
 
 	var dataRAG *rag.RAG
 	var fb *feedback.Store
+	var storesOff []string // stores not opened because a newer soul wrote them (storeOff)
 	if embedder != nil {
 		dataRAG, err = rag.New(ws.Root(), embedder, cfg.DoclingScript)
 		if err != nil {
-			log.Fatalf("[soul] Data RAG init failed: %v", err)
+			if !storeOff("the Data RAG", err, &storesOff) {
+				log.Fatalf("[soul] Data RAG init failed: %v", err)
+			}
+			dataRAG = nil
+		} else {
+			defer dataRAG.Close()
 		}
-		defer dataRAG.Close()
 
 		fb, err = feedback.New(ws.Root(), embedder)
 		if err != nil {
-			log.Fatalf("[soul] feedback store init failed: %v", err)
+			if !storeOff("the feedback store", err, &storesOff) {
+				log.Fatalf("[soul] feedback store init failed: %v", err)
+			}
+			fb = nil
+		} else {
+			defer fb.Close()
 		}
-		defer fb.Close()
 	}
 
 	// L1: curated cross-session memory. Needs both a brain (to judge what
@@ -818,9 +844,13 @@ func main() {
 	if embedder != nil {
 		l1, err = memory.NewL1(ws.Root(), provider, embedder, models.Judgment)
 		if err != nil {
-			log.Fatalf("[soul] L1 memory init failed: %v", err)
+			if !storeOff("long-term memory (L1)", err, &storesOff) {
+				log.Fatalf("[soul] L1 memory init failed: %v", err)
+			}
+			l1 = nil
+		} else {
+			defer l1.Close()
 		}
-		defer l1.Close()
 	}
 
 	// The parts left from soul's life as a product of its own - acquired skills, remembered build fixes and the coding
@@ -880,6 +910,7 @@ func main() {
 	sched.Brain = buildBrain(cfg, models.Default)
 	sched.SkillLib = skillLib
 	s := newServer(cfg, provider, ws, sched)
+	s.storesOff = storesOff
 
 	// Binds all interfaces (0.0.0.0), not just 127.0.0.1 - a real bug
 	// caught running this inside a container: a process bound to
