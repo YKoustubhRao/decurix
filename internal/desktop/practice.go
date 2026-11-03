@@ -56,13 +56,23 @@ var ErrNoSecret = errors.New("the control plane could not load its secret (hostg
 // PracticeSnapshotParts are the agent state folders a case starts from, restored before every case.
 var PracticeSnapshotParts = []string{"skills", "experience", "playbooks", "memory"}
 
-// practiceResetPaths are cleared before every case: the browser profile, the
-// scratch folder, the approval state and the snapshot folders themselves.
+// practiceResetPaths are cleared before every case. All of ~/.decurix goes, not a list of the folders known today:
+// whatever the agent or soul learned or kept in a case (methods, app guides, procedures, recordings, workflows, soul's
+// workspace ~/.decurix/ai with its memory) must not reach the next case, or a suite's repeats are one learning curve
+// rather than independent samples (review EVAL-1, B1). Nothing in it is needed to run: the desktop's identity and
+// agent token are its environment, the gate's key lives in /var/lib/decurix-gate, the start script makes soul's
+// workspace again, and the run's snapshot (PracticeSnapshotParts; an eval's is empty) is restored after the clear.
+// The browser profiles and the whole work folder go too: a case may have saved outside its own folder.
 var practiceResetPaths = []string{
-	"/home/headless/.config/chromium", "/home/headless/.config/google-chrome", PracticeWorkDir,
-	practiceDecurixDir + "/computer/approval.json",
-	practiceDecurixDir + "/skills", practiceDecurixDir + "/experience", practiceDecurixDir + "/playbooks", practiceDecurixDir + "/memory",
+	"/home/headless/.config/chromium", "/home/headless/.config/google-chrome", "/home/headless/work", practiceDecurixDir,
 }
+
+// PracticeResetPaths lists what ResetPractice clears before every case, for runners and their tests.
+func PracticeResetPaths() []string { return append([]string{}, practiceResetPaths...) }
+
+// practiceResetScript ends every process of the worker first (the container restarts next, so nothing it runs may
+// write after the clear), then clears the paths it is given and the agent's task files in /tmp.
+const practiceResetScript = `kill -KILL -1 2>/dev/null; rm -rf -- "$@" /tmp/decurix-* /tmp/decurix.*`
 
 var (
 	// practiceHostPattern is a host name the browser may map to the mock: no quotes, spaces or ports.
@@ -636,11 +646,11 @@ func practicePassword() string {
 }
 
 // ResetPractice returns a practice desktop to the run's starting state before a
-// case: it clears the browser profile, scratch folder, approval state and agent
-// state, restarts the container (the agent's own state goes with its process),
-// and restores the pinned snapshot while it is stopped.
+// case: it ends the worker's processes, clears all of its agent state, the browser
+// profile and the work folder, restarts the container, and restores the pinned
+// snapshot while it is stopped.
 func (m *Manager) ResetPractice(ctx context.Context, id string, snapshot []byte) error {
-	cmd := append([]string{"/bin/rm", "-rf", "--"}, practiceResetPaths...)
+	cmd := append([]string{"/bin/sh", "-c", practiceResetScript, "reset"}, practiceResetPaths...)
 	if err := m.practiceExec(ctx, id, cmd); err != nil {
 		return fmt.Errorf("clear the practice desktop: %w", err)
 	}

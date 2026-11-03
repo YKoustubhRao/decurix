@@ -11,6 +11,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -157,7 +160,7 @@ func (d *practiceDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		ctr := strings.Split(p, "/")[2]
 		joined := strings.Join(body.Cmd, " ")
-		info := []string{ctr, "run", ""}
+		info := []string{ctr, "run", strings.Join(body.Cmd, "\x00")}
 		switch {
 		case strings.Contains(joined, "tar -x -C "):
 			dir := ""
@@ -431,6 +434,26 @@ func TestResetAndCleanupPractice(t *testing.T) {
 	if err := m.ResetPractice(ctx, "desk", tarBody(map[string]string{"skills/a.json": "{}"})); err != nil {
 		t.Fatal(err)
 	}
+	var reset []string
+	for _, info := range d.execs {
+		if info[1] == "run" {
+			reset = strings.Split(info[2], "\x00")
+		}
+	}
+	script := strings.Join(reset, " ")
+	if !strings.Contains(script, "kill -KILL -1") || !strings.Contains(script, "/tmp/decurix-*") {
+		t.Fatalf("the reset does not end the worker's processes and clear its task files: %q", reset)
+	}
+	cleared := map[string]bool{}
+	for _, p := range reset {
+		cleared[p] = true
+	}
+	// All of the agent's and soul's state goes, whatever folders they keep in it (review EVAL-1, B1).
+	for _, p := range []string{"/home/headless/.decurix", "/home/headless/work", "/home/headless/.config/chromium"} {
+		if !cleared[p] {
+			t.Fatalf("the reset does not clear %s: %q", p, reset)
+		}
+	}
 	joined := strings.Join(d.calls, "\n")
 	stop, restore, start := strings.Index(joined, "/containers/desk/stop"), strings.Index(joined, "PUT /containers/desk/archive"), strings.LastIndex(joined, "/containers/desk/start")
 	if stop < 0 || restore < stop || start < restore {
@@ -443,6 +466,32 @@ func TestResetAndCleanupPractice(t *testing.T) {
 	joined = strings.Join(d.calls, "\n")
 	if !strings.Contains(joined, "DELETE /containers/left-behind") || !strings.Contains(joined, "DELETE /networks/net1") {
 		t.Fatalf("cleanup incomplete: %s", joined)
+	}
+}
+
+// Every place the agent and soul keep state is under the folder the reset clears whole: the agent's DECURIX_DIR
+// default (config.py) and soul's WORKSPACE_ROOT (the start script).
+func TestThePracticeResetCoversEveryStateRoot(t *testing.T) {
+	read := func(p string) string {
+		b, err := os.ReadFile(filepath.Join("..", "..", p))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	if !strings.Contains(read("agent/decurix_agent/config.py"), `DECURIX_DIR = Path(os.environ.get("DECURIX_DIR", _default_base / ".decurix"))`) {
+		t.Fatal("the agent's state folder moved; the practice reset must follow it")
+	}
+	m := regexp.MustCompile(`export WORKSPACE_ROOT="([^"]+)"`).FindStringSubmatch(read("agent/start_agent_terminal.sh"))
+	if m == nil || !strings.HasPrefix(m[1], practiceDecurixDir+"/") {
+		t.Fatalf("soul's workspace is not under %s: %v", practiceDecurixDir, m)
+	}
+	found := false
+	for _, p := range practiceResetPaths {
+		found = found || p == practiceDecurixDir
+	}
+	if !found {
+		t.Fatal("the reset does not clear the agent's whole state folder")
 	}
 }
 
