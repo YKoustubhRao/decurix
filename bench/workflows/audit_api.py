@@ -1,4 +1,8 @@
-"""Reproduce the PM audit of one-demo API teaching, correction and resumed replay."""
+"""Reproduce the PM audit of one-demo API teaching, correction and resumed replay.
+
+The verdict is derived from the exported artifacts only (the skill file and
+the recordings' events). The runner's log line is reported beside it as the
+runner's own claim, never as evidence."""
 import argparse
 import json
 from pathlib import Path
@@ -33,10 +37,17 @@ def audit(root):
             assert len(rows) == 3 and [event["replay_of"]["step"] for event in rows] == [1, 2, 3]
             assert rows[-1]["element"]["name"] == "Go" and rows[-1]["outcome"] == "done"
     assert names == {"Initech", "Umbrella", "Wayne"}
-    raw = (root / "skill-api-verified.log").read_bytes()
-    log = raw.decode("utf-16") if raw.startswith(b"\xff\xfe") else raw.decode("utf-8")
-    assert "END TO END: OK" in log and "steps 3-3 ran" in log
+    # The runner's own log line is its claim, not evidence: it is reported
+    # beside the verdict and never part of it, so "independent" rests on the
+    # artifacts above alone.
+    log_path = root / "skill-api-verified.log"
+    runner_says_ok = None
+    if log_path.exists():
+        raw = log_path.read_bytes()
+        log = raw.decode("utf-16") if raw.startswith(b"\xff\xfe") else raw.decode("utf-8")
+        runner_says_ok = "END TO END: OK" in log and "steps 3-3 ran" in log
     return {"mode":"independent_api_skill_lineage_audit", "passed":True, "demonstrations":1,
+            "verdict_from": "artifacts only (the skill file, the recordings' events)", "runner_log_says_ok": runner_says_ok,
             "ready_skill_version":3, "successful_runs":3, "teacher_actions":3,
             "learned_final_button":"Go", "resumed_wayne_typed_once":True,
             "scope":"API teaching, live Chromium, agent-driven audit capture; source record metadata is task-kind"}

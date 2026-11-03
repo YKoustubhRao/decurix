@@ -86,8 +86,8 @@ type Config struct {
 	BraveKeyEnv string `json:"brave_key_env,omitempty"`
 	// WebRender lets a client ask for a page to be read with a headless
 	// browser (/v1/brainiac/fetch "render": true), for pages that need
-	// JavaScript. Default on; answers never use it on their own. It costs
-	// a few hundred MB for a few seconds.
+	// JavaScript. Default on (off on an appliance); answers never use it on
+	// their own. It costs a few hundred MB for a few seconds.
 	WebRender *bool `json:"web_render,omitempty"`
 	// UpdateEvery is how often `serve` looks for better open models ("off"
 	// by default; "24h" for daily): it reads public evaluations, installs a
@@ -181,6 +181,12 @@ func Load(home string) (Config, error) {
 	}
 	if c.Sandbox == "" && Appliance() {
 		c.Sandbox = SandboxRequired
+	}
+	if c.WebRender == nil && Appliance() {
+		// A headless browser is a large program running a stranger's
+		// JavaScript; an office box runs it only when its operator says so.
+		off := false
+		c.WebRender = &off
 	}
 	return c, c.Validate()
 }

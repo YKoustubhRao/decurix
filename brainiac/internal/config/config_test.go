@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -107,5 +109,24 @@ func TestTheApplianceNeedsAKeyEvenOnLoopback(t *testing.T) {
 	c.APIKeyEnv = "TEST_BRAINIAC_KEY"
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTheApplianceDoesNotRenderByDefault(t *testing.T) {
+	t.Setenv("BRAINIAC_APPLIANCE", "")
+	if c, _ := Load(t.TempDir()); !c.Render() {
+		t.Fatal("render is off on a laptop")
+	}
+	t.Setenv("BRAINIAC_APPLIANCE", "1")
+	t.Setenv("TEST_BRAINIAC_KEY", "k")
+	t.Setenv("BRAINIAC_API_KEY_ENV", "TEST_BRAINIAC_KEY")
+	home := t.TempDir()
+	c, err := Load(home)
+	if err != nil || c.Render() {
+		t.Fatalf("render on an appliance by default: %v %v", c.Render(), err)
+	}
+	os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"web_render": true}`), 0o644)
+	if c, err := Load(home); err != nil || !c.Render() {
+		t.Fatalf("the operator's web_render true was ignored: %v", err)
 	}
 }

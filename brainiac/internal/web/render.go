@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,12 +94,26 @@ func (c *Client) renderNoPrecheck(ctx context.Context, raw string) (Page, error)
 		"--proxy-server=http://"+proxy, "--proxy-bypass-list=<-loopback>",
 		"--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--disable-background-networking",
 		"--user-data-dir="+profile, "--virtual-time-budget=8000", "--user-agent="+browserUA, "--dump-dom", u.String())
-	out, err := cmd.Output()
-	if err != nil && len(out) == 0 {
-		return Page{}, fmt.Errorf("web: the headless browser could not read the page: %w", err)
+	// The page is read through a bounded pipe: a page that builds more than
+	// MaxBytes of DOM is refused, and never held in memory whole.
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return Page{}, err
 	}
-	if int64(len(out)) > c.maxBytes() {
-		out = out[:c.maxBytes()]
+	if err := cmd.Start(); err != nil {
+		return Page{}, fmt.Errorf("web: the headless browser did not start: %w", err)
+	}
+	out, rerr := io.ReadAll(io.LimitReader(stdout, c.maxBytes()+1))
+	tooBig := int64(len(out)) > c.maxBytes()
+	if tooBig || rerr != nil {
+		cancel() // ends the browser; Wait below reaps it
+	}
+	werr := cmd.Wait()
+	if tooBig {
+		return Page{}, fmt.Errorf("web: the rendered page is larger than %d bytes", c.maxBytes())
+	}
+	if len(out) == 0 {
+		return Page{}, fmt.Errorf("web: the headless browser could not read the page: %v", errors.Join(rerr, werr))
 	}
 	p := pageFrom(u.String(), "text/html", out)
 	p.Rendered = true
