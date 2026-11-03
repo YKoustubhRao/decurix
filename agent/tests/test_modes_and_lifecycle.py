@@ -85,6 +85,16 @@ class TestModesAndLifecycle(unittest.TestCase):
         self.assertIsNotNone(reason)
         self.assertIn("Observation", reason)
 
+        # Every kind that may change something pauses, not only presses and Enter (review 2026-11-03, D-28).
+        field = {"role": "textbox", "name": "Notes"}
+        for kind, kwargs in (("type", {"text": "x"}), ("key", {"keys": ["ctrl+s"]}), ("select", {}), ("drag", {}),
+                             ("upload", {}), ("click", {})):
+            with self.subTest(kind=kind):
+                target = None if kind == "click" else field
+                self.assertIn("Observation", approval.assess(kind, target, **kwargs) or "")
+        self.assertIsNone(approval.assess("click", field), "a click that only focuses a field goes ahead")
+        self.assertIsNone(approval.assess("scroll", None))
+
         # In supervised mode, normal non-consequential internal clicks pass
         modes.set_stage(modes.STAGE_SUPERVISED)
         self.assertIsNone(approval.assess("click", btn))

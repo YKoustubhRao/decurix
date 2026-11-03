@@ -1278,9 +1278,8 @@ def _form_check_file():
 
 
 class AskFirst(str):
-    """What a replay's committing press holds that a person checks before it goes (_form_check, listing="ask"): the
-    press is put to them through the approval gate rather than refused. (No check returns one since review 2026-11-03:
-    a replay's sourced save goes, an unsourced one is refused.)"""
+    """What a committing press holds that a person checks before it goes: the press is put to them through the approval
+    gate rather than refused. Returned for a button whose form could not be read (_commit_check, D-26)."""
 
 
 # The values a replay running in this process types from the person's demonstration because today's request gives
@@ -2068,7 +2067,17 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
     """
 
     if kind in ("click", "double_click") and element is not None:
-        form = cdp.submit_form_fields(element, min_fields=1) if element.get("source") == "cdp" else None
+        form = cdp.submit_form_fields(element, min_fields=1, unreadable=cdp.UNREADABLE) \
+            if element.get("source") == "cdp" else None
+        if form is cdp.UNREADABLE:
+            if element.get("role") != "button" and not approval.commits(element):
+                form = None
+            else:
+                # A button whose form could not be read may submit one: the checks cannot be made, so a person looks
+                # first (review 2026-11-03, D-26 - "no form" and "could not read" were the same None).
+                label = " ".join(str(element.get("name") or "").split())[:60]
+                return AskFirst(f'the form "{label}" may submit could not be read, so the checks made before a save '
+                                "could not be made - look at what it holds before it goes")
         if form is None and not approval.commits(element):
             return ""
         if form is None and element.get("source") == "cdp" \

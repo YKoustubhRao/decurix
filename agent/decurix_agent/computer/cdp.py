@@ -1908,9 +1908,15 @@ FORM_FIELDS = """function(enter) {
 FORM_CHECK_MIN_FIELDS = 3
 
 
-def submit_form_fields(element, min_fields=None):
+# What submit_form_fields gives, when asked to, for a page that could not be read: not the same as "no form there"
+# (review 2026-11-03, D-26 - a read that timed out skipped every pre-save check).
+UNREADABLE = {"unreadable": True}
+
+
+def submit_form_fields(element, min_fields=None, unreadable=None):
     """{"form", "fields": [[label, value]]} when clicking element submits a form with several filled fields (at least
-    `min_fields`, FORM_CHECK_MIN_FIELDS by default), else None."""
+    `min_fields`, FORM_CHECK_MIN_FIELDS by default), else None. `unreadable` is what is given when the page could not
+    be asked (None by default; UNREADABLE for a caller that must tell the two apart)."""
 
     page = None
     try:
@@ -1923,7 +1929,7 @@ def submit_form_fields(element, min_fields=None):
             return None
         return found
     except (ComputerError, KeyError, TypeError, ValueError, OSError):
-        return None
+        return unreadable
     finally:
         if page is not None:
             page.close()

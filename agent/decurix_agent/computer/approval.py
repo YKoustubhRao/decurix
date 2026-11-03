@@ -654,6 +654,11 @@ def _navigates(element):
     return len(name.split()) == 1 and bool(NAVIGATION_PATH.search(element.get("path") or ""))
 
 
+# Roles a click on only focuses or selects for reading (Observation stage, assess): a field, a cell, text.
+_ONLY_FOCUSES = {"textbox", "searchbox", "document", "paragraph", "heading", "cell", "row", "image", "img", "text",
+                 "statictext", "label", "group", "pane", "window", "terminal", "editbar"}
+
+
 def assess(kind, element, text=None, keys=None, context=None):
     """
     Why this action needs a human's approval first, or None.
@@ -669,10 +674,14 @@ def assess(kind, element, text=None, keys=None, context=None):
 
     # Stage 1: Observation mode stops mutating actions to observe without external side-effects
     if stage == modes.STAGE_OBSERVATION:
-        if kind in ("click", "double_click") and element is not None and element.get("role") in ACTIVATING_ROLES:
-            return "worker is in Stage 1 Observation (shadowing) mode - mutating action paused"
-        if kind == "key" and keys and any(ENTER_KEY.search(k.strip()) for k in keys):
-            return "worker is in Stage 1 Observation (shadowing) mode - key submission paused"
+        # The stage promises no external change (modes.py): only looking, scrolling and a click that only puts the
+        # keyboard or the selection somewhere go ahead. Found in review (2026-11-03, D-28): only presses on activating
+        # roles and Enter were stopped, so typing, Ctrl+S, a select, a drag and a click at a point went through.
+        if kind in ("click", "double_click") and element is not None \
+                and str(element.get("role") or "").lower() in _ONLY_FOCUSES:
+            return None
+        if kind not in ("scroll", "right_click"):
+            return "worker is in Stage 1 Observation (shadowing) mode - an action that may change something is paused"
 
     context = context or {}
     where = " ".join(filter(None, [context.get("window"), context.get("url"),
