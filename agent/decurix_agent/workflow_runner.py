@@ -410,21 +410,39 @@ _PLAIN_NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 _NUMBER_IN_TEXT = re.compile(r"(?<!\w)(?<!\d[.,])-?\d[\d,]*(?:\.\d+)?(?![\w]|[.,]\d)")
 
 
+def _loses_as_a_number(text):
+    """Whether a number written as text would lose information read as an amount - a leading zero, a leading "+",
+    more than 15 digits (office's F-08 rule): then it is an identifier, matched digit for digit."""
+
+    t = text.strip()
+    digits = re.sub(r"\D", "", t)
+    return t.startswith("+") or (len(digits) > 1 and digits.startswith("0") and not t.startswith("0.")) or len(digits) > 15
+
+
 def _contains(text, needle):
     """
     Whether `text` holds `needle` whole: a number as an amount among the text's numbers (1500 is "1,500.00", never
     "15000" or the 500 inside "1500"), and words as whole tokens ("paid" is not in "unpaid"). Review 2026-11-03 (E-46):
-    a substring test passed a total of 1500 for a check of 500.
+    a substring test passed a total of 1500 for a check of 500. A number that would lose information as an amount (an
+    account number, "00123") is matched as itself, a whole token, digit for digit - never as a float (R-3, review round
+    3: a different 18-digit account passed, and "00123" passed on "Ref 123"). Amounts compare exactly (Decimal).
     """
-    if isinstance(needle, str) and _PLAIN_NUMBER.fullmatch(needle.strip()):
+    from decimal import Decimal, InvalidOperation
+
+    if isinstance(needle, int) and not isinstance(needle, bool) and len(str(abs(needle))) > 15:
+        needle = str(needle)  # (an identifier given as a JSON number: matched as its digits)
+    if isinstance(needle, str) and _PLAIN_NUMBER.fullmatch(needle.strip().lstrip("+")) and not _loses_as_a_number(needle):
         # A number written as text in the spec is a number all the same (review rework: "500" passed on "1,500.00").
-        needle = float(needle.strip().replace(",", ""))
-    if isinstance(needle, (int, float)) and not isinstance(needle, bool):
+        needle = Decimal(needle.strip().replace(",", ""))
+    if isinstance(needle, (int, float, Decimal)) and not isinstance(needle, bool):
+        want = Decimal(str(needle))
         for found in _NUMBER_IN_TEXT.findall(text):
+            if _loses_as_a_number(found):
+                continue  # (an identifier in the text is not an amount either)
             try:
-                if float(found.replace(",", "")) == float(needle):
+                if Decimal(found.replace(",", "")) == want:
                     return True
-            except ValueError:
+            except InvalidOperation:
                 continue
         return False
     needle = str(needle)
