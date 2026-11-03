@@ -162,17 +162,19 @@ def draft_for(sources):
 
 def find(query):
     """
-    The ready skill a person means by `query`: (skill, candidates). An exact
-    name wins; otherwise the one skill sharing the most words with it. When
-    two share the same most, `skill` is None and `candidates` lists them -
-    which skill to run is not something to guess.
+    The ready skill a person means by `query`: (skill, candidates). Only an exact name runs: the skill's name, the
+    slug of the query, or its title word for word (identity.same). Otherwise `skill` is None and `candidates` are the
+    skills sharing the most words with the query, best first - suggestions, never run. Found in review (2026-11-03,
+    D-16): the one skill sharing the most words ran, so a query to remove a customer ran the skill that adds one.
     """
+
+    from decurix_agent.computer import identity
 
     ready = [s for s in all_skills() if s.get("status") == READY]
     text = (query or "").strip().lower()
 
     for skill in ready:
-        if skill["name"] == text or skill["name"] == slug(text):
+        if skill["name"] == text or skill["name"] == slug(text) or identity.same(skill.get("title"), query):
             return skill, [skill]
 
     ranked = search(query, limit=len(ready))
@@ -180,9 +182,7 @@ def find(query):
         return None, []
 
     top = _score(ranked[0], query)
-    best = [skill for skill in ranked if _score(skill, query) == top]
-
-    return (best[0] if len(best) == 1 else None), best
+    return None, [skill for skill in ranked if _score(skill, query) == top]
 
 
 def _score(skill, query):

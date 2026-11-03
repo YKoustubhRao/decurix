@@ -329,8 +329,8 @@ def call_tool(name, arguments):
         skill, candidates = skills.find(wanted or "")
         if skill is None:
             names = ", ".join(s["name"] for s in candidates)
-            return [_text(f"more than one skill fits {wanted!r}: {names}. Use its exact name." if candidates
-                          else f"there is no skill {wanted!r} on this desktop")], True
+            return [_text(f"no skill is named {wanted!r}; these come close: {names}. A skill runs only by its "
+                          "exact name." if candidates else f"there is no skill {wanted!r} on this desktop")], True
 
         if name == "skills":
             return [_text(skill_engine.render_text(skill, budget=TREE_BUDGET))], False

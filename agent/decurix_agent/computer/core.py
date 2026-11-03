@@ -1377,8 +1377,8 @@ def _record_refs(pairs):
     """The values typed into a record's own number fields (No., Bill, Invoice, Voucher, Ref) that hold a digit."""
 
     return {str(v).strip().upper() for label, v in pairs if _REF_LABEL.search(str(label or "")) and re.search(r"\d", str(v))}
-_NEW_RECORD_PAGE = re.compile(r"(?i)page is now \S*/(?:new|create|add)\b|\b(?:new|create|add)\b[^\"]{0,20}(?:record|employee|"
-                              r"order|customer|invoice|entry)")
+# A new record's page, told by its address (review 2026-11-03, D-29: a list of business nouns named it too).
+_NEW_RECORD_PAGE = re.compile(r"(?i)page is now \S*/(?:new|create|add)\b")
 _RECORD_NO = re.compile(r"\b[A-Z]{2,5}-\d{3,}\b")
 # A new record's form opened at its start (".../new", not ".../new?step=2" of the same form).
 _FORM_START = re.compile(r"(?i)page is now \S*/(?:new|create|add)(?:[?#](?![^\s;]*step=(?:[2-9]|\d\d))[^\s;]*)?(?=[\s;]|$)")
@@ -1394,7 +1394,20 @@ def _identity(values):
     return ("name", tuple(words[:2])) if len(words) >= 2 else None
 
 
-def already_entered(events):
+def _replayed_saves(events):
+    """The scan already_entered makes, for possibly_entered: (saved, current, pairs, new_page)."""
+
+    out = {}
+
+    def keep(saved, current, pairs, new_page):
+        out.update(saved=saved, current=current, pairs=pairs, new_page=new_page)
+        return None
+
+    already_entered(events, _scan=keep)
+    return out.get("saved", []), out.get("current", []), out.get("pairs", []), out.get("new_page", False)
+
+
+def already_entered(events, _scan=None):
     """
     (what it is, the system's number) when the new record being saved repeats one this task already saved: the values
     typed since the last save, against those of each earlier save (an email, or its first two words). None otherwise -
@@ -1441,6 +1454,21 @@ def already_entered(events):
             current, pairs, new_page = [], [], False
         if moved:
             page = moved.group(1).rstrip(";,").split("?")[0]
+    if _scan is not None:
+        return _scan(saved, current, pairs, new_page)
+    found = _same_saved(current, pairs, new_page, saved)
+    return (found[0], found[1]) if found and found[2] else None
+
+
+def _same_saved(current, pairs, new_page, saved):
+    """
+    (what it is, the system's number, decided) for the earlier save of this task the record being filled repeats, or
+    None. decided: it is the same record by a mechanical identity - the same email, or the same reference typed into
+    its own number field. A record that only shares the first words typed (a name) is not decided (False): two bills
+    to one customer for one item share every word but are two records. Found in review (2026-11-03, D-12): that was
+    refused as a duplicate, and the worker was told never to enter it.
+    """
+
     mine = _identity(current)
     if not mine or not new_page:
         return None
@@ -1450,10 +1478,22 @@ def already_entered(events):
         # for a customer was refused as the first one again).
         if my_refs and their_refs and not (my_refs & their_refs):
             continue
-        if theirs and theirs[0] == mine[0] and (theirs[1] & mine[1] if mine[0] == "mail" else theirs[1] == mine[1]):
-            what = ", ".join(sorted(mine[1])) if mine[0] == "mail" else " ".join(w.title() for w in mine[1])
-            return what, number
+        if not theirs or theirs[0] != mine[0]:
+            continue
+        if mine[0] == "mail" and theirs[1] & mine[1]:
+            return ", ".join(sorted(mine[1])), number, True
+        if mine[0] == "name" and theirs[1] == mine[1]:
+            return " ".join(w.title() for w in mine[1]), number, bool(my_refs & their_refs)
     return None
+
+
+def possibly_entered(events):
+    """(what it is, the system's number) when the record being filled shares only its name with one this task saved:
+    evidence for the final check and the person, never a refusal (already_entered decides only on an identity)."""
+
+    saved, current, pairs, new_page = _replayed_saves(events)
+    found = _same_saved(current, pairs, new_page, saved)
+    return (found[0], found[1]) if found and not found[2] else None
 
 
 def _current_form(events):
@@ -1602,6 +1642,16 @@ def _duplicate_record(element):
         return ""
     found = already_entered(events)
     if not found:
+        maybe = possibly_entered(events)
+        if maybe:
+            # Not a refusal (D-12): the final check and the person see it.
+            try:
+                from decurix_agent.computer import evidence
+                evidence.note(f"a record named {maybe[0]} was saved earlier in this task"
+                              f"{f' ({maybe[1]})' if maybe[1] else ''}, and another with that name is being saved now - "
+                              "two records, or the same one twice")
+            except Exception:  # noqa: BLE001 - evidence is decoration here: the save is not stopped for it
+                pass
         return ""
     what, number = found
     return (f"Not pressed: {what} is already saved in this application{f' ({number})' if number else ''} - entering it "
@@ -2582,20 +2632,17 @@ def _words(text):
 
 
 def _pick(candidates, option):
-    """The one candidate labelled `option`: exact, else starting with it, else holding all its words."""
+    """
+    The one candidate labelled `option` - the same name (identity.same: case, spaces and punctuation aside) - or None.
+    An entry that only starts with it or holds its words is another entry ("Ravi Kumar Jain" for "Ravi Kumar"): it is
+    left in the list the search offered, which is put to the engine, never clicked. Found in review (2026-11-03,
+    D-11): such an entry was clicked and reported as the one asked for.
+    """
 
-    want = option.strip().lower()
-    wanted = _words(option)
-    tests = (lambda n: n == want, lambda n: n.startswith(want), lambda n: wanted and wanted <= _words(n))
-
-    for test in tests:
-        hits = [e for e in candidates if test((e.get("name") or "").strip().lower())]
-        if len(hits) == 1:
-            return hits[0]
-        if len(hits) > 1:
-            raise ComputerError(f"several options fit {option!r}: " + ", ".join(sorted({h['name'] for h in hits})[:8])
-                                + " - pick one yourself")
-    return None
+    hits = [e for e in candidates if identity.same(e.get("name"), option)]
+    if len(hits) > 1:
+        raise ComputerError(f"several options are named {option!r} - pick one yourself by its ref")
+    return hits[0] if hits else None
 
 
 _PLAIN_NUMBER = re.compile(r"[+-]?\d[\d,]*(?:\.\d+)?")

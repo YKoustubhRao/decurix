@@ -508,6 +508,12 @@ class FieldsNamedByTheirGroupLabel(unittest.TestCase):
 
 class ChoosingInADrawnDropdown(unittest.TestCase):
 
+    def setUp(self):
+        # A failed search is remembered for the next select in this process: each test starts with none.
+        from decurix_agent.computer import core
+        core.forget_failed_search()
+        self.addCleanup(core.forget_failed_search)
+
     def _opt(self, name, role="option"):
         return {"role": role, "name": name, "source": "cdp", "box": [0, 0, 10, 10], "path": f"list > {name}"}
 
@@ -540,12 +546,26 @@ class ChoosingInADrawnDropdown(unittest.TestCase):
         clicked, _ = self._run([self._opt("British Indian Ocean"), self._opt("Indian"), self._opt("Indonesian")], "indian")
         self.assertEqual(clicked, ["Nationality", "Indian"])
 
-    def test_a_variant_named_in_another_order_is_found_and_create_is_never_taken(self):
+    def test_a_variant_named_in_another_order_is_offered_and_create_is_never_taken(self):
+        # An entry that only holds the asked words is another entry until it is named exactly (review 2026-11-03,
+        # D-11): it is offered to the engine, never clicked as the one asked for.
+        from decurix_agent.computer import core
+        self.addCleanup(core.forget_failed_search)
         opts = [self._opt('Create "Customizable Desk (White, Aluminium)"', "link"),
                 self._opt("[FURN_0096] Customizable Desk (Aluminium, White)", "link"),
                 self._opt("[FURN_0097] Customizable Desk (Steel, White)", "link")]
-        clicked, _ = self._run(opts, "Customizable Desk (White, Aluminium)")
+        with self.assertRaises(core.ComputerError) as ctx:
+            self._run(opts, "Customizable Desk (White, Aluminium)")
+        self.assertIn("[FURN_0096] Customizable Desk (Aluminium, White)", str(ctx.exception))
+        clicked, _ = self._run(opts, "[FURN_0096] Customizable Desk (Aluminium, White)")
         self.assertEqual(clicked[-1], "[FURN_0096] Customizable Desk (Aluminium, White)")
+
+    def test_an_entry_that_only_starts_with_the_name_is_not_taken(self):
+        from decurix_agent.computer import core
+        self.addCleanup(core.forget_failed_search)
+        with self.assertRaises(core.ComputerError) as ctx:
+            self._run([self._opt("Vendor One Holdings", "link")], "Vendor One")
+        self.assertIn("Vendor One Holdings", str(ctx.exception))
 
     def test_searches_go_from_the_whole_value_to_its_first_word(self):
         from decurix_agent.computer import core

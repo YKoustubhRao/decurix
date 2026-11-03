@@ -908,8 +908,9 @@ def run(argv):
         skill, candidates = skills.find(args.name)
         if skill is None:
             names = ", ".join(s["name"] for s in candidates)
-            raise ComputerError((f"more than one skill fits {args.name!r}: {names}. Use its exact name."
-                                 if candidates else f"there is no skill {args.name!r} here. Run `gui skills` to list them."))
+            raise ComputerError((f"no skill is named {args.name!r}; these come close: {names}. A skill runs only by "
+                                 "its exact name." if candidates
+                                 else f"there is no skill {args.name!r} here. Run `gui skills` to list them."))
 
         if command == "skill" and args.look is not None:
             return _look(skill, args.look)

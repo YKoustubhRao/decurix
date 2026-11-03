@@ -275,12 +275,19 @@ class Store(unittest.TestCase):
         self.assertEqual(skills.unique_name("Pay an invoice", taken={"pay-an-invoice"}), "pay-an-invoice-2")
         self.assertFalse(skills.valid("../etc"))
 
-    def test_a_skill_finds_a_name_or_the_one_skill_that_fits_the_words(self):
+    def test_a_skill_runs_only_by_its_name_and_words_only_suggest(self):
         self.ready("Pay an invoice")
         self.ready("Add a customer", "demo-20260914T101600-bbbbbb")
 
         self.assertEqual(skills.find("pay-an-invoice")[0]["name"], "pay-an-invoice")
-        self.assertEqual(skills.find("please pay that invoice")[0]["name"], "pay-an-invoice")
+        self.assertEqual(skills.find("Pay an invoice")[0]["name"], "pay-an-invoice")
+        # Words in common only suggest (review 2026-11-03, D-16): "remove a customer" never runs "Add a customer".
+        skill, candidates = skills.find("please pay that invoice")
+        self.assertIsNone(skill)
+        self.assertEqual([s["name"] for s in candidates], ["pay-an-invoice"])
+        skill, candidates = skills.find("remove a customer")
+        self.assertIsNone(skill)
+        self.assertEqual([s["name"] for s in candidates], ["add-a-customer"])
         self.assertEqual(skills.find("something else entirely"), (None, []))
 
     def test_two_skills_that_fit_equally_are_never_chosen_between(self):
