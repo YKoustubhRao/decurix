@@ -138,3 +138,68 @@ class TheAzureHarness(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AgainstTheRealGateStore(unittest.TestCase):
+    """The legacy path end to end against the gate's own store (gate_server.handle in this process, as
+    test_gate_server drives it): a held command is the gate's pending request, a signed yes to it makes one grant,
+    granted() is true once, and an amended reply grants nothing. Review 2026-11-03 rework."""
+
+    KEY = "k3y"
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from decurix_agent import gate_server
+        self.gate = gate_server
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        d = Path(self.tmp.name)
+        for p in (patch.object(approval, "STATE_DIR", d), patch.object(approval, "STATE_FILE", d / "approval.json"),
+                  patch.object(approval, "IN_GATE", True), patch.dict(gate_server._key, {"value": self.KEY}),
+                  # The agent's side: this desktop has a gate, reached in this process.
+                  patch.object(approval, "remote", return_value=True),
+                  patch.object(approval, "gate_call", side_effect=lambda op, timeout=None, **a:
+                               gate_server.handle(dict(a, op=op)))):
+            p.start()
+            self.addCleanup(p.stop)
+        gate_server._settled.clear()
+        gate_server._nonces.clear()
+        self.held = gated_command.material(COMMAND, request="tidy the work folder")
+
+    def ask(self):
+        self.assertEqual(gated_command.check(self.held), "asked")
+        return approval._local_pending()
+
+    def settle(self, text, reading):
+        request = self.ask()
+        question = approval.request_text(request)
+        with patch.object(approval, "reading", return_value=reading):
+            self.gate.settle(text, question, "approval", request["id"])
+
+    def test_a_signed_yes_grants_exactly_once(self):
+        self.settle("yes", {"decision": "yes", "condition": ""})
+        self.assertTrue(gated_command.granted(self.held, "yes", "q"))
+        self.assertFalse(gated_command.granted(self.held, "yes", "q"), "a grant is one action's, once")
+
+    def test_an_amended_reply_grants_nothing(self):
+        self.settle("yes, but in the other folder", {"decision": "no", "condition": "", "wants": "the other folder"})
+        self.assertFalse(gated_command.granted(self.held, "yes, but in the other folder", "q"))
+
+    def test_a_yes_for_another_command_is_no_yes_for_this_one(self):
+        self.settle("yes", {"decision": "yes", "condition": ""})
+        other = gated_command.material("rm -rf /home/headless/work/new", request="tidy the work folder")
+        self.assertFalse(gated_command.granted(other, "yes", "q"))
+        self.assertTrue(gated_command.granted(self.held, "yes", "q"))
+
+    def test_a_yes_already_held_runs_when_asked_instead_of_being_used_up(self):
+        # The ask-time check used an unused grant for the same command, then asked again; the later yes found nothing.
+        self.settle("yes", {"decision": "yes", "condition": ""})
+        saved = state.current_task
+        self.addCleanup(setattr, state, "current_task", saved)
+        state.current_task = "tidy the work folder"
+        with patch.object(task_runner, "ask_for_query") as asked, patch.object(task_runner.progress, "emit"):
+            self.assertIs(task_runner.pause_for_dangerous_command(COMMAND, "it deletes files"), True,
+                          "the held yes lets it run now")
+        asked.assert_not_called()
+        self.assertFalse(gated_command.granted(self.held, "yes", "q"), "and that yes is used")

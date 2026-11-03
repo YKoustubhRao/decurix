@@ -103,7 +103,16 @@ def _ask_to_start(state, step):
     from decurix_agent.messaging import ask_for_query, write_final_reply
     run_id, step_id = state["run_id"], step["id"]
     held = gated_command.material("", request=f"start stage {step_id} of workflow {run_id}: {step['instruction']}")
-    if gated_command.gated() and gated_command.check(held) == "no gate":
+    decided = gated_command.check(held) if gated_command.gated() else "asked"
+    if decided == "allowed":
+        # The gate held an unused yes for exactly this stage, and this check used it: the stage starts (asking again
+        # would burn the person's yes; review 2026-11-03 rework).
+        try:
+            _dispatch(run_id, None, [f"{run_id}:{step_id}"])
+        except Exception as exc:  # noqa: BLE001 - reported and the run let go
+            _stop_on_error(exc, f"Workflow {run_id} stopped: {exc}")
+        return
+    if decided == "no gate":
         write_final_reply(f"Workflow {run_id}: stage {step_id} needs your go-ahead before it starts, and this desktop's "
                           f"approval gate did not answer, so it cannot be started. {gated_command.NOT_RUN}",
                           kind="error", checked=False, gated=True)

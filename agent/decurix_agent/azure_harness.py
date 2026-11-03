@@ -638,10 +638,11 @@ def _run(messages):
                 # On a desktop with an approval gate a held command is the gate's to allow (review 2026-11-03, F-09):
                 # put to it now, and run on the reply only if it finds the grant the person's signed yes made. A gate
                 # that does not answer allows nothing, and the person is not asked for a yes that could grant nothing.
-                held = None
+                held, decided = None, ""
                 if pause.command and gated_command.gated():
                     held = gated_command.material(pause.command, request=state.current_task or "")
-                    if gated_command.check(held) == "no gate":
+                    decided = gated_command.check(held)
+                    if decided != "asked":
                         held = False
                 if held is not False:
                     _answer_rest(messages, calls[i + 1:])
@@ -649,7 +650,12 @@ def _run(messages):
                     _paused = {"call_id": call["id"], "tool": name, "command": pause.command, "gate": held}
                     ask_for_query(pause.text, kind=pause.kind, engine=ENGINE)
                     return
-                text, images = gated_command.NOT_RUN, []
+                if decided == "allowed":
+                    # The gate held an unused yes for exactly this command, and this check used it: it runs now
+                    # (asking again would burn the person's yes; review 2026-11-03 rework).
+                    text, images = "The approval gate held a yes for exactly this command. " + _shell(pause.command), []
+                else:
+                    text, images = gated_command.NOT_RUN, []
 
             except (office.OfficeError, OSError, ValueError, TypeError, KeyError) as exc:
                 text, images = f"(failed) {exc}", []

@@ -139,6 +139,14 @@ class StartStage(unittest.TestCase):
         with patch.object(approval, "check", return_value=approval.Decision(False)):
             workflow_task.answer_start("yes")
 
+    def test_a_yes_the_gate_already_holds_starts_it_instead_of_being_used_up(self):
+        gate = Gate(grants=1)
+        with patch.object(approval, "remote", return_value=True), patch.object(approval, "gate_call", gate), \
+                patch.object(approval, "check", return_value=approval.Decision(False)):
+            workflow_task.perform(f"/workflow resume {RUN}")
+        self.assertEqual(self.questions, [])
+        self.assertEqual(self.ran, ["publish"])
+
     def test_with_a_gate_that_does_not_answer_nothing_is_asked_or_started(self):
         def down(*a, **k):
             raise OSError("no gate")

@@ -811,12 +811,18 @@ def pause_for_dangerous_command(command, reason):
     _pending_gate_material = None
     if gated_command.gated():
         held = gated_command.material(command, request=state.current_task or "")
-        if gated_command.check(held) == "no gate":
+        decided = gated_command.check(held)
+        if decided == "allowed":
+            # The gate held an unused yes for exactly this command, and this check used it: it runs now. Asking
+            # again would burn the person's yes (review 2026-11-03 rework).
+            log("The approval gate already held a yes for this command - running it.")
+            return True
+        if decided == "no gate":
             # A reply could grant nothing here, so the person is not asked to give one.
             log("The approval gate did not answer; the held command is not run.")
             write_final_reply(f"I stopped before running this command, because {reason}:\n\n$ {command}\n\n"
                               f"{gated_command.NOT_RUN}", kind="error", checked=False, gated=True)
-            return
+            return False
         _pending_gate_material = held
 
     _pending_dangerous_command = command
@@ -831,6 +837,7 @@ Reply "yes" to let me run exactly that, or tell me what to do instead.
 """.strip(),
         kind="approval",
     )
+    return False
 
 
 def resume_approved_dangerous_command(history, reply):
@@ -1093,8 +1100,8 @@ def perform_task(task, task_file):
             danger = dangerous_reason(command)
 
             if danger:
-                pause_for_dangerous_command(command, danger)
-                return
+                if not pause_for_dangerous_command(command, danger):
+                    return
 
             target = overwrite_target(task, command)
 
@@ -1296,8 +1303,8 @@ def continue_after_query(query_response):
             danger = dangerous_reason(value)
 
             if danger:
-                pause_for_dangerous_command(value, danger)
-                return
+                if not pause_for_dangerous_command(value, danger):
+                    return
 
             target = overwrite_target(task, value)
 
