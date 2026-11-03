@@ -438,10 +438,15 @@ func TestHostSessionIDsNeverCollide(t *testing.T) {
 	seen := map[string]bool{}
 	for _, p := range pairs {
 		id := hostSessionID(p[0], p[1])
-		if seen[id] || len(id) > 46 || !regexp.MustCompile(`^[A-Za-z0-9_-]+$`).MatchString(id) {
+		// The host's desktop name is "decurix_" and the id, cut at 48: all of the id, hash included, must fit (RW1-D-04).
+		if seen[id] || len("decurix_"+id) > 48 || !regexp.MustCompile(`^[A-Za-z0-9_-]+$`).MatchString(id) {
 			t.Errorf("hostSessionID(%q, %q) = %q: collides, too long or unsafe", p[0], p[1], id)
 		}
 		seen[id] = true
+	}
+	// The slug reads back whole from the id, for the app's name on its card (RW1-D-05).
+	if got := HostSessionSlug(hostSessionID("pc2", "microsoft-paint")); got != "microsoft-paint" {
+		t.Errorf("HostSessionSlug = %q", got)
 	}
 }
 

@@ -303,9 +303,10 @@ func (s *Server) releaseHostApps(desktopID string) {
 	}
 }
 
-// keptAppSlug is the launcher slug in a kept app's session id (desktop.packContext.sessionID: "<desktop>-<slug>").
+// keptAppSlug is the launcher slug in a kept app's session id (desktop.HostSessionSlug): "<slug>-<hash>", the slug read
+// back whole for the app's name on its card (RW1-D-05). An id from before the hash ("<desktop>-<slug>") still reads.
 func keptAppSlug(desktopID, id string) string {
-	return strings.TrimPrefix(id, desktopID+"-")
+	return desktop.HostSessionSlug(strings.TrimPrefix(id, desktopID+"-"))
 }
 
 // hostAppGaveUp is winhost's OnGiveUp: an app the host cannot keep running is recorded as unavailable on its desktop,

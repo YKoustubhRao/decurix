@@ -1549,6 +1549,17 @@ type packContext struct {
 	Secret []byte
 }
 
+// hostSessionSlug is how much of an app's slug its host session id keeps.
+const hostSessionSlug = 24
+
+// HostSessionSlug is the app slug a host session id (hostSessionID) starts with: the id less its hash.
+func HostSessionSlug(id string) string {
+	if i := strings.LastIndex(id, "-"); i > 0 && len(id)-i == 13 {
+		return id[:i]
+	}
+	return id
+}
+
 // sessionID names the host session for an app on this desktop, so two desktops never share one app.
 func (pc packContext) sessionID(slug string) string {
 	return hostSessionID(pc.DesktopID, slug)
@@ -1556,7 +1567,10 @@ func (pc packContext) sessionID(slug string) string {
 
 // hostSessionID is the host session of app slug on desktop: a readable prefix plus a hash of the pair, so no two
 // (desktop, app) pairs share one - "a-b" with "c" and "a" with "b-c" did, and long names cut to the same prefix did
-// (B-19). At most 46 characters of [A-Za-z0-9_-], so the host's 48-character desktop name keeps all of it.
+// (B-19). It is the slug (at most 24 characters, for the app's name) and twelve hex digits of the hash of the
+// (desktop, slug) pair, which is what tells pairs apart: at most 37 characters, so the host's 48-character desktop
+// name ("decurix_" and the id) keeps every one of them (RW1-D-04), and the slug can be read back whole for the app's
+// name (RW1-D-05).
 func hostSessionID(desktop, slug string) string {
 	if desktop == "" {
 		desktop = "vm"
@@ -1568,7 +1582,7 @@ func hostSessionID(desktop, slug string) string {
 		}
 		return s
 	}
-	return short(desktop, 16) + "-" + short(slug, 16) + "-" + hex.EncodeToString(sum[:6])
+	return short(slug, hostSessionSlug) + "-" + hex.EncodeToString(sum[:6])
 }
 
 // hostGUILauncher is the shell that shows a Windows app which runs on the host with no window there: it opens the

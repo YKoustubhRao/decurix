@@ -21,9 +21,9 @@ const (
 // worth that unless the owner chooses it. DECURIX_DISABLE_KSM=1, or DECURIX_ENABLE_KSM=0, turns it off explicitly.
 func OptimizeHostKSM() {
 	if !ksmWanted(os.Getenv("DECURIX_ENABLE_KSM"), os.Getenv("DECURIX_DISABLE_KSM")) {
-		if v := os.Getenv("DECURIX_ENABLE_KSM"); v == "0" || v == "false" || os.Getenv("DECURIX_DISABLE_KSM") != "" {
-			DisableHostKSM()
-		}
+		// Not wanted: turned off when an earlier build left it on (it stays on until the kernel restarts otherwise,
+		// RW1-D-03). DisableHostKSM writes only when it is on, and only where this process may.
+		DisableHostKSM()
 		return
 	}
 
