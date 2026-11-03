@@ -17,6 +17,24 @@ import test_recordings  # noqa: F401  (stubs decurix_agent.config on a machine w
 from decurix_agent import config, messaging
 
 
+class TheControlPlanesAnswer(unittest.TestCase):
+    """How _post_querytext reads the control plane's answer (W1, 2026-11-03: a 409 is its no for an outcome naming a
+    task that is not open on this desktop - it ended, or is not its)."""
+
+    def answered(self, code):
+        import urllib.error
+
+        def urlopen(request, timeout=None):
+            raise urllib.error.HTTPError(request.full_url, code, "no", {}, None)
+        with mock.patch("urllib.request.urlopen", urlopen):
+            return messaging._post_querytext({"kind": "final", "reply": "x"})[0]
+
+    def test_a_409_is_refused_and_so_let_go_and_a_5xx_is_tried_again(self):
+        self.assertEqual(self.answered(409), "refused")
+        self.assertEqual(self.answered(400), "refused")
+        self.assertEqual(self.answered(503), "unreachable")
+
+
 class UnsentOutcomes(unittest.TestCase):
 
     def setUp(self):
