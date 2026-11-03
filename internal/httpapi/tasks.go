@@ -175,6 +175,15 @@ func (s *Server) taskTraceHandler(w http.ResponseWriter, r *http.Request, id str
 	}
 }
 
+// taskOfWorker reports whether task is one of worker's tasks in the records: what a desktop may read scoped to a task.
+func (s *Server) taskOfWorker(worker, task string) bool {
+	if s.Tasks == nil || !tasks.ValidID(task) {
+		return false
+	}
+	d, err := s.Tasks.Get(task)
+	return err == nil && d.WorkerID == desktop.SanitizeID(worker)
+}
+
 // maxTaskPicks bounds how many of a desktop's tasks its card's dropdown lists.
 const maxTaskPicks = 50
 

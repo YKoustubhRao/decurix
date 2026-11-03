@@ -21,6 +21,12 @@ type Handler struct {
 	Store *Store
 	// Roles, when set, supplies a worker's roles for GET /api/knowledge.
 	Roles RoleSource
+	// Caller names the desktop a request came from (ok false for a person). A desktop reads only its own scope: the
+	// worker it asks for is itself, whatever it named (review 2026-11-03, C-09).
+	Caller func(*http.Request) (string, bool)
+	// TaskOf reports whether task is one of worker's tasks. A desktop's request for a task's knowledge is answered only
+	// when it is; without TaskOf, a desktop gets no task's knowledge.
+	TaskOf func(worker, task string) bool
 }
 
 // Register adds the knowledge routes to mux.
@@ -52,6 +58,15 @@ func (h *Handler) forWorker(w http.ResponseWriter, r *http.Request) {
 	if (worker != "" && !keyPattern.MatchString(worker)) || (task != "" && !keyPattern.MatchString(task)) {
 		writeError(w, http.StatusBadRequest, "bad worker or task id")
 		return
+	}
+	if h.Caller != nil {
+		if caller, fromDesktop := h.Caller(r); fromDesktop {
+			worker = caller
+			if task != "" && (h.TaskOf == nil || !h.TaskOf(caller, task)) {
+				writeError(w, http.StatusForbidden, "a desktop reads the knowledge of its own tasks only")
+				return
+			}
+		}
 	}
 
 	roles := []string{}

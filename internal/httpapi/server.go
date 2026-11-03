@@ -369,7 +369,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		if s.SkillHub != nil {
 			roles = s.SkillHub
 		}
-		(&knowledge.Handler{Store: s.Knowledge, Roles: roles}).Register(known)
+		(&knowledge.Handler{Store: s.Knowledge, Roles: roles, Caller: requestDesktop, TaskOf: s.taskOfWorker}).Register(known)
 		for _, path := range []string{"/api/knowledge", "/api/knowledge/supersede", "/api/knowledge/why"} {
 			mux.Handle(path, s.readsForAll(known))
 		}

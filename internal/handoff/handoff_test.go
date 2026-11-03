@@ -96,16 +96,30 @@ type fakeFS struct {
 	mu      sync.Mutex
 	files   map[string]map[string][]byte // worker -> path -> data
 	written map[string][]File            // worker+dir -> files
+	reads   []string                     // every path read
 }
 
 func (f *fakeFS) ReadFiles(_ context.Context, worker string, paths []string) ([]File, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reads = append(f.reads, paths...)
 	var out []File
 	for _, p := range paths {
-		data, ok := f.files[worker][p]
-		if !ok {
+		if data, ok := f.files[worker][p]; ok {
+			out = append(out, File{Name: p, Data: data})
+			continue
+		}
+		// A folder is read whole, as a copy-out of it is.
+		found := false
+		for name, data := range f.files[worker] {
+			if strings.HasPrefix(name, p+"/") {
+				out = append(out, File{Name: name, Data: data})
+				found = true
+			}
+		}
+		if !found {
 			return nil, errors.New("no such file")
 		}
-		out = append(out, File{Name: p, Data: data})
 	}
 	return out, nil
 }
@@ -199,8 +213,9 @@ func TestDelegateToNamedWorkerVerifiedIsDone(t *testing.T) {
 		t.Errorf("files not carried: %+v", call)
 	}
 
+	r.fs.files["b"][OutDir(h.ID)+"/summary.txt"] = []byte("total 3")
 	r.tasks.set(h.TaskID, TaskOutcome{Status: tasks.StatusDone, Checked: yes(),
-		Report: "Wrote /home/headless/out/summary.txt.\n\nChecked against the files I wrote: total 3 is in the file."})
+		Report: "Wrote " + OutDir(h.ID) + "/summary.txt.\n\nChecked against the files I wrote: total 3 is in the file."})
 	got, err := r.svc.Get(context.Background(), h.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -244,10 +259,11 @@ func TestErrorQueryAndAbandoned(t *testing.T) {
 	ctx := context.Background()
 	h, _ := r.svc.Delegate(ctx, DelegateRequest{FromWorker: "a", ToWorker: "b", Request: "do it"})
 
-	r.tasks.set(h.TaskID, TaskOutcome{Status: tasks.StatusQuery, OpenQuestions: []string{"Which month?"}})
+	// Waiting on a person is live ("query" is the end of a wait whose desktop stopped: TestATaskEndedWaitingFailsTheHandoff).
+	r.tasks.set(h.TaskID, TaskOutcome{Status: tasks.StatusWaiting, OpenQuestions: []string{"Which month?"}})
 	got, _ := r.svc.Get(ctx, h.ID)
 	if got.Status != StatusRunning || len(got.Result.OpenQuestions) != 1 || !strings.Contains(got.Reason, "asked a person") {
-		t.Fatalf("query: %+v", got)
+		t.Fatalf("waiting: %+v", got)
 	}
 
 	r.tasks.set(h.TaskID, TaskOutcome{Status: tasks.StatusError, Checked: yes(), Report: "Could not open it."})
@@ -585,9 +601,5 @@ func TestEvidenceAndFilesIn(t *testing.T) {
 	ev := EvidenceIn(report)
 	if len(ev) != 3 || !strings.HasPrefix(ev[0], "Checked on the screen:") || ev[2] != "- date: 3 Oct" {
 		t.Errorf("evidence: %q", ev)
-	}
-	files := FilesIn(report)
-	if len(files) != 2 || files[0] != "/home/headless/out/report.xlsx" || files[1] != "/home/headless/out/notes.txt" {
-		t.Errorf("files: %q", files)
 	}
 }

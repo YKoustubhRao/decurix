@@ -18,10 +18,13 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
-// Statuses a handoff moves through. queued and running are open; the rest
-// are final.
+// Statuses a handoff moves through. queued, sending and running are open; the
+// rest are final. sending is a queued handoff claimed by the one dispatch that
+// is submitting it, so the service's lock need not be held while a stopped
+// desktop wakes (C-16).
 const (
 	StatusQueued    = "queued"
+	StatusSending   = "sending"
 	StatusRunning   = "running"
 	StatusDone      = "done"
 	StatusNotDone   = "not_done"
@@ -74,9 +77,20 @@ type Handoff struct {
 	DispatchedAt time.Time `json:"dispatched_at"`
 }
 
+// MarshalJSON shows a handoff being sent as queued: "sending" is this package's claim on the row, not a state a
+// caller (the sending worker's handoff tool, the workforce page) knows; to them it is still waiting to start.
+func (h Handoff) MarshalJSON() ([]byte, error) {
+	type plain Handoff
+	shown := plain(h)
+	if shown.Status == StatusSending {
+		shown.Status = StatusQueued
+	}
+	return json.Marshal(shown)
+}
+
 // Open reports whether the handoff can still change on its own.
 func (h Handoff) Open() bool {
-	return h.Status == StatusQueued || h.Status == StatusRunning
+	return h.Status == StatusQueued || h.Status == StatusSending || h.Status == StatusRunning
 }
 
 // migrations are the handoff component's schema steps: append-only.
@@ -241,10 +255,22 @@ func (s *Store) List(worker string, limit int) ([]Handoff, error) {
 		worker, worker, limit)
 }
 
-// OpenHandoffs returns every queued or running handoff, oldest first.
+// OpenHandoffs returns every queued, sending or running handoff, oldest first.
 func (s *Store) OpenHandoffs() ([]Handoff, error) {
 	return sqlitedb.QueryAll(s.db, scan,
-		`SELECT `+columns+` FROM handoffs WHERE status IN (?, ?) ORDER BY created_ns`, StatusQueued, StatusRunning)
+		`SELECT `+columns+` FROM handoffs WHERE status IN (?, ?, ?) ORDER BY created_ns`, StatusQueued, StatusSending, StatusRunning)
+}
+
+// Claim moves a queued handoff to sending, for the one dispatch that will submit it, and reports whether it did:
+// another dispatch (or a cancel) that got there first makes it false.
+func (s *Store) Claim(id string) (bool, error) {
+	res, err := s.db.Exec(`UPDATE handoffs SET status = ?, updated_ns = ? WHERE id = ? AND status = ?`,
+		StatusSending, sqlitedb.ToNS(s.now()), id, StatusQueued)
+	if err != nil {
+		return false, fmt.Errorf("handoff: claim: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
 }
 
 // Save writes back a handoff's changing fields (where it went, its status,
@@ -256,9 +282,9 @@ func (s *Store) Save(h Handoff) (Handoff, bool, error) {
 	result, _ := json.Marshal(h.Result)
 
 	res, err := s.db.Exec(`UPDATE handoffs SET to_worker = ?, status = ?, reason = ?, task_id = ?, result = ?,
-		updated_ns = ?, dispatched_ns = ? WHERE id = ? AND status IN (?, ?)`,
+		updated_ns = ?, dispatched_ns = ? WHERE id = ? AND status IN (?, ?, ?)`,
 		h.ToWorker, h.Status, h.Reason, h.TaskID, string(result), sqlitedb.ToNS(h.UpdatedAt),
-		sqlitedb.ToNS(h.DispatchedAt), h.ID, StatusQueued, StatusRunning)
+		sqlitedb.ToNS(h.DispatchedAt), h.ID, StatusQueued, StatusSending, StatusRunning)
 	if err != nil {
 		return Handoff{}, false, fmt.Errorf("handoff: save: %w", err)
 	}
