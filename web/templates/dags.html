@@ -147,6 +147,23 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 
   Decurix.relativeTimes();
 
+  /* The list is drawn on the server; it stays current by redrawing once what /api/dags says has changed (a run that
+     ended, one a cron started) - never while the person is typing or a dialog is open (W-20). */
+  var listSeen = null;
+  async function refreshList(){
+    try{
+      var response = await fetch("/api/dags", {cache: "no-store"});
+      if(!response.ok){ return; }
+      var now = JSON.stringify(await response.json());
+      if(listSeen === null){ listSeen = now; return; }
+      var busyHere = document.querySelector("dialog[open]") ||
+        (document.activeElement && document.activeElement.matches("input,textarea,select"));
+      if(now !== listSeen && !busyHere){ location.reload(); }
+    }catch(e){ /* the next tick asks again */ }
+  }
+  refreshList();
+  Decurix.poll(refreshList, 10000);
+
   var dialog = document.getElementById("newDagDialog");
   var form = document.getElementById("newDagForm");
 

@@ -3221,15 +3221,21 @@
     reloadPending = true;
     open.addEventListener("close", function(){ reloadPending = false; reloadWhenFree(); }, {once: true});
   }
+  /* One status request per card at a time, and none for a card whose creation failed: a failed card stays as it is
+     (its reason shown) instead of being asked about every 1.5 s for good (W-20). */
+  var provAsking = {};
   function checkProvisioningDesktops(){
     var provCards = document.querySelectorAll(".status.provisioning");
     if(!provCards || provCards.length === 0){ return; }
 
     provCards.forEach(function(pill){
       var card = pill.closest(".dcard");
-      if(!card || !card.dataset.desktopId){ return; }
+      if(!card || !card.dataset.desktopId || card.dataset.provFailed){ return; }
       var id = card.dataset.desktopId;
+      if(provAsking[id]){ return; }
+      provAsking[id] = true;
       fetch("/api/desktops/status?id=" + encodeURIComponent(id))
+        .finally(function(){ provAsking[id] = false; })
         .then(function(res){
           if(!res.ok){ return null; }
           return res.json();
@@ -3241,6 +3247,7 @@
             return;
           }
           if(data.status === "failed"){
+            card.dataset.provFailed = "1";
             var txt = card.querySelector("[data-prov-text]");
             if(txt){
               txt.textContent = "Failed: " + (data.error || data.message || "Unknown error");
