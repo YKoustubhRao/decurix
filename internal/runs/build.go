@@ -75,19 +75,17 @@ func build(ctx context.Context, src Sources, execID string, view func(tasks.Exec
 	if err != nil {
 		return Trajectory{}, err
 	}
+	w := windowOf(*exec, detail.Executions)
 	var calls []CallRow
 	if src.Calls != nil {
-		to := time.Time{}
-		if !exec.EndedAt.IsZero() {
-			to = exec.EndedAt.Add(callWindowAfter)
-		}
-		rows, err := src.Calls.CallsForTask(taskID, exec.WorkerID, exec.StartedAt, to)
+		rows, err := src.Calls.CallsForTask(taskID, exec.WorkerID, w.from, w.to)
 		if err != nil {
 			return Trajectory{}, err
 		}
-		// Only this worker's own calls: a task id in a header is the desktop's word, never trusted for a join.
+		// Only this worker's own calls in this execution's window: a task id in a header is the desktop's word, never
+		// trusted for a join, and a retry's calls are the retry's.
 		for _, r := range rows {
-			if r.DesktopID == exec.WorkerID {
+			if r.DesktopID == exec.WorkerID && w.holds(r.At) {
 				calls = append(calls, r)
 			}
 		}
@@ -97,7 +95,56 @@ func build(ctx context.Context, src Sources, execID string, view func(tasks.Exec
 		b = &bundle
 	}
 	return assemble(runInput{detail: detail, view: view(*exec), judgements: judgements, calls: calls,
-		bundle: b, blobs: blobs}), nil
+		bundle: b, blobs: blobs, window: w}), nil
+}
+
+// window is the time an execution's own records fall in: from (inclusive) to to (exclusive; zero: open).
+type window struct{ from, to time.Time }
+
+// holds reports whether t is in the window. Something with no time is in no window.
+func (w window) holds(t time.Time) bool {
+	if t.IsZero() || t.Before(w.from) {
+		return false
+	}
+	return w.to.IsZero() || t.Before(w.to)
+}
+
+// windowOf is the window of e among all the task's executions (review B6, R1). It runs from e's start (less
+// windowSlack, for whole-second event times) to a minute after its end (callWindowAfter, for a last check that lands
+// after the reply), but never into a neighbour's: it starts no earlier than where the attempt before it stops, and
+// stops at the next attempt's start. A retry right after a failure is the next attempt's from its first second.
+func windowOf(e tasks.Execution, all []tasks.Execution) window {
+	end := func(x tasks.Execution, next *tasks.Execution) time.Time {
+		to := time.Time{}
+		if !x.EndedAt.IsZero() {
+			to = x.EndedAt.Add(callWindowAfter)
+		}
+		if next != nil && (to.IsZero() || next.StartedAt.Before(to)) {
+			to = next.StartedAt
+		}
+		return to
+	}
+	var prev, next *tasks.Execution
+	for i := range all {
+		o := &all[i]
+		if o.ID == e.ID {
+			continue
+		}
+		if o.StartedAt.Before(e.StartedAt) || (o.StartedAt.Equal(e.StartedAt) && o.Attempt < e.Attempt) {
+			if prev == nil || o.StartedAt.After(prev.StartedAt) {
+				prev = o
+			}
+		} else if next == nil || o.StartedAt.Before(next.StartedAt) {
+			next = o
+		}
+	}
+	w := window{from: e.StartedAt.Add(-windowSlack), to: end(e, next)}
+	if prev != nil {
+		if prevEnd := end(*prev, &e); prevEnd.After(w.from) {
+			w.from = prevEnd
+		}
+	}
+	return w
 }
 
 // execView is one execution with what the run record reads of it, and each intervention's reply judgement and
@@ -134,6 +181,7 @@ type runInput struct {
 	calls      []CallRow
 	bundle     *Bundle
 	blobs      Blobs
+	window     window // this execution's own time (windowOf); zero: everything
 }
 
 // parsed is what the bundle's files hold.
@@ -214,7 +262,7 @@ func assemble(in runInput) Trajectory {
 
 	// The recording, trace and ledger are the task's, cumulative over its attempts: only this execution's own part of
 	// them is its run (review B6), and what was left out is said.
-	t.Integrity.Missing = append(t.Integrity.Missing, p.keepWindow(e.StartedAt, e.EndedAt)...)
+	t.Integrity.Missing = append(t.Integrity.Missing, p.keepWindow(in.window)...)
 	t.Calls = callsOf(in.calls, p.trace)
 	t.Models, t.Usage = modelsOf(t.Calls)
 	t.Ledger = ledgerOf(p.ledger)
@@ -227,19 +275,11 @@ func assemble(in runInput) Trajectory {
 // windowSlack widens an execution's start: events carry whole seconds.
 const windowSlack = 2 * time.Second
 
-// keepWindow keeps the events, trace lines and ledger records of the execution that ran from started to ended (ended
-// zero: still running), plus callWindowAfter for a last check that lands after its reply. It returns what it left
-// out, as integrity lines. Something with no time cannot be placed in a run, so it is left out too, and said.
-func (p *parsed) keepWindow(started, ended time.Time) []string {
-	in := func(t time.Time) bool {
-		if t.IsZero() {
-			return false
-		}
-		if t.Before(started.Add(-windowSlack)) {
-			return false
-		}
-		return ended.IsZero() || !t.After(ended.Add(callWindowAfter))
-	}
+// keepWindow keeps the events, trace lines and ledger records inside w (windowOf; the zero window keeps all that has
+// a time). It returns what it left out, as integrity lines. Something with no time cannot be placed in a run, so it
+// is left out too, and said.
+func (p *parsed) keepWindow(w window) []string {
+	in := w.holds
 	var out []string
 	var events []recEvent
 	for _, ev := range p.events {
