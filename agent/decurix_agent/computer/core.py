@@ -174,6 +174,7 @@ def observe(remember=True, frame=None):
         notes.append(str(exc))
 
     groups = _order_groups(groups, windows, active_title)
+    _withhold_secret_values(found)
 
     if _human_check(found, page_group):
         notes.append(HUMAN_CHECK_NOTE)
@@ -212,6 +213,30 @@ def observe(remember=True, frame=None):
             _save_state(observation, next_ref)
 
     return observation
+
+
+SECRET_VALUE = "[withheld]"
+
+
+def _withhold_secret_values(elements):
+    """
+    Every secret field's value (privacy.secret_field: a password, a one-time code, a key) replaced where it is read, at
+    the look itself, so no renderer, note or record can show it: the field is shown filled, by SECRET_VALUE. Found in
+    review (2026-11-03, D-18): `gui observe` printed a text-type code or key field's value, and the evidence notes the
+    final check reads kept it. The raw value stays only in the element's handle, which is what acting reads.
+    """
+
+    for e in elements:
+        value = e.get("value")
+        if value in (None, "", SECRET_VALUE):
+            continue
+        try:
+            secret = privacy.secret_field(e)
+        except Exception:  # noqa: BLE001 - not known to be safe to show: withheld
+            secret = True
+        if secret:
+            e["handle"] = dict(e.get("handle") or {}, value=value)
+            e["value"] = SECRET_VALUE
 
 
 # How many refs no longer on the screen are kept with where they were (_gone).

@@ -1895,7 +1895,7 @@ FORM_FIELDS = """function(enter) {
     else if (ft === 'checkbox' || ft === 'radio') { if (!f.checked) continue; v = 'checked'; }
     else v = String(f.value || '');
     if (v.trim() === '') continue;
-    out.push([labelOf(f).slice(0, 60), v.slice(0, 80)]);
+    out.push([labelOf(f).slice(0, 60), v.slice(0, 80), ft, (f.getAttribute('autocomplete') || '').toLowerCase()]);
   }
   const name = form.getAttribute('aria-label') || form.getAttribute('name') || form.id ||
     ((form.querySelector('legend, h1, h2, h3') || {}).textContent || '').trim() || 'the form';
@@ -1913,6 +1913,31 @@ FORM_CHECK_MIN_FIELDS = 3
 UNREADABLE = {"unreadable": True}
 
 
+def _without_secrets(found):
+    """A form read by FORM_FIELDS without its secret fields (privacy.secret_field, read from the field's label, type
+    and autocomplete, and privacy.credential_in on the value - left out as a password field always was), as [label,
+    value] pairs. Found in review
+    (2026-11-03, D-18): only type=password was skipped, so a text-type code or key field's value was listed in the
+    pre-save check's "would be sent holding" text."""
+
+    if not found:
+        return found
+    from decurix_agent.computer import privacy
+
+    fields = []
+    for item in found.get("fields") or []:
+        label, value = (list(item) + ["", ""])[:2]
+        kind, autocomplete = (list(item) + ["", "", "", ""])[2:4]
+        field = {"role": "textbox", "name": label, "handle": {"input_type": kind, "autocomplete": autocomplete}}
+        try:
+            secret = privacy.secret_field(field) or privacy.credential_in(str(value))
+        except Exception:  # noqa: BLE001 - not known to be safe to show: withheld
+            secret = True
+        if not secret:
+            fields.append([label, value])
+    return dict(found, fields=fields)
+
+
 def submit_form_fields(element, min_fields=None, unreadable=None):
     """{"form", "fields": [[label, value]]} when clicking element submits a form with several filled fields (at least
     `min_fields`, FORM_CHECK_MIN_FIELDS by default), else None. `unreadable` is what is given when the page could not
@@ -1927,7 +1952,7 @@ def submit_form_fields(element, min_fields=None, unreadable=None):
         }).get("result", {}).get("value")
         if not found or len(found.get("fields") or []) < (FORM_CHECK_MIN_FIELDS if min_fields is None else min_fields):
             return None
-        return found
+        return _without_secrets(found)
     except (ComputerError, KeyError, TypeError, ValueError, OSError):
         return unreadable
     finally:
@@ -1944,10 +1969,10 @@ def enter_form_fields(element):
     try:
         page = _page_for(element)
         object_id = _object(page, element["handle"]["backend_id"])
-        return page.call("Runtime.callFunctionOn", {
+        return _without_secrets(page.call("Runtime.callFunctionOn", {
             "objectId": object_id, "returnByValue": True, "functionDeclaration": FORM_FIELDS,
             "arguments": [{"value": True}],
-        }).get("result", {}).get("value") or None
+        }).get("result", {}).get("value") or None)
     except (ComputerError, KeyError, TypeError, ValueError, OSError):
         return None
     finally:
