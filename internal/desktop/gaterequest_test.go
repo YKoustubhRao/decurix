@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -104,5 +105,39 @@ func TestTheGateGetsTheRequestAndTheSecretsSigned(t *testing.T) {
 	}
 	if (&Manager{client: fake}).SendGateRequest(context.Background(), "box", "t1", "x") == nil {
 		t.Fatal("a manager with no gate key sent a request unsigned")
+	}
+}
+
+// Text that is not valid UTF-8 is signed as encoding/json sends it (each bad byte U+FFFD), so the gate, which hashes
+// the string it decodes, verifies it: the vector is the Python gate's over that string (review CP-A N6).
+func TestInvalidUTF8IsSignedAsItIsSent(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "gate-signatures.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f struct {
+		Key  string `json:"key"`
+		Case struct {
+			TaskID string `json:"task_id"`
+			Ts     string `json:"ts"`
+			Nonce  string `json:"nonce"`
+			RawHex string `json:"raw_hex"`
+			Text   string `json:"text"`
+			Sig    string `json:"sig"`
+		} `json:"request_invalid_utf8"`
+	}
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
+	}
+	bad, _ := hex.DecodeString(f.Case.RawHex)
+	text := GateText(string(bad))
+	sent, _ := json.Marshal(string(bad))
+	var decoded string
+	_ = json.Unmarshal(sent, &decoded)
+	if text != decoded || text != f.Case.Text {
+		t.Fatalf("GateText %q, JSON sends %q, the fixture says %q", text, decoded, f.Case.Text)
+	}
+	if got := SignGateRequest(f.Key, f.Case.TaskID, f.Case.Ts, f.Case.Nonce, text); got != f.Case.Sig {
+		t.Fatalf("signature %s, the gate computes %s", got, f.Case.Sig)
 	}
 }

@@ -17,5 +17,13 @@
       "Qz\"9-lamp\\Hx"
     ],
     "sig": "aa61d39e57c4272dd9b15a92ca5277054f9c01b4e5ddf46de9f26ceae0715353"
+  },
+  "request_invalid_utf8": {
+    "task_id": "t0123456789abcdef",
+    "ts": "1762240933",
+    "nonce": "11223344556677889900aabbccddeeff",
+    "raw_hex": "7369676e20696e206173206d69726120e282207468656e20fffe20646f6e65",
+    "text": "sign in as mira �� then �� done",
+    "sig": "3e1ea3682642ec0900c84ce02ae160a2423ad6bd1547201733394ba1e76f216e"
   }
 }

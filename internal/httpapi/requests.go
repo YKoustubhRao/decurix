@@ -132,37 +132,60 @@ type withheldKey struct{}
 // marked request, is also known to the call recorder before the desktop has it, so no model call that carries it is
 // recorded as typed.
 //
-// The desktop's approval gate is told the same, signed, before the desktop has the text (H-PY-5, H-PY-6): its own copy
-// of a new request (so whether a site is named is decided from that copy, never from a file the worker could write;
-// a request marked secret is given in its withheld form, naming no site), and the values withheld (so the gate's
-// own approval question withholds them). A desktop with no gate logs and goes on.
+// What the desktop's approval gate must be told before the agent has the text is decided here too, from the same
+// decision (gateNotice), and sent by deliverRequest once the desktop answers (H-PY-5, H-PY-6).
 func (s *Server) markWithheld(ctx context.Context, desktopID string, route tasks.Route, content string) context.Context {
 	marked, _ := ctx.Value(sentSecretKey{}).(bool)
 	stored, withheld := s.Tasks.StoredForm(route, content, marked)
-	var values []string
+	notice := gateNotice{taskID: route.TaskID}
 	if withheld {
-		values = s.rememberWithheld(desktopID, content, stored)
+		notice.values = s.rememberWithheld(desktopID, content, stored)
 		ctx = context.WithValue(ctx, withheldKey{}, true)
 	}
-	if s.Desktops != nil {
-		gateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
-		defer cancel()
-		if route.Kind != tasks.RouteReply {
-			copyText := content
-			if marked {
-				copyText = stored
-			}
-			if err := s.Desktops.SendGateRequest(gateCtx, desktopID, route.TaskID, copyText); err != nil {
-				log.Printf("request to %s: its approval gate has no copy (it names no site, so it asks): %v", desktopID, err)
-			}
-		}
-		if len(values) > 0 {
-			if err := s.Desktops.SendGateSecrets(gateCtx, desktopID, route.TaskID, values); err != nil {
-				log.Printf("request to %s: its approval gate was not told the withheld values: %v", desktopID, err)
-			}
+	if route.Kind != tasks.RouteReply {
+		// The gate's own copy of a new request, which it keeps on its disk: the withheld form whenever anything of it
+		// was withheld (a site's name is kept; a value never is), the text as sent otherwise.
+		notice.copy, notice.sendCopy = content, true
+		if withheld {
+			notice.copy = stored
 		}
 	}
-	return ctx
+	return context.WithValue(ctx, gateNoticeKey{}, notice)
+}
+
+// gateNotice is what a desktop's approval gate is told, signed, before its agent has a request: its own copy of a
+// new request (so whether a site is named is decided from that copy, never from a file the worker could write) and
+// the values the records withheld (so the gate's own approval question withholds them).
+type gateNotice struct {
+	taskID   string
+	copy     string
+	sendCopy bool
+	values   []string
+}
+
+// gateNoticeKey carries a request's gateNotice (markWithheld) to deliverRequest.
+type gateNoticeKey struct{}
+
+// tellGate gives desktopID's approval gate the notice ctx carries. It fails closed: an error means the gate does not
+// know what it must, and the request is then not sent.
+func (s *Server) tellGate(ctx context.Context, desktopID string) error {
+	notice, ok := ctx.Value(gateNoticeKey{}).(gateNotice)
+	if !ok {
+		return nil
+	}
+	gateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
+	defer cancel()
+	if notice.sendCopy {
+		if err := s.Desktops.SendGateRequest(gateCtx, desktopID, notice.taskID, notice.copy); err != nil {
+			return err
+		}
+	}
+	if len(notice.values) > 0 {
+		if err := s.Desktops.SendGateSecrets(gateCtx, desktopID, notice.taskID, notice.values); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // rememberWithheld tells the call recorder the values the records withheld from content (stored is the form they
@@ -375,7 +398,20 @@ func (s *Server) deliverRequest(ctx context.Context, desktopID, content string, 
 	// own stores, and the agent must not keep it as typed either.
 	body := desktop.RequestBody{Content: content, TaskID: route.TaskID, Secret: sentAsSecret(ctx),
 		JudgementID: route.JudgementID, DateOrder: s.DateOrder}
-	err := s.Desktops.SendRequest(ctx, desktopID, body)
+
+	// A desktop with an approval gate is told what it must know first, every try, once the desktop answers: if the
+	// gate cannot be told, nothing is sent (review CP-A-2 B1). A desktop made before the gate gets its request as
+	// before.
+	gated := s.Desktops.HasGate(ctx, desktopID)
+	send := func() error {
+		if gated {
+			if err := s.tellGate(ctx, desktopID); err != nil {
+				return err
+			}
+		}
+		return s.Desktops.SendRequest(ctx, desktopID, body)
+	}
+	err := send()
 
 	switch {
 	case err == nil:
@@ -409,7 +445,7 @@ func (s *Server) deliverRequest(ctx context.Context, desktopID, content string, 
 		case <-time.After(autoStartPoll):
 		}
 
-		err = s.Desktops.SendRequest(ctx, desktopID, body)
+		err = send()
 
 		switch {
 		case err == nil:
@@ -518,6 +554,10 @@ func sendRequestError(w http.ResponseWriter, err error) {
 			http.StatusServiceUnavailable,
 			"that desktop is still being created - try again in a few seconds",
 		)
+
+	case errors.Is(err, desktop.ErrGateNotTold):
+		jsonStatusError(w, http.StatusServiceUnavailable,
+			"the desktop's approval gate could not be told what was asked, so nothing was sent - try again in a moment")
 
 	case errors.Is(err, desktop.ErrNotFound):
 		jsonStatusError(

@@ -8,11 +8,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // A person's reply to a question or an approval reaches the worker's agent as a request like any other, and the agent
@@ -130,6 +132,7 @@ func SignGateSecrets(key, taskID, ts, nonce string, values []string) string {
 // is decided from that copy and never from a file the worker could write (docs/gate-boundary.md). text is the
 // request as the person sent it, or its withheld form for one marked secret (the gate then names no site for it).
 func (m *Manager) SendGateRequest(ctx context.Context, id, taskID, text string) error {
+	text = GateText(text)
 	return m.postToGate(ctx, id, "/request", func(key, ts, nonce string) map[string]any {
 		return map[string]any{"task_id": taskID, "ts": ts, "nonce": nonce, "text": text,
 			"sig": SignGateRequest(key, taskID, ts, nonce, text)}
@@ -139,17 +142,68 @@ func (m *Manager) SendGateRequest(ctx context.Context, id, taskID, text string) 
 // SendGateSecrets gives desktop id's approval gate the values the records withheld from a task's request or reply,
 // signed, so the gate's own wording of an approval question withholds them (C14).
 func (m *Manager) SendGateSecrets(ctx context.Context, id, taskID string, values []string) error {
-	if values == nil {
-		values = []string{}
+	clean := make([]string, len(values))
+	for i, v := range values {
+		clean[i] = GateText(v)
 	}
+	values = clean
 	return m.postToGate(ctx, id, "/secrets", func(key, ts, nonce string) map[string]any {
 		return map[string]any{"task_id": taskID, "ts": ts, "nonce": nonce, "secrets": values,
 			"sig": SignGateSecrets(key, taskID, ts, nonce, values)}
 	})
 }
 
+// ErrGateNotTold is a desktop's approval gate that could not be given what it must know before the agent has a
+// request (its copy, the withheld values): the request is then not sent at all.
+var ErrGateNotTold = errors.New("the approval gate could not be told what was asked")
+
+// GateText is s as it is signed and sent to a gate: each byte that is not valid UTF-8 replaced by U+FFFD, exactly as
+// encoding/json writes it into the body, so the gate's hash of the string it decodes is the hash that was signed
+// (review CP-A N6). The Python gate does nothing of its own: it hashes the string it received.
+func GateText(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			b.WriteRune(utf8.RuneError)
+		} else {
+			b.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	return b.String()
+}
+
+// HasGate reports whether desktop id runs an approval gate: its image has the gate's user. A desktop made before the
+// gate (its image has none) is told nothing and keeps today's behaviour. The answer is kept per container; one that
+// cannot be read is taken as gated (fail closed).
+func (m *Manager) HasGate(ctx context.Context, id string) bool {
+	if m.GateKey(id) == "" {
+		return false
+	}
+	inspect, err := m.client.ContainerInspect(ctx, "desktop_"+sanitizeName(id))
+	if err != nil {
+		return true
+	}
+	if v, ok := m.gated.Load(inspect.ID); ok {
+		return v.(bool)
+	}
+	passwd, err := m.copyOut(ctx, inspect.ID, "/etc/passwd", 1<<20)
+	if err != nil {
+		return true
+	}
+	has := tarHasUser(passwd, GateUser)
+	m.gated.Store(inspect.ID, has)
+	return has
+}
+
 // postToGate posts one signed body to desktop id's gate at path: body makes it from the key, the time and a fresh
-// one-use nonce. A desktop with no gate key (made before the gate) gets nothing, and the error says so.
+// one-use nonce. A stopped desktop is ErrNotRunning, and a paused one is woken, as SendRequest does; a gate that
+// does not answer is ErrGateNotTold and ErrAgentUnreachable (the caller may wait for a desktop just started), and
+// one that answers anything but 2xx is ErrGateNotTold.
 func (m *Manager) postToGate(ctx context.Context, id, path string, body func(key, ts, nonce string) map[string]any) error {
 	key := m.GateKey(id)
 	if key == "" {
@@ -160,6 +214,14 @@ func (m *Manager) postToGate(ctx context.Context, id, path string, body func(key
 	inspect, err := m.client.ContainerInspect(ctx, name)
 	if err != nil {
 		return fmt.Errorf("find desktop %s: %w", desktopID, ErrNotFound)
+	}
+	if inspect.State == nil || !inspect.State.Running {
+		return fmt.Errorf("desktop %s: %w", desktopID, ErrNotRunning)
+	}
+	if inspect.State.Paused {
+		if err := m.client.ContainerUnpause(ctx, name); err != nil {
+			return fmt.Errorf("auto-wake desktop %s: %w", desktopID, err)
+		}
 	}
 	host := name
 	if inspect.NetworkSettings != nil {
@@ -186,11 +248,11 @@ func (m *Manager) postToGate(ctx context.Context, id, path string, body func(key
 	}
 	resp, err := cli.Do(req)
 	if err != nil {
-		return fmt.Errorf("send %s to desktop %s's gate: %w", path, desktopID, err)
+		return fmt.Errorf("%w: %w: send %s to desktop %s's gate: %v", ErrGateNotTold, ErrAgentUnreachable, path, desktopID, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("desktop %s's gate returned HTTP %d for %s", desktopID, resp.StatusCode, path)
+		return fmt.Errorf("%w: desktop %s's gate returned HTTP %d for %s", ErrGateNotTold, desktopID, resp.StatusCode, path)
 	}
 	return nil
 }

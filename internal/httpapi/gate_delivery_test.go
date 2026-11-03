@@ -1,0 +1,176 @@
+package httpapi
+
+import (
+	"archive/tar"
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/client"
+
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+)
+
+// gateDesktop is a stand-in desktop "box": a Docker daemon that reports it in state (stopped, paused or running; a
+// start or unpause makes it running), whose image has the gate's user unless noGate, and one HTTP stub that serves
+// both its agent's :8081 and its gate's :8083, the gate answering gateStatus.
+type gateDesktop struct {
+	mu         sync.Mutex
+	state      string
+	noGate     bool
+	gateStatus int
+	log        []string // "start", "unpause", "gate /request", "gate /secrets", "agent"
+}
+
+func (g *gateDesktop) record(what string) {
+	g.mu.Lock()
+	g.log = append(g.log, what)
+	g.mu.Unlock()
+}
+
+func (g *gateDesktop) events() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.log...)
+}
+
+func newGateDesktop(t *testing.T, s *Server, state string) *gateDesktop {
+	t.Helper()
+	g := &gateDesktop{state: state, gateStatus: http.StatusNoContent}
+	stubSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if q := r.URL.RawQuery; strings.Contains(q, ":"+desktop.GatePort) {
+			path := q[strings.Index(q, ":"+desktop.GatePort)+len(":"+desktop.GatePort):]
+			g.record("gate " + path)
+			g.mu.Lock()
+			status := g.gateStatus
+			g.mu.Unlock()
+			w.WriteHeader(status)
+			return
+		}
+		var b map[string]any
+		_ = json.Unmarshal(raw, &b)
+		if _, ok := b["content"]; ok {
+			g.record("agent")
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(stubSrv.Close)
+	stub := strings.TrimPrefix(stubSrv.URL, "http://") + "/?"
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		switch {
+		case strings.HasSuffix(p, "/containers/json"):
+			_, _ = w.Write([]byte("[]"))
+		case strings.HasSuffix(p, "/containers/desktop_box/json"):
+			w.Header().Set("Content-Type", "application/json")
+			st := &container.State{Running: g.state != "stopped", Paused: g.state == "paused", Status: g.state,
+				StartedAt: "2026-11-04T10:00:00Z"}
+			_ = json.NewEncoder(w).Encode(container.InspectResponse{
+				ContainerJSONBase: &container.ContainerJSONBase{ID: "box", Name: "/desktop_box", State: st},
+				NetworkSettings:   &container.NetworkSettings{Networks: map[string]*network.EndpointSettings{desktop.NetworkName: {IPAddress: stub}}},
+			})
+		case strings.HasSuffix(p, "/start"):
+			g.log = append(g.log, "start")
+			g.state = "running"
+			w.WriteHeader(http.StatusNoContent)
+		case strings.HasSuffix(p, "/unpause"):
+			g.log = append(g.log, "unpause")
+			g.state = "running"
+			w.WriteHeader(http.StatusNoContent)
+		case strings.HasSuffix(p, "/archive") && r.URL.Query().Get("path") == "/etc/passwd":
+			users := "root:x:0:0::/root:/bin/bash\nheadless:x:1001:1001::/home/headless:/bin/bash\n"
+			if !g.noGate {
+				users += desktop.GateUser + ":x:999:999::/nonexistent:/usr/sbin/nologin\n"
+			}
+			var b bytes.Buffer
+			tw := tar.NewWriter(&b)
+			_ = tw.WriteHeader(&tar.Header{Name: "passwd", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(users))})
+			_, _ = tw.Write([]byte(users))
+			_ = tw.Close()
+			w.Header().Set("X-Docker-Container-Path-Stat", base64.StdEncoding.EncodeToString([]byte(`{"name":"passwd","size":1,"mode":420}`)))
+			w.Header().Set("Content-Type", "application/x-tar")
+			_, _ = w.Write(b.Bytes())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(daemon.Close)
+	cli, err := client.NewClientWithOpts(client.WithHTTPClient(daemon.Client()),
+		client.WithHost("tcp://"+strings.TrimPrefix(daemon.URL, "http://")), client.WithVersion("1.43"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Desktops = desktop.NewManager(cli)
+	s.Desktops.HostGUISecret = []byte("test secret")
+	return g
+}
+
+const gatedRequest = "sign in to records.example.test, password: Plum7Orbit"
+
+// A gate that cannot be told what was asked stops the request: nothing reaches the agent, and the send says so
+// (review CP-A-2 B1, P5).
+func TestAGateThatCannotBeToldStopsTheRequest(t *testing.T) {
+	s := chatServer(t)
+	g := newGateDesktop(t, s, "running")
+	g.gateStatus = http.StatusInternalServerError
+	rec := sendAs(t, s, url.Values{"id": {"box"}, "content": {gatedRequest}}, false, "")
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "approval gate") {
+		t.Fatalf("send: %d %s", rec.Code, rec.Body)
+	}
+	for _, e := range g.events() {
+		if e == "agent" {
+			t.Fatalf("the agent got the request though its gate was not told: %v", g.events())
+		}
+	}
+}
+
+// A stopped desktop is started first, and its gate is told after the start and before the agent; a paused one is
+// woken first.
+func TestTheGateIsToldAfterTheDesktopIsUp(t *testing.T) {
+	for _, state := range []string{"stopped", "paused", "running"} {
+		t.Run(state, func(t *testing.T) {
+			s := chatServer(t)
+			g := newGateDesktop(t, s, state)
+			if rec := sendAs(t, s, url.Values{"id": {"box"}, "content": {gatedRequest}}, false, ""); rec.Code != http.StatusOK {
+				t.Fatalf("send: %d %s", rec.Code, rec.Body)
+			}
+			got := strings.Join(g.events(), ",")
+			want := "gate /request,gate /secrets,agent"
+			switch state {
+			case "stopped":
+				want = "start," + want
+			case "paused":
+				want = "unpause," + want
+			}
+			if got != want {
+				t.Fatalf("events = %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+// A desktop made before the gate (its image has no gate user) gets its request as before, and no gate post.
+func TestADesktopWithNoGateGetsItsRequest(t *testing.T) {
+	s := chatServer(t)
+	g := newGateDesktop(t, s, "running")
+	g.noGate = true
+	g.gateStatus = http.StatusInternalServerError
+	if rec := sendAs(t, s, url.Values{"id": {"box"}, "content": {gatedRequest}}, false, ""); rec.Code != http.StatusOK {
+		t.Fatalf("send: %d %s", rec.Code, rec.Body)
+	}
+	if got := strings.Join(g.events(), ","); got != "agent" {
+		t.Fatalf("events = %s", got)
+	}
+}
