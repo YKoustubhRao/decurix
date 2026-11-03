@@ -728,6 +728,9 @@ def _prepare(run):
     """What must be settled before the first step: every value a run needs, and where the screen is."""
 
     skill = run["skill"]
+    # Which taught skill drives this task, for its outcome (R7, C5): not a one-off mimic of a recording, which is no
+    # taught skill.
+    task_context.set_skill("" if run.get("one_off") else skill.get("name") or "", skill.get("version", 1))
 
     missing = [p for p in _needed(run) if not run["values"].get(p["name"])]
 

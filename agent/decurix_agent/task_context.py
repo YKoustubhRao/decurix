@@ -330,6 +330,28 @@ def reply_judgement(task_id=None):
     return value if isinstance(value, str) and _JUDGEMENT_ID.match(value) else ""
 
 
+def set_skill(name, version, task_id=None):
+    """The taught skill driving the task (R7): its name and version, sent on the task's outcome (C5). "" clears it."""
+
+    task_id = task_id or current()
+    if not task_id:
+        return
+    try:
+        version = int(version or 0)
+    except (TypeError, ValueError):
+        version = 0
+    _keep_context(task_id, skill={"name": str(name), "version": version} if name else None)
+
+
+def skill(task_id=None):
+    """{"name", "version"} of the taught skill that drove the task, or None."""
+
+    found = _context(task_id or current()).get("skill") if (task_id or current()) else None
+    if isinstance(found, dict) and isinstance(found.get("name"), str) and found["name"]:
+        return {"name": found["name"], "version": int(found.get("version") or 0)}
+    return None
+
+
 def sent_date_order(task_id=None):
     """The date order the control plane sent for the task, or None."""
 

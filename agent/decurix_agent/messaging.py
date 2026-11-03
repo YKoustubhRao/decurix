@@ -187,6 +187,8 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
         verdict   - on a final or error: the structured verdict (decurix.verdict/v1,
                     verdict.py), beside `checked`, which always equals
                     verdict == "done" (C5)
+        skill     - on a final or error: {name, version} of the taught skill that
+                    drove the task, when one did (task_context.skill, R7)
 
     `content` is the whole formatted note, which the dashboard's Query rail
     still shows verbatim. `kind`/`reply` are what the chat renders: the
@@ -248,6 +250,9 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
         payload["checked"] = bool(checked)
         if verdict is not None:
             payload["verdict"] = verdict
+        ran = task_context.skill(task_id or task_context.current())
+        if ran:
+            payload["skill"] = ran
 
     if with_usage:
         payload.update(usage.snapshot())
