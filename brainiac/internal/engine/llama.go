@@ -42,9 +42,13 @@ type LlamaProc struct {
 	mu     sync.Mutex
 	cmd    *exec.Cmd
 	done   chan struct{}
-	client *backend.OpenAI
+	client *backend.OpenAI // set once the server answers its health check
 	open   []string
 	sock   string // the Unix socket's private directory, when one is used
+	// loading is closed when a start in progress ends; nil when none is.
+	// The lock is not held while a model loads (minutes on a CPU), so
+	// status and the other accessors never wait for it.
+	loading chan struct{}
 }
 
 var (
@@ -115,20 +119,61 @@ func (p *LlamaProc) args(host string, port int) []string {
 	return a
 }
 
-// Start runs the server and waits until it has loaded the model.
+// Start runs the server and waits until it has loaded the model. A second
+// caller during a load waits for that load instead of starting another.
 func (p *LlamaProc) Start(ctx context.Context) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	for p.loading != nil {
+		wait := p.loading
+		p.mu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		p.mu.Lock()
+	}
 	if p.running() {
+		p.mu.Unlock()
 		return nil
 	}
+	cmd, client, done, err := p.launchLocked()
+	if err != nil {
+		p.mu.Unlock()
+		return err
+	}
+	loading := make(chan struct{})
+	p.loading = loading
+	p.mu.Unlock()
+
+	err = p.waitHealthy(ctx, client, done)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch {
+	case p.cmd != cmd:
+		if err == nil {
+			err = errors.New("llama-server was stopped while it loaded")
+		}
+	case err != nil:
+		p.stopLocked()
+	default:
+		p.client = client
+	}
+	p.loading = nil
+	close(loading)
+	return err
+}
+
+// launchLocked starts the server process; p.mu is held.
+func (p *LlamaProc) launchLocked() (*exec.Cmd, *backend.OpenAI, chan struct{}, error) {
 	if p.TemplateSHA != "" {
 		got, err := gguf.FileSHA(p.Model)
 		if err != nil {
-			return fmt.Errorf("llama-server: %w", err)
+			return nil, nil, nil, fmt.Errorf("llama-server: %w", err)
 		}
 		if got != p.TemplateSHA {
-			return fmt.Errorf("llama-server: %s no longer carries the chat template it was installed with; not serving it. "+
+			return nil, nil, nil, fmt.Errorf("llama-server: %s no longer carries the chat template it was installed with; not serving it. "+
 				"After `brainiac update approve-template`, `brainiac pull --latest` installs it again", filepath.Base(p.Model))
 		}
 	}
@@ -154,7 +199,7 @@ func (p *LlamaProc) Start(ctx context.Context) error {
 		if logf != nil {
 			logf.Close()
 		}
-		return fmt.Errorf("llama-server: %w", err)
+		return nil, nil, nil, fmt.Errorf("llama-server: %w", err)
 	}
 	cmd, client := l.cmd, l.client
 	p.open = l.open
@@ -169,29 +214,30 @@ func (p *LlamaProc) Start(ctx context.Context) error {
 		}
 		close(done)
 	}()
-	p.cmd, p.done, p.client = cmd, done, client
+	p.cmd, p.done, p.client = cmd, done, nil
+	return cmd, client, done, nil
+}
 
-	// Loading reads the whole file; on a slow disk under memory pressure that
-	// is minutes, so the wait is long, but a crash is noticed at once.
+// waitHealthy waits, without the lock, until the server answers. Loading
+// reads the whole file; on a slow disk under memory pressure that is
+// minutes, so the wait is long, but a crash is noticed at once.
+func (p *LlamaProc) waitHealthy(ctx context.Context, client *backend.OpenAI, done chan struct{}) error {
 	deadline := time.Now().Add(15 * time.Minute)
 	for {
 		select {
 		case <-done:
-			p.cmd, p.client = nil, nil
 			return fmt.Errorf("llama-server exited while loading %s: %s", filepath.Base(p.Model), tailOf(p.LogPath))
 		case <-ctx.Done():
-			p.stopLocked()
 			return ctx.Err()
 		case <-time.After(500 * time.Millisecond):
 		}
 		hctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		ok := p.client.Healthy(hctx)
+		ok := client.Healthy(hctx)
 		cancel()
 		if ok {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			p.stopLocked()
 			return errors.New("llama-server did not finish loading in 15 minutes")
 		}
 	}

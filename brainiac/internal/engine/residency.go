@@ -66,7 +66,15 @@ func NewResidency(budgets map[string]float64, live func(ctx context.Context, poo
 // Acquire makes u resident and holds it until release is called. loadMs is
 // the time spent loading (0 when it was already in memory).
 func (r *Residency) Acquire(ctx context.Context, u loadable) (release func(), loadMs int64, err error) {
+	// A model already in memory needs no load lock: it never waits behind
+	// another model's load in the same pool.
 	r.mu.Lock()
+	if e, ok := r.loaded[u.key()]; ok && e.u.alive() {
+		e.refs++
+		e.lastUsed = time.Now()
+		r.mu.Unlock()
+		return r.releaser(u.key(), e), 0, nil
+	}
 	lm := r.loadMu[u.pool()]
 	if lm == nil {
 		lm = &sync.Mutex{}

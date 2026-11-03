@@ -22,7 +22,8 @@ import (
 // llama-server's flags, it serves /health and a chat answer. What it does is
 // read from the -m file, so a test needs no real model: "die-after-health"
 // exits once its first health check is answered (an OOM kill after loading),
-// the first time it runs beside a given counter file.
+// the first time it runs beside a given counter file; "load-until-ready"
+// loads until a file named <model>.ready appears.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && (os.Args[1] == "--help" || os.Args[1] == "-m") {
 		fakeLlama(os.Args[1:])
@@ -61,7 +62,12 @@ func fakeLlama(args []string) {
 		os.Exit(3)
 	}
 	mux := http.NewServeMux()
+	slow := strings.TrimSpace(string(spec)) == "load-until-ready"
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := os.Stat(model + ".ready"); slow && err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable) // still loading
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		if die {
 			w.(http.Flusher).Flush()
@@ -175,5 +181,60 @@ func TestOnlyAnOrphanedServerIsSwept(t *testing.T) {
 	args := []string{"/store/bin/llama-server", "-m", "m.gguf", "--host", "/tmp/brainiac-llama-123/s.sock"}
 	if !orphanServer(args, "systemd") || orphanServer(args, "brainiac") || orphanServer([]string{"llama-server", "--host", "127.0.0.1"}, "systemd") {
 		t.Fatal("orphanServer")
+	}
+}
+
+// While a model loads (minutes on a CPU), status and a model already in
+// memory in the same pool do not wait for it.
+func TestALoadBlocksNeitherStatusNorALoadedModel(t *testing.T) {
+	e, u := llamaEngine(t, "load-until-ready")
+	other := &fakeUnit{name: "other", gb: 0.1}
+	relOther, _, err := e.res.Acquire(context.Background(), other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relOther()
+	loaded := make(chan error, 1)
+	go func() {
+		rel, _, err := e.res.Acquire(context.Background(), u)
+		if err == nil {
+			rel()
+		}
+		loaded <- err
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for !u.llama.Running() {
+		if time.Now().After(deadline) {
+			t.Fatal("the fake server never started")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	quick := func(name string, f func()) {
+		done := make(chan struct{})
+		go func() { f(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s waited for the load", name)
+		}
+	}
+	quick("status", func() { e.Status() })
+	quick("a loaded model", func() {
+		rel, _, err := e.res.Acquire(context.Background(), other)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		rel()
+	})
+	if u.llama.Client() != nil {
+		t.Fatal("a loading server handed out its client")
+	}
+	os.WriteFile(u.llama.Model+".ready", nil, 0o600)
+	if err := <-loaded; err != nil {
+		t.Fatal(err)
+	}
+	if u.llama.Client() == nil {
+		t.Fatal("the loaded server has no client")
 	}
 }
