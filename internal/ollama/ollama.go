@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	containerName  = "decurix-ollama"
+	containerName = "decurix-ollama"
 	// containerImage is pinned to the release the Windows app installs natively (desktop/electron/wsl/
 	// native-ollama.ps1), so every setup runs one reviewed Ollama, not whatever :latest is on the day (C-29). Its
 	// digest is the owner's to add once pulled: `docker image inspect --format '{{index .RepoDigests 0}}'`.
@@ -48,14 +48,12 @@ const (
 	// requires) to an ambiguous "delete the project", where llama3.2
 	// hallucinated a destructive `rm -rf` on a guessed path instead.
 	//
-	// Temporarily devstral-small-2:24b instead, for every harness, while the
-	// browser-agent extension integration (agent/BROWSER_INTEGRATION.md) is
-	// being worked on - it's the one model already verified end to end
-	// against that pipeline, and every desktop should reason with the same
-	// model the extension itself is grounded on rather than mixing two.
-	// Heavier than the 3B default (needs a GPU that can hold ~15GB), so this
-	// is deliberately a stopgap, not a final choice - qwen2.5-coder:3b's own
-	// case above still holds for a CPU-only or memory-constrained host.
+	// It is devstral-small-2:24b today, for every harness. That was chosen
+	// for the browser-agent extension, which has since been removed; nothing
+	// in the code needs this model now, and whether to go back to the 3B
+	// default is the owner's call (docs/follow-ups.md). It is heavier than
+	// the 3B (it needs a GPU that can hold ~15GB); qwen2.5-coder:3b's case
+	// above still holds for a CPU-only or memory-constrained host.
 	Model = "devstral-small-2:24b"
 
 	// EmbedModel is the embedding model the thebot harness needs, and it

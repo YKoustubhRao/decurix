@@ -94,11 +94,10 @@ func (m *Manager) execTarOut(ctx context.Context, id, from string, limit int64) 
 	}
 	defer attach.Close()
 	out := &cappedBuffer{limit: limit}
-	if _, err = stdcopy.StdCopy(out, io.Discard, attach.Reader); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, errCapped) {
-		return nil, err
-	}
-	if out.over {
+	if _, err = stdcopy.StdCopy(out, io.Discard, attach.Reader); errors.Is(err, errCapped) {
 		return nil, fmt.Errorf("the container's files exceed the copy limit")
+	} else if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
 	}
 	state, err := m.client.ContainerExecInspect(ctx, exec.ID)
 	if err != nil {
@@ -119,16 +118,14 @@ func (m *Manager) execTarOut(ctx context.Context, id, from string, limit int64) 
 // errCapped stops a copy that passed its limit.
 var errCapped = errors.New("copy limit reached")
 
-// cappedBuffer keeps at most limit bytes and notes when more arrived.
+// cappedBuffer keeps at most limit bytes, and stops the copy with errCapped when more arrive.
 type cappedBuffer struct {
 	bytes.Buffer
 	limit int64
-	over  bool
 }
 
 func (b *cappedBuffer) Write(p []byte) (int, error) {
 	if int64(b.Len()+len(p)) > b.limit {
-		b.over = true
 		return 0, errCapped
 	}
 	return b.Buffer.Write(p)

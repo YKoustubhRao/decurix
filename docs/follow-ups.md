@@ -57,13 +57,11 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 - **B-37:** cron is UTC only. A per-schedule zone needs a Migrate step and UI.
 - **B-29:** a restart loop for the Windows tunnel (`Lan-Tunnel.ps1`); the tunnel is opt-in now.
 - **B-10:** the native-Ollama admin API is reachable from desktops; an allowlist proxy for desktops is not built.
-- **W-19:** the website says "it never asks the same thing twice", and its app replica shows an Approve button on the rail that the real rail does not have. Fix the website copy.
 - **W-20 rest:** in-flight guards for `loadNotes`/`pollResourceAlerts`, `/api/desktops/memory` unbounded, the `rfb.js` hash.
 - **RW1-G-04 rest:** starting an existing desktop does not wait for a tools refresh in progress.
-- **Instance tag (b):** the dead "exceed the copy limit" branch (`internal/desktop/exectar.go`).
 - **Orphan home volume:** after a Delete whose volume removal failed, a new desktop of that name is refused with "delete that volume", and no UI does that.
 - **RW1-D-01:** a container the daemon made while `ContainerCreate` returned an error is leaked until a later Delete of that name; at most a log line.
-- **`internal/ollama/ollama.go`:** the default model (`devstral-small-2:24b`) and its comment about the deleted browser-agent work. Owner's call: restore the 3B default the comment defends, or rewrite the comment.
+- **`internal/ollama/ollama.go`:** the default model is still `devstral-small-2:24b` (its comment is corrected). Owner's call: keep it or restore the 3B default.
 - **Mail jobs:** the page may hide "Run again" on a skipped or failed job with no request (the server already answers 409).
 - **No-echo walker limits** (RW1-G-06 is done): an error variable not named like one, or a helper that returns the text, still gets past it.
 - **Two control planes on one data folder** are unsupported; after a crash, two starting at once could each remove the other's fresh `instance-id`.
@@ -93,7 +91,6 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 ### TheBot (W3)
 
 - **O-1.a** (above).
-- **Soul's browser skill:** `internal/skills/browser.go` and `THEBOT_BROWSER_EXTENSION` remain after `agent/browser-agent` was deleted; it is off by default and has nothing to talk to. Delete it and its flag.
 - **N-W3-3:** `asksAppNamesRe` suppresses a HELP to the person once, by words. It fails toward a delay, never a false success; move it into T-20's gate table as a fact.
 - **T-19:** a recall score floor needs nomic's query/document prefixes (re-embedding the stores) or a judge.
 - **T-27:** the embedded UI is the owner's decision.
