@@ -86,6 +86,9 @@ type Call struct {
 	Usage      llm.Usage
 	At         time.Time // when the call was sent; zero is "now, minus Latency"
 	Problems   []string
+	// Secrets are values to withhold wherever they appear, beyond what withhold.Text finds: what the person marked
+	// secret on this desktop (SecretSet). They are never stored.
+	Secrets []string
 }
 
 // Recorder stores calls. Record never fails the call it records: problems are logged and counted inside it.

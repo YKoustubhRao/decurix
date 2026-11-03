@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"github.com/YKoustubhRao/decurix/internal/concierge"
 	"github.com/YKoustubhRao/decurix/internal/llm"
+	"github.com/YKoustubhRao/decurix/internal/llmrec"
 	"github.com/YKoustubhRao/decurix/internal/outbox"
 	"io"
 	"net/http"
@@ -121,6 +122,12 @@ type Server struct {
 	// with one saved in the database.
 	// NewServer reads it from the environment; unconfigured, its routes say so.
 	LLM *llm.Hub
+	// LLMRec records every hosted call the proxy forwards (plan R2: purpose, task, turn, deployment, usage, the
+	// withheld messages as blobs). Assigned by cmd/decurix/main.go; nil records nothing.
+	LLMRec *llmrec.Store
+	// secretsSeen is, per desktop and in memory only, what a person marked secret: the recorder withholds it from
+	// every call of that desktop afterwards (never persisted).
+	secretsSeen llmrec.SecretSet
 	// Outbox holds the emails agents drafted for a person to send
 	// (internal/outbox). Assigned by cmd/decurix/main.go; nil turns it off.
 	Outbox *outbox.Store
@@ -456,6 +463,10 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/llm/settings", s.humansOnly(s.llmSettingsHandler))
 	mux.HandleFunc("/api/llm/settings/forget", s.humansOnly(s.llmForgetHandler))
 	mux.HandleFunc("/api/llm/", s.llmProxyHandler)
+	// What the proxy recorded of those calls: a person's to read, at this machine (llmrec_routes.go).
+	mux.HandleFunc("/api/llm/calls", s.humansOnly(s.llmCallsHandler))
+	mux.HandleFunc("/api/llm/calls/stats", s.humansOnly(s.llmCallStatsHandler))
+	mux.HandleFunc("/api/llm/blobs/", s.humansOnly(s.llmBlobHandler))
 	// Where something is on a screenshot, for a desktop's `gui` (grounder.go).
 	mux.HandleFunc("/api/grounder", s.grounderStatusHandler)
 	mux.HandleFunc("/api/grounder/locate", s.grounderLocateHandler)

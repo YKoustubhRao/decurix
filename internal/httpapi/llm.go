@@ -10,6 +10,7 @@ import (
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/llm"
+	"github.com/YKoustubhRao/decurix/internal/llmrec"
 )
 
 // llmStatusHandler says which hosted models are set up, and with which model
@@ -169,7 +170,31 @@ func (s *Server) llmChat(w http.ResponseWriter, r *http.Request, provider string
 		}
 	}
 
-	status, answer, retry, err := s.LLM.Chat(r.Context(), provider, body)
+	tags := callTags(r)
+
+	started := time.Now()
+	res, err := s.LLM.ChatResult(r.Context(), provider, body)
+	latency := time.Since(started)
+	status, answer, retry := res.Status, res.Body, res.Retry
+	usage := llm.ParseUsage(answer)
+
+	// Every call is recorded, answered or not: synchronously (so a run's record is whole when its outcome lands) but
+	// never failing the call (llmrec.Store.Record logs and counts its own failures).
+	if s.LLMRec != nil {
+		call := llmrec.Call{Provider: provider, Deployment: res.Deployment, Desktop: worker, Task: tags.task,
+			Turn: tags.turn, Purpose: tags.purpose, Caller: tags.caller, Request: body, Response: answer,
+			Status: status, Latency: latency, Usage: usage, At: started, Problems: tags.problems}
+		if fromDesktop {
+			call.Secrets = s.secretsSeen.For(worker)
+		} else {
+			call.Desktop = ""
+		}
+		if err != nil {
+			call.Status = recordedStatus(err)
+		}
+		s.LLMRec.Record(r.Context(), call)
+	}
+
 	if err != nil {
 		if errors.Is(err, llm.ErrNotConfigured) {
 			http.Error(w, "this hosted model is not set up", http.StatusServiceUnavailable)
@@ -182,7 +207,7 @@ func (s *Server) llmChat(w http.ResponseWriter, r *http.Request, provider string
 	}
 
 	if fromDesktop {
-		if err := s.LLM.Meter(worker, time.Now(), llm.ParseUsage(answer)); err != nil {
+		if err := s.LLM.Meter(worker, time.Now(), usage); err != nil {
 			log.Printf("llm %s: %v", provider, err)
 		}
 	}
@@ -197,6 +222,28 @@ func (s *Server) llmChat(w http.ResponseWriter, r *http.Request, provider string
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(answer)
+}
+
+// recordedStatus is the status a call the proxy answered with an error of its own is recorded under: what the desktop
+// was told (503 not set up, 502 not reached).
+func recordedStatus(err error) int {
+	if errors.Is(err, llm.ErrNotConfigured) {
+		return http.StatusServiceUnavailable
+	}
+	return http.StatusBadGateway
+}
+
+// proxyTags are the tags a caller sent with a model call (C1), as stored, and what was wrong with them.
+type proxyTags struct {
+	purpose, task, turn, caller string
+	problems                    []string
+}
+
+// callTags reads a call's tag headers. The desktop is never one of them: it is the connection's (requestDesktop).
+func callTags(r *http.Request) proxyTags {
+	h := func(name string) string { return strings.TrimSpace(r.Header.Get(name)) }
+	return proxyTags{purpose: h(llmrec.HeaderPurpose), task: h(llmrec.HeaderTask), turn: h(llmrec.HeaderTurn),
+		caller: h(llmrec.HeaderCaller)}
 }
 
 // errBrain is a create request's harness or brain refused, in words for the

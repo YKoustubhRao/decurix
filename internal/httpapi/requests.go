@@ -12,6 +12,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/ollama"
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"github.com/YKoustubhRao/decurix/internal/webui"
+	"github.com/YKoustubhRao/decurix/internal/withhold"
 )
 
 // maxRequestBytes is the longest request a human can send a desktop.
@@ -222,6 +223,12 @@ func (s *Server) submitStored(ctx context.Context, desktopID, content string) (t
 		s.signReplyToGate(ctx, id, route.TaskID, content, asked, kind, request)
 	}
 
+	// A secret is known to the call recorder before the desktop has it, so no model call it makes with it is
+	// recorded as typed: a message the person marked secret, or the answer to a question asked for one.
+	if sent, _ := ctx.Value(sentSecretKey{}).(bool); sent || route.Kind == tasks.RouteReply && s.Tasks.AskedSecret(route.InterventionID) {
+		s.secretsSeen.RememberMarked(id, content)
+	}
+
 	// Delivered and recorded under the desktop's lifecycle lock: the idle sweep re-checks Busy under the same lock, so
 	// it cannot pause or stop a desktop between the delivery and the record that makes it busy, and a stop or delete
 	// waits for the record (B-23).
@@ -371,6 +378,11 @@ func (s *Server) recordDelivered(ctx context.Context, desktopID, content string,
 		log.Printf("sendRequest: %v", err)
 	} else {
 		route = committed
+	}
+	// The records kept it withheld whole (a reply to a secret question that opened after Plan picked the route):
+	// the call recorder withholds it too.
+	if stored == withhold.Secret && content != withhold.Secret {
+		s.secretsSeen.RememberMarked(desktop.SanitizeID(desktopID), content)
 	}
 
 	s.Chat.AppendUserRequest(desktopID, route.TaskID, stored)
