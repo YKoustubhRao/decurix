@@ -63,9 +63,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      # The browser extension's own logic, run outside a browser (no browser is launched). The extension is being
-      # removed (agent/browser-agent, dead code); the step runs while its test is still in the tree.
-      - run: if [ -f agent/tests/browser_extension.test.js ]; then node --test agent/tests/browser_extension.test.js; fi
       # The dashboard pages' own scripts: they parse, and the shared chrome polls only while a page is seen.
       - run: node --test web/templates.test.js
       # The Electron shell's main-process logic (no window is opened).

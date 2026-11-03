@@ -193,9 +193,7 @@ func TestEveryAgentFileIsEmbedded(t *testing.T) {
 
 		if d.IsDir() {
 			// TheBot is embedded as an archive; caches and dot folders are not sources.
-			// agent/browser-agent is no image's any more (2026-11-03) and is being deleted; until it is, agent/*-*
-			// still carries its other files, but nothing needs its _ names.
-			if rel == decurix.TheBotDir || rel == "agent/browser-agent" || name == "__pycache__" ||
+			if rel == decurix.TheBotDir || name == "__pycache__" ||
 				strings.HasPrefix(name, ".") || name == "node_modules" {
 				return filepath.SkipDir
 			}

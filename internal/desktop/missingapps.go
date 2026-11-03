@@ -218,6 +218,17 @@ func (m *Manager) copyMissingFile(ctx context.Context, containerID string, apps 
 	return m.client.CopyToContainer(ctx, containerID, "/home/headless", bytes.NewReader(data), container.CopyToContainerOptions{})
 }
 
+// missingAppsOf reads back desktop id's MissingAppsFile as the worker, through the home copy layer (homefs.go): the
+// file is in a folder the worker writes, so a root-side read could be pointed elsewhere by what the worker put there
+// (REVIEW-FINAL). A stopped desktop is read through the locked-down helper, like any other home read.
+func (m *Manager) missingAppsOf(ctx context.Context, id string) ([]MissingApp, error) {
+	data, err := m.readHomeBytes(ctx, id, homeDir+"/"+MissingAppsFile, 2<<20)
+	if err != nil {
+		return nil, err
+	}
+	return readMissingTar(bytes.NewReader(data))
+}
+
 // RestoreMissingApps reads back, from every desktop, the requested apps it does not have - what a control-plane
 // restart would otherwise forget - and resumes the retry of the ones still pending. Run it once, in the background,
 // at start.
@@ -228,13 +239,7 @@ func (m *Manager) RestoreMissingApps(ctx context.Context) {
 		return
 	}
 	for _, d := range desktops {
-		// Root-side read of a direct child of /home/headless: see copyMissingFile.
-		rc, _, err := m.client.CopyFromContainer(ctx, "desktop_"+d.ID, "/home/headless/"+MissingAppsFile)
-		if err != nil {
-			continue
-		}
-		apps, err := readMissingTar(rc)
-		rc.Close()
+		apps, err := m.missingAppsOf(ctx, d.ID)
 		if err != nil || len(apps) == 0 {
 			continue
 		}

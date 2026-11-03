@@ -202,7 +202,6 @@
             {{if eq .Kind "query"}}<span class="req-kind req-kind--wait">Needs your answer</span><span class="sep"></span>
             {{else if eq .Kind "approval"}}<span class="req-kind req-kind--wait">Needs approval</span><span class="sep"></span>
             {{else if eq .Kind "error"}}<span class="req-kind req-kind--error">Failed</span><span class="sep"></span>
-            {{else if eq .Kind "done"}}<span class="req-kind">Done</span><span class="sep"></span>
             {{end}}
             <time data-created="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{.CreatedAt.Format "02 Jan, 15:04"}}</time>
           </div>

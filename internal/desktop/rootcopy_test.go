@@ -17,7 +17,6 @@ import (
 // through homefs.go, as the worker (B-01).
 var rootSideCopies = []string{
 	"claudelogin.go:readFileFromContainer", // the login container's fixed credentials path
-	"missingapps.go:RestoreMissingApps",    // a direct child of the home
 	"missingapps.go:copyMissingFile",       // a direct child of the home
 	"practice.go:CreatePractice",           // a practice desktop that has never started
 	"practice.go:appendBrowserFlags",       // /opt, before the practice desktop starts
@@ -74,5 +73,14 @@ func TestRootSideCopiesStayWhereTheyAreAllowed(t *testing.T) {
 	}
 	if len(found) == 0 {
 		t.Fatal("found no copy calls at all: the walk is broken")
+	}
+	seen := map[string]bool{}
+	for _, f := range found {
+		seen[f] = true
+	}
+	for _, a := range rootSideCopies {
+		if !seen[a] {
+			t.Errorf("%s no longer copies as root: take it off rootSideCopies, so it cannot come back unnoticed", a)
+		}
 	}
 }
