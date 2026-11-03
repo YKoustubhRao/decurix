@@ -239,7 +239,12 @@ def not_found_undone(undone):
 
 
 # A sum written out in a report: "450.00 + 90.00 + 102.60 = 642.60", "$1,200 - 150 = $1,050", "3 x 25.00 = 75.00".
-_AMOUNT = r"(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d+(?:\.\d+)?"
+# Indian digit grouping (1,00,000; 12,34,567) and the rupee sign are notation, read the same as any other: found
+# (review 2026-11-03) "1,00,000 + 50,000 = 1,60,000" and "₹1,200 + ₹300 = ₹1,600" were never decided.
+_CURRENCY = r"(?:[$€£¥₹]|USD|EUR|GBP|INR|Rs\.?)"
+_INDIAN_GROUPED = r"\d{1,2}(?:,\d{2})+,\d{3}"
+_AMOUNT = (rf"{_CURRENCY}?\s?-?(?:{_INDIAN_GROUPED}|\d{{1,3}}(?:,\d{{3}})+)(?:\.\d+)?"
+           rf"|{_CURRENCY}?\s?-?\d+(?:\.\d+)?")
 # An operator stands on the same line as its terms: a dash that opens the next line is a bullet, not a minus. Found
 # live (2026-10-27): "... 56,994.00\n- 1191 = 55,802.60" (a list of vouchers and their totals) was read as
 # 56,994.00 - 1191 = 55,802.60, "a sum you wrote is wrong", and the worker undid right work.
@@ -355,14 +360,35 @@ def false_sums(text):
         # Rounded to the result's own precision is right: 33.333 + 33.333 = 66.67.
         shown = len(stated.split(".")[1]) if "." in stated else 0
         if abs(total - want) > Decimal(1).scaleb(-shown) / 2 + Decimal("0.0001"):
-            out.append(f"{m.group(0).strip()} is wrong: it comes to {total:,.{places}f}")
+            out.append(f"{m.group(0).strip()} is wrong: it comes to {_written_like(total, places, m.group(0))}")
     return out
+
+
+def _written_like(total, places, text):
+    """The total in the notation the sum itself used: Indian grouping when the text groups that way."""
+
+    western = f"{total:,.{places}f}"
+    if not re.search(_INDIAN_GROUPED, text):
+        return western
+    sign, rest = ("-", western[1:]) if western.startswith("-") else ("", western)
+    whole, _, frac = rest.partition(".")
+    digits = whole.replace(",", "")
+    head, tail = digits[:-3], digits[-3:]
+    groups = []
+    while len(head) > 2:
+        groups.insert(0, head[-2:])
+        head = head[:-2]
+    if head:
+        groups.insert(0, head)
+    return sign + ",".join(groups + [tail]) + ("." + frac if frac else "")
 
 
 # A number as a program prints it, never as a person writes one: float noise (1672.7400000000002, 0.30000000000000004,
 # 2.9999999999999996) and scientific notation (3E+1, 1.5e-05).
 _FLOAT_NOISE = re.compile(r"(?<![\w.])-?\d+\.\d*(?:0{6,}|9{6,})\d{1,3}(?![\w.])")
-_SCIENTIFIC = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?[eE][+-]?\d{1,3}(?![\w.])")
+# Only with its sign (3E+1, 1.5e-05), as a program prints it: a bare "3E2" or "12E5" is as often an address or a part
+# number ("Flat 3E2"), and this check blocks (review 2026-11-03, E-25).
+_SCIENTIFIC = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?[eE][+-]\d{1,3}(?![\w.])")
 
 
 def program_numbers(text):
