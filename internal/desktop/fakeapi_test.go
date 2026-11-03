@@ -124,3 +124,9 @@ func (f *fakeAPI) CopyToContainer(_ context.Context, name, path string, content 
 	}
 	return nil
 }
+
+// ContainerList lists nothing: no fake desktop has home-copy helpers or other containers to list.
+func (f *fakeAPI) ContainerList(_ context.Context, o container.ListOptions) ([]container.Summary, error) {
+	f.record("list")
+	return nil, nil
+}

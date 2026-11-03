@@ -996,6 +996,9 @@ func (m *Manager) Unpause(
 	defer m.invalidateList()
 
 	name := "desktop_" + sanitizeName(id)
+	if inspect, err := m.client.ContainerInspect(ctx, name); err == nil {
+		homeCopyPauses.settled(inspect.ID) // a person resumed it: a copy does not pause it again
+	}
 	return notFound(id, m.client.ContainerUnpause(ctx, name))
 }
 
@@ -1155,6 +1158,9 @@ func (m *Manager) Delete(
 	delete(m.resourceOverrides, inspect.ID)
 	delete(m.lastCPU, sanitizedID)
 	m.resourceMu.Unlock()
+
+	// A home-copy helper still holding the home volume would keep it from being removed.
+	m.removeHomeHelpersOf(ctx, name)
 
 	// Delete persistent storage too.
 	if cacheName != "" {

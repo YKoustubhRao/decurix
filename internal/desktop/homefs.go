@@ -114,19 +114,29 @@ func (m *Manager) homeAccessOf(ctx context.Context, name, id string) (string, fu
 		return "", nil, fmt.Errorf("inspect %s: %w", name, err)
 	}
 	state := inspect.State
+	repause := func() {
+		if !homeCopyPauses.end(inspect.ID) {
+			return
+		}
+		pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if err := m.client.ContainerPause(pctx, inspect.ID); err != nil {
+			log.Printf("desktop: pausing %s again after a copy: %v", name, err)
+		}
+	}
 	switch {
 	case state != nil && state.Running && state.Paused:
 		if err := m.client.ContainerUnpause(ctx, inspect.ID); err != nil {
 			return "", nil, fmt.Errorf("resume %s for a copy: %w", name, err)
 		}
-		return inspect.ID, func() {
-			pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-			defer cancel()
-			if err := m.client.ContainerPause(pctx, inspect.ID); err != nil {
-				log.Printf("desktop: pausing %s again after a copy: %v", name, err)
-			}
-		}, nil
+		homeCopyPauses.begin(inspect.ID, true)
+		return inspect.ID, repause, nil
 	case state != nil && state.Running:
+		// Running because another copy resumed it: this copy counts too, so the first to finish does not pause the
+		// desktop under the second (RW1-C-04).
+		if homeCopyPauses.joining(inspect.ID) {
+			return inspect.ID, repause, nil
+		}
 		return inspect.ID, func() {}, nil
 	}
 	return m.homeHelper(ctx, name, inspect)
@@ -178,7 +188,8 @@ func homeHelperConfigs(image, volume, desktopContainer string) (*container.Confi
 		Entrypoint: []string{"/usr/bin/env", "-i", "/bin/sleep", "3600"},
 		Cmd:        []string{},
 		WorkingDir: "/",
-		Labels:     map[string]string{homeHelperLabel: desktopContainer},
+		// Found and removed by its desktop's delete and by this instance's start-up sweep (RW1-C-05).
+		Labels: map[string]string{homeHelperLabel: desktopContainer, homeHelperInstanceLabel: hopInstance(), "decurix": "true"},
 	}
 	host := &container.HostConfig{
 		NetworkMode:    "none",

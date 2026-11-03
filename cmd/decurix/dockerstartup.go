@@ -24,6 +24,8 @@ func dockerStartup(ctx context.Context, desktops *desktop.Manager, server *httpa
 	// Host hops (privileged containers that run something on the host) left by an earlier run go first: their owner is
 	// gone, and the Windows helper a hop runs keeps its app and its memory for as long as the hop lives.
 	desktop.SweepHopsAtStart()
+	// Home-copy helpers this instance left mid-copy hold a desktop's home volume (RW1-C-05).
+	desktops.SweepHomeHelpers(ctx)
 	// And the host-app helpers (with the apps they started) that this instance's earlier run left: a Windows program
 	// started through WSL outlives the hop that started it. Only helpers carrying this instance's tag (W-04).
 	server.SweepHostHelpersAtStart()
