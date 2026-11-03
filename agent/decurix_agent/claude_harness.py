@@ -10,7 +10,7 @@ from decurix_agent.computer import approval
 from decurix_agent.logging_utils import log, log_banner
 from decurix_agent.identity import get_identity_context
 from decurix_agent.memory_context import get_memory_context
-from decurix_agent.messaging import ask_for_query, write_final_reply
+from decurix_agent.messaging import ask_for_query, withheld, write_final_reply
 
 
 # ============================================================
@@ -482,7 +482,7 @@ def _handle_result(result):
 def perform_task(task, task_file):
     state.begin(task, task_file)
 
-    log_banner("STARTING TASK (Claude Code harness)", task)
+    log_banner("STARTING TASK (Claude Code harness)", withheld(task))
 
     result, error = _run_claude(task)
 
@@ -508,7 +508,7 @@ def continue_after_query(query_response):
 
     state.waiting_for_query = False
 
-    log_banner("RECEIVED HUMAN REPLY TO QUERY (Claude Code harness)", query_response)
+    log_banner("RECEIVED HUMAN REPLY TO QUERY (Claude Code harness)", withheld(query_response))
 
     result, error = _run_claude(
         query_response,

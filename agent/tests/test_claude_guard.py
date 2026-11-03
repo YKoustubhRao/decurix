@@ -70,6 +70,24 @@ class TheHarnessRunsBehindIt(unittest.TestCase):
         self.assertIn("Bash(xdotool:*)", cmd[cmd.index("--disallowedTools") + 1])
 
 
+class TheLogHoldsNoSecret(unittest.TestCase):
+    """Review 2026-11-03 (round 2): the Claude harness's banners printed the raw task and the person's reply."""
+
+    def test_the_task_and_the_reply_are_withheld_in_the_banners(self):
+        banners = []
+        with mock.patch.object(claude_harness, "log_banner", lambda title, text: banners.append(text)), \
+                mock.patch.object(claude_harness, "withheld", lambda text: str(text).replace("Quill#4471", "[withheld]")), \
+                mock.patch.object(claude_harness, "_run_claude", lambda *a, **k: (None, "not here")), \
+                mock.patch.object(claude_harness, "write_final_reply", lambda *a, **k: None), \
+                mock.patch.object(claude_harness, "ask_for_query", lambda *a, **k: None), \
+                mock.patch.object(claude_harness.state, "begin", lambda *a, **k: None), \
+                mock.patch.object(claude_harness.state, "current_task", "a task"):
+            claude_harness.perform_task("log in with password Quill#4471", None)
+            claude_harness.continue_after_query("the code is Quill#4471")
+        self.assertEqual(len(banners), 2)
+        self.assertFalse(any("Quill#4471" in b for b in banners), banners)
+
+
 def computer(name, **given):
     return {"tool_name": "mcp__computer__" + name, "tool_input": given}
 
