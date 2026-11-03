@@ -710,8 +710,12 @@ def _scrub(value, depth):
     if isinstance(value, str):
         return _scrub_text(value)
     if isinstance(value, dict):
-        out = {key: _scrub(item, depth + 1) for key, item in value.items()}
-        if _element_shaped(value):
+        element = _element_shaped(value)
+        # An element's backend handle is never stored: it is what the screen layer acts through, and it holds the raw
+        # value of a secret field (core keeps it there to type with). Review 2026-11-03 (round 2): scrub blanked
+        # `value` but kept `handle.value`.
+        out = {key: _scrub(item, depth + 1) for key, item in value.items() if not (element and key == "handle")}
+        if element:
             reason = secret_field(value)
             if reason:
                 if out.get("value"):

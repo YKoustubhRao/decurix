@@ -1019,7 +1019,8 @@ def _distil(book):
     messages = [
         {"role": "system", "content": DISTIL_SYSTEM},
         {"role": "user", "content": f"The request:\n{book['request']}\n\nThe commands that did it, in order (each "
-                                    "exited 0):\n\n" + "\n\n".join(f"[{n}]\n{c}" for n, c in enumerate(book["commands"], 1))
+                                    "exited 0):\n\n" + "\n\n".join(f"[{n}]\n{c}" for n, c
+                                                                   in enumerate(privacy.scrub(book["commands"]), 1))
                                     + _faults_note(book)},
     ]
     one_line = lambda text, limit: " ".join(str(text or "").split())[:limit]  # noqa: E731
@@ -1044,6 +1045,13 @@ def _distil(book):
             "usage": one_line(answer.get("usage"), 400), "example": one_line(answer.get("example"), 400),
             "does": one_line(answer.get("does"), 300), "unused": 0,
         }
+
+        # A kept script runs again and again with nobody watching: one that holds a request's secret or a credential
+        # is never written (review 2026-11-03, round 2). Fails closed - with no tool, the engine does the request.
+        held = privacy.credential_in(answer["script"])
+        if held:
+            log(f"Playbooks: no tool for {book['name']}: the script it wrote holds a {held}")
+            return False
 
         wrong = _sound(answer["script"], language) or _stated(tool, book["request"], book["commands"])
         if not wrong:

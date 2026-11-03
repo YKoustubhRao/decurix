@@ -75,6 +75,17 @@ class Scrub(_Isolated):
         self.assertIsNone(kept["element"]["value"])
         self.assertTrue(kept["element"]["secret"])
 
+    def test_an_elements_handle_is_never_written(self):
+        # Review 2026-11-03 (round 2): the screen layer keeps a secret field's raw value in the element's handle;
+        # scrub blanked `value` and kept `handle.value`.
+        field = {"role": "textbox", "name": "One-time code", "value": "[withheld]",
+                 "handle": {"value": "raw-code-7731", "dom_role": "textbox"}}
+        self.assertNotIn("handle", privacy.scrub({"element": field})["element"])
+        recording.append("adhoc-20260101", {"kind": "type", "element": dict(field)})
+        with mock.patch.object(task_context, "current", return_value="t0123456789abcdef"):
+            evidence.note({"look": [dict(field)]})
+        self.assertNowhere("raw-code-7731")
+
     def test_an_error_gives_a_placeholder_never_the_input(self):
         with mock.patch.object(privacy, "_scrub", side_effect=RuntimeError("broken")):
             self.assertEqual(privacy.scrub({"title": REQUEST}), {"held_back": privacy.HELD_BACK})

@@ -172,7 +172,8 @@ def note(text):
         return
     # Through privacy.scrub before it is cut or written (review 2026-11-03, D-18: a look's field values were written
     # here as they were shown). scrub never raises; on an error the note is HELD_BACK.
-    text = privacy.scrub(str(text))
+    kept = privacy.scrub(text if isinstance(text, (dict, list, tuple)) else str(text))
+    text = kept if isinstance(kept, str) else json.dumps(kept, ensure_ascii=False)
     try:
         NOTES_DIR.mkdir(parents=True, exist_ok=True)
         with open(NOTES_DIR / f"{task_id}.jsonl", "a", encoding="utf-8") as f:
