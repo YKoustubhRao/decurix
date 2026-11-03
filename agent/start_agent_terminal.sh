@@ -216,6 +216,8 @@ if [ "$AGENT_HARNESS" = "thebot" ] && [ -x /opt/soul ]; then
     export THEBOT_WEB_PAGES="${THEBOT_WEB_PAGES:-2}"
     export THEBOT_WEB_PAGE_CHARS="${THEBOT_WEB_PAGE_CHARS:-2500}"
     export SOUL_PORT="4900"
+    # Embedded in Decurix: soul's acquired skills and coding harness stay off (owner decision O-8, review T-07/T-08).
+    export THEBOT_STANDALONE=0
     export DOCLING_SCRIPT="/opt/thebot-scripts/docling_convert.py"
     setsid nice -n 10 /opt/soul >> /tmp/thebot-soul.log 2>&1 < /dev/null &
     echo "[$(date)] soul (TheBot) started as background daemon (pid $!)" >> "$LOG"
