@@ -511,7 +511,7 @@ func main() {
 	}
 
 	// A practice desktop reaches only its broker: both listeners refuse its subnet (practice.RefuseSubnets).
-	lanServer := newServer(lanAddr, practice.RefuseSubnets(practiceSubnets.Subnets, server.GuardGated(lanAccess.Middleware(httpapi.GzipMiddleware(httpapi.MarkGated(lanMux))))))
+	lanServer := newServer(lanAddr, practice.RefuseSubnets(practiceSubnets.Subnets, server.GuardGated(httpapi.BodyLimit(lanAccess.Middleware(httpapi.GzipMiddleware(httpapi.MarkGated(lanMux)))))))
 	// Every listener, for the shutdown below; appended to only before it starts.
 	activeServers := []*http.Server{lanServer}
 
@@ -650,7 +650,7 @@ func main() {
 	addrs := primaryListenAddrs(func() []string { return nil })
 	log.Printf("Desktop manager listening on %s", strings.Join(addrs, ", "))
 
-	handler := practice.RefuseSubnets(practiceSubnets.Subnets, httpapi.RefuseForwarded(server.GuardPrimary(httpapi.GzipMiddleware(mux))))
+	handler := practice.RefuseSubnets(practiceSubnets.Subnets, httpapi.RefuseForwarded(server.GuardPrimary(httpapi.BodyLimit(httpapi.GzipMiddleware(mux)))))
 
 	// Every listener, for the shutdown below. The gateway addresses join once Docker answers (they are Docker's), so
 	// the list is guarded.

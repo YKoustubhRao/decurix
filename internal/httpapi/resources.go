@@ -68,13 +68,17 @@ func (s *Server) resourceIncreaseHandler(w http.ResponseWriter, r *http.Request)
 			MemoryMB  int64  `json:"memory_mb"`
 		}
 		limitJSON(w, r)
-		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
-			if desktopID == "" {
-				desktopID = req.DesktopID
-			}
-			reqCPUs = req.CPUs
-			reqMemMB = req.MemoryMB
+		// A body that does not decode (cut at its cap, or malformed) is refused, never read as "the predicted
+		// increase" (RW1-E-05).
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			badJSON(w, err)
+			return
 		}
+		if desktopID == "" {
+			desktopID = req.DesktopID
+		}
+		reqCPUs = req.CPUs
+		reqMemMB = req.MemoryMB
 	} else {
 		reqCPUs = positiveInt(r.FormValue("cpus"), 0)
 		reqMemMB = positiveInt(r.FormValue("memory_mb"), 0)
@@ -123,7 +127,11 @@ func (s *Server) resourceDismissHandler(w http.ResponseWriter, r *http.Request) 
 			DesktopID string `json:"desktop_id"`
 		}
 		limitJSON(w, r)
-		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.DesktopID != "" {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			badJSON(w, err)
+			return
+		}
+		if req.DesktopID != "" {
 			desktopID = req.DesktopID
 		}
 	}
@@ -174,7 +182,7 @@ func (s *Server) resourceReportHandler(w http.ResponseWriter, r *http.Request) {
 
 	alert, err := s.ResourceMon.RecordReport(req.DesktopID, req.CPUPercent, req.MemoryPercent)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		jsonError(w, err)
 		return
 	}
 
