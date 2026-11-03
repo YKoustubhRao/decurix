@@ -247,6 +247,11 @@ func splitText(s string, max int) []string {
 		for cut > 0 && !utf8Start(s[cut]) {
 			cut--
 		}
+		if cut == 0 {
+			// No character starts in the first max bytes (bytes that are not
+			// UTF-8): cut at max, or this would never end.
+			cut = max
+		}
 		out = append(out, s[:cut])
 		s = s[cut:]
 	}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A saved sign-in is offered only to the control plane it was made for
@@ -89,5 +90,19 @@ func TestAFrameTooLargeForTheLinkIsRefused(t *testing.T) {
 	}
 	if frameHeaderLength+maxVideoPacket+4 != 4<<20 {
 		t.Fatal("the largest frame does not fit one link message exactly")
+	}
+}
+
+// Text that is not UTF-8 still splits, and the split ends (B-37).
+func TestSplitTextEndsOnBytesThatAreNotUTF8(t *testing.T) {
+	done := make(chan []string, 1)
+	go func() { done <- splitText(strings.Repeat("\x80", 400), maxInjectText) }()
+	select {
+	case parts := <-done:
+		if strings.Join(parts, "") != strings.Repeat("\x80", 400) {
+			t.Fatal("bytes were lost")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("splitText did not return")
 	}
 }
