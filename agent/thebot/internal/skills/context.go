@@ -79,14 +79,43 @@ const (
 		"command outputs shortened."
 )
 
-// localTokens is the estimated size of messages in tokens on the local model (a picture counted as pictureChars).
+// localTokens is the estimated size of messages in tokens on the local model (a picture counted as pictureChars), at
+// the default rate - before the model has said what a call really cost.
 func localTokens(messages []llm.Message) int {
-	return (messagesChars(messages)+localCharsPerToken-1)/localCharsPerToken + localMessageTokens*len(messages)
+	return estimateTokens(messages, 0)
+}
+
+// estimateTokens is the size of messages at perByte tokens a byte, never fewer than the default rate gives.
+func estimateTokens(messages []llm.Message, perByte float64) int {
+	bytes := messagesChars(messages)
+	n := (bytes + localCharsPerToken - 1) / localCharsPerToken
+	if measured := int(float64(bytes)*perByte + 0.999); measured > n {
+		n = measured
+	}
+	return n + localMessageTokens*len(messages)
+}
+
+// noteLocalCost keeps the highest tokens-a-byte rate a local call has really cost (Ollama's prompt_eval_count over the
+// bytes sent). Text in a non-Latin script costs far more tokens a byte than the default assumes (review N-W3-6); a
+// call answered partly from the prompt cache reports fewer tokens than it holds, so a rate only ever goes up.
+func (st *operatorState) noteLocalCost(sent []llm.Message, promptTokens int) {
+	bytes := messagesChars(sent)
+	if promptTokens <= 0 || bytes == 0 {
+		return
+	}
+	if rate := float64(promptTokens) / float64(bytes); rate > st.LocalTokensPerByte {
+		st.LocalTokensPerByte = rate
+	}
+}
+
+// localEstimate is the transcript's size in tokens on the local model, at the rate its calls have shown.
+func (st *operatorState) localEstimate() int {
+	return estimateTokens(st.Messages, st.LocalTokensPerByte)
 }
 
 // localOverBudget is whether the transcript would not fit the local window with room for the answer.
 func (st *operatorState) localOverBudget() bool {
-	return localTokens(st.Messages) > localBudgetTokens
+	return st.localEstimate() > localBudgetTokens
 }
 
 // compactNoteRequest asks the model for its notes before its older context is replaced by them.

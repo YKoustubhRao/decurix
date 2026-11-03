@@ -743,6 +743,8 @@ type operatorState struct {
 	// ComputedTyped those of them it then typed: a fact for the reviewer (computed.go).
 	ComputedOnly  map[string]bool `json:",omitempty"`
 	ComputedTyped []string        `json:",omitempty"`
+	// LocalTokensPerByte is the highest rate a local call has really cost (noteLocalCost, context.go).
+	LocalTokensPerByte float64 `json:",omitempty"`
 }
 
 // outputChars is OutputChars, or the local default for a checkpoint written
@@ -1528,10 +1530,10 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			// Past the local window Ollama would drop the contract and the task without a word (context.go): older
 			// outputs are masked first (one cache break, where the cache is lost anyway); if it still does not fit, the
 			// goal ends as not checked rather than run on without its instructions.
-			before := localTokens(st.Messages)
+			before := st.localEstimate()
 			masked := st.maskOutputsBefore(localMaskKeepNewest)
 			rc.Logf("operator", "the local model's window is nearly full (~%d tokens) - %d older outputs masked, now ~%d",
-				before, masked, localTokens(st.Messages))
+				before, masked, st.localEstimate())
 			if st.localOverBudget() {
 				return unchecked(outOfLocalRoomWords, outOfLocalRoomWhy)
 			}
@@ -1581,6 +1583,9 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			})
 		}
 		rc.Logf("operator", "%s", turnUsage(turn+1, st, resp))
+		if !st.Hosted {
+			st.noteLocalCost(st.Messages, resp.PromptTokens)
+		}
 		if resp.Truncated {
 			// A reply cut off for want of room is not the reply: a DONE's report, a command, a list are all missing their
 			// end. Never acted on - asked for again, shorter (the turn budget bounds how often).
