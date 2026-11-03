@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // InstanceFile is the file in the data directory that names this control plane among others on the same computer or
@@ -33,23 +34,20 @@ func instanceIDIn(dir string) string {
 		raw := make([]byte, 6)
 		if _, err := rand.Read(raw); err == nil {
 			id := hex.EncodeToString(raw)
-			// Made once, without a window where a half-written file is read: an exclusive create of a temp file,
-			// then a hard link that fails if another process made the file first (whose ID is then used).
-			tmp, err := os.CreateTemp(dir, ".instance-id-*")
-			if err == nil {
-				_, werr := tmp.WriteString(id + "\n")
-				cerr := tmp.Close()
-				if werr == nil && cerr == nil {
-					_ = os.Chmod(tmp.Name(), 0o600)
-					lerr := os.Link(tmp.Name(), path)
-					_ = os.Remove(tmp.Name())
-					if lerr == nil || errors.Is(lerr, os.ErrExist) {
-						if got, ok := readInstanceID(path); ok {
-							return got
-						}
-					}
-				} else {
-					_ = os.Remove(tmp.Name())
+			// Made once: an exclusive create, which fails if another process made the file first (whose ID is then
+			// used, once it has written it). Unlike a hard link it works on every filesystem a data directory may be
+			// on, so the path's hash is no longer the fallback where links are not supported (REVIEW-3 follow-up 8).
+			f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			switch {
+			case err == nil:
+				_, werr := f.WriteString(id + "\n")
+				if cerr := f.Close(); werr == nil && cerr == nil {
+					return id
+				}
+				_ = os.Remove(path)
+			case errors.Is(err, os.ErrExist):
+				if got, ok := awaitInstanceID(path); ok {
+					return got
 				}
 			}
 		}
@@ -62,6 +60,18 @@ func instanceIDIn(dir string) string {
 	id := hex.EncodeToString(sum[:6])
 	log.Printf("instance: could not keep %s in %s; this control plane is tagged by its data directory's path (%s), which another one with the same path shares", InstanceFile, dir, id)
 	return id
+}
+
+// awaitInstanceID reads the instance ID another process has just created, giving it a moment to write the twelve
+// digits after its exclusive create.
+func awaitInstanceID(path string) (string, bool) {
+	for i := 0; i < 20; i++ {
+		if id, ok := readInstanceID(path); ok {
+			return id, true
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return "", false
 }
 
 // readInstanceID reads an instance ID file, accepting only twelve hex digits.

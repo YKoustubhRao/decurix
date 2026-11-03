@@ -25,3 +25,26 @@ func TestEachDataDirectoryKeepsItsOwnInstanceID(t *testing.T) {
 		t.Fatalf("read %q", got)
 	}
 }
+
+// Many starts at once on one data directory agree on one ID, and the file holds just it (an exclusive create, not a
+// hard link, so it works on any filesystem; REVIEW-3 follow-up 8).
+func TestConcurrentStartsAgreeOnOneInstanceID(t *testing.T) {
+	dir := t.TempDir()
+	ids := make(chan string, 8)
+	for i := 0; i < cap(ids); i++ {
+		go func() { ids <- instanceIDIn(dir) }()
+	}
+	first := <-ids
+	for i := 1; i < cap(ids); i++ {
+		if got := <-ids; got != first {
+			t.Fatalf("two starts made two ids: %q and %q", first, got)
+		}
+	}
+	if got, ok := readInstanceID(filepath.Join(dir, InstanceFile)); !ok || got != first {
+		t.Fatalf("the file holds %q, want %q", got, first)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("only the instance file is left in the data directory: %v", entries)
+	}
+}
