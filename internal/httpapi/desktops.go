@@ -413,16 +413,17 @@ func (s *Server) thenClose(act func(context.Context, string) error, why string) 
 }
 
 // dockerStatusHandler answers GET /api/docker/status: whether the control plane has asked Docker yet, and whether it
-// answered - what the "Docker is not running" banner reads (W-08). Never a round trip to Docker itself.
+// answered - what the "Docker is not running" banner reads (W-08) - and whether a tools update waits for running
+// desktops to stop (tools_waiting). Never a round trip to Docker itself.
 func (s *Server) dockerStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
-	checked, reachable := false, false
+	checked, reachable, toolsWaiting := false, false, false
 	if s.Desktops != nil {
-		checked, reachable = s.Desktops.DockerChecked(), s.Desktops.DockerReachable()
+		checked, reachable, toolsWaiting = s.Desktops.DockerChecked(), s.Desktops.DockerReachable(), s.Desktops.ToolsRefreshWaiting()
 	}
-	jsonResponse(w, map[string]bool{"checked": checked, "reachable": reachable})
+	jsonResponse(w, map[string]bool{"checked": checked, "reachable": reachable, "tools_waiting": toolsWaiting})
 }
 
 // startDesktopHandler starts an existing desktop by ID.

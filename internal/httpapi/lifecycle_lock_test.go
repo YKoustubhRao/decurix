@@ -45,7 +45,7 @@ func TestDockerStatusSaysWhatWasSeen(t *testing.T) {
 	s := &Server{Desktops: &desktop.Manager{}}
 	rec := httptest.NewRecorder()
 	s.dockerStatusHandler(rec, httptest.NewRequest(http.MethodGet, "/api/docker/status", nil))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"checked":false`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"checked":false`) || !strings.Contains(rec.Body.String(), `"tools_waiting":false`) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 }

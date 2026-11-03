@@ -679,6 +679,8 @@ dialog[open]{animation:dialog-in .16s ease-out}
 
 .docker-banner{padding:9px 16px;background:var(--danger-soft);color:var(--danger);font-size:13px;font-weight:550;text-align:center;border-bottom:1px solid var(--line)}
 .docker-banner[hidden]{display:none}
+.tools-banner{padding:7px 16px;background:var(--busy-soft);color:var(--text-2);font-size:13px;text-align:center;border-bottom:1px solid var(--line)}
+.tools-banner[hidden]{display:none}
 #toasts{
   position:fixed;
   top:64px;
@@ -1831,6 +1833,8 @@ body.busy{cursor:progress}
       if(!response.ok){ return; }
       var state = await response.json();
       banner.hidden = !(state.checked && !state.reachable);
+      var tools = document.getElementById("toolsBanner");
+      if(tools){ tools.hidden = !state.tools_waiting; }
     }catch(e){ /* the next tick asks again */ }
   }
 
@@ -1907,4 +1911,5 @@ body.busy{cursor:progress}
   </div>
 </header>
 <div class="docker-banner" id="dockerBanner" role="status" hidden>Docker is not running, so desktops cannot start or be reached. Start Docker Desktop (or the Decurix runtime); this page notices by itself when it is back.</div>
+<div class="tools-banner" id="toolsBanner" role="status" hidden>A tools update is waiting for the running desktops to stop, so they keep the tools they started with. It is applied when a desktop is next created with none running.</div>
 {{end}}

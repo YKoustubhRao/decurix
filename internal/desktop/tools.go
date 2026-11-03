@@ -36,9 +36,19 @@ func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
 		return err
 	}
 
-	m.toolsPopulated = true
+	// A refresh that waited for running desktops is tried again on the next call (a desktop's creation), so it is
+	// applied once none runs, not only at the next start.
+	m.toolsPopulated = !m.toolsWaiting.Load()
 	return nil
 }
+
+// toolsWaitExit is the tools image's exit status when it left the volume as it was because desktops were running
+// (docker/tools.Dockerfile).
+const toolsWaitExit = 75
+
+// ToolsRefreshWaiting reports whether a newer tools image is waiting for the running desktops to stop before it
+// replaces the shared tools volume (REVIEW-3 follow-up 2).
+func (m *Manager) ToolsRefreshWaiting() bool { return m.toolsWaiting.Load() }
 
 // desktopsRunning is "1" when any desktop is running (or Docker cannot say), "0" when none is.
 func (m *Manager) desktopsRunning(ctx context.Context) string {
@@ -94,11 +104,17 @@ func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
 			return fmt.Errorf("wait for tools init: %w", err)
 		}
 	case status := <-statusCh:
+		if status.StatusCode == toolsWaitExit {
+			m.toolsWaiting.Store(true)
+			log.Printf("Shared tools volume %s: a newer tools image waits for the running desktops to stop; it is applied when a desktop is next created with none running, or at the next start with none running.", ToolsVolumeName)
+			return nil
+		}
 		if status.StatusCode != 0 {
 			return fmt.Errorf("tools init container exited with status %d", status.StatusCode)
 		}
 	}
 
+	m.toolsWaiting.Store(false)
 	log.Printf("Shared tools volume %s populated successfully.", ToolsVolumeName)
 	return nil
 }

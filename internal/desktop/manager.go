@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -88,6 +89,9 @@ type Manager struct {
 	// and disk I/O on every VM creation.
 	toolsMu        sync.Mutex
 	toolsPopulated bool
+	// toolsWaiting: the last populate found a newer tools image but left the volume as it was, because desktops
+	// were running (tools.go); the status banner says so until a later populate applies it.
+	toolsWaiting atomic.Bool
 
 	// startedMu/startedCache cache Docker's StartedAt timestamp for running
 	// containers, eliminating redundant ContainerInspect RPCs during List.
