@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"brainiac/internal/isolate"
 )
 
 // stampFile, inside a venv, holds the digest of the requirement files it was
@@ -92,10 +94,35 @@ func baseNames(paths []string) []string {
 	return out
 }
 
+// command makes the process run starts (a variable so tests can see it).
+var command = exec.CommandContext
+
+// pipEnv is the environment venv and pip run with: a model process's (no
+// secrets), plus pip's own settings and the proxy and certificate settings
+// a download needs. A package's build script runs in it, so nothing else of
+// Brainiac's environment (API keys, tokens) is there to read.
+func pipEnv(environ []string) []string {
+	var extra []string
+	for _, kv := range environ {
+		name, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		up := strings.ToUpper(name)
+		switch {
+		case strings.HasPrefix(up, "PIP_"), up == "HTTP_PROXY", up == "HTTPS_PROXY", up == "NO_PROXY", up == "ALL_PROXY",
+			up == "SSL_CERT_FILE", up == "SSL_CERT_DIR", up == "REQUESTS_CA_BUNDLE":
+			extra = append(extra, kv)
+		}
+	}
+	return isolate.Env(extra...)
+}
+
 // run executes a command, sending its output to logf line by line, and keeps
 // the last lines for the error when it fails.
 func run(ctx context.Context, logf func(string, ...any), name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := command(ctx, name, args...)
+	cmd.Env = pipEnv(os.Environ())
 	pr, pw := io.Pipe()
 	cmd.Stdout, cmd.Stderr = pw, pw
 	last := &tail{max: 2048}

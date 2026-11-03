@@ -183,6 +183,8 @@ type LlamaCpp struct {
 	Asset   string `json:"asset"`
 	// Extra are additional assets the variant needs (CUDA runtime DLLs).
 	Extra []string `json:"extra,omitempty"`
+	// SHA256 are the catalog's pins for the assets, by name (may be empty).
+	SHA256 map[string]string `json:"sha256,omitempty"`
 }
 
 // Pick returns the pick for a role.
@@ -1023,7 +1025,8 @@ func (s *selection) finish() {
 	if needLlama {
 		v := llamaVariant(s.cs)
 		asset, extra := llamaAsset(s.cs, s.cat.Runtime.LlamaCppTag, v)
-		s.plan.LlamaCpp = &LlamaCpp{Repo: s.cat.Runtime.LlamaCppRepo, Tag: s.cat.Runtime.LlamaCppTag, Variant: v, Asset: asset, Extra: extra}
+		s.plan.LlamaCpp = &LlamaCpp{Repo: s.cat.Runtime.LlamaCppRepo, Tag: s.cat.Runtime.LlamaCppTag, Variant: v, Asset: asset, Extra: extra,
+			SHA256: s.cat.Runtime.LlamaCppSHA256}
 	}
 	if _, ok := s.plan.Pick(catalog.RoleBrain); !ok {
 		_, ocr := s.plan.Pick(catalog.RoleOCR)
