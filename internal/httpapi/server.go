@@ -125,6 +125,9 @@ type Server struct {
 	// LLMRec records every hosted call the proxy forwards (plan R2: purpose, task, turn, deployment, usage, the
 	// withheld messages as blobs). Assigned by cmd/decurix/main.go; nil records nothing.
 	LLMRec *llmrec.Store
+	// DateOrder is the organisation's date order, "day" or "month" ("" unknown), sent with every request to a
+	// desktop (C6) so a date like 03/04/2026 is read one way (W0.2). main reads it from DECURIX_DATE_ORDER.
+	DateOrder string
 	// RequirePurpose refuses a model call that does not say what it is for (DECURIX_LLM_REQUIRE_PURPOSE=1, read by
 	// main). Off, such a call is stored as "untagged" and counted (D3).
 	RequirePurpose bool

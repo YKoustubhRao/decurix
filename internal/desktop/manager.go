@@ -1322,18 +1322,24 @@ func envValue(env []string, name string) string {
 	return ""
 }
 
-// SendRequest posts a JSON request to a running desktop's internal request
-// endpoint. taskID is the control plane's record the request belongs to; the
-// desktop echoes it back on every step and outcome it reports for that task.
-// secret says the person marked the message secret: the agent is told
-// ("secret": true), so it too keeps it out of its logs and records (F-2).
-func (m *Manager) SendRequest(
-	ctx context.Context,
-	id string,
-	content string,
-	taskID string,
-	secret bool,
-) error {
+// RequestBody is one request to a desktop's agent (/request, contract C6). TaskID is the control plane's record
+// the request belongs to; the desktop echoes it back on every step and outcome it reports for that task. Secret says
+// the records keep it withheld (the person's mark, or what the control plane withheld, C14): the agent is told
+// ("secret": true), so it too keeps it out of its logs and records (F-2). JudgementID is the judgement a person's
+// reply is, for what the desktop keeps from it to cite (R8). DateOrder is the organisation's date order, "day" or
+// "month" ("" unknown).
+type RequestBody struct {
+	Content     string
+	TaskID      string
+	Secret      bool
+	JudgementID string
+	DateOrder   string
+}
+
+// SendRequest posts a JSON request to a running desktop's internal request endpoint (RequestBody says what it
+// carries; fields left empty are not sent).
+func (m *Manager) SendRequest(ctx context.Context, id string, rb RequestBody) error {
+	content, taskID, secret := rb.Content, rb.TaskID, rb.Secret
 
 	desktopID := sanitizeName(id)
 	name := "desktop_" + desktopID
@@ -1376,6 +1382,14 @@ func (m *Manager) SendRequest(
 
 	if secret {
 		payload["secret"] = true
+	}
+
+	if rb.JudgementID != "" {
+		payload["judgement_id"] = rb.JudgementID
+	}
+
+	if rb.DateOrder == "day" || rb.DateOrder == "month" {
+		payload["date_order"] = rb.DateOrder
 	}
 
 	body, err := json.Marshal(payload)

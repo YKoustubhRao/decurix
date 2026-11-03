@@ -209,3 +209,20 @@ func TestAVerdictHasItsAuthorAndOutlivesTheWorker(t *testing.T) {
 		t.Fatalf("a deleted worker's judgements: %d %s", rec.Code, rec.Body)
 	}
 }
+
+// A person's reply reaches the desktop naming the judgement it is (C6), and every request carries the date order
+// when the control plane has one.
+func TestAReplyTellsTheDesktopItsJudgement(t *testing.T) {
+	s := chatServer(t)
+	s.DateOrder = "month"
+	bodies := fakeAgentDesktop(t, s)
+	task := askedQuestion(t, s, tasks.OutcomeQuery, "Which ledger?")
+	if rec := sendAs(t, s, url.Values{"id": {"box"}, "content": {"purchases"}}, false, ""); rec.Code != http.StatusOK {
+		t.Fatalf("reply: %d %s", rec.Code, rec.Body)
+	}
+	j := onlyJudgement(t, s, task)
+	got := requestsWith(bodies(), "content")
+	if len(got) != 1 || got[0]["judgement_id"] != j.ID || got[0]["date_order"] != "month" {
+		t.Fatalf("the desktop got %v, want judgement %s", got, j.ID)
+	}
+}

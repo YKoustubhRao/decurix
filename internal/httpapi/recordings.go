@@ -293,7 +293,7 @@ func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx = s.markWithheld(ctx, worker, route, content)
-	if err := s.deliverRequest(ctx, id, content, route.TaskID); err != nil {
+	if err := s.deliverRequest(ctx, id, content, route); err != nil {
 		sendRequestError(w, err)
 		return
 	}

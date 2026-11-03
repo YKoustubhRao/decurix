@@ -41,10 +41,10 @@ func TestASecretRequestTellsTheAgent(t *testing.T) {
 	m := newManagerWith(fake)
 	m.httpClient = &http.Client{Transport: agent}
 
-	if err := m.SendRequest(context.Background(), "box", "the new password is in the vault", "t1", true); err != nil {
+	if err := m.SendRequest(context.Background(), "box", RequestBody{Content: "the new password is in the vault", TaskID: "t1", Secret: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.SendRequest(context.Background(), "box", "file the invoices", "t2", false); err != nil {
+	if err := m.SendRequest(context.Background(), "box", RequestBody{Content: "file the invoices", TaskID: "t2"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(agent.bodies) != 2 {
@@ -55,5 +55,35 @@ func TestASecretRequestTellsTheAgent(t *testing.T) {
 	}
 	if _, ok := agent.bodies[1]["secret"]; ok {
 		t.Errorf("an ordinary request carries no secret field: %v", agent.bodies[1])
+	}
+}
+
+// The judgement a reply is and the organisation's date order reach the agent when set, and only then (C6).
+func TestARequestCarriesItsJudgementAndTheDateOrder(t *testing.T) {
+	fake := &fakeAPI{}
+	fake.inspect = func(name string) (container.InspectResponse, error) {
+		return container.InspectResponse{
+			ContainerJSONBase: &container.ContainerJSONBase{ID: "cid-box", State: &container.State{Running: true}},
+			NetworkSettings: &container.NetworkSettings{Networks: map[string]*network.EndpointSettings{
+				NetworkName: {IPAddress: "10.0.0.5"},
+			}},
+		}, nil
+	}
+	agent := &agentStub{}
+	m := newManagerWith(fake)
+	m.httpClient = &http.Client{Transport: agent}
+	_ = m.SendRequest(context.Background(), "box", RequestBody{Content: "purchases", TaskID: "t1", JudgementID: "j_0123456789abcdef", DateOrder: "day"})
+	_ = m.SendRequest(context.Background(), "box", RequestBody{Content: "file it", TaskID: "t2", DateOrder: "sideways"})
+	if len(agent.bodies) != 2 {
+		t.Fatalf("the agent got %d requests", len(agent.bodies))
+	}
+	if agent.bodies[0]["judgement_id"] != "j_0123456789abcdef" || agent.bodies[0]["date_order"] != "day" {
+		t.Errorf("a reply: %v", agent.bodies[0])
+	}
+	if _, ok := agent.bodies[1]["judgement_id"]; ok {
+		t.Errorf("a new request names a judgement: %v", agent.bodies[1])
+	}
+	if _, ok := agent.bodies[1]["date_order"]; ok {
+		t.Errorf("an unknown date order was sent: %v", agent.bodies[1])
 	}
 }

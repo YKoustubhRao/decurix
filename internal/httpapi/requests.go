@@ -276,7 +276,7 @@ func (s *Server) submitStored(ctx context.Context, desktopID, content string) (t
 	unlockLifecycle := s.Desktops.LockDesktop(id)
 	defer unlockLifecycle()
 
-	if err := s.deliverRequest(ctx, desktopID, content, route.TaskID); err != nil {
+	if err := s.deliverRequest(ctx, desktopID, content, route); err != nil {
 		return tasks.Route{}, "", err
 	}
 
@@ -328,11 +328,12 @@ func (s *Server) routeRequest(desktopID, content string) tasks.Route {
 // callers (sendRequestHandler, recordTaskHandler) are already about to
 // block the human/automation on the desktop's reply anyway - there is
 // nothing better to do while it boots than wait for it.
-func (s *Server) deliverRequest(ctx context.Context, desktopID, content, taskID string) error {
+func (s *Server) deliverRequest(ctx context.Context, desktopID, content string, route tasks.Route) error {
 	// A message the records keep withheld says so to the agent too (F-2, C14): the control plane withholds it in its
 	// own stores, and the agent must not keep it as typed either.
-	secret := sentAsSecret(ctx)
-	err := s.Desktops.SendRequest(ctx, desktopID, content, taskID, secret)
+	body := desktop.RequestBody{Content: content, TaskID: route.TaskID, Secret: sentAsSecret(ctx),
+		JudgementID: route.JudgementID, DateOrder: s.DateOrder}
+	err := s.Desktops.SendRequest(ctx, desktopID, body)
 
 	switch {
 	case err == nil:
@@ -366,7 +367,7 @@ func (s *Server) deliverRequest(ctx context.Context, desktopID, content, taskID 
 		case <-time.After(autoStartPoll):
 		}
 
-		err = s.Desktops.SendRequest(ctx, desktopID, content, taskID, secret)
+		err = s.Desktops.SendRequest(ctx, desktopID, body)
 
 		switch {
 		case err == nil:

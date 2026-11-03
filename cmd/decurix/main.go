@@ -396,6 +396,8 @@ func main() {
 
 	server.Devices = pairedDevices
 	server.DB = db
+	server.DateOrder = dateOrderFromEnv()
+	server.RequirePurpose = os.Getenv("DECURIX_LLM_REQUIRE_PURPOSE") == "1"
 	server.SkillHub = must(skillhub.NewStore(db))
 	server.Knowledge = must(knowledge.NewStore(db))
 	server.Handoffs = server.NewHandoffService(must(handoff.NewStore(db)))
@@ -720,4 +722,16 @@ func main() {
 	if err := primarySrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+}
+
+// dateOrderFromEnv is the organisation's date order from DECURIX_DATE_ORDER, "day" or "month" (W0.2, C6); anything
+// else is ignored, with one log line, and the desktops then decide each date from what they read.
+func dateOrderFromEnv() string {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("DECURIX_DATE_ORDER")))
+	switch v {
+	case "", "day", "month":
+		return v
+	}
+	log.Printf("DECURIX_DATE_ORDER=%q is not day or month: ignored", v)
+	return ""
 }
