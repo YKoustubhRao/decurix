@@ -875,3 +875,78 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): Question and final-reply files were written unredacted
 - [part-5.md](gotchas/part-5.md): The browser extension took a yes from anyone with the agent token
 - [part-5.md](gotchas/part-5.md): A proven fix stood in every project of the desktop
+- [part-6.md](gotchas/part-6.md): Docker's copy API is root inside the desktop
+- [part-6.md](gotchas/part-6.md): A heredoc built from text is not a safe way to write a file into a desktop
+- [part-6.md](gotchas/part-6.md): Killing processes by command-line pattern on a shared machine needs an owner tag
+- [part-6.md](gotchas/part-6.md): A path hash is not an instance id when every container has the same path
+- [part-6.md](gotchas/part-6.md): An empty instance-id older than 5 s is a crash's leftover
+- [part-6.md](gotchas/part-6.md): A creation that fails must remove only what it made
+- [part-6.md](gotchas/part-6.md): Docker's one-shot stats have no PreCPUStats
+- [part-6.md](gotchas/part-6.md): A full stderr sink that returns an error ends stdcopy.StdCopy
+- [part-6.md](gotchas/part-6.md): Copies into one paused desktop decide one at a time
+- [part-6.md](gotchas/part-6.md): A paused desktop is a running desktop for the tools refresh
+- [part-6.md](gotchas/part-6.md): Docker's --filter name=X matches substrings (and regex)
+- [part-6.md](gotchas/part-6.md): A whole-/dev bind carries the host's /dev/shm and /dev/mqueue into a sandbox
+- [part-6.md](gotchas/part-6.md): A fallback written to .env is a permanent downgrade
+- [part-6.md](gotchas/part-6.md): PowerShell 5.1's Get-Content reads .env in the ANSI code page
+- [part-6.md](gotchas/part-6.md): A partial inventory is worse than none
+- [part-6.md](gotchas/part-6.md): A setting that only exists for an opt-in feature must not be required without it
+- [part-6.md](gotchas/part-6.md): GNU sed replacement text with \L-like sequences lowercases the rest of the line
+- [part-6.md](gotchas/part-6.md): Git for Windows' grep does not see \r in CRLF files
+- [part-6.md](gotchas/part-6.md): A verified-only mail rule must write out the sender's domain
+- [part-6.md](gotchas/part-6.md): Whether a mail rule's request is a slash command is decided from the rule's text, before the email's values go in
+- [part-6.md](gotchas/part-6.md): Outgoing mail headers are rendered from parsed addresses and parsed media types
+- [part-6.md](gotchas/part-6.md): A mail poll commits each batch
+- [part-6.md](gotchas/part-6.md): Only a fault in the email itself counts against its three tries
+- [part-6.md](gotchas/part-6.md): A link fault that one email causes recurs forever at that UID
+- [part-6.md](gotchas/part-6.md): An SMTP QUIT failure after the server accepted DATA is a sent email
+- [part-6.md](gotchas/part-6.md): Attachments an email carried but that were not kept are named
+- [part-6.md](gotchas/part-6.md): A schedule's failed run is consumed but keeps last_error
+- [part-6.md](gotchas/part-6.md): An extra device token is valid only while its device row exists
+- [part-6.md](gotchas/part-6.md): decurix --phone never sends a saved token to another control plane address
+- [part-6.md](gotchas/part-6.md): Phone viewers pass only ordinary typing and navigation keycodes
+- [part-6.md](gotchas/part-6.md): Phone setup never turns on unencrypted network debugging
+- [part-6.md](gotchas/part-6.md): A setup one-liner checks what it runs
+- [part-6.md](gotchas/part-6.md): Person-facing validation errors are typed
+- [part-6.md](gotchas/part-6.md): A name-based walker is a net, not a proof
+- [part-6.md](gotchas/part-6.md): An identifier-labelled figure larger than every money figure makes the amount unknown
+- [part-6.md](gotchas/part-6.md): A check's own except: return [] is a pass
+- [part-6.md](gotchas/part-6.md): "Could not read" is not "none"
+- [part-6.md](gotchas/part-6.md): A word list that unblocks or refuses is a bug that comes back
+- [part-6.md](gotchas/part-6.md): A word list that un-gates a committing verb is a hole
+- [part-6.md](gotchas/part-6.md): A fallback that turns an unread reply into a yes grants changed actions
+- [part-6.md](gotchas/part-6.md): A retry after a stale node is a second action
+- [part-6.md](gotchas/part-6.md): Healing onto another name is acting on another record
+- [part-6.md](gotchas/part-6.md): A value with a slash is not a path
+- [part-6.md](gotchas/part-6.md): A digit string compared as a float is not an identifier
+- [part-6.md](gotchas/part-6.md): A substring replace of a file name rewrites other files
+- [part-6.md](gotchas/part-6.md): Never decide what a table is (a payment file or not) from its headers
+- [part-6.md](gotchas/part-6.md): A reply file is a channel, not a person
+- [part-6.md](gotchas/part-6.md): engine_returned runs in a finally and on the reply thread
+- [part-6.md](gotchas/part-6.md): os.scandir order is the filesystem's
+- [part-6.md](gotchas/part-6.md): binding.held_by compared amounts sign-blind
+- [part-6.md](gotchas/part-6.md): A quoted-name regex must not open on an apostrophe
+- [part-6.md](gotchas/part-6.md): A sum that ends a sentence was never checked
+- [part-6.md](gotchas/part-6.md): Scientific notation counts as a program's number only with its sign
+- [part-6.md](gotchas/part-6.md): Identifiers in sources are matched as one run of digits, never digits joined across cells
+- [part-6.md](gotchas/part-6.md): Lessons are the whole worker's (every client's)
+- [part-6.md](gotchas/part-6.md): Check copies of host files go in a folder per task and per full path
+- [part-6.md](gotchas/part-6.md): Raw nomic-embed-text cosine does not separate relevant from unrelated facts
+- [part-6.md](gotchas/part-6.md): Tests can pin a fail-open as a feature
+- [part-6.md](gotchas/part-6.md): A token estimate must never under-count
+- [part-6.md](gotchas/part-6.md): A file is the work's own code only when it was written from the command's own text and then run as the program
+- [part-6.md](gotchas/part-6.md): A stream that ends is not an answer that finished
+- [part-6.md](gotchas/part-6.md): WaitGroup.Add after the pointer was handed out races Wait
+- [part-6.md](gotchas/part-6.md): Landlock has no right for connecting to a pathname Unix socket, and a network namespace does not cover one
+- [part-6.md](gotchas/part-6.md): pivot_root from a tmpfs on /tmp keeps /tmp's real contents reachable at /oldroot/tmp
+- [part-6.md](gotchas/part-6.md): Pdeathsig fires when the creating thread exits
+- [part-6.md](gotchas/part-6.md): Run go test -c binaries for Linux sandbox tests from a private directory, not /tmp
+- [part-6.md](gotchas/part-6.md): Margin 0 makes "B proven as good as A, and A proven as good as B" impossible
+- [part-6.md](gotchas/part-6.md): A strict checker is not neutral in a comparison
+- [part-6.md](gotchas/part-6.md): Chrome's own networking bypasses a Go dialer guard
+- [part-6.md](gotchas/part-6.md): A path proven by name is not proven when routed
+- [part-6.md](gotchas/part-6.md): Shell heredocs on this host collapse backslashes
+- [part-6.md](gotchas/part-6.md): go test -overlay with Windows paths failed
+- [part-6.md](gotchas/part-6.md): go:embed can fail with "unexpected length"
+- [part-6.md](gotchas/part-6.md): Run the module's suite before each commit, not only before the report
+- [part-6.md](gotchas/part-6.md): Do not have a model analyse evasion shapes for a guard
