@@ -70,9 +70,16 @@ var practiceResetPaths = []string{
 // PracticeResetPaths lists what ResetPractice clears before every case, for runners and their tests.
 func PracticeResetPaths() []string { return append([]string{}, practiceResetPaths...) }
 
-// practiceResetScript ends every process of the worker first (the container restarts next, so nothing it runs may
-// write after the clear), then clears the paths it is given and the agent's task files in /tmp.
-const practiceResetScript = `kill -KILL -1 2>/dev/null; rm -rf -- "$@" /tmp/decurix-* /tmp/decurix.*`
+// practiceResetScript, run as the worker, stops every process of the worker first (the container is killed and
+// started next, so nothing it runs may write after the clear), then clears the paths it is given, the agent's task
+// files in /tmp and soul's job log. It stops them, never kills them: the desktop's init (tini) has the worker's start
+// script as its one child, and killing that ends the container, the clear with it (review EVAL-2, R2-B1, proved on
+// the image).
+const practiceResetScript = `kill -STOP -1 2>/dev/null; rm -rf -- "$@" /tmp/decurix-* /tmp/decurix.* /tmp/thebot-soul.log`
+
+// practiceGateResetScript, run as root, stops the gate's process too and clears the gate's own store (the pending
+// request, any grant, the last reply), which belongs to the gate's user and is out of the worker's reach. Its key stays.
+const practiceGateResetScript = `kill -STOP -1 2>/dev/null; rm -rf -- /var/lib/decurix-gate/computer`
 
 var (
 	// practiceHostPattern is a host name the browser may map to the mock: no quotes, spaces or ports.
@@ -650,11 +657,24 @@ func practicePassword() string {
 // profile and the work folder, restarts the container, and restores the pinned
 // snapshot while it is stopped.
 func (m *Manager) ResetPractice(ctx context.Context, id string, snapshot []byte) error {
+	// It deletes a worker's whole state: only a practice desktop the control plane made is reset, never a worker's own
+	// desktop or a mock (the label is the control plane's, set at creation).
+	inspect, err := m.client.ContainerInspect(ctx, id)
+	if err != nil {
+		return err
+	}
+	if inspect.Config == nil || inspect.Config.Labels[PracticeLabel] != "true" || inspect.Config.Labels["decurix-practice-mock"] == "true" {
+		return ErrNotPractice
+	}
 	cmd := append([]string{"/bin/sh", "-c", practiceResetScript, "reset"}, practiceResetPaths...)
-	if err := m.practiceExec(ctx, id, cmd); err != nil {
+	if err := m.practiceExec(ctx, id, "headless", cmd); err != nil {
 		return fmt.Errorf("clear the practice desktop: %w", err)
 	}
-	timeout := 10
+	if err := m.practiceExec(ctx, id, "root", []string{"/bin/sh", "-c", practiceGateResetScript}); err != nil {
+		return fmt.Errorf("clear the practice desktop's gate: %w", err)
+	}
+	// Every process is stopped and ignores SIGTERM, so the container is killed at once rather than after a timeout.
+	timeout := 0
 	if err := m.client.ContainerStop(ctx, id, container.StopOptions{Timeout: &timeout}); err != nil {
 		return err
 	}
@@ -666,9 +686,9 @@ func (m *Manager) ResetPractice(ctx context.Context, id string, snapshot []byte)
 	return m.client.ContainerStart(ctx, id, container.StartOptions{})
 }
 
-// practiceExec runs a command as the desktop's user and waits for it to end.
-func (m *Manager) practiceExec(ctx context.Context, id string, cmd []string) error {
-	created, err := m.client.ContainerExecCreate(ctx, id, container.ExecOptions{Cmd: workerCmd(cmd...), User: "headless"})
+// practiceExec runs a command as user ("headless" or "root") in a practice desktop and waits for it to end.
+func (m *Manager) practiceExec(ctx context.Context, id, user string, cmd []string) error {
+	created, err := m.client.ContainerExecCreate(ctx, id, container.ExecOptions{Cmd: workerCmd(cmd...), User: user})
 	if err != nil {
 		return err
 	}

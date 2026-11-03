@@ -149,7 +149,15 @@ func (d *practiceDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(p, "/stop"):
 		w.WriteHeader(204)
 	case strings.HasSuffix(p, "/json") && strings.HasPrefix(p, "/containers/") && p != "/containers/json":
-		_ = json.NewEncoder(w).Encode(map[string]any{"Id": "desk", "State": map[string]any{"Running": true, "Paused": d.paused[strings.Split(p, "/")[2]]}, "NetworkSettings": map[string]any{"Networks": map[string]any{PracticeNetworkName: map[string]string{"IPAddress": "172.30.0.5"}}}})
+		ctr := strings.Split(p, "/")[2]
+		labels := map[string]string{PracticeLabel: "true"}
+		switch ctr {
+		case "worker":
+			labels = map[string]string{}
+		case "mock":
+			labels["decurix-practice-mock"] = "true"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"Id": ctr, "Config": map[string]any{"Labels": labels}, "State": map[string]any{"Running": true, "Paused": d.paused[ctr]}, "NetworkSettings": map[string]any{"Networks": map[string]any{PracticeNetworkName: map[string]string{"IPAddress": "172.30.0.5"}}}})
 	case p == "/containers/json":
 		_ = json.NewEncoder(w).Encode([]map[string]string{{"Id": "left-behind"}})
 	case strings.HasSuffix(p, "/exec") && strings.HasPrefix(p, "/containers/"):
@@ -173,8 +181,8 @@ func (d *practiceDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case strings.Contains(joined, "kill -s STOP"):
 			info = []string{ctr, "tarout", body.Cmd[len(body.Cmd)-3]}
 		}
-		if info[1] == "run" && body.User != "headless" {
-			d.t.Errorf("reset ran as %v", body.User)
+		if info[1] == "run" && body.User != "headless" && !(body.User == "root" && strings.Contains(joined, "/var/lib/decurix-gate/computer")) {
+			d.t.Errorf("reset ran as %v: %s", body.User, joined)
 		}
 		if info[1] != "run" && body.User != "1001:1001" {
 			d.t.Errorf("tar ran as %v", body.User)
@@ -434,15 +442,12 @@ func TestResetAndCleanupPractice(t *testing.T) {
 	if err := m.ResetPractice(ctx, "desk", tarBody(map[string]string{"skills/a.json": "{}"})); err != nil {
 		t.Fatal(err)
 	}
+	// What the reset does to a real desktop is TestPracticeResetLive's to prove; here, what it is given to clear.
 	var reset []string
 	for _, info := range d.execs {
-		if info[1] == "run" {
+		if info[1] == "run" && !strings.Contains(info[2], "decurix-gate") {
 			reset = strings.Split(info[2], "\x00")
 		}
-	}
-	script := strings.Join(reset, " ")
-	if !strings.Contains(script, "kill -KILL -1") || !strings.Contains(script, "/tmp/decurix-*") {
-		t.Fatalf("the reset does not end the worker's processes and clear its task files: %q", reset)
 	}
 	cleared := map[string]bool{}
 	for _, p := range reset {
@@ -471,6 +476,23 @@ func TestResetAndCleanupPractice(t *testing.T) {
 
 // Every place the agent and soul keep state is under the folder the reset clears whole: the agent's DECURIX_DIR
 // default (config.py) and soul's WORKSPACE_ROOT (the start script).
+// ResetPractice deletes a worker's whole state, so it refuses any container the control plane did not label as a
+// practice desktop: a worker's own desktop, or a mock (review EVAL-2, N1).
+func TestResetPracticeRefusesWhatIsNotAPracticeDesktop(t *testing.T) {
+	m, d := practiceManager(t)
+	for _, id := range []string{"worker", "mock"} {
+		d.calls = nil
+		if err := m.ResetPractice(context.Background(), id, nil); !errors.Is(err, ErrNotPractice) {
+			t.Fatalf("%s: %v", id, err)
+		}
+		for _, c := range d.calls {
+			if strings.Contains(c, "/exec") || strings.Contains(c, "/stop") {
+				t.Fatalf("%s: the reset touched it: %v", id, d.calls)
+			}
+		}
+	}
+}
+
 func TestThePracticeResetCoversEveryStateRoot(t *testing.T) {
 	read := func(p string) string {
 		b, err := os.ReadFile(filepath.Join("..", "..", p))
