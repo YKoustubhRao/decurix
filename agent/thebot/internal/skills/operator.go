@@ -1736,6 +1736,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: judgementsDoneNudge})
 				continue
 			}
+			reviewedNow := false // an independent review weighed this very report
 			if st.AwaitingJudge == "done" {
 				items, _ := judgementList(value)
 				// What the review raises goes back to it once to settle; what stays unsettled, or rests on the web, is
@@ -1752,6 +1753,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 					return ask(w.question)
 				}
 				value += openPointsNote(st, w.open)
+				reviewedNow = w.reviewed
 			}
 			if question := doneAsksThePerson(value); question != "" {
 				// A DONE that only asks the person for what is missing is a
@@ -1763,6 +1765,15 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 				rc.Logf("operator", "said done, but only asks the person for something - asking them")
 				st.Messages = append(st.Messages, reply)
 				return ask(question)
+			}
+			// A part handed to another worker that came back not verified is not done, whatever the report says of
+			// it. With a review that weighed this report, the reviewer judges it from the fact (handoffFacts); with
+			// none (a local brain, a review skipped or failed), the result is not checked - never read from the
+			// report's words, in either direction (review round 2, R-1).
+			if ids := unverifiedHandoffIDs(st.Seen); len(ids) > 0 && !reviewedNow {
+				rc.Logf("operator", "a handed-back part is not verified and no review weighed the report - not checked")
+				st.Messages = append(st.Messages, reply)
+				return unchecked(value, "a part handed to another worker (handoff "+strings.Join(ids, ", ")+") came back not verified")
 			}
 			return finish(value, true, nil)
 

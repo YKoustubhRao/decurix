@@ -120,6 +120,8 @@ const maxReviewQuestions = 2
 type weighing struct {
 	nudge, question string
 	open            []string
+	// reviewed is whether an independent review weighed this report (it ran, and its answer was read).
+	reviewed bool
 }
 
 // unreviewed is what stands for a review that could not be made.
@@ -255,7 +257,7 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 	if len(open) > 0 {
 		rc.Logf("operator", "%d point(s) still open - carried with the result", len(open))
 	}
-	return weighing{open: open}
+	return weighing{open: open, reviewed: reviewed}
 }
 
 // maxExtraSendBacks bounds the send-backs a goal makes for points found in work done since the last one (knowledge.go).

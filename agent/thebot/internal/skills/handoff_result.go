@@ -107,6 +107,20 @@ func handoffWhy(r handedBack) string {
 	return why
 }
 
+// unverifiedHandoffIDs are the handoffs whose latest result in seen is not verified.
+func unverifiedHandoffIDs(seen string) []string {
+	if !strings.Contains(seen, "=== HANDOFF ") {
+		return nil
+	}
+	var ids []string
+	for _, r := range handedBackResults(seen) {
+		if !r.Verified {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids
+}
+
 // handoffFacts are the parts handed to other workers that came back not verified, as facts for the reviewer: a report
 // that rests on one as done claims what nobody saw.
 func handoffFacts(seen string) []string {
