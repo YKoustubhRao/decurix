@@ -78,7 +78,7 @@ function Invoke-Cleanup {
 
     docker compose down
 
-    $containers = docker ps -a --filter "name=desktop_" --format "{{.ID}}"
+    $containers = docker ps -a --filter "label=desktop-manager=true" --format "{{.ID}}"
     if ($containers) {
         docker rm -f $containers
     }
@@ -160,7 +160,7 @@ try {
 
     Write-Host ""
     Write-Host "=== Removing old desktop containers ==="
-    $containers = docker ps -a --filter "name=desktop_" --format "{{.ID}}"
+    $containers = docker ps -a --filter "label=desktop-manager=true" --format "{{.ID}}"
     if ($containers) {
         docker rm -f $containers
         if ($LASTEXITCODE -ne 0) { Exit-Build $LASTEXITCODE }
@@ -168,7 +168,7 @@ try {
 
     Write-Host ""
     Write-Host "=== Removing old desktop volumes ==="
-    $volumes = docker volume ls --filter "name=desktop_" --format "{{.Name}}"
+    $volumes = docker volume ls --filter "name=^desktop_" --format "{{.Name}}"
     if ($volumes) {
         docker volume rm $volumes
         if ($LASTEXITCODE -ne 0) { Exit-Build $LASTEXITCODE }

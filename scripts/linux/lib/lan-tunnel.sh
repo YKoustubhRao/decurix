@@ -13,7 +13,7 @@
 #
 # Requires: cloudflared already confirmed installed by the caller - this
 # file has no error message of its own for a missing binary, since the
-# caller's own primary-tunnel section already has one and exits before this
+# caller's own tunnel section already has one and exits before this
 # would ever be reached without it.
 
 # start_lan_tunnel opens a Cloudflare tunnel to 127.0.0.1:$1 in the

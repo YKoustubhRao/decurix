@@ -88,7 +88,7 @@ cleanup() {
     docker compose down || true
 
     docker ps -a \
-        --filter "name=desktop_" \
+        --filter "label=desktop-manager=true" \
         --format "{{.ID}}" \
         | xargs -r docker rm -f
 
@@ -119,7 +119,7 @@ echo ""
 echo "=== Removing old desktop containers ==="
 
 docker ps -a \
-    --filter "name=desktop_" \
+    --filter "label=desktop-manager=true" \
     --format "{{.ID}}" \
     | xargs -r docker rm -f
 
@@ -127,7 +127,7 @@ echo ""
 echo "=== Removing old desktop volumes ==="
 
 docker volume ls \
-    --filter "name=desktop_" \
+    --filter "name=^desktop_" \
     --format "{{.Name}}" \
     | xargs -r docker volume rm
 

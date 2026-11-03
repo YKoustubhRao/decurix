@@ -3,28 +3,26 @@
     Shared by scripts/windows/build.ps1 and scripts/windows/rebuild.ps1.
 .DESCRIPTION
     Dot-sourced, not executed directly: defines Show-LanAccess (the LAN
-    address and access code), and Start-LanTunnel/Stop-LanTunnel, a second
-    Cloudflare quick tunnel pointed at the
-    access-code-gated listener (rather than the primary, unauthenticated one
-    both scripts already tunnel in their own foreground loop) - so the gated
-    URL is reachable from anywhere, not only this machine's own network like
-    the plain LAN address is. Both scripts already print and report that LAN
+    address and access code), and Start-LanTunnel/Stop-LanTunnel, a
+    Cloudflare quick tunnel pointed at the access-code-gated listener (the
+    only listener either script tunnels: the primary, unauthenticated one is
+    never exposed) - so the gated URL is reachable from anywhere, not only
+    this machine's own network like the plain LAN address is. Both scripts already print and report that LAN
     address; this gives the same gated listener a link that works
     off-network too, still behind the code.
 
     Requires: cloudflared already confirmed installed by the caller - this
     file has no error message of its own for a missing binary, since the
-    caller's own primary-tunnel section already has one and exits before
-    this would ever be reached without it.
+    caller's own tunnel section already has one and exits before this would
+    ever be reached without it.
 #>
 
 # Start-LanTunnel opens a Cloudflare tunnel to 127.0.0.1:$LanPort as a real
 # background process (Start-Process, not Start-Job - a job's own PowerShell
 # host process is not a reliable way to also kill the native cloudflared.exe
-# it launches) so the caller's own primary tunnel below can still run in the
-# foreground, and reports its trycloudflare.com URL to the control plane as
+# it launches) so the caller can go on in the foreground, and reports its trycloudflare.com URL to the control plane as
 # lan_tunnel_url once cloudflared prints one - polling its redirected output
-# for up to 30 seconds, the same order of magnitude the primary tunnel
+# for up to 30 seconds, the same order of magnitude a quick tunnel
 # usually takes to come up. Prints the URL, or a one-line note if it didn't
 # show up in time (the dashboard's Mobile menu will still pick it up
 # whenever it does). Sets $script:LanTunnelProcess/$script:LanTunnelLogFiles
