@@ -439,10 +439,6 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		if body.Reply == nil || *body.Reply {
 			req.Resume = paused
 			job.Resumed = true
-			// With an approval gate a reading in the request is not believed; the gate's own is (gate.go).
-			if gatePresent() {
-				req.Reading = gateReading(body.Prompt)
-			}
 			job.appendLog(fmt.Sprintf("scheduler: this request answers the paused job %q", truncateLog(paused.Prompt, 80)))
 		} else {
 			job.appendLog(fmt.Sprintf("scheduler: dropping the paused job %q - this is a new request", truncateLog(paused.Prompt, 80)))
@@ -458,6 +454,15 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		defer cancel()
+		// With an approval gate a reading in the request is not believed; the gate's settlement of the paused job's
+		// own request is (gate.go). Waited for here, in the job, so the request that resumes it is answered at once.
+		if req.Resume != nil && gatePresent() {
+			if _, _, ok := req.Resume.Approval(); ok {
+				req.Reading = gateSettled(req.Resume)
+			} else {
+				req.Reading = nil
+			}
+		}
 		result, err := s.sched.Execute(ctx, req, job.appendLog)
 		job.mu.Lock()
 		if err != nil {
@@ -483,6 +488,10 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		job.mu.Unlock()
 
 		if err == nil && result.Checkpoint != nil {
+			// A paused approval becomes the gate's request before anyone can be asked about it (gate.go).
+			if gatePresent() {
+				gateAsk(result.Checkpoint)
+			}
 			s.storePaused(body.SessionID, result.Checkpoint)
 		}
 

@@ -472,7 +472,7 @@ func (m *Manager) readFileFromContainer(ctx context.Context, containerID, path s
 func (m *Manager) execCaptured(ctx context.Context, containerID string, cmd []string) (output string, exitCode int, err error) {
 	execID, err := m.client.ContainerExecCreate(ctx, containerID, container.ExecOptions{
 		User:         "1001:1001", // the desktop starts as root (agent/decurix-entrypoint.sh); a read is the worker's, not root's
-		Cmd:          cmd,
+		Cmd:          workerCmd(cmd...),
 		AttachStdout: true,
 		AttachStderr: true,
 	})

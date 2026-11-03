@@ -26,8 +26,23 @@ class WhatIsAPaymentFile(unittest.TestCase):
                        ["Employee", "Bank A/c", "Net Pay"],
                        ["Beneficiary", "Beneficiary Account", "Payment Value"],
                        ["Account Name", "Account Number", "Amount"],
-                       ["Payee", "UPI", "Amount"]):
+                       ["Payee", "UPI", "Amount"],
+                       # Round-3 recheck: bare account columns beside who is paid (round 2 caught these).
+                       ["Payee", "A/c", "Amount"],
+                       ["Party", "Account", "Amount"],
+                       ["Beneficiary", "Acct", "Transfer"]):
             self.assertIsNotNone(payees.payment_table(header), header)
+
+    def test_a_vendor_master_with_a_bare_account_column_holds_bank_accounts(self):
+        self.assertEqual(payees.bank_columns(["Vendor", "Account"]), [1])
+        self.assertEqual(payees.bank_columns(["Customer", "Account"]), [])
+
+    def test_a_wrong_account_in_a_bare_account_payment_file_is_found(self):
+        d = Path(tempfile.mkdtemp())
+        master = table(d / "master.csv", [["Vendor", "Account"], ["Acme Traders", "50100123456789"]])
+        run = table(d / "run.csv", [["Payee", "A/c", "Amount"], ["Acme Traders", "50100999999999", "45000"]])
+        said = payees.mismatches("", [run], found=([master], []))
+        self.assertTrue(said, "a wrong account in a bare-account payment file went through unchecked")
 
     def test_other_tables(self):
         for header in (["Customer", "Bank Account", "Total Sales"],  # a sales report that lists accounts

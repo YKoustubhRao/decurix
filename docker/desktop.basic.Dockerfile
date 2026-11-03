@@ -295,9 +295,14 @@ RUN rm -f /etc/sudoers.d/headless /dockerstartup/.initial_sudo_password \
     && passwd -l root && passwd -l headless \
     && chmod u-s /usr/bin/sudo /usr/bin/su /usr/bin/passwd /usr/bin/gpasswd /usr/bin/newgrp /usr/bin/chfn /usr/bin/chsh /usr/bin/mount /usr/bin/umount \
     && useradd --system --no-create-home --shell /usr/sbin/nologin decurixgate \
-    && chmod 644 /etc/passwd /etc/group
+    && chmod 644 /etc/passwd /etc/group \
+    && chown -R 1001:1001 /dockerstartup
+# (/dockerstartup is handed to the desktop user here, at build time, and never by root at runtime: with hard-link
+# protection off, a root `chown -R` of a folder the worker can write into hands over whatever it linked there.)
 COPY agent/decurix-entrypoint.sh /opt/decurix-entrypoint.sh
-RUN chmod 755 /opt/decurix-entrypoint.sh
+RUN chmod 755 /opt/decurix-entrypoint.sh \
+    && chown -R root:root /opt/decurix_agent /opt/decurix-entrypoint.sh \
+    && chmod -R go-w /opt/decurix_agent
 
 # A library a task needs beyond the ones installed above: `pip install --user NAME` puts it in the worker's own home
 # (~/.local, on the desktop's persistent volume), so it is there after a restart and needs no administrator rights.

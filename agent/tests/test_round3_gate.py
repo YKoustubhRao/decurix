@@ -124,6 +124,27 @@ class ShellOnlyWork(unittest.TestCase):
         self.assertEqual(playbooks.changed_things(ran), ["echo hi > out.txt", "python3 fix.py",
                                                          "office update a.xlsx -", "mv a b"])
 
+    def test_read_only_answers_with_python_curl_or_git_are_not_changes(self):
+        # Round-3 recheck: these went to the final check and came back "Not checked".
+        reads = ["git status", "git -C ~/work log --oneline -5", "git diff HEAD~1", "git branch", "curl -s https://x.example",
+                 "curl -sfL https://x.example/api | jq .", "python3 -c \"print(sum([1, 2]))\"",
+                 "python3 - <<'PY'\nimport json\nprint(json.loads('[1]'))\nPY", "ls run.sh", "office read a.xlsx",
+                 "grep -r x . 2>/dev/null", "find . -name '*.py' > /dev/null"]
+        self.assertEqual(playbooks.changed_things(reads), [])
+        writes = ["git commit -am x", "git push", "git branch -D old", "curl -d @a.json https://x.example",
+                  "curl -o out.zip https://x.example/f", "curl -X POST https://x.example", "python3 fix.py",
+                  "python3 -c \"open('a','w').write('x')\"", "python3 - <<'PY'\nimport os\nos.remove('a')\nPY",
+                  "bash deploy.sh", "cat cmds | sh", "node -e \"require('fs').writeFileSync('a','x')\""]
+        self.assertEqual(playbooks.changed_things(writes), writes)
+
+    def test_every_engines_commands_are_seen(self):
+        playbooks.begin()
+        playbooks.note_command("rm old.txt")
+        playbooks.note_command("ls")
+        self.assertEqual(playbooks.changed_things(), ["rm old.txt"])
+        playbooks.begin()
+        self.assertEqual(playbooks.changed_things(), [])
+
     def test_the_gate_takes_a_task_whose_commands_changed_things(self):
         with mock.patch.object(skill_task.guidance, "get", lambda: None), \
                 mock.patch.object(skill_task, "_did_screen_work", lambda: False), \
@@ -193,6 +214,22 @@ class ATaughtRunReadsItsFilesBack(unittest.TestCase):
         sent = self.finish(produced.FileFacts(could_not=["x"]), checked_by="person")
         self.assertTrue(sent[0][1]["checked"])
 
+    def test_a_run_not_checked_counts_neither_for_nor_against_the_skill(self):
+        # Round-3 recheck: counted as a failure, a skill whose files cannot all be read back never matured.
+        for facts, counted in ((produced.FileFacts(could_not=["the payee check raised"]), False),
+                               (produced.FileFacts(file_faults=["out.xlsx has a placeholder left"]), True)):
+            with mock.patch.object(skill_task, "_record_verdict") as verdict:
+                with mock.patch.object(skill_task.produced, "files", lambda *a, **k: ["/tmp/out.xlsx"]), \
+                        mock.patch.object(skill_task.produced, "drafts", lambda: []), \
+                        mock.patch.object(skill_task.source_guard, "is_source", lambda *a: False), \
+                        mock.patch.object(skill_task.produced, "file_facts", lambda *a, f=facts, **k: f), \
+                        mock.patch.object(skill_task, "_own_run"), \
+                        mock.patch.object(skill_task, "write_final_reply", lambda *a, **k: None):
+                    skill_task._succeed(self.run_dict(), {"text": "Saved it."}, "screen")
+            self.assertEqual(verdict.called, counted, facts)
+            if counted:
+                self.assertFalse(verdict.call_args.args[1])
+
 
 class ADraftIsMadeOnceAfterTheCheck(unittest.TestCase):
     RECORD = {"to": ["a@x.com"], "cc": [], "subject": "Invoice", "body": "Hello", "attachments": [], "paths": []}
@@ -236,6 +273,137 @@ class ReportsThatAreNotChecks(unittest.TestCase):
                 mock.patch.object(workflow_task, "runner", side_effect=RuntimeError("boom")):
             workflow_task.perform("/workflow status nope")
         self.assertFalse(sent.call_args.kwargs["checked"])
+
+
+# Recheck of round 3: verbs of moving money, trading, letting go and signing off; and keys that move the keyboard
+# before they press.
+MONEY_ASKED = ["Bank Transfer", "Wire transfer", "Fund Transfer", "NEFT Transfer", "Make bank transfer",
+               "Initiate bank transfer", "Disburse", "Disburse loan", "Execute trade", "Execute order", "Place trade",
+               "Submit trade", "Confirm trade", "Sell", "Sell now", "Sell all shares", "Release", "Release payment",
+               "Fund release", "Sign off", "Sign-off", "Signoff", "Approve and sign off", "Refund", "Issue refund",
+               "Liquidate"]
+MONEY_NOT_ASKED = ["Stock Transfer", "Material Transfer", "Make Purchase Receipt", "Post Date", "Delete row",
+                   "New Bank Transfer", "Bank Transfer Details", "Bank Transfer history", "Sell Price", "Selling Price",
+                   "Release Notes", "Release Date", "Sign off date", "Sign on", "Disbursement", "Trade history",
+                   "Refund policy"]
+
+
+class MovingMoneyAsks(unittest.TestCase):
+    def test_moving_money_trading_releasing_and_signing_off_ask(self):
+        for name in MONEY_ASKED:
+            with self.subTest(name=name):
+                self.assertEqual(approval.press_effect(control("button", name)), "asks")
+
+    def test_the_same_words_as_names_of_things_do_not(self):
+        for name in MONEY_NOT_ASKED:
+            with self.subTest(name=name):
+                self.assertIsNone(approval.assess("click", control("button", name)))
+
+    def test_stock_transfer_stays_a_record_type_in_a_menu(self):
+        for role in ("link", "menuitem"):
+            self.assertIsNone(approval.press_effect(control(role, "Stock Transfer")))
+            self.assertEqual(approval.press_effect(control(role, "Bank Transfer")), "asks")
+
+
+class KeysThatMoveTheKeyboardFirst(unittest.TestCase):
+    PAY = control("button", "Pay now")
+    SAVE = control("button", "Save")
+
+    def test_which_presses_come_after_a_move(self):
+        moved = approval.press_after_focus_move
+        self.assertEqual(moved(["Tab", "Return"]), "Return")
+        self.assertEqual(moved(["shift+Tab", "space"]), "space")
+        self.assertEqual(moved(["Tab+Return"]), "Tab+Return")
+        self.assertEqual(moved(["Down", "Down", "Enter"]), "Enter")
+        self.assertEqual(moved(["Escape", "Return"]), "Return")
+        self.assertEqual(moved(["Return", "Return"]), "Return")  # the first may open a dialog
+        self.assertEqual(moved(["Tab", "Return"], control("textbox", "Amount")), "Return")
+
+    def test_keys_that_stay_in_a_field_are_not_a_move(self):
+        moved = approval.press_after_focus_move
+        self.assertIsNone(moved(["Return"]))
+        self.assertIsNone(moved(["space"]))
+        self.assertIsNone(moved(["ctrl+a", "BackSpace", "Return"], control("textbox", "Amount")))
+        self.assertIsNone(moved(["h", "i", "space", "End", "Return"], control("textbox", "Amount")))
+        self.assertIsNone(moved(["Down", "Return"], control("searchbox", "Search")))
+        self.assertIsNone(moved(["Return", "Return"], control("document", "Body")))
+        self.assertIsNone(moved(["Tab"]))
+
+    def test_tab_then_return_where_a_pay_button_is_asks(self):
+        why = approval.assess("key", None, keys=["Tab", "Return"], context={"controls": [self.SAVE, self.PAY]})
+        self.assertIn("Pay now", why)
+        self.assertIsNotNone(approval.assess("key", None, keys=["Tab+Return"], context={"controls": [self.PAY]}))
+
+    def test_a_screen_with_nothing_to_commit_is_not_asked(self):
+        self.assertIsNone(approval.assess("key", None, keys=["Tab", "Return"], context={"controls": [self.SAVE]}))
+
+    def test_a_screen_not_known_is_taken_to_hold_one(self):
+        self.assertIsNotNone(approval.assess("key", None, keys=["Tab", "Return"], context={}))
+
+    def test_a_dialog_that_cannot_be_taken_back_counts(self):
+        yes = control("button", "Yes", path='dialog "Permanently delete INV-7?" > button "Yes"')
+        self.assertIsNotNone(approval.assess("key", None, keys=["Tab", "space"], context={"controls": [yes]}))
+
+    def test_leaving_a_search_box_in_a_chat_and_pressing_enter_sends(self):
+        search = control("searchbox", "Search messages")
+        chat = {"window": "Slack - Chromium", "focused": search, "controls": []}
+        self.assertIsNone(approval.assess("key", None, keys=["Return"], context=chat))
+        self.assertIsNotNone(approval.assess("key", None, keys=["Tab", "Return"], context=chat))
+
+    def test_a_single_return_in_an_editor_or_a_search_box_is_not_asked(self):
+        for field in (control("document", "Body"), control("searchbox", "Search")):
+            with self.subTest(role=field["role"]):
+                self.assertIsNone(approval.assess("key", field, keys=["Return"], context={"controls": [self.PAY]}))
+                self.assertIsNone(approval.assess("key", field, keys=["ctrl+a", "x", "Return"],
+                                                  context={"controls": [self.PAY]}))
+
+    def test_the_button_focused_before_tab_is_not_the_one_pressed(self):
+        save = control("button", "Save", states=["focused"])
+        before = {"elements": [save], "active_title": "Pay - Chromium", "page_url": ""}
+        self.assertIsNone(core._pressed_by_key("key", None, ["Tab", "Return"], before))
+        self.assertIs(core._pressed_by_key("key", None, ["Return", "Tab", "Return"], before), save)
+
+
+class KeysThroughAct(unittest.TestCase):
+    """core.act gives the gate the screen's controls when keys move the keyboard and then press."""
+
+    def act(self, keys, *elements):
+        page = {"elements": list(elements), "groups": [{"id": "g", "window_title": "Pay - Chromium", "source": "cdp",
+                                                       "url": "https://shop.test/pay"}],
+                "active_title": "Pay - Chromium", "frame": None, "size": [1280, 720], "windows": []}
+        seen = {}
+
+        class Stop(Exception):
+            pass
+
+        def check(kind, element, text=None, keys=None, point=None, context=None, require=None, **_):
+            seen["why"] = approval.assess(kind, element, text=text, keys=keys, context=context) or require
+            raise Stop()
+
+        with mock.patch.object(core, "observe", lambda *a, **k: page), \
+                mock.patch.object(core.audit, "record", lambda *a, **k: None), \
+                mock.patch.object(core, "_downloads_snapshot", lambda: None), \
+                mock.patch.object(core, "_refuse_unsafe_save", lambda *a: None), \
+                mock.patch.object(core, "_refuse_number_arrows", lambda *a: None), \
+                mock.patch.object(core, "_commit_check", lambda *a, **k: ""), \
+                mock.patch.object(core.cdp, "available", lambda: False), \
+                mock.patch.object(core, "_perform", mock.Mock(side_effect=AssertionError("pressed"))), \
+                mock.patch.object(approval, "check", check):
+            with self.assertRaises(Stop):
+                core.act("key", keys=keys, check_form=True)
+        return seen["why"]
+
+    def test_tab_and_return_in_one_call_on_a_page_with_pay_is_asked(self):
+        self.assertIn("Pay now", self.act(["Tab", "Return"], control("textbox", "Name", states=["focused"]),
+                                          control("button", "Pay now", ref="e2")))
+
+    def test_the_same_keys_on_a_page_that_only_saves_are_not(self):
+        self.assertIsNone(self.act(["Tab", "Return"], control("textbox", "Name", states=["focused"]),
+                                   control("button", "Save", ref="e2")))
+
+    def test_typing_and_return_in_a_field_are_not(self):
+        self.assertIsNone(self.act(["ctrl+a", "BackSpace", "Return"], control("textbox", "Name", states=["focused"]),
+                                   control("button", "Pay now", ref="e2")))
 
 
 if __name__ == "__main__":

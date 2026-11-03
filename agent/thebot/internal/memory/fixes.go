@@ -18,25 +18,42 @@ import (
 // write to, a worker that edits l1.db can plant one. What a planted one can do is bounded by the caller: a proven fix
 // still passes the command safety check (safety.AssessCommand) before it runs, so it can never run anything the
 // approval gate would have stopped.
+//
+// A yes is not an "always allow" (round-3 recheck): a proven fix stands only in the project it was approved in (its
+// scope, the build's folder) and only for ProvenFixMaxAge; after that, or anywhere else, the same failure asks again.
+// The first table kept fixes by failure alone, so a fix approved in one project ran without asking in every other,
+// forever; it is no longer read.
+
+// ProvenFixMaxAge is how long a person's yes to a fix stands for the same failure in the same project.
+const ProvenFixMaxAge = 30 * 24 * time.Hour
 
 // fixesSchema is the table the proven fixes are kept in, beside L1's facts.
 const fixesSchema = `
-CREATE TABLE IF NOT EXISTS approved_fixes (
-	signature TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS approved_fixes_scoped (
+	signature TEXT NOT NULL,
+	scope TEXT NOT NULL,
 	command TEXT NOT NULL,
-	approved_at INTEGER NOT NULL
+	approved_at INTEGER NOT NULL,
+	PRIMARY KEY (signature, scope)
 );
 `
 
 // ErrNoSignature is why a proven fix was not recorded: without the failure it was for, it would answer any failure.
 var ErrNoSignature = errors.New("l1: a proven fix needs the failure signature it was for")
 
-// RecordProvenFix keeps command as the proven fix for the failure signature: a person approved exactly this command
-// for it, it ran, and the check that had failed then passed. A secret-shaped command is not kept.
-func (l *L1) RecordProvenFix(ctx context.Context, signature, command string) error {
-	signature, command = strings.TrimSpace(signature), strings.TrimSpace(command)
+// ErrNoScope is why a proven fix was not recorded: without the project it was approved in, it would stand in all.
+var ErrNoScope = errors.New("l1: a proven fix needs the project it was approved in")
+
+// RecordProvenFix keeps command as the proven fix for the failure signature in scope (the project): a person approved
+// exactly this command for it there, it ran, and the check that had failed then passed. A secret-shaped command is not
+// kept.
+func (l *L1) RecordProvenFix(ctx context.Context, signature, scope, command string) error {
+	signature, scope, command = strings.TrimSpace(signature), strings.TrimSpace(scope), strings.TrimSpace(command)
 	if signature == "" {
 		return ErrNoSignature
+	}
+	if scope == "" {
+		return ErrNoScope
 	}
 	if command == "" || LooksSecret(command) {
 		return ErrSecret
@@ -45,27 +62,46 @@ func (l *L1) RecordProvenFix(ctx context.Context, signature, command string) err
 		return err
 	}
 	_, err := l.db.ExecContext(ctx,
-		`INSERT INTO approved_fixes (signature, command, approved_at) VALUES (?, ?, ?)
-		 ON CONFLICT(signature) DO UPDATE SET command = excluded.command, approved_at = excluded.approved_at`,
-		signature, command, time.Now().Unix())
+		`INSERT INTO approved_fixes_scoped (signature, scope, command, approved_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(signature, scope) DO UPDATE SET command = excluded.command, approved_at = excluded.approved_at`,
+		signature, scope, command, time.Now().Unix())
 	return err
 }
 
-// ProvenFix returns the proven fix recorded for exactly this failure signature, or "" when there is none.
-func (l *L1) ProvenFix(ctx context.Context, signature string) (string, error) {
-	signature = strings.TrimSpace(signature)
-	if signature == "" {
+// ProvenFix returns the proven fix recorded for exactly this failure signature in scope, approved within
+// ProvenFixMaxAge, or "" when there is none.
+func (l *L1) ProvenFix(ctx context.Context, signature, scope string) (string, error) {
+	signature, scope = strings.TrimSpace(signature), strings.TrimSpace(scope)
+	if signature == "" || scope == "" {
 		return "", nil
 	}
 	if err := l.ensureFixes(ctx); err != nil {
 		return "", err
 	}
 	var command string
-	err := l.db.QueryRowContext(ctx, `SELECT command FROM approved_fixes WHERE signature = ?`, signature).Scan(&command)
+	var at int64
+	err := l.db.QueryRowContext(ctx, `SELECT command, approved_at FROM approved_fixes_scoped WHERE signature = ? AND scope = ?`,
+		signature, scope).Scan(&command, &at)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
-	return command, err
+	if err != nil {
+		return "", err
+	}
+	if age := time.Since(time.Unix(at, 0)); age > ProvenFixMaxAge || age < -time.Hour {
+		return "", nil
+	}
+	return command, nil
+}
+
+// AgeProvenFix moves a proven fix's approval back by d (for tests of its expiry).
+func (l *L1) AgeProvenFix(ctx context.Context, signature, scope string, d time.Duration) error {
+	if err := l.ensureFixes(ctx); err != nil {
+		return err
+	}
+	_, err := l.db.ExecContext(ctx, `UPDATE approved_fixes_scoped SET approved_at = approved_at - ? WHERE signature = ? AND scope = ?`,
+		int64(d.Seconds()), signature, scope)
+	return err
 }
 
 // ensureFixes creates the proven-fix table on first use.

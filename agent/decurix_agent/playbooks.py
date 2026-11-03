@@ -104,7 +104,7 @@ TYPES = re.compile(r"^\s*gui\s+(type|select)\b")
 
 _lock = threading.Lock()
 _run = {"segments": [], "turns": 0, "offered": None, "said": False, "paused": False, "declined": False,
-        "answered": False}
+        "answered": False, "shell": []}
 
 
 # ============================================================
@@ -265,7 +265,8 @@ def begin():
     """A new task: nothing of the last one's commands or playbook carries over."""
 
     with _lock:
-        _run.update(segments=[], turns=0, offered=None, said=False, paused=False, declined=False, answered=False)
+        _run.update(segments=[], turns=0, offered=None, said=False, paused=False, declined=False, answered=False,
+                    shell=[])
 
 
 def note_job(job):
@@ -307,15 +308,72 @@ def ran_commands():
 # A command that can change something outside the engine's own memory: a redirect into a file, a program whose job is
 # to write, move, delete, install, send or run a script. A shell-only task that ran one has side effects nothing
 # read back (review 2026-11-03: such a task returned early at the final gate and went out unchecked).
+#
+# Round-3 recheck: every python3, curl and git counted, so read-only answers ("git status", "curl -s URL", "python3 -c
+# 'print(...)'") went to the final check and came back "Not checked". Those three now count only when they write:
+# git by its subcommand, curl when it sends or saves, an interpreter when its code is not plainly read-only (a script
+# file the check cannot see always counts). Anything not plainly read-only still counts.
 CHANGES_THINGS = re.compile(
-    r"(?<![<>&0-9])>>?(?!&)|\b(tee|touch|mkdir|cp|mv|rm|rmdir|ln|install|dd|truncate|chmod|chown|unzip|tar|wget|curl|"
-    r"sed\s+-i|perl|python3?|node|ruby|sh|bash|git|apt(-get)?|pip3?|npm|office|sqlite3|sendmail|mail|scp|rsync|ssh)\b")
+    r"(?<![<>&0-9])>>?(?!&)(?!\s*/dev/null)|\b(tee|touch|mkdir|cp|mv|rm|rmdir|ln|install|dd|truncate|chmod|chown|"
+    r"unzip|zip|tar|wget|sed\s+-i|apt(-get)?|pip3?|npm|sqlite3|psql|mysql|sendmail|mail|scp|rsync|ssh|kill|pkill|"
+    r"xdotool|soffice|libreoffice)\b|\boffice\s+(?!read\b)\S")
+_GIT_READS = {"status", "log", "diff", "show", "rev-parse", "ls-files", "grep", "blame", "describe", "shortlog",
+              "cat-file", "ls-tree", "reflog", "help", "version"}
+_GIT = re.compile(r"\bgit((?:\s+-[-\w]+(?:[ =](?!-)\S+)?)*)\s+([a-z][-a-z]*)(\s+[^;&|\n]*)?")
+_CURL_WRITES = re.compile(r"(?:^|\s)(?:-[a-zA-Z]*[dFTOo][a-zA-Z]*\b|--data\S*|--form\S*|--json|--upload-file|--output"
+                          r"|--remote-name\S*|-X\s*(?:POST|PUT|PATCH|DELETE)|--request\s+(?:POST|PUT|PATCH|DELETE))")
+_INTERPRETER = re.compile(r"(?:^|[;&|(`]|\$\(|\s)\s*(?:sudo\s+|env\s+)?(?:\S*/)?(python[0-9.]*|node|nodejs|ruby|perl|php"
+                          r"|bash|sh|zsh)(?=\s|$|;|\|)")
+_INLINE_CODE = re.compile(r"\b(?:python[0-9.]*|node|nodejs|ruby|perl|php|bash|sh|zsh)\s+(?:-[a-zA-Z]*[ceE]\b|-\s*<<|<<)")
+_CODE_WRITES = re.compile(
+    r"open\s*\(|\.write|\bos\.|shutil|subprocess|requests|urllib|http\.client|socket|pathlib|Path\s*\(|\.to_(?:csv|excel|"
+    r"json|parquet)|\.save\s*\(|json\.dump\b|pickle\.dump|\bunlink|\bremove|\brmdir|\bmkdir|\brename|smtplib|sqlite3"
+    r"|\bfs\.|writeFile|child_process|\bexec|\bsystem\b|\bFile\.|\bIO\.|`|\$\(|\brm\b")
+
+
+def _changes(command):
+    """Whether one command an engine ran could have changed something (see CHANGES_THINGS)."""
+
+    command = command or ""
+    if CHANGES_THINGS.search(command):
+        return True
+    for m in _GIT.finditer(command):
+        sub, rest = m.group(2), m.group(3) or ""
+        if sub not in _GIT_READS and not (sub == "branch" and not re.search(r"\s-[dDmMcC]\b|--(delete|move|copy)", rest)
+                                          ) and not (sub in ("remote", "config", "stash", "tag") and
+                                                     re.fullmatch(r"\s*(-v|--list|-l|--get\S*\s+\S+|list|show\s.*)?\s*",
+                                                                  rest or "")):
+            return True
+    if re.search(r"\bcurl\b", command) and _CURL_WRITES.search(command):
+        return True
+    if _INTERPRETER.search(command):
+        # Inline code that plainly only reads and prints is not a change; a script file, or code that writes, runs a
+        # program or reaches the network, is.
+        if not _INLINE_CODE.search(command) or _CODE_WRITES.search(command):
+            return True
+    return False
+
+
+def note_command(command):
+    """A shell command an engine ran in this task, whichever engine (its own runner calls this): the final gate's
+    "could this have changed something" sees every engine's commands, not only TheBot's (round-3 recheck)."""
+
+    command = " ".join(str(command or "").split())
+    if command:
+        with _lock:
+            if len(_run["shell"]) < 500:
+                _run["shell"].append(command)
 
 
 def changed_things(commands=None):
-    """The commands among `commands` (the task's own when None) that could have changed something."""
+    """The commands among `commands` (the task's own, from every engine, when None) that could have changed
+    something."""
 
-    return [c for c in (ran_commands() if commands is None else commands) if CHANGES_THINGS.search(c or "")]
+    if commands is None:
+        with _lock:
+            shell = list(_run["shell"])
+        commands = ran_commands() + shell
+    return [c for c in commands if _changes(c)]
 
 
 def use(ok, commands):

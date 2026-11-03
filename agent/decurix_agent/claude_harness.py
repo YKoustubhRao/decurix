@@ -223,6 +223,13 @@ def _emit_event(event):
             # other engines produce. A second line here would only repeat them.
             if (block.get("name") or "").startswith("mcp__computer__"):
                 continue
+            if block.get("name") == "Bash":
+                # The final check reads what shell work could have changed (playbooks.changed_things).
+                try:
+                    from decurix_agent import playbooks
+                    playbooks.note_command((block.get("input") or {}).get("command") or "")
+                except Exception:  # noqa: BLE001 - noting it is for the final check only
+                    pass
             progress.emit(_describe_tool(block))
 
 

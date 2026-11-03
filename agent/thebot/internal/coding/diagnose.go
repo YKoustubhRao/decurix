@@ -375,12 +375,21 @@ func matchKnownFix(failure string, d *Design, env *EnvFacts, tc *Toolchain) (Dia
 	return Diagnosis{}, false
 }
 
-// provenFix is the proven fix recorded for the failure signature sig, as a diagnosis to run.
+// fixScope is the project a proven fix stands in: the build's own folder ("" when there is none, and then no fix is
+// kept or read back).
+func (h *Harness) fixScope() string {
+	if h.Workspace == nil {
+		return ""
+	}
+	return h.Workspace.Root()
+}
+
+// provenFix is the proven fix recorded for the failure signature sig in this project, as a diagnosis to run.
 func (h *Harness) provenFix(ctx context.Context, sig string) (Diagnosis, bool) {
 	if h.L1 == nil || sig == "" {
 		return Diagnosis{}, false
 	}
-	command, err := h.L1.ProvenFix(ctx, sig)
+	command, err := h.L1.ProvenFix(ctx, sig, h.fixScope())
 	if err != nil || command == "" {
 		return Diagnosis{}, false
 	}
@@ -621,7 +630,7 @@ func (h *Harness) provenStill(diag Diagnosis) bool {
 	if !diag.proven || h.L1 == nil || len(diag.FixCommands) != 1 {
 		return false
 	}
-	command, err := h.L1.ProvenFix(context.Background(), diag.Signature)
+	command, err := h.L1.ProvenFix(context.Background(), diag.Signature, h.fixScope())
 	if err != nil || command == "" || command != diag.FixCommands[0] {
 		return false
 	}
@@ -659,7 +668,7 @@ func (h *Harness) settleLearning(ctx context.Context, passed bool) {
 	// The exact command the person approved, which then worked, runs again
 	// for the same failure without asking (provenFix).
 	if approved && h.L1 != nil && diag.Signature != "" {
-		if err := h.L1.RecordProvenFix(ctx, diag.Signature, diag.Action()); err != nil {
+		if err := h.L1.RecordProvenFix(ctx, diag.Signature, h.fixScope(), diag.Action()); err != nil {
 			h.logf("coding: could not keep the fix you approved for next time: %s", err.Error())
 		}
 	}

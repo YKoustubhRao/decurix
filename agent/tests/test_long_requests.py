@@ -1669,6 +1669,26 @@ class LongRun(LongRunBase):
             self.message("yes")
             kept.assert_not_called()
 
+    def test_with_a_gate_only_the_gates_reading_is_kept_as_an_approval(self):
+        # Round-3 recheck: a reply-named file still made "You approved". With a gate, only a reply the gate read (the
+        # person's signed copy) is kept, with the gate's decision.
+        from decurix_agent.computer import approval
+        long_task._run = {"run_id": "x", "task_id": TASK, "task_file": None, "request": LONG}
+        (self.runner.root / "x").mkdir()
+        for gate_said, kept_with in ((None, None), ({"decision": "no", "condition": ""}, "no")):
+            state.waiting_for_query, state.last_query_kind = True, "approval"
+            with mock.patch.object(long_task, "_approval_as_decision") as kept, \
+                    mock.patch("decurix_agent.watchers.answer_waiting"), \
+                    mock.patch.object(approval, "remote", return_value=True), \
+                    mock.patch.object(approval, "read_reply", return_value="yes"), \
+                    mock.patch.object(approval, "pending", return_value=None), \
+                    mock.patch.object(approval, "gate_reading", return_value=gate_said):
+                self.message("yes", reply=True)
+            if kept_with is None:
+                kept.assert_not_called()
+            else:
+                self.assertEqual(kept.call_args.kwargs["said"]["decision"], kept_with)
+
     def test_stop_stops_and_reports_where_it_stands(self):
         self.engine.asks["s1-register"] = "Which rate?"
         long_task.perform(LONG, None)

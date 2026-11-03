@@ -57,6 +57,13 @@ go test -tags e2e -run TestAPhoneAppIsButtonsInARealDesktop ./internal/httpapi/ 
                                                   # approval gate in a real desktop's Chromium (fake phone; Docker, ~2 min)
 python3 bench/gui/run.py --engine oracle --container desktop_<id>   # GUI benchmark, no model
 python3 bench/gui/run.py --engine ollama --engine thebot --engine claude  # per-engine success rate
+sh bench/security/boundary.sh [--image decurix-desktop:basic] [--layer]   # the approval gate's boundary on an image:
+                                                  # every self-approval attack of the security reviews (root on restart,
+                                                  # the key in an environment, forged and misbound replies). Run on every
+                                                  # new image; --layer puts this checkout's entrypoint and agent on top
+                                                  # first. Linux Docker as root (the Decurix distro: wsl -d Decurix -u root
+                                                  # -- sh /mnt/c/.../bench/security/boundary.sh --layer); one throwaway
+                                                  # desktop, ~2 min
 ```
 
 `scripts/` is split by who runs it: `mac/` (`setup.sh`, `build-images.sh`, `build.sh`, `rebuild.sh`, `quickstart.sh`, `test-vm.sh`, with `lib/`), `linux/` (`setup.sh`, `build-images.sh`, `build.sh`, `rebuild.sh`, `quickstart.sh`, `test-vm.sh`, with `lib/`), `windows/` (the same as `.ps1`, with `lib/Ollama-Setup.ps1`), and `release/` (`release.sh` + `release.ps1`). Each `.sh` has a `.ps1` twin at the same position in the other directory — they are hand-maintained, not generated from each other, so a change to one needs the same change to the other; the `lib/` sharing is within a platform only; `build.sh`/`build.ps1` and `rebuild.sh`/`rebuild.ps1` each source it independently rather than duplicating the ~200-line "find an Ollama the desktops can reach" logic. Every script resolves the repo root from its own location, never from `$PWD`.

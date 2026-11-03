@@ -85,14 +85,30 @@ def bank_columns(header):
     labels = [str(h or "") for h in header]
     has_bank = any(_BANK_DETAIL.search(h) or re.search(r"\b(?:bank|branch)\b", h, re.I) for h in labels)
     has_payee = any(PAYEE_COLUMN.search(h) or re.search(r"\bholder\b", h, re.I) for h in labels)
+    # Someone who is paid, not only billed: a customer's account beside sales figures is a report's, not a payment's.
+    pays_someone = any((PAYEE_COLUMN.search(h) or re.search(r"\bholder\b", h, re.I))
+                       and not re.search(r"\bcustomers?\b", h, re.I) for h in labels)
     cols = []
     for i, h in enumerate(labels):
         if _BANK_DETAIL.search(h):
             cols.append(i)
         elif _ACCOUNT_WORD.search(h) and not _LEDGER_ACCOUNT.search(h):
-            if _BANK_ACCOUNT.search(h) or has_bank or (has_payee and _ACCOUNT_NUMBER.search(h)):
+            if (_BANK_ACCOUNT.search(h) or has_bank or (has_payee and _ACCOUNT_NUMBER.search(h))
+                    or (pays_someone and _bare_account(h))):
                 cols.append(i)
     return cols
+
+
+_BARE_ACCOUNT_WORDS = {"a", "c", "ac", "acc", "acct", "account", "no", "number", "num"}
+
+
+def _bare_account(label):
+    """Whether a label is an account and nothing else ("A/c", "Acct", "Account", "Account No"). Beside a column of who
+    is paid it is that payee's bank account (round-3 recheck: "Payee, A/c, Amount" and "Party, Account, Amount" were no
+    longer read as payment files, so a wrong account went through unchecked)."""
+
+    words = re.findall(r"[a-z]+", str(label or "").lower())
+    return bool(words) and all(w in _BARE_ACCOUNT_WORDS for w in words)
 
 
 def payment_table(header):

@@ -1,3 +1,5 @@
+import os
+import posixpath
 import re
 import subprocess
 
@@ -31,7 +33,8 @@ _RM_RECURSIVE = re.compile(
 # look like these: `python3 script.py`, `grep x | sort`, `echo "$(date)"` all run.
 _COMMAND_START = r"(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+|\b(?:then|do|else)\s+)"
 _UNREADABLE = (
-    (re.compile(_COMMAND_START + r"(?:\$\{?\w+\}?|\$\(|`)", re.MULTILINE),
+    # ($HOME/bin/tool and $PWD/tool are paths, not a program chosen at run time: round-3 recheck.)
+    (re.compile(_COMMAND_START + r"(?:\$(?!(?:HOME|PWD)/|\{(?:HOME|PWD)\}/)\{?\w+\}?|\$\(|`)", re.MULTILINE),
      "it runs a program named by a variable or a substitution, which cannot be checked"),
     (re.compile(_COMMAND_START + r"eval\b", re.MULTILINE), "it runs text built at run time (eval)"),
     (re.compile(r"\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:env\s+(?:\S+=\S*\s+)*)?(?:/\S*/)?(?:ba|z|da|k|c)?sh(?:\s+-s?)?\s*(?:$|[;&|)\n])",
@@ -44,8 +47,38 @@ _UNREADABLE = (
                 r"(?:rmtree|os\.(?:remove|unlink|rmdir|removedirs|system|popen|exec\w*)|\bunlink\b|\bsystem\s*\(|"
                 r"subprocess|execSync|child_process|\brm\s+-)", re.IGNORECASE),
      "an interpreter's inline code deletes files or runs commands, which cannot be checked"),
-    (re.compile(r"\bfind\b[^;&|\n]*-exec(?:dir)?\s+(?:/\S*/)?rm\b[^;&|\n]*"), "find runs rm on everything it matches"),
 )
+
+# find running rm on what it matches, from where it starts: inside the work folder (a relative path, or none - find
+# starts where the command runs, the work folder) it is ordinary clean-up; anywhere else the matches cannot be checked.
+_FIND_RM = re.compile(r"\bfind\b([^;&|\n]*?)-exec(?:dir)?\s+(?:/\S*/)?rm\b")
+
+
+def _in_work_folder(start):
+    """Whether a path find starts from is the work folder or inside it."""
+
+    start = start.strip("'\"")
+    if not start.startswith(("/", "~", "$")):
+        return ".." not in start.split("/")
+    home = os.environ.get("HOME") or posixpath.expanduser("~")
+    path = re.sub(r"^(?:\$\{HOME\}|\$HOME|~)(?=/|$)", lambda _: home, start)
+    if "$" in path or "~" in path:
+        return False
+    path = posixpath.normpath(path)
+    work = posixpath.normpath(str(config.WORK_DIR).replace("\\", "/"))
+    return path == work or path.startswith(work + "/")
+
+
+def _find_rm_outside_work(text):
+    for m in _FIND_RM.finditer(text or ""):
+        starts = []
+        for word in m.group(1).split():
+            if word.startswith(("-", "(", "!", "\\(")):
+                break
+            starts.append(word)
+        if any(not _in_work_folder(s) for s in starts):
+            return True
+    return False
 
 _OTHER_DANGEROUS = (
     (re.compile(r"--no-preserve-root"), "it disables rm's protection for the filesystem root"),
@@ -88,6 +121,8 @@ def dangerous_reason(command):
         # The inline-code and find rules read the text as written (the code is inside the quotes).
         if pattern.search(text if reason.startswith(("an interpreter", "find ")) else code):
             return reason
+    if _find_rm_outside_work(text):
+        return "find runs rm on everything it matches outside the work folder"
 
     return None
 
@@ -122,6 +157,11 @@ def run_command(command, timeout=120):
     """
 
     log(f"Executing command: {command}")
+    try:
+        from decurix_agent import playbooks
+        playbooks.note_command(command)
+    except Exception:  # noqa: BLE001 - noting it is for the final check; the command still runs
+        pass
 
     try:
         process = subprocess.run(

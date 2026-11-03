@@ -1446,8 +1446,12 @@ def _succeed(run, result, checked_by, seen="", helped=False):
         decided = verify.outcome({"verdict": verify.DONE, "seen": seen} if not problems else
                                  {"verdict": verify.NOT_DONE, "seen": "; ".join(problems)}, problems, not_made)
         if decided["status"] != verify.DONE:
-            _own_run(run, False)
-            _record_verdict(run, False, why=decided["why"])
+            # A run the check could not make is not checked, which is neither a pass nor a failure: it counts for
+            # nothing (round-3 recheck: counted as a failure, a skill whose files cannot all be read back never
+            # matured). Only a run whose files do not hold up is one.
+            if decided["status"] == verify.NOT_DONE:
+                _own_run(run, False)
+                _record_verdict(run, False, why=decided["why"])
             head = ("Not done - the files it wrote do not hold up: " if decided["status"] == verify.NOT_DONE
                     else "Not checked - ")
             write_final_reply(f"{head}{decided['why']}" + chr(10) * 2 + text, kind=decided["kind"], engine=SKILL_ENGINE,

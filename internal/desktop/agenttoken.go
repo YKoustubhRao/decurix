@@ -58,9 +58,11 @@ func (m *Manager) withScreenPassword(env []string, id string) []string {
 	return append(out, "VNC_PW="+m.screenPassword(id))
 }
 
-// GateKeyEnv is the environment variable the container's entrypoint reads the approval key from. It is given to the
-// approval gate's own process only and removed from everything else's environment (agent/decurix-entrypoint.sh).
-const GateKeyEnv = "DECURIX_GATE_KEY"
+// GateKeyFile is where a new desktop's approval key is put before its first start: a root-only file (0400 in a 0700
+// directory) that the entrypoint moves into the gate's own directory (agent/decurix-entrypoint.sh). It is never in the
+// container's environment: every `docker exec` inherits that, and a worker that can get the control plane to exec as
+// it (the memory route) could read the key from there (round-3 recheck).
+const GateKeyFile = "/etc/decurix-gate/key"
 
 // GatePort is where a desktop's approval gate listens for the control plane's signed replies.
 const GatePort = "8083"

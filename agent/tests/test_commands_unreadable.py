@@ -53,6 +53,23 @@ class AskedAbout(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIsNone(dangerous_reason(command), command)
 
+    def test_round3_over_asking_is_gone_and_its_neighbours_still_ask(self):
+        from unittest import mock
+        from decurix_agent import commands
+        with mock.patch.object(commands.config, "WORK_DIR", "/home/headless/work"), \
+                mock.patch.dict("os.environ", {"HOME": "/home/headless"}):
+            for command in ("$HOME/bin/tool --help", "${HOME}/.local/bin/x run", "$PWD/run.sh",
+                            "find . -name '*.tmp' -exec rm {} \\;", "find build -type f -exec rm -f {} +",
+                            "find ~/work/out -name '*.bak' -exec rm {} \\;", "find -name '*.pyc' -exec rm {} +",
+                            "find /home/headless/work/tmp -exec rm -rf {} +"):
+                with self.subTest(command=command):
+                    self.assertIsNone(dangerous_reason(command), command)
+            for command in ("$X/rm -rf ~", "$TOOL --wipe", "find ~ -name x -exec rm {} \\;",
+                            "find /home/headless -exec rm {} +", "find ../.. -exec rm {} +",
+                            "find ~/work/../.ssh -exec rm {} +", "find $DIR -exec rm {} +"):
+                with self.subTest(command=command):
+                    self.assertTrue(dangerous_reason(command), command)
+
 
 if __name__ == "__main__":
     unittest.main()

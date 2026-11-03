@@ -101,6 +101,13 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		// CachedInputTokens is the part of InputTokens the provider served
 		// from its prompt cache.
 		CachedInputTokens *int64 `json:"cached_input_tokens"`
+
+		// Gate is the approval gate's own question for the action it holds, signed by the gate (an approval only).
+		Gate *struct {
+			ID       string `json:"id"`
+			Question string `json:"question"`
+			Sig      string `json:"sig"`
+		} `json:"gate"`
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxQueryTextRequestBytes)
@@ -167,6 +174,16 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	// The kind is what lets a later reply resolve this note: only a query or
 	// an approval is answered by one.
 	note.Kind = outcomeKindFor(req.Kind, chatKind)
+
+	// An approval the gate worded: the person is shown the gate's words first, and their reply is bound to that
+	// request. The worker's own text follows, said to be the worker's.
+	if note.Kind == querynotes.KindApproval && req.Gate != nil &&
+		s.Desktops.VerifyGateQuestion(desktopID, req.Gate.ID, req.Gate.Question, req.Gate.Sig) {
+		question := strings.Join(strings.Fields(req.Gate.Question), " ")
+		note.GateRequest, note.GateQuestion = req.Gate.ID, question
+		note.Content = withGateQuestion(question, note.Content)
+		chatText = withGateQuestion(question, chatText)
+	}
 
 	if !req.Quiet && note.Kind != tasks.OutcomeDone {
 		s.QueryNotes.Add(note)
@@ -336,4 +353,14 @@ func cachedWithin(cached, input *int64) *int64 {
 		return &v
 	}
 	return cached
+}
+
+// withGateQuestion is an approval's text with the gate's own question first and the worker's words after it, marked as
+// the worker's (or the gate's words alone when the worker's only repeat them).
+func withGateQuestion(question, worker string) string {
+	worker = strings.TrimSpace(worker)
+	if worker == "" || strings.Join(strings.Fields(worker), " ") == question {
+		return question
+	}
+	return question + "\n\nThe worker's note: " + worker
 }

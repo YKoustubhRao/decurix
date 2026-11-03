@@ -66,9 +66,25 @@ type Checkpoint struct {
 	Replans   int
 	UsedSkill string
 	CreatedAt time.Time
+	// GateRequest and GateFingerprint are the approval gate's request for this paused approval, when the desktop has
+	// a gate (soul's gate.go): the reply that resumes it is the gate's settlement of that one request.
+	GateRequest     string
+	GateFingerprint string
 
 	nodes []node
 	seq   int
+}
+
+// Approval reports what a paused approval is for: the command a step stopped on, or the whole request (command
+// empty). ok is false when the job is not waiting on an approval.
+func (c *Checkpoint) Approval() (command, request string, ok bool) {
+	if c == nil || c.Kind != pauseApproval {
+		return "", "", false
+	}
+	if c.Action == requestAction {
+		return "", c.Prompt, true
+	}
+	return c.Action, "", true
 }
 
 type pause struct {

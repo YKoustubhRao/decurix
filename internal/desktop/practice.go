@@ -646,7 +646,7 @@ func (m *Manager) ResetPractice(ctx context.Context, id string, snapshot []byte)
 
 // practiceExec runs a command as the desktop's user and waits for it to end.
 func (m *Manager) practiceExec(ctx context.Context, id string, cmd []string) error {
-	created, err := m.client.ContainerExecCreate(ctx, id, container.ExecOptions{Cmd: cmd, User: "headless"})
+	created, err := m.client.ContainerExecCreate(ctx, id, container.ExecOptions{Cmd: workerCmd(cmd...), User: "headless"})
 	if err != nil {
 		return err
 	}

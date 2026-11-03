@@ -207,6 +207,16 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
         "engine": engine or config.AGENT_HARNESS,
     }
 
+    if kind == "approval":
+        # The approval gate words and signs the question for the action it holds; the control plane shows the person
+        # those words and binds their reply to that request. Without it a reply to this note grants nothing.
+        try:
+            from decurix_agent.computer import approval
+            gate = approval.signed_question()
+        except Exception:  # noqa: BLE001 - no gate's question: the note still goes, and its reply grants nothing
+            gate = None
+        if gate:
+            payload["gate"] = gate
     if quiet:
         payload["quiet"] = True
     if interrupted:

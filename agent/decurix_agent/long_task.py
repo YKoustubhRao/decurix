@@ -5799,8 +5799,14 @@ def _take_message(content, path, about_this=False):
     decides = (waiting and waiting_kind == "approval" and watchers.is_reply_file(path.name)
                and approval.read_reply(content, (approval.pending() or {}).get("action") or state.last_query_text) != "unclear")
     if decides:
+        # With an approval gate, "You approved" is kept only from the gate's own reading of the person's signed reply:
+        # a file named like a reply is the worker's to write (round-3 recheck). Without a gate, as before.
+        said = approval.gate_reading(content) if approval.remote() else None
         try:
-            _approval_as_decision(run_id, content)
+            if not approval.remote() or (said and said.get("decision") in ("yes", "if", "no")):
+                _approval_as_decision(run_id, content, said=said)
+            else:
+                log("long_task: the approval gate did not read this reply; it is not kept as a decision")
         except Exception as exc:  # noqa: BLE001 - keeping it as a decision is extra; the gate's answer goes on
             log(f"long_task: could not keep the approval as a decision: {exc}")
         _answered_whole(run_id)
@@ -6157,7 +6163,7 @@ def _decided(run_state, step_id):
     return any(d.get("stage") == step_id for d in ledger(run_state["run_id"])["decisions"])
 
 
-def _approval_as_decision(run_id, reply):
+def _approval_as_decision(run_id, reply, said=None):
     """
     An approval asked during a decision stage that the person answered yes or no: kept as that stage's decision, so
     the stage's check finds it (belt and braces - such a stage asks a question, take_question). The approval itself is
@@ -6175,9 +6181,9 @@ def _approval_as_decision(run_id, reply):
         step = steps.get(q["stage"])
         if not step or not step.get("decision") or _decided(run_state, q["stage"]):
             continue
-        said = {"yes": "approved", "if": "approved only once a condition holds"}.get(
-            approval.read_reply(reply, q.get("text") or ""), "declined")
-        answer = f"You {said}: \"{' '.join(str(reply).split())[:300]}\""
+        decision = (said or {}).get("decision") or approval.read_reply(reply, q.get("text") or "")
+        verdict = {"yes": "approved", "if": "approved only once a condition holds"}.get(decision, "declined")
+        answer = f"You {verdict}: \"{' '.join(str(reply).split())[:300]}\""
 
         def add(d, q=q, answer=answer):
             d["decisions"].append({"stage": q["stage"], "question": q["text"], "answer": answer, "at": time.time()})

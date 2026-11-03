@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"thebot/internal/memory"
 )
@@ -165,6 +166,7 @@ func TestAnApprovedFixThatWorkedRunsAgainForTheSameFailure(t *testing.T) {
 	// A later build: nobody approves anything, the same failure comes back.
 	h2, r2, _ := newProposalHarness(t)
 	h2.L1 = l1
+	h2.Workspace, r2.Dir = h.Workspace, r.Dir // the same project
 	got := h2.Diagnose(ctx, failure, &Design{}, &EnvFacts{}, &Toolchain{})
 	if got.Action() != diag.Action() || !got.proven {
 		t.Fatalf("Diagnose = %+v, want the proven fix", got)
@@ -179,6 +181,7 @@ func TestAnApprovedFixThatWorkedRunsAgainForTheSameFailure(t *testing.T) {
 	// The record no longer holds this command (edited, or replaced): it asks.
 	h3, r3, _ := newProposalHarness(t)
 	h3.L1 = l1
+	h3.Workspace, r3.Dir = h.Workspace, r.Dir
 	edited := got
 	edited.FixCommands = []string{"echo other > ran-it.txt"}
 	if h3.applyFix(ctx, r3, edited, &BuildReport{}) || h3.pending == nil {
@@ -186,11 +189,12 @@ func TestAnApprovedFixThatWorkedRunsAgainForTheSameFailure(t *testing.T) {
 	}
 
 	// A proven fix that trips the command safety check asks every time.
-	if err := l1.RecordProvenFix(ctx, "E: other", "git push origin main"); err != nil {
+	if err := l1.RecordProvenFix(ctx, "E: other", h.fixScope(), "git push origin main"); err != nil {
 		t.Fatal(err)
 	}
 	h4, r4, _ := newProposalHarness(t)
 	h4.L1 = l1
+	h4.Workspace, r4.Dir = h.Workspace, r.Dir
 	push, ok := h4.provenFix(ctx, "E: other")
 	if !ok {
 		t.Fatal("no proven fix read back")
@@ -218,7 +222,34 @@ func TestOnlyAPersonsYesMakesAProvenFix(t *testing.T) {
 		t.Fatal("a table fix did not run")
 	}
 	h.settleLearning(ctx, true)
-	if got, _ := l1.ProvenFix(ctx, "E: x"); got != "" {
+	if got, _ := l1.ProvenFix(ctx, "E: x", h.fixScope()); got != "" {
 		t.Fatalf("a fix nobody approved was recorded as approved: %q", got)
+	}
+}
+
+// Round-3 recheck: a proven fix was an "always allow" - it stood in every project, forever. It stands only in the
+// project it was approved in, and only for memory.ProvenFixMaxAge.
+func TestAProvenFixStandsOnlyInItsProjectAndForAWhile(t *testing.T) {
+	ctx := context.Background()
+	h, _, l1 := newProposalHarness(t)
+	if err := l1.RecordProvenFix(ctx, "E: y", h.fixScope(), "echo fixed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := h.provenFix(ctx, "E: y"); !ok {
+		t.Fatal("the fix was not read back in its own project")
+	}
+	other, _, _ := newProposalHarness(t)
+	other.L1 = l1
+	if _, ok := other.provenFix(ctx, "E: y"); ok {
+		t.Fatal("a fix approved in one project ran without asking in another")
+	}
+	if err := l1.RecordProvenFix(ctx, "E: y", "", "echo fixed"); err == nil {
+		t.Fatal("a fix with no project was kept")
+	}
+	if err := l1.AgeProvenFix(ctx, "E: y", h.fixScope(), memory.ProvenFixMaxAge+time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := h.provenFix(ctx, "E: y"); ok {
+		t.Fatal("a yes older than ProvenFixMaxAge still stood")
 	}
 }

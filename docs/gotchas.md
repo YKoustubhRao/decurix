@@ -856,3 +856,10 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): A yes now exists only in a process the worker cannot touch: signed replies to a separate gate user
 - [part-5.md](gotchas/part-5.md): The agent's shell net now fails closed on what it cannot read
 - [part-5.md](gotchas/part-5.md): A long run kept "You approved" for any file in the command folder
+- [part-5.md](gotchas/part-5.md): The entrypoint ran as root through the worker's PATH and the worker's hard links
+- [part-5.md](gotchas/part-5.md): The gate's key in the container's environment reached every docker exec
+- [part-5.md](gotchas/part-5.md): A yes was tied to wording, not to the action
+- [part-5.md](gotchas/part-5.md): A bare shell in a root docker exec runs the worker's code
+- [part-5.md](gotchas/part-5.md): Read-only answers and shell clean-up were over-asked
+- [part-5.md](gotchas/part-5.md): Proven fixes were an always-allow
+- [part-5.md](gotchas/part-5.md): Bare account columns stopped making a payment file

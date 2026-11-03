@@ -33,6 +33,12 @@ type QueryNote struct {
 	// ResolutionManual when a person marked it resolved.
 	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 	Resolution string     `json:"resolution,omitempty"`
+
+	// GateRequest and GateQuestion are set on an approval whose question the desktop's approval gate worded and
+	// signed (desktop.VerifyGateQuestion): the gate's request id and its words. A reply to this note is signed to the
+	// gate with them; a reply to any other note grants nothing.
+	GateRequest  string `json:"-"`
+	GateQuestion string `json:"-"`
 }
 
 // Resolutions a note can end with.
@@ -68,6 +74,9 @@ var schema = []string{
 	`ALTER TABLE query_notes ADD COLUMN kind TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE query_notes ADD COLUMN resolved_ns INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE query_notes ADD COLUMN resolution TEXT NOT NULL DEFAULT ''`,
+	// The approval gate's own request and words, for an approval the gate signed (round-3 recheck).
+	`ALTER TABLE query_notes ADD COLUMN gate_request TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE query_notes ADD COLUMN gate_question TEXT NOT NULL DEFAULT ''`,
 }
 
 // maxResolved bounds one ListResolved call, so the history stays flat-cost as
@@ -93,18 +102,18 @@ func NewStore(db *sql.DB) (*Store, error) {
 // chat reply and the task outcome, which must still land.
 func (s *Store) Add(note QueryNote) {
 	_, err := s.db.Exec(
-		`INSERT INTO query_notes (id, desktop_id, vm_name, filename, content, created_ns, kind)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO query_notes (id, desktop_id, vm_name, filename, content, created_ns, kind, gate_request, gate_question)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET content = excluded.content`,
 		note.ID, note.DesktopID, note.VMName, note.Filename, note.Content,
-		sqlitedb.ToNS(note.CreatedAt), note.Kind,
+		sqlitedb.ToNS(note.CreatedAt), note.Kind, note.GateRequest, note.GateQuestion,
 	)
 	if err != nil {
 		log.Printf("querynotes: add %s: %v", note.ID, err)
 	}
 }
 
-const noteColumns = `id, desktop_id, vm_name, filename, content, created_ns, kind, resolved_ns, resolution`
+const noteColumns = `id, desktop_id, vm_name, filename, content, created_ns, kind, resolved_ns, resolution, gate_request, gate_question`
 
 // list reads the notes a WHERE clause selects, in the order given, closing its
 // rows before returning (no query may run while a *sql.Rows is open).
@@ -125,7 +134,7 @@ func (s *Store) list(where, order string, args ...any) []QueryNote {
 		var created, resolved int64
 
 		if err := rows.Scan(&note.ID, &note.DesktopID, &note.VMName, &note.Filename, &note.Content,
-			&created, &note.Kind, &resolved, &note.Resolution); err != nil {
+			&created, &note.Kind, &resolved, &note.Resolution, &note.GateRequest, &note.GateQuestion); err != nil {
 			log.Printf("querynotes: list: %v", err)
 			continue
 		}

@@ -338,9 +338,6 @@ func (m *Manager) runProvisioning(
 	if token := m.AgentToken(name); token != "" {
 		env = append(env, AgentTokenEnv+"="+token)
 	}
-	if key := m.GateKey(name); key != "" {
-		env = append(env, GateKeyEnv+"="+key)
-	}
 	env = m.withScreenPassword(env, name)
 	m.provisioningMu.Lock()
 	prov.Model = desktopModel(env)
@@ -362,6 +359,12 @@ func (m *Manager) runProvisioning(
 	resp, err := m.client.ContainerCreate(ctx, config, hostConfig, networkingConfig, nil, containerName)
 	if err != nil {
 		fail(fmt.Errorf("create container: %w", err))
+		return
+	}
+	// The approval key goes in as a root-only file before the first start, never in the environment. A desktop whose
+	// key could not be placed is not started: its gate would allow nothing.
+	if err := m.putGateKey(ctx, resp.ID, m.GateKey(name)); err != nil {
+		fail(fmt.Errorf("give the desktop its approval key: %w", err))
 		return
 	}
 
@@ -1353,12 +1356,12 @@ mkdir -p "$dir" && cat <<'%s' > "$dir/%s"
 	return m.execBash(ctx, containerName, cmd, "memory write exec")
 }
 
-// execBash runs cmd with `bash -lc` in a container and polls until it exits or ctx is cancelled; a non-zero exit is an
+// execBash runs cmd with bash (no profile, empty environment: workerCmd) as the worker in a container and polls until it exits or ctx is cancelled; a non-zero exit is an
 // error. what names the exec in errors.
 func (m *Manager) execBash(ctx context.Context, containerName, cmd, what string) error {
 	execID, err := m.client.ContainerExecCreate(ctx, containerName, container.ExecOptions{
 		User:         "1001:1001", // the desktop starts as root (agent/decurix-entrypoint.sh); this is the worker's own work
-		Cmd:          []string{"bash", "-lc", cmd},
+		Cmd:          workerCmd("/bin/bash", "--noprofile", "--norc", "-c", cmd),
 		AttachStdout: true,
 		AttachStderr: true,
 	})

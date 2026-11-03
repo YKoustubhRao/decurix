@@ -9,11 +9,12 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
 )
 
-// openQuestion returns the text and kind ("approval" or "query") of the newest question desktopID has open: the one a
-// reply now reaches. "" when there is none.
-func (s *Server) openQuestion(desktopID string) (text, kind string) {
+// openQuestion returns the text, kind ("approval" or "query") and gate request of the newest question desktopID has
+// open: the one a reply now reaches. For an approval the gate worded, the text is the gate's own words. "" when there
+// is none.
+func (s *Server) openQuestion(desktopID string) (text, kind, request string) {
 	if s.QueryNotes == nil {
-		return "", ""
+		return "", "", ""
 	}
 	var newest *querynotes.QueryNote
 	for _, note := range s.QueryNotes.List() {
@@ -26,19 +27,22 @@ func (s *Server) openQuestion(desktopID string) (text, kind string) {
 		}
 	}
 	if newest == nil {
-		return "", ""
+		return "", "", ""
 	}
-	return newest.Content, newest.Kind
+	if newest.GateRequest != "" {
+		return newest.GateQuestion, newest.Kind, newest.GateRequest
+	}
+	return newest.Content, newest.Kind, ""
 }
 
 // signReplyToGate gives the desktop's approval gate the person's reply, signed, before the agent gets it: only a reply
 // that came this way can grant anything (desktop.SendGateReply). A desktop without a gate (made before it existed)
 // logs and goes on; it settles replies in its agent as it always did, and is recreated to get the boundary.
 func (s *Server) signReplyToGate(ctx context.Context, desktopID, taskID, text string) {
-	asked, kind := s.openQuestion(desktopID)
+	asked, kind, request := s.openQuestion(desktopID)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
 	defer cancel()
-	if err := s.Desktops.SendGateReply(ctx, desktopID, taskID, text, asked, kind); err != nil {
+	if err := s.Desktops.SendGateReply(ctx, desktopID, taskID, text, asked, kind, request); err != nil {
 		log.Printf("reply to %s: not given to its approval gate: %v", desktopID, err)
 	}
 }

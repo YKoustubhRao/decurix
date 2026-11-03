@@ -51,13 +51,24 @@ from decurix_agent.computer import modes
 
 GRANT_SECONDS = 15 * 60
 
+# Nouns of money that make a "transfer" after them the moving of money ("Bank Transfer", "Wire transfer"), not a kind of
+# record ("Stock Transfer", "Material Transfer" stay record types: _ALSO_NOUNS). Payment networks are named as banks
+# name them on a button.
+_MONEY_NOUNS = set("bank wire fund funds money cash balance payment remittance interbank inter-bank ach sepa swift neft "
+                   "rtgs imps upi".split())
+_MONEY_TRANSFER = "(?:" + "|".join(sorted(_MONEY_NOUNS)) + ") transfer"
+
 # Controls whose own label says they commit the human to something.
 CONSEQUENTIAL_CONTROL = re.compile(
     r"^\s*("
     r"send|send now|send (it|message|email|e-mail|mail|newsletter|invite|invitation|reply|sms|text|money|payment)"
     r"|pay|pay now|make (a )?payment|submit payment|authori[sz]e payment"
-    r"|confirm (and pay|payment|purchase|order|transfer|booking)"
+    r"|confirm (and pay|payment|purchase|order|transfer|booking|trade|sale)"
     r"|buy|buy now|purchase|place (your |my )?order|complete (order|purchase|payment|checkout)"
+    # Money moved, paid out or given back, a holding sold, something held let go of (review 2026-11-03: "Bank
+    # Transfer", "Disburse", "Sell", "Release" passed). "Release notes", "New release", "Sell price" are read as names
+    # (_only_reads).
+    r"|" + _MONEY_TRANSFER + r"|disburse|sell|liquidate|refund|release"
     r"|checkout|check out(?=\s*(now)?\s*$)"
     # The step that leads straight into a committing act is put to the person like the act: "proceed to checkout"
     # always was, and "proceed to file / pay / submit" is the same step (review 2026-11-02: a test pinned "PROCEED TO
@@ -82,8 +93,8 @@ CONSEQUENTIAL_CONTROL = re.compile(
     # form's name is a code with a digit in it; "File returns" (plural) stays the menu of returns it was.
     r"|file (?:the |this |my |your )?(?:return|declaration|claim|[a-z]+-?\d[\w-]*)(?= |$)"
     # Approving binds the person (a payment, a claim, a document's workflow); signing, by hand or electronically, is
-    # their signature. "Sign in", "Sign up", "Sign out" are not.
-    r"|approve|e-?sign\w*|digitally sign|sign(?! ?-?(?:in|up|out|on|off|into)\b)"
+    # their signature, and so is signing off on something. "Sign in", "Sign up", "Sign out", "Sign on" are not.
+    r"|approve|e-?sign\w*|digitally sign|sign-?off|sign(?! ?-?(?:in|up|out|on|into)\b)"
     r")\b",
     re.IGNORECASE,
 )
@@ -96,15 +107,18 @@ MORE_CONSEQUENTIAL = re.compile(
     r"(?:proceed|continue|go|move on|next|skip) to (?:the )?(?:checkout|payment|pay|paying|file|filing|submit|submission"
     r"|send|transfer|purchase)"
     r"|authori[sz]e"
-    r"|(?:make|submit|confirm|complete|process|release|initiate|execute|approve|schedule|send|finali[sz]e) "
-    r"(?:the |this |a |my |your )?(?:payments?|transfers?|transactions?|remittances?|wires?|purchases?|donations?)"
+    r"|(?:make|submit|confirm|complete|process|release|initiate|execute|approve|schedule|send|finali[sz]e|issue) "
+    r"(?:the |this |a |my |your )?(?:(?:" + "|".join(sorted(_MONEY_NOUNS)) + r") )?"
+    r"(?:payments?|transfers?|transactions?|remittances?|wires?|purchases?|donations?|trades?|swaps?|refunds?"
+    r"|disbursements?|payouts?)"
     r"|remit|wire(?: money| funds)?"
-    r"|settle (?:the |this )?(?:invoices?|bills?|payments?|balances?|amounts?|dues)"
-    r"|place (?:the |this |an )?order"
+    r"|settle (?:the |this )?(?:invoices?|bills?|payments?|balances?|amounts?|dues|trades?)"
+    # An order or a trade put to a market or a shop, carried out or placed (review 2026-11-03: "Execute trade" passed).
+    r"|place (?:the |this |an |a )?(?:order|trade|bet)|execute (?:the |this |a |my )?(?:orders?|deals?)|trade now"
     # Money let go of, and an order made with a supplier or a shop (review 2026-11-03: "Release funds", "Submit order"
     # passed).
     r"|release (?:the |this )?(?:funds?|money|escrow|amounts?)"
-    r"|submit (?:the |this |your |my )?(?:order|purchase|bid|offer|tender)s?"
+    r"|submit (?:the |this |your |my )?(?:order|purchase|bid|offer|tender|trade)s?"
     r"|cash out|request (?:a )?(?:payout|withdrawal|refund)"
     r")\b",
     re.IGNORECASE,
@@ -150,7 +164,12 @@ _ATTRIBUTES = set("date dates time times price prices rate rates type types mode
 # Transfer", "Material Transfer", "Make Purchase Receipt"), not an act. Verbs only (pay, send, buy, sign) stay acts
 # wherever they are: "Securely pay", "Yes, send".
 _ALSO_NOUNS = set("transfer transfers purchase purchases post posts order orders payment payments booking bookings "
-                  "reply replies withdrawal withdrawals donation donations return returns publish".split())
+                  "reply replies withdrawal withdrawals donation donations return returns publish release".split())
+# ...except where a noun of money comes first: "Fund release" lets money go. ("Bank Transfer" is matched whole, and
+# judged, at its first word.)
+_MOVES_MONEY = {"release"}
+# The few words after which a committing verb names a thing: "Release notes", "Release candidate".
+_NAMED_AFTER = {"release": set("notes note candidate candidates channel channels branch branches cycle".split())}
 # What before such a word makes it the act: a joiner or a yes ("Approve & transfer", "Yes, post it"), an adverb
 # ("Securely transfer", "Transfer now" is at word 0 anyway).
 _LEADS = set("and then yes ok okay sure please now confirm also just".split())
@@ -176,6 +195,13 @@ def _only_reads(words, i):
         return False
     before = words[i - 1].lower() if i else ""
     after = [w.lower() for w in words[i + 1:]]
+    # A verb of two words is read as one: "Bank Transfer details" is about a transfer, "Sign off date" about signing off.
+    if verb in _MONEY_NOUNS and after[:1] == ["transfer"]:
+        verb, after = "transfer", after[1:]
+    elif verb == "sign" and after[:1] == ["off"]:
+        after = after[1:]
+    if after[:1] and after[0] in _NAMED_AFTER.get(verb, ()):
+        return True
     if before in _READ_BEFORE:
         return True
     # (Only nouns of looking: "Purchase Invoice List" on a button may still be an act - a kind of record after the word
@@ -188,7 +214,8 @@ def _only_reads(words, i):
         return True
     if verb in ("send", "bring") and after in _ARRANGES:
         return True
-    if i and verb in _ALSO_NOUNS and before not in _LEADS and not before.endswith("ly"):
+    if i and verb in _ALSO_NOUNS and before not in _LEADS and not before.endswith("ly") \
+            and not (verb in _MOVES_MONEY and before in _MONEY_NOUNS):
         return True
     if verb in _CREATE_BEFORE and len(after) >= 2 and after[-1] in _RECORD_NOUNS:
         # "Make Purchase Receipt", "Make Payment Entry": a new record of that kind is opened, to be saved by its form.
@@ -236,6 +263,83 @@ MESSAGING_CONTEXT = re.compile(
 )
 
 ENTER_KEY = re.compile(r"(^|\+)(return|enter|kp_enter)$", re.IGNORECASE)
+
+# A key that presses whatever has the keyboard: Return or Enter on a button, Space on a button or a box.
+ACTIVATING_KEY = re.compile(r"(^|\+)(return|enter|kp_enter|space|spacebar)$", re.IGNORECASE)
+_MODIFIER_KEYS = {"ctrl", "control", "shift", "alt", "altgr", "super", "win", "cmd", "meta", "hyper"}
+# Fields whose keys stay in them: letters, Backspace and the caret keys edit the text or move in it, not the keyboard.
+TEXT_ROLES = {"textbox", "document", "combobox", "searchbox", "spinbutton", "password text", "entry", "editbar",
+              "terminal"}
+# Ctrl+ keys that edit a field's text in place: select all, copy, paste, cut, undo, redo, a word or the ends.
+_EDIT_CHORDS = set("a c v x z y left right home end backspace delete".split())
+_LEAVES_FIELD = {"tab", "iso_left_tab", "escape", "esc", "menu", "return", "enter", "kp_enter"}
+
+
+def _key_parts(combo):
+    return [p for p in re.split(r"\s*\+\s*", str(combo or "").strip().lower()) if p]
+
+
+def _keeps_focus(combo, in_text, lines=False):
+    """Whether this key leaves the keyboard where it was. Unsure is no: outside a text field any key may move it (an
+    arrow in a list or a menu, a letter that jumps to an entry, Escape closing a dialog, Return opening one). `lines`:
+    the field holds lines of text, where Return starts a new one."""
+
+    parts = _key_parts(combo)
+    named = [p for p in parts if p not in _MODIFIER_KEYS]
+    if not named:
+        return True  # a modifier on its own
+    if not in_text or len(named) > 1:
+        return False
+    key, held = named[0], set(parts) - {named[0]}
+    if lines and key in ("return", "enter", "kp_enter") and not held - {"shift"}:
+        return True
+    if key in _LEAVES_FIELD or re.fullmatch(r"f\d{1,2}", key):
+        return False
+    if held - {"shift"}:
+        return held <= {"ctrl", "control", "shift"} and key in _EDIT_CHORDS
+    return True
+
+
+def press_after_focus_move(keys, focus=None):
+    """
+    The first key of `keys` that presses whatever has the keyboard (Return, Enter, Space) after an earlier key may have
+    moved the keyboard elsewhere - Tab, an arrow, Escape, another Return, or a key chorded with it ("Tab+Return"); None
+    when every such press is on the control that had the keyboard at the start. `focus` is that control: in a text field
+    letters, the caret keys and ctrl+a stay in it. Found in review (2026-11-03): `gui key Tab Return` pressed the
+    control Tab landed on, which nothing had looked at.
+    """
+
+    focus = focus or {}
+    in_text = focus.get("role") in TEXT_ROLES
+    lines = focus.get("role") in ("document", "terminal") or "\n" in str(focus.get("value") or "")
+    moved = False
+    for combo in keys or ():
+        parts = _key_parts(combo)
+        if not parts:
+            continue
+        if ACTIVATING_KEY.search(str(combo).strip()):
+            chord = [p for p in parts[:-1] if p not in _MODIFIER_KEYS]
+            if moved or chord:
+                return str(combo).strip()
+        if not _keeps_focus(combo, in_text, lines):
+            moved = True
+    return None
+
+
+def _holds_consequential(context, where):
+    """What a press whose target cannot be told may land on and commit, in words, or "" when nothing on the screen
+    would. Not knowing what the screen holds is taken as holding one."""
+
+    if MESSAGING_CONTEXT.search(where or ""):
+        return "in this window Enter sends what was typed as a message"
+    controls = context.get("controls")
+    if controls is None:
+        return "what is on the screen is not known"
+    for control in controls:
+        if press_effect(control) == "asks" or confirms_permanently(control, context.get("dialogs")):
+            label = " ".join(str(control.get("name") or "").split())[:60]
+            return f'the screen holds "{label}", which a press there would commit'
+    return ""
 
 # A field Enter searches from, wherever it is. Found live on LinkedIn
 # (2026-10-03): Enter in Messaging's "Search messages" box - looking a person
@@ -532,7 +636,10 @@ def assess(kind, element, text=None, keys=None, context=None):
     Why this action needs a human's approval first, or None.
 
     `context` is {"window": active window title, "url": active tab URL,
-    "focused": the field that has the keyboard, when the caller knows it}.
+    "focused": the field that has the keyboard, when the caller knows it,
+    "controls": the controls on the screen, given for keys that move the
+    keyboard before they press (press_after_focus_move); "dialogs": the
+    dialogs open}.
     """
 
     stage = modes.get_stage()
@@ -558,6 +665,16 @@ def assess(kind, element, text=None, keys=None, context=None):
         asked = confirms_permanently(element, context.get("dialogs"))
         if asked:
             return f'this answers "{asked}" - it cannot be taken back'
+
+    if kind == "key" and keys:
+        # Return or Space after Tab (or any key that may move the keyboard) presses a control nothing has looked at:
+        # which one cannot be told beforehand, so it is asked wherever a press could commit something.
+        pressed = press_after_focus_move(keys, element or context.get("focused"))
+        held = _holds_consequential(context, where) if pressed else ""
+        if held:
+            return (f"{' '.join(str(k).strip() for k in keys)} moves the keyboard and then presses {pressed}, and where "
+                    f"that press lands cannot be told beforehand - {held} (pressed alone, after the keys that move the "
+                    f"keyboard, {pressed} is checked against the control it lands on)")
 
     if kind == "key" and keys and any(ENTER_KEY.search(k.strip()) for k in keys):
         # Where the keyboard is decides what Enter does: in a search box it
@@ -903,8 +1020,73 @@ def check(kind, element, text=None, keys=None, point=None, context=None, about="
     fingerprint = _fingerprint(kind, element, text, keys, point, context=context, about=about,
                                sends=sent_digest(sends))
     description = describe_action(kind, element, text=text, keys=keys, point=point)
+    # What the gate makes this action's fingerprint and words from, both from the same description of it.
+    material = {"kind": kind, "element": element, "text": text, "keys": list(keys or []) or None,
+                "point": list(point) if point else None, "context": _for_gate(context), "about": about or "",
+                "sends": sent_digest(sends)}
 
-    return _decide(fingerprint, description, reason, element, about)
+    return _decide(fingerprint, description, reason, element, about, material=material)
+
+
+GATE_CONTROLS = 150
+
+
+def _for_gate(context):
+    """context as the gate gets it: a busy page's list of controls cut short (the action is already held here; the
+    list only lets the gate find its own reason, and the caller's stands when it finds none)."""
+
+    context = dict(context or {})
+    controls = context.get("controls")
+    if isinstance(controls, list):
+        context["controls"] = [{"role": str((c or {}).get("role") or "")[:40], "name": str((c or {}).get("name") or "")[:120],
+                                "path": str((c or {}).get("path") or "")[:200]}
+                               for c in controls[:GATE_CONTROLS] if isinstance(c, dict)]
+    return context
+
+
+def from_material(material):
+    """
+    (fingerprint, description, element, about) of an action described by `material` (check's, or TheBot's paused
+    command). Run by the gate: both come from the same description, so one action's grant cannot be asked for in
+    another action's words (round-3 recheck).
+    """
+
+    kind = str(material.get("kind") or "")
+    if kind == "command":
+        command = " ".join(str(material.get("command") or "").split())
+        request = " ".join(str(material.get("request") or "").split())
+        workdir = str(material.get("workdir") or "")
+        fingerprint = hashlib.sha256("".join(["command", command, request, workdir]).encode("utf-8")).hexdigest()[:24]
+        if command:
+            description = f"run the command `{command[:600]}`" + (f" in {workdir}" if workdir else "")
+        else:
+            description = f"start this request: {request[:600]}"
+        return fingerprint, description, None, ""
+    element = material.get("element") if isinstance(material.get("element"), dict) else None
+    text = material.get("text")
+    text = None if text is None else str(text)
+    keys = [str(k) for k in (material.get("keys") or [])] or None
+    point = material.get("point")
+    point = (point[0], point[1]) if isinstance(point, (list, tuple)) and len(point) >= 2 else None
+    context = material.get("context") if isinstance(material.get("context"), dict) else {}
+    about = str(material.get("about") or "")
+    fingerprint = _fingerprint(kind, element, text, keys, point, context=context, about=about,
+                               sends=str(material.get("sends") or ""))
+    return fingerprint, describe_action(kind, element, text=text, keys=keys, point=point), element, about
+
+
+def reason_from_material(material):
+    """The gate's own reason for holding an action, when it finds one; None leaves the caller's."""
+
+    if str(material.get("kind") or "") == "command":
+        return None
+    try:
+        element = material.get("element") if isinstance(material.get("element"), dict) else None
+        context = material.get("context") if isinstance(material.get("context"), dict) else None
+        return assess(str(material.get("kind") or ""), element, text=material.get("text"),
+                      keys=material.get("keys"), context=context)
+    except Exception:  # noqa: BLE001 - no reason of the gate's own: the caller's stands
+        return None
 
 
 def _decide_local(fingerprint, description, reason, element, about):
@@ -917,9 +1099,15 @@ def _decide_local(fingerprint, description, reason, element, about):
                 state["grants"].remove(grant)
                 return Decision(True, reason=reason, approved=True)
         prior = dict(state.get("last_reply") or {})
+        # The action already asked about keeps its request and the words it was asked in: a later call cannot reword it.
+        kept = state.get("pending")
+        if kept and kept.get("fingerprint") == fingerprint:
+            return Decision(False, reason=kept.get("reason"), request=dict(kept))
 
-    # Read outside the lock (a model's reading takes seconds, and every gui action waits on this store).
-    if _reply_grants(prior, description, element, reason, about=about):
+    # Read outside the lock (a model's reading takes seconds, and every gui action waits on this store). In the gate
+    # a reply is only ever the yes of the request it answered, worded by the gate (gate_server.settle): a person's reply
+    # to a question the worker wrote never stands as the yes for the next action.
+    if not IN_GATE and _reply_grants(prior, description, element, reason, about=about):
         with _locked() as state:
             now = state.get("last_reply") or {}
             # The very reply read, still unused: two actions racing for one yes get one of them.
@@ -950,6 +1138,13 @@ def _decide_local(fingerprint, description, reason, element, about):
         state["pending"] = request
 
     return Decision(False, reason=reason, request=request)
+
+
+def _local_take_grant(fingerprint):
+    """Remove the grant for exactly this action, if there is one (TheBot took the yes itself)."""
+
+    with _locked() as state:
+        state["grants"] = [g for g in state["grants"] if g.get("fingerprint") != fingerprint]
 
 
 def _local_pending():
@@ -1115,6 +1310,9 @@ GATE_SOCKET = GATE_DIR + "/gate.sock"
 GATE_CALL_SECONDS = 90
 # How long the agent waits for the gate to settle a reply that reached it as a request.
 GATE_REPLY_WAIT_SECONDS = 45
+# True only inside the gate's own process (gate_server.py sets it): not a setting, and not in the environment, so
+# nothing the worker can set turns a `gui` command onto a store the worker can write.
+IN_GATE = False
 
 
 def remote():
@@ -1125,7 +1323,7 @@ def remote():
     the worker can write.
     """
 
-    return not os.environ.get("DECURIX_GATE_LOCAL") and os.path.isdir(GATE_DIR)
+    return not IN_GATE and os.path.isdir(GATE_DIR)
 
 
 def gate_call(op, timeout=GATE_CALL_SECONDS, **args):
@@ -1148,12 +1346,13 @@ def gate_call(op, timeout=GATE_CALL_SECONDS, **args):
     return reply
 
 
-def _decide(fingerprint, description, reason, element, about):
+def _decide(fingerprint, description, reason, element, about, material=None):
     if not remote():
         return _decide_local(fingerprint, description, reason, element, about)
     try:
-        said = gate_call("check", fingerprint=fingerprint, description=description, reason=reason,
-                         control=(element or {}).get("name") or "", about=about or "")
+        if material is None:
+            raise ValueError("no description of the action to give the gate")
+        said = gate_call("check", material=json.loads(json.dumps(material, default=str)), reason=reason)
         return Decision(bool(said["allowed"]), reason=reason, approved=bool(said.get("approved")),
                         request=said.get("request"), by_reply=said.get("by_reply") or "")
     except (OSError, ValueError, KeyError) as exc:
@@ -1219,6 +1418,35 @@ def resolve_reply(reply, asked=""):
                          wait=GATE_REPLY_WAIT_SECONDS).get("outcome")
     except (OSError, ValueError):
         return None
+
+
+def gate_reading(reply, wait=20.0):
+    """The gate's reading of a person's reply it settled ({"decision", "condition"}), waiting up to `wait` seconds for
+    the gate to finish reading it; None when the gate read no signed copy of it (or there is no gate)."""
+
+    if not remote():
+        return None
+    deadline = time.monotonic() + max(0.0, float(wait))
+    while True:
+        said = last_reading(reply)
+        if said or time.monotonic() >= deadline:
+            return said or None
+        time.sleep(0.5)
+
+
+def signed_question():
+    """The gate's pending request with its own words and signature ({"id", "question", "sig"}), or None: sent with an
+    approval so the control plane shows the person the gate's words and binds their reply to that request."""
+
+    if not remote():
+        return None
+    try:
+        request = gate_call("pending").get("pending")
+    except (OSError, ValueError):
+        return None
+    if not isinstance(request, dict) or not request.get("sig"):
+        return None
+    return {"id": request.get("id"), "question": request.get("question"), "sig": request.get("sig")}
 
 
 def last_reading(reply):

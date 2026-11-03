@@ -3557,12 +3557,16 @@ def _focused_control(before):
     return None
 
 
-def _pressed_by_key(kind, element, keys, before):
-    """The control a Return or Space presses, when the keys go to a focused button/link (or are aimed at one); else None."""
+def _pressed_by_key(kind, element, keys, before, focus=None):
+    """The control a Return or Space presses, when the keys go to a focused button/link (or are aimed at one); else None.
+    A press after a key that may move the keyboard is not this one's: approval.assess asks for it (`focus`: the field
+    that has the keyboard, when known)."""
 
     if kind != "key" or not keys:
         return None
-    if not any(approval.ENTER_KEY.search(k.strip()) or SPACE_KEY.search(k.strip()) for k in keys):
+    first = next((i for i, k in enumerate(keys) if approval.ENTER_KEY.search(k.strip()) or SPACE_KEY.search(k.strip())),
+                 None)
+    if first is None or approval.press_after_focus_move(keys[:first + 1], element or focus):
         return None
     if element is not None:
         return element if element.get("role") in approval.ACTIVATING_ROLES else None
@@ -3826,6 +3830,11 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     # The dialogs open on the screen, for a yes-button whose own path does not name its dialog (approval.py).
     context["dialogs"] = [str(e.get("name") or "") for e in before.get("elements") or []
                           if str(e.get("role") or "").lower() in ("dialog", "alertdialog") and e.get("name")]
+    if kind == "key" and approval.press_after_focus_move(keys, element or context.get("focused")):
+        # Keys that move the keyboard and then press: any control on the screen may be the one pressed (approval.assess).
+        context["controls"] = [{"role": e.get("role"), "name": e.get("name"), "path": e.get("path") or ""}
+                               for e in before.get("elements") or []
+                               if e.get("role") in approval.PRESS_ROLES and str(e.get("name") or "").strip()]
 
     _refuse_number_arrows(kind, point)
     _refuse_unsafe_save(kind, element, keys, before)
@@ -3854,7 +3863,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     # Return or Space on a focused button presses it; a click at a spot that resolved to no element presses whatever is
     # drawn there. Both are put to the gate as the press they are.
-    keyed = _pressed_by_key(kind, element, keys, before) if by_enter is None else None
+    keyed = _pressed_by_key(kind, element, keys, before, focus=context.get("focused")) if by_enter is None else None
     if keyed is not None:
         why = approval.assess("click", keyed, context=context)
         if why:
