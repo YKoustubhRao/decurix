@@ -311,12 +311,6 @@ func main() {
 	defer cli.Close()
 
 	desktops := desktop.NewManager(cli)
-	// Host hops (privileged containers that run something on the host) left by an earlier run go first: their owner is
-	// gone, and the Windows helper a hop runs keeps its app and its memory for as long as the hop lives.
-	desktop.SweepHopsAtStart()
-	// And the host-app helpers (with the apps they started) that ran through those hops: a Windows program started
-	// through WSL outlives the hop that started it.
-	httpapi.SweepHostHelpersAtStart()
 	// The key that signs the launch tokens in a desktop's host-app launchers (internal/winhost). It lives in the data
 	// directory so launchers already written keep working across restarts; a failure only disables those apps.
 	hostGUISecret, err := winhost.LoadSecret(sqlitedb.DataDir())
@@ -324,10 +318,6 @@ func main() {
 		log.Printf("host apps: %v - Windows apps shown from the host are disabled", err)
 	}
 	desktops.HostGUISecret = hostGUISecret
-	// Requested apps a desktop was created without (and the retry of ones the host could not be asked about yet) live
-	// in memory; read them back from the desktops, which keep them for their agents. Its retries wait long enough for
-	// the host-app checker that the HTTP server installs below.
-	go desktops.RestoreMissingApps(context.Background())
 	desktop.OptimizeHostKSM()
 	ollamaManager := ollama.NewManager(cli, desktop.NetworkName)
 	ollama.EnableWarm()
@@ -345,44 +335,6 @@ func main() {
 
 		return
 	}
-
-	// Non-blocking: the dashboard is still useful (and says what is wrong)
-	// when the images have not been built yet.
-	if err := desktops.EnsureImages(ctx); err != nil {
-		log.Printf("warning: %v", err)
-		log.Printf("run `%s --build-images` to build them", exeName())
-	}
-
-	if err := desktops.EnsureNetwork(ctx); err != nil {
-		log.Fatal(err)
-	}
-
-	// Pre-warm the shared tools volume asynchronously in the background so the
-	// first VM creation does not have to wait for volume initialization.
-	go func() {
-		if err := desktops.EnsureToolsVolume(context.Background()); err != nil {
-			log.Printf("background tools volume: %v", err)
-		}
-	}()
-
-	// Desktops created before the control plane moved off the LAN-facing
-	// address keep calling it (see Manager.StaleControlPlane): say so once,
-	// with what to do, rather than leaving them to fail silently.
-	go func() {
-		if stale := desktops.StaleControlPlane(context.Background()); len(stale) > 0 {
-			log.Printf("warning: desktops %s call the control plane at an address it no longer serves them on; "+
-				"recreate them (their environment is fixed when they are created)", strings.Join(stale, ", "))
-		}
-	}()
-
-	// Desktops made when half their chosen memory was reserved get the idle floor instead
-	// (Manager.ReleaseReservations): the rest is taken only when used.
-	go func() {
-		if changed := desktops.ReleaseReservations(context.Background()); len(changed) > 0 {
-			log.Printf("desktops %s now reserve only their idle memory; the size chosen stays their ceiling",
-				strings.Join(changed, ", "))
-		}
-	}()
 
 	dbPath := filepath.Join(sqlitedb.DataDir(), sqlitedb.FileName)
 
@@ -447,35 +399,7 @@ func main() {
 	if err := server.SetQualificationOwner(sqlitedb.DataDir()); err != nil {
 		log.Fatalf("create readiness owner key: %v", err)
 	}
-	// Qualification work is disposable. Never resume a process whose evidence
-	// transaction was interrupted; startup revoked its grant in NewStore.
-	qualificationCleanup, qualificationCleanupDone := context.WithTimeout(context.Background(), 30*time.Second)
-	if err := desktops.CleanupQualification(qualificationCleanup); err != nil {
-		log.Printf("warning: cleanup interrupted readiness containers: %v", err)
-	}
-	// Practice desktops are disposable the same way (docs/simulation.md).
-	if err := desktops.CleanupPractice(qualificationCleanup); err != nil {
-		log.Printf("warning: cleanup practice containers: %v", err)
-	}
-	qualificationCleanupDone()
 	server.CFTunnel = namedTunnel
-
-	// Notes of desktops deleted before deleting resolved them sat in "Needs
-	// you" for good, with a Reply that had nowhere to go. Only when the list
-	// is known: a failed list is not evidence that anything was deleted.
-	go func() {
-		all, err := desktops.List(context.Background())
-		if err != nil {
-			return
-		}
-		ids := make([]string, 0, len(all))
-		for _, d := range all {
-			ids = append(ids, d.ID)
-		}
-		if n := server.QueryNotes.ResolveOrphans(ids); n > 0 {
-			log.Printf("Resolved %d open note(s) of desktops that no longer exist.", n)
-		}
-	}()
 	// Linked Android phones (decurix --phone): their apps join the app list.
 	server.SetPhones(phonehost.NewHub())
 	// A phone that pairs is offered its phone link, set up from the phone
@@ -518,10 +442,12 @@ func main() {
 	}
 	// The Windows apps copied into VMs are kept running on the host, ready to show the moment one is opened.
 	server.HostGUIDataDir = sqlitedb.DataDir()
-	go server.RestoreHostApps(context.Background())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Closed once the start-up that needs Docker has run (dockerStartup).
+	dockerReady := make(chan struct{})
+	var dockerReadyOnce sync.Once
 
 	resMon := resourcemon.NewMonitor(desktops)
 	server.ResourceMon = resMon
@@ -604,6 +530,7 @@ func main() {
 	})
 
 	go func() {
+		<-dockerReady
 		if !ollama.Needed() {
 			log.Println("Ollama: not preloading - a hosted model is configured and no desktop uses a local-model engine yet.")
 			// Still choose the model (it reads /api/tags and /api/show, and
@@ -697,7 +624,7 @@ func main() {
 	server.KeepAwake = keeper
 	go keeper.Run(ctx)
 
-	addrs := primaryListenAddrs(func() []string {
+	gateways := func() []string {
 		// Only Linux has Docker's bridge gateways as addresses of its own to bind. On macOS and Windows Docker runs in
 		// a VM: those addresses exist only inside it, binding them fails, and host.docker.internal already lands on
 		// loopback there.
@@ -705,31 +632,65 @@ func main() {
 			return nil
 		}
 		return desktops.GatewayIPs(ctx)
-	})
+	}
+	addrs := primaryListenAddrs(func() []string { return nil })
 	log.Printf("Desktop manager listening on %s", strings.Join(addrs, ", "))
 
 	handler := practice.RefuseSubnets(practiceSubnets.Subnets, httpapi.RefuseForwarded(server.GuardPrimary(httpapi.GzipMiddleware(mux))))
 
-	for _, addr := range addrs[1:] {
+	// Every listener, for the shutdown below. The gateway addresses join once Docker answers (they are Docker's), so
+	// the list is guarded.
+	var serversMu sync.Mutex
+	bound := map[string]bool{}
+	listen := func(addr string) {
+		serversMu.Lock()
+		defer serversMu.Unlock()
+		if bound[addr] || ctx.Err() != nil {
+			return
+		}
+		bound[addr] = true
 		s := newServer(addr, handler)
 		activeServers = append(activeServers, s)
-		go func(srv *http.Server, a string) {
-			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Printf("warning: primary listener on %s failed: %v", a, err)
+		go func() {
+			if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("warning: primary listener on %s failed: %v", addr, err)
 			}
-		}(s, addr)
+		}()
+	}
+	for _, addr := range addrs[1:] {
+		listen(addr)
 	}
 
 	primarySrv := newServer(addrs[0], handler)
+	serversMu.Lock()
+	bound[addrs[0]] = true
 	activeServers = append(activeServers, primarySrv)
+	serversMu.Unlock()
+
+	// The start-up that needs Docker runs once Docker answers, not before: with Docker not running the listeners
+	// still come up and the dashboard says so (W-08), and the host-app sweep runs only for a control plane that is
+	// really going to run (W-04).
+	go desktops.WatchDocker(ctx, 10*time.Second, func(ctx context.Context) error {
+		if err := dockerStartup(ctx, desktops, server, tasksStore); err != nil {
+			return err
+		}
+		for _, a := range primaryListenAddrs(gateways)[1:] {
+			listen(a)
+		}
+		dockerReadyOnce.Do(func() { close(dockerReady) })
+		return nil
+	})
 
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
+		serversMu.Lock()
+		servers := append([]*http.Server(nil), activeServers...)
+		serversMu.Unlock()
 		var wg sync.WaitGroup
-		for _, s := range activeServers {
+		for _, s := range servers {
 			wg.Add(1)
 			go func(srv *http.Server) {
 				defer wg.Done()

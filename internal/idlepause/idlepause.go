@@ -94,8 +94,12 @@ func (c *Checker) Run(ctx context.Context) {
 	}
 }
 
-// sweep checks every running desktop, up to sweepConcurrency at once.
+// sweep checks every running desktop, up to sweepConcurrency at once, after closing the tasks of desktops that are
+// gone (gone.go).
 func (c *Checker) sweep(ctx context.Context) {
+	if g, ok := c.Desktops.(DesktopGone); ok {
+		closeGone(ctx, g, c.Tasks, false)
+	}
 	desktops, err := c.Desktops.List(ctx)
 	if err != nil {
 		log.Printf("idlepause: listing desktops: %v", err)

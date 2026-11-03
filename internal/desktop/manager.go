@@ -23,7 +23,12 @@ import (
 
 // Manager owns the Docker client and the desktop containers it manages.
 type Manager struct {
-	client *client.Client
+	// client is the Docker API. It is the interface *client.Client implements, so a test can stand a fake in for the
+	// daemon (newManagerWith) and see every call the Manager makes.
+	client client.APIClient
+
+	// docker is what the last check of the daemon found (dockerwatch.go).
+	docker dockerState
 
 	// callers maps a desktop container's address to its desktop ID (caller.go).
 	callers callerCache
@@ -139,8 +144,17 @@ func (m *Manager) InvalidateProxyTarget(rawID string) {
 
 // NewManager creates a Manager backed by the given Docker client.
 func NewManager(cli *client.Client) *Manager {
+	if cli == nil {
+		return newManagerWith(nil)
+	}
+	return newManagerWith(cli)
+}
+
+// newManagerWith is NewManager over any Docker API: the daemon itself, or a test's fake. A nil api stays a nil
+// interface, so the "no Docker" checks (m.client == nil) still hold.
+func newManagerWith(api client.APIClient) *Manager {
 	return &Manager{
-		client:            cli,
+		client:            api,
 		startedCache:      make(map[string]string),
 		proxyTargets:      make(map[string]proxyTargetCacheEntry),
 		resourceOverrides: make(map[string]ResourceAllocation),

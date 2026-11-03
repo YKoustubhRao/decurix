@@ -41,7 +41,9 @@
 #   EVENT open <id>          a shortcut on the wallpaper was double-clicked
 # -Build and -Resolve are for the helper when it runs as a program of its own (see "This class as a program" below):
 # -Build <path> compiles that program and ends; -Resolve <request> answers one question of it and ends.
-param([Parameter(Mandatory = $true)][string]$DesktopName, [string]$Build = '', [string]$Resolve = '')
+# -DecurixInstance is the tag of the control plane that started this helper. The helper never reads it: it is there so
+# that control plane's sweeps end only its own helpers, never another instance's (internal/httpapi/hostinstance_h.go).
+param([Parameter(Mandatory = $true)][string]$DesktopName, [string]$Build = '', [string]$Resolve = '', [string]$DecurixInstance = '')
 
 $NativeSource = @'
 using System;

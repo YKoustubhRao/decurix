@@ -55,7 +55,7 @@ foreach ($id in [DecurixRm]::Holders('` + quoted + `')) {
   $cur = $p; $ours = $false
   for ($i = 0; $i -lt 6 -and $cur; $i++) {
     $cur = Get-CimInstance Win32_Process -Filter "ProcessId=$($cur.ParentProcessId)"
-    if ($cur -and $cur.CommandLine -like '` + helperMatch + `') { $ours = $true; break }
+    if ($cur -and $cur.CommandLine -like '` + ownHelperMatch(hostInstanceTag()) + `') { $ours = $true; break }
   }
   if ($ours) { taskkill.exe /T /F /PID $id | Out-Null; 'RELEASED ' + $id + ' ' + $p.Name } else { 'HELD ' + $id + ' ' + $p.Name }
 }
