@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -392,7 +395,7 @@ func (r *Runner) readBatch(ctx context.Context, mb Mailbox, acct Account, uids [
 		if oneByOne {
 			one, herr := mb.Headers([]uint32{uid})
 			if herr != nil {
-				if !p.failedRead(uid) {
+				if !emailFault(herr) || !p.failedRead(uid) {
 					return herr
 				}
 				log.Printf("mailtrigger: %s: passing over email %d after %d failed header reads: %v", acct.Email, uid, maxReadTries, herr)
@@ -433,7 +436,7 @@ func (r *Runner) readBatch(ctx context.Context, mb Mailbox, acct Account, uids [
 
 		text, files, dropped, err := readContent(mb, uid, header, matched)
 		if err != nil {
-			if !p.failedRead(uid) {
+			if !emailFault(err) || !p.failedRead(uid) {
 				return err
 			}
 
@@ -486,6 +489,21 @@ func (p *Poll) passed(uid uint32, seen bool) {
 	if p.StuckUID != 0 && uid >= p.StuckUID {
 		p.StuckUID, p.StuckTries = 0, 0
 	}
+}
+
+// emailFault reports whether a failed read says something about the email itself - the server refused it (a NO or
+// BAD answer) or sent what could not be read as one - rather than about the link to the server: a dropped or reset
+// connection, a timeout, a cancelled poll. Only the first counts against the email's maxReadTries: a connection that
+// fails three polls running must not pass a good email over unread (REVIEW-3 follow-up 5). The link's failures fail
+// the poll, which is retried with its backoff.
+func emailFault(err error) bool {
+	var netErr net.Error
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded),
+		errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, net.ErrClosed), errors.As(err, &netErr):
+		return false
+	}
+	return true
 }
 
 // failedRead counts one failed read of uid, and reports whether that was the
