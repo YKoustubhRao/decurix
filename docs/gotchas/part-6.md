@@ -101,3 +101,6 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
 - **`go:embed` can fail with "unexpected length"** while another writer is editing an embedded agent file. Retry.
 - **Run the module's suite before each commit, not only before the report.** One commit landed with a failing test and the next fixed it.
 - **Do not have a model analyse evasion shapes for a guard.** A safety classifier stopped two agents three times while they prepared guard fixes from attack shapes. Write such fixes by input class and build their tests mechanically from the guard's own existing examples (O-1.a), or leave them to a person.
+- **A test request from `httptest.NewRequest` comes from 192.0.2.1, which is not the host once the server has a
+  desktop manager.** `fromContainer` then holds and `ActorContext` carries no actor: a reply is refused as "a desktop
+  cannot answer its own question". Set `req.RemoteAddr = "127.0.0.1:..."` in a test that plays a person.

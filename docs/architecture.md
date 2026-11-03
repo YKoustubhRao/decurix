@@ -574,3 +574,19 @@ Docker's `CopyFromContainer`/`CopyToContainer` run as root and resolve parent fo
 **When Docker is down.** The control plane no longer exits when Docker does not answer. Both listeners start, every page shows a "Docker is not running" banner, and the Docker-dependent start-up (`cmd/decurix/dockerstartup.go`) runs once Docker answers (`Manager.WatchDocker`, every 10 s; `Manager.DockerReachable()`).
 
 **The tools volume.** The tools image's populate rule writes its ready marker last, and waits while any desktop is not exited or created (running, paused or restarting all count; a failed listing counts as running). A refresh that waits exits 75; the control plane logs it, `/api/docker/status` reports `tools_waiting`, every page shows a quiet banner, and the refresh is tried again when a desktop is next created. `BuildImages` populates under the same lock as a creation. Starting an existing desktop does not wait for a refresh (a follow-up). The owner rebuilds the tools image to pick this up.
+
+## The run record on the control plane (phase 2)
+
+- `internal/blobstore` keeps content-addressed blobs under the data folder, `blobs/sha256/<2>/<64>`: model-call
+  messages, answers, tool lists and images (`internal/llmrec`) and the files of run bundles (`internal/runs`). Nothing
+  deletes a blob.
+- `internal/llmrec` is the recording proxy's store (`llm_calls`): every hosted call through `/api/llm/...`, with its
+  purpose, task, turn and caller (the `X-Decurix-*` headers; the desktop is the connection's), the deployment that
+  served it, usage and latency, and its messages withheld and stored once each by hash. Recording never fails a call.
+- `tasks` holds the judgements (every human input with its author, append-only), the structured verdict
+  (`executions.verdict`) and what each execution ran (origin, skill, resolved model).
+- `internal/runs` pulls a run's bundle off its desktop when the run ends and before the desktop is deleted, and builds
+  `decurix.trajectory/v1` (docs/trajectory.md).
+- All of it is host-only: `/api/llm/calls`, `/api/llm/blobs/`, `/api/judgements`, `/api/tasks/pass-rates` and
+  `/api/runs/` are on the primary listener behind `humansOnly`; `/api/desktops/learned` is a desktop's callback there.
+  The gated listener forwards no soul route but its read-only health (`/agent/<id>/api/health`).

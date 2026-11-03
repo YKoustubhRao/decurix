@@ -951,3 +951,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): go:embed can fail with "unexpected length"
 - [part-6.md](gotchas/part-6.md): Run the module's suite before each commit, not only before the report
 - [part-6.md](gotchas/part-6.md): Do not have a model analyse evasion shapes for a guard
+- [part-6.md](gotchas/part-6.md): A test request from httptest comes from 192.0.2.1, not the host, once a desktop manager is set

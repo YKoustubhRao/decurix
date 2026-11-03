@@ -22,6 +22,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/YKoustubhRao/decurix/internal/access"
+	"github.com/YKoustubhRao/decurix/internal/blobstore"
 	"github.com/YKoustubhRao/decurix/internal/cftunnel"
 	"github.com/YKoustubhRao/decurix/internal/claudeauth"
 	"github.com/YKoustubhRao/decurix/internal/concierge"
@@ -29,6 +30,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/dag"
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/devices"
+	"github.com/YKoustubhRao/decurix/internal/eval"
 	"github.com/YKoustubhRao/decurix/internal/grounder"
 	"github.com/YKoustubhRao/decurix/internal/handoff"
 	"github.com/YKoustubhRao/decurix/internal/httpapi"
@@ -37,6 +39,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/knowledge"
 	"github.com/YKoustubhRao/decurix/internal/lanaccess"
 	"github.com/YKoustubhRao/decurix/internal/llm"
+	"github.com/YKoustubhRao/decurix/internal/llmrec"
 	"github.com/YKoustubhRao/decurix/internal/mailtrigger"
 	"github.com/YKoustubhRao/decurix/internal/memory"
 	"github.com/YKoustubhRao/decurix/internal/ollama"
@@ -46,6 +49,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/qualification"
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/resourcemon"
+	"github.com/YKoustubhRao/decurix/internal/runs"
 	"github.com/YKoustubhRao/decurix/internal/schedule"
 	"github.com/YKoustubhRao/decurix/internal/sealed"
 	"github.com/YKoustubhRao/decurix/internal/skillhub"
@@ -430,6 +434,14 @@ func main() {
 		log.Printf("warning: %s: %v; model API keys cannot be saved until it can be written (none is stored unencrypted)", llm.KeyFile, err)
 	}
 	server.LLM = must(llm.NewHub(db, llmKey))
+	// The run record (plan R1, R2, R9): every hosted call recorded with its messages kept once each by hash, and
+	// every run's bundle pulled off its desktop when it ends, both in the blob store under the data folder.
+	blobs := must(blobstore.New(filepath.Join(sqlitedb.DataDir(), "blobs")))
+	llmrecStore := must(llmrec.NewStore(db, blobs))
+	server.LLMRec = llmrecStore
+	runStore := must(runs.NewStore(db, blobs))
+	server.RunStore, server.RunBundles = runStore, runStore
+	server.Runs = &runs.Puller{Home: desktops, Store: runStore, Blobs: blobs}
 	// Simulate: practice runs of what a worker was taught, on a practice desktop that reaches only its broker
 	// (docs/simulation.md). Its routes are the owner's, primary listener only.
 	practiceSvc := &practice.Service{
@@ -449,6 +461,25 @@ func main() {
 	brokerLn := &practice.BrokerListener{Network: desktops.PracticeBrokerEndpoint, Port: "8091", Handler: practiceSvc.Broker.Handler()}
 	defer brokerLn.Close()
 	practiceSvc.BrokerURL = brokerLn.URL
+	// Practice and eval desktops' calls go through the broker, which records them (caller practice), and a changed
+	// hosted deployment sends every suite that pins it back to needs-retesting (E4).
+	practiceSvc.Broker.Recorder = llmrecStore
+	server.LLM.OnChange(practiceSvc.BrainChanged)
+	// The eval matrix runner (E3, docs: evals/): one suite x arms x repeats on the practice sandbox, one run at a
+	// time, sharing Simulate's slot. Its routes are the owner's, primary listener only. A run that was running when
+	// the control plane stopped is marked interrupted (NewStore).
+	evalSvc := &eval.Service{
+		Store:      must(eval.NewStore(db, blobs)),
+		Sandbox:    desktops,
+		Broker:     practiceSvc.Broker,
+		BrokerURL:  practiceSvc.BrokerURL,
+		Hub:        server.LLM,
+		Recorder:   llmrecStore,
+		Tasks:      tasksStore,
+		Practice:   practiceSvc,
+		Vision:     practiceSvc.Vision,
+		FreeMemory: practiceSvc.FreeMemory,
+	}
 	practiceSubnets := &practice.SubnetCache{Lookup: desktops.PracticeSubnets}
 	// A GUI-grounding model, when .env names one (DECURIX_GROUNDER_MODEL):
 	// where on the screen a desktop's `gui click --see "..."` clicks.
@@ -464,6 +495,16 @@ func main() {
 	// Closed once the start-up that needs Docker has run (dockerStartup).
 	dockerReady := make(chan struct{})
 	var dockerReadyOnce sync.Once
+
+	// Run bundles leave their desktops as runs end; once Docker is up, the last week's unpulled ones are caught up.
+	go server.RunPulls(ctx)
+	go func() {
+		select {
+		case <-dockerReady:
+			server.CatchUpRunPulls(ctx)
+		case <-ctx.Done():
+		}
+	}()
 
 	resMon := resourcemon.NewMonitor(desktops)
 	server.ResourceMon = resMon
@@ -488,6 +529,7 @@ func main() {
 	server.RegisterRoutes(mux)
 	server.RegisterLocalRoutes(mux)
 	server.RegisterSimulationRoutes(mux, practiceSvc)
+	server.RegisterEvalRoutes(mux, evalSvc)
 	server.RegisterAccessRoutes(mux)
 	server.RegisterAccessLocalRoutes(mux)
 

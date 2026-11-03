@@ -101,6 +101,7 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 - **G-11:** carrying unchanged units into the new engine. The right shape is one Residency per Server, outliving engines.
 - **G-17:** re-derive the workflow bench's results from artifacts (the name now says what is checked).
 - **G-09:** hash-locked requirements (O-3.5).
+- **FIX-BR-1:** a managed (non-system) python for the worker. `isolate.ForProgram` (`brainiac/internal/isolate/elflibs.go`, called from `brainiac/internal/engine/engine.go` `New`) grants its binary and the shared libraries it links, but not its standard library (`../lib/python3.x`), so it may not start in the mount view. A system python is unaffected (`/usr` is read). Check it live, and grant that tree read-only if it fails.
 
 ## Live checks after the next build
 
@@ -218,3 +219,26 @@ fail on an absent corpus, which proves nothing. "Synthetic" says whether a ficti
 
 None holds customer data that must be recreated: every fixture was a fictional company's run. Rebuild each on a
 synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
+
+## Phase 2: control plane
+
+- **Untagged model calls are flagged, not refused** (D3). `DECURIX_LLM_REQUIRE_PURPOSE=1` refuses them; make it the
+  default only after a clean live round shows 0 `untagged` on `/api/llm/calls/stats` (L0, L3).
+- **The delete flush can time out** (90 s). A run not pulled by then is named in the log ("... that run's recording,
+  ledger and notes are lost") and the delete goes on: the one case where a label can be lost. Measure live how long a
+  flush takes; consider refusing the delete instead while unpulled runs remain.
+- **`resolved_model` for a local brain** is `"<engine>:<model the desktop said>"`, not a deployment the proxy saw
+  (Ollama calls never pass it). Local-brain call bodies are a later phase (PLAN-P2 §9).
+- **The pass-rate query counts each task by its latest attempt** (the one a person's verdict judges). An earlier
+  attempt's outcome is not in it.
+- **A secret reply whose question changes between Plan and commit** (a faster reply resumed the task and it asked
+  again) can be told "secret" by one intervention and stored by another (C14.1 decides before delivery, the store at
+  commit). The window is the length of a delivery.
+- **A gated reply without a sign-in** is authored by "someone with the access code" (`access-code`, no roles): rule 5
+  holds in that the input says who it could be, not who it was. Require a sign-in on the gated listener for replies
+  once the pilot has users.
+- **No control-plane page links to soul at `/agent/<id>/`.** The gated listener forwards only its health; the primary
+  one forwards all of soul. If soul's own page is to be shown on a phone, add each route it needs to
+  `gatedAgentRoutes` with a reason, never `/api/chat` (it would drive the worker with no task record or author).
+- **The tools image is re-checked by its ID**, not its sentinel: a tools image rebuilt with the same tree but a new
+  ID is applied again (a cheap no-op copy, since the tools CMD compares sentinels).

@@ -55,6 +55,7 @@ func listenerMuxes(s *Server) (primary, gated *http.ServeMux) {
 	s.RegisterRoutes(primary)
 	s.RegisterLocalRoutes(primary)
 	s.RegisterSimulationRoutes(primary, nil)
+	s.RegisterEvalRoutes(primary, nil)
 	s.RegisterAccessRoutes(primary)
 	s.RegisterAccessLocalRoutes(primary)
 
@@ -105,6 +106,7 @@ func localOnlyPaths(t *testing.T) []string {
 	var paths []string
 	paths = append(paths, literalPaths(t, "server.go", "RegisterLocalRoutes")...)
 	paths = append(paths, literalPaths(t, "simulation_routes.go", "RegisterSimulationRoutes")...)
+	paths = append(paths, literalPaths(t, "eval_routes.go", "RegisterEvalRoutes")...)
 	paths = append(paths, literalPaths(t, filepath.Join("..", "access", "http.go"), "RegisterAdmin")...)
 	paths = append(paths, literalPaths(t, filepath.Join("..", "handoff", "handler.go"), "Register")...)
 	paths = append(paths, workqueue.Paths()...)
