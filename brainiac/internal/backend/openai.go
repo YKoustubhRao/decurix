@@ -151,10 +151,12 @@ func (c *OpenAI) Chat(ctx context.Context, req ChatRequest) (ChatResult, error) 
 		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
 			return out, fmt.Errorf("%s: bad answer: %w", c.name(), err)
 		}
-		if len(r.Choices) > 0 {
-			out.Text = r.Choices[0].Message.Content
-			out.Truncated = r.Choices[0].FinishReason == "length"
+		if len(r.Choices) == 0 {
+			return out, fmt.Errorf("%s: the answer has no choices", c.name())
 		}
+		out.Text = r.Choices[0].Message.Content
+		out.Truncated = r.Choices[0].FinishReason == "length"
+		out.Complete = true // a whole JSON document came back
 		c.usage(&out, r.Usage)
 		out.Model = r.Model
 		if req.OnDelta != nil && out.Text != "" {
@@ -167,6 +169,7 @@ func (c *OpenAI) Chat(ctx context.Context, req ChatRequest) (ChatResult, error) 
 	var text strings.Builder
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64*1024), 16<<20)
+	finished := false // a finish_reason or [DONE]: the server says the answer ended
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if !strings.HasPrefix(line, "data:") {
@@ -174,6 +177,7 @@ func (c *OpenAI) Chat(ctx context.Context, req ChatRequest) (ChatResult, error) 
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
+			finished = true
 			break
 		}
 		var r oaResponse
@@ -194,17 +198,24 @@ func (c *OpenAI) Chat(ctx context.Context, req ChatRequest) (ChatResult, error) 
 			if t := ch.Delta.ReasoningContent; t != "" && req.OnThink != nil {
 				req.OnThink(t)
 			}
+			if ch.FinishReason != "" {
+				finished = true
+			}
 			if ch.FinishReason == "length" {
 				out.Truncated = true
 			}
 		}
 		c.usage(&out, r.Usage)
 	}
+	out.Text = text.String()
+	out.Duration = time.Since(start)
 	if err := sc.Err(); err != nil {
 		return out, fmt.Errorf("%s: reading the answer: %w", c.name(), err)
 	}
-	out.Text = text.String()
-	out.Duration = time.Since(start)
+	if !finished {
+		return out, fmt.Errorf("%s: %w", c.name(), ErrCutShort)
+	}
+	out.Complete = true
 	return out, nil
 }
 

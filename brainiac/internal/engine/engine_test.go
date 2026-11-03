@@ -51,6 +51,7 @@ type fakeUnit struct {
 	loads    int
 	unloads  int
 	failLoad bool
+	dead     bool // it went away after loading
 }
 
 func (f *fakeUnit) key() string    { return f.name }
@@ -63,7 +64,8 @@ func (f *fakeUnit) load(context.Context) error {
 	f.loads++
 	return nil
 }
-func (f *fakeUnit) unload() { f.unloads++ }
+func (f *fakeUnit) unload()     { f.unloads++ }
+func (f *fakeUnit) alive() bool { return !f.dead }
 
 func TestResidencyEvictsOnlyIdleOwnModels(t *testing.T) {
 	free := 10.0
@@ -277,5 +279,46 @@ func TestRemoteFailureIsNotPassedOffAsLocal(t *testing.T) {
 	res, err := e.Chat(context.Background(), Request{Messages: []InMessage{{Role: "user", Parts: []Part{{Kind: "text", Text: "x"}}}}})
 	if err != nil || !strings.Contains(res.Brain, "fallback") || len(res.Trace.Notes) == 0 {
 		t.Fatalf("fallback res %+v err %v", res, err)
+	}
+}
+
+// A remote stream that fails partway, with local_fallback on, never reaches
+// the client as the start of one answer followed by the local one; a remote
+// answer that finishes reaches it whole.
+func TestFallbackNeverSendsTwoAnswers(t *testing.T) {
+	cut := true
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"The remote total is 1"}}]}`)
+		if !cut {
+			fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"2"},"finish_reason":"stop"}]}`)
+		}
+	}))
+	defer remote.Close()
+	fo := &fakeOllama{}
+	srv := httptest.NewServer(fo)
+	defer srv.Close()
+	cfg := config.Default()
+	cfg.Mode, cfg.OllamaURL, cfg.LocalFallback = config.ModeHybrid, srv.URL, true
+	cfg.Remote = &config.Remote{Kind: config.RemoteOpenAI, URL: remote.URL, Model: "m"}
+	e := newEngine(t, cfg, lockWith(ollamaPick(catalog.RoleBrain, "tiny", "tiny:1b")))
+	ask := func() (string, *Response) {
+		var sent strings.Builder
+		res, err := e.Chat(context.Background(), Request{OnDelta: func(s string) { sent.WriteString(s) },
+			Messages: []InMessage{{Role: "user", Parts: []Part{{Kind: "text", Text: "total?"}}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sent.String(), res
+	}
+	sent, res := ask()
+	if sent != "The total is 12,345.00 and tax 999." || !strings.Contains(res.Brain, "fallback") {
+		t.Fatalf("the client got %q from %s", sent, res.Brain)
+	}
+	if res.Mode != config.ModeLocal {
+		t.Errorf("a local answer reported mode %s", res.Mode)
+	}
+	cut = false
+	if sent, _ := ask(); sent != "The remote total is 12" {
+		t.Fatalf("the finished remote answer reached the client as %q", sent)
 	}
 }

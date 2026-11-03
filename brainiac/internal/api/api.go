@@ -46,6 +46,9 @@ type Server struct {
 	cur    atomic.Pointer[engine.Engine]
 	active atomic.Int64 // work requests being answered
 	last   atomic.Int64 // when the last one ended (unix nanoseconds)
+
+	// beforeEnter, in tests, runs between reading the engine and holding it.
+	beforeEnter func(*engine.Engine)
 }
 
 // engine is the engine requests go to now.
@@ -60,11 +63,36 @@ func (s *Server) engine() *engine.Engine {
 func (s *Server) Current() *engine.Engine { return s.engine() }
 
 // SetEngine sends new requests to e and returns the engine it replaces,
-// which the caller drains and closes.
+// which the caller retires (Engine.Retire): requests already holding it
+// finish there, and nothing new reaches it.
 func (s *Server) SetEngine(e *engine.Engine) *engine.Engine {
 	old := s.engine()
 	s.cur.Store(e)
 	return old
+}
+
+// errNoEngine is no engine taking requests (Brainiac is shutting down).
+var errNoEngine = errors.New("Brainiac is shutting down; try again in a moment")
+
+// use takes a hold on the current engine for one work request; done lets it
+// go. An engine retired between being read and being held refuses the hold,
+// and the engine that replaced it is used instead, so no request runs on an
+// engine that is closing.
+func (s *Server) use() (*engine.Engine, func(), error) {
+	var last *engine.Engine
+	for {
+		e := s.engine()
+		if e == last {
+			return nil, nil, errNoEngine
+		}
+		if s.beforeEnter != nil {
+			s.beforeEnter(e)
+		}
+		if e.Enter() {
+			return e, e.Leave, nil
+		}
+		last = e
+	}
 }
 
 // IdleFor is how long no work request has run (0 while one runs). Reading
@@ -332,8 +360,14 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	if model == "" {
 		model = engine.ModelAuto
 	}
+	eng, done, err := s.use()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "server_error", err.Error())
+		return
+	}
+	defer done()
 	if !cr.Stream {
-		res, err := s.engine().Chat(r.Context(), req)
+		res, err := answered(eng.Chat(r.Context(), req))
 		if err != nil {
 			s.chatError(w, err, res)
 			return
@@ -356,7 +390,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		}
 		sse.data(chunk(id, model, map[string]any{"content": d}, nil))
 	}
-	res, err := s.engine().Chat(r.Context(), req)
+	res, err := answered(eng.Chat(r.Context(), req))
 	if err != nil {
 		if !sse.started() {
 			stopKeepAlive()
@@ -384,6 +418,15 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		sse.data(u)
 	}
 	sse.done()
+}
+
+// answered passes an engine's answer on only when the brain said it ended:
+// a cut answer is an error, never a finish_reason of "stop".
+func answered(res *engine.Response, err error) (*engine.Response, error) {
+	if err == nil && (res == nil || !res.Complete) {
+		err = backend.ErrCutShort
+	}
+	return res, err
 }
 
 func parseStop(raw json.RawMessage) []string {
@@ -504,7 +547,13 @@ func (s *Server) transcribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	format := formatOf(hdr.Filename, data)
-	t, rec, err := s.engine().Transcribe(r.Context(), data, format, r.FormValue("language"))
+	eng, done, err := s.use()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "server_error", err.Error())
+		return
+	}
+	defer done()
+	t, rec, err := eng.Transcribe(r.Context(), data, format, r.FormValue("language"))
 	if err != nil {
 		s.chatError(w, err, &engine.Response{Trace: rec})
 		return
@@ -535,7 +584,13 @@ func (s *Server) ocr(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	res, rec, err := s.engine().OCR(r.Context(), data)
+	eng, done, err := s.use()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "server_error", err.Error())
+		return
+	}
+	defer done()
+	res, rec, err := eng.OCR(r.Context(), data)
 	if err != nil {
 		s.chatError(w, err, &engine.Response{Trace: rec})
 		return
@@ -559,7 +614,13 @@ func (s *Server) embed(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "input is empty")
 		return
 	}
-	vecs, model, err := s.engine().Embed(r.Context(), inputs)
+	eng, done, err := s.use()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "server_error", err.Error())
+		return
+	}
+	defer done()
+	vecs, model, err := eng.Embed(r.Context(), inputs)
 	if err != nil {
 		s.chatError(w, err, nil)
 		return

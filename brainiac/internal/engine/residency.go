@@ -31,6 +31,9 @@ type loadable interface {
 	memGB() float64
 	load(ctx context.Context) error
 	unload()
+	// alive reports whether what was loaded is still there: a model server
+	// can die after loading (an OOM kill), and then it must load again.
+	alive() bool
 }
 
 type resident struct {
@@ -76,10 +79,16 @@ func (r *Residency) Acquire(ctx context.Context, u loadable) (release func(), lo
 
 	r.mu.Lock()
 	if e, ok := r.loaded[u.key()]; ok {
-		e.refs++
-		e.lastUsed = time.Now()
-		r.mu.Unlock()
-		return r.releaser(u.key()), 0, nil
+		if e.u.alive() {
+			e.refs++
+			e.lastUsed = time.Now()
+			r.mu.Unlock()
+			return r.releaser(u.key(), e), 0, nil
+		}
+		// It died after loading: its memory is back already. Forget it, and
+		// load it again below. Requests still holding the dead one release
+		// their own entry, not the new one.
+		r.forgetLocked(u.key())
 	}
 	evicted, err := r.makeRoomLocked(ctx, u)
 	r.mu.Unlock()
@@ -93,18 +102,21 @@ func (r *Residency) Acquire(ctx context.Context, u loadable) (release func(), lo
 	if err := u.load(ctx); err != nil {
 		return nil, 0, err
 	}
+	e := &resident{u: u, refs: 1, lastUsed: time.Now()}
 	r.mu.Lock()
-	r.loaded[u.key()] = &resident{u: u, refs: 1, lastUsed: time.Now()}
+	r.loaded[u.key()] = e
 	r.mu.Unlock()
-	return r.releaser(u.key()), time.Since(start).Milliseconds(), nil
+	return r.releaser(u.key(), e), time.Since(start).Milliseconds(), nil
 }
 
-func (r *Residency) releaser(key string) func() {
+// releaser gives back one hold on e. It touches e only while e is still the
+// resident for key: one that was forgotten and loaded again is a new entry.
+func (r *Residency) releaser(key string, e *resident) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			r.mu.Lock()
-			if e, ok := r.loaded[key]; ok && e.refs > 0 {
+			if cur, ok := r.loaded[key]; ok && cur == e && e.refs > 0 {
 				e.refs--
 				e.lastUsed = time.Now()
 			}
@@ -186,9 +198,11 @@ func (r *Residency) Loaded() []string {
 // Forget drops a resident without unloading it (it already went away).
 func (r *Residency) Forget(key string) {
 	r.mu.Lock()
-	delete(r.loaded, key)
+	r.forgetLocked(key)
 	r.mu.Unlock()
 }
+
+func (r *Residency) forgetLocked(key string) { delete(r.loaded, key) }
 
 // UnloadAll unloads every resident (shutdown).
 func (r *Residency) UnloadAll() {

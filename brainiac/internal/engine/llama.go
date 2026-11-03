@@ -162,7 +162,7 @@ func (p *LlamaProc) Start(ctx context.Context) error {
 	for {
 		select {
 		case <-done:
-			p.cmd = nil
+			p.cmd, p.client = nil, nil
 			return fmt.Errorf("llama-server exited while loading %s: %s", filepath.Base(p.Model), tailOf(p.LogPath))
 		case <-ctx.Done():
 			p.stopLocked()
@@ -294,10 +294,15 @@ func (p *LlamaProc) Open() []string {
 	return p.open
 }
 
-// Client is the server's API, valid while it runs.
+// Client is the server's API while it runs, and nil once it has exited (a
+// crash or an OOM kill), so a caller starts it again instead of dialing a
+// server that is gone.
 func (p *LlamaProc) Client() *backend.OpenAI {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !p.running() {
+		return nil
+	}
 	return p.client
 }
 
@@ -335,7 +340,7 @@ func (p *LlamaProc) stopLocked() {
 		case <-time.After(10 * time.Second):
 		}
 	}
-	p.cmd = nil
+	p.cmd, p.client = nil, nil
 	p.removeSock()
 }
 

@@ -170,7 +170,7 @@ func updateLoop(ctx context.Context, st *store.Store, cfg config.Config, srv *ap
 				continue
 			}
 			old := srv.SetEngine(eng)
-			go old.Drain(2 * time.Minute)
+			go old.Retire(lg.Printf)
 			lg.Printf("update: now serving %s", rolesLine(eng.Status().Roles))
 		}
 	}

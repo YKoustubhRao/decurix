@@ -62,6 +62,16 @@ func (u *unit) load(ctx context.Context) error {
 	return nil
 }
 
+// alive reports whether a loaded unit is still in memory. A llama-server can
+// die after loading; Ollama keeps its own models; the worker starts again on
+// its next call.
+func (u *unit) alive() bool {
+	if u.runtime == catalog.RuntimeLlamaCpp {
+		return u.llama.Running()
+	}
+	return true
+}
+
 func (u *unit) unload() {
 	switch u.runtime {
 	case catalog.RuntimeLlamaCpp:

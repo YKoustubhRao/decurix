@@ -99,7 +99,10 @@ type Request struct {
 
 // Response is the answer and what it took.
 type Response struct {
-	Text             string
+	Text string
+	// Complete is the brain saying its answer ended. A response without it
+	// is never returned without an error; the API checks it again.
+	Complete         bool
 	Truncated        bool
 	Brain            string
 	Mode             string
@@ -139,18 +142,74 @@ type Engine struct {
 	evals    *evalCache
 	outcomes *evals.Outcomes
 	web      *web.Client
-	// inflight counts requests being answered, so an engine replaced by a
-	// newer one is closed only after they finish.
-	inflight sync.WaitGroup
+	// refs counts the holds callers took with Enter; once retired, no new
+	// hold is given and drained closes when the last one is let go.
+	refMu   sync.Mutex
+	refs    int
+	retired bool
+	drained chan struct{}
 }
 
-// Drain waits up to timeout for requests in progress, then closes the engine.
-func (e *Engine) Drain(timeout time.Duration) {
-	done := make(chan struct{})
-	go func() { e.inflight.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(timeout):
+// ErrRetired is an engine that was replaced or closed: ask the current one.
+var ErrRetired = errors.New("engine: this engine was replaced; use the current one")
+
+// Enter takes a hold on the engine for one request, so it is not closed
+// under the request. It is false once the engine is retired or closed; the
+// caller then asks for the current engine again. Every true is paired with
+// one Leave.
+func (e *Engine) Enter() bool {
+	e.refMu.Lock()
+	defer e.refMu.Unlock()
+	if e.retired {
+		return false
+	}
+	e.refs++
+	return true
+}
+
+// Leave lets go of a hold taken with Enter.
+func (e *Engine) Leave() {
+	e.refMu.Lock()
+	defer e.refMu.Unlock()
+	e.refs--
+	if e.refs == 0 && e.retired && e.drained != nil {
+		close(e.drained)
+		e.drained = nil
+	}
+}
+
+// Retire stops new holds, waits for every request holding the engine to
+// finish, however long a CPU answer takes, and then closes it. A request is
+// never cut short to make way for a new engine. logf, when set, is told
+// every few minutes what it still waits for.
+func (e *Engine) Retire(logf func(string, ...any)) {
+	e.refMu.Lock()
+	e.retired = true
+	var wait chan struct{}
+	if e.refs > 0 {
+		if e.drained == nil {
+			e.drained = make(chan struct{})
+		}
+		wait = e.drained
+	}
+	e.refMu.Unlock()
+	if wait != nil {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+	loop:
+		for {
+			select {
+			case <-wait:
+				break loop
+			case <-t.C:
+				if logf != nil {
+					e.refMu.Lock()
+					n := e.refs
+					e.refMu.Unlock()
+					logf("the replaced engine waits for %d request(s) to finish before it closes", n)
+				}
+			}
+		}
 	}
 	e.Close()
 }
@@ -255,8 +314,12 @@ func reasoningModel(m string) bool {
 // to make room for checking new models.
 func (e *Engine) Unload() { e.res.UnloadAll() }
 
-// Close unloads everything Brainiac loaded.
+// Close unloads everything Brainiac loaded. A closed engine gives no new
+// holds (Enter is false), so nothing starts a model server on it again.
 func (e *Engine) Close() {
+	e.refMu.Lock()
+	e.retired = true
+	e.refMu.Unlock()
 	e.res.UnloadAll()
 	if e.wk != nil {
 		_ = e.wk.Stop()
@@ -356,8 +419,6 @@ func hasRole(u *unit, r string) bool {
 
 // Chat answers one request.
 func (e *Engine) Chat(ctx context.Context, req Request) (*Response, error) {
-	e.inflight.Add(1)
-	defer e.inflight.Done()
 	start := time.Now()
 	id := req.ID
 	if id == "" {
@@ -434,12 +495,24 @@ func (e *Engine) Chat(ctx context.Context, req Request) (*Response, error) {
 	if req.OnProgress != nil {
 		req.OnProgress("answering with " + bc.name)
 	}
-	res, atom, err := e.callBrain(ctx, bc, breq)
-	if err != nil && bc.remote != nil && e.cfg.LocalFallback && bc.local != nil {
+	// When the local brain may take over from a failing remote one, the
+	// remote's words are held until it finishes: a client must never get the
+	// start of one answer followed by another whole answer.
+	fallback := bc.remote != nil && e.cfg.LocalFallback && bc.local != nil
+	first := breq
+	if fallback && req.OnDelta != nil {
+		first.OnDelta = func(string) {}
+	}
+	res, atom, err := e.callBrain(ctx, bc, first)
+	if err == nil && fallback && req.OnDelta != nil && res.Text != "" {
+		req.OnDelta(res.Text)
+	}
+	if err != nil && fallback {
 		rec.Notes = append(rec.Notes, "the remote brain failed ("+err.Error()+"); the local brain answered instead")
 		rec.Atoms = append(rec.Atoms, atom)
 		bc = brainChoice{mode: config.ModeLocal, local: bc.local, name: bc.local.model, sees: bc.local.vision}
 		rec.Brain = bc.name + " (fallback)"
+		rec.Mode = bc.mode
 		msgs, sources = e.brainMessages(req.Messages, evidence, webEv, bc)
 		breq.Messages = msgs
 		res, atom, err = e.callBrain(ctx, bc, breq)
@@ -469,7 +542,7 @@ func (e *Engine) Chat(ctx context.Context, req Request) (*Response, error) {
 		rec.Checks = append(rec.Checks, trace.Check{Kind: "unsupported_figures",
 			Detail: "figures in the answer that appear in no message or evidence (computed ones are expected here; read ones are not)", Items: figs})
 	}
-	return &Response{Text: res.Text, Truncated: res.Truncated, Brain: rec.Brain, Mode: bc.mode,
+	return &Response{Text: res.Text, Complete: true, Truncated: res.Truncated, Brain: rec.Brain, Mode: bc.mode,
 		PromptTokens: res.PromptTokens, CompletionTokens: res.CompletionTokens, Trace: rec}, nil
 }
 
@@ -503,6 +576,10 @@ func (e *Engine) callBrain(ctx context.Context, bc brainChoice, req backend.Chat
 		release()
 	}
 	atom.Ms = time.Since(t0).Milliseconds()
+	if err == nil && !res.Complete {
+		// No backend may pass a cut answer off as a whole one.
+		err = fmt.Errorf("%s: %w", bc.name, backend.ErrCutShort)
+	}
 	if err != nil {
 		atom.Error = err.Error()
 		return res, atom, err
@@ -766,8 +843,6 @@ func (e *Engine) brainMessages(in []InMessage, evidence map[string][]string, web
 
 // Transcribe is speech to text alone (the /v1/audio/transcriptions route).
 func (e *Engine) Transcribe(ctx context.Context, audio []byte, format, lang string) (worker.Transcript, *trace.Record, error) {
-	e.inflight.Add(1)
-	defer e.inflight.Done()
 	start := time.Now()
 	rec := &trace.Record{ID: trace.NewID(), At: start.UTC(), Model: "asr", Mode: config.ModeLocal}
 	defer func() { rec.Ms = time.Since(start).Milliseconds(); e.traces.Add(rec) }()
@@ -785,8 +860,6 @@ func (e *Engine) Transcribe(ctx context.Context, audio []byte, format, lang stri
 
 // OCR reads a picture's text alone (the /v1/brainiac/ocr route).
 func (e *Engine) OCR(ctx context.Context, img []byte) (worker.OCRResult, *trace.Record, error) {
-	e.inflight.Add(1)
-	defer e.inflight.Done()
 	start := time.Now()
 	rec := &trace.Record{ID: trace.NewID(), At: start.UTC(), Model: "ocr", Mode: config.ModeLocal}
 	defer func() { rec.Ms = time.Since(start).Milliseconds(); e.traces.Add(rec) }()
@@ -806,8 +879,6 @@ func (e *Engine) OCR(ctx context.Context, img []byte) (worker.OCRResult, *trace.
 
 // Embed turns texts into vectors with the embedding model.
 func (e *Engine) Embed(ctx context.Context, inputs []string) ([][]float32, string, error) {
-	e.inflight.Add(1)
-	defer e.inflight.Done()
 	u := e.byRole[catalog.RoleEmbed]
 	if u == nil {
 		return nil, "", ErrNoEmbed

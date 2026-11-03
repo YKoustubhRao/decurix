@@ -95,6 +95,7 @@ func (o *Ollama) Chat(ctx context.Context, req ChatRequest) (ChatResult, error) 
 
 	var out ChatResult
 	var text strings.Builder
+	done := false // Ollama's done: true, the only sign the answer ended
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64*1024), 16<<20)
 	for sc.Scan() {
@@ -119,16 +120,21 @@ func (o *Ollama) Chat(ctx context.Context, req ChatRequest) (ChatResult, error) 
 			req.OnThink(c.Message.Thinking)
 		}
 		if c.Done {
+			done = true
 			out.PromptTokens, out.CompletionTokens = c.PromptEvalCount, c.EvalCount
 			out.Truncated = c.DoneReason == "length"
 			out.Model = c.Model
 		}
 	}
+	out.Text = text.String()
+	out.Duration = time.Since(start)
 	if err := sc.Err(); err != nil {
 		return out, fmt.Errorf("ollama: reading the answer: %w", err)
 	}
-	out.Text = text.String()
-	out.Duration = time.Since(start)
+	if !done {
+		return out, fmt.Errorf("ollama: %w", ErrCutShort)
+	}
+	out.Complete = true
 	return out, nil
 }
 

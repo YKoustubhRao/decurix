@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -131,5 +132,51 @@ func TestOpenAIEmbedKeepsOrder(t *testing.T) {
 func TestImageMime(t *testing.T) {
 	if ImageMime(png1x1) != "image/png" || ImageMime([]byte{0xFF, 0xD8, 0xFF, 0}) != "image/jpeg" || ImageMime([]byte("hello")) != "" {
 		t.Fatal("mime sniffing")
+	}
+}
+
+// A stream that ends with no finish (the server died mid-answer) is an
+// error, never a complete answer: "The total is 1" is not the total.
+func TestACutStreamIsAnError(t *testing.T) {
+	cases := map[string]struct {
+		body string
+		chat func(url string) (ChatResult, error)
+	}{
+		"openai": {"data: {\"choices\":[{\"delta\":{\"content\":\"The total is 1\"}}]}\n\n", func(url string) (ChatResult, error) {
+			return (&OpenAI{BaseURL: url}).Chat(context.Background(), ChatRequest{Messages: []Message{{Role: "user", Text: "sum"}}, OnDelta: func(string) {}})
+		}},
+		"ollama": {`{"message":{"content":"The total is 1"},"done":false}` + "\n", func(url string) (ChatResult, error) {
+			return NewOllama(url).Chat(context.Background(), ChatRequest{Model: "m", Messages: []Message{{Role: "user", Text: "sum"}}})
+		}},
+	}
+	for name, c := range cases {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, c.body)
+			w.(http.Flusher).Flush()
+		}))
+		res, err := c.chat(srv.URL)
+		srv.Close()
+		if err == nil || !errors.Is(err, io.ErrUnexpectedEOF) || res.Complete {
+			t.Errorf("%s: a cut stream came back as an answer: err=%v text=%q complete=%v", name, err, res.Text, res.Complete)
+		}
+	}
+}
+
+// A finished answer says so.
+func TestAFinishedAnswerIsComplete(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"12"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+	res, err := (&OpenAI{BaseURL: srv.URL}).Chat(context.Background(), ChatRequest{OnDelta: func(string) {}})
+	if err != nil || !res.Complete || res.Text != "12" {
+		t.Fatalf("res %+v err %v", res, err)
+	}
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"choices":[]}`)
+	}))
+	defer srv2.Close()
+	if _, err := (&OpenAI{BaseURL: srv2.URL}).Chat(context.Background(), ChatRequest{}); err == nil {
+		t.Fatal("an answer with no choices was accepted")
 	}
 }

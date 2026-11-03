@@ -62,7 +62,13 @@ type ChatResult struct {
 	// Truncated means the backend stopped for length: the text is real but
 	// cut off. A clean 200 with half an answer looks like an answer.
 	Truncated bool
-	Duration  time.Duration
+	// Complete means the backend said the answer ended: a finish_reason or
+	// [DONE] on a stream, Ollama's done, or a whole JSON answer. Chat returns
+	// an error instead of an incomplete result, so a nil error comes with
+	// Complete; callers check it anyway, so a Chatter that forgets cannot
+	// pass a cut answer off as a whole one.
+	Complete bool
+	Duration time.Duration
 	// Model is the model the backend says answered.
 	Model string
 }
@@ -76,6 +82,11 @@ type Chatter interface {
 type Embedder interface {
 	Embed(ctx context.Context, model string, inputs []string) ([][]float32, error)
 }
+
+// ErrCutShort is an answer stream that ended before the backend said it was
+// finished: the server died, was killed, or the connection dropped. The text
+// so far is not an answer. It wraps io.ErrUnexpectedEOF.
+var ErrCutShort = fmt.Errorf("the answer stream ended before the model finished: %w", io.ErrUnexpectedEOF)
 
 // HTTPError is a backend's answer with a status other than 200.
 type HTTPError struct {
