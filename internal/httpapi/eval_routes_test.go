@@ -145,6 +145,15 @@ func TestEvalRunRowsAndCancel(t *testing.T) {
 	if w := get("/api/evals/runs/e1/rows"); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &rows) != nil || len(rows.Rows) != 1 || !rows.Rows[0].FalseDone {
 		t.Fatalf("rows: %d %s", w.Code, w.Body)
 	}
+	if w := get("/api/evals/runs/e1/table"); w.Code != 200 || !strings.Contains(w.Body.String(), "n=1: not a result") ||
+		!strings.HasPrefix(w.Header().Get("Content-Type"), "text/markdown") {
+		t.Fatalf("table: %d %s", w.Code, w.Body)
+	}
+	var table eval.Table
+	if w := get("/api/evals/runs/e1/table?format=json"); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &table) != nil ||
+		len(table.Rows) != 1 || table.Totals["nothing"].FalseDone != 1 || !table.NotResult {
+		t.Fatalf("json table: %d %s", w.Code, w.Body)
+	}
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/evals/runs/e1/cancel", nil))
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"status":"cancelled"`) {

@@ -144,7 +144,8 @@ func formFile(r *http.Request, field string, limit int64) ([]byte, bool) {
 	return b, true
 }
 
-// run serves one run: GET <id> (status, progress, current case), GET <id>/rows, POST <id>/cancel.
+// run serves one run: GET <id> (status, progress, current case), GET <id>/rows, GET <id>/table?format=md|json,
+// POST <id>/cancel.
 func (h *evalRoutes) run(w http.ResponseWriter, r *http.Request) {
 	if !h.ready(w) {
 		return
@@ -175,6 +176,19 @@ func (h *evalRoutes) run(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		jsonResponse(w, map[string]any{"rows": rows})
+	case sub == "table" && r.Method == http.MethodGet:
+		rows, err := h.e.Store.Rows(id)
+		if err != nil {
+			internalError(w, "eval: table", err)
+			return
+		}
+		t := eval.Summarise(run, rows)
+		if r.URL.Query().Get("format") == "json" {
+			jsonResponse(w, t)
+			return
+		}
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		_, _ = io.WriteString(w, t.Markdown())
 	case sub == "cancel" && r.Method == http.MethodPost:
 		run, err := h.e.Cancel(id)
 		if err != nil {
