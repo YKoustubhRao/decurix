@@ -64,12 +64,12 @@ func CompilePattern(pattern string) (*regexp.Regexp, error) {
 	}
 
 	if len(pattern) > maxPattern {
-		return nil, fmt.Errorf("a pattern can be at most %d characters", maxPattern)
+		return nil, invalid("a pattern can be at most %d characters", maxPattern)
 	}
 
 	re, err := regexp.Compile("(?i)" + pattern)
 	if err != nil {
-		return nil, fmt.Errorf("%q is not a valid regular expression: %v", pattern, err)
+		return nil, invalid("%q is not a valid regular expression: %v", pattern, err)
 	}
 
 	return re, nil
@@ -82,15 +82,15 @@ func (s *Store) CreateRule(n NewRule) (Rule, error) {
 	n.SubjectRe = strings.TrimSpace(n.SubjectRe)
 
 	if n.DesktopID == "" {
-		return Rule{}, fmt.Errorf("choose the desktop that should do the work")
+		return Rule{}, invalid("choose the desktop that should do the work")
 	}
 
 	if strings.TrimSpace(n.Content) == "" {
-		return Rule{}, fmt.Errorf("write the request the desktop should get")
+		return Rule{}, invalid("write the request the desktop should get")
 	}
 
 	if n.SenderRe == "" && n.SubjectRe == "" {
-		return Rule{}, fmt.Errorf("give a sender pattern, a subject pattern, or both")
+		return Rule{}, invalid("give a sender pattern, a subject pattern, or both")
 	}
 
 	for _, p := range []string{n.SenderRe, n.SubjectRe} {
@@ -100,16 +100,16 @@ func (s *Store) CreateRule(n NewRule) (Rule, error) {
 	}
 
 	if n.VerifiedOnly && n.SenderRe != "" && NamedDomain(n.SenderRe) == "" {
-		return Rule{}, fmt.Errorf(`with "verified senders only", write the sender's address or domain out (billing@acme.com or @acme.com), so the check knows which domain must have sent the email`)
+		return Rule{}, invalid(`with "verified senders only", write the sender's address or domain out (billing@acme.com or @acme.com), so the check knows which domain must have sent the email`)
 	}
 
 	if len(n.Name) > 200 {
-		return Rule{}, fmt.Errorf("a name can be at most 200 characters")
+		return Rule{}, invalid("a name can be at most 200 characters")
 	}
 
 	if _, err := s.Account(n.AccountID); err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return Rule{}, fmt.Errorf("choose a connected mailbox")
+			return Rule{}, invalid("choose a connected mailbox")
 		}
 
 		return Rule{}, err

@@ -1,10 +1,14 @@
 package httpapi
 
 import (
+	"crypto/tls"
 	"errors"
+	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
@@ -38,7 +42,8 @@ func (s *Server) triggersPageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Web.RenderTriggers(w, webui.PageData{Desktops: desktops}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("triggers page: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
 }
 
@@ -109,7 +114,7 @@ func (s *Server) connectMailHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := n.Normalise(); err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		mailInputError(w, err)
 		return
 	}
 
@@ -143,7 +148,7 @@ func (s *Server) mailPasswordHandler(w http.ResponseWriter, r *http.Request) {
 
 	candidate, password, err := acct.WithPassword(r.FormValue("password"))
 	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		mailInputError(w, err)
 		return
 	}
 
@@ -177,7 +182,8 @@ func (s *Server) checkMailHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		jsonStatusError(w, http.StatusBadGateway, err.Error())
+		log.Printf("mail: checking now: %v", err)
+		jsonStatusError(w, http.StatusBadGateway, mailConnectReason(err))
 		return
 	}
 
@@ -236,7 +242,7 @@ func (s *Server) createMailRuleHandler(w http.ResponseWriter, r *http.Request) {
 		VerifiedOnly: r.FormValue("verified_only") == "true",
 	})
 	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		mailInputError(w, err)
 		return
 	}
 
@@ -276,7 +282,14 @@ func (s *Server) testMailRuleHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		var input mailtrigger.InputError
+		if errors.As(err, &input) {
+			mailInputError(w, err)
+			return
+		}
+
+		log.Printf("mail: testing a rule: %v", err)
+		jsonStatusError(w, http.StatusBadGateway, mailConnectReason(err))
 		return
 	}
 
@@ -379,7 +392,46 @@ func mailConnectError(w http.ResponseWriter, host string, err error) {
 		return
 	}
 
-	jsonStatusError(w, http.StatusBadGateway, "Could not connect: "+err.Error())
+	log.Printf("mail: connecting to %s: %v", host, err)
+	jsonStatusError(w, http.StatusBadGateway, mailConnectReason(err))
+}
+
+// mailInputError answers a mistake in what the person gave with its own
+// words, and any other error as internal: an error's text is shown only when
+// it was written for the person (review 2026-11-03, B-37).
+func mailInputError(w http.ResponseWriter, err error) {
+	var input mailtrigger.InputError
+	if errors.As(err, &input) {
+		jsonStatusError(w, http.StatusBadRequest, input.Error())
+		return
+	}
+
+	jsonError(w, err)
+}
+
+// mailConnectReason says, in words chosen here, why a mail server could not
+// be used: the error itself is logged, never shown.
+func mailConnectReason(err error) string {
+	var dns *net.DNSError
+	var cert *tls.CertificateVerificationError
+	var netErr net.Error
+
+	switch {
+	case mailtrigger.IsAuth(err):
+		return "The mail server refused the login."
+	case errors.As(err, &dns):
+		return "Could not connect: the mail server's name was not found. Check the server name."
+	case errors.As(err, &cert):
+		return "Could not connect: the mail server's certificate could not be verified."
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "Could not connect: the mail server refused the connection. Check the server name and port."
+	case errors.As(err, &netErr) && netErr.Timeout():
+		return "Could not connect: the mail server did not answer in time."
+	case errors.Is(err, mailtrigger.ErrPasswordUnreadable):
+		return "The saved password can no longer be read; type it again."
+	default:
+		return "Could not connect to the mail server. The control plane's log says why."
+	}
 }
 
 // mailToggle is the shared body of the mailbox and rule pause/resume

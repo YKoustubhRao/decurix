@@ -46,25 +46,62 @@ func charsetReader(charset string, input io.Reader) (io.Reader, error) {
 	switch strings.ToLower(strings.TrimSpace(charset)) {
 	case "", "utf-8", "utf8", "us-ascii", "ascii":
 		return input, nil
-	case "iso-8859-1", "latin1", "latin-1", "windows-1252", "cp1252", "iso-8859-15":
+	case "iso-8859-1", "latin1", "latin-1":
 		raw, err := io.ReadAll(input)
 		if err != nil {
 			return nil, err
 		}
 
-		return strings.NewReader(latin1(raw)), nil
+		return strings.NewReader(singleByte(raw, nil)), nil
+	case "windows-1252", "cp1252":
+		raw, err := io.ReadAll(input)
+		if err != nil {
+			return nil, err
+		}
+
+		return strings.NewReader(singleByte(raw, cp1252)), nil
+	case "iso-8859-15", "latin-9", "latin9":
+		raw, err := io.ReadAll(input)
+		if err != nil {
+			return nil, err
+		}
+
+		return strings.NewReader(singleByte(raw, latin9)), nil
 	default:
 		return nil, fmt.Errorf("unsupported charset %q", charset)
 	}
 }
 
-func latin1(raw []byte) string {
+// singleByte decodes a one-byte-per-character charset: Latin-1, with the
+// bytes in differ read as that table says. windows-1252 and ISO-8859-15 are
+// not Latin-1 (review 2026-11-03, B-37): 0x80 is the euro sign in
+// windows-1252, which Latin-1 makes an invisible control character, so a
+// "€ 120" in an invoice email lost its currency.
+func singleByte(raw []byte, differ map[byte]rune) string {
 	var b strings.Builder
 	for _, c := range raw {
+		if r, ok := differ[c]; ok {
+			b.WriteRune(r)
+			continue
+		}
 		b.WriteRune(rune(c))
 	}
 
 	return b.String()
+}
+
+// cp1252 is where windows-1252 differs from Latin-1 (0x80-0x9F); the five
+// bytes it leaves undefined stay as Latin-1 reads them.
+var cp1252 = map[byte]rune{
+	0x80: '\u20ac', 0x82: '\u201a', 0x83: '\u0192', 0x84: '\u201e', 0x85: '\u2026', 0x86: '\u2020', 0x87: '\u2021',
+	0x88: '\u02c6', 0x89: '\u2030', 0x8a: '\u0160', 0x8b: '\u2039', 0x8c: '\u0152', 0x8e: '\u017d',
+	0x91: '\u2018', 0x92: '\u2019', 0x93: '\u201c', 0x94: '\u201d', 0x95: '\u2022', 0x96: '\u2013', 0x97: '\u2014',
+	0x98: '\u02dc', 0x99: '\u2122', 0x9a: '\u0161', 0x9b: '\u203a', 0x9c: '\u0153', 0x9e: '\u017e', 0x9f: '\u0178',
+}
+
+// latin9 is where ISO-8859-15 differs from Latin-1.
+var latin9 = map[byte]rune{
+	0xa4: '\u20ac', 0xa6: '\u0160', 0xa8: '\u0161', 0xb4: '\u017d', 0xb8: '\u017e', 0xbc: '\u0152', 0xbd: '\u0153', 0xbe: '\u0178',
 }
 
 var wordDecoder = &mime.WordDecoder{CharsetReader: charsetReader}

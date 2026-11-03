@@ -61,6 +61,17 @@ var schema = []string{
 	`ALTER TABLE schedules ADD COLUMN last_error TEXT NOT NULL DEFAULT ''`,
 }
 
+// InputError is a mistake in what a person gave (a cron expression that does
+// not parse, a time in the past): its text is written for that person and may
+// be shown as it is. Every other error is internal and is not shown.
+type InputError struct{ msg string }
+
+// Error returns the message for the person.
+func (e InputError) Error() string { return e.msg }
+
+// invalid is an InputError.
+func invalid(format string, args ...any) error { return InputError{fmt.Sprintf(format, args...)} }
+
 // Store is a SQLite-backed collection of Schedules.
 type Store struct {
 	db *sql.DB
@@ -100,14 +111,14 @@ func (s *Store) Create(desktopID, content, cronExpr string) (Schedule, error) {
 
 	expr, err := Parse(cronExpr)
 	if err != nil {
-		return Schedule{}, err
+		return Schedule{}, invalid("%v", err)
 	}
 
 	now := s.clock()
 
 	next, ok := expr.Next(now)
 	if !ok {
-		return Schedule{}, fmt.Errorf("cron expression %q never matches", cronExpr)
+		return Schedule{}, invalid("cron expression %q never matches", cronExpr)
 	}
 
 	return s.insert("create", Schedule{
@@ -135,7 +146,7 @@ func (s *Store) CreateOnce(desktopID, content string, runAt time.Time) (Schedule
 	runAt = runAt.UTC()
 
 	if !runAt.After(now) {
-		return Schedule{}, fmt.Errorf("run time must be in the future")
+		return Schedule{}, invalid("run time must be in the future")
 	}
 
 	return s.insert("create once", Schedule{
@@ -154,11 +165,11 @@ func checkRequest(desktopID, content string) (string, error) {
 	desktopID = strings.TrimSpace(desktopID)
 
 	if desktopID == "" {
-		return "", fmt.Errorf("desktop id is required")
+		return "", invalid("desktop id is required")
 	}
 
 	if strings.TrimSpace(content) == "" {
-		return "", fmt.Errorf("request text is required")
+		return "", invalid("request text is required")
 	}
 
 	return desktopID, nil
@@ -334,7 +345,7 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 
 	if err := s.db.QueryRow(`SELECT cron_expr, run_once, last_run_ns FROM schedules WHERE id = ?`, id).Scan(&cronExpr, &runOnce, &lastRunNS); err != nil {
 		if err == sql.ErrNoRows {
-			return fmt.Errorf("schedule not found")
+			return invalid("schedule not found")
 		}
 
 		return fmt.Errorf("schedule: enable %s: %w", id, err)
@@ -342,7 +353,7 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 
 	if runOnce != 0 {
 		if lastRunNS != 0 {
-			return fmt.Errorf("this one-time run has already fired")
+			return invalid("this one-time run has already fired")
 		}
 
 		if _, err := s.db.Exec(`UPDATE schedules SET enabled = 1 WHERE id = ?`, id); err != nil {
@@ -359,7 +370,7 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 
 	next, ok := expr.Next(s.clock())
 	if !ok {
-		return fmt.Errorf("cron expression %q never matches", cronExpr)
+		return invalid("cron expression %q never matches", cronExpr)
 	}
 
 	if _, err := s.db.Exec(

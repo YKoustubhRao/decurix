@@ -83,6 +83,17 @@ type Account struct {
 // job, is not in a state the change applies to).
 var ErrNotFound = errors.New("not found")
 
+// InputError is a mistake in what a person gave (a pattern that does not
+// compile, a missing field): its text is written for that person and may be
+// shown as it is. Every other error is internal and is not shown.
+type InputError struct{ msg string }
+
+// Error returns the message for the person.
+func (e InputError) Error() string { return e.msg }
+
+// invalid is an InputError.
+func invalid(format string, args ...any) error { return InputError{fmt.Sprintf(format, args...)} }
+
 var schema = []string{
 	`CREATE TABLE mail_accounts (
 		id             TEXT PRIMARY KEY,
@@ -224,7 +235,7 @@ func (n *NewAccount) Normalise() error {
 	n.Folder = strings.TrimSpace(n.Folder)
 
 	if !strings.Contains(n.Email, "@") || len(n.Email) > 320 {
-		return fmt.Errorf("enter the email address of the mailbox")
+		return invalid("enter the email address of the mailbox")
 	}
 
 	if n.Host == "" {
@@ -236,7 +247,7 @@ func (n *NewAccount) Normalise() error {
 	}
 
 	if n.Port < 1 || n.Port > 65535 {
-		return fmt.Errorf("the port must be between 1 and 65535")
+		return invalid("the port must be between 1 and 65535")
 	}
 
 	if n.Folder == "" {
@@ -246,12 +257,12 @@ func (n *NewAccount) Normalise() error {
 	n.Password = normalisePassword(n.Host, n.Password)
 
 	if n.Password == "" {
-		return fmt.Errorf("enter the mailbox's app password")
+		return invalid("enter the mailbox's app password")
 	}
 
 	for _, v := range []string{n.Email, n.Password, n.Host, n.Folder} {
 		if strings.ContainsAny(v, "\r\n\x00") {
-			return fmt.Errorf("a line break is not allowed in the connection details")
+			return invalid("a line break is not allowed in the connection details")
 		}
 	}
 
@@ -273,7 +284,7 @@ func normalisePassword(host, password string) string {
 func (a Account) WithPassword(password string) (Account, string, error) {
 	password = normalisePassword(a.Host, password)
 	if password == "" || strings.ContainsAny(password, "\r\n\x00") {
-		return Account{}, "", fmt.Errorf("enter the mailbox's app password")
+		return Account{}, "", invalid("enter the mailbox's app password")
 	}
 
 	a.password = password

@@ -444,3 +444,37 @@ func TestUniqueNamesNeverRepeatAName(t *testing.T) {
 		t.Fatalf("a name that was already unique changed: %v", got)
 	}
 }
+
+// windows-1252 and ISO-8859-15 are read by their own tables, not as Latin-1
+// (review 2026-11-03, B-37).
+func TestOneByteCharsetsAreReadByTheirOwnTables(t *testing.T) {
+	for _, c := range []struct{ charset, in, want string }{
+		{"windows-1252", "\x80 120 \x93x\x94", "\u20ac 120 \u201cx\u201d"},
+		{"iso-8859-15", "\xa4 120", "\u20ac 120"},
+		{"iso-8859-1", "\xa4 120", "\u00a4 120"},
+	} {
+		r, err := charsetReader(c.charset, strings.NewReader(c.in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := io.ReadAll(r)
+		if string(got) != c.want {
+			t.Errorf("%s: %q, want %q", c.charset, got, c.want)
+		}
+	}
+}
+
+func TestFileNamesKeepTheirScriptAndLoseALeadingDash(t *testing.T) {
+	for in, want := range map[string]string{
+		"चालान.pdf":   "चालान.pdf",
+		"-rf.xlsx":    "_rf.xlsx",
+		".hidden.pdf": "_hidden.pdf",
+		`a/b\c.pdf`:   "c.pdf",
+		"x\ny.pdf":    "x_y.pdf",
+		"..":          "file",
+	} {
+		if got := SafeFileName(in); got != want {
+			t.Errorf("SafeFileName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

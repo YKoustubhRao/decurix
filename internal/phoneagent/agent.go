@@ -565,7 +565,9 @@ func (a *agent) open(ctx context.Context, m phonehost.Message) {
 	for {
 		frame, err := readFrame(vbr)
 		if err != nil {
-			if sctx.Err() == nil {
+			if errors.Is(err, errFrameTooLarge) {
+				a.send(phonehost.Message{Op: phonehost.OpClosed, Session: s.id, Error: err.Error()})
+			} else if sctx.Err() == nil {
 				a.send(phonehost.Message{Op: phonehost.OpClosed, Session: s.id, Error: "the app's display closed"})
 			} else {
 				a.send(phonehost.Message{Op: phonehost.OpClosed, Session: s.id})

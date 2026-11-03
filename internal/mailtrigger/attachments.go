@@ -186,14 +186,22 @@ func extensionFor(mediaType string) string {
 	return ".bin"
 }
 
-var unsafeName = regexp.MustCompile(`[^\w.\- ()&+,@]`)
+// unsafeName is every character a file name keeps out: letters and digits of
+// any script stay (an invoice named in Hindi keeps its name), as do a few
+// marks; control characters, slashes, quotes and shell characters go.
+var unsafeName = regexp.MustCompile(`[^\p{L}\p{M}\p{N}_.\- ()&+,@]`)
 
 // SafeFileName makes an attachment's name safe to write into a folder: no
-// directories, no control characters, a bounded length.
+// directories, no control characters, a bounded length, and no leading "-"
+// or "." (a name that a command the worker runs would read as an option, or
+// that hides the file; review 2026-11-03, B-37).
 func SafeFileName(name string) string {
 	name = strings.ReplaceAll(name, "\\", "/")
 	name = strings.TrimSpace(path.Base(name))
 	name = unsafeName.ReplaceAllString(name, "_")
+	if name != "." && name != ".." && (strings.HasPrefix(name, "-") || strings.HasPrefix(name, ".")) {
+		name = "_" + name[1:]
+	}
 	if len(name) > 150 {
 		// An extension that long is not one: cutting the name to make room for it panicked and crash-looped the
 		// control plane on one email (review 2026-11-02).

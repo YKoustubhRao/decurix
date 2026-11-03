@@ -318,6 +318,16 @@ func dialForwarded(ctx context.Context, port int, wantDummy bool) (net.Conn, *bu
 	}
 }
 
+// maxVideoPacket is the largest video payload one link message can carry:
+// the control plane's WebSocket reader (internal/wsconn) takes at most 4 MiB
+// in one message, and a frame goes out with a 4-byte session prefix and its
+// header. A larger frame would have closed the whole link; now it ends only
+// its session, saying why (review 2026-11-03, B-37).
+const maxVideoPacket = 4<<20 - 4 - frameHeaderLength
+
+// errFrameTooLarge is a video frame too large for the link.
+var errFrameTooLarge = errors.New("a video frame was too large to send; open the app again at a smaller size")
+
 // readFrame reads one scrcpy video message: a 12-byte header, and for a
 // media packet its payload. It returns both together, as they are sent on.
 func readFrame(r io.Reader) ([]byte, error) {
@@ -332,8 +342,8 @@ func readFrame(r io.Reader) ([]byte, error) {
 	}
 
 	size := binary.BigEndian.Uint32(head[8:])
-	if size > 16<<20 {
-		return nil, fmt.Errorf("a %d-byte video packet is not believable", size)
+	if size > maxVideoPacket {
+		return nil, errFrameTooLarge
 	}
 
 	msg := make([]byte, frameHeaderLength+int(size))

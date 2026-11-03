@@ -1,7 +1,10 @@
 package phoneagent
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -73,5 +76,18 @@ func TestConnectingADBNeverOpensTheLegacyPort(t *testing.T) {
 		if strings.Join(c, " ") != "connect localhost:41234" {
 			t.Fatalf("adb was asked to %v", c)
 		}
+	}
+}
+
+// A video frame larger than one link message can carry ends its session, not
+// the whole link (review 2026-11-03, B-37).
+func TestAFrameTooLargeForTheLinkIsRefused(t *testing.T) {
+	head := make([]byte, frameHeaderLength)
+	binary.BigEndian.PutUint32(head[8:], maxVideoPacket+1)
+	if _, err := readFrame(bytes.NewReader(head)); !errors.Is(err, errFrameTooLarge) {
+		t.Fatalf("err = %v", err)
+	}
+	if frameHeaderLength+maxVideoPacket+4 != 4<<20 {
+		t.Fatal("the largest frame does not fit one link message exactly")
 	}
 }
