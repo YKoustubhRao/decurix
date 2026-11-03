@@ -451,3 +451,45 @@ func TestAnOllamaModelSomeoneElseUsesIsNotUnloaded(t *testing.T) {
 		t.Fatalf("a model in use by someone else was unloaded: %d %v", unloads, u.shared)
 	}
 }
+
+// A retired engine frees at once the models no request holds; the one an
+// in-flight request uses stays until that request leaves.
+func TestRetireFreesWhatNoRequestHolds(t *testing.T) {
+	e := newEngine(t, config.Default(), lockWith())
+	idle, held := &fakeUnit{name: "idle", gb: 1}, &fakeUnit{name: "held", gb: 1}
+	rel, _, err := e.res.Acquire(context.Background(), idle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel()
+	relHeld, _, err := e.res.Acquire(context.Background(), held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !e.Enter() {
+		t.Fatal("no hold on a live engine")
+	}
+	retired := make(chan struct{})
+	go func() { e.Retire(nil); close(retired) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for idle.unloads == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the idle model was not freed when the engine retired")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case <-retired:
+		t.Fatal("retired while a request still held the engine")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if held.unloads != 0 {
+		t.Fatal("the model a request is using was unloaded")
+	}
+	relHeld()
+	e.Leave()
+	<-retired
+	if held.unloads != 1 {
+		t.Fatalf("held unloads %d after the request left", held.unloads)
+	}
+}

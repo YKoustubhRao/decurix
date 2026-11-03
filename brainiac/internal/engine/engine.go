@@ -178,13 +178,19 @@ func (e *Engine) Leave() {
 	}
 }
 
-// Retire stops new holds, waits for every request holding the engine to
-// finish, however long a CPU answer takes, and then closes it. A request is
-// never cut short to make way for a new engine. logf, when set, is told
+// Retire stops new holds, unloads the models no request is using, waits for
+// every request holding the engine to finish, however long a CPU answer
+// takes, and then closes it. A request is never cut short to make way for a
+// new engine. logf, when set, is told
 // every few minutes what it still waits for.
 func (e *Engine) Retire(logf func(string, ...any)) {
 	e.refMu.Lock()
 	e.retired = true
+	e.refMu.Unlock()
+	// What no request holds now is freed at once, so the engine that
+	// replaced this one has the memory while a long answer finishes here.
+	e.res.UnloadIdle()
+	e.refMu.Lock()
 	var wait chan struct{}
 	if e.refs > 0 {
 		if e.drained == nil {

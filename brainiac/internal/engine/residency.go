@@ -212,6 +212,22 @@ func (r *Residency) Forget(key string) {
 
 func (r *Residency) forgetLocked(key string) { delete(r.loaded, key) }
 
+// UnloadIdle unloads every resident no one holds now; held ones stay.
+func (r *Residency) UnloadIdle() {
+	r.mu.Lock()
+	var idle []loadable
+	for k, e := range r.loaded {
+		if e.refs == 0 {
+			idle = append(idle, e.u)
+			delete(r.loaded, k)
+		}
+	}
+	r.mu.Unlock()
+	for _, u := range idle {
+		u.unload()
+	}
+}
+
 // UnloadAll unloads every resident (shutdown).
 func (r *Residency) UnloadAll() {
 	r.mu.Lock()
