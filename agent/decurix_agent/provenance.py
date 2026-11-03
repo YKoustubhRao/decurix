@@ -354,6 +354,26 @@ def derived(value, operands, pool):
     return False
 
 
+_DIGIT_RUN = re.compile(r"\+?\d(?:[-. ()]{1,2}\d|\d)*")
+
+
+def _id_forms(written):
+    """The digit strings an identifier as written may stand for: all its digits, and - only where the writing marks a
+    prefix - without a country code after "+" (1 to 3 digits) or a trunk "0". Never a cut that the writing does not
+    show (review 2026-11-03, E-28: up to three leading digits were stripped from any number)."""
+
+    text = str(written or "").strip()
+    digits = re.sub(r"\D", "", text)
+    if len(digits) < 7:
+        return {digits} if digits else set()
+    forms = {digits}
+    if text.startswith("+"):
+        forms |= {digits[k:] for k in range(1, 4) if len(digits) - k >= 7}
+    elif digits.startswith("0") and len(digits) >= 8:
+        forms.add(digits[1:])
+    return forms
+
+
 class Sources:
     """
     What the sources of a piece of work hold, put in one form: the request, its input files and messages, the system's
@@ -368,7 +388,12 @@ class Sources:
         joined = "\n".join(texts)
         self.flat = " ".join(joined.lower().split())
         self.squashed = _squash(joined)
-        self.digits = "|".join(re.sub(r"\D", "", t) for t in texts)
+        # Each identifier a source writes, as its digits: one run of digits with at most two of " -.()" between them,
+        # never digits joined across cells or words (review 2026-11-03, E-28: "Qty 12 Rate 3456 Total 789" held
+        # "2345678"), in every form its prefix allows (_id_forms).
+        self.idents = set()
+        for m in _DIGIT_RUN.finditer(joined):
+            self.idents |= _id_forms(m.group(0))
         self.emails = {e.lower() for e in _EMAIL.findall(joined)}
         self.dates = _dates(joined)
         self.numbers = []
@@ -383,10 +408,11 @@ class Sources:
 
         self.dates.add(tuple(date.timetuple()[:3]))
 
-    def _held_digits(self, digits):
-        # The same identifier with or without a country or trunk prefix: +91 98765 43210 is 9876543210.
-        tries = [digits] + [digits[k:] for k in range(1, 4) if len(digits) - k >= 7]
-        return any(t and t in self.digits for t in tries)
+    def _held_digits(self, written):
+        """Whether a source writes this identifier: the same digits, a whole run of them, with or without a prefix
+        that is written as one (a "+" country code, a trunk "0") - never a part of a longer number."""
+
+        return bool(_id_forms(written) & self.idents)
 
     def holds(self, kind, written):
         """Whether a source states this fact (kind and text as facts_in gives them)."""
@@ -398,7 +424,7 @@ class Sources:
         if kind == "code":
             return bool(_squash(written)) and _squash(written) in self.squashed
         if kind == "ident":
-            return self._held_digits(re.sub(r"\D", "", written)) or self.holds("number", written)
+            return self._held_digits(written) or self.holds("number", written)
         if kind == "number":
             found = parse_number(written)
             if not found:
@@ -407,7 +433,7 @@ class Sources:
             if any(same_figure((abs(found[0]), found[1]), (abs(n[0]), n[1])) for n in self.numbers):
                 return True
             digits = re.sub(r"\D", "", written)
-            return len(digits) >= 7 and self._held_digits(digits)
+            return len(digits) >= 7 and self._held_digits(written)
         return True
 
     def _missing(self, text, operands=()):
