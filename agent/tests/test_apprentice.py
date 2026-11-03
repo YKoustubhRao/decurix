@@ -12,6 +12,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+import config_stub  # noqa: F401  (first: a task file of this test process's own)
 import test_skills as ts
 from test_recordings import event, field
 

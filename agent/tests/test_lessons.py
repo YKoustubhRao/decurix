@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+import config_stub  # noqa: F401  (first: a task file of this test process's own)
 from temp_case import TempDirCase
 
 from decurix_agent import guidance, lessons, skill_task, state

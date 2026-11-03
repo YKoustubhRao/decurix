@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import config_stub  # noqa: F401  (first: a task file of this test process's own)
 from decurix_agent import playbooks, produced
 from decurix_agent.tools import outbox
 
