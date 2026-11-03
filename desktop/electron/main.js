@@ -304,17 +304,19 @@ function stackDir() {
 // What docker is run with: a PATH it and its helpers are found on, and the
 // two host folders the compose file mounts (scripts/mac/lib/host-mounts.sh,
 // scripts/linux/build.sh: a Mac shares its home folder and has no Windows
-// drive; Linux gives its root where WSL would give C:).
+// drive; Linux under WSL gives the Windows drive, and Linux without one an
+// empty folder - never the host's root, which would put /etc and every home
+// folder in reach of the control plane's host-file checks).
 function stackEnv() {
   // The project name a checkout's own `docker compose up` uses, so the app
   // takes over a control plane started that way instead of colliding with
   // its container's name - and keeps its records (the decurix-data volume).
   const env = { ...process.env, PATH: searchPath().join(path.delimiter), COMPOSE_PROJECT_NAME: 'decurix', DECURIX_HOST_HOME: os.homedir() };
-  if (process.platform === 'darwin') {
+  if (process.platform !== 'darwin' && fs.existsSync('/mnt/c')) {
+    env.DECURIX_HOST_MNT_C = '/mnt/c';
+  } else {
     env.DECURIX_HOST_MNT_C = path.join(dataDir(), 'no-windows-drive');
     fs.mkdirSync(env.DECURIX_HOST_MNT_C, { recursive: true });
-  } else {
-    env.DECURIX_HOST_MNT_C = fs.existsSync('/mnt/c') ? '/mnt/c' : '/';
   }
   return env;
 }

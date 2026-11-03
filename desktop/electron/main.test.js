@@ -46,14 +46,17 @@ test('native folder chooser only accepts the dashboard main frame', async () => 
   assert.equal(result.pickerCalls.length, 0);
 });
 
-test('native folder chooser maps home folders on Mac and Linux, and Linux root mount', async () => {
+test('native folder chooser maps home folders on Mac and Linux, and never mounts the Linux root', async () => {
   const homeFolder = path.join('/Users/ana', 'Documents', 'demo');
   for (const platform of ['darwin', 'linux']) {
     const result = await boot('ready', { platform, pickedFolders: [homeFolder] });
     assert.equal((await result.pickFolders()).paths[0].path, '/host-home/Documents/demo');
   }
   const linux = await boot('ready', { platform: 'linux', pickedFolders: [path.resolve('/opt/demo')] });
-  assert.equal((await linux.pickFolders()).paths[0].path, '/mnt/c/opt/demo');
+  await assert.rejects(linux.pickFolders(), /inside your home folder/);
+  // Linux under WSL gives the Windows drive, as scripts/linux/build.sh does.
+  const wslLinux = await boot('ready', { platform: 'linux', files: ['/mnt/c'], pickedFolders: [path.resolve('/mnt/c/Users/ana/demo')] });
+  assert.equal((await wslLinux.pickFolders()).paths[0].path, '/mnt/c/Users/ana/demo');
   const mac = await boot('ready', { platform: 'darwin', pickedFolders: [path.resolve('/Users/another/demo')] });
   await assert.rejects(mac.pickFolders(), /inside your home folder/);
 });
@@ -903,4 +906,12 @@ test('native connectivity errors affect hosting status after the dashboard opens
   const state = await result.modelAction('local-model-status');
   assert.equal(state.phase, 'error');
   assert.match(state.detail, /Linux cannot reach/);
+});
+
+test('Linux without a Windows drive mounts an empty folder as the control plane\'s C:, never the host root', async () => {
+  const result = await boot('absent', { platform: 'linux', files: [dockerOnPath] });
+  const run = result.spawns.find((s) => path.basename(s.file) === 'docker');
+  assert.equal(run.options.env.DECURIX_HOST_MNT_C, path.join(data, 'no-windows-drive'));
+  const wsl = await boot('absent', { platform: 'linux', files: [dockerOnPath, '/mnt/c'] });
+  assert.equal(wsl.spawns.find((s) => path.basename(s.file) === 'docker').options.env.DECURIX_HOST_MNT_C, '/mnt/c');
 });
