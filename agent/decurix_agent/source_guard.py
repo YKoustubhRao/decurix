@@ -13,6 +13,10 @@ work is reported, a file the request gives (attached, named, or in a folder it n
 and is now different, and that the request did not ask to be changed, is put back from its copy and the result is not
 done, said in plain words. Any other file of the folder is the person's business, never judged or put back. The same notes tell the checks which files
 are sources, so a check of what was made never runs on them.
+
+Since review 2026-11-03 (E-12) the gate takes the fact only (changed_sources): which given file changed and how, for
+the judge and always for the person. Nothing is put back before a verdict, and whether the request allowed the change
+is the judge's, not a verb list's. check_and_restore is the old rule, kept until its last caller is moved.
 """
 
 import hashlib
@@ -33,7 +37,9 @@ KEEP_TASKS = 5                   # snapshots of the last few tasks are kept, so 
 
 _EXT = r"\.(?:xlsx|xlsm|xls|docx|doc|pptx|ppt|pdf|csv|tsv|txt|md|json|xml|html?|ods|odt|odp|png|jpe?g|gif|bmp|svg|webp|tiff?)\b"
 # A file name a request mentions: a plain one (receivables.xlsx), or one with spaces in quotes ("Q3 review.xlsx").
-_REQUESTED = re.compile(r"(?<![\w.-])[\w-][\w.-]*" + _EXT + r"|[\"'“]([^\"'”\n]{1,80}" + _EXT + r")", re.I)
+# An opening quote never follows a letter: found (review 2026-11-03) "Record today's payments in ledger.xlsx" read
+# "s payments in ledger.xlsx" as one quoted name, and the guard never noticed ledger.xlsx at all.
+_REQUESTED = re.compile(r"(?<![\w.-])[\w-][\w.-]*" + _EXT + r"|(?<!\w)[\"'“]([^\"'”\n]{1,80}" + _EXT + r")", re.I)
 # A verb asking for a file itself to be changed.
 _EDIT = re.compile(r"\b(?:update|change|edit|modify|correct|fix|fill(?:\s+in)?|add|insert|append|remove|delete|"
                    r"highlight|colou?r|format|sort|rename|replace|overwrite|clean|mark|tidy)\b", re.I)
@@ -480,3 +486,159 @@ def check_and_restore(task_id, request):
 
 # How the finding of a changed source begins (a stable prefix: a repeated one becomes a question to the person).
 CHANGED_SOURCE = "The task changed your file"
+
+
+# ------------------------------------------------------------
+# The fact, without a verdict (review 2026-11-03, E-12)
+#
+# check_and_restore decided from verbs (may_change) whether the request allowed a file to change, and put the original
+# back inside the gate before anything judged the work: "Record today's payments in ledger.xlsx" or "Complete
+# rates.xlsx" - the core of a CA firm's work - was reverted as "you changed my file". What code knows for certain is
+# only the mechanical fact: this given file changed, and how. That fact goes to the judge and, always, to the person;
+# the original stays kept, and it is put back only on a judge's structured verdict or the person's word.
+# ------------------------------------------------------------
+
+DIFF_CHARS = 600
+DIFF_CELLS = 12
+
+
+class NotChecked(OSError):
+    """The source check could not be made (its notes or a changed file could not be read): not checked, never passed."""
+
+
+def _strict_manifest(task_id):
+    """The task's notes, None when none were taken (no shared folder, or a task begun before one): raises NotChecked
+    when they exist and cannot be read."""
+
+    path = _manifest_path(task_id)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise NotChecked(f"the notes of the files before the task could not be read: {exc}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("files"), dict):
+        raise NotChecked("the notes of the files before the task are not in their shape")
+    return data
+
+
+def _diff(before, after):
+    """A short, plain description of how a file's content changed: cells for a workbook, lines for text."""
+
+    import difflib
+
+    if isinstance(before, list) and isinstance(after, list):
+        old = {(s, c): v for s, cells in before for c, v in cells}
+        new = {(s, c): v for s, cells in after for c, v in cells}
+        moved = []
+        for key in sorted(set(old) | set(new), key=lambda k: (str(k[0]), str(k[1]))):
+            if old.get(key) != new.get(key):
+                moved.append(f"{key[0]}!{key[1]}: {old.get(key, '(empty)')!r} -> {new.get(key, '(empty)')!r}")
+        if not moved:
+            return "the same cells (the file was saved again)"
+        shown = "; ".join(moved[:DIFF_CELLS]) + (f"; and {len(moved) - DIFF_CELLS} more cells" if len(moved) > DIFF_CELLS else "")
+        return f"{len(moved)} cell(s) changed: {shown}"
+    if isinstance(before, str) and isinstance(after, str):
+        lines = [line for line in difflib.unified_diff(before.splitlines(), after.splitlines(), lineterm="", n=0)
+                 if line[:1] in "+-" and not line.startswith(("+++", "---"))]
+        return ("lines changed: " + " | ".join(lines))[:DIFF_CHARS] if lines else "the same text (saved again)"
+    return ""
+
+
+_TEXT_KINDS = {".csv", ".tsv", ".txt", ".md", ".json", ".xml", ".html", ".htm"}
+
+
+def _plain_text(path):
+    """A text file's text (for its diff), or None for any other kind or one that cannot be read."""
+
+    if Path(path).suffix.lower() not in _TEXT_KINDS:
+        return None
+    try:
+        return Path(path).read_bytes()[:HASH_MAX].decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def changed_sources(task_id, request):
+    """
+    The given files of the request (attached, named, or in a folder it names) that were in the shared folder before the
+    task and now hold something else, or are gone - whatever the request's words, which decide nothing here:
+    [{"rel", "name", "path", "diff", "gone", "kept", "asked"}]. "asked" is may_change's reading (the request names
+    the file near an edit verb): evidence for the judge, never a verdict. [] when there is no shared folder or nothing
+    changed; raises NotChecked when the check cannot be made. Never restores anything.
+    """
+
+    if not shared.active():
+        return []
+    data = _strict_manifest(task_id)
+    if data is None:
+        return []
+    named = _names(request)
+    mine = given(request)
+    out = []
+    for rel, entry in data["files"].items():
+        if rel not in mine and Path(rel).name.lower() not in named:
+            continue  # (not a source this request gives: never judged)
+        copy = _folder(task_id) / "files" / entry["copy"] if entry.get("copy") else None
+        fact = {"rel": rel, "name": Path(rel).name, "path": shared.to_host(str(Path(_root()) / rel)) or rel,
+                "gone": False, "kept": bool(copy and copy.is_file()), "asked": may_change(Path(rel).name, request),
+                "diff": ""}
+        now = _now(rel)
+        if now is None:
+            fact.update(gone=True, diff="the file is gone")
+            out.append(fact)
+            continue
+        local, info = now
+        if info.st_size == entry.get("size") and info.st_mtime_ns == entry.get("mtime"):
+            continue
+        try:
+            if entry.get("sha256") and info.st_size == entry.get("size") and _digest(local) == entry["sha256"]:
+                continue
+        except OSError as exc:
+            raise NotChecked(f"{Path(rel).name} could not be read to compare: {exc}") from exc
+        if fact["kept"]:
+            before, after = _content(copy) or _plain_text(copy), _content(local) or _plain_text(local)
+            if before is not None and before == after:
+                continue  # (saved again by an app, the same content: not a change)
+            fact["diff"] = _diff(before, after)
+        if not fact["diff"]:
+            fact["diff"] = f"its bytes differ ({entry.get('size')} bytes before, {info.st_size} now)"
+        out.append(fact)
+    return out
+
+
+def judge_lines(facts):
+    """What the judge is told, one line per changed file: the fact checked in code, and the request's own wording as
+    a pointer only."""
+
+    lines = []
+    for f in facts or ():
+        line = f"Checked in code (not a claim): the request's file {f['path']} changed during the task - {f['diff']}."
+        line += (" The request names this file next to an edit verb." if f.get("asked") else
+                 " Whether the request asked for this file itself to change is for you to judge from its words.")
+        lines.append(line)
+    return lines
+
+
+def report_lines(facts):
+    """The person's line for each changed file, always shown with the result (under "Please check")."""
+
+    out = []
+    for f in facts or ():
+        if f.get("kept"):
+            out.append(f'Changed your file {f["path"]} ({f["diff"]}) - the original is kept; say "put back {f["name"]}" '
+                       "and I will restore it.")
+        else:
+            out.append(f"Changed your file {f['path']} ({f['diff']}) - no copy of the original was kept (it was too "
+                       "large), so it cannot be undone from here.")
+    return out
+
+
+def restore_sources(task_id, rels):
+    """Put the originals back over the named changed files: (done [rel], failed [(rel, why)], kept {rel: the worker's
+    version, kept beside it}). Only on a structured judge verdict that the change was not asked for, or the person's
+    request - never as part of checking."""
+
+    kept = {}
+    done, failed = restore(task_id, list(rels or ()), kept=kept)
+    return done, failed, kept
