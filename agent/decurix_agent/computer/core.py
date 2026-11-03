@@ -3420,20 +3420,41 @@ def _redrawn(exc, element, ref, role, name, path):
     """
 
     if element is None or element.get("source") != "cdp" or not (ref or role or name or path):
-        return None
+        return None, None
     if not any(s in str(exc).lower() for s in STALE_NODE):
-        return None
+        return None, None
     fresh = observe()
     try:
         again = el.find(fresh["elements"], ref=ref, role=role, name=name, path=path, active_group=active_group(fresh),
                         gone=fresh.get("gone"))
     except ComputerError:
-        return None
+        return None, None
     # ...and in the same window: the same tab, the same title (an approval judged for one document's control never
     # passes to another's).
-    if again is None or again.get("role") != element.get("role") or again.get("name") != element.get("name")             or again.get("group") != element.get("group") or again.get("window_title") != element.get("window_title"):
-        return None
-    return again
+    if again is None or again.get("role") != element.get("role") or again.get("name") != element.get("name") \
+            or again.get("group") != element.get("group") or again.get("window_title") != element.get("window_title"):
+        return None, None
+    return again, fresh
+
+
+def _changed_under(before, element, fresh, again):
+    """
+    Why the page a redrawn control sits on is not the one the action was judged on, or "": its address, the filled
+    fields shown to the person (_what_it_acts_on) or every field the press sends (_what_it_sends) differ. Found in
+    review (2026-11-03, D-06): the retry compared the control's role, name and window only, so a same-titled tab
+    showing another record or amount was pressed under a grant made for the first. Unreadable is changed.
+    """
+
+    try:
+        if (_context(fresh).get("url") or "") != (_context(before).get("url") or ""):
+            return "its address changed"
+        if _what_it_acts_on(fresh, again) != _what_it_acts_on(before, element):
+            return "what is filled in beside it changed"
+        if _what_it_sends(fresh, again) != _what_it_sends(before, element):
+            return "what it would send changed"
+    except Exception as exc:  # noqa: BLE001 - what the page holds now cannot be read: it is not known to be the same
+        return f"what the page holds now could not be read ({type(exc).__name__})"
+    return ""
 
 
 # Controls whose press does something or chooses something. An engine that
@@ -3602,6 +3623,24 @@ def _unresolved_press(kind, element, point, before):
         return None, None  # the page says no control is there: a click on plain page, nothing to name
     return None, (f"this presses the spot {point[0]},{point[1]}, which nothing on the screen names - a press there may "
                   "pay, send or file")
+
+
+def _refuse_files_that_may_not_leave(files):
+    """Raise when a file an upload would hand a page may not leave this desktop (privacy.file_may_leave: the worker's
+    own state, a hidden folder, anything outside the work, shared and download folders). Found in review (2026-11-03,
+    D-08): an upload sent any file on the desktop to any page; only the outbox and handoff asked this."""
+
+    if not files:
+        return files
+    if isinstance(files, (str, bytes)):
+        files = [files]
+    # As the upload reads them (cdp.set_file_input_files): from this process's folder when not absolute.
+    named = [os.path.abspath(os.path.expanduser(str(f))) for f in files]
+    for f in named:
+        _, why = privacy.file_may_leave(f)
+        if why:
+            raise ComputerError(f"{f} is not uploaded: {why}. Nothing was sent.")
+    return named
 
 
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
@@ -3838,6 +3877,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
 
     _refuse_number_arrows(kind, point)
     _refuse_unsafe_save(kind, element, keys, before)
+    files = _refuse_files_that_may_not_leave(files)
     downloads_before = _downloads_snapshot() if kind in ("click", "double_click", "key") else None
     acted_at = time.time()
     require = None
@@ -3945,9 +3985,19 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             try:
                 backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files, ids=ids)
             except ComputerError as exc:
-                again = _redrawn(exc, element, ref, role, name, path)
+                again, fresh = _redrawn(exc, element, ref, role, name, path)
                 if again is None:
                     raise
+                # The second press is judged like the first, on the page as it is now (D-06).
+                changed = _changed_under(before, element, fresh, again)
+                if changed:
+                    raise ComputerError(f"the page changed under the action ({changed}) - nothing more was done. "
+                                        "Observe and do it again.") from exc
+                if check_form:
+                    held = _commit_check(kind, again, keys, fresh, checked=check_form == "checked", text=text,
+                                         listing="ask" if check_form == "replay" else True)
+                    if held:
+                        raise ComputerError(str(held)) from exc
                 element = again
                 backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files, ids=ids)
     except ComputerError as exc:
@@ -3983,7 +4033,11 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     relayed = _relayed(element, before)
     # Only a field is typed again: in a paragraph, a cell or a document a second typing adds a second copy (found
     # live: an Impress subtitle came out twice).
-    if kind == "type" and element is not None and text and not append and not relayed \
+    # Never typed again when the text pressed Enter or Tab (a field that empties because Enter sent it looks like one the
+    # page cleared, and the retype sent it twice), nor when a person approved this typing: one yes is one action (D-07).
+    keyed = bool(text) and ("\n" in text or "\t" in text)
+    if kind == "type" and element is not None and text and not append and not relayed and not keyed \
+            and not getattr(decision, "approved", False) \
             and element.get("role") not in ("paragraph", "heading", "cell", "document"):
         again = _same_field(element, after)
         if again is not None and _typing_lost(again, text):
@@ -3993,7 +4047,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             after = observe()
             retyped = True
 
-    if kind == "type" and element is not None and text and not append and element.get("role") == "textbox"             and not relayed:
+    if kind == "type" and element is not None and text and not append and element.get("role") == "textbox" \
+            and not relayed and not keyed:
         retained = _same_field(element, after)
         if retained is not None and _typing_lost(retained, text):
             reason = (f"{target} did not retain the requested text after retrying. Observe the field again and "
@@ -4753,15 +4808,15 @@ def _open(target, new_tab):
         # guessed points around the icon on every run.
         argv = launchers.argv(launchers.by_name(target))
     else:
-        parts = target.split()
-        if not shutil.which(parts[0]):
-            icons = sorted({entry["name"] for entry in launchers.entries()})
-            raise ComputerError(
-                f"don't know how to open {target!r}: give a URL, an existing file path, or one of "
-                + ", ".join(sorted(APPS))
-                + ("; or the name of an app on this desktop: " + ", ".join(icons) if icons else "")
-            )
-        argv = parts
+        # Found in review (2026-11-03, D-05): anything else was split into words and run when its first word was a
+        # program on PATH - a door to run any program with any arguments, which no guard of the shell looked at. Open
+        # takes a URL, a file, an app of APPS or an icon of this desktop, and nothing else.
+        icons = sorted({entry["name"] for entry in launchers.entries()})
+        raise ComputerError(
+            f"don't know how to open {target!r}: give a URL, an existing file path, or one of "
+            + ", ".join(sorted(APPS))
+            + ("; or the name of an app on this desktop: " + ", ".join(icons) if icons else "")
+        )
 
     started = " ".join(argv)
     raises = launchers.by_name(target) is not None and not path.exists()

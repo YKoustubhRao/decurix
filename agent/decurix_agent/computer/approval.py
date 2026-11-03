@@ -247,7 +247,8 @@ def consequential(name, goes_somewhere=False):
         return False
     for i in range(len(words)):
         rest = " ".join(words[i:])
-        if (CONSEQUENTIAL_CONTROL.match(rest) or MORE_CONSEQUENTIAL.match(rest))                 and not _only_reads(words, i, goes_somewhere):
+        if (CONSEQUENTIAL_CONTROL.match(rest) or MORE_CONSEQUENTIAL.match(rest)) \
+                and not _only_reads(words, i, goes_somewhere):
             return True
     return bool(OTHER_LANGUAGES.search(" ".join(str(name or "").split())))
 
@@ -389,7 +390,8 @@ Y", "file it if Z"). Only a condition on THIS action counts: what they ask to be
 payment, and check X before you file") is an instruction for that step, and this action is a "yes". So is one that \
 can only be met after this action - to show or check what it leads to ("go ahead, show me the next screen before you \
 click there"): this action is what brings that about.
-- "no": they do not approve it now (not yet, wait, fix something first, never). A reply that approves with a different amount, recipient, account, date or item is "no" for THIS action: put the change they ask for in "wants".
+- "no": they do not approve it now (not yet, wait, fix something first, never). A reply that approves with a \
+different amount, recipient, account, date or item is "no" for THIS action: put the change they ask for in "wants".
 - "unclear": the reply neither approves nor refuses it - a question back to the worker, or about something else.
 And "wants": what they ask the worker to tell them, show them or do before they decide (a question to answer, a \
 report), in their words - empty when they ask nothing of it.
