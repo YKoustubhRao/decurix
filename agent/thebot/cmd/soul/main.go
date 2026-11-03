@@ -352,7 +352,8 @@ func (s *server) handleSkillAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.sched.SkillLib == nil {
-		writeJSON(w, 400, map[string]any{"error": "no skill library configured for this session"})
+		// Off (inside Decurix, or with no embedder): there is nothing here to confirm.
+		writeJSON(w, 404, map[string]any{"error": "no skill library on this machine"})
 		return
 	}
 	rest := strings.TrimPrefix(r.URL.Path, "/api/skills/")
@@ -730,6 +731,20 @@ func buildProvider(cfg config.Config) (llm.Provider, llm.Models, llm.Embedder) {
 	}
 }
 
+// standaloneMode reports whether soul runs as a product of its own (THEBOT_STANDALONE=1): only then are the acquired
+// skill library and the coding harness on (owner decision O-8).
+func standaloneMode() bool {
+	return os.Getenv("THEBOT_STANDALONE") == "1"
+}
+
+// skillLibraryFor is the acquired-skill library, or nil: off unless standalone, and off without an embedder.
+func skillLibraryFor(standalone bool, root string, embedder llm.Embedder, model string) (*memory.SkillLibrary, error) {
+	if !standalone || embedder == nil {
+		return nil, nil
+	}
+	return memory.NewSkillLibrary(root, embedder, model)
+}
+
 func main() {
 	cfg := config.Load()
 	if err := cfg.Validate(); err != nil {
@@ -790,14 +805,18 @@ func main() {
 		defer l1.Close()
 	}
 
+	// The parts left from soul's life as a product of its own - acquired skills, remembered build fixes and the coding
+	// harness - are off unless THEBOT_STANDALONE=1 (owner decision O-8; review T-07, T-08, T-21). Inside Decurix a
+	// skill must never be confirmed by anything the worker's shell can reach, and Decurix has its own taught skills.
+	standalone := standaloneMode()
+	log.Printf("[soul] standalone parts (acquired skills, coding harness): %v (THEBOT_STANDALONE=1 turns them on; "+
+		"approval gate present: %v)", standalone, gatePresent())
+
 	// SkillLib: acquired procedural memory. Same nil-safe pattern - needs
 	// an embedder to match a future request against what's been learned.
-	var skillLib *memory.SkillLibrary
-	if embedder != nil {
-		skillLib, err = memory.NewSkillLibrary(ws.Root(), embedder, models.Judgment)
-		if err != nil {
-			log.Fatalf("[soul] skill library init failed: %v", err)
-		}
+	skillLib, err := skillLibraryFor(standalone, ws.Root(), embedder, models.Judgment)
+	if err != nil {
+		log.Fatalf("[soul] skill library init failed: %v", err)
 	}
 
 	skills.Register(skills.NewFeedback())
@@ -806,7 +825,10 @@ func main() {
 	// reason its classifier is ordered ahead of theirs: a real "build me
 	// software" request must reach the harness that designs, tests and
 	// fixes it, not the one that saves a single unexecuted completion.
-	skills.Register(skills.NewCoding())
+	if standalone {
+		skills.Register(skills.NewCoding())
+	}
+	atomizer.CodingAvailable = standalone
 	skills.Register(skills.NewDownload())
 	skills.Register(skills.NewTerminal())
 	skills.Register(skills.NewFileWrite())

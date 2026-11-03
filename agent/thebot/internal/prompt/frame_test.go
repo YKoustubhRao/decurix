@@ -58,3 +58,11 @@ func TestPersonaDoesNotCarryTheChatSignal(t *testing.T) {
 		t.Error("the persona teaches NEEDS_TOOLS to every call, including the operator's")
 	}
 }
+
+// Recalled facts are offered as possibly relevant, never as true (review T-19): what the task shows comes first.
+func TestRecalledFactsAreNotToldAsTrue(t *testing.T) {
+	msg := Frame{Facts: []string{"The user works in the Sales team."}}.Message().Content
+	if strings.Contains(msg, "Treat them as true") || !strings.Contains(msg, "may be relevant") {
+		t.Fatalf("frame: %s", msg)
+	}
+}

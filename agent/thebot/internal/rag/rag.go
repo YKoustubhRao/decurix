@@ -148,13 +148,21 @@ func extractText(ctx context.Context, absPath, doclingScript string) (text, meth
 	if looksBinary(peek[:n]) {
 		return "", "", fmt.Errorf("skip: looks like binary content, not text")
 	}
+	if st, err := f.Stat(); err == nil && st.Size() > maxIngestBytes {
+		return "", "", fmt.Errorf("skip: %d bytes is more than the %d a file is indexed up to", st.Size(), maxIngestBytes)
+	}
 
-	raw, err := os.ReadFile(absPath)
+	raw, err := io.ReadAll(io.LimitReader(f, maxIngestBytes+1))
 	if err != nil {
 		return "", "", fmt.Errorf("read file: %w", err)
 	}
-	return string(raw), "text", nil
+	// The peek above already read the first bytes: the reader goes on from there.
+	return string(peek[:n]) + string(raw), "text", nil
 }
+
+// maxIngestBytes bounds a plain-text file indexed whole (review T-17): read into memory and embedded chunk by chunk, a
+// huge log would hold memory and the embedder for an hour on the target host.
+const maxIngestBytes = 4 << 20
 
 // binarySniffBytes is how much of a file gets checked for binary content -
 // enough to reliably catch real binaries (their signature bytes are always
@@ -211,7 +219,19 @@ func (r *RAG) IngestFile(ctx context.Context, relPath string) (chunks int, metho
 		return 0, method, nil
 	}
 
-	tx, err := r.db.Begin()
+	// Every chunk is embedded first, then written in one short transaction: on the one-connection pool a transaction
+	// held across the embedding calls blocked every other use of the index (Stats, a query) for the whole ingest
+	// (review T-17).
+	vectors := make([]string, len(pieces))
+	for i, piece := range pieces {
+		vec, embErr := r.embedder.Embed(ctx, embedModel, piece)
+		if embErr != nil {
+			return 0, "", fmt.Errorf("rag: embed chunk %d of %s: %w", i, relPath, embErr)
+		}
+		vectors[i] = llm.EncodeVector(vec)
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, "", fmt.Errorf("rag: begin tx: %w", err)
 	}
@@ -223,13 +243,9 @@ func (r *RAG) IngestFile(ctx context.Context, relPath string) (chunks int, metho
 
 	now := time.Now().Unix()
 	for i, piece := range pieces {
-		vec, embErr := r.embedder.Embed(ctx, embedModel, piece)
-		if embErr != nil {
-			return 0, "", fmt.Errorf("rag: embed chunk %d of %s: %w", i, relPath, embErr)
-		}
 		if _, err := tx.Exec(
 			`INSERT INTO chunks (rel_path, chunk_index, text, embedding, created_at) VALUES (?, ?, ?, ?, ?)`,
-			relPath, i, piece, llm.EncodeVector(vec), now,
+			relPath, i, piece, vectors[i], now,
 		); err != nil {
 			return 0, "", fmt.Errorf("rag: insert chunk %d of %s: %w", i, relPath, err)
 		}

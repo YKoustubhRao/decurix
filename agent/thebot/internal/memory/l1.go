@@ -309,6 +309,10 @@ func (l *L1) Store(ctx context.Context, fact, source string) error {
 // Recall returns the facts most relevant to a query, most relevant first.
 // Returns nothing (not an error) when L1 is empty - that's a normal state,
 // not a failure.
+//
+// No score floor (review T-19, measured 2026-11-03 on nomic-embed-text as soul calls it): a fact that answers the
+// query scored 0.44-0.69 and an unrelated one 0.28-0.56, so any fixed floor either drops real facts or keeps
+// unrelated ones. What a recalled fact is worth is said where it is shown instead (prompt.Frame: "may be relevant").
 func (l *L1) Recall(ctx context.Context, query string, topK int) ([]L1Entry, error) {
 	if topK <= 0 {
 		return nil, nil

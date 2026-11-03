@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -141,10 +142,10 @@ func TestRunnerTakesACleanExitWithABackgroundChildAsSuccess(t *testing.T) {
 	}
 }
 
-// A fix the person approved for a failure, which then worked, runs again for the same failure without asking - but
-// only that exact command, and only while it passes the command safety check. A fix recalled from L1's text, or one
-// edited since, is still a proposal and asks.
-func TestAnApprovedFixThatWorkedRunsAgainForTheSameFailure(t *testing.T) {
+// A fix the person approved for a failure, which then worked, is asked about again for the same failure - with their
+// earlier yes shown, never run on the strength of it (review T-08: no remembered yes). A fix recalled from L1's text is
+// a hint, never a command run. With NoProvenFixes (inside Decurix) nothing is kept or read back.
+func TestAnApprovedFixThatWorkedIsAskedAgainWithTheEarlierYesShown(t *testing.T) {
 	ctx := context.Background()
 	failure := "E: frobnicator is not installed"
 	sig := errorSignature(failure)
@@ -163,45 +164,42 @@ func TestAnApprovedFixThatWorkedRunsAgainForTheSameFailure(t *testing.T) {
 		t.Fatal("the approved fix did not run")
 	}
 	h.settleLearning(ctx, true)
+	if err := os.Remove(filepath.Join(r.Dir, "ran-it.txt")); err != nil {
+		t.Fatal(err)
+	}
 
 	// A later build: nobody approves anything, the same failure comes back.
 	h2, r2, _ := newProposalHarness(t)
 	h2.L1 = l1
 	h2.Workspace, r2.Dir, h2.project = h.Workspace, r.Dir, h.project // the same project
 	got := h2.Diagnose(ctx, failure, &Design{}, &EnvFacts{}, &Toolchain{})
-	if got.Action() != diag.Action() || !got.proven {
-		t.Fatalf("Diagnose = %+v, want the proven fix", got)
+	if got.Action() != diag.Action() || !got.proven || !strings.Contains(got.Cause, "you approved this command for it on") {
+		t.Fatalf("Diagnose = %+v, want the earlier fix with the earlier yes shown", got)
 	}
-	if !h2.applyFix(ctx, r2, got, &BuildReport{}) || h2.pending != nil {
-		t.Fatal("the proven fix asked again")
+	if h2.applyFix(ctx, r2, got, &BuildReport{}) || h2.pending == nil {
+		t.Fatal("a remembered yes ran the fix without asking")
 	}
-	if _, err := os.Stat(filepath.Join(r2.Dir, "ran-it.txt")); err != nil {
-		t.Fatal("the proven fix did not run")
+	if _, err := os.Stat(filepath.Join(r2.Dir, "ran-it.txt")); err == nil {
+		t.Fatal("the fix ran on an earlier yes")
 	}
 
-	// The record no longer holds this command (edited, or replaced): it asks.
+	// Inside Decurix: none is read back, and none is kept.
 	h3, r3, _ := newProposalHarness(t)
-	h3.L1 = l1
+	h3.L1, h3.NoProvenFixes = l1, true
 	h3.Workspace, r3.Dir, h3.project = h.Workspace, r.Dir, h.project
-	edited := got
-	edited.FixCommands = []string{"echo other > ran-it.txt"}
-	if h3.applyFix(ctx, r3, edited, &BuildReport{}) || h3.pending == nil {
-		t.Fatal("an edited fix ran on the strength of the earlier yes")
+	if _, ok := h3.provenFix(ctx, sig); ok {
+		t.Fatal("a proven fix was read back with NoProvenFixes")
 	}
-
-	// A proven fix that trips the command safety check asks every time.
-	if err := l1.RecordProvenFix(ctx, "E: other", h.fixScope(), "git push origin main"); err != nil {
-		t.Fatal(err)
+	h4, r4, l14 := newProposalHarness(t)
+	h4.NoProvenFixes = true
+	again := diag.Action()
+	h4.Approve = func(a string) bool { ok := a == again; again = ""; return ok }
+	if !h4.applyFix(ctx, r4, diag, &BuildReport{}) {
+		t.Fatal("the approved fix did not run")
 	}
-	h4, r4, _ := newProposalHarness(t)
-	h4.L1 = l1
-	h4.Workspace, r4.Dir, h4.project = h.Workspace, r.Dir, h.project
-	push, ok := h4.provenFix(ctx, "E: other")
-	if !ok {
-		t.Fatal("no proven fix read back")
-	}
-	if h4.applyFix(ctx, r4, push, &BuildReport{}) || h4.pending == nil {
-		t.Fatal("a remembered yes stood in for the approval gate")
+	h4.settleLearning(ctx, true)
+	if kept, _ := l14.ProvenFix(ctx, sig, h4.fixScope()); kept != "" {
+		t.Fatalf("a yes was kept with NoProvenFixes: %q", kept)
 	}
 
 	// A fix only written as text in L1 ("remember that the fix is ...") is a hint, never a command run.

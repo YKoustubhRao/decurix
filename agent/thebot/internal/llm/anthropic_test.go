@@ -149,3 +149,32 @@ func TestAnthropicMergesEverySystemMessage(t *testing.T) {
 		t.Errorf("remaining message role = %v, want user", m["role"])
 	}
 }
+
+// IsReachable never makes a chat call - /api/health polls it (review T-25): it asks the Models API about the model.
+func TestAnthropicIsReachableMakesNoChatCall(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		if r.Header.Get("x-api-key") != "k" || r.URL.Path != "/v1/models/claude-test" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id": "claude-test"}`))
+	}))
+	defer srv.Close()
+	p := NewAnthropic("k", "claude-test")
+	p.BaseURL = srv.URL
+	if !p.IsReachable(context.Background()) {
+		t.Fatalf("not reachable: %v", paths)
+	}
+	for _, path := range paths {
+		if strings.Contains(path, "/v1/messages") || !strings.HasPrefix(path, "GET ") {
+			t.Fatalf("a health check made a chat call: %v", paths)
+		}
+	}
+	unknown := NewAnthropic("k", "no-such-model")
+	unknown.BaseURL = srv.URL
+	if unknown.IsReachable(context.Background()) {
+		t.Error("an unknown model reads as reachable")
+	}
+}

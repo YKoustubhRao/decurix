@@ -164,6 +164,8 @@ func proposalSource(source string) string {
 		return "a web page (read by the model)"
 	case "model":
 		return "the model"
+	case "memory:approved":
+		return "a command you approved for this failure before (asked again: an earlier yes is not this one)"
 	default:
 		return source
 	}

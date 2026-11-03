@@ -43,7 +43,7 @@ func Register(taskType string, match func(step string) bool) {
 func Classify(step string) string {
 	for _, c := range registry {
 		if c.match(step) {
-			return withoutMissingBrowser(c.taskType)
+			return withoutMissingSkill(c.taskType)
 		}
 	}
 	return "general"
@@ -56,10 +56,15 @@ func Classify(step string) string {
 // no extension, which waited 30 s and failed the whole task.
 var BrowserAvailable = true
 
-// withoutMissingBrowser turns the browser task type into the operator's when
-// the extension is not installed.
-func withoutMissingBrowser(taskType string) string {
-	if taskType == "browser" && !BrowserAvailable {
+// CodingAvailable says whether the coding harness is on (soul sets it at startup). Inside Decurix it is off, and on
+// only behind THEBOT_STANDALONE=1 (review T-07/T-21, owner decision O-8): a request to build software is then the
+// operator's, never a skill that is not there.
+var CodingAvailable = true
+
+// withoutMissingSkill turns a task type whose skill is off on this machine (the browser extension not installed, the
+// coding harness off) into the operator's.
+func withoutMissingSkill(taskType string) string {
+	if (taskType == "browser" && !BrowserAvailable) || (taskType == "coding" && !CodingAvailable) {
 		return "operator"
 	}
 	return taskType

@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -137,16 +138,29 @@ func (a *AnthropicProvider) chatOnce(ctx context.Context, model string, messages
 	}, nil
 }
 
+// IsReachable asks the Models API about the configured model (GET /v1/models/{model}): the key, the network and the
+// model, confirmed without a paid call. It used to send a real chat message, and /api/health (polled every few
+// seconds while the UI is open) paid for one each time (review T-25).
 func (a *AnthropicProvider) IsReachable(ctx context.Context) bool {
 	if a.APIKey == "" {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	// Anthropic has no cheap health-check endpoint - a minimal real call
-	// against the actually-configured model is the honest way to confirm
-	// the key/network/model all really work, not just that a key string
-	// is non-empty.
-	_, err := a.Chat(ctx, a.healthCheckModel, []Message{{Role: "user", Content: "hi"}}, Options{TimeoutMs: 8000})
-	return err == nil
+	target := a.BaseURL + "/v1/models"
+	if a.healthCheckModel != "" {
+		target += "/" + url.PathEscape(a.healthCheckModel)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("x-api-key", a.APIKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	resp, err := a.Client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }

@@ -48,6 +48,8 @@ type Harness struct {
 	// AllowWebSearch gates the research layer of diagnosis. Off in unit
 	// tests (no network), on in real runs.
 	AllowWebSearch bool
+	// NoProvenFixes keeps no record of a fix the person approved and reads none back (inside Decurix, review T-08).
+	NoProvenFixes bool
 
 	MaxFileAttempts  int
 	MaxTotalAttempts int

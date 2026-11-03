@@ -14,10 +14,10 @@ import (
 // ever a proposal. A proven fix is written only by the coding harness itself (Harness.settleLearning), with the exact
 // bytes of the command the person saw, and is read back only for the same failure signature.
 //
-// It is as strong as the file it lives in: until the approval state moves to a process the worker's shell cannot
-// write to, a worker that edits l1.db can plant one. What a planted one can do is bounded by the caller: a proven fix
-// still passes the command safety check (safety.AssessCommand) before it runs, so it can never run anything the
-// approval gate would have stopped.
+// It is as strong as the file it lives in - the worker's shell can write l1.db - so it is never a yes (review T-08,
+// CLAUDE.md "no always allow"): the same failure is asked about again, and the record only lets the question show the
+// person their earlier answer ("you approved this on ..."). Inside Decurix none is kept or read at all
+// (coding.Harness.NoProvenFixes; the coding harness is off there too).
 //
 // A yes is not an "always allow" (round-3 recheck): a proven fix stands only in the project it was approved in (its
 // scope, the build's folder) and only for ProvenFixMaxAge; after that, or anywhere else, the same failure asks again.
@@ -71,27 +71,34 @@ func (l *L1) RecordProvenFix(ctx context.Context, signature, scope, command stri
 // ProvenFix returns the proven fix recorded for exactly this failure signature in scope, approved within
 // ProvenFixMaxAge, or "" when there is none.
 func (l *L1) ProvenFix(ctx context.Context, signature, scope string) (string, error) {
+	command, _, err := l.ProvenFixAt(ctx, signature, scope)
+	return command, err
+}
+
+// ProvenFixAt is ProvenFix with when the person approved it: what a new question about the same failure shows them
+// ("you approved this on ..."). It never stands for a yes (review T-08: no remembered yes).
+func (l *L1) ProvenFixAt(ctx context.Context, signature, scope string) (string, time.Time, error) {
 	signature, scope = strings.TrimSpace(signature), strings.TrimSpace(scope)
 	if signature == "" || scope == "" {
-		return "", nil
+		return "", time.Time{}, nil
 	}
 	if err := l.ensureFixes(ctx); err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	var command string
 	var at int64
 	err := l.db.QueryRowContext(ctx, `SELECT command, approved_at FROM approved_fixes_scoped WHERE signature = ? AND scope = ?`,
 		signature, scope).Scan(&command, &at)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+		return "", time.Time{}, nil
 	}
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	if age := time.Since(time.Unix(at, 0)); age > ProvenFixMaxAge || age < -time.Hour {
-		return "", nil
+		return "", time.Time{}, nil
 	}
-	return command, nil
+	return command, time.Unix(at, 0), nil
 }
 
 // AgeProvenFix moves a proven fix's approval back by d (for tests of its expiry).
