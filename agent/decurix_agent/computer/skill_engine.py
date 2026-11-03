@@ -1,3 +1,4 @@
+import hashlib
 import json
 import time
 
@@ -153,7 +154,7 @@ def run(skill, params=None, start=1, source_files=None):
     """
 
     REPLAYED_DIR.mkdir(parents=True, exist_ok=True)
-    lock_path = REPLAYED_DIR / f".lock-{_scope()}-{skill.get('name') or 'skill'}"
+    lock_path = REPLAYED_DIR / f".lock-{_scope()}-{_note_key(skill, params).replace('#', '-')}"
     try:
         handle = open(lock_path, "a+")
     except OSError as exc:
@@ -229,7 +230,8 @@ def _run(skill, params=None, start=1, source_files=None):
     # A replay that ran to its end did the task - it saves, submits or sends at its end. Run again for the same
     # request from before its end, it does it a second time. Found live (2026-10-14): sent back over one value of a
     # record the replay had saved, the engine ran `gui do` from step 1 and a second employee record was made.
-    done_to = _replayed_to(skill["name"])
+    key = _note_key(skill, params)
+    done_to = _replayed_to(key)
     if done_to and start <= done_to:
         return _refusal(skill, f"this request already had it replayed to its end (step {done_to}) - the task is done, "
                                "and replaying it again from step " + str(start) + " would do it a second time. Open "
@@ -243,7 +245,7 @@ def _run(skill, params=None, start=1, source_files=None):
     # A run of it this request that stopped part way did the steps before its stop: it carries on from there, never
     # from an earlier step (review 2026-11-02: only a run that reached its end was noted, so a run halted after its
     # save could be started again from step 1 and save a second record).
-    stopped = _stopped_at(skill["name"])
+    stopped = _stopped_at(key)
     if stopped:
         at, how = stopped["at"], stopped.get("outcome")
         if how == replay.RECONCILIATION_REQUIRED and start <= at:
@@ -266,10 +268,10 @@ def _run(skill, params=None, start=1, source_files=None):
         # counts as a good run of the skill.
         if result["outcome"] == replay.VERIFIED:
             skills.note_run(skill["name"])
-        _note_replayed(skill["name"], len(program["steps"]))
+        _note_replayed(key, len(program["steps"]))
     elif result["outcome"] != replay.HALTED_BEFORE_EFFECT or start > 1:
         at = result.get("resume_from") or result.get("step") or start
-        _note_stopped(skill["name"], int(at), result["outcome"])
+        _note_stopped(key, int(at), result["outcome"])
 
     return result
 
@@ -277,6 +279,18 @@ def _run(skill, params=None, start=1, source_files=None):
 # Outside any task, what was replayed counts for this long (a run from the shell, a test, an engine with no task):
 # before, nothing was kept there and a second run did the work again (D-30).
 NO_TASK_SECONDS = 3600
+
+
+def _note_key(skill, params):
+    """What a run is noted under: the skill, within the task. Outside any task there is no request to tell runs apart
+    by, so the run's own values are part of it - the same skill with the same values is the same work done twice;
+    with other values it is other work."""
+
+    name = skill.get("name") or "skill"
+    if task_context.current():
+        return name
+    given = json.dumps(params or {}, sort_keys=True, default=str)
+    return f"{name}#{hashlib.sha256(given.encode('utf-8')).hexdigest()[:12]}"
 
 
 def _scope():

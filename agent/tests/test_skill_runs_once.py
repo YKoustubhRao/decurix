@@ -28,7 +28,8 @@ class OneRunAtATime(unittest.TestCase):
 
     def test_a_second_run_while_one_runs_is_refused(self):
         skill = {"name": "add-a-thing", "title": "Add a thing", "steps": []}
-        held = open(Path(self.tmp.name) / ".lock-no-task-add-a-thing", "a+")
+        key = skill_engine._note_key(skill, None).replace("#", "-")
+        held = open(Path(self.tmp.name) / f".lock-no-task-{key}", "a+")
         self.addCleanup(held.close)
         self.assertTrue(filelock.try_exclusive(held))
         with mock.patch.object(skill_engine, "_run") as run:
@@ -39,6 +40,11 @@ class OneRunAtATime(unittest.TestCase):
     def test_a_run_outside_a_task_is_noted(self):
         skill_engine._note_replayed("add-a-thing", 4)
         self.assertEqual(skill_engine._replayed_to("add-a-thing"), 4)
+
+    def test_outside_a_task_other_values_are_other_work(self):
+        skill = {"name": "add-a-thing"}
+        self.assertNotEqual(skill_engine._note_key(skill, {"v": "1"}), skill_engine._note_key(skill, {"v": "2"}))
+        self.assertEqual(skill_engine._note_key(skill, {"v": "1"}), skill_engine._note_key(skill, {"v": "1"}))
 
     def test_an_old_note_outside_a_task_no_longer_counts(self):
         skill_engine._note_replayed("add-a-thing", 4)

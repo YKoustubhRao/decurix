@@ -14,7 +14,11 @@ _spec.loader.exec_module(transfer)
 class LearningTransferAcceptance(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.report = transfer.benchmark()
+        # Each case is a request of its own with no task id: outside a task, skill_engine refuses the same skill with
+        # the same values again within NO_TASK_SECONDS (review 2026-11-03, D-30). The bench's cases are not that.
+        from decurix_agent.computer import skill_engine
+        with mock.patch.object(skill_engine, "NO_TASK_SECONDS", 0):
+            cls.report = transfer.benchmark()
 
     def test_twenty_five_distinct_task_families_and_business_operations(self):
         self.assertEqual(self.report["families"], 25)
@@ -58,7 +62,8 @@ class TheBenchCanFail(unittest.TestCase):
         from decurix_agent.computer import recording, replay, skills
         case = transfer.SCENARIOS[0]
         right = transfer.evaluate
-        with tempfile.TemporaryDirectory() as tmp,                 mock.patch.object(recording, "ROOT", Path(tmp) / "recordings"),                 mock.patch.object(skills, "ROOT", Path(tmp) / "skills"),                 mock.patch.object(transfer, "evaluate", lambda operation, raw: ("wrong", right(operation, raw))):
+        from decurix_agent.computer import skill_engine
+        with mock.patch.object(skill_engine, "NO_TASK_SECONDS", 0), tempfile.TemporaryDirectory() as tmp,                 mock.patch.object(recording, "ROOT", Path(tmp) / "recordings"),                 mock.patch.object(skills, "ROOT", Path(tmp) / "skills"),                 mock.patch.object(transfer, "evaluate", lambda operation, raw: ("wrong", right(operation, raw))):
             result = transfer.run_case(case, Path(tmp), "holdout")
         self.assertIn(result["replay_outcome"], replay.SUCCESS, "the control needs a replay the screen calls a success")
         self.assertFalse(result["business_verified"])

@@ -1403,10 +1403,12 @@ PLAIN = {
     "loop": {"each": {"each", "each one", "for each", "for each item", "every item", "per item", "items", "rows",
                       "repeat", "loop", "yes", "y"},
              "fixed": {"fixed", "once", "as recorded", "just those", "only those", "exactly", "no", "n"}},
-    "approval": {"ask": {"ask", "ask me", "ask first", "ask me first", "check with me", "confirm", "wait for me",
-                         "every time", "each time"},
-                 "go": {"go", "go ahead", "don't ask", "do not ask", "never ask", "no need", "no need to ask",
-                        "just do", "proceed", "automatically", "on your own", "by yourself", "without asking"}},
+    "approval": {"ask": {"ask", "ask me", "ask first", "ask me first", "ask each time", "ask me each time",
+                         "ask every time", "ask me every time", "check with me", "confirm", "wait for me",
+                         "every time", "each time", "i want to approve", "i will approve"},
+                 "go": {"go", "go ahead", "don't ask", "don't ask me", "do not ask", "do not ask me", "never ask",
+                        "no need", "no need to ask", "just do", "proceed", "automatically", "on your own",
+                        "by yourself", "without asking"}},
     "confirm": {"yes": set(), "no": set()},  # whole-reply patterns of their own (KEEP_NAME, THROW_AWAY)
 }
 _STEP_NUMBERS = re.compile(r"#?\b\d+(?:\s*(?:-|to)\s*\d+)?(?:st|nd|rd|th)?\b", re.I)
