@@ -441,6 +441,12 @@ func (r *Runner) readBatch(ctx context.Context, mb Mailbox, acct Account, uids [
 
 			for _, rule := range matched {
 				job := newJob(acct, rule, msg, "", p.At, nil, nil)
+				if job.Status == JobSkipped {
+					// The rule would have skipped it anyway (an unverified sender on a verified-only rule): that
+					// reason stands, never "give the desktop the task by hand" (RW1-B-03).
+					p.Jobs = append(p.Jobs, job)
+					continue
+				}
 				job.Status = JobFailed
 				job.Content = "" // nothing was read to send; Run again cannot send it either
 				job.Note = fmt.Sprintf("Not sent: the mail server would not return this email after %d tries (%s), so it was passed over and the emails after it went on. Open it in the mailbox and give the desktop the task by hand.", maxReadTries, clip(err.Error()))
