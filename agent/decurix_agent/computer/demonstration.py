@@ -1230,8 +1230,8 @@ class Recorder:
             "window": (before or {}).get("active_title"),
         }
         self.latest = None
-        self._input_while_paused = False
-        self._typed_while_paused = False
+        # (The flags of input while paused are cleared when the pause begins, in _on_pause - not here: this runs on the
+        # processing thread a moment later, and clearing them here erased what the person typed in that moment.)
         log(f"Paused: {self._pause['reason']}")
 
     def _resumed(self):
@@ -1340,6 +1340,10 @@ class Recorder:
                 self._look()
 
     def _on_pause(self, *_):
+        # Cleared before the reader starts counting input as the pause's: found in review (2026-11-03, D-30), they were
+        # cleared later, on the processing thread, so a password typed just after Pause left no private step.
+        self._input_while_paused = False
+        self._typed_while_paused = False
         self.paused = True
         self.pause_requested = True
 
