@@ -25,6 +25,7 @@ func TestDetectHostAppsHandler(t *testing.T) {
 	srv := &Server{}
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux) // host apps are this computer's, served on the primary listener only
 
 	req := httptest.NewRequest(http.MethodGet, "/api/host-apps/detect", nil)
 	rec := httptest.NewRecorder()
@@ -184,9 +185,11 @@ func TestCopyHostAppsIntoAnExistingDesktop(t *testing.T) {
 	srv := &Server{Desktops: mgr}
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux) // host apps are this computer's, served on the primary listener only
 	post := func(form string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/api/desktops/host-apps/copy", strings.NewReader(form))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = "127.0.0.1:5000" // the person at this computer
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		return rec
@@ -213,7 +216,9 @@ func TestCopyHostAppsIntoAnExistingDesktop(t *testing.T) {
 		t.Errorf("no id = %d, want 400", rec.Code)
 	}
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/desktops/host-apps/copy", nil))
+	get := httptest.NewRequest(http.MethodGet, "/api/desktops/host-apps/copy", nil)
+	get.RemoteAddr = "127.0.0.1:5000"
+	mux.ServeHTTP(rec, get)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET = %d, want 405", rec.Code)
 	}
@@ -228,9 +233,12 @@ func TestTheHostIsWarmedWhileSomeoneChoosesAppsAndWhileTheyAreCopied(t *testing.
 	srv := &Server{Desktops: mgr}
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux) // host apps are this computer's, served on the primary listener only
 
 	// Opening the list of apps to copy means a desktop is about to be created: the helper should be started meanwhile.
-	mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/host-apps/detect", nil))
+	list := httptest.NewRequest(http.MethodGet, "/api/host-apps/detect", nil)
+	list.RemoteAddr = "127.0.0.1:5000" // the person at this computer
+	mux.ServeHTTP(httptest.NewRecorder(), list)
 	if atomic.LoadInt32(&warmed) == 0 {
 		t.Error("listing the host apps did not warm the host")
 	}
@@ -239,6 +247,7 @@ func TestTheHostIsWarmedWhileSomeoneChoosesAppsAndWhileTheyAreCopied(t *testing.
 	before := atomic.LoadInt32(&warmed)
 	req := httptest.NewRequest(http.MethodPost, "/api/desktops/host-apps/copy", strings.NewReader("id=work&host_apps=host_bridge"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = "127.0.0.1:5000"
 	mux.ServeHTTP(httptest.NewRecorder(), req)
 	if atomic.LoadInt32(&warmed) == before {
 		t.Error("copying host apps did not warm the host")

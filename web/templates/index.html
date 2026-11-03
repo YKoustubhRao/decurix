@@ -1389,6 +1389,8 @@
         <div class="hint">One folder on this computer that the worker can read and write. Nothing else on this computer is reachable. It is fixed when the worker is made: to share another folder, make a new worker.</div>
       </div>
 
+      {{/* Apps and sign-ins of this computer are given only at this computer: the gated listener refuses them (W-05). */}}
+      {{if not $.Gated}}
       <div class="field host-apps-section" id="hostAppsSection">
         <div class="host-apps-head">
           <div>
@@ -1417,6 +1419,7 @@
           </div>
         </div>
       </div>
+      {{end}}
 
     </div>
 

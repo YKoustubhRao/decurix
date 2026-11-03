@@ -110,6 +110,12 @@ func (s *Server) readsForAll(h http.Handler) http.HandlerFunc {
 			jsonStatusError(w, http.StatusForbidden, "not available from inside a desktop")
 			return
 		}
+		// The organisation's skills, roles and knowledge are changed by the host operator, like its users and
+		// policies: a phone or tunnel visitor may read them, not change them (owner decision O-7, A-08).
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && isGated(r) {
+			jsonStatusError(w, http.StatusForbidden, "this can only be changed on this computer, not through the phone or tunnel address")
+			return
+		}
 		h.ServeHTTP(w, r)
 	}
 }

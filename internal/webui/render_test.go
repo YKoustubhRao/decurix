@@ -284,6 +284,13 @@ func TestRenderEveryPage(t *testing.T) {
 	if strings.Contains(gatedIndex.String(), "#simulate") {
 		t.Error("the gated dashboard shows the Simulate button")
 	}
+	// This computer's apps and sign-ins are offered only at this computer (W-05).
+	if strings.Contains(gatedIndex.String(), `id="hostAppsSection"`) {
+		t.Error("the gated dashboard offers this computer's apps")
+	}
+	if !strings.Contains(index.String(), `id="hostAppsSection"`) {
+		t.Error("the dashboard on this computer lost its host apps section")
+	}
 	if strings.Contains(index.String(), strings.Repeat("a very long request ", 10)) {
 		t.Error("the task dropdown shows the whole request instead of a short title")
 	}

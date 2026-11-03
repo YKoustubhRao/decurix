@@ -225,6 +225,12 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	var selectedApps []string
 	copyHostApps := r.FormValue("copy_host_apps") == "1" ||
 		strings.EqualFold(r.FormValue("copy_host_apps"), "true")
+	if (copyHostApps || strings.TrimSpace(r.FormValue("host_apps")) != "") && isGated(r) {
+		// The host's programs and signed-in sessions are the person's to give, at their own screen - the same rule as
+		// a shared folder below (review 2026-11-03, W-05): a worker made through the phone or tunnel gets none.
+		jsonStatusError(w, http.StatusForbidden, "apps from this computer can only be given to a desktop on this computer, not through the phone or tunnel address")
+		return
+	}
 	if copyHostApps {
 		selectedApps = splitList(r.FormValue("host_apps"))
 	}
@@ -518,38 +524,4 @@ func (s *Server) closeOpenTasks(id, why string) {
 
 	// And the chat's turn for it, which nothing else would close now.
 	s.Chat.EndTurn(desktop.SanitizeID(id), why)
-}
-
-// validateHostPathHandler checks whether a path on the host filesystem exists
-// and returns whether it is a file or directory, its size, name, and default VM destination.
-// GET or POST /api/host-paths/validate?path=...
-func (s *Server) validateHostPathHandler(w http.ResponseWriter, r *http.Request) {
-	hostPath := strings.TrimSpace(r.FormValue("path"))
-	if hostPath == "" {
-		jsonStatusError(w, http.StatusBadRequest, "path parameter is required")
-		return
-	}
-
-	defaultDest := desktop.ComputeDefaultVMDest(hostPath)
-	fi, err := os.Stat(hostPath)
-	if err != nil {
-		jsonResponse(w, map[string]any{
-			"valid":        false,
-			"exists":       false,
-			"path":         hostPath,
-			"default_dest": defaultDest,
-			"error":        "Path not found on host",
-		})
-		return
-	}
-
-	jsonResponse(w, map[string]any{
-		"valid":        true,
-		"exists":       true,
-		"is_dir":       fi.IsDir(),
-		"name":         fi.Name(),
-		"size":         fi.Size(),
-		"path":         hostPath,
-		"default_dest": defaultDest,
-	})
 }

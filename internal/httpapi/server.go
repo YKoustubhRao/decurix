@@ -240,8 +240,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/requests", s.requestsDashboardHandler)
 	mux.HandleFunc("/api/desktops/send", s.sendRequestHandler)
 	mux.HandleFunc("/api/desktops/suggest", s.suggestDesktopHandler)
-	mux.HandleFunc("/api/host-apps/detect", s.detectHostAppsHandler)
-	mux.HandleFunc("/api/host-paths/validate", s.validateHostPathHandler)
 	// A linked phone connects here as a paired device (the gate checks its
 	// cookie on the tunnel's listener, the handler checks it on both).
 	mux.HandleFunc("/api/phones/connect", s.phoneConnectHandler)
@@ -255,7 +253,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/phone/setup.sh", s.phoneSetupScriptHandler)
 	mux.HandleFunc("/phone/decurix", s.phoneBinaryHandler)
 	mux.HandleFunc("/api/phones/claim", s.phoneClaimHandler)
-	mux.HandleFunc("/api/desktops/host-apps/copy", s.copyHostAppsHandler)
 	mux.HandleFunc("/api/schedules", s.schedulesHandler)
 	mux.HandleFunc("/api/schedules/create", s.createScheduleHandler)
 	mux.HandleFunc("/api/schedules/delete", s.deleteScheduleHandler)
@@ -352,17 +349,12 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/ticket/attach", s.ticketAttachHandler)
 	mux.HandleFunc("/api/tunnel", s.tunnelHandler)
 	mux.HandleFunc("/api/model", s.modelHandler)
-	mux.HandleFunc("/api/claude-auth/status", s.claudeAuthStatusHandler)
-	mux.HandleFunc("/api/claude-auth/login/start", s.claudeAuthLoginStartHandler)
-	mux.HandleFunc("/api/claude-auth/login/code", s.claudeAuthLoginCodeHandler)
-	mux.HandleFunc("/api/claude-auth/login/cancel", s.claudeAuthLoginCancelHandler)
 	mux.HandleFunc("/api/personas", s.personasHandler)
 	mux.HandleFunc("/api/personas/get", s.personaHandler)
 	mux.HandleFunc("/api/personas/create-desktop", s.createPersonaDesktopHandler)
 	mux.HandleFunc("/api/teams", s.teamsHandler)
 	mux.HandleFunc("/api/teams/get", s.teamHandler)
 	mux.HandleFunc("/api/teams/deploy", s.deployTeamHandler)
-	mux.HandleFunc("/api/channels/inbound", s.inboundChannelHandler)
 	if s.SkillHub != nil {
 		hub := http.NewServeMux()
 		(&skillhub.Handler{Store: s.SkillHub, Agent: s.Desktops}).Register(hub)
@@ -430,6 +422,15 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	// The file chooser opens on this computer's own screen: for the person
 	// sitting at it, never a phone or a desktop's agent.
 	mux.HandleFunc("/api/host-paths/browse", s.humansOnly(s.browseHostPathHandler))
+	// The host's own apps and sign-ins: listing them, and copying them into a desktop, are for the person at this
+	// machine - never a phone or tunnel visitor, never a desktop's agent (review 2026-11-03, A-02, W-05, N-B2).
+	mux.HandleFunc("/api/host-apps/detect", s.humansOnly(s.detectHostAppsHandler))
+	mux.HandleFunc("/api/desktops/host-apps/copy", s.humansOnly(s.copyHostAppsHandler))
+	// The owner's Claude account (its email, its sign-in flow) is this machine's, not the tunnel's (A-04).
+	mux.HandleFunc("/api/claude-auth/status", s.humansOnly(s.claudeAuthStatusHandler))
+	mux.HandleFunc("/api/claude-auth/login/start", s.humansOnly(s.claudeAuthLoginStartHandler))
+	mux.HandleFunc("/api/claude-auth/login/code", s.humansOnly(s.claudeAuthLoginCodeHandler))
+	mux.HandleFunc("/api/claude-auth/login/cancel", s.humansOnly(s.claudeAuthLoginCancelHandler))
 	// Giving up on a DAG run is a person's call, at this machine (dag.Runner.Cancel).
 	mux.HandleFunc("/api/dags/runs/cancel", s.humansOnly(s.cancelDagRunHandler))
 	// Whether a file a task was asked to save on this computer is there - for the check of that task.
