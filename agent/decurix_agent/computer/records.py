@@ -16,11 +16,9 @@ book open - was decided nowhere in code. The ledger makes each a fact a check ca
 import json
 import re
 import time
-from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from decurix_agent import config, task_context
+from decurix_agent import config, task_context, values
 from decurix_agent.computer import identity
 from decurix_agent.computer.errors import ComputerError
 
@@ -38,80 +36,31 @@ _LABEL_SYNONYMS = {"no": "number", "num": "number", "#": "number", "nbr": "numbe
 # label without it.
 _LABEL_QUALIFIERS = {"due", "from", "to", "start", "end", "mailing", "alias", "other", "secondary", "alternate",
                      "shipping", "billing", "old", "new", "previous", "next", "opening", "closing", "parent"}
-_MONTHS = {m: i for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov",
-                                       "dec"), 1)}
 _NUMBER_TOKEN = re.compile(r"(?<![\w.])[-+]?\d[\d,]*(?:\.\d+)?(?![\w])")
 _DATE_TOKEN = re.compile(r"\b(\d{1,2})[/.\- ]([A-Za-z]{3,9}|\d{1,2})[a-z]*[/.\- ](\d{2,4})\b|\b(\d{4})-(\d{2})-(\d{2})\b")
 
 
 # ------------------------------------------------------------------ values
+#
+# What counts as the same value is decided in one place, decurix_agent/values.py (W0.2, W0.3): the screen's checks,
+# this ledger and a taught run's checks share it. The names below are kept for the ledger's callers.
 
-def _text_key(value):
-    # (A code in brackets at the end - "Karnataka (29)" - names the same thing as the bare name: an option's label
-    # often carries one; found live 2026-10-26, a right form was stopped once over it.)
-    return re.sub(r"[^a-z0-9]", "", re.sub(r"\s*\([^()]{1,12}\)\s*$", "", str(value or "")).lower())
-
-
-# A number as a value writes it: a currency sign or word before it ("Rs. 5,850.00", "₹78", "INR 400"), a sign or a
-# unit after it ("500/-", "18%", "15 kg"). Letters or a dash joined to the digits ("INV-1234", "PO1234", "1234A") make
-# it an identifier, never a number: "INV-1234" and "PO-1234" are two documents, not the figure -1234 twice. Found in
-# review (2026-11-02): the save gate passed a form holding the wrong document number.
-_AS_NUMBER = re.compile(
-    r"\s*(?:(?:rs\.?|inr|rupees?|usd|eur|gbp)\s*|[^\w\s.,+-]\s*)?([-+]?)\s*"
-    r"(\d(?:[\d,]|\s(?=\d))*(?:\.\d+)?)"
-    r"\s*(?:/-|%|[^\w\s.,]|\s[A-Za-z]{1,12}\.?)?\s*", re.I)
+_text_key = values.text_key
+as_number = values.parse_number
 
 
-def as_number(value):
-    """The number a value writes (commas, currency signs and spaces aside), or None - None also for an identifier
-    written in digits: letters joined to them, or a leading zero ("0012345" is not 12345)."""
+def as_date(value, order=None):
+    """The day a value names as YYYY-MM-DD, or None - None also for a digit date whose day and month could be either
+    way when no date order is known (values.parse_date)."""
 
-    m = _AS_NUMBER.fullmatch(str(value if value is not None else ""))
-    if not m:
-        return None
-    digits = re.sub(r"[,\s]", "", m.group(2))
-    if re.match(r"0\d", digits):
-        return None
-    try:
-        return Decimal(m.group(1) + digits)
-    except InvalidOperation:
-        return None
+    return values.as_iso(value, task_context.date_order() if order is None else order)
 
 
-def as_date(value):
-    """The day a value names, in any common form, or None."""
+def same_value(a, b, order=None):
+    """Two values of one field, the same whatever their form (values.same_value): True, False, or None when the date
+    order this task writes in is not known and decides it. `order` defaults to the task's (task_context.date_order)."""
 
-    if isinstance(value, (date, datetime)):
-        return value.strftime("%Y-%m-%d")
-    t = str(value or "").strip()
-    m = re.fullmatch(r"(\d{1,2})[/.\- ]([A-Za-z]{3,9}|\d{1,2})[a-z]*[/.\- ](\d{2,4})(?:[ T,].*)?", t)
-    if m:
-        mo = int(m.group(2)) if m.group(2).isdigit() else _MONTHS.get(m.group(2).lower()[:3], 0)
-        y = int(m.group(3))
-        y = y + 2000 if y < 100 else y
-        if 1 <= mo <= 12 and 1 <= int(m.group(1)) <= 31:
-            return f"{y:04d}-{mo:02d}-{int(m.group(1)):02d}"
-    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})(?:[ T].*)?", t)
-    if m:
-        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-    m = re.fullmatch(r"([A-Za-z]{3,9})\.? (\d{1,2}),? (\d{4})", t)
-    if m and _MONTHS.get(m.group(1).lower()[:3]):
-        return f"{int(m.group(3)):04d}-{_MONTHS[m.group(1).lower()[:3]]:02d}-{int(m.group(2)):02d}"
-    return None
-
-
-def same_value(a, b):
-    """Two values of one field, the same whatever their form: a number with or without commas and decimals, a date in
-    any format, text aside from case, spaces and punctuation."""
-
-    na, nb = as_number(a), as_number(b)
-    if na is not None and nb is not None:
-        return na == nb
-    da, db = as_date(a), as_date(b)
-    if da and db:
-        return da == db
-    ka, kb = _text_key(a), _text_key(b)
-    return bool(ka) and ka == kb
+    return values.same_value(a, b, task_context.date_order() if order is None else order)
 
 
 def stands_in(value, text):
@@ -128,12 +77,9 @@ def stands_in(value, text):
             # A code of digits (a document number) may stand joined to letters ("INV1188") or a dash.
             return bool(re.search(r"(?<!\d)" + re.escape(str(value).strip()) + r"(?!\d)", text))
         return False
-    d = as_date(value)
-    if d:
-        for m in _DATE_TOKEN.finditer(text):
-            if as_date(m.group(0)) == d:
-                return True
-        return False
+    if values.parse_date(value):
+        order = task_context.date_order()
+        return any(values.same_value(value, m.group(0), order) is True for m in _DATE_TOKEN.finditer(text))
     key = _text_key(value)
     if len(key) < 2:
         return False
@@ -504,7 +450,12 @@ def presave(rec, form_fields):
                 blocking.append(f"{flabel} is empty where the record says {want!r} - a record is saved with its identifier")
             else:
                 advisory.append(f"{flabel} is empty where the record says {want}")
-        elif not same_value(fvalue, want):
+        elif (same := same_value(fvalue, want)) is None:
+            # Fails closed (W0.2): a digit date whose day and month could be either way is never taken as the date
+            # wanted, nor as another; the save waits until the order is known.
+            blocking.append(f"{flabel} holds {fvalue!r} where the record says {want!r} - the date in the form and the "
+                            "date wanted could not be compared: which order are dates written in here?")
+        elif not same:
             if chosen is None:
                 chosen = chosen_values()
             if any(same_value(fvalue, c) for c in chosen):

@@ -7,6 +7,7 @@ import traceback
 from pathlib import Path
 
 from decurix_agent import org_knowledge
+from decurix_agent import values as field_values
 from decurix_agent import (app_skills, attachments, binding, config, guidance, lessons, llm_client, messaging, playbooks, procedures, produced,
                            progress, request_reading, source_guard, sources, state, study, task_context, usage, verify)
 from decurix_agent.computer import (approval, constraints, core, escalation, evidence, experience, launchers, learning,
@@ -1978,21 +1979,14 @@ def _rows_note(run):
 
 
 def _same_value(wanted, typed):
-    """Whether what was typed is the value wanted: the same text, or the same number however it is written."""
+    """Whether what was typed is decidedly the value wanted (values.same_value is True): the same text, the same number
+    to its last digit however it is written, the same day under the task's date order. (It went through float(), which
+    loses every digit past the 15th: two 17-digit account numbers were one, W0.3.)"""
 
     a, b = " ".join(str(wanted).split()).casefold(), " ".join(str(typed).split()).casefold()
     if a == b:
         return True
-
-    def number(text):
-        digits = re.sub(r"[^\d.,-]", "", text).replace(",", "")
-        try:
-            return float(digits) if re.search(r"\d", digits) and not re.search(r"[a-z]", text) else None
-        except ValueError:
-            return None
-
-    x, y = number(a), number(b)
-    return x is not None and x == y
+    return field_values.same_value(wanted, typed, task_context.date_order()) is True
 
 
 def _never_entered(run):
@@ -2024,18 +2018,16 @@ def _never_entered(run):
     # document gives was read, left alone - and the run was refused for a
     # value "never typed".
     seen = evidence.read()
-    seen_numbers = {float(n.replace(",", "")) for n in re.findall(r"(?<![\w.])\d[\d,]*(?:\.\d+)?(?![\w])", seen)
-                    if re.search(r"\d", n)}
+    # (Every digit counts, as in _same_value: Decimal, never float.)
+    tokens = re.findall(r"(?<![\w.])\d[\d,]*(?:\.\d+)?(?![\w])", seen)
+    seen_numbers = {n for n in (field_values.parse_number(t) for t in tokens) if n is not None}
 
     def was_read(item):
         text = " ".join(str(item).split())
         if text.casefold() in " ".join(seen.split()).casefold():
             return True
-        digits = re.sub(r"[^\d.,-]", "", text).replace(",", "")
-        try:
-            return not re.search(r"[A-Za-z]", text) and float(digits) in seen_numbers
-        except ValueError:
-            return False
+        number = field_values.parse_number(text)
+        return number is not None and number in seen_numbers
 
     # A reference a run reached by pressing the control named for it was used, not left out. Found live
     # (2026-10-15): a delivery received against PO-4423, opened by clicking its link in the list, was refused as

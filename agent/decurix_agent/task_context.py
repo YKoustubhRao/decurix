@@ -335,3 +335,73 @@ def sent_date_order(task_id=None):
 
     value = _context(task_id or current()).get("date_order")
     return value if value in DATE_ORDERS else None
+
+
+def request_date_marker(request):
+    """"day" when the request writes dates DD/MM, "month" when MM/DD, None when it does not say."""
+
+    from decurix_agent import attachments
+    text = attachments.text(request or "")
+    if re.search(r"(?i)\bDD[/.\-]MM\b", text):
+        return "day"
+    if re.search(r"(?i)\bMM[/.\-]DD\b", text):
+        return "month"
+    return None
+
+
+# How many of the request's files are read for their dates, and how much of each (the text layer only: no OCR, which
+# is too slow on the save path).
+_ORDER_FILES = 6
+_ORDER_CHARS = 200000
+_derived = {}
+
+
+def _files_text(paths):
+    from decurix_agent.tools import office
+    texts = []
+    for path in list(paths)[:_ORDER_FILES]:
+        try:
+            if os.path.splitext(str(path))[1].lower() in office.IMAGE_TYPES:
+                continue
+            texts.append(office.read_document(path)["text"][:_ORDER_CHARS])
+        except Exception:  # noqa: BLE001 - a file that cannot be read says nothing about dates
+            continue
+    return texts
+
+
+def date_order(task_id=None):
+    """
+    The order the current task's digit dates are written in, "day" (DD/MM) or "month" (MM/DD), or None when nothing
+    says. In this order: what the control plane sent on /request (the org's, C6); the request's own DD/MM or MM/DD
+    marker; then the dates in the request and the text of its files that cannot be read the other way (28/09/2026 is
+    day first: binding.date_order), when they all agree. What is derived is kept for the task, so the `gui` process
+    that checks a save does not read the files again.
+    """
+
+    import hashlib
+
+    task_id = task_id or current()
+    sent = sent_date_order(task_id) if task_id else None
+    if sent:
+        return sent
+    request = current_request() if not task_id or task_id == current() else ""
+    if not request:
+        return None
+    # Kept by the request it was read from, so a task id used again (a test's, a resumed task's) never reads another
+    # request's order.
+    key = (task_id, hashlib.sha256(request.encode("utf-8", "replace")).hexdigest()[:16])
+    if key in _derived:
+        return _derived[key]
+    kept = _context(task_id).get("derived_date_order") if task_id else None
+    if isinstance(kept, dict) and kept.get("request") == key[1] and kept.get("order") in DATE_ORDERS + ("none",):
+        _derived[key] = None if kept["order"] == "none" else kept["order"]
+        return _derived[key]
+    order = request_date_marker(request)
+    if order is None:
+        from decurix_agent import attachments, binding
+        files = current_files() if task_id and task_id == current() else []
+        order = binding.date_order([attachments.text(request)] + _files_text(files or attachments.files(request)))
+    _derived[key] = order
+    if task_id:
+        _keep_context(task_id, derived_date_order={"request": key[1], "order": order or "none"})
+    return order

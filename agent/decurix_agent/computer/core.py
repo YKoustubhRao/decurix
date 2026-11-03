@@ -1532,28 +1532,14 @@ def _words_of(label):
     return {w for w in re.findall(r"[a-z]+", re.sub(r"\(.*?\)", " ", str(label or "").lower())) if w not in _LABEL_NOISE}
 
 
-def _same_value(a, b):
-    """Two values of one field, the same whatever their form: case, spaces, punctuation, a date's format, a phone's +91."""
+def _same_value(a, b, order=None):
+    """Two values of one field, decidedly the same whatever their form (values.same_value is True): case, spaces,
+    punctuation, a date's format under the task's date order, a phone's leading country code. Every digit of a number
+    counts (W0.3: two account numbers that share their last 10 digits are two accounts), and a date whose day and
+    month could be either way matches only a date written the same way (W0.2)."""
 
-    import datetime
-    def norm(v):
-        if isinstance(v, (datetime.date, datetime.datetime)):
-            return ("date", v.strftime("%Y-%m-%d"))
-        t = str(v if v is not None else "").strip()
-        m = re.fullmatch(r"(\d{1,2})[/.\- ](\d{1,2}|[A-Za-z]{3})[a-z]*[/.\- ](\d{4})", t)
-        if m:
-            months = {k: i for i, k in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
-                                                  "nov", "dec"), 1)}
-            mo = int(m.group(2)) if m.group(2).isdigit() else months.get(m.group(2).lower()[:3], 0)
-            return ("date", f"{int(m.group(3)):04d}-{mo:02d}-{int(m.group(1)):02d}")
-        m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})(?:[ T].*)?", t)
-        if m:
-            return ("date", f"{m.group(1)}-{m.group(2)}-{m.group(3)}")
-        digits = re.sub(r"\D", "", t)
-        if len(digits) >= 7 and len(digits) >= len(re.sub(r"\s", "", t)) - 4:
-            return ("digits", digits[-10:])
-        return ("text", re.sub(r"[^a-z0-9]", "", t.lower()))
-    return norm(a) == norm(b) and norm(a)[1] != ""
+    from decurix_agent import values
+    return values.same_value(a, b, order) is True
 
 
 def crossed_values(form, tables):
@@ -1567,6 +1553,8 @@ def crossed_values(form, tables):
     values = [v for _, v in form]
     mails = [v.strip().lower() for v in values if re.fullmatch(r"\S+@\S+\.\S+", v.strip())]
     words = [v.strip().lower() for v in values if re.fullmatch(r"[A-Za-z][A-Za-z .'-]{1,40}", v.strip())][:2]
+    from decurix_agent import task_context
+    order = task_context.date_order()
     out = []
     for header, rows in tables:
         cells = lambda row: [str(c).strip().lower() for c in row if c not in (None, "")]  # noqa: E731
@@ -1586,9 +1574,9 @@ def crossed_values(form, tables):
             lw = _words_of(label)
             col = next((i for i, h in enumerate(header) if h and lw and (_words_of(h) and (_words_of(h) <= lw
                                                                                           or lw <= _words_of(h)))), None)
-            if col is None or col >= len(own) or _same_value(typed, own[col]):
+            if col is None or col >= len(own) or _same_value(typed, own[col], order):
                 continue
-            others = [r for r in rows if r is not own and col < len(r) and _same_value(typed, r[col])]
+            others = [r for r in rows if r is not own and col < len(r) and _same_value(typed, r[col], order)]
             if others:
                 whose = str(others[0][name_col] if name_col < len(others[0]) else "another record")
                 out.append((str(label), typed, whose, "" if own[col] is None else str(own[col])))

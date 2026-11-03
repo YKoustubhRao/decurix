@@ -4811,14 +4811,12 @@ List at most 15 figures; never list a figure that appears in only one file."""
 # and figures are compared as the same kind of thing: a date as a date, an amount as a number.
 
 def _day_first(request):
-    """True when the request writes dates day first (DD/MM), False month first (MM/DD), None when it does not say."""
+    """True when the request writes dates day first (DD/MM), False month first (MM/DD), None when it does not say
+    (task_context.request_date_marker: one reading of the marker for every check)."""
 
-    text = attachments.text(request or "")
-    if re.search(r"(?i)\bDD[/.\-]MM\b", text):
-        return True
-    if re.search(r"(?i)\bMM[/.\-]DD\b", text):
-        return False
-    return None
+    from decurix_agent import task_context
+    marker = task_context.request_date_marker(request)
+    return None if marker is None else marker == "day"
 
 
 def _place_value(snippet, value):

@@ -49,7 +49,12 @@ class Values(unittest.TestCase):
         self.assertTrue(records.stands_in("5850.00", BILL))
         self.assertTrue(records.stands_in("1188", BILL))
         self.assertTrue(records.stands_in("1-10-2026", BILL))
-        self.assertTrue(records.stands_in("2026-10-01", BILL))
+        with mock.patch("decurix_agent.task_context.date_order", lambda task_id=None: "day"):
+            self.assertTrue(records.stands_in("2026-10-01", BILL))
+        # With no order known, the bill's 01/10/2026 may be 10 January: an ISO date is not taken as standing in it
+        # (W0.2 - it was read day first by default).
+        with mock.patch("decurix_agent.task_context.date_order", lambda task_id=None: None):
+            self.assertFalse(records.stands_in("2026-10-01", BILL))
         self.assertTrue(records.stands_in("Coastal Infra Projects", BILL))
         self.assertTrue(records.stands_in("29AAGFC5512K1ZC", BILL))
         self.assertFalse(records.stands_in("76800", BILL))
@@ -96,7 +101,10 @@ class Declaring(unittest.TestCase):
                   mock.patch("decurix_agent.task_context.current", lambda: "t0123456789abcdef"),
                   mock.patch("decurix_agent.task_context.current_request", lambda: "Enter the bills in the books of Karkala Steel Fabricators 2026-27"),
                   mock.patch("decurix_agent.computer.evidence.read", lambda task_id=None: "a look at the screen then. combobox \"Particulars 1\" holds: Sales@18% | CGST@9% | SGST@9% | Karnataka"),
-                  mock.patch("decurix_agent.computer.evidence.looks", lambda task_id=None: [])):
+                  mock.patch("decurix_agent.computer.evidence.looks", lambda task_id=None: []),
+                  # The books of an org whose dates are written day first (the control plane's date_order, W0.2): the
+                  # bill's 01/10/2026 could be read either way, and only the order decides it is 1 October.
+                  mock.patch("decurix_agent.task_context.date_order", lambda task_id=None: "day")):
             p.start()
             self.addCleanup(p.stop)
 
