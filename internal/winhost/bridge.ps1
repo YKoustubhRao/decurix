@@ -348,12 +348,16 @@ public class Native {
             six.lpAttributeList = list;
             PROCESS_INFORMATION pi;
             string cmd = "\"" + exe + "\"" + (string.IsNullOrEmpty(args) ? "" : " " + args);
-            int flags = 0x400 /* CREATE_UNICODE_ENVIRONMENT */ | 0x00080000 /* EXTENDED_STARTUPINFO_PRESENT */ | 0x10 /* CREATE_NEW_CONSOLE */;
+            int flags = 0x400 /* CREATE_UNICODE_ENVIRONMENT */ | 0x00080000 /* EXTENDED_STARTUPINFO_PRESENT */ | 0x10 /* CREATE_NEW_CONSOLE */ | 0x4 /* CREATE_SUSPENDED */;
             bool started = CreateProcessEx(exe, cmd, IntPtr.Zero, IntPtr.Zero, false, flags, env, folder, ref six, out pi);
             int err = Marshal.GetLastWin32Error();
             DeleteProcThreadAttributeList(list);
             if (!started) return "ERR the worker's terminal could not be started in its sandbox (" + err + ")";
-            AssignProcessToJobObject(job, pi.hProcess);
+            if (!AssignProcessToJobObject(job, pi.hProcess)) {
+                TerminateProcess(pi.hProcess, 0); CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+                return "ERR the worker's terminal could not be tied to its helper, so it was not started";
+            }
+            ResumeThread(pi.hThread);
             CloseHandle(pi.hThread);
             process = pi.hProcess;
             return "OK pid=" + pi.dwProcessId + " sandbox=" + sidText;
@@ -388,11 +392,19 @@ public class Native {
             si.dwFlags = 0x100 /* STARTF_USESTDHANDLES, and none given */;
         }
         IntPtr env = CleanEnvironment();
+        // Started suspended, put in the job, and only then let run (B-27): a program that ran first could start children
+        // outside the job before it was assigned, and those would outlive the helper. One that cannot be put in the job is
+        // not started at all.
+        flags |= 0x4 /* CREATE_SUSPENDED */;
         bool started = CreateProcess(app, cmd, IntPtr.Zero, IntPtr.Zero, false, flags, env, string.IsNullOrEmpty(workDir) ? null : workDir, ref si, out pi);
         int err = Marshal.GetLastWin32Error();
         Marshal.FreeHGlobal(env);
         if (!started) return "ERR CreateProcess failed (" + err + ")";
-        AssignProcessToJobObject(job, pi.hProcess);
+        if (!AssignProcessToJobObject(job, pi.hProcess)) {
+            TerminateProcess(pi.hProcess, 0); CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+            return "ERR the app could not be tied to its helper, so it was not started";
+        }
+        ResumeThread(pi.hThread);
         CloseHandle(pi.hThread);
         process = pi.hProcess;
         return "OK pid=" + pi.dwProcessId;
