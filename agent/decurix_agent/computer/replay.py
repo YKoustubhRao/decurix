@@ -1942,15 +1942,32 @@ def _screen_parts(observation):
     return [p for p in parts if p]
 
 
-def _read_back_form(value):
-    """How a run value is looked for on the screen: a file path by its file name; a list or anything else not text
+def _read_back_form(value, is_path=False):
+    """How a run value is looked for on the screen: the whole value; a file by its file name only when the value is a
+    path by structure (`is_path`: it went to an upload or a file field), never because it holds a slash - "05/03/2026"
+    read back as "2026" was confirmed by any year on the page (R-2, review round 3). A list or anything else not text
     cannot be read back (None)."""
 
     if not isinstance(value, str) or not value.strip():
         return None
-    if ("/" in value or "\\" in value) and os.path.basename(value.replace("\\", "/")):
+    if is_path and os.path.basename(value.replace("\\", "/")):
         return os.path.basename(value.replace("\\", "/"))
     return value
+
+
+def _path_params(program):
+    """The names of the run's parameters that are files by structure: given to an upload step, or typed into a file
+    field (its recorded target is an input of type file)."""
+
+    out = set()
+    for step in program.get("steps") or []:
+        if not step.get("param"):
+            continue
+        target = step.get("target") or {}
+        handle = target.get("handle") or {}
+        if step.get("kind") == "upload" or str(target.get("input_type") or handle.get("input_type") or "").lower() == "file":
+            out.add(step["param"])
+    return out
 
 
 def _not_read_back(program, values, committed):
@@ -1977,8 +1994,9 @@ def _not_read_back(program, values, committed):
     from decurix_agent.computer import records
 
     unread = []
+    paths = _path_params(program)
     for p in wanted:
-        form = _read_back_form(values[p["name"]])
+        form = _read_back_form(values[p["name"]], is_path=p["name"] in paths)
         if form is None or not any(records.stands_in(form, part) for part in parts):
             unread.append(p["name"])
     return unread

@@ -72,7 +72,12 @@ class AReadBackAfterTheSave(unittest.TestCase):
         shown = {"elements": [{"role": "link", "name": "report.pdf"}]}
         with mock.patch.object(replay, "core", mock.Mock(observe=mock.Mock(return_value=shown))):
             self.assertEqual(replay._not_read_back(PROGRAM, {"customer_name": ["a", "b"]}, {}), ["customer_name"])
-            self.assertEqual(replay._not_read_back(PROGRAM, {"customer_name": "/home/x/work/report.pdf"}, {}), [])
+            # A file by its name only when it is a file by structure - given to an upload (R-2: a slash alone made
+            # "05/03/2026" read back as "2026").
+            uploads = dict(PROGRAM, steps=[{"n": 1, "kind": "upload", "param": "customer_name"}])
+            self.assertEqual(replay._not_read_back(uploads, {"customer_name": "/home/x/work/report.pdf"}, {}), [])
+            self.assertEqual(replay._not_read_back(PROGRAM, {"customer_name": "/home/x/work/report.pdf"}, {}),
+                             ["customer_name"])
 
     def test_a_run_with_a_repaired_step_is_never_verified(self):
         fake = screen(ClearsOnSave, "Customer Vendor Two saved")
