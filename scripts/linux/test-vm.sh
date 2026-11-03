@@ -117,15 +117,23 @@ echo ""
 echo "=== Starting test desktop (${DESKTOP_CONTAINER}) ==="
 docker rm -f "$DESKTOP_CONTAINER" >/dev/null 2>&1 || true
 
+# A fresh agent token and screen password for each test desktop, never a
+# fixed one: the agent refuses /request without its token (DECURIX_AGENT_TOKEN,
+# as the control plane gives every desktop), and the ports are published on
+# this computer's 127.0.0.1 only, never on the network.
+AGENT_TOKEN="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+VNC_PASSWORD="$(head -c 9 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+
 docker run -d \
     --name "$DESKTOP_CONTAINER" \
     --network decurix-network \
     --shm-size=512m \
-    -p 16901:6901 \
-    -p 14900:4900 \
-    -p 18081:8081 \
+    -p 127.0.0.1:16901:6901 \
+    -p 127.0.0.1:14900:4900 \
+    -p 127.0.0.1:18081:8081 \
     --add-host host.docker.internal:host-gateway \
-    -e VNC_PW=admin \
+    -e VNC_PW="$VNC_PASSWORD" \
+    -e DECURIX_AGENT_TOKEN="$AGENT_TOKEN" \
     -e VNC_RESOLUTION=1280x720 \
     -e DESKTOP_ID="$NAME" \
     -e DESKTOP_NAME="$NAME" \
@@ -162,6 +170,7 @@ if [ -n "$TASK" ]; then
     echo "=== Sending task ==="
     payload=$(jq -n --arg content "$TASK" '{content:$content}')
     curl -fsS -X POST "http://127.0.0.1:18081/request" \
+        -H "Authorization: Bearer $AGENT_TOKEN" \
         -H "Content-Type: application/json" \
         -d "$payload" \
         >/dev/null && echo "Sent." || echo "WARNING: could not deliver the task yet - the agent may still be starting. Retry with the same --task once it's up."
@@ -171,11 +180,11 @@ echo ""
 echo "========================================"
 echo " Test desktop is up"
 echo "========================================"
-echo "VNC:              http://localhost:16901/vnc.html"
+echo "VNC:              http://localhost:16901/vnc.html  (password: $VNC_PASSWORD)"
 if [ "$HARNESS" = "thebot" ]; then
 echo "Agent chat UI:     http://localhost:14900/"
 fi
-echo "Send a task:       curl -X POST http://localhost:18081/request -H 'Content-Type: application/json' -d '{\"content\":\"...\"}'"
+echo "Send a task:       curl -X POST http://localhost:18081/request -H \"Authorization: Bearer \$(docker exec ${DESKTOP_CONTAINER} printenv DECURIX_AGENT_TOKEN)\" -H 'Content-Type: application/json' -d '{\"content\":\"...\"}'"
 echo "Watch callbacks:    docker logs -f ${DUMMY_CP}"
 echo "Watch agent logs:   docker exec ${DESKTOP_CONTAINER} tail -f /tmp/decurix-startup.log"
 echo "Tear down:          ./scripts/linux/test-vm.sh --name ${NAME} --down"

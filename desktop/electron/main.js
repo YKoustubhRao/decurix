@@ -828,7 +828,8 @@ async function prepareWindowsModels() {
   }
   const derived = path.join(dataDir(), 'windows-stack.env');
   fs.writeFileSync(derived, windowsRuntime.stackSettings(original, settings, plan, host), 'utf8');
-  const copied = await inDistro(['sh', '-c', 'tr -d "\\r" < "$1" > "$2"', 'decurix-settings', linuxPath(derived), DISTRO_STACK + '/.env'], undefined, '/', QUICK);
+  // The settings hold the person's keys: root-only from the moment they exist.
+  const copied = await inDistro(['sh', '-c', 'umask 077 && tr -d "\\r" < "$1" > "$2" && chmod 600 "$2"', 'decurix-settings', linuxPath(derived), DISTRO_STACK + '/.env'], undefined, '/', QUICK);
   if (copied !== 0) throw new Error('Could not stage the Windows model settings in WSL.');
   return host ? 'http://' + host + ':11435' : '';
 

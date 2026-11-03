@@ -78,6 +78,8 @@ if [ "$(cat "$stack/VERSION" 2>/dev/null || true)" != "$(cat "$stack_src/VERSION
     done
     cp -f "$stack_src/VERSION" "$stack/VERSION"
 fi
-# The person's settings, every start (compose and the image both read them).
-tr -d '\r' < "$env_file" > "$stack/.env"
+# The person's settings, every start (compose gives them to the control plane).
+# They hold the person's keys: readable by root only, from the moment they exist.
+(umask 077 && tr -d '\r' < "$env_file" > "$stack/.env")
+chmod 600 "$stack/.env"
 say "ready"

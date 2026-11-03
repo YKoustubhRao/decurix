@@ -23,5 +23,7 @@ if [ "$(cat "$stack/VERSION" 2>/dev/null || true)" != "$(cat "$stack_src/VERSION
     done
     cp -f "$stack_src/VERSION" "$stack/VERSION"
 fi
-tr -d '\r' < "$env_file" > "$stack/.env"
+# .env holds the person's keys: readable by root only, from the moment it exists.
+(umask 077 && tr -d '\r' < "$env_file" > "$stack/.env")
+chmod 600 "$stack/.env"
 echo 'decurix-setup: existing WSL runtime ready'

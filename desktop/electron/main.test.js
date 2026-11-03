@@ -195,7 +195,7 @@ async function boot(initialState, {
     if (program[0] === 'sh' && program[1] === '-c') {
       if (program[2] === 'ip -4 route show default') { say('default via 172.28.0.1 dev eth0', 0); return; }
       if (program[2].startsWith('docker_root=')) { say('104857600', 0); return; }
-      if (program[2].startsWith('tr ')) { say('', 0); return; }
+      if (program[2].startsWith('umask 077 && tr ')) { say('', 0); return; }
       say('runtime probe', machine.existing[distro] ? 0 : 1); return;
     }
     if (distro !== 'Decurix' && !machine.existing[distro]) { say('Docker is not running', 1); return; }
@@ -968,4 +968,11 @@ test('a full disk does not hide a dashboard that is already running; it is said 
   await result.settle(20);
   assert.equal(result.window.url, 'http://127.0.0.1:8080');
   assert.ok(result.questions.some((q) => q.type === 'warning' && /GB is free/.test(q.message)));
+});
+
+test('the settings staged in WSL (they hold keys) are written root-only', async () => {
+  const result = await boot('ready');
+  const copy = result.spawns.find((s) => Array.from(s.args).some((a) => /tr -d/.test(a)));
+  const script = Array.from(copy.args).find((a) => /tr -d/.test(a));
+  assert.match(script, /^umask 077 && tr -d .* && chmod 600 "\$2"$/);
 });

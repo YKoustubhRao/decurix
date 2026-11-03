@@ -107,15 +107,28 @@ Write-Host ""
 Write-Host "=== Starting test desktop ($DesktopContainer) ==="
 docker rm -f $DesktopContainer 2>$null | Out-Null
 
+# A fresh agent token and screen password for each test desktop, never a
+# fixed one: the agent refuses /request without its token (DECURIX_AGENT_TOKEN,
+# as the control plane gives every desktop), and the ports are published on
+# this computer's 127.0.0.1 only, never on the network.
+function New-RandomHex([int]$Bytes) {
+    $buffer = New-Object byte[] $Bytes
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($buffer)
+    return -join ($buffer | ForEach-Object { $_.ToString('x2') })
+}
+$AgentToken = New-RandomHex 24
+$VncPassword = New-RandomHex 9
+
 docker run -d `
     --name $DesktopContainer `
     --network decurix-network `
     --shm-size=512m `
-    -p 16901:6901 `
-    -p 14900:4900 `
-    -p 18081:8081 `
+    -p 127.0.0.1:16901:6901 `
+    -p 127.0.0.1:14900:4900 `
+    -p 127.0.0.1:18081:8081 `
     --add-host host.docker.internal:host-gateway `
-    -e VNC_PW=admin `
+    -e VNC_PW=$VncPassword `
+    -e DECURIX_AGENT_TOKEN=$AgentToken `
     -e VNC_RESOLUTION=1280x720 `
     -e DESKTOP_ID=$Name `
     -e DESKTOP_NAME=$Name `
@@ -153,7 +166,7 @@ if ($Task) {
     Write-Host "=== Sending task ==="
     try {
         $body = @{ content = $Task } | ConvertTo-Json -Compress
-        Invoke-RestMethod -Uri "http://127.0.0.1:18081/request" -Method Post -ContentType "application/json" -Body $body | Out-Null
+        Invoke-RestMethod -Uri "http://127.0.0.1:18081/request" -Method Post -ContentType "application/json" -Headers @{ Authorization = "Bearer $AgentToken" } -Body $body | Out-Null
         Write-Host "Sent."
     } catch {
         Write-Host "WARNING: could not deliver the task yet - the agent may still be starting. Retry with the same -Task once it's up."
@@ -164,11 +177,11 @@ Write-Host ""
 Write-Host "========================================"
 Write-Host " Test desktop is up"
 Write-Host "========================================"
-Write-Host "VNC:                http://localhost:16901/vnc.html"
+Write-Host "VNC:                http://localhost:16901/vnc.html  (password: $VncPassword)"
 if ($Harness -eq "thebot") {
 Write-Host "Agent chat UI:      http://localhost:14900/"
 }
-Write-Host "Send a task:        Invoke-RestMethod http://localhost:18081/request -Method Post -ContentType application/json -Body '{\"content\":\"...\"}'"
+Write-Host "Send a task:        Invoke-RestMethod http://localhost:18081/request -Method Post -ContentType application/json -Headers @{ Authorization = 'Bearer ' + (docker exec $DesktopContainer printenv DECURIX_AGENT_TOKEN) } -Body '{\"content\":\"...\"}'"
 Write-Host "Watch callbacks:    docker logs -f $DummyCP"
 Write-Host "Watch agent logs:   docker exec $DesktopContainer tail -f /tmp/decurix-startup.log"
 Write-Host "Tear down:          .\scripts\windows\test-vm.ps1 -Name $Name -Down"
