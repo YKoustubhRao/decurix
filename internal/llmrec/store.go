@@ -420,7 +420,7 @@ func scanRow(row sqlitedb.Scanner) (Row, error) {
 
 // Calls is every call tagged with taskID, in the order they were made.
 func (s *Store) Calls(taskID string) ([]Row, error) {
-	return sqlitedb.QueryAll(s.db, scanRow, `SELECT `+rowColumns+` FROM llm_calls WHERE task_id = ? ORDER BY at_ns, id`,
+	return sqlitedb.QueryAll(s.db, scanRow, `SELECT `+rowColumns+` FROM llm_calls WHERE task_id = ? ORDER BY at_ns, rowid`,
 		taskID)
 }
 
@@ -435,7 +435,7 @@ func (s *Store) CallsForTask(taskID, worker string, from, to time.Time) ([]Row, 
 		hi = sqlitedb.ToNS(to)
 	}
 	return sqlitedb.QueryAll(s.db, scanRow, `SELECT `+rowColumns+` FROM llm_calls
-		WHERE task_id = ? AND desktop_id = ? AND at_ns >= ? AND at_ns <= ? ORDER BY at_ns, id`, taskID, worker, lo, hi)
+		WHERE task_id = ? AND desktop_id = ? AND at_ns >= ? AND at_ns <= ? ORDER BY at_ns, rowid`, taskID, worker, lo, hi)
 }
 
 // DeploymentFor is the deployment that served task's calls from worker since since: the one with the most calls of
