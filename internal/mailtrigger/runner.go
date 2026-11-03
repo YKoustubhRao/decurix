@@ -379,11 +379,31 @@ func (r *Runner) readBatch(ctx context.Context, mb Mailbox, acct Account, uids [
 
 	headers, err := mb.Headers(uids)
 	if err != nil {
-		return err
+		// One email the server will not return can fail a whole batch's headers, poll after poll. Asked one at a
+		// time, the emails before it are read and it is counted, so after maxReadTries it is passed over like an
+		// email whose text cannot be read (review RW1-B-01).
+		headers = map[uint32][]byte{}
 	}
+	oneByOne := err != nil
 
 	for _, uid := range uids {
 		p.reading = uid
+
+		if oneByOne {
+			one, herr := mb.Headers([]uint32{uid})
+			if herr != nil {
+				if !p.failedRead(uid) {
+					return herr
+				}
+				log.Printf("mailtrigger: %s: passing over email %d after %d failed header reads: %v", acct.Email, uid, maxReadTries, herr)
+				p.Err = fmt.Errorf("email %d in this mailbox: the mail server would not return its headers after %d tries, so it was skipped; open it in the mailbox", uid, maxReadTries)
+				p.passed(uid, true)
+				continue
+			}
+			if h, ok := one[uid]; ok {
+				headers[uid] = h
+			}
+		}
 
 		header, ok := headers[uid]
 		if !ok {
