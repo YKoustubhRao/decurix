@@ -24,22 +24,31 @@ import (
 // A backup is what a firm cannot get back once it is gone: what its workers
 // were taught (each desktop's skills), what they learned (worker memory),
 // optionally the demonstrations themselves, and the control plane's own
-// records (task history, chats, triggers, the saved model settings) with the
-// key files that open its sealed secrets. rebuild.sh deletes the database
-// after one prompt and a desktop's volume goes with the desktop; before this
-// nothing kept a copy.
+// records (task history, chats, triggers, the saved model settings).
+// rebuild.sh deletes the database after one prompt and a desktop's volume goes
+// with the desktop; before this nothing kept a copy.
+//
+// It holds no secret that opens anything (review 2026-11-02: a stolen backup
+// carried llm.key, and with it every saved API key). The key files that seal
+// the saved secrets (llm.key, mail.key, cloudflare.key, hostgui.key, the
+// qualification owner token: every *.key, *.token and *.pem) are left out, so
+// the sealed values in the snapshot stay sealed; a secret saved unsealed (a key
+// file that could not be written) and the Claude Code login (kept as it is)
+// are taken out of the snapshot itself (scrubSnapshot). Restored on the same
+// install, whose key files are still in place, the sealed secrets open again;
+// anywhere else they are entered again, and the restore says so.
 //
 // It is one .tar.gz streamed as it is built:
 //
-//	manifest.json                    when, which desktops, what was left out and why
-//	data/decurix.db                  a consistent snapshot (VACUUM INTO), not a live copy
-//	data/<file>                      the data dir's other files: *.key, hostgui-apps.json
+//	manifest.json                    when, which desktops, which secrets were left out
+//	data/decurix.db                  a consistent snapshot (VACUUM INTO), not a live copy, scrubbed
+//	data/<file>                      the data dir's other files (hostgui-apps.json), never a key
 //	desktops/<id>/skills/...         ~/.decurix/skills
 //	desktops/<id>/memory/...         ~/.decurix/memory
 //	desktops/<id>/recordings/...     ~/.decurix/recordings, only with ?recordings=1
 //
-// It holds the keys to the saved secrets, so it is served only on the
-// primary listener and only to a person (RegisterLocalRoutes, humansOnly).
+// It is still the firm's whole history, so it is served only on the primary
+// listener and only to a person (RegisterLocalRoutes, humansOnly).
 
 // backupParts are the folders of a desktop's ~/.decurix a backup always takes.
 //
@@ -53,12 +62,35 @@ var backupParts = []string{"skills", "memory", "playbooks", "tools"}
 // database itself is never skipped.
 const backupMaxDataFile = 64 << 20
 
-// backupManifest is manifest.json.
+// backupManifest is manifest.json. SecretsLeftOut names what a restore has to
+// have entered again (cmd/decurix/restore.go reads it); a backup from before
+// it existed carried its key files.
 type backupManifest struct {
-	Version    int             `json:"version"`
-	Created    time.Time       `json:"created"`
-	Desktops   []backupDesktop `json:"desktops"`
-	Recordings bool            `json:"recordings"`
+	Version        int             `json:"version"`
+	Created        time.Time       `json:"created"`
+	Desktops       []backupDesktop `json:"desktops"`
+	Recordings     bool            `json:"recordings"`
+	SecretsLeftOut []string        `json:"secrets_left_out"`
+}
+
+// backupSecretsLeftOut is what every backup leaves out, in the words the
+// restore repeats to the person.
+var backupSecretsLeftOut = []string{
+	"the model API keys (Claude, Azure, OpenAI): set them up again on the dashboard",
+	"mailbox passwords: enter them again on the Triggers page",
+	"the Cloudflare tunnel on your own domain: set it up again",
+	"the Claude Code login: sign in again",
+	"the key that signs host-app launchers and desktop tokens: recreate the desktops made before the restore",
+}
+
+// isSecretDataFile reports whether a data-dir file is a key or token a backup
+// never carries: a name ending in .key, .token or .pem, or the qualification
+// owner's. By pattern, so a key file added later is left out without anyone
+// remembering a list.
+func isSecretDataFile(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasSuffix(lower, ".key") || strings.HasSuffix(lower, ".token") ||
+		strings.HasSuffix(lower, ".pem") || name == QualificationOwnerFile
 }
 
 // What could not be read goes into problems.json, written last since it is
@@ -92,6 +124,13 @@ func (s *Server) backupHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer os.Remove(snap)
 
+	// A snapshot that could not be scrubbed is not sent: a backup with a
+	// secret in it is worse than none.
+	if err := scrubSnapshot(r.Context(), snap); err != nil {
+		jsonError(w, err)
+		return
+	}
+
 	list, err := s.Desktops.List(r.Context())
 	if err != nil {
 		jsonError(w, err)
@@ -107,7 +146,7 @@ func (s *Server) backupHandler(w http.ResponseWriter, r *http.Request) {
 	tw := tar.NewWriter(gz)
 	var problems []string
 
-	man := backupManifest{Version: 1, Created: time.Now().UTC(), Recordings: withRecordings}
+	man := backupManifest{Version: 1, Created: time.Now().UTC(), Recordings: withRecordings, SecretsLeftOut: backupSecretsLeftOut}
 	for _, d := range list {
 		man.Desktops = append(man.Desktops, backupDesktop{ID: d.ID, Name: d.Name, Brain: d.Brain})
 	}
@@ -175,8 +214,62 @@ func snapshotDB(ctx context.Context, db *sql.DB) (string, error) {
 	return p, nil
 }
 
-// addDataDir adds the data dir's own small files (key files, the kept host
-// apps list) - not the database and its WAL, which the snapshot covers.
+// backupScrub is what scrubSnapshot runs on the snapshot, per table: a
+// secret that was saved unsealed (sealed.Seal with no key file) would open
+// for anyone holding the backup, and the Claude Code login is always kept as
+// it is. A sealed value ("enc1:...") stays: without its key file, which the
+// backup leaves out, it is noise, and on the same install it opens again.
+var backupScrub = map[string][]string{
+	"llm_providers":   {`DELETE FROM llm_providers WHERE api_key NOT LIKE 'enc1:%'`},
+	"cftunnel_config": {`DELETE FROM cftunnel_config WHERE api_token NOT LIKE 'enc1:%' OR connector_token NOT LIKE 'enc1:%'`},
+	"mail_accounts": {`UPDATE mail_accounts SET password = '', needs_password = 1,
+		last_error = 'The password was not in the backup: enter it again.' WHERE password NOT LIKE 'enc1:%'`},
+	"claude_session": {`DELETE FROM claude_session`},
+}
+
+// scrubSnapshot takes the secrets that would open without a key file out of
+// the snapshot at p (backupScrub), with secure_delete on so the freed pages
+// are zeroed rather than left holding them.
+func scrubSnapshot(ctx context.Context, p string) error {
+	db, err := sql.Open("sqlite", p)
+	if err != nil {
+		return fmt.Errorf("open the snapshot: %w", err)
+	}
+	defer func() {
+		db.Close()
+		for _, side := range []string{"-journal", "-wal", "-shm"} {
+			os.Remove(p + side)
+		}
+	}()
+	db.SetMaxOpenConns(1) // the pragmas below hold for this one connection
+
+	for _, pragma := range []string{`PRAGMA journal_mode = DELETE`, `PRAGMA secure_delete = ON`} {
+		if _, err := db.ExecContext(ctx, pragma); err != nil {
+			return fmt.Errorf("scrub the snapshot: %w", err)
+		}
+	}
+
+	for table, statements := range backupScrub {
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&n); err != nil {
+			return fmt.Errorf("scrub the snapshot: %w", err)
+		}
+		if n == 0 {
+			continue // that part of the control plane never ran here
+		}
+		for _, q := range statements {
+			if _, err := db.ExecContext(ctx, q); err != nil {
+				return fmt.Errorf("scrub the snapshot: %s: %w", table, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// addDataDir adds the data dir's own small files (the kept host apps list) -
+// not the database and its WAL, which the snapshot covers, and never a key
+// file (isSecretDataFile).
 func addDataDir(tw *tar.Writer, dir string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -186,7 +279,7 @@ func addDataDir(tw *tar.Writer, dir string) []string {
 	var problems []string
 	for _, e := range entries {
 		n := e.Name()
-		if !e.Type().IsRegular() || strings.HasPrefix(n, sqlitedb.FileName) || n == QualificationOwnerFile {
+		if !e.Type().IsRegular() || strings.HasPrefix(n, sqlitedb.FileName) || isSecretDataFile(n) {
 			continue
 		}
 		info, err := e.Info()

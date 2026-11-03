@@ -196,3 +196,40 @@ func TestBrowserSkillSendsTheAgentToken(t *testing.T) {
 		t.Error("a 401 was read as an answer")
 	}
 }
+
+// A browsing task that names an internal address (loopback, metadata, private, localhost) is refused before any
+// hand-off: the real browser must not be a way to reach soul's ports, the control plane or the cloud metadata
+// service. The extension's server is never even contacted.
+func TestBrowserSkillRefusesInternalTargets(t *testing.T) {
+	var touched bool
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { touched = true }))
+	defer server.Close()
+	skill := NewBrowser()
+	skill.BaseURL = server.URL
+
+	for _, step := range []string{
+		"open http://169.254.169.254/latest/meta-data/ and read it",
+		"go to http://localhost:4900/api/chat",
+		"fetch http://127.0.0.1:8080/backup",
+		"browse http://10.0.0.5/admin",
+	} {
+		res, err := skill.Run(RunContext{Ctx: context.Background(), OnLog: func(string) {}}, Subtask{Step: step, Type: "browser"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Verified || res.Meta["fatal"] != true {
+			t.Errorf("Run(%q) = %+v, want a refusal", step, res)
+		}
+	}
+	if touched {
+		t.Error("the extension server was contacted for a refused task")
+	}
+
+	// A public target still goes through (it reaches the fake ext server, which has no such request -> handover).
+	if res, _ := skill.Run(RunContext{Ctx: context.Background(), OnLog: func(string) {}},
+		Subtask{Step: "open https://example.com and search", Type: "browser"}); res.Meta["fatal"] == true && res.Meta["error"] != nil {
+		if s, _ := res.Meta["error"].(string); strings.Contains(s, "public internet") {
+			t.Errorf("a public target was refused: %+v", res)
+		}
+	}
+}

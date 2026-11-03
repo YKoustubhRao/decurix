@@ -133,13 +133,25 @@ class EnterIsAPressOnTheSubmitControl(_Store):
 class AReplaysCommittingPress(_Store):
     FULL = [["Customer", "Cafe Bloom"], ["Customer PO number", "WA-1810"], ["Quantity", "2"], ["Rate", "149"]]
 
-    def test_today_s_values_are_put_to_the_person_not_listed_for_a_checked_click(self):
+    def _form(self, **patches):
         save = {"ref": "e2", "role": "button", "name": "Save", "path": "div > button Save", "source": "cdp", "group": "g"}
-        with mock.patch.object(core, "_unsourced_fields", lambda fields: []), \
-                mock.patch.object(core, "_ledger_check", lambda fields: None):
-            held = core._form_check(save, found={"form": "New order", "fields": self.FULL}, listing="ask")
-        self.assertIsInstance(held, core.AskFirst)
-        self.assertIn("Quantity: 2", held)
+        with mock.patch.object(core, "_ledger_check", lambda fields: None),                 mock.patch.object(core, "_unsourced_fields", patches.get("unsourced", lambda fields: [])):
+            return core._form_check(save, found={"form": "New order", "fields": self.FULL}, listing="ask")
+
+    def test_a_replay_saving_sourced_values_asks_nobody(self):
+        # (review 2026-11-03: it asked a person at every save of a form of 3 fields or more)
+        self.assertEqual(self._form(), "")
+
+    def test_a_replay_saving_a_value_in_no_source_is_refused_not_asked(self):
+        held = self._form(unsourced=lambda fields: [("Quantity", "2")])
+        self.assertNotIsInstance(held, core.AskFirst)
+        self.assertIn("Quantity", held)
+        self.assertIn("Not pressed", held)
+
+    def test_a_value_taken_from_the_demonstration_is_the_persons_own(self):
+        core.TAUGHT_VALUES.add("2")
+        self.addCleanup(core.TAUGHT_VALUES.clear)
+        self.assertEqual(self._form(unsourced=lambda fields: [("Quantity", "2")]), "")
 
     def test_a_replay_asks_for_the_checks(self):
         fake = FakeScreen([control("button", "Save", path="p/save")])

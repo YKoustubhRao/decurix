@@ -1414,9 +1414,45 @@ def _own_run(run, worked):
             log(f"Could not count a replay of this desktop's own run: {exc}")
 
 
+def _read_back(run, text):
+    """
+    (problems, not_made): what a taught run's own files say once read back by the code-decided checks every route
+    shares (produced.file_facts) - the files the run wrote, never the person's own sources. Nothing written, nothing
+    to read: ([], []). A check that could not be made is in not_made, never passed (review 2026-11-03: a taught run
+    reported checked=True with its files unread).
+    """
+
+    request = state.current_task or ""
+    try:
+        made = [m for m in produced.files(text, request=request)
+                if not source_guard.is_source(m, task_context.current(), request)]
+        if not made and not produced.drafts():
+            return [], []
+        facts = produced.file_facts(request, made, drafts_made=produced.drafts())
+    except Exception as exc:  # noqa: BLE001 - a read-back that breaks is a check not made
+        log(f"Skill {run['skill']['name']}: could not read the run's files back: {exc}")
+        return [], [f"the files it wrote could not be read back ({' '.join(str(exc).split())[:160]})"]
+    problems = (facts.unstored + facts.gaps + ([facts.missing_files] if facts.missing_files else []) + facts.file_faults
+                + facts.payee_mismatch + facts.source_mismatch + facts.unknown_recipients + facts.draft_facts)
+    return [p for p in problems if p], list(facts.could_not) + list(facts.unchecked)
+
+
 def _succeed(run, result, checked_by, seen="", helped=False):
     skill = run["skill"]
     text = result["text"]
+    if checked_by != "person":
+        # checked=True only when the files the run made were read back (review 2026-11-03).
+        problems, not_made = _read_back(run, text)
+        decided = verify.outcome({"verdict": verify.DONE, "seen": seen} if not problems else
+                                 {"verdict": verify.NOT_DONE, "seen": "; ".join(problems)}, problems, not_made)
+        if decided["status"] != verify.DONE:
+            _own_run(run, False)
+            _record_verdict(run, False, why=decided["why"])
+            head = ("Not done - the files it wrote do not hold up: " if decided["status"] == verify.NOT_DONE
+                    else "Not checked - ")
+            write_final_reply(f"{head}{decided['why']}" + chr(10) * 2 + text, kind=decided["kind"], engine=SKILL_ENGINE,
+                              checked=decided["checked"], gated=True)
+            return
     _own_run(run, True)
 
     if skill.get("own"):
@@ -2979,6 +3015,16 @@ def _playbook(done, task="", skill=None, why=""):
         log(f"Could not update this task's playbook: {exc}")
 
 
+def _commands_text():
+    """The shell commands the task ran that could have changed something, for the judge ("" when none)."""
+
+    ran = playbooks.changed_things()
+    if not ran:
+        return ""
+    return "Shell commands the task ran that could have changed things (their effects are not read back):" + chr(10) + chr(10).join(
+        f"- {' '.join(c.split())[:300]}" for c in ran[:20])
+
+
 def _with_said(task):
     """The task as the final check judges it: the request, and what the person said during it (guidance)."""
 
@@ -3020,7 +3066,9 @@ def _gate(reply, kind, engine):
         # unchecked.
         if not _did_screen_work() and (engine in NOT_AN_ENGINE or not (produced.files(reply) or produced.drafts()
                                                                         or procedures.in_request(state.current_task)
-                                                                        or produced.requested_names(state.current_task))):
+                                                                        or produced.requested_names(state.current_task)
+                                                                        or playbooks.changed_things())):
+            # (Shell-only work that could have changed something is checked too: review 2026-11-03.)
             return False
         guided = guidance.begin(skill=None, task=state.current_task or "", text="", mode="engine", run=None)
 
@@ -3062,7 +3110,7 @@ def _gate(reply, kind, engine):
                               "the screen, so part of it may be in place"
                               + (f" ({verdict['seen']})" if verdict.get("seen") else "")
                               + ". Look at what it left first, or the same thing may be entered twice.",
-                              kind="error", engine=engine, checked=True)
+                              kind="error", engine=engine, checked=verify.outcome(verdict)["checked"], gated=True)
             return True
         if run is not None:
             _record_verdict(run, False, why=(reply or "")[:300])
@@ -3297,6 +3345,7 @@ def _gate(reply, kind, engine):
             _with_said(guided["task"]), claim=reply, live_png=evidence.live() if on_screen else None, observed=evidence.observed(),
             screen_text=evidence.live_text() if on_screen else "", screen=on_screen,
             produced="\n".join(x for x in (produced.text(made, focus=notes + loud), produced.drafts_text(),
+                                           _commands_text(),
                                            sources.evidence(state.current_task or "", made),
                                            _bill_evidence(state.current_task or "", made),
                                            produced.notes_text(notes + loud)) if x),
@@ -3389,7 +3438,7 @@ def _gate(reply, kind, engine):
     if _confirm_round() > MAX_CONFIRM_ROUNDS:
         if run is not None:
             _record_verdict(run, False, why="not confirmed after repeated checks")
-        write_final_reply(_given_up_text(reply, verdict, on_screen), kind="error", engine=engine, checked=True)
+        write_final_reply(_given_up_text(reply, verdict, on_screen), kind="error", engine=engine, checked=verify.outcome(verdict)["checked"], gated=True)
         return True
     state.paused_skill = {"mode": "confirm", "run": run, "claim": reply, "verdict": verdict, "engine": engine,
                           "task": guided["task"]}
@@ -3581,7 +3630,7 @@ def _confirm_reply(paused, reply):
                                  "about the task before it. I have closed that task as NOT confirmed - "
                                  + (seen or "look at what it left before relying on it")
                                  + "\n\nSend the new request again and I will start on it.",
-                                 kind="error", engine=engine, checked=True)
+                                 kind="error", engine=engine, checked=False, gated=True)
 
     if approval._bare(reply) in VAGUE_YES:
         # Only a yes, which may have been meant for another question: the question stays open.
@@ -3617,7 +3666,7 @@ def _confirm_reply(paused, reply):
     if choice == "stop":
         if run is not None:
             _record_verdict(run, False, why="the person said it was not done")
-        return write_final_reply("Not done - marked as a failure. " + seen, kind="error", engine=engine, checked=True)
+        return write_final_reply("Not done - marked as a failure. " + seen, kind="error", engine=engine, checked=False, gated=True)
 
     # "Retry" alone tries again as it was; with anything more ("retry only the two that failed") their words go with it.
     redo = choice == "redo" and not told
@@ -3639,7 +3688,7 @@ def _confirm_reply(paused, reply):
 
     write_final_reply("Not done - marked as a failure" + ("" if redo else f", and I will remember what you said: "
                                                           f"{el._quote(reply, 200)}"), kind="error", engine=engine,
-                      checked=True)
+                      checked=False, gated=True)
 
 
 messaging.set_final_gate(_gate)

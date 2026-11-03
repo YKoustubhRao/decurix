@@ -24,7 +24,7 @@ AMENDMENT = [{"n": 1, "text": "Exclude bill NS-0457 from everything - Nova Stati
               "removed": ["NS-0457"]}]
 
 
-@unittest.skipUnless(WORKBOOK.is_file() and BILL.is_file(), "round 5 P1's files are not on this machine")
+@fixture_paths.skip_unless(WORKBOOK.is_file() and BILL.is_file(), "round 5 P1's files are not on this machine")
 class TheRoundsOwnFiles(TempDirCase):
 
     def setUp(self):
@@ -64,7 +64,7 @@ FIRST_PASS = ["Purchase GST issue held out of ITC: SP-2291, PK-BOX billed at 18%
 CHANGE = [{"n": 1, "text": "Exclude bill NS-0457 from Nova Stationers from all outputs because it was cancelled."}]
 
 
-@unittest.skipUnless(RUN2.is_file() and WORKBOOK.is_file(), "round 5 P1's files are not on this machine")
+@fixture_paths.skip_unless(RUN2.is_file() and WORKBOOK.is_file(), "round 5 P1's files are not on this machine")
 class AReCheckKeepsEarlierFindings(TempDirCase):
     """Finding BG: re-run for the cancelled bill, the register lost the wrong-rate bill's flag."""
 
@@ -173,7 +173,7 @@ class WorkLeftUndoneInATable(TempDirCase):
         self.assertEqual(len(found), 1)
         self.assertIn("SO-5103 - Action says \"Refund requested; calculate affected units", found[0])
 
-    @unittest.skipUnless((P6_INBOX / "1018_E10.eml").is_file(), "round 5 P6's inbox is not on this machine")
+    @fixture_paths.skip_unless((P6_INBOX / "1018_E10.eml").is_file(), "round 5 P6's inbox is not on this machine")
     def test_an_automatic_reply_given_another_emails_order_is_found(self):
         inbox = self.dir / "inbox"
         shutil.copytree(P6_INBOX, inbox)
@@ -224,7 +224,7 @@ class ComputedAmountsHold(TempDirCase):
         path.write_text("Order No,Customer,SKU,Qty,Unit price\nSO-5103,Lotus Yoga Centre,LAN-S,200,35\n", encoding="utf-8")
         return str(path)
 
-    @unittest.skipUnless((P6_INBOX / "1016_E03.eml").is_file(), "round 5 P6's inbox is not on this machine")
+    @fixture_paths.skip_unless((P6_INBOX / "1016_E03.eml").is_file(), "round 5 P6's inbox is not on this machine")
     def test_a_computed_refund_with_no_working_is_found(self):
         made = self.book([self.LIVE_E03])
         found = stage_facts.unworked_amounts(made, [str(P6_INBOX / "1016_E03.eml")])
@@ -281,7 +281,7 @@ class ARemovedRecordStillInTheOutputs(unittest.TestCase):
     # Round 5 P1 on pc3 (2026-10-21, series 13): "Bill NS-0457 from Nova Stationers was cancelled - leave it out of
     # everything" - and the Purchase Register still had "08/10/2026 | Nova Stationers | NS-0457 | 66700 | 4533 | ...".
 
-    @unittest.skipUnless(LIVE_P1_S13.is_file(), f"fixture not here: {LIVE_P1_S13}")
+    @fixture_paths.skip_unless(LIVE_P1_S13.is_file(), f"fixture not here: {LIVE_P1_S13}")
     def test_the_live_register_is_found(self):
         found = stage_facts.removed_still_present(NS_0457, [str(LIVE_P1_S13)])
         self.assertTrue(any(f.startswith("p1_series13_month_end_close.xlsx (Purchase Register): NS-0457 is still a row")

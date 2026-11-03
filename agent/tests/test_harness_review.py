@@ -381,23 +381,6 @@ class ACrossCheckDisagreementIsAdvisory(base.LongRun):
             long_task.PLEASE_CHECK)[0] if "Needs you:" in final["reply"] else "")
 
 
-def load_tests(loader, tests, pattern):
-    """Only this module's own tests: two classes here build on test_long_requests.LongRun, whose tests are run there."""
-
-    suite = unittest.TestSuite()
-    for cls in (AWrongBlockingFindingIsThePersonsToOverrule, APartialAnswerIsAskedAboutOnce,
-                PaymentDetailsTheRequestGivesInMessages, TheEntryStageIsThePlannersWord, ClassifiedRemovalsAndExclusions,
-                FiguresOfEqualSizeAgree, ACrossCheckDisagreementIsAdvisory):
-        for name in loader.getTestCaseNames(cls):
-            if name in cls.__dict__:
-                suite.addTest(cls(name))
-    return suite
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class AnItemDecidedEarlierIsNotAskedAgain(unittest.TestCase):
     """Series 16 H1: CL-4142 was decided by the first answer; the stage's next question listed it again, and the
     follow-up for what an answer leaves open must not put it to the person a third time."""
@@ -418,3 +401,22 @@ class AnItemDecidedEarlierIsNotAskedAgain(unittest.TestCase):
             left = long_task._rest_to_ask("run", "s1", {"id": "q2", "kind": "query", "text": "1. ... 2. ... 3. ..."},
                                           answer)
         self.assertEqual(left, ["CL-4122 Kavya Raghavan", "CL-4145 Neha Joshi flight"])
+
+
+def load_tests(loader, tests, pattern):
+    """Only this module's own tests: classes here that build on test_long_requests.LongRun inherit its tests, which
+    are run there. Every TestCase class defined in this module is taken, by looking, not from a hand-kept list: a list
+    left AnItemDecidedEarlierIsNotAskedAgain out, so it never ran (review 2026-11-02)."""
+
+    suite = unittest.TestSuite()
+    for cls in list(globals().values()):
+        if not (isinstance(cls, type) and issubclass(cls, unittest.TestCase) and cls.__module__ == __name__):
+            continue
+        for name in loader.getTestCaseNames(cls):
+            if name in cls.__dict__:
+                suite.addTest(cls(name))
+    return suite
+
+
+if __name__ == "__main__":
+    unittest.main()

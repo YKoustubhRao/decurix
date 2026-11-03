@@ -37,6 +37,11 @@ PYTHONPATH=agent python3 -m unittest discover -s agent/tests   # computer-use ga
                                   # skills (generalising demos, loops, the questions and answers,
                                   # running a skill and asking when stuck, the gui/MCP tools and the
                                   # agent's /skills endpoints)
+                                  # Tests that need the live-run fixtures (DECURIX_TEST_FIXTURES, outside the repo) or
+                                  # the script sandbox skip where those are missing, and the run ends listing them.
+                                  # DECURIX_REQUIRE_FIXTURES=1 / DECURIX_REQUIRE_SANDBOX=1 make such a skip a failure:
+                                  # use the first before a release (CI cannot - the fixtures stay out of it); CI sets the second.
+node --test web/templates.test.js   # the dashboard pages' scripts parse; the shared chrome's polling and access-code menu
 python3 bench/skills/e2e.py         # teach + run a skill on a real desktop (Docker, ~2 min)
 python3 bench/recordings/e2e.py      # record, replay, move, reorder, import on a real desktop (Docker, ~3 min)
 python3 bench/recordings/tune.py <dir>   # visual anchors against real frames (see visual.py; no display needed)

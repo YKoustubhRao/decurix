@@ -46,7 +46,7 @@ Live benches (Docker, minutes each) are listed in [docs/running.md](docs/running
 - **Two listeners.** The primary `:8080` has no login and host-level power (Docker socket, host bridge). It is never exposed beyond this machine and its desktops. The gated `:8090` (`internal/lanaccess`) is the only thing tunnelled. Host-running routes are registered on the primary mux only (`RegisterLocalRoutes`). Details: architecture.md.
 - **`harness.py` is the only file that branches on `AGENT_HARNESS`.** Everything upstream stays harness-agnostic.
 - **No unseen success.** A report goes through the final gate (`verify.py`, `skill_task._gate`); only a confident `done` is done. Facts a program can decide (sums, files, paths, recipients) are checked in code before any model.
-- **The approval gate is not the skill's or the engine's to switch off.** A yes is one action's. No "always allow".
+- **The approval gate is not the skill's or the engine's to switch off.** A yes is one action's. No "always allow". A yes is made only by the gate process (separate Linux user) from a reply the control plane signed; nothing in the worker's user (files, env, `:8081`, `:4900`) may create one. Details and limits: [docs/gate-boundary.md](docs/gate-boundary.md).
 - **Generic tools only.** No per-product or per-workflow helpers; add capabilities (`office read/update/create`, `gui ...`), and put business rules in the operator's `taskRules` as a principle, not a story.
 - **Secrets never reach the chat, the command file, the task record or a recording.** `privacy.py` withholds at the source.
 - **SQLite.** A schema change is a new appended step in that component's `Migrate` slice, never an edit. No query while a `*sql.Rows` is open. A read-then-write needs its own mutex.

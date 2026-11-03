@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"thebot/internal/llm"
+	"thebot/internal/safety"
 	"thebot/internal/websearch"
 )
 
@@ -65,6 +66,10 @@ type Diagnosis struct {
 	// Signature is the failure's errorSignature, which pairs a proposal
 	// the person approved with the same failure when the build is re-run.
 	Signature string
+	// proven marks a fix read back from the proven-fix record (memory.L1.ProvenFix): the exact command a person
+	// approved for this same failure once, after which the check passed. Unexported, so no checkpoint or reply can
+	// carry it; mayRun reads the record again before trusting it.
+	proven bool
 }
 
 // IsProposal reports whether the diagnosis's fix commands are a proposal - a
@@ -319,6 +324,13 @@ func (h *Harness) diagnose(ctx context.Context, failure string, d *Design, env *
 		}
 	}
 
+	// 2a. A fix a person approved for exactly this failure, which then
+	// worked: the same command again, not asked about again (mayRun).
+	if diag, ok := h.provenFix(ctx, sig); ok {
+		h.logf("coding-diagnosis: the fix you approved for this failure before: %s", truncate(diag.Action(), 120))
+		return diag
+	}
+
 	// 2. Its own memory - has it genuinely solved this before?
 	if diag, ok := h.diagnoseFromMemory(ctx, failure); ok {
 		h.logf("coding-diagnosis: recalled a fix from memory: %s", diag.Cause)
@@ -361,6 +373,25 @@ func matchKnownFix(failure string, d *Design, env *EnvFacts, tc *Toolchain) (Dia
 		return diag, true
 	}
 	return Diagnosis{}, false
+}
+
+// provenFix is the proven fix recorded for the failure signature sig, as a diagnosis to run.
+func (h *Harness) provenFix(ctx context.Context, sig string) (Diagnosis, bool) {
+	if h.L1 == nil || sig == "" {
+		return Diagnosis{}, false
+	}
+	command, err := h.L1.ProvenFix(ctx, sig)
+	if err != nil || command == "" {
+		return Diagnosis{}, false
+	}
+	return Diagnosis{
+		Kind:        DiagEnvironment,
+		Cause:       "the same failure as before, fixed then by a command you approved",
+		FixCommands: []string{command},
+		Source:      "memory:approved",
+		Signature:   sig,
+		proven:      true,
+	}, true
 }
 
 // diagnoseFromMemory asks L1 whether this agent already knows why this
@@ -560,6 +591,10 @@ func (h *Harness) mayRun(diag Diagnosis) bool {
 		return true
 	}
 	action := diag.Action()
+	if h.provenStill(diag) {
+		h.logf("coding: running the fix you approved for this failure before: %s", truncate(action, 120))
+		return true
+	}
 	for _, d := range h.Declined {
 		if d == action {
 			h.logf("coding: not running `%s` - you did not approve it", truncate(action, 120))
@@ -568,6 +603,7 @@ func (h *Harness) mayRun(diag Diagnosis) bool {
 	}
 	if h.Approve != nil && h.Approve(action) {
 		h.logf("coding: running the fix you approved: %s", truncate(action, 120))
+		h.approvedAction = action
 		return true
 	}
 	if h.pending == nil {
@@ -578,10 +614,28 @@ func (h *Harness) mayRun(diag Diagnosis) bool {
 	return false
 }
 
+// provenStill reports whether diag is a proven fix that may run without asking: the record still holds exactly this
+// command for this failure (byte for byte - a fix edited since is a new proposal), and the command passes the command
+// safety check, so a remembered yes never stands in for the approval gate's own question.
+func (h *Harness) provenStill(diag Diagnosis) bool {
+	if !diag.proven || h.L1 == nil || len(diag.FixCommands) != 1 {
+		return false
+	}
+	command, err := h.L1.ProvenFix(context.Background(), diag.Signature)
+	if err != nil || command == "" || command != diag.FixCommands[0] {
+		return false
+	}
+	if c := safety.AssessCommand(command); c != nil {
+		h.logf("coding: the fix you approved before now needs your approval again - %s", c.Reason)
+		return false
+	}
+	return true
+}
+
 // awaitCheck notes a researched fix that ran: it is remembered only once the
 // check that failed passes after it (settleLearning).
 func (h *Harness) awaitCheck(diag Diagnosis) {
-	if diag.Learned {
+	if diag.Learned || (diag.IsProposal() && diag.Action() == h.approvedAction) {
 		d := diag
 		h.unconfirmed = &d
 	}
@@ -596,8 +650,20 @@ func (h *Harness) settleLearning(ctx context.Context, passed bool) {
 	if diag == nil {
 		return
 	}
+	approved := diag.Action() == h.approvedAction
+	h.approvedAction = ""
 	if !passed {
 		h.logf("coding: not remembering the fix `%s` - the check it was for did not pass after it", truncate(diag.Action(), 120))
+		return
+	}
+	// The exact command the person approved, which then worked, runs again
+	// for the same failure without asking (provenFix).
+	if approved && h.L1 != nil && diag.Signature != "" {
+		if err := h.L1.RecordProvenFix(ctx, diag.Signature, diag.Action()); err != nil {
+			h.logf("coding: could not keep the fix you approved for next time: %s", err.Error())
+		}
+	}
+	if !diag.Learned {
 		return
 	}
 	h.learnedFixes = append(h.learnedFixes, diag.Cause+" → "+fixSummary(*diag))

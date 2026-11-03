@@ -78,6 +78,12 @@ CONSEQUENTIAL_CONTROL = re.compile(
     r"|file( [\w-]+)? with \w+|file now|e-?file( now)?"
     r"|submit (the )?(return|declaration|application|claim|filing)s?"
     r"|(offset|set[- ]off) (the )?liabilit(y|ies)"
+    # ...and the one return named: "File GSTR-1", "File return", "File the declaration" (review 2026-11-03: ungated). A
+    # form's name is a code with a digit in it; "File returns" (plural) stays the menu of returns it was.
+    r"|file (?:the |this |my |your )?(?:return|declaration|claim|[a-z]+-?\d[\w-]*)(?= |$)"
+    # Approving binds the person (a payment, a claim, a document's workflow); signing, by hand or electronically, is
+    # their signature. "Sign in", "Sign up", "Sign out" are not.
+    r"|approve|e-?sign\w*|digitally sign|sign(?! ?-?(?:in|up|out|on|off|into)\b)"
     r")\b",
     re.IGNORECASE,
 )
@@ -95,7 +101,21 @@ MORE_CONSEQUENTIAL = re.compile(
     r"|remit|wire(?: money| funds)?"
     r"|settle (?:the |this )?(?:invoices?|bills?|payments?|balances?|amounts?|dues)"
     r"|place (?:the |this |an )?order"
+    # Money let go of, and an order made with a supplier or a shop (review 2026-11-03: "Release funds", "Submit order"
+    # passed).
+    r"|release (?:the |this )?(?:funds?|money|escrow|amounts?)"
+    r"|submit (?:the |this |your |my )?(?:order|purchase|bid|offer|tender)s?"
+    r"|cash out|request (?:a )?(?:payout|withdrawal|refund)"
     r")\b",
+    re.IGNORECASE,
+)
+
+# The same acts in a few other languages a label may be written in: send, pay, buy (a label is read whole, lower-cased).
+# Not a translation table to grow with each new site: the gate's English phrases are the rule, these are the plain
+# verbs of the commonest languages so that a page in one of them is not ungated wholesale.
+OTHER_LANGUAGES = re.compile(
+    r"(?:^|\s)(?:envoyer|payer|acheter|enviar|pagar|comprar|senden|absenden|bezahlen|kaufen|inviare|invia|pagare|"
+    r"acquista|verzenden|betalen|kopen)(?:\s|$)|भुगतान|भेजें|खरीदें",
     re.IGNORECASE,
 )
 
@@ -116,8 +136,29 @@ _READ_AFTER = set("history list lists report reports details detail summary stat
 _RECORD_NOUNS = set("invoice invoices order orders receipt receipts request requests return returns ledger ledgers "
                     "entry entries quotation quotations requisition requisitions item items record records note notes "
                     "voucher vouchers bill bills".split())
-_CREATE_BEFORE = set("new add create draft edit copy duplicate amend".split())
+_CREATE_BEFORE = set("new add create draft edit copy duplicate amend make get fetch".split())
 _DESTROYS = set("delete erase purge destroy cancel close withdraw remove".split())
+# Words after which a committing word names a thing rather than does it: "Get Items From Purchase Order", "Purchase
+# Taxes and Charges for Transfer" (review 2026-11-03: matched at any word, they asked).
+_OF_WORDS = set("from for of in on by with per against into under via".split())
+# Words that name an attribute of a kind of act - a field's or a column's label, never the act: "Post Date", "Buy
+# Price", "Purchase Taxes and Charges", "Transfer Type". ("Amount" is not one: "Pay amount" pays it.)
+_ATTRIBUTES = set("date dates time times price prices rate rates type types mode modes category categories code codes "
+                  "no number numbers period periods tax taxes charge charges rule rules template templates account "
+                  "accounts uom unit units status".split())
+# Committing words that are also nouns: after a word that is not one of _LEADS they name a kind of thing ("Stock
+# Transfer", "Material Transfer", "Make Purchase Receipt"), not an act. Verbs only (pay, send, buy, sign) stay acts
+# wherever they are: "Securely pay", "Yes, send".
+_ALSO_NOUNS = set("transfer transfers purchase purchases post posts order orders payment payments booking bookings "
+                  "reply replies withdrawal withdrawals donation donations return returns publish".split())
+# What before such a word makes it the act: a joiner or a yes ("Approve & transfer", "Yes, post it"), an adverb
+# ("Securely transfer", "Transfer now" is at word 0 anyway).
+_LEADS = set("and then yes ok okay sure please now confirm also just".split())
+# Arranging a drawing's objects: "Send to back", "Send backward".
+_ARRANGES = (["to", "back"], ["to", "front"], ["backward"], ["backwards"], ["forward"], ["forwards"])
+# What a row or a line of a form being filled is: deleting one changes the form, which its own Save then commits
+# (review 2026-11-03: "Delete row" in a document's item table asked a person). A record, a file, a user is not this.
+_FORM_PARTS = set("row rows line lines field fields filter filters column columns cell cells".split())
 
 
 def label_words(name):
@@ -141,6 +182,17 @@ def _only_reads(words, i):
     # is RECORD_NAME's to read, for links and menus.)
     if after and all(w in _READ_AFTER for w in after):
         return True
+    if before in _OF_WORDS:
+        return True
+    if after and all(w in _ATTRIBUTES or w == "and" for w in after) and any(w in _ATTRIBUTES for w in after):
+        return True
+    if verb in ("send", "bring") and after in _ARRANGES:
+        return True
+    if i and verb in _ALSO_NOUNS and before not in _LEADS and not before.endswith("ly"):
+        return True
+    if verb in _CREATE_BEFORE and len(after) >= 2 and after[-1] in _RECORD_NOUNS:
+        # "Make Purchase Receipt", "Make Payment Entry": a new record of that kind is opened, to be saved by its form.
+        return True
     return before in _CREATE_BEFORE and bool(after) and all(w in _RECORD_NOUNS for w in after)
 
 
@@ -153,11 +205,24 @@ def consequential(name):
     """
 
     words = label_words(name).split()
+    if _edits_the_form(words):
+        return False
     for i in range(len(words)):
         rest = " ".join(words[i:])
         if (CONSEQUENTIAL_CONTROL.match(rest) or MORE_CONSEQUENTIAL.match(rest)) and not _only_reads(words, i):
             return True
-    return False
+    return bool(OTHER_LANGUAGES.search(" ".join(str(name or "").split())))
+
+
+def _edits_the_form(words):
+    """Whether a label removes a part of the form being filled ("Delete row", "Remove selected lines"): a change the
+    form's own Save commits, never the person's record itself (_FORM_PARTS)."""
+
+    lowered = [w.lower() for w in words]
+    if not lowered or lowered[0] not in _DESTROYS:
+        return False
+    rest = [w for w in lowered[1:] if w not in ("this", "the", "selected", "all", "a", "empty")]
+    return bool(rest) and all(w in _FORM_PARTS for w in rest)
 
 # Roles that carry out their label when activated.
 ACTIVATING_ROLES = {"button", "link", "menuitem", "toggle", "listitem", "icon", "option"}
@@ -539,6 +604,8 @@ def press_effect(element):
     if not element or role not in PRESS_ROLES or _navigates(element):
         return None
     name = element.get("name") or ""
+    if _edits_the_form(label_words(name).split()):
+        return None
     if consequential(name):
         return "asks" if role in ACTIVATING_ROLES else "commits"
     return "commits" if COMMIT_CONTROL.match(label_words(name)) else None
@@ -730,7 +797,7 @@ class Decision:
 REPLY_GRANT_SECONDS = 900
 
 
-def note_reply(text, asked=""):
+def _local_note_reply(text, asked=""):
     """
     The person's latest reply in this task and the question it answered, kept for check(): when that question named
     the very control the gate stops next, and the reply - read against the question and that action - approves that
@@ -837,6 +904,13 @@ def check(kind, element, text=None, keys=None, point=None, context=None, about="
                                sends=sent_digest(sends))
     description = describe_action(kind, element, text=text, keys=keys, point=point)
 
+    return _decide(fingerprint, description, reason, element, about)
+
+
+def _decide_local(fingerprint, description, reason, element, about):
+    """The decision on a gated action, in this process's own store: a grant for exactly it, or the latest reply as its
+    yes, or a pending approval. Run by the approval gate (gate_server.py) for every desktop that has one."""
+
     with _locked() as state:
         for grant in state["grants"]:
             if grant["fingerprint"] == fingerprint:
@@ -878,14 +952,14 @@ def check(kind, element, text=None, keys=None, point=None, context=None, about="
     return Decision(False, reason=reason, request=request)
 
 
-def pending():
+def _local_pending():
     """The approval an engine is currently stopped on, or None."""
 
     with _locked() as state:
         return state["pending"]
 
 
-def resolve_reply(reply, asked=""):
+def _local_resolve_reply(reply, asked=""):
     """
     Settle the pending approval with the human's reply.
 
@@ -947,7 +1021,7 @@ def asked_about(request, question):
     return bool(question and action) and action[:120] in question
 
 
-def last_reading(reply):
+def _local_last_reading(reply):
     """The reading resolve_reply made of this very reply (decision and condition), or None."""
 
     text = " ".join(str(reply or "").split())
@@ -964,12 +1038,12 @@ def last_reading(reply):
     return None
 
 
-def has_grant():
+def _local_has_grant():
     with _locked() as state:
         return bool(state["grants"])
 
 
-def reset():
+def _local_reset():
     """Forget pending approvals and grants - a new task starts clean."""
 
     with _locked() as state:
@@ -1015,3 +1089,144 @@ def request_text(request):
         f"Approval needed before I {request['action']}: {request['reason']}.{about} "
         "Nothing was clicked or sent. Reply yes to let me do it, or tell me what to do instead."
     )
+
+
+# ============================================================
+# The approval gate as a process of its own
+#
+# On a desktop with a gate (gate_server.py, run as another Linux user by the container's entrypoint) this process holds
+# no state that makes a yes: grants, the pending approval and the person's latest reply live in the gate, and only a
+# reply the control plane signed with the desktop's gate key (internal/desktop/gatereply.go) can change them. The
+# worker's shell runs as the same user as this agent, so anything kept here, in a file under ~/.decurix or in the
+# environment, is the worker's to write. What the worker can do through the gate's socket is ask: check an action
+# (which consumes a grant that exists), see what is pending, withdraw grants. It cannot grant.
+#
+# A desktop without a gate (made before it existed, or a test) keeps the store above, in this process: no boundary,
+# said so in docs/gate-boundary.md.
+# ============================================================
+
+import os
+import socket
+
+# Fixed paths, not settings: a path the worker's environment could change is a way to point this at nothing.
+GATE_DIR = "/run/decurix-gate"
+GATE_SOCKET = GATE_DIR + "/gate.sock"
+# How long a call to the gate may take: a check can wait on a model's reading of the person's reply.
+GATE_CALL_SECONDS = 90
+# How long the agent waits for the gate to settle a reply that reached it as a request.
+GATE_REPLY_WAIT_SECONDS = 45
+
+
+def remote():
+    """
+    Whether this process asks a gate for its decisions: the desktop has one (its directory exists - the entrypoint
+    makes it, as the gate's user, and the worker cannot remove it) and this is not the gate itself. A gate that is
+    down is then a gate that answers nothing, and nothing is allowed; it is never a reason to fall back to a store
+    the worker can write.
+    """
+
+    return not os.environ.get("DECURIX_GATE_LOCAL") and os.path.isdir(GATE_DIR)
+
+
+def gate_call(op, timeout=GATE_CALL_SECONDS, **args):
+    """One call to the gate over its socket: {"op": ..., **args} -> the reply's JSON. Raises OSError/ValueError when
+    the gate cannot be reached or answers nonsense; a caller that decides anything fails closed on that."""
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+        conn.settimeout(timeout)
+        conn.connect(GATE_SOCKET)
+        conn.sendall((json.dumps(dict(args, op=op)) + "\n").encode("utf-8"))
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    reply = json.loads(data.decode("utf-8"))
+    if not isinstance(reply, dict) or reply.get("error"):
+        raise ValueError(str((reply or {}).get("error") if isinstance(reply, dict) else "bad reply"))
+    return reply
+
+
+def _decide(fingerprint, description, reason, element, about):
+    if not remote():
+        return _decide_local(fingerprint, description, reason, element, about)
+    try:
+        said = gate_call("check", fingerprint=fingerprint, description=description, reason=reason,
+                         control=(element or {}).get("name") or "", about=about or "")
+        return Decision(bool(said["allowed"]), reason=reason, approved=bool(said.get("approved")),
+                        request=said.get("request"), by_reply=said.get("by_reply") or "")
+    except (OSError, ValueError, KeyError) as exc:
+        # The gate did not answer: nothing is allowed, and no pending request exists for a reply to settle.
+        request = {"id": uuid.uuid4().hex[:12], "fingerprint": fingerprint, "reason": reason,
+                   "action": description, "about": about or "", "created": time.time()}
+        try:
+            from decurix_agent.logging_utils import log
+            log(f"The approval gate did not answer ({type(exc).__name__}: {exc}); {description[:80]} is not allowed.")
+        except Exception:  # noqa: BLE001
+            pass
+        return Decision(False, reason=reason, request=request)
+
+
+def pending():
+    """The approval an engine is currently stopped on, or None."""
+
+    if not remote():
+        return _local_pending()
+    try:
+        return gate_call("pending").get("pending")
+    except (OSError, ValueError):
+        return None
+
+
+def has_grant():
+    if not remote():
+        return _local_has_grant()
+    try:
+        return bool(gate_call("has_grant").get("grant"))
+    except (OSError, ValueError):
+        return False
+
+
+def reset():
+    """Forget pending approvals and grants - a new task starts clean."""
+
+    if not remote():
+        return _local_reset()
+    try:
+        gate_call("reset")
+    except (OSError, ValueError):
+        pass
+
+
+def note_reply(text, asked=""):
+    """With a gate, the person's reply was already given to it, signed; a copy from here would be the worker's word."""
+
+    if not remote():
+        return _local_note_reply(text, asked)
+
+
+def resolve_reply(reply, asked=""):
+    """
+    "granted", "declined" or None. With a gate this asks it what it did with this very reply (it settled the signed
+    copy the control plane sent); a reply that reached this agent without that copy settles nothing.
+    """
+
+    if not remote():
+        return _local_resolve_reply(reply, asked)
+    try:
+        return gate_call("outcome", timeout=GATE_REPLY_WAIT_SECONDS + 10, reply=" ".join(str(reply or "").split()),
+                         wait=GATE_REPLY_WAIT_SECONDS).get("outcome")
+    except (OSError, ValueError):
+        return None
+
+
+def last_reading(reply):
+    """The reading made of this very reply (decision and condition), or None."""
+
+    if not remote():
+        return _local_last_reading(reply)
+    try:
+        return gate_call("last_reading", reply=" ".join(str(reply or "").split())).get("reading")
+    except (OSError, ValueError):
+        return None

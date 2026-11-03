@@ -21,8 +21,30 @@ _PROTECTED = (
 
 _RM_RECURSIVE = re.compile(
     r"(?:^|[;&|(]\s*|\bsudo\s+)rm\s+(?:-[a-zA-Z-]*\s+)*?"
-    r"(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)\b(?:\s+-[a-zA-Z-]+)*\s+"
+    r"(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)\b(?:\s+-[a-zA-Z-]+)*\s+(?:--\s+)?"
     r"(?:[^;&|]*?\s)?(?:" + _PROTECTED + r")(?=\s|$|[;&|])"
+)
+
+# What a word list cannot read is not guessed at (a list of spellings is never complete): a command whose program is
+# named by a variable or a substitution, text piped into a shell or an interpreter, eval, and an interpreter's inline
+# code that deletes or runs commands. Each waits for a person, who sees the command as written. Ordinary work does not
+# look like these: `python3 script.py`, `grep x | sort`, `echo "$(date)"` all run.
+_COMMAND_START = r"(?:^|[;&|(]\s*|\bsudo\s+|\bxargs\s+|\b(?:then|do|else)\s+)"
+_UNREADABLE = (
+    (re.compile(_COMMAND_START + r"(?:\$\{?\w+\}?|\$\(|`)", re.MULTILINE),
+     "it runs a program named by a variable or a substitution, which cannot be checked"),
+    (re.compile(_COMMAND_START + r"eval\b", re.MULTILINE), "it runs text built at run time (eval)"),
+    (re.compile(r"\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:env\s+(?:\S+=\S*\s+)*)?(?:/\S*/)?(?:ba|z|da|k|c)?sh(?:\s+-s?)?\s*(?:$|[;&|)\n])",
+                re.MULTILINE),
+     "it pipes text into a shell, which cannot be checked"),
+    (re.compile(r"\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:/\S*/)?(?:python[0-9.]*|perl|ruby|node|nodejs|php|deno)\s*(?:-\s*)?(?:$|[;&|)\n])",
+                re.MULTILINE),
+     "it pipes text into an interpreter, which cannot be checked"),
+    (re.compile(r"\b(?:python[0-9.]*|perl|ruby|node|nodejs|php)\s+-[a-zA-Z]*[ce]\b[^\n]*?"
+                r"(?:rmtree|os\.(?:remove|unlink|rmdir|removedirs|system|popen|exec\w*)|\bunlink\b|\bsystem\s*\(|"
+                r"subprocess|execSync|child_process|\brm\s+-)", re.IGNORECASE),
+     "an interpreter's inline code deletes files or runs commands, which cannot be checked"),
+    (re.compile(r"\bfind\b[^;&|\n]*-exec(?:dir)?\s+(?:/\S*/)?rm\b[^;&|\n]*"), "find runs rm on everything it matches"),
 )
 
 _OTHER_DANGEROUS = (
@@ -60,7 +82,25 @@ def dangerous_reason(command):
         if pattern.search(text):
             return reason
 
+    # Quoted text and here-document bodies are data, not commands: `echo "$(date)"` and a heredoc's own lines are not read.
+    code = _without_data(text)
+    for pattern, reason in _UNREADABLE:
+        # The inline-code and find rules read the text as written (the code is inside the quotes).
+        if pattern.search(text if reason.startswith(("an interpreter", "find ")) else code):
+            return reason
+
     return None
+
+
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2\s*(?:\n|$)", re.DOTALL)
+_QUOTED = re.compile(r"'[^'\n]*'|\"(?:\\.|[^\"\\\n])*\"")
+
+
+def _without_data(text):
+    """A command with its here-document bodies and quoted strings blanked, so what is left is what the shell runs."""
+
+    text = _HEREDOC.sub(lambda m: m.group(0).split("\n", 1)[0] + "\n", text)
+    return _QUOTED.sub('""', text)
 
 
 # Commands run in /bin/sh (dash in the desktop images), not bash - on

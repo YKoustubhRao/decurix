@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -186,6 +187,25 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return harnessOn(t, db)
+}
+
+// newFileHarness is newHarness on a database file opened as the control
+// plane opens it (sqlitedb.Open: a pool of connections, WAL, BEGIN
+// IMMEDIATE), for a test of callers at once: OpenMemory's one connection
+// serialises them, so a race cannot happen there (review 2026-11-02).
+func newFileHarness(t *testing.T) *harness {
+	t.Helper()
+
+	db, err := sqlitedb.Open(filepath.Join(t.TempDir(), "mail.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return harnessOn(t, db)
+}
+
+func harnessOn(t *testing.T, db *sql.DB) *harness {
+	t.Helper()
 	t.Cleanup(func() { db.Close() })
 
 	key, err := LoadKey(t.TempDir())

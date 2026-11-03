@@ -84,9 +84,14 @@ var commandRules = []rule{
 		"it publishes a package or image"},
 	{regexp.MustCompile(`(?i)\bgh\s+(pr\s+(create|merge|close)|issue\s+(create|close|comment)|release\s+create|repo\s+(delete|create))\b`),
 		"it acts on GitHub as the user"},
-	// The whole of /, a home or every home, also by a glob of what is in it ("/*", "~/*", "$HOME/.*") or with the
-	// long option (review 2026-11-02: "rm -rf /*" passed).
-	{regexp.MustCompile(`(?i)\brm\s+((-[a-z]*|--[a-z-]+)\s+)*(-[a-z]*r[a-z]*|--recursive)\s+((-[a-z]*|--[a-z-]+)\s+)*("|')?(/|~/?|\$HOME/?|\$\{HOME\}/?|/home/?|/home/[^/\s]+/?)("|')?(\.?\*)?(\s|$)`),
+	// The whole of /, a home or every home, also by a glob of what is in it ("/*", "~/*", "$HOME/.*"), with the
+	// long option, or with a "--" end-of-options before the target (review 2026-11-02: "rm -rf /*" passed; round 3:
+	// "rm -rf -- ~" passed).
+	{regexp.MustCompile(`(?i)\brm\s+((-[a-z]*|--[a-z-]+)\s+)*(-[a-z]*r[a-z]*|--recursive)\s+((-[a-z]*|--[a-z-]+)\s+)*(--\s+)?("|')?(/|~/?|\$HOME/?|\$\{HOME\}/?|/home/?|/home/[^/\s]+/?)("|')?(\.?\*)?(\s|$)`),
+		"it recursively deletes a home or root directory"},
+	// find deleting everything under a home or root (-delete, or -exec rm/unlink/shred). A deeper path ("find
+	// ~/work -delete") or an ordinary search ("find . -name x") is not it. Round 3: "find ~ -delete" passed.
+	{regexp.MustCompile(`(?i)\bfind\s+("|')?(/|~/?|\$HOME/?|\$\{HOME\}/?|/home/?|/home/[^/\s]+/?)("|')?(\s)[\s\S]*?(-delete\b|-exec(dir)?\s+(rm|unlink|shred)\b)`),
 		"it recursively deletes a home or root directory"},
 	{regexp.MustCompile(`(?i)\bmkfs(\.\w+)?\b|\bdd\b[^|;&]*\bof=/dev/|\bwipefs\b|\bshred\b`),
 		"it can destroy a disk or file permanently"},
@@ -99,9 +104,11 @@ var commandRules = []rule{
 		"it is a fork bomb"},
 	{regexp.MustCompile(`(?i)\bchmod\s+(-[a-z]*\s+)*-[a-z]*R[a-z]*\s+[0-7]*7[0-7]*7\s+/(\s|$)|\bchown\s+(-[a-z]*\s+)*-[a-z]*R[a-z]*\s+\S+\s+/(\s|$)`),
 		"it changes permissions on the whole filesystem"},
-	// Any way curl is told to send: a method, a body (also --json, -d@file, --data=...), a form, an upload, and short
-	// flags run together (-sd, -XPOST). Review 2026-11-02: only some spellings were caught.
-	{regexp.MustCompile(`(?i)\bcurl\b[^|;&]*(\s(-X\s*|--request[\s=]+)['"]?(POST|PUT|PATCH|DELETE)\b|\s--(data|data-\w+|json|form|form-string|upload-file)\b|\s-[a-z]*[dFT]([\s=@'"]|$))`),
+	// Any way curl is told to send: a method, a body (also --json, -d@file, --data=...), a form, an upload, and the
+	// short data flags run together with others (-sd, -XPOST). Only -d/-F/-T send; -f/-s/-S (fail, silent, show
+	// errors) do not, so the data letters are matched case-sensitively (review 2026-11-02 over-flagged -f/-sf/-sSf/-t
+	// because the whole rule was case-insensitive and read -f as -F, -t as -T).
+	{regexp.MustCompile(`(?i)\bcurl\b[^|;&]*(\s(-X\s*|--request[\s=]+)['"]?(POST|PUT|PATCH|DELETE)\b|\s--(data|data-\w+|json|form|form-string|upload-file)\b|\s-[a-zA-Z]*(?-i:[dFT])([\s=@'"]|$))`),
 		"it sends data to a web service"},
 	{regexp.MustCompile(`(?i)\bwget\b[^|;&]*\s--(post-data|post-file|body-data|body-file|method[\s=]+['"]?(POST|PUT|PATCH|DELETE))`),
 		"it sends data to a web service"},
@@ -113,13 +120,42 @@ var commandRules = []rule{
 var indirectRules = []rule{
 	{regexp.MustCompile(`(?i)\|\s*(sudo\s+((-\S+|\S+=\S*)\s+)*)?(env\s+((-\S+|\S+=\S*)\s+)*)?(/\S*/)?(ba|z|da|k|c|tc|fi)?sh\b`),
 		"it runs commands piped into a shell, which cannot be checked before they run"},
-	{regexp.MustCompile(`(?i)\|\s*(sudo\s+)?(/\S*/)?(python[0-9.]*|perl|ruby|node|php)\s+-(\s|$)`),
+	// Code piped into an interpreter that reads it from stdin: "cat f | python3", "| python3 -", "| node -e". A named
+	// script after it ("| python3 analyze.py") is a file, not stdin, so it is not matched (round 3: bare "| python3"
+	// and "|python3" passed because the rule needed a "- " after the interpreter).
+	{regexp.MustCompile(`(?i)\|\s*(sudo\s+((-\S+|\S+=\S*)\s+)*)?(env\s+((-\S+|\S+=\S*)\s+)*)?(/\S*/)?(python[0-9.]*|perl|ruby|node|nodejs|php|deno)\b[ \t]*(-|$|[;&|\n])`),
 		"it runs code piped into an interpreter, which cannot be checked before it runs"},
 	{regexp.MustCompile(`(?i)(^|[;&|(]\s*)(eval|source|\.)\s+["']?(\$\(|\x60|<\()|(^|[\s;&|(])(ba|z|da|k)?sh\s+(-\w+\s+)*<\(`),
 		"it runs commands it builds or fetches at run time, which cannot be checked before they run"},
 	{regexp.MustCompile(`(?i)\b(ba|z|da|k)?sh\s+(-\w+\s+)*-\w*c\w*\s+["']?(\$\(|\x60)`),
 		"it runs commands it builds or fetches at run time, which cannot be checked before they run"},
 }
+
+// cmdPos is where a command word begins: a line's start, or after ;, |, &, ( or sudo. Unlike progAt it does not
+// count a closing quote, because what follows a quote inside an argument ("$(date)" in echo "$(date)") is not a
+// command the shell runs.
+const cmdPos = `(?m)(^|[;&|(]|\bsudo\s+)[ \t]*`
+
+// failClosedRules fire on a command whose effect the word rules above cannot read, so it is asked about rather than
+// let through (the word filters are not a boundary). They are matched on the shell's own words (quoted stretches
+// blanked), so a literal "$c" inside quotes is not one.
+var failClosedRules = []rule{
+	// The program to run is a variable or a command substitution ("c=rm; $c -rf ~", "$(echo rm) -rf ~"): what runs
+	// is decided at run time and no rule here saw it. An ordinary "$VAR" used as an argument (echo "$VAR") is not at
+	// a command position and is not matched.
+	{regexp.MustCompile(cmdPos + `(\$\{?[A-Za-z_]|\$\(|\x60)`),
+		"it runs a command chosen at run time (a variable or a substitution as the program), which cannot be checked before it runs"},
+	// eval runs a string built at run time.
+	{regexp.MustCompile(cmdPos + `eval\b`),
+		"it runs commands it builds at run time (eval), which cannot be checked before they run"},
+}
+
+// inlineInterpRe finds an interpreter run with inline code (-c/-e/-E/-r), where that code (dangerousInlineRe) deletes
+// files or shells out: "python3 -c '... shutil.rmtree ...'", "perl -e 'system(...)'". Plain inline code
+// ("python3 -c 'print(1)'") is readable and left alone. Checked with here-documents blanked, so a python heredoc's
+// body (its own data, not a shell command) is not read as inline code.
+var inlineInterpRe = regexp.MustCompile(`(?i)\b(python[0-9.]*|perl|ruby|node|nodejs|php|deno)\b[^\n|;&]*?\s-[a-zA-Z]*[ceEr]\b`)
+var dangerousInlineRe = regexp.MustCompile(`(?i)shutil\.rmtree|os\.(remove|unlink|rmdir|removedirs|system|execl?|popen)|subprocess\.|\bPopen\b|\bsystem\s*\(|child_process|execSync|spawnSync|\bunlink\b|FileUtils\.(rm|remove)|\brm\s+-[a-z]*[rf]`)
 
 // programRules are matched against the shell's own words only (quoted arguments and here-documents blanked): a
 // messaging or payment program run as a command.
@@ -166,6 +202,14 @@ func AssessCommand(command string) *Concern {
 		if r.re.MatchString(unquoted) || r.re.MatchString(blankQuoted(command)) {
 			return &Concern{Reason: r.reason}
 		}
+	}
+	for _, r := range failClosedRules {
+		if r.re.MatchString(unquoted) {
+			return &Concern{Reason: r.reason}
+		}
+	}
+	if interp := blankHeredocs(command); inlineInterpRe.MatchString(interp) && dangerousInlineRe.MatchString(interp) {
+		return &Concern{Reason: "it runs code that deletes files or runs other commands through an interpreter's -c/-e, which cannot be checked before it runs"}
 	}
 	return nil
 }

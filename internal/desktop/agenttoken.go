@@ -57,3 +57,22 @@ func (m *Manager) withScreenPassword(env []string, id string) []string {
 	}
 	return append(out, "VNC_PW="+m.screenPassword(id))
 }
+
+// GateKeyEnv is the environment variable the container's entrypoint reads the approval key from. It is given to the
+// approval gate's own process only and removed from everything else's environment (agent/decurix-entrypoint.sh).
+const GateKeyEnv = "DECURIX_GATE_KEY"
+
+// GatePort is where a desktop's approval gate listens for the control plane's signed replies.
+const GatePort = "8083"
+
+// GateKey is the key a desktop's approval gate verifies a person's reply with: derived from the control plane's secret
+// with a label of its own, so it is not the agent token (which the worker's environment holds) and cannot be made from
+// it. "" when the control plane has no secret.
+func (m *Manager) GateKey(id string) string {
+	if m == nil || len(m.HostGUISecret) == 0 {
+		return ""
+	}
+	mac := hmac.New(sha256.New, m.HostGUISecret)
+	mac.Write([]byte("decurix-gate-key\x00" + sanitizeName(id)))
+	return hex.EncodeToString(mac.Sum(nil))
+}

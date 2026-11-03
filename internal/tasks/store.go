@@ -649,6 +649,13 @@ func (s *Store) Commit(route Route, worker Worker, text string) (Route, error) {
 			}
 		}
 
+		// An answer to a question that asked for a secret (an OTP, a password, a PIN) is kept withheld even when it
+		// is a bare value (withhold.Reply); text is already withheld as any request is.
+		var question string
+		if err := tx.QueryRow(`SELECT request FROM interventions WHERE id = ?`, interventionID).Scan(&question); err == nil {
+			text = withhold.Reply(question, text)
+		}
+
 		// A second reply landing before the agent resumed joins the first.
 		if _, err := tx.Exec(
 			`UPDATE interventions SET

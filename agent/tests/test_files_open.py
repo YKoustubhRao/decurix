@@ -18,6 +18,7 @@ import test_long_requests as base  # noqa: F401 - stubs config first
 
 from decurix_agent import produced
 from decurix_agent.tools import office
+import fixture_paths  # noqa: E402 - what may not be on this machine is counted
 
 LIVE_SPEC = Path(r"C:\Users\Administrator\decurix-tests\wide\process\out\P3\20261021-102912\worker\P3_payment_run"
                  r"\outputs\ap_register_spec.json")
@@ -88,7 +89,7 @@ class OfficeFilesOpen(unittest.TestCase):
         self.assertEqual(unopenable([str(book)]), [])
         self.assertIn("never edit an Office file's XML", office.USAGE)
 
-    @unittest.skipUnless(LIVE_SPEC.is_file(), f"the live spec is not here: {LIVE_SPEC}")
+    @fixture_paths.skip_unless(LIVE_SPEC.is_file(), f"the live spec is not here: {LIVE_SPEC}")
     def test_the_live_spec_round_trips_to_a_workbook_that_opens(self):
         spec = json.loads(LIVE_SPEC.read_text(encoding="utf-8"))
         out = self.dir / "AP_register.xlsx"

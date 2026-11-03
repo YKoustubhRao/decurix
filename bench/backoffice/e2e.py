@@ -383,19 +383,28 @@ wb.save('{HOME}/work/wf7/SalesRegister_Aug2026.xlsx'); print(json.dumps('ok'))
     check("a draft to accounts with the cleaned file", drafts and any(f["name"].endswith(".xlsx") for f in drafts[0]["files"]), drafts)
 
 
+def _due(days):
+    """(posting date, due date) of an invoice due `days` from today (negative: overdue), on 30-day terms. Fixed
+    dates rotted: an invoice due "in the future" on the day this was written fell overdue weeks later, and correct
+    work - chasing it - was scored wrong (review 2026-11-02)."""
+    due = TODAY + dt.timedelta(days=days)
+    return (due - dt.timedelta(days=30)).isoformat(), due.isoformat()
+
+
 def wf8_9_receivables(work):
+    rows = [('SI-0701', *_due(-92), 'Rao Engineering', 'accounts@raoeng.example', 250000, 250000, 'No'),
+            ('SI-0744', *_due(-77), 'Rao Engineering', 'accounts@raoeng.example', 118000, 43000, 'No'),
+            ('SI-0761', *_due(-70), 'Sai Motors', 'finance@saimotors.example', 96500, 96500, 'Yes'),
+            ('SI-0812', *_due(-62), 'Rao Engineering', 'accounts@raoeng.example', 486160, 486160, 'No'),
+            ('SI-0813', *_due(-58), 'Sai Motors', 'finance@saimotors.example', 352230, 352230, 'No'),
+            ('SI-0819', *_due(30), 'Kiran Pumps', 'ap@kiranpumps.example', 772900, 772900, 'No'),
+            ('SI-0831', *_due(0), 'Deccan Agro', 'pay@deccanagro.example', 376302, 376302, 'No')]
     py(f"""
 import json, os, openpyxl
 os.makedirs('{HOME}/work/wf8', exist_ok=True)
 wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Accounts Receivable'
 ws.append(['Invoice', 'Posting Date', 'Due Date', 'Customer', 'Customer Email', 'Invoice Amount', 'Outstanding', 'Disputed'])
-for r in [('SI-0701','2026-07-03','2026-08-02','Rao Engineering','accounts@raoeng.example',250000,250000,'No'),
-          ('SI-0744','2026-07-18','2026-08-17','Rao Engineering','accounts@raoeng.example',118000,43000,'No'),
-          ('SI-0761','2026-07-25','2026-08-24','Sai Motors','finance@saimotors.example',96500,96500,'Yes'),
-          ('SI-0812','2026-08-02','2026-09-01','Rao Engineering','accounts@raoeng.example',486160,486160,'No'),
-          ('SI-0813','2026-08-06','2026-09-05','Sai Motors','finance@saimotors.example',352230,352230,'No'),
-          ('SI-0819','2026-08-14','2026-10-13','Kiran Pumps','ap@kiranpumps.example',772900,772900,'No'),
-          ('SI-0831','2026-08-29','{TODAY.isoformat()}','Deccan Agro','pay@deccanagro.example',376302,376302,'No')]:
+for r in {rows!r}:
     ws.append(list(r))
 wb.save('{HOME}/work/wf8/open_invoices_export.xlsx'); print(json.dumps('ok'))
 """)

@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"sync"
@@ -124,6 +125,13 @@ func NewManager(db *sql.DB, key []byte, localPort int) (*Manager, error) {
 	m := &Manager{db: db, key: key, localPort: localPort, conn: newConnector()}
 
 	cfg, err := m.load()
+	if errors.Is(err, sealed.ErrUnreadable) {
+		// A restored backup carries no key files (internal/httpapi/backup.go):
+		// on another install the saved tokens no longer open. That is "set the
+		// tunnel up again", not a control plane that will not start.
+		log.Printf("warning: %v", err)
+		cfg, err = nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -150,10 +158,10 @@ func (m *Manager) load() (*config, error) {
 	}
 
 	if c.apiToken, err = sealed.Open(m.key, apiToken); err != nil {
-		return nil, fmt.Errorf("cftunnel: the saved API token cannot be read (%v); set the tunnel up again", err)
+		return nil, fmt.Errorf("cftunnel: the saved API token cannot be read (%w); set the tunnel up again", err)
 	}
 	if c.connectorToken, err = sealed.Open(m.key, connectorToken); err != nil {
-		return nil, fmt.Errorf("cftunnel: the saved connector token cannot be read (%v); set the tunnel up again", err)
+		return nil, fmt.Errorf("cftunnel: the saved connector token cannot be read (%w); set the tunnel up again", err)
 	}
 
 	c.updated = sqlitedb.FromNS(updated)

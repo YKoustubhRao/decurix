@@ -1517,6 +1517,29 @@ def _with_opening_press(steps, start):
 
 def run(program, params=None, start=1, report=None, ladder=None):
     """
+    _run_program, with the values this run types from the person's demonstration (a parameter today's request gives
+    nothing for keeps the value it was recorded with) known to the pre-save checks as the person's own
+    (core.TAUGHT_VALUES): a replay's save is refused only for a value that is in no source and is not theirs.
+    """
+
+    given = {name for name in (params or {})}
+    taught = {" ".join(str(p.get("default") or "").split()).lower() for p in program.get("params") or []
+              if p.get("name") not in given and not p.get("secret") and str(p.get("default") or "").strip()}
+    store = getattr(core, "TAUGHT_VALUES", None)
+    if store is None:
+        return _run_program(program, params, start, report, ladder)
+    kept = set(store)
+    store.clear()
+    store.update(taught)
+    try:
+        return _run_program(program, params, start, report, ladder)
+    finally:
+        store.clear()
+        store.update(kept)
+
+
+def _run_program(program, params=None, start=1, report=None, ladder=None):
+    """
     Run a program from step `start` and say how it ended: {"outcome",
     "text", "step", "resume_from", "reason", "evidence", "done",
     "verified", "unverified", "total", "missing", "session", "options",

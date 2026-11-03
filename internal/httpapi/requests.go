@@ -203,6 +203,11 @@ func (s *Server) submitLocked(ctx context.Context, desktopID, content string) (t
 		return tasks.Route{}, err
 	}
 
+	// A reply to an open question goes to the desktop's approval gate first, signed: that is the only way a yes is made.
+	if route.Kind == tasks.RouteReply {
+		s.signReplyToGate(ctx, id, route.TaskID, content)
+	}
+
 	if err := s.deliverRequest(ctx, desktopID, content, route.TaskID); err != nil {
 		return tasks.Route{}, err
 	}

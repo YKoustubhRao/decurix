@@ -4,6 +4,11 @@ import json
 from pathlib import Path
 from transfer import SCENARIOS
 
+# The checks here are assert statements. Under python -O they all vanish, and this would report a pass it never
+# checked (review 2026-11-02): it refuses to run that way.
+if not __debug__:
+    raise SystemExit("run this without -O: its checks are assert statements, which -O removes")
+
 
 def audit(root):
     report = json.loads((root / "live-transfer-full.json").read_text(encoding="utf-8"))

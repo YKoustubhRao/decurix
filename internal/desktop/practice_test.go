@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -229,7 +230,35 @@ func practiceManager(t *testing.T) (*Manager, *practiceDaemon) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cli.Close() })
-	return NewManager(cli), d
+	m := NewManager(cli)
+	m.HostGUISecret = []byte("practice-secret")
+	return m, d
+}
+
+// A practice desktop gets its agent token like any desktop, and without the control plane's secret it is not made at
+// all - it used to be made with no token, and every request the run sent it was refused with no reason given.
+func TestCreatePracticeNeedsTheSecret(t *testing.T) {
+	m, d := practiceManager(t)
+	spec := PracticeSpec{RunID: "x1", Image: d.image, Harness: "thebot", Brain: BrainAzure, Model: "m", BrokerURL: "http://172.30.0.1:8091"}
+	if _, err := m.CreatePractice(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	var env []string
+	hasToken := false
+	for _, e := range d.created[0]["Env"].([]any) {
+		env = append(env, e.(string))
+		hasToken = hasToken || e.(string) == AgentTokenEnv+"="+m.AgentToken("practice-x1")
+	}
+	if !hasToken || m.AgentToken("practice-x1") == "" {
+		t.Fatalf("the practice desktop has no agent token of its own: %v", env)
+	}
+	m.HostGUISecret = nil
+	if _, err := m.CreatePractice(context.Background(), PracticeSpec{RunID: "x2", Image: d.image, BrokerURL: "http://172.30.0.1:8091"}); !errors.Is(err, ErrNoSecret) {
+		t.Fatalf("a practice desktop without the secret: %v, want ErrNoSecret", err)
+	}
+	if len(d.created) != 1 {
+		t.Fatal("a practice desktop was made without the secret")
+	}
 }
 
 func TestCreatePracticeIsIsolated(t *testing.T) {

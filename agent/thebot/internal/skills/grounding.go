@@ -441,7 +441,7 @@ func (st *operatorState) noteSeen(text string) {
 	if st.Seen == "" && st.SeenHead == 0 {
 		head := "\n" + text
 		if len(head) > maxSeenHeadChars {
-			head = head[:maxSeenHeadChars]
+			head = trimRuneEnd(head[:maxSeenHeadChars])
 		}
 		st.SeenHead = len(head)
 	}
@@ -453,8 +453,33 @@ func (st *operatorState) noteSeen(text string) {
 	tail := st.Seen[len(st.Seen)-(maxSeenChars-len(head)):]
 	if nl := strings.IndexByte(tail, '\n'); nl >= 0 && nl < 4096 {
 		tail = tail[nl:]
+	} else {
+		tail = trimRuneStart(tail) // no line break near the cut: at least do not keep half a rune
 	}
 	st.Seen = head + tail
+}
+
+// trimRuneStart drops any bytes at the start of s that are the tail of a multi-byte rune cut mid-character, so s
+// begins on a valid UTF-8 boundary. A byte-position cut (noteSeen) can land inside a rune; the model and the
+// grounding check are both fed this text, and invalid UTF-8 at the edge breaks a quote match and an API call alike.
+func trimRuneStart(s string) string {
+	for i := 0; i < len(s) && i < utf8.UTFMax; i++ {
+		if utf8.RuneStart(s[i]) {
+			return s[i:]
+		}
+	}
+	return s
+}
+
+// trimRuneEnd drops any bytes at the end of s that are an incomplete multi-byte rune, so s ends on a whole rune.
+func trimRuneEnd(s string) string {
+	for len(s) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(s); r != utf8.RuneError || size > 1 {
+			break
+		}
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 // shellSegment is one simple command of a command line - the words between ;, &&, ||, | and line ends - with the

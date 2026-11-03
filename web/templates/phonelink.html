@@ -157,6 +157,19 @@ details{margin-top:10px;color:var(--text-2)}
     });
   };
 
+  // later waits ms, and then until this page is seen again: the person is in Termux while the helper runs, and
+  // the page answers the moment they come back to it, not in the background meanwhile.
+  function later(fn, ms) {
+    setTimeout(function () {
+      if (document.visibilityState !== 'hidden') { fn(); return; }
+      document.addEventListener('visibilitychange', function wake() {
+        if (document.visibilityState === 'hidden') { return; }
+        document.removeEventListener('visibilitychange', wake);
+        fn();
+      });
+    }, ms);
+  }
+
   function poll() {
     fetch('/api/phones', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
       var linked = (d.phones || []).some(function (p) { return p.id === DEVICE; });
@@ -167,8 +180,8 @@ details{margin-top:10px;color:var(--text-2)}
         document.getElementById('done').hidden = false;
         return;
       }
-      setTimeout(poll, 3000);
-    }).catch(function () { setTimeout(poll, 5000); });
+      later(poll, 3000);
+    }).catch(function () { later(poll, 5000); });
   }
 })();
 </script>

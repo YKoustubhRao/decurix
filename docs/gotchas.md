@@ -819,3 +819,40 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): A small marked figure hid a large one in an approval policy
 - [part-5.md](gotchas/part-5.md): A person's typed password was kept in the task records and the chat
 - [part-5.md](gotchas/part-5.md): On Windows, `filepath.IsAbs("/etc/passwd")` is false
+- [part-5.md](gotchas/part-5.md): A label is read as a whole, not as a bag of words
+- [part-5.md](gotchas/part-5.md): A replay's save is not a person's decision to make again
+- [part-5.md](gotchas/part-5.md): A press has three doors, and the gate saw one
+- [part-5.md](gotchas/part-5.md): "Nothing readable was written" is not "nothing changed"
+- [part-5.md](gotchas/part-5.md): checked=True means a result was read back
+- [part-5.md](gotchas/part-5.md): Drafting a real email before its check made a redo draft it twice
+- [part-5.md](gotchas/part-5.md): A word filter is not a boundary; fail closed on what it cannot read
+- [part-5.md](gotchas/part-5.md): `(?i)` over a whole regex made curl's `-f` read as `-F`
+- [part-5.md](gotchas/part-5.md): A secret detector must read the VALUE, not the word
+- [part-5.md](gotchas/part-5.md): A fix a person approved once may run again unasked, from a record only the harness writes
+- [part-5.md](gotchas/part-5.md): A proxied network lost downloads and web search
+- [part-5.md](gotchas/part-5.md): Anthropic has one system, and a second system message broke the call
+- [part-5.md](gotchas/part-5.md): Unbounded jobs (soul job caps)
+- [part-5.md](gotchas/part-5.md): A byte cut of the operator's seen text left half a rune
+- [part-5.md](gotchas/part-5.md): A figure glued to its currency was no figure, so a policy's two approvers were skipped
+- [part-5.md](gotchas/part-5.md): A postal code remembered as a secret hid every matching total
+- [part-5.md](gotchas/part-5.md): A label's value stopped at ";" and a password without a colon got through
+- [part-5.md](gotchas/part-5.md): An identifier in digits went into a sheet as a number
+- [part-5.md](gotchas/part-5.md): Every table with an account column was a payment run, and a run of a payee's words was the payee
+- [part-5.md](gotchas/part-5.md): A stolen backup opened every saved secret
+- [part-5.md](gotchas/part-5.md): A saved key went wherever a new endpoint pointed
+- [part-5.md](gotchas/part-5.md): Hidden tabs polled and every page held the access code
+- [part-5.md](gotchas/part-5.md): Tests that need what is not here skipped without a word
+- [part-5.md](gotchas/part-5.md): A race test on one connection cannot race
+- [part-5.md](gotchas/part-5.md): The binary carried the agent's tests
+- [part-5.md](gotchas/part-5.md): Bench verdicts that could not fail
+- [part-5.md](gotchas/part-5.md): A container on a network the control plane did not know was a person
+- [part-5.md](gotchas/part-5.md): One lock around every Docker lookup made every poll wait
+- [part-5.md](gotchas/part-5.md): "Is this a Windows program" read the base name of the whole command line
+- [part-5.md](gotchas/part-5.md): host-bridge open and clip needed no token, so any desktop drove the person's own browser
+- [part-5.md](gotchas/part-5.md): The host-files deny-list was decided on the path as written
+- [part-5.md](gotchas/part-5.md): The Windows app published the gated port on every address of its WSL distro
+- [part-5.md](gotchas/part-5.md): A practice desktop was made with no token when the secret was missing
+- [part-5.md](gotchas/part-5.md): The worker was root-capable the whole time: sudo with the image's public password, writable /etc/passwd
+- [part-5.md](gotchas/part-5.md): A yes now exists only in a process the worker cannot touch: signed replies to a separate gate user
+- [part-5.md](gotchas/part-5.md): The agent's shell net now fails closed on what it cannot read
+- [part-5.md](gotchas/part-5.md): A long run kept "You approved" for any file in the command folder

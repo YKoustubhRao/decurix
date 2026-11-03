@@ -1,6 +1,8 @@
 package qualification
 
 import (
+	"database/sql"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +30,25 @@ func testStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return storeOn(t, db)
+}
+
+// fileStore is a Store on a database file opened as the control plane opens
+// it (sqlitedb.Open: a pool of connections, WAL, BEGIN IMMEDIATE), for a test
+// of two callers at once: OpenMemory's pool is one connection, which
+// serialises every caller, so a race there cannot happen and its test cannot
+// fail (review 2026-11-02).
+func fileStore(t *testing.T) *Store {
+	t.Helper()
+	db, err := sqlitedb.Open(filepath.Join(t.TempDir(), "qualification.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return storeOn(t, db)
+}
+
+func storeOn(t *testing.T, db *sql.DB) *Store {
+	t.Helper()
 	t.Cleanup(func() { db.Close() })
 	s, err := NewStore(db)
 	if err != nil {
@@ -128,16 +149,19 @@ func TestSuiteCompletenessAndRevisionInvalidation(t *testing.T) {
 }
 
 func TestConcurrentRunsAndDuplicateCompletion(t *testing.T) {
-	s := testStore(t)
+	s := fileStore(t)
 	r := qualify(t, s)
 	_, _ = s.Authorize(r.ID, r.Revision, "enable")
+	const callers = 8
 	var wg sync.WaitGroup
-	results := make(chan error, 2)
-	runs := make(chan Run, 2)
-	for i := 0; i < 2; i++ {
+	results := make(chan error, callers)
+	runs := make(chan Run, callers)
+	start := make(chan struct{})
+	for i := 0; i < callers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			<-start
 			run, err := s.BeginRun(r.ID, r.Revision, "production", "task")
 			results <- err
 			if err == nil {
@@ -145,6 +169,7 @@ func TestConcurrentRunsAndDuplicateCompletion(t *testing.T) {
 			}
 		}()
 	}
+	close(start)
 	wg.Wait()
 	close(results)
 	close(runs)

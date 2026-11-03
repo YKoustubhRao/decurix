@@ -31,6 +31,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import brain  # noqa: E402
 
+# The checks here are assert statements. Under python -O they all vanish, and this would report a pass it never
+# checked (review 2026-11-02): it refuses to run that way.
+if not __debug__:
+    raise SystemExit("run this without -O: its checks are assert statements, which -O removes")
+
 REPO = str(Path(__file__).resolve().parents[2])
 NAME = "decurix-skill-test-" + uuid.uuid4().hex[:10]
 PORT = 18080

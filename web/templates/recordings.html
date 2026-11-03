@@ -838,7 +838,7 @@
     if(demo && state.selected === demo.session && state.loaded && state.loaded.meta.event_count !== demo.events && !usingDetail()){
       await redrawDetail(demo.session);
     }
-    setTimeout(tick, demo ? 2500 : 15000);
+    Decurix.later(tick, demo ? 2500 : 15000);
   }
 
   tick().then(function(){

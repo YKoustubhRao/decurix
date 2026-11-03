@@ -134,8 +134,8 @@ type Server struct {
 
 	// sends serialises every send to one desktop (sendlock.go).
 	sends sendLocks
-	// nets caches the Docker networks' address ranges (humansonly.go).
-	nets containerNets
+	// netsFor stands in for Desktops.Networks, in tests (humansonly.go).
+	netsFor func() desktop.NetView
 	// keepAwakeScriptAt is when a host keep-awake script last asked
 	// (UnixNano; mail.go's keepAwakeHandler).
 	keepAwakeScriptAt atomic.Int64
@@ -418,7 +418,6 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	// access code must not become command execution on the host.
 	mux.HandleFunc("/api/host-bridge/exec", s.hostBridgeExecHandler)
 	mux.HandleFunc("/api/host-bridge/open", s.hostBridgeOpenHandler)
-	mux.HandleFunc("/api/host-bridge/clip", s.hostBridgeClipHandler)
 	mux.HandleFunc("/api/host-gui/start", hostGUIDirectOnly(s.hostGUIStartHandler))
 	mux.HandleFunc("/api/host-gui/ws", hostGUIDirectOnly(s.hostGUIWSHandler))
 	mux.HandleFunc("/api/host-gui/stop", hostGUIDirectOnly(s.hostGUIStopHandler))

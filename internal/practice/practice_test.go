@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -405,15 +406,48 @@ func TestInSubnetsAndRefuse(t *testing.T) {
 			t.Fatalf("%s: got %d want %d", addr, w.Code, want)
 		}
 	}
-	calls := 0
-	cache := &SubnetCache{Lookup: func(context.Context) []netip.Prefix { calls++; return prefixes }, TTL: time.Hour}
-	cache.Subnets()
-	cache.Subnets()
-	cache.Refresh()
-	cache.Subnets()
-	if calls != 2 {
-		t.Fatalf("cache asked Docker %d times", calls)
+	var calls atomic.Int32
+	cache := &SubnetCache{Lookup: func(context.Context) []netip.Prefix { calls.Add(1); return prefixes }, TTL: time.Hour}
+	if got := cache.Subnets(); len(got) != 1 {
+		t.Fatalf("the first call did not wait for the ranges: %v", got)
 	}
+	cache.Subnets()
+	if calls.Load() != 1 {
+		t.Fatalf("cache asked Docker %d times", calls.Load())
+	}
+}
+
+// Once the ranges are known, a slow Docker never holds up a request: the ranges known are answered while one
+// question is out, and requests meanwhile do not ask again.
+func TestSubnetCacheDoesNotQueueRequestsBehindDocker(t *testing.T) {
+	prefixes := []netip.Prefix{netip.MustParsePrefix("172.30.0.0/16")}
+	release := make(chan struct{})
+	var calls atomic.Int32
+	cache := &SubnetCache{TTL: time.Millisecond, Lookup: func(context.Context) []netip.Prefix {
+		if calls.Add(1) > 1 {
+			<-release
+		}
+		return prefixes
+	}}
+	cache.Subnets()
+	time.Sleep(5 * time.Millisecond)
+	start := time.Now()
+	for range 20 {
+		if got := cache.Subnets(); len(got) != 1 {
+			t.Fatalf("lost the known ranges while Docker was asked again: %v", got)
+		}
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Fatalf("requests waited %s for Docker", waited)
+	}
+	for deadline := time.Now().Add(time.Second); calls.Load() < 2 && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	cache.Subnets()
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("Docker was asked %d times, want one question out at a time", n)
+	}
+	close(release)
 }
 
 func TestBrokerServesOnlyItsPaths(t *testing.T) {

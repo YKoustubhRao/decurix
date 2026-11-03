@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -674,5 +675,60 @@ func TestSoulTakesNoApprovalFromARequestBody(t *testing.T) {
 	job := waitJob(t, s, postChat(t, s, `{"prompt":"pay the 400 dollar invoice in ~/work/invoice.pdf","approved":true}`), 5*time.Second)
 	if job["outcome"] != "needs_approval" {
 		t.Fatalf("job = %v, want it to ask: a body's approved field approves nothing", job)
+	}
+}
+
+// Soul caps how many jobs run at once: over the cap a new request is refused (429), not queued, so a flood of
+// requests cannot spawn unbounded goroutines and job records.
+func TestChatRefusesWhenTooManyJobsRun(t *testing.T) {
+	s := newTestServer(t)
+	s.jobsMu.Lock()
+	for i := 0; i < maxRunningJobs; i++ {
+		id := fmt.Sprintf("running-%d", i)
+		s.jobs[id] = newJobRecord(id, "busy") // never finished -> counts as running
+	}
+	s.jobsMu.Unlock()
+
+	rec := serve(s, http.MethodPost, "/api/chat", `{"prompt":"do a thing"}`)
+	if rec.Code != 429 {
+		t.Fatalf("status = %d, want 429 when the running cap is full", rec.Code)
+	}
+
+	// A finished job frees a slot.
+	s.jobsMu.Lock()
+	s.jobs["running-0"].finish()
+	s.jobsMu.Unlock()
+	if rec := serve(s, http.MethodPost, "/api/chat", `{"prompt":"run this command: `+"`echo ok`"+`"}`); rec.Code != 200 {
+		t.Fatalf("status = %d, want 200 once a slot is free", rec.Code)
+	}
+}
+
+// Finished job records are pruned once the map is full, so a long-lived soul does not keep every job forever.
+func TestFinishedJobsArePruned(t *testing.T) {
+	s := newTestServer(t)
+	s.jobsMu.Lock()
+	for i := 0; i < maxJobRecords+50; i++ {
+		id := fmt.Sprintf("old-%d", i)
+		j := newJobRecord(id, "old")
+		j.startedAt = time.Now().Add(-time.Duration(maxJobRecords+50-i) * time.Minute)
+		j.finish()
+		s.jobs[id] = j
+	}
+	s.pruneFinishedJobsLocked()
+	n := len(s.jobs)
+	s.jobsMu.Unlock()
+	if n >= maxJobRecords {
+		t.Fatalf("after pruning there are %d job records, want below %d", n, maxJobRecords)
+	}
+	// The newest finished job survived; the oldest was dropped.
+	s.jobsMu.Lock()
+	_, newestKept := s.jobs[fmt.Sprintf("old-%d", maxJobRecords+49)]
+	_, oldestKept := s.jobs["old-0"]
+	s.jobsMu.Unlock()
+	if !newestKept {
+		t.Error("pruning dropped the most recent job")
+	}
+	if oldestKept {
+		t.Error("pruning kept the oldest job")
 	}
 }

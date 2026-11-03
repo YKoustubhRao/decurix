@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"thebot/internal/netguard"
 )
 
 // BrowserSkill hands an interactive web task ("Open google.com. Search for
@@ -224,6 +226,21 @@ func (b *BrowserSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	}
 
 	task := strings.TrimSpace(subtask.Step)
+	// The browser drives the desktop's real, logged-in Chromium, so a task that names an internal address turns it
+	// into a way to reach the cloud metadata service, the control plane or soul's own ports from inside the network.
+	// A URL in the task is checked the same way a download or a page fetch is (netguard): only a public target is let
+	// through. A name is checked only as a literal here - its resolution is the browser's, not ours.
+	for _, raw := range urlRe.FindAllString(task, -1) {
+		link := findURL(raw)
+		if link == "" {
+			continue
+		}
+		if err := netguard.CheckURL(link); err != nil {
+			rc.Logf("browser", "refusing a browsing task aimed at a non-public address: %s", err.Error())
+			return finish("That points at an address that is not on the public internet (a loopback, private or metadata address), which the browser will not open: "+err.Error(),
+				false, map[string]any{"error": err.Error(), "fatal": true, "needsUserInput": true})
+		}
+	}
 	rc.Logf("browser", "handing off to the browser extension: %s", task)
 
 	var submitted struct {

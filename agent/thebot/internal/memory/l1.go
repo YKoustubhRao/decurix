@@ -68,7 +68,45 @@ CREATE INDEX IF NOT EXISTS facts_fact ON facts (fact);
 		db.Close()
 		return nil, fmt.Errorf("l1: create schema: %w", err)
 	}
+	if _, err := PurgeSecrets(db, "facts", "fact"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("l1: purge secrets: %w", err)
+	}
 	return &L1{db: db, provider: provider, embedder: embedder, model: model}, nil
+}
+
+// PurgeSecrets deletes every row of table whose columns hold a secret-shaped value (LooksSecret) and returns how
+// many it deleted. A store opened by an older soul, whose check let a secret in, is cleaned when it is opened: L1 and
+// the feedback store are recalled into later prompts, so a secret kept there leaks into every one of them. The ids
+// are read first and the rows deleted after the read is closed (no query while a *sql.Rows is open).
+func PurgeSecrets(db *sql.DB, table string, columns ...string) (int, error) {
+	rows, err := db.Query(`SELECT id, ` + strings.Join(columns, ` || char(10) || `) + ` FROM ` + table)
+	if err != nil {
+		return 0, err
+	}
+	var doomed []int64
+	for rows.Next() {
+		var id int64
+		var text string
+		if err := rows.Scan(&id, &text); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if LooksSecret(text) {
+			doomed = append(doomed, id)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range doomed {
+		if _, err := db.Exec(`DELETE FROM `+table+` WHERE id = ?`, id); err != nil {
+			return 0, err
+		}
+	}
+	return len(doomed), nil
 }
 
 func (l *L1) Close() error { return l.db.Close() }

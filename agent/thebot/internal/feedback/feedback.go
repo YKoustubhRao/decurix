@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS negative_feedback (
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("feedback: create schema: %w", err)
 	}
+	if _, err := memory.PurgeSecrets(db, "negative_feedback", "task", "detail"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("feedback: purge secrets: %w", err)
+	}
 	return &Store{db: db, embedder: embedder}, nil
 }
 

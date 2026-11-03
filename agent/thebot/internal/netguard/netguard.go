@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -66,6 +67,12 @@ type guard struct {
 	allow   func(netip.Addr) bool
 	resolve func(ctx context.Context, host string) ([]netip.Addr, error)
 	dialer  *net.Dialer
+	// proxy, when set, is where a request is sent (honouring HTTP(S)_PROXY/NO_PROXY). The proxy then does the
+	// dialing, so the public-address check can no longer be made on the target's own connection; instead the
+	// target's name and IP are checked before the request is handed to the proxy (checkTarget), and the configured
+	// proxy endpoints (proxyHosts) are the only non-public addresses dial lets through.
+	proxy      func(*http.Request) (*url.URL, error)
+	proxyHosts map[string]bool
 }
 
 func defaultResolve(ctx context.Context, host string) ([]netip.Addr, error) {
@@ -78,6 +85,11 @@ func (g *guard) dial(ctx context.Context, network, address string) (net.Conn, er
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, err
+	}
+	// A dial to the configured proxy itself is let through as given: the proxy is operator-configured infrastructure
+	// (often on a private or loopback address), and it is the proxy that then reaches the - already checked - target.
+	if g.isProxyEndpoint(host, port) {
+		return g.dialer.DialContext(ctx, network, address)
 	}
 	var addrs []netip.Addr
 	if ip, perr := netip.ParseAddr(strings.Trim(host, "[]")); perr == nil {
@@ -131,14 +143,41 @@ func (g *guard) checkURL(u *url.URL) error {
 	return nil
 }
 
+// checkTarget checks a request's target before it is handed to a proxy. The proxy, not this client, dials the
+// target, so the per-connection address check (dial) never sees it; the address-literal and localhost checks still
+// hold, and a name is resolved here as well, best effort - a name this host can resolve to a loopback, private or
+// metadata address is refused, so a proxy is never a way around the guard for a target this host can see. A name
+// only the proxy can resolve is left to the proxy; that is the proxy's trust domain, not a bypass this host offers.
+func (g *guard) checkTarget(ctx context.Context, u *url.URL) error {
+	if err := g.checkURL(u); err != nil {
+		return err
+	}
+	host := u.Hostname()
+	if _, err := netip.ParseAddr(host); err == nil {
+		return nil // a literal was already checked by checkURL
+	}
+	addrs, err := g.resolve(ctx, host)
+	if err != nil {
+		return nil // only the proxy may be able to resolve it
+	}
+	for _, a := range addrs {
+		if !g.allow(a) {
+			return fmt.Errorf("%s (%s): %w", host, a.Unmap(), ErrBlocked)
+		}
+	}
+	return nil
+}
+
 // maxRedirects is how many redirects one fetch follows.
 const maxRedirects = 10
 
 func (g *guard) client(timeout time.Duration) *http.Client {
 	transport := &http.Transport{
-		// No proxy: through a proxy the address dialled is the proxy's, and the
-		// destination could not be checked.
-		Proxy:                 nil,
+		// With no proxy configured, every connection is dialled directly and checked (Proxy nil). With one
+		// configured (HTTP(S)_PROXY, honouring NO_PROXY), the proxy dials the target and the target is checked in
+		// RoundTrip instead; a NO_PROXY match makes g.proxy return nil for that request, so it is dialled and
+		// checked directly as before.
+		Proxy:                 g.proxy,
 		DialContext:           g.dial,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          10,
@@ -165,17 +204,77 @@ type checkedTransport struct {
 }
 
 func (t *checkedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if err := t.g.checkURL(req.URL); err != nil {
+	if t.g.proxy != nil {
+		if err := t.g.checkTarget(req.Context(), req.URL); err != nil {
+			return nil, err
+		}
+	} else if err := t.g.checkURL(req.URL); err != nil {
 		return nil, err
 	}
 	return t.next.RoundTrip(req)
 }
 
-// Client is an HTTP client that dials only public internet addresses, checks
-// every redirect, and uses no proxy. timeout 0 means none beyond the request's context.
+// Client is an HTTP client that dials only public internet addresses and
+// checks every redirect. When HTTP_PROXY/HTTPS_PROXY (or ALL_PROXY) is set it
+// routes through the proxy (honouring NO_PROXY) instead of dialling directly,
+// so a proxied network keeps downloads and web search; the target is still
+// checked first, and the proxy is never a way to reach a loopback, private or
+// metadata target. timeout 0 means none beyond the request's context.
 func Client(timeout time.Duration) *http.Client {
 	g := &guard{allow: Public, resolve: defaultResolve, dialer: &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}}
+	if proxyConfigured() {
+		g.proxy = http.ProxyFromEnvironment
+		g.proxyHosts = proxyEndpoints()
+	}
 	return g.client(timeout)
+}
+
+// proxyEnv are the environment variables that configure an outbound proxy.
+var proxyEnv = []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"}
+
+// proxyConfigured reports whether any proxy environment variable names a proxy.
+func proxyConfigured() bool {
+	for _, k := range proxyEnv {
+		if strings.TrimSpace(os.Getenv(k)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// proxyEndpoints is the set of host and host:port strings the configured proxies listen on, so a dial to the proxy
+// is recognised and let through while every other direct dial stays public-only.
+func proxyEndpoints() map[string]bool {
+	out := map[string]bool{}
+	for _, k := range proxyEnv {
+		raw := strings.TrimSpace(os.Getenv(k))
+		if raw == "" {
+			continue
+		}
+		if !strings.Contains(raw, "://") {
+			raw = "http://" + raw
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		if h := strings.ToLower(u.Hostname()); h != "" {
+			out[h] = true
+			if p := u.Port(); p != "" {
+				out[net.JoinHostPort(h, p)] = true
+			}
+		}
+	}
+	return out
+}
+
+// isProxyEndpoint reports whether host:port is one of the configured proxies.
+func (g *guard) isProxyEndpoint(host, port string) bool {
+	if len(g.proxyHosts) == 0 {
+		return false
+	}
+	h := strings.ToLower(strings.Trim(host, "[]"))
+	return g.proxyHosts[h] || g.proxyHosts[net.JoinHostPort(h, port)]
 }
 
 // CheckURL refuses a URL a guarded client would refuse before resolving it

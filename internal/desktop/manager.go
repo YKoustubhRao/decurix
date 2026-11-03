@@ -338,6 +338,9 @@ func (m *Manager) runProvisioning(
 	if token := m.AgentToken(name); token != "" {
 		env = append(env, AgentTokenEnv+"="+token)
 	}
+	if key := m.GateKey(name); key != "" {
+		env = append(env, GateKeyEnv+"="+key)
+	}
 	env = m.withScreenPassword(env, name)
 	m.provisioningMu.Lock()
 	prov.Model = desktopModel(env)
@@ -1354,6 +1357,7 @@ mkdir -p "$dir" && cat <<'%s' > "$dir/%s"
 // error. what names the exec in errors.
 func (m *Manager) execBash(ctx context.Context, containerName, cmd, what string) error {
 	execID, err := m.client.ContainerExecCreate(ctx, containerName, container.ExecOptions{
+		User:         "1001:1001", // the desktop starts as root (agent/decurix-entrypoint.sh); this is the worker's own work
 		Cmd:          []string{"bash", "-lc", cmd},
 		AttachStdout: true,
 		AttachStderr: true,

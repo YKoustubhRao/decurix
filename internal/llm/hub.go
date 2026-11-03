@@ -281,7 +281,8 @@ func (h *Hub) Complete(provider string, s Settings) (Settings, error) {
 	s.Model = strings.TrimSpace(s.Model)
 	s.FastModel = strings.TrimSpace(s.FastModel)
 
-	if s.Key == "" {
+	kept := s.Key == ""
+	if kept {
 		s.Key = h.savedKey(provider)
 	}
 	if s.Endpoint == "" && provider == ProviderAzure {
@@ -314,7 +315,29 @@ func (h *Hub) Complete(provider string, s Settings) (Settings, error) {
 		s.Endpoint = ""
 	}
 
+	// A key left empty on a save is the saved one, and it goes only where it was saved for: changing the endpoint
+	// with the key field empty would hand the saved key to whatever server the new address names (Test calls it
+	// at once). A new endpoint needs the key typed again.
+	if kept && s.Key != "" && !h.savedEndpointIs(provider, s.Endpoint) {
+		return s, errors.New("the saved key is only sent to the endpoint it was saved for: type the key again to use a new endpoint")
+	}
+
 	return s, nil
+}
+
+// savedEndpointIs reports whether endpoint is, normalised the way the provider's client normalises it, the endpoint
+// the provider's key was saved for. Claude has no endpoint to change.
+func (h *Hub) savedEndpointIs(provider, endpoint string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	switch provider {
+	case ProviderAzure:
+		return h.azure != nil && NewAzure(endpoint, "", "", "").Endpoint == h.azure.Endpoint
+	case ProviderOpenAI:
+		return h.openai != nil && NewOpenAI(endpoint, "", "", "").Endpoint == h.openai.Endpoint
+	}
+	return true
 }
 
 // Save stores a provider's settings (Complete first) and puts them in use.

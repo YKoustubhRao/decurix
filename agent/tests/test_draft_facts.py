@@ -30,7 +30,7 @@ def draft_fact_problems(drafts, tables, source_text=""):
     return out
 
 
-@unittest.skipUnless(TRACKER.is_file(), "round 5 P4's tracker is not on this machine")
+@fixture_paths.skip_unless(TRACKER.is_file(), "round 5 P4's tracker is not on this machine")
 class TheLiveDrafts(unittest.TestCase):
     def setUp(self):
         self.tables = [(h, r) for _, h, r in stage_facts.tables_of([str(TRACKER)])]

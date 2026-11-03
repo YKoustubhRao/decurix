@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/netip"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -17,45 +16,71 @@ import (
 // assign, so DesktopAt says which desktop that address belongs to.
 
 // callerTTL is how long the address map is trusted; callerRefreshEvery bounds how often an unknown address makes
-// it refresh (a desktop just started).
+// it refresh (a desktop just started). A desktop made or removed through the control plane drops the map at once
+// (the desktop list's generation), so an address handed to a new desktop is not read as the old one's.
 const (
 	callerTTL          = 15 * time.Second
 	callerRefreshEvery = 2 * time.Second
 )
 
+// callerCache is the address map and the network view, each fetched by one call at a time (refreshed).
 type callerCache struct {
-	mu      sync.Mutex
-	byAddr  map[netip.Addr]string
-	fetched time.Time
+	byAddr refreshed[map[netip.Addr]string]
+	nets   netCache
+
+	// list and netsFetch stand in for Docker in tests.
+	list      func(ctx context.Context) (map[netip.Addr]string, error)
+	netsFetch func(ctx context.Context) (NetView, bool)
 }
 
 // DesktopAt returns the ID of the desktop whose container has addr on the desktop network, and false when no
-// desktop does (or Docker cannot be asked).
+// desktop does (or Docker cannot be asked). A known address in a fresh map is answered without waiting; only an
+// address the map does not hold, or a map past callerTTL, waits for Docker, and every caller waiting then shares one
+// question.
 func (m *Manager) DesktopAt(ctx context.Context, addr netip.Addr) (string, bool) {
-	if m == nil || m.client == nil || !addr.IsValid() {
+	if m == nil || (m.client == nil && m.callers.list == nil) || !addr.IsValid() {
 		return "", false
 	}
 	addr = addr.Unmap()
+	gen := m.desktopGeneration()
 
-	m.callers.mu.Lock()
-	defer m.callers.mu.Unlock()
-
-	age := time.Since(m.callers.fetched)
-	if id, ok := m.callers.byAddr[addr]; ok && age < callerTTL {
+	byAddr, ok := m.callers.byAddr.fresh(ctx, callerTTL, gen, m.fetchCallers)
+	if !ok {
+		return "", false
+	}
+	if id, found := byAddr[addr]; found {
 		return id, true
 	}
-	if age < callerRefreshEvery && m.callers.byAddr != nil {
+	// Not in the map: a desktop started a moment ago, or no desktop at all. Asked again at most every
+	// callerRefreshEvery, so a container that is no desktop cannot make every request wait for Docker.
+	byAddr, ok = m.callers.byAddr.fresh(ctx, callerRefreshEvery, gen, m.fetchCallers)
+	if !ok {
 		return "", false
 	}
+	id, found := byAddr[addr]
+	return id, found
+}
 
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
+// desktopGeneration is the desktop list's generation, bumped by every desktop made or removed here.
+func (m *Manager) desktopGeneration() uint64 {
+	m.listMu.Lock()
+	defer m.listMu.Unlock()
+	return m.listGen
+}
+
+// fetchCallers asks Docker which desktop has which address on the desktop network. Unknown is unknown: when Docker
+// cannot be asked the map is empty, since an old map is not evidence about who is calling now.
+func (m *Manager) fetchCallers(ctx context.Context, _ map[netip.Addr]string) map[netip.Addr]string {
+	if m.callers.list != nil {
+		byAddr, err := m.callers.list(ctx)
+		if err != nil {
+			return map[netip.Addr]string{}
+		}
+		return byAddr
+	}
 	list, err := m.client.ContainerList(ctx, container.ListOptions{Filters: filters.NewArgs(filters.Arg("label", "desktop-manager=true"))})
-	m.callers.fetched = time.Now()
 	if err != nil {
-		// Unknown is unknown: an old map is not evidence about who is calling now.
-		m.callers.byAddr = map[netip.Addr]string{}
-		return "", false
+		return map[netip.Addr]string{}
 	}
 	byAddr := make(map[netip.Addr]string, len(list))
 	for _, c := range list {
@@ -69,9 +94,7 @@ func (m *Manager) DesktopAt(ctx context.Context, addr netip.Addr) (string, bool)
 			}
 		}
 	}
-	m.callers.byAddr = byAddr
-	id, ok := byAddr[addr]
-	return id, ok
+	return byAddr
 }
 
 // desktopIDFromNames is the desktop ID in a container's names ("/desktop_<id>"), "" for any other container.

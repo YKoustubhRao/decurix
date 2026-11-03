@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/concierge"
 	"github.com/YKoustubhRao/decurix/internal/conversation"
@@ -44,9 +42,7 @@ func conciergeServer(t *testing.T) (*Server, *[]string) {
 	})
 
 	s := &Server{Concierge: c, Web: webui.NewRenderer()}
-	s.nets.subnets = []netip.Prefix{netip.MustParsePrefix("172.18.0.0/16")}
-	s.nets.gateways = []netip.Addr{netip.MustParseAddr("172.18.0.1")}
-	s.nets.fetched = time.Now()
+	s.netsFor = staticNets("172.18.0.0/16", "172.18.0.1")
 	return s, &sent
 }
 

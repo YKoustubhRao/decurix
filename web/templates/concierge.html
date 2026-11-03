@@ -293,7 +293,7 @@
   document.querySelectorAll("[data-try]").forEach(b => b.onclick = () => send(b.dataset.try));
 
   poll();
-  setInterval(poll, 1500);
+  Decurix.poll(poll, 1500);
   input.focus();
 })();
 </script>

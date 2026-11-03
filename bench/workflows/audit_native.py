@@ -6,6 +6,11 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
+# The checks here are assert statements. Under python -O they all vanish, and this would report a pass it never
+# checked (review 2026-11-02): it refuses to run that way.
+if not __debug__:
+    raise SystemExit("run this without -O: its checks are assert statements, which -O removes")
+
 TABLE = "{urn:oasis:names:tc:opendocument:xmlns:table:1.0}"
 OFFICE = "{urn:oasis:names:tc:opendocument:xmlns:office:1.0}"
 TEXT = "{urn:oasis:names:tc:opendocument:xmlns:text:1.0}"

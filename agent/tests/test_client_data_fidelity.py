@@ -140,12 +140,17 @@ class PinCodeIsAnAddress(unittest.TestCase):
         self.assertIn("576104", privacy.request_secrets("login PIN: 576104"))
         self.assertIn("123456", privacy.request_secrets("UPI PIN is 123456"))
 
-    def test_a_bare_pin_is_a_secret_whatever_its_digit_count(self):
-        # Recheck 2026-11-02: six digits after a bare "PIN" were taken for a postal code and not withheld. The digits
-        # never tell a PIN from a postal code; only a label that says "PIN code" / "postal code" does.
-        self.assertIn("482193", privacy.request_secrets("PIN: 482193"))
+    def test_a_bare_pin_is_withheld_where_written_and_remembered_only_when_surely_secret(self):
+        # Recheck 2026-11-02: six digits after a bare "PIN" were taken for a postal code and not withheld. Recheck
+        # 2026-11-03: remembering every one as a secret hid a postal code everywhere, an invoice total that matched it
+        # included. Six digits after a bare "PIN" with nothing beside them are withheld where they are written and not
+        # remembered; words of a sign-in make them a secret, an address's words a postal code.
+        self.assertEqual(privacy.request_secrets("PIN: 482193"), [])
+        self.assertEqual(privacy.withhold_spoken_secrets("PIN: 482193"), "PIN: [withheld]")
         self.assertIn("482193", privacy.request_secrets("my PIN is 482193"))
-        self.assertIn("576104", privacy.request_secrets("Ship to 12 MG Road, Udupi, PIN: 576104"))
+        self.assertIn("482193", privacy.request_secrets("Log in with user ram, PIN: 482193"))
+        self.assertEqual(privacy.request_secrets("Ship to 12 MG Road, Udupi, PIN: 576104"), [])
+        self.assertIn("4821", privacy.request_secrets("PIN: 4821"))  # four digits are never a postal code
         self.assertTrue(privacy.secret_field({"role": "textbox", "name": "PIN no."}))
 
 

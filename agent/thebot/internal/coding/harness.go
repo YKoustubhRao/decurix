@@ -74,8 +74,11 @@ type Harness struct {
 	// unconfirmed is a researched fix that ran but whose failing check has
 	// not been re-run yet: remembered only if that check then passes.
 	unconfirmed *Diagnosis
-	attempts    int
-	deadline    time.Time
+	// approvedAction is the proposal the person's yes ran in this build, so
+	// settleLearning can keep it as a proven fix once its check passes.
+	approvedAction string
+	attempts       int
+	deadline       time.Time
 	// fixesApplied records every real environment fix that worked, so the
 	// final report can say what it actually had to do to get the build
 	// running (install uv, create a venv, add a package).

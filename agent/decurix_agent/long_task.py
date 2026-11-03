@@ -768,7 +768,7 @@ def drive(run_id, task_file):
         _end()
         write_final_reply(f"The request stopped on an error in its stage machinery ({exc}). Every stage checked "
                           f"so far is saved; `/workflow status {run_id}` shows them and `/workflow resume {run_id}` "
-                          "carries on.", kind="error", checked=True)
+                          "carries on.", kind="error", checked=False, gated=True)
 
 
 # ============================================================
@@ -5241,7 +5241,9 @@ def _report_message(run_id, work, parts, head, done, not_done, needs, changes, d
         body = messaging.cut_text(body, room - 60) + "\n... (the rest is in the full report)"
     text = body + "\n\n" + end
     finished = stages - len(not_done)
-    fallback = (f"Finished: {finished} of {stages} stages done"
+    # (The plain line says what the head says about checking: a short line that only said "Finished" read as checked,
+    # review 2026-11-03.)
+    fallback = (f"{' '.join(str(head).split())[:200]} " if head else "") + (f"{finished} of {stages} stages done"
                 + (f"; WARNING - {' '.join(warnings)}" if warnings else "")
                 + (f"; the full report is in {saved}." if saved else "."))
     return text, fallback
@@ -5792,7 +5794,9 @@ def _take_message(content, path, about_this=False):
     # A reply that decides the approval (yes, yes once something holds, no) goes to the gate, read once
     # (approval.reading): "haan fine" is as much a yes as "yes". One that decides nothing - a question back, something
     # else - is read below as any message is.
-    decides = (waiting and waiting_kind == "approval"
+    # Only a message saved as the reply to the open question can be it (watchers.is_reply_file): a file dropped into the
+    # command folder is not, and must not be kept as "You approved" in the run's record.
+    decides = (waiting and waiting_kind == "approval" and watchers.is_reply_file(path.name)
                and approval.read_reply(content, (approval.pending() or {}).get("action") or state.last_query_text) != "unclear")
     if decides:
         try:
@@ -6515,7 +6519,7 @@ def _report_stopped(run_id):
             done = []
         write_final_reply("Stopped, as you said. Nothing more is started. "
                           + ("Done before the stop: " + "; ".join(done) + "." if done else "No stage was finished.")
-                          + f" (The full report could not be put together: {str(exc)[:200]}.)", kind="error", checked=True,
+                          + f" (The full report could not be put together: {str(exc)[:200]}.)", kind="error", checked=False, gated=True,
                           task_id=task_id)
     finally:
         if _stopping == run_id:

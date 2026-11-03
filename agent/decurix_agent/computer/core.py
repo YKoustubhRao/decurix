@@ -1279,7 +1279,20 @@ def _form_check_file():
 
 class AskFirst(str):
     """What a replay's committing press holds that a person checks before it goes (_form_check, listing="ask"): the
-    press is put to them through the approval gate rather than refused."""
+    press is put to them through the approval gate rather than refused. (No check returns one since review 2026-11-03:
+    a replay's sourced save goes, an unsourced one is refused.)"""
+
+
+# The values a replay running in this process types from the person's demonstration because today's request gives
+# none for them (replay.run sets it for the run): the person's own, never "in no source".
+TAUGHT_VALUES = set()
+
+
+def _taught_value(value):
+    """Whether a typed value is one the replay running now took from the person's demonstration (TAUGHT_VALUES)."""
+
+    value = " ".join(str(value or "").split()).lower()
+    return bool(value) and value in TAUGHT_VALUES
 
 
 # A value that only holds a place: "TEST", "dummy", "xxx", "asdf" anywhere; "123", "abc" in a reference-like field.
@@ -1933,15 +1946,21 @@ def _form_check(element, checked=False, found=None, confirm=None, listing=True):
         from decurix_agent import filler, task_context
         files = task_context.current_files()
         made_up = filler.invented(found["fields"], task_context.current_request(), files)
-        made_up += _unsourced_fields(found["fields"])
+        unsourced = _unsourced_fields(found["fields"])
+        if listing == "ask":
+            # A replay types what the person demonstrated where today's request gives nothing (replay.run): their own
+            # value, not one made up. Any other value no source holds is refused below, like an engine's.
+            unsourced = [(label, value) for label, value in unsourced if not _taught_value(value)]
+        made_up += unsourced
     except Exception as exc:  # noqa: BLE001
         # A check that could not be made is not a check that passed (review 2026-11-02): the press waits for a person.
         return (f"Not pressed: the check of where {el._quote(found['form'], 60)}'s values come from could not be made "
                 f"({' '.join(str(exc).split())[:160]}), so nothing shows they are the request's. Ask the person (HELP) "
                 "before this is saved.")
     lines = "\n".join(f"  {label}: {value}" for label, value in found["fields"])
-    if made_up and listing != "ask":
-        # Never sent, with or without --checked (found live 2026-10-20: a joiner onboarded with phone 9999999999).
+    if made_up:
+        # Never sent, with or without --checked (found live 2026-10-20: a joiner onboarded with phone 9999999999) - nor
+        # by a replay: a value in no source is refused, never put to a person to wave through (review 2026-11-03).
         return filler.refusal(made_up, files)
     ledger_lines = []
     judged = _ledger_check(found["fields"])
@@ -1949,13 +1968,15 @@ def _form_check(element, checked=False, found=None, confirm=None, listing=True):
         held, clean, ledger_lines = judged
         if held:
             return held
-        if clean and not made_up:
+        if clean:
             return ""  # the declared record is the check this listing stood in for: one click saves
-    if listing == "ask" and (made_up or len(found["fields"]) >= cdp.FORM_CHECK_MIN_FIELDS):
-        unsourced = ("; ".join(f"{label}: {value!r}" for label, value in made_up))
-        return AskFirst(f"this replay would save {el._quote(found['form'], 60)} with the values it holds today, which "
-                        "a person has not seen - a recording is not a yes to the values a run types:\n" + lines
-                        + (f"\n  (in no source of this request: {unsourced})" if unsourced else ""))
+    if listing == "ask":
+        # A replay of the person's own steps whose every value is today's request's or the person's demonstration:
+        # saving it is the taught task, not a new decision. Asking at every save (review 2026-11-02, second round) made
+        # every taught skill wait on a person at each record - and taught them to say yes without reading
+        # (review 2026-11-03). What commits the person to more than a record in their own system (pay, send, file,
+        # sign, an irrevocable submit) is still the approval gate's to ask, at the press itself.
+        return ""
     if len(found["fields"]) < cdp.FORM_CHECK_MIN_FIELDS or not listing:
         return ""  # a small form (a search, a sign-in) is sent at once
     key = hashlib.sha256(json.dumps([element.get("path") or element.get("name"), found], sort_keys=True).encode()).hexdigest()
@@ -1992,6 +2013,13 @@ def _form_check(element, checked=False, found=None, confirm=None, listing=True):
             "before it is sent.")
 
 
+# A field that narrows what a list shows ("Filter by status", "Sort by").
+_FILTER_FIELD = re.compile(r"^\s*(?:filter|sort|group by|show|search|find|page size|rows per page)\b", re.I)
+# A control whose label opens a new record or accepts something, rather than saving what the page around it holds:
+# with no <form> and no dialog around it, the page's other fields are not what it sends (review 2026-11-03: "Create"
+# on a list page and "Accept" on a banner were refused over fields they never send).
+_OPENS_OR_ACCEPTS = re.compile(r"^\s*(?:create|new|accept|agree)\b", re.I)
+
 # A value that is a file's name or path (a save dialog's "Name" field): not a record's value, never judged as one.
 _FILE_NAME_VALUE = re.compile(r"(?:[^\s@]*[/\\])?[^\s@/\\]+\.[A-Za-z][A-Za-z0-9]{1,4}")
 
@@ -2010,6 +2038,10 @@ def _page_fields(observation, element):
             continue
         value = " ".join(str(e.get("value") or "").split())
         if not value or privacy.secret_field(e) or privacy.credential_in(value) or _FILE_NAME_VALUE.fullmatch(value):
+            continue
+        if approval.searches(e) or _FILTER_FIELD.match(str(e.get("name") or "")):
+            # A list's search box and filters say what is shown, not what a press saves (review 2026-11-03: a list
+            # page's filters were checked as the record a "Create" there would save).
             continue
         fields.append([" ".join(str(e.get("name") or e.get("role") or "").split())[:60], value[:80]])
     title = (element or {}).get("window_title") or (observation or {}).get("active_title") or "the window"
@@ -2038,6 +2070,11 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
     if kind in ("click", "double_click") and element is not None:
         form = cdp.submit_form_fields(element, min_fields=1) if element.get("source") == "cdp" else None
         if form is None and not approval.commits(element):
+            return ""
+        if form is None and element.get("source") == "cdp" \
+                and _OPENS_OR_ACCEPTS.match(approval.label_words(element.get("name"))) \
+                and not approval.DIALOG_IN_PATH.search(element.get("path") or "") \
+                and approval.press_effect(element) != "asks":
             return ""
         return _form_check(element, checked=checked, found=form or _page_fields(before, element), listing=listing)
     typed_enter = kind == "type" and bool(text) and "\n" in text and element is not None
@@ -3499,6 +3536,70 @@ def _enter_submits(kind, element, keys, text, before):
             "group": field.get("group"), "window_title": field.get("window_title"), "form": form}
 
 
+SPACE_KEY = re.compile(r"(^|\+)(space|spacebar)$", re.IGNORECASE)
+
+
+def _focused_control(before):
+    """The button, link or menu entry that has the keyboard, as an element, or None: Return or Space on it presses it
+    (review 2026-11-03: Tab to a "Pay" button and Return went past the gate, which looked at clicks only)."""
+
+    found = next((e for e in before.get("elements") or [] if "focused" in (e.get("states") or [])
+                  and e.get("role") in approval.ACTIVATING_ROLES), None)
+    if found is not None:
+        return found
+    if browser.is_browser_title(before.get("active_title")) and cdp.available():
+        try:
+            field = cdp.focused(before.get("elements") or [])[0]
+        except ComputerError:
+            return None
+        if field is not None and field.get("role") in approval.ACTIVATING_ROLES:
+            return field
+    return None
+
+
+def _pressed_by_key(kind, element, keys, before):
+    """The control a Return or Space presses, when the keys go to a focused button/link (or are aimed at one); else None."""
+
+    if kind != "key" or not keys:
+        return None
+    if not any(approval.ENTER_KEY.search(k.strip()) or SPACE_KEY.search(k.strip()) for k in keys):
+        return None
+    if element is not None:
+        return element if element.get("role") in approval.ACTIVATING_ROLES else None
+    return _focused_control(before)
+
+
+def _unresolved_press(kind, element, point, before):
+    """
+    (element, why) for a click at a point that resolved to no element: the control the page itself says is there
+    (cdp.hit), else the line of text under it (OCR) taken as the label of a button; else (None, why) - a press on a spot
+    nothing could name is put to the person, never let through (review 2026-11-03).
+    """
+
+    if kind not in ("click", "double_click") or element is not None or point is None:
+        return None, None
+    answered = False
+    if before.get("page_url") and cdp.available():
+        try:
+            found, context = cdp.hit(point[0], point[1], before.get("elements") or [], controls_only=True)
+            answered = context is not None
+        except Exception:  # noqa: BLE001 - the page did not answer: look at the picture
+            found = None
+        if found is not None:
+            return found, None
+    try:
+        from decurix_agent.computer import ocr
+        line = ocr.line_at(ocr.read_frame(before.get("frame")), point) if ocr.available() else None
+    except Exception:  # noqa: BLE001
+        line = None
+    if line and str(line.get("text") or "").strip():
+        return {"role": "button", "name": line["text"].strip(), "window_title": before.get("active_title")}, None
+    if answered:
+        return None, None  # the page says no control is there: a click on plain page, nothing to name
+    return None, (f"this presses the spot {point[0]},{point[1]}, which nothing on the screen names - a press there may "
+                  "pay, send or file")
+
+
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
         text=None, keys=None, direction=None, amount=None, option=None, append=False, end=None, files=None,
         see=None, replace_all=False, named=False, keys_from_task=False, cell=None, check_form=False, ids=None):
@@ -3751,6 +3852,26 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             why = f'Enter here submits the form with its "{label}" control - {why}'
             require = f"{why}; {require}" if require else why
 
+    # Return or Space on a focused button presses it; a click at a spot that resolved to no element presses whatever is
+    # drawn there. Both are put to the gate as the press they are.
+    keyed = _pressed_by_key(kind, element, keys, before) if by_enter is None else None
+    if keyed is not None:
+        why = approval.assess("click", keyed, context=context)
+        if why:
+            label = " ".join(str(keyed.get("name") or "").split())[:60]
+            why = f'{" ".join(keys)} on "{label}" presses it - {why}'
+            require = f"{why}; {require}" if require else why
+    if grounded and kind in ("click", "double_click") and element is None:
+        # Found by eye for a description: the description is what it presses.
+        spot, spot_why = {"role": "button", "name": grounded, "window_title": before.get("active_title")}, None
+    else:
+        spot, spot_why = _unresolved_press(kind, element, point, before)
+    if spot is not None:
+        why = approval.assess("click", spot, context=context)
+        if why:
+            require = f"{why}; {require}" if require else why
+    elif spot_why:
+        require = f"{spot_why}; {require}" if require else spot_why
     decision = approval.check(kind, element, text=text, keys=keys, point=point, context=context,
                               about=_what_it_acts_on(before, element), require=require,
                               sends=lambda: _what_it_sends(before, element if by_enter is None else by_enter,

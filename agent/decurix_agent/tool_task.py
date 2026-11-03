@@ -159,12 +159,14 @@ class NoSandbox(Exception):
     """The tool cannot run unattended here (script_sandbox): nothing was run."""
 
 
-def _run(tool, args):
+def _run(tool, args, drafts=None):
     """
     Run the tool, shut off (script_sandbox): in a scratch copy of the work folder with no network, no display and an
     environment of its own; what it wrote there is copied back into the work folder, and what it drafted is drafted
     for real by the agent. (exit code, what it printed). Raises NoSandbox when this desktop cannot shut it off - it
-    is then not run at all, and the engine does the request.
+    is then not run at all, and the engine does the request. `drafts`: a list this fills with the emails the script
+    drafted (attachments resolved to the files copied back); they are NOT drafted for real here - the caller checks
+    them as a dry draft and makes them once, after the check passes (_draft_once).
     """
 
     interpreter = "bash" if tool["path"].endswith(".sh") else sys.executable
@@ -208,19 +210,21 @@ def _run(tool, args):
         if refused:
             return 126, (printed + f"\n\nNot copied into the work folder (a link, or a place outside it): "
                          + ", ".join(refused[:10])).strip()
-        drafted = _draft_for_real(scratch / "drafts.jsonl", work)
-        if drafted:
-            return 126, (printed + "\n\n" + drafted).strip()
+        if drafts is not None:
+            wrong = _dry_drafts(scratch / "drafts.jsonl", work, drafts)
+            if wrong:
+                return 126, (printed + "\n\n" + wrong).strip()
         return 0, printed
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
 
-def _draft_for_real(log_path, work):
+def _dry_drafts(log_path, work, out):
     """
-    Draft into the Outbox what the script drafted in its scratch copy (office email there is kept, not sent to the
-    control plane, which it cannot reach): "" when every draft was made, else what went wrong. An attachment is the
-    file of that name the script left in the work folder (copied back).
+    Read what the script drafted in its scratch copy (office email there is kept, not sent to the control plane, which
+    it cannot reach) into `out`, each with its attachments as the files of that name in the work folder (copied back).
+    "" when all were read, else what went wrong. Nothing is put in the Outbox here: a check runs on this dry draft
+    first (review 2026-11-03: drafting before the check made a redo draft every email twice).
     """
 
     from decurix_agent.tools import outbox
@@ -230,11 +234,42 @@ def _draft_for_real(log_path, work):
         for name in record.get("attachments") or []:
             found = [p for p in work.rglob("*") if p.name == name and p.is_file() and not p.is_symlink()]
             if len(found) != 1:
-                return f"An email it drafted attaches {name}, which is not one file in the work folder: nothing more was drafted."
+                return f"An email it drafted attaches {name}, which is not one file in the work folder: nothing was drafted."
             attached.append(str(found[0]))
+        out.append(dict(record, paths=attached))
+    return ""
+
+
+def _same_draft(made, record):
+    """Whether a draft already made (outbox.drafted) is this one: the same people, subject, body and files."""
+
+    def low(items):
+        return sorted(a.lower() for a in items or [])
+
+    def words(text):
+        return " ".join(str(text or "").split())
+
+    return (low(made.get("to")) == low(record.get("to")) and low(made.get("cc")) == low(record.get("cc"))
+            and words(made.get("subject")) == words(record.get("subject"))
+            and words(made.get("body")) == words(record.get("body"))
+            and sorted(made.get("attachments") or []) == sorted(record.get("attachments") or []))
+
+
+def _draft_once(records):
+    """
+    Draft into the Outbox the emails a script drafted dry, once each: one this task already drafted with the same
+    people, subject, body and files is not drafted again (a redo or a second pass makes no duplicate). "" when every
+    draft is made, else what went wrong.
+    """
+
+    from decurix_agent.tools import outbox
+
+    for record in records:
+        if any(_same_draft(made, record) for made in produced.drafts()):
+            continue
         try:
             outbox.draft(record.get("to") or [], record.get("subject") or "", record.get("body") or "",
-                         cc=record.get("cc") or None, attachments=attached)
+                         cc=record.get("cc") or None, attachments=record.get("paths") or [])
         except Exception as exc:  # noqa: BLE001 - a draft that could not be made is said, never dropped
             return f"An email it drafted could not be put in the Outbox ({exc})."
     return ""
@@ -297,7 +332,8 @@ def perform(content, task_file=None):
         line = " ".join(shlex.quote(a) for a in args)
         progress.emit(f"Running the tool I wrote for this kind of request: {Path(tool['path']).name} {line}")
         try:
-            code, printed = _run(tool, args)
+            dry = []
+            code, printed = _run(tool, args, dry)
         except NoSandbox as exc:
             log(f"Tool {book['name']}: not run with no engine: {exc}")
             return _to_engine(content, task_file, f"My script for this does not run unattended here ({exc}), so I am "
@@ -315,7 +351,7 @@ def perform(content, task_file=None):
                  f"{printed[:MAX_OUTPUT_CHARS]}")
         made = produced.files(reply, request=content)
         # The same code-decided facts about the files as the final gate's (produced.file_facts), with no model.
-        facts = produced.file_facts(content, made, drafts_made=produced.drafts())
+        facts = produced.file_facts(content, made, drafts_made=dry or produced.drafts())
         from decurix_agent import source_guard, task_context
         try:
             changed_source = source_guard.check_and_restore(task_context.current(), content)
@@ -338,7 +374,7 @@ def perform(content, task_file=None):
                               "left, or a value is on no record"}
         else:
             verdict = verify.judge(content, claim=reply, screen=False,
-                                   produced="\n".join(x for x in (produced.text(made), produced.drafts_text(),
+                                   produced="\n".join(x for x in (produced.text(made), produced.drafts_text(dry or None),
                                                                   produced.notes_text(facts.notes())) if x),
                                    look_up=lambda terms: produced.lines_with(made, terms))
 
@@ -346,6 +382,14 @@ def perform(content, task_file=None):
         # is not done here either - it goes to the engine below like any unsettled check.
         settled = verify.outcome(verdict, not_made=getattr(facts, "could_not", ()))
         if settled["status"] == verify.DONE:
+            # The check passed on the dry draft: the real draft is made now, once.
+            failed = _draft_once(dry)
+            if failed:
+                _note(book, False, failed=True)
+                return _to_engine(content, task_file, "My tool's result is right but its email could not be drafted, so "
+                                  "I am doing that myself.", note=f"A script of this desktop's own made the files and "
+                                  f"{failed} Draft the email yourself (office email), and do not make a second copy of "
+                                  "anything already made.")
             _note(book, True)
             seen = f"\n\nChecked against the files it wrote: {verdict['seen']}" if verdict.get("seen") else ""
             return write_final_reply(reply + seen, kind="final", engine=ENGINE, checked=True)

@@ -758,7 +758,7 @@
     runDetailEl.appendChild(inner);
   }
 
-  setInterval(function(){
+  Decurix.poll(function(){
     loadRuns();
     if(openRunId){ openRun(openRunId); }
   }, 5000);

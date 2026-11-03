@@ -49,6 +49,10 @@ const (
 	practiceMaxTar = 64 << 20
 )
 
+// ErrNoSecret is why a desktop is not made when the control plane could not load its secret: the desktop would get
+// no agent token, and its agent would refuse (or, built before tokens, accept) every request.
+var ErrNoSecret = errors.New("the control plane could not load its secret (hostgui.key in the data folder), so a desktop cannot be made safely; check the data folder and restart Decurix")
+
 // PracticeSnapshotParts are the agent state folders a case starts from, restored before every case.
 var PracticeSnapshotParts = []string{"skills", "experience", "playbooks", "memory"}
 
@@ -449,6 +453,12 @@ func (m *Manager) CreatePractice(ctx context.Context, spec PracticeSpec) (d Prac
 	if !practiceRunID.MatchString(spec.RunID) || !strings.HasPrefix(spec.Image, "sha256:") || spec.BrokerURL == "" {
 		return d, qualification.ErrInvalid
 	}
+	// A practice desktop gets the same per-desktop token as any desktop, or is not made: without the secret its agent
+	// would have no token, refuse every request the run sends it and the run would fail with no reason (review
+	// 2026-11-02, second round).
+	if len(m.HostGUISecret) == 0 {
+		return d, ErrNoSecret
+	}
 	flags, err := practiceBrowserFlags(spec.Hosts)
 	if err != nil {
 		return d, err
@@ -462,9 +472,11 @@ func (m *Manager) CreatePractice(ctx context.Context, spec PracticeSpec) (d Prac
 	}
 	env := practiceEnvironment(inherited, spec, practicePassword())
 	// A practice desktop's agent takes requests only with its token, like every desktop's (agenttoken.go).
-	if token := m.AgentToken(PracticeDesktopID(spec.RunID)); token != "" {
-		env = append(env, AgentTokenEnv+"="+token)
+	token := m.AgentToken(PracticeDesktopID(spec.RunID))
+	if token == "" {
+		return d, ErrNoSecret
 	}
+	env = append(env, AgentTokenEnv+"="+token)
 	config, host, net := practiceConfigs(spec, env, m.desktopSecurityOpt(ctx))
 	created, err := m.client.ContainerCreate(ctx, config, host, net, nil, PracticeDesktopID(spec.RunID))
 	if err != nil {

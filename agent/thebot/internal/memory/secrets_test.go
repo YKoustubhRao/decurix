@@ -88,3 +88,69 @@ func TestConsiderExchangeKeepsOnlyValuesThePersonSaid(t *testing.T) {
 		t.Fatalf("stored a password the person asked to be remembered (count %d)", n)
 	}
 }
+
+// The detector looks for a secret VALUE next to a credential word, not for the word: a fix memory that mentions a
+// token, a key or pinning a version is kept, and a password written without "is" or with a symbol is still caught.
+func TestLooksSecretReadsValuesNotWords(t *testing.T) {
+	secret := []string{
+		"passwd hunter2",
+		"pw hunter2",
+		"the portal login is Tally@123",
+		"password: valid8",
+		"password - hunter22",
+		"otp 552910",
+		"The verification code is 482913",
+		"one-time password is swordfish",
+		"access token = 9f8e7d6c5b4a3210",
+		"client secret: q8Zr2kLm9Xp4",
+	}
+	for _, s := range secret {
+		if !LooksSecret(s) {
+			t.Errorf("LooksSecret(%q) = false, want true", s)
+		}
+	}
+	plain := []string{
+		`build failure fix: when a build fails with "SyntaxError: unexpected token: foo", the cause is a stray brace.`,
+		"build failure fix: pin numpy<2 to fix the ABI error",
+		"The fix that actually worked: pip install 'numpy<2' (pin the version)",
+		"my api key is stored in the vault",
+		"set the token budget to 4000",
+		"the key: value pairs go in config.yaml",
+		"export the password=$DB_PASS from the environment",
+		"the login: admin@example.com account",
+		"the login page is at https://erp.example.com/login",
+		"password-protected PDFs need qpdf",
+		"remember my PAN ABCDE1234F",
+		"Office address PIN code 560001",
+	}
+	for _, s := range plain {
+		if LooksSecret(s) {
+			t.Errorf("LooksSecret(%q) = true, want false", s)
+		}
+	}
+}
+
+// A store an older soul wrote, holding a secret its check let in, is cleaned when it is opened.
+func TestOpeningL1PurgesSecretsAlreadyStored(t *testing.T) {
+	root := t.TempDir()
+	l1, err := NewL1(root, &judgeStub{}, &countingEmbedder{}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Written past Store, as an older soul's weaker check would have let it through.
+	for _, f := range []string{"The user's passwd hunter2 opens the portal.", "The user prefers Go."} {
+		if _, err := l1.db.Exec(`INSERT INTO facts (fact, source, embedding, created_at) VALUES (?, 'explicit', '[]', 0)`, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l1.Close()
+
+	l1, err = NewL1(root, &judgeStub{}, &countingEmbedder{}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l1.Close()
+	if n, _ := l1.Count(context.Background()); n != 1 {
+		t.Fatalf("after reopening, L1 holds %d facts, want only the one without a secret", n)
+	}
+}

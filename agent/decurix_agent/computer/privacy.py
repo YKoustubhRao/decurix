@@ -18,22 +18,83 @@ from decurix_agent.computer import elements as el
 # record or a recording has any word that is one of them replaced by [withheld].
 # ============================================================
 
-# "PIN" names a secret - a card's, an ATM's, a UPI or a login PIN. Only a label that says it is a postal code is not
-# one: "PIN code", "Pincode", "Pin-code" (an Indian address's postal code; found in review 2026-11-02, a GST or address
-# form's "PIN code" field was taken for a secret and the worker stopped for a person). A bare "PIN" stays a secret
-# whatever follows it - "PIN: 482193" is six digits like a postal code, and the digits never tell which it is (recheck
-# 2026-11-02: a digit-count carve-out let a six-digit PIN through). A PIN named for a card, an ATM, UPI, a login or a
-# bank stays a secret even when "code" follows it.
-_QUALIFIED_PIN = r"(?:card|atm|upi|login|debit|credit|bank(?:ing)?|transaction|security|account)[\s_-]*pin|m-?pin"
+# "PIN" names a secret - a card's, an ATM's, a UPI or a login PIN - and an Indian address's postal code (six digits,
+# the first 1-9). Only a label that says it is a postal code is surely one: "PIN code", "Pincode", "Pin-code" (found in
+# review 2026-11-02, a GST or address form's "PIN code" field was taken for a secret and the worker stopped for a
+# person). A PIN named for a card, an ATM, UPI, a login or a bank stays a secret even when "code" follows it.
+_QUALIFIED_PIN = (r"(?:card|atm|upi|login|debit|credit|bank(?:ing)?|transaction|security|account)[\s_-]*pin"
+                  r"|m-?pin|t-?pin")
 PIN_WORD = r"(?:" + _QUALIFIED_PIN + r"|pin(?![\s_-]{0,3}code\b))"
 # A label that names a postal code in other words ("Postal code (PIN)", "ZIP / PIN").
 _POSTAL_LABEL = re.compile(r"(?i)\b(?:postal|post|zip)[\s_-]*code\b|\bzip\b")
 
-# A secret after its name in a request: "password Northwind#2026", "PIN: 4821", "api key=abc", "token is xyz".
+# A PIN and its value: "UPI PIN 4821", "ATM PIN code: 1234", "PIN: 576104", "PIN-560001", "pin '4821'". A PIN is
+# digits only (never "Mumbai" in "Pin: Mumbai 400001"), four to eight of them.
+PIN_VALUE = re.compile(
+    r"(?i)(?<![A-Za-z])(?P<label>" + _QUALIFIED_PIN + r"|pin)(?P<suffix>(?:[\s_-]*(?:code|number|no)\b\.?)?)"
+    r"(?:\s*(?:is|was)\s+|\s*[:=#-]?\s*)(?P<q>[\"'\u201c\u2018]?)(?P<value>\d{4,8})(?!\d)(?![A-Za-z])")
+# Words that make the PIN beside them a sign-in's or a payment's (recheck 2026-11-03).
+_PIN_SECRET_CUE = re.compile(
+    r"(?i)\b(?:log\s?in|sign\s?in|user(?:name|\s?id)?|password|passcode|otp|portal|net\s?banking|bank|card|atm|upi"
+    r"|secret|credential|enter|type|my|your|his|her|their|our)\b")
+# Words that make the PIN beside them an address's postal code.
+_PIN_ADDRESS_CUE = re.compile(
+    r"(?i)\b(?:address|addr|road|rd|street|st|lane|marg|nagar|colony|sector|layout|city|town|village|district|dist"
+    r"|taluk|tehsil|state|india|ship(?:ping)?\s+to|deliver(?:y|ed)?|billing|bill\s+to|postal|post|zip|floor"
+    r"|building|bldg|near|opp(?:osite)?|landmark|cross|main|east|west|north|south)\b")
+# A place's name right before the label ("Bengaluru PIN 560001", "Udupi, PIN: 576104", "Mumbai - PIN 400001"), as
+# against an English word that starts a sentence ("Your PIN", "The PIN", "Enter PIN").
+_PLACE_BEFORE = re.compile(r"\b([A-Z][a-z]{2,})\s*[,-]?\s*$")
+_NOT_A_PLACE = {"the", "your", "my", "his", "her", "their", "our", "its", "this", "that", "new", "old", "current",
+                "default", "temporary", "temp", "enter", "use", "with", "and", "same", "secret", "login", "user",
+                "type", "send", "share", "give", "also", "then", "please", "kindly", "card", "bank", "otp",
+                "password", "portal", "account", "transaction", "security", "debit", "credit", "upi", "atm", "here",
+                "set", "change", "reset", "valid", "wrong", "correct", "only", "is", "was"}
+
+
+def pin_kind(text, match):
+    """What a PIN_VALUE match in text is: "secret" (a card's, a bank's or a sign-in's), "postal" (an address's code)
+    or "unsure". Six digits after a bare "PIN" may be either; the words beside it decide, and with none that do it is
+    "unsure" - withheld where it is written, never remembered as a secret for everywhere (recheck 2026-11-03: a
+    remembered postal code hid every matching invoice total)."""
+
+    label, suffix, value = match.group("label"), match.group("suffix"), match.group("value")
+    if label.lower() != "pin":
+        return "secret"
+    if suffix.strip(" _-.").lower() == "code":
+        return "postal"
+    if len(value) != 6 or value[0] == "0":
+        return "secret"  # an Indian postal code is exactly six digits, the first 1-9
+    line_start = max(text.rfind("\n", 0, match.start()) + 1, match.start() - 60)
+    line_end = text.find("\n", match.end())
+    line_end = len(text) if line_end < 0 else line_end
+    line_end = min(line_end, match.end() + 30)
+    before, after = text[line_start:match.start()], text[match.end():line_end]
+    place = _PLACE_BEFORE.search(before)
+    place = place is not None and place.group(1).lower() not in _NOT_A_PLACE
+    address = place or _PIN_ADDRESS_CUE.search(before) is not None or _PIN_ADDRESS_CUE.search(after) is not None
+    secret = _PIN_SECRET_CUE.search(before) is not None or _PIN_SECRET_CUE.search(after) is not None
+    if place or (address and not secret):
+        return "postal"
+    return "secret" if secret else "unsure"
+
+
+def request_pins(text):
+    """The PINs a request gives that are surely secrets: [value]."""
+
+    return [m.group("value") for m in PIN_VALUE.finditer(text or "") if pin_kind(text, m) == "secret"]
+
+
+# A secret after its name in a request: "password Northwind#2026", "api key=abc", "token is xyz". (A PIN is
+# PIN_VALUE's.) The value runs to a space or a quote: "password: Abc;123xyz" is all secret (review 2026-11-03: the
+# part after ";" got through); the punctuation that ends it ("x9y8z7);") is left out.
 REQUEST_SECRET = re.compile(
-    r"(?i)\b(?:pass(?:word|code|phrase)|pwd|" + PIN_WORD + r"|otp|one[- ]time (?:code|password)|token|api[ _-]?key|secret(?: key)?)"
-    r"\b\s*(is\s+|[:=]\s*)?([\"'\u201c\u2018]?)([^\s\"'\u201d\u2019,;)\]]{3,200})")
+    r"(?i)\b(?P<label>pass(?:word|code|phrase)|pwd|otp|one[- ]time (?:code|password)|token|api[ _-]?key|secret(?: key)?)"
+    r"\b\s*(is\s+|[:=]\s*)?([\"'\u201c\u2018]?)([^\s\"'\u201d\u2019]{2,199}?[^\s\"'\u201d\u2019.,;:!?)\]])(?=[.,;:!?)\]]*(?:[\s\"'\u201d\u2019]|$))")
 _WORD = re.compile(r"[^\s\"'\u201c\u201d\u2018\u2019(),;<>\[\]{}=]+")
+# A whole word between spaces or quotes, checked as well as its parts: a password with a ";" or "," in it is one
+# word here and two for _WORD.
+_SPACED_WORD = re.compile(r"[^\s\"'\u201c\u201d\u2018\u2019<>]+")
 _MAX_KEPT = 200
 
 
@@ -47,15 +108,37 @@ def _hash(text):
 
 
 def request_secrets(text):
-    """The secrets a request's own words give after their names (a password, a PIN, a key): [text]."""
+    """The secrets a request's own words give after their names (a password, a PIN, a key) and the card numbers it
+    spells out: [text]."""
 
     # Said as one ("password is x", "pin: x", quoted), any word; written straight after the name, only what has a
     # digit or a mark in it. Found live (2026-10-22): "No OTP has come to the client's phone yet" kept "has"
     # as a secret, and every "has" of every later reply and step read "[withheld]".
-    found = [m.group(3).rstrip(".!?") for m in REQUEST_SECRET.finditer(text or "")
-             if m.group(1) or m.group(2) or not m.group(3).rstrip(".!?").isalpha()]
-    found += [m.group(1) for m in SPOKEN_SECRET.finditer(text or "")]
+    text = text or ""
+    found = [m.group(4).rstrip(".!?") for m in REQUEST_SECRET.finditer(text) if _request_value(m)]
+    found += [m.group(1) for m in SPOKEN_SECRET.finditer(text)]
+    found += request_pins(text)
+    found += [re.sub(r"\D", "", text[a:b]) for a, b in _card_spans(text)]
     return [s for s in dict.fromkeys(found) if len(s) >= 3 and s.lower() not in {"for", "the", "and", "from", "field"}]
+
+
+def _request_value(m):
+    """Whether a REQUEST_SECRET match holds a secret's value. Said as one ("is", ":", quoted), any word but a label;
+    written straight after a password's or a code's name, only what has a digit or a mark in it; straight after
+    "token", "secret" or "key", only a machine's token (long, letters and digits) - "token number: 7781" and "Ack
+    token 112233445566" are a queue's and a reference's numbers (recheck 2026-11-03: "number:" was remembered and
+    withheld everywhere). A folder is never one ("pwd /home/user/work")."""
+
+    value = m.group(4).rstrip(".!?:")
+    if not value or value.startswith(("/", "~")):
+        return False
+    if value.isalpha() and value.lower() in {"number", "no", "code", "id", "field", "box", "reset"}:
+        return False
+    if m.group(2) or m.group(3):
+        return True
+    if m.group("label").lower().startswith(("token", "api", "secret")):
+        return len(value) >= 16 and re.search(r"[A-Za-z]", value) is not None and re.search(r"\d", value) is not None
+    return not value.isalpha()
 
 
 def remember_secrets(text):
@@ -153,15 +236,23 @@ def _withhold_known(text):
     if not known:
         return text
 
+    def is_known(word):
+        return _hash(word) in known
+
     def hide(match):
         word = match.group(0)
-        if _hash(word) in known:
+        if is_known(word):
             return "[withheld]"
-        bare = word.rstrip(".:!?")
-        if bare != word and _hash(bare) in known:
+        bare = word.rstrip(".:!?,;")
+        if bare != word and is_known(bare):
             return "[withheld]" + word[len(bare):]
         return word
-    return _WORD.sub(hide, text)
+
+    # A remembered card number written with spaces or dashes ("4111 1111 1111 1111") is one number.
+    def hide_card(match):
+        return "[withheld]" if is_known(re.sub(r"\D", "", match.group(0))) else match.group(0)
+    text = CARD_NUMBER.sub(hide_card, text)
+    return _WORD.sub(hide, _SPACED_WORD.sub(hide, text))
 
 
 def safe_text(text):
@@ -234,6 +325,37 @@ CREDENTIALS = [
 # holds 13 digits that may pass the checksum). Found live (2026-10-25): a message to a client quoting two such numbers was
 # withheld whole as "a card number", and the person asked to approve sending it was shown nothing of it.
 CARD_NUMBER = re.compile(r"(?<![\w-])\d(?:[ -]?\d){12,18}(?![\w-])")
+# What a card number is written as: groups of four (Amex 4-6-5) split by spaces or dashes.
+_CARD_GROUPED = re.compile(r"^\d{4}([ -])\d{4}\1\d{4}\1\d{1,7}$|^\d{4}([ -])\d{6}\2\d{4,5}$")
+# The word that last names the number before it: a card's, or another identifier's (an account, an order, a
+# reference), which a long number that passes the card checksum often is (one in ten does).
+_CARD_WORD = re.compile(r"(?i)\b(?:card|credit|debit|visa|master\s?card|rupay|amex|maestro|cc)\b")
+_NOT_CARD_WORD = re.compile(
+    r"(?i)\b(?:a/c|account|acct|order|invoice|inv|ref(?:erence)?|utr|awb|tracking|total|amount|phone|mobile"
+    r"|aadhaa?r|uan|policy|folio|ack(?:nowledge?ment)?|irn|txn|transaction|po|bill|voucher|serial|imei)\b")
+
+
+def _card_spans(text):
+    """The (start, end) of every card number text spells out: a number that passes the card checksum and is written
+    as one (grouped in fours) or named as one ("card no 4111111111111111"), unless the word before names another
+    identifier ("A/c 50100123456789" is an account)."""
+
+    spans = []
+    for match in CARD_NUMBER.finditer(text or ""):
+        raw = match.group(0)
+        digits = re.sub(r"\D", "", raw)
+        if not (13 <= len(digits) <= 19 and _luhn(digits)):
+            continue
+        before = text[max(0, match.start() - 30):match.start()]
+        card = list(_CARD_WORD.finditer(before))
+        other = list(_NOT_CARD_WORD.finditer(before))
+        last_card = card[-1].end() if card else -1
+        last_other = other[-1].end() if other else -1
+        if last_other > last_card:
+            continue
+        if last_card >= 0 or _CARD_GROUPED.match(raw):
+            spans.append((match.start(), match.end()))
+    return spans
 
 # Query parameters whose values are credentials more often than not.
 SECRET_PARAM = re.compile(r"pass|pwd|secret|token|key|auth|session|sig|otp|code|credential", re.IGNORECASE)
@@ -315,6 +437,10 @@ def _credential_in(text):
             if _is_secret_value(label, match.group(group) if group else match.group(0)):
                 return label
 
+    for match in PIN_VALUE.finditer(text):
+        if pin_kind(text, match) != "postal":
+            return "PIN"
+
     for match in CARD_NUMBER.finditer(text):
         digits = re.sub(r"\D", "", match.group(0))
         if 13 <= len(digits) <= 19 and _luhn(digits):
@@ -323,11 +449,11 @@ def _credential_in(text):
     return None
 
 
-# A credential written out in a sentence: `the password "Ttlh"`, `pin: '1234'`. A task's
+# A credential written out in a sentence: `the password "Ttlh"`, `otp: '1234'`. A task's
 # own words often carry one, and a recording's title and description are shown to
-# anyone who opens the page and exported with it.
+# anyone who opens the page and exported with it. (A PIN is PIN_VALUE's: digits only, so "pin 'Mumbai'" is none.)
 SPOKEN_SECRET = re.compile(
-    r"(?i)\b(?:pass(?:word|code|phrase)|secret|token|api[ _-]?key|" + PIN_WORD + r"|otp|cvv2?)\b[^\"'\u201c\u2018\n]{0,20}?"
+    r"(?i)\b(?:pass(?:word|code|phrase)|secret|token|api[ _-]?key|otp|cvv2?)\b[^\"'\u201c\u2018\n]{0,20}?"
     r"[\"'\u201c\u2018]([^\"'\u201d\u2019\n]{1,200})[\"'\u201d\u2019]"
 )
 
@@ -337,8 +463,10 @@ SPOKEN_SECRET = re.compile(
 # read from the person's client list. (Not "PIN": that is the PIN rule's, above. Not "tokens": a usage line's count.)
 _SECRET_NAME = (r"pass(?:word|code|phrase)|passwd|pwd|api[ _-]?(?:key|secret)|secret(?:[ _-]?key)?|client[ _-]?secret"
                 r"|access[ _-]?(?:key|token)|refresh[ _-]?token|auth(?:entication)?[ _-]?token|private[ _-]?key|token")
+# The value runs to a space or a quote ("password: Abc;123xyz" is all secret; review 2026-11-03 found the part after
+# ";" let through); the punctuation that ends it is left out.
 LABELLED_SECRET = re.compile(
-    r"(?i)(?<![A-Za-z])(?:" + _SECRET_NAME + r")(?![A-Za-z])\s*[:=]\s*[`\"'“‘]?([^\s`\"'”’,;)\]]{3,200})")
+    r"(?i)(?<![A-Za-z])(?:" + _SECRET_NAME + r")(?![A-Za-z])\s*[:=]\s*[`\"'“‘]?([^\s`\"'”’]{2,199}?[^\s`\"'”’.,;:!?)\]])(?=[.,;:!?)\]]*(?:[\s`\"'”’]|$))")
 
 # Generic shapes of a secret written out, beyond the named credentials above (review 2026-11-02: only named secrets
 # were withheld). Each is unambiguous on its own or by the word next to it, so a figure, a date, a GSTIN, an invoice
@@ -355,20 +483,25 @@ GENERIC_SECRETS = [
         r"(?i)[?&#;](?:[\w.-]*[_-])?(?:token|secret|password|passwd|pwd|apikey|api[_-]?key|key|access[_-]?key|signature"
         r"|sig|otp|session(?:[_-]?id)?|auth)=([^&\s#\"'<>]+)"), 1),
     ("password", LABELLED_SECRET, 1),
-    # "the password is Lift$2026" (a value with a digit or a mark: "the password is incorrect" is a screen's words).
+    # "the password is Lift$2026", "Password Northwind2026" (a value with a digit or a mark: "the password is
+    # incorrect" and "password reset" are a screen's words; review 2026-11-03 found the form with no "is" let through).
     ("password said", re.compile(r"(?i)(?<![A-Za-z])(?:pass(?:word|code|phrase)|passwd|pwd|api[ _-]?key|secret[ _-]?key"
-                            r"|client[ _-]?secret|access[ _-]?token)\s+(?:is|was)\s+[`\"'“‘]?([^\s`\"'”’,;)\]]{3,200})"), 1),
+                            r"|client[ _-]?secret|access[ _-]?token)\s+(?:(?:is|was)\s+)?[`\"'“‘]?"
+                            r"([^\s`\"'”’]{2,199}?[^\s`\"'”’.,;:!?)\]])(?=[.,;:!?)\]]*(?:[\s`\"'”’]|$))"), 1),
     # "OTP 529749", "verification code: 4821", "CVV 123".
     ("one-time code", re.compile(r"(?i)(?<![A-Za-z])(?:otp|one[- ]time (?:code|password|passcode)|verification code"
-                                 r"|security code|auth(?:entication)? code|2fa code|mfa code|totp)(?![A-Za-z])"
+                                 r"|security code|auth(?:entication)? code|2fa code|mfa code|totp"
+                                 r"|log[- ]?in code|sign[- ]?in code|access code)(?![A-Za-z])"
                                  r"[^\d\n]{0,12}?(?<!\d)(\d{4,8})(?!\d)"), 1),
     ("card security code", re.compile(r"(?i)(?<![A-Za-z])(?:cvv2?|cvc2?)(?![A-Za-z])[^\d\n]{0,6}?(?<!\d)(\d{3,4})(?!\d)"),
      1),
     # A long random token next to a word that says what it is: "client key 9f8a7b...", "secret: a1B2...".
-    # (Not "key" alone: "the key figures" in a letter is no secret's name.)
+    # (Not "key" alone: "the key figures" in a letter is no secret's name. Not past another identifier's name: in
+    # "e-invoice token generated, IRN 6f2b..." the hash is the IRN's - review 2026-11-03.)
     ("key or token", re.compile(r"(?i)(?<![A-Za-z])(?:(?:api|access|secret|client|private|licen[cs]e)[ _-]?key|apikey"
                                 r"|secret|token|password|passwd|credentials?|signature)"
-                                r"(?![A-Za-z])[^\n]{0,30}?(?<![A-Za-z0-9+/_=.-])([A-Za-z0-9+/_=.-]{20,})"), 1),
+                                r"(?![A-Za-z])(?:(?!\b(?:irn|hash|ack|utr|gstin|ref|reference|id|no|number|txn)\b)[^\n])"
+                                r"{0,30}?(?<![A-Za-z0-9+/_=.-])([A-Za-z0-9+/_=.-]{20,})"), 1),
 ]
 
 def _tokenish(value):
@@ -395,6 +528,8 @@ def _is_secret_value(label, value):
         return True
     if label == "password said":
         bare = value.rstrip(".!?:")
+        if bare.startswith(("/", "~", "./", "../")):
+            return False  # "pwd /home/user/work" is the shell's command and a folder
         return re.search(r"[\d!@#$%^&*+=~|\\/<>]", bare) is not None or re.search(r"[a-z][A-Z]", bare) is not None
     if label == "bearer token":
         return len(value) >= 16 and _tokenish(value)
@@ -406,10 +541,31 @@ def _is_secret_value(label, value):
     return True  # a password after its name
 
 
+def _withhold_pins(text):
+    """text with every PIN it gives withheld where it is written - a card's, a bank's, a sign-in's, and six digits after
+    a bare "PIN" that nothing marks as an address's - and every postal code kept ("Bengaluru PIN 560001")."""
+
+    def hide(m):
+        if pin_kind(text, m) == "postal":
+            return m.group(0)
+        start = m.start("value") - m.start(0)
+        return m.group(0)[:start] + "[withheld]"
+    return PIN_VALUE.sub(hide, text)
+
+
+def _withhold_cards(text):
+    """text with every card number it spells out (_card_spans) withheld."""
+
+    for start, end in reversed(_card_spans(text)):
+        text = text[:start] + "[withheld]" + text[end:]
+    return text
+
+
 def _withhold_shapes(text):
     """text with every credential it spells out, by name or by shape, replaced by [withheld]. Raises on an error (the
     callers fail closed)."""
 
+    text = _withhold_cards(_withhold_pins(text))
     for label, pattern in CREDENTIALS:
         if label != "private key":  # (the whole block goes, below - not its first line only)
             text = pattern.sub("[withheld]", text)

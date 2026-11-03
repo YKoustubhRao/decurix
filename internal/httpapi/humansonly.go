@@ -5,111 +5,90 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"sync"
-	"time"
+
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 )
 
-// Some routes show or change what only a person should: a mailbox's senders
-// and subjects, the rules that turn email into tasks. The primary listener
-// has no login, and the agents in the desktops can reach it (they call back
-// to it), so an agent - or a prompt injected into one by a web page or an
-// email - could read someone's inbox headers or add a rule that feeds it
-// more. humansOnly refuses those routes to any request from a container.
+// Some routes show or change what only a person should: a mailbox's senders and subjects, the rules that turn email
+// into tasks, the access code, the backup. The primary listener has no login, and the agents in the desktops can
+// reach it (they call back to it), so an agent - or a prompt injected into one by a web page or an email - could read
+// someone's inbox headers or add a rule that feeds it more. humansOnly refuses those routes to anyone who is not a
+// person.
 //
-// A container is told apart by its address: inside one of the Docker
-// networks desktops use, and not that network's gateway (desktop.Manager.
-// ContainerNetworks). A person's browser reaches the control plane from the
-// host - loopback when the binary runs on the host, the network's gateway
-// when compose publishes the port - and never from a container address.
-// Checked live on both. The one setup it cannot tell apart is the released
-// binary on Docker Desktop (macOS/Windows), where a container's call to
-// host.docker.internal arrives on the host's loopback like the browser's.
+// Who is a person is told by the address (desktop.NetView). On the primary listener it is the host and nothing else:
+// loopback (a browser on this machine), or the gateway of a Docker network the control plane knows (a browser on the
+// host through a port compose publishes, which Docker hands over from the control plane's own network's gateway).
+// Every other address is not a person there: a desktop, the bundled Ollama, and a container on any network someone
+// else made (review 2026-11-02, third round: a container on a user-made network read the access code, downloaded the
+// backup, created a DAG and started a desktop, because an address in no known range counted as a person). A phone, a
+// LAN laptop and the tunnel use the gated listener, whose login is the boundary there: it refuses only an address
+// known to be a container. The one setup an address cannot tell apart is the released binary on Docker Desktop
+// (macOS/Windows), where a container's call to host.docker.internal arrives on the host's loopback like the browser's.
 
-// containerNetsTTL is how long the Docker network ranges are cached.
-const containerNetsTTL = time.Minute
-
-type containerNets struct {
-	mu       sync.Mutex
-	subnets  []netip.Prefix
-	gateways []netip.Addr
-	fetched  time.Time
-}
-
-func (s *Server) containerNetworks() ([]netip.Prefix, []netip.Addr) {
-	return s.containerNetworksFresh(containerNetsTTL)
-}
-
-// containerNetworksFresh is containerNetworks, asking Docker again when what it knows is older than maxAge.
-func (s *Server) containerNetworksFresh(maxAge time.Duration) ([]netip.Prefix, []netip.Addr) {
-	s.nets.mu.Lock()
-	defer s.nets.mu.Unlock()
-
-	if s.Desktops != nil && time.Since(s.nets.fetched) > maxAge {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		subnets, gateways := s.Desktops.ContainerNetworks(ctx)
-		cancel()
-
-		// A Docker hiccup keeps the last ranges rather than forgetting them.
-		if len(subnets) > 0 {
-			s.nets.subnets, s.nets.gateways = subnets, gateways
-		}
-
-		s.nets.fetched = time.Now()
-	}
-
-	return s.nets.subnets, s.nets.gateways
-}
-
-// containerNetsRecheck bounds how often an address in no known range makes the ranges be asked for again.
-const containerNetsRecheck = 2 * time.Second
-
-// fromContainer reports whether r came from a container rather than from the host. It fails closed: an address
-// that is not loopback, not a network's gateway and in no range known now makes the ranges be asked for again (a
-// network made since, such as the practice one), and while no range is known at all, every such address is taken for
-// a container (review 2026-11-02: an empty list made every container a person).
-func (s *Server) fromContainer(r *http.Request) bool {
+// remoteAddr is r's source address, invalid when it cannot be read.
+func remoteAddr(r *http.Request) netip.Addr {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-
 	addr, err := netip.ParseAddr(host)
 	if err != nil {
-		return true
+		return netip.Addr{}
 	}
-
-	addr = addr.Unmap()
-	if addr.IsLoopback() {
-		return false
-	}
-
-	verdict := func(subnets []netip.Prefix, gateways []netip.Addr) (container, known bool) {
-		for _, gw := range gateways {
-			if addr == gw.Unmap() {
-				return false, true
-			}
-		}
-		for _, subnet := range subnets {
-			if subnet.Contains(addr) {
-				return true, true
-			}
-		}
-		return false, false
-	}
-
-	subnets, gateways := s.containerNetworks()
-	if container, known := verdict(subnets, gateways); known {
-		return container
-	}
-	subnets, gateways = s.containerNetworksFresh(containerNetsRecheck)
-	if container, known := verdict(subnets, gateways); known {
-		return container
-	}
-	// No desktop manager means no containers (a test's server); with one, no known range means not known to be a person.
-	return len(subnets) == 0 && s.Desktops != nil
+	return addr.Unmap()
 }
 
-// humansOnly serves h only to requests that do not come from a container.
+// netView is what the control plane knows of the Docker networks (s.netsFor in tests).
+func (s *Server) netView(ctx context.Context) desktop.NetView {
+	if s.netsFor != nil {
+		return s.netsFor()
+	}
+	return s.Desktops.Networks(ctx)
+}
+
+// origin is where r's source address puts it. Loopback is answered without asking anything; an address no network
+// holds makes the networks be asked for again in the background (a network made since), never while r waits.
+func (s *Server) origin(r *http.Request) desktop.Origin {
+	addr := remoteAddr(r)
+	if !addr.IsValid() {
+		return desktop.OriginUnknown
+	}
+	if addr.IsLoopback() {
+		return desktop.OriginHost
+	}
+	o := s.netView(r.Context()).Classify(addr)
+	if o == desktop.OriginUnknown && s.netsFor == nil {
+		s.Desktops.RecheckNetworks()
+	}
+	return o
+}
+
+// noNetworks reports whether this server has nothing to tell containers apart with: a test's server, with no desktop
+// manager and no network view. Every caller is then the host.
+func (s *Server) noNetworks() bool {
+	return s.Desktops == nil && s.netsFor == nil
+}
+
+// fromContainer reports whether r must not be served as a person. On the primary listener that is anything but the
+// host (loopback or a known gateway): unknown is not a person. On the gated listener, which has a login of its own,
+// it is an address known to be a container's.
+func (s *Server) fromContainer(r *http.Request) bool {
+	if s.noNetworks() {
+		return false
+	}
+	o := s.origin(r)
+	if isGated(r) {
+		return o == desktop.OriginContainer
+	}
+	return o != desktop.OriginHost
+}
+
+// fromKnownContainer reports whether r comes from an address inside a known Docker network (not its gateway).
+func (s *Server) fromKnownContainer(r *http.Request) bool {
+	return !s.noNetworks() && s.origin(r) == desktop.OriginContainer
+}
+
+// humansOnly serves h only to a person (fromContainer).
 func (s *Server) humansOnly(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.fromContainer(r) {

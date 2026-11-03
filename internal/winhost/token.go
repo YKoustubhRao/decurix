@@ -78,3 +78,16 @@ func ValidExecToken(secret []byte, desktopID, cmd string, args []string, token s
 	id, joined := execParts(desktopID, args)
 	return ValidToken(secret, id, cmd, joined, token)
 }
+
+// OpenToken authorises opening one link in the person's own browser from one desktop: a launcher Decurix wrote for a
+// web app carries it for that app's address. The "open:" prefix keeps it from ever being valid as an exec or a launch
+// token for the same strings. A desktop's agent cannot point the person's browser anywhere a launcher was not written
+// to (review 2026-11-02: any desktop could, including at the control plane's own no-login listener).
+func OpenToken(secret []byte, desktopID, link string) string {
+	return Token(secret, "open:"+desktopID, link, "")
+}
+
+// ValidOpenToken reports whether token is the open token for exactly this desktop and link.
+func ValidOpenToken(secret []byte, desktopID, link, token string) bool {
+	return ValidToken(secret, "open:"+desktopID, link, "", token)
+}

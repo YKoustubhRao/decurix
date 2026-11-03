@@ -322,9 +322,13 @@ function inDistro(args, onLine, cwd = '/') {
 
 // docker runs one docker command in the stack's folder - on Windows inside
 // the app's distro, given what stackEnv gives elsewhere as plain variables.
+// On Windows the gated port is published on the distro's 127.0.0.1 only
+// (DECURIX_LAN_BIND): the LAN link and the tunnel reach it through Windows'
+// own 127.0.0.1 (windows-lan.js), and published on every address it let a
+// desktop come back in through Docker's proxy looking like this computer.
 function docker(args, onLine) {
   if (windows) {
-    return inDistro(['env', 'COMPOSE_PROJECT_NAME=decurix', 'DECURIX_HOST_HOME=/home', 'DECURIX_HOST_MNT_C=/mnt/c', 'docker', ...(runtimeDistro !== DISTRO ? ['--host', 'unix:///var/run/docker.sock'] : []), ...args], onLine, DISTRO_STACK);
+    return inDistro(['env', 'COMPOSE_PROJECT_NAME=decurix', 'DECURIX_HOST_HOME=/home', 'DECURIX_HOST_MNT_C=/mnt/c', 'DECURIX_LAN_BIND=127.0.0.1', 'docker', ...(runtimeDistro !== DISTRO ? ['--host', 'unix:///var/run/docker.sock'] : []), ...args], onLine, DISTRO_STACK);
   }
   return run(findProgram('docker') || 'docker', args, onLine, { cwd: stackDir(), env: stackEnv() });
 }

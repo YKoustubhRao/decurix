@@ -17,6 +17,8 @@ from unittest import mock
 
 from decurix_agent import playbooks, script_sandbox, tool_task
 
+import fixture_paths  # noqa: E402 - what may not be on this machine is counted
+
 
 class TheEnvironmentIsBuiltFromNothing(unittest.TestCase):
     def test_no_token_display_proxy_or_control_plane(self):
@@ -92,11 +94,14 @@ class TheEarlyRefusalReadsMore(unittest.TestCase):
                 self.assertIn("acts beyond the work folder", playbooks._sound(script, language))
 
 
-@unittest.skipIf(os.name == "nt" or not script_sandbox._candidates(), "needs Linux with unshare or bubblewrap")
+# CI sets DECURIX_REQUIRE_SANDBOX=1 (after allowing unprivileged user namespaces), so there this fails rather than
+# skips: the one test that the sandbox is a boundary must not be vacuous where every change is checked.
+@fixture_paths.skip_unless(os.name != "nt" and bool(script_sandbox._candidates()),
+                           "the script sandbox needs Linux with unshare or bubblewrap", kind="sandbox")
 class TheNamespaceHolds(unittest.TestCase):
     def test_a_script_cannot_reach_a_port_on_this_machine(self):
         if not script_sandbox.available():
-            self.skipTest("user and network namespaces are not allowed here")
+            raise fixture_paths.missing("user and network namespaces are not allowed here", kind="sandbox")
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)

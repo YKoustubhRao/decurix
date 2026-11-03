@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -151,38 +150,6 @@ func (m *Manager) GatewayIPs(ctx context.Context) []string {
 		}
 	}
 	return ips
-}
-
-// ContainerNetworks returns the address ranges of the Docker networks
-// desktops live on (decurix-network, and the default bridge), and each one's
-// gateway. A request from inside one of those ranges that is not its
-// gateway comes from a container - a desktop, or the bundled Ollama - never
-// from a person's browser, which reaches the control plane from the host
-// (loopback, or through a published port, which Docker hands over from the
-// gateway). httpapi uses it to keep what only a person should see away from
-// the agents.
-func (m *Manager) ContainerNetworks(ctx context.Context) (subnets []netip.Prefix, gateways []netip.Addr) {
-
-	for _, name := range []string{NetworkName, "bridge", PracticeNetworkName} {
-		info, err := m.client.NetworkInspect(ctx, name, network.InspectOptions{})
-		if err != nil {
-			continue
-		}
-
-		for _, cfg := range info.IPAM.Config {
-			if prefix, err := netip.ParsePrefix(cfg.Subnet); err == nil {
-				subnets = append(subnets, prefix.Masked())
-			}
-
-			// The practice network's gateway is not the host's way in: nothing a person uses arrives from it, so it
-			// stays inside the range a container is recognised by.
-			if gw, err := netip.ParseAddr(cfg.Gateway); err == nil && name != PracticeNetworkName {
-				gateways = append(gateways, gw)
-			}
-		}
-	}
-
-	return subnets, gateways
 }
 
 // EnsureNetwork creates the shared Docker network used by desktops if it does not already exist.
@@ -416,6 +383,9 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 		ShmSize:     shmBytes,
 		SecurityOpt: securityOpt,
 		Resources:   resources,
+		// No raw sockets: with them a desktop could forge ARP and take another's address, which the control plane's
+		// identity-by-address checks rely on (docs/gate-boundary.md).
+		CapDrop: []string{"NET_RAW"},
 		Tmpfs: map[string]string{
 			"/tmp": "rw,nosuid,size=256m,mode=1777",
 			"/run": "rw,nosuid,size=64m,mode=755",

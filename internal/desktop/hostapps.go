@@ -57,7 +57,7 @@ type knownAppDef struct {
 	description     string
 	defaultSelected bool
 	probeFn         func() []string
-	packFn          func(tw *tar.Writer, paths []string) error
+	packFn          func(tw *tar.Writer, paths []string, pc packContext) error
 }
 
 var (
@@ -587,7 +587,7 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 				miss(id, def.name, "Decurix found nothing of it on this computer to copy.", false)
 				continue
 			}
-			if err := def.packFn(tw, paths); err != nil {
+			if err := def.packFn(tw, paths, packContext{DesktopID: sanitizedID, Secret: m.HostGUISecret}); err != nil {
 				log.Printf("hostapps: packing %s for %s: %v", def.id, desktopID, err)
 				miss(id, def.name, "Copying it into the desktop failed.", false)
 				continue
@@ -741,8 +741,8 @@ func getKnownAppDefs() []knownAppDef {
 				}
 				return found
 			},
-			packFn: func(tw *tar.Writer, paths []string) error {
-				return packWebAppHost(tw, "claude", "Claude", "https://claude.ai")
+			packFn: func(tw *tar.Writer, paths []string, pc packContext) error {
+				return packWebAppHost(tw, pc, "claude", "Claude", "https://claude.ai")
 			},
 		},
 		{
@@ -765,8 +765,8 @@ func getKnownAppDefs() []knownAppDef {
 				}
 				return found
 			},
-			packFn: func(tw *tar.Writer, paths []string) error {
-				return packWebAppHost(tw, "chatgpt", "ChatGPT", "https://chatgpt.com")
+			packFn: func(tw *tar.Writer, paths []string, pc packContext) error {
+				return packWebAppHost(tw, pc, "chatgpt", "ChatGPT", "https://chatgpt.com")
 			},
 		},
 		{
@@ -778,7 +778,7 @@ func getKnownAppDefs() []knownAppDef {
 			probeFn: func() []string {
 				return []string{"host_bridge"}
 			},
-			packFn: func(tw *tar.Writer, paths []string) error {
+			packFn: func(tw *tar.Writer, paths []string, pc packContext) error {
 				return packHostBridgeLaunchers(tw)
 			},
 		},
@@ -812,8 +812,13 @@ func packFirstDir(dest string, exclude func(name, fullPath string, isDir bool) b
 	}
 }
 
-// packWebAppHost packs a host AI app (slug, shown as name) as a launcher that opens site in an app window.
-func packWebAppHost(tw *tar.Writer, slug, name, site string) error {
+// packWebAppHost packs a host AI app (slug, shown as name) as a launcher that opens site in an app window, or with no
+// browser in the desktop, in the person's own browser: only site, signed for this desktop (winhost.OpenToken).
+func packWebAppHost(tw *tar.Writer, pc packContext, slug, name, site string) error {
+	fallback := "echo \"No browser is installed in this desktop to open " + site + " in.\" >&2\nexit 1\n"
+	if len(pc.Secret) > 0 {
+		fallback = fmt.Sprintf("exec /home/headless/.local/bin/host-run open %s %s\n", winhost.OpenToken(pc.Secret, pc.DesktopID, site), shellQuote(site))
+	}
 	wrapper := fmt.Sprintf(`#!/usr/bin/env bash
 if command -v chromium-browser >/dev/null 2>&1; then
     exec chromium-browser --app="%[1]s" "$@"
@@ -822,8 +827,7 @@ elif command -v google-chrome >/dev/null 2>&1; then
 elif command -v chromium >/dev/null 2>&1; then
     exec chromium --app="%[1]s" "$@"
 fi
-exec /home/headless/.local/bin/host-run open %[1]s
-`, site)
+%[2]s`, site, fallback)
 	if err := writeStringToTar(tw, ".local/bin/"+slug+"-host", wrapper, 0755); err != nil {
 		return err
 	}
@@ -1988,8 +1992,8 @@ Categories=%s
 
 func packHostBridgeLaunchers(tw *tar.Writer) error {
 	hostRunScript := `#!/usr/bin/env bash
-# host-run: asks the control plane to open a link, set the clipboard, or run one command a launcher was written for on
-# the host. It cannot run anything else: the control plane only runs a command it signed into a launcher.
+# host-run: asks the control plane to open one link or run one command a launcher was written for on the host. It
+# cannot do anything else: the control plane only opens a link and runs a command it signed into a launcher.
 set -e
 
 CP_URL="${CONTROL_PLANE_URL:-${DECURIX_CONTROL_PLANE:-http://host.docker.internal:8080}}"
@@ -1997,17 +2001,15 @@ CP_URL="${CONTROL_PLANE_URL:-${DECURIX_CONTROL_PLANE:-http://host.docker.interna
 # bridge_post <path> <key> <value> [args-json]: POSTs a small JSON object to the control plane and
 # prints the response body. python3 rather than curl: the desktop images do not all ship curl, and
 # a missing curl made every launcher fail as "host bridge not reachable" without ever sending a request.
-# DECURIX_BRIDGE_TOKEN, when set, is the launcher's signature for the command being run.
+# DECURIX_BRIDGE_TOKEN is the launcher's signature for the link or the command.
 bridge_post() {
     python3 - "${CP_URL}$1" "$2" "$3" "${4:-}" <<'PY'
 import json, os, sys, urllib.request
 url, key, value, args = sys.argv[1:5]
-body = {key: value}
+body = {key: value, "desktop": os.environ.get("DESKTOP_ID", ""), "token": os.environ.get("DECURIX_BRIDGE_TOKEN", "")}
 if args:
     body["args"] = json.loads(args)
     body["display"] = os.environ.get("DISPLAY", ":1")
-    body["desktop"] = os.environ.get("DESKTOP_ID", "")
-    body["token"] = os.environ.get("DECURIX_BRIDGE_TOKEN", "")
 req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"})
 sys.stdout.write(urllib.request.urlopen(req, timeout=60).read().decode())
 PY
@@ -2015,11 +2017,11 @@ PY
 
 usage() {
     cat << EOF
-Usage: host-run open <http(s)-link>
-       host-run clip <text or pipe from stdin>
+Usage: host-run open <token> <https-link>            (what a copied web app's launcher runs)
        host-run signed <token> <command> [args...]   (what a copied app's launcher runs)
 
-Opens links and sets the clipboard on the host. Running other programs on the host is not possible from here.
+Opens the links and runs the commands Decurix's launchers were written for. Nothing else can be opened or run on the
+host from here.
 EOF
     exit 0
 }
@@ -2030,27 +2032,15 @@ subcmd="$1"
 
 case "$subcmd" in
     open)
-        shift
-        target="${1:-}"
+        [ $# -ge 3 ] || usage
+        DECURIX_BRIDGE_TOKEN="$2"
+        export DECURIX_BRIDGE_TOKEN
+        target="$3"
         if bridge_post /api/host-bridge/open target "${target}" >/dev/null 2>&1; then
             echo "Opened on host desktop: ${target}"
             exit 0
         fi
-        echo "Error: could not open ${target} on the host (only plain http(s) links can be opened; is ${CP_URL} reachable?)."
-        exit 1
-        ;;
-    clip)
-        shift
-        if [ $# -gt 0 ]; then
-            text="$*"
-        else
-            text=$(cat)
-        fi
-        if bridge_post /api/host-bridge/clip text "${text}" >/dev/null 2>&1; then
-            echo "Copied to host clipboard!"
-            exit 0
-        fi
-        echo "Error: could not reach the host bridge at ${CP_URL} (or the text is over 64 KB)."
+        echo "Error: could not open ${target} on the host (only the link a launcher was written for; is ${CP_URL} reachable?)."
         exit 1
         ;;
     signed)
@@ -2072,19 +2062,15 @@ case "$subcmd" in
         usage
         ;;
     *)
-        echo "Error: host-run cannot run '${subcmd}' on the host. It only opens http(s) links, sets the clipboard, and runs commands from the launchers Decurix wrote." >&2
+        echo "Error: host-run cannot run '${subcmd}' on the host. It only opens the links and runs the commands of the launchers Decurix wrote." >&2
         exit 1
         ;;
 esac
 `
 
-	if err := writeStringToTar(tw, ".local/bin/host-run", hostRunScript, 0755); err != nil {
-		return err
-	}
-	if err := writeStringToTar(tw, ".local/bin/host-open", "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run open \"$@\"\n", 0755); err != nil {
-		return err
-	}
-	return writeStringToTar(tw, ".local/bin/host-clip", "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run clip \"$@\"\n", 0755)
+	// No host-open or host-clip any more: a link is opened only for a launcher that was signed for it, and nothing sets
+	// the person's clipboard from a desktop (review 2026-11-02).
+	return writeStringToTar(tw, ".local/bin/host-run", hostRunScript, 0755)
 }
 
 // -----------------------------------------------------------------------------

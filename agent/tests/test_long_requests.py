@@ -618,8 +618,9 @@ class LongRunBase(unittest.TestCase):
         # The run's own reports: sent on its own task (Finding BO), or on no task named; never a reply on another task.
         return [s for s in self.sent if s["kind"] in ("final", "error") and s.get("task_id") in (None, TASK)]
 
-    def message(self, text, task_id=TASK):
-        path = self.root / "command" / f"20261019_101500_{len(self.classified) + len(self.sent):08d}.{task_id}.txt"
+    def message(self, text, task_id=TASK, reply=False):
+        mark = "-reply" if reply else ""  # (messaging.REPLY_MARK: what the agent's own API adds to a reply)
+        path = self.root / "command" / f"20261019_101500_{len(self.classified) + len(self.sent):08d}{mark}.{task_id}.txt"
         path.write_text(text, encoding="utf-8")
         state.processed_commands.add(path.name)
         long_task.take_message(text, path)
@@ -1654,9 +1655,19 @@ class LongRun(LongRunBase):
         state.waiting_for_query, state.last_query_kind = True, "approval"
         with mock.patch("decurix_agent.watchers.answer_waiting") as answer, \
                 mock.patch.object(long_task, "classify") as classify:
-            self.message("yes")
+            self.message("yes", reply=True)
             answer.assert_called_once()
             classify.assert_not_called()
+
+    def test_a_file_dropped_in_the_command_folder_is_not_kept_as_an_approval(self):
+        # Round 3: only a message saved as the reply to the open question can be the approval; the run's record must
+        # not say "You approved" for a file anything could write into the folder.
+        long_task._run = {"run_id": "x", "task_id": TASK, "task_file": None, "request": LONG}
+        (self.runner.root / "x").mkdir()
+        state.waiting_for_query, state.last_query_kind = True, "approval"
+        with mock.patch.object(long_task, "_approval_as_decision") as kept,                 mock.patch("decurix_agent.watchers.answer_waiting"),                 mock.patch.object(long_task, "classify", return_value={"kind": "unrelated"}):
+            self.message("yes")
+            kept.assert_not_called()
 
     def test_stop_stops_and_reports_where_it_stands(self):
         self.engine.asks["s1-register"] = "Which rate?"

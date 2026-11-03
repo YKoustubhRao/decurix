@@ -297,7 +297,7 @@ def perform(content, task_file=None):
                 pass
         _active = None
         _pending = None
-        write_final_reply(f"Workflow stopped: {exc}", kind="error", checked=True)
+        write_final_reply(f"Workflow stopped: {exc}", kind="error", checked=False, gated=True)
 
 
 def final_gate(reply, kind, engine=None):
@@ -341,5 +341,5 @@ def final_gate(reply, kind, engine=None):
             _pending = (run_id, task_file, ())
     except Exception as exc:
         from decurix_agent.messaging import write_final_reply
-        write_final_reply(f"Workflow {run_id} stopped during verification: {exc}. Resume after inspecting the checkpoint.", kind="error", checked=True)
+        write_final_reply(f"Workflow {run_id} stopped during verification: {exc}. Resume after inspecting the checkpoint.", kind="error", checked=False, gated=True)
     return True

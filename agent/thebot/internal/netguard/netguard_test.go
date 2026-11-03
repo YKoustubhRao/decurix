@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"testing"
 	"time"
 )
@@ -100,5 +101,90 @@ func TestCheckURL(t *testing.T) {
 	}
 	if err := CheckURL("https://example.com/report.pdf"); err != nil {
 		t.Errorf("CheckURL(public) = %v", err)
+	}
+}
+
+// With a proxy configured, a request to a public target is routed through the proxy (a proxied network keeps its
+// downloads and web search), but the proxy is never a way to reach a loopback, metadata or private target.
+func TestProxyRoutesPublicTargetsButNotInternalOnes(t *testing.T) {
+	var proxied int
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { proxied++; w.Write([]byte("via proxy")) }))
+	defer proxy.Close()
+	proxyURL, _ := url.Parse(proxy.URL)
+	proxyHost, proxyPort, _ := net.SplitHostPort(proxyURL.Host)
+
+	g := &guard{
+		allow: Public,
+		resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
+			switch host {
+			case "good.example":
+				return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
+			case "sneaky.internal":
+				return []netip.Addr{netip.MustParseAddr("169.254.169.254")}, nil
+			}
+			return nil, errors.New("no such host")
+		},
+		dialer:     &net.Dialer{Timeout: 2 * time.Second},
+		proxy:      func(*http.Request) (*url.URL, error) { return proxyURL, nil },
+		proxyHosts: map[string]bool{proxyHost: true, net.JoinHostPort(proxyHost, proxyPort): true},
+	}
+	c := g.client(5 * time.Second)
+
+	resp, err := c.Get("http://good.example/file.pdf")
+	if err != nil {
+		t.Fatalf("a public target was not fetched through the proxy: %v", err)
+	}
+	resp.Body.Close()
+	if proxied != 1 {
+		t.Fatalf("the request did not go through the proxy (proxied=%d)", proxied)
+	}
+
+	for _, u := range []string{
+		"http://169.254.169.254/latest/meta-data/", // metadata literal
+		"http://sneaky.internal/",                  // a name that resolves to metadata
+		"http://localhost:4900/api/chat",           // localhost
+		"http://127.0.0.1:8080/",                   // loopback literal
+		"http://10.1.2.3/",                         // private literal
+	} {
+		if resp, err := c.Get(u); err == nil {
+			resp.Body.Close()
+			t.Errorf("Get(%s) via proxy succeeded, want refused", u)
+		}
+	}
+	if proxied != 1 {
+		t.Errorf("an internal target was sent to the proxy anyway (proxied=%d)", proxied)
+	}
+}
+
+// The proxy endpoints are read from the proxy environment variables, with and without a port.
+func TestProxyEndpointsFromEnv(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://proxy.corp:3128")
+	t.Setenv("HTTPS_PROXY", "squid.lan:8080")
+	t.Setenv("NO_PROXY", "")
+	if !proxyConfigured() {
+		t.Fatal("proxyConfigured = false with a proxy set")
+	}
+	eps := proxyEndpoints()
+	for _, want := range []string{"proxy.corp", "proxy.corp:3128", "squid.lan", "squid.lan:8080"} {
+		if !eps[want] {
+			t.Errorf("proxyEndpoints missing %q (got %v)", want, eps)
+		}
+	}
+	g := &guard{proxyHosts: eps}
+	if !g.isProxyEndpoint("proxy.corp", "3128") || !g.isProxyEndpoint("squid.lan", "8080") {
+		t.Error("a configured proxy endpoint was not recognised")
+	}
+	if g.isProxyEndpoint("evil.example", "80") {
+		t.Error("a non-proxy host was taken for the proxy")
+	}
+}
+
+// Without a proxy configured, the client dials directly and keeps the public-only check (unchanged behaviour).
+func TestNoProxyByDefault(t *testing.T) {
+	for _, k := range proxyEnv {
+		t.Setenv(k, "")
+	}
+	if proxyConfigured() {
+		t.Fatal("proxyConfigured = true with no proxy set")
 	}
 }

@@ -167,7 +167,7 @@ class ReplayGate(unittest.TestCase):
 
     def setUp(self):
         if not FIXTURES.is_dir():
-            self.skipTest(f"fixture not here: {FIXTURES} (set DECURIX_TEST_FIXTURES)")
+            raise fixture_paths.missing(f"fixture not here: {FIXTURES} (set DECURIX_TEST_FIXTURES)")
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)

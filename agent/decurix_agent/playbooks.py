@@ -297,6 +297,27 @@ def note_job(job):
         _run["turns"] += turns
 
 
+def ran_commands():
+    """The shell commands this task's engine jobs ran that worked (soul's `worked`), oldest first."""
+
+    with _lock:
+        return [c for seg in _run["segments"] for c in seg]
+
+
+# A command that can change something outside the engine's own memory: a redirect into a file, a program whose job is
+# to write, move, delete, install, send or run a script. A shell-only task that ran one has side effects nothing
+# read back (review 2026-11-03: such a task returned early at the final gate and went out unchecked).
+CHANGES_THINGS = re.compile(
+    r"(?<![<>&0-9])>>?(?!&)|\b(tee|touch|mkdir|cp|mv|rm|rmdir|ln|install|dd|truncate|chmod|chown|unzip|tar|wget|curl|"
+    r"sed\s+-i|perl|python3?|node|ruby|sh|bash|git|apt(-get)?|pip3?|npm|office|sqlite3|sendmail|mail|scp|rsync|ssh)\b")
+
+
+def changed_things(commands=None):
+    """The commands among `commands` (the task's own when None) that could have changed something."""
+
+    return [c for c in (ran_commands() if commands is None else commands) if CHANGES_THINGS.search(c or "")]
+
+
 def use(ok, commands):
     """One run's record for a playbook's history (what tool_task.py adds for a run with no engine)."""
 

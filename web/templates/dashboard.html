@@ -666,10 +666,7 @@
   }
 
   syncOpen();
-  setInterval(syncOpen, 3000);
-  document.addEventListener("visibilitychange", function(){
-    if(document.visibilityState === "visible"){ syncOpen(); }
-  });
+  Decurix.poll(syncOpen, 3000);
 })();
 </script>
 

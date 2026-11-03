@@ -1,7 +1,9 @@
 """PM acceptance of persisted demonstrations on unseen task inputs and UI variants."""
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _path = Path(__file__).resolve().parents[2] / "bench" / "workflows" / "transfer.py"
 _spec = importlib.util.spec_from_file_location("workflow_transfer_benchmark", _path)
@@ -45,6 +47,22 @@ class LearningTransferAcceptance(unittest.TestCase):
             with self.subTest(task=result["task"], variant=result["variant"]):
                 self.assertTrue(result["passed"], result["reason"])
                 self.assertEqual(result["typed_values"], [])
+
+
+class TheBenchCanFail(unittest.TestCase):
+    """A negative control: the screen says "Result ready" and the replay reports success, but the application's answer
+    is wrong. The bench must score that row failed - a bench whose rows cannot fail measures nothing (review 2026-11-02
+    found its old "wrong business result" variant passing on its own check, whatever the worker did)."""
+
+    def test_a_replay_that_succeeds_on_screen_with_a_wrong_answer_is_not_passed(self):
+        from decurix_agent.computer import recording, replay, skills
+        case = transfer.SCENARIOS[0]
+        right = transfer.evaluate
+        with tempfile.TemporaryDirectory() as tmp,                 mock.patch.object(recording, "ROOT", Path(tmp) / "recordings"),                 mock.patch.object(skills, "ROOT", Path(tmp) / "skills"),                 mock.patch.object(transfer, "evaluate", lambda operation, raw: ("wrong", right(operation, raw))):
+            result = transfer.run_case(case, Path(tmp), "holdout")
+        self.assertIn(result["replay_outcome"], replay.SUCCESS, "the control needs a replay the screen calls a success")
+        self.assertFalse(result["business_verified"])
+        self.assertFalse(result["passed"], result)
 
 
 if __name__ == "__main__":

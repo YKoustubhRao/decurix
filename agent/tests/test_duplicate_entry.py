@@ -200,7 +200,7 @@ class AnotherRecordsValues(unittest.TestCase):
                 said = core._crossed_record({"name": "Submit onboarding"})
         self.assertIn("Job title is 'Sales Executive' - that is Mohammed Arif Khan's", said)
 
-    @unittest.skipUnless(TRACKER.is_file(), "round 5 P4's tracker is not on this machine")
+    @fixture_paths.skip_unless(TRACKER.is_file(), "round 5 P4's tracker is not on this machine")
     def test_the_live_saves(self):
         from decurix_agent import stage_facts
         path = fixture_paths.need("p4_duplicate", "events.jsonl")

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"thebot/internal/llm"
 )
@@ -826,5 +827,21 @@ func TestCanonicalNumberKeepsIdentifiersApart(t *testing.T) {
 		if got, ok := canonicalNumber(v); ok {
 			t.Errorf("canonicalNumber(%q) = %q, want no number: it is an identifier", v, got)
 		}
+	}
+}
+
+// A byte-position cut of the seen text must never leave half a multi-byte rune at either edge: the model and the
+// grounding check are both fed this text, and invalid UTF-8 breaks a quote match and an API call alike.
+func TestSeenTextStaysValidUTF8WhenCut(t *testing.T) {
+	st := &operatorState{}
+	// A head longer than maxSeenHeadChars, made of 3-byte runes so a byte cut lands mid-rune unless it is fixed.
+	st.noteSeen("₹" + strings.Repeat("₹", maxSeenHeadChars))
+	// Tail with no line break near the cut, also all multi-byte runes.
+	st.noteSeen(strings.Repeat("€", maxSeenChars))
+	if !utf8.ValidString(st.Seen) {
+		t.Fatal("the seen text holds invalid UTF-8 after being cut")
+	}
+	if len(st.Seen) > maxSeenChars {
+		t.Fatalf("seen text is %d chars, over %d", len(st.Seen), maxSeenChars)
 	}
 }

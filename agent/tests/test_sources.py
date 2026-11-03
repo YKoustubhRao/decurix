@@ -17,6 +17,7 @@ import openpyxl
 from temp_case import TempDirCase
 
 from decurix_agent import config, produced, sources
+import fixture_paths  # noqa: E402 - what may not be on this machine is counted
 
 # The round's bank statement, as the person gave it (decurix-tests/wide/apps, bank_oct.csv).
 BANK_CSV = """Date,Description,Debit,Credit,Balance
@@ -132,7 +133,7 @@ class AFigurePerASource(Fixture):
             self.assertIn("bank_oct.csv: closing balance 398,360.00", text)
             self.assertEqual(sources.evidence("Make a price list workbook from these files."), "")
 
-    @unittest.skipUnless(REAL_RESULT.is_file(), "the round's saved reconciliation is not on this machine")
+    @fixture_paths.skip_unless(REAL_RESULT.is_file(), "the round's saved reconciliation is not on this machine")
     def test_the_rounds_real_reconciliation(self):
         # The file is the latest run's: the one that ended at -14,140.00 is found, a later correct one passes.
         copy = self.dir / "bank_rec_oct.xlsx"

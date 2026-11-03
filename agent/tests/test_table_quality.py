@@ -14,6 +14,7 @@ import test_recordings  # noqa: F401 - stubs config first
 
 from decurix_agent import config, long_task, task_context
 from decurix_agent.tools import office, table_quality
+import fixture_paths  # noqa: E402 - what may not be on this machine is counted
 
 P5 = Path(r"C:\Users\Administrator\decurix-tests\wide\process\data\P5")
 
@@ -44,7 +45,7 @@ class FactsOfOneTable(Isolated):
         self.assertEqual(clean["lines"], [])
 
 
-@unittest.skipUnless(P5.is_dir(), "the P5 test data is not on this machine")
+@fixture_paths.skip_unless(P5.is_dir(), "the P5 test data is not on this machine")
 class TheLiveP5Exports(Isolated):
     def read_all(self):
         return {f: office.read_document(str(P5 / f))["text"] for f in

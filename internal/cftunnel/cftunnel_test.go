@@ -358,3 +358,23 @@ func TestAMissingCloudflaredIsReported(t *testing.T) {
 
 	waitState(t, c, stateMissing)
 }
+
+// A backup carries no key files, so on another install the saved tokens no
+// longer open: the control plane still starts, with no tunnel set up.
+func TestTokensSealedWithAnotherKeyLeaveNoSetupRatherThanNoStart(t *testing.T) {
+	api := newFakeCloudflare("secret-api-token")
+	m := newManager(t, api, make([]byte, 32))
+	if _, err := m.Configure(context.Background(), "secret-api-token", "https://example.com", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	other := make([]byte, 32)
+	other[0] = 1
+	again, err := NewManager(m.db, other, 8090)
+	if err != nil {
+		t.Fatalf("a restored database on another install stopped the control plane: %v", err)
+	}
+	if again.URL() != "" {
+		t.Errorf("URL = %q from tokens that did not open", again.URL())
+	}
+}

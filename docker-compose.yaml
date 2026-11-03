@@ -25,7 +25,12 @@ services:
       # LAN address should be pointed at. DECURIX_LAN_PORT in .env changes
       # the port on both sides at once (compose's own variable substitution
       # here; the binary reads the same .env, copied into the image).
-      - "${DECURIX_LAN_PORT:-8090}:${DECURIX_LAN_PORT:-8090}"
+      # DECURIX_LAN_BIND picks the address it is published on. The Windows
+      # app sets 127.0.0.1: its LAN link and tunnel come in through Windows'
+      # own 127.0.0.1 (windows-lan.js), and a port published on every address
+      # of the WSL distro let a desktop come back in through Docker's proxy,
+      # from the gateway - indistinguishable from the person - and try codes.
+      - "${DECURIX_LAN_BIND:-0.0.0.0}:${DECURIX_LAN_PORT:-8090}:${DECURIX_LAN_PORT:-8090}"
 
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

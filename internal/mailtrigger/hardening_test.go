@@ -184,7 +184,7 @@ func TestAFloodIsWorkedThroughInOnePoll(t *testing.T) {
 }
 
 func TestTwoDispatchersNeverSendTheSameEmailTwice(t *testing.T) {
-	h := newHarness(t)
+	h := newFileHarness(t)
 	h.rule(t, NewRule{SubjectRe: `.`})
 	h.sub.stickBusy = false
 
@@ -195,10 +195,12 @@ func TestTwoDispatchersNeverSendTheSameEmailTwice(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
+	start := make(chan struct{})
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); h.runner.dispatch(context.Background()) }()
+		go func() { defer wg.Done(); <-start; h.runner.dispatch(context.Background()) }()
 	}
+	close(start)
 	wg.Wait()
 
 	if n := h.sub.count(); n != 1 {

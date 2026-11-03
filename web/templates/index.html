@@ -904,7 +904,7 @@
     </div>
 
     <div class="page-head-actions">
-      <a class="btn btn-default" href="/api/backup" download title="Download what every desktop was taught, what they learned, and this control plane's records and keys. Keep it private: it opens your saved passwords and API keys.">
+      <a class="btn btn-default" href="/api/backup" download title="Download what every desktop was taught, what they learned, and this control plane's records. It holds no keys or passwords: restored on another computer, API keys, mailbox passwords and logins are entered again. Keep it private all the same: it is your firm's history.">
         <svg width="15" height="15"><use href="#i-download"/></svg>
         Back up
       </a>
@@ -1690,6 +1690,13 @@
      this computer's own address; over the phone link they are refused and
      the panel says so. */
   var BRAIN_NAMES = {claude: "Claude", azure: "Azure OpenAI", openai: "OpenAI / compatible"};
+
+  /* isHosted says whether brain p is one of the hosted models above, set up with a key here. Every check of "is a
+     hosted model chosen" goes through it: the create guard once listed claude and azure by hand and missed openai,
+     so a desktop was created on an OpenAI brain that was never set up, or with a half-typed key never checked. */
+  function isHosted(p){
+    return Object.prototype.hasOwnProperty.call(BRAIN_NAMES, p);
+  }
   var modelInfo = null;
   var brainEditing = false;
 
@@ -1716,7 +1723,7 @@
     var p = chosenBrain();
     var status = document.getElementById("brainStatus");
     var setup = document.getElementById("brainSetup");
-    var hosted = p === "claude" || p === "azure" || p === "openai";
+    var hosted = isHosted(p);
     var info = providerInfo(p);
 
     if(!hosted){
@@ -2293,7 +2300,7 @@
        desktop is created only once that worked - never one that would fail
        its first request. */
     var brain = chosenBrain();
-    if((brain === "claude" || brain === "azure") && (!providerInfo(brain).configured || brainEditing)){
+    if(isHosted(brain) && (!providerInfo(brain).configured || brainEditing)){
       var filled = document.getElementById("brainKey").value.trim() || providerInfo(brain).configured;
       if(!filled){
         document.getElementById("brainError").textContent = "Add the API key first.";
@@ -2661,8 +2668,7 @@
     finally{ memoryPolling = false; }
   }
 
-  setInterval(pollMemory, 4000);
-  document.addEventListener("visibilitychange", pollMemory);
+  Decurix.poll(pollMemory, 4000);
 
   /* ---------------- task trace picker ----------------
      Each card's dropdown lists the desktop's tasks newest first; the Trace
@@ -2760,10 +2766,7 @@
 
   document.querySelectorAll("[data-task-pick]").forEach(traceHref);
   pollTaskPicks();
-  setInterval(pollTaskPicks, 4000);
-  document.addEventListener("visibilitychange", function(){
-    if(document.visibilityState === "visible"){ pollTaskPicks(); }
-  });
+  Decurix.poll(pollTaskPicks, 4000);
 
   memoryForm("[data-link-memory-form]", "/api/desktops/memory/link", "Sharing…", "Share memory");
 
@@ -3063,9 +3066,9 @@
   }
 
   pollActivity();
-  setInterval(pollActivity, 2500);
+  Decurix.poll(pollActivity, 2500);
   document.addEventListener("visibilitychange", function(){
-    if(document.visibilityState === "visible"){ pollActivity(); paintCreated(); }
+    if(document.visibilityState === "visible"){ paintCreated(); }
   });
   setInterval(paintActivity, 1000);
 
@@ -3090,8 +3093,10 @@
     }
   }
 
+  /* The rail also feeds the notifications of a tab in the background (data-query-poll="own"), so it keeps a slow
+     pace while hidden. */
   loadNotes();
-  setInterval(loadNotes, 2500);
+  Decurix.poll(loadNotes, 2500, {hidden: 30000});
 
   /* ---------------- resource autoscaling alerts ---------------- */
   var activeAlerts = new Map();
@@ -3198,9 +3203,21 @@
   });
 
   pollResourceAlerts();
-  setInterval(pollResourceAlerts, 4000);
+  Decurix.poll(pollResourceAlerts, 4000);
 
   /* ---------------- provisioning desktop poller ---------------- */
+
+  /* A desktop that finished provisioning is shown by reloading the page - but not under a dialog the person is filling
+     in: a reload there threw away a half-typed API key or a request (review 2026-11-02). It waits for the dialog to
+     close. */
+  var reloadPending = false;
+  function reloadWhenFree(){
+    if(reloadPending){ return; }
+    var open = Array.prototype.find.call(document.querySelectorAll("dialog"), function(d){ return d.open; });
+    if(!open){ location.reload(); return; }
+    reloadPending = true;
+    open.addEventListener("close", function(){ reloadPending = false; reloadWhenFree(); }, {once: true});
+  }
   function checkProvisioningDesktops(){
     var provCards = document.querySelectorAll(".status.provisioning");
     if(!provCards || provCards.length === 0){ return; }
@@ -3217,7 +3234,7 @@
         .then(function(data){
           if(!data){ return; }
           if(data.ready || (data.status === "running" && data.stage === "ready")){
-            location.reload();
+            reloadWhenFree();
             return;
           }
           if(data.status === "failed"){
@@ -3244,7 +3261,7 @@
     });
   }
   checkProvisioningDesktops();
-  setInterval(checkProvisioningDesktops, 1500);
+  Decurix.poll(checkProvisioningDesktops, 1500);
 
   /* ---------------- shortcuts ---------------- */
 

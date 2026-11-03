@@ -23,3 +23,94 @@ func TestLargestAmountErrsHigh(t *testing.T) {
 		}
 	}
 }
+
+// A figure glued to its currency or scale, and the grouping other countries use, are read in full (review
+// 2026-11-03: "Pay Rs450000 ... bank charges Rs 50" read as 50 and skipped the two-approver rule).
+func TestLargestAmountGluedAndGrouped(t *testing.T) {
+	cases := []struct {
+		text string
+		want *float64
+	}{
+		// Glued currency, before or after the figure.
+		{"Pay Rs450000 to Acme, bank charges Rs 50", f(450000)},
+		{"Rs450000 to Acme, fee Rs 100", f(450000)},
+		{"Pay INR450000 to Acme, fee Rs 50", f(450000)},
+		{"Pay INR450000 plus Rs 100 fee", f(450000)},
+		{"Pay 450000INR, fee Rs 50", f(450000)},
+		{"Pay ₹4,50,000 to Acme, fee ₹50", f(450000)},
+		{"Pay Rs.450000, fee Rs 50", f(450000)},
+		{"Pay USD1500 and fee USD 5", f(1500)},
+		{"Pay Rs 4,50,000/- to Acme, fee Rs 50/-", f(450000)},
+		// Scales, spaced or glued, and a large unmarked figure beside a small marked one.
+		{"Pay $1.5M to Acme, fee $20", f(1.5e6)},
+		{"Pay 3 Cr to Acme, fee Rs 500", f(3e7)},
+		{"Pay 3Cr to Acme, fee Rs 500", f(3e7)},
+		{"Pay 10 L to Acme (fee ₹200)", f(1e6)},
+		{"Pay ₹5L now", f(5e5)},
+		{"Pay $50k to Acme", f(5e4)},
+		{"Pay USD 2bn", f(2e9)},
+		{"Pay 1.5 million USD", f(1.5e6)},
+		{"Pay Rs 5L/- to Acme", f(5e5)},
+		{"Pay 450000 incl 18% GST Rs 81000", f(450000)},
+		{"Pay 4,50,000.00 incl GST 18", f(450000)},
+		// European, apostrophe and spaced grouping.
+		{"Transfer 450.000,00 EUR, fee EUR 5", f(450000)},
+		{"Pay EUR 1.234.567", f(1234567)},
+		{"Pay CHF 1'250'000", f(1250000)},
+		{"Pay 1 250 000,00 EUR", f(1250000)},
+		{"Pay Rs 1,23,456.78", f(123456.78)},
+		{"Pay EUR 12,50", f(12.5)},
+		// A figure read two ways takes the larger reading.
+		{"Pay EUR 1.250", f(1250)},
+		{"Pay $0.125 per unit", f(0.125)},
+		// Currency codes that are also words count only in capitals; "pounds" is a weight as often as money.
+		{"Pay TRY 300", f(300)},
+		{"try 3 times to pay the vendor", nil},
+		{"ship 5 pounds of tea", nil},
+		{"Hrs450 logged", nil},
+		// No money anywhere: unknown, so the policy applies.
+		{"Pay 4500000 to Acme", nil},
+		{"Pay 1.5M to Acme", nil},
+	}
+	for _, c := range cases {
+		got := LargestAmount(c.text)
+		if (got == nil) != (c.want == nil) || (got != nil && *got != *c.want) {
+			t.Errorf("%q: got %v want %v", c.text, deref(got), deref(c.want))
+		}
+	}
+}
+
+// Dates, times, units, firm prefixes and identifiers beside an amount are not amounts, so a small payment that
+// mentions them does not ask for a second approver; a marked figure next to them still counts.
+func TestLargestAmountSkipsDatesAndIdentifiers(t *testing.T) {
+	cases := []struct {
+		text string
+		want float64
+	}{
+		{"Pay Rs 500 to Acme due 30 Nov 2026", 500},
+		{"Pay Rs 500 to Acme due Nov 30, 2026", 500},
+		{"Pay Rs 500 for March 2026", 500},
+		{"Pay Rs 500 due 2026-11-30", 500},
+		{"Pay Rs 500 at 10:30", 500},
+		{"Pay Rs 500 for 5kg of rice", 500},
+		{"Pay Rs 45,000 M/s Sharma Traders", 45000},
+		{"Pay Rs 500 to a/c 50100123456789", 500},
+		{"Pay Rs 500, Ref: 778899123", 500},
+		{"Pay Rs 500 to Acme, phone 9876543210", 500},
+		{"Pay Rs 500 against invoice no. 45000", 500},
+		{"Pay Rs 500 against invoice #45000", 500},
+		{"Pay Rs 500 against PO 4500012345", 500},
+		{"Pay Rs 500 for order no 1234567890", 500},
+		{"Pay bill 45000, fee Rs 50", 45000}, // "bill 45000" may be the amount: it counts
+		// A marked or unmistakable amount beside a month or a label still counts.
+		{"Pay Rs 50000 March rent", 50000},
+		{"Pay 50000 March rent, fee Rs 50", 50000},
+		{"Pay Rs 500 and 2,50,000 to a/c 123", 250000},
+	}
+	for _, c := range cases {
+		got := LargestAmount(c.text)
+		if got == nil || *got != c.want {
+			t.Errorf("%q: got %v want %v", c.text, deref(got), c.want)
+		}
+	}
+}

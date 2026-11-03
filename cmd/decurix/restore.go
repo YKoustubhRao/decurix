@@ -17,8 +17,9 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
-// runRestore puts a backup's data files (the database and the key files that
-// open its sealed secrets - httpapi/backup.go) back into the data dir. It is
+// runRestore puts a backup's data files (the database, and in a backup from
+// before 2026-11-03 the key files that open its sealed secrets -
+// httpapi/backup.go) back into the data dir. It is
 // the control plane's own records only: a desktop's skills and memory go back
 // into a desktop from the dashboard (POST /api/desktops/restore), since a
 // desktop is a container this command does not start.
@@ -46,7 +47,7 @@ func runRestore(file, dataDir, controlPlane string, force bool) int {
 	}
 	defer os.RemoveAll(stage)
 
-	files, err := unpackData(file, stage)
+	files, leftOut, err := unpackData(file, stage)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "restore: %v\n", err)
 		return 1
@@ -80,26 +81,36 @@ func runRestore(file, dataDir, controlPlane string, force bool) int {
 
 	fmt.Printf("Restored %d file(s) into %s: %s\n", len(files), dataDir, strings.Join(files, ", "))
 	fmt.Printf("What they replaced is in %s.\n", aside)
+	if len(leftOut) > 0 {
+		// Said plainly, since a model that stops answering after a restore
+		// looks like a fault: the backup never held these.
+		fmt.Println("The backup holds no keys or logins, so a stolen copy opens nothing. Restored on the install it was")
+		fmt.Println("made on, whose key files are still in this data dir, the saved secrets open again. Anywhere else:")
+		for _, what := range leftOut {
+			fmt.Println("  - " + what)
+		}
+	}
 	fmt.Println("Start the control plane again. Skills and memory go back into a desktop from its card: Restore from a backup.")
 	return 0
 }
 
 // unpackData checks the archive is a Decurix backup and writes its data/
-// files, flat, into dir. It returns their names.
-func unpackData(file, dir string) ([]string, error) {
+// files, flat, into dir. It returns their names, and the secrets the
+// backup's manifest says it left out (to be entered again).
+func unpackData(file, dir string) ([]string, []string, error) {
 	f, err := os.Open(file)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer f.Close()
 
 	gz, err := gzip.NewReader(f)
 	if err != nil {
-		return nil, fmt.Errorf("%s is not a Decurix backup (not gzip): %w", file, err)
+		return nil, nil, fmt.Errorf("%s is not a Decurix backup (not gzip): %w", file, err)
 	}
 	tr := tar.NewReader(gz)
 
-	var names []string
+	var names, leftOut []string
 	var manifest bool
 	for {
 		h, err := tr.Next()
@@ -107,17 +118,19 @@ func unpackData(file, dir string) ([]string, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", file, err)
+			return nil, nil, fmt.Errorf("read %s: %w", file, err)
 		}
 
 		if h.Name == "manifest.json" {
 			var m struct {
-				Version int `json:"version"`
+				Version        int      `json:"version"`
+				SecretsLeftOut []string `json:"secrets_left_out"`
 			}
 			if err := json.NewDecoder(tr).Decode(&m); err != nil || m.Version != 1 {
-				return nil, fmt.Errorf("%s has a manifest this version cannot read", file)
+				return nil, nil, fmt.Errorf("%s has a manifest this version cannot read", file)
 			}
 			manifest = true
+			leftOut = m.SecretsLeftOut
 			continue
 		}
 
@@ -125,7 +138,7 @@ func unpackData(file, dir string) ([]string, error) {
 		// does was made or changed by something else, and is not restored.
 		for _, part := range strings.Split(h.Name, "/") {
 			if part == ".." {
-				return nil, fmt.Errorf("%s holds %q, which climbs out of the archive - not restored", file, h.Name)
+				return nil, nil, fmt.Errorf("%s holds %q, which climbs out of the archive - not restored", file, h.Name)
 			}
 		}
 
@@ -135,30 +148,30 @@ func unpackData(file, dir string) ([]string, error) {
 		}
 		// Flat names only: nothing in a backup may write outside the data dir.
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
-			return nil, fmt.Errorf("%s holds a file named %q, which is not restored", file, h.Name)
+			return nil, nil, fmt.Errorf("%s holds a file named %q, which is not restored", file, h.Name)
 		}
 
 		out, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		_, err = io.Copy(out, tr)
 		if cerr := out.Close(); err == nil {
 			err = cerr
 		}
 		if err != nil {
-			return nil, fmt.Errorf("unpack %s: %w", name, err)
+			return nil, nil, fmt.Errorf("unpack %s: %w", name, err)
 		}
 		names = append(names, name)
 	}
 
 	if !manifest {
-		return nil, fmt.Errorf("%s is not a Decurix backup (no manifest.json)", file)
+		return nil, nil, fmt.Errorf("%s is not a Decurix backup (no manifest.json)", file)
 	}
 	if slices.Contains(names, sqlitedb.FileName) {
-		return names, nil
+		return names, leftOut, nil
 	}
-	return nil, fmt.Errorf("%s holds no database (data/%s)", file, sqlitedb.FileName)
+	return nil, nil, fmt.Errorf("%s holds no database (data/%s)", file, sqlitedb.FileName)
 }
 
 // answers reports whether a control plane responds at url.

@@ -912,6 +912,62 @@ body.busy{cursor:progress}
     });
   }
 
+  /* ---- polling that stops while nobody can see the page ----
+     poll(fn, ms) runs fn every ms while this page is visible and not at all
+     while it is hidden (a tab in the background, a minimised window): ten
+     open tabs used to ask the control plane ~0.7 times a second each, for
+     cards nobody could see (review 2026-11-02). The moment the page is seen
+     again fn runs at once and the interval resumes, so every part of a card is
+     live while it is on screen - never a stale card that needs a reload.
+     opts.hidden is a slower interval kept while hidden, for the few polls
+     whose whole point is a tab in the background (the notifications of a
+     finished task or a question). The first call is the caller's: poll only
+     repeats. Returns {stop()}. */
+  function poll(fn, ms, opts){
+    var hiddenMs = (opts && opts.hidden) || 0;
+    var timer = 0;
+    var stopped = false;
+
+    function schedule(){
+      clearInterval(timer);
+      timer = 0;
+      if(stopped){ return; }
+      var every = document.visibilityState === "hidden" ? hiddenMs : ms;
+      if(every > 0){ timer = setInterval(fn, every); }
+    }
+
+    function changed(){
+      if(stopped){ return; }
+      if(document.visibilityState === "visible"){ fn(); }
+      schedule();
+    }
+
+    document.addEventListener("visibilitychange", changed);
+    schedule();
+
+    return {
+      stop: function(){
+        stopped = true;
+        clearInterval(timer);
+        timer = 0;
+        document.removeEventListener("visibilitychange", changed);
+      }
+    };
+  }
+
+  /* later(fn, ms) is setTimeout for a page that schedules its own next look:
+     while the page is hidden the look waits until it is seen again. */
+  function later(fn, ms){
+    return setTimeout(function(){
+      if(document.visibilityState !== "hidden"){ fn(); return; }
+      document.addEventListener("visibilitychange", function wake(){
+        if(document.visibilityState === "hidden"){ return; }
+        document.removeEventListener("visibilitychange", wake);
+        fn();
+      });
+    }, ms);
+  }
+
   /* ---- toasts ---- */
 
   function toast(body, kind){
@@ -1099,6 +1155,16 @@ body.busy{cursor:progress}
 
   /* ---- dropdown menus ---- */
 
+  /* setMenuOpen opens or closes one menu and tells it (a "menuchange" event
+     with detail.open), so a menu can fetch what it shows only while open. */
+  function setMenuOpen(menu, open){
+    var was = menu.classList.contains("open");
+    menu.classList.toggle("open", open);
+    var toggle = menu.querySelector("[data-menu-toggle]");
+    if(toggle){ toggle.setAttribute("aria-expanded", open ? "true" : "false"); }
+    if(was !== open){ menu.dispatchEvent(new CustomEvent("menuchange", {detail: {open: open}})); }
+  }
+
   function bindMenus(){
     document.querySelectorAll(".menu").forEach(function(menu){
       var toggle = menu.querySelector("[data-menu-toggle]");
@@ -1106,18 +1172,13 @@ body.busy{cursor:progress}
 
       toggle.addEventListener("click", function(event){
         event.stopPropagation();
-        var open = menu.classList.toggle("open");
-        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        setMenuOpen(menu, !menu.classList.contains("open"));
       });
     });
 
     document.addEventListener("click", function(event){
       document.querySelectorAll(".menu.open").forEach(function(menu){
-        if(!menu.contains(event.target)){
-          menu.classList.remove("open");
-          var toggle = menu.querySelector("[data-menu-toggle]");
-          if(toggle){ toggle.setAttribute("aria-expanded", "false"); }
-        }
+        if(!menu.contains(event.target)){ setMenuOpen(menu, false); }
       });
     });
 
@@ -1125,7 +1186,7 @@ body.busy{cursor:progress}
       if(event.key !== "Escape"){ return; }
 
       document.querySelectorAll(".menu.open").forEach(function(menu){
-        menu.classList.remove("open");
+        setMenuOpen(menu, false);
       });
     });
   }
@@ -1137,8 +1198,16 @@ body.busy{cursor:progress}
      for the access code the gated ones need, read from internal/lanaccess
      via /api/lan-access/status. One panel, one source of truth for all of
      it, rather than the code living only in a terminal a person has since
-     closed. */
+     closed.
 
+     The code (and the pairing link built from it) is fetched only while the
+     person has this menu open, and forgotten - out of the page and out of
+     memory - when it closes. It used to be fetched every 15 seconds into
+     every page's DOM, menu closed or not, where any script or extension on
+     any page could read it (review 2026-11-02). Nothing else in the menu is
+     on screen while it is closed either, so nothing in it is polled then. */
+
+  var tunnelMenuOpen = false;
   var lastTunnelURL = "";
   var lastAdminURL = "";
   var lastLANURL = "";
@@ -1390,7 +1459,20 @@ body.busy{cursor:progress}
     }
   }
 
+  /* forgetAccessCode drops the code from memory and the panel once the menu
+     is closed. */
+  function forgetAccessCode(){
+    lastLAN = null;
+    lastDevices = null;
+    lastPhones = null;
+    clearTimeout(tunnelWaitTimer);
+    lastMobileState = "";
+    renderMobilePanel();
+  }
+
   async function refreshTunnel(){
+    if(!tunnelMenuOpen){ return; }
+
     try{
       var response = await fetch("/api/tunnel", {cache: "no-store"});
       if(response.ok){
@@ -1417,6 +1499,9 @@ body.busy{cursor:progress}
       var phonesResponse = await fetch("/api/phones", {cache: "no-store"});
       if(phonesResponse.ok){ lastPhones = await phonesResponse.json(); }
     }catch(e){ /* keep whatever is already rendered */ }
+
+    /* Closed while the answers were on their way: they are not shown. */
+    if(!tunnelMenuOpen){ forgetAccessCode(); return; }
 
     /* No address yet: ask again soon instead of at the next 15 s tick, until
        one arrives or the wait is over (the look after that says there is none). */
@@ -1705,19 +1790,27 @@ body.busy{cursor:progress}
 
     lastTunnelURL = document.body.dataset.tunnel || "";
     renderMobilePanel();
-    refreshTunnel();
-    setInterval(refreshTunnel, 15000);
+    var tunnelMenu = document.getElementById("tunnelMenu");
+    if(tunnelMenu){
+      tunnelMenu.addEventListener("menuchange", function(event){
+        tunnelMenuOpen = event.detail.open;
+        if(tunnelMenuOpen){ refreshTunnel(); }else{ forgetAccessCode(); }
+      });
+    }
+    poll(refreshTunnel, 15000);
 
     refreshModel();
-    setInterval(refreshModel, 60000);
+    poll(refreshModel, 60000);
 
+    /* These two tell a person about a tab in the background, so they keep a
+       slow pace while it is hidden. */
     refreshFinished();
-    setInterval(refreshFinished, 5000);
+    poll(refreshFinished, 5000, {hidden: 30000});
 
     /* Pages that poll query notes themselves feed the badge directly. */
     if(document.body.dataset.queryPoll !== "own"){
       refreshQueryBadge();
-      setInterval(refreshQueryBadge, 5000);
+      poll(refreshQueryBadge, 5000, {hidden: 30000});
     }
   });
 
@@ -1726,6 +1819,8 @@ body.busy{cursor:progress}
     icon: icon,
     button: button,
     getJSON: getJSON,
+    poll: poll,
+    later: later,
     relativeTimes: relativeTimes,
     toast: toast,
     markSent: markSent,

@@ -279,6 +279,11 @@ func (s *Service) execute(ctx context.Context, run qualification.PracticeRun, su
 	d, err = s.Sandbox.CreatePractice(ctx, spec)
 	if err != nil {
 		log.Printf("practice: create desktop: %v", err)
+		if errors.Is(err, desktop.ErrNoSecret) {
+			// Said, not swallowed: a run that cannot be made safely is the control plane's fault, not the worker's.
+			finish("error", "The practice desktop was not made: "+desktop.ErrNoSecret.Error()+".")
+			return
+		}
 		finish("error", "The practice desktop could not be created.")
 		return
 	}

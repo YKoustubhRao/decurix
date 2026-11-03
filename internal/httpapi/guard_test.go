@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
 )
 
@@ -16,9 +17,7 @@ import (
 func guardedServer(t *testing.T) (*Server, http.Handler) {
 	t.Helper()
 	s := &Server{}
-	s.nets.subnets = []netip.Prefix{netip.MustParsePrefix("172.30.0.0/16")}
-	s.nets.gateways = []netip.Addr{netip.MustParseAddr("172.30.0.1")}
-	s.nets.fetched = time.Now().Add(time.Hour)
+	s.netsFor = staticNets("172.30.0.0/16", "172.30.0.1")
 	s.callerAt = func(r *http.Request) (string, bool) {
 		if strings.HasPrefix(r.RemoteAddr, "172.30.0.5:") {
 			return "box-a", true
@@ -216,5 +215,91 @@ func TestReplyAnswersOnlyItsOwnCard(t *testing.T) {
 	}
 	if err := s.replyStillAnswers("box", "gone"); err == nil {
 		t.Error("a reply under a closed card was let through")
+	}
+}
+
+// staticNets is a network view of one Docker network (subnet, gateway) and any further ranges with no gateway the
+// host comes in through (other people's Docker networks).
+func staticNets(subnet, gateway string, others ...string) func() desktop.NetView {
+	v := desktop.NetView{Subnets: []netip.Prefix{netip.MustParsePrefix(subnet)}, Gateways: []netip.Addr{netip.MustParseAddr(gateway)}}
+	for _, o := range others {
+		v.Subnets = append(v.Subnets, netip.MustParsePrefix(o))
+	}
+	return func() desktop.NetView { return v }
+}
+
+// Found live in the third review round: a container on a Docker network the control plane did not know read the
+// access code, downloaded the backup, created a DAG and started a desktop, because an address in no known range
+// counted as a person. On the primary listener only loopback and a known gateway are a person now.
+func TestOnlyTheHostIsAPersonOnThePrimaryListener(t *testing.T) {
+	s, h := guardedServer(t)
+	s.netsFor = staticNets("172.30.0.0/16", "172.30.0.1", "172.31.0.0/16")
+	for _, route := range []struct{ method, target string }{
+		{http.MethodGet, "/api/lan-access/status"},
+		{http.MethodGet, "/api/backup"},
+		{http.MethodPost, "/api/dags/create"},
+		{http.MethodPost, "/api/desktops/create"},
+		{http.MethodPost, "/api/agent/events"}, // a callback route: still only a desktop's own address
+	} {
+		for remote, want := range map[string]int{
+			"127.0.0.1:50000":   http.StatusOK,        // the browser on this machine
+			"[::1]:50000":       http.StatusOK,        // the same, IPv6
+			"172.30.0.1:50000":  http.StatusOK,        // the browser through a port compose publishes (the gateway)
+			"172.25.0.2:50000":  http.StatusForbidden, // a container on a network nobody told the control plane of
+			"172.31.0.2:50000":  http.StatusForbidden, // a container on another Docker network
+			"192.168.1.20:5000": http.StatusForbidden, // the LAN: it uses the gated listener
+			"garbage":           http.StatusForbidden,
+		} {
+			got := guardDo(h, route.method, route.target, remote, map[string]string{"Host": "127.0.0.1:8080"}).Code
+			if got != want {
+				t.Errorf("%s %s from %s: got %d, want %d", route.method, route.target, remote, got, want)
+			}
+		}
+	}
+	// humansOnly says the same as the guard, on its own.
+	page := s.humansOnly(func(w http.ResponseWriter, r *http.Request) {})
+	for remote, want := range map[string]int{"127.0.0.1:1": 200, "172.30.0.1:1": 200, "172.25.0.2:1": 403, "172.30.0.5:1": 403} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/api/mail", nil)
+		r.RemoteAddr = remote
+		page(w, r)
+		if w.Code != want {
+			t.Errorf("humansOnly from %s: got %d, want %d", remote, w.Code, want)
+		}
+	}
+}
+
+// While Docker has said nothing of its networks the primary listener still serves the browser on loopback and refuses
+// everyone else, and the gated listener still lets a phone reach its login (round two refused LAN, phone and compose
+// browser requests then); a desktop's address known from this machine's own interfaces stays refused there.
+func TestNoNetworksKnownFailsClosedOnlyWhereThereIsNoLogin(t *testing.T) {
+	s := &Server{}
+	s.netsFor = func() desktop.NetView { return desktop.NetView{} }
+	served := func(h http.Handler, remote string) int {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/api/mail", nil)
+		r.RemoteAddr = remote
+		r.Host = "127.0.0.1:8080"
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	page := http.HandlerFunc(s.humansOnly(func(w http.ResponseWriter, r *http.Request) {}))
+	primary := s.GuardPrimary(page)
+	gated := s.GuardGated(MarkGated(page))
+	if got := served(primary, "127.0.0.1:1"); got != 200 {
+		t.Errorf("the browser on loopback with no networks known: %d", got)
+	}
+	if got := served(primary, "172.18.0.5:1"); got != 403 {
+		t.Errorf("an unknown address on the primary listener with no networks known: %d", got)
+	}
+	if got := served(gated, "192.168.1.20:1"); got != 200 {
+		t.Errorf("a phone on the gated listener with no networks known: %d", got)
+	}
+	s.netsFor = staticNets("172.18.0.0/16", "172.18.0.1")
+	if got := served(gated, "172.18.0.5:1"); got != 403 {
+		t.Errorf("a desktop on the gated listener: %d", got)
+	}
+	if got := served(gated, "172.18.0.1:1"); got != 200 {
+		t.Errorf("the host on the gated listener: %d", got)
 	}
 }

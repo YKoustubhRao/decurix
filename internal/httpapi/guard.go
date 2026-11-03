@@ -61,10 +61,10 @@ var containerRoutes = []containerRoute{
 	{path: "/api/host-files/stat", readOnly: true},
 	{path: "/api/host-files/read", readOnly: true},
 	{path: "/api/host-files/release"},
-	// Launchers for host and phone apps: each command is signed (winhost.ExecToken), each view carries a token.
+	// Launchers for host and phone apps: each command is signed (winhost.ExecToken), each link a launcher opens in the
+	// person's browser too (winhost.OpenToken), each view carries a token.
 	{path: "/api/host-bridge/exec"},
 	{path: "/api/host-bridge/open"},
-	{path: "/api/host-bridge/clip"},
 	{path: "/api/host-gui/start"},
 	{path: "/api/host-gui/stop"},
 	{path: "/api/host-gui/ws"},
@@ -102,6 +102,8 @@ func (s *Server) GuardPrimary(next http.Handler) http.Handler {
 			http.Error(w, "refused a cross-site request", http.StatusForbidden)
 			return
 		}
+		// Anything but the host is held to the desktops' callbacks, and on them must be a desktop's address: a container
+		// on a network the control plane does not know is no person (review 2026-11-02, third round).
 		if s.fromContainer(r) {
 			if !containerMayCall(r.Method, r.URL.Path) {
 				jsonStatusError(w, http.StatusForbidden, "not available from inside a desktop")
@@ -119,7 +121,8 @@ func (s *Server) GuardPrimary(next http.Handler) http.Handler {
 }
 
 // GuardGated wraps the gated listener: no cross-site writes or WebSockets (its access-code cookie is sent along with
-// a cross-site form post), and no desktop at all - a desktop has no business there, and must not try codes.
+// a cross-site form post), and no container at all - a desktop has no business there, and must not try codes. An
+// address in no known Docker network (a phone, a LAN laptop) reaches the login, which is this listener's boundary.
 func (s *Server) GuardGated(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		noFraming(w)
@@ -127,7 +130,7 @@ func (s *Server) GuardGated(next http.Handler) http.Handler {
 			http.Error(w, "refused a cross-site request", http.StatusForbidden)
 			return
 		}
-		if s.fromContainer(r) {
+		if s.fromKnownContainer(r) {
 			jsonStatusError(w, http.StatusForbidden, "not available from inside a desktop")
 			return
 		}
@@ -217,12 +220,8 @@ func (s *Server) callerDesktop(r *http.Request) (string, bool) {
 	if s.Desktops == nil {
 		return "", false
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	addr, err := netip.ParseAddr(host)
-	if err != nil {
+	addr := remoteAddr(r)
+	if !addr.IsValid() {
 		return "", false
 	}
 	return s.Desktops.DesktopAt(r.Context(), addr)

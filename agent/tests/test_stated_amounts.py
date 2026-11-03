@@ -22,7 +22,7 @@ INBOX = Path(r"C:\Users\Administrator\decurix-tests\wide\process\data\P6\inbox")
 LIVE = fixture_paths.fixture("p6_tracker_live.xlsx")  # the run's tracker (pc3, read only)
 
 
-@unittest.skipUnless(INBOX.is_dir(), "round 5 P6's inbox is not on this machine")
+@fixture_paths.skip_unless(INBOX.is_dir(), "round 5 P6's inbox is not on this machine")
 class TheLiveInbox(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

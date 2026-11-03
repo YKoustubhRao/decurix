@@ -647,8 +647,8 @@
     sendWorkflow("/workflow start " + workflowExample.value + " " + JSON.stringify({source_files: files, instructions: instructions}), workflowStartButton);
   });
   refreshWorkflows();
-  setInterval(function(){
-    if(document.visibilityState === "visible" && !workflowSending){ refreshWorkflows(); }
+  Decurix.poll(function(){
+    if(!workflowSending){ refreshWorkflows(); }
   }, 5000);
 })();
 </script>

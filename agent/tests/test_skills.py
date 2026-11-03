@@ -23,7 +23,7 @@ from unittest import mock
 # Imported first: it stubs decurix_agent.config on a machine with no desktop.
 from test_recordings import FakeScreen, event, field
 
-from decurix_agent import http_api, skill_task, state
+from decurix_agent import http_api, playbooks, skill_task, state
 from decurix_agent.computer import cli, learning, mcp_server, recording, replay, skill_engine, skills
 
 
@@ -401,6 +401,7 @@ class TeachingBase(unittest.TestCase):
         recording.ROOT, skills.ROOT = Path(self.tmp.name) / "recordings", Path(self.tmp.name) / "skills"
         replay.FIND_SECONDS = replay.EXPECT_SECONDS = replay.POLL_SECONDS = 0
         state.paused_skill = None
+        playbooks.begin()  # (the commands of an earlier test's task are no part of this one: skill_task._gate reads them)
 
         self.asked, self.finals, self.remembered = [], [], []
         patches = [

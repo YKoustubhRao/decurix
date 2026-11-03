@@ -58,8 +58,13 @@ def main():
                 match = re.search(r"Workflow ([\w-]+): completed\.", reply)
                 if match:
                     run_id = match.group(1)
-                    # This is an independent process re-reading every artifact,
-                    # not trusting chat or the model's success report.
+                    # A second process re-reads every artifact rather than trust
+                    # the chat or the model's report - but with the run's own
+                    # check code (artifact_evidence), so it proves the files are
+                    # still what the run's checks saw, not that those checks are
+                    # right. It is not an independent check, and the report says
+                    # so (review 2026-11-02): ground truth for a workflow lives
+                    # in a checker outside the repository.
                     code = ("import json; from decurix_agent import config; "
                             "from decurix_agent.workflow_runner import WorkflowRunner,artifact_evidence; "
                             "r=WorkflowRunner(config.DECURIX_DIR/'workflows'); "
@@ -81,7 +86,9 @@ def main():
         print(json.dumps(outcome), flush=True)
         if not outcome["passed"]:
             break  # Do not feed a new workflow into a pending human query.
-    report = {"mode": "live_desktop", "passed": len(results) == len(selected) and all(r["passed"] for r in results), "results": results}
+    report = {"mode": "live_desktop", "passed": len(results) == len(selected) and all(r["passed"] for r in results),
+              "verification": "the run's own artifact checks re-read in a second process; not an independent checker",
+              "results": results}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return 0 if report["passed"] else 1

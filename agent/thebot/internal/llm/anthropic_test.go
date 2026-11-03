@@ -119,3 +119,33 @@ func TestAnthropicChatMarksACutOffAnswer(t *testing.T) {
 		}
 	}
 }
+
+// Anthropic has no "system" role inside messages[]: several system-role messages are joined into the top-level
+// `system` field, never sent as a messages[] entry (which the API rejects).
+func TestAnthropicMergesEverySystemMessage(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&body)
+		json.NewEncoder(w).Encode(map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}})
+	}))
+	defer srv.Close()
+	p := &AnthropicProvider{APIKey: "k", Client: srv.Client(), BaseURL: srv.URL}
+	_, err := p.Chat(context.Background(), "claude-test", []Message{
+		{Role: "system", Content: "frame one"},
+		{Role: "user", Content: "hi"},
+		{Role: "system", Content: "frame two"},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["system"] != "frame one\n\nframe two" {
+		t.Errorf("system = %v, want both system messages joined", body["system"])
+	}
+	msgs, _ := body["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("messages length = %d, want 1 (no system-role message left in the array)", len(msgs))
+	}
+	if m, _ := msgs[0].(map[string]any); m["role"] != "user" {
+		t.Errorf("remaining message role = %v, want user", m["role"])
+	}
+}

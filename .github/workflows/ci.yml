@@ -45,9 +45,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # What the desktop image installs from Ubuntu for the agent (docker/desktop.basic.Dockerfile).
-      - run: pip install openpyxl pypdf python-docx pillow
+      # What the desktop image installs for the agent (docker/desktop.basic.Dockerfile), python-pptx at its pin.
+      - run: pip install openpyxl pypdf python-docx pillow python-pptx==1.0.2
+      # The script sandbox's own test must run here, not skip: Ubuntu 24.04 holds unprivileged user namespaces back
+      # (AppArmor) unless told otherwise, and DECURIX_REQUIRE_SANDBOX=1 turns that test's skip into a failure
+      # (agent/tests/fixture_paths.py). Tests that need the live-run fixtures still skip - those are customer data and
+      # never in the repository or CI - but the suite ends by counting them, and this job shows it as a warning.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || echo "no such sysctl on this runner"
       - run: PYTHONPATH=agent python -m unittest discover -s agent/tests
+        env:
+          DECURIX_REQUIRE_SANDBOX: "1"
 
   javascript:
     runs-on: ubuntu-24.04
@@ -58,6 +65,8 @@ jobs:
           node-version: "22"
       # The browser extension's own logic, run outside a browser (no browser is launched).
       - run: node --test agent/tests/browser_extension.test.js
+      # The dashboard pages' own scripts: they parse, and the shared chrome polls only while a page is seen.
+      - run: node --test web/templates.test.js
       # The Electron shell's main-process logic (no window is opened).
       - run: npm ci
         working-directory: desktop/electron

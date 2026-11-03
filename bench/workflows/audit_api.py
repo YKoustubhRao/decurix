@@ -3,6 +3,11 @@ import argparse
 import json
 from pathlib import Path
 
+# The checks here are assert statements. Under python -O they all vanish, and this would report a pass it never
+# checked (review 2026-11-02): it refuses to run that way.
+if not __debug__:
+    raise SystemExit("run this without -O: its checks are assert statements, which -O removes")
+
 
 def audit(root):
     skill = json.loads((root / "api-skills/add-a-customer.json").read_text())

@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -52,14 +53,27 @@ type jobRecord struct {
 	Log      []string
 	// Usage is what this job's model calls read and wrote (llm.Metered).
 	Usage       *llm.Usage
+	startedAt   time.Time
 	cancel      context.CancelFunc
 	done        chan struct{}
 	subscribers map[chan string]bool
 }
 
 func newJobRecord(id, prompt string) *jobRecord {
-	return &jobRecord{ID: id, Prompt: prompt, Status: "running", done: make(chan struct{}), subscribers: map[chan string]bool{}}
+	return &jobRecord{ID: id, Prompt: prompt, Status: "running", startedAt: time.Now(), done: make(chan struct{}), subscribers: map[chan string]bool{}}
 }
+
+const (
+	// maxRunningJobs caps how many jobs run at once. Each job is a model-driven loop that holds memory and a worker
+	// shell, and the worker (which reads untrusted email and web pages) drives soul's API; without a cap, a flood of
+	// /api/chat posts spawns unbounded goroutines and job records. Over the cap a new request is refused (429) rather
+	// than queued, so the caller backs off instead of soul growing without bound. The scheduler's own model-
+	// concurrency limit (llm.Limited) still bounds the model calls these running jobs make.
+	maxRunningJobs = 16
+	// maxJobRecords bounds how many finished job records are kept for status reads; the oldest finished ones are
+	// pruned past it, so the jobs map does not grow for the life of the process.
+	maxJobRecords = 256
+)
 
 // finish marks the job complete - a real channel close, not a magic
 // string threaded through the log line stream (that was tried first and
@@ -400,6 +414,18 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	id := genID()
 	job := newJobRecord(id, body.Prompt)
 	s.jobsMu.Lock()
+	running := 0
+	for _, j := range s.jobs {
+		if !j.isDone() {
+			running++
+		}
+	}
+	if running >= maxRunningJobs {
+		s.jobsMu.Unlock()
+		writeJSON(w, 429, map[string]any{"error": fmt.Sprintf("busy: %d jobs already running (max %d) - retry shortly", running, maxRunningJobs)})
+		return
+	}
+	s.pruneFinishedJobsLocked()
 	s.jobs[id] = job
 	s.jobsMu.Unlock()
 
@@ -413,6 +439,10 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		if body.Reply == nil || *body.Reply {
 			req.Resume = paused
 			job.Resumed = true
+			// With an approval gate a reading in the request is not believed; the gate's own is (gate.go).
+			if gatePresent() {
+				req.Reading = gateReading(body.Prompt)
+			}
 			job.appendLog(fmt.Sprintf("scheduler: this request answers the paused job %q", truncateLog(paused.Prompt, 80)))
 		} else {
 			job.appendLog(fmt.Sprintf("scheduler: dropping the paused job %q - this is a new request", truncateLog(paused.Prompt, 80)))
@@ -476,6 +506,24 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, 200, map[string]any{"id": id})
+}
+
+// pruneFinishedJobsLocked drops the oldest finished job records once the map is at maxJobRecords, so a long-lived
+// soul does not keep every job it ever ran. A running job is never pruned. Called with jobsMu held.
+func (s *server) pruneFinishedJobsLocked() {
+	if len(s.jobs) < maxJobRecords {
+		return
+	}
+	var finished []*jobRecord
+	for _, j := range s.jobs {
+		if j.isDone() {
+			finished = append(finished, j)
+		}
+	}
+	sort.Slice(finished, func(a, b int) bool { return finished[a].startedAt.Before(finished[b].startedAt) })
+	for i := 0; i < len(finished) && len(s.jobs) >= maxJobRecords; i++ {
+		delete(s.jobs, finished[i].ID)
+	}
 }
 
 func truncateLog(s string, n int) string {

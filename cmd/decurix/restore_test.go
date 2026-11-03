@@ -110,3 +110,30 @@ func TestRestoreRefusesWhatIsNotABackup(t *testing.T) {
 		})
 	}
 }
+
+// A backup made since 2026-11-03 carries no key files and says what it left out; the restore reads that list back, to
+// tell the person what to enter again, and restores what is there.
+func TestRestoreReadsWhatTheBackupLeftOut(t *testing.T) {
+	data := t.TempDir()
+	backup := writeArchive(t, map[string]string{
+		"manifest.json":             `{"version": 1, "secrets_left_out": ["the model API keys", "mailbox passwords"]}`,
+		"data/" + sqlitedb.FileName: "new db",
+	})
+
+	files, leftOut, err := unpackData(backup, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0] != sqlitedb.FileName {
+		t.Errorf("files = %v", files)
+	}
+	if len(leftOut) != 2 || leftOut[0] != "the model API keys" {
+		t.Errorf("left out = %v", leftOut)
+	}
+	if code := runRestore(backup, data, nobody, false); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if got := read(t, filepath.Join(data, sqlitedb.FileName)); got != "new db" {
+		t.Errorf("database = %q", got)
+	}
+}

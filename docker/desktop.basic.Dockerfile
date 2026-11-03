@@ -286,13 +286,23 @@ ENV PATH="/opt/tools/bin:/opt/tools/go/bin:/opt/tools/node/bin:/opt/tools/rust/b
     PIP_CACHE_DIR="/var/cache/decurix/pip" \
     HF_HOME="/var/cache/decurix/huggingface"
 
-RUN chmod 666 /etc/passwd /etc/group
+# The worker must not be able to become root, or nothing below root's reach (the approval gate's state, its token)
+# is a boundary (docs/gate-boundary.md). The base image gave the desktop user `sudo` with the image's public default
+# password, setuid helpers, and a world-writable /etc/passwd (so its startup could run `sudo chown` as the worker).
+# All of that goes: the entrypoint does the one-time setup as root and then drops to the desktop user with no
+# capabilities. The gate gets a user of its own.
+RUN rm -f /etc/sudoers.d/headless /dockerstartup/.initial_sudo_password \
+    && passwd -l root && passwd -l headless \
+    && chmod u-s /usr/bin/sudo /usr/bin/su /usr/bin/passwd /usr/bin/gpasswd /usr/bin/newgrp /usr/bin/chfn /usr/bin/chsh /usr/bin/mount /usr/bin/umount \
+    && useradd --system --no-create-home --shell /usr/sbin/nologin decurixgate \
+    && chmod 644 /etc/passwd /etc/group
+COPY agent/decurix-entrypoint.sh /opt/decurix-entrypoint.sh
+RUN chmod 755 /opt/decurix-entrypoint.sh
 
 # A library a task needs beyond the ones installed above: `pip install --user NAME` puts it in the worker's own home
 # (~/.local, on the desktop's persistent volume), so it is there after a restart and needs no administrator rights.
 # Not PIP_USER=1: a venv's pip refuses a --user install, and the coding harness installs into project venvs.
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-USER headless
-
-ENTRYPOINT ["/usr/bin/tini", "--", "/dockerstartup/startup.sh"]
+# No USER line: the entrypoint starts as root for its setup and drops to headless (agent/decurix-entrypoint.sh).
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/decurix-entrypoint.sh"]

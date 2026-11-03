@@ -779,5 +779,5 @@ def reply_on_task(task_id, text, kind="final", still_working=False):
     """
 
     filename = time.strftime("%d%m%Y%H%M%S") + "_r.txt"
-    return send_query(filename, text, kind=kind, reply=text, quiet=True, checked=True, task_id=task_id,
+    return send_query(filename, text, kind=kind, reply=text, quiet=True, checked=False, task_id=task_id,
                       with_usage=False, still_working=still_working)

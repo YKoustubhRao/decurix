@@ -35,41 +35,117 @@ IFSC = re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b")
 IBAN = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b")
 SWIFT = re.compile(r"\b[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b")
 UPI = re.compile(r"\b[\w.-]{2,}@[a-z]{2,}\b(?![.\w])")
-# A column whose cells are where money goes: an account, an IFSC/IBAN/SWIFT/UPI id.
+# Words of an account or a bank identifier (a cell that holds one is not a payee's name). Which columns hold where
+# money goes is bank_columns'.
 ID_COLUMN = re.compile(r"\b(?:a/?c|acc(?:oun)?t|account\s*(?:no|number|#)?|ifsc|iban|swift|bic|upi|vpa|routing|sort\s*code)\b",
                        re.I)
 # A column naming who is paid.
 PAYEE_COLUMN = re.compile(r"\b(?:vendor|supplier|payee|beneficiary|party|customer|employee|name|account\s*name)\b", re.I)
-# A file that holds payments: a column of amounts.
-AMOUNT_COLUMN = re.compile(r"\b(?:amount|payable|pay(?:ment)?|paid|net|total|value|refund|transfer)\b", re.I)
 MAX_ROWS = 5000
+
+# Review 2026-11-03: any table with an "account" column and a column of figures was taken for a payment file, so a
+# sales report with customers' bank accounts, a ledger's "GL Account" or a stock table's "Stock Account" drew "PAYEES
+# NOT CHECKED". A payment file is a table of money going out to bank details: a column of bank details and a column of
+# what is paid.
+# A column of bank details by its own name.
+_BANK_DETAIL = re.compile(r"\b(?:ifsc|iban|swift|bic|micr|upi|vpa|routing|sort\s*code)\b", re.I)
+# An account column that is a ledger's, not a bank's: "GL Account", "Account Head", "Stock Account", "Account Name".
+_LEDGER_ACCOUNT = re.compile(r"\b(?:gl|g/l|ledger|head|group|code|name|type|category|class|stock|expense|income|revenue"
+                             r"|sales|purchases?|cost|control|sub|parent|nature|description|holder|opening|closing"
+                             r"|balance)\b", re.I)
+_ACCOUNT_WORD = re.compile(r"\b(?:a/?c|acc(?:oun)?t|account)\b", re.I)
+# Who an account is for, or a bank, in its own label: "Bank Account", "Beneficiary A/c".
+_BANK_ACCOUNT = re.compile(r"\b(?:bank|beneficiary|payee|vendor|supplier|employee|party|creditor)\b", re.I)
+_ACCOUNT_NUMBER = re.compile(r"\b(?:no|number|num|#)\b|#", re.I)
+# A column of what is paid out, by its last word ("Amount Payable (Rs)", "Net Pay", "Total") or by a word of paying
+# anywhere in it ("Payment Value") - never a measure of something else ("Total Sales", "Taxable Value", "GST Amount").
+_PAID_HEAD = {"amount", "amt", "payable", "payment", "pay", "paid", "transfer", "refund", "remittance", "disbursement",
+              "net", "total"}
+_PAID_WORD = re.compile(r"\b(?:pay|payment|payable|paid|transfer|remit(?:tance)?|refund|disburse(?:ment)?)\b", re.I)
+_NOT_PAID = re.compile(r"\b(?:sales|revenue|turnover|taxable|tax|gst|cgst|sgst|igst|cess|stock|opening|closing|limit"
+                       r"|budget)\b", re.I)
+
+
+def _paid_column(label):
+    """Whether a column's label names an amount paid out."""
+
+    text = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", str(label or "")).lower()
+    words = re.findall(r"[a-z]+", text)
+    if not words or _NOT_PAID.search(text):
+        return False
+    return words[-1] in _PAID_HEAD or _PAID_WORD.search(text) is not None
+
+
+def bank_columns(header):
+    """The columns of a table's header that hold bank details: an IFSC, IBAN, SWIFT, UPI... column by its name, and an
+    account column that is a bank's - its label says so ("Bank Account", "Beneficiary A/c"), or the table has a
+    column of bank details or a bank's name beside it, or it is an account number ("Account No") in a table that names
+    a payee. A ledger's account ("GL Account", "Account Head", "Account Name") is never one."""
+
+    labels = [str(h or "") for h in header]
+    has_bank = any(_BANK_DETAIL.search(h) or re.search(r"\b(?:bank|branch)\b", h, re.I) for h in labels)
+    has_payee = any(PAYEE_COLUMN.search(h) or re.search(r"\bholder\b", h, re.I) for h in labels)
+    cols = []
+    for i, h in enumerate(labels):
+        if _BANK_DETAIL.search(h):
+            cols.append(i)
+        elif _ACCOUNT_WORD.search(h) and not _LEDGER_ACCOUNT.search(h):
+            if _BANK_ACCOUNT.search(h) or has_bank or (has_payee and _ACCOUNT_NUMBER.search(h)):
+                cols.append(i)
+    return cols
+
+
+def payment_table(header):
+    """(bank columns, payee column or None) when a table's header is a payment file's - bank details and an amount
+    paid out - else None."""
+
+    cols = bank_columns(header)
+    if not cols or not any(_paid_column(h) for i, h in enumerate(header) if i not in cols):
+        return None
+    payee_col = next((i for i, h in enumerate(header) if PAYEE_COLUMN.search(h or "") and i not in cols
+                      and not _ACCOUNT_WORD.search(h or "")), None)
+    if payee_col is None:
+        payee_col = next((i for i, h in enumerate(header) if PAYEE_COLUMN.search(h or "") and i not in cols), None)
+    return cols, payee_col
 
 
 # Words of a name that say what kind of body it is, not which one: "ABC Traders Pvt Ltd" is "ABC Traders".
-_LEGAL_FORM = {"pvt", "private", "ltd", "limited", "llp", "inc", "llc", "co", "company", "corp", "corporation", "the"}
+_LEGAL_FORM = {"pvt", "private", "ltd", "limited", "llp", "inc", "llc", "co", "company", "corp", "corporation", "the",
+               "and"}
 
 
 def _name_tokens(text):
-    """A party's name as whole lower-case words, its legal form ("Pvt Ltd", "M/s") left out."""
+    """A party's name as whole lower-case words, its legal form ("Pvt Ltd", "M/s"), "&" and a bracket's words (a
+    branch, a city) left out."""
 
     text = re.sub(r"(?i)\bm/s\b\.?", " ", str(text or ""))
+    text = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", text)
     return [w for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in _LEGAL_FORM]
 
 
 def names_payee(payee, row):
-    """Whether a record's row (its cells joined by " | ") names the payee: the payee's whole words, in order, are the
-    words of one of its cells or a run of them - never a part of a word. Found in review (2026-11-02): matched as a
-    substring, "Ram" was on record wherever "Ramesh" was, and another party's account passed for the payee's."""
+    """Whether a record's row (its cells joined by " | ") names the payee: one of its cells is the payee's name, word
+    for word, its legal form aside ("M/s Shree Ganesh Packaging Pvt Ltd" is "Shree Ganesh Packaging"). Found in review
+    (2026-11-02): matched as a substring, "Ram" was on record wherever "Ramesh" was; and (2026-11-03) as a run of
+    words, "Ram" was on record wherever "Sita Ram Traders" was and "ABC Pvt Ltd" wherever "ABC Traders" was - another
+    party's account passed for the payee's. A name written another way is not this payee: it is asked about, never
+    passed."""
 
     wanted = _name_tokens(payee)
     if not wanted:
         return False
+    return any(_name_tokens(cell) == wanted for cell in str(row or "").split(" | "))
+
+
+def _named_in_text(party, text):
+    """Whether free text (a message) names a party: its whole words, in order, somewhere in it."""
+
+    wanted = _name_tokens(party)
+    if not wanted:
+        return False
+    words = _name_tokens(text)
     n = len(wanted)
-    for cell in str(row or "").split(" | "):
-        words = _name_tokens(cell)
-        if any(words[i:i + n] == wanted for i in range(len(words) - n + 1)):
-            return True
-    return False
+    return any(words[i:i + n] == wanted for i in range(len(words) - n + 1))
 
 
 def _identifiers(text, column=""):
@@ -122,7 +198,7 @@ def record_identifiers(path):
 
     out = {}
     for header, rows in _tables(path, report=True):
-        id_cols = [i for i, h in enumerate(header) if ID_COLUMN.search(h or "")]
+        id_cols = bank_columns(header)
         if not id_cols:
             continue
         for row in rows:
@@ -209,10 +285,10 @@ def _payment_rows(path):
 
     out = []
     for header, rows in _tables(path, report=True):
-        id_cols = [i for i, h in enumerate(header) if ID_COLUMN.search(h or "")]
-        if not id_cols or not any(AMOUNT_COLUMN.search(h or "") for h in header):
+        table = payment_table(header)
+        if table is None:
             continue
-        payee_col = next((i for i, h in enumerate(header) if PAYEE_COLUMN.search(h or "") and i not in id_cols), None)
+        id_cols, payee_col = table
         for n, row in enumerate(rows, 2):
             payee = (row[payee_col] if payee_col is not None and payee_col < len(row) else
                      next((c for c in row if re.search(r"[A-Za-z]{3}", c or "") and not ID_COLUMN.search(c)), ""))
@@ -377,7 +453,7 @@ def _suspicious(found):
         domain = sender.split("@", 1)[1]
         text = " ".join([display or "", body or ""]).lower()
         for party, known in domains.items():
-            if party and names_payee(party, text) and domain not in known:
+            if party and _named_in_text(party, text) and domain not in known:
                 out.append((message, subject,
                             f"The message \"{subject}\" says it is from {party.title()}, but it comes from {domain}; the "
                             f"record has {', '.join(sorted(known))} for them - treat it as suspicious and use the details "

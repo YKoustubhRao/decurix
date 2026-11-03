@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/keepawake"
 	"github.com/YKoustubhRao/decurix/internal/mailtrigger"
@@ -146,16 +144,15 @@ func TestKeepAwakeSaysWhetherTheHostShouldStayAwake(t *testing.T) {
 
 func TestTheMailboxIsNotAvailableToDesktops(t *testing.T) {
 	s := mailServer(t)
-	s.nets.subnets = []netip.Prefix{netip.MustParsePrefix("172.18.0.0/16")}
-	s.nets.gateways = []netip.Addr{netip.MustParseAddr("172.18.0.1")}
-	s.nets.fetched = time.Now()
+	s.netsFor = staticNets("172.18.0.0/16", "172.18.0.1")
 
 	handler := s.humansOnly(s.mailStateHandler)
 
 	for addr, want := range map[string]int{
 		"127.0.0.1:50000":           http.StatusOK,        // the binary on the host: a browser on loopback
 		"172.18.0.1:50000":          http.StatusOK,        // compose: the browser, through the published port
-		"192.168.1.20:50000":        http.StatusOK,        // a phone on the LAN listener
+		"192.168.1.20:50000":        http.StatusForbidden, // no person on the primary listener: phones use the gated one
+		"172.25.0.2:50000":          http.StatusForbidden, // a container on a network the control plane does not know
 		"172.18.0.5:50000":          http.StatusForbidden, // a desktop
 		"[::ffff:172.18.0.9]:50000": http.StatusForbidden,
 	} {
@@ -169,14 +166,23 @@ func TestTheMailboxIsNotAvailableToDesktops(t *testing.T) {
 			t.Errorf("%s: status = %d, want %d", addr, rec.Code, want)
 		}
 	}
+	// The gated listener has its own login: a phone there is a person, a desktop is not.
+	gated := MarkGated(handler)
+	for addr, want := range map[string]int{"192.168.1.20:50000": http.StatusOK, "172.18.0.5:50000": http.StatusForbidden} {
+		req := httptest.NewRequest(http.MethodGet, "/api/mail", nil)
+		req.RemoteAddr = addr
+		rec := httptest.NewRecorder()
+		gated.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Errorf("%s on the gated listener: status = %d, want %d", addr, rec.Code, want)
+		}
+	}
 }
 
 func TestTheEmailPageIsPartOfTheTriggersPage(t *testing.T) {
 	s := mailServer(t)
 	s.Web = webui.NewRenderer()
-	s.nets.subnets = []netip.Prefix{netip.MustParsePrefix("172.18.0.0/16")}
-	s.nets.gateways = []netip.Addr{netip.MustParseAddr("172.18.0.1")}
-	s.nets.fetched = time.Now()
+	s.netsFor = staticNets("172.18.0.0/16", "172.18.0.1")
 
 	mux := http.NewServeMux()
 	s.RegisterRoutes(mux)

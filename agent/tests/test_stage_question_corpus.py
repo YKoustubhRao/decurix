@@ -115,7 +115,7 @@ class Pipeline:
         return "carry_on"
 
 
-@unittest.skipUnless(CORPUS_PATH.is_file(), f"fixture not here: {CORPUS_PATH}")
+@fixture_paths.skip_unless(CORPUS_PATH.is_file(), f"fixture not here: {CORPUS_PATH}")
 class TheCorpus(unittest.TestCase):
     def test_every_live_question_ends_where_its_reading_sends_it(self):
         self.assertGreaterEqual(len(CORPUS["cases"]), 20)
@@ -154,7 +154,7 @@ class TheCorpus(unittest.TestCase):
         self.assertEqual(pipeline.ask(), "person")
 
 
-@unittest.skipUnless(CORPUS_PATH.is_file(), f"fixture not here: {CORPUS_PATH}")
+@fixture_paths.skip_unless(CORPUS_PATH.is_file(), f"fixture not here: {CORPUS_PATH}")
 class TheBounceCap(unittest.TestCase):
     def test_a_question_reaches_the_person_after_two_send_backs_whatever_routes_fire(self):
         case = {"request": "P4", "headers": {"Mobile": ["joiners_tracker_Nov2026.xlsx"]},

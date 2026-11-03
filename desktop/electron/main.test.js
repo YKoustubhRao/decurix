@@ -382,6 +382,9 @@ test('a first launch imports the distro, prepares it, starts Docker and the stac
   // Compose runs in the staged stack, with the project a checkout's stack has.
   const up = result.spawns.find((s) => Array.from(s.args).includes('up'));
   assert.deepEqual(Array.from(up.args).slice(0, 10), ['-d', 'Decurix', '-u', 'root', '--cd', '/var/lib/decurix/stack', '-e', 'env', 'COMPOSE_PROJECT_NAME=decurix', 'DECURIX_HOST_HOME=/home']);
+  // The gated port is published on the distro's loopback only: a desktop must not come back in through Docker's
+  // proxy on another address of the distro, where it looks like this computer (review 2026-11-02).
+  assert.ok(Array.from(up.args).includes('DECURIX_LAN_BIND=127.0.0.1'));
   assert.equal(up.options.windowsHide, true);
 
   // The person's settings name the control plane's own model server.

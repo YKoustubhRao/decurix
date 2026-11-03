@@ -274,8 +274,6 @@ func TestPackHostBridgeLaunchers(t *testing.T) {
 
 	expected := []string{
 		".local/bin/host-run",
-		".local/bin/host-open",
-		".local/bin/host-clip",
 	}
 
 	for _, exp := range expected {
@@ -285,6 +283,9 @@ func TestPackHostBridgeLaunchers(t *testing.T) {
 	}
 
 	unexpected := []string{
+		// a link opened in the person's browser is signed into a launcher too, and nothing sets their clipboard
+		".local/bin/host-open",
+		".local/bin/host-clip",
 		// generic "run anything on the host" wrappers: host commands are signed into launchers now
 		".local/bin/win-run",
 		".local/bin/mac-run",
@@ -333,7 +334,7 @@ func TestSelectedAppsPackaging(t *testing.T) {
 			if !ok {
 				t.Fatalf("missing def for %s", tc.id)
 			}
-			files := pack(t, func(tw *tar.Writer) error { return def.packFn(tw, []string{}) })
+			files := pack(t, func(tw *tar.Writer) error { return def.packFn(tw, []string{}, packContext{}) })
 			if _, found := files[tc.expectedFile]; !found {
 				t.Errorf("expected %s to be packed when %s is selected", tc.expectedFile, tc.id)
 			}
@@ -745,7 +746,7 @@ func TestTheHostIsOnlyAskedAboutAnAppOnce(t *testing.T) {
 	}
 }
 
-// host-run can only open links, set the clipboard and run a signed launcher command. The old generic form
+// host-run can only open a signed link and run a signed launcher command. The old generic form
 // ("host-run rm -rf ...", and win-run/mac-run which wrapped it) is what let a desktop's agent run anything on the host.
 func TestHostRunRefusesToRunAnUnsignedCommand(t *testing.T) {
 	requireBash(t)
@@ -773,13 +774,28 @@ func TestStaticLaunchersOpenALinkInsteadOfRunningCmd(t *testing.T) {
 		}
 		buf := new(bytes.Buffer)
 		tw := tar.NewWriter(buf)
-		if err := def.packFn(tw, nil); err != nil {
+		if err := def.packFn(tw, nil, packContext{}); err != nil {
 			t.Fatal(err)
 		}
 		tw.Close()
 		if strings.Contains(buf.String(), "host-run cmd.exe") {
 			t.Errorf("%s launcher still asks the host to run cmd.exe", def.id)
 		}
+		if strings.Contains(buf.String(), "host-run open") {
+			t.Errorf("%s launcher opens a link on the host with no signature", def.id)
+		}
+	}
+}
+
+// A web app's launcher opens its own site in the person's browser only with a token for that site and that desktop:
+// the control plane opens nothing else (winhost.OpenToken).
+func TestWebAppLauncherSignsItsOwnSite(t *testing.T) {
+	pc := packContext{DesktopID: "box-a", Secret: []byte("secret")}
+	files := pack(t, func(tw *tar.Writer) error { return packWebAppHost(tw, pc, "claude", "Claude", "https://claude.ai") })
+	script := files[".local/bin/claude-host"].data
+	want := "exec /home/headless/.local/bin/host-run open " + winhost.OpenToken(pc.Secret, "box-a", "https://claude.ai") + " 'https://claude.ai'"
+	if !strings.Contains(script, want) {
+		t.Fatalf("launcher does not open its site signed: %s", script)
 	}
 }
 
@@ -815,7 +831,7 @@ func TestNoAppCopiesTheHostsCredentials(t *testing.T) {
 		default:
 			t.Errorf("unexpected host app definition %q: only launchers may be copied into a desktop", def.id)
 		}
-		files := pack(t, func(tw *tar.Writer) error { return def.packFn(tw, nil) })
+		files := pack(t, func(tw *tar.Writer) error { return def.packFn(tw, nil, packContext{}) })
 		for name := range files {
 			lower := strings.ToLower(name)
 			for _, secret := range []string{".ssh", ".config/google-chrome", ".mozilla", ".config/gh", ".docker", ".config/gcloud", ".azure", "keyrings", "cookies", "login data"} {

@@ -19,6 +19,7 @@ import openpyxl
 from temp_case import TempDirCase
 
 from decurix_agent import payees, produced
+import fixture_paths  # noqa: E402 - what may not be on this machine is counted
 
 LIVE_IN = Path(r"C:\Users\Administrator\decurix-tests\wide\process\data\P3")
 LIVE_OUT = Path(r"C:\Users\Administrator\decurix-tests\wide\process\out\P3\20261020-034132\worker\P3_payment_run\outputs")
@@ -219,7 +220,7 @@ class AtTheFinalCheck(FileWorkIsChecked):
         self.assertIn("accounts@gujaratpantrysupplies.example", self.asked[-1][0])
 
 
-@unittest.skipUnless(LIVE_IN.is_dir() and LIVE_OUT.is_dir(), "the round's P3 files are not on this machine")
+@fixture_paths.skip_unless(LIVE_IN.is_dir() and LIVE_OUT.is_dir(), "the round's P3 files are not on this machine")
 class TheRoundsOwnFiles(TempDirCase):
 
     def setUp(self):
@@ -245,7 +246,7 @@ class TheRoundsOwnFiles(TempDirCase):
         # request's folder that has emails and masters of its own.
         requests = LIVE_IN.parent.parent / "requests.json"
         if not requests.is_file():
-            self.skipTest("requests.json is not on this machine")
+            raise fixture_paths.missing("requests.json is not on this machine")
         import json
         p3 = json.loads(requests.read_text(encoding="utf-8"))["P3"]
         work = self.dir / "work"
