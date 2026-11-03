@@ -2,10 +2,18 @@ package engine
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"brainiac/internal/worker"
 )
+
+// evidenceTagRe is an evidence tag written inside content.
+var evidenceTagRe = regexp.MustCompile(`(?i)<(/?)(evidence)`)
+
+// inert makes content unable to open or close an evidence block: what a
+// picture, a recording or a web page says stays inside its own block.
+func inert(s string) string { return evidenceTagRe.ReplaceAllString(s, "&lt;${1}${2}") }
 
 // EvidenceNote is added to the system prompt whenever a request carried
 // pictures or audio. It is constant text, so the prompt prefix stays
@@ -38,7 +46,7 @@ func ocrEvidence(id, model string, r worker.OCRResult) (string, int) {
 			mark = " (unsure)"
 			unsure++
 		}
-		line := fmt.Sprintf("[%d,%d] %s%s\n", l.Box[0], l.Box[1], strings.TrimSpace(l.Text), mark)
+		line := fmt.Sprintf("[%d,%d] %s%s\n", l.Box[0], l.Box[1], inert(strings.TrimSpace(l.Text)), mark)
 		chars += len(line)
 		b.WriteString(line)
 	}
@@ -51,7 +59,7 @@ func ocrEvidence(id, model string, r worker.OCRResult) (string, int) {
 
 // describeEvidence renders a vision model's description as an evidence block.
 func describeEvidence(id, model, text string) string {
-	return fmt.Sprintf("<evidence id=%q kind=\"description\" source=%q>\n%s\n</evidence>", id, model, strings.TrimSpace(text))
+	return fmt.Sprintf("<evidence id=%q kind=\"description\" source=%q>\n%s\n</evidence>", id, model, inert(strings.TrimSpace(text)))
 }
 
 // transcriptEvidence renders a transcript as an evidence block.
@@ -62,11 +70,11 @@ func transcriptEvidence(id, model string, t worker.Transcript) string {
 		if strings.TrimSpace(t.Text) == "" {
 			b.WriteString("(no speech found)\n")
 		} else {
-			b.WriteString(strings.TrimSpace(t.Text) + "\n")
+			b.WriteString(inert(strings.TrimSpace(t.Text)) + "\n")
 		}
 	}
 	for _, s := range t.Segments {
-		fmt.Fprintf(&b, "[%s-%s] %s\n", clock(s.Start), clock(s.End), strings.TrimSpace(s.Text))
+		fmt.Fprintf(&b, "[%s-%s] %s\n", clock(s.Start), clock(s.End), inert(strings.TrimSpace(s.Text)))
 	}
 	b.WriteString("</evidence>")
 	return b.String()
@@ -74,7 +82,7 @@ func transcriptEvidence(id, model string, t worker.Transcript) string {
 
 // missingEvidence says plainly that something could not be read.
 func missingEvidence(id, kind, why string) string {
-	return fmt.Sprintf("<evidence id=%q kind=%q>\n(could not be read: %s)\n</evidence>", id, kind, why)
+	return fmt.Sprintf("<evidence id=%q kind=%q>\n(could not be read: %s)\n</evidence>", id, kind, inert(why))
 }
 
 func clock(sec float64) string {

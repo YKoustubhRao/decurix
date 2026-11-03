@@ -127,12 +127,12 @@ func (e *Engine) webEvidence(ctx context.Context, req Request, rec *trace.Record
 				pub = fmt.Sprintf(" published=%q", p.Published)
 			}
 			out = append(out, fmt.Sprintf("<evidence id=%q kind=\"web\" url=%q title=%q retrieved=%q%s>\n%s\n</evidence>",
-				id, p.URL, title, retrieved, pub, web.Passages(p.Text, query, webPassageChars)))
+				id, inert(p.URL), inert(title), retrieved, inert(pub), inert(web.Passages(p.Text, query, webPassageChars))))
 			continue
 		}
 		// Not read: its search snippet is still a lead.
 		out = append(out, fmt.Sprintf("<evidence id=%q kind=\"web\" url=%q title=%q retrieved=%q snippet-only=\"true\">\n%s\n</evidence>",
-			id, r.URL, r.Title, retrieved, r.Snippet))
+			id, inert(r.URL), inert(r.Title), retrieved, inert(r.Snippet)))
 	}
 	return out
 }
