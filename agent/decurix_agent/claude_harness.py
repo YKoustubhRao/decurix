@@ -376,13 +376,16 @@ def _run_claude(prompt, resume_session_id=None):
     return result, None
 
 
-def ask_once(system, prompt):
+def ask_once(system, prompt, *, purpose):
     """
     One question to Claude with every tool switched off: what the computer
     layer's grounder and judge (computer/escalation.py) use. Answers with the
     reply text, or raises RuntimeError - a caller treats "could not ask" as
-    "not sure", never as a yes.
+    "not sure", never as a yes. `purpose` (what the question is for) is logged:
+    the claude CLI's calls do not pass the control plane's proxy.
     """
+
+    log(f"claude: one question ({purpose})")
 
     cmd = ["claude", "-p", prompt, "--output-format", "json", "--tools", "",
            "--max-budget-usd", "0.25", "--append-system-prompt", system]

@@ -455,8 +455,8 @@ class EveryModelCallIsCounted(unittest.TestCase):
                         b'"usage":{"prompt_tokens":1200,"completion_tokens":30}}')
 
         with patch.object(llm_client.urllib.request, "urlopen", lambda *a, **k: Answer()):
-            llm_client.chat([{"role": "user", "content": "one"}])
-            llm_client.ask_once("system", "two")
+            llm_client.chat([{"role": "user", "content": "one"}], purpose="py.playbook")
+            llm_client.ask_once("system", "two", purpose="py.playbook")
 
         self.assertEqual(usage.snapshot(), {"input_tokens": 2400, "output_tokens": 60})
         usage.reset()

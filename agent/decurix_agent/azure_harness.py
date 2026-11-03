@@ -572,7 +572,7 @@ def _system_message(task=""):
 
 def _step(messages, tools):
     _trim_images(messages)
-    message, _ = llm_client.chat(messages, tools=tools, max_tokens=6000)
+    message, _ = llm_client.chat(messages, tools=tools, max_tokens=6000, purpose="legacy.azure.turn")
 
     assistant = {"role": "assistant", "content": message.get("content") or ""}
     if message.get("tool_calls"):

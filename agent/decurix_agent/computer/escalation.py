@@ -284,7 +284,7 @@ class Ladder:
         )
 
         try:
-            answer = parse_reply(self.ask_model(GROUND_SYSTEM, prompt))
+            answer = parse_reply(self.ask_model(GROUND_SYSTEM, prompt, purpose="py.escalation.ground"))
         except Exception as exc:
             self.trail.append(f"the engine could not be asked ({str(exc)[:80]})")
             return None
@@ -332,7 +332,7 @@ class Ladder:
         )
 
         try:
-            answer = parse_reply(self.ask_model(JUDGE_SYSTEM, prompt)) or {}
+            answer = parse_reply(self.ask_model(JUDGE_SYSTEM, prompt, purpose="py.escalation.judge")) or {}
         except Exception as exc:
             self.trail.append(f"the engine could not be asked to judge step {step['n']} ({str(exc)[:80]})")
             return False
@@ -381,7 +381,7 @@ class Ladder:
                 + f"The screen now:\n{ocr.text(texts[2], 700)}"
             )
             try:
-                answer = parse_reply(self.ask_model(DETOUR_SYSTEM, prompt)) or {}
+                answer = parse_reply(self.ask_model(DETOUR_SYSTEM, prompt, purpose="py.escalation.detour")) or {}
             except Exception as exc:
                 self.trail.append(f"the engine could not be asked about {span} ({str(exc)[:80]})")
                 answer = {}
@@ -489,7 +489,7 @@ class Ladder:
         )
 
         try:
-            answer = parse_reply(self.ask_model(POINT_SYSTEM, prompt)) or {}
+            answer = parse_reply(self.ask_model(POINT_SYSTEM, prompt, purpose="py.escalation.point")) or {}
         except Exception as exc:
             self.trail.append(f"the engine could not be asked where step {step['n']} clicks ({str(exc)[:80]})")
             return None

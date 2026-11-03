@@ -75,16 +75,17 @@ class _Refused(Exception):
     """A request that cannot be carried out, in words a person can act on."""
 
 
-def _ask_model(system, prompt):
+def _ask_model(system, prompt, purpose="py.skill.ask"):
     """
     One question to this desktop's own engine, for the escalation ladder. The
     import is here, not at the top, because harness.py reads the configured
     engine at import and this module must load without one (and be testable).
+    `purpose`: what the question is for; the ladder and mimic name their own.
     """
 
     from decurix_agent import harness
 
-    return harness.ask_model(system, prompt)
+    return harness.ask_model(system, prompt, purpose=purpose)
 
 
 def _ladder(skill):
@@ -3691,7 +3692,7 @@ def _calls_off(reply, said=""):
     try:
         message, _ = llm_client.chat([{"role": "system", "content": CALLS_OFF_SYSTEM},
                                       {"role": "user", "content": f"The worker said: {said[:1500]}\n\nTheir reply: {text[:2000]}"}],
-                                     max_tokens=100)
+                                     max_tokens=100, purpose="py.skill.calls_off")
         found = re.search(r"\{.*\}", message.get("content") or "", re.DOTALL)
         return bool(json.loads(found.group(0)).get("calls_off")) if found else False
     except Exception:  # noqa: BLE001 - no reading: their words are what to do next

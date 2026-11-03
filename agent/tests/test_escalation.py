@@ -166,7 +166,7 @@ def asks(*replies):
     calls = []
     queue = list(replies)
 
-    def ask(system, prompt):
+    def ask(system, prompt, purpose=None):
         calls.append((system, prompt))
         reply = queue.pop(0)
         if isinstance(reply, Exception):

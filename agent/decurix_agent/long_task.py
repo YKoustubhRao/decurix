@@ -180,13 +180,13 @@ _FORMATS = {".xlsx": "xlsx", ".xlsm": "xlsx", ".docx": "docx", ".pptx": "pptx", 
             ".ods": "ods", ".odt": "odt", ".odp": "odp", ".txt": "text", ".md": "text"}
 
 
-def _ask_json(system, prompt, max_tokens=4000):
+def _ask_json(system, prompt, max_tokens=4000, purpose="py.stage"):
     """One model call answered in JSON (the hosted model when there is one), parsed; ValueError when it is not JSON."""
 
     from decurix_agent import llm_client
     if llm_client.available():
         message, spent = llm_client.chat([{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-                                         max_tokens=max_tokens)
+                                         max_tokens=max_tokens, purpose=purpose)
         with _lock:
             _asked_tokens[0] += int((spent or {}).get("prompt_tokens") or 0) + int((spent or {}).get("completion_tokens") or 0)
         text = message.get("content") or ""
@@ -194,7 +194,7 @@ def _ask_json(system, prompt, max_tokens=4000):
         # The engine's own model: what it spent is what the usage meter counted meanwhile (E-41: it was charged nothing).
         from decurix_agent import harness
         spent_before = usage.spent()
-        text = harness.ask_model(system, prompt)
+        text = harness.ask_model(system, prompt, purpose=purpose)
         with _lock:
             _asked_tokens[0] += max(0, usage.spent() - spent_before)
     match = re.search(r"\{.*\}", text or "", re.DOTALL)

@@ -118,7 +118,7 @@ class TheSavedFileDecides(unittest.TestCase):
     def setUp(self):
         self.sent = []
 
-        def chat(messages, max_tokens=None):
+        def chat(messages, max_tokens=None, purpose=None):
             self.sent.append(messages)
             return {"content": '{"verdict": "done", "confidence": 0.9, "seen": "", "why": ""}'}, {}
 

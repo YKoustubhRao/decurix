@@ -539,7 +539,7 @@ class LongRunBase(unittest.TestCase):
         harness.perform_task = self.engine.perform_task
         harness.continue_after_query = self.engine.continue_after_query
         harness.cancel_running = lambda: False
-        harness.ask_model = lambda system, prompt: "{}"
+        harness.ask_model = lambda system, prompt, purpose=None: "{}"
         import decurix_agent
         self.runner = WorkflowRunner(root / "workflows")
         self.classified = []

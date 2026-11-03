@@ -54,7 +54,7 @@ class TheEnginesModelIsCharged(unittest.TestCase):
     def test_the_fallback_models_tokens_count(self):
         spent = iter([1000, 1240])
         harness = mock.Mock()
-        harness.ask_model = lambda system, prompt: '{"ok": true}'
+        harness.ask_model = lambda system, prompt, purpose=None: '{"ok": true}'
         before = long_task._asked()
         with mock.patch("decurix_agent.llm_client.available", lambda: False), \
                 mock.patch.dict(sys.modules, {"decurix_agent.harness": harness}), \

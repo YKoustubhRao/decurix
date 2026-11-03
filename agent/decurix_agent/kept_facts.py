@@ -107,7 +107,7 @@ def _answer(request, read):
         return {}
     message, _ = llm_client.chat([{"role": "system", "content": SYSTEM},
                                   {"role": "user", "content": f"THE REQUEST:\n{request[:3000]}\n\nWHAT IT READ:\n{read}"}],
-                                 max_tokens=1500)
+                                 max_tokens=1500, purpose="py.kept_facts")
     found = re.search(r"\{.*\}", message.get("content") or "", re.DOTALL)
     try:
         answer = json.loads(found.group(0)) if found else {}

@@ -99,7 +99,7 @@ def _ask_brain(frame, description):
             {"role": "system", "content": POINT_SYSTEM},
             {"role": "user", "content": [{"type": "text", "text": f"Where is: {description}"},
                                          llm_client.image_part(pointing.ruled(frame).png())]},
-        ], max_tokens=200)
+        ], max_tokens=200, purpose="py.ground")
         found = re.search(r"\{.*\}", message.get("content") or "", re.DOTALL)
         answer = json.loads(found.group(0)) if found else {}
     except (llm_client.LLMError, ValueError) as exc:

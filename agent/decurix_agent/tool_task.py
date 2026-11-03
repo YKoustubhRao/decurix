@@ -129,7 +129,7 @@ def read_args(book, content):
     )
     try:
         message, _ = llm_client.chat([{"role": "system", "content": ARGS_SYSTEM}, {"role": "user", "content": prompt}],
-                                     max_tokens=400, response_format={"type": "json_object"})
+                                     max_tokens=400, response_format={"type": "json_object"}, purpose="py.tool.args")
         found = re.search(r"\{.*\}", message.get("content") or "", re.DOTALL)
         answer = json.loads(found.group(0)) if found else {}
     except (llm_client.LLMError, ValueError) as exc:

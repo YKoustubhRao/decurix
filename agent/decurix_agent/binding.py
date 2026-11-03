@@ -246,6 +246,7 @@ def _ask(skill, params, context, files, note="", rows=True):
         message, _ = llm_client.chat(
             [{"role": "system", "content": SYSTEM}, {"role": "user", "content": parts}],
             max_tokens=3000 if len(files) <= MAX_FILES else 8000, response_format={"type": "json_object"},
+            purpose="py.binding.fill",
         )
         answer = json.loads(message.get("content") or "{}")
     except (llm_client.LLMError, ValueError) as exc:

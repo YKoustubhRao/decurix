@@ -457,7 +457,7 @@ def reading(reply, action="", plain=True):
             message, _ = llm_client.chat([{"role": "system", "content": READ_SYSTEM},
                                           {"role": "user", "content": f"The action (as the question they answered put "
                                            f"it): {action[:6000]}\n\nTheir reply: {text[:3000]}"}],
-                                         max_tokens=300)
+                                         max_tokens=300, purpose="py.approval.read")
             found = re.search(r"\{.*\}", message.get("content") or "", re.DOTALL)
             said = json.loads(found.group(0)) if found else {}
             decision = str(said.get("decision") or "").strip().lower()
@@ -553,7 +553,7 @@ def read_choice(reply, question, choices, plain=None):
             message, _ = llm_client.chat([{"role": "system", "content": CHOICE_SYSTEM},
                                           {"role": "user", "content": f"The question: {str(question or '')[:2000]}\n\n"
                                            f"The choices:\n{offered}\n\nTheir reply: {text[:3000]}"}],
-                                         max_tokens=400)
+                                         max_tokens=400, purpose="py.approval.choice")
             found = re.search(r"\{.*\}", message.get("content") or "", re.DOTALL)
             said = json.loads(found.group(0)) if found else {}
             choice = str(said.get("choice") or "").strip()

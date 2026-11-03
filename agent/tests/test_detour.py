@@ -137,7 +137,7 @@ class Engine(unittest.TestCase):
         self.asked = []
 
     def ladder(self, reply):
-        def ask(system, prompt):
+        def ask(system, prompt, purpose=None):
             self.asked.append((system, prompt))
             return reply
         ladder = escalation.Ladder(ask_model=ask if reply is not None else None, goal="search")

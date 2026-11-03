@@ -132,7 +132,8 @@ def other_system(skill, request):
               f"What it does: {(skills.explanation(skill) or skill.get('goal') or '')[:400]}\n\nRequest:\n{request[:1500]}")
     try:
         message, _ = llm_client.chat([{"role": "system", "content": FITS_SYSTEM}, {"role": "user", "content": prompt}],
-                                     max_tokens=200, response_format={"type": "json_object"})
+                                     max_tokens=200, response_format={"type": "json_object"},
+                                     purpose="py.skill_engine.fits")
         answer = json.loads(message.get("content") or "{}")
     except (llm_client.LLMError, ValueError) as exc:
         log(f"skill_engine: could not tell which system {skill['name']} is for: {exc}")

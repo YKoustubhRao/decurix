@@ -38,7 +38,7 @@ class RateLimits(unittest.TestCase):
         with mock.patch.object(llm_client.urllib.request, "urlopen", side_effect=calls), \
                 mock.patch.object(llm_client.time, "sleep") as sleep, \
                 mock.patch.object(llm_client.random, "uniform", return_value=0):
-            message, usage = llm_client.chat([{"role": "user", "content": "x"}])
+            message, usage = llm_client.chat([{"role": "user", "content": "x"}], purpose="py.study")
         self.assertEqual(message["content"], "hi")
         sleep.assert_called_once_with(37.0)
 
@@ -55,14 +55,14 @@ class RateLimits(unittest.TestCase):
                 mock.patch.object(llm_client.random, "uniform", return_value=0), \
                 mock.patch.object(llm_client, "RETRY_BUDGET_SECONDS", 240):
             with self.assertRaises(llm_client.LLMError):
-                llm_client.chat([{"role": "user", "content": "x"}])
+                llm_client.chat([{"role": "user", "content": "x"}], purpose="py.study")
         self.assertEqual(sleep.call_count, 1)  # 200 s once; a second 200 s would pass the 240 s budget
 
     def test_our_own_mistake_is_not_retried(self):
         with mock.patch.object(llm_client.urllib.request, "urlopen", side_effect=[http_error(400)]), \
                 mock.patch.object(llm_client.time, "sleep") as sleep:
             with self.assertRaises(llm_client.LLMError):
-                llm_client.chat([{"role": "user", "content": "x"}])
+                llm_client.chat([{"role": "user", "content": "x"}], purpose="py.study")
         sleep.assert_not_called()
 
 
@@ -85,7 +85,7 @@ class AnEmptyAnswerCutOffByItsLimit(unittest.TestCase):
             sent.append(json.loads(request.data)["max_completion_tokens"])
             return Ok(empty if len(sent) == 1 else ANSWER)
         with mock.patch.object(llm_client.urllib.request, "urlopen", side_effect=answer):
-            message, _ = llm_client.chat([{"role": "user", "content": "x"}], max_tokens=800)
+            message, _ = llm_client.chat([{"role": "user", "content": "x"}], max_tokens=800, purpose="py.study")
         self.assertEqual(message["content"], "hi")
         self.assertEqual(sent, [800, llm_client.EMPTY_RETRY_TOKENS])
 
@@ -93,7 +93,7 @@ class AnEmptyAnswerCutOffByItsLimit(unittest.TestCase):
         stopped = {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}]}
         for body in (ANSWER, stopped):
             with mock.patch.object(llm_client.urllib.request, "urlopen", side_effect=[Ok(body)]) as urlopen:
-                llm_client.chat([{"role": "user", "content": "x"}], max_tokens=800)
+                llm_client.chat([{"role": "user", "content": "x"}], max_tokens=800, purpose="py.study")
             self.assertEqual(urlopen.call_count, 1)
 
 

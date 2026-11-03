@@ -529,7 +529,7 @@ def adapt_values(skill, found, request, values, pending, ask_model):
         answer = None
         if ask_model is not None:
             try:
-                answer = _clean_answer(ask_model(system, prompt), recorded)
+                answer = _clean_answer(ask_model(system, prompt, purpose="py.mimic"), recorded)
             except Exception:
                 answer = None
 

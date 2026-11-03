@@ -330,6 +330,8 @@ def read_key(directory):
 def main():
     approval.IN_GATE = True  # this process is the gate: its decisions are its own store's, never another gate's
     os.environ.pop("DECURIX_GATE_KEY", None)
+    # The gate reads replies with the model (approval.read_choice): its calls reach the proxy as the gate's (C1).
+    os.environ["DECURIX_CALLER"] = "gate"
     key = read_key(os.environ.get("DECURIX_DIR") or "/var/lib/decurix-gate")
     if not key:
         log("no key in the gate's directory: this desktop has no approval gate")

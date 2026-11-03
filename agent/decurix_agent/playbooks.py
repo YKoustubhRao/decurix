@@ -1034,7 +1034,8 @@ def _distil(book):
 
     for attempt in range(DISTIL_ATTEMPTS):
         try:
-            message, _ = llm_client.chat(messages, max_tokens=5000, response_format={"type": "json_object"})
+            message, _ = llm_client.chat(messages, max_tokens=5000, response_format={"type": "json_object"},
+                                         purpose="py.playbook")
             found = re.search(r"\{.*\}", message.get("content") or "", re.DOTALL)
             answer = json.loads(found.group(0)) if found else {}
         except (llm_client.LLMError, ValueError) as exc:

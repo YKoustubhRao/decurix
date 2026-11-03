@@ -414,7 +414,8 @@ def program_numbers(text):
 
 
 def judge(task, claim="", criteria="", values=None, steps="", live_png=None, reference_png=None, observed=None,
-          screen_text="", chosen=(), produced="", screen=True, deliverables=(), look_up=None, found=""):
+          screen_text="", chosen=(), produced="", screen=True, deliverables=(), look_up=None, found="",
+          purpose="py.judge"):
     """
     {"verdict", "confidence", "seen", "why"} for whether `task` was done. With
     no model, or when the model cannot be read, the verdict is "unsure" - the
@@ -519,7 +520,7 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
     def ask(parts):
         try:
             message, spent = llm_client.chat([{"role": "system", "content": JUDGE_SYSTEM},
-                                              {"role": "user", "content": parts}], max_tokens=600)
+                                              {"role": "user", "content": parts}], max_tokens=600, purpose=purpose)
             found = _parse(message.get("content") or "")
         except (llm_client.LLMError, ValueError) as exc:
             log(f"verify: could not judge: {exc}")

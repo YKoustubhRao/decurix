@@ -82,9 +82,31 @@ def _reasoning_effort():
     return effort if effort in ("low", "medium", "high") else None
 
 
-def chat(messages, tools=None, model="default", max_tokens=4000, temperature=None, response_format=None):
+# What a call is for travels in headers (PLAN-P2 C1), never in the body: the prompt bytes - and with them the
+# provider's cache - stay the same. The control plane's proxy stores every call with them (R2, R3).
+PURPOSE_HEADER = "X-Decurix-Purpose"
+TASK_HEADER = "X-Decurix-Task"
+CALLER_HEADER = "X-Decurix-Caller"
+
+
+def tag_headers(purpose):
+    """The headers that say what a call is for, which task it works on and which process makes it (C1)."""
+
+    from decurix_agent import task_context
+
+    headers = {PURPOSE_HEADER: str(purpose), CALLER_HEADER: os.environ.get("DECURIX_CALLER", "").strip() or "agent"}
+    task = task_context.current()
+    if task:
+        headers[TASK_HEADER] = task
+    return headers
+
+
+def chat(messages, tools=None, model="default", max_tokens=4000, temperature=None, response_format=None, *, purpose):
     """
     One chat completion. Returns (message dict, usage dict). Raises LLMError.
+
+    `purpose` names what the call is for ("py.judge", ...): keyword-only and required, so a call site that says
+    nothing fails in its tests instead of reaching the proxy untagged (agent/tests/test_purpose_tags.py).
     """
 
     body = {
@@ -113,7 +135,7 @@ def chat(messages, tools=None, model="default", max_tokens=4000, temperature=Non
         wait = None
         request = urllib.request.Request(
             CHAT_URL, data=data, method="POST",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **tag_headers(purpose)},
         )
 
         try:
@@ -163,14 +185,15 @@ def chat(messages, tools=None, model="default", max_tokens=4000, temperature=Non
         # as a request it had never seen. Once more, with room to answer.
         log(f"llm: the model used all {max_tokens} tokens and answered nothing - asking again with {EMPTY_RETRY_TOKENS}")
         return chat(messages, tools=tools, model=model, max_tokens=EMPTY_RETRY_TOKENS, temperature=temperature,
-                    response_format=response_format)
+                    response_format=response_format, purpose=purpose)
     return message, spent
 
 
-def ask_once(system, prompt):
+def ask_once(system, prompt, *, purpose):
     """One question, no tools, no history - harness.ask_model's shape."""
 
-    message, _ = chat([{"role": "system", "content": system}, {"role": "user", "content": prompt}], max_tokens=1500)
+    message, _ = chat([{"role": "system", "content": system}, {"role": "user", "content": prompt}], max_tokens=1500,
+                      purpose=purpose)
 
     return (message.get("content") or "").strip()
 

@@ -436,13 +436,16 @@ def prime_prompt_cache():
         log(f"Could not prime the prompt cache (harmless): {exc}")
 
 
-def ask_once(system, prompt):
+def ask_once(system, prompt, *, purpose):
     """
     One question to the model, with no loop and no history: what the
     computer layer's grounder and judge (computer/escalation.py) use. Keep the
     system text fixed from call to call - Ollama's prompt cache carries it.
+    `purpose` (what the question is for) is logged with the call: no proxy sees
+    a local model's calls, so the log is their only record of it.
     """
 
+    log(f"ollama: one question ({purpose})")
     return ollama_request([
         {"role": "system", "content": system},
         {"role": "user", "content": prompt},
