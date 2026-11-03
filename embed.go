@@ -30,10 +30,10 @@ import "embed"
 // patterns are: every top-level file with a dot or a dash in its name (the
 // launch scripts, the desktop's settings files, vm_server.py, chromium-browser,
 // and thebot.tar.gz and thebot-soul when go generate made them), the four
-// commands without either (gui, office, lookup, handoff), and the two source
-// folders (decurix_agent, and browser-agent through agent/*-*). A pattern must
-// match something or the build fails, so the optional thebot-soul rides in
-// agent/*-*, which chromium-browser always matches. TestTheBuildContextIsWhat
+// commands without either (gui, office, lookup, handoff), and the source
+// folder decurix_agent. A pattern must match something or the build fails, so
+// the optional thebot-soul rides in agent/*-*, which chromium-browser always
+// matches. TestTheBuildContextIsWhat
 // TheImagesCopy (embed_test.go) checks the Dockerfiles' COPY lines against it.
 //
 // It also skips agent/thebot, without a word: a directory with a go.mod is
@@ -47,7 +47,6 @@ import "embed"
 //go:embed docker/tools.Dockerfile
 //go:embed agent/[^._]*.* agent/[^._]*-* agent/gui agent/office agent/lookup agent/handoff agent/decurix_agent
 //go:embed agent/decurix_agent/__init__.py agent/decurix_agent/*/__init__.py agent/decurix_agent/*/__main__.py
-//go:embed agent/browser-agent/*/_pathfix.py
 var DesktopBuildContext embed.FS
 
 // TheBotSource is the archive of agent/thebot inside DesktopBuildContext, and

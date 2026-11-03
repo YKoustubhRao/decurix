@@ -139,18 +139,6 @@ RUN pip3 install --no-cache-dir --break-system-packages \
         tabulate==0.9.0 \
         reportlab==4.2.5
 
-# browser-agent: extension_pipeline/ext_server.py, the backend for the
-# browser-agent extension. No desktop loads the extension today (the Chrome
-# launcher passes no --load-extension), so soul sends web work to the
-# operator unless THEBOT_BROWSER_EXTENSION=1. Placed before the agent's own
-# code so a code change does not re-run this pip install. Only core/, extension/
-# and extension_pipeline/ ship (see agent/BROWSER_INTEGRATION.md).
-COPY agent/browser-agent/core /opt/browser-agent/core
-COPY agent/browser-agent/extension /opt/browser-agent/extension
-COPY agent/browser-agent/extension_pipeline /opt/browser-agent/extension_pipeline
-COPY agent/browser-agent/requirements.txt /opt/browser-agent/requirements.txt
-RUN python3 -m venv /opt/browser-agent-venv && \
-    /opt/browser-agent-venv/bin/pip install --no-cache-dir -r /opt/browser-agent/requirements.txt
 COPY agent/vm_server.py /opt/vm_server.py
 COPY agent/decurix_agent /opt/decurix_agent
 COPY agent/start_agent_terminal.sh /opt/start_agent_terminal.sh
