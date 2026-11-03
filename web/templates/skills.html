@@ -551,6 +551,31 @@
     }
   }
 
+  /* What a run's buttons may send, built here from structured parts (W-11): the desktop says which actions apply, but
+     the words a click sends as the person are this page's - a verb from this list, this run's own ID and, for a retry,
+     one of its failed stages. Anything else the desktop lists is not shown. Every one asks first. */
+  function workflowActions(run){
+    var out = [];
+    (run.actions || []).forEach(function(action){
+      var m = /^\/workflow (retry|resume|cancel) (\S+)(?: (\S+))?$/.exec(String(action.command || ""));
+      if(!m || m[2] !== run.run_id){ return; }
+      var verb = m[1], stage = m[3] || "";
+      if(verb === "retry"){
+        var failed = (run.stages || []).some(function(s){ return s.id === stage && s.status === "failed"; });
+        if(!failed){ return; }
+        out.push({verb: verb, label: "Retry stage " + stage, command: "/workflow retry " + run.run_id + " " + stage,
+                  confirm: "Retry stage \"" + stage + "\" of " + run.title + "?"});
+      }else if(!stage && verb === "resume"){
+        out.push({verb: verb, label: "Continue workflow", command: "/workflow resume " + run.run_id,
+                  confirm: "Continue " + run.title + " from where it stopped?"});
+      }else if(!stage && verb === "cancel"){
+        out.push({verb: verb, label: "Cancel workflow", command: "/workflow cancel " + run.run_id,
+                  confirm: "Cancel remaining stages? Changes already made will be kept."});
+      }
+    });
+    return out;
+  }
+
   function workflowCard(run){
     var card = node("article", "panel skill");
     var head = node("div", "skill-head");
@@ -566,21 +591,11 @@
       head.appendChild(node("div", "workflow-preview", "Proposed stage: " + run.approval.stage + "\n" + run.approval.instruction + "\nRequired files: " + run.approval.files.join(", ")));
     }
     var actions = node("div", "skill-actions");
-    run.actions.forEach(function(action){
+    workflowActions(run).forEach(function(action){
       var b = button(action.label, "btn-default");
-      var cancelling = action.command.indexOf("/workflow cancel ") === 0;
-      var approving = action.command.indexOf("/workflow approve ") === 0;
-      b.disabled = workflowBusy && !cancelling;
+      b.disabled = workflowBusy && action.verb !== "cancel";
       b.addEventListener("click", function(){
-        if(cancelling && !window.confirm("Cancel remaining stages? Changes already made will be kept.")){ return; }
-        /* An approval lets the stage act; it is one click's worth only after
-           the person has read what it will do. */
-        if(approving){
-          var stage = run.approval || {};
-          var what = String(stage.instruction || "").trim();
-          if(what.length > 400){ what = what.slice(0, 397) + "…"; }
-          if(!window.confirm("Approve stage \"" + (stage.stage || "this stage") + "\" of " + run.title + "?" + (what ? "\n\nIt will: " + what : ""))){ return; }
-        }
+        if(!window.confirm(action.confirm)){ return; }
         sendWorkflow(action.command, b);
       });
       actions.appendChild(b);

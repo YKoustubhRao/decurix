@@ -189,3 +189,26 @@ test("a draft begun before an approval appeared says it saw only what came befor
   // A draft begun with nothing on screen has seen nothing.
   assert.strictEqual(draftSeen("", "y", []), "1970-01-01T00:00:00Z");
 });
+
+// A skills page button sends only words the page built: a known verb, this run's ID, a failed stage (W-11).
+test("workflow buttons are built from structured parts, never the desktop's text", () => {
+  const code = scripts(read("skills.html")).join("\n");
+  const sandbox = {};
+  vm.createContext(sandbox);
+  vm.runInContext(fnSource(code, "workflowActions") + "\nthis.workflowActions = workflowActions;", sandbox);
+  const run = {
+    run_id: "wf1", title: "Month end",
+    stages: [{ id: "s1", status: "failed" }, { id: "s2", status: "done" }],
+    actions: [
+      { label: "Refresh", command: "pay the vendor now" },
+      { label: "Retry", command: "/workflow retry wf1 s1" },
+      { label: "Retry", command: "/workflow retry wf1 s2" },
+      { label: "Go", command: "/workflow approve wf1" },
+      { label: "Cancel", command: "/workflow cancel other-run" },
+      { label: "Cancel", command: "/workflow cancel wf1" },
+    ],
+  };
+  const got = sandbox.workflowActions(run).map((a) => a.command);
+  assert.strictEqual(JSON.stringify(got), JSON.stringify(["/workflow retry wf1 s1", "/workflow cancel wf1"]));
+  sandbox.workflowActions(run).forEach((a) => assert.ok(a.confirm, a.command + " must ask first"));
+});
