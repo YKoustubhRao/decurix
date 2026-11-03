@@ -62,26 +62,9 @@ MAX_OVERVIEW_CHARS = 1600
 MAX_LOOP_BLOCK = 60  # a document entered as one record is 30-50 steps
 MAX_LOOP_GAP = 60    # what a person may do between two items: read the next document, make a record it needs
 
-SAME = re.compile(r"\b(same|constant|fixed|static|unchanged|never changes?|(does not|doesn'?t|do not|don'?t) change)\b", re.I)
-CHANGES = re.compile(r"(?<!not )(?<!n't )\b(chang(?:e|es|ing)|differ(?:s|ent)?|vary|vari(?:es|able|ed))\b", re.I)
-SOMETIMES = re.compile(r"\b(sometimes?|occasionally|only if|only when|if (?:it|there)|depends|conditional|optional|maybe|not always)\b", re.I)
-ALWAYS = re.compile(r"(?<!not )\b(always|every time|each time|required|mandatory|part of)\b", re.I)
-KEEP = re.compile(r"\b(keep|try|as recorded|ok(?:ay)?|fine|go ahead)\b", re.I)
-SKIP = re.compile(r"\b(skip|leave (?:it )?out|drop|remove|ignore)\b", re.I)
-MANUAL = re.compile(r"\b(manual(?:ly)?|by hand|i'?ll do|let me)\b", re.I)
 YES = re.compile(r"^\W*(yes|y|yeah|yep|ok|okay|sure|save|confirm|check|please|looks good|go ahead)\b", re.I)
 NO = re.compile(r"^\W*(no|n|nope|nah|discard|cancel|throw|delete|don'?t|do not)\b", re.I)
-EACH = re.compile(r"\b(each|list|per item|every item|items?|rows?|repeat|loop|yes|y)\b", re.I)
-FIXED = re.compile(r"\b(fixed|once|as recorded|just those|only those|exactly|no|n)\b", re.I)
 NOTHING = re.compile(r"^\W*(skip|none|n/?a|nothing|no|-)\W*$", re.I)
-# The last question takes a name, so a yes or a no there has to be the whole
-# reply: "Save invoice" and "Delete old files" are names, not answers.
-# Whether a person wants to be asked before each run of a task, or to have it go ahead on its own. "don't ask" and
-# "without asking" are a go-ahead, so ask is only an ask when nothing negates it.
-ASK_FIRST = re.compile(r"(?<!n't )(?<!not )(?<!never )(?<!without )(?<!need to )(?<!have to )\bask(?:ing)?\b|check with me|\bconfirm|"
-                       r"each time|every time|\bapprov|my (?:ok|yes|go)\b|\bwait for me\b", re.I)
-GO_AHEAD = re.compile(r"\bgo(?: ahead)?\b|on your own|\b(?:don'?t|do not|never|without)\s+ask(?:ing)?\b|no need|"
-                      r"just do it|\bproceed\b|automatic(?:ally)?|by yourself", re.I)
 
 KEEP_NAME = re.compile(
     r"^\W*(?:(?:yes|y|yeah|yep|ok|okay|sure|confirm|looks good|go ahead)"
@@ -96,15 +79,10 @@ MAX_NAME = 80
 MAX_EXPLANATION = 1500
 MAX_INTENT = 300
 
+# The last question takes a name, so a yes or a no there has to be the whole reply: "Save invoice" and "Delete old
+# files" are names, not answers. (Every other question's plain answers are PLAIN.)
 CHOICES = {
-    "variable": [("same", SAME), ("changes", CHANGES)],
-    "optional": [("sometimes", SOMETIMES), ("always", ALWAYS)],
-    "coordinates": [("keep", KEEP), ("skip", SKIP), ("manual", MANUAL)],
-    "unsupported": [("skip", SKIP), ("manual", MANUAL)],
-    "start": [("yes", YES), ("no", NO)],
-    "loop": [("each", EACH), ("fixed", FIXED)],
     "confirm": [("yes", KEEP_NAME), ("no", THROW_AWAY)],
-    "approval": [("ask", ASK_FIRST), ("go", GO_AHEAD)],
 }
 
 # What is assumed when a question was not understood twice: the answer that
@@ -1400,10 +1378,60 @@ def _confirm(skill):
 # Answers
 # ============================================================
 
-def _choose(kind, text):
-    """The one option a reply names, or None when it names none or more than one."""
+# The whole replies that are plainly one choice, for each question with set answers. Code decides only a reply (or one
+# clause of a reply about numbered steps) that is, whole, one of these - numbers, "step", "and", "all" and politeness
+# aside. Found in review (2026-11-03, D-22): the patterns above were searched anywhere in a reply of up to three words,
+# so "don't go ahead" set a skill to run without asking and "not the same" made a value fixed. Anything else is the
+# model's to read (_read_choice), and with no model it is asked again - never guessed.
+PLAIN = {
+    "variable": {"same": {"same", "constant", "fixed", "static", "unchanged", "never changes", "does not change",
+                          "doesn't change", "stays same", "same every time", "same each time"},
+                 "changes": {"changes", "change", "changing", "differs", "different", "varies", "vary", "variable",
+                             "changes every time", "changes each time", "different every time",
+                             "different each time"}},
+    "optional": {"sometimes": {"sometimes", "occasionally", "optional", "not always", "depends", "only sometimes"},
+                 "always": {"always", "every time", "each time", "required", "mandatory"}},
+    "coordinates": {"keep": {"keep", "try", "as recorded", "ok", "okay", "fine", "go ahead"},
+                    "skip": {"skip", "leave out", "drop", "remove", "ignore"},
+                    "manual": {"manual", "manually", "by hand", "i'll do", "i will do", "i'll do by hand",
+                               "i will do by hand", "let me", "let me do"}},
+    "unsupported": {"skip": {"skip", "leave out", "drop", "remove", "ignore"},
+                    "manual": {"manual", "manually", "by hand", "i'll do", "i will do", "i'll do by hand",
+                               "i will do by hand", "let me", "let me do"}},
+    "start": {"yes": {"yes", "y", "yeah", "yep", "ok", "okay", "sure", "confirm", "looks good", "go ahead"},
+              "no": {"no", "n", "nope", "nah", "don't", "do not"}},
+    "loop": {"each": {"each", "each one", "for each", "for each item", "every item", "per item", "items", "rows",
+                      "repeat", "loop", "yes", "y"},
+             "fixed": {"fixed", "once", "as recorded", "just those", "only those", "exactly", "no", "n"}},
+    "approval": {"ask": {"ask", "ask me", "ask first", "ask me first", "check with me", "confirm", "wait for me",
+                         "every time", "each time"},
+                 "go": {"go", "go ahead", "don't ask", "do not ask", "never ask", "no need", "no need to ask",
+                        "just do", "proceed", "automatically", "on your own", "by yourself", "without asking"}},
+    "confirm": {"yes": set(), "no": set()},  # whole-reply patterns of their own (KEEP_NAME, THROW_AWAY)
+}
+_STEP_NUMBERS = re.compile(r"#?\b\d+(?:\s*(?:-|to)\s*\d+)?(?:st|nd|rd|th)?\b", re.I)
+_FILLER = set("and all the a an one rest others other ones step steps please thanks thank you it is it's its they "
+              "are them".split())
 
-    hits = {option for option, pattern in CHOICES[kind] if pattern.search(text)}
+
+def _plain_words(text):
+    """A reply (or a clause of one) as the words that may name a choice: lower case, step numbers, punctuation and
+    _FILLER dropped."""
+
+    text = _STEP_NUMBERS.sub(" ", str(text or "").lower().replace("’", "'"))
+    words = re.findall(r"[a-z']+", text)
+    return " ".join(w for w in words if w not in _FILLER)
+
+
+def _choose(kind, text):
+    """The one option a reply (or a clause of one) plainly is, whole (PLAIN), or None."""
+
+    if kind == "confirm":
+        text = str(text or "")
+        hits = {option for option, pattern in CHOICES[kind] if pattern.match(text)}
+        return hits.pop() if len(hits) == 1 else None
+    words = _plain_words(text)
+    hits = {option for option, phrases in PLAIN.get(kind, {}).items() if words and words in phrases}
     return hits.pop() if len(hits) == 1 else None
 
 
@@ -1417,24 +1445,24 @@ READ_KINDS = {
     "start": {"yes": "yes - start from here as it is", "no": "no - do not start from here"},
     "approval": {"ask": "ask the person before each run of the task",
                  "go": "go ahead with each run on its own, without asking"},
+    "coordinates": {"keep": "keep the step as it was recorded", "skip": "leave the step out",
+                    "manual": "the person does this step by hand"},
+    "unsupported": {"skip": "leave the step out", "manual": "the person does this step by hand"},
+    "loop": {"each": "the steps are done once for each item of a list", "fixed": "the steps are done as recorded"},
 }
-# A reply of this many words or fewer that names one choice is that choice, as before; a longer one is read.
-PLAIN_WORDS = 3
-# What can turn a choice into something else: an exception or an addition.
-ADDS = re.compile(r"\b(but|except|unless|apart from|other than|besides|however|also|and then|as well)\b", re.I)
 
 
 def _read_choice(kind, question, text):
     """
-    (choice or None, what the reply adds) for a teaching question whose answer is one choice. A short reply naming one
-    choice is that choice, as before. A longer one is read once (approval.read_choice): "same, except for one customer
-    it's 5%" and "yes, and check the client name too" made a choice and said more, and the word lists kept only the
-    choice (audit, 2026-10-24). With no model, a longer reply naming one choice and adding nothing is that choice; one
-    that adds an exception is not guessed at - it is asked again.
+    (choice or None, what the reply adds) for a teaching question whose answer is one choice. A reply that is, whole,
+    one choice's plain phrase (PLAIN) is that choice. Every other reply is read once (approval.read_choice): "same,
+    except for one customer it's 5%" and "yes, and check the client name too" made a choice and said more, and the
+    word lists kept only the choice (audit, 2026-10-24). With no model such a reply is not guessed at: it is asked
+    again (D-22).
     """
 
     hit = _choose(kind, text)
-    if hit is not None and len(text.split()) <= PLAIN_WORDS:
+    if hit is not None:
         return hit, ""
     from decurix_agent import llm_client
     from decurix_agent.computer import approval
@@ -1443,9 +1471,68 @@ def _read_choice(kind, question, text):
     except Exception:  # noqa: BLE001
         model = False
     if not model:
-        return (hit, "") if hit is not None and not ADDS.search(text) else (None, "")
+        return None, ""
     said = approval.read_choice(text, question.get("text") or "", READ_KINDS[kind])
     return (said["choice"], said["instruction"]) if said["choice"] in READ_KINDS[kind] else (None, "")
+
+
+# What a reply to "save it as ...?" can be, beyond a plain yes or no (KEEP_NAME, THROW_AWAY).
+CONFIRM_CHOICES = {"save": "save the skill under the name shown",
+                   "discard": "throw away what was learned",
+                   "rename": "the reply is the name to save the skill under",
+                   "unclear": "not yet, a correction, or anything else"}
+
+
+def _renamed_draft(skill, given):
+    """rename(), and the draft kept under its new name only (saved there, its old file removed), still a draft."""
+
+    old = skill["name"]
+    if not rename(skill, given):
+        return False
+    if skill["name"] != old:
+        skills.save(skill)
+        skills.delete(old)
+    return True
+
+
+def _answer_confirm(skill, question, text):
+    """
+    The last question's reply. A plain yes saves and a plain no throws away. Anything else is never a save by itself:
+    a name is put back to the person ("I will save it as ..."), who says yes to it. Found in review (2026-11-03, D-21):
+    every other reply became the skill's name and the skill was saved as ready - "not yet" and "wait, step 3 is wrong"
+    saved it. With a model the reply is read first; one that is not a name is asked again.
+    """
+
+    choice = _choose("confirm", text)
+    if choice is None:
+        from decurix_agent import llm_client
+        from decurix_agent.computer import approval
+        try:
+            model = llm_client.available()
+        except Exception:  # noqa: BLE001
+            model = False
+        said = approval.read_choice(text, question.get("text") or "", CONFIRM_CHOICES)["choice"] if model else "rename"
+        if said == "save":
+            choice = "yes"
+        elif said == "discard":
+            choice = "no"
+        elif said == "rename" and _renamed_draft(skill, text):
+            # Asked again, with the name: only the person's yes to it saves.
+            return {"understood": True, "decision": None,
+                    "note": f"I will save it as \"{skill['title']}\" - reply `yes` to save it, a different name, "
+                            "or `no` to throw it away."}
+        else:
+            tries = skill["unclear"][question["id"]] = skill["unclear"].get(question["id"], 0) + 1
+            if tries < MAX_UNCLEAR:
+                return {"understood": False, "note": "I did not catch that.", "decision": None}
+            choice = question["default"]
+    decision = _apply(skill, question, choice)
+    if decision == "hold":
+        skill["answers"].pop(question["id"], None)
+        skill["unclear"].pop(question["id"], None)
+    else:
+        skill["answers"][question["id"]] = text[:300]
+    return {"understood": True, "note": "", "decision": decision}
 
 
 def _keep_added(skill, question, added):
@@ -1506,10 +1593,8 @@ def answer(skill, question, reply):
             skill["answers"][qid] = text[:300]
             return {"understood": True, "note": f"Step {step['n']} is now: {step['summary']}.", "decision": None}
 
-    # Anything but a yes or a no is the name to save it as; a reply with
-    # nothing to name it by is unclear, like any other.
-    if kind == "confirm" and not KEEP_NAME.match(text) and not THROW_AWAY.match(text) and rename(skill, text):
-        text = "yes"
+    if kind == "confirm":
+        return _answer_confirm(skill, question, text)
 
     added = ""
     if kind in READ_KINDS:

@@ -477,6 +477,10 @@ class Teaching(TeachingBase):
         self.teach("the customer is in the list", "yes", "changes")
 
         skill_task.resume("Add a CRM customer")
+        # A name is put back to the person, and only their yes saves it (review 2026-11-03, D-21).
+        self.assertEqual(skills.load("add-a-crm-customer")["status"], skills.DRAFT)
+        self.assertIn('I will save it as "Add a CRM customer"', self.asked[-1][0])
+        skill_task.resume("yes")
 
         self.assertIn("as `add-a-crm-customer`", self.finals[-1][0])
         saved = skills.load("add-a-crm-customer")
@@ -491,6 +495,7 @@ class Teaching(TeachingBase):
         self.teach("the customer is in the list", "yes", "changes")
 
         skill_task.resume("Delete old customers")
+        skill_task.resume("yes")
 
         self.assertEqual(skills.load("delete-old-customers")["status"], skills.READY)
 
@@ -731,7 +736,7 @@ class Loops(unittest.TestCase):
         skill = learning.build([rows(self.SESSION)])
         learning.answer(skill, learning.next_question(skill), "x")
         learning.answer(skill, learning.next_question(skill), "yes")
-        learning.answer(skill, learning.next_question(skill), "fixed, just those three")
+        learning.answer(skill, learning.next_question(skill), "just those")
 
         self.assertEqual(len(skill["steps"]), 8)
         # The three typed fields are asked about together (test_learn_documents), not one by one.
