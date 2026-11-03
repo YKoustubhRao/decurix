@@ -657,10 +657,87 @@ def public_element(element):
             public[key] = None
             withheld[key] = f"longer than {MAX_TEXT} characters"
 
+    # A credential in an ordinary field's value, a control's name or a window's title is kept by no recording (review
+    # 2026-11-03: only a secret *field* was withheld, so a token pasted into a plain text box was stored).
+    for key in ("value", "name", "window_title"):
+        value = public.get(key)
+        if isinstance(value, str) and value:
+            credential = credential_in(value)
+            if credential:
+                public[key] = None
+                withheld[key] = f"looks like a {credential}"
+
     if withheld:
         public["withheld"] = withheld
 
     return public
+
+
+# ============================================================
+# The last pass inside every writer
+#
+# Found in review (2026-11-03): privacy was applied by hand at each place that wrote, and every place that forgot leaked
+# - a task's recording titled with the raw request, a demonstration step's summary, a playbook's stored request. So each
+# writer (recording's events and meta, evidence notes, progress lines, the playbook store) ends with scrub(): one pass
+# over every string it is about to write. The helpers above stay as the first pass, for the better wording ("withheld:
+# password field"); scrub only makes forgetting one impossible.
+# ============================================================
+
+# How deep scrub follows nested dicts and lists. Nothing a writer stores is near this; past it a value is held back.
+_SCRUB_DEPTH = 40
+
+
+def _scrub_text(text):
+    out = withhold_known(text)
+    if out == HELD_BACK:
+        return out
+    kind = credential_in(out)
+    # A long number that passes the card checksum is withheld by withhold_known only where it reads as a card (by the
+    # words before it): credential_in's context-free card test is for a value typed into a field (withhold_text), and
+    # here it would wipe whole notes for an account or invoice number. Every other kind it finds is withheld whole.
+    if kind and kind != "card number":
+        return HELD_BACK if kind == "text that could not be checked for secrets" else f"[withheld: looks like a {kind}]"
+    return out
+
+
+def _element_shaped(value):
+    return "role" in value and ("value" in value or "handle" in value)
+
+
+def _scrub(value, depth):
+    if depth > _SCRUB_DEPTH:
+        return HELD_BACK
+    if isinstance(value, str):
+        return _scrub_text(value)
+    if isinstance(value, dict):
+        out = {key: _scrub(item, depth + 1) for key, item in value.items()}
+        if _element_shaped(value):
+            reason = secret_field(value)
+            if reason:
+                if out.get("value"):
+                    out["value"] = None
+                out.setdefault("secret", reason)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_scrub(item, depth + 1) for item in value]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return _scrub_text(str(value))
+
+
+def scrub(obj):
+    """`obj` (a string, or dicts and lists of them) with every string through withhold_known and credential_in, and the
+    value of every element-shaped dict that is a secret field blanked. Returns a new object; never raises. On an error
+    the result is a placeholder - HELD_BACK, or {"held_back": HELD_BACK} for a dict, [] for a list - never `obj`."""
+
+    try:
+        return _scrub(obj, 0)
+    except Exception:  # noqa: BLE001 - fail closed
+        if isinstance(obj, dict):
+            return {"held_back": HELD_BACK}
+        if isinstance(obj, (list, tuple)):
+            return []
+        return HELD_BACK
 
 
 def secret_boxes(elements):

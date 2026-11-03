@@ -43,21 +43,20 @@ HELD_BACK = "[held back: this text could not be checked for secrets]"
 
 
 def _withheld(value):
-    """A line, or an action's fields, with the request's secrets withheld (computer/privacy.py) before it leaves the
-    desktop. Fails closed and never raises: a text that cannot be checked is HELD_BACK, never sent as it was."""
+    """A line, or an action's fields, through privacy.scrub (computer/privacy.py) before it leaves the desktop: the
+    request's secrets, credentials and secret fields' values withheld. Fails closed and never raises: a text that
+    cannot be checked is HELD_BACK, never sent as it was."""
 
-    if isinstance(value, str):
-        try:
-            from decurix_agent.computer import privacy
-            return privacy.withhold_known(value)
-        except Exception:  # noqa: BLE001 - decoration never fails the task; nor does it let a secret through
-            return HELD_BACK
+    try:
+        from decurix_agent.computer import privacy
+    except Exception:  # noqa: BLE001 - decoration never fails the task; nor does it let a secret through
+        return HELD_BACK if isinstance(value, str) else None
     if isinstance(value, dict):
         # A step's screenshots are pictures (painted over at the source, screen.Frame.masked), not text.
-        return {k: (v if str(k).endswith("_png") else _withheld(v)) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_withheld(v) for v in value]
-    return value
+        pictures = {k: v for k, v in value.items() if str(k).endswith("_png")}
+        rest = privacy.scrub({k: v for k, v in value.items() if k not in pictures})
+        return {**rest, **pictures} if pictures and "held_back" not in rest else rest
+    return privacy.scrub(value)
 
 
 def _post(item):
@@ -116,6 +115,20 @@ def emit(text):
     immediately and never raises.
     """
 
+    try:
+        _emit(text)
+    except Exception as exc:  # noqa: BLE001 - progress is decoration: it never fails the task
+        _quiet_log(f"progress: a line was not reported: {type(exc).__name__}")
+
+
+def _quiet_log(line):
+    try:
+        log(line)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _emit(text):
     if not text:
         return
 
@@ -159,6 +172,13 @@ def emit_action(text, action, before_png=None, after_png=None, task_id=None):
     than the current-task file does (a demonstration recorded for a task).
     """
 
+    try:
+        _emit_action(text, action, before_png, after_png, task_id)
+    except Exception as exc:  # noqa: BLE001 - progress is decoration: it never fails the task
+        _quiet_log(f"progress: a step was not reported: {type(exc).__name__}")
+
+
+def _emit_action(text, action, before_png, after_png, task_id):
     if not text:
         return
 

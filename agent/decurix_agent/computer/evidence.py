@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 from decurix_agent import config, task_context
-from decurix_agent.computer import recording, screen, visual
+from decurix_agent.computer import privacy, recording, screen, visual
 from decurix_agent.logging_utils import log
 
 
@@ -170,10 +170,13 @@ def note(text):
     task_id = task_context.current()
     if not task_id or not text:
         return
+    # Through privacy.scrub before it is cut or written (review 2026-11-03, D-18: a look's field values were written
+    # here as they were shown). scrub never raises; on an error the note is HELD_BACK.
+    text = privacy.scrub(str(text))
     try:
         NOTES_DIR.mkdir(parents=True, exist_ok=True)
         with open(NOTES_DIR / f"{task_id}.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps({"at": time.time(), "text": str(text)[:MAX_NOTE]}, ensure_ascii=False) + "\n")
+            f.write(json.dumps({"at": time.time(), "text": text[:MAX_NOTE]}, ensure_ascii=False) + "\n")
         _prune()
     except OSError as exc:
         log(f"evidence: could not keep a note: {exc}")

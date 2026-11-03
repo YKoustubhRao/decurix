@@ -935,6 +935,18 @@ class Recorder:
         point = action.get("point")
         text, withheld = privacy.withhold_text(element, action.get("text")) if kind == "type" else (None, None)
 
+        # Fail closed: text whose field cannot be told, typed while a secret
+        # field is on the screen, may have gone into that field. "On the
+        # screen" is any look from the one before the typing on: found live
+        # (2026-10-14), a password typed into a field that could not be told
+        # was kept in plain text because the look this run was judged by had
+        # been taken after Sign in had already taken the page away. Decided
+        # before the summary is worded: built first, the summary kept the
+        # text this withholds (review 2026-11-03, D-02).
+        if kind == "type" and text is not None and element is None \
+                and (privacy.secret_boxes((observation or {}).get("elements")) or self._secret_around(action["t"])):
+            text, withheld = None, "typed while a password field was on screen, into a field that could not be told"
+
         # Where it happened: what the screen said at the moment, else the last look.
         if located is not None:
             window, url = located.get("window") or "", located.get("url") or ""
@@ -977,17 +989,6 @@ class Recorder:
         # has no step that opened it).
         if located is not None and located.get("app"):
             entry["app"] = located["app"]
-
-        # Fail closed: text whose field cannot be told, typed while a secret
-        # field is on the screen, may have gone into that field. "On the
-        # screen" is any look from the one before the typing on: found live
-        # (2026-10-14), a password typed into a field that could not be told
-        # was kept in plain text because the look this run was judged by had
-        # been taken after Sign in had already taken the page away.
-        if kind == "type" and text is not None and element is None \
-                and (privacy.secret_boxes((observation or {}).get("elements")) or self._secret_around(action["t"])):
-            text, withheld = None, "typed while a password field was on screen, into a field that could not be told"
-            entry["text"] = None
 
         if kind == "type":
             # What a person types goes in at the caret. Replayed, it replaces

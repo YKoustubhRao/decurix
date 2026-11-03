@@ -41,8 +41,10 @@ from decurix_agent.logging_utils import log
 #
 # Several processes append to one session at once - a `gui` command, Claude
 # Code's MCP server, the demonstration recorder - so every change to a
-# session happens under a file lock on it. This module stores what it is
-# given; what it is given has already been through privacy.py.
+# session happens under a file lock on it. What it is given has already been
+# through privacy.py's helpers; every event and every meta still goes through
+# privacy.scrub as it is written, so a caller that forgot one cannot leak
+# (review 2026-11-03: a task's recording was titled with the raw request).
 # ============================================================
 
 ROOT = Path(os.environ.get("DECURIX_RECORDINGS_DIR") or (config.DECURIX_DIR / "recordings"))
@@ -112,12 +114,21 @@ def _dir(session_id):
     return ROOT / session_id
 
 
+# How long a writer waits for another holding a session's lock. Found in review (2026-11-03): the wait had no end, so
+# one stuck process (a `gui` command killed mid-write leaves no lock, but a hung one keeps it) stalled every action.
+LOCK_WAIT_SECONDS = float(os.environ.get("DECURIX_RECORDING_LOCK_S", "30"))
+
+
 @contextmanager
 def _locked(directory):
     directory.mkdir(parents=True, exist_ok=True)
 
     with open(directory / ".lock", "w") as lock:
-        filelock.exclusive(lock)
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        while not filelock.try_exclusive(lock):
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"recording {directory.name} is held by another writer")
+            time.sleep(0.02)
         yield
 
 
@@ -140,7 +151,11 @@ def write_whole(path, data):
 
 
 def _write_meta(directory, meta):
+    """Write a session's meta, through privacy.scrub, and return what was written."""
+
+    meta = privacy.scrub(meta)
     write_whole(directory / "meta.json", json.dumps(meta, ensure_ascii=False, indent=1))
+    return meta
 
 
 def _new_meta(session_id, started_at=None):
@@ -189,7 +204,7 @@ def ensure(session_id, **fields):
                 changed = True
 
         if changed:
-            _write_meta(directory, meta)
+            meta = _write_meta(directory, meta)
 
     if created:
         prune(keep=session_id)
@@ -226,7 +241,7 @@ def update(session_id, **fields):
             if fields.get(key) is not None:
                 meta[key] = fields[key]
 
-        _write_meta(directory, meta)
+        meta = _write_meta(directory, meta)
 
     return meta
 
@@ -305,6 +320,7 @@ def append(session_id, event, before=None, after=None, at=None, defaults=None):
             if not meta.get("screen") and width:
                 meta["screen"] = [width, height]
 
+        event = privacy.scrub(event)
         with open(directory / "events.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
 

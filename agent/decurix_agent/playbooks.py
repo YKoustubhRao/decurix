@@ -126,11 +126,19 @@ def load(name):
 
 
 def save(book):
+    """Write a playbook, through privacy.scrub (review 2026-11-03, E-14: a request's password was kept in the store).
+    A book that cannot be checked for secrets is not written: False."""
+
+    kept = privacy.scrub(book)
+    if not isinstance(kept, dict) or kept.get("name") != book["name"]:
+        log(f"Playbooks: {book['name']} could not be checked for secrets, so it was not kept")
+        return False
     ROOT.mkdir(parents=True, exist_ok=True)
     tmp = _path(book["name"]).with_suffix(".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(book, f, indent=1, ensure_ascii=False)
+        json.dump(kept, f, indent=1, ensure_ascii=False)
     os.replace(tmp, _path(book["name"]))
+    return True
 
 
 def delete(name):
@@ -164,10 +172,13 @@ def shape(request):
     """
     The words that say what kind of request this is, in order: its own words
     (not its attachments), without what is quoted, numbers and filler. Two
-    orders for two customers have the same shape but for the names.
+    orders for two customers have the same shape but for the names. Read
+    from the request with its secrets withheld: a shape is kept in the store
+    and names the playbook (review 2026-11-03: a password's letters were in
+    both).
     """
 
-    words = attachments.text(request or "").strip().splitlines()
+    words = privacy.safe_text(attachments.text(request or "").strip()).splitlines()
     text = QUOTED.sub(" ", " ".join(words))
     seen, out = set(), []
     for word in WORD.findall(text.lower()):
@@ -1116,7 +1127,8 @@ def _mark_proven(request):
         for other in recording.sessions():
             if other.get("proven") and other["id"] != session and _alike(words, shape(other.get("task") or other.get("title") or "")) >= MATCH:
                 recording.update(other["id"], proven=False)
-        recording.update(session, proven=True, task=attachments.text(request or "").strip()[:1000])
+        recording.update(session, proven=True,
+                         task=privacy.safe_text(attachments.text(request or "").strip())[:1000])
     except (OSError, ValueError, KeyError) as exc:
         log(f"Playbooks: could not keep this task's recording as its way: {exc}")
         return False
@@ -1245,7 +1257,8 @@ def keep(request, skill=None):
         if len(words) < 2:
             return None
         book = {
-            "name": _unique_name(words), "request": attachments.text(request or "").strip()[:1000], "shape": words,
+            "name": _unique_name(words), "request": privacy.safe_text(attachments.text(request or "").strip())[:1000],
+            "shape": words,
             "skill": skill or None, "commands": commands,
             "made": {k: run[k] for k in ("at", "tokens", "turns", "commands")}, "uses": [], "misses": 0,
         }

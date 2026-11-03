@@ -2,7 +2,7 @@ import time
 import uuid
 
 from decurix_agent import config, progress, task_context
-from decurix_agent.computer import recording
+from decurix_agent.computer import privacy, recording
 from decurix_agent.logging_utils import log
 
 
@@ -71,7 +71,9 @@ def record(entry, before=None, after=None, masks=()):
     try:
         event = recording.append(
             session_id, entry, before=before, after=after,
-            defaults={"task_id": task_id, "title": task_context.current_request()[:500]},
+            # Withheld before it is cut: a cut can split a secret so it no longer reads as one (review 2026-11-03,
+            # D-01: the title was the raw request). recording.append scrubs the meta as well.
+            defaults={"task_id": task_id, "title": privacy.safe_text(task_context.current_request())[:500]},
         )
     except (OSError, ValueError) as exc:
         log(f"Could not write the recording of {record_id}: {exc}")
