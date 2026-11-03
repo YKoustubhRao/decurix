@@ -516,6 +516,10 @@ def answer_waiting(path, content, already_marked=False):
     if not state.current_task_id:
         task_context.start(task_context.task_id_from_filename(path.name))
 
+    # A person replied on the run: it carries their input, and its evidence is kept until exported (W0.8).
+    from decurix_agent import retention
+    retention.mark_labelled(task_context.current(), "reply")
+
     if workflow_task.query_control(content):
         if not already_marked:
             _mark_handled(path)

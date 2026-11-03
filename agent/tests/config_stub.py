@@ -28,6 +28,10 @@ atexit.register(shutil.rmtree, _OWN, True)
 TASK_FILE = os.path.join(_OWN, "current-task")
 os.environ["DECURIX_TASK_FILE"] = TASK_FILE
 os.environ["TMPDIR"] = _OWN
+# 3. The agent's own folder (config.DECURIX_DIR): a test that does not point it elsewhere wrote into the machine's real
+#    ~/.decurix, where a run's marks outlive the test run - a LABELLED run (retention.py) kept a later run's prune test
+#    from pruning it. Each test process gets one of its own, unless the run names one.
+os.environ.setdefault("DECURIX_DIR", os.path.join(_OWN, "decurix-dir"))
 if "decurix_agent.task_context" in sys.modules:
     sys.modules["decurix_agent.task_context"].CURRENT_FILE = TASK_FILE
 if "decurix_agent.computer.core" in sys.modules:

@@ -471,8 +471,13 @@ def _size(meta):
 def prune(keep=None):
     """
     Delete the oldest task and hand-run recordings until what is left fits in
-    MAX_BYTES. Demonstrations are never pruned, and neither is `keep`.
+    MAX_BYTES. Demonstrations are never pruned, and neither is `keep`, nor a
+    labelled run's recording before the control plane exported it
+    (retention.held, W0.8): over budget with only those left, nothing is
+    deleted and that is said.
     """
+
+    from decurix_agent import retention
 
     found = sessions()
     total = sum(_size(meta) for meta in found)
@@ -480,10 +485,15 @@ def prune(keep=None):
     if total <= MAX_BYTES:
         return
 
+    held = 0
     for meta in reversed(found):
         # A task's recording the worker kept as its own way of doing that kind
         # of request (playbooks.py) is kept like a demonstration.
         if meta.get("kind") == "demonstration" or meta.get("proven") or meta["id"] == keep:
+            continue
+        task_id = str(meta.get("task_id") or "") or (meta["id"][5:] if meta["id"].startswith("task-") else "")
+        if retention.held(task_id):
+            held += 1
             continue
 
         size = _size(meta)
@@ -499,6 +509,9 @@ def prune(keep=None):
         total -= size
         if total <= MAX_BYTES:
             return
+
+    if held:
+        retention.warn_kept(held, "recordings")
 
 
 def _parse_time(value):

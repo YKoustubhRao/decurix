@@ -250,10 +250,13 @@ def note_look(shown, observation=None):
 
 
 def _prune():
+    """Delete notes older than NOTES_KEEP_SECONDS - never a labelled run's before it is exported (retention.held, W0.8)."""
+
+    from decurix_agent import retention
     cutoff = time.time() - NOTES_KEEP_SECONDS
     for path in list(NOTES_DIR.glob("*.jsonl")) + list(NOTES_DIR.glob("*.files")) + list(NOTES_DIR.glob("*.outputs")):
         try:
-            if path.stat().st_mtime < cutoff:
+            if path.stat().st_mtime < cutoff and not retention.held(path.name.split(".", 1)[0]):
                 path.unlink()
         except OSError:
             pass

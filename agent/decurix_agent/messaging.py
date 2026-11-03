@@ -711,6 +711,11 @@ def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted
                 reply = (f"Not checked - the final check itself failed ({type(exc).__name__}). Look at the screen "
                          f"and the files before relying on this.\n\n{reply}")
 
+    # The run now has an outcome: its evidence is kept until the control plane has pulled it (retention.py, W0.8).
+    # Before the report is sent, so the control plane's pull, which the report starts, finds the mark.
+    from decurix_agent import retention
+    retention.mark_labelled(task_id or task_context.current(), "final")
+
     # ddmmyyyyhhmmss.txt
     filename = time.strftime("%d%m%Y%H%M%S") + ".txt"
 
