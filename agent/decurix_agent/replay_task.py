@@ -146,11 +146,26 @@ def _run(program, params, start):
         # shown to be one (skill_task.check_unchecked; imported here, as
         # skill_task imports this module).
         from decurix_agent import skill_task
-        skill_task.check_unchecked(result["text"], engine=ENGINE)
+        try:
+            skill_task.check_unchecked(result["text"], engine=ENGINE)
+        except Exception as exc:  # noqa: BLE001 - the check could not be made: said, never a plain final
+            log(f"replay: the check of an unverified replay failed: {exc!r}")
+            _not_checked(result["text"], f"the check of it on the screen could not be made ({type(exc).__name__})")
         return
 
-    kind = "final" if result["outcome"] in replay.SUCCESS else "error"
+    if result["outcome"] in replay.SUCCESS and result["outcome"] != replay.VERIFIED:
+        # Any success short of VERIFIED never goes out as a plain final (review 2026-11-03, D-09/D-25 handoff).
+        _not_checked(result["text"], "the replay ran to the end without seeing every result")
+        return
+    kind = "final" if result["outcome"] == replay.VERIFIED else "error"
     write_final_reply(result["text"], kind=kind, engine=ENGINE)
+
+
+def _not_checked(text, why):
+    """A replay that ran but was not shown to be done: reported not checked, saying so first."""
+
+    write_final_reply(f"Not checked - {why}. Look at the screen before relying on this.\n\n{text}", kind="final",
+                      engine=ENGINE, checked=False, gated=True)
 
 
 def _secret_step(program, n):
