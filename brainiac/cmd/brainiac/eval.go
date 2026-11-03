@@ -87,6 +87,7 @@ func runEval(args []string) error {
 	sort.Strings(names)
 	type tally struct {
 		n, ok, prompt, completion int
+		decided, decidedOK        int // cases a stated value decides (Check.Decides)
 		ms                        int64
 	}
 	scores := map[string]map[string]*tally{}
@@ -131,6 +132,12 @@ func runEval(args []string) error {
 			if ok {
 				s.ok++
 			}
+			if c.Check.Decides() {
+				s.decided++
+				if ok {
+					s.decidedOK++
+				}
+			}
 		}
 	}
 
@@ -145,7 +152,8 @@ func runEval(args []string) error {
 		sort.Strings(ds)
 		for _, d := range ds {
 			s := scores[model][d]
-			score := evals.Score{N: s.n, Correct: s.ok, MeanMs: s.ms / int64(s.n), MeanPrompt: s.prompt / s.n, MeanCompletion: s.completion / s.n, At: time.Now().UTC()}
+			score := evals.Score{N: s.n, Correct: s.ok, MeanMs: s.ms / int64(s.n), MeanPrompt: s.prompt / s.n, MeanCompletion: s.completion / s.n, At: time.Now().UTC(),
+				Decided: s.decided, DecidedCorrect: s.decidedOK}
 			fmt.Fprintf(tw, "%s\t%s\t%d/%d\t%.0f%%\t%.0f%%\t%.1fs\t%d+%d\n", model, d, s.ok, s.n, 100*score.Accuracy(), 100*score.LowerBound(), float64(s.ms)/float64(s.n)/1000, score.MeanPrompt, score.MeanCompletion)
 			results.Set(model, d, score)
 		}
@@ -154,7 +162,7 @@ func runEval(args []string) error {
 	if err := results.Save(resultsPath); err != nil {
 		return err
 	}
-	fmt.Printf("\nSaved to %s. A local model takes a field from the remote brain only with at least %d cases there, when the accuracy it can claim is within %.0f points of the remote brain's. `brainiac paths` shows where that leaves each field.\n", resultsPath, evals.MinCases, 100*evals.Margin)
+	fmt.Printf("\nSaved to %s. A local model takes a field from the remote brain only with at least %d cases there that a stated number, letter or exact text decides (contains and regex cases are scored but prove nothing), when the accuracy it can claim is at least the remote brain's. `brainiac paths` shows where that leaves each field.\n", resultsPath, evals.MinCases)
 	if *learn {
 		n, err := learnRouter(st, cases)
 		if err != nil {

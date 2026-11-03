@@ -63,6 +63,19 @@ type Record struct {
 	RemoteT int      `json:"remote_tokens"`
 	// USD is what the remote brain's tokens cost, when its price is configured.
 	USD float64 `json:"usd,omitempty"`
+	// Shape is what a request routed to a field looked like, in counts, so a
+	// later eval can be drawn from the traffic a path really serves.
+	Shape *Shape `json:"shape,omitempty"`
+}
+
+// Shape is a request's form, never its content.
+type Shape struct {
+	UserTurns      int  `json:"user_turns"`
+	AssistantTurns int  `json:"assistant_turns,omitempty"`
+	SystemChars    int  `json:"system_chars,omitempty"`
+	TextChars      int  `json:"text_chars"`
+	Media          int  `json:"media,omitempty"`
+	Web            bool `json:"web,omitempty"`
 }
 
 // Check is one thing the verifier found.

@@ -439,6 +439,10 @@ func (e *Engine) Chat(ctx context.Context, req Request) (*Response, error) {
 		return fail(err)
 	}
 	rec.Mode, rec.Brain, rec.Domain, rec.DomainP = bc.mode, bc.name, bc.domain, bc.domainP
+	if bc.domain != "" {
+		shape := shapeOf(req)
+		rec.Shape = &shape
+	}
 	if bc.why != "" {
 		rec.Notes = append(rec.Notes, bc.why)
 	}

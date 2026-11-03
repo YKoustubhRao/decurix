@@ -70,6 +70,7 @@ func ask(t *testing.T, e *Engine, model, domain, text string) *Response {
 
 func TestMathGoesToTheMathSpecialistLocally(t *testing.T) {
 	e, _ := domainEngine(t, config.ModeLocal, nil)
+	saveScores(t, e, map[string]evals.Score{"math-1.5b": {N: 100, Correct: 95}, "brain-2b": {N: 100, Correct: 80}})
 	res := ask(t, e, "brainiac", "", "Solve 5x + 7 = 2x - 8")
 	if res.Brain != "math-1.5b" || res.Trace.Domain != "math" {
 		t.Fatalf("brain %s domain %s notes %v", res.Brain, res.Trace.Domain, res.Trace.Notes)
@@ -124,6 +125,9 @@ func saveScores(t *testing.T, e *Engine, scores map[string]evals.Score) {
 		if s.At.IsZero() {
 			s.At = time.Now().Add(-time.Hour)
 		}
+		if s.Decided == 0 {
+			s.Decided, s.DecidedCorrect = s.N, s.Correct // every case decided by a stated value
+		}
 		r.Set(m, "math", s)
 	}
 	if err := r.Save(e.st.Path("evals.json")); err != nil {
@@ -146,7 +150,7 @@ func TestASmallPerfectScoreDoesNotTakeAFieldFromThePerfectRemote(t *testing.T) {
 
 func TestTheLocalBrainCanEarnAFieldToo(t *testing.T) {
 	e := remoteEngine(t)
-	saveScores(t, e, map[string]evals.Score{"brain-2b": {N: 100, Correct: 95, MeanMs: 900}, RemoteEvalName: {N: 100, Correct: 92}})
+	saveScores(t, e, map[string]evals.Score{"brain-2b": {N: 100, Correct: 99, MeanMs: 900}, RemoteEvalName: {N: 100, Correct: 92}})
 	res := ask(t, e, "brainiac", "", mathAsk)
 	if res.Brain != "brain-2b" || res.Trace.RemoteT != 0 || res.Trace.Domain != "math" {
 		t.Fatalf("brain %s remote tokens %d", res.Brain, res.Trace.RemoteT)
@@ -155,7 +159,7 @@ func TestTheLocalBrainCanEarnAFieldToo(t *testing.T) {
 
 func TestAmongEarnedPathsTheFasterAnswers(t *testing.T) {
 	e := remoteEngine(t)
-	saveScores(t, e, map[string]evals.Score{"math-1.5b": {N: 100, Correct: 96, MeanMs: 90000}, "brain-2b": {N: 100, Correct: 95, MeanMs: 4000}, RemoteEvalName: {N: 100, Correct: 92}})
+	saveScores(t, e, map[string]evals.Score{"math-1.5b": {N: 100, Correct: 99, MeanMs: 90000}, "brain-2b": {N: 100, Correct: 98, MeanMs: 4000}, RemoteEvalName: {N: 100, Correct: 92}})
 	if res := ask(t, e, "brainiac", "", mathAsk); res.Brain != "brain-2b" {
 		t.Fatalf("brain %s", res.Brain)
 	}
@@ -164,7 +168,7 @@ func TestAmongEarnedPathsTheFasterAnswers(t *testing.T) {
 func TestAPathTooSlowForTheLimitStaysRemote(t *testing.T) {
 	e := remoteEngine(t)
 	e.cfg.MaxLocalSeconds = 60
-	saveScores(t, e, map[string]evals.Score{"math-1.5b": {N: 100, Correct: 96, MeanMs: 90000}, RemoteEvalName: {N: 100, Correct: 92}})
+	saveScores(t, e, map[string]evals.Score{"math-1.5b": {N: 100, Correct: 99, MeanMs: 90000}, RemoteEvalName: {N: 100, Correct: 92}})
 	res := ask(t, e, "brainiac", "", mathAsk)
 	if res.Brain != "decurix:azure" || !strings.Contains(strings.Join(res.Trace.Notes, " "), "max_local_seconds") {
 		t.Fatalf("brain %s notes %v", res.Brain, res.Trace.Notes)
@@ -173,7 +177,7 @@ func TestAPathTooSlowForTheLimitStaysRemote(t *testing.T) {
 
 func TestARequestTooLongForTheLocalWindowStaysRemote(t *testing.T) {
 	e := remoteEngine(t)
-	saveScores(t, e, map[string]evals.Score{"math-1.5b": {N: 100, Correct: 96}, RemoteEvalName: {N: 100, Correct: 92}})
+	saveScores(t, e, map[string]evals.Score{"math-1.5b": {N: 100, Correct: 99}, RemoteEvalName: {N: 100, Correct: 92}})
 	long := mathAsk + " " + strings.Repeat("Solve for x. ", 5000)
 	if res := ask(t, e, "brainiac", "math", long); res.Brain != "math-1.5b" {
 		t.Fatalf("an explicit field went to %s", res.Brain)
@@ -185,7 +189,7 @@ func TestARequestTooLongForTheLocalWindowStaysRemote(t *testing.T) {
 
 func TestOneReportedMissSendsThePathBackUntilMeasuredAgain(t *testing.T) {
 	e := remoteEngine(t)
-	saveScores(t, e, map[string]evals.Score{"math-1.5b": {N: 100, Correct: 96}, RemoteEvalName: {N: 100, Correct: 92}})
+	saveScores(t, e, map[string]evals.Score{"math-1.5b": {N: 100, Correct: 99}, RemoteEvalName: {N: 100, Correct: 92}})
 	res := ask(t, e, "brainiac", "", mathAsk)
 	if res.Brain != "math-1.5b" {
 		t.Fatalf("earned: brain %s", res.Brain)
@@ -214,7 +218,7 @@ func TestOneReportedMissSendsThePathBackUntilMeasuredAgain(t *testing.T) {
 		t.Fatalf("a remote answer's miss was filed against the local model: %d", got)
 	}
 	// Measured again after the miss, it earns the field back.
-	saveScores(t, e, map[string]evals.Score{"math-1.5b": {N: 100, Correct: 96, At: time.Now().Add(time.Second)}, RemoteEvalName: {N: 100, Correct: 92}})
+	saveScores(t, e, map[string]evals.Score{"math-1.5b": {N: 100, Correct: 99, At: time.Now().Add(time.Second)}, RemoteEvalName: {N: 100, Correct: 92}})
 	if res := ask(t, e, "brainiac", "", mathAsk); res.Brain != "math-1.5b" {
 		t.Fatalf("measured again: brain %s", res.Brain)
 	}
@@ -228,11 +232,14 @@ func TestOneReportedMissSendsThePathBackUntilMeasuredAgain(t *testing.T) {
 	}
 }
 
-func TestLocallyTheBrainTakesAFieldItIsProvenAsGoodAtAndFaster(t *testing.T) {
+// Locally, a specialist that is merely as good as the brain on the cases
+// does not take the field (it is not proven at least as good); one clearly
+// better does, however slow.
+func TestLocallyASpecialistTakesAFieldOnlyWhenProvenAtLeastAsGood(t *testing.T) {
 	e, _ := domainEngine(t, config.ModeLocal, nil)
-	saveScores(t, e, map[string]evals.Score{"brain-2b": {N: 100, Correct: 95, MeanMs: 4000}, "math-1.5b": {N: 100, Correct: 95, MeanMs: 900000}})
+	saveScores(t, e, map[string]evals.Score{"brain-2b": {N: 100, Correct: 99, MeanMs: 4000}, "math-1.5b": {N: 100, Correct: 99, MeanMs: 900000}})
 	res := ask(t, e, "brainiac", "", mathAsk)
-	if res.Brain != "brain-2b" || !strings.Contains(strings.Join(res.Trace.Notes, " "), "answers faster") {
+	if res.Brain != "brain-2b" || !strings.Contains(strings.Join(res.Trace.Notes, " "), "not proven") {
 		t.Fatalf("brain %s notes %v", res.Brain, res.Trace.Notes)
 	}
 	saveScores(t, e, map[string]evals.Score{"brain-2b": {N: 100, Correct: 80, MeanMs: 4000}, "math-1.5b": {N: 100, Correct: 95, MeanMs: 900000}})
@@ -251,12 +258,7 @@ func TestWithARemoteBrainTheSpecialistMustEarnTheField(t *testing.T) {
 	if res.Brain != "decurix:azure" || res.Trace.Domain != "math" {
 		t.Fatalf("unmeasured: brain %s domain %s", res.Brain, res.Trace.Domain)
 	}
-	r := &evals.Results{}
-	r.Set("math-1.5b", "math", evals.Score{N: 100, Correct: 92, At: time.Now()})
-	r.Set(RemoteEvalName, "math", evals.Score{N: 100, Correct: 90, At: time.Now()})
-	if err := r.Save(e.st.Path("evals.json")); err != nil {
-		t.Fatal(err)
-	}
+	saveScores(t, e, map[string]evals.Score{"math-1.5b": {N: 100, Correct: 99}, RemoteEvalName: {N: 100, Correct: 90}})
 	res = ask(t, e, "brainiac", "", "Solve 5x + 7 = 2x - 8")
 	if res.Brain != "math-1.5b" || res.Trace.RemoteT != 0 {
 		t.Fatalf("measured at least as good: brain %s remote tokens %d", res.Brain, res.Trace.RemoteT)
@@ -264,5 +266,53 @@ func TestWithARemoteBrainTheSpecialistMustEarnTheField(t *testing.T) {
 	// The remote brain alone stays reachable by name, for evals.
 	if res := ask(t, e, RemoteEvalName, "", "Solve 5x + 7 = 2x - 8"); res.Brain != "decurix:azure" {
 		t.Fatalf("remote by name went to %s", res.Brain)
+	}
+}
+
+// The router's guess never hands a request to a specialist nobody measured:
+// the brain answers, and naming the field still reaches the specialist.
+func TestAnUnmeasuredSpecialistAnswersOnlyWhenNamed(t *testing.T) {
+	e, _ := domainEngine(t, config.ModeLocal, nil)
+	res := ask(t, e, "brainiac", "", mathAsk)
+	if res.Brain != "brain-2b" || res.Trace.Domain != "math" || !strings.Contains(strings.Join(res.Trace.Notes, " "), "not proven") {
+		t.Fatalf("unmeasured, routed: brain %s notes %v", res.Brain, res.Trace.Notes)
+	}
+	if res := ask(t, e, "brainiac", "math", mathAsk); res.Brain != "math-1.5b" {
+		t.Fatalf("named: brain %s", res.Brain)
+	}
+	// Measured only on cases that decide nothing, it still has not earned it.
+	r := &evals.Results{}
+	r.Set("math-1.5b", "math", evals.Score{N: 100, Correct: 100})
+	r.Set("brain-2b", "math", evals.Score{N: 100, Correct: 50})
+	if err := r.Save(e.st.Path("evals.json")); err != nil {
+		t.Fatal(err)
+	}
+	e.evals.res = nil
+	if res := ask(t, e, "brainiac", "", mathAsk); res.Brain != "brain-2b" {
+		t.Fatalf("contains-only scores earned the field for %s", res.Brain)
+	}
+}
+
+// A path earned on single questions does not take a conversation, an agent's
+// long system prompt or a picture whose last turn looks like its field.
+func TestAnEarnedPathServesOnlyRequestsShapedLikeItsCases(t *testing.T) {
+	e := remoteEngine(t)
+	saveScores(t, e, map[string]evals.Score{"math-1.5b": {N: 100, Correct: 99}, RemoteEvalName: {N: 100, Correct: 92}})
+	if res := ask(t, e, "brainiac", "", mathAsk); res.Brain != "math-1.5b" || res.Trace.Shape == nil || res.Trace.Shape.UserTurns != 1 {
+		t.Fatalf("a single question: brain %s shape %+v", res.Brain, res.Trace.Shape)
+	}
+	text := func(role, s string) InMessage { return InMessage{Role: role, Parts: []Part{{Kind: "text", Text: s}}} }
+	for name, msgs := range map[string][]InMessage{
+		"conversation":  {text("user", "I have a ledger to check."), text("assistant", "Send it."), text("user", mathAsk)},
+		"agent prompt":  {text("system", strings.Repeat("You are an office worker with tools. ", 40)), text("user", mathAsk)},
+		"with an image": {{Role: "user", Parts: []Part{{Kind: "text", Text: mathAsk}, {Kind: "image", Data: pngBytes}}}},
+	} {
+		res, err := e.Chat(context.Background(), Request{Model: "brainiac", Messages: msgs})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if res.Brain != "decurix:azure" {
+			t.Errorf("%s went to %s: %v", name, res.Brain, res.Trace.Notes)
+		}
 	}
 }
