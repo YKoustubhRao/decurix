@@ -41,18 +41,20 @@ class StuckDisputes(unittest.TestCase):
         with mock.patch.object(long_task, "_ask_json", broken), mock.patch.object(long_task, "_charge", lambda *a: None):
             self.assertEqual(long_task.dispute_points("run", STEP, FINDING, "report"), [])
 
-    def test_a_reply_that_settles_a_point_binds_the_check_and_go_on_words_do_not(self):
-        for said in ("try again", "Try again please.", "skip it", "Use your judgement and carry on.", "stop"):
-            self.assertFalse(long_task.settles_something(said), said)
-        for said in ("1: the work is right", "The check is right about CL-4113 - use Rs 756",
-                     "try again, CL-4125 was cut for alcohol"):
-            self.assertTrue(long_task.settles_something(said), said)
+    def test_every_reply_binds_the_check_but_a_bare_retry_skip_or_stop(self):
+        # E-20 (review 2026-11-03): a word count decided it, so "use 18%" and "no, it is 5%" never reached the check.
+        # The reply's one reading (stuck_choice, kept with the decision) decides.
         question = long_task.stuck_question(STEP, 2, FINDING, points=POINTS)
-        data = {"decisions": [{"question": question, "answer": "1: the work is right, Tier 2 applies to Pune"},
-                              {"question": question, "answer": "try again"}], "amendments": []}
+        binds = [("1: the work is right, Tier 2 applies to Pune", "answer", ""), ("use 18%", "unclear", ""),
+                 ("no, it is 5%", "answer", ""), ("try again with Rs 500", "retry", "with Rs 500")]
+        go_on = [("try again", "retry", ""), ("skip it", "skip", ""), ("stop", "stop", "")]
+        data = {"decisions": [{"question": question, "answer": a, "choice": c, "instruction": i}
+                              for a, c, i in binds + go_on], "amendments": []}
         text = long_task.binding_text(data)
-        self.assertIn("the person settled it: \"1: the work is right, Tier 2 applies to Pune\"", text)
-        self.assertNotIn("\"try again\"\n", text + "\n")
+        for said, _, _ in binds:
+            self.assertIn(f"the person settled it: \"{said}\"", text)
+        for said, _, _ in go_on:
+            self.assertNotIn(f"the person settled it: \"{said}\"", text)
 
 
 if __name__ == "__main__":

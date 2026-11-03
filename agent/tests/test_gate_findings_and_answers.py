@@ -188,5 +188,17 @@ class AStopIsNotAFinishedTask(_Reports):
         self.assertTrue(self.reports[-1]["text"].startswith("Stopped, as you said, before step 3"))
 
 
+class ASecretValueIsAskedAsSecret(ts.TeachingBase):
+    def test_a_question_for_a_parameter_the_skill_marks_secret_carries_the_flag(self):
+        said = []
+        run = {"skill": {"name": "s"}}
+        self.addCleanup(setattr, state, "paused_skill", None)
+        with mock.patch.object(skill_task, "ask_for_query",
+                               lambda text, kind="query", engine=None, secret=False: said.append(secret)):
+            skill_task._pause(run, "values", "I need the portal PIN.", secret=True, missing=["pin"])
+            skill_task._pause(run, "values", "I need the customer.", missing=["customer"])
+        self.assertEqual(said, [True, False])
+
+
 if __name__ == "__main__":
     unittest.main()

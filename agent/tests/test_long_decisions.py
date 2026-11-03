@@ -42,12 +42,15 @@ def _decision_plan():
 
 
 class Planning(unittest.TestCase):
-    def test_a_decision_stage_never_drafts_and_a_request_without_emails_gets_none(self):
-        spec = long_task.spec_from_plan(_decision_plan(), request=P2)
+    def test_a_decision_stage_never_drafts(self):
+        # (Whether another stage drafts is the planner's reading of the request - E-21; a word list no longer zeroes it.)
+        plan = _decision_plan()
+        plan["stages"][1]["drafts"] = 0
+        spec = long_task.spec_from_plan(plan, request=P2)
         credit, replies = spec["steps"]
         self.assertTrue(credit["decision"])
         self.assertEqual(credit["drafts"], 0)
-        self.assertEqual(replies["drafts"], 0)  # "I'll send them myself" is a file
+        self.assertEqual(replies["drafts"], 0)
         self.assertFalse(any(c["format"] == "drafts" for s in spec["steps"] for c in s["checks"]))
 
     def test_drafts_stay_where_the_request_asks_for_emails(self):
@@ -56,12 +59,19 @@ class Planning(unittest.TestCase):
         self.assertEqual(spec["steps"][1]["drafts"], 1)
         self.assertEqual(spec["steps"][0]["drafts"], 0)  # still a decision
 
-    def test_what_asks_for_drafts(self):
-        for text in ("dispute email drafts to vendors with mismatches", "Email the customers their statements",
-                     "Draft a reply to each supplier", "Put them in the Outbox", "send the invoice by email"):
-            self.assertTrue(long_task.asks_for_drafts(text), text)
-        for text in (P2, "2 POs that came by email", "customer_replies.txt: the reply for each customer. I'll send them myself."):
-            self.assertFalse(long_task.asks_for_drafts(text), text)
+    def test_the_planners_draft_count_is_kept_whatever_the_wording(self):
+        # E-21 (review 2026-11-03): a word list zeroed the planner's count for requests it did not recognise, and the
+        # mechanical count check was never made. The count is the planner's; only a decision stage drafts nothing.
+        for request in ("Draft reminders for each overdue customer.", "Mail each vendor a statement of account.",
+                        "Put the replies in the drafts folder."):
+            plan = {"long": True, "title": "t", "stages": [
+                {"id": "s1", "title": "Reminders", "does": "Draft them.", "drafts": 3, "outputs": []},
+                {"id": "s2", "title": "Decide", "does": "Ask the person.", "drafts": 2, "decision": True,
+                 "outputs": []}]}
+            spec = long_task.spec_from_plan(plan, request=request)
+            self.assertEqual(spec["steps"][0]["drafts"], 3, request)
+            self.assertIn({"path": "outbox", "format": "drafts", "min_count": 3}, spec["steps"][0]["checks"])
+            self.assertEqual(spec["steps"][1]["drafts"], 0, request)
 
     def test_the_planner_is_told_ask_me_is_the_chat(self):
         self.assertIn('"Ask me" is never an email', " ".join(long_task.PLAN_SYSTEM.split()))

@@ -68,9 +68,14 @@ class Stages(base.LongRunBase):
     def test_general_words_are_not_taken_for_columns(self):
         self.request()
         request = "Onboard them.\n\n" + attachments.MARK + f"\n  {self.tracker}\n"
-        self.assertEqual(long_task.fields_in_inputs("Which department's portal should I use?", request),
-                         ["Department is a column of joiners_tracker_Nov2026.xlsx"])
-        self.assertEqual(long_task.fields_in_inputs("What name should the form have?", request), [])
+        headers = long_task._input_headers(request)
+        self.assertEqual(headers.get("Department"), ["joiners_tracker_Nov2026.xlsx"])
+        self.assertFalse({h.lower() for h in headers} & {"name", "date", "status"})
+
+    def test_the_header_cache_is_bounded(self):
+        for n in range(long_task._INPUT_HEADERS_KEPT + 5):
+            long_task._input_headers(f"request number {n}")
+        self.assertLessEqual(len(long_task._input_headers_cache), long_task._INPUT_HEADERS_KEPT)
 
 
 if __name__ == "__main__":

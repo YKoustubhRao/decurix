@@ -88,7 +88,6 @@ class Pipeline:
                 mock.patch.object(long_task, "_charge", lambda *a: None), \
                 mock.patch.object(long_task, "_input_headers", lambda request: headers), \
                 mock.patch.object(long_task, "run_inputs", lambda request: []), \
-                mock.patch.object(long_task, "_note_probe_record", lambda *a: None), \
                 mock.patch.object(long_task, "_decided", lambda *a: False), \
                 mock.patch.object(long_task, "_park", lambda run_id, step_id, q, *a, **k: self.to_person.append(q)), \
                 mock.patch.object(long_task, "_new_question", lambda *a, **k: "q1"), \

@@ -712,9 +712,13 @@ def _run_request(query, given, context="", source_files=None):
     _prepare(run)
 
 
-def _pause(run, kind, text, ask_kind="query", **extra):
+def _pause(run, kind, text, ask_kind="query", secret=False, **extra):
+    """Pause the run on a question. `secret`: the question asks for a value the skill itself marks secret (a
+    parameter's own "secret"), so the person's whole reply is withheld wherever it is kept (X-6) - from structure,
+    never from the question's words."""
+
     state.paused_skill = dict({"mode": "run", "kind": kind, "run": run}, **extra)
-    ask_for_query(text, kind=ask_kind, engine=SKILL_ENGINE)
+    ask_for_query(text, kind=ask_kind, engine=SKILL_ENGINE, secret=bool(secret))
 
 
 def _prepare(run):
@@ -793,7 +797,7 @@ def _prepare(run):
 
     if missing:
         _pause(run, "values", (problem + " " if problem else "") + _need_text(skill, missing),
-               missing=[p["name"] for p in missing])
+               secret=any(p.get("secret") for p in missing), missing=[p["name"] for p in missing])
         return
 
     # What the person chose when they taught it: some tasks are theirs to start (they spend money, commit them to
@@ -1162,7 +1166,11 @@ def _execute(run):
     elif outcome in (replay.NEEDS_APPROVAL, replay.NEEDS_HUMAN):
         kind = "approval" if outcome == replay.NEEDS_APPROVAL else "human"
         text = _approval_text(run, result, values) if kind == "approval" else result["text"]
+        # A by-hand step the recording kept private (a password the person types) asks for a secret: its reply is
+        # withheld whole wherever it is kept - from the recording's structure, never the question's words (X-6).
+        from decurix_agent.replay_task import _secret_step
         _pause(run, kind, text, "approval" if kind == "approval" else "query",
+               secret=kind == "human" and _secret_step(program, result.get("step")),
                step=result["step"], resume_from=result["resume_from"])
     elif outcome == replay.RECONCILIATION_REQUIRED or result["resume_from"] is None or run["stuck"] >= MAX_STUCK_ASKS:
         _settle(run, outcome)
@@ -1878,7 +1886,7 @@ def _learning_by_model(run):
 
 # What the engine and the check are told about a value the person typed only
 # to search with. Found live: the words read from a document for such a value
-# ("Executive A4 Printing Paper 75 GSM", then "Printing Paper") were typed
+# (a long product name, then a shorter part of it) were typed
 # whole, matched nothing, and the correct record picked in the end ("A4
 # Printing Paper") was refused by the check as "another value".
 CHOSEN_NOTE = ("a search, not the text to end up in the field: the person typed a few words, a list of the "

@@ -1591,9 +1591,11 @@ class LongRun(LongRunBase):
         run_state = {"spec": {"steps": []}, "steps": {}}
         verdict = long_task.classify("the second one", run_state, data, ask=lambda *a: (_ for _ in ()).throw(ValueError("down")))
         self.assertEqual(verdict["kind"], "unclear")
+        # With no question open it is asked about too, never applied as a change (E-42, review 2026-11-03).
         verdict = long_task.classify("the second one", run_state, {"questions": [], "request": LONG},
                                      ask=lambda *a: (_ for _ in ()).throw(ValueError("down")))
-        self.assertEqual(verdict["kind"], "amendment")
+        self.assertEqual(verdict["kind"], "unclear")
+        self.assertEqual(verdict["amendment"], "")
 
     def test_an_amendment_is_never_the_answer_and_the_answer_leads_the_rerun(self):
         # Only stages that need the answer are left: the question parks its stage and the run asks once.
@@ -1672,7 +1674,9 @@ class LongRun(LongRunBase):
         long_task._run = {"run_id": "x", "task_id": TASK, "task_file": None, "request": LONG}
         (self.runner.root / "x").mkdir()
         state.waiting_for_query, state.last_query_kind = True, "approval"
-        with mock.patch.object(long_task, "_approval_as_decision") as kept,                 mock.patch("decurix_agent.watchers.answer_waiting"),                 mock.patch.object(long_task, "classify", return_value={"kind": "unrelated"}):
+        with mock.patch.object(long_task, "_approval_as_decision") as kept, \
+                mock.patch("decurix_agent.watchers.answer_waiting"), \
+                mock.patch.object(long_task, "classify", return_value={"kind": "unrelated"}):
             self.message("yes")
             kept.assert_not_called()
 
@@ -1724,7 +1728,8 @@ class LongRun(LongRunBase):
         def read(path):
             stage = Path(path).stem
             figure = rows.get(stage) or {"register": "1,000.00", "memo": "1,200.00", "bank": "5"}[stage]
-            return [("Total payable", [figure])] if stage != "bank" else [("Fees", [figure])]
+            # (A named total: "Total payable" alone is every table's and is not compared - E-17.)
+            return [("Vendor bills total payable", [figure])] if stage != "bank" else [("Fees", [figure])]
 
         attempts = []
 

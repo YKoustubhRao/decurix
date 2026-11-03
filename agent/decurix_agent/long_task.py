@@ -191,8 +191,12 @@ def _ask_json(system, prompt, max_tokens=4000):
             _asked_tokens[0] += int((spent or {}).get("prompt_tokens") or 0) + int((spent or {}).get("completion_tokens") or 0)
         text = message.get("content") or ""
     else:
+        # The engine's own model: what it spent is what the usage meter counted meanwhile (E-41: it was charged nothing).
         from decurix_agent import harness
+        spent_before = usage.spent()
         text = harness.ask_model(system, prompt)
+        with _lock:
+            _asked_tokens[0] += max(0, usage.spent() - spent_before)
     match = re.search(r"\{.*\}", text or "", re.DOTALL)
     if not match:
         raise ValueError(f"no JSON in the answer: {(text or '')[:200]!r}")
@@ -232,16 +236,6 @@ def _relative(path):
 _PLACEHOLDER = re.compile(r"x{3,}|X{3,}|<[^>/]*>|\{[^}/]*\}|\[[^\]/]*\]")
 # Words the request puts in quotes: the only literals a code check may require of a file.
 _QUOTED = re.compile("[\"“]([^\"”\\n]{1,40})[\"”]|(?<![\\w])'([^'\\n]{1,40})'(?![\\w])")
-
-
-# A request that asks for emails to be prepared (to be drafted into the Outbox): "draft an email", "email the
-# customers", "dispute email drafts", "the Outbox". A request that only mentions email ("POs that came by email") or
-# says it will send replies itself does not: then no stage drafts anything (round 5 P2, 2026-10-20: the planner
-# invented "1 email draft(s)" for a decision stage, and the stage met it by writing to a customer).
-_ASKS_DRAFTS = re.compile(
-    r"\boutbox\b|\be-?mail\s+drafts?\b|\bdrafts?\s+(?:an?\s+|the\s+)?(?:e-?mails?|repl(?:y|ies)|messages?|letters?)\b|"
-    r"\b(?:draft|prepare|write|compose|send)\s+(?:\w+\s+){0,4}?(?:e-?mails?)\b|"
-    r"\be-?mail\s+(?:the|them|each|every|all|our|him|her|it|to)\b", re.I)
 
 
 # Drafts the request asks for only where needed: "a reply for every email that needs one", "drafts where needed".
@@ -300,15 +294,9 @@ def reply_coverage(emails, drafts, report):
     return left
 
 
-def asks_for_drafts(request):
-    """Whether the request asks for emails to be prepared as drafts (never decided by the planner alone)."""
-
-    return bool(_ASKS_DRAFTS.search(attachments.text(request or "")))
-
-
 # Work that enters records in an application (a portal, a back office, an ERP, a form): what was saved is read back
 # from the application itself. Found live (round 5 P2, 2026-10-20): the entry stage checked an order by the portal's
-# "Order SO-5103 was saved." and its own CSV; the saved order had a quantity of 60 for 24 and a line missing.
+# "Order ORD-3 was saved." and its own CSV; the saved order had a quantity of 60 for 24 and a line missing.
 APP_ENTRY = re.compile(r"\b(?:enter|key|post|book|create|record|register|submit|file)\w*\b[^.\n]{0,160}?\b(?:portal|"
                        r"application|app|system|erp|website|web site|software|form|back office)\b|https?://", re.I)
 
@@ -425,8 +413,11 @@ def spec_from_plan(plan, files=(), request=""):
         for_approval = decision and stage.get("for_approval") is True
         if for_approval:
             decision = False
-        if decision or not asks_for_drafts(request):
-            # A decision is the person's, asked in the chat; and drafts are made only when the request asks for emails.
+        if decision:
+            # A decision is the person's, asked in the chat: it drafts nothing (round 5 P2, 2026-10-20: the planner
+            # gave a decision stage "1 email draft(s)" and the stage met it by writing to a customer). Otherwise the
+            # count is the planner's reading of the request, never a word list's: E-21 (review 2026-11-03), a regex
+            # zeroed the count for "Draft reminders for each overdue customer" and the count check was never made.
             drafts = 0
         as_needed = bool(drafts) and drafts_as_needed(request)
         if as_needed:
@@ -611,12 +602,41 @@ def _ledger_path(run_id):
     return _runner().root / run_id / "ledger.json"
 
 
+class LedgerError(OSError):
+    """A run's ledger exists and cannot be read: never taken for an empty one (E-23)."""
+
+
+def _unreadable_copies(run_id):
+    return sorted(_ledger_path(run_id).parent.glob("ledger.json.unreadable-*"))
+
+
 def ledger(run_id):
+    """
+    The run's ledger. A run with none yet has the empty shape. One that exists and cannot be read is moved aside (kept,
+    never overwritten) and LedgerError is raised - then and on every later read, so no save can write an empty ledger
+    over the person's facts, decisions and amendments (E-23, review 2026-11-03: any read error gave {}, and the next
+    update wrote the defaults over the real file).
+    """
+
     with _lock:
+        path = _ledger_path(run_id)
         try:
-            data = json.loads(_ledger_path(run_id).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("the ledger is not an object")
+        except FileNotFoundError:
+            if _unreadable_copies(run_id):
+                raise LedgerError(f"the ledger of run {run_id} could not be read; it is kept as "
+                                  f"{_unreadable_copies(run_id)[-1].name}")
             data = {}
+        except (OSError, ValueError) as exc:
+            aside = path.with_name(f"ledger.json.unreadable-{int(time.time())}")
+            try:
+                path.replace(aside)
+            except OSError as move:
+                log(f"long_task: could not move the unreadable ledger aside: {move}")
+            raise LedgerError(f"the ledger of run {run_id} could not be read ({type(exc).__name__}); it is kept as "
+                              f"{aside.name}") from exc
     data.setdefault("facts", [])
     data.setdefault("decisions", [])
     data.setdefault("amendments", [])
@@ -628,11 +648,25 @@ def ledger(run_id):
 
 
 def _save_ledger(run_id, data):
-    _withhold_derived(data)
+    """
+    Write the run's ledger whole: its derived records withheld first (a failure there skips the save - the file on disk
+    keeps what it had, never "[held back]" over every record), flushed to the disk before it replaces the old file (a
+    power cut leaves the old ledger or the new one, never an empty one - E-23).
+    """
+
+    import copy
+
+    withheld = _withhold_derived(copy.deepcopy(data))
+    data.clear()
+    data.update(withheld)
     with _lock:
         path = _ledger_path(run_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, indent=1, ensure_ascii=False))
+            f.flush()
+            os.fsync(f.fileno())
         tmp.replace(path)
 
 
@@ -735,12 +769,14 @@ def perform(content, task_file):
         return False
 
     task_id = task_context.current()
-    run_state = _runner().create(spec, {"request": request}, work_dir=str(config.WORK_DIR))
-    run_id = run_state["run_id"]
-    if task_id:
-        _runner().bind_task(run_id, task_id)
+    # The ledger first, then the run: a crash between the two leaves a ledger with no run (nothing resumes it), never
+    # a run with no request to resume (E-23).
+    run_id = uuid.uuid4().hex
     _save_ledger(run_id, {"request": request, "task_id": task_id, "started": time.time(),
                           "task_file": str(task_file or ""), "host_docs_start": _host_snapshot()})
+    run_state = _runner().create(spec, {"request": request}, run_id=run_id, work_dir=str(config.WORK_DIR))
+    if task_id:
+        _runner().bind_task(run_id, task_id)
     _charge(run_id, before)
     with state.state_lock:
         state.current_task = request
@@ -1216,6 +1252,8 @@ def run_inputs(request):
 _GENERIC_HEADERS = {"name", "date", "no", "id", "type", "status", "amount", "total", "description", "notes", "note",
                     "remarks", "value", "item", "items", "code", "s.no", "sr", "sl", "#"}
 _input_headers_cache = {}
+# How many requests' headers are kept (E-40: the cache grew without bound over a desktop's life).
+_INPUT_HEADERS_KEPT = 8
 
 
 def _input_headers(request):
@@ -1251,26 +1289,19 @@ def _input_headers(request):
                     if path.name not in headers[text]:
                         headers[text].append(path.name)
     _input_headers_cache[key] = headers
+    while len(_input_headers_cache) > _INPUT_HEADERS_KEPT:
+        _input_headers_cache.pop(next(iter(_input_headers_cache)))
     return headers
 
 
-def fields_in_inputs(question, request):
-    """The columns of the request's input tables a question asks for, as "Mobile is a column of x.xlsx"; [] for none."""
-
-    found = []
-    for header, files in _input_headers(request).items():
-        if re.search(r"(?<![\w-])" + re.escape(header) + r"(?![\w-])", question or "", re.I):
-            found.append(f"{header} is a column of {', '.join(files)}")
-    return found
-
-
-def _send_back_found_in_inputs(run_id, step_id, question, found=None):
+def _send_back_found_in_inputs(run_id, step_id, question, found):
     """
     A stage that asks the person for a value that is a column of one of the request's own input tables is sent back,
     once, told where it is - never the person asked for what the request gave (round 5 P4, 2026-10-20).
     """
 
-    found = found if found is not None else fields_in_inputs(question, ledger(run_id).get("request") or "")
+    # (`found` is the routing reading's pointer to where the inputs hold it - E-40: a word match over the input headers
+    # was dead in production and is gone.)
     if not found:
         return False
     places = "; ".join(found[:6])
@@ -1576,7 +1607,7 @@ LEFT_OUT = re.compile(r"\b(?:hold|held|cancel\w*|reject\w*|declin\w*|not approve
                       r"skip\w*)\b", re.I)
 # A column of what goes now (allocated, shipped), and one of what does not (backorder).
 NOW_COLUMN = re.compile(r"\b(?:alloc\w*|ship\w*|dispatch\w*|deliver\w*)\b", re.I)
-LATER_COLUMN = re.compile(r"back\s*-?\s*order|pending|short|value|amount|gst|tax|rate|price|total", re.I)
+LATER_COLUMN = re.compile(r"back\s*-?\s*order|pending|short|value|amount|total", re.I)
 TABLE_KINDS = {".csv", ".tsv", ".xlsx", ".xlsm"}
 
 
@@ -1616,13 +1647,14 @@ def covers_every(step):
 # A stage that takes only the records meeting a condition: "a Refund over Rs 5,000", "with anything over 30 days",
 # "whose papers are complete", "approved", "that need one".
 _THRESHOLD = re.compile(r"(?i)(?:\b(?P<noun>[A-Za-z]+)\s+)?\b(?P<op>over|above|more than|exceeding|greater than|at least|"
-                        r"under|below|less than|up to|not more than)\s+(?:rs\.?\s*|inr\s*|₹\s*)?(?P<n>\d[\d,]*(?:\.\d+)?)"
+                        r"under|below|less than|up to|not more than)\s+(?:(?:rs\.?|inr|₹|\$|€|£|usd|eur|gbp)\s*)?(?P<n>\d[\d,]*(?:\.\d+)?)"
                         r"(?!\s*(?:days?|%|percent|units?|pcs|items?))\b")
 _CONDITION = re.compile(r"(?i)\b(?:whose|which|that|who)\s+(?:is|are|has|have|need|needs|meet|meets|qualif\w*)\b|"
                         r"\bwith\s+(?:anything|any|an?\s+\w+)\s+(?:over|above|older|more)\b|\b(?:eligible|"
                         r"complete|overdue|flagged|unpaid)\b|\bover\s+\d+\s*days?\b")
 # ("approved" and "held" are a decision's, which the check already reads row by row: LEFT_OUT.)
-_MONEY = re.compile(r"(?i)(?:rs\.?|inr|₹)\s*(\d[\d,]*(?:\.\d+)?)")
+# (Any currency's sign or code is notation, not a business word: "over $5,000" decided nothing - E-28.)
+_MONEY = re.compile(r"(?i)(?:rs\.?|inr|₹|\$|€|£|usd|eur|gbp)\s*(\d[\d,]*(?:\.\d+)?)")
 _STAGE_NOUNS = {"every", "each", "all", "the", "a", "an", "any", "is", "are", "of", "to", "for", "from", "with"}
 
 
@@ -1700,8 +1732,8 @@ def coverage_problems(run_state, step, made):
                 continue
             gathered += [(path, header, rows) for header, rows in tables]
     # A party a table of these files leaves out (held, cancelled ...) is left out, whatever another sheet of them lists
-    # without a status (found in the replay gate, series 10's P2: "Orders" had Harbour HELD, its "Working" sheet listed
-    # the same lines with no status, and the portal stage was refused for not entering Harbour).
+    # without a status (found in the replay gate, series 10's P2: "Orders" had one customer HELD, its "Working" sheet listed
+    # the same lines with no status, and the portal stage was refused for not entering it).
     left_out = set()
     for path, header, rows in gathered:
         column = next((i for i, h in enumerate(header) if _header_key(h) in keys), None)
@@ -1744,34 +1776,6 @@ def coverage_problems(run_state, step, made):
         return [head + " Do each one that is left - check the application first for any already there, never enter "
                 "one twice - and log it."]
     return [head + " Add the missing rows to the file."]
-
-
-# A stage saying it saved a record only to try the application out: "the wrong extra test order ... I created it while
-# checking how the site saves orders".
-PROBE_RECORD = re.compile(r"(?i)\b(?:test|trial|probe|dummy|sample)\b[^\n]{0,80}?\b(?:order|record|entry|invoice|bill|"
-                          r"voucher|customer|item|line)s?\b[^\n]{0,160}?\b(?:I|we)\s+(?:created|saved|made|entered|posted|"
-                          r"submitted)\b")
-
-
-def _note_probe_record(run_id, step, text):
-    """
-    A record a stage says it saved to try the application out is wrong in the application, said at the top of the
-    report with what the person must remove - whatever happens to the question (found live 2026-10-20, P2: a test order
-    SO-5102 saved "while checking how the site saves orders", in a portal that cannot delete orders).
-    """
-
-    if not PROBE_RECORD.search(text or ""):
-        return
-    said = " ".join(str(text).split())[:300]
-    title = step.get("title", step.get("id", "a stage"))
-
-    def keep(data):
-        kept = data.setdefault("wrong_in_app", [])
-        entry = (f"{title}: a test record was saved in the application, which the request did not ask for - remove it "
-                 f"there if it is still there (the worker said: \"{said}\")")
-        if entry not in kept:
-            kept.append(entry)
-    _update(run_id, keep)
 
 
 # How a stage reopened for the person's change of the request says so (amend).
@@ -2292,10 +2296,11 @@ def excluded_names(data):
 
 
 def _names(name, text):
-    """Whether `text` names `name` (its first word is enough: "Priya" in "Priya Nair")."""
+    """Whether `text` names `name`: every word of the name, in any order (_name_seen). Never its first word alone: found
+    (review 2026-11-03, E-19), the person excluded one person and the check's "the letter for <the same first name,
+    another surname> is missing" was taken for that person, so a refusal about someone else was softened."""
 
-    first = name.split()[0]
-    return bool(re.search(rf"\b{re.escape(first)}\b", text or ""))
+    return _name_seen(name, text)
 
 
 def refused_for_excluded(verdict, data):
@@ -2370,7 +2375,7 @@ def _stem(word):
 def rescope_after_answer(run_id, question, answer):
     """
     Restate the stages whose scope the person's answer changes (one call to the main brain), keep the change in the
-    ledger and show it with the plan. Found live (round 5 P4, 2026-10-20): the answer "skip Priya" was given as binding
+    ledger and show it with the plan. Found live (round 5 P4, 2026-10-20): the answer "skip <a joiner>" was given as binding
     to the check, which still judged the stage by its title "for everyone whose papers are complete" and refused it twice.
     Returns the ids restated.
     """
@@ -2410,7 +2415,7 @@ def rescope_after_answer(run_id, question, answer):
         if (enters_records(dict(old, instruction=before)) and not APP_ENTRY.search(does)) \
                 or len(kept) < 0.4 * max(1, len(_words(before))):
             # A restatement that drops the stage's own work is a note on it, never its new text. Found live (round 5
-            # P2, 2026-10-20, CR): the portal stage was restated as only "Include Cafe Bloom ... Exclude Harbour ..." -
+            # P2, 2026-10-20, CR): the portal stage was restated as only "Include <customer A> ... Exclude <customer B> ..." -
             # the worker wrote a log and never entered an order.
             does = before.rstrip() + " After the person's answer: " + does
         try:
@@ -2441,16 +2446,18 @@ def binding_text(data):
         question = " ".join(str(d.get("question") or "").split())
         answer = " ".join(str(d.get("answer") or "").split())[:1200]
         if is_stuck_question(question):
-            # A reply that settles what the work and its check disagreed on binds the check like any answer; one that
-            # only says how to go on ("try again") does not (series 16, 2026-10-21: the person's "the work is right"
-            # reached only the worker, and the check refused the same figure again).
-            if settles_something(answer):
+            # Every reply binds the check like any answer, except one that only says how to go on: a bare "try again",
+            # "skip it" or "stop" - stuck_choice's reading, kept with the decision (series 16, 2026-10-21: the person's
+            # "the work is right" reached only the worker, and the check refused the same figure again). E-20 (review
+            # 2026-11-03): a word count decided it, and "use 18%" or "no, it is 5%" never reached the check.
+            choice = d.get("choice") or _plain_stuck_choice(answer)
+            if not (choice in ("skip", "stop") or (choice == "retry" and not str(d.get("instruction") or "").strip())):
                 lines.append(f"- About a check the stage did not pass (\"{question[:1500]}\") - the person settled it: "
                              f"\"{answer}\"")
             continue
         # What the answer addresses first, as the model read it (classify): an item the question lists that the
         # answer does not address is not decided (series 15 H1, 2026-10-21: the question cut at 300 characters showed
-        # only its first item, and the judge took "Approve Neha's airport taxi ..." for a decision about Kavya's cab).
+        # only its first item, and the judge took "Approve <person A>'s airport taxi ..." for a decision about <person B>'s cab).
         reading = []
         if d.get("names"):
             reading.append("The answer addresses: " + ", ".join(d["names"]) + ".")
@@ -2571,7 +2578,7 @@ def _judge(state, step, reply, made, drafts, note="", start=None, evidence=()):
     data = ledger(state["run_id"])
     binding = binding_text(data)
     if binding:
-        # Found live (round 5 P4, 2026-10-20): the person said to skip Priya until her ID arrives; the stage left her
+        # Found live (round 5 P4, 2026-10-20): the person said to skip one joiner until her ID arrives; the stage left her
         # out, and the check - shown the answer only as context - failed it twice against the tracker.
         task += "\n" + binding
     if note:
@@ -2847,7 +2854,7 @@ def _stage_tool_record(run_id, step, start):
         pass
     read = [text for at, text in notes if at >= last_entry]
     read += [str(e.get("change") or "") for e in actions if when(e) >= last_entry]
-    # The whole stage's reading too: the system's own page for each record as it was saved ("Order SO-5102 was saved").
+    # The whole stage's reading too: the system's own page for each record as it was saved ("Order ORD-2 was saved").
     everything = [text for at, text in notes if at >= began]
     everything += [str(e.get("change") or "") for e in actions]
 
@@ -2866,7 +2873,7 @@ _ENTERED_CELL = re.compile(r"(?i)^\W*(?:entered|created|saved|submitted|onboarde
                            r"\s+\S*\d{3,}|\s*$)")
 # A column that holds the record's number in the system ("Portal ref", "SO number", "Employee ID").
 _REFERENCE_HEADER = re.compile(r"(?i)\b(?:ref\w*|number|id|portal|system)\b")
-# A record's number in a system, whatever its shape (SO-5101, EMP2044, INV/2026/0012, 100234): a token with three
+# A record's number in a system, whatever its shape (ORD-0001, EMP0044, INV/2026/0012, 100234): a token with three
 # digits in a row - not a date, not a figure.
 _SYSTEM_NUMBER = re.compile(r"(?<![\w/.,-])(?=[A-Za-z0-9/_-]*\d{3})[A-Za-z0-9]+(?:[-/_][A-Za-z0-9]+)*(?![\w/-])")
 _DATE_SHAPE = re.compile(r"^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}$")
@@ -2925,7 +2932,7 @@ def _claimed_records(made):
                 continue
             keys = [c for c in cells if re.search(r"\d{3,}", c) and len(c) <= 40 and not re.fullmatch(r"[\d.,/ -]+", c)]
             names = [c for c in cells[:3] if re.fullmatch(r"[A-Za-z][A-Za-z&.',/ -]{2,60}", c) and c not in said]
-            # The record's number in the system, when the status gives it (EMP-2044, SO-5101, 100234), is what its
+            # The record's number in the system, when the status gives it (EMP-0044, ORD-0001, 100234), is what its
             # pages show; else its own reference and name - never other details (a bank code, an amount) a form held.
             system_ids = list(dict.fromkeys([m for c in verbs for m in _system_numbers(c)]
                                             + [m for c in numbered for m in _system_numbers(c)]))
@@ -3063,7 +3070,7 @@ def system_entry_findings(run_id, step, made, request, start, record=None):
 
 def _shown(values, names, claimed, text, ids=()):
     """
-    Whether the system's pages show one claimed record: by the system's own number when the log gives one (SO-5102,
+    Whether the system's pages show one claimed record: by the system's own number when the log gives one (ORD-0002,
     EMP2044, 100234); else by its name (in any order, case or punctuation) and its reference on one line; a reference
     several claimed records share (one PO for three chat orders) never identifies one by itself.
     """
@@ -3204,7 +3211,7 @@ def draft_checks(drafts, request, made=()):
     draft's fact against its recipient's own row of the request's table (stage_facts.draft_field_facts), and a name it
     gives as a field of its recipient's record that no source holds. Found live (round 5 P4 on pc3, 2026-10-21, DE):
     welcome drafts named managers no source has. Which capitalised words are a name is a guess at meaning ("report to
-    our Engineering Lead, Priya Nair, at the Head Office" gave "Engineering Lead" and "Head Office"), so a name is
+    our Engineering Lead, <a name>, at the Head Office" gave "Engineering Lead" and "Head Office"), so a name is
     evidence for the judge and the person, never a verdict (harness review, 2026-10-21).
     """
 
@@ -3610,7 +3617,7 @@ def _recheck_refusal(run_id, step, record, verdict):
     A refusal of a stage re-checked only because the person decided after it was made: it stands only when it is about
     what the decision names (its customers, orders, records); anything else is kept as advisory ("Please check") and the
     stage stands, since it had passed its check before the decision. Found live (round 5 P2 on pc3, 2026-10-20): the
-    extraction stage, re-checked after "Release Cafe Bloom, hold Harbour", was refused for its WA-1810 references.
+    extraction stage, re-checked after "Release <customer A>, hold <customer B>", was refused for its order references.
     """
 
     from decurix_agent import verify
@@ -3712,7 +3719,7 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
             verdict = _judge(run_state, step, reply, made, drafts, start=start, evidence=advice)
             if verdict["verdict"] == verify.NOT_DONE:
                 # A refusal on a record the person's answer left out is the check ranking the files above the person:
-                # judged once more with that said outright (round 5 P4, 2026-10-20: refused twice for Priya Nair).
+                # judged once more with that said outright (round 5 P4, 2026-10-20: refused twice for the excluded joiner).
                 gone = refused_for_excluded(verdict, ledger(run_id))
                 if gone:
                     log(f"long_task: the check counted {', '.join(gone)} as missing, whom the person excluded; judged again")
@@ -4089,6 +4096,14 @@ STUCK_PLAIN = {
 }
 
 
+def _plain_stuck_choice(answer):
+    """The choice a whole reply makes when it is one of STUCK_PLAIN's fixed phrases ("try again", "skip it", "stop"),
+    else None: for a decision kept before its reading was (binding_text). Never a word search."""
+
+    said = " ".join(re.sub(r"[^\w\s']", " ", str(answer or "")).lower().split())
+    return next((choice for choice, phrases in STUCK_PLAIN.items() if said in phrases), None)
+
+
 def stuck_choice(answer, question=""):
     """What a person's answer to a stuck stage decides: {"choice": retry|skip|stop|answer|unclear, "instruction"}."""
 
@@ -4162,17 +4177,6 @@ def dispute_points(run_id, step, finding, reply):
     return points[:6]
 
 
-# A reply to a stuck stage that says only how to go on - not what is right.
-_GO_ON_WORDS = re.compile(r"(?i)\b(?:please|ok(?:ay)?|yes|no|just|try|again|skip|it|stop|use|your|judg(?:e)?ment|"
-                          r"carry|on|and|go|ahead|the|that|with|thanks?)\b|[^\w\s]")
-
-
-def settles_something(answer):
-    """Whether a reply to a stuck stage says what is right (binding for the check), not only how to go on."""
-
-    return len(_GO_ON_WORDS.sub(" ", str(answer or "")).split()) >= 3
-
-
 def _record_cost(run_id, step_id, start, outcome):
     entry = {"attempt": start.get("attempt"), "seconds": round(time.time() - start["t"], 1),
              # The stage's engine and its check; not what reading a message meanwhile cost (that is overhead).
@@ -4228,8 +4232,10 @@ def _new_question(run_id, step_id, text, kind, parked, extra=None):
 def _park(run_id, step_id, question, run_state, report=None, kind="query", extra=None):
     from decurix_agent.messaging import post_question
 
-    _runner().park(run_id, step_id, question, report=report)
+    # (The question first: a restart between the two finds an open question and asks it, never a parked stage with
+    # nothing asked - E-23.)
     _new_question(run_id, step_id, question, kind, True, extra=extra)
+    _runner().park(run_id, step_id, question, report=report)
     _dispatch_next(run_id)
     if _runnable_besides(_runner().status(run_id), step_id):
         post_question(f"{question}\n\n(Meanwhile I am carrying on with the parts that do not depend on this.)")
@@ -4299,7 +4305,8 @@ def take_question(problem, kind):
             return _bounced(run_id, step_id)
         elif route == "DECIDED" and _send_back_once(run_id, step_id, problem, decided_by=pointer):
             return _bounced(run_id, step_id)
-    _note_probe_record(run_id, step_now, problem)
+    # (A record saved only to try the application out is the worker's to say, on its own WRONG IN THE APPLICATION
+    # line - APP_ENTRY_RULE; a regex over its words no longer decides it: E-22, review 2026-11-03.)
     if step_now.get("decision") and kind != "query" and not _decided(run_state, step_id):
         # A decision stage asks the person a question, whatever its words: "Please approve this payment run" is the
         # person's decision, not an action the worker is about to take (round 5 P3, 2026-10-20: asked as an approval,
@@ -4425,7 +4432,7 @@ def _send_back_unchecked(run_id, step_id, question):
 def _send_back_false_figures(run_id, step_id, question):
     """
     A stage about to tell the person something is wrong, with figures that do not add up (verify.false_sums): sent back
-    once to recheck, never shown to the person as fact. Found live (2026-10-20, P2): "SO-5101 ... should total 13129.00
+    once to recheck, never shown to the person as fact. Found live (2026-10-20, P2): "ORD-1 ... should total 1,000.00
     ex tax from 40 @ 175.75, 24 @ 149, 30 @ 95 - the person must correct the saved lines" - those come to 13,456.00,
     the record's own total; a person would have "corrected" a correct order.
     """
@@ -4561,7 +4568,7 @@ def _send_back_once(run_id, step_id, question, settled_by="", decided_by=""):
     """
 
     if decided_by:
-        # Series 16 H1 (2026-10-21): CL-4142 approved at Rs 1,200, then asked about again as "approve at Rs 1,850 or
+        # Series 16 H1 (2026-10-21): a claim approved at Rs 1,200, then asked about again as "approve at Rs 1,850 or
         # decline" - four questions in 80 seconds.
         return _send_back(run_id, step_id, "decided_back", question,
                           f"You asked the person: \"{' '.join(str(question or '').split())[:500]}\" They already "
@@ -4742,7 +4749,9 @@ def code_disagreements(outputs, read=None):
             if not _TOTALISH.search(label):
                 continue
             key = _label_key(label)
-            if not key:
+            # Only a label with a word of its own is one figure across files: "Total" or "Net amount" alone is every
+            # table's, and a register's total against an ageing report's is no disagreement (E-17, review 2026-11-03).
+            if not key or not [w for w in key.split() if not _TOTALISH.fullmatch(w)]:
                 continue
             seen.setdefault(key, {}).setdefault(path, (stage, label, figures))
     disagreements, agreed = [], 0
@@ -4958,6 +4967,7 @@ def _cross_check(run_state):
     run_id = run_state["run_id"]
     data = ledger(run_id)
     if data["crosscheck"]["rounds"] >= MAX_CROSSCHECK_ROUNDS:
+        _settle_crosscheck(run_state, data)
         return False
     outputs = _outputs(run_state)
     if len(outputs) < 2:
@@ -4992,6 +5002,37 @@ def _cross_check(run_state):
     return bool(reopened)
 
 
+def _settle_crosscheck(run_state, data):
+    """
+    After the last round that sent a stage back, the figures are compared once more, sending nothing back: a
+    disagreement no longer found is resolved, one still there stays for the person (E-17, review 2026-11-03: "resolved"
+    was set nowhere, so a corrected stage still read "not everything is checked").
+    """
+
+    cross = data["crosscheck"]
+    if cross.get("settled") or not any(d.get("sent_back_to") for d in cross.get("disagreements") or []):
+        return
+    outputs = _outputs(run_state)
+    run_id = run_state["run_id"]
+    before = _asked()
+    try:
+        found, agreed = code_disagreements(outputs)
+        more, agreed_more = model_disagreements(outputs, request=data.get("request") or "")
+    except Exception as exc:  # noqa: BLE001 - not compared again: they stay unresolved, never passed
+        log(f"long_task: could not compare the figures again: {exc}")
+        return
+    _charge(run_id, before)
+    still = {d["figure"] for d in found + more}
+
+    def keep(d):
+        for disagreement in d["crosscheck"]["disagreements"]:
+            if disagreement["figure"] not in still:
+                disagreement["resolved"] = True
+        d["crosscheck"]["agreed"] = agreed + agreed_more
+        d["crosscheck"]["settled"] = True
+    _update(run_id, keep)
+
+
 # ---------- the report ----------
 
 def final_report(run_state):
@@ -5001,12 +5042,11 @@ def final_report(run_state):
     from decurix_agent.messaging import write_final_reply
 
     run_id = run_state["run_id"]
-    if run_id in _reported:
+    if not _claim_report(run_id):
         # Already reported (a stop's report went out while the stage's engine was still ending): never twice.
         workflow_task._active = workflow_task._pending = None
         _release_hold(run_id)
         return None
-    _reported.add(run_id)
     data = ledger(run_id)
     from decurix_agent import source_guard
     # (A "<name>.orig" copy kept of a file the run made is a stale version beside its output: removed, round 5 P5.)
@@ -5388,7 +5428,7 @@ person sent a message. Decide what the message is.
   things as they are); false when they ask for any change to what is done.
 - For an amendment, which records it takes out or puts back, each by its reference exactly as the person writes it (a
   record's own number or code): "removed" - whole records it takes out of the work; "removed_lines" - a line or part
-  of a record it takes out ("the freight line of PO-7781": that record itself stays); "restored" - records it puts
+  of a record it takes out ("the freight line of PO-0001": that record itself stays); "restored" - records it puts
   back ("don't remove INV-1 after all"). A message that says NOT to remove something removes nothing. Empty lists
   when none.
 - An answer to a question about a check's finding (it asks whether to keep the work as it is): "keep": true when the
@@ -5484,12 +5524,11 @@ def classify(message, run_state, data, ask=None, said_answer=False):
         found = None
     if not isinstance(found, dict) or found.get("kind") not in {"answer", "amendment", "both", "status", "stop",
                                                                  "unrelated", "new_request", "unclear"}:
-        if questions:
-            # No model to tell an answer from a change: never guess - ask.
-            return {"kind": "unclear", "answers": [], "amendment": "", "affects": [],
-                    "ask": "Is this your answer to my question, or a change to the task?"}
-        return {"kind": "amendment", "answers": [], "amendment": " ".join((message or "").split())[:600],
-                "affects": [], "ask": ""}
+        # No model to tell an answer from a change: never guess - ask. (E-42, review 2026-11-03: with no question open
+        # any message was taken for a change, and a change naming no stage re-checks every finished one.)
+        return {"kind": "unclear", "answers": [], "amendment": "", "affects": [],
+                "ask": ("Is this your answer to my question, or a change to the task?" if questions else
+                        "Is this a change to the task? If it is, say what it changes.")}
     ids = {q["id"] for q in questions} | {f"d:{s['id']}" for s in pending}
     answers = [a for a in found.get("answers") or [] if isinstance(a, dict) and a.get("question") in ids
                and str(a.get("answer") or "").strip()]
@@ -5530,8 +5569,8 @@ def _reading(answer, message, confirming=None, question=""):
     The model's structured reading of one answer that code keeps: "hands_back", "keep" (only when true), and
     "excluded" / "restored" / "names" / "undecided" - only names the person's own message or the question writes (in
     any order or case; never one the model made up). Who or what is in or out comes from this reading, never from a word list over the person's
-    words (series 15 H1, 2026-10-21: "Approve Neha's airport taxi without the receipt, but pay only Rs 1,200" was read
-    as leaving Neha out, and her correct draft was refused).
+    words (series 15 H1, 2026-10-21: "Approve <person A>'s airport taxi without the receipt, but pay only Rs 1,200" was read
+    as leaving them out, and their correct draft was refused).
     """
 
     said = f"{message or ''} {(confirming or {}).get('message') or ''} {question or ''}"
@@ -5567,7 +5606,7 @@ def undecided_stages(run_state, data):
 def _about(answer, message, questions, pending):
     """
     An answer the model gave to an open question, moved to the decision it is really about when its words are that
-    decision's and not the question's (round 5 P2, 2026-10-20: "Release Cafe Bloom this once, hold Harbour..." was
+    decision's and not the question's (round 5 P2, 2026-10-20: "Release <customer A> this once, hold <customer B>..." was
     taken as the answer to "which document should I take it from?").
     """
 
@@ -5854,21 +5893,31 @@ _DERIVED = {"facts": ("text",), "decisions": ("question", "answer"), "amendments
 
 
 def _withhold_derived(data):
-    """A ledger with every derived record's text passed through the secret withholding before it is written."""
+    """A ledger with every derived record's text passed through the secret withholding before it is written. A text
+    that could not be checked raises LedgerError: the save is skipped, so one passing failure never replaces every
+    record with "[held back]" for good (E-23). (Withholding a text already withheld changes nothing.)"""
+
+    from decurix_agent.computer import privacy
+
+    def withheld(text):
+        out = privacy.withhold_known(text)
+        if out == privacy.HELD_BACK and text != privacy.HELD_BACK:
+            raise LedgerError("a record could not be checked for secrets; the ledger was not saved")
+        return out
 
     for key, fields in _DERIVED.items():
         for item in data.get(key) or []:
             for field in fields:
                 if isinstance(item.get(field), str):
-                    item[field] = privacy_withheld(item[field])
+                    item[field] = withheld(item[field])
     for key in ("wrong_in_app", "needs_you", "kept_for_person"):
         if isinstance(data.get(key), list):
-            data[key] = [privacy_withheld(t) if isinstance(t, str) else t for t in data[key]]
+            data[key] = [withheld(t) if isinstance(t, str) else t for t in data[key]]
     confirming = data.get("confirming")
     if isinstance(confirming, dict):
         for field in ("message", "ask"):
             if isinstance(confirming.get(field), str):
-                confirming[field] = privacy_withheld(confirming[field])
+                confirming[field] = withheld(confirming[field])
     return data
 
 
@@ -6093,6 +6142,7 @@ def _take_message(content, path, about_this=False):
                                     answer["answer"], names=answer.get("names"))
     for answer in answered:
         question = next(q for q in data["questions"] if q["id"] == answer["question"])
+        stuck_reading, stuck_answer = {}, answer["answer"]
         if question.get("kind") == "finding" and answer.get("keep") is True:
             # The person's alone: the reply to the question, and the gate's yes where there is a gate (E-15). Until
             # then the question stays open.
@@ -6101,7 +6151,14 @@ def _take_message(content, path, about_this=False):
             _decide(run_id, question, answer["answer"], reading=_answer_reading(answer))
             _keep_findings(run_id, question, answer["answer"])
         else:
-            _decide(run_id, question, answer["answer"], reading=_answer_reading(answer))
+            # A stuck stage's answer is read once for how to go on (stuck_choice), and the reading is kept with the
+            # decision: binding_text binds every answer but a bare retry, skip or stop (E-20).
+            stuck_reading = (stuck_choice(answer["answer"], question.get("text"))
+                             if question.get("parked") and question.get("kind") == "stuck" else {})
+            reading = dict(_answer_reading(answer) or {})
+            if stuck_reading:
+                reading.update(choice=stuck_reading.get("choice"), instruction=stuck_reading.get("instruction") or "")
+            _decide(run_id, question, answer["answer"], reading=reading)
         if answer.get("assumed"):
             _update(run_id, lambda d, q=question, a=answer: d.setdefault("assumed_for_person", []).append(
                 {"stage": q["stage"], "items": list(a["assumed"]), "at": time.time()}))
@@ -6116,7 +6173,9 @@ def _take_message(content, path, about_this=False):
             try:
                 # A person's own words for "stop" or "skip", answering a stuck stage (round 5 P6, 2026-10-20) - read
                 # once: anything else, however it starts, is what the stage goes on with.
-                said = stuck_choice(answer["answer"], question.get("text")) if question.get("kind") == "stuck" else {}
+                said = (stuck_reading if stuck_reading and answer["answer"] == stuck_answer
+                        else stuck_choice(answer["answer"], question.get("text")) if question.get("kind") == "stuck"
+                        else {})
                 if said.get("choice") == "stop":
                     _mark(path)
                     return stop(answer["answer"])
@@ -6199,8 +6258,8 @@ _ITEM_REF = re.compile(r"[a-z]*\d[a-z0-9]*(?:[-/][a-z0-9]+)*")
 
 
 def _same_item(decided, item):
-    """Whether an item an answer decided ("CL-4142", "Neha") is this listed item. An item with a reference is that
-    reference only - "Neha" decides one of her claims, not her flight CL-4145; without one, the same name exactly."""
+    """Whether an item an answer decided ("C-1", "<a name>") is this listed item. An item with a reference is that
+    reference only - "<a name>" decides one of their claims, not their claim C-2; without one, the same name exactly."""
 
     refs = lambda s: set(_ITEM_REF.findall(str(s or "").lower()))  # noqa: E731
     if refs(item):
@@ -6216,7 +6275,7 @@ def _rest_to_ask(run_id, step_id, question, answer):
     """
 
     items = [str(i) for i in answer.get("undecided") or []]
-    # An item an earlier answer already decided is not open (series 16 H1, 2026-10-21: CL-4142 was approved at Rs
+    # An item an earlier answer already decided is not open (series 16 H1, 2026-10-21: a claim was approved at Rs
     # 1,200, the stage's next question listed it again, and the follow-up asked the person about it twice more).
     decided = [n for d in ledger(run_id)["decisions"] if not is_stuck_question(d.get("question"))
                and d.get("answer") != answer.get("answer") for n in d.get("names") or []]
@@ -6326,7 +6385,7 @@ def _resume(run_id):
                      daemon=True).start()
 
 
-# What a question says the worker will do unless told otherwise: "I would record WB-500 as 70 ... unless you ...".
+# What a question says the worker will do unless told otherwise: "I would record <a reference> as 70 ... unless you ...".
 STATED_DEFAULT = re.compile(r"[^.?!\n]*\b(?:I would|I'd|I will|I'll|I plan to|I propose to|unless you)\b[^.?!\n]*[.?!]?",
                             re.I)
 
@@ -6482,6 +6541,30 @@ def _dependents(run_state, step_ids):
     return out
 
 
+def _stages_holding(run_state, step_ids, references):
+    """The stages among `step_ids` whose output files hold one of `references` as a whole token. A stage whose files
+    cannot be read counts as holding it (re-checked, never passed over)."""
+
+    from decurix_agent import produced
+    from decurix_agent.computer import identity
+
+    if not references:
+        return []
+    work = Path(_runner().context(run_state)["work_dir"])
+    out = []
+    for step_id in step_ids:
+        paths = [str(work / e["path"]) for e in run_state["steps"][step_id].get("evidence") or [] if not e.get("drafts")]
+        try:
+            text = produced.lines_with(paths, references) if paths else ""
+        except Exception as exc:  # noqa: BLE001 - unreadable: re-checked
+            log(f"long_task: could not read stage {step_id}'s outputs for the change: {exc}")
+            out.append(step_id)
+            continue
+        if any(identity.holds_identifier(text, r) or identity.holds(text, r) for r in references):
+            out.append(step_id)
+    return out
+
+
 def amend(run_id, text, affects, said=None, to_decision=False, keeps=None, records=None):
     """
     Fold a change the person made into the run: every stage still to run
@@ -6514,7 +6597,14 @@ def amend(run_id, text, affects, said=None, to_decision=False, keeps=None, recor
         # It keeps what is done: every stage still to run reads it; nothing finished is opened again.
         _show(_runner().status(run_id))
         return f"Noted: {text} - nothing already done changes; it applies to every stage still to do."
-    targets = _dependents(run_state, affects) if affects else set()
+    # Which finished stages it touches. The model's "affects" names them; none named is not "none touched" - every
+    # finished stage is re-checked - and a finished stage whose outputs hold a reference the change takes out or puts
+    # back is re-checked whatever "affects" says (E-18, review 2026-11-03: "leave X out of everything" with an empty
+    # "affects" reopened nothing, and the run could end done with X in it). Fails safe: more re-checks, never fewer.
+    done = [s["id"] for s in _steps(run_state) if run_state["steps"][s["id"]]["status"] in {"completed", "failed"}]
+    named = list(affects) if affects else done
+    named += _stages_holding(run_state, done, [r for k in ("removed", "restored") for r in (records or {}).get(k) or []])
+    targets = _dependents(run_state, named)
     reopened = []
     for step in _steps(run_state):
         if step["id"] in targets and run_state["steps"][step["id"]]["status"] in {"completed", "failed"}:
@@ -6600,6 +6690,18 @@ _Timer = threading.Timer
 _Thread = threading.Thread
 # Runs whose final report has gone out: a stage that ends after a stop's report adds nothing.
 _reported = set()
+_reported_lock = threading.Lock()
+
+
+def _claim_report(run_id):
+    """True for the one caller that reports this run; False for any other (the stop's timer and a stage ending raced
+    on a check-then-add - E-42)."""
+
+    with _reported_lock:
+        if run_id in _reported:
+            return False
+        _reported.add(run_id)
+        return True
 
 
 def _report_stopped(run_id):
