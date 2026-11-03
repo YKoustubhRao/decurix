@@ -431,3 +431,29 @@ func TestContentMismatch(t *testing.T) {
 		}
 	}
 }
+
+// A later job's download never overwrites an earlier job's file of the same name (review T-30).
+func TestADownloadKeepsAnEarlierJobsFile(t *testing.T) {
+	body := "a,b\n1,first\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/csv")
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	rc := newDownloadRC(t)
+	if res, _ := NewDownload().Run(rc, Subtask{Step: "download " + srv.URL + "/report.csv", Type: "download"}); !res.Verified {
+		t.Fatalf("first download: %+v", res)
+	}
+	body = "a,b\n2,second\n"
+	res, _ := NewDownload().Run(rc, Subtask{Step: "download " + srv.URL + "/report.csv", Type: "download"})
+	if !res.Verified || !strings.Contains(res.Output, "already there") {
+		t.Fatalf("second download: %+v", res)
+	}
+	first, err := os.ReadFile(filepath.Join(rc.Workspace.Root(), "downloads", "report.csv"))
+	if err != nil || string(first) != "a,b\n1,first\n" {
+		t.Fatalf("the earlier file was overwritten: %q %v", first, err)
+	}
+	if second, err := os.ReadFile(filepath.Join(rc.Workspace.Root(), "downloads", "report_2.csv")); err != nil || string(second) != "a,b\n2,second\n" {
+		t.Fatalf("the new file: %q %v", second, err)
+	}
+}

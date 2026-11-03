@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -30,6 +32,22 @@ type DownloadSkill struct{}
 func NewDownload() *DownloadSkill { return &DownloadSkill{} }
 
 func (d *DownloadSkill) Name() string { return "download" }
+
+// maxNameTries bounds how many numbered names a download tries before an existing file's name is given up on.
+const maxNameTries = 100
+
+// writeNew writes data to a file that must not exist yet (fs.ErrExist when it does).
+func writeNew(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
 func (d *DownloadSkill) Description() string {
 	return "Downloads real files linked from a real page (or a direct file URL) into the workspace - never a guessed link."
 }
@@ -362,20 +380,35 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		}
 		usedNames[name] = true
 
-		rel := filepath.ToSlash(filepath.Join(downloadDir, name))
-		abs, err := rc.Workspace.ResolveSafe(rel)
-		if err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %s", fileURL, err.Error()))
+		// A file an earlier job saved under the same name is never overwritten (review T-30): the new one takes the
+		// next free name, and the result says which name it came under.
+		asked := name
+		var abs string
+		var werr error
+		for n := 1; n <= maxNameTries; n++ {
+			if n > 1 {
+				ext := extRe.FindString(asked)
+				name = fmt.Sprintf("%s_%d%s", strings.TrimSuffix(asked, ext), n, ext)
+				if usedNames[name] {
+					continue
+				}
+			}
+			rel := filepath.ToSlash(filepath.Join(downloadDir, name))
+			if abs, werr = rc.Workspace.ResolveSafe(rel); werr != nil {
+				break
+			}
+			if werr = os.MkdirAll(filepath.Dir(abs), 0o755); werr != nil {
+				break
+			}
+			if werr = writeNew(abs, data); !errors.Is(werr, fs.ErrExist) {
+				break
+			}
+		}
+		if werr != nil {
+			failed = append(failed, fmt.Sprintf("%s: %s", fileURL, werr.Error()))
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %s", fileURL, err.Error()))
-			continue
-		}
-		if err := os.WriteFile(abs, data, 0o644); err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %s", fileURL, err.Error()))
-			continue
-		}
+		usedNames[name] = true
 		// Verified against the real file on disk, byte count included -
 		// never assumed from a write call that returned no error.
 		info, err := os.Stat(abs)
@@ -384,7 +417,11 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 			continue
 		}
 		rc.Logf("download", "saved %s (%d bytes) - verified on disk", abs, info.Size())
-		saved = append(saved, fmt.Sprintf("%s (%d bytes)", abs, info.Size()))
+		entry := fmt.Sprintf("%s (%d bytes)", abs, info.Size())
+		if name != asked {
+			entry += fmt.Sprintf(" - saved as %s, since %s was already there", name, asked)
+		}
+		saved = append(saved, entry)
 	}
 
 	var b strings.Builder
