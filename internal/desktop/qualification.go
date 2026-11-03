@@ -256,3 +256,23 @@ func qualificationArtifacts(r io.Reader, program string, inputs map[string][]byt
 	}
 	return out, nil
 }
+
+// DesktopImageID is the immutable image ID (sha256:...) of the desktop image for profile ("" is basic): what an eval
+// arm pins, as QualificationImage pins an existing worker's.
+func (m *Manager) DesktopImageID(ctx context.Context, profile string) (string, error) {
+	if profile == "" {
+		profile = "basic"
+	}
+	tag, err := resolveDesktopImage(profile)
+	if err != nil {
+		return "", err
+	}
+	inspect, _, err := m.client.ImageInspectWithRaw(ctx, tag)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(inspect.ID, "sha256:") {
+		return "", fmt.Errorf("the %s desktop image has no immutable ID", profile)
+	}
+	return inspect.ID, nil
+}
