@@ -248,7 +248,10 @@ _AMOUNT = (rf"{_CURRENCY}?\s?-?(?:{_INDIAN_GROUPED}|\d{{1,3}}(?:,\d{{3}})+)(?:\.
 # An operator stands on the same line as its terms: a dash that opens the next line is a bullet, not a minus. Found
 # live (2026-10-27): "... 56,994.00\n- 1191 = 55,802.60" (a list of vouchers and their totals) was read as
 # 56,994.00 - 1191 = 55,802.60, "a sum you wrote is wrong", and the worker undid right work.
-_SUM = re.compile(rf"(?<![\w.,/-])((?:{_AMOUNT})(?:[ \t]*[-+×x*@][ \t]*(?:{_AMOUNT}))+)[ \t]*=[ \t]*({_AMOUNT})(?![\w%/.]|,\d)", re.I)
+# A full stop that ends the sentence (then a space or the end) ends the total too: found (review round 2,
+# 2026-11-03) "... = 1143.00." decided nothing. A dot followed by a digit still does (a version, a date, 2.10.3).
+_SUM = re.compile(rf"(?<![\w.,/-])((?:{_AMOUNT})(?:[ \t]*[-+×x*@][ \t]*(?:{_AMOUNT}))+)[ \t]*=[ \t]*({_AMOUNT})"
+                  rf"(?![\w%/]|\.(?!\s|$)|,\d)", re.I)
 # One token of a written sum: an amount (with its currency) or an operator; a product's "x", "×", "*" or "@".
 _SUM_TOKEN = re.compile(rf"[ \t]*(?:({_AMOUNT})|([-+×x*@]))", re.I)
 

@@ -25,6 +25,19 @@ class IndianGroupingAndTheRupeeSign(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(verify.false_sums(text), [])
 
+    def test_a_sum_that_ends_its_sentence_is_read(self):
+        # Review round 2: a full stop after the total decided nothing, the commonest way to write it.
+        self.assertEqual(verify.false_sums("The invoices come to 750.00 + 300.00 + 84.00 = 1143.00."),
+                         ["750.00 + 300.00 + 84.00 = 1143.00 is wrong: it comes to 1,134.00"])
+        self.assertEqual(verify.false_sums("It is 2 + 2 = 5."), ["2 + 2 = 5 is wrong: it comes to 4"])
+        self.assertEqual(verify.false_sums("It is 2 + 2 = 4."), [])
+
+    def test_a_dot_followed_by_a_digit_still_decides_nothing(self):
+        for text in ("1 + 1 = 2.10.3 is the version", "Dated 1 + 1 = 2.1.2026.", "Pages 1-5 = 5.",
+                     "Invoices 101-110 = 10."):
+            with self.subTest(text=text):
+                self.assertEqual(verify.false_sums(text), [])
+
     def test_ranges_and_rates_are_still_not_sums(self):
         for text in ("Entered rows 2-10 = 9 rows.", "Invoices 101-110 = 10 invoices", "TDS @ 10 = 1,000 on 10,000"):
             with self.subTest(text=text):
