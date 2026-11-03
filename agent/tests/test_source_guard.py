@@ -180,6 +180,7 @@ class TheGateSaysYouChangedMyFile(FileWorkIsChecked):
               "path": "/shared/Decurix demo/receivables.xlsx", "diff": "D4: open -> paid",
               "gone": False, "kept": True, "asked": False, "copy": "/kept/receivables.xlsx"}
 
+    @needs("openpyxl")  # (the work is a workbook: without the reader it is not checked, never judged)
     def test_a_changed_source_goes_to_the_judge_and_the_person_and_is_never_read_as_an_output(self):
         self.verdicts = [{"verdict": verify.DONE, "confidence": 0.9, "seen": "the review lists every open invoice",
                           "why": ""}]

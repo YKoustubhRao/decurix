@@ -171,6 +171,7 @@ class FactsAtTheGate(FileWorkIsChecked):
         with mock.patch.multiple(skill_task.produced, **defaults):
             return skill_task._gate(report, "final", "thebot")
 
+    @needs("openpyxl")  # (the work is a workbook: without the reader it is not checked, never judged)
     def test_a_file_the_requests_words_name_and_nothing_wrote_is_evidence_the_judge_weighs(self):
         # Review 2026-11-03 (E-10): read from the words alone, "Do not create report.pdf" asked for report.pdf and was
         # refused at certainty; such a name is evidence for the judge, which decides.
