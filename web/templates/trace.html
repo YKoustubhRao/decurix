@@ -166,6 +166,7 @@
         {{if or .InputTokens .OutputTokens}}<span>{{tokens .InputTokens}} in{{with .CachedInputTokens}} ({{tokens .}} of them from the cache){{end}} / {{tokens .OutputTokens}} out tokens</span>{{end}}
         {{if .CostUSD}}<span>{{cost .CostUSD}}</span>{{end}}
         {{if or .Checked (eq .Status "done")}}<span>{{finalCheck .Checked}}</span>{{end}}
+        {{if and $.RunRecords (not .EndedAt.IsZero)}}<span><a href="/api/runs/{{.ID}}/bundle" download>Download the run record</a></span>{{end}}
       </div>
     </div>
 

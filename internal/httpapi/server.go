@@ -10,6 +10,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/concierge"
 	"github.com/YKoustubhRao/decurix/internal/llm"
 	"github.com/YKoustubhRao/decurix/internal/llmrec"
+	"github.com/YKoustubhRao/decurix/internal/runs"
 	"github.com/YKoustubhRao/decurix/internal/outbox"
 	"io"
 	"net/http"
@@ -130,6 +131,10 @@ type Server struct {
 	Runs       RunPuller
 	RunBundles RunBundles
 	runPulls   runPulls
+	// RunStore keeps the bundles and serves the run records (runs_routes.go); assigned by main.
+	RunStore *runs.Store
+	// buildRun stands in for runs.Build in tests.
+	buildRun func(ctx context.Context, execID string) (runs.Trajectory, error)
 	// deleteDesktop stands in for Desktops.Delete in deleteDesktopHandler, in tests.
 	deleteDesktop func(ctx context.Context, id string) error
 	// DateOrder is the organisation's date order, "day" or "month" ("" unknown), sent with every request to a
@@ -487,6 +492,8 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	// What a desktop keeps from a person's reply, kept here too when it is made (plan R8, learned.go): a desktop's
 	// callback, on this listener only.
 	mux.HandleFunc("/api/desktops/learned", s.desktopLearnedHandler)
+	// A run's record and bundle (plan R1, runs_routes.go): a person's, at this machine.
+	mux.HandleFunc("/api/runs/", s.humansOnly(s.runsHandler))
 	// Where something is on a screenshot, for a desktop's `gui` (grounder.go).
 	mux.HandleFunc("/api/grounder", s.grounderStatusHandler)
 	mux.HandleFunc("/api/grounder/locate", s.grounderLocateHandler)

@@ -108,6 +108,9 @@ type TaskPageData struct {
 // request, every attempt and every step the store holds, in order.
 type TaskTracePageData struct {
 	Task tasks.Detail
+	// RunRecords offers each attempt's run record for download (/api/runs/<execution>/bundle): on the primary
+	// listener only, where that route is served.
+	RunRecords bool
 }
 
 // ShortTitleRunes is how much of a request the dashboard's task dropdown shows.

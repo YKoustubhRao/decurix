@@ -169,7 +169,7 @@ func (s *Server) taskTraceHandler(w http.ResponseWriter, r *http.Request, id str
 		return
 	}
 
-	if err := s.Web.RenderTaskTrace(w, webui.TaskTracePageData{Task: detail}); err != nil {
+	if err := s.Web.RenderTaskTrace(w, webui.TaskTracePageData{Task: detail, RunRecords: !isGated(r) && s.RunStore != nil}); err != nil {
 		log.Printf("task trace: render: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}

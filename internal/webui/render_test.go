@@ -230,7 +230,8 @@ func TestRenderEveryPage(t *testing.T) {
 	traceDetail.Verdict, traceDetail.VerdictNote, traceDetail.VerdictAt = tasks.VerdictWrong, "wrong account", now
 
 	var trace bytes.Buffer
-	if err := renderer.RenderTaskTrace(&trace, TaskTracePageData{Task: traceDetail}); err != nil {
+	traceDetail.Executions[0].EndedAt = now.Add(time.Minute)
+	if err := renderer.RenderTaskTrace(&trace, TaskTracePageData{Task: traceDetail, RunRecords: true}); err != nil {
 		t.Fatalf("RenderTaskTrace: %v", err)
 	}
 	for _, want := range []string{
@@ -239,6 +240,7 @@ func TestRenderEveryPage(t *testing.T) {
 		"Paid INV-1042.", "timed out", `href="/tasks/t0123456789abcdef/trace.txt?download=1"`, "data-copy-trace",
 		"Verdict: <b class=\"wrong\">wrong</b>", "wrong account", `href="/tasks/t0123456789abcdef"`,
 		"Final check: done · by verify · rests on code, model", "files.read_back", "out.xlsx: 3 sheets read",
+		`href="/api/runs/x1/bundle"`, "Download the run record",
 	} {
 		if !strings.Contains(trace.String(), want) {
 			t.Errorf("the trace page is missing %q", want)
