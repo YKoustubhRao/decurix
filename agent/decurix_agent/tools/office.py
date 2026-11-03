@@ -1434,26 +1434,18 @@ def create_workbook(path, sheets):
     for spec in sheets:
         ws = wb.create_sheet(str(spec.get("name") or f"Sheet{len(wb.sheetnames) + 1}")[:31])
         rows = spec.get("rows") or []
-        # A column's label is its header (the first row, unless "header" is false); an identifier's label makes the
-        # figures under it text (_labelled_value).
-        header = list(rows[0]) if rows and spec.get("header", True) and isinstance(rows[0], (list, tuple)) else None
-        for i, row in enumerate(rows):
-            if (header is not None and i == 0) or not isinstance(row, (list, tuple)):
-                ws.append([_cell_value(v) for v in row])
-                continue
-            filled = sum(1 for v in row if v not in (None, ""))
-            ws.append([_cell_value(_labelled_value(v, header[j] if header and j < len(header) else None,
-                                                   row[j - 1] if j else None, filled))
-                       for j, v in enumerate(row)])
+        # Text or number is decided by the value alone (_cell_value); a long whole number shows whole (format "0").
+        for row in rows:
+            ws.append([_cell_value(v) for v in row])
         for ref, v in (spec.get("cells") or {}).items():
             cell = _cell_address(ref)
             if isinstance(v, dict):
                 v = _given_value(v, f"cell {cell} has no value: give a value, \"=FORMULA\" or {{\"formula\": ...}}")
-            col, row_n = _split(cell)
-            above = ws[f"{col}1"].value if int(row_n) > 1 and spec.get("header", True) else None
-            left = ws.cell(row=int(row_n), column=_col_num(col) - 1).value if _col_num(col) > 1 else None
-            filled = sum(1 for c in ws[int(row_n)] if c.value not in (None, "") and c.coordinate != cell) + 1
-            ws[cell] = _cell_value(_labelled_value(v, above, left, filled))
+            ws[cell] = _cell_value(v)
+        for line in ws.iter_rows():
+            for c in line:
+                if _shown_whole(c.value) and c.number_format == "General":
+                    c.number_format = "0"
 
         if spec.get("header", True) and ws.max_row >= 1:
             for c in ws[1]:
@@ -1565,111 +1557,83 @@ def _given_value(spec, missing):
     raise OfficeError(missing)
 
 
-# A whole number with this many digits or more is written as text: Excel shows it as 1.23457E+11 from 12 digits and
-# keeps only 15 of them, so a bank account or Aadhaar number would be changed. (No amount in whole rupees runs to 12
-# digits; a 9-11 digit figure stays a number, or its SUM would silently leave it out.)
-_LONG_DIGITS = 12
+# Whether a value in digits is written as a number or as text is decided by what a number would lose, never by the
+# words of its label. Found in review (2026-11-03, F-08): label vocabularies (account, ref, no, code ...) wrote an
+# amount beside "Amount credited to account" as text, so SUM left it out; and each round added words. A spreadsheet
+# keeps 15 significant digits: a whole number of more is text (a 16-digit account or card number would be changed).
+# A leading zero or a leading "+" is lost by a number, so such digits are text. Everything else is a number.
+_EXACT_DIGITS = 15
+# From this many digits a whole number shows as 1.23457E+11 in a General cell: it is given the number format "0"
+# (built-in format 1), so it shows whole and still adds up.
+_SHOWN_WHOLE_DIGITS = 12
+# The built-in number format "0".
+_WHOLE_FORMAT_ID = 1
 
 
 class _Text(str):
-    """A value to write as text whatever it looks like: an identifier written in digits (_cell_value)."""
-
-
-# The head word of a label that names an identifier written in digits - an account, a phone, a postal code, a tax or
-# ID number, a reference, a code. Its values are written as text whatever their length or type (review 2026-11-03: a
-# 10-digit account number, and one given as a JSON number, went in as numbers, so the sheet showed 1.23E+09 and
-# dropped leading zeros). Only the head word counts - the last word, after a bracket's words and a trailing digit
-# are put aside - so "Account Balance" names a quantity and "Sita Phone Traders" names nobody's phone.
-_ID_HEADS = {"a/c", "ac", "acct", "account", "iban", "ifsc", "swift", "bic", "micr", "routing", "phone", "mobile", "mob",
-             "tel", "telephone", "contact", "whatsapp", "fax", "pin", "pincode", "postcode", "zip", "zipcode", "postal",
-             "gstin", "pan", "tan", "cin", "llpin", "aadhaar", "aadhar", "uan", "esic", "id", "code", "ref",
-             "reference", "utr", "rrn", "cheque", "chq", "irn", "ack", "awb", "tracking", "serial", "imei", "barcode",
-             "ean", "upc", "isbn", "sku", "hsn", "sac", "hsn/sac", "folio", "no", "number", "num", "nr", "#"}
-# Head words of a quantity: a figure under one stays a number so it adds up, beside a label or not.
-_QUANTITY_HEADS = {"amount", "amt", "total", "sum", "price", "rate", "cost", "qty", "quantity", "count", "units",
-                   "balance", "debit", "credit", "dr", "cr", "tax", "gst", "cgst", "sgst", "igst", "cess", "tds", "fee",
-                   "fees", "charge", "charges", "discount", "net", "gross", "weight", "wt", "percent", "pct", "%",
-                   "days", "hours", "hrs", "salary", "wages", "payable", "receivable", "due", "paid", "outstanding",
-                   "opening", "closing", "mrp", "taxable", "value", "nos", "pcs"}
-
-
-def label_kind(label):
-    """"id" when a column's or a field's label names an identifier written in digits, "quantity" when it names a
-    figure, else None. "Number of ..." and "No. of ..." are counts."""
-
-    if not isinstance(label, str):
-        return None
-    text = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", label.lower())
-    if re.search(r"\b(?:number|no\.?|count)\s+of\b", text):
-        return "quantity"
-    words = [w.strip(".:*-_") for w in re.findall(r"[a-z/#%.]+|\d+", text)]
-    words = [w for w in words if w and not w.isdigit()]
-    if not words:
-        return None
-    head = words[-1]
-    if head in _QUANTITY_HEADS:
-        # A bare "Value" heads the values of a key-value list, not a column of figures.
-        return None if head == "value" and len(words) == 1 else "quantity"
-    if head in _ID_HEADS:
-        return "id"
-    return None
-
-
-# Under an identifier's label, a value in digits this long or longer is written as text: a phone, a postal code, an
-# account. A shorter one (a row's serial "S. No." 1, 2, 3; an item code 1001) loses nothing as a number.
-_ID_MIN_DIGITS = 5
-
-
-def _as_identifier(v):
-    """v as the text of an identifier in digits when it is one (a whole number, or digits as text, of _ID_MIN_DIGITS
-    digits or more), else None."""
-
-    if isinstance(v, bool):
-        return None
-    if isinstance(v, float) and v.is_integer() and abs(v) < 1e18:
-        v = int(v)
-    if isinstance(v, int):
-        return _Text(str(v)) if len(str(abs(v))) >= _ID_MIN_DIGITS else None
-    if isinstance(v, str) and re.fullmatch(r"\+?\d+", v.strip()) and len(v.strip().lstrip("+")) >= _ID_MIN_DIGITS:
-        return _Text(v)
-    return None
-
-
-def _labelled_value(v, header=None, row_label=None, row_cells=0):
-    """v as a cell under `header` (its column's label) and beside `row_label` (the label left of it): an identifier
-    label makes a value in digits text (_Text). The label left of it counts only in a two-cell "label, value" row
-    whose column is not one of figures."""
-
-    kind = label_kind(header)
-    if kind != "id" and kind != "quantity" and row_cells == 2 and label_kind(row_label) == "id":
-        kind = "id"
-    if kind == "id":
-        ident = _as_identifier(v)
-        if ident is not None:
-            return ident
-    return v
+    """A value to write as text whatever it looks like: digits a number would change (_cell_value)."""
 
 
 def _cell_value(v):
-    """A value as written into a cell: a text that is a plain number becomes the number, unless it is an identifier
-    written in digits - one with a leading zero or too long for a number to keep as typed, or one an identifier's label
-    marked (_Text) - which stays text. A whole number too long for a spreadsheet to keep is text too, a JSON number
-    as much as a text one."""
+    """A value as written into a cell: a text that is a plain number becomes the number, unless a number would lose
+    something of it - a leading zero, a leading "+", or more digits than a spreadsheet keeps - when it stays text. A
+    whole number given as a number with more digits than a spreadsheet keeps is text too."""
 
     if isinstance(v, _Text):
         return clean_text(str(v))
     if isinstance(v, float):
         return clean_number(v)
-    if isinstance(v, int) and not isinstance(v, bool) and len(str(abs(v))) >= _LONG_DIGITS:
-        return str(v)
+    if isinstance(v, int) and not isinstance(v, bool) and len(str(abs(v))) > _EXACT_DIGITS:
+        return _Text(str(v))
     if isinstance(v, str):
         s = v.strip()
         m = re.fullmatch(r"-?(\d+)(\.\d+)?", s)
         if m and not (len(m.group(1)) > 1 and m.group(1).startswith("0")) \
-                and len(m.group(1)) < _LONG_DIGITS and len(m.group(1) + (m.group(2) or "")) <= 16:
+                and len(m.group(1) + (m.group(2) or "")) <= _EXACT_DIGITS:
             return clean_number(float(s)) if "." in s else int(s)
         return clean_text(v)
     return v
+
+
+def _shown_whole(value):
+    """Whether a value written as a number needs the format "0" to show whole (a long whole number)."""
+
+    return isinstance(value, int) and not isinstance(value, bool) and len(str(abs(value))) >= _SHOWN_WHOLE_DIGITS
+
+
+def _whole_style(entries, base):
+    """The index of a cell format like `base` (an index, or None for the default) that shows numbers as "0": `base`
+    itself when its number format is not General, else one added to xl/styles.xml (reused when already there). None
+    when the workbook's styles cannot be read - the number is then written as it is."""
+
+    styles = entries.get("xl/styles.xml")
+    if styles is None:
+        return None
+    xml = styles.decode("utf-8")
+    m = re.search(r"<cellXfs\b[^>]*>(.*?)</cellXfs>", xml, re.S)
+    if not m:
+        return None
+    xfs = re.findall(r"<xf\b[^>]*?(?:/>|>.*?</xf>)", m.group(1), re.S)
+    index = int(base or 0)
+    if index >= len(xfs):
+        return None
+    xf = xfs[index]
+    fmt = re.search(r'\bnumFmtId="(\d+)"', xf)
+    if fmt and fmt.group(1) != "0":
+        return str(index)
+    if fmt:
+        wanted = xf.replace(fmt.group(0), f'numFmtId="{_WHOLE_FORMAT_ID}"', 1)
+    else:
+        wanted = xf.replace("<xf", f'<xf numFmtId="{_WHOLE_FORMAT_ID}"', 1)
+    if "applyNumberFormat=" not in wanted:
+        wanted = wanted.replace("<xf", '<xf applyNumberFormat="1"', 1)
+    if wanted in xfs:
+        return str(xfs.index(wanted))
+    body = m.group(1) + wanted
+    head = re.sub(r'\bcount="\d+"', f'count="{len(xfs) + 1}"', xml[m.start():m.start(1)], count=1)
+    xml = xml[:m.start()] + head + body + "</cellXfs>" + xml[m.end():]
+    entries["xl/styles.xml"] = xml.encode("utf-8")
+    return str(len(xfs))
 
 
 # ------------------------------------------------------------------
@@ -1730,30 +1694,6 @@ def _date_cell(path, sheet, cell):
     except Exception:
         return False
     return False
-
-
-def _edit_labels(path, sheet, cell):
-    """(the column's label, the label left of the cell, how many cells of its row are filled with it) in a saved
-    workbook, for _labelled_value: the column's label is the nearest text above the cell. (None, None, 0) when it
-    cannot be read."""
-
-    wb = _held_workbook(path)
-    if wb is None or sheet not in wb.sheetnames:
-        return None, None, 0
-    try:
-        ws = wb[sheet]
-        col, row = _split(cell)
-        header = None
-        for r in range(row - 1, max(row - 60, 0), -1):
-            v = ws[f"{col}{r}"].value
-            if isinstance(v, str) and not v.startswith("=") and re.search(r"[A-Za-z]", v):
-                header = v
-                break
-        left = ws.cell(row=row, column=_col_num(col) - 1).value if _col_num(col) > 1 else None
-        filled = sum(1 for c in ws[row] if c.value not in (None, "") and c.coordinate != cell) + 1
-        return header, left, filled
-    except Exception:
-        return None, None, 0
 
 
 def _date_format(fmt):
@@ -1901,7 +1841,12 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
         name = sheet_files[sheet]
         xml = entries[name].decode("utf-8")
         for cell, value in cell_edits:
-            xml = _set_cell(xml, cell, value)
+            if not (isinstance(value, str) and value.startswith("=")):
+                value = _cell_value(value)
+            style = None
+            if _shown_whole(value):
+                style = _whole_style(entries, _style_of(xml, cell))
+            xml = _set_cell(xml, cell, value, style)
             changed.append(f"{sheet}!{cell}")
         entries[name] = _fix_dimension(xml).encode("utf-8")
 
@@ -1946,8 +1891,6 @@ def _guard_edits(src, edits, sheet_files, copy_rows, clear_text):
         # wiped a total and the engine reported it updated.
         value = _given_value(e, f"the edit of {sheet}!{cell} has no value: give \"value\" (a number, text, \"=FORMULA\", "
                                 "or null to empty the cell)")
-        if not (isinstance(value, str) and value.startswith("=")):
-            value = _labelled_value(value, *_edit_labels(src, sheet, cell))
         by_sheet.setdefault(sheet, []).append((cell, value))
     if labels:
         raise OfficeError("not updated - these cells hold text (labels, headings, names), not figures, and the update "
@@ -2660,6 +2603,19 @@ def _set_cell(xml, ref, value, style=None):
         row_xml = row_xml[:pos] + new + row_xml[pos:]
 
     return xml[:m.start()] + row_xml + xml[m.end():]
+
+
+def _style_of(xml, ref):
+    """The format index a cell written at `ref` takes: its own, else the cell's above it (as _set_cell gives it)."""
+
+    col, row = _split(ref)
+    m = re.search(_ROW_RE.format(n=row), xml, re.S)
+    if m:
+        c = re.search(_CELL_RE.format(ref=ref), m.group(0), re.S)
+        if c:
+            own = re.search(r'\bs="(\d+)"', c.group(0))
+            return own.group(1) if own else None
+    return _style_above(xml, col, row)
 
 
 def _style_above(xml, col, row):
