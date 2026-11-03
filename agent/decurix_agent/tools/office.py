@@ -1785,6 +1785,43 @@ def _short_value(v):
     return repr(t[:30] + ("..." if len(t) > 30 else "")) if isinstance(v, str) else t[:30]
 
 
+def _whole_ref(old):
+    """A pattern that finds the reference `old` only as a whole reference: not inside a longer one ("Data!$B$2:$B$13"
+    in "Data!$B$2:$B$130"), nor as the end of another sheet's name. Found in review (2026-11-03, F-07): a substring
+    rewrite turned the longer range into $B$140 and counted it as a swap."""
+
+    return re.compile(r"(?<![\w$:.])" + re.escape(old) + r"(?![\w$:(!])")
+
+
+def _drop_saved_results(p):
+    """Remove the saved result of every formula cell of a workbook (its <v>, and the type that went with it), so no
+    reader takes an old result for the value. Returns whether the file was rewritten."""
+
+    entries, order = _zip_parts(p)
+    touched = False
+    for name in _sheet_files(entries).values():
+        if name not in entries:
+            continue
+        text = entries[name].decode("utf-8")
+
+        def drop(m):
+            attrs, inner = m.group(1), m.group(2)
+            if inner is None or not re.search(r"<f\b", inner) or re.search(r'<f\b[^>]*\bt="dataTable"', inner):
+                return m.group(0)
+            bare = re.sub(r"<v\s*/>|<v>.*?</v>", "", inner, flags=re.S)
+            if bare == inner:
+                return m.group(0)
+            return "<c" + re.sub(r'\st="[^"]*"', "", attrs) + ">" + bare + "</c>"
+
+        new = _CELL_XML.sub(drop, text)
+        if new != text:
+            entries[name] = new.encode("utf-8")
+            touched = True
+    if touched:
+        _write_zip(p, order, entries)
+    return touched
+
+
 def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_sheets=None, insert_rows=None,
                     copy_rows=None, clear_text=False):
     """
@@ -1933,20 +1970,18 @@ def _finish_update(src, dst, entries, order, replace_refs, added, inserted, copi
         # depending on who saved the file; both mean the same range. Live, a
         # model wrote the bare form, the file had the quoted one, and nothing
         # matched. Try the other spelling when the given one is not there.
-        if not any(old in entries[n].decode("utf-8", "ignore") for n in entries
+        if not any(_whole_ref(old).search(entries[n].decode("utf-8", "ignore")) for n in entries
                    if re.match(r"xl/(charts/chart\d+|workbook|pivotCache/pivotCacheDefinition\d+)\.xml$", n)):
             old, new = _other_sheet_quoting(old), _other_sheet_quoting(new)
         for name in list(entries):
             if re.match(r"xl/(charts/chart\d+|tables/table\d+|workbook|pivotCache/pivotCacheDefinition\d+)\.xml$", name):
                 text = entries[name].decode("utf-8")
-                hits = text.count(old)
+                text2, hits = _whole_ref(old).subn(lambda m: new, text)
                 if not hits and name.startswith("xl/tables/"):
                     old_local, new_local = old.split("!")[-1].replace("$", ""), new.split("!")[-1].replace("$", "")
                     text2 = text.replace(f'ref="{old_local}"', f'ref="{new_local}"')
                     hits = int(text2 != text)
-                    text = text2
-                else:
-                    text = text.replace(old, new)
+                text = text2
                 if hits:
                     swaps += hits
                     entries[name] = text.encode("utf-8")
@@ -1975,6 +2010,11 @@ def _finish_update(src, dst, entries, order, replace_refs, added, inserted, copi
     dst.parent.mkdir(parents=True, exist_ok=True)
     _write_zip(dst, order, entries)
     stored = _store_results(dst)
+    # The old results of formulas that depend on what changed are wrong now. Found in review (2026-11-03, F-06):
+    # when LibreOffice could not recalculate, they stayed in the file, and `office read` and the final checks showed
+    # the stale total as the value. Dropped, every formula holds no saved result: read_workbook says so and the
+    # checks know they cannot decide.
+    dropped = not stored and bool(changed or inserted or copied) and _drop_saved_results(dst)
 
     msg = (f"Updated {dst}: " + (f"added sheet(s) {', '.join(added)}; " if added else "")
            + "".join(f"{words}; " for words in inserted) + "".join(f"{words}; " for words in copied)
@@ -1989,7 +2029,13 @@ def _finish_update(src, dst, entries, order, replace_refs, added, inserted, copi
         msg += f"; {swaps} range reference(s) rewritten"
         if not swaps:
             msg += " - none matched: read the workbook to see the exact ranges its charts use"
-    msg += (". Formula results are recalculated and saved in it." if stored else ". Formulas recalculate when the file is opened.")
+    if stored:
+        msg += ". Formula results are recalculated and saved in it."
+    elif dropped:
+        msg += (". Formula results could not be recalculated here, so the old ones were removed: every formula holds "
+                "no saved result until the file is opened in a spreadsheet program - read its totals there, not here")
+    else:
+        msg += ". Formulas recalculate when the file is opened."
     return msg + _layout_note(dst, changed)
 
 
