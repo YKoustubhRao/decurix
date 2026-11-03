@@ -79,3 +79,18 @@ func TestAYearInADeclaredKeyNamesNoRecordAlone(t *testing.T) {
 		}
 	}
 }
+
+// A key whose last part is short has no running number: only the whole key names it, never its year (round 4).
+func TestAShortSerialFallsBackToTheWholeKeyOnly(t *testing.T) {
+	ledger := "- INV/2026/01 (from /w/inv-01.pdf): saved"
+	for subject, want := range map[string]bool{
+		"Plans for 2026":        false,
+		"INV/2026/01 corrected": true,
+	} {
+		st := &operatorState{Hosted: true, RecordLedger: ledger,
+			Listings: []string{`e31 row "Office - ` + subject + ` | see attached | 2026-12-04"`}}
+		if got := len(st.unopenedMessageIssues("Done.")) == 1; got != want {
+			t.Errorf("subject %q: raised = %v, want %v", subject, got, want)
+		}
+	}
+}

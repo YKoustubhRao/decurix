@@ -117,12 +117,16 @@ func identifierTokens(s string) []string {
 	return identifierTokenRe.FindAllString(strings.ToLower(s), -1)
 }
 
-// runningNumber is a key's last token that holds a digit and has three or more characters, or "" when it has none.
+// runningNumber is a key's last token when it holds a digit and has three or more characters, or "": a short last part
+// ("INV/2026/01") gives no running number - an earlier part would be a year or a series, never the record - and only
+// the whole key then names it (review round 4).
 func runningNumber(key []string) string {
-	for i := len(key) - 1; i >= 0; i-- {
-		if len(key[i]) >= 3 && strings.IndexFunc(key[i], unicode.IsDigit) >= 0 {
-			return key[i]
-		}
+	if len(key) == 0 {
+		return ""
+	}
+	last := key[len(key)-1]
+	if len(last) >= 3 && strings.IndexFunc(last, unicode.IsDigit) >= 0 {
+		return last
 	}
 	return ""
 }
