@@ -363,16 +363,22 @@ def _window_id_for(element):
     for w in windows:
         if w["title"] == title:
             return w["id"]
-    for w in windows:
-        if title and (title in w["title"] or w["title"] in title):
-            return w["id"]
-    return None
+    near = [w for w in windows if title and w["title"] and (title in w["title"] or w["title"] in title)]
+    # Only one window may be meant: "Untitled 1" is inside "Untitled 10" (review 2026-11-03, D-27).
+    return near[0]["id"] if len(near) == 1 else None
 
 
 def _focus_window(element):
+    """Put the element's own window in front before keys go to it, or raise: keys sent when it cannot be found, or
+    cannot be told apart from another, go to whatever is in front (D-27)."""
+
     window_id = _window_id_for(element)
     if window_id is not None:
         xinput.activate(window_id)
+    elif element.get("window_title"):
+        raise ComputerError(f"its window {el._quote(element['window_title'], 60)} cannot be found on its own on the "
+                            "screen, so nothing was typed or pressed (it would go to whatever window is in front). "
+                            "Bring that window forward (gui front) and observe again.")
 
 
 # Where the keyboard was left by the last action of this task: the window in front then, and every window there was.
