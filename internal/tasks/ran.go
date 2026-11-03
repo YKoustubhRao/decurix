@@ -115,3 +115,12 @@ func (s *Store) EndedExecutions(worker string, since time.Time) ([]ExecutionKey,
 	}, `SELECT id, task_id, worker_id FROM executions WHERE ended_ns >= ? AND ended_ns > 0 AND (? = '' OR worker_id = ?)
 		ORDER BY ended_ns, id`, sqlitedb.ToNS(since), worker, worker)
 }
+
+// OpenExecutions is every execution not ended yet (queued, running or waiting on a person), oldest first.
+func (s *Store) OpenExecutions() ([]ExecutionKey, error) {
+	return sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) (ExecutionKey, error) {
+		var k ExecutionKey
+		return k, r.Scan(&k.ExecID, &k.TaskID, &k.WorkerID)
+	}, `SELECT id, task_id, worker_id FROM executions WHERE status IN (?, ?, ?) ORDER BY started_ns, id`,
+		StatusQueued, StatusRunning, StatusWaiting)
+}

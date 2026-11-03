@@ -181,7 +181,7 @@ func (s *Server) llmChat(w http.ResponseWriter, r *http.Request, provider string
 				Caller: tags.caller, Request: body, Status: http.StatusBadRequest, At: time.Now(),
 				Problems: append(tags.problems, "refused: no purpose")}
 			if fromDesktop {
-				call.Desktop, call.Secrets = worker, s.secretsSeen.For(worker)
+				call.Desktop, call.Secrets, call.NoBodies = worker, s.secretsSeen.For(worker), s.secretsUnknown(worker)
 			}
 			s.LLMRec.Record(r.Context(), call)
 		}
@@ -203,6 +203,7 @@ func (s *Server) llmChat(w http.ResponseWriter, r *http.Request, provider string
 			Status: status, Latency: latency, Usage: usage, At: started, Problems: tags.problems}
 		if fromDesktop {
 			call.Secrets = s.secretsSeen.For(worker)
+			call.NoBodies = s.secretsUnknown(worker)
 		} else {
 			call.Desktop = ""
 		}

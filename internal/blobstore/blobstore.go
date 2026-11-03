@@ -42,6 +42,8 @@ func New(dir string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "sha256"), 0o700); err != nil {
 		return nil, fmt.Errorf("blobstore: %w", err)
 	}
+	// A temp file left by a crash mid-Put is never a blob: it goes at open, while nothing else writes here.
+	_ = os.RemoveAll(filepath.Join(dir, "tmp"))
 	return &Store{root: dir}, nil
 }
 
@@ -100,8 +102,12 @@ func (s *Store) Put(r io.Reader) (string, int64, error) {
 	return sha, n, nil
 }
 
-// PutBytes stores b and returns its SHA-256.
+// PutBytes stores b and returns its SHA-256. A blob already stored costs a hash and a stat, no write: an agent's
+// turn re-sends every earlier message, and each would otherwise be written and synced again (review CP-A N1).
 func (s *Store) PutBytes(b []byte) (string, error) {
+	if sha := SHA256(b); s.Has(sha) {
+		return sha, nil
+	}
 	sha, _, err := s.Put(bytes.NewReader(b))
 	return sha, err
 }

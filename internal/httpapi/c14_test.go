@@ -1,6 +1,10 @@
 package httpapi
 
 import (
+	"context"
+	"sync"
+
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -56,13 +60,29 @@ func TestWhatTheRecordsWithholdReachesTheAgentAsSecret(t *testing.T) {
 }
 
 // The gated listener forwards no soul route but the read-only ones on its allowlist (C14.4, F-S1): soul's memory,
-// skills, stats, chat and jobs answer 404 there, whatever method. The routes are read from soul's own mux.
+// skills, stats, chat and jobs answer 404 there, whatever method, and a stand-in soul behind it sees none of them;
+// its health is forwarded. The routes are read from soul's own mux.
 func TestTheGatedListenerForwardsOnlyAllowedSoulRoutes(t *testing.T) {
 	soulRoutes := literalPaths(t, filepath.Join("..", "..", "agent", "thebot", "cmd", "soul", "main.go"), "mux")
 	if len(soulRoutes) < 6 {
 		t.Fatalf("only %v read from soul's mux", soulRoutes)
 	}
-	_, gated := listenerMuxes(fullServer(t))
+	var mu sync.Mutex
+	var seen []string
+	soul := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(soul.Close)
+	s := fullServer(t)
+	s.Desktops = desktop.NewManager(nil)
+	s.agentTarget = func(_ context.Context, id string) (*url.URL, string, error) {
+		u, _ := url.Parse(soul.URL)
+		return u, id, nil
+	}
+	_, gated := listenerMuxes(s)
 	h := MarkGated(gated)
 	checked := 0
 	for _, route := range append(soulRoutes, "/api/skills/x/confirm", "/api/jobs/j1", "/index.html", "/api/../api/memory") {
@@ -71,9 +91,8 @@ func TestTheGatedListenerForwardsOnlyAllowedSoulRoutes(t *testing.T) {
 				continue
 			}
 			checked++
-			req := httptest.NewRequest(method, "/agent/box"+route, nil)
 			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, req)
+			h.ServeHTTP(rec, httptest.NewRequest(method, "/agent/box"+route, nil))
 			// ServeMux answers a path to clean with a redirect to the clean one, which is refused in turn.
 			if rec.Code != http.StatusNotFound && rec.Code != http.StatusMovedPermanently && rec.Code != http.StatusTemporaryRedirect {
 				t.Errorf("%s /agent/box%s on the gated listener: %d, want 404", method, route, rec.Code)
@@ -82,6 +101,18 @@ func TestTheGatedListenerForwardsOnlyAllowedSoulRoutes(t *testing.T) {
 	}
 	if checked < 12 {
 		t.Fatalf("only %d refusals checked", checked)
+	}
+	mu.Lock()
+	if len(seen) != 0 {
+		t.Fatalf("soul was reached from the gated listener: %v", seen)
+	}
+	mu.Unlock()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/agent/box/api/health", nil))
+	mu.Lock()
+	defer mu.Unlock()
+	if rec.Code != http.StatusOK || len(seen) != 1 || seen[0] != "GET /api/health" {
+		t.Fatalf("health on the gated listener: %d, soul saw %v", rec.Code, seen)
 	}
 	for p := range gatedAgentRoutes {
 		if gatedAgentRoute(http.MethodPost, p) {

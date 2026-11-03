@@ -116,3 +116,25 @@ func TestALessonFromAWithheldReplyKeepsNoValue(t *testing.T) {
 		}
 	}
 }
+
+// After a restart, a desktop whose task was open keeps only hashes of its calls (its marked secrets are gone from
+// memory) until that task ends; then its calls keep their text again.
+func TestATaskOpenAtStartKeepsNoText(t *testing.T) {
+	s := recordingServer(t)
+	route, _ := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "box", Name: "box"}, "sign in for me")
+	s.ForgetSecretsAtStart()
+	const v = "Tulip-31-Quay"
+	recordTurn(t, s, map[string]any{"role": "assistant", "content": `Running: gui type e3 "` + v + `"`})
+	if hits := blobsHolding(t, s, v); len(hits) > 0 {
+		t.Fatalf("a call of a task open at start kept its text: %s", hits[0])
+	}
+	st, _ := s.LLMRec.Stats()
+	if st.Calls != 1 {
+		t.Fatalf("the call was not recorded: %+v", st)
+	}
+	finalWithVerdict(t, s, route.TaskID, "signed in", doneVerdict, true)
+	recordTurn(t, s, map[string]any{"role": "assistant", "content": "the next task's words"})
+	if hits := blobsHolding(t, s, "the next task's words"); len(hits) != 1 {
+		t.Fatalf("after the task ended, calls still keep no text (%d)", len(hits))
+	}
+}

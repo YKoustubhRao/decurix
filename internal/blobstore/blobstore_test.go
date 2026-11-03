@@ -113,3 +113,18 @@ func TestConcurrentPutOfSameBytes(t *testing.T) {
 		t.Fatal("the stored blob is not the bytes put")
 	}
 }
+
+// A temp file a crash left behind is cleared when the store opens.
+func TestOpeningClearsACrashesTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "tmp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(dir, "tmp", "put-123"), []byte("half a blob"), 0o600)
+	if _, err := New(dir); err != nil {
+		t.Fatal(err)
+	}
+	if left, _ := os.ReadDir(filepath.Join(dir, "tmp")); len(left) != 0 {
+		t.Fatalf("%d temp files left", len(left))
+	}
+}

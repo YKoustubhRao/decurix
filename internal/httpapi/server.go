@@ -14,6 +14,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/outbox"
 	"io"
 	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 
@@ -135,6 +136,8 @@ type Server struct {
 	RunStore *runs.Store
 	// buildRun stands in for runs.Build in tests.
 	buildRun func(ctx context.Context, execID string) (runs.Trajectory, error)
+	// agentTarget stands in for Desktops.AgentProxyTarget in agentProxyHandler, in tests.
+	agentTarget func(ctx context.Context, id string) (*url.URL, string, error)
 	// deleteDesktop stands in for Desktops.Delete in deleteDesktopHandler, in tests.
 	deleteDesktop func(ctx context.Context, id string) error
 	// DateOrder is the organisation's date order, "day" or "month" ("" unknown), sent with every request to a
@@ -146,6 +149,8 @@ type Server struct {
 	// secretsSeen is, per desktop and in memory only, what a person marked secret: the recorder withholds it from
 	// every call of that desktop afterwards (never persisted).
 	secretsSeen llmrec.SecretSet
+	// lostSecrets are the desktops whose tasks were open at start: their calls keep no text (secretslost.go).
+	lostSecrets secretsLost
 	// Outbox holds the emails agents drafted for a person to send
 	// (internal/outbox). Assigned by cmd/decurix/main.go; nil turns it off.
 	Outbox *outbox.Store

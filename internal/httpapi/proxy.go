@@ -1668,7 +1668,11 @@ func (s *Server) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	proxyURL, desktopID, err := s.Desktops.AgentProxyTarget(r.Context(), parts[0])
+	target := s.Desktops.AgentProxyTarget
+	if s.agentTarget != nil {
+		target = s.agentTarget
+	}
+	proxyURL, desktopID, err := target(r.Context(), parts[0])
 
 	if proxyTargetFailed(w, r, err) {
 		return
