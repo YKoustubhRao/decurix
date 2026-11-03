@@ -70,5 +70,34 @@ class TheHarnessRunsBehindIt(unittest.TestCase):
         self.assertIn("Bash(xdotool:*)", cmd[cmd.index("--disallowedTools") + 1])
 
 
+def computer(name, **given):
+    return {"tool_name": "mcp__computer__" + name, "tool_input": given}
+
+
+class TheComputerToolsAreSeenToo(unittest.TestCase):
+    """Review 2026-11-03 (D-05): the hook did not see the MCP door, whose open could start a program."""
+
+    def test_the_hook_is_registered_for_the_computer_tools(self):
+        settings = json.loads(claude_harness.GUARD_SETTINGS)
+        matchers = [h["matcher"] for h in settings["hooks"]["PreToolUse"]]
+        self.assertIn("mcp__computer__.*", matchers)
+
+    def test_open_never_names_a_program_a_local_port_or_the_gates_state(self):
+        for target in ("xdotool click 1", "http://127.0.0.1:8081/api/approval", "localhost:9222",
+                       "/home/headless/.decurix/command/1-reply.txt", "", None):
+            with self.subTest(target=target):
+                self.assertTrue(claude_guard.verdict(computer("open", target=target)))
+
+    def test_ordinary_computer_calls_are_let_through(self):
+        for call in (computer("observe"), computer("open", target="https://portal.example/login"),
+                     computer("open", target="/home/headless/work/inbox/statement.pdf"),
+                     computer("act", kind="type", ref="e4", text="8080"), computer("verify", text="Saved")):
+            with self.subTest(call=call):
+                self.assertEqual(claude_guard.verdict(call), "")
+
+    def test_a_call_it_cannot_read_is_refused(self):
+        self.assertTrue(claude_guard.verdict({"tool_name": "mcp__computer__act", "tool_input": "not a dict"}))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -132,8 +132,10 @@ MCP_CONFIG = json.dumps({
 # around the approval gate, reaches this desktop's own agent and DevTools ports, or touches the gate's state and the
 # person's reply channel - and deny rules for the plainest of them, which hold in every permission mode. Review
 # 2026-11-02: under --dangerously-skip-permissions alone, Bash could `xdotool` a click on Pay or write a yes into the
-# reply channel. A GUARD RAIL, NOT A BOUNDARY: the shell runs as the same Linux user as the gate, so a determined
-# command gets past words; the boundary is a separate user for the gate and its state (not built yet).
+# reply channel. The hook sees the computer tools' calls too (mcp__computer__*: review 2026-11-03, D-05 - their `open`
+# could start a program the hook refused in Bash). A GUARD RAIL, NOT A BOUNDARY: the approval gate runs as a separate
+# Linux user (decurix-entrypoint.sh), so no yes is made from here, but the shell runs as the worker's user and a
+# determined command gets past words to the screen and the worker's files.
 GUARD_SCRIPT = Path(__file__).resolve().parent / "claude_guard.py"
 # Claude Code blocks a call only on exit 2; any other failure lets it run. So the guard failing to start (a crash on
 # import, no python3) is turned into exit 2 here. The interpreter is named by its full path (the worker's ~/.local/bin
@@ -142,7 +144,8 @@ GUARD_SCRIPT = Path(__file__).resolve().parent / "claude_guard.py"
 _GUARD_HOOK = [{"type": "command", "command": f"/usr/bin/python3 -I {shlex.quote(GUARD_SCRIPT.as_posix())} || exit 2"}]
 GUARD_SETTINGS = json.dumps({
     "hooks": {"PreToolUse": [{"matcher": tool, "hooks": _GUARD_HOOK}
-                             for tool in ("Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch")]},
+                             for tool in ("Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch",
+                                          "mcp__computer__.*")]},
 })
 PERMISSION_FLAGS = [
     # Every tool allowed without a prompt, as before - the mode named rather than "dangerously" skipped, so the hook

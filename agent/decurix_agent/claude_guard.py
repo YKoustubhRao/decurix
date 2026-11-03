@@ -12,10 +12,15 @@ files the gate reads (review 2026-11-02). This hook refuses those calls:
   - the gate's state and channels: ~/.decurix/command (the human's replies), ~/.decurix/computer (approval.json, the
     form-check note, the screen's state), the task file, the agent's token.
 
+It also sees the computer tools' own calls (mcp__computer__*): a call it cannot read is refused, and `open` may not
+name a program to run, this desktop's own ports, or the gate's state (review 2026-11-03, D-05: the hook did not see
+the MCP door at all). What is typed or clicked goes through the approval gate in the tool itself.
+
 THIS IS A GUARD RAIL, NOT A BOUNDARY. It reads the words of a command; `x"do"tool`, a script written to a file and run,
-or Python's socket module get past it, because the shell Claude runs is the same Linux user as the gate and can do
-whatever the gate can. The boundary is a separate Linux user for the gate and its state, which this desktop does not
-have yet. What this does is stop the plain ways a model reaches for, and say why, so it uses the gate's own tools.
+or Python's socket module get past it, because the shell Claude runs is the same Linux user as the worker. The
+approval gate does run as a separate Linux user (decurix-entrypoint.sh), so a yes cannot be made from here; but the
+screen, the browser and the worker's own files can still be reached directly, which this only makes harder. What this
+does is stop the plain ways a model reaches for, and say why, so it uses the gate's own tools.
 
 Standard library only: Claude Code runs it as a plain script. It fails closed - a call it cannot read is refused.
 Exit 2 with the reason on stderr is how a PreToolUse hook blocks a call (Claude Code shows the reason to the model).
@@ -70,6 +75,34 @@ def verdict(call):
         if re.search(r"//(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1?\])(?::\d+)?", url, re.IGNORECASE) \
                 or LOCAL_PORTS.search(url):
             return "this fetches from this desktop's own agent or browser ports. " + USE_GUI
+    if tool.startswith(COMPUTER_TOOLS):
+        return _computer_verdict(tool[len(COMPUTER_TOOLS):], given)
+    return ""
+
+
+# The computer MCP server's tools (decurix_agent/computer/mcp_server.py), as Claude Code names them.
+COMPUTER_TOOLS = "mcp__computer__"
+
+
+def _computer_verdict(name, given):
+    """Why a computer tool's call is refused, or "". What it types or presses is the approval gate's to decide (inside
+    the tool); here only `open`'s target is read, which names a page, a file or an app - never a program to run."""
+
+    if any(not isinstance(value, (str, int, float, bool, type(None), list, dict)) for value in given.values()):
+        return "the tool call could not be read, so it is not run"
+    if name != "open":
+        return ""
+    target = given.get("target")
+    if not isinstance(target, str) or not target.strip():
+        return "open needs a target: a web address, a file or an app's name"
+    if INPUT_PROGRAMS.search(target):
+        return f"open was given a program that sends input to the screen ({INPUT_PROGRAMS.search(target).group(0)}). " \
+               + USE_GUI
+    if GATE_STATE.search(target):
+        return "open was given the approval gate's own state or the person's reply channel, which only the agent opens."
+    if re.search(r"//(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[::1?\])(?::\d+)?", target, re.IGNORECASE) \
+            or LOCAL_PORTS.search(target):
+        return "open was given this desktop's own agent or browser ports. " + USE_GUI
     return ""
 
 
