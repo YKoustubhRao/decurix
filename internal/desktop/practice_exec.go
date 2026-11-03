@@ -43,7 +43,9 @@ func (m *Manager) ExecPracticeAsWorker(ctx context.Context, containerID string, 
 	ctx, cancel := context.WithTimeout(ctx, timeout+10*time.Second)
 	defer cancel()
 
-	cmd := append([]string{"/usr/bin/timeout", "-k", "5", fmt.Sprintf("%ds", int(timeout.Round(time.Second)/time.Second)), "--"}, argv...)
+	// Whole seconds, rounded up: a timeout under a second is 1s, never 0s (which coreutils reads as no limit).
+	secs := int((timeout + time.Second - 1) / time.Second)
+	cmd := append([]string{"/usr/bin/timeout", "-k", "5", fmt.Sprintf("%ds", secs), "--"}, argv...)
 	exec, err := m.client.ContainerExecCreate(ctx, inspect.ID, container.ExecOptions{
 		User: "headless", Cmd: workerCmd(cmd...), AttachStdout: true, AttachStderr: true,
 	})

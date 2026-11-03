@@ -2,6 +2,10 @@ package desktop
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -130,29 +134,92 @@ func TestOnlyAStopAppliesAWaitingRefresh(t *testing.T) {
 	}
 }
 
-// A desktop started while a populate replaces the tools volume waits until the copy is done (review CP-B B2).
+// A desktop started while a populate replaces the tools volume waits until the copy is done (review CP-B B2), by
+// every way a desktop starts: Start, and Restart's start after its stop. (Create starts through the same
+// startDesktopContainer; TestEveryDesktopStartTakesTheToolsLock holds every start to it.)
 func TestAStartWaitsForAPopulate(t *testing.T) {
-	fake := &fakeAPI{}
-	fake.volumeGet = func(name string) (volume.Volume, error) { return volume.Volume{Name: name}, nil }
-	d := &slowTools{toolsDaemon: &toolsDaemon{fakeAPI: fake}, release: make(chan struct{}), populated: make(chan struct{}),
-		state: container.StateExited}
-	m := newManagerWith(d)
-	go func() { _ = m.EnsureToolsVolume(context.Background()) }()
-	<-d.populated
-	started := make(chan struct{})
-	go func() {
-		_ = m.Start(context.Background(), "box")
-		close(started)
-	}()
-	select {
-	case <-started:
-		t.Fatal("a desktop started while the tools volume was being replaced")
-	case <-time.After(300 * time.Millisecond):
+	for name, start := range map[string]func(m *Manager) error{
+		"Start":   func(m *Manager) error { return m.Start(context.Background(), "box") },
+		"Restart": func(m *Manager) error { return m.Restart(context.Background(), "box") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeAPI{}
+			fake.volumeGet = func(name string) (volume.Volume, error) { return volume.Volume{Name: name}, nil }
+			d := &slowTools{toolsDaemon: &toolsDaemon{fakeAPI: fake}, release: make(chan struct{}), populated: make(chan struct{}),
+				state: container.StateExited}
+			m := newManagerWith(d)
+			go func() { _ = m.EnsureToolsVolume(context.Background()) }()
+			<-d.populated
+			started := make(chan struct{})
+			go func() {
+				_ = start(m)
+				close(started)
+			}()
+			select {
+			case <-started:
+				t.Fatal("a desktop started while the tools volume was being replaced")
+			case <-time.After(300 * time.Millisecond):
+			}
+			d.mu.Lock()
+			running := d.state == container.StateRunning
+			d.mu.Unlock()
+			if running {
+				t.Fatal("the desktop reached running during the copy")
+			}
+			close(d.release)
+			select {
+			case <-started:
+			case <-time.After(2 * time.Second):
+				t.Fatal("the start never went ahead after the populate")
+			}
+		})
 	}
-	close(d.release)
-	select {
-	case <-started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the start never went ahead after the populate")
+}
+
+// Every start of a desktop's container in this package goes through startDesktopContainer, which holds the tools
+// lock: a create (runProvisioning), a Start or a Restart that called the client directly would boot under a copy.
+// The starts named here are of containers that never mount the shared tools volume.
+func TestEveryDesktopStartTakesTheToolsLock(t *testing.T) {
+	allowed := map[string]string{
+		"startDesktopContainer": "the one desktop start, under toolsRW",
+		"PopulateToolsVolume":   "the tools init container itself",
+		"StartClaudeLogin":      "the throwaway Claude login container",
+		"homeHelper":            "the home-copy helper, which mounts no tools",
+		"RunQualification":      "a readiness container, with no tools volume",
+	}
+	files, _ := filepath.Glob("*.go")
+	found := 0
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") || strings.HasPrefix(file, "practice") {
+			continue // practice desktops are the EVAL lane's (their own sandbox, reset between cases)
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "ContainerStart" {
+					return true
+				}
+				found++
+				if allowed[fn.Name.Name] == "" {
+					t.Errorf("%s: %s starts a container outside startDesktopContainer (the tools lock)", file, fn.Name.Name)
+				}
+				return true
+			})
+		}
+	}
+	if found < 3 {
+		t.Fatalf("only %d container starts found: the walk is not reading the package", found)
 	}
 }

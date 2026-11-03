@@ -172,3 +172,13 @@ func TestATimedOutPracticeCommandIsEnded(t *testing.T) {
 		t.Fatalf("command = %q", cmd)
 	}
 }
+
+// A timeout under a second rounds up to 1s, never to 0s, which timeout(1) takes as no limit.
+func TestAShortTimeoutIsNeverNoTimeout(t *testing.T) {
+	d := &execDaemon{t: t, output: []byte(""), labels: map[string]map[string]string{"practice": {PracticeLabel: "true"}}}
+	m := execManager(t, d)
+	_, _, _ = m.ExecPracticeAsWorker(context.Background(), "practice", []string{"true"}, 300*time.Millisecond)
+	if cmd := strings.Join(d.cmds[0], " "); !strings.Contains(cmd, "/usr/bin/timeout -k 5 1s -- true") {
+		t.Fatalf("command = %q", cmd)
+	}
+}
