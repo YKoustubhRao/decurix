@@ -107,3 +107,54 @@ func TestAnApprovalQuotesTheWithheldAction(t *testing.T) {
 		t.Fatalf("the action to match was changed: %q", action)
 	}
 }
+
+// S1: with model replies logged, a reply that quotes a job's value (here one the request gives after a password's
+// name, and one sent on the job) leaves the log withheld.
+func TestALoggedModelReplyIsWithheld(t *testing.T) {
+	old := logReplies
+	logReplies = true
+	defer func() { logReplies = old }()
+	chat := &taggedChat{replies: []string{"DONE:\nSigned in with Swordfish42 and larch-meadow-19."}}
+	ctx := withheld.With(context.Background(), []string{"larch-meadow-19"})
+	logged, _ := logsOf(t, chat, ctx, "sign in, the password is Swordfish42")
+	if !strings.Contains(logged, "model replied:") {
+		t.Fatalf("no model-replied line:\n%s", logged)
+	}
+	if strings.Contains(logged, "Swordfish42") || strings.Contains(logged, "larch") {
+		t.Fatalf("the logged reply holds a value:\n%s", logged)
+	}
+}
+
+// S2: the operator's "approval needed before" line goes through the same filter.
+func TestTheApprovalNeededLineIsWithheld(t *testing.T) {
+	chat := &taggedChat{replies: []string{"COMMAND:\ngit push https://u:Swordfish42@example.test main"}}
+	logged, _ := logsOf(t, chat, context.Background(), "push it, the password is Swordfish42")
+	if !strings.Contains(logged, "approval needed before") || strings.Contains(logged, "Swordfish42") {
+		t.Fatalf("approval line:\n%s", logged)
+	}
+}
+
+// S2: the terminal skill's command lines and its approval go through the same filter.
+func TestTheTerminalSkillWithholdsItsCommand(t *testing.T) {
+	var lines []string
+	rc := RunContext{Ctx: withheld.With(context.Background(), []string{"larch-meadow-19"}), WorkDir: t.TempDir(),
+		OnLog: func(l string) { lines = append(lines, l) }}
+	res, err := NewTerminal().Run(rc, Subtask{Step: "run this command: `git push origin larch-meadow-19`", Type: "terminal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shown, _ := res.Meta["actionShown"].(string)
+	if res.Meta["needsApproval"] != true || strings.Contains(shown, "larch") || strings.Contains(res.Output, "larch") {
+		t.Fatalf("approval: %+v", res)
+	}
+	if action, _ := res.Meta["action"].(string); !strings.Contains(action, "larch-meadow-19") {
+		t.Fatalf("the action to match was changed: %q", action)
+	}
+	res, err = NewTerminal().Run(rc, Subtask{Step: "run this command: `echo larch-meadow-19`", Type: "terminal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined := strings.Join(lines, "\n"); strings.Contains(joined, "larch") || !strings.Contains(joined, "command (") {
+		t.Fatalf("terminal lines:\n%s", joined)
+	}
+}

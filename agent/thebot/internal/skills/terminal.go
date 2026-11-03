@@ -211,12 +211,17 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	// The same gate the operator's loop goes through: a command written
 	// into the request (or by a planner) is exactly as consequential as
 	// one a model chose mid-loop.
+	// Everything this skill emits about the command goes through the operator's one filter (withholdFor).
+	clean := withholdIn(rc, subtask.Step, command)
 	if concern := safety.AssessCommand(command); concern != nil && !rc.IsApproved(command) {
-		rc.Logf("terminal", "approval needed before `%s` - %s", command, concern.Reason)
-		return NeedsApproval(subtask, t.Name(), command, concern.Reason, nil), nil
+		rc.Logf("terminal", "approval needed before `%s` - %s", clean(command), concern.Reason)
+		res := NeedsApproval(subtask, t.Name(), command, concern.Reason, nil)
+		res.Meta["actionShown"] = clean(command)
+		res.Output = fmt.Sprintf("Paused before `%s` - %s. Waiting for approval.", clean(command), concern.Reason)
+		return res, nil
 	}
 
-	rc.Logf("terminal", "command (%s): %s", source, command)
+	rc.Logf("terminal", "command (%s): %s", source, clean(command))
 	cwd := rc.Dir()
 	rc.Logf("terminal", "cwd: %s", cwd)
 
@@ -297,7 +302,7 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 			// ran last, not by what it printed. The step's question is
 			// answered - "no match" - which is neither the work done nor a
 			// failure to retry with another command.
-			rc.Logf("terminal", "exit code: 1 - answered: %s", answer)
+			rc.Logf("terminal", "exit code: 1 - answered: %s", clean(answer))
 			out := fmt.Sprintf("Command: %s\nWorking directory: %s\nExit code: 1 - answered: %s", command, cwd, answer)
 			if len(stdout) > 0 {
 				out += "\n\nStdout:\n" + string(stdout)

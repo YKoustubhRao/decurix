@@ -1344,6 +1344,13 @@ func (st *operatorState) traceCommand(rc RunContext, command string, res shellRe
 	w.CommandRun(rc.Ctx, command, guard, &exit, took, res.Output, st.withholdFor(command))
 }
 
+// withholdIn is withholdFor for a skill with no operator state of its own (the terminal skill): the job's values on
+// rc, and what the request says by structure.
+func withholdIn(rc RunContext, request, command string) func(string) string {
+	st := &operatorState{Request: request, jobSecrets: withheld.From(rc.Ctx)}
+	return st.withholdFor(command)
+}
+
 // withholdFor is the one filter for everything soul emits about command or what came of it: the job log's step line
 // ("$ ..."), the bounded output line after it, the trace, the run's outputs file and the action an approval quotes.
 // It takes out the job's own secret values (C14), then what soul knows by structure is secret (secretValues: a value
@@ -2034,7 +2041,7 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			st.Messages = append(st.Messages, reply)
 
 			if concern := safety.AssessCommand(value); concern != nil && !rc.IsApproved(value) {
-				rc.Logf("operator", "approval needed before `%s` - %s", value, concern.Reason)
+				rc.Logf("operator", "approval needed before `%s` - %s", st.withholdFor(value)(value), concern.Reason)
 				trace.From(rc.Ctx).CommandRun(rc.Ctx, value, trace.GuardAsked, nil, 0, "", st.withholdFor(value))
 				st.Pending, st.PendingWhat = value, value+" - "+concern.Reason
 				return o.pause(subtask, st, concern.Reason+st.reviewInProgress()), nil
