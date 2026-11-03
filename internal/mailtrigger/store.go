@@ -77,6 +77,8 @@ type Account struct {
 	// how many polls in a row did (Runner.readBatch).
 	stuckUID   uint32
 	stuckTries int
+	// stuckLinkTries is how many of those polls failed on the link instead (a reset, a timeout).
+	stuckLinkTries int
 }
 
 // ErrNotFound is an account, rule or job ID that does not exist (or, for a
@@ -162,6 +164,9 @@ var schema = []string{
 	// failed on it: after maxReadTries it is passed over (review 2026-11-03).
 	`ALTER TABLE mail_accounts ADD COLUMN stuck_uid INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE mail_accounts ADD COLUMN stuck_tries INTEGER NOT NULL DEFAULT 0`,
+	// How many polls in a row the link to the server failed while reading stuck_uid: after maxLinkTries the email
+	// is passed over too, so one email too large for the link cannot hold up the mailbox for good (RW1-G-01).
+	`ALTER TABLE mail_accounts ADD COLUMN stuck_link_tries INTEGER NOT NULL DEFAULT 0`,
 }
 
 // Store is the SQLite-backed collection of accounts, rules and jobs.
@@ -398,7 +403,7 @@ func (s *Store) DeleteAccount(id string) error {
 }
 
 const accountColumns = `id, email, password, host, port, folder, enabled, created_ns, uid_validity, last_uid,
-	last_check_ns, last_ok_ns, last_error, needs_password, failures, seen, stuck_uid, stuck_tries`
+	last_check_ns, last_ok_ns, last_error, needs_password, failures, seen, stuck_uid, stuck_tries, stuck_link_tries`
 
 // Accounts returns every mailbox connection, oldest first.
 func (s *Store) Accounts() ([]Account, error) {
@@ -432,7 +437,7 @@ func (s *Store) scanAccount(rows sqlitedb.Scanner) (Account, error) {
 
 	if err := rows.Scan(&a.ID, &a.Email, &stored, &a.Host, &a.Port, &a.Folder, &enabled, &created,
 		&validity, &lastUID, &lastCheck, &lastOK, &a.LastError, &needsPassword, &a.Failures, &a.Seen,
-		&stuckUID, &a.stuckTries); err != nil {
+		&stuckUID, &a.stuckTries, &a.stuckLinkTries); err != nil {
 		return Account{}, err
 	}
 
@@ -484,6 +489,8 @@ type Poll struct {
 	// polls in a row could not; both are 0 when nothing is stuck.
 	StuckUID   uint32
 	StuckTries int
+	// StuckLinkTries is how many polls in a row the link failed while reading StuckUID.
+	StuckLinkTries int
 
 	// reading is the email being read, for readSafely.
 	reading uint32
@@ -519,8 +526,8 @@ func (s *Store) record(accountID string, p Poll, final bool) error {
 	// A poll that failed part way still saves how far it got (and the jobs
 	// it queued up to there): Poll starts from the account's own position,
 	// so one that failed before reading anything leaves it where it was.
-	res, err := tx.Exec(`UPDATE mail_accounts SET uid_validity = ?, last_uid = ?, seen = seen + ?, stuck_uid = ?, stuck_tries = ? WHERE id = ?`,
-		p.UIDValidity, p.LastUID, p.Seen, p.StuckUID, p.StuckTries, accountID)
+	res, err := tx.Exec(`UPDATE mail_accounts SET uid_validity = ?, last_uid = ?, seen = seen + ?, stuck_uid = ?, stuck_tries = ?, stuck_link_tries = ? WHERE id = ?`,
+		p.UIDValidity, p.LastUID, p.Seen, p.StuckUID, p.StuckTries, p.StuckLinkTries, accountID)
 	if err != nil {
 		return fmt.Errorf("mailtrigger: record poll: %w", err)
 	}

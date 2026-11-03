@@ -145,13 +145,13 @@ func (r *Runner) step(ctx context.Context) {
 // they go), and the email it panicked on counts as one failed read of it: after maxReadTries it is passed over, so
 // it cannot stop the mailbox for good either (review 2026-11-03, B-17).
 func (r *Runner) readSafely(ctx context.Context, acct Account) (p Poll) {
-	p = Poll{At: r.clock(), UIDValidity: acct.uidValidity, LastUID: acct.lastUID, StuckUID: acct.stuckUID, StuckTries: acct.stuckTries}
+	p = Poll{At: r.clock(), UIDValidity: acct.uidValidity, LastUID: acct.lastUID, StuckUID: acct.stuckUID, StuckTries: acct.stuckTries, StuckLinkTries: acct.stuckLinkTries}
 	defer func() {
 		if v := recover(); v != nil {
 			log.Printf("mailtrigger: %s: reading the mailbox failed: %v", acct.Email, v)
 			p.Err = fmt.Errorf("an email in this mailbox could not be read")
 			if uid := p.reading; uid != 0 {
-				if p.failedRead(uid) {
+				if p.failedRead(uid, errReadPanicked) {
 					p.Err = fmt.Errorf("email %d in this mailbox could not be read after %d tries and was skipped; open it in the mailbox", uid, maxReadTries)
 					p.passed(uid, true)
 				}
@@ -295,7 +295,7 @@ func (r *Runner) read(ctx context.Context, acct Account, p *Poll) {
 
 		p.UIDValidity = validity
 		p.LastUID = lastBefore(next)
-		p.StuckUID, p.StuckTries = 0, 0
+		p.StuckUID, p.StuckTries, p.StuckLinkTries = 0, 0, 0
 
 		return
 	}
@@ -367,6 +367,15 @@ func (r *Runner) commit(acct Account, p *Poll) error {
 // after it (review 2026-11-03, B-17).
 const maxReadTries = 3
 
+// maxLinkTries is how many polls in a row the link to the server may fail while reading the same email (a reset, the
+// session's deadline) before it is passed over in the same way. Higher than maxReadTries, since a link failure is
+// usually not the email's: but an email too large to read within a session on a slow link fails every poll, and
+// must not hold up every email after it for good (RW1-G-01).
+const maxLinkTries = 10
+
+// errReadPanicked stands for a read that panicked: the email's fault, so it counts against maxReadTries.
+var errReadPanicked = errors.New("reading the email panicked")
+
 // maxHeldFileBytes is how many bytes of attachments a poll holds before it
 // commits what it has read, mid-batch.
 const maxHeldFileBytes = 32 << 20
@@ -395,11 +404,11 @@ func (r *Runner) readBatch(ctx context.Context, mb Mailbox, acct Account, uids [
 		if oneByOne {
 			one, herr := mb.Headers([]uint32{uid})
 			if herr != nil {
-				if !emailFault(herr) || !p.failedRead(uid) {
+				if !p.failedRead(uid, herr) {
 					return herr
 				}
-				log.Printf("mailtrigger: %s: passing over email %d after %d failed header reads: %v", acct.Email, uid, maxReadTries, herr)
-				p.Err = fmt.Errorf("email %d in this mailbox: the mail server would not return its headers after %d tries, so it was skipped; open it in the mailbox", uid, maxReadTries)
+				log.Printf("mailtrigger: %s: passing over email %d after failed header reads (%s): %v", acct.Email, uid, p.gaveUp(), herr)
+				p.Err = fmt.Errorf("email %d in this mailbox: its headers could not be read (%s), so it was skipped; open it in the mailbox", uid, p.gaveUp())
 				p.passed(uid, true)
 				continue
 			}
@@ -436,11 +445,11 @@ func (r *Runner) readBatch(ctx context.Context, mb Mailbox, acct Account, uids [
 
 		text, files, dropped, err := readContent(mb, uid, header, matched)
 		if err != nil {
-			if !emailFault(err) || !p.failedRead(uid) {
+			if !p.failedRead(uid, err) {
 				return err
 			}
 
-			log.Printf("mailtrigger: %s: passing over email %d after %d failed reads: %v", acct.Email, uid, maxReadTries, err)
+			log.Printf("mailtrigger: %s: passing over email %d after failed reads (%s): %v", acct.Email, uid, p.gaveUp(), err)
 
 			for _, rule := range matched {
 				job := newJob(acct, rule, msg, "", p.At, nil, nil)
@@ -452,7 +461,7 @@ func (r *Runner) readBatch(ctx context.Context, mb Mailbox, acct Account, uids [
 				}
 				job.Status = JobFailed
 				job.Content = "" // nothing was read to send; Run again cannot send it either
-				job.Note = fmt.Sprintf("Not sent: the mail server would not return this email after %d tries (%s), so it was passed over and the emails after it went on. Open it in the mailbox and give the desktop the task by hand.", maxReadTries, clip(err.Error()))
+				job.Note = fmt.Sprintf("Not sent: %s (%s), so it was passed over and the emails after it went on. Open it in the mailbox and give the desktop the task by hand.", p.gaveUp(), clip(err.Error()))
 				p.Jobs = append(p.Jobs, job)
 			}
 
@@ -487,7 +496,7 @@ func (p *Poll) passed(uid uint32, seen bool) {
 	}
 
 	if p.StuckUID != 0 && uid >= p.StuckUID {
-		p.StuckUID, p.StuckTries = 0, 0
+		p.StuckUID, p.StuckTries, p.StuckLinkTries = 0, 0, 0
 	}
 }
 
@@ -506,17 +515,28 @@ func emailFault(err error) bool {
 	return true
 }
 
-// failedRead counts one failed read of uid, and reports whether that was the
-// last try it gets.
-func (p *Poll) failedRead(uid uint32) bool {
-	tries := 1
-	if p.StuckUID == uid {
-		tries = p.StuckTries + 1
+// failedRead counts one failed read of uid with err - against maxReadTries when it is the email's fault, against
+// maxLinkTries when the link's - and reports whether that was the last try it gets.
+func (p *Poll) failedRead(uid uint32, err error) bool {
+	if p.StuckUID != uid {
+		p.StuckUID, p.StuckTries, p.StuckLinkTries = uid, 0, 0
 	}
 
-	p.StuckUID, p.StuckTries = uid, tries
+	if emailFault(err) {
+		p.StuckTries++
+	} else {
+		p.StuckLinkTries++
+	}
 
-	return tries >= maxReadTries
+	return p.StuckTries >= maxReadTries || p.StuckLinkTries >= maxLinkTries
+}
+
+// gaveUp says why the stuck email is passed over, for its failed job and the mailbox's error.
+func (p *Poll) gaveUp() string {
+	if p.StuckTries >= maxReadTries {
+		return fmt.Sprintf("the mail server would not return this email after %d tries", maxReadTries)
+	}
+	return fmt.Sprintf("the connection to the mail server failed every time this email was read, %d polls in a row; it may be too large for this link", p.StuckLinkTries)
 }
 
 // readContent fetches what the rules an email matched need: its text when one

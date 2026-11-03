@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -93,5 +94,48 @@ func TestALinkFailureNeverPassesAnEmailOver(t *testing.T) {
 				t.Fatalf("lastUID=%d (email %d), tries %d, %d jobs: a link failure passed the email over", acct.lastUID, bad, acct.stuckTries, len(h.jobs(t)))
 			}
 		})
+	}
+}
+
+// An email that cannot be read within the poll's session deadline (a large scan on a slow link) fails every poll on
+// the link, never on the email: after maxLinkTries polls in a row it is passed over with a failed job a person sees,
+// and the email after it is handled (RW1-G-01, the reviewer's scenario).
+func TestAnEmailTheLinkNeverReadsIsPassedOverInTheEnd(t *testing.T) {
+	h := newHarness(t)
+	h.rule(t, NewRule{SubjectRe: `.`, IncludeBody: true})
+	big := h.box.deliver("a@x.com", "Scan 20 MB", "x")
+	h.box.deliver("a@x.com", "Next", "y")
+	h.runner.Dial = func(ctx context.Context, acct Account) (Mailbox, error) {
+		mb, err := h.box.dialer(ctx, acct)
+		if err != nil {
+			return nil, err
+		}
+		return linkDownSession{mb.(fakeSession), big, fmt.Errorf("reading from the mail server: %w", os.ErrDeadlineExceeded)}, nil
+	}
+	for i := 0; i < maxLinkTries-1; i++ {
+		h.advance(6 * time.Hour)
+		h.runner.step(context.Background())
+	}
+	if acct, _ := h.store.Account(h.acct.ID); acct.lastUID >= big || len(h.jobs(t)) != 0 {
+		t.Fatalf("passed over before maxLinkTries: lastUID=%d, %d jobs", acct.lastUID, len(h.jobs(t)))
+	}
+	for i := 0; i < 2; i++ {
+		h.advance(6 * time.Hour)
+		h.runner.step(context.Background())
+	}
+	var failed, sent int
+	for _, j := range h.jobs(t) {
+		switch {
+		case j.Subject == "Scan 20 MB" && j.Status == JobFailed && strings.Contains(j.Note, "connection to the mail server failed"):
+			failed++
+		case j.Subject == "Next" && j.Status == JobSent:
+			sent++
+		}
+	}
+	if failed != 1 || sent != 1 {
+		t.Fatalf("want the unreadable email failed with a note and the next one sent; jobs = %+v", h.jobs(t))
+	}
+	if acct, _ := h.store.Account(h.acct.ID); acct.stuckUID != 0 || acct.stuckLinkTries != 0 {
+		t.Fatalf("the mailbox is still marked stuck: %d, %d", acct.stuckUID, acct.stuckLinkTries)
 	}
 }
