@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
@@ -94,6 +95,31 @@ func (s *Service) Running() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.active) > 0
+}
+
+// reservedSlot is the key another kind of practice run (an eval) holds the slot under.
+const reservedSlot = "reserved"
+
+// Reserve takes the control plane's one practice slot for another kind of run, an eval, so neither a Simulate run
+// nor a second eval starts while it holds it; ErrBusy when the slot is taken. release gives it back, once.
+func (s *Service) Reserve() (release func(), err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.active) > 0 {
+		return nil, ErrBusy
+	}
+	if s.active == nil {
+		s.active = map[string]context.CancelFunc{}
+	}
+	s.active[reservedSlot] = func() {}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			delete(s.active, reservedSlot)
+			s.mu.Unlock()
+		})
+	}, nil
 }
 
 // StartRun starts a practice run of an approved suite. sourceSHA is the source

@@ -1,0 +1,899 @@
+package eval
+
+import (
+	"archive/tar"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/llmrec"
+	"github.com/YKoustubhRao/decurix/internal/practice"
+	"github.com/YKoustubhRao/decurix/internal/qualification"
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
+)
+
+// Arm kinds: a model works the cases; the two calibration arms run none.
+const (
+	ArmModel   = "model"
+	ArmOracle  = "oracle"
+	ArmNothing = "nothing"
+)
+
+// Limits of one matrix.
+const (
+	MaxArms        = 8
+	MaxRepeats     = 20
+	MaxQuestions   = 5
+	maxLedgerBytes = 1 << 20
+)
+
+var armName = regexp.MustCompile(`^[a-z0-9][a-z0-9+@._:-]{0,63}$`)
+
+// Arm pins everything that changes a worker's behaviour (D10).
+type Arm struct {
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Expert   bool   `json:"expert"`
+	// AgentTreeRev names the agent tree ("" is the image's own); AgentTree is its tar, rooted at decurix_agent/.
+	AgentTreeRev string `json:"agent_tree_rev,omitempty"`
+	AgentTree    []byte `json:"-"`
+	// Pinned when the arm starts.
+	Image            string `json:"image,omitempty"`
+	Deployment       string `json:"deployment,omitempty"`
+	AgentTreeSHA     string `json:"agent_tree_sha,omitempty"`
+	ExpertDeployment string `json:"expert_deployment,omitempty"`
+}
+
+// Sandbox is the practice desktop, its mock and the two primitives an eval adds (*desktop.Manager).
+type Sandbox interface {
+	practice.Sandbox
+	ExecPracticeAsWorker(ctx context.Context, containerID string, argv []string, timeout time.Duration) (int, []byte, error)
+	DesktopImageID(ctx context.Context, profile string) (string, error)
+}
+
+// Slot is the control plane's one practice slot (*practice.Service): Simulate and evals take turns.
+type Slot interface {
+	Reserve() (release func(), err error)
+}
+
+// Service runs matrices: arms × repeats × cases, sequentially, in one practice desktop per arm.
+type Service struct {
+	Store     *Store
+	Sandbox   Sandbox
+	Broker    *practice.Broker
+	BrokerURL func(ctx context.Context) (string, error)
+	Hub       Hub
+	// Recorder keeps the expert's calls (the broker records the desktop's own).
+	Recorder llmrec.Recorder
+	Tasks    practice.Tasks
+	Practice Slot
+	// Vision reports whether a hosted provider reads images.
+	Vision func(provider string) bool
+	// FreeMemory is the machine's available memory in bytes; a run refuses below MinFreeBytes (2.5 GB by default).
+	FreeMemory   func() (uint64, error)
+	MinFreeBytes uint64
+	// Minute is how long a budget minute lasts (a minute; tests shorten it).
+	Minute      time.Duration
+	BootTimeout time.Duration
+
+	mu     sync.Mutex
+	active map[string]*activeRun
+}
+
+type activeRun struct {
+	cancel   context.CancelFunc
+	progress Progress
+}
+
+// Progress is where a running matrix is.
+type Progress struct {
+	Arm    string `json:"arm"`
+	Repeat int    `json:"repeat"`
+	Case   string `json:"case"`
+	Done   int    `json:"done"`
+	Total  int    `json:"total"`
+}
+
+// MatrixRequest is one matrix to run.
+type MatrixRequest struct {
+	SuiteTar []byte
+	Arms     []Arm
+	Repeats  int
+	// Cases limits the run to these case ids, in the suite's order (empty: every case).
+	Cases []string
+}
+
+// ErrBusy is a second practice or eval run while one is active.
+var ErrBusy = practice.ErrBusy
+
+// BadRequest is a matrix the runner refuses before anything is made: safe to show as it is.
+type BadRequest string
+
+func (b BadRequest) Error() string { return string(b) }
+
+// Start validates a matrix, takes the practice slot, stores the run and runs it in the background. It refuses a
+// second run, short memory and a suite with problems before anything is created.
+func (s *Service) Start(ctx context.Context, req MatrixRequest) (Run, error) {
+	if s.Store == nil || s.Sandbox == nil || s.Broker == nil || s.BrokerURL == nil || s.Practice == nil {
+		return Run{}, BadRequest("The eval runner is not set up.")
+	}
+	suite, err := Load(req.SuiteTar)
+	if err != nil {
+		return Run{}, err
+	}
+	cases, err := selectCases(suite, req.Cases)
+	if err != nil {
+		return Run{}, err
+	}
+	if req.Repeats < 1 || req.Repeats > MaxRepeats {
+		return Run{}, BadRequest(fmt.Sprintf("Repeats must be between 1 and %d.", MaxRepeats))
+	}
+	arms, err := s.checkArms(req.Arms)
+	if err != nil {
+		return Run{}, err
+	}
+	release, err := s.Practice.Reserve()
+	if err != nil {
+		return Run{}, err
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			release()
+		}
+	}()
+	if err := s.checkMemory(); err != nil {
+		return Run{}, err
+	}
+	blob, err := s.Store.PutSuite(req.SuiteTar)
+	if err != nil {
+		return Run{}, err
+	}
+	now := s.Store.now()
+	run := Run{ID: sqlitedb.NewID("e", 8), CreatedAt: now, StartedAt: now, SuiteName: suite.Name, SuiteSHA: suite.SHA, SuiteBlob: blob,
+		Arms: arms, Cases: caseIDs(cases), Repeats: req.Repeats, Status: RunRunning}
+	if err := s.Store.Create(run); err != nil {
+		return Run{}, err
+	}
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	s.mu.Lock()
+	if s.active == nil {
+		s.active = map[string]*activeRun{}
+	}
+	s.active[run.ID] = &activeRun{cancel: cancel, progress: Progress{Total: len(arms) * req.Repeats * len(cases)}}
+	s.mu.Unlock()
+	ok = true
+	go s.execute(runCtx, run, suite, cases, arms, release)
+	return run, nil
+}
+
+func caseIDs(cases []Case) []string {
+	out := make([]string, len(cases))
+	for i, c := range cases {
+		out[i] = c.ID
+	}
+	return out
+}
+
+// selectCases is the suite's cases, limited to ids when given, in the suite's order.
+func selectCases(s Suite, ids []string) ([]Case, error) {
+	if len(ids) == 0 {
+		return s.Cases, nil
+	}
+	want := map[string]bool{}
+	for _, id := range ids {
+		if _, ok := s.Case(id); !ok {
+			return nil, BadRequest(fmt.Sprintf("The suite has no case %q.", clipText(id, 64)))
+		}
+		want[id] = true
+	}
+	var out []Case
+	for _, c := range s.Cases {
+		if want[c.ID] {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// checkArms validates the arms and fills their defaults.
+func (s *Service) checkArms(arms []Arm) ([]Arm, error) {
+	if len(arms) == 0 || len(arms) > MaxArms {
+		return nil, BadRequest(fmt.Sprintf("A matrix needs between 1 and %d arms.", MaxArms))
+	}
+	seen := map[string]bool{}
+	out := make([]Arm, len(arms))
+	for i, a := range arms {
+		if !armName.MatchString(a.Name) || seen[a.Name] {
+			return nil, BadRequest(fmt.Sprintf("Arm %d needs a unique name of letters, digits and +@._:- .", i+1))
+		}
+		seen[a.Name] = true
+		switch a.Kind {
+		case ArmModel:
+			if a.Provider == "" {
+				a.Provider = ExpertProvider
+			}
+			if a.Model == "" {
+				a.Model = "default"
+			}
+			if (a.Provider != "azure" && a.Provider != "claude") || (a.Model != "default" && a.Model != "fast") {
+				return nil, BadRequest(fmt.Sprintf("Arm %s: the provider is azure or claude, the model default or fast.", a.Name))
+			}
+			if s.Hub == nil || !s.Hub.Configured(a.Provider) {
+				return nil, BadRequest(fmt.Sprintf("Arm %s: the %s model is not set up.", a.Name, a.Provider))
+			}
+			// The expert reads every question, answering or not, so the required/other split is decided alike.
+			if !s.Hub.Configured(ExpertProvider) {
+				return nil, BadRequest("The scripted expert needs the Azure model set up.")
+			}
+		case ArmOracle, ArmNothing:
+			a.Provider, a.Model, a.Expert = ExpertProvider, "", false
+		default:
+			return nil, BadRequest(fmt.Sprintf("Arm %s: the kind is model, oracle or nothing.", a.Name))
+		}
+		if len(a.AgentTree) > 0 {
+			sum, err := desktop.TarFingerprint(a.AgentTree)
+			if err != nil || !treeRooted(a.AgentTree) {
+				return nil, BadRequest(fmt.Sprintf("Arm %s: the agent tree is not a tar rooted at decurix_agent/.", a.Name))
+			}
+			a.AgentTreeSHA = sum
+			if a.AgentTreeRev == "" {
+				a.AgentTreeRev = "upload"
+			}
+		} else {
+			a.AgentTreeRev = ""
+		}
+		out[i] = a
+	}
+	return out, nil
+}
+
+// treeRooted reports whether every entry of an agent tree tar sits under decurix_agent/, as the image's
+// /opt/decurix_agent is copied (desktop.PracticeAgentTree).
+func treeRooted(b []byte) bool {
+	tr := tar.NewReader(bytes.NewReader(b))
+	n := 0
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			return n > 0
+		}
+		if err != nil {
+			return false
+		}
+		name := strings.TrimPrefix(h.Name, "./")
+		if h.Typeflag == tar.TypeXGlobalHeader {
+			continue
+		}
+		if name != "decurix_agent/" && !strings.HasPrefix(name, "decurix_agent/") || strings.Contains(name, "..") {
+			return false
+		}
+		n++
+	}
+}
+
+func (s *Service) checkMemory() error {
+	if s.FreeMemory == nil {
+		return nil
+	}
+	need := s.MinFreeBytes
+	if need == 0 {
+		need = practice.DefaultMinFreeBytes
+	}
+	avail, err := s.FreeMemory()
+	if err != nil {
+		return BadRequest("Could not read this machine's free memory.")
+	}
+	if avail < need {
+		return practice.LowMemoryError{AvailMB: avail >> 20, NeedMB: need >> 20}
+	}
+	return nil
+}
+
+func (s *Service) minute() time.Duration {
+	if s.Minute > 0 {
+		return s.Minute
+	}
+	return time.Minute
+}
+
+func (s *Service) bootTimeout() time.Duration {
+	if s.BootTimeout > 0 {
+		return s.BootTimeout
+	}
+	return practice.DefaultBootTimeout
+}
+
+// Progress returns where a running matrix is; false when it is not running here.
+func (s *Service) Progress(id string) (Progress, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.active[id]
+	if !ok {
+		return Progress{}, false
+	}
+	return a.progress, true
+}
+
+func (s *Service) setProgress(id string, fn func(p *Progress)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if a, ok := s.active[id]; ok {
+		fn(&a.progress)
+	}
+}
+
+// Running reports whether any matrix is running in this process.
+func (s *Service) Running() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.active) > 0
+}
+
+// Cancel records the cancellation durably, then stops the run's work; the desktop and mock are removed as the run
+// unwinds.
+func (s *Service) Cancel(id string) (Run, error) {
+	run, err := s.Store.Get(id)
+	if err != nil {
+		return run, err
+	}
+	if run.Status != RunRunning {
+		return run, nil
+	}
+	if err := s.Store.Finish(id, RunCancelled, "Cancelled by a person."); err != nil {
+		return run, err
+	}
+	s.mu.Lock()
+	a := s.active[id]
+	s.mu.Unlock()
+	if a != nil {
+		a.cancel()
+	}
+	return s.Store.Get(id)
+}
+
+// emptySnapshot is an empty ~/.decurix: an eval worker starts with no skills, memory or experience.
+var emptySnapshot = func() []byte {
+	var buf bytes.Buffer
+	_ = tar.NewWriter(&buf).Close()
+	return buf.Bytes()
+}()
+
+// execute runs every arm in turn and ends the run; the practice slot is released at the end, whatever happens.
+func (s *Service) execute(ctx context.Context, run Run, suite Suite, cases []Case, arms []Arm, release func()) {
+	defer func() {
+		release()
+		s.mu.Lock()
+		if a := s.active[run.ID]; a != nil {
+			a.cancel()
+		}
+		delete(s.active, run.ID)
+		s.mu.Unlock()
+	}()
+	var expert *Expert
+	if s.Hub != nil && s.Hub.Configured(ExpertProvider) {
+		dep, err := s.Hub.Resolve(ExpertProvider, ExpertModel)
+		if err == nil {
+			expert = &Expert{Hub: s.Hub, Recorder: s.Recorder, Deployment: dep}
+			_ = s.Store.AddNote(run.ID, "The expert is "+ExpertProvider+" "+dep+".")
+		}
+	}
+	invalid := false
+	for i := range arms {
+		if ctx.Err() != nil {
+			return
+		}
+		bad, err := s.runArm(ctx, run, suite, cases, &arms[i], i, expert)
+		_ = s.Store.SetArms(run.ID, arms)
+		invalid = invalid || bad
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("eval: run %s arm %s: %v", run.ID, arms[i].Name, err)
+				_ = s.Store.Finish(run.ID, RunError, fmt.Sprintf("Arm %s stopped: %s", arms[i].Name, publicError(err)))
+			}
+			return
+		}
+	}
+	note := ""
+	if invalid {
+		note = "invalid: a model changed during the run."
+	}
+	_ = s.Store.Finish(run.ID, RunDone, note)
+}
+
+// publicError is what a run's note may say of an error: its own sentence, or a fixed line.
+func publicError(err error) string {
+	var b BadRequest
+	if errors.As(err, &b) {
+		return string(b)
+	}
+	return practice.Public(err)
+}
+
+// runArm makes the arm's practice desktop, runs every repeat of every case in it and removes it. It reports whether
+// any row was invalid.
+func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case, arm *Arm, index int, expert *Expert) (bool, error) {
+	image, err := s.Sandbox.DesktopImageID(ctx, "basic")
+	if err != nil {
+		return false, practice.Sentence("The desktop image could not be read.")
+	}
+	arm.Image = image
+	if arm.Kind == ArmModel {
+		if arm.Deployment, err = s.Hub.Resolve(arm.Provider, arm.Model); err != nil {
+			return false, practice.Sentence("The arm's model could not be resolved.")
+		}
+	}
+	if expert != nil {
+		arm.ExpertDeployment = expert.Deployment
+	}
+	broker, err := s.BrokerURL(ctx)
+	if err != nil {
+		return false, practice.Sentence("The practice broker could not start.")
+	}
+	armRun := fmt.Sprintf("%s-a%d", run.ID, index+1)
+	desktopID := desktop.PracticeDesktopID(armRun)
+	spec := desktop.PracticeSpec{RunID: armRun, Image: image, Harness: "thebot", Brain: arm.Provider, Model: arm.Model,
+		MemoryMB: 2048, BrokerURL: broker, Hosts: suite.Hosts(), AgentTree: arm.AgentTree, Snapshot: emptySnapshot}
+	if spec.Model == "" {
+		spec.Model = "default"
+	}
+	if s.Vision != nil {
+		spec.Vision = s.Vision(arm.Provider)
+	}
+	var maxTokens int64
+	for _, c := range cases {
+		maxTokens += suite.CaseBudget(c).MaxTokens
+	}
+	label := ""
+	if arm.Kind == ArmModel && arm.Model != "default" {
+		label = arm.Model
+	}
+	s.Broker.BeginModel(desktopID, maxTokens*int64(run.Repeats), label)
+	var d desktop.PracticeDesktop
+	defer func() {
+		clean, done := context.WithTimeout(context.Background(), 60*time.Second)
+		defer done()
+		if d.ContainerID != "" {
+			_ = s.Sandbox.UnpausePractice(clean, d.ContainerID)
+			_ = s.Sandbox.RemovePractice(clean, d.ContainerID)
+		}
+		_ = s.Sandbox.RemovePracticeNetwork(clean)
+		s.Broker.End()
+		if s.Tasks != nil {
+			_ = s.Tasks.CloseOpen(desktopID, "The eval arm ended.")
+		}
+	}()
+	if d, err = s.Sandbox.CreatePractice(ctx, spec); err != nil {
+		if errors.Is(err, desktop.ErrNoSecret) {
+			return false, practice.Sentence("The practice desktop was not made: " + desktop.ErrNoSecret.Error() + ".")
+		}
+		return false, practice.Sentence("The practice desktop could not be created.")
+	}
+	if err := s.waitAgent(ctx, d); err != nil {
+		return false, practice.Sentence("The practice desktop's agent never became ready.")
+	}
+	invalid := false
+	first := true
+	for rep := 1; rep <= run.Repeats; rep++ {
+		for _, c := range cases {
+			if ctx.Err() != nil {
+				return invalid, nil
+			}
+			s.setProgress(run.ID, func(p *Progress) { p.Arm, p.Repeat, p.Case = arm.Name, rep, c.ID })
+			if !first {
+				err := s.Sandbox.ResetPractice(ctx, d.ContainerID, emptySnapshot)
+				if err == nil {
+					err = s.waitAgent(ctx, d)
+				}
+				if ctx.Err() != nil {
+					return invalid, nil
+				}
+				if err != nil {
+					return invalid, practice.Sentence("The practice desktop could not be reset between cases.")
+				}
+			}
+			first = false
+			row := s.runCase(ctx, run, suite, *arm, armRun, d, c, rep, expert)
+			if ctx.Err() != nil {
+				return invalid, nil
+			}
+			invalid = invalid || row.Invalid()
+			if err := s.Store.AddRow(row); err != nil {
+				return invalid, fmt.Errorf("store a row: %w", err)
+			}
+			s.setProgress(run.ID, func(p *Progress) { p.Done++ })
+		}
+	}
+	return invalid, nil
+}
+
+// waitAgent polls the practice desktop's agent until it answers.
+func (s *Service) waitAgent(ctx context.Context, d desktop.PracticeDesktop) error {
+	deadline := time.Now().Add(s.bootTimeout())
+	for {
+		reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		resp, err := s.Sandbox.PracticeAgentRequest(reqCtx, d, http.MethodGet, "/skills", nil)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+		}
+		cancel()
+		if err == nil && resp.StatusCode == http.StatusOK {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("the agent did not answer in time")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// post sends one JSON request to the practice desktop's agent.
+func (s *Service) post(ctx context.Context, d desktop.PracticeDesktop, path string, body any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	resp, err := s.Sandbox.PracticeAgentRequest(ctx, d, http.MethodPost, path, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("the agent answered %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// rowChecks is what a row keeps of how its case was decided.
+type rowChecks struct {
+	Expected   string  `json:"expected"`
+	Graders    []Check `json:"graders"`
+	Questions  []Asked `json:"questions"`
+	WorkerSaid string  `json:"worker_said,omitempty"`
+}
+
+// runCase runs one case in the arm's desktop and returns its row: inputs in, a fresh mock, the arm's work, then a
+// pause before anything is read, collection, the grade, and the mock removed.
+func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, armRun string, d desktop.PracticeDesktop, c Case, rep int, expert *Expert) Row {
+	started := time.Now()
+	desktopID := desktop.PracticeDesktopID(armRun)
+	budget := suite.CaseBudget(c)
+	route := tasks.NewRoute()
+	route.Origin = tasks.Origin{Kind: tasks.OriginEval, Ref: fmt.Sprintf("%s/%s/%d/%s", run.ID, arm.Name, rep, c.ID)}
+	var problems []string
+	if s.Tasks != nil {
+		if _, err := s.Tasks.CommitTyped(route, tasks.Worker{ID: desktopID, Name: "Eval " + arm.Name, Engine: "eval", Profile: "practice"},
+			"Eval ("+c.Category+"): "+clipText(suite.Withhold(c.Request), 200), tasks.TypePractice); err != nil {
+			problems = append(problems, "The case's task record could not be opened.")
+		}
+	}
+	ev := Evidence{}
+	var mockID string
+	obs := s.Broker.StartCase(route.TaskID)
+	s.Broker.LimitCase(budget.MaxTokens)
+	caseCtx, cancel := context.WithTimeout(ctx, time.Duration(budget.MaxMinutes*float64(s.minute())))
+	func() {
+		if err := s.Sandbox.CopyPracticeInputs(ctx, d.ContainerID, c.ID, c.Files); err != nil {
+			ev.RunErr = err
+			problems = append(problems, "The case's input files could not be copied in.")
+			return
+		}
+		if c.Start.Mock != "" {
+			id, err := s.Sandbox.StartPracticeMock(ctx, arm.Image, armRun, suite.MockSources[c.Start.Mock], c.Fixture)
+			if err != nil {
+				ev.RunErr = err
+				problems = append(problems, "The case's mock app could not start.")
+				return
+			}
+			mockID = id
+		}
+		switch arm.Kind {
+		case ArmModel:
+			problems = append(problems, s.observeModel(caseCtx, d, desktopID, route.TaskID, c, arm, expert, obs, &ev)...)
+		case ArmOracle:
+			problems = append(problems, s.runOracle(caseCtx, d, route.TaskID, c, &ev)...)
+		default:
+			yes := true
+			ev.Observation, ev.FinalText, ev.Checked = ObservedFinal, "done", &yes
+		}
+	}()
+	cancel()
+	// Freeze the desktop and the mock before reading anything, so the worker cannot change what the graders see.
+	if err := s.Sandbox.PausePractice(ctx, d.ContainerID, mockID); err != nil {
+		ev.CollectProblems = append(ev.CollectProblems, "The practice desktop could not be paused before collection.")
+	} else {
+		outputs, changed, collect, err := s.Sandbox.CollectPractice(ctx, d.ContainerID, c.ID, c.Files)
+		if err != nil {
+			ev.CollectProblems = append(ev.CollectProblems, "The case's files could not be collected.")
+		}
+		ev.Outputs, ev.ChangedInputs = outputs, changed
+		ev.CollectProblems = append(ev.CollectProblems, collect...)
+		if mockID != "" {
+			if state, err := s.Sandbox.PracticeMockState(ctx, mockID); err != nil {
+				ev.CollectProblems = append(ev.CollectProblems, "The app's stored records could not be read.")
+			} else if ev.MockState, err = mockState(state); err != nil {
+				ev.CollectProblems = append(ev.CollectProblems, "The app's stored records are not readable.")
+			}
+		}
+	}
+	usage := s.Broker.CaseUsage()
+	drafts, _ := s.Broker.EndCase()
+	ev.Drafts = drafts
+	clean, done := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
+	_ = s.Sandbox.UnpausePractice(clean, d.ContainerID, mockID)
+	// The worker's own ledger is read once it runs again: it is worker-written, reported and never a pass (D8).
+	ev.Ledger = s.readLedger(clean, d, route.TaskID)
+	if mockID != "" {
+		_ = s.Sandbox.RemovePractice(clean, mockID)
+	}
+	done()
+	ev.Minutes = time.Since(started).Minutes()
+	mode := Mode{Expert: arm.Expert || arm.Kind == ArmOracle}
+	res := Grade(c, ev, mode)
+	row := Row{RunID: run.ID, Arm: arm.Name, Repeat: rep, CaseID: c.ID, TaskID: route.TaskID, Observed: res.Observed,
+		Checked: ev.Checked != nil && *ev.Checked, Passed: res.Passed, FalseDone: res.FalseDone, DoneUncheckedWrong: res.DoneUncheckedWrong,
+		QRequired: res.Questions.Required, QOther: res.Questions.Other, TokensIn: usage.Input, TokensCached: usage.Cached, TokensOut: usage.Output,
+		Minutes: ev.Minutes, Deployments: usage.Deployments, At: s.Store.now()}
+	row.Problems = append(append([]string{}, res.Problems...), problems...)
+	if arm.Kind == ArmModel && servedByOther(usage.Deployments, arm.Deployment) && !containsString(row.Problems, modelChanged) {
+		row.Problems = append(row.Problems, modelChanged)
+	}
+	for i := range row.Problems {
+		row.Problems[i] = suite.Withhold(row.Problems[i])
+	}
+	questions := ev.Questions
+	if questions == nil {
+		questions = []Asked{}
+	}
+	checks, _ := json.Marshal(rowChecks{Expected: res.Expected, Graders: res.Checks, Questions: questions,
+		WorkerSaid: clipText(ev.FinalText, 2000)})
+	row.Checks = json.RawMessage(suite.Withhold(string(checks)))
+	s.recordOutcome(desktopID, route.TaskID, c, ev, res)
+	return row
+}
+
+// servedByOther reports calls served by more than one deployment, or by one that is not the arm's.
+func servedByOther(seen []string, pinned string) bool {
+	if len(seen) > 1 {
+		return true
+	}
+	return len(seen) == 1 && seen[0] != pinned
+}
+
+func containsString(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// mockState reads a mock's state: {"collections": {...}} (or the collections themselves, as a Simulate mock writes).
+func mockState(b []byte) (map[string][]map[string]any, error) {
+	if len(bytes.TrimSpace(b)) == 0 {
+		return nil, nil
+	}
+	var wrapped struct {
+		Collections map[string][]map[string]any `json:"collections"`
+	}
+	if err := json.Unmarshal(b, &wrapped); err == nil && wrapped.Collections != nil {
+		return wrapped.Collections, nil
+	}
+	var flat map[string][]map[string]any
+	if err := json.Unmarshal(b, &flat); err != nil {
+		return nil, err
+	}
+	return flat, nil
+}
+
+// recordOutcome closes the case's task record with what the graders decided; the worker's words are kept as said.
+func (s *Service) recordOutcome(desktopID, taskID string, c Case, ev Evidence, res Result) {
+	if s.Tasks == nil {
+		return
+	}
+	kind := tasks.OutcomeError
+	switch ev.Observation {
+	case ObservedFinal:
+		kind = tasks.OutcomeDone
+	case ObservedQuery:
+		kind = tasks.OutcomeQuery
+	case ObservedApproval:
+		kind = tasks.OutcomeApproval
+	}
+	verdict := "failed its graders"
+	if res.Passed {
+		verdict = "passed its graders"
+	}
+	passed := res.Passed
+	_, _ = s.Tasks.RecordOutcome(desktopID, taskID, tasks.Outcome{Kind: kind, Engine: "eval", Checked: &passed,
+		Reply: "Eval case " + c.ID + " " + verdict + ". The worker said: " + clipText(ev.FinalText, 2000)})
+}
+
+// readLedger reads the worker's record ledger for the task through the worker's own user; nil when there is none.
+func (s *Service) readLedger(ctx context.Context, d desktop.PracticeDesktop, taskID string) []byte {
+	path := "/home/headless/.decurix/computer/evidence/" + taskID + ".records.json"
+	argv := []string{"/bin/sh", "-c", `[ -f "$1" ] || exit 3; head -c ` + fmt.Sprint(maxLedgerBytes+1) + ` -- "$1"`, "ledger", path}
+	exit, out, err := s.Sandbox.ExecPracticeAsWorker(ctx, d.ContainerID, argv, 30*time.Second)
+	if err != nil || exit != 0 || len(out) > maxLedgerBytes {
+		return nil
+	}
+	return out
+}
+
+// observeModel sends the case's request and follows the worker turn by turn: a question gets the expert's chosen
+// fact (or the fixed sentence) when the arm has the expert, and ends the case when it does not; an approval, a final
+// or an error ends it; so do the case's minutes and its token budget.
+func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, desktopID, taskID string, c Case, arm Arm, expert *Expert, obs <-chan practice.Observation, ev *Evidence) []string {
+	var problems []string
+	if err := s.post(ctx, d, "/request", map[string]string{"content": c.Request, "task_id": taskID}); err != nil {
+		ev.RunErr = err
+		return append(problems, "The request could not be sent to the worker.")
+	}
+	questions := 0
+	exhausted := s.Broker.CaseExhausted()
+	for {
+		select {
+		case o := <-obs:
+			switch o.Kind {
+			case qualification.ObservedQuery:
+				questions++
+				asked := Asked{Kind: ObservedQuery, Text: o.Text, Secret: o.Secret}
+				if questions > MaxQuestions {
+					ev.Questions = append(ev.Questions, asked)
+					ev.Observation, ev.FinalText = ObservedQuery, o.Text
+					return append(problems, "too many questions")
+				}
+				if !o.Secret && expert != nil && len(c.Facts) > 0 {
+					choice, err := expert.ChooseFor(ctx, desktopID, taskID, o.Text, c.Facts)
+					if err != nil && ctx.Err() == nil {
+						log.Printf("eval: expert: %v", err)
+					}
+					asked.Fact = choice.Fact
+					if choice.Problem != "" {
+						problems = append(problems, "expert: "+choice.Problem)
+						if strings.Contains(choice.Problem, modelChanged) && !containsString(problems, modelChanged) {
+							problems = append(problems, modelChanged)
+						}
+					}
+				}
+				if f, ok := c.Fact(asked.Fact); ok {
+					asked.Required = f.IsRequired()
+				}
+				if !arm.Expert || o.Secret {
+					// No expert, or a secret nobody may answer with a value: the question ends the case.
+					ev.Questions = append(ev.Questions, asked)
+					ev.Observation, ev.FinalText = ObservedQuery, o.Text
+					return problems
+				}
+				asked.Reply = Reply(c, asked.Fact)
+				ev.Questions = append(ev.Questions, asked)
+				if err := s.post(ctx, d, "/request", map[string]string{"content": asked.Reply, "task_id": taskID}); err != nil {
+					ev.RunErr = err
+					ev.Observation, ev.FinalText = ObservedQuery, o.Text
+					return append(problems, "The expert's reply could not be sent to the worker.")
+				}
+			case qualification.ObservedApproval:
+				text := o.Gate
+				if text == "" {
+					text = o.Text
+				}
+				ev.Questions = append(ev.Questions, Asked{Kind: ObservedApproval, Text: text, Required: true})
+				ev.Observation, ev.FinalText = ObservedApproval, text
+				return problems
+			case qualification.ObservedFinal, qualification.ObservedError:
+				checked := o.Checked
+				ev.Observation, ev.FinalText, ev.Checked, ev.Verdict = o.Kind, o.Text, &checked, o.Verdict
+				return problems
+			}
+		case <-exhausted:
+			ev.Observation = ObservedBudget
+			return append(problems, "The case reached its token budget.")
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				ev.Observation = ObservedTimeout
+				return append(problems, "The case ran out of time.")
+			}
+			ev.RunErr = ctx.Err()
+			return problems
+		}
+	}
+}
+
+// oraclePrelude runs one oracle line as the worker would run a command in its desktop session: the session's
+// display and bus, the office tools on the path, the case's folder as the working folder, the task's id, and
+// MOCK_ROUTE for curl to reach the case's mock under its own host name.
+const oraclePrelude = `export HOME=/home/headless USER=headless DISPLAY=:1 XAUTHORITY=/home/headless/.Xauthority NO_AT_BRIDGE=0 LANG=C.UTF-8
+export PATH=/opt/office-venv/bin:/usr/local/bin:/usr/bin:/bin DECURIX_TASK_ID="$1" MOCK_ROUTE="--connect-to ::` + desktop.PracticeMockAlias + `:` + desktop.PracticeMockPort + `"
+for p in /proc/[0-9]*; do
+  if [ "$(cat "$p/comm" 2>/dev/null)" = xfce4-session ]; then
+    d=$(tr '\0' '\n' < "$p/environ" 2>/dev/null | grep '^DBUS_SESSION_BUS_ADDRESS=' | head -n 1)
+    [ -n "$d" ] && export "$d"
+    break
+  fi
+done
+cd "$2" || exit 97
+eval "$3"`
+
+// oracleArgv is the command line one oracle step runs as.
+func oracleArgv(taskID, caseID, line string) []string {
+	return []string{"/bin/bash", "-c", oraclePrelude, "oracle", taskID, desktop.PracticeWorkDir + "/" + caseID, line}
+}
+
+// runOracle runs the case's scripted solution as the worker and records how it ended: an approval when the gate
+// stopped an approval step, an error when a step exited otherwise than it should, else a checked final with the
+// solution's answer.
+func (s *Service) runOracle(ctx context.Context, d desktop.PracticeDesktop, taskID string, c Case, ev *Evidence) []string {
+	answer := "Done."
+	for i, st := range c.Oracle {
+		if ctx.Err() != nil {
+			ev.Observation = ObservedTimeout
+			return []string{"The case ran out of time."}
+		}
+		switch st.Kind {
+		case StepAnswer:
+			answer = st.Line
+			continue
+		case StepSleep:
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Duration(st.Seconds * float64(time.Second))):
+			}
+			continue
+		}
+		remaining := time.Minute
+		if dl, ok := ctx.Deadline(); ok {
+			remaining = time.Until(dl)
+		}
+		exit, out, err := s.Sandbox.ExecPracticeAsWorker(ctx, d.ContainerID, oracleArgv(taskID, c.ID, st.Line), remaining)
+		said := strings.TrimSpace(string(out))
+		if err != nil {
+			ev.Observation, ev.FinalText = ObservedError, said
+			if ctx.Err() != nil {
+				ev.Observation = ObservedTimeout
+			}
+			return []string{fmt.Sprintf("Oracle step %d could not run.", i+1)}
+		}
+		if st.Kind == StepApproval && exit == st.Exit {
+			text := clipText(said, 2000)
+			ev.Questions = append(ev.Questions, Asked{Kind: ObservedApproval, Text: text, Required: true})
+			ev.Observation, ev.FinalText = ObservedApproval, text
+			return nil
+		}
+		if exit != st.Exit {
+			no := false
+			ev.Observation, ev.FinalText, ev.Checked = ObservedError, said, &no
+			return []string{fmt.Sprintf("Oracle step %d exited %d, not %d: %s", i+1, exit, st.Exit, clipText(lastLines(said, 5), 600))}
+		}
+	}
+	yes := true
+	ev.Observation, ev.FinalText, ev.Checked = ObservedFinal, answer, &yes
+	return nil
+}
+
+func lastLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
