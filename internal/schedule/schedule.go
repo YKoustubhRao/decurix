@@ -35,6 +35,10 @@ type Schedule struct {
 	// is busy), and WaitingSince since when; both clear once it runs.
 	Waiting      string    `json:"waiting"`
 	WaitingSince time.Time `json:"waiting_since"`
+	// LastError says why the last run did not reach its desktop; "" when it
+	// did. A failed run is consumed (the schedule moves on to its next
+	// occurrence) but never silently: this is its trace.
+	LastError string `json:"last_error"`
 }
 
 var schema = []string{
@@ -53,6 +57,8 @@ var schema = []string{
 	`ALTER TABLE schedules ADD COLUMN run_once INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE schedules ADD COLUMN waiting TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE schedules ADD COLUMN waiting_since_ns INTEGER NOT NULL DEFAULT 0`,
+	// Why the last run did not reach its desktop (review 2026-11-03, B-28).
+	`ALTER TABLE schedules ADD COLUMN last_error TEXT NOT NULL DEFAULT ''`,
 }
 
 // Store is a SQLite-backed collection of Schedules.
@@ -231,6 +237,19 @@ func (s *Store) Due(now time.Time) ([]Schedule, error) {
 // once is the whole job - so it is simply disabled, the same terminal state a
 // cron schedule reaches when it runs out of matches.
 func (s *Store) MarkRun(id string, ranAt time.Time) error {
+	return s.markRun(id, ranAt, "")
+}
+
+// MarkRunFailed is MarkRun for a run that did not reach its desktop: the
+// schedule moves on all the same, and keeps why as LastError.
+func (s *Store) MarkRunFailed(id string, ranAt time.Time, why string) error {
+	if why == "" {
+		why = "the run did not reach its desktop"
+	}
+	return s.markRun(id, ranAt, why)
+}
+
+func (s *Store) markRun(id string, ranAt time.Time, failure string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -261,13 +280,13 @@ func (s *Store) MarkRun(id string, ranAt time.Time) error {
 
 	if !ok {
 		_, err = s.db.Exec(
-			`UPDATE schedules SET enabled = 0, last_run_ns = ?, next_run_ns = 0, waiting = '', waiting_since_ns = 0 WHERE id = ?`,
-			sqlitedb.ToNS(ranAt), id,
+			`UPDATE schedules SET enabled = 0, last_run_ns = ?, next_run_ns = 0, waiting = '', waiting_since_ns = 0, last_error = ? WHERE id = ?`,
+			sqlitedb.ToNS(ranAt), failure, id,
 		)
 	} else {
 		_, err = s.db.Exec(
-			`UPDATE schedules SET last_run_ns = ?, next_run_ns = ?, waiting = '', waiting_since_ns = 0 WHERE id = ?`,
-			sqlitedb.ToNS(ranAt), sqlitedb.ToNS(next), id,
+			`UPDATE schedules SET last_run_ns = ?, next_run_ns = ?, waiting = '', waiting_since_ns = 0, last_error = ? WHERE id = ?`,
+			sqlitedb.ToNS(ranAt), sqlitedb.ToNS(next), failure, id,
 		)
 	}
 
@@ -386,14 +405,14 @@ func (s *Store) DeleteForDesktop(desktopID string) {
 	}
 }
 
-const scheduleColumns = `id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once, waiting, waiting_since_ns`
+const scheduleColumns = `id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once, waiting, waiting_since_ns, last_error`
 
 func scanSchedule(rows sqlitedb.Scanner) (Schedule, error) {
 	var sch Schedule
 	var enabled, runOnce int
 	var created, lastRun, nextRun, waitingSince int64
 
-	if err := rows.Scan(&sch.ID, &sch.DesktopID, &sch.Content, &sch.CronExpr, &enabled, &created, &lastRun, &nextRun, &runOnce, &sch.Waiting, &waitingSince); err != nil {
+	if err := rows.Scan(&sch.ID, &sch.DesktopID, &sch.Content, &sch.CronExpr, &enabled, &created, &lastRun, &nextRun, &runOnce, &sch.Waiting, &waitingSince, &sch.LastError); err != nil {
 		return Schedule{}, err
 	}
 

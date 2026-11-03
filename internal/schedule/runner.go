@@ -120,8 +120,17 @@ func (r *Runner) tick(ctx context.Context) {
 // error that has a DesktopBusy method): the run is held, not sent and not
 // skipped, and tried again every tick until the desktop is free. Sent to an
 // agent waiting on a person, it would be taken as that person's answer.
+//
+// TIME is the occurrence the run is for (the schedule's next run as stored),
+// not the moment the tick noticed it: a run held behind a busy desktop, or
+// caught up after the control plane was down, still says which run it is
+// (review 2026-11-03, B-28).
 func (r *Runner) fire(ctx context.Context, sch Schedule, now time.Time) {
-	content := sch.Content + timeField(now)
+	occurrence := sch.NextRunAt
+	if occurrence.IsZero() || occurrence.After(now) {
+		occurrence = now
+	}
+	content := sch.Content + timeField(occurrence)
 
 	err := r.Submitter.Submit(ctx, sch.DesktopID, content)
 
@@ -138,6 +147,13 @@ func (r *Runner) fire(ctx context.Context, sch Schedule, now time.Time) {
 
 	if err != nil {
 		log.Printf("schedule: firing %s on %s: %v", sch.ID, sch.DesktopID, err)
+
+		why := "The run for " + occurrence.UTC().Format("2 Jan 15:04") + " UTC did not reach the desktop: " + clip(err.Error())
+		if err := r.Store.MarkRunFailed(sch.ID, now, why); err != nil {
+			log.Printf("schedule: advancing %s: %v", sch.ID, err)
+		}
+
+		return
 	}
 
 	if err := r.Store.MarkRun(sch.ID, now); err != nil {
@@ -150,6 +166,14 @@ func (r *Runner) fire(ctx context.Context, sch Schedule, now time.Time) {
 // cannot say for itself.
 func timeField(t time.Time) string {
 	return "\n\nTIME:{" + t.UTC().Format(time.RFC3339) + "}"
+}
+
+// clip bounds a reason kept on a schedule.
+func clip(s string) string {
+	if r := []rune(s); len(r) > 200 {
+		return string(r[:200]) + "..."
+	}
+	return s
 }
 
 func (r *Runner) clock() time.Time {
