@@ -326,7 +326,9 @@ def _walk(root, skip=()):
     while stack:
         folder_path, depth = stack.popleft()
         try:
-            children = list(os.scandir(folder_path))
+            # In name order: the filesystem's order is not one (ext4 hashes it), and at the entry budget an unsorted
+            # listing kept an arbitrary subset that changed between machines (review 2026-11-03, N-E1).
+            children = sorted(os.scandir(folder_path), key=lambda entry: entry.name)
         except OSError:
             continue
         for child in children:
