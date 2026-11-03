@@ -600,6 +600,35 @@ def value_spans(skill, values):
     return sorted(spans, key=lambda s: -len(s["find"]))
 
 
+# An entry of a list the person picked from: its whole name is whom or what it is.
+PICKED_ROLES = {"row", "option", "listitem", "link", "menuitem", "treeitem", "gridcell", "cell"}
+
+
+def _party_entry(recorded, spans):
+    """
+    The target for a list entry whose recorded name a change covers only in part ("Priya Shah" with the value
+    "Priya" changed to "Rahul"): never the spliced name ("Rahul Shah", another party), but the entry that holds this
+    run's whole value, words in order, and is the only one that does (replay.resolve, `contains` with `value`) - or
+    none, and the step asks. Found in review (2026-11-03, D-20). None when the change covers the whole name or the
+    control is not a list entry.
+    """
+
+    name = str(recorded.get("name") or "")
+    if recorded.get("role") not in PICKED_ROLES or not name:
+        return None
+    for span in spans:
+        if not span.get("placed") or not _phrase(span["find"]).search(name):
+            continue
+        whole = [w for w, _, _ in _words(name)]
+        if [w.lower() for w in whole] == [w.lower() for w in span["find"]]:
+            return None  # the change is the whole name: the new name is the entry's name
+        if re.search(r"\d", str(span.get("old") or "")):
+            return None  # an identifier changed ("Invoice 1042" -> "Invoice 1043"): the spliced name is exact
+        return dict(recorded, name=span["new"], contains=True, value=span["new"], path=None,
+                    avoid=list(recorded.get("avoid") or []) + [name])
+    return None
+
+
 def substitute_step(step, spans):
     """A copy of `step` with the changes put into what it targets, opens and expects."""
 
@@ -616,6 +645,9 @@ def substitute_step(step, spans):
         if target.get("name") != (step["target"] or {}).get("name"):
             # The recorded path names the old control; find the new one by name.
             target.pop("path", None)
+            party = _party_entry(step["target"], spans)
+            if party is not None:
+                target = party
         out["target"] = target
 
     for key in ("window", "open", "summary"):

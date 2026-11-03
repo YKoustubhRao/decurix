@@ -7,7 +7,7 @@ from datetime import date
 
 from decurix_agent import progress
 from decurix_agent.computer import approval, audit, browser, constraints, core, launchers, privacy, recording, screen, visual, volatility
-from decurix_agent.computer import detour
+from decurix_agent.computer import detour, identity
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ActedError, ComputerError
 from decurix_agent.logging_utils import log
@@ -413,6 +413,28 @@ def _stable_title(title, reference=None):
     return " - ".join(kept) or None
 
 
+# Why a segment of a title with digits in it would change from run to run anyway (volatility.classify).
+_PASSING = {"clock_time", "relative_time", "date", "near_date", "count", "counter"}
+
+
+def _window_ids(step, recorded_values):
+    """
+    The step with the identifiers its window's title holds ("INV-1043" of "INV-1043 - Sales Invoice") kept as
+    `window_ids`, when none of them is a value the run may change (a parameter's recorded value): the in-front check
+    then needs that document's window, not any of its kind. Found in review (2026-11-03, D-17): titles were compared
+    without their digits, so another invoice's window passed. A title naming a run's own value keeps the stable check.
+    """
+
+    title = step.get("window") or ""
+    ids = [s for s in _segments(title) if re.search(r"\d", s) and volatility.classify(s) not in _PASSING]
+    if not ids:
+        return step
+    lowered = title.lower()
+    if any(v and v.lower() in lowered for v in recorded_values):
+        return step
+    return dict(step, window_ids=ids)
+
+
 def mine_checks(expect, reference=None):
     """
     What a step's recorded result lets a replay check: only what will read
@@ -728,12 +750,12 @@ def follow_values(steps, params, values):
             if value != recorded and _holds_words(recorded, name):
                 pattern = re.compile(r"\s+".join(re.escape(w) for w in recorded.split()), re.IGNORECASE)
                 renamed = pattern.sub(value, name) if pattern.search(name) else f"{name} {value}"
-                new = dict(target, name=renamed, contains=True, path=None,
+                new = dict(target, name=renamed, contains=True, value=value, path=None,
                            avoid=list(target.get("avoid") or []) + [recorded])
                 break
             if (step["n"] == at + 1 and step.get("kind") in ("click", "double_click") and name
                     and target.get("role") in RESULT_ROLES and volatility.only_a_moment(name)):
-                new = dict(target, name=value, contains=True, path=None,
+                new = dict(target, name=value, contains=True, value=value, path=None,
                            avoid=list(target.get("avoid") or []) + ([recorded] if value != recorded else []))
                 break
 
@@ -858,6 +880,16 @@ def resolve(step, observation):
     elements = observation.get("elements") or []
 
     if target:
+        # A step recorded in a window acts only in a window of that kind (the stable part of its title), whatever is
+        # in front - filtered before anything is counted. Found in review (2026-11-03, D-10): the window narrowed only
+        # two or more matches, so the one same-named control of another window was taken.
+        window = _stable_title(target.get("window_title"))
+        if window:
+            elements = [e for e in elements if title_matches(window, e.get("window_title") or "")]
+        if step.get("window_ids"):
+            # ...and of that very document, when its title named one this run does not change (_window_ids, D-17).
+            elements = [e for e in elements
+                        if all(s in _segments(e.get("window_title") or "") for s in step["window_ids"])]
         path = target.get("path")
         if path and not target.get("contains"):
             exact = [e for e in elements if e.get("path") == path]
@@ -872,8 +904,11 @@ def resolve(step, observation):
             # A target that follows this run's value (follow_values) is the
             # control whose name holds that value's words; never one that names
             # what the demonstration typed instead.
-            same = (lambda e: _holds_words(name, e.get("name"))) if target.get("contains") \
-                else (lambda e: _norm(e.get("name")) == _norm(name))
+            # ...and holds this run's whole value, its words in order (identity.holds): found in review
+            # (2026-11-03, D-20), a word subset took a control naming the same first name with another surname.
+            same = (lambda e: _holds_words(name, e.get("name"))
+                    and (not target.get("value") or identity.holds(e.get("name"), target["value"]))) \
+                if target.get("contains") else (lambda e: _norm(e.get("name")) == _norm(name))
             matches = [e for e in elements
                        if (not role or e.get("role") == role) and same(e) and not avoided(target, e)]
 
@@ -915,6 +950,12 @@ def resolve(step, observation):
         window = _stable_title(step.get("window"))
         if window and not title_matches(window, observation.get("active_title") or ""):
             return None, None, f"{NOT_IN_FRONT} {el._quote(window, 60)}, which is not in front"
+        # ...and the document it was recorded in, when its title named one this run does not change (_window_ids).
+        have = _segments(observation.get("active_title") or "")
+        other = [s for s in step.get("window_ids") or [] if s not in have]
+        if other:
+            return None, None, (f"{NOT_IN_FRONT} {el._quote(step.get('window') or '', 60)} (the window of "
+                                f"{el._quote(other[0], 40)}), which is not in front")
 
         if step.get("look") and observation.get("frame") is not None:
             seen = visual.find(step["look"], observation["frame"])
@@ -1649,6 +1690,9 @@ def _run_program(program, params=None, start=1, report=None, ladder=None):
     _fit_screen([s for s in steps if s["n"] >= start], report)
     changed_at = _first_change(program, values)
     steps = [_typing_checks(s) for s in follow_values(steps, program.get("params"), values)]
+    recorded_values = [str(_recorded_value(p)) for p in program.get("params") or []
+                       if _recorded_value(p) not in (None, "")]
+    steps = [_window_ids(s, recorded_values) for s in steps]
 
     if ladder is not None:
         ladder.typed = [(str(p.get("example") if p.get("example") is not None else p.get("default")), str(values[p["name"]]))
