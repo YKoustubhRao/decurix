@@ -34,6 +34,30 @@ type viewStep struct {
 	link   string // a symlink's target, or "" for a bind
 	write  bool
 	isFile bool
+	tmpfs  bool // a fresh, private tmpfs (the view's own /dev/shm)
+}
+
+// viewDevices are the device nodes a view's /dev holds: the plain ones any
+// program uses, and a GPU's, where this machine has them. Not the host's
+// whole /dev: its /dev/shm and /dev/mqueue are shared with every host
+// process, a channel out of the sandbox.
+var viewDevices = []string{"/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom",
+	"/dev/dri", "/dev/kfd", "/dev/nvidiactl", "/dev/nvidia-uvm", "/dev/nvidia-uvm-tools", "/dev/nvidia-modeset"}
+
+// devSteps is the view's /dev: the devices above that exist, the NVIDIA
+// GPUs (nvidia0, nvidia1...), and a private /dev/shm.
+func devSteps() []viewStep {
+	var out []viewStep
+	paths := append([]string{}, viewDevices...)
+	if gpus, err := filepath.Glob("/dev/nvidia[0-9]*"); err == nil {
+		paths = append(paths, gpus...)
+	}
+	for _, p := range paths {
+		if fi, err := os.Stat(p); err == nil {
+			out = append(out, viewStep{path: p, write: true, isFile: !fi.IsDir()})
+		}
+	}
+	return append(out, viewStep{path: "/dev/shm", tmpfs: true})
 }
 
 // planView lists what the new root needs for a policy, read from the host's
@@ -94,6 +118,12 @@ func planView(p Policy) []viewStep {
 		walk(r, false)
 	}
 	for _, w := range p.Write {
+		if filepath.Clean(w) == "/dev" {
+			for _, s := range devSteps() {
+				add(s)
+			}
+			continue
+		}
 		walk(w, true)
 	}
 	// Parents before children, so a bind inside a bound directory lands on
@@ -140,6 +170,15 @@ func enterView(steps []viewStep) error {
 		if s.link != "" {
 			if err := os.Symlink(s.link, dst); err != nil && !errors.Is(err, os.ErrExist) {
 				return err
+			}
+			continue
+		}
+		if s.tmpfs {
+			if err := os.MkdirAll(dst, 0o755); err != nil {
+				return err
+			}
+			if err := syscall.Mount("tmpfs", dst, "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV, "mode=1777"); err != nil {
+				return fmt.Errorf("%s: %w", s.path, err)
 			}
 			continue
 		}

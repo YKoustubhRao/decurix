@@ -41,10 +41,17 @@ func TestAConfinedProcessCannotReachASocketOutsideItsPolicy(t *testing.T) {
 		}
 	}()
 	mustWrite(t, filepath.Join(outside, "secret"), "secret")
+	// A file in the host's shared memory, which a view's private /dev/shm hides.
+	shm := ""
+	if f, err := os.CreateTemp("/dev/shm", "brainiac-view-test-"); err == nil {
+		shm = f.Name()
+		f.Close()
+		defer os.Remove(shm)
+	}
 	self, _ := os.Executable()
 	cmd := exec.Command(self, "-test.run=TestAConfinedProcessCannotReachASocketOutsideItsPolicy")
 	cmd.Env = Env("BRAINIAC_VIEW_CHILD=1", "CHILD_OUTSIDE_SOCK="+outsideSock, "CHILD_SECRET="+filepath.Join(outside, "secret"),
-		"CHILD_OWN="+own, "CHILD_PARENT="+strconv.Itoa(os.Getpid()))
+		"CHILD_OWN="+own, "CHILD_PARENT="+strconv.Itoa(os.Getpid()), "CHILD_HOST_SHM="+shm)
 	NoNetwork(cmd)
 	DieWithParent(cmd)
 	if err := Wrap(cmd, ForProgram(self, nil, []string{own})); err != nil {
@@ -103,6 +110,29 @@ func viewChild() {
 	}
 	if _, err := os.ReadFile("/proc/cpuinfo"); err != nil {
 		fail(45, "could not read the machine's facts", err)
+	}
+	if p := os.Getenv("CHILD_HOST_SHM"); p != "" {
+		if _, err := os.Stat(p); err == nil {
+			fail(48, "sees the host's /dev/shm", nil)
+		}
+	}
+	if err := os.WriteFile("/dev/null", []byte("x"), 0); err != nil {
+		fail(49, "could not write /dev/null", err)
+	}
+	if f, err := os.Open("/dev/urandom"); err != nil {
+		fail(50, "could not open /dev/urandom", err)
+	} else {
+		b := make([]byte, 16)
+		if _, err := f.Read(b); err != nil {
+			fail(50, "could not read /dev/urandom", err)
+		}
+		f.Close()
+	}
+	if err := os.WriteFile("/dev/shm/x", []byte("x"), 0o600); err != nil {
+		fail(51, "has no /dev/shm of its own", err)
+	}
+	if entries, _ := os.ReadDir("/dev"); len(entries) > len(viewDevices)+8 {
+		fail(52, fmt.Sprintf("sees the host's /dev (%d entries)", len(entries)), nil)
 	}
 	l, err := net.Listen("unix", filepath.Join(os.Getenv("CHILD_OWN"), "s.sock"))
 	if err != nil {
