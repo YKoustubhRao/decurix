@@ -171,19 +171,22 @@ from decurix_agent import skill_task  # noqa: E402
 
 
 class AtTheFinalCheck(FileWorkIsChecked):
-    """At the final check a figure the source contradicts is not done, decided before any model is asked."""
+    """At the final check a figure the source seems to contradict is evidence the judge weighs, never a verdict of code
+    (E-13, review 2026-11-03: a cash book's Dr balance and a newest-first bank export were refused by sign and row
+    conventions)."""
 
-    def test_a_contradicted_source_figure_is_sent_back_without_a_model(self):
-        self.verdicts = []
+    def test_a_contradicted_source_figure_reaches_the_judge(self):
+        self.verdicts = [{"verdict": "not_done", "confidence": 0.9, "seen": "the closing balance is not the bank's",
+                          "why": ""}]
         found = ['bank_rec_oct.xlsx: Reconciliation!B7 "Closing balance per bank statement" is -14,140.00, but '
                  'bank_oct.csv itself states 398,360.00']
         skill_task.state.current_task = REQUEST
         with mock.patch.object(skill_task.produced, "file_facts",
                                lambda *a, **k: produced.FileFacts(source_mismatch=found)),                 mock.patch.object(skill_task.produced, "missing_highlight", lambda paths, request="": []):
             self.assertTrue(skill_task._gate("Saved bank_rec_oct.xlsx, ending at -14,140.00.", "final", "thebot"))
-        self.assertEqual(self.judged, [])
+        self.assertEqual(len(self.judged), 1)
+        self.assertIn("bank_oct.csv itself states 398,360.00", self.judged[0]["produced"])
         self.assertEqual(self.finals, [])
-        self.assertIn("bank_oct.csv itself states 398,360.00", self.asked[-1][0])
 
 
 if __name__ == "__main__":

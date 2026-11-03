@@ -1756,24 +1756,27 @@ class LongRun(LongRunBase):
         self.assertEqual(bank, [])  # asked once, never sent back to ask again
         report = self.finals()[-1]["reply"]
         self.assertIn("Bank reconciliation: could not be done after 1 attempt(s) - you said no at its approval", report)
-        self.assertIn("and it did not finish another way", report)
+        self.assertIn("so it is not done", report)
         self.assertIn("Memo", report.split("Not done:")[0])
 
-    def test_a_refused_command_does_not_fail_a_stage_that_finished_another_way(self):
+    def test_a_declined_command_ends_its_stage_declined_never_done_another_way(self):
+        # NEW-T1 (review 2026-11-03): a no that stood (nothing was done after it - guidance.refused) ends the stage
+        # "declined, not done". It used to be judged and could complete as "done another way", which teaches the worker
+        # to route around a no. The person is told, and the stage is not tried again.
         from decurix_agent import guidance
         engine_perform = self.engine.perform_task
 
         def bank_other_way(prompt, task_file):
             if "Bank reconciliation." in prompt.split("\n")[0]:
                 with mock.patch.object(guidance, "refused", side_effect=["no, don't send anything", None, None]):
-                    engine_perform(prompt, task_file)  # the engine carries on and makes the file
+                    engine_perform(prompt, task_file)
                 return
             engine_perform(prompt, task_file)
         sys.modules["decurix_agent.harness"].perform_task = bank_other_way
         long_task.perform(LONG, None)
         report = self.finals()[-1]["reply"]
-        self.assertIn("Done - every stage was made and checked.", report)
-        self.assertIn("You declined one of its commands (\"no, don't send anything\"); it was done another way.", report)
+        self.assertNotIn("Done - every stage was made and checked.", report)
+        self.assertIn("you said no at its approval (\"no, don't send anything\"), so it is not done", report)
         self.assertEqual(len([p for p in self.engine.prompts if p.startswith("Stage 2 of 3")]), 1)
 
     def test_the_stage_prompt_carries_the_requests_rules_and_every_ask(self):

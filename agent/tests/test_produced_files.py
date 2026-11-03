@@ -189,10 +189,14 @@ class FileWorkIsChecked(ts.TeachingBase):
         self.assertIs(kw.get("checked"), False)
         self.assertTrue(kw.get("gated"))
 
-    def test_a_task_that_wrote_nothing_is_not_checked(self):
+    def test_a_task_that_wrote_nothing_and_read_nothing_goes_out_said_not_checked(self):
+        # Not judged (there is nothing to judge it against), and never sent as a checked result: it is labelled
+        # (E-02 / T-01, review 2026-11-03 - it used to skip the gate and go out as written).
         self.made = []
-        self.assertFalse(skill_task._gate("The kernel is 6.6.", "final", "thebot"))
+        with mock.patch.object(skill_task.evidence, "observed", lambda *a, **k: []),                 mock.patch.object(skill_task.evidence, "files_read", lambda *a, **k: []),                 mock.patch.object(skill_task, "_commands_text", lambda: ""):
+            self.assertTrue(skill_task._gate("The kernel is 6.6.", "final", "thebot"))
         self.assertEqual(self.judged, [])
+        self.assertTrue(self.finals[-1][0].startswith(skill_task.UNCHECKED_ANSWER))
 
     def test_a_tickets_or_a_replays_own_report_is_not_an_engines(self):
         for engine in ("human", "replay", "web", skill_task.SKILL_ENGINE, skill_task.LEARN_ENGINE):
@@ -239,16 +243,18 @@ class NoModelAtTheGate(ts.TeachingBase):
         self.assertEqual(self.said, [])
         self.assertIn("it comes to 1,134.00", self.asked[-1][0])
 
-    def test_the_persons_changed_file_is_still_put_back(self):
+    def test_the_persons_changed_file_is_told_and_never_put_back_while_checking(self):
+        # E-12 (review 2026-11-03): nothing is put back before a verdict, and the request's verbs decide nothing; the
+        # change reaches the person, with where the original is kept. (It used to be restored here, by a verb list.)
         restored = []
-
-        def check_and_restore(task_id, request):
-            restored.append(request)
-            return "list_a.xlsx is the person's and was changed; it has been put back"
-        with mock.patch.object(skill_task.source_guard, "check_and_restore", check_and_restore):
+        change = {"rel": "list_a.xlsx", "name": "list_a.xlsx", "path": "/shared/list_a.xlsx", "diff": "A2: x -> y",
+                  "gone": False, "kept": True, "asked": False, "copy": "/kept/list_a.xlsx"}
+        with mock.patch.object(skill_task.source_guard, "changed_sources", lambda task_id, request: [change]),                 mock.patch.object(skill_task.source_guard, "restore", lambda *a, **k: restored.append(a) or ([], [])):
             self.assertTrue(skill_task._gate("Made result.xlsx.", "final", "thebot"))
-        self.assertEqual(restored, ["compare the two lists into result.xlsx"])
-        self.assertIn("list_a.xlsx is the person's and was changed", self.asked[-1][0])
+        self.assertEqual(restored, [])
+        text, kw = self.said[-1]
+        self.assertIn("Changed your file /shared/list_a.xlsx", text)
+        self.assertIs(kw.get("checked"), False)
 
     @needs("openpyxl")
     def test_file_work_no_one_could_judge_is_said_not_checked_never_done(self):
@@ -273,8 +279,10 @@ class NoModelAtTheGate(ts.TeachingBase):
         with mock.patch.object(skill_task.guidance, "refused", lambda: "no, do not send it"):
             self.assertTrue(skill_task._gate("Stopped before sending.", "final", "thebot"))
         text, kw = self.said[-1]
-        self.assertTrue(text.startswith("Stopped there, as you said"))
-        self.assertNotIn("checked", kw)
+        # A stop is never a finished task (E-36): kind "error", not checked.
+        self.assertTrue(text.startswith("Stopped, as you said"))
+        self.assertEqual(kw.get("kind"), "error")
+        self.assertIs(kw.get("checked"), False)
         self.assertTrue(kw.get("gated"))
 
 

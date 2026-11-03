@@ -678,7 +678,8 @@ class Teaching(TeachingBase):
     def test_stop_ends_the_run_where_it_is(self):
         name, fake = self.stuck()
         skill_task.resume("stop")
-        self.assertIn("Stopped before step 1", self.finals[-1][0])
+        self.assertIn("Stopped, as you said, before step 1", self.finals[-1][0])
+        self.assertEqual(self.finals[-1][1], "error")  # a stop is never a finished task (E-36)
 
     def test_asking_for_a_skill_that_does_not_exist_lists_what_does(self):
         self.taught_button()

@@ -68,7 +68,8 @@ class AWrongBlockingFindingIsThePersonsToOverrule(base.LongRun):
             self.assertEqual(self.runner.status(run_id)["steps"]["s1-register"]["status"], "parked")
             self.assertEqual(len([p for p in self.engine.prompts if p.startswith("Stage 1 of 3")]), 2)  # no third try
             self.message_verdict = {"kind": "answer", "answers": [{"question": "q1", "answer": "Keep it.", "keep": True}]}
-            self.message("Keep it.")
+            # (The reply to the question: only that can keep it - E-15. No approval gate on this machine.)
+            self.message("Keep it.", reply=True)
         overrides = long_task.ledger(run_id)["overrides"]
         self.assertEqual([(o["stage"], o["check"]) for o in overrides], [("s1-register", "file_facts")])
         self.assertEqual(self.runner.status(run_id)["steps"]["s1-register"]["status"], "completed")

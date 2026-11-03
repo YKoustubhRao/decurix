@@ -642,8 +642,11 @@ class AnyScreenTask(ts.TeachingBase):
         state.current_task = "open the invoice and approve it"
 
     def test_a_chat_answer_is_not_checked(self):
-        with mock.patch.object(skill_task, "_did_screen_work", lambda: False):
-            self.assertFalse(skill_task._gate("The kernel is 6.6.", "final", "thebot"))
+        # Not judged - nothing was read to judge it by - and said NOT checked, never sent as a checked result
+        # (E-02/T-01, review 2026-11-03).
+        with mock.patch.object(skill_task, "_did_screen_work", lambda: False),                 mock.patch.object(skill_task.evidence, "observed", lambda *a, **k: []),                 mock.patch.object(skill_task.evidence, "files_read", lambda *a, **k: []),                 mock.patch.object(skill_task, "_commands_text", lambda: ""):
+            self.assertTrue(skill_task._gate("The kernel is 6.6.", "final", "thebot"))
+        self.assertTrue(self.finals[-1][0].startswith(skill_task.UNCHECKED_ANSWER))
 
     def test_screen_work_is_reported_done_only_once_seen(self):
         self.verdicts = [verdict(verify.DONE, seen="Invoice INV-1 shows Approved")]

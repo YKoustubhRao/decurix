@@ -353,19 +353,21 @@ def perform(content, task_file=None):
         # The same code-decided facts about the files as the final gate's (produced.file_facts), with no model.
         facts = produced.file_facts(content, made, drafts_made=dry or produced.drafts())
         from decurix_agent import source_guard, task_context
+        # The person's given files that changed: facts for the judge and lines for the person, never put back while
+        # checking (E-12); a check that cannot be made leaves the result not checked (E-01).
+        changed_for_judge, changed_for_person = [], []
         try:
-            changed_source = source_guard.check_and_restore(task_context.current(), content)
-        except Exception as exc:  # noqa: BLE001
+            changes = source_guard.changed_sources(task_context.current(), content)
+            changed_for_judge, changed_for_person = source_guard.judge_lines(changes), source_guard.report_lines(changes)
+        except Exception as exc:  # noqa: BLE001 - not made, never passed
             log(f"tool_task: could not check the shared folder's files: {exc}")
-            changed_source = ""
+            facts.could_not.append(f"whether your own files were changed could not be checked ({type(exc).__name__})")
         source_guard.tidy_own_backups(content)
-        if changed_source:
-            progress.emit(changed_source)
-            facts.file_faults.append(changed_source)
-        # Only the invariants decide here (harness audit, 2026-10-21); what reads the request is evidence for the judge.
-        wrong = (facts.unstored + facts.gaps
-                 + ([facts.missing_files] if facts.missing_files else []) + facts.file_faults
-                 + facts.payee_mismatch + facts.source_mismatch + facts.unknown_recipients + facts.draft_facts)
+        for line in changed_for_person:
+            progress.emit(line)
+        # Only the invariants decide here (harness audit, 2026-10-21; FileFacts.blocking - E-27); what reads the request
+        # is evidence for the judge.
+        wrong = facts.blocking()
         progress.emit("Reading back what it wrote to check it against the request.")
         if wrong:
             verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "; ".join(wrong)[:600],
@@ -375,12 +377,13 @@ def perform(content, task_file=None):
         else:
             verdict = verify.judge(content, claim=reply, screen=False,
                                    produced="\n".join(x for x in (produced.text(made), produced.drafts_text(dry or None),
-                                                                  produced.notes_text(facts.notes())) if x),
+                                                                  produced.notes_text(facts.notes() + changed_for_judge
+                                                                                      + changed_for_person)) if x),
                                    look_up=lambda terms: produced.lines_with(made, terms))
 
         # The one decision (verify.outcome): a done the judge is not sure of, or with a check that could not be made,
         # is not done here either - it goes to the engine below like any unsettled check.
-        settled = verify.outcome(verdict, not_made=getattr(facts, "could_not", ()))
+        settled = verify.outcome(verdict, not_made=facts.not_made())
         if settled["status"] == verify.DONE:
             # The check passed on the dry draft: the real draft is made now, once.
             failed = _draft_once(dry)
@@ -392,7 +395,9 @@ def perform(content, task_file=None):
                                   "anything already made.")
             _note(book, True)
             seen = f"\n\nChecked against the files it wrote: {verdict['seen']}" if verdict.get("seen") else ""
-            return write_final_reply(reply + seen, kind="final", engine=ENGINE, checked=True)
+            told = ("\n\nPlease check:\n" + "\n".join(f"- {line}" for line in changed_for_person)
+                    if changed_for_person else "")
+            return write_final_reply(reply + seen + told, kind="final", engine=ENGINE, checked=True)
 
         if settled["status"] == verify.NOT_DONE:
             wrong = " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x)

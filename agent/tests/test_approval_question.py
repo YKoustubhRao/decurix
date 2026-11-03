@@ -77,7 +77,7 @@ class Running(TeachingBase):
         skill_task.perform('/skill add-a-customer customer_name="Globex"')
         skill_task.resume("no")
 
-        self.assertIn("Stopped before starting", self.finals[-1][0])
+        self.assertIn("Stopped, as you said, before starting", self.finals[-1][0])
         self.assertEqual(self.screen_fake.acted, [])
 
     def test_a_task_taught_to_go_ahead_just_runs(self):

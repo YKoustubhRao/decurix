@@ -168,8 +168,12 @@ class ShellOnlyWork(unittest.TestCase):
                 mock.patch.object(skill_task.produced, "drafts", lambda: []), \
                 mock.patch.object(skill_task.procedures, "in_request", lambda t: False), \
                 mock.patch.object(skill_task.produced, "requested_names", lambda t: []):
-            with mock.patch.object(playbooks, "changed_things", lambda commands=None: []):
-                self.assertFalse(skill_task._gate("Done.", "final", "thebot"))
+            said = []
+            # Nothing changed and nothing read: not judged, and sent said NOT checked (E-02/T-01, review 2026-11-03).
+            with mock.patch.object(playbooks, "changed_things", lambda commands=None: []),                     mock.patch.object(skill_task.evidence, "observed", lambda *a, **k: []),                     mock.patch.object(skill_task.evidence, "files_read", lambda *a, **k: []),                     mock.patch.object(skill_task, "_commands_text", lambda: ""),                     mock.patch.object(skill_task, "write_final_reply", lambda text, **k: said.append((text, k))):
+                self.assertTrue(skill_task._gate("Done.", "final", "thebot"))
+            self.assertTrue(said[-1][0].startswith(skill_task.UNCHECKED_ANSWER))
+            self.assertIs(said[-1][1].get("checked"), False)
             began = []
             with mock.patch.object(playbooks, "changed_things", lambda commands=None: ["rm old.txt"]), \
                     mock.patch.object(skill_task.guidance, "begin",
