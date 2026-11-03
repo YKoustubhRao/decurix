@@ -125,6 +125,13 @@ type Server struct {
 	// LLMRec records every hosted call the proxy forwards (plan R2: purpose, task, turn, deployment, usage, the
 	// withheld messages as blobs). Assigned by cmd/decurix/main.go; nil records nothing.
 	LLMRec *llmrec.Store
+	// Runs pulls a run's bundle off its desktop (runs.Puller), and RunBundles says which are stored (runs.Store);
+	// both assigned by main, nil pulls nothing (runpull.go, plan R9).
+	Runs       RunPuller
+	RunBundles RunBundles
+	runPulls   runPulls
+	// deleteDesktop stands in for Desktops.Delete in deleteDesktopHandler, in tests.
+	deleteDesktop func(ctx context.Context, id string) error
 	// DateOrder is the organisation's date order, "day" or "month" ("" unknown), sent with every request to a
 	// desktop (C6) so a date like 03/04/2026 is read one way (W0.2). main reads it from DECURIX_DATE_ORDER.
 	DateOrder string

@@ -102,3 +102,16 @@ func (s *Store) PassRates() ([]PassRate, error) {
 		 GROUP BY e.skill_name, e.skill_version, e.resolved_model
 		 ORDER BY e.skill_name, e.skill_version, e.resolved_model`)
 }
+
+// ExecutionKey names one execution: its id, its task and its worker.
+type ExecutionKey struct{ ExecID, TaskID, WorkerID string }
+
+// EndedExecutions is every execution that ended since since (of worker, or of every worker when it is ""), oldest
+// first: what a run puller looks through for runs whose bundle it has not pulled yet.
+func (s *Store) EndedExecutions(worker string, since time.Time) ([]ExecutionKey, error) {
+	return sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) (ExecutionKey, error) {
+		var k ExecutionKey
+		return k, r.Scan(&k.ExecID, &k.TaskID, &k.WorkerID)
+	}, `SELECT id, task_id, worker_id FROM executions WHERE ended_ns >= ? AND ended_ns > 0 AND (? = '' OR worker_id = ?)
+		ORDER BY ended_ns, id`, sqlitedb.ToNS(since), worker, worker)
+}

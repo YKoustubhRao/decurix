@@ -224,6 +224,8 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	// An ended execution records the deployment that served it (R7), from the call log (one query, no rows open).
 	if err == nil && execID != "" && (note.Kind == tasks.OutcomeDone || note.Kind == tasks.OutcomeError) {
 		s.resolveModel(execID)
+		// Its bundle leaves the desktop now (R9), before anything on the desktop can prune it.
+		s.pullAfterOutcome(note.Kind, desktopID, taskID, execID)
 	}
 
 	// An outcome for a task that is not open here (it ended, or is not this desktop's) is refused, with nothing

@@ -485,7 +485,15 @@ func (s *Server) restartDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 // deleteDesktopHandler deletes a desktop and its persistent storage by ID.
 func (s *Server) deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.desktopAction(w, r, false, s.thenClose(s.Desktops.Delete, "The desktop was deleted before this task finished."))
+	// Every run not yet pulled leaves the desktop first (R9): deleting it would lose what labels those runs.
+	deleteAfterFlush := func(ctx context.Context, id string) error {
+		s.flushRuns(ctx, desktop.SanitizeID(id))
+		if s.deleteDesktop != nil {
+			return s.deleteDesktop(ctx, id)
+		}
+		return s.Desktops.Delete(ctx, id)
+	}
+	id, ok := s.desktopAction(w, r, false, s.thenClose(deleteAfterFlush, "The desktop was deleted before this task finished."))
 	if !ok {
 		return
 	}
