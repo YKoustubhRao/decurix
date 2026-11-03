@@ -745,6 +745,8 @@ type operatorState struct {
 	ComputedTyped []string        `json:",omitempty"`
 	// LocalTokensPerByte is the highest rate a local call has really cost (noteLocalCost, context.go).
 	LocalTokensPerByte float64 `json:",omitempty"`
+	// WroteFiles are the files this goal's commands wrote by redirection or tee (computed.go).
+	WroteFiles []string `json:",omitempty"`
 }
 
 // outputChars is OutputChars, or the local default for a checkpoint written
@@ -1150,6 +1152,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 		shown := withoutCommandValues(res.Output, run)
 		if res.ExitCode == 0 {
 			st.noteComputed(run, shown) // before noteSeen: what it prints that nothing showed before
+			st.noteWroteFiles(run)
 		}
 		st.noteSeen(shown)
 		st.noteEvidence(run, shown)

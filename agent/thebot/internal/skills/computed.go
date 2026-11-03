@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"path"
 	"regexp"
 	"strings"
 )
@@ -18,10 +19,45 @@ const (
 	maxComputedTyped  = 20
 )
 
+// writeTargetRe is a file a command writes: a redirection's target (> f, >> f) or tee's.
+var writeTargetRe = regexp.MustCompile(`(?:^|[^>&0-9<])>>?[ \t]*['"]?([^\s'";&|<>()]+)|\btee[ \t]+(?:-a[ \t]+)?['"]?([^\s'";&|<>()]+)`)
+
+// maxWroteFiles bounds the files a goal is remembered to have written.
+const maxWroteFiles = 50
+
+// noteWroteFiles keeps the files a command that worked wrote by redirection or tee: a script the work writes there and
+// runs later is its own code, as inline code is (review N-W3-8).
+func (st *operatorState) noteWroteFiles(command string) {
+	for _, m := range writeTargetRe.FindAllStringSubmatch(command, -1) {
+		f := m[1] + m[2]
+		if f == "" || f == "/dev/null" || strings.HasPrefix(f, "&") || contains(st.WroteFiles, f) || len(st.WroteFiles) >= maxWroteFiles {
+			continue
+		}
+		st.WroteFiles = append(st.WroteFiles, f)
+	}
+}
+
+// ownCode reports whether a command runs code the work wrote itself: inline code, or a file this goal wrote, named by
+// the same path or the same final part of it.
+func (st *operatorState) ownCode(command string) bool {
+	if inlineCodeRe.MatchString(command) {
+		return true
+	}
+	for _, word := range strings.Fields(command) {
+		word = strings.Trim(word, `'"`)
+		for _, f := range st.WroteFiles {
+			if word == f || path.Base(word) == path.Base(f) && strings.Contains(path.Base(f), ".") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // noteComputed keeps the values the command's output holds that nothing seen before held, when the command runs code
-// it wrote itself.
+// the work wrote itself (ownCode).
 func (st *operatorState) noteComputed(command, shown string) {
-	if !inlineCodeRe.MatchString(command) {
+	if !st.ownCode(command) {
 		return
 	}
 	for _, v := range valueTokenRe.FindAllString(shown, -1) {

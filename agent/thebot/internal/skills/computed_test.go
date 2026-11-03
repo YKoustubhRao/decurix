@@ -28,3 +28,22 @@ func TestAValueOnlyTheWorksOwnCodePrintedIsAFactForTheReviewer(t *testing.T) {
 		t.Error("a file's output was taken for the work's own code")
 	}
 }
+
+// A script file the goal wrote and then ran is the work's own code, as inline code is (N-W3-8); a script it did not
+// write is not.
+func TestAValueOnlyAScriptTheWorkWrotePrintedIsAFactForTheReviewer(t *testing.T) {
+	st := &operatorState{Request: "enter the total"}
+	st.noteSeen(st.Request)
+	st.noteWroteFiles("cat > /tmp/w/calc.py <<'EOF'\nprint(1)\nEOF")
+	st.noteComputed("python3 /tmp/w/calc.py", "12345")
+	st.noteSeen("12345")
+	st.noteTracedTyping(`gui type e5 "12345"`)
+	if len(st.ComputedTyped) != 1 || st.ComputedTyped[0] != "12345" {
+		t.Fatalf("computed typed = %v (wrote %v)", st.ComputedTyped, st.WroteFiles)
+	}
+	other := &operatorState{}
+	other.noteComputed("python3 given.py", "99999")
+	if len(other.ComputedOnly) != 0 {
+		t.Error("a script the goal did not write was taken for its own code")
+	}
+}
