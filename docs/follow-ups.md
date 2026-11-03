@@ -68,7 +68,6 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 - **No-echo walker limits** (RW1-G-06 is done): an error variable not named like one, or a helper that returns the text, still gets past it.
 - **Two control planes on one data folder** are unsupported; after a crash, two starting at once could each remove the other's fresh `instance-id`.
 - **P3s not done:** B-02 (a panic path leaves only `last_error`), C-06 (a live test positive control; walk all packages), C-07 (a main-level Docker-down test; the watcher is tested), F-05 (owner's call), A-02 to A-06 (Electron details), F-08, F-10, F-11 (notes).
-- **`bench/workflows/README.md` and `bench/workflows/PM_REVIEW.md`:** change "independently verified" to "checked for consistency: the runner's exported report against the scenario table and the files on disk (recordings, skills, PNG headers). The pass/fail results are the runner's own and are not re-derived." (Not applied: outside the docs paths.)
 
 ### Python agent (W2)
 

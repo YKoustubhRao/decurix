@@ -75,7 +75,7 @@ The independent [PM review](PM_REVIEW.md) records the evidence checks and remain
 
 Live testing exposed missing labels on LibreOffice editable fields and loss of earlier supplied parameters when replay resumed at a later step. Both are fixed in production with regressions. The native report preserves failed attempts as well as passing reruns; fixture recovery-state and dialog-scope corrections are identified separately.
 
-Recheck exported evidence from the repository root:
+Recheck exported evidence from the repository root. `audit_evidence.py` is checked for consistency: the runner's exported report against the scenario table and the files on disk (recordings, skills, PNG headers). The pass/fail results are the runner's own and are not re-derived.
 
 ```text
 python bench/workflows/audit_evidence.py
