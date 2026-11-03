@@ -411,7 +411,11 @@ class TeachingBase(unittest.TestCase):
         playbooks.begin()  # (the commands of an earlier test's task are no part of this one: skill_task._gate reads them)
 
         self.asked, self.finals, self.remembered = [], [], []
+        from decurix_agent.tools import outbox
         patches = [
+            # The Outbox's log is this test's own: another test's drafts under the same task id are not this task's
+            # work (review round 3: a gate test read them and sent correct work back).
+            mock.patch.object(outbox, "DRAFTS_DIR", Path(self.tmp.name) / "drafts"),
             mock.patch.object(skill_task, "remember", lambda title, summary, category="workflow": self.remembered.append((title, summary, category))),
             mock.patch.object(skill_task, "_remember_async", lambda skill: skill_task._remember(skill)),
             mock.patch.object(skill_task, "ask_for_query", self._ask_for_query),

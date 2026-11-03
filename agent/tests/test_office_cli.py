@@ -133,6 +133,11 @@ class AnEmailIsDraftedNeverSent(unittest.TestCase):
         work = mock.patch.object(outbox.config, "WORK_DIR", Path(self.dir.name))
         work.start()
         self.addCleanup(work.stop)
+        # The drafts' log is this test's own: the machine's would be read by any later test of the same task id
+        # (found in review round 3: a later gate test saw these drafts as its own work).
+        log = mock.patch.object(outbox, "DRAFTS_DIR", Path(self.dir.name) / "drafts")
+        log.start()
+        self.addCleanup(log.stop)
 
     def tearDown(self):
         self.dir.cleanup()
