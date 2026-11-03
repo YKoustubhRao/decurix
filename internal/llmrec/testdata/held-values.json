@@ -1,0 +1,62 @@
+{
+  "rule": "A held value of 4 or more characters (code points) is withheld wherever it occurs, as a substring. A shorter value is withheld only as a whole token: where the character right before it and the one right after it are not a letter or a digit (Unicode), or are the start or end of the text. Longest value first. The marker is [withheld].",
+  "cases": [
+    {
+      "text": "hash 9fab9c and ab9 alone",
+      "values": [
+        "ab9"
+      ],
+      "want": "hash 9fab9c and [withheld] alone"
+    },
+    {
+      "text": "ab9.",
+      "values": [
+        "ab9"
+      ],
+      "want": "[withheld]."
+    },
+    {
+      "text": "ab9",
+      "values": [
+        "ab9"
+      ],
+      "want": "[withheld]"
+    },
+    {
+      "text": "ab9_x and xab9",
+      "values": [
+        "ab9"
+      ],
+      "want": "[withheld]_x and xab9"
+    },
+    {
+      "text": "ä12 and xä12",
+      "values": [
+        "ä12"
+      ],
+      "want": "[withheld] and xä12"
+    },
+    {
+      "text": "pin 4821, pin4821x",
+      "values": [
+        "4821"
+      ],
+      "want": "pin [withheld], pin[withheld]x"
+    },
+    {
+      "text": "code Zq9X-77 typed, again Zq9X-77",
+      "values": [
+        "Zq9X-77"
+      ],
+      "want": "code [withheld] typed, again [withheld]"
+    },
+    {
+      "text": "the value Plum7Orbit2 and Plum7Orbit",
+      "values": [
+        "Plum7Orbit",
+        "Plum7Orbit2"
+      ],
+      "want": "the value [withheld] and [withheld]"
+    }
+  ]
+}

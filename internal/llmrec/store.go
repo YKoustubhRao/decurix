@@ -300,28 +300,34 @@ func (w *withholder) image(part map[string]any) (map[string]any, bool) {
 
 // text is s with the marked secrets and what withhold.Text finds withheld. Last, a backstop that fails closed: if a
 // held value still shows once JSON escapes are undone (up to three layers: a string literal holding JSON, NDJSON,
-// JSON after prose, any escaping the parser and the listed forms did not reach), the whole string is withheld and a
-// problem says so (review CP-A-3 N1).
+// JSON after prose, any escaping the parser and the listed forms did not reach), the smallest JSON string token that
+// holds it is withheld, and a problem says so; only when no token holds it is the whole string withheld (review
+// CP-A-3 N1, CP-A-4 N2).
 func (w *withholder) text(s string) string {
 	out := withhold.Text(replaceForms(s, w.secrets))
-	if len(w.raw) == 0 || !strings.Contains(out, "\\") {
+	if len(w.raw) == 0 || !strings.Contains(out, "\\") || !heldUnderEscapes(out, w.raw) {
 		return out
 	}
-	layer := out
-	for i := 0; i < 3; i++ {
-		next := unescapeJSON(layer)
-		if next == layer {
-			break
+	var b strings.Builder
+	last, cut := 0, false
+	for _, span := range jsonStringTokens(out) {
+		inner := out[span[0]+1 : span[1]-1]
+		if !heldUnderEscapes(`"`+inner+`"`, w.raw) && !heldUnderEscapes(inner, w.raw) {
+			continue
 		}
-		for _, v := range w.raw {
-			if strings.TrimSpace(v) != "" && strings.Contains(next, v) {
-				w.problems = append(w.problems, "a string was withheld whole: a held value was under JSON escapes")
-				return withhold.Marker
-			}
-		}
-		layer = next
+		b.WriteString(out[last:span[0]])
+		b.WriteString(`"` + withhold.Marker + `"`)
+		last, cut = span[1], true
 	}
-	return out
+	if cut {
+		b.WriteString(out[last:])
+		if next := b.String(); !heldUnderEscapes(next, w.raw) {
+			w.problems = append(w.problems, "a JSON string was withheld whole: a held value was under JSON escapes")
+			return next
+		}
+	}
+	w.problems = append(w.problems, "a string was withheld whole: a held value was under JSON escapes")
+	return withhold.Marker
 }
 
 // unescapeJSON is s with every JSON string escape in it undone (\", \\, \/, \b, \f, \n, \r, \t, \uXXXX in either
@@ -397,14 +403,6 @@ func hexRune(s string) (rune, int) {
 func WithholdValues(text string, values []string) string {
 	w := withholder{secrets: secretForms(values), raw: values}
 	return w.text(text)
-}
-
-// replaceForms is s with each of forms (secretForms: longest first) replaced by withhold.Marker.
-func replaceForms(s string, forms []string) string {
-	for _, f := range forms {
-		s = strings.ReplaceAll(s, f, withhold.Marker)
-	}
-	return s
 }
 
 // secretForms is every form values can take in a stored message, longest first so a secret inside a longer one is

@@ -327,3 +327,37 @@ func TestAHeldValueUnderEscapesTheParserMissedIsWithheldWhole(t *testing.T) {
 		t.Errorf("a string with no held value was changed: %q", got)
 	}
 }
+
+// The rule for finding a held value, shared with the Python side (testdata/held-values.json): 4 or more characters
+// as a substring, a shorter value only as a whole token (review CP-A-4 N2).
+func TestHeldValuesFollowTheSharedRule(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "held-values.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Cases []struct {
+			Text   string   `json:"text"`
+			Values []string `json:"values"`
+			Want   string   `json:"want"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil || len(doc.Cases) < 5 {
+		t.Fatalf("fixture: %v (%d cases)", err, len(doc.Cases))
+	}
+	for _, c := range doc.Cases {
+		if got := ReplaceHeld(c.Text, c.Values); got != c.Want {
+			t.Errorf("%q with %q = %q, want %q", c.Text, c.Values, got, c.Want)
+		}
+	}
+}
+
+// The backstop withholds the smallest JSON string token that holds the value under escapes, never the whole tool
+// output for one value (review CP-A-4 N2: a held date written 10\/2024).
+func TestTheBackstopWithholdsOnlyTheTokenThatHoldsIt(t *testing.T) {
+	in := `{"status":"ok","due":"paid 10\/2024","path":"C:\Users\mira"} and more`
+	got := WithholdValues(in, []string{"10/2024"})
+	if got != `{"status":"ok","due":"[withheld]","path":"C:\Users\mira"} and more` {
+		t.Fatalf("got %q", got)
+	}
+}
