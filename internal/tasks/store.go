@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
@@ -387,6 +388,29 @@ type Store struct {
 	mu sync.Mutex
 
 	now func() time.Time
+
+	// onEnded is told of every task that closed (OnTaskEnded), after the close is committed and the store unlocked.
+	onEnded atomic.Pointer[func(workerID, taskID string)]
+}
+
+// OnTaskEnded sets f to be called with the worker and the task each time a task closes: done, error, or ended by
+// CloseOpen (stopped, restarted, deleted, abandoned). f runs after the close is committed, outside the store's lock,
+// on the closing caller's goroutine, so it must not block; nothing it does can undo or fail the close.
+func (s *Store) OnTaskEnded(f func(workerID, taskID string)) {
+	s.onEnded.Store(&f)
+}
+
+// tellEnded calls the OnTaskEnded hook, if any, for each task.
+func (s *Store) tellEnded(workerID string, taskIDs ...string) {
+	f := s.onEnded.Load()
+	if f == nil || *f == nil {
+		return
+	}
+	for _, id := range taskIDs {
+		if id != "" {
+			(*f)(workerID, id)
+		}
+	}
 }
 
 // NewStore opens the task Store on db, creating its tables if needed.
@@ -1153,6 +1177,8 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 
 // RecordOutcomeExec is RecordOutcome, also returning the execution the outcome closed or paused ("" with the task).
 func (s *Store) RecordOutcomeExec(workerID, taskID string, outcome Outcome) (string, string, error) {
+	ended := ""
+	defer func() { s.tellEnded(workerID, ended) }() // runs after the unlock below
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1261,6 +1287,9 @@ func (s *Store) RecordOutcomeExec(workerID, taskID string, outcome Outcome) (str
 	if err := tx.Commit(); err != nil {
 		return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
 	}
+	if outcome.Kind != OutcomeQuery && outcome.Kind != OutcomeApproval {
+		ended = ref.taskID
+	}
 
 	return ref.taskID, ref.id, nil
 }
@@ -1310,6 +1339,8 @@ func setExecutionStatus(tx *sql.Tx, executionID, taskID, status string, now time
 // stopped, restarted or deleted: its agent loses what it was doing, so a
 // running task is abandoned and one waiting on a human ended waiting.
 func (s *Store) CloseOpen(workerID, why string) error {
+	var ended []string
+	defer func() { s.tellEnded(workerID, ended...) }() // runs after the unlock below
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1349,7 +1380,13 @@ func (s *Store) CloseOpen(workerID, why string) error {
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	for _, ref := range open {
+		ended = append(ended, ref.taskID)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

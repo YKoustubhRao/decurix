@@ -25,5 +25,11 @@
     "raw_hex": "7369676e20696e206173206d69726120e282207468656e20fffe20646f6e65",
     "text": "sign in as mira �� then �� done",
     "sig": "3e1ea3682642ec0900c84ce02ae160a2423ad6bd1547201733394ba1e76f216e"
+  },
+  "task_ended": {
+    "task_id": "t0123456789abcdef",
+    "ts": "1762240934",
+    "nonce": "fedcba98765432100123456789abcdef",
+    "sig": "e809d1ad9857fbfa5f6346a37cd06314056b877e5ae642548ddfdd5bd81cb56f"
   }
 }

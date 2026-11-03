@@ -361,6 +361,9 @@ func main() {
 	log.Printf("Records: %s", dbPath)
 
 	tasksStore := must(tasks.NewStore(db))
+	// A task that closes is told to its desktop's approval gate, which then lets go of that task's secret values
+	// (gate_server /task-ended); never blocking the close, retried with the next delivery to that gate.
+	tasksStore.OnTaskEnded(desktops.GateTaskEnded)
 	lanAccess := lanaccess.NewStore()
 	pairedDevices := must(devices.NewStore(db))
 	lanAccess.SetDevices(pairedDevices)

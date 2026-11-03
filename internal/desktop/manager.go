@@ -41,6 +41,9 @@ type Manager struct {
 	// internal/winhost); set by main before any desktop is created.
 	HostGUISecret []byte
 
+	// taskEnded is the task-ended notices each desktop's gate has not taken yet (gateended.go).
+	taskEnded pendingTaskEnded
+
 	// listMu guards the List result cache: one Docker round trip answers every
 	// List call inside listCacheTTL, and concurrent callers share the one in
 	// flight. Measured: 20 dashboards polling /api/desktops at once made the
@@ -1165,6 +1168,9 @@ func (m *Manager) Delete(
 	m.viewedMu.Lock()
 	delete(m.viewed, sanitizeName(id))
 	m.viewedMu.Unlock()
+
+	// Its gate went with it: nothing is left to tell that its tasks ended.
+	m.forgetTaskEnded(sanitizedID)
 
 	// A desktop made again under this name starts at the size it is given, not the old one's (B-25).
 	m.resourceMu.Lock()

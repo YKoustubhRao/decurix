@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/docker/docker/client"
 )
 
 // A person's reply to a question or an approval reaches the worker's agent as a request like any other, and the agent
@@ -62,6 +64,7 @@ func (m *Manager) SendGateReply(ctx context.Context, id, taskID, text, asked, ki
 	if key == "" {
 		return fmt.Errorf("no secret to sign with")
 	}
+	m.flushTaskEnded(ctx, sanitizeName(id)) // what ended before this reply is told first; never fails the reply
 	desktopID := sanitizeName(id)
 	name := "desktop_" + desktopID
 	inspect, err := m.client.ContainerInspect(ctx, name)
@@ -200,11 +203,21 @@ func (m *Manager) HasGate(ctx context.Context, id string) bool {
 	return inspect.Config.Labels[GateLabel] != "0"
 }
 
-// postToGate posts one signed body to desktop id's gate at path: body makes it from the key, the time and a fresh
-// one-use nonce. A stopped desktop is ErrNotRunning, and a paused one is woken, as SendRequest does; a gate that
-// does not answer is ErrGateNotTold and ErrAgentUnreachable (the caller may wait for a desktop just started), and
-// one that answers anything but 2xx is ErrGateNotTold.
+// postToGate posts one signed body to desktop id's gate at path, after the task-ended notices that gate has not
+// taken yet (those are retried here and never fail this delivery). See postToGateNow for the errors.
 func (m *Manager) postToGate(ctx context.Context, id, path string, body func(key, ts, nonce string) map[string]any) error {
+	m.flushTaskEnded(ctx, sanitizeName(id))
+	return m.postToGateNow(ctx, id, path, body)
+}
+
+// errDesktopGone is a desktop Docker says it does not have (not a daemon that did not answer): its gate is gone too.
+var errDesktopGone = errors.New("no such desktop")
+
+// postToGateNow posts one signed body to desktop id's gate at path: body makes it from the key, the time and a fresh
+// one-use nonce. A desktop Docker does not have is ErrNotFound (and errDesktopGone), a stopped one ErrNotRunning, and
+// a paused one is woken, as SendRequest does; a gate that does not answer is ErrGateNotTold and ErrAgentUnreachable
+// (the caller may wait for a desktop just started), and one that answers anything but 2xx is ErrGateNotTold.
+func (m *Manager) postToGateNow(ctx context.Context, id, path string, body func(key, ts, nonce string) map[string]any) error {
 	key := m.GateKey(id)
 	if key == "" {
 		return fmt.Errorf("no secret to sign with")
@@ -213,6 +226,9 @@ func (m *Manager) postToGate(ctx context.Context, id, path string, body func(key
 	name := "desktop_" + desktopID
 	inspect, err := m.client.ContainerInspect(ctx, name)
 	if err != nil {
+		if client.IsErrNotFound(err) {
+			return fmt.Errorf("find desktop %s: %w: %w", desktopID, ErrNotFound, errDesktopGone)
+		}
 		return fmt.Errorf("find desktop %s: %w", desktopID, ErrNotFound)
 	}
 	if inspect.State == nil || !inspect.State.Running {
