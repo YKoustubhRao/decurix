@@ -1,10 +1,13 @@
 package engine
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -382,4 +385,38 @@ func TestEvidenceContentCannotCloseItsBlock(t *testing.T) {
 			t.Errorf("%d opening tags in %q", n, block)
 		}
 	}
+}
+
+// A picture that declares more than MaxPixels is never decoded or handed to
+// a model; the brain is told why instead.
+func TestAPictureWithTooManyPixelsIsNotDecoded(t *testing.T) {
+	// Only a header: 60000x60000 pixels declared, with a valid checksum.
+	var ihdr bytes.Buffer
+	ihdr.WriteString("IHDR")
+	binary.Write(&ihdr, binary.BigEndian, [2]uint32{60000, 60000})
+	ihdr.WriteString("\x08\x02\x00\x00\x00")
+	var png bytes.Buffer
+	png.WriteString("\x89PNG\r\n\x1a\n\x00\x00\x00\x0d")
+	png.Write(ihdr.Bytes())
+	binary.Write(&png, binary.BigEndian, crc32.ChecksumIEEE(ihdr.Bytes()))
+	if !tooManyPixels(png.Bytes()) || tooManyPixels(pngBytes) {
+		t.Fatal("tooManyPixels")
+	}
+	fo := &fakeOllama{}
+	srv := httptest.NewServer(fo)
+	defer srv.Close()
+	cfg := config.Default()
+	cfg.Mode, cfg.OllamaURL = config.ModeLocal, srv.URL
+	e := newEngine(t, cfg, lockWith(ollamaPick(catalog.RoleBrain, "tiny", "tiny:1b"), ollamaPick(catalog.RoleVision, "eye", "eye:1b")))
+	res, err := e.Chat(context.Background(), Request{Messages: []InMessage{{Role: "user", Parts: []Part{{Kind: "text", Text: "what is this?"}, {Kind: "image", Data: png.Bytes()}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fo.reqs) != 1 {
+		t.Fatalf("%d model calls; the picture went to the vision model", len(fo.reqs))
+	}
+	if msgs := fmt.Sprint(fo.reqs[0]["messages"]); !strings.Contains(msgs, "million pixels") || strings.Contains(msgs, "images") {
+		t.Fatalf("the brain was not told, or got the picture: %s", msgs)
+	}
+	_ = res
 }

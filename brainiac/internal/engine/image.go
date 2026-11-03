@@ -2,12 +2,28 @@ package engine
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 	_ "image/gif" // decoders
 	"image/jpeg"
 	"image/png"
 )
+
+// MaxPixels is the largest picture Brainiac decodes or hands to a model: a
+// small file can declare a huge size and take gigabytes to decode.
+const MaxPixels = 50_000_000
+
+// errTooManyPixels is a picture larger than MaxPixels.
+var errTooManyPixels = fmt.Errorf("the picture has more than %d million pixels, which is not decoded here", MaxPixels/1_000_000)
+
+// tooManyPixels reports whether a picture's header declares more than
+// MaxPixels. A picture whose header Go cannot read is not judged here; the
+// worker's own decoder has the same limit.
+func tooManyPixels(data []byte) bool {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	return err == nil && int64(cfg.Width)*int64(cfg.Height) > MaxPixels
+}
 
 // shrink returns a picture no larger than maxSide on its longer side, as PNG
 // (or JPEG for a JPEG), using a box filter so text stays legible. Pictures it
@@ -19,7 +35,7 @@ func shrink(data []byte, maxSide int) []byte {
 		return data
 	}
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
-	if err != nil || (cfg.Width <= maxSide && cfg.Height <= maxSide) {
+	if err != nil || (cfg.Width <= maxSide && cfg.Height <= maxSide) || int64(cfg.Width)*int64(cfg.Height) > MaxPixels {
 		return data
 	}
 	src, _, err := image.Decode(bytes.NewReader(data))

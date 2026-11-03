@@ -240,7 +240,9 @@ func New(opt Options) (*Engine, error) {
 		// its default models there on first use; its temp files stay in the store.
 		tmp := opt.Store.Path("tmp")
 		_ = os.MkdirAll(tmp, 0o700)
-		e.wk = worker.New(opt.Lock.Python, opt.Lock.WorkerScript, []string{"OMP_NUM_THREADS=" + fmt.Sprint(threads), "TMPDIR=" + tmp})
+		e.wk = worker.New(opt.Lock.Python, opt.Lock.WorkerScript, []string{"OMP_NUM_THREADS=" + fmt.Sprint(threads), "TMPDIR=" + tmp,
+			// OpenCV refuses to decode a picture larger than Brainiac would.
+			"OPENCV_IO_MAX_IMAGE_PIXELS=" + fmt.Sprint(MaxPixels)})
 		e.wk.Logf = func(f string, a ...any) { lg.Printf("worker: "+f, a...) }
 		if opt.Config.Sandbox != config.SandboxOff {
 			pol := isolate.ForProgram(opt.Lock.Python, []string{filepath.Dir(opt.Lock.WorkerScript), opt.Store.Path("models")}, []string{opt.Store.Venv(), tmp})
@@ -614,12 +616,14 @@ func (e *Engine) runAtoms(ctx context.Context, req Request, atoms []Atom, rec *t
 		var ev string
 		var ta trace.Atom
 		var err error
-		switch a.Op {
-		case "ocr":
+		switch {
+		case part.Kind == "image" && tooManyPixels(part.Data):
+			ta, err = trace.Atom{ID: a.ID, Op: a.Op, Error: errTooManyPixels.Error()}, errTooManyPixels
+		case a.Op == "ocr":
 			ev, ta, err = e.ocrAtom(ctx, a.ID, part.Data)
-		case "asr":
+		case a.Op == "asr":
 			ev, ta, err = e.asrAtom(ctx, a.ID, part)
-		case "describe":
+		case a.Op == "describe":
 			ev, ta, err = e.describeAtom(ctx, a.ID, part.Data)
 		}
 		rec.Atoms = append(rec.Atoms, ta)
@@ -795,7 +799,8 @@ func (e *Engine) brainMessages(in []InMessage, evidence map[string][]string, web
 			case "image", "audio":
 				id := ids[[2]int{mi, pi}]
 				evs := evidence[id]
-				if p.Kind == "image" && bc.sees {
+				big := p.Kind == "image" && tooManyPixels(p.Data)
+				if p.Kind == "image" && bc.sees && !big {
 					data := p.Data
 					if bc.remote == nil {
 						data = shrink(data, e.imageMaxSide())
@@ -806,8 +811,11 @@ func (e *Engine) brainMessages(in []InMessage, evidence map[string][]string, web
 					}
 					imgs = append(imgs, backend.Image{Data: data, Mime: backend.ImageMime(data), Label: label})
 				}
-				if len(evs) == 0 && !(p.Kind == "image" && bc.sees) {
+				if len(evs) == 0 && !(p.Kind == "image" && bc.sees && !big) {
 					why := "no model here can read it"
+					if big {
+						why = errTooManyPixels.Error()
+					}
 					evs = []string{missingEvidence(id, p.Kind, why)}
 				}
 				for _, ev := range evs {
@@ -873,6 +881,10 @@ func (e *Engine) OCR(ctx context.Context, img []byte) (worker.OCRResult, *trace.
 	if u == nil || e.wk == nil {
 		rec.Error = ErrNoOCR.Error()
 		return worker.OCRResult{}, rec, ErrNoOCR
+	}
+	if tooManyPixels(img) {
+		rec.Error = errTooManyPixels.Error()
+		return worker.OCRResult{}, rec, errTooManyPixels
 	}
 	r, cached, loadMs, ms, err := e.ocr(ctx, u, img)
 	ta := trace.Atom{ID: "image-1", Op: "ocr", Model: u.model, Runtime: u.runtime, Cached: cached, LoadMs: loadMs, Ms: ms}
