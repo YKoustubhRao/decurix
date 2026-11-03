@@ -99,5 +99,9 @@ RUN echo '#!/bin/sh' > /opt/tools/env.sh && \
 # whose sentinel differs from this image's is emptied and filled again; one that matches is left alone.
 FROM alpine:3.24
 COPY --from=builder /opt/tools /opt/tools
-CMD ["sh", "-c", "if ! cmp -s /opt/tools/.decurix-tools-ready /target/.decurix-tools-ready; then find /target -mindepth 1 -maxdepth 1 -exec rm -rf {} + && cp -a /opt/tools/. /target/ && sync; fi"]
+# The ready marker is taken away first and written back last, after everything else is copied and synced, so a copy
+# that fails partway (a full disk, a kill) leaves no marker and the next run fills the volume again - never a matching
+# marker over half a tree (review RW1-D-02). A refresh (a marker that differs) waits while desktops are running
+# (DECURIX_DESKTOPS_RUNNING=1, set by the control plane): their /opt/tools would vanish mid-task.
+CMD ["sh", "-c", "set -e; R=.decurix-tools-ready; if cmp -s /opt/tools/$R /target/$R; then exit 0; fi; if [ -e /target/$R ] && [ \"$DECURIX_DESKTOPS_RUNNING\" = 1 ]; then echo 'tools update waits for idle desktops'; exit 0; fi; rm -f /target/$R; sync; find /target -mindepth 1 -maxdepth 1 -exec rm -rf {} +; for f in /opt/tools/* /opt/tools/.[!.]*; do [ -e \"$f\" ] || continue; [ \"${f##*/}\" = $R ] && continue; cp -a \"$f\" /target/; done; sync; cp /opt/tools/$R /target/$R.new; sync; mv /target/$R.new /target/$R; sync"]
 

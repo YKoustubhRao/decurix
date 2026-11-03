@@ -6,6 +6,7 @@ import (
 	"log"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/volume"
 )
 
@@ -39,6 +40,18 @@ func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
 	return nil
 }
 
+// desktopsRunning is "1" when any desktop is running (or Docker cannot say), "0" when none is.
+func (m *Manager) desktopsRunning(ctx context.Context) string {
+	args := filters.NewArgs()
+	args.Add("label", "desktop-manager=true")
+	args.Add("status", "running")
+	list, err := m.client.ContainerList(ctx, container.ListOptions{Filters: args})
+	if err != nil || len(list) > 0 {
+		return "1"
+	}
+	return "0"
+}
+
 // PopulateToolsVolume populates the decurix-tools volume using the tools image.
 func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
 
@@ -49,8 +62,10 @@ func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
 		ctx,
 		&container.Config{
 			// No Cmd: the tools image's own CMD is the copy rule (docker/tools.Dockerfile), so it lives in one place
-			// and a rebuilt image with a new sentinel replaces what the volume holds (B-24).
+			// and a rebuilt image with a new sentinel replaces what the volume holds (B-24). It is told whether
+			// desktops are running: a refresh then waits, since their /opt/tools would vanish mid-task (RW1-D-02).
 			Image: ToolsImage,
+			Env:   []string{"DECURIX_DESKTOPS_RUNNING=" + m.desktopsRunning(ctx)},
 		},
 		&container.HostConfig{
 			Binds: []string{
