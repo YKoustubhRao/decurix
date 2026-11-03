@@ -21,7 +21,9 @@ import (
 
 // The modes.
 const (
-	// ModeLocal: every model runs on this machine; nothing leaves it.
+	// ModeLocal: every model runs on this machine. Nothing leaves it except a
+	// web search query the client itself wrote and sent ("web": true with
+	// "web_query"), and then only when web is not "off".
 	ModeLocal = "local"
 	// ModeHybrid: pictures and audio are read here; the remote brain gets
 	// text evidence (and the pictures only if ShareMedia), and answers.
@@ -69,10 +71,14 @@ type Config struct {
 	// ImageMaxSide shrinks pictures shown to a local vision model; on a CPU
 	// every pixel is prompt to read. 0 means 1280; -1 means never shrink.
 	ImageMaxSide int `json:"image_max_side,omitempty"`
-	// Web decides when answers use live web pages: "auto" (when a request
-	// asks about the world now, or the client asks), "on-request" (only when
-	// the client sends "web": true) or "off". Only a scrubbed search query
-	// leaves the machine - never the conversation.
+	// Web decides when an answer may read live web pages. The search query is
+	// always one the client wrote and sent as "web_query"; Brainiac never
+	// builds a query from the conversation, so with no web_query nothing is
+	// looked up. "on-request" (the default): only when the request also sends
+	// "web": true. "auto": a request that sends a web_query reads the web
+	// without "web": true; refused in local mode. "off": never. What leaves
+	// the machine is that query, scrubbed of identity numbers and secrets, and
+	// the requests that fetch the result pages.
 	Web string `json:"web,omitempty"`
 	// SearxURL is a SearXNG instance to search with first.
 	SearxURL string `json:"searx_url,omitempty"`
@@ -154,7 +160,7 @@ func Load(home string) (Config, error) {
 		}
 	}
 	if c.Web == "" {
-		c.Web = WebAuto
+		c.Web = WebOnRequest
 	}
 	if c.UpdateEvery == "" {
 		c.UpdateEvery = "24h"
@@ -246,6 +252,9 @@ func (c Config) Validate() error {
 	case "", WebAuto, WebOnRequest, WebOff:
 	default:
 		return fmt.Errorf("web %q is not auto, on-request or off", c.Web)
+	}
+	if c.Mode == ModeLocal && c.Web == WebAuto {
+		return fmt.Errorf("web auto is refused in local mode, which keeps everything on this machine: use on-request (a request sends \"web\": true and its own \"web_query\") or off")
 	}
 	if (c.Mode == ModeHybrid || c.Mode == ModeRemote) && c.Remote == nil {
 		return fmt.Errorf("mode %s needs a remote brain (BRAINIAC_REMOTE=decurix:azure, azure or openai)", c.Mode)

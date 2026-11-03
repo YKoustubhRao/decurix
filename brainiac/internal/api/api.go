@@ -164,6 +164,10 @@ type chatRequest struct {
 	// Web is Brainiac's own field: true reads the web for this answer, false
 	// never does; absent follows the configured policy.
 	Web *bool `json:"web"`
+	// WebQuery is Brainiac's own field: the search query, in the client's
+	// words. It is the only text a lookup sends out; with none, nothing is
+	// looked up.
+	WebQuery string `json:"web_query"`
 }
 
 type contentPart struct {
@@ -311,7 +315,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	req := engine.Request{Model: cr.Model, Domain: cr.Domain, Web: cr.Web, Messages: msgs, Temperature: cr.Temperature, MaxTokens: cr.MaxTokens}
+	req := engine.Request{Model: cr.Model, Domain: cr.Domain, Web: cr.Web, WebQuery: cr.WebQuery, Messages: msgs, Temperature: cr.Temperature, MaxTokens: cr.MaxTokens}
 	if cr.MaxCompletionTokens > 0 {
 		req.MaxTokens = cr.MaxCompletionTokens
 	}

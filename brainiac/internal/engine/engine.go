@@ -78,9 +78,12 @@ type Request struct {
 	// Domain names the field (math, law...) when the client knows it; empty
 	// lets the router decide.
 	Domain string
-	// Web forces reading the web on (true) or off (false); nil follows the
-	// configured policy.
-	Web         *bool
+	// Web asks to read the web (true) or forbids it (false); nil follows the
+	// configured policy. A lookup also needs WebQuery.
+	Web *bool
+	// WebQuery is the search query the client wrote. It is the only text a
+	// web lookup sends out: the conversation itself never becomes a query.
+	WebQuery    string
 	Messages    []InMessage
 	MaxTokens   int
 	Temperature *float64
@@ -392,9 +395,11 @@ func (e *Engine) Chat(ctx context.Context, req Request) (*Response, error) {
 		return fail(err)
 	}
 	var webEv []string
-	if ok, why := e.wantsWeb(req); ok {
+	if ok, why := e.wantsWeb(req, bc.mode); ok {
 		rec.Notes = append(rec.Notes, "read the web: "+why)
 		webEv = e.webEvidence(ctx, req, rec)
+	} else if why != "" {
+		rec.Notes = append(rec.Notes, why)
 	}
 
 	msgs, sources := e.brainMessages(req.Messages, evidence, webEv, bc)

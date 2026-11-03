@@ -9,7 +9,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 )
 
 const article = `<!doctype html><html><head><title>Qwen3.9 released &amp; benchmarks</title>
@@ -126,22 +125,14 @@ func TestScrubKeepsTheQuestionAndDropsIdentities(t *testing.T) {
 	}
 }
 
-func TestNeedsFresh(t *testing.T) {
-	now := time.Date(2026, 10, 24, 0, 0, 0, 0, time.UTC)
-	yes := []string{"What is the latest version of Go?", "gold price today", "Who is the current CEO of Infosys?",
-		"Any news on the GST council meeting?", "What changed in the 2026 budget?", "new GST rules notification for e-invoicing",
-		"what is the exchange rate of the dollar now"}
-	no := []string{"Explain photosynthesis", "Solve 3x + 7 = 22", "What is the current flowing through a 10 ohm resistor at 5 V?",
-		"Write a poem about rain", "What did the 1991 reforms change?", "Translate to Hindi: thank you"}
-	for _, s := range yes {
-		if ok, _ := NeedsFresh(s, now); !ok {
-			t.Errorf("missed: %q", s)
-		}
+func TestQueryFromKeepsOnlyTheClientsQuery(t *testing.T) {
+	q, _ := QueryFrom("  repo rate   October 2026 ")
+	if q != "repo rate October 2026" {
+		t.Errorf("query %q", q)
 	}
-	for _, s := range no {
-		if ok, why := NeedsFresh(s, now); ok {
-			t.Errorf("flagged %q (%s)", s, why)
-		}
+	long := strings.Repeat("word ", 80)
+	if q, _ := QueryFrom(long); len(q) > 200 {
+		t.Errorf("query not cut to 200: %d", len(q))
 	}
 }
 

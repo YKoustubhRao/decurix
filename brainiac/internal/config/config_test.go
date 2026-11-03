@@ -45,3 +45,21 @@ func TestHybridNeedsARemote(t *testing.T) {
 		t.Fatal("hybrid without a remote was accepted")
 	}
 }
+
+func TestWebDefaultsToOnRequestAndLocalRefusesAuto(t *testing.T) {
+	c, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Web != WebOnRequest {
+		t.Fatalf("default web %q", c.Web)
+	}
+	c.Web = WebAuto
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "local") {
+		t.Fatalf("local mode with web auto was accepted: %v", err)
+	}
+	c.Mode, c.Remote = ModeHybrid, &Remote{Kind: RemoteOpenAI, URL: "http://127.0.0.1:1"}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("hybrid with web auto: %v", err)
+	}
+}
