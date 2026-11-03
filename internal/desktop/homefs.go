@@ -216,9 +216,12 @@ func (m *Manager) readHomeTar(ctx context.Context, target, clean string, limit i
 		defer done()
 		defer attach.Close()
 		out := &limitWriter{w: pw, left: limit}
-		stderr := &cappedBuffer{limit: 4 << 10}
+		// tar's warnings are kept to their first 4 KiB and the rest dropped without an error: only the stdout limit
+		// (limitWriter) may stop the copy. A full stderr sink used to end the whole stream there, and a cut archive
+		// was then taken as whole (review RW1-C-01).
+		stderr := &headBuffer{limit: 4 << 10}
 		_, err := stdcopy.StdCopy(out, stderr, attach.Reader)
-		if errors.Is(err, io.EOF) || errors.Is(err, errCapped) {
+		if errors.Is(err, io.EOF) {
 			err = nil
 		}
 		if err == nil && out.over {

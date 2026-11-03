@@ -134,6 +134,20 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 	return b.Buffer.Write(p)
 }
 
+// headBuffer keeps the first limit bytes written to it and drops the rest, never failing a write: a sink for
+// messages, whose overflow must not stop the stream it rides on.
+type headBuffer struct {
+	bytes.Buffer
+	limit int
+}
+
+func (b *headBuffer) Write(p []byte) (int, error) {
+	if room := b.limit - b.Len(); room > 0 {
+		b.Buffer.Write(p[:min(room, len(p))])
+	}
+	return len(p), nil
+}
+
 // shortID is a container id short enough for a log line.
 func shortID(id string) string {
 	if len(id) > 12 {
