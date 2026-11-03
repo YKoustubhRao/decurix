@@ -4,6 +4,7 @@ import re
 import time
 import uuid
 from contextlib import contextmanager
+from pathlib import Path
 
 from decurix_agent import config, filelock
 from decurix_agent.computer import elements as el
@@ -810,17 +811,49 @@ def _taught_text():
 
 
 def site_known(host):
-    """Whether this host is named by the current request or by what a person taught or recorded on this desktop."""
+    """
+    Whether this host is named by the request (or, on a desktop with no gate, by what a person taught or recorded on
+    it). On a desktop with an approval gate the gate answers, from its own copy of the request the control plane signed
+    (gate_server's /request): the task file in /tmp, the skills and the recordings are all the worker's user's to
+    write, so a command the worker ran could make any site "named" (review 2026-11-04). The gate unreachable, or with
+    no request of its own, knows no site: the password is asked about. Fails closed.
+    """
 
     host = (host or "").lower()
     if not host:
         return True
+    if IN_GATE:
+        return _names_host(gate_request_text().lower(), host)
+    if remote():
+        try:
+            return bool(gate_call("site_known", host=host).get("known"))
+        except (OSError, ValueError):
+            return False
     try:
         from decurix_agent import task_context
         request = (task_context.current_request() or "").lower()
     except Exception:  # noqa: BLE001 - no request to read is no request naming it
         request = ""
     return _names_host(request, host) or _names_host(_taught_text(), host)
+
+
+# The gate's own copy of the latest request the control plane sent this desktop, signed (gate_server.keep_request),
+# in the gate's own directory (DECURIX_DIR is the gate's, mode 700, in the gate process).
+GATE_REQUEST_FILE = "gate-request.json"
+
+
+def gate_request_path():
+    return Path(config.DECURIX_DIR) / GATE_REQUEST_FILE
+
+
+def gate_request_text():
+    """The text of the request the gate keeps (only ever read in the gate), or "" when it has none."""
+
+    try:
+        data = json.loads(gate_request_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    return str(data.get("text") or "") if isinstance(data, dict) else ""
 
 
 def _names_host(text, host):

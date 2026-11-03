@@ -87,6 +87,39 @@ def sign_question(key, request_id, question):
     return _mac(key, ("question", request_id, _sha(_norm(question))))
 
 
+def sign_request(key, task_id, ts, nonce, text):
+    """The signature the control plane puts on a request it sends the gate (/request): its own label ("request"), so a
+    signed request can never stand as a signed reply, nor a reply as a request."""
+
+    return _mac(key, ("request", task_id, ts, nonce, _sha(text)))
+
+
+def verify_request(key, data, now=None):
+    """Whether `data` (a parsed /request body) is a request the control plane signed, fresh and not seen before:
+    a reason it is refused, or ""."""
+
+    if not key:
+        return "this gate has no key"
+    try:
+        task_id, ts, nonce, text, sig = (str(data["task_id"]), str(data["ts"]), str(data["nonce"]), str(data["text"]),
+                                         str(data["sig"]))
+    except (KeyError, TypeError):
+        return "incomplete"
+    if not hmac.compare_digest(sign_request(key, task_id, ts, nonce, text).encode("utf-8"), sig.encode("utf-8")):
+        return "bad signature"
+    return _fresh(ts, nonce, now)
+
+
+def keep_request(task_id, text):
+    """Keep the latest signed request as the gate's own copy (approval.gate_request_text): what a site the request
+    names is read from, never the worker's task file."""
+
+    path = approval.gate_request_path()
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({"task_id": task_id, "text": text, "at": time.time()}), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def verify(key, data, now=None):
     """Whether `data` (a parsed /reply body) is a reply the control plane signed, fresh and not seen before. Returns
     a reason it is refused, or "" when it is genuine (and its nonce is used up)."""
@@ -99,10 +132,16 @@ def verify(key, data, now=None):
         request_id = str(data.get("request_id", ""))
     except (KeyError, TypeError):
         return "incomplete"
-    now = time.time() if now is None else now
     if not hmac.compare_digest(sign(key, task_id, ts, nonce, text, asked, kind, request_id).encode("utf-8"),
                                sig.encode("utf-8")):
         return "bad signature"
+    return _fresh(ts, nonce, now)
+
+
+def _fresh(ts, nonce, now=None):
+    """"" when a signed body's time is within SKEW_SECONDS and its nonce unused (now used up), else why not."""
+
+    now = time.time() if now is None else now
     try:
         sent = float(ts)
     except ValueError:
@@ -211,6 +250,9 @@ def handle(call):
         # worker's text still reaches the person, as the worker's note.
         reason = approval.reason_from_material(material) or GATE_REASON
         return decision_json(approval._decide_local(fingerprint, description, reason, element, about))
+    if op == "site_known":
+        # From the gate's own copy of the signed request only (approval.site_known in the gate).
+        return {"known": approval.site_known(str(call.get("host") or ""))}
     if op == "pending":
         return {"pending": with_question(approval._local_pending())}
     if op == "has_grant":
@@ -296,7 +338,7 @@ class ReplyHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         # A web page cannot sign; a request that names an origin is not the control plane's.
-        if self.path != "/reply" or self.headers.get("Origin") is not None:
+        if self.path not in ("/reply", "/request") or self.headers.get("Origin") is not None:
             return self._send(404)
         try:
             length = int(self.headers.get("Content-Length") or "0")
@@ -305,7 +347,19 @@ class ReplyHandler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length).decode("utf-8"))
         except (ValueError, OSError):
             return self._send(400)
-        why = verify(self.key, data if isinstance(data, dict) else {})
+        data = data if isinstance(data, dict) else {}
+        if self.path == "/request":
+            why = verify_request(self.key, data)
+            if why:
+                log(f"a request was refused: {why}")
+                return self._send(403)
+            try:
+                keep_request(str(data["task_id"]), str(data["text"]))
+            except OSError as exc:
+                log(f"could not keep the request: {exc}")
+                return self._send(500)
+            return self._send(204)
+        why = verify(self.key, data)
         if why:
             log(f"a reply was refused: {why}")
             return self._send(403)
