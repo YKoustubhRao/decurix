@@ -19,6 +19,7 @@ import (
 	"github.com/docker/docker/client"
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
 // gateDesktop is a stand-in desktop "box": a Docker daemon that reports it in state (stopped, paused or running; a
@@ -290,5 +291,50 @@ func TestADesktopWithoutAGateIsToldToBeRecreated(t *testing.T) {
 	sendRequestError(rec, fmt.Errorf("x: %w: %w", desktop.ErrGateNotTold, desktop.ErrGateMaybeMissing))
 	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "Recreate this desktop") {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+// A reply's withheld values reach the gate, acknowledged, before the reply reaches the agent (H-PY-10), and a reply
+// gives the gate no request copy; every request and reply names its execution (H-PY-7).
+func TestAReplysValuesReachTheGateFirst(t *testing.T) {
+	s := chatServer(t)
+	g := newGateDesktop(t, s, "running")
+	task := askedQuestion(t, s, tasks.OutcomeQuery, "I need the password for mira.k to sign in. What is it?")
+	if rec := sendAs(t, s, url.Values{"id": {"box"}, "content": {"Fern42Kite"}}, false, ""); rec.Code != http.StatusOK {
+		t.Fatalf("reply: %d %s", rec.Code, rec.Body)
+	}
+	events := g.events()
+	secretsAt, agentAt := -1, -1
+	for i, e := range events {
+		switch e {
+		case "gate /secrets":
+			secretsAt = i
+		case "agent":
+			if agentAt < 0 {
+				agentAt = i
+			}
+		case "gate /request":
+			t.Fatalf("a reply gave the gate a request copy: %v", events)
+		}
+	}
+	if secretsAt < 0 || agentAt < 0 || secretsAt > agentAt {
+		t.Fatalf("events = %v: the values must reach the gate before the reply reaches the agent", events)
+	}
+
+	// A gate that refuses the values stops the reply.
+	if _, err := s.Tasks.RecordOutcome("box", task, tasks.Outcome{Kind: tasks.OutcomeQuery, Reply: "And the PIN for the card?"}); err != nil {
+		t.Fatal(err)
+	}
+	g.mu.Lock()
+	g.gateStatus = http.StatusInternalServerError
+	g.log = nil
+	g.mu.Unlock()
+	if rec := sendAs(t, s, url.Values{"id": {"box"}, "content": {"4821"}}, false, ""); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a reply whose values the gate refused: %d %s", rec.Code, rec.Body)
+	}
+	for _, e := range g.events() {
+		if e == "agent" {
+			t.Fatalf("the reply reached the agent: %v", g.events())
+		}
 	}
 }

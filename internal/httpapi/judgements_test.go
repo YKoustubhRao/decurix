@@ -225,4 +225,8 @@ func TestAReplyTellsTheDesktopItsJudgement(t *testing.T) {
 	if len(got) != 1 || got[0]["judgement_id"] != j.ID || got[0]["date_order"] != "month" {
 		t.Fatalf("the desktop got %v, want judgement %s", got, j.ID)
 	}
+	// It names the execution it belongs to (H-PY-7): the attempt waiting on this answer.
+	if got[0]["execution_id"] != j.ExecutionID || j.ExecutionID == "" {
+		t.Fatalf("the reply names execution %v, want %s", got[0]["execution_id"], j.ExecutionID)
+	}
 }

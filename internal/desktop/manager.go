@@ -1332,14 +1332,19 @@ func envValue(env []string, name string) string {
 // the records keep it withheld (the person's mark, or what the control plane withheld, C14): the agent is told
 // ("secret": true), so it too keeps it out of its logs and records (F-2). JudgementID is the judgement a person's
 // reply is, for what the desktop keeps from it to cite (R8). DateOrder is the organisation's date order, "day" or
-// "month" ("" unknown).
+// "month" ("" unknown). ExecutionID is the execution (attempt) the message belongs to: the desktop holds that run's
+// evidence until the control plane's EXPORTED names it (H-PY-7).
 type RequestBody struct {
 	Content     string
 	TaskID      string
 	Secret      bool
 	JudgementID string
 	DateOrder   string
+	ExecutionID string
 }
+
+// executionIDShape is an execution id the desktop accepts (H-PY-7); anything else is not sent.
+var executionIDShape = regexp.MustCompile(`^[A-Za-z0-9_-]{4,64}$`)
 
 // SendRequest posts a JSON request to a running desktop's internal request endpoint (RequestBody says what it
 // carries; fields left empty are not sent).
@@ -1395,6 +1400,10 @@ func (m *Manager) SendRequest(ctx context.Context, id string, rb RequestBody) er
 
 	if rb.DateOrder == "day" || rb.DateOrder == "month" {
 		payload["date_order"] = rb.DateOrder
+	}
+
+	if executionIDShape.MatchString(rb.ExecutionID) {
+		payload["execution_id"] = rb.ExecutionID
 	}
 
 	body, err := json.Marshal(payload)

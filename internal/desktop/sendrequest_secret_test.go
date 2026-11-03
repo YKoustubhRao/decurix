@@ -87,3 +87,27 @@ func TestARequestCarriesItsJudgementAndTheDateOrder(t *testing.T) {
 		t.Errorf("an unknown date order was sent: %v", agent.bodies[1])
 	}
 }
+
+// The execution a message belongs to reaches the agent (H-PY-7), and only in the shape the desktop accepts.
+func TestARequestCarriesItsExecution(t *testing.T) {
+	fake := &fakeAPI{}
+	fake.inspect = func(name string) (container.InspectResponse, error) {
+		return container.InspectResponse{
+			ContainerJSONBase: &container.ContainerJSONBase{ID: "cid-box", State: &container.State{Running: true}},
+			NetworkSettings: &container.NetworkSettings{Networks: map[string]*network.EndpointSettings{
+				NetworkName: {IPAddress: "10.0.0.5"},
+			}},
+		}, nil
+	}
+	agent := &agentStub{}
+	m := newManagerWith(fake)
+	m.httpClient = &http.Client{Transport: agent}
+	_ = m.SendRequest(context.Background(), "box", RequestBody{Content: "a", TaskID: "t1", ExecutionID: "x0123456789abcdef"})
+	_ = m.SendRequest(context.Background(), "box", RequestBody{Content: "b", TaskID: "t1", ExecutionID: "x/../etc"})
+	if agent.bodies[0]["execution_id"] != "x0123456789abcdef" {
+		t.Errorf("the execution was not sent: %v", agent.bodies[0])
+	}
+	if _, ok := agent.bodies[1]["execution_id"]; ok {
+		t.Errorf("an execution id of another shape was sent: %v", agent.bodies[1])
+	}
+}

@@ -437,7 +437,7 @@ func (s *Server) deliverRequest(ctx context.Context, desktopID, content string, 
 	// A message the records keep withheld says so to the agent too (F-2, C14): the control plane withholds it in its
 	// own stores, and the agent must not keep it as typed either.
 	body := desktop.RequestBody{Content: content, TaskID: route.TaskID, Secret: sentAsSecret(ctx),
-		JudgementID: route.JudgementID, DateOrder: s.DateOrder}
+		JudgementID: route.JudgementID, DateOrder: s.DateOrder, ExecutionID: route.ExecutionID}
 
 	// A desktop with an approval gate is told what it must know first, every try, once the desktop answers: if the
 	// gate cannot be told, nothing is sent (review CP-A-2 B1). A desktop made before the gate gets its request as
