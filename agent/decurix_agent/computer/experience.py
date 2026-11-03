@@ -53,6 +53,15 @@ except ValueError:
     TRUST_AFTER = 3
 
 APPRENTICE, TRUSTED = "apprentice", "trusted"
+
+# The kinds of check that are independent of the worker's own say-so (W0.5 of the plan of 2026-11-03): the run's files
+# read back by code ("code"), every record it declared read back from the application matching ("ledger"), or a
+# person ("person"). Only a run checked by one of these counts towards trust. The screen ("screen": every step's
+# expected result appeared) and the model looking at it ("model") are kept on the verdict, for the record, and never
+# advance the streak: a replay can show each step's result and still have entered the wrong thing, and the model that
+# judges is the same kind of thing that worked. A verdict written before `basis` existed has none, so every skill
+# earns its trust again under this rule (PLAN-P2 D11): its old streak was counted by the rule this replaces.
+INDEPENDENT = frozenset({"code", "ledger", "person"})
 ALIAS_LIMIT = 5
 PROMOTE_AFTER = 2
 FRAGILE_AT = 3
@@ -142,20 +151,22 @@ def commit(skill, ladder, outcome, success, asked=None):
     return learned
 
 
-def note_verdict(skill, mode, ok, checked_by=None, helped=False, why="", tokens=None):
+def note_verdict(skill, mode, ok, checked_by=None, helped=False, why="", tokens=None, basis=()):
     """
     Record how one run of a skill ended, for stage(): `mode` "model" (the
     engine did it, guided by the skill) or "replay"; `ok` only for a success
     that was checked - by the screen (`checked_by` "screen"), the model looking
     at it ("model") or a person ("person"); `helped` when a person had to step
-    in. `tokens` is what the run's model calls read and wrote in all (None
-    when nobody counted): what economy() compares. The caller saves.
+    in. `basis` is every kind of check that passed (code, ledger, person,
+    screen, model): only an INDEPENDENT one counts towards trust. `tokens` is
+    what the run's model calls read and wrote in all (None when nobody
+    counted): what economy() compares. The caller saves.
     """
 
     experience = skill.setdefault("experience", {"runs": [], "steps": {}})
     verdict = {
         "at": int(time.time()), "mode": mode, "ok": bool(ok), "checked_by": checked_by,
-        "helped": bool(helped), "why": (why or "")[:300],
+        "helped": bool(helped), "why": (why or "")[:300], "basis": sorted({str(b) for b in basis or () if b}),
     }
     if tokens is not None:
         verdict["tokens"] = int(tokens)
@@ -184,12 +195,18 @@ def economy(skill):
     return {"first": first, "now": now, "saved_percent": saved}
 
 
+def counts(verdict):
+    """Whether one run's verdict counts towards trust: it succeeded, needed no person, and an independent check passed."""
+
+    return bool(verdict.get("ok") and not verdict.get("helped") and INDEPENDENT & set(verdict.get("basis") or ()))
+
+
 def clean_streak(skill):
-    """How many runs in a row, most recent first, succeeded, were checked and needed no person."""
+    """How many runs in a row, most recent first, succeeded, needed no person and were checked independently."""
 
     streak = 0
     for verdict in reversed((skill.get("experience") or {}).get("verdicts") or []):
-        if not (verdict.get("ok") and verdict.get("checked_by") and not verdict.get("helped")):
+        if not counts(verdict):
             break
         streak += 1
     return streak
@@ -225,7 +242,9 @@ def health(skill):
     return {"fragile": sorted(fragile, key=lambda e: e["n"]), "drifting": sorted(drifting, key=lambda e: e["n"]),
             "recent": [r["outcome"] for r in experience.get("runs") or []],
             "stage": stage(skill), "clean_runs": clean_streak(skill), "trust_after": TRUST_AFTER,
-            "tokens": economy(skill)}
+            "tokens": economy(skill),
+            # How each recent run was checked, most recent last: what its trust rests on.
+            "basis": [list(v.get("basis") or []) for v in experience.get("verdicts") or []]}
 
 
 def advice(skill):

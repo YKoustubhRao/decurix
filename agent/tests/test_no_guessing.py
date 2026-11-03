@@ -42,7 +42,7 @@ class StoppingATask(unittest.TestCase):
 def skill(chosen):
     steps = [{"kind": "type", "param": "name"}, {"kind": "click", "target": {"role": "option" if chosen else "button"}}]
     return {"name": "s", "steps": steps, "experience": {"verdicts": [
-        {"ok": True, "checked_by": "model", "helped": False}] * experience.TRUST_AFTER}}
+        {"ok": True, "checked_by": "model", "helped": False, "basis": ["model", "ledger"]}] * experience.TRUST_AFTER}}
 
 
 class WhoDoesATaughtTask(unittest.TestCase):

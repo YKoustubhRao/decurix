@@ -555,6 +555,24 @@ def listing(task_id=None):
     return out
 
 
+def all_read_back(task_id=None):
+    """Whether the task declared at least one record and every one was saved and read back with each of its declared
+    values shown (the ledger's "matched"): the independent check a run's trust may rest on (experience.INDEPENDENT)."""
+
+    try:
+        found = load(task_id)
+    except Exception:  # noqa: BLE001 - a ledger that cannot be read proves nothing
+        return False
+    if not found:
+        return False
+    for rec in found:
+        rb = rec.get("readback") or {}
+        wanted = [l for l, f in (rec.get("fields") or {}).items() if isinstance(f, dict) and f.get("intent")]
+        if not rec.get("saved_at") or rb.get("absent") or not wanted or set(wanted) - set(rb.get("seen") or []):
+            return False
+    return True
+
+
 def facts(task_id=None):
     """What a check can hold against the task: records declared and never saved, and values not read back."""
 

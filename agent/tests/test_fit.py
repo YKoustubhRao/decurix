@@ -152,7 +152,7 @@ class WhoDoesItOnceItIsTrusted(unittest.TestCase):
         skill = a_bill_skill()
         with patch.object(skill_task, "_engine_can_drive", return_value=True):
             self.assertTrue(skill_task._learning_by_model({"skill": skill}))
-            skill["experience"] = {"verdicts": [{"ok": True, "checked_by": "model", "helped": False}] * experience.TRUST_AFTER}
+            skill["experience"] = {"verdicts": [{"ok": True, "checked_by": "model", "helped": False, "basis": ["model", "ledger"]}] * experience.TRUST_AFTER}
             self.assertFalse(skill_task._learning_by_model({"skill": skill}))
             # ...unless its rules ask for more than its steps: then it stays the model's, with the replay as its tool.
             skill["supervised"] = "nothing shows the search for an earlier copy was made"
@@ -179,7 +179,7 @@ class WhoDoesItOnceItIsTrusted(unittest.TestCase):
 
     def test_a_task_the_person_said_to_check_before_starting_is_the_models_from_the_first_run(self):
         skill = a_bill_skill()
-        skill["experience"] = {"verdicts": [{"ok": True, "checked_by": "model", "helped": False}] * experience.TRUST_AFTER}
+        skill["experience"] = {"verdicts": [{"ok": True, "checked_by": "model", "helped": False, "basis": ["model", "ledger"]}] * experience.TRUST_AFTER}
         with patch.object(skill_task, "_engine_can_drive", return_value=True):
             for said in ("Before you start, search ERPNext for the bill's supplier invoice number.",
                          "If a Purchase Invoice with that number already exists, do not enter it again - tell me.",

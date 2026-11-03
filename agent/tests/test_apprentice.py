@@ -31,16 +31,17 @@ class Maturity(unittest.TestCase):
         skill = {}
         for n in range(experience.TRUST_AFTER):
             self.assertEqual(experience.stage(skill), experience.APPRENTICE)
-            experience.note_verdict(skill, "model", True, checked_by="model")
+            experience.note_verdict(skill, "model", True, checked_by="model", basis=["model", "code"])
         self.assertEqual(experience.stage(skill), experience.TRUSTED)
 
     def test_a_failure_or_a_rescue_starts_the_count_again(self):
         for spoiler in ({"ok": False}, {"ok": True, "helped": True}, {"ok": True, "checked_by": None}):
             skill = {}
             for _ in range(experience.TRUST_AFTER):
-                experience.note_verdict(skill, "replay", True, checked_by="screen")
+                experience.note_verdict(skill, "replay", True, checked_by="screen", basis=["screen", "ledger"])
             experience.note_verdict(skill, "replay", spoiler["ok"], checked_by=spoiler.get("checked_by", "screen"),
-                                    helped=spoiler.get("helped", False))
+                                    helped=spoiler.get("helped", False),
+                                    basis=["ledger"] if spoiler.get("checked_by", "screen") else [])
             with self.subTest(spoiler):
                 self.assertEqual(experience.stage(skill), experience.APPRENTICE)
                 self.assertEqual(experience.clean_streak(skill), 0)
@@ -90,7 +91,7 @@ class WithTheModel(ts.TeachingBase):
     def trust(self, name):
         skill = skills.load(name)
         for _ in range(experience.TRUST_AFTER):
-            experience.note_verdict(skill, "replay", True, checked_by="screen")
+            experience.note_verdict(skill, "replay", True, checked_by="screen", basis=["screen", "ledger"])
         skills.save(skill)
 
     def one_step(self, expect=False):

@@ -1325,15 +1325,20 @@ def _finish(run, result):
         _by_model(run, phase=REST_PHASE)
         return
 
-    if screen_checked and not (verify.available() and _stage(run) == experience.APPRENTICE):
+    spot = verify.available() and _spot(run)
+    if screen_checked and not (verify.available() and _stage(run) == experience.APPRENTICE) and not spot:
         return _succeed(run, result, "screen")
 
     progress.emit("Checking the screen to see that the task was really done.")
     # A gathered run's files are a fact code decides (_documents_note, added in _judge): weighed as found, not claimed.
-    verdict = _judge(run, result["text"])
+    verdict = _judge(run, result["text"], purpose="py.judge.spot" if spot else "py.judge")
 
     if verdict["verdict"] == verify.DONE:
         return _succeed(run, result, "model", seen=verdict["seen"])
+    if spot and verdict["verdict"] == verify.NOT_DONE:
+        # A trusted skill the spot check finds not done is learning again from here (W0.5), whatever comes next.
+        _record_verdict(run, False, why=("spot check: " + " ".join(x for x in (verdict.get("seen"), verdict.get("why"))
+                                                                    if x))[:300], basis=["model"])
     if screen_checked and verdict["verdict"] == verify.UNSURE:
         # Every step's own result was on the screen; the model could not tell
         # more than that. The screen is the proof it always was.
@@ -1434,9 +1439,11 @@ def _read_back(run, text):
     """
 
     request = state.current_task or ""
+    run["_read_back_files"] = 0
     try:
         made = [m for m in produced.files(text, request=request)
                 if not source_guard.is_source(m, task_context.current(), request)]
+        run["_read_back_files"] = len(made)
         if not made and not produced.drafts():
             return [], []
         facts = produced.file_facts(request, made, drafts_made=produced.drafts())
@@ -1447,12 +1454,60 @@ def _read_back(run, text):
     return facts.blocking(), facts.not_made()
 
 
+def _spot_every():
+    """1 in how many trusted replays is judged all the same (DECURIX_SPOT_JUDGE_EVERY; 0 never, 1 always)."""
+
+    try:
+        return max(0, int(os.environ.get("DECURIX_SPOT_JUDGE_EVERY", "5")))
+    except ValueError:
+        return 5
+
+
+def _spot(run):
+    """
+    Whether this run of a trusted skill is one the judge looks at anyway (W0.5): a deterministic share of task ids,
+    1 in _spot_every(), so a rerun of the same task is sampled the same way and no run can choose to be skipped. A
+    trusted replay is otherwise taken on the screen's word that each step's result appeared - which is not a check
+    that counts towards trust (experience.INDEPENDENT), and so needs sampling to catch a skill gone wrong.
+    """
+
+    every = _spot_every()
+    if every == 0 or run.get("one_off") or _stage(run) != experience.TRUSTED:
+        return False
+    if every == 1:
+        return True
+    task_id = task_context.current()
+    if not task_id:
+        return False
+    import hashlib
+    return int(hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:8], 16) % every == 0
+
+
+def _basis(checked_by, code=False):
+    """
+    The kinds of check this run passed (experience.INDEPENDENT): `checked_by` itself (screen, model or person), "code"
+    when the caller read the run's own files back clean, and "ledger" when every record the task declared was read back
+    from the application with its values shown (records.all_read_back).
+    """
+
+    from decurix_agent.computer import records
+    basis = {checked_by} if checked_by else set()
+    if code:
+        basis.add("code")
+    if records.all_read_back(task_context.current()):
+        basis.add("ledger")
+    return sorted(basis)
+
+
 def _succeed(run, result, checked_by, seen="", helped=False):
     skill = run["skill"]
     text = result["text"]
+    read_clean = False
     if checked_by != "person":
         # checked=True only when the files the run made were read back (review 2026-11-03).
         problems, not_made = _read_back(run, text)
+        # Code read at least one file the run made, and found nothing wrong and nothing it could not check.
+        read_clean = bool(run.get("_read_back_files")) and not problems and not not_made
         decided = verify.outcome({"verdict": verify.DONE, "seen": seen} if not problems else
                                  {"verdict": verify.NOT_DONE, "seen": "; ".join(problems)}, problems, not_made)
         if decided["status"] != verify.DONE:
@@ -1504,7 +1559,8 @@ def _succeed(run, result, checked_by, seen="", helped=False):
 
     skill["runs"] = skill.get("runs", 0) + 1
     experience.note_verdict(skill, "replay", True, checked_by=checked_by,
-                            helped=helped or bool(run["asked_ids"]) or bool(run.get("taken_over")))
+                            helped=helped or bool(run["asked_ids"]) or bool(run.get("taken_over")),
+                            basis=_basis(checked_by, code=read_clean))
     skills.save(skill)
     text += experience.advice(skill)
 
@@ -2530,8 +2586,9 @@ def _by_model(run, from_step=None, note="", ran=False, phase=None):
         state.request_preapproved = False
 
 
-def _judge(run, claim, note=""):
-    """The final check's judge on a skill run (`note`: evidence code found, for the judge to weigh)."""
+def _judge(run, claim, note="", purpose="py.judge"):
+    """The final check's judge on a skill run (`note`: evidence code found, for the judge to weigh; `purpose`: what the
+    judge's model call is for - a trusted replay's spot check is "py.judge.spot")."""
     skill = run["skill"]
     steps = "; ".join(f"{s['n']}. {s.get('summary')}" for s in skill["steps"])[:1500]
     # With what the person said during the task. Found live (2026-10-31): asked about a document's identifier that failed
@@ -2549,7 +2606,7 @@ def _judge(run, claim, note=""):
                         + _criteria(skill, run["values"], since=run.get("began")),
                         values=run["values"], steps=steps, live_png=evidence.live(),
                         reference_png=evidence.final_frame(skill), observed=evidence.observed(), screen_text=evidence.live_text(),
-                        chosen=_chosen_for(run))
+                        chosen=_chosen_for(run), purpose=purpose)
 
 
 REPORT_CHARS = 4000
@@ -2589,8 +2646,9 @@ def _doubt_text(claim, verdict, on_screen=True):
             "to have it tried again, or tell me what is wrong - I will remember it for next time.")
 
 
-def _record_verdict(run, ok, checked_by=None, helped=False, why="", mode=None):
-    """Note how a run ended on the saved skill (a fresh copy: the run's own may hold unproven changes)."""
+def _record_verdict(run, ok, checked_by=None, helped=False, why="", mode=None, basis=()):
+    """Note how a run ended on the saved skill (a fresh copy: the run's own may hold unproven changes). `basis`: the
+    kinds of check that passed (_basis), of which only an independent one counts towards trust."""
 
     if run.get("one_off"):
         return
@@ -2602,7 +2660,7 @@ def _record_verdict(run, ok, checked_by=None, helped=False, why="", mode=None):
     tokens = (spent.get("input_tokens", 0) + spent.get("output_tokens", 0)
               if "input_tokens" in spent or "output_tokens" in spent else None)
     experience.note_verdict(fresh, mode or ("model" if run.get("attempts") else "replay"), ok, checked_by=checked_by,
-                            helped=helped, why=why, tokens=tokens)
+                            helped=helped, why=why, tokens=tokens, basis=basis)
     if ok:
         fresh["runs"] = fresh.get("runs", 0) + 1
     skills.save(fresh)
@@ -3181,7 +3239,7 @@ def _gate(reply, kind, engine):
                 log(f"Skill {run['skill']['name']}: could not check what a failed run left: {exc}")
                 verdict = {"verdict": verify.UNSURE, "seen": "", "why": ""}
             if verify.outcome(verdict)["status"] == verify.DONE:
-                _record_verdict(run, True, checked_by="model", helped=True)
+                _record_verdict(run, True, checked_by="model", helped=True, basis=_basis("model"))
                 write_final_reply("The work is done, though my model stopped answering before I could report it. "
                                   f"Checked on the screen and in what my tools read: {verdict.get('seen') or verdict.get('why')}"
                                   f"\n\n(What went wrong at the end: {(reply or '').strip()[:400]})" + _evidence_text(run),
@@ -3487,7 +3545,8 @@ def _gate(reply, kind, engine):
             # end but did not run smoothly: it does not count towards trust.
             _record_verdict(run, True, checked_by="model",
                             helped=guided["mode"] == "takeover" or run.get("attempts", 1) > 1
-                            or bool(run.get("asked_person")))
+                            or bool(run.get("asked_person")),
+                            basis=_basis("model", code=bool(made) and not facts.blocking() and not facts.not_made()))
         where = "Checked on the screen" if on_screen else "Checked against the files I wrote"
         text = f"{reply}\n\n{where}: {verdict['seen']}" if verdict.get("seen") else reply
         if facts.totals_note:
@@ -3748,7 +3807,7 @@ def _confirm_reply(paused, reply):
         if run is not None and paused.get("result") is not None:
             return _succeed(run, paused["result"], "person", helped=True)
         if run is not None:
-            _record_verdict(run, True, checked_by="person", helped=True)
+            _record_verdict(run, True, checked_by="person", helped=True, basis=["person"])
         return write_final_reply(f"{claim}\n\nYou confirmed it was done.", kind="final", engine=engine, checked=True)
 
     if choice == "stop":
