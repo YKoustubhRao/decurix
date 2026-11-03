@@ -74,6 +74,8 @@ type ResourceAllocation struct {
 // receive immediate acceptance (<15ms) while the volume, container, host apps,
 // and VNC initialization finish asynchronously in the background.
 type ProvisioningDesktop struct {
+	// creation names this one creation; its home volume carries it (homeCreationLabel).
+	creation       string
 	ID             string `json:"id"`
 	Name           string `json:"name"`
 	Profile        string `json:"profile"`

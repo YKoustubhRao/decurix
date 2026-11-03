@@ -20,7 +20,6 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 )
 
@@ -222,12 +221,18 @@ func (m *Manager) BeginProvisioning(
 	}
 	m.provisioningMu.RUnlock()
 
-	// Check if container already exists
+	// Check if container already exists. Only Docker's own "no such container" lets a creation go on: an inspect
+	// that timed out (memory pressure) said nothing, and going on made the create fail on the name and its cleanup
+	// remove the existing desktop and its home (B-03).
 	if _, err := m.client.ContainerInspect(context.Background(), "desktop_"+sanitizedID); err == nil {
-		return nil, fmt.Errorf("desktop %s already exists", name)
+		return nil, alreadyExists(name, sanitizedID)
+	} else if !client.IsErrNotFound(err) {
+		log.Printf("desktop %s: checking whether it exists: %v", sanitizedID, err)
+		return nil, fmt.Errorf("could not check whether desktop %s already exists (Docker did not answer); nothing was changed, try again", sanitizedID)
 	}
 
 	prov := &ProvisioningDesktop{
+		creation:       newCreationID(),
 		ID:             sanitizedID,
 		Name:           name,
 		Profile:        profile,
@@ -312,6 +317,9 @@ func (m *Manager) runProvisioning(
 		m.provisioningMu.Unlock()
 	}
 
+	// What this run made, and so all a failure may remove: never anything that was there before it (B-03).
+	var createdContainer string
+	createdVolume := false
 	fail := func(err error) {
 		log.Printf("desktop provisioning failed for %s: %v", sanitizedID, err)
 		m.provisioningMu.Lock()
@@ -320,9 +328,12 @@ func (m *Manager) runProvisioning(
 		prov.Message = fmt.Sprintf("Creation failed: %v", err)
 		m.provisioningMu.Unlock()
 
-		// Clean up Docker resources if partially created
-		_ = m.client.ContainerRemove(context.Background(), containerName, container.RemoveOptions{Force: true})
-		_ = m.client.VolumeRemove(context.Background(), volumeName, true)
+		if createdContainer != "" {
+			_ = m.client.ContainerRemove(context.Background(), createdContainer, container.RemoveOptions{Force: true})
+		}
+		if createdVolume {
+			_ = m.client.VolumeRemove(context.Background(), volumeName, true)
+		}
 
 		// A creation stopped by a delete is gone at once; a failure is kept 60s so the page can show it.
 		if ctx.Err() == context.Canceled {
@@ -347,9 +358,10 @@ func (m *Manager) runProvisioning(
 
 	// 2. Storage Volume
 	updateStage("volume", "Creating persistent storage volume...", 30)
-	_, err = m.client.VolumeCreate(ctx, volume.CreateOptions{Name: volumeName})
+	made, err := m.homeVolumeFor(ctx, volumeName, sanitizedID, prov.creation)
+	createdVolume = made
 	if err != nil {
-		fail(fmt.Errorf("create volume: %w", err))
+		fail(err)
 		return
 	}
 
@@ -382,6 +394,7 @@ func (m *Manager) runProvisioning(
 		fail(fmt.Errorf("create container: %w", err))
 		return
 	}
+	createdContainer = resp.ID
 	// The approval key goes in as a root-only file before the first start, never in the environment. A desktop whose
 	// image has no gate, or whose key could not be placed, is not started: it would allow nothing.
 	if err := m.prepareGate(ctx, resp.ID, m.GateKey(name)); err != nil {
@@ -1032,9 +1045,8 @@ func (m *Manager) Delete(
 	)
 	if err != nil {
 		if isProvisioning {
-			// Container was not yet created or partially created; clean up volume if any
-			// The name runProvisioning gives it.
-			_ = m.client.VolumeRemove(ctx, fmt.Sprintf("desktop_%s_home", sanitizedID), true)
+			// Stopped before its container was made: the run's own cleanup removed what it had made (a volume it
+			// created), and nothing else is this delete's to remove (B-03).
 			return nil
 		}
 		return notFound(id, err)
@@ -1069,6 +1081,12 @@ func (m *Manager) Delete(
 	m.viewedMu.Lock()
 	delete(m.viewed, sanitizeName(id))
 	m.viewedMu.Unlock()
+
+	// A desktop made again under this name starts at the size it is given, not the old one's (B-25).
+	m.resourceMu.Lock()
+	delete(m.resourceOverrides, sanitizedID)
+	delete(m.resourceOverrides, inspect.ID)
+	m.resourceMu.Unlock()
 
 	// Delete persistent storage too.
 	if volumeName != "" {
