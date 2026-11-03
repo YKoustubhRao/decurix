@@ -101,13 +101,22 @@ def soul_sha():
     """"sha256:<hex>" of the soul binary, or "" when there is none."""
 
     try:
+        stat = os.stat(config.THEBOT_SOUL_PATH)
+        key = (config.THEBOT_SOUL_PATH, stat.st_mtime_ns, stat.st_size)
+        if _soul_sha.get("key") == key:
+            return _soul_sha["sha"]
         digest = hashlib.sha256()
         with open(config.THEBOT_SOUL_PATH, "rb") as f:
             for block in iter(lambda: f.read(1 << 20), b""):
                 digest.update(block)
-        return "sha256:" + digest.hexdigest()
+        _soul_sha.update(key=key, sha="sha256:" + digest.hexdigest())
+        return _soul_sha["sha"]
     except (OSError, AttributeError):
         return ""
+
+
+# soul's hash, kept while the binary's path, time and size stay the same (it is read at every final report).
+_soul_sha = {}
 
 
 def _parts(task_id):

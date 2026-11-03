@@ -279,6 +279,36 @@ ENGINE_STOPPED = (
 )
 
 
+# What soul takes as a job's secret values (its /api/chat refuses more): at most this many, each at most this long.
+JOB_SECRETS = 1000
+JOB_SECRET_BYTES = 64 * 1024
+
+
+def _job_secrets():
+    """The task's secret values for soul's job, within soul's limits (a longer value stays withheld on this side)."""
+
+    values = [v for v in task_context.secret_values() if len(v.encode("utf-8")) <= JOB_SECRET_BYTES]
+    return values[-JOB_SECRETS:]
+
+
+class SoulRefused(str):
+    """soul's own 400 for a job it will not take (its words): a refusal of this job, never an outage to retry."""
+
+
+def _refusal(exc):
+    """soul's message in a 400's body (its JSON "error", else the body), withheld and cut."""
+
+    try:
+        raw = exc.read().decode("utf-8", errors="replace")[:2000]
+    except Exception:  # noqa: BLE001
+        raw = ""
+    try:
+        said = json.loads(raw).get("error") or raw
+    except (ValueError, AttributeError):
+        said = raw
+    return SoulRefused(withheld(" ".join(str(said or "it gave no reason").split())[:600]))
+
+
 def _cancel_job(base, job_id):
     """
     Stop a job this harness has given up waiting for, so it does not keep
@@ -575,9 +605,14 @@ def _run_thebot(request, reply, extra_context="", approval_reading=None):
                 "taskId": task_context.current(),
                 # The values this task's requests and replies made secret (C14): data for soul to keep out of
                 # everything it stores and shows - never in the prompt, whose bytes stay as they are.
-                **({"secrets": task_context.secret_values()} if task_context.secret_values() else {}),
+                **({"secrets": _job_secrets()} if _job_secrets() else {}),
             },
         )
+    except urllib.error.HTTPError as exc:
+        if exc.code == 400:
+            # soul refused the job itself (one it will not take, e.g. too many secret values): said as a refusal.
+            return None, _refusal(exc)
+        return None, f"could not submit task to TheBot: {exc}"
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return None, f"could not submit task to TheBot: {exc}"
 
@@ -769,6 +804,10 @@ def _handle_job(job, error, resuming=False):
         if error == ENGINE_STOPPED:
             # Not the model's doing and not a setup to fix: said as it is.
             write_final_reply(error, kind="error")
+            return
+        if isinstance(error, SoulRefused):
+            # soul's own no to this job: not an outage, not retried, said in soul's words.
+            write_final_reply(f"TheBot refused this job and did not start it: {error}", kind="error", gated=True)
             return
         if resuming:
             # The documented exception: a failure while resuming after a
