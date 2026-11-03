@@ -1264,9 +1264,9 @@ _BLANK_DOC = re.compile(r"^\s*(?:Document|Book|Presentation)\d+(?:\s*-\s*(?:Word
 def _refuse_unsafe_save(kind, element, keys, before):
     """
     A save in an app of the person's computer is refused when what is open there is read-only or a new blank document:
-    Ctrl+S then saves nothing or a copy - or an empty document over the file with Save As. Found live (round 5 P1 on pc3,
-    2026-10-20, CS): Word held the memo from an earlier attempt, the tools rewrote it, and Word's stale and later blank
-    copy was saved over it - the memo ended with 0 headings.
+    Ctrl+S then saves nothing or a copy - or an empty document over the file with Save As. Found live (2026-10-20): a word
+    processor held a memo from an earlier attempt, the tools rewrote it, and the app's stale and later blank copy was
+    saved over it - the memo ended with 0 headings.
     """
 
     if not _relayed_page(before) or not _saves(kind, element, keys):
@@ -1420,8 +1420,8 @@ def already_entered(events, _scan=None):
     """
     (what it is, the system's number) when the new record being saved repeats one this task already saved: the values
     typed since the last save, against those of each earlier save (an email, or its first two words). None otherwise -
-    and never for a form that changes an existing record. Found live (round 5 P4, 2026-10-21): a joiner saved with the
-    wrong department was entered again, and the portal held him twice.
+    and never for a form that changes an existing record. Found live (2026-10-21): a record saved with a wrong
+    value was entered again, and the application held it twice.
 
     A save the application has since deleted no longer counts: found live (2026-10-31): a record saved with a misread
     value was deleted to be entered again, and every re-entry was refused as "already saved" though the application
@@ -1560,8 +1560,8 @@ def crossed_values(form, tables):
     """
     The values put into a record's form that are ANOTHER record's in the source table (one row per record) and not
     this one's: [(field, typed, whose, own)]. The record is the row its typed email, else its first two words, names.
-    Nothing when the record or the field's column cannot be told. Found live (round 5 P4, 2026-10-21): Rohit
-    Kulkarni was saved with Mohammed Arif Khan's department and job title.
+    Nothing when the record or the field's column cannot be told. Found live (2026-10-21): one person's record
+    was saved with another person's department and job title.
     """
 
     values = [v for _, v in form]
@@ -2713,10 +2713,10 @@ def _named_within(label, text):
     """
     Whether an entry's whole name lies within `text`: every word of the name
     is a word of the text, and the name has at least two. A document describes
-    a thing in more words than the application's record of it has - "Executive
-    A4 Printing Paper 75 GSM (Box of 10 Reams)" for a record named "A4
-    Printing Paper" - so the record is found inside the description, never the
-    other way round. One shared word proves nothing and is not enough.
+    a thing in more words than the application's record of it has - "Premium
+    Lined Notebook 200 Pages (Pack of 5)" for a record named "Lined Notebook"
+    - so the record is found inside the description, never the other way
+    round. One shared word proves nothing and is not enough.
     """
 
     name = set(_own_name(label))

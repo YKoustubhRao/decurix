@@ -615,11 +615,11 @@ class ChoosingInADrawnDropdown(unittest.TestCase):
         # Found live: handed a document's line for a value, an engine searched with the wrong words, clicked
         # entries by where it expected them, and asked a person for a record the list had.
         from decurix_agent.computer import core
-        opts = [self._opt("A4 Printing Paper A4 Printing Paper, Consumable"), self._opt("Printer Ink Printer Ink, Consumable"),
+        opts = [self._opt("Lined Notebook Lined Notebook, Consumable"), self._opt("Desk Lamp Desk Lamp, Consumable"),
                 self._opt(" Create a new one"), self._opt("Advanced Search")]
-        clicked, _ = self._run(opts, "Executive A4 Printing Paper 75 GSM (Box of 10 Reams)")
-        self.assertEqual(clicked[-1], "A4 Printing Paper A4 Printing Paper, Consumable")
-        self.assertEqual(core._selected["name"], "A4 Printing Paper A4 Printing Paper, Consumable")
+        clicked, _ = self._run(opts, "Premium Lined Notebook 200 Pages (Pack of 5)")
+        self.assertEqual(clicked[-1], "Lined Notebook Lined Notebook, Consumable")
+        self.assertEqual(core._selected["name"], "Lined Notebook Lined Notebook, Consumable")
 
         # A plural in the description is the record's singular.
         clicked, _ = self._run([self._opt("Office Chair Office Chair, Products")], "High Back Office Mesh Chairs")
