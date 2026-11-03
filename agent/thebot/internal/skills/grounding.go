@@ -665,12 +665,18 @@ func untracedQuestion(untraced []string, nudge string) string {
 	}
 	if m := unreadNamedRe.FindStringSubmatch(nudge); m != nil {
 		return "I was about to type " + quotedList(untraced) + ", but I have not found it in what I have read, and I " +
-			"could not read " + m[1] + ", so I have not typed it. Where does it come from - or what should I type instead?"
+			"could not read " + m[1] + ", so I have not typed it. Where does it come from - or what should I type instead?" +
+			plainYesNote
 	}
 	return "I was about to type " + quotedList(untraced) + ", but I could not find this in your request or in " +
 		"the files and screens I read, so I have not typed it. Where does it come from - or what should I type " +
-		"instead?"
+		"instead?" + plainYesNote
 }
+
+// plainYesNote tells the person the one answer code can settle without reading their words: a reply that only says
+// yes vouches for the values; any other is read for what it does where a reading is to be had, and otherwise leaves
+// them untraced (review T-11).
+const plainYesNote = " (If it is right as it is, just reply yes.)"
 
 // secretShown is what a refusal or a question says in place of a secret value: the field, never the value. A password
 // in the chat is the leak privacy.py exists to prevent (found live 2026-10-20).

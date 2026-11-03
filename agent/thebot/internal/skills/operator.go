@@ -262,6 +262,51 @@ const ungroundedDoneNudge = `Every command you have run so far FAILED, so nothin
 Send a DIFFERENT command that gets the real answer with COMMAND.
 If the failure itself is the answer (for example, the file really does not exist), reply DONE: again and quote the error that shows it.`
 
+// Bounds on what is kept of failed commands' outputs for quotesFailure, and the shortest piece of one a DONE must
+// hold to count as quoting it.
+const (
+	maxFailedOutputs     = 6
+	maxFailedOutputChars = 4000
+	minQuoteChars        = 12
+)
+
+// noteFailedOutput keeps a failed command's output (already without the command's own values), bounded.
+func (st *operatorState) noteFailedOutput(output string) {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return
+	}
+	if len(output) > maxFailedOutputChars {
+		output = trimRuneEnd(output[:maxFailedOutputChars])
+	}
+	st.FailedOutputs = append(st.FailedOutputs, output)
+	if n := len(st.FailedOutputs); n > maxFailedOutputs {
+		st.FailedOutputs = st.FailedOutputs[n-maxFailedOutputs:]
+	}
+}
+
+// quotesFailure reports whether answer quotes a failed command's output: it holds, word for word (case and spacing
+// aside), a piece of one at least minQuoteChars long - a line, or a part of a line between ": " separators, the way
+// error messages are built. A mechanical fact, not a reading of the words.
+func quotesFailure(outputs []string, answer string) bool {
+	norm := func(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
+	said := norm(answer)
+	for _, out := range outputs {
+		for _, line := range strings.Split(out, "\n") {
+			for _, piece := range strings.FieldsFunc(line, func(r rune) bool { return r == '·' }) {
+				for _, part := range append([]string{piece}, strings.Split(piece, ": ")...) {
+					part = norm(strings.Trim(part, " \t.,;:'\"`()[]"))
+					if utf8.RuneCountInString(part) >= minQuoteChars && strings.IndexFunc(part, unicode.IsLetter) >= 0 &&
+						strings.Contains(said, part) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 // missingProgramRe finds the program a failed command could not find:
 // "bash: curl: command not found", "xargs: curl: No such file or directory",
 // "sh: 1: jq: not found".
@@ -689,6 +734,9 @@ type operatorState struct {
 	// AnswerUnreviewed is set when the person answered a question about the calls and no round has weighed it since:
 	// the next approval is reviewed whatever work came between (judgements.go).
 	AnswerUnreviewed bool `json:",omitempty"`
+	// FailedOutputs are the last few failed commands' outputs (with what the command itself held masked): what a
+	// DONE after every command failed may quote to stand (quotesFailure).
+	FailedOutputs []string `json:",omitempty"`
 }
 
 // outputChars is OutputChars, or the local default for a checkpoint written
@@ -824,10 +872,9 @@ func (o *OperatorSkill) resume(rc RunContext, subtask Subtask, st *operatorState
 	// vouch for them, those values, which a reply that only names them back ("31200 for which field?") never sources.
 	heard, vouched := reply, false
 	if len(st.AskedUntraced) > 0 && reply != "" {
-		var known bool
-		if vouched, known = o.replyAccepts(rc, st, st.LastAsked, reply); !known {
-			vouched = !refusalReplyRe.MatchString(reply)
-		}
+		// Not known (a local brain, or no reading to be had) is not vouched: the values stay untraced. Found in review: the
+		// old fallback ("anything not starting with no") took "31200 for which field?" for vouching for 31200 (T-11).
+		vouched, _ = o.replyAccepts(rc, st, st.LastAsked, reply)
 		if !vouched {
 			heard = withoutCommandValues(reply, strings.Join(st.AskedUntraced, " "))
 		}
@@ -892,10 +939,8 @@ func (o *OperatorSkill) resume(rc RunContext, subtask Subtask, st *operatorState
 	}
 	// Web pages the person was asked to vouch for: a reply that accepts them makes them sources (knowledge.go).
 	if len(st.AskedSources) > 0 {
-		trusted, known := o.replyAccepts(rc, st, st.LastAsked, reply)
-		if !known {
-			trusted = !refusalReplyRe.MatchString(reply)
-		}
+		// Not known is not trusted: the pages stay lookups (T-11).
+		trusted, _ := o.replyAccepts(rc, st, st.LastAsked, reply)
 		st.settleAskedSources(reply, trusted)
 	}
 	if st.PlanQuestion && reply != "" {
@@ -1075,6 +1120,9 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 	st.CommandsRun++
 	if guiOpenRe.MatchString(command) {
 		st.Opens = append(st.Opens, strings.TrimSpace(command)+" -> "+headline(res))
+	}
+	if res.ExitCode != 0 {
+		st.noteFailedOutput(withoutCommandValues(res.Output, run))
 	}
 	if res.ExitCode == 0 {
 		st.CommandsSucceeded++
@@ -1582,15 +1630,24 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			} else {
 				st.LastReport = value
 			}
-			if st.CommandsRun > 0 && st.CommandsSucceeded == 0 && !st.UngroundedNudged {
+			if st.CommandsRun > 0 && st.CommandsSucceeded == 0 {
 				// Every command so far failed, so nothing on this machine has
 				// shown the answer: a DONE now is from memory, unless the
 				// failure itself is the answer ("that file does not exist"),
 				// which the model can say again, quoting the error.
-				st.UngroundedNudged = true
-				rc.Logf("operator", "answered although every command failed - asking it where the answer came from")
-				st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: ungroundedDoneNudge})
-				continue
+				if !st.UngroundedNudged {
+					st.UngroundedNudged = true
+					rc.Logf("operator", "answered although every command failed - asking it where the answer came from")
+					st.Messages = append(st.Messages, reply, llm.Message{Role: "user", Content: ungroundedDoneNudge})
+					continue
+				}
+				// Said again: it stands only when it quotes what a failed command printed (a fact code can decide).
+				// Otherwise it is put to the person as not checked - never reported as a success nothing showed.
+				if !quotesFailure(st.FailedOutputs, value) {
+					rc.Logf("operator", "answered again with every command failed and no error quoted - not checked")
+					st.Messages = append(st.Messages, reply)
+					return unchecked(value, "every command I ran failed, so nothing on this machine showed this answer")
+				}
 			}
 			if st.CommandsRun == 0 && !st.EarlyDoneNudged {
 				if nudge := earlyDoneNudge(st, rc.SessionHistory, value); nudge != "" {

@@ -91,14 +91,40 @@ func TestAPracticeTheReplyDoesNotSpellOutIsFoundOrAskedForNeverGuessed(t *testin
 	}
 }
 
-func TestOnALocalBrainTheOldRuleStands(t *testing.T) {
-	st := groundingState("Prepare the return from the workbook.")
-	st.AskedUntraced = []string{"900"}
-	chat := &scriptedChat{}
-	rc := weighRC(chat)
-	rc.HumanReply = "Use your judgement and carry on."
+// On a local brain no side call reads the reply: only a plain yes vouches. Anything else is not known, and not known
+// is not vouched - the values stay untraced (T-11).
+func TestOnALocalBrainOnlyAPlainYesVouches(t *testing.T) {
+	for _, c := range []struct {
+		reply   string
+		vouched bool
+	}{
+		{"use your judgement", true},
+		{"yes", true},
+		{"Use your judgement and carry on.", false},
+		{"900 for which field?", false},
+	} {
+		st := groundingState("Prepare the return from the workbook.")
+		st.AskedUntraced = []string{"900"}
+		chat := &scriptedChat{}
+		rc := weighRC(chat)
+		rc.HumanReply = c.reply
+		(&OperatorSkill{}).resume(rc, Subtask{}, st)
+		if traced := groundingNudge(st, `gui type e5 "900"`) == ""; traced != c.vouched {
+			t.Errorf("%q: traced = %v, want %v", c.reply, traced, c.vouched)
+		}
+		if len(chat.calls) != 0 {
+			t.Errorf("%q: a local brain's reply was read by a side call", c.reply)
+		}
+	}
+}
+
+// A web page the person was asked to vouch for stays a lookup when their reply cannot be read (T-11).
+func TestAnUnreadReplyDoesNotTrustAPage(t *testing.T) {
+	st := &operatorState{Lookups: []webLookup{{Text: "the rate is 18 percent"}}, AskedSources: []int{0}}
+	rc := weighRC(&scriptedChat{})
+	rc.HumanReply = "hmm, is that the official page?"
 	(&OperatorSkill{}).resume(rc, Subtask{}, st)
-	if groundingNudge(st, `gui type e5 "900"`) != "" || len(chat.calls) != 0 {
-		t.Fatalf("a local brain's reply was read by a side call, or the old rule changed (%d calls)", len(chat.calls))
+	if strings.Contains(st.Seen, "18 percent") {
+		t.Fatal("an unread reply made a web page a source")
 	}
 }

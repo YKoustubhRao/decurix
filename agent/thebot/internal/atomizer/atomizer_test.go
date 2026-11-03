@@ -304,15 +304,23 @@ func TestAtomizePlansRealMultiStepTask(t *testing.T) {
 	}
 }
 
-func TestAtomizeTreatsPlainQuestionAsChat(t *testing.T) {
+func TestAtomizeTreatsConversationAsChat(t *testing.T) {
 	stub := &stubProvider{response: "TASK: no"}
-	plan := Atomize(context.Background(), "who wrote the odyssey?", stub, "m", nil)
+	plan := Atomize(context.Background(), "thanks!", stub, "m", nil)
 
 	if plan.IsTask {
-		t.Errorf("IsTask = true for a plain question, want false")
+		t.Errorf("IsTask = true for conversation, want false")
 	}
-	if len(plan.Steps) != 1 || plan.Steps[0].Text != "who wrote the odyssey?" {
+	if len(plan.Steps) != 1 || plan.Steps[0].Text != "thanks!" {
 		t.Errorf("plan.Steps = %+v, want the original prompt as one step", plan.Steps)
+	}
+}
+
+// A question is the operator's (review T-04): it is real work that may need a look.
+func TestAtomizeTreatsAQuestionAsWork(t *testing.T) {
+	plan := Atomize(context.Background(), "who wrote the odyssey?", &stubProvider{response: "TASK: no"}, "m", nil)
+	if !plan.IsTask || len(plan.Steps) != 1 {
+		t.Errorf("plan = %+v, want one step of work", plan)
 	}
 }
 

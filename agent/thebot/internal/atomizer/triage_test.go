@@ -15,17 +15,17 @@ func TestTriageRoutesRequestsByShape(t *testing.T) {
 		{"what can you do?", RouteChat},
 		{"my name is Alex, remember that", RouteChat},
 		{"what's my name?", RouteChat},
-		{"who wrote the odyssey?", RouteChat},
-		{"what is 1+1?", RouteChat},
-		// Measured in a real desktop: the bare word "browser" sent this to the
-		// operator, which asked the human to install xclip.
-		{"browser test message one", RouteChat},
-		{"ping - just reply pong", RouteChat},
+		// Any other question goes to the operator, which answers at once when it need not look (review T-04): the
+		// chat skill has no tools, and its answer about the person's own data was reported as verified.
+		{"who wrote the odyssey?", RouteOperate},
+		{"what is 1+1?", RouteOperate},
+		{"browser test message one", RouteOperate},
+		{"ping - just reply pong", RouteOperate},
 
 		// Says how to work a screen, in an app no surface word names.
 		{"On Request REQ-26-00009 the Due Date is empty. Open it, type 03-10-2026 into Due Date, press Escape, save.", RouteOperate},
 		{"press ctrl+s in the editor", RouteOperate},
-		{"what does the escape key do?", RouteChat},
+		{"what does the escape key do?", RouteOperate},
 
 		// On this machine: the operator works it out.
 		{"what is the current kernel version?", RouteOperate},
@@ -44,8 +44,8 @@ func TestTriageRoutesRequestsByShape(t *testing.T) {
 		{"Prepare a payment reminder email for Acme and put it in the outbox", RouteOperate},
 		{"write an email to billing@acme.example about invoice INV-7", RouteOperate},
 		{"compose a reply to the supplier confirming delivery on Friday", RouteOperate},
-		// Wording help is conversation: no address, nothing to attach.
-		{"help me write an email asking my boss for Friday off", RouteChat},
+		// Wording help with no address and nothing to attach: the operator, which can answer with the text at once.
+		{"help me write an email asking my boss for Friday off", RouteOperate},
 
 		// On the screen: the operator, with the gui command - not the web
 		// skill fetching the URL, and not a plan written before looking.
@@ -246,9 +246,6 @@ func TestTriageSendsARequestWithAttachedFilesToTheOperator(t *testing.T) {
 	if got := Triage(p); got.Kind != RouteOperate {
 		t.Fatalf("Triage(%q) = %v (%s), want operate", p, got.Kind, got.Reason)
 	}
-	if got := Triage("what does this say?"); got.Kind == RouteOperate {
-		t.Errorf("the same question with no file went to the operator (%s)", got.Reason)
-	}
 }
 
 // A file whose contents must come from a website goes to the operator, never to the
@@ -326,6 +323,27 @@ func TestTriageSendsFilesFromAWebAppToKeepToTheOperator(t *testing.T) {
 	for _, q := range []string{"what does https://go.dev/doc/devel/release say about go 1.22?", "look up the latest Go release and save a note in my work folder"} {
 		if got := Triage(q); got.Kind == RouteOperate && got.Reason == "work with a web page and this machine's files - the operator does both" {
 			t.Fatalf("%q was taken by the keep-on-machine rule", q)
+		}
+	}
+}
+
+// Questions about the person's own records, files, apps or work go to the operator, which can look (review T-04);
+// conversation alone stays with the tool-less chat skill.
+func TestTriageSendsQuestionsAboutThePersonsWorkToTheOperator(t *testing.T) {
+	for _, p := range []string{
+		"What is the total of the invoices the client sent last week?",
+		"Which customer owes us the most right now?",
+		"Did the return for October get filed?",
+		"how much did we pay the supplier in September",
+		"is the backup finished?",
+	} {
+		if got := Triage(p); got.Kind != RouteOperate {
+			t.Errorf("Triage(%q) = %s/%s (%s), want operate", p, got.Kind, got.TaskType, got.Reason)
+		}
+	}
+	for _, p := range []string{"hi", "hello there", "thanks!", "what can you do?"} {
+		if got := Triage(p); got.Kind != RouteChat {
+			t.Errorf("Triage(%q) = %s (%s), want chat", p, got.Kind, got.Reason)
 		}
 	}
 }

@@ -445,5 +445,8 @@ func Triage(prompt string) Route {
 		return Route{Kind: RouteOperate, TaskType: matched, Reason: "something to do or check on this machine - handing it to the operator"}
 	}
 
-	return Route{Kind: RouteChat, TaskType: matched, Reason: "a question - answering directly"}
+	// Anything else - a question about the person's own records, files, apps or work included - goes to the operator,
+	// which looks first when it needs to and can answer at once when it does not. The chat skill has no tools, and its
+	// answer about the person's data was reported as verified (review T-04); only conversation stays with it.
+	return Route{Kind: RouteOperate, TaskType: matched, Reason: "a question - the operator answers it, and looks first if it needs to"}
 }

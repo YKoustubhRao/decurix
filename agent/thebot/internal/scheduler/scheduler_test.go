@@ -181,11 +181,43 @@ func TestSchedulerReclassifiesRetryStepInsteadOfInheritingOriginalType(t *testin
 	if result.SkillName != "terminal" {
 		t.Fatalf("retry ran through skill %q, want terminal - the retry step's own content should have been reclassified, not inherited the original type", result.SkillName)
 	}
-	if !result.Verified {
-		t.Fatalf("retry not verified: %s", result.Output)
-	}
 	if !strings.Contains(result.Output, "reclassified") {
 		t.Errorf("retry output = %q, want it to reflect the real command that actually ran", result.Output)
+	}
+	// A retry of another kind did something else in the step's place: reported as tried instead, never as the
+	// step done (review T-12).
+	if result.Verified || !strings.Contains(result.Output, "Tried instead") {
+		t.Errorf("a retry of another kind was reported as the step done: verified=%v %q", result.Verified, result.Output)
+	}
+}
+
+// modelReplySkill answers with a model's own words, verified - the shape of the chat and web skills.
+type modelReplySkill struct{}
+
+func (modelReplySkill) Name() string                   { return "model-reply" }
+func (modelReplySkill) Description() string            { return "answers with a model's words" }
+func (modelReplySkill) Matches(st skills.Subtask) bool { return st.Type == "test-model-reply" }
+func (modelReplySkill) Run(rc skills.RunContext, st skills.Subtask) (skills.Result, error) {
+	return skills.Result{Subtask: st, SkillName: "model-reply", Output: "an answer in a model's words", Verified: true,
+		Meta: map[string]any{skills.MetaModelReply: true}}, nil
+}
+
+var registerModelReplyOnce sync.Once
+
+// A retry whose result is a model's own words is not the step done (review T-12).
+func TestARetryThatIsAModelsWordsIsNotVerified(t *testing.T) {
+	registerModelReplyOnce.Do(func() {
+		atomizer.Register("test-model-reply", func(step string) bool { return strings.HasPrefix(step, "model reply:") })
+		skills.Register(modelReplySkill{})
+	})
+	registerTestFailFixtures()
+	mock := &mockProvider{response: "DECISION: RETRY\nREASON: another way\nRETRY_STEP: model reply: say it"}
+	job, err := newTestScheduler(t, mock).Run(context.Background(), "trigger test-fail please", nil, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := job.Results[0]; r.Verified || r.Meta["triedInstead"] == nil {
+		t.Fatalf("a model's words stood in for the failed step: %+v", r)
 	}
 }
 
@@ -312,11 +344,45 @@ func TestSchedulerDecomposedStepFailureDoesNotRecurse(t *testing.T) {
 	if got := mock.calls - callsBeforeRun; got != 2 {
 		t.Errorf("made %d model call(s) for the whole recovery, want exactly 2 (no recursive reasoning about a decomposed step's own failure)", got)
 	}
-	if !result.Verified {
-		t.Fatalf("final step not verified: %s", result.Output)
+	// One step failed, so the recovery did not work, whatever the last step printed (review T-05).
+	if result.Verified {
+		t.Fatalf("a recovery with a failed step was verified: %s", result.Output)
 	}
-	if !strings.Contains(result.Output, "recovered-anyway") {
-		t.Errorf("Output = %q, want the last (successful) decomposed step's real output", result.Output)
+	if !strings.Contains(result.Output, "step 1 of 2") || !strings.Contains(result.Output, "recovered-anyway") {
+		t.Errorf("Output = %q, want the failed step named and the last step's real output kept", result.Output)
+	}
+}
+
+// A recovery whose middle step failed is not verified, and nothing is proposed from it as a skill (review T-05).
+func TestADecomposedRecoveryWithAFailedStepProposesNothing(t *testing.T) {
+	registerTestFailFixtures()
+	registerTerminalSkill()
+	mock := &mockProvider{response: "DECISION: DECOMPOSE\n" +
+		"REASON: needs three steps\n" +
+		"RETRY_STEP: prepare, then the real step, then report\n" +
+		"TASK: yes\n" +
+		"STEPS:\n" +
+		"1. run the command: echo prepared\n" +
+		"2. run the command: this-command-does-not-exist-xyz\n" +
+		"3. run the command: echo reported\n"}
+	sched := newTestScheduler(t, mock)
+	lib, err := memory.NewSkillLibrary(sched.Workspace.Root(), nil, "test-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sched.SkillLib = lib
+	job, err := sched.Run(context.Background(), "trigger test-fail please", nil, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := job.Results[0]; r.Verified || !strings.Contains(r.Output, "step 2 of 3") {
+		t.Fatalf("a recovery with a failed middle step: verified=%v %q", r.Verified, r.Output)
+	}
+	if job.ProposedSkill != "" {
+		t.Errorf("a broken recovery was proposed as a skill: %q", job.ProposedSkill)
+	}
+	if pending, _ := lib.ListPending(); len(pending) != 0 {
+		t.Errorf("pending proposals = %+v, want none", pending)
 	}
 }
 

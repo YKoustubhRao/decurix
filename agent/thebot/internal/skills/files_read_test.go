@@ -121,9 +121,11 @@ func TestThePersonsAnswerSettlesTheValuesTheyWereAskedAbout(t *testing.T) {
 	o := &OperatorSkill{}
 	st := groundingState("Prepare the GSTR-1 from the invoices.")
 	st.AskedUntraced, st.UntracedNudges = []string{"900", "9346.27"}, 2
-	o.resume(RunContext{Ctx: context.Background(), OnLog: func(string) {}, HumanReply: "Use your judgement and carry on."}, Subtask{}, st)
+	// A plain yes settles them with no reading; any other reply on a local brain is not known, and not known is not
+	// vouched (review T-11) - the question tells the person to reply yes (plainYesNote).
+	o.resume(RunContext{Ctx: context.Background(), OnLog: func(string) {}, HumanReply: "use your judgement"}, Subtask{}, st)
 	if groundingNudge(st, `gui type e5 "900"`) != "" || st.UntracedNudges != 0 || st.AskedUntraced != nil {
-		t.Fatalf("a reply that did not say no left the values untraced (nudges %d)", st.UntracedNudges)
+		t.Fatalf("a plain yes left the values untraced (nudges %d)", st.UntracedNudges)
 	}
 	st2 := groundingState("Prepare the GSTR-1 from the invoices.")
 	st2.AskedUntraced = []string{"900"}
