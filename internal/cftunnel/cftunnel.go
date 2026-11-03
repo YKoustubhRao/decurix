@@ -49,6 +49,10 @@ var (
 // ErrInvalid is a domain or subdomain that is not a hostname, or a missing token.
 var ErrInvalid = errors.New("cftunnel: invalid settings")
 
+// ErrUnsealed is Configure's refusal when the key file that seals the saved tokens could not be loaded or written:
+// they are never stored in plain text (RW1-F-06, as for the model keys, C-19).
+var ErrUnsealed = errors.New("cftunnel: no key file to seal the tokens with")
+
 var schema = []string{
 	`CREATE TABLE cftunnel_config (
 		id              INTEGER PRIMARY KEY CHECK (id = 1),
@@ -236,6 +240,9 @@ func (m *Manager) Configure(ctx context.Context, apiToken, domain, subdomain str
 		m.mu.Unlock()
 	}
 
+	if m.db != nil && m.key == nil {
+		return Status{}, ErrUnsealed
+	}
 	if apiToken == "" || !domainRe.MatchString(domain) || !subdomainRe.MatchString(subdomain) {
 		return Status{}, ErrInvalid
 	}

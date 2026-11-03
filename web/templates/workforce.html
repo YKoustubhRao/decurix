@@ -401,6 +401,9 @@ td.actions{white-space:nowrap;text-align:right}
     });
     var data = await response.json().catch(function(){ return {}; });
     if(!response.ok){ throw new Error(data.error || "Request failed"); }
+    /* Saved: the fields of the row whose button sent it are the server's now (RW1-F-12: cleared on success only, so
+       a failed save leaves what the person typed in place). */
+    if(saving){ saving.querySelectorAll("[data-dirty]").forEach(function(f){ delete f.dataset.dirty; }); }
     return data;
   }
 
@@ -413,12 +416,13 @@ td.actions{white-space:nowrap;text-align:right}
   function markDirty(event){
     if(event.target.matches && event.target.matches("input,select,textarea")){ event.target.dataset.dirty = "1"; }
   }
+  /* The row (or form) whose button was pressed last: its dirty marks go once its save succeeds (send). */
+  var saving = null;
   document.addEventListener("click", function(event){
     var b = event.target.closest && event.target.closest("button");
-    if(!b){ return; }
-    var scope = b.closest("tr,form,[data-row]") || b.parentElement;
-    if(scope){ scope.querySelectorAll("[data-dirty]").forEach(function(f){ delete f.dataset.dirty; }); }
+    if(b){ saving = b.closest("tr,form,[data-row]") || b.parentElement; }
   }, true);
+  document.addEventListener("submit", function(event){ saving = event.target; }, true);
 
   function editing(el){
     var a = document.activeElement;

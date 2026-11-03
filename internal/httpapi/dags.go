@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -53,12 +54,14 @@ func (s *Server) dagPageHandler(w http.ResponseWriter, r *http.Request) {
 
 	desktops, err := s.Desktops.List(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("dag page: listing desktops: %v", err)
+		http.Error(w, "could not list the desktops", http.StatusInternalServerError)
 		return
 	}
 
-	if err := s.Web.RenderDag(w, webui.DagPageData{DAG: d, Desktops: desktops}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.Web.RenderDag(w, webui.DagPageData{DAG: d, Desktops: desktops, Gated: isGated(r)}); err != nil {
+		log.Printf("dag page: render: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
 }
 

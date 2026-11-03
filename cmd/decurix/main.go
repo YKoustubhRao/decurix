@@ -364,11 +364,11 @@ func main() {
 	pairedDevices.OnRevoke(func(id string) { lanAccess.CloseDevice(id) })
 
 	// The fixed link on the person's own domain, when they set one up
-	// (internal/cftunnel). A key that cannot be written leaves the tokens
-	// unsealed rather than the feature off.
+	// (internal/cftunnel). A key that cannot be written refuses the setup:
+	// the tokens are never stored unsealed.
 	cfKey, err := sealed.LoadKey(sqlitedb.DataDir(), cftunnel.KeyFile)
 	if err != nil {
-		log.Printf("warning: %s: %v; the Cloudflare tokens will be stored unencrypted", cftunnel.KeyFile, err)
+		log.Printf("warning: %s: %v; your own link cannot be set up until it can be written (no token is stored unencrypted)", cftunnel.KeyFile, err)
 	}
 	namedTunnel := must(cftunnel.NewManager(db, cfKey, lanPort(lanListenAddr())))
 	schedules := must(schedule.NewStore(db))
@@ -425,7 +425,7 @@ func main() {
 	// keys sealed like the Cloudflare tokens. Never read from .env.
 	llmKey, err := sealed.LoadKey(sqlitedb.DataDir(), llm.KeyFile)
 	if err != nil {
-		log.Printf("warning: %s: %v; the model API keys will be stored unencrypted", llm.KeyFile, err)
+		log.Printf("warning: %s: %v; model API keys cannot be saved until it can be written (none is stored unencrypted)", llm.KeyFile, err)
 	}
 	server.LLM = must(llm.NewHub(db, llmKey))
 	// Simulate: practice runs of what a worker was taught, on a practice desktop that reaches only its broker
@@ -472,6 +472,7 @@ func main() {
 	// ticket landed under), so it is built after Server and wired back onto
 	// it rather than passed through NewServer.
 	dagRunner := &dag.Runner{Store: dags, Submitter: server, Tasks: tasksStore}
+	dagRunner.MarkStarted()
 	server.DagRunner = dagRunner
 	go dagRunner.Run(ctx)
 

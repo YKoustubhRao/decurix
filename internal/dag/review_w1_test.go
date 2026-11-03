@@ -168,3 +168,23 @@ func TestCancelEndsARun(t *testing.T) {
 		t.Errorf("a cancelled run sent %q", got)
 	}
 }
+
+// A node a dispatch claimed while Cancel ran is failed as cancelled, never left running in a closed run (RW1-F-03).
+func TestCancelFailsANodeClaimedMeanwhile(t *testing.T) {
+	now := time.Now()
+	store := newTestStore(t, now)
+	d, _ := store.Create("pipeline")
+	store.AddNode(d.ID, "a", "box-1", "first")
+	run, _ := store.StartRun(d.ID, TriggerManual, now)
+	rns, _ := store.RunNodes(run.ID)
+	r := newTestRunner(store, &fakeSubmitter{}, newFakeTaskResults(), now)
+	// Claimed after Cancel would have read it as pending: simulate by claiming, then cancelling with the stale view.
+	store.ClaimRunNode(rns[0].ID, now)
+	if ok, err := r.Cancel(run.ID); err != nil || !ok {
+		t.Fatalf("Cancel = %v %v", ok, err)
+	}
+	rns, _ = store.RunNodes(run.ID)
+	if rns[0].Status != NodeFailed {
+		t.Fatalf("node %s after cancel", rns[0].Status)
+	}
+}

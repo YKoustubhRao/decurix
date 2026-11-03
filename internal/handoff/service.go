@@ -565,9 +565,14 @@ func (s *Service) dispatch(ctx context.Context, h Handoff) Handoff {
 		return h
 	}
 	h.Status = StatusSending
-	s.mu.Unlock()
-	taskID, err := s.Submit.SubmitHandoff(ctx, to, content, dir, files)
-	s.mu.Lock()
+	var taskID string
+	func() {
+		// Re-locked by a defer, so a panicking submit still leaves the lock as the caller's deferred unlock expects
+		// (an unlock of an unlocked mutex is fatal, past any recover: RW1-F-09).
+		s.mu.Unlock()
+		defer s.mu.Lock()
+		taskID, err = s.Submit.SubmitHandoff(ctx, to, content, dir, files)
+	}()
 	h.Status = StatusQueued
 	var busy busyError
 	if errors.As(err, &busy) {

@@ -423,6 +423,11 @@ func (r *Runner) dispatch(ctx context.Context, runID string, rn RunNode, node No
 	}
 }
 
+// MarkStarted records that this process's Runner begins now, before anything can trigger a run: called by main
+// before the Runner is handed to the HTTP routes, so a claim a Trigger makes before Run's goroutine starts is not
+// taken for one a stopped control plane left (RW1-F-03). Run calls it too; only the first call counts.
+func (r *Runner) MarkStarted() { r.markStarted(r.clock()) }
+
 // markStarted records when this process's Runner began, once.
 func (r *Runner) markStarted(at time.Time) {
 	r.startedNS.CompareAndSwap(0, at.UnixNano())
@@ -454,8 +459,16 @@ func (r *Runner) Cancel(runID string) (bool, error) {
 	for _, rn := range runNodes {
 		switch rn.Status {
 		case NodePending:
-			if _, err := r.Store.SkipRunNode(rn.ID, now); err != nil {
+			skipped, err := r.Store.SkipRunNode(rn.ID, now)
+			if err != nil {
 				return false, err
+			}
+			if !skipped {
+				// A dispatch claimed it meanwhile: it is running now, so it is failed as cancelled like the others
+				// (RW1-F-03), never left running in a closed run.
+				if _, err := r.Store.MarkRunNodeTerminal(rn.ID, NodeRunning, NodeFailed, reasonCancelledBy, now); err != nil {
+					return false, err
+				}
 			}
 		case NodeRunning:
 			if _, err := r.Store.MarkRunNodeTerminal(rn.ID, NodeRunning, NodeFailed, reasonCancelledBy, now); err != nil {

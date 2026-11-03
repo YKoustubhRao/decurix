@@ -303,6 +303,8 @@ type DagsPageData struct {
 type DagPageData struct {
 	DAG      dag.DAG
 	Desktops []desktop.Desktop
+	// Gated is a page served on the phone/tunnel listener, which offers no host-only action (cancelling a run).
+	Gated bool
 }
 
 // RecordingsPageData is the template data for one desktop's recordings page.

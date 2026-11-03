@@ -210,6 +210,8 @@
   "use strict";
 
   var toast = Decurix.toast, post = Decurix.post, busy = Decurix.busy;
+  /* Cancelling a run is this computer's (a primary-listener route): the phone and tunnel page offers no button. */
+  var canCancel = {{if .Gated}}false{{else}}true{{end}};
   var SVG_NS = "http://www.w3.org/2000/svg";
   var DRAG_THRESHOLD = 6;
 
@@ -634,7 +636,7 @@
 
     row.appendChild(main);
 
-    if(run.status === "running"){
+    if(run.status === "running" && canCancel){
       /* A run stuck on a node (a desktop that never answered) can be given up on. */
       var cancel = document.createElement("button");
       cancel.type = "button";

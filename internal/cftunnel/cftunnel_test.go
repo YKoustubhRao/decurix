@@ -202,7 +202,7 @@ func TestConfigureCreatesTheTunnelRouteAndRecord(t *testing.T) {
 
 func TestConfigureTwiceReusesTheTunnel(t *testing.T) {
 	api := newFakeCloudflare("tok")
-	m := newManager(t, api, nil)
+	m := newManager(t, api, make([]byte, 32))
 
 	for i := 0; i < 2; i++ {
 		// The second time without the token: the saved one is used.
@@ -223,7 +223,7 @@ func TestConfigureTwiceReusesTheTunnel(t *testing.T) {
 func TestSomeoneElsesRecordIsNeverOverwritten(t *testing.T) {
 	api := newFakeCloudflare("tok")
 	api.records = []dnsRecord{{ID: "r0", Type: "A", Name: "decurix.example.com", Content: "203.0.113.9"}}
-	m := newManager(t, api, nil)
+	m := newManager(t, api, make([]byte, 32))
 
 	_, err := m.Configure(context.Background(), "tok", "example.com", "decurix")
 	if !errors.Is(err, ErrNameTaken) {
@@ -240,7 +240,7 @@ func TestSomeoneElsesRecordIsNeverOverwritten(t *testing.T) {
 func TestOurOwnOldRecordIsRepointed(t *testing.T) {
 	api := newFakeCloudflare("tok")
 	api.records = []dnsRecord{{ID: "r0", Type: "CNAME", Name: "decurix.example.com", Content: "old.cfargotunnel.com", Comment: recordComment}}
-	m := newManager(t, api, nil)
+	m := newManager(t, api, make([]byte, 32))
 
 	if _, err := m.Configure(context.Background(), "tok", "example.com", "decurix"); err != nil {
 		t.Fatal(err)
@@ -252,7 +252,7 @@ func TestOurOwnOldRecordIsRepointed(t *testing.T) {
 
 func TestBadSettingsAndBadTokensAreRefused(t *testing.T) {
 	api := newFakeCloudflare("tok")
-	m := newManager(t, api, nil)
+	m := newManager(t, api, make([]byte, 32))
 
 	for _, c := range []struct{ token, domain, sub string }{
 		{"", "example.com", ""},
@@ -276,7 +276,7 @@ func TestBadSettingsAndBadTokensAreRefused(t *testing.T) {
 
 func TestDisableForgetsTheSetup(t *testing.T) {
 	api := newFakeCloudflare("tok")
-	m := newManager(t, api, nil)
+	m := newManager(t, api, make([]byte, 32))
 
 	if _, err := m.Configure(context.Background(), "tok", "example.com", ""); err != nil {
 		t.Fatal(err)
@@ -376,5 +376,15 @@ func TestTokensSealedWithAnotherKeyLeaveNoSetupRatherThanNoStart(t *testing.T) {
 	}
 	if again.URL() != "" {
 		t.Errorf("URL = %q from tokens that did not open", again.URL())
+	}
+}
+
+// Without a key file to seal them, the tunnel's tokens are not stored at all - and nothing is created at Cloudflare
+// first (RW1-F-06).
+func TestTheTunnelIsNotSetUpWithoutASealingKey(t *testing.T) {
+	api := newFakeCloudflare("token")
+	m := newManager(t, api, nil)
+	if _, err := m.Configure(context.Background(), "token", "example.com", "decurix"); !errors.Is(err, ErrUnsealed) {
+		t.Fatalf("Configure = %v, want ErrUnsealed", err)
 	}
 }
