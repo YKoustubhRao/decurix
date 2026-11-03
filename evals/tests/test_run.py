@@ -31,6 +31,7 @@ class ArmTest(unittest.TestCase):
         self.assertEqual((a["provider"], a["model"], a["expert"], a["agent_tree_rev"]), ("claude", "fast", True, "HEAD~2"))
         self.assertEqual(run.parse_arm("oracle"), {"name": "oracle", "kind": "oracle", "expert": False})
         self.assertEqual(run.parse_arm("nothing")["kind"], "nothing")
+        self.assertEqual(run.parse_arm("ask")["kind"], "ask")
         for bad in ("gpt-5", "default+expert+expert", "openai:default", "default@", "fast@a b", ""):
             with self.assertRaises(run.Usage, msg=bad):
                 run.parse_arm(bad)
@@ -80,6 +81,16 @@ class AgentTreeTest(unittest.TestCase):
 
         with self.assertRaises(run.Usage):
             run.agent_tree("nope", run=failing)
+
+
+class RevTest(unittest.TestCase):
+    def test_a_rev_is_resolved_to_its_commit(self):
+        if not (run.ROOT / ".git").exists():
+            self.skipTest("not a git checkout (an exported tree)")
+        sha = run.resolve_rev("HEAD")
+        self.assertRegex(sha, r"^[0-9a-f]{40}$")
+        with self.assertRaises(run.Usage):
+            run.resolve_rev("no-such-rev-here")
 
 
 class FakeControlPlane(BaseHTTPRequestHandler):
@@ -158,13 +169,15 @@ class CommandTest(unittest.TestCase):
         self.assertIn("3/4 rows", said)
 
     def test_an_arm_at_a_rev_sends_its_tree(self):
-        with unittest.mock.patch.object(run, "agent_tree", return_value=b"TREE") as tree:
+        full = "eb15981" + "0" * 33
+        with unittest.mock.patch.object(run, "agent_tree", return_value=b"TREE") as tree,                 unittest.mock.patch.object(run, "resolve_rev", return_value=full) as rev:
             code, said = self.main("run", "--suite", str(EVALS / "suites" / "core-v1"), "--arm", "default@eb15981", "--repeats", "1", "--detach")
         self.assertEqual(code, 0, said)
-        tree.assert_called_once_with("eb15981")
+        rev.assert_called_once_with("eb15981")
+        tree.assert_called_once_with(full)
         sent = FakeControlPlane.started[0]
         self.assertEqual(sent["tree_default@eb15981"], b"TREE")
-        self.assertEqual(json.loads(sent["arms"])[0]["agent_tree_rev"], "eb15981")
+        self.assertEqual(json.loads(sent["arms"])[0]["agent_tree_rev"], full)
         self.assertIn("n=1: not a result", said)
         self.assertTrue(said.strip().endswith("e1"))
 

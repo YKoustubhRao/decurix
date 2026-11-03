@@ -37,8 +37,11 @@ type Observation struct {
 	Checked bool
 	// Secret is set on a question raised for a secret: nobody may answer it with a value.
 	Secret bool
-	// Gate is the approval gate's own question on an approval ("" when the callback carried none).
-	Gate string
+	// Gate is the approval gate's question on an approval, with the gate's request id and signature, as the callback
+	// carried them ("" when it carried none). A runner checks the signature before it takes the words as the gate's.
+	Gate    string
+	GateID  string
+	GateSig string
 	// Verdict is the worker's decurix.verdict/v1 on a final, when it sent one.
 	Verdict json.RawMessage
 }
@@ -423,7 +426,9 @@ func ObservedKind(kind string) string {
 
 // gateQuestion is the approval gate's question as a callback carries it.
 type gateQuestion struct {
+	ID       string `json:"id"`
 	Question string `json:"question"`
+	Sig      string `json:"sig"`
 }
 
 // queryText records each end-of-turn report of the case. It never answers a
@@ -467,7 +472,7 @@ func (b *Broker) queryText(w http.ResponseWriter, r *http.Request) {
 func observation(kind, text string, checked *bool, secret bool, gate *gateQuestion, verdict json.RawMessage) Observation {
 	o := Observation{Kind: kind, Text: text, Checked: checked != nil && *checked, Secret: secret}
 	if gate != nil && kind == qualification.ObservedApproval {
-		o.Gate = clip(strings.TrimSpace(gate.Question), 2000)
+		o.Gate, o.GateID, o.GateSig = strings.TrimSpace(gate.Question), clip(gate.ID, 200), clip(gate.Sig, 200)
 	}
 	if kind == qualification.ObservedFinal && len(verdict) > 0 && len(verdict) <= 64<<10 && json.Valid(verdict) {
 		o.Verdict = append(json.RawMessage{}, verdict...)

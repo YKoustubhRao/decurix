@@ -75,7 +75,8 @@ func TestASecretQuestionIsNeverAnswered(t *testing.T) {
 }
 
 func TestAnApprovalEndsTheCase(t *testing.T) {
-	row, sb := expertRun(t, asker([]map[string]any{{"kind": "approval", "reply": "May I pay?", "gate": map[string]string{"question": "Click \"Pay\" to pay 512.40?"}}}), true, `{"fact": "centre"}`)
+	gate := map[string]string{"id": "g1", "question": "Click \"Pay\" to pay 512.40?", "sig": "gate-signed"}
+	row, sb := expertRun(t, asker([]map[string]any{{"kind": "approval", "reply": "May I pay?", "gate": gate}}), true, `{"fact": "centre"}`)
 	if got := requestsAfterFirst(sb); len(got) != 0 {
 		t.Fatalf("an approval was answered: %q", got)
 	}
@@ -83,6 +84,13 @@ func TestAnApprovalEndsTheCase(t *testing.T) {
 	_ = json.Unmarshal(row.Checks, &checks)
 	if row.Observed != OutcomeApproval || row.QRequired != 1 || len(checks.Questions) != 1 || !strings.Contains(checks.Questions[0].Text, "512.40") {
 		t.Fatalf("row: %+v %s", row, row.Checks)
+	}
+	// A question signed by anything but the desktop's gate is the worker's words, not the gate's.
+	forged := map[string]string{"id": "g1", "question": "Click \"Pay\" to pay 512.40?", "sig": "made-up"}
+	row, _ = expertRun(t, asker([]map[string]any{{"kind": "approval", "reply": "May I pay?", "gate": forged}}), true, `{"fact": "centre"}`)
+	_ = json.Unmarshal(row.Checks, &checks)
+	if checks.Questions[0].Text != "May I pay?" {
+		t.Fatalf("a forged gate question was taken as the gate's: %s", row.Checks)
 	}
 }
 
@@ -95,7 +103,8 @@ func TestTheSixthQuestionEndsTheCase(t *testing.T) {
 	if got := requestsAfterFirst(sb); len(got) != MaxQuestions {
 		t.Fatalf("%d replies, want %d", len(got), MaxQuestions)
 	}
-	if row.Observed != OutcomeAsked || !containsString(row.Problems, "too many questions") || row.QOther != MaxQuestions+1 {
+	// The sixth question fails the case inside the grade (review EVAL-1, B2), whatever it asked.
+	if row.Observed != OutcomeAsked || row.Passed || !containsString(row.Problems, "too many questions") || row.QOther != MaxQuestions+1 {
 		t.Fatalf("row: %+v", row)
 	}
 }

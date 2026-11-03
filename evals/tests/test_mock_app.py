@@ -84,7 +84,7 @@ FIXTURE = {
     "options": {"cost_centres": ["General", "Project Birch"]},
     "collections": {
         "users": [{"id": 1, "name": "Ann Lowe", "email": "ann.lowe@example.test", "role": "Admin"}],
-        "payments": [{"id": 1, "payee": "Bluebell Stationers", "account": "6620150043218765", "amount": "512.40",
+        "payments": [{"id": 1, "payee": "Bluequill Stationers", "account": "6620150043218765", "amount": "512.40",
                       "date": "2026-03-10", "reference": "BL-1987", "status": "unpaid"}],
     },
 }
@@ -105,7 +105,7 @@ class MockAppTest(unittest.TestCase):
         self.assertIn('href="/users/1/edit">Edit Ann Lowe</a>', body)
 
     def test_a_form_submit_lands_in_state(self):
-        status, location, _ = self.app.post("/bills/new", number="BL-2041", vendor="Bluebell Stationers",
+        status, location, _ = self.app.post("/bills/new", number="BL-2041", vendor="Bluequill Stationers",
                                             date="2026-03-12", due="", total="1,416.00", cost_centre="General")
         self.assertEqual(status, 303)
         self.assertEqual(location, "/bills/1?saved=1")

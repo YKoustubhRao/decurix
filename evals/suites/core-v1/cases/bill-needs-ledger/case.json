@@ -32,7 +32,7 @@
               "id": "FJ-1190"
             },
             "vendor": {
-              "text": "Finch Joinery Works"
+              "text": "Finchmoor Joinery Works"
             },
             "date": {
               "date": "2026-06-02"
@@ -62,7 +62,7 @@
   },
   "oracle": [
     "office read bill.pdf | grep -q FJ-1190",
-    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode number=FJ-1190 --data-urlencode 'vendor=Finch Joinery Works' --data-urlencode date=2026-06-02 --data-urlencode due=2026-07-02 --data-urlencode total=3,540.00 --data-urlencode 'cost_centre=Project Birch' --data-urlencode notes= http://records.example.test/bills/new"
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode number=FJ-1190 --data-urlencode 'vendor=Finchmoor Joinery Works' --data-urlencode date=2026-06-02 --data-urlencode due=2026-07-02 --data-urlencode total=3,540.00 --data-urlencode 'cost_centre=Project Birch' --data-urlencode notes= http://records.example.test/bills/new"
   ],
   "tags": [
     "question"

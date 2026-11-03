@@ -9,11 +9,12 @@ Run an eval suite on the control plane's matrix runner, and read its results (do
     py -3 evals/run.py table  <run-id>      # prints the markdown and writes evals/results/<id>/table.md
     py -3 evals/run.py rows   <run-id>      # writes evals/results/<id>/rows.jsonl
 
-An arm is <model>[+expert][@<git-rev>], or oracle, or nothing:
+An arm is <model>[+expert][@<git-rev>], or oracle, nothing or ask:
   - <model> is default or fast (the hub's two deployments), on azure; claude:default (or claude:fast) uses claude;
   - +expert answers the worker's questions with the scripted expert;
   - @<rev> runs the agent tree of that git revision (git archive of agent/decurix_agent), not the image's;
-  - oracle runs each case's scripted solution; nothing claims "done" and does nothing (calibration).
+  - oracle runs each case's scripted solution; nothing claims "done" and does nothing; ask asks one question about
+    nothing and stops (calibration: oracle must pass every case, nothing and ask none).
 
 Standard library only, Python 3.11+, run from the repository root. The control plane's eval routes are on its primary
 listener only (127.0.0.1:8080), never the gated one.
@@ -53,12 +54,12 @@ def parse_arm(text):
     """One --arm as the runner takes it: {name, kind, provider, model, expert, agent_tree_rev}."""
 
     text = text.strip()
-    if text in ("oracle", "nothing"):
+    if text in ("oracle", "nothing", "ask"):
         return {"name": text, "kind": text, "expert": False}
     m = ARM.match(text)
     if not m:
         raise Usage(f"--arm {text!r}: an arm is <model>[+expert][@<git-rev>] (model default or fast, optionally "
-                    "claude: before it), or oracle, or nothing")
+                    "claude: before it), or oracle, nothing or ask")
     arm = {"name": text, "kind": "model", "provider": m.group("provider") or "azure", "model": m.group("model"),
            "expert": bool(m.group("expert"))}
     if m.group("rev"):
@@ -71,6 +72,16 @@ def archive_command(rev):
     into /opt (desktop.PracticeAgentTree reads /opt/decurix_agent as a tar rooted there)."""
 
     return ["git", "-C", str(ROOT), "archive", "--format=tar", "--prefix=decurix_agent/", f"{rev}:agent/decurix_agent"]
+
+
+def resolve_rev(rev, run=subprocess.run):
+    """The full commit id a revision names (HEAD, a branch, a short id): a run records what it ran, not a moving name."""
+
+    p = run(["git", "-C", str(ROOT), "rev-parse", "--verify", "--quiet", rev + "^{commit}"], capture_output=True, timeout=60)
+    sha = p.stdout.decode(errors="replace").strip() if isinstance(p.stdout, bytes) else str(p.stdout or "").strip()
+    if p.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise Usage(f"{rev!r} is not a commit of this repository")
+    return sha
 
 
 def agent_tree(rev, run=subprocess.run):
@@ -207,7 +218,7 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     r = sub.add_parser("run", help="start a matrix and, unless --detach, wait for its table")
     r.add_argument("--suite", required=True, help="a suite folder, e.g. evals/suites/core-v1")
-    r.add_argument("--arm", action="append", required=True, help="repeatable: default, fast+expert, default@<rev>, claude:default, oracle, nothing")
+    r.add_argument("--arm", action="append", required=True, help="repeatable: default, fast+expert, default@<rev>, claude:default, oracle, nothing, ask")
     r.add_argument("--repeats", type=int, default=5)
     r.add_argument("--cases", default="", help="comma-separated case ids (default: every case)")
     r.add_argument("--detach", action="store_true", help="print the run id and return at once")
@@ -229,6 +240,7 @@ def main(argv=None):
                 print("note: one repeat shows what happened once; rates need at least 5 (n=1: not a result).", flush=True)
             for a in arms:
                 if a.get("agent_tree_rev"):
+                    a["agent_tree_rev"] = resolve_rev(a["agent_tree_rev"])
                     a["tree"] = agent_tree(a["agent_tree_rev"])
             cases = [c.strip() for c in args.cases.split(",") if c.strip()]
             run = start(cp, args.suite, arms, args.repeats, cases)

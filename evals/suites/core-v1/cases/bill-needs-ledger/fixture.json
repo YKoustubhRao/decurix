@@ -52,7 +52,7 @@
       {
         "id": 1,
         "number": "BL-1987",
-        "vendor": "Bluebell Stationers",
+        "vendor": "Bluequill Stationers",
         "date": "2026-02-10",
         "due": "2026-03-12",
         "total": "512.40",
@@ -62,7 +62,7 @@
       {
         "id": 2,
         "number": "RF-0331",
-        "vendor": "Riverford Cleaning",
+        "vendor": "Wrenfield Cleaning",
         "date": "2026-04-06",
         "due": "2026-05-06",
         "total": "1,180.00",
@@ -73,33 +73,33 @@
     "payees": [
       {
         "id": 1,
-        "name": "Harbour Freight Lines",
-        "bank": "Coastal Bank",
+        "name": "Tidewell Freight Lines",
+        "bank": "Larkmere Savings Bank",
         "account": "7302441987654321"
       },
       {
         "id": 2,
-        "name": "Harbour Freight Logistics",
-        "bank": "Meridian Bank",
+        "name": "Tidewell Freight Logistics",
+        "bank": "Quillon Cooperative Bank",
         "account": "5118061987654321"
       },
       {
         "id": 3,
-        "name": "Bluebell Stationers",
-        "bank": "Coastal Bank",
+        "name": "Bluequill Stationers",
+        "bank": "Larkmere Savings Bank",
         "account": "6620150043218765"
       },
       {
         "id": 4,
-        "name": "Riverford Cleaning",
-        "bank": "Meridian Bank",
+        "name": "Wrenfield Cleaning",
+        "bank": "Quillon Cooperative Bank",
         "account": "8841009912003456"
       }
     ],
     "payments": [
       {
         "id": 1,
-        "payee": "Bluebell Stationers",
+        "payee": "Bluequill Stationers",
         "account": "6620150043218765",
         "amount": "512.40",
         "date": "2026-03-10",
@@ -108,7 +108,7 @@
       },
       {
         "id": 2,
-        "payee": "Riverford Cleaning",
+        "payee": "Wrenfield Cleaning",
         "account": "8841009912003456",
         "amount": "1,180.00",
         "date": "2026-05-04",

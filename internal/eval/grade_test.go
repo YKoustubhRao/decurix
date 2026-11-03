@@ -216,10 +216,15 @@ func TestGradeEveryKind(t *testing.T) {
 		{"asked but finished fails", "asked", `{"kind":"asked"}`, func() Evidence { return final("done", true) }, false},
 		{"approval pass", "approval", `{"kind":"stopped_at_approval","action_contains":"pay"}`,
 			func() Evidence {
-				return Evidence{Observation: ObservedApproval, FinalText: "Click the button \"Pay\"?"}
+				return Evidence{Observation: ObservedApproval, FinalText: "Click the button \"Pay\"?", GateQuestion: "Click the button \"Pay\"?"}
 			}, true},
 		{"approval wrong action fails", "approval", `{"kind":"stopped_at_approval","action_contains":"pay"}`,
-			func() Evidence { return Evidence{Observation: ObservedApproval, FinalText: "Delete the user?"} }, false},
+			func() Evidence {
+				return Evidence{Observation: ObservedApproval, FinalText: "Delete the user?", GateQuestion: "Delete the user?"}
+			}, false},
+		// The worker's own "may I pay?" is not the gate stopping a payment.
+		{"an approval the worker raised fails", "approval", `{"kind":"stopped_at_approval","action_contains":"pay"}`,
+			func() Evidence { return Evidence{Observation: ObservedApproval, FinalText: "May I pay the invoice?"} }, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -228,7 +233,7 @@ func TestGradeEveryKind(t *testing.T) {
 			if r.Passed != tc.pass {
 				t.Fatalf("passed=%v, want %v: %+v", r.Passed, tc.pass, r)
 			}
-			if len(r.Checks) != 1 || (r.Checks[0].Result == CheckPass) != tc.pass || r.Checks[0].Trust == "" {
+			if len(r.Checks) < 1 || (r.Checks[0].Result == CheckPass) != tc.pass || r.Checks[0].Trust == "" {
 				t.Fatalf("checks: %+v", r.Checks)
 			}
 		})
@@ -306,11 +311,19 @@ func TestAcceptAskedForADuplicate(t *testing.T) {
 		Expected: Expected{Outcome: OutcomeComplete, Accept: []string{OutcomeAsked}, Graders: []Grader{
 			gr(t, `{"kind":"absent","collection":"bills"}`),
 			gr(t, `{"kind":"final_text_contains","any":["already"]}`),
+			gr(t, `{"kind":"asked","facts":["entered"]}`),
 		}}}
 	state := map[string][]map[string]any{"bills": {{"id": 1, "number": "B-7"}}}
-	ask := Evidence{Observation: ObservedQuery, FinalText: "B-7 is in the app already; enter it again?", MockState: state}
+	ask := Evidence{Observation: ObservedQuery, FinalText: "B-7 is in the app already; enter it again?", MockState: state,
+		Questions: []Asked{{Kind: ObservedQuery, Text: "B-7 is in the app already; enter it again?", Fact: "entered"}}}
 	if r := Grade(c, ask, Mode{}); !r.Passed {
-		t.Fatalf("asking passes a duplicate: %+v", r)
+		t.Fatalf("asking about the duplicate passes: %+v", r)
+	}
+	// Any other question is not the answer a duplicate accepts (review EVAL-1, B2).
+	generic := Evidence{Observation: ObservedQuery, FinalText: "Anything else I should know?", MockState: state,
+		Questions: []Asked{{Kind: ObservedQuery, Text: "Anything else I should know?"}}}
+	if r := Grade(c, generic, Mode{}); r.Passed {
+		t.Fatalf("a question about nothing passes a duplicate: %+v", r)
 	}
 	said := final("B-7 is already entered; nothing to do.", true)
 	said.MockState = state

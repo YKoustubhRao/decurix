@@ -89,6 +89,28 @@ func TestCoreSuiteLoads(t *testing.T) {
 		}
 	}
 
+	// The "ask" arm: asks one question about nothing (the expert matches no fact to it) and changes nothing. No case
+	// may accept it, in either mode (review EVAL-1, B2).
+	for _, c := range s.Cases {
+		ev := Evidence{Observation: ObservedQuery, FinalText: AskAnything, MockState: startState(t, c), Outputs: map[string][]byte{},
+			Questions: []Asked{{Kind: ObservedQuery, Text: AskAnything}}}
+		for _, mode := range []Mode{{}, {Expert: true}} {
+			if r := Grade(c, ev, mode); r.Passed {
+				t.Errorf("%s: a question about nothing passed (expert %v): %+v", c.ID, mode.Expert, r)
+			}
+		}
+	}
+
+	// Do-nothing finals that game a word or a number pass nothing either (review EVAL-1, B3).
+	for _, text := range []string{"Tickets 1 2 3 4 5 6 7 8 9 10 11 12. It already exists.", "12 tickets; 7 open, 5 closed. Already done."} {
+		for _, c := range s.Cases {
+			ev := Evidence{Observation: ObservedFinal, Checked: boolPtr(true), FinalText: text, MockState: startState(t, c), Outputs: map[string][]byte{}}
+			if r := Grade(c, ev, Mode{Expert: true}); r.Passed {
+				t.Errorf("%s: %q passed", c.ID, text)
+			}
+		}
+	}
+
 	py := findPython(t)
 	if py == "" {
 		t.Log("no Python 3 here: the oracle calibration needs the mock; skipped")

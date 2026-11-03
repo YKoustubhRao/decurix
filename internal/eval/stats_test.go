@@ -45,6 +45,7 @@ func fixtureRun(repeats int) (Run, []Row) {
 		add("fast+expert", "one", rep, true, false, false, 0, 1, 90000, 60000, 2000, 2, []string{"small-1"})
 		if rep == 2 {
 			add("fast+expert", "two", rep, false, false, true, 1, 1, 120000, 40000, 3000, 4, []string{"small-1", "small-2"}, modelChanged)
+			rows[len(rows)-1].Invalid = true
 		} else {
 			add("fast+expert", "two", rep, true, false, false, 1, 0, 100000, 50000, 2500, 4, []string{"small-1"})
 		}
@@ -70,10 +71,11 @@ func TestSummariseOverFixtureRows(t *testing.T) {
 		t.Fatalf("default/one: %+v", one)
 	}
 	fast := tab.Totals["fast+expert"]
-	if fast.N != 10 || fast.Pass != 9 || fast.Invalid != 1 || fast.DoneUncheckedWrong != 1 || len(fast.Deployments) != 2 {
+	// The invalid row (rep 2 of "two") is left out of every rate and counted apart.
+	if fast.N != 9 || fast.Pass != 9 || fast.Invalid != 1 || fast.DoneUncheckedWrong != 0 || len(fast.Deployments) != 2 {
 		t.Fatalf("fast total: %+v", fast)
 	}
-	if math.Abs(fast.QOther-0.6) > 1e-9 {
+	if math.Abs(fast.QOther-5.0/9) > 1e-9 {
 		t.Fatalf("fast other questions per run: %v", fast.QOther)
 	}
 	// A case nobody ran shows as empty, not as a zero pass rate.

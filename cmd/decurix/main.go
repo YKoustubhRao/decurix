@@ -439,6 +439,7 @@ func main() {
 	blobs := must(blobstore.New(filepath.Join(sqlitedb.DataDir(), "blobs")))
 	llmrecStore := must(llmrec.NewStore(db, blobs))
 	server.LLMRec = llmrecStore
+	server.ForgetSecretsAtStart()
 	runStore := must(runs.NewStore(db, blobs))
 	server.RunStore, server.RunBundles = runStore, runStore
 	server.Runs = &runs.Puller{Home: desktops, Store: runStore, Blobs: blobs}
@@ -465,7 +466,7 @@ func main() {
 	// hosted deployment sends every suite that pins it back to needs-retesting (E4).
 	practiceSvc.Broker.Recorder = llmrecStore
 	server.LLM.OnChange(practiceSvc.BrainChanged)
-	// The eval matrix runner (E3, docs: evals/): one suite x arms x repeats on the practice sandbox, one run at a
+	// The eval matrix runner (E3, docs/evals.md): one suite x arms x repeats on the practice sandbox, one run at a
 	// time, sharing Simulate's slot. Its routes are the owner's, primary listener only. A run that was running when
 	// the control plane stopped is marked interrupted (NewStore).
 	evalSvc := &eval.Service{

@@ -406,18 +406,22 @@ func validateExpected(c Case, factIDs map[string]bool) Problems {
 			positive[g.Scope()]++
 		}
 	}
-	switch e.Outcome {
-	case OutcomeComplete:
-		if positive[OutcomeComplete] == 0 {
-			add("a complete case needs an independent or output grader besides absent, so a claim alone cannot pass.")
-		}
-	case OutcomeAsked:
-		if positive[OutcomeAsked] == 0 {
-			add("an asked case needs an asked grader.")
-		}
-	case OutcomeApproval:
-		if positive[OutcomeApproval] == 0 {
-			add("an approval case needs a stopped_at_approval grader.")
+	// Every outcome the case accepts needs a grader that can fail it, or any ending of that kind passes: a question
+	// accepted as an answer must be the right question (an asked grader names the facts), review EVAL-1 B2.
+	for _, outcome := range append([]string{e.Outcome}, e.Accept...) {
+		switch outcome {
+		case OutcomeComplete:
+			if positive[OutcomeComplete] == 0 {
+				add("a complete case needs an independent or output grader besides absent, so a claim alone cannot pass.")
+			}
+		case OutcomeAsked:
+			if positive[OutcomeAsked] == 0 {
+				add("a case that accepts a question needs an asked grader naming the facts it must be about.")
+			}
+		case OutcomeApproval:
+			if positive[OutcomeApproval] == 0 {
+				add("an approval case needs a stopped_at_approval grader.")
+			}
 		}
 	}
 	if c.HasRequiredFact() && e.Outcome == OutcomeComplete && positive[OutcomeAsked] == 0 {
@@ -514,6 +518,10 @@ func validateGrader(g Grader, inputs, factIDs map[string]bool, hasMock bool) str
 			return "final_text_contains needs words or any."
 		}
 	case "asked":
+		// The right question about the right fact: asking anything at all is not the answer a case accepts.
+		if len(g.Facts) == 0 {
+			return "asked names the facts the question must be about (facts)."
+		}
 		for _, f := range g.Facts {
 			if !factIDs[f] {
 				return fmt.Sprintf("asked names the fact %q, which the case does not have.", f)
@@ -629,14 +637,25 @@ func canonicalJSON(b []byte) []byte {
 	return out
 }
 
-// suiteSHA is the case-set hash: SHA-256 over the canonical JSON of every JSON document and the SHA-256 of every
-// other file, by path in sorted order. The same bytes give the same hash whatever order the tar was written in.
+// isSuiteDocument reports whether a tar path is suite.json or a case's case.json.
+func isSuiteDocument(name string) bool {
+	if name == "suite.json" {
+		return true
+	}
+	parts := strings.Split(name, "/")
+	return len(parts) == 3 && parts[0] == "cases" && parts[2] == "case.json"
+}
+
+// suiteSHA is the case-set hash: SHA-256 over the canonical JSON of the suite's own documents (suite.json and each
+// case.json, whose spacing means nothing) and the SHA-256 of every other file's exact bytes - inputs and fixtures are
+// read byte for byte by the worker and the mock, so a changed byte there is a changed case - by path in sorted order.
+// The same files give the same hash whatever order the tar was written in.
 func suiteSHA(files entries) string {
 	h := sha256.New()
 	for _, name := range sortedNames(files) {
 		b := files[name]
 		var part string
-		if strings.HasSuffix(name, ".json") {
+		if isSuiteDocument(name) {
 			sum := sha256.Sum256(canonicalJSON(b))
 			part = "json:" + hex.EncodeToString(sum[:])
 		} else {

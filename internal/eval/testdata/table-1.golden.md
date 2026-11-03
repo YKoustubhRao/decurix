@@ -1,6 +1,6 @@
 # Eval e1: sample
 
-**n=1: not a result.** A single repeat shows what happened once; rates need at least 5 repeats.
+**n=1: not a result.** Fewer than 5 repeats show what happened, not a rate.
 
 - Suite: `sample`, SHA-256 `abc123`
 - Date: 2026-11-04 09:30 UTC; repeats: 1; status: done
@@ -40,11 +40,11 @@
 | two | 306.0k, 306.0k; 33% | 102.5k, 102.5k; 50% |
 | **total** | **255.0k, 306.0k; 50%** | **97.2k, 102.5k; 58%** |
 
-## Minutes per run (median); invalid rows
+## Minutes per run (median); rows left out: invalid, infrastructure
 
 | case | default | fast+expert |
 |---|---|---|
-| one | 4.0; 0 | 2.0; 0 |
-| two | 5.0; 0 | 4.0; 0 |
-| **total** | **4.5; 0** | **3.0; 0** |
+| one | 4.0; 0, 0 | 2.0; 0, 0 |
+| two | 5.0; 0, 0 | 4.0; 0, 0 |
+| **total** | **4.5; 0, 0** | **3.0; 0, 0** |
 

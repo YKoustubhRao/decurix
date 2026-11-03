@@ -13,9 +13,9 @@
   },
   "facts": [
     {
-      "id": "duplicate",
-      "about": "whether to enter a bill again that is already in the app",
-      "answer": "It is already entered. Do not enter it again.",
+      "id": "entered",
+      "about": "whether this bill is already in the Records app",
+      "answer": "Bill BL-1987 from Bluequill Stationers was entered in the Records app on 10 February 2026.",
       "required": false
     }
   ],
@@ -28,12 +28,21 @@
       },
       {
         "kind": "final_text_contains",
+        "words": [
+          "BL-1987"
+        ],
         "any": [
           "already",
           "duplicate",
           "exists",
           "existing",
           "previously"
+        ]
+      },
+      {
+        "kind": "asked",
+        "facts": [
+          "entered"
         ]
       }
     ],

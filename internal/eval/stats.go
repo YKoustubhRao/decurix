@@ -26,7 +26,9 @@ func Wilson(k, n int, z float64) (lo, hi float64) {
 	return math.Max(0, center-half), math.Min(1, center+half)
 }
 
-// Cell is one case × arm of a table (or an arm's total).
+// Cell is one case × arm of a table (or an arm's total). N, the rates and the means count the valid rows only: a row
+// whose model changed under it (Invalid) or whose case the runner could not run as written (Infra) says nothing of
+// the worker, so it is counted apart and never in k/n or a Wilson bound (review EVAL-1, B4).
 type Cell struct {
 	N                  int      `json:"n"`
 	Pass               int      `json:"pass"`
@@ -41,6 +43,7 @@ type Cell struct {
 	CachedShare        float64  `json:"cached_share"`
 	MinutesMedian      float64  `json:"minutes_median"`
 	Invalid            int      `json:"invalid"`
+	Infra              int      `json:"infra"`
 	Deployments        []string `json:"deployments"`
 }
 
@@ -63,12 +66,14 @@ type Table struct {
 	Rows      []TableRow      `json:"rows"`
 	Totals    map[string]Cell `json:"totals"`
 	NotResult bool            `json:"not_a_result"`
+	// Invalid counts the rows whose model changed under them; any makes the table say so first.
+	Invalid int `json:"invalid"`
 }
 
 // Summarise builds a run's table from its rows, cases in the run's order and arms as the run named them.
 func Summarise(run Run, rows []Row) Table {
 	t := Table{RunID: run.ID, Suite: run.SuiteName, SuiteSHA: run.SuiteSHA, Repeats: run.Repeats, Status: run.Status, Note: run.Note,
-		Date: run.CreatedAt, Arms: run.Arms, Rows: []TableRow{}, Totals: map[string]Cell{}, NotResult: run.Repeats < 2}
+		Date: run.CreatedAt, Arms: run.Arms, Rows: []TableRow{}, Totals: map[string]Cell{}, NotResult: run.Repeats < MinRepeats}
 	cases := append([]string{}, run.Cases...)
 	known := map[string]bool{}
 	for _, c := range cases {
@@ -93,13 +98,37 @@ func Summarise(run Run, rows []Row) Table {
 	}
 	for _, a := range run.Arms {
 		t.Totals[a.Name] = cell(byArm[a.Name])
+		t.Invalid += t.Totals[a.Name].Invalid
 	}
 	return t
 }
 
-// cell summarises a group of rows.
-func cell(rows []Row) Cell {
-	c := Cell{N: len(rows), Deployments: []string{}}
+// MinRepeats is the fewest repeats whose rates are a result (docs/evals.md); fewer are said not to be one.
+const MinRepeats = 5
+
+// cell summarises a group of rows: the valid ones, with the invalid and infrastructure ones counted apart.
+func cell(all []Row) Cell {
+	c := Cell{Deployments: []string{}}
+	seen := map[string]bool{}
+	var rows []Row
+	for _, r := range all {
+		for _, d := range r.Deployments {
+			if !seen[d] {
+				seen[d] = true
+				c.Deployments = append(c.Deployments, d)
+			}
+		}
+		switch {
+		case r.Invalid:
+			c.Invalid++
+		case r.Infra:
+			c.Infra++
+		default:
+			rows = append(rows, r)
+		}
+	}
+	sort.Strings(c.Deployments)
+	c.N = len(rows)
 	if len(rows) == 0 {
 		c.PassLo, c.FalseDoneHi = 0, 1
 		return c
@@ -107,7 +136,6 @@ func cell(rows []Row) Cell {
 	var tokens []int64
 	var minutes []float64
 	var in, cached int64
-	seen := map[string]bool{}
 	for _, r := range rows {
 		if r.Passed {
 			c.Pass++
@@ -118,21 +146,12 @@ func cell(rows []Row) Cell {
 		if r.DoneUncheckedWrong {
 			c.DoneUncheckedWrong++
 		}
-		if r.Invalid() {
-			c.Invalid++
-		}
 		c.QRequired += float64(r.QRequired)
 		c.QOther += float64(r.QOther)
 		tokens = append(tokens, r.TokensIn+r.TokensOut)
 		minutes = append(minutes, r.Minutes)
 		in += r.TokensIn
 		cached += r.TokensCached
-		for _, d := range r.Deployments {
-			if !seen[d] {
-				seen[d] = true
-				c.Deployments = append(c.Deployments, d)
-			}
-		}
 	}
 	n := float64(len(rows))
 	c.QRequired, c.QOther = c.QRequired/n, c.QOther/n
@@ -152,7 +171,6 @@ func cell(rows []Row) Cell {
 	if in > 0 {
 		c.CachedShare = float64(cached) / float64(in)
 	}
-	sort.Strings(c.Deployments)
 	return c
 }
 
@@ -160,8 +178,12 @@ func cell(rows []Row) Cell {
 func (t Table) Markdown() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Eval %s: %s\n\n", t.RunID, t.Suite)
+	if t.Invalid > 0 || strings.Contains(t.Note, "invalid") {
+		fmt.Fprintf(&b, "**INVALID: a model changed during the run.** %d row(s) were served by another deployment than the "+
+			"run pinned; they are left out of every rate below and counted apart.\n\n", t.Invalid)
+	}
 	if t.NotResult {
-		b.WriteString("**n=1: not a result.** A single repeat shows what happened once; rates need at least 5 repeats.\n\n")
+		fmt.Fprintf(&b, "**n=%d: not a result.** Fewer than %d repeats show what happened, not a rate.\n\n", t.Repeats, MinRepeats)
 	}
 	fmt.Fprintf(&b, "- Suite: `%s`, SHA-256 `%s`\n", t.Suite, t.SuiteSHA)
 	fmt.Fprintf(&b, "- Date: %s; repeats: %d; status: %s\n", t.Date.UTC().Format("2006-01-02 15:04 UTC"), t.Repeats, t.Status)
@@ -224,11 +246,15 @@ func (t Table) Markdown() string {
 		}
 		return fmt.Sprintf("%s, %s; %.0f%%", humanTokens(c.TokensMedian), humanTokens(c.TokensP90), 100*c.CachedShare)
 	})
-	section("Minutes per run (median); invalid rows", func(c Cell) string {
-		if c.N == 0 {
+	section("Minutes per run (median); rows left out: invalid, infrastructure", func(c Cell) string {
+		if c.N == 0 && c.Invalid == 0 && c.Infra == 0 {
 			return "-"
 		}
-		return fmt.Sprintf("%.1f; %d", c.MinutesMedian, c.Invalid)
+		minutes := "-"
+		if c.N > 0 {
+			minutes = fmt.Sprintf("%.1f", c.MinutesMedian)
+		}
+		return fmt.Sprintf("%s; %d, %d", minutes, c.Invalid, c.Infra)
 	})
 	return b.String()
 }

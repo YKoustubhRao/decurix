@@ -60,6 +60,10 @@ var schema = []string{
 		at_ns INTEGER NOT NULL
 	);
 	CREATE INDEX eval_rows_run ON eval_rows(run_id, arm, repeat);`,
+	// A row's model changed under it (invalid), or the runner could not run its case as written (infra): data, not a
+	// sentence in its problems, so the report can leave such rows out of k/n (review EVAL-1, B4).
+	`ALTER TABLE eval_rows ADD COLUMN invalid INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE eval_rows ADD COLUMN infra INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // Blobs keeps a run's suite tar by content (*blobstore.Store), so a run can be read again later.
@@ -106,16 +110,10 @@ type Row struct {
 	Checks             json.RawMessage `json:"checks"`
 	Problems           []string        `json:"problems"`
 	At                 time.Time       `json:"at"`
-}
-
-// Invalid reports whether the row's model changed under it (D10).
-func (r Row) Invalid() bool {
-	for _, p := range r.Problems {
-		if p == modelChanged {
-			return true
-		}
-	}
-	return false
+	// Invalid is a row whose calls were not all served by the deployment the run pinned (D10).
+	Invalid bool `json:"invalid"`
+	// Infra is a row whose case the runner could not run as written; it says nothing of the worker.
+	Infra bool `json:"infra"`
 }
 
 // Store keeps eval runs and their rows in SQLite.
@@ -229,11 +227,12 @@ func (s *Store) AddRow(r Row) error {
 		checks = json.RawMessage(`{}`)
 	}
 	_, err := s.db.Exec(`INSERT INTO eval_rows (run_id, arm, repeat, case_id, task_id, observed, checked, passed, false_done,
-		done_unchecked_wrong, q_required, q_other, tokens_in, tokens_cached, tokens_out, minutes, deployments, checks, problems, at_ns)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		done_unchecked_wrong, q_required, q_other, tokens_in, tokens_cached, tokens_out, minutes, deployments, checks, problems, at_ns,
+		invalid, infra)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.RunID, r.Arm, r.Repeat, r.CaseID, r.TaskID, r.Observed, r.Checked, r.Passed, r.FalseDone, r.DoneUncheckedWrong,
 		r.QRequired, r.QOther, r.TokensIn, r.TokensCached, r.TokensOut, r.Minutes, string(deps), string(checks), string(probs),
-		sqlitedb.ToNS(r.At))
+		sqlitedb.ToNS(r.At), r.Invalid, r.Infra)
 	return err
 }
 
@@ -293,7 +292,7 @@ func (s *Store) query(where string, args ...any) ([]Run, error) {
 // Rows returns a run's rows in the order they were stored.
 func (s *Store) Rows(runID string) ([]Row, error) {
 	rows, err := s.db.Query(`SELECT run_id, arm, repeat, case_id, task_id, observed, checked, passed, false_done, done_unchecked_wrong,
-		q_required, q_other, tokens_in, tokens_cached, tokens_out, minutes, deployments, checks, problems, at_ns
+		q_required, q_other, tokens_in, tokens_cached, tokens_out, minutes, deployments, checks, problems, at_ns, invalid, infra
 		FROM eval_rows WHERE run_id=? ORDER BY rowid`, runID)
 	if err != nil {
 		return nil, err
@@ -305,7 +304,8 @@ func (s *Store) Rows(runID string) ([]Row, error) {
 		var deps, checks, probs string
 		var at int64
 		if err := rows.Scan(&r.RunID, &r.Arm, &r.Repeat, &r.CaseID, &r.TaskID, &r.Observed, &r.Checked, &r.Passed, &r.FalseDone,
-			&r.DoneUncheckedWrong, &r.QRequired, &r.QOther, &r.TokensIn, &r.TokensCached, &r.TokensOut, &r.Minutes, &deps, &checks, &probs, &at); err != nil {
+			&r.DoneUncheckedWrong, &r.QRequired, &r.QOther, &r.TokensIn, &r.TokensCached, &r.TokensOut, &r.Minutes, &deps, &checks, &probs, &at,
+			&r.Invalid, &r.Infra); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(deps), &r.Deployments)

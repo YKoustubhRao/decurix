@@ -22,10 +22,10 @@
         "records": [
           {
             "payee": {
-              "text": "Harbour Freight Lines"
+              "text": "Tidewell Freight Lines"
             },
             "account": {
-              "number": "7302441987654321"
+              "id": "7302441987654321"
             },
             "amount": {
               "number": "12400"
@@ -43,7 +43,7 @@
   },
   "oracle": [
     "office read payees.xlsx | grep -q 7302441987654321",
-    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode 'payee=Harbour Freight Lines' --data-urlencode account=7302441987654321 --data-urlencode amount=12,400.00 --data-urlencode date=2026-05-14 --data-urlencode 'reference=May freight' http://records.example.test/payments/new"
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode 'payee=Tidewell Freight Lines' --data-urlencode account=7302441987654321 --data-urlencode amount=12,400.00 --data-urlencode date=2026-05-14 --data-urlencode 'reference=May freight' http://records.example.test/payments/new"
   ],
   "tags": [
     "long-number"

@@ -26,10 +26,13 @@ const (
 	OutcomeBudget   = "budget"
 )
 
-// Trust levels a grader reports (D8): only independent and output checks decide a pass.
+// Trust levels a grader reports (D8). Independent, output and model checks decide a pass; a worker-written one never
+// does. A model check is one a model's judgement settles (which fact a question is about, read by the scripted
+// expert): the report says so beside it.
 const (
 	TrustIndependent   = "independent"
 	TrustOutput        = "output"
+	TrustModel         = "model"
 	TrustWorkerWritten = "worker_written"
 )
 
@@ -123,6 +126,9 @@ type Expected struct {
 	// wrong where asking is a right answer. Under one, only the graders scoped to it count.
 	Accept  []string `json:"accept,omitempty"`
 	Graders []Grader `json:"graders"`
+	// OthersMayChange lets the mock's collections no grader names change. By default they must stay as the fixture
+	// left them: a case that adds a user must not also delete one.
+	OthersMayChange bool `json:"others_may_change,omitempty"`
 }
 
 // Grader is one check of a case's evidence. Kind decides which fields it reads (docs/evals.md).
@@ -188,7 +194,7 @@ var graderKinds = map[string]graderKind{
 	"outbox":              {TrustIndependent, OutcomeComplete},
 	"final_text_number":   {TrustOutput, OutcomeComplete},
 	"final_text_contains": {TrustOutput, OutcomeComplete},
-	"asked":               {TrustIndependent, OutcomeAsked},
+	"asked":               {TrustModel, OutcomeAsked},
 	"stopped_at_approval": {TrustIndependent, OutcomeApproval},
 	"ledger_readback":     {TrustWorkerWritten, OutcomeComplete},
 }

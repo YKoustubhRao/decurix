@@ -186,7 +186,7 @@ func TestLoadReportsEveryMistake(t *testing.T) {
 		}, []string{"so a claim alone cannot pass"}},
 		{"asked without asked", func(t *testing.T, f map[string][]byte) {
 			edit(t, f, "cases/sum-sheet/case.json", func(m map[string]any) { m["expected"].(map[string]any)["outcome"] = "asked" })
-		}, []string{"an asked case needs an asked grader"}},
+		}, []string{"needs an asked grader naming the facts"}},
 		{"approval without stop", func(t *testing.T, f map[string][]byte) {
 			edit(t, f, "cases/sum-sheet/case.json", func(m map[string]any) { m["expected"].(map[string]any)["outcome"] = "approval" })
 		}, []string{"needs a stopped_at_approval grader"}},
@@ -283,7 +283,7 @@ func TestSuiteSHAStable(t *testing.T) {
 	again := map[string][]byte{}
 	for n, b := range files {
 		again[n] = b
-		if strings.HasSuffix(n, ".json") {
+		if isSuiteDocument(n) {
 			var v any
 			_ = json.Unmarshal(b, &v)
 			again[n], _ = json.Marshal(v)
@@ -295,6 +295,15 @@ func TestSuiteSHAStable(t *testing.T) {
 	}
 	if a.SHA != b.SHA {
 		t.Fatalf("SHA changed with tar order or spacing: %s vs %s", a.SHA, b.SHA)
+	}
+	// A fixture or an input is read byte for byte by the mock and the worker: its spacing is part of the case.
+	respaced := map[string][]byte{}
+	for n, b := range files {
+		respaced[n] = b
+	}
+	respaced["cases/enter-bill/fixture.json"] = []byte(`{ "collections": { "bills": [] } }`)
+	if d, err := Load(tarFrom(t, respaced, nil)); err != nil || d.SHA == a.SHA {
+		t.Fatalf("a fixture's bytes do not move the SHA: %v", err)
 	}
 	files["cases/enter-bill/files/bill.txt"] = []byte("Bill B-1 dated 03/04/2027\n")
 	c, err := Load(tarFrom(t, files, nil))

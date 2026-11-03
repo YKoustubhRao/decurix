@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -23,12 +24,18 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
-// Arm kinds: a model works the cases; the two calibration arms run none.
+// Arm kinds: a model works the cases; the three calibration arms run none. oracle runs each case's scripted solution
+// (it must pass every case), nothing claims "done" and does nothing, and ask asks one question about nothing in
+// particular and stops (each must pass none).
 const (
 	ArmModel   = "model"
 	ArmOracle  = "oracle"
 	ArmNothing = "nothing"
+	ArmAsk     = "ask"
 )
+
+// AskAnything is the ask arm's question: one any worker could ask of any case.
+const AskAnything = "Before I go on: is there anything else I should know?"
 
 // Limits of one matrix.
 const (
@@ -62,6 +69,8 @@ type Sandbox interface {
 	practice.Sandbox
 	ExecPracticeAsWorker(ctx context.Context, containerID string, argv []string, timeout time.Duration) (int, []byte, error)
 	DesktopImageID(ctx context.Context, profile string) (string, error)
+	// VerifyGateQuestion checks that a question was signed by the desktop's own approval gate.
+	VerifyGateQuestion(desktopID, requestID, question, sig string) bool
 }
 
 // Slot is the control plane's one practice slot (*practice.Service): Simulate and evals take turns.
@@ -158,13 +167,16 @@ func (s *Service) Start(ctx context.Context, req MatrixRequest) (Run, error) {
 	if err := s.checkMemory(); err != nil {
 		return Run{}, err
 	}
+	if err := s.pinDeployments(arms); err != nil {
+		return Run{}, err
+	}
 	blob, err := s.Store.PutSuite(req.SuiteTar)
 	if err != nil {
 		return Run{}, err
 	}
 	now := s.Store.now()
 	run := Run{ID: sqlitedb.NewID("e", 8), CreatedAt: now, StartedAt: now, SuiteName: suite.Name, SuiteSHA: suite.SHA, SuiteBlob: blob,
-		Arms: arms, Cases: caseIDs(cases), Repeats: req.Repeats, Status: RunRunning}
+		Arms: arms, Cases: caseIDs(cases), Repeats: req.Repeats, Status: RunRunning, Note: graderNote()}
 	if err := s.Store.Create(run); err != nil {
 		return Run{}, err
 	}
@@ -178,6 +190,49 @@ func (s *Service) Start(ctx context.Context, req MatrixRequest) (Run, error) {
 	ok = true
 	go s.execute(runCtx, run, suite, cases, arms, release)
 	return run, nil
+}
+
+// pinDeployments resolves, once for the whole matrix, the deployment every model arm and the expert are served by: an
+// arm that starts later is held to what the run started with, so a settings change mid-run shows as invalid rows,
+// never as a quiet comparison of two models (review EVAL-1, B4).
+func (s *Service) pinDeployments(arms []Arm) error {
+	expert := ""
+	if s.Hub != nil && s.Hub.Configured(ExpertProvider) {
+		if dep, err := s.Hub.Resolve(ExpertProvider, ExpertModel); err == nil {
+			expert = dep
+		}
+	}
+	for i := range arms {
+		arms[i].ExpertDeployment = expert
+		if arms[i].Kind != ArmModel {
+			continue
+		}
+		dep, err := s.Hub.Resolve(arms[i].Provider, arms[i].Model)
+		if err != nil || dep == "" {
+			return BadRequest(fmt.Sprintf("Arm %s: its model could not be resolved.", arms[i].Name))
+		}
+		arms[i].Deployment = dep
+	}
+	return nil
+}
+
+// graderNote names the control plane build that graded the run: the graders are its code, so a score is bound to it
+// as well as to the case-set hash.
+func graderNote() string {
+	rev, dirty := "unknown", ""
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, kv := range info.Settings {
+			switch kv.Key {
+			case "vcs.revision":
+				rev = clipText(kv.Value, 12)
+			case "vcs.modified":
+				if kv.Value == "true" {
+					dirty = " (modified)"
+				}
+			}
+		}
+	}
+	return "Graded by control plane build " + rev + dirty + "."
 }
 
 func caseIDs(cases []Case) []string {
@@ -239,10 +294,10 @@ func (s *Service) checkArms(arms []Arm) ([]Arm, error) {
 			if !s.Hub.Configured(ExpertProvider) {
 				return nil, BadRequest("The scripted expert needs the Azure model set up.")
 			}
-		case ArmOracle, ArmNothing:
+		case ArmOracle, ArmNothing, ArmAsk:
 			a.Provider, a.Model, a.Expert = ExpertProvider, "", false
 		default:
-			return nil, BadRequest(fmt.Sprintf("Arm %s: the kind is model, oracle or nothing.", a.Name))
+			return nil, BadRequest(fmt.Sprintf("Arm %s: the kind is model, oracle, nothing or ask.", a.Name))
 		}
 		if len(a.AgentTree) > 0 {
 			sum, err := desktop.TarFingerprint(a.AgentTree)
@@ -384,12 +439,9 @@ func (s *Service) execute(ctx context.Context, run Run, suite Suite, cases []Cas
 		s.mu.Unlock()
 	}()
 	var expert *Expert
-	if s.Hub != nil && s.Hub.Configured(ExpertProvider) {
-		dep, err := s.Hub.Resolve(ExpertProvider, ExpertModel)
-		if err == nil {
-			expert = &Expert{Hub: s.Hub, Recorder: s.Recorder, Deployment: dep}
-			_ = s.Store.AddNote(run.ID, "The expert is "+ExpertProvider+" "+dep+".")
-		}
+	if len(arms) > 0 && arms[0].ExpertDeployment != "" {
+		expert = &Expert{Hub: s.Hub, Recorder: s.Recorder, Deployment: arms[0].ExpertDeployment}
+		_ = s.Store.AddNote(run.ID, "The expert is "+ExpertProvider+" "+expert.Deployment+".")
 	}
 	invalid := false
 	for i := range arms {
@@ -431,13 +483,18 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 		return false, practice.Sentence("The desktop image could not be read.")
 	}
 	arm.Image = image
+	// What the arm's model and the expert resolve to now, against the run's pins: a change since the run started makes
+	// every row of this arm invalid.
+	drift := ""
 	if arm.Kind == ArmModel {
-		if arm.Deployment, err = s.Hub.Resolve(arm.Provider, arm.Model); err != nil {
-			return false, practice.Sentence("The arm's model could not be resolved.")
+		if now, err := s.Hub.Resolve(arm.Provider, arm.Model); err != nil || now != arm.Deployment {
+			drift = fmt.Sprintf("%s: the arm's model resolves to %q at its start, not %q as when the run started", modelChanged, now, arm.Deployment)
 		}
 	}
-	if expert != nil {
-		arm.ExpertDeployment = expert.Deployment
+	if expert != nil && drift == "" {
+		if now, err := s.Hub.Resolve(ExpertProvider, ExpertModel); err != nil || now != expert.Deployment {
+			drift = fmt.Sprintf("%s: the expert resolves to %q at this arm's start, not %q as when the run started", modelChanged, now, expert.Deployment)
+		}
 	}
 	broker, err := s.BrokerURL(ctx)
 	if err != nil {
@@ -510,7 +567,11 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 			if ctx.Err() != nil {
 				return invalid, nil
 			}
-			invalid = invalid || row.Invalid()
+			if drift != "" {
+				row.Invalid = true
+				row.Problems = append(row.Problems, drift)
+			}
+			invalid = invalid || row.Invalid
 			if err := s.Store.AddRow(row); err != nil {
 				return invalid, fmt.Errorf("store a row: %w", err)
 			}
@@ -569,6 +630,8 @@ type rowChecks struct {
 	Graders    []Check `json:"graders"`
 	Questions  []Asked `json:"questions"`
 	WorkerSaid string  `json:"worker_said,omitempty"`
+	// Verdict is the worker's own decurix.verdict/v1 on its final, as it sent it.
+	Verdict json.RawMessage `json:"verdict,omitempty"`
 }
 
 // runCase runs one case in the arm's desktop and returns its row: inputs in, a fresh mock, the arm's work, then a
@@ -593,15 +656,13 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 	caseCtx, cancel := context.WithTimeout(ctx, time.Duration(budget.MaxMinutes*float64(s.minute())))
 	func() {
 		if err := s.Sandbox.CopyPracticeInputs(ctx, d.ContainerID, c.ID, c.Files); err != nil {
-			ev.RunErr = err
-			problems = append(problems, "The case's input files could not be copied in.")
+			ev.Infra = append(ev.Infra, "The case's input files could not be copied in.")
 			return
 		}
 		if c.Start.Mock != "" {
 			id, err := s.Sandbox.StartPracticeMock(ctx, arm.Image, armRun, suite.MockSources[c.Start.Mock], c.Fixture)
 			if err != nil {
-				ev.RunErr = err
-				problems = append(problems, "The case's mock app could not start.")
+				ev.Infra = append(ev.Infra, "The case's mock app could not start.")
 				return
 			}
 			mockID = id
@@ -610,7 +671,9 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 		case ArmModel:
 			problems = append(problems, s.observeModel(caseCtx, d, desktopID, route.TaskID, c, arm, expert, obs, &ev)...)
 		case ArmOracle:
-			problems = append(problems, s.runOracle(caseCtx, d, route.TaskID, c, &ev)...)
+			problems = append(problems, s.runOracle(caseCtx, d, desktopID, route.TaskID, c, &ev)...)
+		case ArmAsk:
+			problems = append(problems, s.askAnything(caseCtx, desktopID, route.TaskID, c, expert, &ev)...)
 		default:
 			yes := true
 			ev.Observation, ev.FinalText, ev.Checked = ObservedFinal, "done", &yes
@@ -652,10 +715,14 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 	row := Row{RunID: run.ID, Arm: arm.Name, Repeat: rep, CaseID: c.ID, TaskID: route.TaskID, Observed: res.Observed,
 		Checked: ev.Checked != nil && *ev.Checked, Passed: res.Passed, FalseDone: res.FalseDone, DoneUncheckedWrong: res.DoneUncheckedWrong,
 		QRequired: res.Questions.Required, QOther: res.Questions.Other, TokensIn: usage.Input, TokensCached: usage.Cached, TokensOut: usage.Output,
-		Minutes: ev.Minutes, Deployments: usage.Deployments, At: s.Store.now()}
+		Minutes: ev.Minutes, Deployments: usage.Deployments, At: s.Store.now(), Infra: res.Infra}
 	row.Problems = append(append([]string{}, res.Problems...), problems...)
-	if arm.Kind == ArmModel && servedByOther(usage.Deployments, arm.Deployment) && !containsString(row.Problems, modelChanged) {
-		row.Problems = append(row.Problems, modelChanged)
+	if arm.Kind == ArmModel && servedByOther(usage.Deployments, arm.Deployment) {
+		row.Invalid = true
+		row.Problems = append(row.Problems, fmt.Sprintf("%s: calls served by %s, the run pinned %q", modelChanged, strings.Join(usage.Deployments, ", "), arm.Deployment))
+	}
+	if containsString(problems, modelChanged) {
+		row.Invalid = true
 	}
 	for i := range row.Problems {
 		row.Problems[i] = suite.Withhold(row.Problems[i])
@@ -665,7 +732,7 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 		questions = []Asked{}
 	}
 	checks, _ := json.Marshal(rowChecks{Expected: res.Expected, Graders: res.Checks, Questions: questions,
-		WorkerSaid: clipText(ev.FinalText, 2000)})
+		WorkerSaid: clipText(ev.FinalText, 2000), Verdict: ev.Verdict})
 	row.Checks = json.RawMessage(suite.Withhold(string(checks)))
 	s.recordOutcome(desktopID, route.TaskID, c, ev, res)
 	return row
@@ -746,8 +813,8 @@ func (s *Service) readLedger(ctx context.Context, d desktop.PracticeDesktop, tas
 func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, desktopID, taskID string, c Case, arm Arm, expert *Expert, obs <-chan practice.Observation, ev *Evidence) []string {
 	var problems []string
 	if err := s.post(ctx, d, "/request", map[string]string{"content": c.Request, "task_id": taskID}); err != nil {
-		ev.RunErr = err
-		return append(problems, "The request could not be sent to the worker.")
+		ev.Infra = append(ev.Infra, "The request could not be sent to the worker.")
+		return problems
 	}
 	questions := 0
 	exhausted := s.Broker.CaseExhausted()
@@ -761,23 +828,11 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 				if questions > MaxQuestions {
 					ev.Questions = append(ev.Questions, asked)
 					ev.Observation, ev.FinalText = ObservedQuery, o.Text
-					return append(problems, "too many questions")
+					ev.Unfinished = append(ev.Unfinished, "too many questions")
+					return problems
 				}
-				if !o.Secret && expert != nil && len(c.Facts) > 0 {
-					choice, err := expert.ChooseFor(ctx, desktopID, taskID, o.Text, c.Facts)
-					if err != nil && ctx.Err() == nil {
-						log.Printf("eval: expert: %v", err)
-					}
-					asked.Fact = choice.Fact
-					if choice.Problem != "" {
-						problems = append(problems, "expert: "+choice.Problem)
-						if strings.Contains(choice.Problem, modelChanged) && !containsString(problems, modelChanged) {
-							problems = append(problems, modelChanged)
-						}
-					}
-				}
-				if f, ok := c.Fact(asked.Fact); ok {
-					asked.Required = f.IsRequired()
+				if !o.Secret {
+					problems = append(problems, s.classify(ctx, desktopID, taskID, c, expert, &asked)...)
 				}
 				if !arm.Expert || o.Secret {
 					// No expert, or a secret nobody may answer with a value: the question ends the case.
@@ -788,14 +843,15 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 				asked.Reply = Reply(c, asked.Fact)
 				ev.Questions = append(ev.Questions, asked)
 				if err := s.post(ctx, d, "/request", map[string]string{"content": asked.Reply, "task_id": taskID}); err != nil {
-					ev.RunErr = err
 					ev.Observation, ev.FinalText = ObservedQuery, o.Text
-					return append(problems, "The expert's reply could not be sent to the worker.")
+					ev.Infra = append(ev.Infra, "The expert's reply could not be sent to the worker.")
+					return problems
 				}
 			case qualification.ObservedApproval:
-				text := o.Gate
-				if text == "" {
-					text = o.Text
+				text := o.Text
+				// Only a question the desktop's own gate signed is the gate's; the worker's own "may I?" is not.
+				if o.Gate != "" && s.Sandbox.VerifyGateQuestion(desktopID, o.GateID, o.Gate, o.GateSig) {
+					text, ev.GateQuestion = o.Gate, o.Gate
 				}
 				ev.Questions = append(ev.Questions, Asked{Kind: ObservedApproval, Text: text, Required: true})
 				ev.Observation, ev.FinalText = ObservedApproval, text
@@ -817,6 +873,39 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 			return problems
 		}
 	}
+}
+
+// classify asks the expert which fact a question is about (it never answers here) and marks the question required
+// when that fact is; the problems are the expert's, said in the row. A case with no facts asks nobody.
+func (s *Service) classify(ctx context.Context, desktopID, taskID string, c Case, expert *Expert, asked *Asked) []string {
+	var problems []string
+	if expert != nil && len(c.Facts) > 0 {
+		choice, err := expert.ChooseFor(ctx, desktopID, taskID, asked.Text, c.Facts)
+		if err != nil && ctx.Err() == nil {
+			log.Printf("eval: expert: %v", err)
+		}
+		asked.Fact = choice.Fact
+		if choice.Problem != "" {
+			problems = append(problems, "expert: "+choice.Problem)
+			if strings.Contains(choice.Problem, modelChanged) {
+				problems = append(problems, modelChanged)
+			}
+		}
+	}
+	if f, ok := c.Fact(asked.Fact); ok {
+		asked.Required = f.IsRequired()
+	}
+	return problems
+}
+
+// askAnything is the ask calibration arm: it does nothing and asks AskAnything, which the expert reads as any
+// question is read; no case may accept it.
+func (s *Service) askAnything(ctx context.Context, desktopID, taskID string, c Case, expert *Expert, ev *Evidence) []string {
+	asked := Asked{Kind: ObservedQuery, Text: AskAnything}
+	problems := s.classify(ctx, desktopID, taskID, c, expert, &asked)
+	ev.Questions = append(ev.Questions, asked)
+	ev.Observation, ev.FinalText = ObservedQuery, AskAnything
+	return problems
 }
 
 // oraclePrelude runs one oracle line as the worker would run a command in its desktop session: the session's
@@ -842,7 +931,7 @@ func oracleArgv(taskID, caseID, line string) []string {
 // runOracle runs the case's scripted solution as the worker and records how it ended: an approval when the gate
 // stopped an approval step, an error when a step exited otherwise than it should, else a checked final with the
 // solution's answer.
-func (s *Service) runOracle(ctx context.Context, d desktop.PracticeDesktop, taskID string, c Case, ev *Evidence) []string {
+func (s *Service) runOracle(ctx context.Context, d desktop.PracticeDesktop, desktopID, taskID string, c Case, ev *Evidence) []string {
 	answer := "Done."
 	for i, st := range c.Oracle {
 		if ctx.Err() != nil {
@@ -875,6 +964,10 @@ func (s *Service) runOracle(ctx context.Context, d desktop.PracticeDesktop, task
 		}
 		if st.Kind == StepApproval && exit == st.Exit {
 			text := clipText(said, 2000)
+			// The gate's own words for what it holds, as the agent sends them with an approval (approval.signed_question).
+			if q := s.gateQuestion(ctx, d, desktopID, taskID, c.ID); q != "" {
+				text, ev.GateQuestion = q, q
+			}
 			ev.Questions = append(ev.Questions, Asked{Kind: ObservedApproval, Text: text, Required: true})
 			ev.Observation, ev.FinalText = ObservedApproval, text
 			return nil
@@ -888,6 +981,29 @@ func (s *Service) runOracle(ctx context.Context, d desktop.PracticeDesktop, task
 	yes := true
 	ev.Observation, ev.FinalText, ev.Checked = ObservedFinal, answer, &yes
 	return nil
+}
+
+// gateSignedQuestion prints the approval gate's pending request as the agent reads it for an approval note.
+const gateSignedQuestion = `python3 -c 'import json, sys; sys.path.insert(0, "/opt"); from decurix_agent.computer import approval; print(json.dumps(approval.signed_question() or {}))'`
+
+// gateQuestion is the desktop's gate's own question for the action it holds, when its signature checks; "" otherwise.
+func (s *Service) gateQuestion(ctx context.Context, d desktop.PracticeDesktop, desktopID, taskID, caseID string) string {
+	exit, out, err := s.Sandbox.ExecPracticeAsWorker(ctx, d.ContainerID, oracleArgv(taskID, caseID, gateSignedQuestion), 30*time.Second)
+	if err != nil || exit != 0 {
+		return ""
+	}
+	var q struct {
+		ID       string `json:"id"`
+		Question string `json:"question"`
+		Sig      string `json:"sig"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(out), &q) != nil || q.Question == "" {
+		return ""
+	}
+	if !s.Sandbox.VerifyGateQuestion(desktopID, q.ID, q.Question, q.Sig) {
+		return ""
+	}
+	return clipText(q.Question, 2000)
 }
 
 func lastLines(s string, n int) string {

@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
@@ -113,27 +114,54 @@ func describeRecord(r map[string]Value) string {
 // would join two numbers).
 var numberToken = regexp.MustCompile(`\d[\d,_'\x{00a0}\x{202f}]*(?:\.\d+)?`)
 
-// textHoldsNumber reports whether text writes the number, digit for digit with separators aside. A number inside
-// a longer run of digits does not count; a minus sign right before a token makes it negative.
-func textHoldsNumber(text, number string) bool {
-	want, ok := parseNumber(number)
-	if !ok {
-		return false
-	}
+// numbersIn lists the numbers text writes, digit runs with their separators; a minus sign right before one makes it
+// negative.
+func numbersIn(text string) []*big.Rat {
+	var out []*big.Rat
 	for _, loc := range numberToken.FindAllStringIndex(text, -1) {
-		tok := strings.TrimRight(text[loc[0]:loc[1]], ",_'  ")
-		got, ok := parseNumber(tok)
+		tok := strings.TrimRight(text[loc[0]:loc[1]], ",_'\u00a0\u202f")
+		n, ok := parseNumber(tok)
 		if !ok {
 			continue
 		}
-		if before := text[:loc[0]]; strings.HasSuffix(before, "-") || strings.HasSuffix(before, "−") {
-			got.Neg(got)
+		if before := text[:loc[0]]; strings.HasSuffix(before, "-") || strings.HasSuffix(before, "\u2212") {
+			n.Neg(n)
 		}
-		if got.Cmp(want) == 0 {
-			return true
+		out = append(out, n)
+	}
+	return out
+}
+
+// answersNumber says why a final report does not answer with the number ("" when it does). The answer must be
+// unambiguous: leaving aside the numbers the request itself writes, every number in the report is that number, and
+// there is at least one. A list of ids, a wrong count beside the right digit, or "5 of 12" is not an answer of 5.
+// Numbers written as words are not read.
+func answersNumber(final, request, number string) string {
+	want, ok := parseNumber(number)
+	if !ok {
+		return "the case's number is not a number."
+	}
+	asked := numbersIn(request)
+	found, other := false, []string{}
+	for _, n := range numbersIn(final) {
+		inRequest := false
+		for _, a := range asked {
+			inRequest = inRequest || a.Cmp(n) == 0
+		}
+		switch {
+		case n.Cmp(want) == 0:
+			found = true
+		case !inRequest:
+			other = append(other, n.RatString())
 		}
 	}
-	return false
+	if !found {
+		return fmt.Sprintf("the final report does not give %s.", number)
+	}
+	if len(other) > 0 {
+		return fmt.Sprintf("the final report gives %s, and other numbers beside it (%s): not one clear answer.", number, strings.Join(other, ", "))
+	}
+	return ""
 }
 
 // textHolds checks words in text, whitespace collapsed and case folded: all of words, and one of any.

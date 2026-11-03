@@ -25,7 +25,7 @@
               "id": "BL-2041"
             },
             "vendor": {
-              "text": "Bluebell Stationers"
+              "text": "Bluequill Stationers"
             },
             "date": {
               "date": "2026-03-12"
@@ -48,7 +48,7 @@
   },
   "oracle": [
     "office read bill.pdf | grep -q BL-2041",
-    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode number=BL-2041 --data-urlencode 'vendor=Bluebell Stationers' --data-urlencode date=2026-03-12 --data-urlencode due=2026-04-11 --data-urlencode total=1,416.00 --data-urlencode cost_centre=General --data-urlencode notes= http://records.example.test/bills/new"
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode number=BL-2041 --data-urlencode 'vendor=Bluequill Stationers' --data-urlencode date=2026-03-12 --data-urlencode due=2026-04-11 --data-urlencode total=1,416.00 --data-urlencode cost_centre=General --data-urlencode notes= http://records.example.test/bills/new"
   ],
   "tags": [
     "document"

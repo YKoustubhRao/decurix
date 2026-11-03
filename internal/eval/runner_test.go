@@ -158,13 +158,16 @@ type fakeSandbox struct {
 	execExit  func(argv []string) (int, []byte)
 	paused    map[string]bool
 	resets    int
-	blockReq  chan struct{}
-	seenWork  chan struct{}
+	// home is the files in the desktop's home that outlive a case unless the reset clears them.
+	home     map[string]bool
+	onCreate func(n int)
+	blockReq chan struct{}
+	seenWork chan struct{}
 }
 
 func newSandbox(t *testing.T, b *practice.Broker, w worker) *fakeSandbox {
 	return &fakeSandbox{t: t, broker: b, work: w, live: map[string]bool{}, mocks: map[string]map[string][]map[string]any{},
-		outputs: map[string]map[string][]byte{}, perCase: map[string]int{}, paused: map[string]bool{}}
+		outputs: map[string]map[string][]byte{}, perCase: map[string]int{}, paused: map[string]bool{}, home: map[string]bool{}}
 }
 
 func (f *fakeSandbox) CreatePractice(_ context.Context, spec desktop.PracticeSpec) (desktop.PracticeDesktop, error) {
@@ -172,15 +175,43 @@ func (f *fakeSandbox) CreatePractice(_ context.Context, spec desktop.PracticeSpe
 	defer f.mu.Unlock()
 	f.specs = append(f.specs, spec)
 	f.desktopID = desktop.PracticeDesktopID(spec.RunID)
+	f.home = map[string]bool{}
+	if f.onCreate != nil {
+		f.onCreate(len(f.specs))
+	}
 	id := "c-" + spec.RunID
 	f.live[id] = true
 	return desktop.PracticeDesktop{ContainerID: id, Name: f.desktopID, IP: "172.30.0.5"}, nil
 }
+
+// ResetPractice clears what the real reset clears (desktop.PracticeResetPaths) from the fake home.
 func (f *fakeSandbox) ResetPractice(context.Context, string, []byte) error {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.resets++
-	f.mu.Unlock()
+	for file := range f.home {
+		for _, root := range desktop.PracticeResetPaths() {
+			if file == root || strings.HasPrefix(file, root+"/") {
+				delete(f.home, file)
+			}
+		}
+	}
 	return nil
+}
+
+// learned is where the agent keeps a method after a checked done (methods.py: ~/.decurix/methods).
+const learned = "/home/headless/.decurix/methods/enter-a-bill.json"
+
+func (f *fakeSandbox) knows(file string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.home[file]
+}
+
+func (f *fakeSandbox) keep(file string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.home[file] = true
 }
 func (f *fakeSandbox) CopyPracticeInputs(_ context.Context, _ string, caseID string, _ map[string][]byte) error {
 	f.mu.Lock()
@@ -292,6 +323,11 @@ func (f *fakeSandbox) DesktopImageID(context.Context, string) (string, error) {
 	return "sha256:image1", nil
 }
 
+// VerifyGateQuestion takes "gate-signed" as the desktop gate's signature, nothing else.
+func (f *fakeSandbox) VerifyGateQuestion(_, requestID, question, sig string) bool {
+	return requestID != "" && question != "" && sig == "gate-signed"
+}
+
 // ---- what the fake worker does ----
 
 func (f *fakeSandbox) callback(path string, body map[string]any) {
@@ -341,12 +377,14 @@ func diligent(fs *fakeSandbox, caseID, content string, n int) {
 		fs.addRecord("bills", map[string]any{"number": "B-1"})
 		fs.final("Saved B-1.", true)
 	case "ask-first":
-		if n == 1 {
+		// A method kept from an earlier case already holds the person's answer: a worker that has one does not ask.
+		if n == 1 && !fs.knows(learned) {
 			fs.callback("/api/querytext", map[string]any{"kind": "query", "reply": "Which cost centre should B-2 go to?"})
 			return
 		}
-		if strings.Contains(content, "Birch") {
+		if strings.Contains(content, "Birch") || fs.knows(learned) {
 			fs.addRecord("bills", map[string]any{"number": "B-2", "centre": "Birch"})
+			fs.keep(learned)
 			fs.final("Saved B-2 to Birch.", true)
 			return
 		}
@@ -603,7 +641,7 @@ func TestAChangedDeploymentMarksTheRowAndTheRunInvalid(t *testing.T) {
 	}
 	run = waitDone(t, s, run.ID)
 	rows, _ := s.Store.Rows(run.ID)
-	if rows[0].Invalid() || !rows[1].Invalid() || rows[1].Deployments[0] != "big-2" {
+	if rows[0].Invalid || !rows[1].Invalid || rows[1].Deployments[0] != "big-2" {
 		t.Fatalf("rows: %+v", rows)
 	}
 	if run.Status != RunDone || !strings.Contains(run.Note, "invalid") {
