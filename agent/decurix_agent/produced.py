@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -1767,25 +1768,61 @@ def saved_on_host(request, ask=None):
     return _host_findings(request, ask)[1]
 
 
-def copy_from_host(paths, fetch=None):
+HOST_COPY_TASKS = 5  # the check copies of the last few tasks are kept; older ones are removed
+
+
+def _host_copy_root():
+    return config.DECURIX_DIR / "computer" / "host-copies"
+
+
+def _prune_host_copies(keep):
+    """Remove the check copies of all but the newest HOST_COPY_TASKS tasks (never `keep`'s), and any copy left loose in
+    the folder by an older version of this code (review 2026-11-03, E-43: nothing was ever removed)."""
+
+    root = _host_copy_root()
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.is_file():
+            try:
+                entry.unlink()
+            except OSError:
+                pass
+    folders = sorted((e for e in entries if e.is_dir()), key=lambda d: d.stat().st_mtime, reverse=True)
+    for old in folders[HOST_COPY_TASKS:]:
+        if old.name != keep:
+            shutil.rmtree(old, ignore_errors=True)
+
+
+def host_copies(paths, fetch=None):
     """
-    Local copies of files of the person's computer, for the final check to read
-    (the control plane hands over only files the task's own request names).
-    Copies keep the file's own name, under ~/.decurix/computer/host-copies/.
-    A file that cannot be fetched is left out.
+    {host path: local copy} of files of the person's computer, for the final check to read (the control plane hands
+    over only files the task's own request names). A file in the shared folder is read where it is. A fetched copy
+    keeps the file's own name, in a folder of its own per full path, under a folder per task
+    (~/.decurix/computer/host-copies/<task>/<hash of the path>/<name>): found (review 2026-11-03, E-31), copies kept by
+    name alone made two report.xlsx files of two client folders one file, so one was checked twice and the other
+    never. A file
+    that cannot be fetched is left out.
     """
 
+    import hashlib
     import urllib.parse
     import urllib.request
 
-    folder = config.DECURIX_DIR / "computer" / "host-copies"
-    out = []
-    for path in paths:
+    from decurix_agent import task_context
+
+    task = re.sub(r"[^\w-]", "_", task_context.current() or "current")
+    folder = _host_copy_root() / task
+    out = {}
+    fetched = False
+    for path in dict.fromkeys(paths or ()):
         if Path(_leaf(path)).suffix.lower() not in READABLE:
             continue
         local = shared.to_local(path)
         if local is not None and Path(local).is_file():
-            out.append(Path(local))  # in the shared folder: read where it is, not fetched
+            out[path] = Path(local)  # in the shared folder: read where it is, not fetched
             continue
         try:
             if fetch is not None:
@@ -1795,13 +1832,24 @@ def copy_from_host(paths, fetch=None):
                        + urllib.parse.urlencode({"desktop": config.DESKTOP_ID, "path": path}))
                 with urllib.request.urlopen(url, timeout=60) as answer:
                     data = answer.read()
-            folder.mkdir(parents=True, exist_ok=True)
-            local = folder / _leaf(path)
+            place = folder / hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
+            place.mkdir(parents=True, exist_ok=True)
+            local = place / _leaf(path)
             local.write_bytes(data)
-            out.append(local)
+            out[path] = local
+            fetched = True
         except Exception as exc:  # noqa: BLE001 - a copy that cannot be made leaves the check to the rest
             log(f"produced: could not copy {path} from the person's computer: {exc}")
+    if fetched:
+        _prune_host_copies(task)
     return out
+
+
+def copy_from_host(paths, fetch=None):
+    """The local copies host_copies makes, as a list in the order of `paths` (callers that need to know which copy is
+    which host file use host_copies)."""
+
+    return list(host_copies(paths, fetch=fetch).values())
 
 
 # What a file's name says its first bytes must be (the control plane reads eight of them, never more).
