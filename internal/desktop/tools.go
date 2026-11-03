@@ -42,6 +42,18 @@ func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
 	return nil
 }
 
+// populateToolsLocked is PopulateToolsVolume under toolsMu, noting whether it applied (EnsureToolsVolume then has
+// nothing left to do) or waits for running desktops.
+func (m *Manager) populateToolsLocked(ctx context.Context) error {
+	m.toolsMu.Lock()
+	defer m.toolsMu.Unlock()
+	if err := m.PopulateToolsVolume(ctx); err != nil {
+		return err
+	}
+	m.toolsPopulated = !m.toolsWaiting.Load()
+	return nil
+}
+
 // toolsWaitExit is the tools image's exit status when it left the volume as it was because desktops were running
 // (docker/tools.Dockerfile).
 const toolsWaitExit = 75
@@ -50,13 +62,21 @@ const toolsWaitExit = 75
 // replaces the shared tools volume (REVIEW-3 follow-up 2).
 func (m *Manager) ToolsRefreshWaiting() bool { return m.toolsWaiting.Load() }
 
-// desktopsRunning is "1" when any desktop is running (or Docker cannot say), "0" when none is.
+// desktopsRunning is "1" when any desktop may use /opt/tools now or on resume (or Docker cannot say), "0" when none
+// may. Paused counts: desktops are idle-paused routinely, and one resumed mid-task would find its tools replaced
+// (RW1-G-02). So does restarting, and any state but exited, created or dead.
 func (m *Manager) desktopsRunning(ctx context.Context) string {
 	args := filters.NewArgs()
 	args.Add("label", "desktop-manager=true")
-	args.Add("status", "running")
-	list, err := m.client.ContainerList(ctx, container.ListOptions{Filters: args})
-	if err != nil || len(list) > 0 {
+	list, err := m.client.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
+	if err != nil {
+		return "1"
+	}
+	for _, c := range list {
+		switch c.State {
+		case container.StateExited, container.StateCreated, container.StateDead:
+			continue
+		}
 		return "1"
 	}
 	return "0"

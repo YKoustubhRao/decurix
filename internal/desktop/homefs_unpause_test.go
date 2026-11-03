@@ -82,6 +82,11 @@ func TestTwoCopiesIntoAPausedDesktopBothSucceed(t *testing.T) {
 	if n := len(fake.called("ContainerUnpause")); n != 1 {
 		t.Errorf("want one unpause, got %d: %v", n, fake.calls)
 	}
+	// A read's re-pause runs when its reader goroutine ends, which may be just after the read returned.
+	for deadline := time.Now().Add(2 * time.Second); len(fake.called("ContainerPause")) == 0 && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond) // a second, wrong pause would land by now
 	if n := len(fake.called("ContainerPause")); n != 1 {
 		t.Errorf("want one pause after both copies, got %d: %v", n, fake.calls)
 	}
@@ -99,6 +104,7 @@ func TestACopyIntoADesktopResumedMeanwhileGoesOn(t *testing.T) {
 	if _, err := m.readHomeBytes(context.Background(), "box", homeDir+"/present", 1<<20); err != nil {
 		t.Fatal(err)
 	}
+	time.Sleep(50 * time.Millisecond) // a re-pause would run as the reader goroutine ends
 	if n := len(fake.called("ContainerPause")); n != 0 {
 		t.Errorf("a desktop the copy did not resume must not be paused by it: %v", fake.calls)
 	}

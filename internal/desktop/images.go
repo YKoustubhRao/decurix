@@ -101,8 +101,9 @@ func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bo
 		return nil
 	}
 
-	// Ensure the shared tools volume is populated from the tools image.
-	if err := m.PopulateToolsVolume(ctx); err != nil {
+	// Ensure the shared tools volume is populated from the tools image, under the tools lock so it never overlaps a
+	// desktop creation's populate (RW1-G-04).
+	if err := m.populateToolsLocked(ctx); err != nil {
 		fmt.Fprintf(out, "==> warning: populate tools volume: %v\n", err)
 	}
 
