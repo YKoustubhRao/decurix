@@ -177,7 +177,7 @@ func TestPullStoresEveryFileOnceAndMarksTheRunExported(t *testing.T) {
 		t.Fatalf("missing = %v", b.Missing)
 	}
 	stored := blobs.count()
-	if got := string(h.written[".decurix/runs/t_1/EXPORTED"]); got != "e_1\n"+b.ManifestSHA+"\n" {
+	if got := string(h.written[".decurix/runs/t_1/EXPORTED"]); got != "e_1\n"+b.ManifestSHA+"\n\n" { // the fixture's LABELLED is empty
 		t.Fatalf("EXPORTED = %q", got)
 	}
 	if saved, ok, _ := p.Store.Bundle("e_1"); !ok || saved.ManifestSHA != b.ManifestSHA {

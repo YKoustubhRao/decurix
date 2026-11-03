@@ -61,8 +61,10 @@ execution ends and before a desktop is deleted. Paths are under the worker's hom
   keeps the new file, with the old one in the bundle's `history`. Rows and blobs are never deleted (plan rule 4).
 - A desktop that is not there saves nothing (`runs.ErrDesktopGone`), as a pull that finds no part at all does
   (`runs.ErrNothingFound`).
-- After the bundle is saved, the control plane writes `~/.decurix/runs/<task>/EXPORTED` (the execution id, then the
-  manifest SHA, one line each). The desktop's prune keeps a labelled run until that file is there (W0.8).
+- After the bundle is saved, the control plane writes `~/.decurix/runs/<task>/EXPORTED`, three lines: the execution
+  id, the manifest SHA, and the content of the run folder's `LABELLED` as that pull read it (trailing newlines
+  trimmed; an empty line when there was none). The agent compares that third line with `LABELLED` now, since a tar
+  copy rounds file times to the second. The desktop's prune keeps a labelled run until that file is there (W0.8).
 - An execution with no bundle still has a trajectory: no steps, and `integrity.missing` says "no bundle".
 
 ## The document

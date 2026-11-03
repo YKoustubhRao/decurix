@@ -125,6 +125,7 @@ type pull struct {
 	events   string // the recording's events.jsonl blob, to order observations and frames
 	found    bool
 	gone     bool
+	labelled string         // the run folder's LABELLED as this pull read it, for EXPORTED's third line
 	capped   map[string]int // entries not kept for the file cap, by part
 	counted  map[string]int // entries kept or held, by part
 }
@@ -209,7 +210,7 @@ func (p *Puller) Pull(ctx context.Context, ref ExecutionRef) (Bundle, error) {
 		Missing: st.missing}
 	// EXPORTED is written under the store's lock, from the bundle as stored: the last pull saved is the last written.
 	saved, err := p.Store.SaveBundleThen(b, func(saved Bundle) error {
-		return p.writeExported(ctx, ref, saved.ManifestSHA)
+		return p.writeExported(ctx, ref, saved.ManifestSHA, st.labelled)
 	})
 	if err != nil && saved.ExecID == "" {
 		return Bundle{}, err
@@ -287,6 +288,9 @@ func (s *pull) readLabel(ctx context.Context, name, rel string) bool {
 		s.files = append(s.files, File{Path: rel, SHA256: sha, Bytes: n})
 		if strings.HasSuffix(rel, "/events.jsonl") && name == "recording" {
 			s.events = sha
+		}
+		if name == "run" && rel == ".decurix/runs/"+s.ref.TaskID+"/LABELLED" {
+			s.labelled = s.readBlob(sha)
 		}
 	})
 	return true
@@ -481,6 +485,17 @@ func (s *pull) eventOrder() map[string]int {
 	return order
 }
 
+// readBlob is a stored blob's content ("" when it cannot be read).
+func (s *pull) readBlob(sha string) string {
+	rc, err := s.p.Blobs.Open(sha)
+	if err != nil {
+		return ""
+	}
+	defer rc.Close()
+	data, _ := io.ReadAll(io.LimitReader(rc, LabelLimit))
+	return string(data)
+}
+
 // cleanup removes the files spooled on local disk.
 func (s *pull) cleanup() {
 	if s.spoolDir != "" {
@@ -497,9 +512,12 @@ func sortedKeys(m map[string]int) []string {
 	return out
 }
 
-// writeExported writes ~/.decurix/runs/<task>/EXPORTED (C8): the execution id and the manifest's SHA-256, one line
-// each, as the worker. The folders on the way are made when missing; existing ones keep their owner and mode.
-func (p *Puller) writeExported(ctx context.Context, ref ExecutionRef, manifest string) error {
+// writeExported writes ~/.decurix/runs/<task>/EXPORTED (C8), as the worker: the execution id, the manifest's SHA-256,
+// and the LABELLED this pull read (its content exactly, less trailing newlines; "" when it was not there), one line
+// each. The agent's retention compares the third line with LABELLED's content to know whether this export covers the
+// run's latest label: a tar copy rounds times to the second, so it cannot compare times. The folders on the way are
+// made when missing; existing ones keep their owner and mode.
+func (p *Puller) writeExported(ctx context.Context, ref ExecutionRef, manifest, labelled string) error {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	now := time.Now()
@@ -508,7 +526,7 @@ func (p *Puller) writeExported(ctx context.Context, ref ExecutionRef, manifest s
 			return err
 		}
 	}
-	body := []byte(ref.ExecID + "\n" + manifest + "\n")
+	body := []byte(ref.ExecID + "\n" + manifest + "\n" + strings.TrimRight(labelled, "\r\n") + "\n")
 	if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: ".decurix/runs/" + ref.TaskID + "/EXPORTED",
 		Mode: 0o600, Size: int64(len(body)), ModTime: now}); err != nil {
 		return err
