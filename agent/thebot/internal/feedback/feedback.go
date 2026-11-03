@@ -26,6 +26,7 @@ import (
 	"thebot/internal/llm"
 	"thebot/internal/memory"
 	"thebot/internal/migrate"
+	"thebot/internal/withheld"
 )
 
 // Migrate is the feedback store's schema, step by step: appended only, never edited (internal/migrate).
@@ -86,7 +87,8 @@ func (s *Store) Close() error { return s.db.Close() }
 // An entry holding a secret-shaped value (memory.LooksSecret) is not kept:
 // it would be recalled into later failures' reasoning prompts.
 func (s *Store) RecordNegative(ctx context.Context, task, detail, source string) error {
-	if memory.LooksSecret(task) || memory.LooksSecret(detail) {
+	if secrets := withheld.From(ctx); memory.LooksSecret(task) || memory.LooksSecret(detail) || secrets.Holds(task) ||
+		secrets.Holds(detail) {
 		return memory.ErrSecret
 	}
 	vec, err := s.embedder.Embed(ctx, embedModel, task+"\n"+detail)

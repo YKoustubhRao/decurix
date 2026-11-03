@@ -15,6 +15,7 @@ import (
 	"thebot/internal/prompt"
 	"thebot/internal/safety"
 	"thebot/internal/skills"
+	"thebot/internal/withheld"
 	"thebot/internal/workspace"
 )
 
@@ -733,9 +734,22 @@ func (e *execution) finish() *Job {
 	}
 
 	if e.s.L2 != nil {
-		_ = e.s.L2.Append(memory.L2Entry{Prompt: job.Prompt, Status: string(job.Outcome), Plan: stepStrings(job.Plan)})
+		_ = e.s.L2.Append(l2Entry(withheld.From(e.ctx), job))
 	}
 	return job
+}
+
+// l2Entry is the job as L2 keeps it: its prompt and plan with the job's secret values withheld (C14), and none of its
+// text when the whole request was secret.
+func l2Entry(secrets withheld.Values, job *Job) memory.L2Entry {
+	if secrets.Whole(job.Prompt) {
+		return memory.L2Entry{Prompt: withheld.Mark, Status: string(job.Outcome)}
+	}
+	plan := stepStrings(job.Plan)
+	for i := range plan {
+		plan[i] = secrets.Text(plan[i])
+	}
+	return memory.L2Entry{Prompt: secrets.Text(job.Prompt), Status: string(job.Outcome), Plan: plan}
 }
 
 func approvalQuestion(p *pause, request string) string {

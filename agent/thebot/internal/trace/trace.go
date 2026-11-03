@@ -23,6 +23,7 @@ import (
 
 	"thebot/internal/llm"
 	"thebot/internal/memory"
+	"thebot/internal/withheld"
 )
 
 // Schema names a trace line.
@@ -143,7 +144,8 @@ func (w *Writer) Call(ctx context.Context, purpose, provider, model string, mess
 
 // CommandRun writes the line of one command run under ctx: its text and output through the secrets filter, the
 // guard's decision, the exit code (nil when it did not run), duration, the redacted output's SHA-256 and its first
-// OutputHead bytes. clean is the caller's own filter, run first (the secrets the task gave); nil for none.
+// OutputHead bytes. The job's secret values (withheld.From) are taken out first, then clean, the caller's own filter
+// (the secrets the task gave; nil for none), then the shape filter.
 func (w *Writer) CommandRun(ctx context.Context, text, guard string, exit *int, d time.Duration, output string, clean func(string) string) {
 	if w == nil {
 		return
@@ -155,6 +157,9 @@ func (w *Writer) CommandRun(ctx context.Context, text, guard string, exit *int, 
 	if clean == nil {
 		clean = func(s string) string { return s }
 	}
+	secrets := withheld.From(ctx)
+	own := clean
+	clean = func(s string) string { return own(secrets.Text(s)) }
 	redactedOut := memory.RedactSecrets(clean(output))
 	sum := sha256.Sum256([]byte(redactedOut))
 	w.write(tags, Line{Kind: "command", Command: &Command{

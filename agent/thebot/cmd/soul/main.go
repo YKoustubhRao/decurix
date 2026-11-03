@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -32,6 +33,7 @@ import (
 	"thebot/internal/session"
 	"thebot/internal/skills"
 	"thebot/internal/trace"
+	"thebot/internal/withheld"
 	"thebot/internal/workspace"
 	"thebot/web"
 )
@@ -59,6 +61,8 @@ type jobRecord struct {
 	Log     []string
 	// Usage is what this job's model calls read and wrote (llm.Metered).
 	Usage *llm.Usage
+	// secrets are the secret values withheld from everything this job logs and answers (C14).
+	secrets withheld.Values
 	// TaskID is the control plane's task the job was sent for ("" when none was named).
 	TaskID      string
 	startedAt   time.Time
@@ -107,8 +111,11 @@ func (j *jobRecord) isDone() bool {
 	}
 }
 
+// appendLog adds a line to the job's log and stream, with the job's secret values withheld: a step's text
+// ("$ gui type e3 '...'") leaves soul without them (C14).
 func (j *jobRecord) appendLog(line string) {
 	j.mu.Lock()
+	line = j.secrets.Text(line)
 	j.Log = append(j.Log, line)
 	subs := make([]chan string, 0, len(j.subscribers))
 	for ch := range j.subscribers {
@@ -138,11 +145,12 @@ func (j *jobRecord) unsubscribe(ch chan string) {
 	j.mu.Unlock()
 }
 
+// snapshot is the job as /api/jobs and the stream answer it, with the job's secret values withheld in every string.
 func (j *jobRecord) snapshot() map[string]any {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	promptTokens, responseTokens, calls := j.Usage.Snapshot()
-	return map[string]any{
+	return scrubbed(map[string]any{
 		"id": j.ID, "prompt": j.Prompt, "status": j.Status,
 		"plan": j.Plan, "results": j.Results, "finalAnswer": j.FinalAnswer,
 		"usedSkill": j.UsedSkill, "proposedSkill": j.ProposedSkill,
@@ -150,8 +158,70 @@ func (j *jobRecord) snapshot() map[string]any {
 		"steps": j.Steps, "resumed": j.Resumed,
 		"usage": map[string]int{"promptTokens": promptTokens, "responseTokens": responseTokens, "calls": calls,
 			"cachedTokens": j.Usage.Cached()},
-	}
+	}, j.secrets.Text)
 }
+
+// scrubbed is v as its JSON reads, with fix applied to every string in it (keys too): what soul answers is filtered
+// once, whatever shape it has.
+func scrubbed(v map[string]any, fix func(string) string) map[string]any {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return map[string]any{}
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return map[string]any{}
+	}
+	out, _ := scrubAny(decoded, fix).(map[string]any)
+	return out
+}
+
+func scrubAny(x any, fix func(string) string) any {
+	switch t := x.(type) {
+	case string:
+		return fix(t)
+	case []any:
+		for i := range t {
+			t[i] = scrubAny(t[i], fix)
+		}
+		return t
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[fix(k)] = scrubAny(val, fix)
+		}
+		return out
+	}
+	return x
+}
+
+// secretSet is every secret value soul has been told this process, at most maxSecrets, oldest dropped first. It is
+// never written anywhere: it lets a job resumed in a session, and the memory API, withhold values an earlier job was
+// told.
+type secretSet struct {
+	mu   sync.Mutex
+	vals []string
+}
+
+const maxSecrets = 256
+
+// add keeps values and returns every value known.
+func (s *secretSet) add(values []string) withheld.Values {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, v := range withheld.Clean(values) {
+		if !slices.Contains(s.vals, v) {
+			s.vals = append(s.vals, v)
+		}
+	}
+	if len(s.vals) > maxSecrets {
+		s.vals = s.vals[len(s.vals)-maxSecrets:]
+	}
+	return withheld.Clean(s.vals)
+}
+
+// all is every value known.
+func (s *secretSet) all() withheld.Values { return s.add(nil) }
 
 // server holds everything the HTTP handlers need - deliberately a struct,
 // not package-level globals, so tests can construct isolated instances
@@ -175,6 +245,8 @@ type server struct {
 	storesOff []string
 	// tracer writes each task's trace (internal/trace); nil writes none.
 	tracer *trace.Writer
+	// secrets is every secret value a job was told this process (C14), withheld from all soul answers.
+	secrets secretSet
 }
 
 // pausedJobTTL is how long a paused job waits for its reply before the next
@@ -340,7 +412,10 @@ func (s *server) handleMemory(w http.ResponseWriter, r *http.Request) {
 	}
 	out["feedback"] = fbInfo
 
-	writeJSON(w, 200, out)
+	// A second wall (C14): what the stores hold passes through the secret values soul was told and its secrets
+	// filter before it is served, whatever was written before either existed.
+	secrets := s.secrets.all()
+	writeJSON(w, 200, scrubbed(out, func(text string) string { return memory.RedactSecrets(secrets.Text(text)) }))
 }
 
 // handleSkills lists real acquired-skill state: what's confirmed and
@@ -442,6 +517,10 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// TaskID is the control plane's task this request belongs to (PLAN-P2 C2). It tags every model call and command
 		// of the job (llm.WithTags) and names its trace; one not of llm.TaskIDShape is ignored.
 		TaskID string `json:"taskId"`
+		// Secrets are the request's (and its replies') secret values: what the person marked, or the control plane
+		// withheld (C14). Data beside the prompt, never added to it: the model is sent the prompt as it is, and
+		// nothing soul logs, answers or stores keeps a copy of them.
+		Secrets []string `json:"secrets"`
 	}
 	// Bounded: a request is a prompt and its host context, never megabytes (review T-23).
 	r.Body = http.MaxBytesReader(w, r.Body, maxChatBody)
@@ -452,6 +531,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	id := genID()
 	job := newJobRecord(id, body.Prompt)
+	job.secrets = s.secrets.add(body.Secrets)
 	s.jobsMu.Lock()
 	running := 0
 	for _, j := range s.jobs {
@@ -491,7 +571,8 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	tags := llm.Tags{Task: taskID, Job: id}
 	job.TaskID = taskID
 
-	ctx, cancel := context.WithCancel(trace.WithWriter(llm.WithTags(context.Background(), tags), s.tracer))
+	jobCtx := withheld.With(trace.WithWriter(llm.WithTags(context.Background(), tags), s.tracer), job.secrets)
+	ctx, cancel := context.WithCancel(jobCtx)
 	ctx, used := llm.WithUsage(ctx)
 	job.mu.Lock()
 	job.cancel = cancel
@@ -555,8 +636,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// next request queues behind, and it evicts that request's cached
 		// prompt prefix on the way.
 		if s.sched.L1 != nil && memory.LooksMemorable(body.Prompt) {
-			go s.sched.L1.ConsiderExchange(trace.WithWriter(llm.WithTags(context.Background(), tags), s.tracer), body.Prompt,
-				finalAnswer, job.appendLog)
+			go s.sched.L1.ConsiderExchange(jobCtx, body.Prompt, finalAnswer, job.appendLog)
 		}
 
 		job.finish()

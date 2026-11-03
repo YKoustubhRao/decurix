@@ -16,6 +16,8 @@ import (
 
 	"thebot/internal/llm"
 	"thebot/internal/migrate"
+
+	"thebot/internal/withheld"
 )
 
 // L1 is curated memory: the small set of things actually worth carrying
@@ -247,7 +249,7 @@ const dedupeThreshold = 0.95
 // token or key) is never stored, whoever asks: L1 is recalled into every
 // later job's system frame, and a secret there is in every prompt after it.
 func (l *L1) Store(ctx context.Context, fact, source string) error {
-	if LooksSecret(fact) {
+	if LooksSecret(fact) || withheld.From(ctx).Holds(fact) {
 		return ErrSecret
 	}
 	l.storeMu.Lock()

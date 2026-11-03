@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,13 +24,16 @@ import (
 type fakeProxy struct {
 	mu      sync.Mutex
 	headers []http.Header
+	bodies  [][]byte
 }
 
 func (f *fakeProxy) start(t *testing.T) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		f.headers = append(f.headers, r.Header.Clone())
+		f.bodies = append(f.bodies, body)
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{{"message": map[string]any{"content": "Hello."}}},

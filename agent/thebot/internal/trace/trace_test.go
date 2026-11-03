@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"thebot/internal/llm"
+	"thebot/internal/withheld"
 )
 
 // readLines is every line of a trace file, decoded.
@@ -204,4 +205,15 @@ func TestAnUnwritableFolderFailsNothing(t *testing.T) {
 		t.Fatalf("the call failed with the trace: %v %+v", err, res)
 	}
 	w.CommandRun(taskCtx(w), "ls", GuardAllowed, nil, 0, "", nil)
+}
+
+// A job's own secret values, of no credential's shape, are withheld from the trace too (C14).
+func TestAJobsSecretIsWithheldFromTheTrace(t *testing.T) {
+	dir := t.TempDir()
+	w := New(dir)
+	ctx := withheld.With(taskCtx(w), []string{"plumtree-cabinet-41"})
+	w.CommandRun(ctx, "gui type e3 'plumtree-cabinet-41'", GuardAllowed, nil, 0, "typed plumtree-cabinet-41", nil)
+	if raw := mustRead(t, filepath.Join(dir, "t_9.jsonl")); strings.Contains(raw, "plumtree") {
+		t.Fatalf("the trace holds the job's secret: %s", raw)
+	}
 }

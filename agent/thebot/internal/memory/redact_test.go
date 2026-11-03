@@ -1,8 +1,12 @@
 package memory
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+
+	"thebot/internal/withheld"
 )
 
 // RedactSecrets takes out exactly what LooksSecret finds: after it, no secret sample still looks secret, and a plain
@@ -45,5 +49,14 @@ func TestRedactSecretsWithholdsWhatLooksSecret(t *testing.T) {
 		if got := RedactSecrets(text); got != text {
 			t.Errorf("RedactSecrets(%q) = %q, want it unchanged", text, got)
 		}
+	}
+}
+
+// L1 refuses a fact that holds one of the job's secret values, whatever its shape.
+func TestL1RefusesAJobsSecret(t *testing.T) {
+	l1 := &L1{}
+	ctx := withheld.With(context.Background(), []string{"plumtree-cabinet-41"})
+	if err := l1.Store(ctx, "The portal sign-in is plumtree-cabinet-41.", "explicit"); !errors.Is(err, ErrSecret) {
+		t.Fatalf("Store = %v, want ErrSecret", err)
 	}
 }
