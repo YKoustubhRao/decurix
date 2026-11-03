@@ -32,6 +32,9 @@ query_asked_at = 0.0
 # so the person's reply can be kept with what it answered (lessons.py).
 last_query_text = ""
 last_query_kind = ""
+# Whether that question was raised for a secret (a password or code field, a step the recorder kept private): its reply
+# may be the secret itself, so it is withheld whole wherever it is kept (messaging "secret", watchers.answer_waiting).
+last_query_secret = False
 
 # Whether the harness's reasoning backend has been reached at least once.
 # Set by harness.wait_for_backend() on the thread app.py starts, read by

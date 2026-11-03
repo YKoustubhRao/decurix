@@ -555,8 +555,13 @@ def answer_waiting(path, content, already_marked=False):
     # What the person just told the worker is kept for later
     # tasks (lessons.py) - except the answers of a lesson being
     # taught, which the skill itself keeps, question by question.
+    # The reply to a question raised for a secret may be the secret itself: it is remembered as one (withheld from every
+    # later note, step and report) and never kept as a lesson (review 2026-11-03, X-6).
+    secret = getattr(state, "last_query_secret", False)
+    if secret:
+        _remember_reply_secret(content)
     teaching = (state.paused_skill or {}).get("mode") == "learn"
-    if not teaching:
+    if not teaching and not secret:
         # A replay's or a skill run's own question (a value, a
         # stuck step); "is it done?" is not one of those.
         mechanical = (state.paused_replay is not None
@@ -610,6 +615,21 @@ def answer_waiting(path, content, already_marked=False):
         target, args = _run_handler, (target, args)
 
     threading.Thread(target=target, args=args, daemon=True).start()
+
+
+def _remember_reply_secret(content):
+    """A reply to a question raised for a secret: the secrets it spells out, and a one-word reply whole, are remembered
+    so privacy.withhold_known hides them from here on. Never raises."""
+
+    try:
+        from decurix_agent.computer import privacy
+        text = attachments.text(content or "").strip()
+        privacy.remember_secrets(text)
+        words = text.split()
+        if len(words) == 1:
+            privacy.remember_value(words[0].rstrip(".:!?,;"))
+    except Exception as exc:  # noqa: BLE001 - the control plane withholds the reply too ("secret" on the question)
+        log(f"Could not remember the reply's secret: {exc}")
 
 
 def _perform_long(content, task_file):

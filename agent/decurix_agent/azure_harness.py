@@ -37,7 +37,7 @@ from decurix_agent.computer import approval
 from decurix_agent.identity import get_identity_context
 from decurix_agent.logging_utils import log, log_banner
 from decurix_agent.memory_context import get_memory_context
-from decurix_agent.messaging import ask_for_query, remember, write_final_reply
+from decurix_agent.messaging import ask_for_query, remember, withheld, write_final_reply
 from decurix_agent.tools import office, outbox
 
 ENGINE = "azure"
@@ -708,7 +708,7 @@ def perform_task(task, task_file):
     _finish_pushbacks = 0
     usage.set_model(os.environ.get("AZURE_MODEL") or "hosted model")
 
-    log_banner("STARTING TASK (azure harness)", task)
+    log_banner("STARTING TASK (azure harness)", withheld(task))
 
     messages = [
         {"role": "system", "content": _system_message(task)},
@@ -757,7 +757,7 @@ def continue_after_query(query_response):
 
     messages.append({"role": "tool", "tool_call_id": paused["call_id"], "content": result})
 
-    log_banner("RECEIVED HUMAN REPLY (azure harness)", reply)
+    log_banner("RECEIVED HUMAN REPLY (azure harness)", withheld(reply))
 
     _run(messages)
 

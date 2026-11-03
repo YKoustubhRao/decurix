@@ -13,6 +13,7 @@ from decurix_agent.memory_context import get_memory_context
 from decurix_agent.messaging import (
     ask_for_query,
     backend_failure_note,
+    withheld,
     write_final_reply,
 )
 from decurix_agent.ollama_client import ensure_model_resident
@@ -880,7 +881,7 @@ def perform_task(task, task_file):
 
     state.begin(task, task_file)
 
-    log_banner("STARTING TASK (TheBot harness)", task)
+    log_banner("STARTING TASK (TheBot harness)", withheld(task))
 
     # soul reports each job's token counts with the job (_count). The local
     # model costs nothing per call; a hosted one's spend is on the provider's
@@ -910,7 +911,7 @@ def continue_after_query(query_response):
     if getattr(state, "last_query_kind", "") != "approval":
         playbooks.answered()
 
-    log_banner("RECEIVED HUMAN REPLY TO QUERY (TheBot harness)", query_response)
+    log_banner("RECEIVED HUMAN REPLY TO QUERY (TheBot harness)", withheld(query_response))
 
     global _written_pause
     written, _written_pause = _written_pause, None

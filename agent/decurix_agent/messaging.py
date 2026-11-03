@@ -150,7 +150,7 @@ def save_request(request, task_id=""):
 # ============================================================
 
 def send_query(filename, content, kind="", reply="", engine=None, quiet=False, interrupted=False, checked=False,
-               task_id=None, with_usage=True, fallback=None, still_working=False):
+               task_id=None, with_usage=True, fallback=None, still_working=False, secret=False):
     """
     Send a query to the Decurix control plane.
 
@@ -172,6 +172,11 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
         interrupted - true when this reports a task an earlier life of the
                     agent never finished; the control plane drops it when that
                     task was already closed (a restart it was asked for)
+        secret    - true on a question raised for a secret (a password or code
+                    field, a step the recorder kept private): the person's reply
+                    may be the secret, and the control plane keeps none of it.
+                    A structural fact from where the question came from, never a
+                    reading of its words (review 2026-11-03, X-6)
 
     `content` is the whole formatted note, which the dashboard's Query rail
     still shows verbatim. `kind`/`reply` are what the chat renders: the
@@ -224,6 +229,8 @@ def send_query(filename, content, kind="", reply="", engine=None, quiet=False, i
     if still_working:
         # The desktop is still busy after this reply (a planned run's receipt): the chat's turn stays open.
         payload["still_working"] = True
+    if secret:
+        payload["secret"] = True
     # Whether the result went through the final check (verify.py, the skill
     # gate): the task records keep it as data, so an audit can tell a checked
     # "done" from one nobody looked at.
@@ -283,6 +290,13 @@ def _withheld(text):
     except Exception as exc:  # noqa: BLE001 - fail closed
         log(f"Could not withhold secrets from a note, so it is held back: {exc}")
         return HELD_BACK
+
+
+def withheld(text):
+    """_withheld, for the agent's own log: a request or a reply printed in a banner is withheld first - the log is a
+    file the worker's tools and the support zip read (review 2026-11-03, F raw log). Never raises."""
+
+    return _withheld(text)
 
 
 def _post_querytext(payload):
@@ -412,7 +426,7 @@ BLANK_PROBLEM = (
 )
 
 
-def ask_for_query(problem, kind="query", engine=None):
+def ask_for_query(problem, kind="query", engine=None, secret=False):
     """
     Ask the human/control plane a query.
 
@@ -421,6 +435,9 @@ def ask_for_query(problem, kind="query", engine=None):
     action) and "query" when it is stuck. Both pause the task the same way;
     the task records count them separately, since one is the agent doing
     its job and the other is the agent failing to.
+
+    `secret`: the question was raised for a secret field or a private step (a structural fact the caller has, never
+    read from the question's words): its reply is withheld whole wherever it is kept (send_query's "secret").
     """
 
     # A model that answers `HELP:` with nothing after it has still stopped the
@@ -502,6 +519,7 @@ Please send instructions through the Decurix control plane.
     )
 
     state.last_query_text, state.last_query_kind = problem, kind
+    state.last_query_secret = bool(secret)
 
     log_banner("AGENT HAS A QUERY", content, f"Query written to: {path}")
 
@@ -518,6 +536,7 @@ Please send instructions through the Decurix control plane.
         kind=kind,
         reply=problem,
         engine=engine,
+        secret=secret,
     )
 
     if sent:

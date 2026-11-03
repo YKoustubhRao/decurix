@@ -8,6 +8,7 @@ from decurix_agent.logging_utils import log, log_banner
 from decurix_agent.messaging import (
     ask_for_query,
     backend_failure_note,
+    withheld,
     write_final_reply,
 )
 from decurix_agent.ollama_client import (
@@ -906,7 +907,7 @@ def perform_task(task, task_file):
     _pending_dangerous_command = None
     _pending_gate_material = None
 
-    log_banner("STARTING TASK", task)
+    log_banner("STARTING TASK", withheld(task))
 
     history = []
 
@@ -1159,7 +1160,7 @@ def continue_after_query(query_response):
 
     state.waiting_for_query = False
 
-    log_banner("RECEIVED HUMAN REPLY TO QUERY", query_response)
+    log_banner("RECEIVED HUMAN REPLY TO QUERY", withheld(query_response))
 
     # Continue the same task with the human's
     # response appended as context.

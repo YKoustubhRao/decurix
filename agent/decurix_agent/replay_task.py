@@ -137,7 +137,8 @@ def _run(program, params, start):
             "text": result["text"],
         }
         kind = "approval" if result["outcome"] == replay.NEEDS_APPROVAL else "query"
-        ask_for_query(result["text"], kind=kind, engine=ENGINE)
+        ask_for_query(result["text"], kind=kind, engine=ENGINE,
+                      secret=result["outcome"] == replay.NEEDS_HUMAN and _secret_step(program, result.get("step")))
         return
 
     if result["outcome"] == replay.COMPLETED_UNVERIFIED:
@@ -150,6 +151,29 @@ def _run(program, params, start):
 
     kind = "final" if result["outcome"] in replay.SUCCESS else "error"
     write_final_reply(result["text"], kind=kind, engine=ENGINE)
+
+
+def _secret_step(program, n):
+    """
+    Whether the recorded step `n` a replay stopped on is a secret one - a step the recorder kept private (kind
+    "manual": a password typed by the person), one that types a parameter the recording withheld, or one whose control
+    is a secret field. A structural fact of the recording, never a reading of the question's words: the person's reply
+    to its question may be the secret itself (review 2026-11-03, X-6). Never raises; unknown is not secret.
+    """
+
+    try:
+        step = next((s for s in program.get("steps") or [] if s.get("n") == n), None)
+        if step is None:
+            return False
+        if step.get("kind") == "manual":
+            return True
+        if any(p.get("secret") and p.get("step") == n for p in program.get("params") or []):
+            return True
+        from decurix_agent.computer import privacy
+        target = step.get("target")
+        return isinstance(target, dict) and bool(privacy.secret_field(target))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def resume(reply, approval_outcome=None):
