@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"os"
 	"os/exec"
 	"strconv"
 	"time"
@@ -61,9 +60,8 @@ func runShell(ctx context.Context, dir, command string, timeout time.Duration, e
 
 	cmd := hostshell.Command(command)
 	cmd.Dir = dir
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
+	// Soul's own secrets (the agent token, its keys) are not the command's (review T-16).
+	cmd.Env = hostshell.ChildEnv(extraEnv...)
 	cmd.Stdin = nil
 	var out cappedBuffer
 	cmd.Stdout = &out

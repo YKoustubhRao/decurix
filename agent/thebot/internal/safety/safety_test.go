@@ -201,14 +201,18 @@ func TestAssessRequestIgnoresQuestionsAndBuilds(t *testing.T) {
 }
 
 func TestIsApproval(t *testing.T) {
-	for _, reply := range []string{"yes", "Yes, go ahead", "ok", "approved", "go for it", "sure, do it", "LGTM"} {
+	// Without a host reading or a gate, only an exact short affirmative grants (review T-10); a longer yes is unclear
+	// and is asked again, which costs a question, never a wrong grant.
+	for _, reply := range []string{"yes", "Yes.", "ok", "approved", "go ahead", "y"} {
 		if !IsApproval(reply) {
 			t.Errorf("IsApproval(%q) = false, want true", reply)
 		}
 	}
 	for _, reply := range []string{"no", "don't", "yes but don't push yet", "wait", "use rsync instead", "", "what would it do?",
 		"ok, what will this send?", "yes, how much is it?", "sure - which account?", "yes if the total matches",
-		"ok, but only the first one", "yes once the tests pass", "go ahead unless it is over 500"} {
+		"ok, but only the first one", "yes once the tests pass", "go ahead unless it is over 500",
+		"You can't do that", "go away", "ok I'm not comfortable with that", "Okay I'm not sure", "fine, leave it",
+		"continue later", "sure thing, cheers", "yes please and also delete my backups", "Yes, go ahead"} {
 		if IsApproval(reply) {
 			t.Errorf("IsApproval(%q) = true, want false", reply)
 		}

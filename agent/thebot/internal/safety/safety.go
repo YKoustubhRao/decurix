@@ -14,6 +14,11 @@
 // The patterns are deliberately narrow. A gate that fires on ordinary work
 // ("install this package", "delete the build folder") teaches a human to
 // approve without reading, which is worse than no gate at all.
+//
+// FROZEN (review 2026-11-03, owner decision O-1): this word-level list is a
+// guard rail in front of the worker, not a boundary, and it is not grown any
+// more. The boundary is the OS: the gate user, read-only binds and the input
+// broker in docs/gate-boundary.md. A miss found here is fixed there.
 package safety
 
 import (
@@ -329,22 +334,25 @@ func AssessRequest(prompt string) *Concern {
 }
 
 var (
-	approvalRe = regexp.MustCompile(`(?i)^\s*(yes|yep|yeah|yup|y|ok|okay|sure|approved?|i approve|confirm(ed)?|go( ahead)?|go for it|do it|proceed|continue|lgtm|sounds good|fine|allowed?|granted|you can|please do|affirmative)\b`)
-	refusalRe  = regexp.MustCompile(`(?i)\b(no|nope|don'?t|do not|stop|cancel|abort|wait|hold on|never|not now|deny|denied|reject(ed)?)\b`)
+	refusalRe = regexp.MustCompile(`(?i)\b(no|nope|don'?t|do not|stop|cancel|abort|wait|hold on|never|not now|deny|denied|reject(ed)?)\b`)
 	// A question back, or a yes on a condition, grants nothing yet: "ok, what will this send?" asks before deciding, and
 	// "yes if the total matches" is a yes only once something holds that no one has checked.
 	questionRe  = regexp.MustCompile(`(?i)\?|\b(what|which|how|why|where|who|whom|whose|when)\b`)
 	conditionRe = regexp.MustCompile(`(?i)\b(if|only|unless|provided|providing|as long as|so long as|assuming|but|except|after|once|first|before|until)\b`)
 )
 
+// plainYesRe is a reply that is only a short affirmative and nothing else.
+var plainYesRe = regexp.MustCompile(`(?i)^\s*(yes|y|yep|yeah|ok|okay|approve|approved|go ahead)\s*[.!]*\s*$`)
+
 // IsApproval reports whether a human's reply to an approval request grants
-// it. A reply that says yes and no at once ("ok but don't push yet") is not
-// an approval - the gate stays shut and the reply is passed on as input.
-// Only a clear affirmative is one: a reply with a question in it, or a
-// condition, is not a yes.
+// it, where no host reading and no gate decides (a standalone soul; on a
+// Decurix desktop the gate process reads the reply). Only an exact short
+// affirmative grants; anything else - a yes with more words, a question, a
+// condition - is unclear, and the gate stays shut (review T-10: a prefix
+// match read several refusals as yes).
 func IsApproval(reply string) bool {
 	reply = strings.TrimSpace(reply)
-	if reply == "" || !approvalRe.MatchString(reply) {
+	if reply == "" || !plainYesRe.MatchString(reply) {
 		return false
 	}
 	return !refusalRe.MatchString(reply) && !questionRe.MatchString(reply) && !conditionRe.MatchString(reply)

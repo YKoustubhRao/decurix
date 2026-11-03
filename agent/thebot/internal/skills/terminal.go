@@ -224,8 +224,13 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 
 	cmd := hostshell.CommandContext(ctx, command)
 	cmd.Dir = cwd
+	// Soul's own secrets are not the command's (review T-16), and what it prints is held to a bound (T-14).
+	cmd.Env = hostshell.ChildEnv()
+	var outBuf, errBuf hostshell.CappedBuffer
+	cmd.Stdout, cmd.Stderr = &outBuf, &errBuf
 	start := time.Now()
-	stdout, err := cmd.Output()
+	err := cmd.Run()
+	stdout := outBuf.Bytes()
 	duration := time.Since(start).Milliseconds()
 	// The command itself finished with 0; a background child it started is
 	// what still held the pipe (and was cut off). Its own exit is the result.
@@ -236,7 +241,7 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		exitCode := -1
 		exitErr, isExitErr := err.(*exec.ExitError)
 		if isExitErr {
-			stderr = string(exitErr.Stderr)
+			stderr = errBuf.String()
 			exitCode = exitErr.ExitCode()
 		}
 

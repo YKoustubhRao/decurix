@@ -46,5 +46,35 @@ func (w *Workspace) ResolveSafe(relPath string) (string, error) {
 	if abs != w.root && !strings.HasPrefix(abs, w.root+string(filepath.Separator)) {
 		return "", fmt.Errorf("workspace: path %q escapes workspace root", relPath)
 	}
+	// By its name it is inside; where it leads, links followed, must be too (review T-15).
+	real, root := RealPath(abs), RealPath(w.root)
+	if real != root && !strings.HasPrefix(real, root+string(filepath.Separator)) {
+		return "", fmt.Errorf("workspace: path %q leads outside the workspace root", relPath)
+	}
 	return abs, nil
+}
+
+// RealPath is p with every link in it followed: the deepest part of it that exists, resolved, with the rest (not made
+// yet) joined back on. p itself when nothing of it can be resolved.
+func RealPath(p string) string {
+	rest := ""
+	cur := p
+	for {
+		if real, err := filepath.EvalSymlinks(cur); err == nil {
+			if rest == "" {
+				return real
+			}
+			return filepath.Join(real, rest)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return p
+		}
+		if rest == "" {
+			rest = filepath.Base(cur)
+		} else {
+			rest = filepath.Join(filepath.Base(cur), rest)
+		}
+		cur = parent
+	}
 }

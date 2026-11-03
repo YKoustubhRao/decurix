@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"thebot/internal/workspace"
 
 	"thebot/internal/llm"
 )
@@ -361,7 +362,13 @@ func resolveWritePath(rc RunContext, path string) (string, error) {
 		}
 		p = filepath.Join(rc.Dir(), p)
 	}
+	// Where the path really leads, links followed (review T-15: a link inside the workspace pointing at the agent's
+	// own files passed the containment check by its name).
 	p = filepath.Clean(p)
+	real := workspace.RealPath(p)
+	if err := hiddenTarget(rc, real, home); err != nil {
+		return "", err
+	}
 
 	roots := []string{rc.WorkDir, home, os.TempDir()}
 	if rc.Workspace != nil {
@@ -371,12 +378,48 @@ func resolveWritePath(rc RunContext, path string) (string, error) {
 		if root == "" {
 			continue
 		}
-		root = filepath.Clean(root)
-		if p == root || strings.HasPrefix(p, root+string(filepath.Separator)) {
+		if pathWithin(real, workspace.RealPath(filepath.Clean(root))) {
 			return p, nil
 		}
 	}
 	return "", fmt.Errorf("%s is outside the working directory and the home directory", p)
+}
+
+// pathWithin reports whether p is root or inside it.
+func pathWithin(p, root string) bool {
+	return p == root || strings.HasPrefix(p, strings.TrimSuffix(root, string(filepath.Separator))+string(filepath.Separator))
+}
+
+// hiddenTarget refuses a write into a hidden file or folder of the home (its dot-folders hold the agent's command
+// file, its token, its settings and lessons) - except inside soul's own workspace, which itself lives in one
+// (WORKSPACE_ROOT is ~/.decurix/ai), and there except its own hidden stores (.skills, .memory, .rag). The same rail
+// the Claude harness keeps (claude_guard.py), so the two harnesses agree (review T-15). A guard rail, not a boundary.
+func hiddenTarget(rc RunContext, p, home string) error {
+	if rc.Workspace != nil {
+		if root := workspace.RealPath(filepath.Clean(rc.Workspace.Root())); pathWithin(p, root) {
+			if hasHiddenPart(strings.TrimPrefix(p, root)) {
+				return fmt.Errorf("%s is one of the agent's own stores, not a place for work", p)
+			}
+			return nil
+		}
+	}
+	if home == "" {
+		return nil
+	}
+	if h := workspace.RealPath(filepath.Clean(home)); pathWithin(p, h) && hasHiddenPart(strings.TrimPrefix(p, h)) {
+		return fmt.Errorf("%s is in a hidden folder of the home, where the agent keeps its own files", p)
+	}
+	return nil
+}
+
+// hasHiddenPart reports whether a relative path has a part that starts with a dot.
+func hasHiddenPart(rel string) bool {
+	for _, part := range strings.FieldsFunc(rel, func(r rune) bool { return r == '/' || r == filepath.Separator }) {
+		if strings.HasPrefix(part, ".") && part != "." && part != ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // rootedPath reports whether p names a place from a root rather than from the
