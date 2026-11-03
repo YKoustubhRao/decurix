@@ -86,3 +86,10 @@ func TestEveryReadCarriesTheCheckedOutcome(t *testing.T) {
 		}
 	}
 }
+
+// A reason read from words is labelled a guess; a stop and a wrong verdict are facts (C-22).
+func TestWordReadReasonsAreMarkedGuessed(t *testing.T) {
+	if !GuessedReason(ReasonApprovalPayment) || !GuessedReason(ReasonCredentials) || GuessedReason(ReasonStopped) || GuessedReason(ReasonWrong) {
+		t.Fatal("GuessedReason misjudges which reasons are read from words")
+	}
+}

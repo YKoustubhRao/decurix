@@ -343,9 +343,12 @@ func (g Group) TokensPerTask() string {
 
 // Reason is one row of "why humans stepped in".
 type Reason struct {
-	Key      string          `json:"key"`
-	Label    string          `json:"label"`
-	Approval bool            `json:"approval"`
+	Key      string `json:"key"`
+	Label    string `json:"label"`
+	Approval bool   `json:"approval"`
+	// Guessed says the reason was read from the words of a question or an error (classify.go), not from what
+	// happened: a person reads it as a guess (C-22). A stop and a wrong verdict are facts.
+	Guessed  bool            `json:"guessed"`
 	Count    int             `json:"count"`
 	Share    float64         `json:"share"`
 	ByEngine []EngineCount   `json:"by_engine"`
@@ -448,7 +451,7 @@ func reportFromSummaries(since time.Time, summaries []Summary) Report {
 
 			reason, ok := reasons[key]
 			if !ok {
-				reason = &Reason{Key: key, Label: ReasonLabel(key), Approval: IsApprovalReason(key)}
+				reason = &Reason{Key: key, Label: ReasonLabel(key), Approval: IsApprovalReason(key), Guessed: GuessedReason(key)}
 				reasons[key] = reason
 				reasonEngines[key] = map[string]int{}
 			}

@@ -289,7 +289,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
       {{range $report.Reasons}}
       <div class="reason">
         <div class="reason-head">
-          <div class="reason-label"><i class="reason-kind{{if .Approval}} is-approval{{end}}"></i><span>{{.Label}}</span></div>
+          <div class="reason-label"><i class="reason-kind{{if .Approval}} is-approval{{end}}"></i><span>{{.Label}}</span>{{if .Guessed}}<span class="muted" title="Read from the words of the question or error, not from what happened"> · guessed from the words</span>{{end}}</div>
           <div class="share-bar"><i style="width:{{.SharePercent}}%"></i></div>
           <div class="reason-count">{{.Count}}<span>{{.SharePercent}}%</span></div>
         </div>

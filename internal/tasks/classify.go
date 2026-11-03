@@ -197,6 +197,13 @@ var reasonLabels = map[string]string{
 	ReasonWrong:           "Answer marked wrong",
 }
 
+// GuessedReason reports whether a reason key is read from words (a question's or an error's text, by the word lists
+// below) rather than from what happened: every key but a stop and a wrong verdict. The agent sends no reason code of
+// its own yet; when it does, that code should come first and these guesses only as the fallback (C-22).
+func GuessedReason(key string) bool {
+	return key != ReasonStopped && key != ReasonWrong
+}
+
 // ReasonLabel is the human-readable name of a reason key.
 func ReasonLabel(reason string) string {
 	if label, ok := reasonLabels[reason]; ok {
