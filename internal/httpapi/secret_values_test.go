@@ -213,3 +213,19 @@ func TestALessonKeepsNoHeldValueFromAnotherInput(t *testing.T) {
 		}
 	}
 }
+
+// A task open at start that is closed by a stop or a delete also ends its desktop's hashes-only recording.
+func TestClosingTheOpenTasksEndsHashesOnly(t *testing.T) {
+	s := recordingServer(t)
+	if _, err := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "box", Name: "box"}, "sign in", tasks.Origin{Kind: tasks.OriginPerson}); err != nil {
+		t.Fatal(err)
+	}
+	s.ForgetSecretsAtStart()
+	if !s.secretsUnknown("box") {
+		t.Fatal("a desktop with a task open at start records its calls with their text")
+	}
+	s.closeOpenTasks("box", "The desktop was stopped before this task finished.")
+	if s.secretsUnknown("box") {
+		t.Fatal("after its open tasks were closed, the desktop's calls still keep no text")
+	}
+}
