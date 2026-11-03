@@ -171,7 +171,7 @@ func (s *Store) StartRun(dagID, trigger string, now time.Time) (Run, error) {
 	}
 
 	if headNodeID == "" {
-		return Run{}, fmt.Errorf("dag: this DAG has no head node set")
+		return Run{}, refuse("this DAG has no head node set")
 	}
 
 	edges, err := edgeEnds(tx, dagID)

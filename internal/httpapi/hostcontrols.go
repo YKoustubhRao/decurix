@@ -90,7 +90,7 @@ func (s *Server) visionProvider() string {
 func (s *Server) sessionControls(sess *winhost.Session, id string) winhost.Controls {
 	c, err := sess.Controls()
 	if err != nil {
-		return winhost.Controls{Error: err.Error()}
+		return winhost.Controls{Error: viewerReason(err)}
 	}
 	if !c.Pending && c.Error == "" {
 		// An app Windows describes takes typed text as characters; one that draws its own screen, as keys.

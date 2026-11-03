@@ -24,7 +24,7 @@ func (s *Server) desktopMemoryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		badForm(w, err)
 		return
 	}
 
@@ -80,7 +80,7 @@ func (s *Server) linkDesktopMemoryHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		badForm(w, err)
 		return
 	}
 
@@ -134,7 +134,7 @@ func (s *Server) unlinkDesktopMemoryHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		badForm(w, err)
 		return
 	}
 

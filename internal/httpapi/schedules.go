@@ -130,7 +130,7 @@ func (s *Server) toggleScheduleHandler(w http.ResponseWriter, r *http.Request) {
 func scheduleInputError(w http.ResponseWriter, err error) {
 	var input schedule.InputError
 	if errors.As(err, &input) {
-		jsonStatusError(w, http.StatusBadRequest, input.Error())
+		jsonStatusError(w, http.StatusBadRequest, refusal(input))
 		return
 	}
 

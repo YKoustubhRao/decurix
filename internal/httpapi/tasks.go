@@ -92,7 +92,7 @@ func (s *Server) tasksPageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Web.RenderTasks(w, data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, "tasks page", err)
 	}
 }
 
@@ -135,7 +135,7 @@ func (s *Server) taskPageHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.Web.RenderTask(w, data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, "task page", err)
 	}
 }
 

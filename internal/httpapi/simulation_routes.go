@@ -120,7 +120,7 @@ func practiceError(w http.ResponseWriter, err error) {
 	var low practice.LowMemoryError
 	switch {
 	case errors.As(err, &low):
-		jsonStatusError(w, 409, low.Error())
+		jsonStatusError(w, 409, refusal(low))
 	case errors.Is(err, practice.ErrBusy), errors.Is(err, practice.ErrStale):
 		jsonStatusError(w, 409, practice.Public(err))
 	case errors.Is(err, practice.ErrHostedOnly):

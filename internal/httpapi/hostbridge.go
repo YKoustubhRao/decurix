@@ -213,7 +213,7 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, hostBridgeExecResponse{
 				Success:  false,
 				ExitCode: 1,
-				Error:    err.Error(),
+				Error:    "the program could not be started on this computer",
 			})
 			return
 		}

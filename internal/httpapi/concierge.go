@@ -59,7 +59,7 @@ func (s *Server) conciergePageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Web.RenderConcierge(w); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, "concierge page", err)
 	}
 }
 

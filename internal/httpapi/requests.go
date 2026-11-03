@@ -41,7 +41,7 @@ func (s *Server) requestsDashboardHandler(w http.ResponseWriter, r *http.Request
 
 	desktops, err := s.Desktops.List(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, "requests page: listing desktops", err)
 		return
 	}
 
@@ -50,7 +50,7 @@ func (s *Server) requestsDashboardHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := s.Web.RenderRequests(w, data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, "requests page", err)
 	}
 }
 

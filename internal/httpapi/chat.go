@@ -184,7 +184,7 @@ func (s *Server) agentEventHandler(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxAgentEventBytes)
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		badJSON(w, err)
 		return
 	}
 

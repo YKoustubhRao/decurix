@@ -1988,11 +1988,7 @@ func proxyTargetFailed(w http.ResponseWriter, r *http.Request, err error) bool {
 		)
 
 	default:
-		http.Error(
-			w,
-			err.Error(),
-			http.StatusInternalServerError,
-		)
+		internalError(w, "desktop proxy", err)
 	}
 
 	return true

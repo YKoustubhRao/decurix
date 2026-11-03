@@ -387,7 +387,7 @@ func mailConnectError(w http.ResponseWriter, host string, err error) {
 		}
 
 		// err reads "<ErrAuth> (<the server's words>)"; keep only the words.
-		said := strings.TrimSpace(strings.TrimPrefix(err.Error(), mailtrigger.ErrAuth.Error()))
+		said := strings.TrimSpace(strings.TrimPrefix(providerSaid(err), mailtrigger.ErrAuth.Error()))
 		jsonStatusError(w, http.StatusBadRequest, strings.TrimSpace(msg+" "+said))
 		return
 	}
@@ -402,7 +402,7 @@ func mailConnectError(w http.ResponseWriter, host string, err error) {
 func mailInputError(w http.ResponseWriter, err error) {
 	var input mailtrigger.InputError
 	if errors.As(err, &input) {
-		jsonStatusError(w, http.StatusBadRequest, input.Error())
+		jsonStatusError(w, http.StatusBadRequest, refusal(input))
 		return
 	}
 

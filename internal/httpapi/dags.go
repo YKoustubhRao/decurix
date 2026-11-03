@@ -29,7 +29,7 @@ func (s *Server) dagsPageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Web.RenderDags(w, webui.DagsPageData{Dags: list}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, "DAGs page", err)
 	}
 }
 
@@ -88,7 +88,7 @@ func (s *Server) createDagHandler(w http.ResponseWriter, r *http.Request) {
 
 	d, err := s.Dags.Create(r.FormValue("name"))
 	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		dagReply(w, nil, err, "no such DAG")
 		return
 	}
 
@@ -174,7 +174,7 @@ func (s *Server) deleteDagNodeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Dags.DeleteNode(r.FormValue("id")); err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		dagReply(w, nil, err, "no such node")
 		return
 	}
 
@@ -309,14 +309,18 @@ func (s *Server) dagNodeDesktop(w http.ResponseWriter, r *http.Request) (string,
 }
 
 // dagReply answers a DAG edit with v, or with what err calls for:
-// dag.ErrNotFound is a 404 saying missing, any other error a 400 with the
-// store's reason.
+// dag.ErrNotFound is a 404 saying missing, an edit the store refused
+// (dag.InputError) a 400 with its reason, anything else an internal error
+// that is logged and never echoed.
 func dagReply(w http.ResponseWriter, v any, err error, missing string) {
+	var refused *dag.InputError
 	switch {
 	case errors.Is(err, dag.ErrNotFound):
 		jsonStatusError(w, http.StatusNotFound, missing)
+	case errors.As(err, &refused):
+		jsonStatusError(w, http.StatusBadRequest, refused.Msg)
 	case err != nil:
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		jsonError(w, err)
 	default:
 		jsonResponse(w, v)
 	}

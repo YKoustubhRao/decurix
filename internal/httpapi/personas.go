@@ -99,7 +99,7 @@ func (s *Server) personaDesktop(w http.ResponseWriter, spec *personaDesktopSpec)
 
 	brain, err := s.desktopBrain(spec.Harness, spec.Brain)
 	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		jsonStatusError(w, http.StatusBadRequest, refusal(err))
 		return brain, false
 	}
 

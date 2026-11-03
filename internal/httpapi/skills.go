@@ -105,7 +105,7 @@ func (s *Server) runSkillHandler(w http.ResponseWriter, r *http.Request) {
 
 	content, err := skillContent(name, params)
 	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		jsonStatusError(w, http.StatusBadRequest, refusal(err))
 		return
 	}
 
@@ -144,7 +144,7 @@ func (s *Server) learnRecordingHandler(w http.ResponseWriter, r *http.Request) {
 	name := strings.Join(strings.Fields(r.FormValue("name")), " ")
 	content, err := learnContent(sessions, name)
 	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		jsonStatusError(w, http.StatusBadRequest, refusal(err))
 		return
 	}
 

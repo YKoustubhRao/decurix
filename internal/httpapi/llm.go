@@ -61,7 +61,7 @@ func (s *Server) llmSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	// need to fix the form - not an internal error to hide.
 	vision, err := s.LLM.Test(r.Context(), provider, settings)
 	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, "Not saved - "+err.Error())
+		jsonStatusError(w, http.StatusBadRequest, "Not saved - "+providerSaid(err))
 		return
 	}
 	settings.Vision = vision
@@ -124,7 +124,7 @@ func (s *Server) llmProxyHandler(w http.ResponseWriter, r *http.Request) {
 		s.llmChat(w, r, provider)
 	case "v1/models":
 		if !s.LLM.Configured(provider) {
-			http.Error(w, llm.ErrNotConfigured.Error(), http.StatusServiceUnavailable)
+			http.Error(w, "this hosted model is not set up", http.StatusServiceUnavailable)
 			return
 		}
 		jsonResponse(w, map[string]any{
@@ -172,7 +172,7 @@ func (s *Server) llmChat(w http.ResponseWriter, r *http.Request, provider string
 	status, answer, retry, err := s.LLM.Chat(r.Context(), provider, body)
 	if err != nil {
 		if errors.Is(err, llm.ErrNotConfigured) {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			http.Error(w, "this hosted model is not set up", http.StatusServiceUnavailable)
 			return
 		}
 

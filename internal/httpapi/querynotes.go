@@ -117,7 +117,7 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxQueryTextRequestBytes)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		badJSON(w, err)
 		return
 	}
 
@@ -351,11 +351,7 @@ func (s *Server) dashboardPostsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Web.RenderQueryNotesDashboard(w, data); err != nil {
-		http.Error(
-			w,
-			err.Error(),
-			http.StatusInternalServerError,
-		)
+		internalError(w, "queries dashboard", err)
 		return
 	}
 }

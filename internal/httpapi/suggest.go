@@ -22,7 +22,7 @@ func (s *Server) suggestDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		badForm(w, err)
 		return
 	}
 

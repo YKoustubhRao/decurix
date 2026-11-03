@@ -484,7 +484,7 @@ func (s *Server) hostGUIStartHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("host-gui: start %s: %v", req.ID, err)
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		jsonResponse(w, map[string]string{"error": err.Error()})
+		jsonResponse(w, map[string]string{"error": viewerReason(err)})
 		return
 	}
 	width, height := sess.Size()
@@ -656,7 +656,7 @@ func applyInput(sess *winhost.Session, req hostGUIRequest) (text string, wantsTe
 	case "press":
 		text, err = sess.Press(req.X, req.Y)
 		if err != nil {
-			return "ERR " + err.Error(), true, nil
+			return "ERR " + viewerReason(err), true, nil
 		}
 		return text, true, nil
 	case "setfocus":
@@ -665,14 +665,14 @@ func applyInput(sess *winhost.Session, req hostGUIRequest) (text string, wantsTe
 		// The answer is what the field holds afterwards, or why it could not be set (the viewer then types the text).
 		text, err = sess.SetValue(req.X, req.Y, req.Text, req.Append)
 		if err != nil {
-			return "ERR " + err.Error(), true, nil
+			return "ERR " + viewerReason(err), true, nil
 		}
 		return "SET " + text, true, nil
 	case "choose":
 		// The answer is the entry chosen, or why none was: a drop-down's entries are not shown to the viewer.
 		text, err = sess.Choose(req.X, req.Y, req.Text)
 		if err != nil {
-			return "ERR " + err.Error(), true, nil
+			return "ERR " + viewerReason(err), true, nil
 		}
 		return text, true, nil
 	default:

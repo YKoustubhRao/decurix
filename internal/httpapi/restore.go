@@ -66,7 +66,7 @@ func (s *Server) restoreDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 	byDesktop, err := readBackupFolders(http.MaxBytesReader(w, r.Body, restoreMaxBody))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, refusal(err), http.StatusBadRequest)
 		return
 	}
 
@@ -74,7 +74,7 @@ func (s *Server) restoreDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	if from == "" {
 		from, err = onlyDesktop(byDesktop, desktop.SanitizeID(target))
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, refusal(err), http.StatusBadRequest)
 			return
 		}
 	}

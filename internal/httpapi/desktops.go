@@ -83,7 +83,7 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 
 	desktops, err := s.Desktops.List(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, "dashboard: listing desktops", err)
 		return
 	}
 
@@ -124,7 +124,7 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Web.RenderIndex(w, data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, "dashboard page", err)
 	}
 }
 
@@ -175,7 +175,7 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if brainErr != nil {
-		jsonStatusError(w, http.StatusBadRequest, brainErr.Error())
+		jsonStatusError(w, http.StatusBadRequest, refusal(brainErr))
 		return
 	}
 
@@ -256,7 +256,7 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	sharedFolder, sharedErr := desktop.ParseSharedFolder(r.FormValue("shared_folder"))
 	if sharedErr != nil {
-		jsonStatusError(w, http.StatusBadRequest, sharedErr.Error())
+		jsonStatusError(w, http.StatusBadRequest, refusal(sharedErr))
 		return
 	}
 
