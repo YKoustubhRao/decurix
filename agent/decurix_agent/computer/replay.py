@@ -417,13 +417,38 @@ def _stable_title(title, reference=None):
 _PASSING = {"clock_time", "relative_time", "date", "near_date", "count", "counter"}
 
 
-def _window_ids(step, recorded_values):
+def _known_documents(steps):
+    """
+    The texts that name a document the recording found rather than made: the window titles of its first step, and
+    what it opened, chose or clicked by name before its first committing step. An identifier only these hold is of a
+    document that existed before the run touched it; one that first shows after a save (the next invoice number), or
+    in a document the app named when it was made ("Untitled 2"), is not (review round 2, D-17).
+    """
+
+    texts = []
+    if steps:
+        first = steps[0]
+        texts += [first.get("window") or "", (first.get("target") or {}).get("window_title") or ""]
+    for step in steps:
+        if step.get("consequential") or _step_commits(step):
+            break
+        texts += [str(step.get("open") or ""), str(step.get("option") or "")]
+        if step.get("kind") in ("click", "double_click"):
+            texts.append(str((step.get("target") or {}).get("name") or ""))
+    return [t for t in texts if t]
+
+
+def _window_ids(step, recorded_values, known=None):
     """
     The step with the identifiers its window's title holds ("INV-1043" of "INV-1043 - Sales Invoice") kept as
-    `window_ids`, when none of them is a value the run may change (a parameter's recorded value): the in-front check
-    then needs that document's window, not any of its kind. Found in review (2026-11-03, D-17): titles were compared
-    without their digits, so another invoice's window passed. A title naming a run's own value keeps the stable check.
+    `window_ids`, when none of them is a value the run may change (a parameter's recorded value) and each names a
+    document the recording found rather than made (`known`, _known_documents): the in-front check then needs that
+    document's window, not any of its kind. Found in review (2026-11-03, D-17): titles were compared without their
+    digits, so another invoice's window passed; and (round 2) an id the app gave the run's own new document was pinned,
+    so the next run, given the next number, found nothing.
     """
+
+    from decurix_agent.computer import identity
 
     title = step.get("window") or ""
     ids = [s for s in _segments(title) if re.search(r"\d", s) and volatility.classify(s) not in _PASSING]
@@ -432,7 +457,43 @@ def _window_ids(step, recorded_values):
     lowered = title.lower()
     if any(v and v.lower() in lowered for v in recorded_values):
         return step
-    return dict(step, window_ids=ids)
+    ids = [s for s in ids if any(identity.holds_identifier(text, s) for text in known or ())]
+    return dict(step, window_ids=ids) if ids else step
+
+
+def _titles_follow_values(steps, params, values):
+    """
+    The steps with each changed run value put into the window titles they were recorded in (step["window"],
+    target["window_title"]): a step recorded in "Client One - Customer" is in "Client Two - Customer" on a run for
+    client two. Found in review (round 2, D-10): the window filter then took the recorded value's window only.
+    """
+
+    changes = []
+    for param in params or []:
+        recorded, value = _recorded_value(param), (values or {}).get(param["name"])
+        if recorded is None or value is None or isinstance(value, list) or len(str(recorded).strip()) < 2:
+            continue
+        if str(value) != str(recorded):
+            changes.append((re.compile(re.escape(str(recorded).strip()), re.IGNORECASE), str(value)))
+    if not changes:
+        return steps
+
+    def follow(title):
+        for pattern, value in changes:
+            title = pattern.sub(lambda _m, v=value: v, title)
+        return title
+
+    out = []
+    for step in steps:
+        target = step.get("target") or {}
+        if step.get("window") or target.get("window_title"):
+            step = dict(step)
+            if step.get("window"):
+                step["window"] = follow(step["window"])
+            if target.get("window_title"):
+                step["target"] = dict(target, window_title=follow(target["window_title"]))
+        out.append(step)
+    return out
 
 
 def mine_checks(expect, reference=None):
@@ -1703,10 +1764,12 @@ def _run_program(program, params=None, start=1, report=None, ladder=None):
 
     _fit_screen([s for s in steps if s["n"] >= start], report)
     changed_at = _first_change(program, values)
+    known = _known_documents(steps)
     steps = [_typing_checks(s) for s in follow_values(steps, program.get("params"), values)]
+    steps = _titles_follow_values(steps, program.get("params"), values)
     recorded_values = [str(_recorded_value(p)) for p in program.get("params") or []
                        if _recorded_value(p) not in (None, "")]
-    steps = [_window_ids(s, recorded_values) for s in steps]
+    steps = [_window_ids(s, recorded_values, known) for s in steps]
 
     if ladder is not None:
         ladder.typed = [(str(p.get("example") if p.get("example") is not None else p.get("default")), str(values[p["name"]]))

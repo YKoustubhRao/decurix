@@ -604,7 +604,7 @@ def value_spans(skill, values):
 PICKED_ROLES = {"row", "option", "listitem", "link", "menuitem", "treeitem", "gridcell", "cell"}
 
 
-def _party_entry(recorded, spans):
+def _party_entry(recorded, spans, target=None):
     """
     The target for a list entry whose recorded name a change covers only in part ("Priya Shah" with the value
     "Priya" changed to "Rahul"): never the spliced name ("Rahul Shah", another party), but the entry that holds this
@@ -624,7 +624,8 @@ def _party_entry(recorded, spans):
             return None  # the change is the whole name: the new name is the entry's name
         if re.search(r"\d", str(span.get("old") or "")):
             return None  # an identifier changed ("Invoice 1042" -> "Invoice 1043"): the spliced name is exact
-        return dict(recorded, name=span["new"], contains=True, value=span["new"], path=None,
+        # Built from the target as substituted (its window title follows the change too, review round 2).
+        return dict(target or recorded, name=span["new"], contains=True, value=span["new"], path=None,
                     avoid=list(recorded.get("avoid") or []) + [name])
     return None
 
@@ -645,7 +646,7 @@ def substitute_step(step, spans):
         if target.get("name") != (step["target"] or {}).get("name"):
             # The recorded path names the old control; find the new one by name.
             target.pop("path", None)
-            party = _party_entry(step["target"], spans)
+            party = _party_entry(step["target"], spans, target)
             if party is not None:
                 target = party
         out["target"] = target

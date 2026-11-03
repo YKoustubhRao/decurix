@@ -46,17 +46,62 @@ class TheDocumentComesFirst(unittest.TestCase):
         activate.assert_not_called()
 
     def test_a_step_recorded_in_one_documents_window_is_not_done_in_anothers(self):
-        step = replay._window_ids({"n": 2, "kind": "click", "point": [5, 5], "window": "DOC-43 - Sales Invoice"}, [])
+        # The document was there when the recording began (its first step's window): it is that document's step.
+        known = replay._known_documents([{"n": 1, "kind": "click", "window": "DOC-43 - Sales Invoice"}])
+        step = replay._window_ids({"n": 2, "kind": "click", "point": [5, 5], "window": "DOC-43 - Sales Invoice"}, [],
+                                  known)
         _, point, why = replay.resolve(step, {"active_title": "DOC-50 - Sales Invoice", "elements": []})
         self.assertIsNone(point)
         self.assertIn("not in front", why)
         _, point, _ = replay.resolve(step, {"active_title": "DOC-43 - Sales Invoice", "elements": []})
         self.assertEqual(point, [5, 5])
 
+    def test_a_number_the_app_gave_after_a_save_is_not_pinned(self):
+        # Save, then Submit: the document's number first shows after the save, and the next run gets the next one.
+        steps = [{"n": 1, "kind": "click", "window": "New Sales Invoice - Browser",
+                  "target": {"role": "button", "name": "Save"}},
+                 {"n": 2, "kind": "click", "window": "DOC-42 - Sales Invoice - Browser",
+                  "target": {"role": "button", "name": "Submit", "window_title": "DOC-42 - Sales Invoice - Browser"}}]
+        step = replay._window_ids(steps[1], [], replay._known_documents(steps))
+        self.assertNotIn("window_ids", step)
+        obs = {"active_title": "DOC-43 - Sales Invoice - Browser", "elements": [
+            control("Submit", "DOC-43 - Sales Invoice - Browser")]}
+        self.assertIsNotNone(replay.resolve(step, obs)[0])
+
+    def test_a_new_documents_own_name_is_not_pinned(self):
+        steps = [{"n": 1, "kind": "key", "keys": ["ctrl+n"], "window": "Start - Sheets"},
+                 {"n": 2, "kind": "click", "point": [5, 5], "window": "Untitled 2 - Sheets"}]
+        self.assertNotIn("window_ids", replay._window_ids(steps[1], [], replay._known_documents(steps)))
+
+    def test_a_document_opened_by_name_before_the_save_is_pinned(self):
+        steps = [{"n": 1, "kind": "click", "window": "List - Browser", "target": {"role": "link", "name": "DOC-43"}},
+                 {"n": 2, "kind": "click", "point": [5, 5], "window": "DOC-43 - Sales Invoice"}]
+        self.assertEqual(replay._window_ids(steps[1], [], replay._known_documents(steps))["window_ids"], ["doc-43"])
+
     def test_a_document_that_is_the_runs_own_value_keeps_the_stable_check(self):
         step = replay._window_ids({"n": 2, "kind": "click", "point": [5, 5], "window": "DOC-43 - Sales Invoice"},
                                   ["DOC-43"])
         self.assertNotIn("window_ids", step)
+
+
+class TheWindowFollowsTheRunsValues(unittest.TestCase):
+    def test_a_window_titled_by_the_recorded_value_is_the_runs_value_window(self):
+        params = [{"name": "client", "step": 1, "example": "Client One"}]
+        steps = [{"n": 3, "kind": "click", "window": "Client One - Customer - Browser",
+                  "target": {"role": "button", "name": "Save", "window_title": "Client One - Customer - Browser",
+                             "path": "x > button Save"}}]
+        (step,) = replay._titles_follow_values(steps, params, {"client": "Client Two"})
+        self.assertEqual(step["target"]["window_title"], "Client Two - Customer - Browser")
+        obs = {"active_title": "Client Two - Customer - Browser",
+               "elements": [control("Save", "Client Two - Customer - Browser", path="y > button Save")]}
+        self.assertIsNotNone(replay.resolve(step, obs)[0])
+
+    def test_a_party_entry_keeps_the_substituted_window_title(self):
+        spans = [{"old": "First", "new": "Other", "find": ["first"], "placed": True, "value": True}]
+        step = {"kind": "click", "target": {"role": "listitem", "name": "First Last", "path": "x",
+                                            "window_title": "First - Chat"}, "summary": "s"}
+        target = mimic.substitute_step(step, spans)["target"]
+        self.assertEqual(target["window_title"], "Other - Chat")
 
 
 class APartyIsFoundByItsWholeValue(unittest.TestCase):
