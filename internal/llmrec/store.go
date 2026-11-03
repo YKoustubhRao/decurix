@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf16"
 
 	"github.com/YKoustubhRao/decurix/internal/blobstore"
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
@@ -78,7 +79,12 @@ func (s *Store) record(c Call) error {
 		return errors.New("no store")
 	}
 	problems := append([]string(nil), c.Problems...)
-	w := withholder{secrets: longestFirst(c.Secrets), blobs: s.blobs}
+	w := withholder{secrets: secretForms(c.Secrets), put: s.blobs.PutBytes}
+	if c.NoBodies {
+		// Hashes only: the row and its prefix are kept, the text is not (its secrets may be unknown here).
+		w.put = func(b []byte) (string, error) { return blobstore.SHA256(b), nil }
+		problems = append(problems, NoBodiesProblem)
+	}
 
 	shas := []string{}
 	params := "{}"
@@ -92,7 +98,7 @@ func (s *Store) record(c Call) error {
 			if err != nil {
 				return err
 			}
-			sha, err := s.blobs.PutBytes(canon)
+			sha, err := w.put(canon)
 			if err != nil {
 				return err
 			}
@@ -105,7 +111,7 @@ func (s *Store) record(c Call) error {
 			if err != nil {
 				return err
 			}
-			sha, err := s.blobs.PutBytes(canon)
+			sha, err := w.put(canon)
 			if err != nil {
 				return err
 			}
@@ -132,7 +138,7 @@ func (s *Store) record(c Call) error {
 		} else {
 			body = []byte(w.text(string(c.Response)))
 		}
-		sha, err := s.blobs.PutBytes(body)
+		sha, err := w.put(body)
 		if err != nil {
 			return err
 		}
@@ -198,7 +204,7 @@ func orUntagged(p string) string {
 // withhold.Text finds. An image sent as a data: URL is stored as a blob and replaced by a reference to it.
 type withholder struct {
 	secrets  []string
-	blobs    *blobstore.Store
+	put      func([]byte) (string, error) // stores a body and names it by its hash
 	problems []string
 }
 
@@ -253,7 +259,7 @@ func (w *withholder) image(part map[string]any) (map[string]any, bool) {
 		w.problems = append(w.problems, "image not stored: bad base64")
 		return map[string]any{"type": "image_ref", "sha256": "", "mime": mime}, true
 	}
-	sha, err := w.blobs.PutBytes(raw)
+	sha, err := w.put(raw)
 	if err != nil {
 		w.problems = append(w.problems, "image not stored: "+err.Error())
 		sha = ""
@@ -263,21 +269,72 @@ func (w *withholder) image(part map[string]any) (map[string]any, bool) {
 
 // text is s with the marked secrets and what withhold.Text finds withheld.
 func (w *withholder) text(s string) string {
-	for _, secret := range w.secrets {
-		s = strings.ReplaceAll(s, secret, withhold.Marker)
-	}
-	return withhold.Text(s)
+	return withhold.Text(replaceForms(s, w.secrets))
 }
 
-// longestFirst is the non-empty values, longest first, so a secret inside a longer one is not replaced first.
-func longestFirst(values []string) []string {
+// WithholdValues is text with every one of values withheld (as written, and as it reads inside a JSON string), then
+// what withhold.Text finds: the wall the recorder puts in front of what it stores, for other stores to use too.
+func WithholdValues(text string, values []string) string {
+	return withhold.Text(replaceForms(text, secretForms(values)))
+}
+
+// replaceForms is s with each of forms (secretForms: longest first) replaced by withhold.Marker.
+func replaceForms(s string, forms []string) string {
+	for _, f := range forms {
+		s = strings.ReplaceAll(s, f, withhold.Marker)
+	}
+	return s
+}
+
+// secretForms is every form values can take in a stored message, longest first so a secret inside a longer one is
+// not replaced first: as written, and as it reads inside a JSON string, which a tool call's arguments are (Go's
+// escaping, with and without HTML escapes, and an ASCII-only one with \uXXXX as Python writes it by default).
+func secretForms(values []string) []string {
+	seen := map[string]bool{}
 	out := make([]string, 0, len(values))
+	add := func(f string) {
+		if strings.TrimSpace(f) != "" && !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
 	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			out = append(out, v)
+		add(v)
+		for _, f := range jsonEscapes(v) {
+			add(f)
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out
+}
+
+// jsonEscapes is v as it reads between the quotes of a JSON string, in each escaping a writer may have used.
+func jsonEscapes(v string) []string {
+	var out []string
+	if b, err := json.Marshal(v); err == nil {
+		out = append(out, string(b[1:len(b)-1]))
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if enc.Encode(v) == nil {
+		b := bytes.TrimSpace(buf.Bytes())
+		plain := string(b[1 : len(b)-1])
+		out = append(out, plain)
+		var ascii strings.Builder
+		for _, r := range plain {
+			switch {
+			case r < 0x80:
+				ascii.WriteRune(r)
+			case r > 0xFFFF:
+				r1, r2 := utf16.EncodeRune(r)
+				fmt.Fprintf(&ascii, "\\u%04x\\u%04x", r1, r2)
+			default:
+				fmt.Fprintf(&ascii, "\\u%04x", r)
+			}
+		}
+		out = append(out, ascii.String())
+	}
 	return out
 }
 

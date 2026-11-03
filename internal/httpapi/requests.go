@@ -133,13 +133,23 @@ type withheldKey struct{}
 // recorded as typed.
 func (s *Server) markWithheld(ctx context.Context, desktopID string, route tasks.Route, content string) context.Context {
 	marked, _ := ctx.Value(sentSecretKey{}).(bool)
-	if _, withheld := s.Tasks.StoredForm(route, content, marked); !withheld {
+	stored, withheld := s.Tasks.StoredForm(route, content, marked)
+	if !withheld {
 		return ctx
 	}
-	if marked || route.Kind == tasks.RouteReply {
-		s.secretsSeen.RememberMarked(desktopID, content)
-	}
+	s.rememberWithheld(desktopID, content, stored)
 	return context.WithValue(ctx, withheldKey{}, true)
+}
+
+// rememberWithheld tells the call recorder the values the records withheld from content (stored is the form they
+// keep): each withheld value, and the whole text only when it was withheld whole, plus any labelled value inside it.
+// Never a word around a value: the recorder replaces what it is told everywhere in that desktop's calls.
+func (s *Server) rememberWithheld(desktopID, content, stored string) {
+	values := withhold.Values(content, stored)
+	if stored == withhold.Secret {
+		values = append(values, withhold.Values(content, withhold.Text(content))...)
+	}
+	s.secretsSeen.Remember(desktopID, values...)
 }
 
 // sentAsSecret reports whether what ctx carries goes to the desktop marked secret: the person marked it, or the
@@ -426,8 +436,8 @@ func (s *Server) recordDelivered(ctx context.Context, desktopID, content string,
 	}
 	// The records kept it withheld whole (a reply to a secret question that opened after Plan picked the route):
 	// the call recorder withholds it too.
-	if stored == withhold.Secret && content != withhold.Secret {
-		s.secretsSeen.RememberMarked(desktop.SanitizeID(desktopID), content)
+	if err == nil && stored != content {
+		s.rememberWithheld(desktop.SanitizeID(desktopID), content, stored)
 	}
 
 	s.Chat.AppendUserRequest(desktopID, route.TaskID, stored)

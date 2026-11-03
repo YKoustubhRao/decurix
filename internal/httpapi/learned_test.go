@@ -62,6 +62,8 @@ func TestALearnedRowIsKeptUnderThePersonWhoSaidIt(t *testing.T) {
 		t.Fatalf("kept as %+v", j)
 	}
 
+	roleless, _ := s.Tasks.AddJudgement(tasks.Judgement{Actor: accessCodeHolder, Kind: tasks.JudgementAnswer,
+		WorkerID: "box", TaskID: route.TaskID, Text: "purchases"})
 	for name, c := range map[string]struct {
 		from string
 		body map[string]any
@@ -69,6 +71,8 @@ func TestALearnedRowIsKeptUnderThePersonWhoSaidIt(t *testing.T) {
 	}{
 		"an unknown judgement":      {"box", body(route.TaskID, tasks.NewJudgementID()), http.StatusConflict},
 		"a worker's judgement":      {"box", body(route.TaskID, workerJ), http.StatusConflict},
+		"an author with no role":    {"box", body(route.TaskID, roleless), http.StatusConflict},
+		"a derived row":             {"box", body(route.TaskID, created.ID), http.StatusConflict},
 		"another desktop's task":    {"box", body(other.TaskID, reply.JudgementID), http.StatusForbidden},
 		"from the host":             {"", body(route.TaskID, reply.JudgementID), http.StatusForbidden},
 		"another desktop's posting": {"eve", body(route.TaskID, reply.JudgementID), http.StatusForbidden},

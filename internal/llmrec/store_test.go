@@ -142,7 +142,7 @@ func TestAnInlineImageIsOneBlob(t *testing.T) {
 func TestSecretsReachNoBlob(t *testing.T) {
 	s := testStore(t)
 	var marked SecretSet
-	marked.RememberMarked("eve", "Zq9-plum-Orbit")
+	marked.Remember("eve", "Zq9-plum-Orbit")
 	body := chatBody(t, []any{
 		map[string]any{"role": "user", "content": "log in as ravi, the code word is Zq9-plum-Orbit"},
 		map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"function": map[string]any{
@@ -241,17 +241,12 @@ func TestARecordingFailureIsCountedNotRaised(t *testing.T) {
 	}
 }
 
-func TestSecretSetKeepsShortMessagesWordsAndForgets(t *testing.T) {
+func TestSecretSetKeepsValuesAndForgets(t *testing.T) {
 	now := time.Now()
 	set := SecretSet{now: func() time.Time { return now }}
-	set.RememberMarked("eve", "  plum  Orbit9 ab ")
-	got := strings.Join(set.For("eve"), "|")
-	if got != "plum Orbit9 ab|plum|Orbit9" {
-		t.Fatalf("held %q", got)
-	}
-	set.RememberMarked("eve", "one two three four five sixsix")
-	if n := len(set.For("eve")); n != 4 { // a long message is kept whole, without its words
-		t.Fatalf("held %d values", n)
+	set.Remember("eve", "  Orbit9 ", "ab", "Orbit9", "Plum-7")
+	if got := strings.Join(set.For("eve"), "|"); got != "Orbit9|Plum-7" {
+		t.Fatalf("held %q (a value under 3 characters is never held, a repeat once)", got)
 	}
 	if len(set.For("other")) != 0 {
 		t.Fatal("another desktop's values leaked")
@@ -265,5 +260,24 @@ func TestSecretSetKeepsShortMessagesWordsAndForgets(t *testing.T) {
 	now = now.Add(25 * time.Hour)
 	if n := len(set.For("eve")); n != 0 {
 		t.Fatalf("held %d values a day later", n)
+	}
+}
+
+// A held value is withheld also as it reads inside a JSON string (a tool call's arguments): with its quote and
+// backslash escaped, and with a non-ASCII letter written as \uXXXX.
+func TestAHeldValueIsWithheldInsideJSONStrings(t *testing.T) {
+	values := []string{`Qz"9-lamp\Hx`, "pässwört-77"}
+	asciiArgs := `{"command":"gui type e3 p\u00e4ssw\u00f6rt-77"}`
+	goArgs, _ := json.Marshal(map[string]string{"command": "gui type e3 " + values[0]})
+	for _, in := range []string{string(goArgs), asciiArgs, "typed " + values[0] + " and " + values[1]} {
+		out := WithholdValues(in, values)
+		for _, frag := range []string{"9-lamp", "rt-77"} {
+			if strings.Contains(out, frag) {
+				t.Errorf("%s -> %s keeps %q", in, out, frag)
+			}
+		}
+	}
+	if got := WithholdValues("the password field", values); got != "the password field" {
+		t.Errorf("text with no held value changed: %q", got)
 	}
 }

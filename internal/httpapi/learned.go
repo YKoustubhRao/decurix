@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/YKoustubhRao/decurix/internal/tasks"
-	"github.com/YKoustubhRao/decurix/internal/withhold"
+	"github.com/YKoustubhRao/decurix/internal/llmrec"
 )
 
 // maxLearnedBytes bounds one learned row: a correction, a run answer or a lesson is a few sentences.
@@ -66,7 +66,21 @@ func (s *Server) desktopLearnedHandler(w http.ResponseWriter, r *http.Request) {
 		jsonStatusError(w, http.StatusConflict, "that is not a person's judgement on this task")
 		return
 	}
-	payload, _ := json.Marshal(map[string]string{"question": withhold.Text(body.Question)})
+	// A kept rule stands on someone known: not on an input whose author holds no role (someone with the access code,
+	// not signed in), and only on the person's own input, never on another derived row.
+	if len(source.Actor.Roles) == 0 {
+		jsonStatusError(w, http.StatusConflict, "that judgement's author is not signed in, so nothing is kept from it")
+		return
+	}
+	if source.DerivedFrom != "" {
+		jsonStatusError(w, http.StatusConflict, "cite the person's own judgement, not one derived from it")
+		return
+	}
+	// Withheld with what this desktop's records withheld (the values its person's replies held) before withhold.Text:
+	// the table is append-only, so a value that got in could never be taken out.
+	held := s.secretsSeen.For(worker)
+	text = llmrec.WithholdValues(text, held)
+	payload, _ := json.Marshal(map[string]string{"question": llmrec.WithholdValues(body.Question, held)})
 	id, err := s.Tasks.AddJudgement(tasks.Judgement{
 		Actor: source.Actor, Door: "derived", Kind: body.Kind, WorkerID: worker, TaskID: body.TaskID,
 		ExecutionID: source.ExecutionID, InterventionID: source.InterventionID, SkillName: body.Skill,

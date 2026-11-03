@@ -11,9 +11,6 @@ import (
 const (
 	secretsPerDesktop = 64
 	secretsTTL        = 24 * time.Hour
-	// shortMarkedWords is the length of a marked message whose words are each kept too (privacy.remember_marked's
-	// SHORT_MARKED_WORDS on the desktop: the same rule on both sides).
-	shortMarkedWords = 5
 )
 
 // SecretSet holds, in memory only, the values a person marked secret per desktop, so the call recorder withholds
@@ -27,22 +24,6 @@ type SecretSet struct {
 type heldSecret struct {
 	value string
 	at    time.Time
-}
-
-// RememberMarked keeps a message the person marked secret: the whole message (spaces folded) and, when it is five
-// words or fewer, each of its words of four characters or more.
-func (s *SecretSet) RememberMarked(desktop, text string) {
-	text = strings.Join(strings.Fields(text), " ")
-	values := []string{text}
-	words := strings.Fields(text)
-	if len(words) <= shortMarkedWords {
-		for _, w := range words {
-			if w = strings.Trim(w, ".,:;!?'\"()[]{}"); len(w) >= 4 {
-				values = append(values, w)
-			}
-		}
-	}
-	s.Remember(desktop, values...)
 }
 
 // Remember keeps values (of three characters or more) for desktop.

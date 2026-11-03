@@ -89,7 +89,13 @@ type Call struct {
 	// Secrets are values to withhold wherever they appear, beyond what withhold.Text finds: what the person marked
 	// secret on this desktop (SecretSet). They are never stored.
 	Secrets []string
+	// NoBodies keeps the call's row and the hashes of its messages and answer, but none of their text: for a task
+	// that was open when the control plane started, whose marked secrets (held in memory only) are gone.
+	NoBodies bool
 }
+
+// NoBodiesProblem is the problem a row stored with no bodies carries.
+const NoBodiesProblem = "body not kept: started before restart"
 
 // Recorder stores calls. Record never fails the call it records: problems are logged and counted inside it.
 type Recorder interface {

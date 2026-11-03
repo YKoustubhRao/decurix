@@ -720,7 +720,7 @@ func (s *Store) CommitReply(route Route, worker Worker, text string, secret bool
 	// A secret the person typed (a password, an OTP) reaches the desktop as written, never these records: they are
 	// shown in traces, reports and exports (review 2026-11-02).
 	stored := requestForm(text, secret)
-	route, err := s.commit(route, worker, &stored, by, secret)
+	route, err := s.commit(route, worker, &stored, by, secret, text)
 	return route, stored, err
 }
 
@@ -767,7 +767,7 @@ func (s *Store) StoredForm(route Route, text string, marked bool) (string, bool)
 
 // commit is Commit's body. It may withhold *stored further (a reply to a question asked for a secret), and leaves in
 // it what it recorded.
-func (s *Store) commit(route Route, worker Worker, stored *string, by ReplyBy, secret bool) (Route, error) {
+func (s *Store) commit(route Route, worker Worker, stored *string, by ReplyBy, secret bool, raw string) (Route, error) {
 	judgementID := route.JudgementID
 	route.JudgementID = ""
 	text := *stored
@@ -843,10 +843,11 @@ func (s *Store) commit(route Route, worker Worker, stored *string, by ReplyBy, s
 			}
 			var workerID string
 			_ = tx.QueryRow(`SELECT worker_id FROM executions WHERE id = ?`, route.ExecutionID).Scan(&workerID)
-			raw, _ := json.Marshal(payload)
+			// Secret is the one decision C14 tells the desktop by: the records withhold any of it (StoredForm).
+			payloadJSON, _ := json.Marshal(payload)
 			id, err := insertJudgement(tx, Judgement{ID: judgementID, At: now, Actor: by.Actor, Door: by.Door,
 				Kind: kind, WorkerID: workerID, TaskID: route.TaskID, ExecutionID: route.ExecutionID,
-				InterventionID: interventionID, Text: text, Secret: secret || askedSecret, Payload: raw})
+				InterventionID: interventionID, Text: text, Secret: secret || askedSecret || text != raw, Payload: payloadJSON})
 			if err != nil {
 				return route, err
 			}
