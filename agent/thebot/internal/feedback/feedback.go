@@ -28,7 +28,6 @@ import (
 	"thebot/internal/migrate"
 )
 
-// embedModel is deliberately empty - see rag.go's matching comment. Each
 // Migrate is the feedback store's schema, step by step: appended only, never edited (internal/migrate).
 var Migrate = []string{
 	`CREATE TABLE IF NOT EXISTS negative_feedback (
@@ -41,6 +40,7 @@ var Migrate = []string{
 );`,
 }
 
+// embedModel is deliberately empty - see rag.go's matching comment. Each
 // llm.Embedder implementation owns its own default embed model.
 const embedModel = ""
 
