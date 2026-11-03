@@ -2,6 +2,7 @@ package skills
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -83,17 +84,25 @@ func (st *operatorState) opened(row *listedMessage) bool {
 	return strings.Contains(seen, `heading "`+subject) || strings.Contains(seen, `text "`+subject)
 }
 
-// aboutThisTask reports whether a message row's subject names a record this task declared: a whole token of the
-// subject equals a record key of the ledger, or a part of one that carries digits (the "0201" of "ABC-0201"). Only the
-// subject is read - never the row's preview or date - and only declared records count, never any number a command
-// held (review round 2, R-2: a date's "2026" made every unopened message a point).
+// aboutThisTask reports whether a message row's subject names a record this task declared (RecordLedger): the
+// subject holds the key's own tokens, in order, as whole tokens ("INV/2026/0201"), or the key's last part that holds
+// digits - its running number ("0201") - as a whole token. Only the subject is read, never the row's preview or date,
+// and never any number a command held (review round 2, R-2). A part of the key before its running number (a year, a
+// series) never counts alone (round 3, N-W3-5): "2026" names no record.
 func (st *operatorState) aboutThisTask(row *listedMessage) bool {
-	ids := declaredIdentifiers(st.RecordLedger)
-	if len(ids) == 0 {
+	subject := identifierTokens(row.subject)
+	if len(subject) == 0 {
 		return false
 	}
-	for _, tok := range identifierTokens(row.subject) {
-		if ids[tok] {
+	for _, m := range ledgerRecordRe.FindAllStringSubmatch(st.RecordLedger, -1) {
+		key := identifierTokens(strings.TrimSpace(m[1]))
+		if len(key) == 0 {
+			continue
+		}
+		if holdsSequence(subject, key) {
+			return true
+		}
+		if last := runningNumber(key); last != "" && holdsSequence(subject, []string{last}) {
 			return true
 		}
 	}
@@ -108,20 +117,24 @@ func identifierTokens(s string) []string {
 	return identifierTokenRe.FindAllString(strings.ToLower(s), -1)
 }
 
-// declaredIdentifiers are the ledger's record keys, whole (as one token when the key is one) and by each part of
-// three or more characters that holds a digit.
-func declaredIdentifiers(ledger string) map[string]bool {
-	out := map[string]bool{}
-	for _, m := range ledgerRecordRe.FindAllStringSubmatch(ledger, -1) {
-		key := strings.ToLower(strings.TrimSpace(m[1]))
-		out[key] = true
-		for _, part := range identifierTokens(key) {
-			if len(part) >= 3 && strings.IndexFunc(part, unicode.IsDigit) >= 0 {
-				out[part] = true
-			}
+// runningNumber is a key's last token that holds a digit and has three or more characters, or "" when it has none.
+func runningNumber(key []string) string {
+	for i := len(key) - 1; i >= 0; i-- {
+		if len(key[i]) >= 3 && strings.IndexFunc(key[i], unicode.IsDigit) >= 0 {
+			return key[i]
 		}
 	}
-	return out
+	return ""
+}
+
+// holdsSequence reports whether tokens holds want, in order and next to each other.
+func holdsSequence(tokens, want []string) bool {
+	for i := 0; i+len(want) <= len(tokens); i++ {
+		if slices.Equal(tokens[i:i+len(want)], want) {
+			return true
+		}
+	}
+	return false
 }
 
 // unopenedMessageIssues are the points for messages the task listed and never opened: one from a sender whose other

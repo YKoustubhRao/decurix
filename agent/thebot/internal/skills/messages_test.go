@@ -61,3 +61,21 @@ func TestAMessageFromAnotherSenderIsNotRaisedUnlessItNamesThisTasksRecord(t *tes
 		t.Errorf("after the page was seen: %+v", got)
 	}
 }
+
+// A key whose parts include a year names its record only by its own tokens or its running number: a subject that
+// shares only the year raises nothing (round 3, N-W3-5).
+func TestAYearInADeclaredKeyNamesNoRecordAlone(t *testing.T) {
+	ledger := "- INV/2026/0201 (from /w/inv-0201.pdf): saved"
+	for subject, want := range map[string]bool{
+		"Plans for 2026":            false,
+		"Revised 0201":              true,
+		"INV/2026/0201 corrected":   true,
+		"Order 02011 for next week": false,
+	} {
+		st := &operatorState{Hosted: true, RecordLedger: ledger,
+			Listings: []string{`e30 row "Office - ` + subject + ` | see attached | 2026-12-04"`}}
+		if got := len(st.unopenedMessageIssues("Done.")) == 1; got != want {
+			t.Errorf("subject %q: raised = %v, want %v", subject, got, want)
+		}
+	}
+}
