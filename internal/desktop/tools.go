@@ -20,7 +20,7 @@ func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
 		return nil
 	}
 
-	_ = m.ensureSharedVolume(ctx, CacheVolumeName, "cache")
+	_ = m.ensureSharedVolume(ctx, HFVolumeName, "model cache")
 
 	if err := m.ensureSharedVolume(ctx, ToolsVolumeName, "tools"); err != nil {
 		return err
@@ -48,8 +48,9 @@ func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
 	resp, err := m.client.ContainerCreate(
 		ctx,
 		&container.Config{
+			// No Cmd: the tools image's own CMD is the copy rule (docker/tools.Dockerfile), so it lives in one place
+			// and a rebuilt image with a new sentinel replaces what the volume holds (B-24).
 			Image: ToolsImage,
-			Cmd:   []string{"sh", "-c", "if [ ! -f /target/.decurix-tools-ready ]; then cp -a /opt/tools/. /target/ && touch /target/.decurix-tools-ready && sync; fi"},
 		},
 		&container.HostConfig{
 			Binds: []string{
@@ -87,8 +88,8 @@ func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
 	return nil
 }
 
-// ensureSharedVolume creates one of the volumes every desktop shares (the tools volume, or the writable cache that
-// deduplicates package caches across desktops) unless it exists; what names it in the log and errors.
+// ensureSharedVolume creates one of the volumes every desktop shares read-only (the tools, the model cache) unless it
+// exists; what names it in the log and errors.
 func (m *Manager) ensureSharedVolume(ctx context.Context, name, what string) error {
 
 	vol, err := m.client.VolumeInspect(ctx, name)

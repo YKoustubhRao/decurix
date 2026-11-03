@@ -37,8 +37,10 @@ const (
 	// into desktop containers at /opt/tools.
 	ToolsVolumeName = "decurix-tools"
 
-	// CacheVolumeName is the shared writable volume mounted into desktop containers
-	// at /var/cache/decurix to deduplicate Go modules, npm downloads, and cargo registries.
+	// CacheVolumeName was the one writable cache volume every desktop shared at /var/cache/decurix. A desktop
+	// created before 2026-11-03 still mounts it (recreate it to stop); a new one gets a cache of its own
+	// (cacheVolumeFor) and the read-only model cache (HFVolumeName): a cache one worker writes and another trusts on
+	// read is a way from one worker into the other (B-02). Delete never removes it.
 	CacheVolumeName = "decurix-cache"
 
 	// NetworkName is the shared Docker bridge network desktop containers
@@ -336,6 +338,8 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 		"GOMODCACHE=/var/cache/decurix/go",
 		"PIP_CACHE_DIR=/var/cache/decurix/pip",
 		"HF_HOME=/var/cache/decurix/huggingface",
+		// The models the control plane put in the shared, read-only model cache (HFVolumeName).
+		"DECURIX_SHARED_MODELS="+HFMountPoint,
 		"PYTHONDONTWRITEBYTECODE=1",
 		"PYTHONUNBUFFERED=1",
 	)
@@ -383,6 +387,9 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 			shmBytes = parsed * 1024 * 1024
 		}
 	}
+	// No process in a desktop gains privileges by exec - not the worker's (the entrypoint's setpriv already sets it),
+	// and not one the control plane starts with docker exec, which the entrypoint never sees (B-21).
+	securityOpt = append(append([]string{}, securityOpt...), "no-new-privileges:true")
 	hostConfig := &container.HostConfig{
 		ShmSize:     shmBytes,
 		SecurityOpt: securityOpt,
@@ -394,10 +401,13 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 			"/tmp": "rw,nosuid,size=256m,mode=1777",
 			"/run": "rw,nosuid,size=64m,mode=755",
 		},
+		// Every writable volume is this desktop's alone (B-02): its home and its package caches. What desktops share
+		// is read-only: the tools, and the models the control plane put in the model cache.
 		Binds: []string{
 			volumeName + ":/home/headless",
 			ToolsVolumeName + ":/opt/tools:ro",
-			CacheVolumeName + ":/var/cache/decurix:rw",
+			cacheVolumeFor(containerName) + ":/var/cache/decurix:rw",
+			HFVolumeName + ":" + HFMountPoint + ":ro",
 		},
 		LogConfig: container.LogConfig{
 			Type: "json-file",

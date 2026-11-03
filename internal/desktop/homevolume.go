@@ -69,3 +69,37 @@ func (m *Manager) homeVolumeFor(ctx context.Context, name, id, creation string) 
 	}
 	return true, nil
 }
+
+const (
+	// HFVolumeName is the model cache every desktop shares read-only, at HFMountPoint: models the control plane puts
+	// there once, so no desktop downloads its own copy and no desktop can change another's (B-02, owner decision O-2).
+	HFVolumeName = "decurix-models"
+	// HFMountPoint is where a desktop sees HFVolumeName (DECURIX_SHARED_MODELS); HF_HOME stays its own cache.
+	HFMountPoint = "/var/cache/decurix-models"
+)
+
+// cacheVolumeFor is the package-cache volume (pip, npm, Go modules, HF_HOME) of the desktop container called
+// containerName: one per desktop, deleted with it.
+func cacheVolumeFor(containerName string) string { return containerName + "_cache" }
+
+// cacheVolumeFresh makes desktop id's cache volume name fresh for creation: one a deleted desktop of the same name
+// left is removed first (a cache is disposable, and another worker wrote it), then a new one is made and labelled.
+// made is true once this creation owns it.
+func (m *Manager) cacheVolumeFresh(ctx context.Context, name, id, creation string) (made bool, err error) {
+	if existing, err := m.client.VolumeInspect(ctx, name); err == nil {
+		if existing.Labels[homeCreationLabel] == creation {
+			return true, nil
+		}
+		if err := m.client.VolumeRemove(ctx, name, false); err != nil {
+			return false, fmt.Errorf("an earlier desktop's package cache %s is still there and in use: %w", name, err)
+		}
+	} else if !client.IsErrNotFound(err) {
+		return false, fmt.Errorf("check the package cache volume: %w", err)
+	}
+	if _, err := m.client.VolumeCreate(ctx, volume.CreateOptions{Name: name, Labels: map[string]string{
+		DecurixLabel: "true", homeDesktopLabel: id, homeCreationLabel: creation,
+	}}); err != nil {
+		return false, fmt.Errorf("create the package cache volume: %w", err)
+	}
+	return true, nil
+}

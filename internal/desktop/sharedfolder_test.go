@@ -175,7 +175,7 @@ func TestTheSharedFolderIsABindMountOutsideTheHomeFolderAndIsReadWrite(t *testin
 			t.Errorf("the shared folder is in Binds: %s", b)
 		}
 	}
-	if len(host.Binds) != 3 {
+	if len(host.Binds) != 4 { // home, tools, its own cache, the read-only model cache
 		t.Errorf("the desktop's own volumes changed: %v", host.Binds)
 	}
 	if config.Labels[sharedLabel] != sf.Host {

@@ -15,6 +15,9 @@ COPY agent/thebot/web ./web
 # this is developed on. It costs a minute of wall time, not correctness.
 RUN GOMAXPROCS=2 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -p 1 -trimpath -ldflags="-s -w" -o /soul ./cmd/soul
 
+# The base is not pinned by digest yet: no digest is recorded anywhere here, and this loop could not pull to read one.
+# The owner pins it (`docker image inspect --format '{{index .RepoDigests 0}}' accetto/ubuntu-vnc-xfce-chromium-g3`)
+# and moves the pin on purpose (B-24).
 FROM accetto/ubuntu-vnc-xfce-chromium-g3:latest
 
 USER root
@@ -259,7 +262,7 @@ RUN chmod 644 /home/headless/.config/autostart/decurix-agent.desktop \
 # Shared tools runtime configuration:
 # When decurix-tools is mounted at /opt/tools, environment scripts and path
 # automatically expose all tools to interactive shells, desktop apps, and daemons.
-RUN mkdir -p /opt/tools /var/cache/decurix /etc/profile.d && \
+RUN mkdir -p /opt/tools /var/cache/decurix /var/cache/decurix-models /etc/profile.d && \
     chmod 1777 /var/cache/decurix && \
     echo 'if [ -f /opt/tools/env.sh ]; then . /opt/tools/env.sh; fi' > /etc/profile.d/decurix-tools.sh && \
     chmod 644 /etc/profile.d/decurix-tools.sh
@@ -277,11 +280,13 @@ ENV PATH="/opt/tools/bin:/opt/tools/go/bin:/opt/tools/node/bin:/opt/tools/rust/b
 # The worker must not be able to become root, or nothing below root's reach (the approval gate's state, its token)
 # is a boundary (docs/gate-boundary.md). The base image gave the desktop user `sudo` with the image's public default
 # password, setuid helpers, and a world-writable /etc/passwd (so its startup could run `sudo chown` as the worker).
-# All of that goes: the entrypoint does the one-time setup as root and then drops to the desktop user with no
+# All of that goes - every setuid and setgid bit in the image, not a list of the ones known today (B-21): a desktop
+# runs with no-new-privileges, so none could work anyway, and Chromium uses its namespace sandbox (sandbox.go). The
+# entrypoint does the one-time setup as root and then drops to the desktop user with no
 # capabilities. The gate gets a user of its own.
 RUN rm -f /etc/sudoers.d/headless /dockerstartup/.initial_sudo_password \
     && passwd -l root && passwd -l headless \
-    && chmod u-s /usr/bin/sudo /usr/bin/su /usr/bin/passwd /usr/bin/gpasswd /usr/bin/newgrp /usr/bin/chfn /usr/bin/chsh /usr/bin/mount /usr/bin/umount \
+    && find / -xdev \( -perm -4000 -o -perm -2000 \) -type f -exec chmod ug-s {} + \
     && useradd --system --no-create-home --shell /usr/sbin/nologin decurixgate \
     && chmod 644 /etc/passwd /etc/group \
     && chown -R 1001:1001 /dockerstartup

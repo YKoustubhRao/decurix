@@ -15,16 +15,15 @@ const (
 	ksmZeroPagesPath = "/sys/kernel/mm/ksm/use_zero_pages"
 )
 
-// OptimizeHostKSM inspects and enables Linux Kernel Samepage Merging (KSM)
-// if supported by the host kernel, deduplicating identical physical memory
-// pages across container processes.
-// pages across container processes. If DECURIX_DISABLE_KSM is set, it explicitly disables KSM.
+// OptimizeHostKSM enables Linux Kernel Samepage Merging (KSM), which merges identical memory pages across container
+// processes, only when DECURIX_ENABLE_KSM=1 (or true). It is off by default (L-01): merging pages across desktops
+// that distrust each other opens a known page-deduplication timing side channel between them, and memory saved is not
+// worth that unless the owner chooses it. DECURIX_DISABLE_KSM=1, or DECURIX_ENABLE_KSM=0, turns it off explicitly.
 func OptimizeHostKSM() {
-	if os.Getenv("DECURIX_DISABLE_KSM") == "1" ||
-		os.Getenv("DECURIX_DISABLE_KSM") == "true" ||
-		os.Getenv("DECURIX_ENABLE_KSM") == "0" ||
-		os.Getenv("DECURIX_ENABLE_KSM") == "false" {
-		DisableHostKSM()
+	if !ksmWanted(os.Getenv("DECURIX_ENABLE_KSM"), os.Getenv("DECURIX_DISABLE_KSM")) {
+		if v := os.Getenv("DECURIX_ENABLE_KSM"); v == "0" || v == "false" || os.Getenv("DECURIX_DISABLE_KSM") != "" {
+			DisableHostKSM()
+		}
 		return
 	}
 
@@ -67,4 +66,13 @@ func DisableHostKSM() {
 			log.Println("[ksm] Disabled Linux Kernel Samepage Merging (KSM) scanning.")
 		}
 	}
+}
+
+// ksmWanted reports whether KSM is to be turned on: only on an explicit DECURIX_ENABLE_KSM=1 (or true), and never
+// when DECURIX_DISABLE_KSM says otherwise.
+func ksmWanted(enable, disable string) bool {
+	if disable == "1" || disable == "true" {
+		return false
+	}
+	return enable == "1" || enable == "true"
 }

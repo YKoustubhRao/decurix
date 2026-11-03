@@ -20,9 +20,13 @@ import (
 // start - which is why the base image ships Chromium with --no-sandbox, and
 // why every desktop's browser opened under a yellow "You are using an
 // unsupported command-line flag: --no-sandbox" bar. Every other rule of the
-// default profile stays in force (mount, bpf, ptrace and the rest are still
-// denied), and nothing is granted to the container that its own user did
-// not already have outside a namespace. The trade is a small increase in
+// default profile stays in force (mount, bpf and the rest are still denied
+// without their capabilities), and nothing is granted to the container that
+// its own user did not already have outside a namespace. ptrace is NOT denied:
+// upstream's default allows it on kernels 4.8 and newer (seccomp-desktop.json,
+// the "ptrace" rule), so a desktop's processes can trace other processes of
+// the same uid - which is why every desktop also runs with no-new-privileges
+// and no setuid files (B-21). The trade is a small increase in
 // the kernel surface a process inside the desktop can reach, for renderer
 // processes that are actually isolated from the pages they render - the
 // same trade Chrome's own documentation recommends for containers.

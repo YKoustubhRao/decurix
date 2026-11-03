@@ -29,7 +29,10 @@ import (
 
 const (
 	containerName  = "decurix-ollama"
-	containerImage = "ollama/ollama:latest"
+	// containerImage is pinned to the release the Windows app installs natively (desktop/electron/wsl/
+	// native-ollama.ps1), so every setup runs one reviewed Ollama, not whatever :latest is on the day (C-29). Its
+	// digest is the owner's to add once pulled: `docker image inspect --format '{{index .RepoDigests 0}}'`.
+	containerImage = "ollama/ollama:0.40.1"
 	volumeName     = "decurix_ollama"
 
 	// Model is the Ollama model every desktop agent is configured to use.

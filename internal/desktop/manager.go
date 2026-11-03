@@ -319,7 +319,8 @@ func (m *Manager) runProvisioning(
 
 	// What this run made, and so all a failure may remove: never anything that was there before it (B-03).
 	var createdContainer string
-	createdVolume := false
+	createdVolume, createdCache := false, false
+	cacheName := cacheVolumeFor(containerName)
 	fail := func(err error) {
 		log.Printf("desktop provisioning failed for %s: %v", sanitizedID, err)
 		m.provisioningMu.Lock()
@@ -333,6 +334,9 @@ func (m *Manager) runProvisioning(
 		}
 		if createdVolume {
 			_ = m.client.VolumeRemove(context.Background(), volumeName, true)
+		}
+		if createdCache {
+			_ = m.client.VolumeRemove(context.Background(), cacheName, true)
 		}
 
 		// A creation stopped by a delete is gone at once; a failure is kept 60s so the page can show it.
@@ -360,6 +364,12 @@ func (m *Manager) runProvisioning(
 	updateStage("volume", "Creating persistent storage volume...", 30)
 	made, err := m.homeVolumeFor(ctx, volumeName, sanitizedID, prov.creation)
 	createdVolume = made
+	if err != nil {
+		fail(err)
+		return
+	}
+	made, err = m.cacheVolumeFresh(ctx, cacheName, sanitizedID, prov.creation)
+	createdCache = made
 	if err != nil {
 		fail(err)
 		return
@@ -1057,6 +1067,13 @@ func (m *Manager) Delete(
 	}
 
 	volumeName := homeVolume(inspect.Mounts)
+	cacheName := ""
+	for _, mp := range inspect.Mounts {
+		// This desktop's own package cache; never the one older desktops shared (CacheVolumeName).
+		if mp.Destination == "/var/cache/decurix" && mp.Name == cacheVolumeFor(name) {
+			cacheName = mp.Name
+		}
+	}
 
 	err = m.client.ContainerRemove(
 		ctx,
@@ -1089,6 +1106,11 @@ func (m *Manager) Delete(
 	m.resourceMu.Unlock()
 
 	// Delete persistent storage too.
+	if cacheName != "" {
+		if err := m.client.VolumeRemove(ctx, cacheName, true); err != nil {
+			log.Printf("warning: removing volume %s: %v", cacheName, err)
+		}
+	}
 	if volumeName != "" {
 		if err := m.client.VolumeRemove(
 			ctx,

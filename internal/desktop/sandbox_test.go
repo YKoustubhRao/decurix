@@ -55,8 +55,8 @@ func TestDesktopSeccompProfileOnlyOpensNamespaceCreation(t *testing.T) {
 func TestBuildContainerConfigsAppliesSandboxAndCoreLimit(t *testing.T) {
 	_, host, _ := buildContainerConfigs("img", "desktop_x", "basic", "ollama", 2, 4096, nil, "vol", []string{"seccomp=" + desktopSeccompProfile})
 
-	if len(host.SecurityOpt) != 1 || host.SecurityOpt[0][:8] != "seccomp=" {
-		t.Errorf("SecurityOpt = %v, want the desktop seccomp profile", host.SecurityOpt)
+	if len(host.SecurityOpt) != 2 || host.SecurityOpt[0][:8] != "seccomp=" || host.SecurityOpt[1] != "no-new-privileges:true" {
+		t.Errorf("SecurityOpt = %v, want the desktop seccomp profile and no-new-privileges", host.SecurityOpt)
 	}
 	found := false
 	for _, u := range host.Ulimits {

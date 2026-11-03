@@ -114,12 +114,12 @@ func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bo
 	return nil
 }
 
-// PruneDanglingResources prunes untagged/dangling Docker image layers left behind
-// by builds, reclaiming disk space without affecting any active desktop images.
+// PruneDanglingResources prunes the untagged image layers Decurix's own builds left behind, reclaiming disk space
+// without affecting any active desktop image - and never another project's dangling images on a Docker engine Decurix
+// shares (L-02): only images carrying contextLabel, which every desktop and tools image Decurix builds has.
 func (m *Manager) PruneDanglingResources(ctx context.Context) (uint64, error) {
 
-	pruneFilters := filters.NewArgs()
-	pruneFilters.Add("dangling", "true")
+	pruneFilters := pruneFilter()
 
 	report, err := m.client.ImagesPrune(ctx, pruneFilters)
 	if err != nil {
@@ -379,4 +379,12 @@ func streamBuildOutput(out io.Writer, body io.Reader) error {
 			fmt.Fprint(out, msg.Stream)
 		}
 	}
+}
+
+// pruneFilter selects what PruneDanglingResources removes: dangling images Decurix built.
+func pruneFilter() filters.Args {
+	f := filters.NewArgs()
+	f.Add("dangling", "true")
+	f.Add("label", contextLabel)
+	return f
 }

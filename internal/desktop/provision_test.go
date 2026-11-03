@@ -70,7 +70,12 @@ func TestAnInspectThatTimesOutRemovesNothing(t *testing.T) {
 // unlabelled one it reused.
 func TestANameConflictRemovesNothingThatWasThere(t *testing.T) {
 	fake := &fakeAPI{
-		volumeGet: func(name string) (volume.Volume, error) { return volume.Volume{Name: name}, nil },
+		volumeGet: func(name string) (volume.Volume, error) {
+			if strings.HasSuffix(name, "_home") {
+				return volume.Volume{Name: name}, nil
+			}
+			return volume.Volume{}, errFakeNotFound
+		},
 		create: func(name string, _ *container.Config, _ *container.HostConfig) (container.CreateResponse, error) {
 			return container.CreateResponse{}, errors.New("Conflict. The container name is already in use")
 		},
@@ -81,7 +86,8 @@ func TestANameConflictRemovesNothingThatWasThere(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitProvisioned(t, m, prov)
-	if c := append(fake.called("ContainerRemove"), fake.called("VolumeRemove")...); len(c) > 0 {
+	// Only the package cache this creation made itself may go.
+	if c := append(fake.called("ContainerRemove"), fake.called("VolumeRemove desktop_box_home")...); len(c) > 0 {
 		t.Fatalf("a failed creation removed what it did not make: %v", c)
 	}
 }
