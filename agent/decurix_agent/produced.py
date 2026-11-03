@@ -369,25 +369,46 @@ def missing_requested(request, made, root=None, only=None):
     sentences in its instruction name (found live, round 5 P1: the memo stage was refused for the deck).
     """
 
+    missing = missing_names(request, made, root=root, only=only)
+    if not missing:
+        return ""
+    return (", ".join(missing) + (" was" if len(missing) == 1 else " were") + " not made: no such file was written "
+            "during this task")
+
+
+def missing_names(request, made, root=None, only=None):
+    """The names missing_requested reports, as a list ([] when none)."""
+
     text = attachments.text(request or "")
     if _host_paths(text):
-        return ""
+        return []
     names = [n for n in requested_names(request) if Path(n).suffix.lower() in READABLE]
     if only is not None:
         own = {Path(str(o).replace("\\", "/")).name.lower() for o in only}
         names = [n for n in names if Path(n.replace("\\", "/")).name.lower() in own]
     if not names:
-        return ""
+        return []
     have = {Path(p).name.lower() for p in made}
     root = Path(root or config.WORK_DIR)
     there = {p.name.lower() for p in _walk(root)}
     # A name that is there at all - made now, or an input the request mentions in the same sentence ("an email with
     # invoice.pdf attached") - is not called missing; only a file nowhere to be found is.
-    missing = [name for name in names if name.lower() not in have and name.lower() not in there]
+    return [name for name in names if name.lower() not in have and name.lower() not in there]
+
+
+def named_not_written(request, made, root=None):
+    """
+    Evidence, never a block: the file names the request's words seem to ask for that no file of the task carries.
+    Found (review 2026-11-03, E-10): read from the words alone, "Do not create report.pdf" asked for report.pdf, and a
+    file "on the GST portal" was taken for one to make - each refused at certainty. Only a planned stage's own outputs
+    (structure) can make a missing file blocking (file_facts' own_outputs).
+    """
+
+    missing = missing_names(request, made, root=root)
     if not missing:
-        return ""
-    return (", ".join(missing) + (" was" if len(missing) == 1 else " were") + " not made: no such file was written "
-            "during this task")
+        return []
+    return [f"The request's words name {', '.join(missing)}, and no file of that name was written during this task "
+            "(read from the words alone: judge whether the request asks for it to be made)"]
 
 
 def source_images(request, made, root=None, fetch=None):
@@ -486,15 +507,92 @@ def page_break_findings(request, made):
     return out
 
 
-def document_findings(request, made):
+def _filled_sources(request, made, root=None):
+    """The Word documents the task worked from: the request's attached or named .docx/.dotx files that it did not
+    make, and the copy kept from before the task of a made document that was there already (filled in place)."""
+
+    from decurix_agent import source_guard
+
+    made_set = {os.path.realpath(str(m)) for m in made}
+    text = attachments.text(request or "")
+    found = [str(p) for p in attachments.files(request or "") if Path(str(p)).suffix.lower() in (".docx", ".dotx")]
+    names = {n.lower() for n in REQUESTED_FILE.findall(text) if Path(n).suffix.lower() in (".docx", ".dotx")}
+    names |= {n.lower() for n in re.findall(r"\b[\w-][\w.-]*\.dotx\b", text, re.I)}
+    if names:
+        found += [str(p) for p in _walk(Path(root or config.WORK_DIR)) if p.name.lower() in names]
+    for m in made:
+        if Path(str(m)).suffix.lower() == ".docx":
+            try:
+                before = source_guard.before_copy(m)
+            except Exception:  # noqa: BLE001 - no copy known: nothing to compare with
+                before = None
+            if before:
+                found.append(str(before))
+    return [p for p in dict.fromkeys(found) if os.path.realpath(p) not in made_set and Path(p).is_file()]
+
+
+def _source_placeholders(request, made, root=None):
+    """Every placeholder the documents the task filled hold (a set), read with no model."""
+
+    from decurix_agent.tools import office
+
+    held = set()
+    for path in _filled_sources(request, made, root=root):
+        try:
+            held.update(office.docx_placeholders(path))
+        except Exception as exc:  # noqa: BLE001 - a source that cannot be read decides nothing
+            log(f"produced: could not look for placeholders in {path}: {exc}")
+    return held
+
+
+def _left_placeholders(made):
+    """{path: [placeholder]} of the Word documents among `made` that still hold one."""
+
+    from decurix_agent.tools import office
+
+    out = {}
+    for path in made:
+        if Path(path).suffix.lower() != ".docx":
+            continue
+        try:
+            left = office.docx_placeholders(path)
+        except Exception as exc:  # noqa: BLE001
+            log(f"produced: could not look for placeholders in {path}: {exc}")
+            continue
+        if left:
+            out[path] = left
+    return out
+
+
+def template_placeholder_notes(request, made, root=None):
+    """Evidence: a placeholder left in a made document that no document the task filled held - a template or a guide
+    may well be meant to keep it (review 2026-11-03, E-11: a requested mail-merge template was refused)."""
+
+    left = _left_placeholders(made)
+    if not left:
+        return []
+    held = _source_placeholders(request, made, root=root)
+    out = []
+    for path, found in left.items():
+        own = [p for p in found if p not in held]
+        if own:
+            out.append(f"{Path(path).name} holds the placeholder(s) {', '.join(own[:6])}, which no document it was "
+                       "filled from held (judge whether the request asks for them to be filled)")
+    return out
+
+
+def document_findings(request, made, root=None):
     """
     What is wrong with the Word documents a task saved, decided without reading the request: a "\\f" typed as text where
-    a break was meant, and a template's placeholder left. (Page breaks the request asks for: page_break_findings.)
+    a break was meant, and a placeholder left that a document the task filled held (the template's own placeholder
+    was not filled: mechanical). A placeholder no source held is evidence (template_placeholder_notes; review
+    2026-11-03, E-11). (Page breaks the request asks for: page_break_findings.)
     """
 
     from decurix_agent.tools import office
 
     out = []
+    held = None
     for path in made:
         if Path(path).suffix.lower() != ".docx":
             continue
@@ -512,8 +610,11 @@ def document_findings(request, made):
             log(f"produced: could not look for placeholders in {path}: {exc}")
             left = []
         if left:
-            out.append(f"{Path(path).name} still holds the template's placeholder(s) {', '.join(left[:6])} - fill "
-                       "them (office update DOC.docx with a \"replace\" spec)")
+            held = _source_placeholders(request, made, root=root) if held is None else held
+            unfilled = [p for p in left if p in held]
+            if unfilled:
+                out.append(f"{Path(path).name} still holds the template's placeholder(s) {', '.join(unfilled[:6])} - "
+                           "fill them (office update DOC.docx with a \"replace\" spec)")
     return out
 
 
@@ -524,7 +625,10 @@ class FileFacts:
       unstored      workbooks whose formulas still have no stored result
       typed_totals  a Total row of typed numbers where the request asked for formulas (evidence: a reading of it)
       totals_note   the same, where it did not ask (a correct answer, only noted)
-      missing_files a file the request names that was not made
+      missing_files a file a planned stage's own outputs name that was not made (structure: blocking)
+      missing_named a file name the request's words seem to ask for that no file carries (evidence)
+      placeholder_notes a template placeholder left in a made document that no document it was filled from held
+                    (evidence)
       file_faults   hygiene: an Office file a strict reader cannot open, a template placeholder left, "\\f" as text
       request_faults a picture's size or a document's page breaks against what the request asks (evidence)
       gaps          formula cells whose stored result is an error (#REF!, #VALUE!, #DIV/0! ...): certain, blocking
@@ -554,8 +658,10 @@ class FileFacts:
     def __init__(self, unstored=(), typed_totals=(), totals_note=(), missing_files="", file_faults=(), gaps=(), layout=(),
                  source_mismatch=(), disclosures=(), payee_mismatch=(), unknown_recipients=(), draft_facts=(),
                  request_faults=(), draft_fields=(), gap_notes=(), unchecked=(), duplicates=(), pattern_breaks=(),
-                 code_notes=(), could_not=()):
+                 code_notes=(), could_not=(), missing_named=(), placeholder_notes=()):
         self.could_not = list(could_not)
+        self.missing_named = list(missing_named)
+        self.placeholder_notes = list(placeholder_notes)
         self.code_notes = list(code_notes)
         self.duplicates = list(duplicates)
         self.pattern_breaks = list(pattern_breaks)
@@ -604,7 +710,7 @@ class FileFacts:
         """The evidence among these facts (never a verdict): what reads the request, or needs judgement."""
 
         return (list(self.gap_notes) + list(self.unchecked) + list(self.layout) + list(self.typed_totals) + list(self.request_faults)
-                + list(self.source_mismatch)
+                + list(self.source_mismatch) + list(self.missing_named) + list(self.placeholder_notes)
                 + list(self.disclosures) + list(self.draft_fields) + list(self.duplicates)
                 + list(self.pattern_breaks) + list(self.code_notes))
 
@@ -760,10 +866,12 @@ def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_m
         unstored=unstored,
         typed_totals=wrong_totals,
         totals_note=[] if wrong_totals else found_totals,
-        missing_files=missing_requested(named, every, root=root,
-                                        **({"only": own_outputs} if own_outputs is not None else {})),
-        file_faults=[s for st, s in opened.values() if st == "broken"] + document_findings(named, every)
+        # Blocking only for names from structure (a planned stage's outputs); otherwise evidence (E-10).
+        missing_files=missing_requested(named, every, root=root, only=own_outputs) if own_outputs is not None else "",
+        missing_named=named_not_written(named, every, root=root) if own_outputs is None else [],
+        file_faults=[s for st, s in opened.values() if st == "broken"] + document_findings(named, every, root=root)
         + named_kind_faults(every),
+        placeholder_notes=template_placeholder_notes(named, every, root=root),
         unchecked=[s for st, s in opened.values() if st in ("protected", "unchecked") and s],
         request_faults=image_findings(named, every, source_images(named, every, **({"root": root} if root else {})))
         + page_break_findings(named, every),
