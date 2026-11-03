@@ -399,6 +399,19 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request, warm bool
 	return id, true
 }
 
+// thenClose is act followed by closing the desktop's open tasks with why, both under the lifecycle lock desktopAction
+// holds: a delivery waiting on that lock records its task after the close, never before it to be closed by mistake
+// (RW1-E-01).
+func (s *Server) thenClose(act func(context.Context, string) error, why string) func(context.Context, string) error {
+	return func(ctx context.Context, id string) error {
+		if err := act(ctx, id); err != nil {
+			return err
+		}
+		s.closeOpenTasks(id, why)
+		return nil
+	}
+}
+
 // dockerStatusHandler answers GET /api/docker/status: whether the control plane has asked Docker yet, and whether it
 // answered - what the "Docker is not running" banner reads (W-08). Never a round trip to Docker itself.
 func (s *Server) dockerStatusHandler(w http.ResponseWriter, r *http.Request) {
@@ -427,12 +440,11 @@ func (s *Server) startDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 // stopDesktopHandler stops a running desktop by ID.
 func (s *Server) stopDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.desktopAction(w, r, false, s.Desktops.Stop)
+	id, ok := s.desktopAction(w, r, false, s.thenClose(s.Desktops.Stop, "The desktop was stopped before this task finished."))
 	if !ok {
 		return
 	}
 
-	s.closeOpenTasks(id, "The desktop was stopped before this task finished.")
 	// Its host apps go too: kept ready for nobody, each with its bridge. Remembered for its next start (hostgui.go).
 	s.releaseHostApps(desktop.SanitizeID(id))
 
@@ -461,12 +473,9 @@ func (s *Server) unpauseDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 // restartDesktopHandler restarts a desktop by ID.
 func (s *Server) restartDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.desktopAction(w, r, true, s.Desktops.Restart)
-	if !ok {
+	if _, ok := s.desktopAction(w, r, true, s.thenClose(s.Desktops.Restart, "The desktop was restarted before this task finished.")); !ok {
 		return
 	}
-
-	s.closeOpenTasks(id, "The desktop was restarted before this task finished.")
 
 	jsonResponse(w, map[string]string{
 		"status": "restarted",
@@ -475,12 +484,10 @@ func (s *Server) restartDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 // deleteDesktopHandler deletes a desktop and its persistent storage by ID.
 func (s *Server) deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.desktopAction(w, r, false, s.Desktops.Delete)
+	id, ok := s.desktopAction(w, r, false, s.thenClose(s.Desktops.Delete, "The desktop was deleted before this task finished."))
 	if !ok {
 		return
 	}
-
-	s.closeOpenTasks(id, "The desktop was deleted before this task finished.")
 
 	// Its open notes can never be answered now.
 	s.QueryNotes.ResolveDesktop(desktop.SanitizeID(id))

@@ -37,11 +37,10 @@ func (s *Server) ConciergeDeps() concierge.Deps {
 		},
 		OpenQuestion: s.Tasks.OpenQuestion,
 		Stop: func(ctx context.Context, id string) error {
-			if err := s.Desktops.Stop(ctx, id); err != nil {
-				return err
-			}
-			s.closeOpenTasks(id, "The desktop was stopped before this task finished.")
-			return nil
+			// The same lifecycle lock as the dashboard's Stop and every delivery (B-23, RW1-E-02).
+			unlock := s.Desktops.LockDesktop(id)
+			defer unlock()
+			return s.thenClose(s.Desktops.Stop, "The desktop was stopped before this task finished.")(ctx, id)
 		},
 	}
 	if s.Suggest != nil {

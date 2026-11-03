@@ -27,9 +27,18 @@ func TestAnEmbedThatWouldEvictTheChatModelIsSeen(t *testing.T) {
 		t.Fatal("two slots: nothing is evicted")
 	}
 	t.Setenv("OLLAMA_MAX_LOADED_MODELS", "1")
+	// Another chat model loaded (an older desktop's, not this process's pick) is evicted all the same (RW1-E-03).
 	loaded = `{"models":[{"name":"other:latest"}]}`
+	if !EmbedWouldEvict(context.Background()) {
+		t.Fatal("another chat model is loaded: an embed would evict it")
+	}
+	loaded = `{"models":[{"name":"` + EmbedModel + `"}]}`
 	if EmbedWouldEvict(context.Background()) {
-		t.Fatal("the chat model is not loaded: nothing of the desktops' is evicted")
+		t.Fatal("only the embedder is loaded: nothing is evicted")
+	}
+	loaded = `{"models":[]}`
+	if EmbedWouldEvict(context.Background()) {
+		t.Fatal("nothing loaded: nothing is evicted")
 	}
 }
 

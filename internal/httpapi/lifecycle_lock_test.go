@@ -49,3 +49,30 @@ func TestDockerStatusSaysWhatWasSeen(t *testing.T) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 }
+
+// A stop closes the desktop's open tasks while it still holds the lifecycle lock, so a delivery waiting on that lock
+// records its task only after the close (RW1-E-01): the lock is still held when the tasks are closed.
+func TestAStopClosesItsTasksUnderTheLock(t *testing.T) {
+	s := chatServer(t)
+	s.Desktops = &desktop.Manager{}
+	deliver(t, s, "box", "a task")
+	heldDuringClose := false
+	act := s.thenClose(func(context.Context, string) error { return nil }, "stopped")
+	unlock := s.Desktops.LockDesktop("box")
+	done := make(chan struct{})
+	go func() {
+		// Another delivery waiting on the lock: it must not get it before the close below.
+		u := s.Desktops.LockDesktop("box")
+		heldDuringClose = s.Tasks.Working() == false
+		u()
+		close(done)
+	}()
+	if err := act(context.Background(), "box"); err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	<-done
+	if !heldDuringClose {
+		t.Fatal("the waiting delivery got the lock before the tasks were closed")
+	}
+}
