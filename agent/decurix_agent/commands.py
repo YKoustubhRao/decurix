@@ -166,8 +166,20 @@ def _protected_path(path):
     return bool(re.fullmatch(r"/home/[^/]+|/(?:usr|var|etc)/[^/]+", path))
 
 
+_WIPE = "it deletes a system directory, the filesystem root or the whole home directory"
+_WHERE_UNKNOWN = ("it deletes recursively by a relative path or a pattern, in a folder that cannot be told (a cd to a "
+                  "folder decided at run time came before it), which cannot be checked")
+
+
+def _absolute(word):
+    """Whether a word names a path whatever folder the command is in: from the root or from the home."""
+
+    return word.startswith("/") or re.match(r"^(?:~|\$HOME|\$\{HOME\})(?=/|$)", word) is not None
+
+
 def _rm_wipes(words, start, cwd):
-    """Whether `rm` at words[start] deletes recursively something protected."""
+    """Why `rm` at words[start] must wait, or None: it deletes recursively something protected, or - when the folder
+    it runs in cannot be told (cwd None) - a relative path or a pattern, which could be anything."""
 
     recursive, operands, options_done = False, [], False
     for word in words[start + 1:]:
@@ -180,12 +192,14 @@ def _rm_wipes(words, start, cwd):
         else:
             operands.append(word)
     if not recursive:
-        return False
+        return None
     for word in operands:
-        path = _resolve(word, cwd)
+        if cwd is None and not _absolute(word):
+            return _WHERE_UNKNOWN
+        path = _resolve(word, cwd or "/")
         if path is not None and _protected_path(path):
-            return True
-    return False
+            return _WIPE
+    return None
 
 
 def _rm_wipe_reason(text, depth=0):
@@ -222,12 +236,22 @@ def _rm_wipe_reason(text, depth=0):
         if i >= len(words):
             continue
         name = posixpath.basename(words[i])
-        if name == "cd":
+        if name in ("cd", "pushd"):
+            # A folder decided at run time ("cd $X", "cd -", "pushd +1") leaves where the next command runs unknown
+            # (None): what cannot be read waits, as this module's rule says. Found in review (2026-11-03, F-10): the
+            # old folder was kept, and a recursive rm after it was read as if it ran there.
             args = [w for w in words[i + 1:] if w != "--" and not re.fullmatch(r"-[LPe@]+", w)]
-            path = _resolve(args[0] if args else "~", cwd)
-            cwd = path if path is not None else cwd
-        elif name == "rm" and _rm_wipes(words, i, cwd):
-            return "it deletes a system directory, the filesystem root or the whole home directory"
+            target = args[0] if args else "~"
+            if target == "-" or re.fullmatch(r"[+-]\d+", target) or (cwd is None and not _absolute(target)):
+                cwd = None
+            else:
+                cwd = _resolve(target, cwd or "/")
+        elif name == "popd":
+            cwd = None
+        elif name == "rm":
+            why = _rm_wipes(words, i, cwd)
+            if why:
+                return why
         elif name in _SHELLS:
             # bash -c 'script', bash -lc "...", su -c '...': the script is a command too.
             for j in range(i + 1, len(words) - 1):
