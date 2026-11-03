@@ -78,6 +78,7 @@ if ! docker info >/dev/null 2>&1; then
         fi
         sleep 2
     done
+    docker info >/dev/null 2>&1 || echo "WARNING: Docker Desktop is not answering yet; start it before opening Decurix."
 else
     echo "Docker is already running."
 fi
@@ -88,30 +89,38 @@ echo "        Verifying Installation"
 echo "========================================"
 echo ""
 
-echo "Git:"
-git --version || true
+# Each tool is looked for, not assumed: an install that failed above must not
+# be reported here as installed.
+missing=''
+optional_missing=''
+show() {
+    local label="$1" need="$2" out; shift 2
+    echo "$label:"
+    if out="$("$@" 2>/dev/null)"; then
+        printf '%s\n' "$out" | head -n 1
+    else
+        echo "  NOT FOUND"
+        if [ "$need" = required ]; then missing="$missing $label"; else optional_missing="$optional_missing $label"; fi
+    fi
+    echo ""
+}
+show Git required git --version
+show Docker required docker --version
+show "Docker Compose" required docker compose version
+show jq required jq --version
+show Ollama required ollama --version
+show QEMU optional qemu-system-x86_64 --version
+show Cloudflared optional cloudflared --version
 
-echo ""
-echo "Docker:"
-docker --version || true
+if [ -n "$missing" ]; then
+    echo "========================================"
+    echo " macOS Host Setup INCOMPLETE"
+    echo "========================================"
+    echo "Missing:$missing. Install them (brew install ...), then re-run this script."
+    exit 1
+fi
+[ -n "$optional_missing" ] && echo "Optional, not installed:$optional_missing (Decurix runs without them)." && echo ""
 
-echo ""
-echo "Docker Compose:"
-docker compose version || true
-
-echo ""
-echo "QEMU:"
-qemu-system-x86_64 --version 2>/dev/null | head -n 1 || echo "(qemu installed)"
-
-echo ""
-echo "Ollama:"
-ollama --version 2>/dev/null || echo "(ollama installed)"
-
-echo ""
-echo "Cloudflared:"
-cloudflared --version 2>/dev/null || echo "(cloudflared installed)"
-
-echo ""
 echo "========================================"
 echo " macOS Host Setup Complete"
 echo "========================================"

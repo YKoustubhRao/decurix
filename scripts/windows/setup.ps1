@@ -35,13 +35,23 @@ $packages = @(
     "Ollama.Ollama"
 )
 
+# winget says whether it worked through its exit code, not an exception: a
+# failure is collected and said at the end, never reported as installed.
+$installFailures = @()
+# winget's "already installed" and "no newer version" answers are not failures.
+$wingetFine = @(0, -1978335189, -1978335135)  # 0, 0x8A15002B (no applicable update), 0x8A150061 (already installed)
 foreach ($package in $packages) {
     try {
         Write-Host "Installing $package..."
         winget install --id $package --silent --accept-package-agreements --accept-source-agreements
+        if ($wingetFine -notcontains $LASTEXITCODE) {
+            Write-Host "WARNING: winget could not install $package (exit $LASTEXITCODE)."
+            $installFailures += $package
+        }
     }
     catch {
         Write-Host "WARNING: Failed to install $package - $($_.Exception.Message)"
+        $installFailures += $package
     }
 }
 Write-Host ""
@@ -121,29 +131,37 @@ Write-Host "        Verifying Installation"
 Write-Host "========================================"
 Write-Host ""
 
-Write-Host "Git:"
-if (Get-Command git -ErrorAction SilentlyContinue) { git --version } else { Write-Host "(git installed)" }
-Write-Host ""
+# Each tool is looked for, not assumed. A tool installed a moment ago may not
+# be on this window's PATH yet, so "not found" says where to look again.
+$notFound = @()
+function Show-Tool([string]$Label, [string]$Command, [string[]]$Arguments) {
+    Write-Host "${Label}:"
+    if (Get-Command $Command -ErrorAction SilentlyContinue) {
+        & $Command @Arguments 2>$null | Select-Object -First 1
+    } else {
+        Write-Host "  NOT FOUND in this window (one installed just now shows up in a new window)"
+        $script:notFound += $Label
+    }
+    Write-Host ""
+}
+Show-Tool 'Git' 'git' @('--version')
+Show-Tool 'Docker' 'docker' @('--version')
+Show-Tool 'Docker Compose' 'docker' @('compose', 'version')
+Show-Tool 'QEMU' 'qemu-system-x86_64' @('--version')
+Show-Tool 'Ollama' 'ollama' @('--version')
+Show-Tool 'Cloudflared' 'cloudflared' @('--version')
 
-Write-Host "Docker:"
-if (Get-Command docker -ErrorAction SilentlyContinue) { docker --version } else { Write-Host "(docker installed)" }
-Write-Host ""
-
-Write-Host "Docker Compose:"
-if (Get-Command docker -ErrorAction SilentlyContinue) { docker compose version } else { Write-Host "(docker compose installed)" }
-Write-Host ""
-
-Write-Host "QEMU:"
-if (Get-Command qemu-system-x86_64 -ErrorAction SilentlyContinue) { qemu-system-x86_64 --version | Select-Object -First 1 } else { Write-Host "(qemu installed)" }
-Write-Host ""
-
-Write-Host "Ollama:"
-if (Get-Command ollama -ErrorAction SilentlyContinue) { ollama --version } else { Write-Host "(ollama installed)" }
-Write-Host ""
-
-Write-Host "Cloudflared:"
-if (Get-Command cloudflared -ErrorAction SilentlyContinue) { cloudflared --version } else { Write-Host "(cloudflared installed)" }
-Write-Host ""
+if ($installFailures.Count -gt 0) {
+    Write-Host "========================================"
+    Write-Host "        Setup INCOMPLETE"
+    Write-Host "========================================"
+    Write-Host "These could not be installed: $($installFailures -join ', '). Install them yourself, then re-run."
+    exit 1
+}
+if ($notFound.Count -gt 0) {
+    Write-Host "Not found in this window: $($notFound -join ', '). Open a new PowerShell window to check again."
+    Write-Host ""
+}
 
 Write-Host "========================================"
 Write-Host "        Setup Complete"

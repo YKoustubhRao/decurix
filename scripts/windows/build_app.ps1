@@ -158,7 +158,7 @@ function Clear-DecurixData {
     }
 
     # A shared WSL distro keeps other applications: reset only our resources.
-    & powershell.exe -NoProfile -NonInteractive -File (Join-Path $repo 'desktop/electron/wsl/cleanup-existing.ps1') -Action reset
+    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $repo 'desktop/electron/wsl/cleanup-existing.ps1') -Action reset
     if ($LASTEXITCODE -ne 0) { throw 'Could not reset the saved WSL runtime; its data and runtime record were kept.' }
 
     # The distro holds every worker and the records, and the worker images.

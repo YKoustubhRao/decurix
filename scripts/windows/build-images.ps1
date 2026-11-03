@@ -63,15 +63,26 @@ function Build-DesktopImage {
 Build-DesktopImage -Tag "decurix-desktop:basic" -Dockerfile "docker/desktop.basic.Dockerfile" -Label "Unified Desktop Base"
 Build-DesktopImage -Tag "decurix-tools:latest" -Dockerfile "docker/tools.Dockerfile" -Label "Shared Tools Runtime"
 
+# Each step's exit code is checked, as the .sh twins' `set -e` does: an image
+# that was not tagged, or a tools volume that was not filled, must not be
+# reported as ready.
+function Invoke-Step([string]$What, [scriptblock]$Step) {
+    & $Step
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: could not $What (exit $LASTEXITCODE)."
+        exit $LASTEXITCODE
+    }
+}
+
 Write-Host "=== Aliasing desktop profiles (developer / ai) to unified base ==="
-docker tag decurix-desktop:basic decurix-desktop:developer
-docker tag decurix-desktop:basic decurix-desktop:ai
+Invoke-Step 'tag decurix-desktop:developer' { docker tag decurix-desktop:basic decurix-desktop:developer }
+Invoke-Step 'tag decurix-desktop:ai' { docker tag decurix-desktop:basic decurix-desktop:ai }
 
 Write-Host ""
 Write-Host "=== Populating shared tools volume (decurix-tools) ==="
-docker volume create decurix-tools *>$null
-docker run --rm -v decurix-tools:/target decurix-tools:latest
-docker volume create decurix-cache *>$null
+Invoke-Step 'create the decurix-tools volume' { docker volume create decurix-tools *>$null }
+Invoke-Step 'populate the decurix-tools volume' { docker run --rm -v decurix-tools:/target decurix-tools:latest }
+Invoke-Step 'create the decurix-cache volume' { docker volume create decurix-cache *>$null }
 
 Write-Host ""
 Write-Host "=== Pruning dangling build layers to reclaim disk space ==="
