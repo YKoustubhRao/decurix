@@ -14,8 +14,11 @@ echo "[$(date)] Starting Decurix agent" >> "$LOG"
 
 export DISPLAY=:1
 
-# Allow incoming display connections for host-bridge display tunneling
-which xhost >/dev/null 2>&1 && xhost + >/dev/null 2>&1 || true
+# Only this desktop's own user may open the display. "xhost +" turned X access control off, so anything that could
+# reach the X server - another container on the Docker network, if Xvnc listens on TCP - could drive this screen
+# around the approval gate (review 2026-11-03, N-F2). Every process that drives the screen (the agent, the gui
+# command, soul, the control plane's docker exec) runs as the desktop's user, headless.
+which xhost >/dev/null 2>&1 && { xhost - >/dev/null 2>&1; xhost +SI:localuser:headless >/dev/null 2>&1; } || true
 
 if [ -z "$XDG_RUNTIME_DIR" ]; then
     export XDG_RUNTIME_DIR="/tmp/runtime-headless"
