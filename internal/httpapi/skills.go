@@ -197,6 +197,9 @@ func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content,
 	}
 
 	payload["task_id"] = route.TaskID
+	// The execution it belongs to, as on every /request (H-PY-7): the desktop holds that run's evidence until EXPORTED
+	// names it.
+	payload["execution_id"] = route.ExecutionID
 
 	resp, ok := s.askAgent(ctx, w, id, http.MethodPost, agentPath, payload)
 	if !ok {

@@ -338,3 +338,19 @@ func TestAReplysValuesReachTheGateFirst(t *testing.T) {
 		}
 	}
 }
+
+// A replay, a skill run and a lesson name the execution they belong to too, as every /request does (H-PY-7).
+func TestATaughtDoorNamesItsExecution(t *testing.T) {
+	s := recordingServer(t)
+	bodies := fakeAgentDesktop(t, s)
+	rec := replayWith(t, s, map[string]string{"invoice_no": "INV-0042"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("replay: %d %s", rec.Code, rec.Body)
+	}
+	task := between(rec.Body.String(), `"task_id":"`, `"`)
+	exec := latestExecution(t, s, task).ID
+	sent := requestsWith(bodies(), "params")
+	if len(sent) == 0 || sent[len(sent)-1]["execution_id"] != exec {
+		t.Fatalf("the replay body %v does not name execution %s", sent, exec)
+	}
+}
