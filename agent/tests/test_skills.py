@@ -924,6 +924,10 @@ class EngineAccess(unittest.TestCase):
         self.saved = (skills.ROOT, replay.core, skill_engine.core, replay.FIND_SECONDS, replay.EXPECT_SECONDS, replay.POLL_SECONDS)
         skills.ROOT = Path(self.tmp.name)
         replay.FIND_SECONDS = replay.EXPECT_SECONDS = replay.POLL_SECONDS = 0
+        # What each test's runs replayed is its own (skill_engine notes runs outside a task too).
+        replayed = mock.patch.object(skill_engine, "REPLAYED_DIR", Path(self.tmp.name) / "replayed")
+        replayed.start()
+        self.addCleanup(replayed.stop)
 
         skill = learning.build([demo("demo-20260914T101500-aaaaaa", "Acme")])
         answer_all(skill)

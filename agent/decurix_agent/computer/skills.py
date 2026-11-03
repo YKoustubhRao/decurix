@@ -675,9 +675,12 @@ def fit(skill, program, values):
                             base_of[rename[old]] = old
                             params[rename[old]] = dict(params.get(old) or {"label": old, "example": None},
                                                        name=rename[old], default=None)
-                        # Which row a control is in was the demonstration's row: it is found by what it is.
+                        # Which row a control is in was the demonstration's row: this one is the same control in
+                        # row r + 1 - the (r + 1)th of its name, never the first one found by name alone, which is
+                        # an earlier row's (review 2026-11-03, D-30: a row's value went over the first row's).
                         if each.get("target"):
                             each["target"] = {k: v for k, v in each["target"].items() if k not in ("path", "row", "nth")}
+                            each["target"]["nth"] = r + 1
                         each["expect"] = []
                         each["summary"] = f"{replay._summary(each)} (row {r + 1})"
                         extra.append(each)

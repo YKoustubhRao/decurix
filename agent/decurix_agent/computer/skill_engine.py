@@ -1,6 +1,7 @@
 import json
+import time
 
-from decurix_agent import config, llm_client, task_context
+from decurix_agent import config, filelock, llm_client, task_context
 from decurix_agent.computer import escalation, core, learning, replay, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
@@ -145,8 +146,29 @@ def run(skill, params=None, start=1, source_files=None):
     Run a ready skill with no model and say how it ended, in replay.run's shape.
     A skill that is not ready, is missing a value the recording could not
     supply, or is not where it began (when a person asked for that to be
-    checked) does nothing and says why.
+    checked) does nothing and says why. One run of a skill at a time per task
+    (or outside any task): a second, started while the first runs, is refused -
+    its check of what was already done would pass before the first noted it.
+    Found in review (2026-11-03, D-30).
     """
+
+    REPLAYED_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = REPLAYED_DIR / f".lock-{_scope()}-{skill.get('name') or 'skill'}"
+    try:
+        handle = open(lock_path, "a+")
+    except OSError as exc:
+        return _refusal(skill, f"its run lock could not be opened ({type(exc).__name__}), so it is not run")
+    try:
+        if not filelock.try_exclusive(handle):
+            return _refusal(skill, "another run of it is going on now - wait for that one to end, then look at "
+                                   "what it did before running it again")
+        return _run(skill, params, start, source_files)
+    finally:
+        handle.close()
+
+
+def _run(skill, params=None, start=1, source_files=None):
+    """run(), under its lock."""
 
     if skill.get("status") != skills.READY:
         return _refusal(skill, "it was never finished being taught - a person confirms a skill in the chat with /learn")
@@ -252,9 +274,28 @@ def run(skill, params=None, start=1, source_files=None):
     return result
 
 
+# Outside any task, what was replayed counts for this long (a run from the shell, a test, an engine with no task):
+# before, nothing was kept there and a second run did the work again (D-30).
+NO_TASK_SECONDS = 3600
+
+
+def _scope():
+    """The task this run is for, or "no-task"."""
+
+    return task_context.current() or "no-task"
+
+
 def _replayed_path():
-    task_id = task_context.current()
-    return REPLAYED_DIR / f"{task_id}.json" if task_id else None
+    return REPLAYED_DIR / f"{_scope()}.json"
+
+
+def _read_replayed(path):
+    """What a run's note file holds; outside any task, an old note no longer counts."""
+
+    done = json.loads(path.read_text(encoding="utf-8"))
+    if path.stem == "no-task" and time.time() - float(done.get("#at") or 0) > NO_TASK_SECONDS:
+        return {}
+    return done
 
 
 def _replayed_to(name):
@@ -262,7 +303,7 @@ def _replayed_to(name):
 
     path = _replayed_path()
     try:
-        return int(json.loads(path.read_text(encoding="utf-8")).get(name) or 0) if path else 0
+        return int(_read_replayed(path).get(name) or 0) if path else 0
     except (OSError, ValueError, TypeError):
         return 0
 
@@ -272,7 +313,7 @@ def _stopped_at(name):
 
     path = _replayed_path()
     try:
-        kept = json.loads(path.read_text(encoding="utf-8")).get(f"{name}#stopped") if path else None
+        kept = _read_replayed(path).get(f"{name}#stopped") if path else None
         return {"at": int(kept["at"]), "outcome": kept.get("outcome")} if kept else None
     except (OSError, ValueError, TypeError, KeyError):
         return None
@@ -290,7 +331,8 @@ def _note_replayed(name, last, stopped=None):
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        done = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        done = _read_replayed(path) if path.exists() else {}
+        done["#at"] = time.time()
         if stopped is not None:
             done[f"{name}#stopped"] = stopped
         else:
