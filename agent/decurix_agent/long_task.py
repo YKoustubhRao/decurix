@@ -1121,13 +1121,15 @@ def stage_prompt(state, step):
                       "earlier stages' outputs:"]
         lines += [f"  {p}" for p in others]
     # The run's plan is the person's to see with every question it asks (plan_text): a stage does not put a plan of
-    # its own to them (soul's plan.go reads this marker). Found live (2026-10-24): every attempt of a stage was a new
+    # its own to them (the model reads this line; soul itself goes by the job's planAgreed field, which
+    # thebot_harness._plan_agreed sets from the run's structure, never from this text). Found live (2026-10-24): every attempt of a stage was a new
     # goal, and each put its plan to the person again - ten times for one stage.
     lines += ["", f"{PLAN_AGREED_MARKER}: the run's plan above is the person's; carry it out."]
     return "\n".join(lines)
 
 
-# soul's planAgreedMarker (plan.go): with it in the request, a stage does not put a plan of its own to the person.
+# The line that tells the model a stage's plan is the person's. soul no longer reads it from the text (a pasted message
+# could hold it): it takes the job body's planAgreed flag (thebot_harness._plan_agreed).
 PLAN_AGREED_MARKER = "THE PLAN OF THIS REQUEST IS AGREED"
 
 

@@ -414,6 +414,24 @@ def plan_context():
             "changes the plan where it says so - and do not put the plan to them again.")
 
 
+def _plan_agreed():
+    """Whether the job about to start is under a plan the person agreed: this process put the plan to them and they
+    answered it (plan_context), or the job is a stage of a planned long request (workflow_task points at a stage of a
+    run whose spec is planned). Anything that cannot be read is False: soul then asks about its plan, which is safe."""
+
+    if plan_context():
+        return True
+    try:
+        from decurix_agent import workflow_task
+        active = workflow_task._active
+        if not active:
+            return False
+        return bool(workflow_task.runner().status(active[0])["spec"].get("planned"))
+    except Exception as exc:  # noqa: BLE001 - not knowing means soul asks; never fails the task
+        log(f"TheBot: could not tell whether the plan is agreed: {exc}")
+        return False
+
+
 # How many taught skills the standing context lists. In name order, never
 # ranked by the request: the context is part of soul's system frame, and a
 # frame that changed with every request would cost a local brain its prompt
@@ -546,6 +564,10 @@ def _run_thebot(request, reply, extra_context="", approval_reading=None):
                 # about each consequential action itself (review 2026-11-02).
                 # What the reply to an approval decides ({"decision": yes|if|no|unclear, "condition"}), or None.
                 "approvalReading": approval_reading,
+                # The plan of this request is the person's (soul's PlanAgreed): a stage of a planned run, or a later
+                # job of a request whose plan the person already answered. Decided from structure here, never from
+                # the request's words (soul stopped reading the marker in the text: a pasted message could hold it).
+                "planAgreed": _plan_agreed(),
             },
         )
     except (urllib.error.URLError, OSError, ValueError) as exc:
