@@ -222,6 +222,12 @@ func (s *Server) submitStored(ctx context.Context, desktopID, content string) (t
 		s.signReplyToGate(ctx, id, route.TaskID, content, asked, kind, request)
 	}
 
+	// Delivered and recorded under the desktop's lifecycle lock: the idle sweep re-checks Busy under the same lock, so
+	// it cannot pause or stop a desktop between the delivery and the record that makes it busy, and a stop or delete
+	// waits for the record (B-23).
+	unlockLifecycle := s.Desktops.LockDesktop(id)
+	defer unlockLifecycle()
+
 	if err := s.deliverRequest(ctx, desktopID, content, route.TaskID); err != nil {
 		return tasks.Route{}, "", err
 	}

@@ -373,6 +373,8 @@ func main() {
 	dags := must(dag.NewStore(db))
 	memoryStore := must(memory.NewStore(db))
 	suggestions := must(suggest.NewStore(db, desktops, tasksStore, memoryStore, ollama.Embed))
+	// A suggestion never evicts the chat model from a one-model Ollama to embed (C-10).
+	suggestions.WouldEvict = ollama.EmbedWouldEvict
 
 	server := httpapi.NewServer(
 		desktops,

@@ -386,12 +386,30 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request, warm bool
 		return "", false
 	}
 
-	if err := act(r.Context(), id); err != nil {
+	// One lifecycle change at a time per desktop, and never in the middle of a request being delivered and recorded
+	// (submitStored holds the same lock): a stop then closes what was just recorded instead of racing it (B-23).
+	unlock := s.Desktops.LockDesktop(id)
+	err := act(r.Context(), id)
+	unlock()
+	if err != nil {
 		jsonError(w, err)
 		return "", false
 	}
 
 	return id, true
+}
+
+// dockerStatusHandler answers GET /api/docker/status: whether the control plane has asked Docker yet, and whether it
+// answered - what the "Docker is not running" banner reads (W-08). Never a round trip to Docker itself.
+func (s *Server) dockerStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if !allowMethod(w, r, http.MethodGet) {
+		return
+	}
+	checked, reachable := false, false
+	if s.Desktops != nil {
+		checked, reachable = s.Desktops.DockerChecked(), s.Desktops.DockerReachable()
+	}
+	jsonResponse(w, map[string]bool{"checked": checked, "reachable": reachable})
 }
 
 // startDesktopHandler starts an existing desktop by ID.

@@ -280,6 +280,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/mail/rules/test", s.humansOnly(s.testMailRuleHandler))
 	mux.HandleFunc("/api/mail/jobs", s.humansOnly(s.mailJobHandler))
 	mux.HandleFunc("/api/keep-awake", s.keepAwakeHandler)
+	// Whether Docker answers, for the banner every page shows while it does not (W-08).
+	mux.HandleFunc("/api/docker/status", s.dockerStatusHandler)
 	mux.HandleFunc("/dags", s.dagsPageHandler)
 	mux.HandleFunc("/dags/", s.dagPageHandler)
 	mux.HandleFunc("/api/dags", s.dagsAPIHandler)

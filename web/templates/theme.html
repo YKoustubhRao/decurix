@@ -677,6 +677,8 @@ dialog[open]{animation:dialog-in .16s ease-out}
 
 /* ---------- toasts (replaces alert()) ---------- */
 
+.docker-banner{padding:9px 16px;background:var(--danger-soft);color:var(--danger);font-size:13px;font-weight:550;text-align:center;border-bottom:1px solid var(--line)}
+.docker-banner[hidden]{display:none}
 #toasts{
   position:fixed;
   top:64px;
@@ -1406,7 +1408,8 @@ body.busy{cursor:progress}
          it that fills in by itself a moment later. */
       addWaiting(panel, tunnelLoaded ? "Getting the link for your phone. This takes a few seconds after Decurix starts…" : "Loading…");
     }else{
-      addNote(panel, "No link yet. It appears here as soon as the tunnel to this computer is up. If it never does, check that this computer is online, then restart Decurix.");
+      /* The public link is off until the person turns it on (the switch the Decurix app puts at the top of this menu). */
+      addNote(panel, "No link yet. A link that works from anywhere needs the public link: turn it on with the switch at the top of this menu in the Decurix app. If it is on and no link comes, check that this computer is online, then restart Decurix.");
     }
 
     /* -- the code the addresses above need -- */
@@ -1803,6 +1806,9 @@ body.busy{cursor:progress}
     refreshModel();
     poll(refreshModel, 60000);
 
+    refreshDocker();
+    poll(refreshDocker, 10000, {hidden: 60000});
+
     /* These two tell a person about a tab in the background, so they keep a
        slow pace while it is hidden. */
     refreshFinished();
@@ -1814,6 +1820,19 @@ body.busy{cursor:progress}
       poll(refreshQueryBadge, 5000, {hidden: 30000});
     }
   });
+
+  /* Docker not answering: every page says so, and the banner goes by itself once it does (the control plane keeps
+     trying, cmd/decurix dockerstartup.go). */
+  async function refreshDocker(){
+    var banner = document.getElementById("dockerBanner");
+    if(!banner){ return; }
+    try{
+      var response = await fetch("/api/docker/status", {cache: "no-store"});
+      if(!response.ok){ return; }
+      var state = await response.json();
+      banner.hidden = !(state.checked && !state.reachable);
+    }catch(e){ /* the next tick asks again */ }
+  }
 
   window.Decurix = {
     node: node,
@@ -1887,4 +1906,5 @@ body.busy{cursor:progress}
     </button>
   </div>
 </header>
+<div class="docker-banner" id="dockerBanner" role="status" hidden>Docker is not running, so desktops cannot start or be reached. Start Docker Desktop (or the Decurix runtime); this page notices by itself when it is back.</div>
 {{end}}

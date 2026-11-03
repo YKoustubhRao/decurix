@@ -90,6 +90,10 @@ type Store struct {
 	Tasks    ActivityStore
 	Memory   MemoryLister
 	Embed    Embedder
+	// WouldEvict, when set, reports that embedding now would push the chat model out of a one-model Ollama (it then
+	// reloads for minutes on the next agent turn, C-10); a suggestion then falls back to recency.
+	// ollama.EmbedWouldEvict satisfies it.
+	WouldEvict func(ctx context.Context) bool
 }
 
 // NewStore creates a Store, creating its embedding cache table if needed.
@@ -111,7 +115,7 @@ func (s *Store) Suggest(ctx context.Context, content string) (Suggestion, bool) 
 		return Suggestion{}, false
 	}
 
-	if len(content) >= minContentChars && s.Embed != nil {
+	if len(content) >= minContentChars && s.Embed != nil && (s.WouldEvict == nil || !s.WouldEvict(ctx)) {
 		if match, found := s.memoryPick(ctx, content, desktops); found {
 			return match, true
 		}
