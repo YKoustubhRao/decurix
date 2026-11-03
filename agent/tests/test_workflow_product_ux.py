@@ -32,6 +32,7 @@ class WorkflowProductExperience(unittest.TestCase):
         self.calls = []
         message = types.ModuleType("decurix_agent.messaging")
         message.write_final_reply = lambda text, **kwargs: self.replies.append((text, kwargs))
+        message.ask_for_query = lambda text, **kwargs: self.replies.append((text, kwargs))
         harness = types.ModuleType("decurix_agent.harness")
         harness.perform_task = self.execute
         import decurix_agent
@@ -94,7 +95,10 @@ class WorkflowProductExperience(unittest.TestCase):
         self.assertIn(instruction, reply)
         self.assertIn("CRM", reply)
         self.assertIn("publish.txt", reply)
-        self.assertIn("/workflow approve review-123 publish", reply)
+        # Asked as a question the person replies to (review 2026-11-03, F-09): no command to copy.
+        self.assertEqual(self.replies[-1][1].get("kind"), "approval")
+        self.assertIn("start stage publish", reply)
+        self.assertNotIn("/workflow approve", reply)
         self.assertNotIn("RUN_ID STEP_ID", reply)
         self.assertEqual(self.calls, [])
 

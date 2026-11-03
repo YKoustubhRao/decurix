@@ -169,7 +169,15 @@ def _orphaned_question(name):
 
 
 def is_reply_file(name):
-    """Whether a command file was saved while the agent was waiting on a question (messaging.save_request)."""
+    """
+    Whether a command file was saved while the agent was waiting on a question (messaging.save_request).
+
+    It says which way a message came, not who wrote it: the command folder is the worker's own, so its shell can name a
+    file this way. A reply that decides something only a person may (an approval, keeping a parked finding, starting a
+    workflow stage) therefore needs this AND, on a desktop with an approval gate, the gate's own reading or grant of the
+    person's signed reply (approval.gate_reading, gated_command.granted) - never this mark alone (review 2026-11-03,
+    E-15, F-09).
+    """
 
     return REPLY_MARK in (name or "")
 
@@ -573,6 +581,10 @@ def answer_waiting(path, content, already_marked=False):
             target, args = replay_task.resume, (content, outcome)
         else:
             target, args = skill_task.resume, (content, outcome)
+    elif workflow_task.awaiting_start():
+        # A workflow stage's "may I start it?": only this reply (a reply file, above) - and with an approval gate, the
+        # gate's grant - starts it (review 2026-11-03, F-09).
+        target, args = workflow_task.answer_start, (content, outcome)
     else:
         guidance.note_exchange(guidance.open_question() or getattr(state, "last_query_text", ""), content)
         guidance.note_reply(content, outcome)

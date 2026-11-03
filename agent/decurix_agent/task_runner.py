@@ -1,7 +1,7 @@
 import os
 import re
 
-from decurix_agent import config, progress, state
+from decurix_agent import config, gated_command, progress, state
 from decurix_agent.commands import dangerous_reason, run_command
 from decurix_agent.computer import approval
 from decurix_agent.logging_utils import log, log_banner
@@ -774,6 +774,9 @@ def pause_for_screen_approval(command, result):
 # A shell command stopped by commands.dangerous_reason, waiting on a person:
 # run once if they say yes, dropped if they do not.
 _pending_dangerous_command = None
+# On a desktop with an approval gate: the held command as the gate holds it (gated_command.material), so the yes is the
+# gate's, never this process's reading (review 2026-11-03, F-09).
+_pending_gate_material = None
 
 
 def pause_for_dangerous_command(command, reason):
@@ -785,9 +788,20 @@ def pause_for_dangerous_command(command, reason):
     ask is not a pause.
     """
 
-    global _pending_dangerous_command
+    global _pending_dangerous_command, _pending_gate_material
 
     log(f"Command held for approval ({reason}): {command}")
+
+    _pending_gate_material = None
+    if gated_command.gated():
+        held = gated_command.material(command, request=state.current_task or "")
+        if gated_command.check(held) == "no gate":
+            # A reply could grant nothing here, so the person is not asked to give one.
+            log("The approval gate did not answer; the held command is not run.")
+            write_final_reply(f"I stopped before running this command, because {reason}:\n\n$ {command}\n\n"
+                              f"{gated_command.NOT_RUN}", kind="error", checked=False, gated=True)
+            return
+        _pending_gate_material = held
 
     _pending_dangerous_command = command
     progress.emit(f"Held for approval: {command}")
@@ -809,10 +823,19 @@ def resume_approved_dangerous_command(history, reply):
     Returns (command, result), or (None, None) when nothing was run.
     """
 
-    global _pending_dangerous_command
+    global _pending_dangerous_command, _pending_gate_material
 
     command = _pending_dangerous_command
     _pending_dangerous_command = None
+    held, _pending_gate_material = _pending_gate_material, None
+
+    if gated_command.gated():
+        # Only the gate makes this yes: asked again for exactly the command it held, it finds the one-shot grant the
+        # person's signed reply made - or nothing runs. Never this process's reading of the reply.
+        if not command or held is None or gated_command.check(held) != "allowed":
+            return None, None
+        log("The approval gate granted the held command - running it now.")
+        return _run(history, command)
 
     # A catastrophic command is released only by a clean yes: "yes but not
     # that one" is a person changing their mind, not permission - and "yes,
@@ -876,11 +899,12 @@ def resume_approved_screen_action(history):
 
 
 def perform_task(task, task_file):
-    global _pending_gui_command, _pending_dangerous_command
+    global _pending_gui_command, _pending_dangerous_command, _pending_gate_material
 
     state.begin(task, task_file)
     _pending_gui_command = None
     _pending_dangerous_command = None
+    _pending_gate_material = None
 
     log_banner("STARTING TASK", task)
 

@@ -31,7 +31,7 @@ import base64
 import json
 import os
 
-from decurix_agent import config, guidance, llm_client, progress, state, usage
+from decurix_agent import config, gated_command, guidance, llm_client, progress, state, usage
 from decurix_agent.commands import dangerous_reason, run_command
 from decurix_agent.computer import approval
 from decurix_agent.identity import get_identity_context
@@ -635,11 +635,21 @@ def _run(messages):
                 return
 
             except Pause as pause:
-                _answer_rest(messages, calls[i + 1:])
-                _conversation = messages
-                _paused = {"call_id": call["id"], "tool": name, "command": pause.command}
-                ask_for_query(pause.text, kind=pause.kind, engine=ENGINE)
-                return
+                # On a desktop with an approval gate a held command is the gate's to allow (review 2026-11-03, F-09):
+                # put to it now, and run on the reply only if it finds the grant the person's signed yes made. A gate
+                # that does not answer allows nothing, and the person is not asked for a yes that could grant nothing.
+                held = None
+                if pause.command and gated_command.gated():
+                    held = gated_command.material(pause.command, request=state.current_task or "")
+                    if gated_command.check(held) == "no gate":
+                        held = False
+                if held is not False:
+                    _answer_rest(messages, calls[i + 1:])
+                    _conversation = messages
+                    _paused = {"call_id": call["id"], "tool": name, "command": pause.command, "gate": held}
+                    ask_for_query(pause.text, kind=pause.kind, engine=ENGINE)
+                    return
+                text, images = gated_command.NOT_RUN, []
 
             except (office.OfficeError, OSError, ValueError, TypeError, KeyError) as exc:
                 text, images = f"(failed) {exc}", []
@@ -725,7 +735,13 @@ def continue_after_query(query_response):
 
     reply = (query_response or "").strip()
 
-    if paused.get("command"):
+    if paused.get("command") and gated_command.gated():
+        # Only the gate makes this yes, never this process's reading of the reply (review 2026-11-03, F-09).
+        if paused.get("gate") and gated_command.check(paused["gate"]) == "allowed":
+            result = "The approval gate granted it. " + _shell(paused["command"])
+        else:
+            result = f"The person did not approve running it (the approval gate made no yes). Their reply: {reply}"
+    elif paused.get("command"):
         if approval.says_yes(reply, paused["command"]) and not _qualified(reply):
             result = "The person said yes. " + _shell(paused["command"])
         else:

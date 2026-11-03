@@ -12,6 +12,9 @@ from decurix_agent.workflow_catalog import CATALOG, get
 
 _active = None
 _pending = None
+# A stage that waits for the person's go-ahead before it starts ({"run_id", "step_id", "question", "material"}): only
+# their reply to that question starts it (answer_start), never a command file (review 2026-11-03, F-09 / E-15).
+_awaiting_start = None
 STAGE_REPORT_CHARS = 500
 _driving = False
 _runners = {}
@@ -79,17 +82,72 @@ def runner():
     return _runners[root]
 
 
+def awaiting_start():
+    """Whether the open question is a stage's "may I start it?" (watchers.answer_waiting hands its reply here)."""
+    return _awaiting_start is not None
+
+
+def _ask_to_start(state, step):
+    """
+    Put a stage that needs the person's go-ahead to them as a question, and wait for their reply to it.
+
+    The go-ahead used to be a command, `/workflow approve RUN STAGE`, taken from any command file - which the worker's
+    own user can write - and from a button the agent listed (review 2026-11-03, F-09). It is now the person's reply to
+    this question, and on a desktop with an approval gate, the gate's grant for it: the gate words and signs the
+    question (kind "command", "start this request: ..."), and only its grant for exactly this stage starts it. It
+    starts the stage only: every consequential action inside it still asks the gate on its own.
+    """
+    global _awaiting_start
+    from decurix_agent import gated_command
+    from decurix_agent.messaging import ask_for_query, write_final_reply
+    run_id, step_id = state["run_id"], step["id"]
+    held = gated_command.material("", request=f"start stage {step_id} of workflow {run_id}: {step['instruction']}")
+    if gated_command.gated() and gated_command.check(held) == "no gate":
+        write_final_reply(f"Workflow {run_id}: stage {step_id} needs your go-ahead before it starts, and this desktop's "
+                          f"approval gate did not answer, so it cannot be started. {gated_command.NOT_RUN}",
+                          kind="error", checked=False, gated=True)
+        return
+    question = (f"Workflow {run_id}: may I start stage {step_id}?\n"
+                f"It will use {step.get('app', 'the available apps')} to: {step['instruction']}\n"
+                f"It must produce: {', '.join(c['path'] for c in step['checks'])}\n\n"
+                f"Reply yes to start stage {step_id}, or say what to change. Anything the stage would send, pay or "
+                f"save is still put to you on its own. To stop the workflow: /workflow cancel {run_id}.")
+    _awaiting_start = {"run_id": run_id, "step_id": step_id, "question": question, "material": held}
+    ask_for_query(question, kind="approval")
+
+
+def answer_start(reply, outcome=None):
+    """
+    The person's reply to a stage's "may I start it?" (watchers.answer_waiting: only a reply file reaches here). With
+    an approval gate, only the gate's one-shot grant for exactly that stage starts it; without one, a plain yes with no
+    condition in the reply's one reading (approval.reading), as an approval's. Anything else starts nothing.
+    """
+    global _awaiting_start
+    from decurix_agent import gated_command
+    from decurix_agent import state as agent_state
+    asked, _awaiting_start = _awaiting_start, None
+    agent_state.waiting_for_query = False
+    if asked is None:
+        return
+    run_id, step_id = asked["run_id"], asked["step_id"]
+    if not gated_command.granted(asked["material"], reply, asked["question"]):
+        from decurix_agent.messaging import write_final_reply
+        write_final_reply(f"Workflow {run_id}: stage {step_id} was not started - your reply was not a yes to starting "
+                          f"it. Nothing of that stage was done. To be asked again: /workflow resume {run_id}. To stop: "
+                          f"/workflow cancel {run_id}.", kind="error", checked=False, gated=True)
+        return
+    try:
+        _dispatch(run_id, None, [f"{run_id}:{step_id}"])
+    except Exception as exc:  # noqa: BLE001 - reported and the run let go
+        _stop_on_error(exc, f"Workflow {run_id} stopped: {exc}")
+
+
 def _report(state):
     from decurix_agent.messaging import write_final_reply
     detail = state.get("backend_wait", "") or state.get("error", "") or "; ".join(f"{key}: {record['error']}" for key, record in state["steps"].items() if record.get("error"))
     if state.get("approval_required"):
         step_id = state["approval_required"].split(":", 1)[1]
-        step = next(s for s in state["spec"]["steps"] if s["id"] == step_id)
-        detail = (f"Approval required for {step_id} using {step.get('app', 'available apps')}.\n"
-                  f"Proposed action: {step['instruction']}\n"
-                  f"Required output checks: {json.dumps(step['checks'])}\n"
-                  f"After reviewing, use /workflow approve {state['run_id']} {step_id}. "
-                  f"To stop, use /workflow cancel {state['run_id']}.")
+        return _ask_to_start(state, next(s for s in state["spec"]["steps"] if s["id"] == step_id))
     elif state["status"] == "running":
         detail = (detail + "\n" if detail else "") + "A worker still owns this stage. No second attempt was started."
     elif state["status"] == "failed":
@@ -273,8 +331,8 @@ def drop_stale():
     being worked on. It is closed as not finished, so its run never takes the new task's report as its own (review
     2026-11-03, E-05).
     """
-    global _active, _pending
-    active, _active, _pending = _active, None, None
+    global _active, _pending, _awaiting_start
+    active, _active, _pending, _awaiting_start = _active, None, None, None
     if active is None:
         return
     try:
@@ -284,10 +342,10 @@ def drop_stale():
 
 
 def cancel_active():
-    global _active, _pending
+    global _active, _pending, _awaiting_start
     if _active:
         runner().cancel(_active[0])
-    _active = _pending = None
+    _active = _pending = _awaiting_start = None
 
 
 def interrupted_note(task_id):
@@ -344,8 +402,12 @@ def perform(content, task_file=None):
                 agent_state.paused_skill = agent_state.paused_replay = None
             return _report(cancelled)
         if action == "approve":
-            run_id, step_id = shlex.split(rest)
-            return _dispatch(run_id, task_file, [f"{run_id}:{step_id}"])
+            # A stage is started only by the person's reply to its question (answer_start): a command file is the
+            # worker's to write, so this command starts nothing (review 2026-11-03, F-09).
+            run_id = (shlex.split(rest) or [""])[0]
+            return write_final_reply(f"Nothing was started: a stage starts only on your reply to its question. To be "
+                                     f"asked again: /workflow resume {run_id}.", kind="error", checked=False,
+                                     gated=True)
         if action == "retry":
             run_id, step_id = shlex.split(rest)
             r.retry(run_id, step_id)

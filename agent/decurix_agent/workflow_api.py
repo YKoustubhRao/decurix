@@ -28,7 +28,8 @@ def summary(saved):
         if step:
             approval = {"stage": step["id"], "instruction": step["instruction"],
                         "files": [check["path"] for check in step["checks"]]}
-            actions.append({"label": "Approve this stage", "command": f"/workflow approve {run_id} {step['id']}"})
+            # No "approve" button: a stage starts only on the person's reply to its question in chat (and, with an
+            # approval gate, the gate's grant) - never on a command a page sends (review 2026-11-03, F-09).
     if status in {"pending", "awaiting_backend"}:
         actions.append({"label": "Continue workflow", "command": f"/workflow resume {run_id}"})
     if status not in {"completed", "cancelled"}:
@@ -38,7 +39,7 @@ def summary(saved):
         "uncertain": "An interrupted action may have changed another app. Check that app before starting more work; normal resume cannot resolve this state.",
         "failed": "The workflow stopped. Completed files are preserved. Only stages marked safe to retry offer a retry action.",
         "awaiting_backend": "The reasoning service is unavailable. Your work is saved; continue when it is connected.",
-        "awaiting_approval": "Review the proposed stage below before approving it.",
+        "awaiting_approval": "Review the proposed stage below, then answer its question in chat to start it.",
         "awaiting_answer": "Every stage that does not need your answer is done. Answer the question in chat to continue.",
         "completed": "All required artifact checks passed. Those checks cover the workflow's stated criteria.",
         "cancelled": "No further stages will start. Changes already made are preserved.",
