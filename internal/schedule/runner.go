@@ -3,6 +3,7 @@ package schedule
 import (
 	"context"
 	"errors"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"log"
 	"sync"
 	"time"
@@ -132,7 +133,7 @@ func (r *Runner) fire(ctx context.Context, sch Schedule, now time.Time) {
 	}
 	content := sch.Content + timeField(occurrence)
 
-	err := r.Submitter.Submit(ctx, sch.DesktopID, content)
+	err := r.Submitter.Submit(tasks.WithOrigin(ctx, tasks.Origin{Kind: tasks.OriginSchedule, Ref: sch.ID}), sch.DesktopID, content)
 
 	var busy interface{ DesktopBusy() string }
 	if errors.As(err, &busy) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"io"
 	"log"
 	"net"
@@ -927,6 +928,7 @@ func (r *Runner) send(ctx context.Context, job Job) {
 
 	files, ferr := r.Store.JobFiles(job.ID)
 	fs, canFiles := r.Submitter.(FileSubmitter)
+	ctx = tasks.WithOrigin(ctx, tasks.Origin{Kind: tasks.OriginMail, Ref: job.RuleID})
 
 	switch {
 	case ferr != nil:

@@ -282,6 +282,8 @@ func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 	route := s.routeRequest(worker, content)
 	ctx := withDoor(s.ActorContext(r), "chat")
+	recorder, _ := actorFrom(ctx)
+	route.Origin = tasks.Origin{Kind: tasks.OriginRecording, ActorID: recorder.ID}
 	if route.Kind == tasks.RouteReply {
 		if _, ok := actorFrom(ctx); !ok {
 			uploadError(w, errNoReplier)

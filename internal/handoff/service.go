@@ -573,7 +573,7 @@ func (s *Service) dispatch(ctx context.Context, h Handoff) Handoff {
 		// (an unlock of an unlocked mutex is fatal, past any recover: RW1-F-09).
 		s.mu.Unlock()
 		defer s.mu.Lock()
-		taskID, err = s.Submit.SubmitHandoff(ctx, to, content, dir, files)
+		taskID, err = s.Submit.SubmitHandoff(tasks.WithOrigin(ctx, tasks.Origin{Kind: tasks.OriginHandoff, Ref: h.ID}), to, content, dir, files)
 	}()
 	h.Status = StatusQueued
 	var busy busyError

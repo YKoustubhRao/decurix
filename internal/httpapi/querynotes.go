@@ -93,6 +93,9 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		// derived from it. Absent from older images.
 		Verdict json.RawMessage `json:"verdict"`
 
+		// Skill names the taught skill that drove the turn, and its version (C5): stored on the execution (R7).
+		Skill *tasks.Skill `json:"skill"`
+
 		// Secret marks a question raised for a secret (a password or code field): the person's reply to it is kept
 		// withheld whole in every record, and still reaches the desktop as typed (X-6). Ignored on anything but a
 		// question or an approval.
@@ -200,8 +203,9 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("querytext from %s: the verdict for task %s could not be read, so it is stored unchecked: %s",
 			desktopID, named, strings.Join(problems, "; "))
 	}
-	taskID, err := s.Tasks.RecordOutcome(desktopID, named, tasks.Outcome{
+	taskID, execID, err := s.Tasks.RecordOutcomeExec(desktopID, named, tasks.Outcome{
 		Verdict:           verdict,
+		Skill:             req.Skill,
 		Kind:              note.Kind,
 		Reply:             chatText,
 		Engine:            clip(req.Engine, 32),
@@ -215,6 +219,11 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.Printf("querytext from %s: %v", desktopID, err)
+	}
+
+	// An ended execution records the deployment that served it (R7), from the call log (one query, no rows open).
+	if err == nil && execID != "" && (note.Kind == tasks.OutcomeDone || note.Kind == tasks.OutcomeError) {
+		s.resolveModel(execID)
 	}
 
 	// An outcome for a task that is not open here (it ended, or is not this desktop's) is refused, with nothing

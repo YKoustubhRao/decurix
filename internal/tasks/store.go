@@ -129,7 +129,13 @@ type Execution struct {
 	Outcome Display `json:"outcome"`
 	// Verdict is the final check as the desktop reported it (decurix.verdict/v1); nil for an older image's, which
 	// said only Checked. Checked is derived from it.
-	Verdict       *GateVerdict   `json:"verdict"`
+	Verdict *GateVerdict `json:"verdict"`
+	// Origin is what started this execution (unknown before R7); SkillName and SkillVersion the taught skill that
+	// drove it ("" / 0: none said); ResolvedModel the deployment that served its model calls (R7).
+	Origin        Origin         `json:"origin"`
+	SkillName     string         `json:"skill_name"`
+	SkillVersion  int            `json:"skill_version"`
+	ResolvedModel string         `json:"resolved_model"`
 	Steps         []Step         `json:"steps"`
 	Interventions []Intervention `json:"interventions"`
 }
@@ -236,6 +242,8 @@ type Outcome struct {
 	// Verdict: the final check, structured (nil: an older image). When given, the stored checked flag is derived
 	// from it (done), and is false whenever Checked says otherwise.
 	Verdict *GateVerdict
+	// Skill: the taught skill that drove the turn, and its version (nil: none said).
+	Skill *Skill
 	// Secret: a query raised for a secret (the agent knows where its question came from); the person's reply to it
 	// is kept as withhold.Secret in every record, and reaches the desktop as typed.
 	Secret bool
@@ -360,6 +368,14 @@ var schema = []string{
 	`ALTER TABLE interventions ADD COLUMN judgement_id TEXT NOT NULL DEFAULT ''`,
 	// The run's final check, structured (plan R6, decurix.verdict/v1): '' for an older image, which sent only checked.
 	`ALTER TABLE executions ADD COLUMN verdict TEXT NOT NULL DEFAULT ''`,
+	// What each execution ran (plan R7): what started it (a person, a schedule, a DAG node, ...), the taught skill
+	// and its version that drove it, and the model deployment that served it. '' / 0 before R7, read as unknown.
+	`ALTER TABLE executions ADD COLUMN origin TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE executions ADD COLUMN origin_ref TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE executions ADD COLUMN origin_actor TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE executions ADD COLUMN skill_name TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE executions ADD COLUMN skill_version INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE executions ADD COLUMN resolved_model TEXT NOT NULL DEFAULT ''`,
 }
 
 // Store is the SQLite-backed record of every worker's tasks.
@@ -885,9 +901,10 @@ func (s *Store) insertExecution(tx *sql.Tx, route Route, attempt int, worker Wor
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO executions (id, task_id, attempt, worker_id, engine, model, status, started_ns)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO executions (id, task_id, attempt, worker_id, engine, model, status, started_ns, origin, origin_ref,
+			origin_actor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		route.ExecutionID, route.TaskID, attempt, worker.ID, worker.Engine, worker.Model, status, sqlitedb.ToNS(now),
+		originKind(route.Origin), route.Origin.Ref, route.Origin.ActorID,
 	); err != nil {
 		return fmt.Errorf("tasks: recording execution: %w", err)
 	}
@@ -1123,6 +1140,10 @@ func (s *Store) RecordOutcomeExec(workerID, taskID string, outcome Outcome) (str
 		log.Printf("tasks: verdict and checked disagree for %s (verdict %s, checked %v): stored as not checked",
 			ref.id, outcome.Verdict.Verdict, *outcome.Checked)
 	}
+	skillName, skillVersion := "", 0
+	if outcome.Skill != nil && strings.TrimSpace(outcome.Skill.Name) != "" {
+		skillName, skillVersion = clipText(strings.TrimSpace(outcome.Skill.Name), 128), max(outcome.Skill.Version, 0)
+	}
 	verdictJSON := ""
 	if outcome.Verdict != nil {
 		if b, err := json.Marshal(outcome.Verdict); err == nil {
@@ -1139,11 +1160,14 @@ func (s *Store) RecordOutcomeExec(workerID, taskID string, outcome Outcome) (str
 			output_tokens = COALESCE(?, output_tokens),
 			cached_input_tokens = COALESCE(?, cached_input_tokens),
 			checked = COALESCE(?, checked),
-			verdict = CASE WHEN ? != '' THEN ? ELSE verdict END
+			verdict = CASE WHEN ? != '' THEN ? ELSE verdict END,
+			skill_name = CASE WHEN ? != '' THEN ? ELSE skill_name END,
+			skill_version = CASE WHEN ? != '' THEN ? ELSE skill_version END
 		 WHERE id = ?`,
 		outcome.Engine, outcome.Engine, outcome.Model, outcome.Model,
 		nullable(outcome.CostUSD), nullable(outcome.InputTokens), nullable(outcome.OutputTokens),
-		nullable(outcome.CachedInputTokens), nullBool(checked), verdictJSON, verdictJSON, ref.id,
+		nullable(outcome.CachedInputTokens), nullBool(checked), verdictJSON, verdictJSON,
+		skillName, skillName, skillName, skillVersion, ref.id,
 	); err != nil {
 		return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
 	}
@@ -1455,8 +1479,13 @@ func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 
 		if err := r.Scan(&execution.ID, &execution.TaskID, &execution.Attempt, &execution.WorkerID,
 			&execution.Engine, &execution.Model, &execution.Status, &execution.FinalReply,
-			&started, &ended, &cost, &input, &output, &cached, &checked, &verdict); err != nil {
+			&started, &ended, &cost, &input, &output, &cached, &checked, &verdict,
+			&execution.Origin.Kind, &execution.Origin.Ref, &execution.Origin.ActorID,
+			&execution.SkillName, &execution.SkillVersion, &execution.ResolvedModel); err != nil {
 			return Execution{}, err
+		}
+		if execution.Origin.Kind == "" {
+			execution.Origin.Kind = OriginUnknown
 		}
 		if verdict != "" {
 			var v GateVerdict
@@ -1491,7 +1520,7 @@ func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 		return execution, nil
 	}, `SELECT e.id, e.task_id, e.attempt, e.worker_id, e.engine, e.model, e.status, e.final_reply,
 			e.started_ns, e.ended_ns, e.cost_usd, e.input_tokens, e.output_tokens, e.cached_input_tokens, e.checked,
-			e.verdict
+			e.verdict, e.origin, e.origin_ref, e.origin_actor, e.skill_name, e.skill_version, e.resolved_model
 		 FROM executions e JOIN tasks t ON t.id = e.task_id `+where+` ORDER BY e.task_id, e.attempt`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("tasks: reading executions: %w", err)

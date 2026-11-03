@@ -91,7 +91,10 @@ func (s *Server) sendRequestHandler(w http.ResponseWriter, r *http.Request) {
 	// A reply typed under one question card answers that question only: if the desktop has since asked something
 	// newer, that newer question is what the reply would land on, so it is refused (review 2026-11-02: a "yes" under
 	// an old card approved a newer action).
-	ctx := withDoor(s.ActorContext(r), requestDoor(r))
+	door := requestDoor(r)
+	ctx := withDoor(s.ActorContext(r), door)
+	actor, _ := actorFrom(ctx)
+	ctx = tasks.WithOrigin(ctx, tasks.Origin{Kind: tasks.OriginPerson, Ref: door, ActorID: actor.ID})
 	if r.FormValue("secret") == "1" {
 		// The person marked this a secret: it reaches the desktop as typed and is kept nowhere as typed.
 		ctx = context.WithValue(ctx, sentSecretKey{}, true)
@@ -202,6 +205,8 @@ func (s *Server) submitStored(ctx context.Context, desktopID, content string) (t
 	ollama.WarmAsync()
 
 	route := s.routeRequest(id, content)
+	// What started it (plan R7): the door's or producer's origin, written on a new execution (unknown when none).
+	route.Origin = tasks.OriginFrom(ctx)
 
 	// A reply is a person's judgement (plan R5): it needs its author, and its id is chosen now so the desktop is told
 	// it with the reply (C6). No door that sends a reply lacks an actor; a reply with none is refused before delivery.

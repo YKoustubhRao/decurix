@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"log"
 	"sort"
 	"strings"
@@ -556,7 +557,7 @@ func (d *Dispatcher) send(ctx context.Context, st *tickState, it Item, worker st
 		request += "\n\nFiles for this request are in " + dir + ": " + strings.Join(names, ", ")
 	}
 
-	taskID, err := d.Submitter.Submit(ctx, worker, request, dir, files)
+	taskID, err := d.Submitter.Submit(tasks.WithOrigin(ctx, tasks.Origin{Kind: tasks.OriginQueue, Ref: it.ID}), worker, request, dir, files)
 	if err == nil && taskID == "" {
 		err = errors.New("no task id came back")
 	}
