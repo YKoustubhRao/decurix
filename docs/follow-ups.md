@@ -159,3 +159,62 @@ What the SOUL lane left for later (PLAN-P2 §9; schema and limits in [trajectory
   (`TaskOfExecution`).
 - **Live check (L0):** `/api/llm/calls/stats` shows no `untagged` from `caller=soul`; a task's
   `~/.decurix/ai/traces/<task>.jsonl` exists, and its call lines' turns are the turns on that task's `llm_calls` rows.
+
+## Phase 2: Python agent
+
+What the PY lane left for later (lane-PY.md; PLAN-P2 §9).
+
+- **Legacy verdicts.** Two paths still send `checked=True` with no verdict of their own and so get a `legacy` done
+  (no checks, no basis; it never counts towards trust): `tool_task.perform` (a learned tool's run) and
+  `workflow_task._report` (a workflow stage's report). `agent/tests/test_verdict.py` (`LEGACY`) lists them; the list
+  may only shrink. The control plane must accept `by: "legacy"` with no checks (handoff H-PY-1).
+- **Python's model calls, still to move behind soul** (plan rule 3; every one is tagged `py.*` or `legacy.*`, so the
+  proxy's stats show the share): `py.judge`, `py.judge.spot`, `py.skill.ask`, `py.skill.calls_off`, `py.stage`,
+  `py.binding.fill`, `py.approval.read`, `py.approval.choice`, `py.ground`, `py.escalation.ground`, `.judge`,
+  `.detour`, `.point`, `py.mimic`, `py.skill_engine.fits`, `py.kept_facts`, `py.playbook`, `py.study`,
+  `py.tool.args`, `legacy.azure.turn`. `agent/tests/test_purpose_tags.py` holds the set.
+- **Spot judgement of trusted replays** samples 1 in 5 task ids by default (`DECURIX_SPOT_JUDGE_EVERY`; 0 never, 1
+  always). Measure the judge's cost and its catch rate on the L3 matrix before changing it; its eval case waits for
+  `learn-v1`.
+- **Dates.** With no order known (no `DECURIX_DATE_ORDER` on the control plane, no DD/MM marker, no unambiguous date
+  in the request or its files' text layer), an ambiguous digit date never matches an ISO one: the save waits and asks
+  which order. Set `DECURIX_DATE_ORDER` for each org. A digit date against the known order (04/13/2026 under `day`) is
+  no date, by the lane's example; the lane's other sentence ("p2 > 12 is month-first, whatever the order") was read
+  as applying when no order is known.
+- **What the worker could write itself** (O-1): the run folder's `context.json` (the date order, the reply's
+  judgement id), `LABELLED` and the ledger are all in the worker's user. A worker that flipped its own date order
+  could pass a wrong date. Moving them under the gate user is part of O-1.
+- **Live checks:** L0 (every recording event of a hosted task carries `turn`, actions carry `obs`, `run.json` lists
+  the parts; every Python call row has a `py.*` purpose), L5 (retention), L1 (no secret in any kept file:
+  `.done`, `.request`, `active-task.json`; soul gets `secrets` on the job, H-PY-4).
+
+## Phase 2: fixture corpus lost
+
+`C:\Users\Administrator\decurix-tests\fixtures` (and the round folders beside it) are gone (W0.1). These tests skip,
+counted, for what is no longer on this machine. `DECURIX_REQUIRE_FIXTURES=1` is not set on this host: every one would
+fail on an absent corpus, which proves nothing. "Synthetic" says whether a fictional fixture could stand in.
+
+| Test | Live regression it pinned | Synthetic? |
+|---|---|---|
+| `test_coverage_condition.ConditionalCoverage` (4 tests) | CW, round 5 P6: a stage that selects by a condition (refunds over Rs 5,000) was checked against every record of the tracker | Yes: a small tracker and refund list with a threshold reproduce it |
+| `test_cross_check_corpus.TheCorpus.test_every_case` | Every live line the cross-check got wrong or right (dates, lakh/crore, rounding, signs, ids, percentages) | Partly: the forms can be written fresh; the corpus's value was that each line was a real miss |
+| `test_draft_facts.TheLiveDrafts` | DE, round 5 P4: welcome drafts naming managers and dates no source held | Yes: a tracker and drafts with planted wrong facts |
+| `test_duplicate_entry.AnotherRecordsValues.test_the_live_saves`, `TheSaveGuard.test_the_live_record` | CX/CY, round 5 P4: a joiner saved with another joiner's department, then entered twice | Yes: the synthetic table tests beside them already cover the rule; the live event log only replays it |
+| `test_files_open.OfficeFilesOpen.test_the_live_spec_round_trips_to_a_workbook_that_opens` | Series 14 P3: script-written workbooks that no app could open | Yes: a spec of the same shape |
+| `test_kept_sheets.AdditionsAreNoChange` (4), `AfterARecordWasRemoved` (3), `CellsByMeaning` (1) | CO, CP2, round 5 P1/P2: a later stage's added column or a cancelled bill read as changing earlier stages' sheets; LibreOffice's re-save | Yes for the first two (small workbooks); the round trip needs a LibreOffice re-save, which a desktop image can make again |
+| `test_no_suite_terms.NoSuiteTerms` | The harness names no suite (needs the private `leak_terms.txt`) | No: the terms list is the private suites' own words; rebuild it from `evals/` ids (the EVAL lane's boundary test covers the dev suites) |
+| `test_order_totals.OrderTotals.test_the_live_sheet_has_no_finding` | CK, round 5 P2: an order's total compared with its line rows | Yes |
+| `test_payees.TheRoundsOwnFiles` | Round 5 P3: a payment run paid to a lookalike "change of bank account" email | Yes: a vendor master, bills and one lookalike email |
+| `test_replay_gate.ReplayGate` | The replay gate: every code check run on saved right runs (CHECK_MATURITY) | No: its point is real right runs. Rebuild from the core-v1 oracle arm's runs once they are kept (R9 bundles) |
+| `test_requests_corpus.LiveRequests` | CL, round 5 P1: each deliverable bound to its own app | Partly: the six requests can be rewritten fictionally; they are no longer the live ones |
+| `test_stage_app.StageApp` (3) | CL: a named app binds only to its deliverable | Yes: the request text is the fixture |
+| `test_stage_facts` (5 classes) | BG, CF, CC, round 5 P1/P6: a re-check losing a flag, a computed refund with no working, an auto-reply with another email's order | Yes: small registers and inboxes |
+| `test_stage_question_corpus.TheBounceCap`, `TheCorpus` | A stage's question routing (person_keeps, route_question) over every live question | Partly, as the cross-check corpus |
+| `test_stated_amounts.TheLiveInbox` | CI, round 5 P6: amounts stated in a customer's own email called "no working" | Yes: a few .eml files |
+| `test_summary_totals.TheLiveWorkbooks` (2) | DC, round 5 P1: a GSTR-3B sheet's ITC of 0 against its own register | Yes: two small workbooks (tax figures are fictional) |
+| `test_system_entry_readback.TheLiveReadBack` (2) | DA, round 5 P2: orders the portal held read as not shown | Yes: an event log of the same shape |
+| `test_table_quality.TheLiveP5Exports` | BK, round 5 P5: a sales export repeating a week, inflating every total | Yes: CSVs with one repeated week |
+| `test_working_factors.TheLiveExceptions`, `TheLiveRegister` (3) | CH/CQ, round 5 P3: the working check took the first quantity x the first rate | Yes: registers with GST on top and partial receipts |
+
+None holds customer data that must be recreated: every fixture was a fictional company's run. Rebuild each on a
+synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.

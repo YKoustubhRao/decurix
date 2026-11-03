@@ -48,3 +48,25 @@ On a desktop with a shared folder, `source_guard.take` notes and copies the fold
 - Values count as "only the work's own code printed" only when the file was written from the command's own text and then run as the program.
 
 **Recall is not a filter.** Raw nomic-embed-text cosine, as soul calls it (with no query or document prefix), does not separate relevant from unrelated facts: measured on 2026-11-03, relevant facts scored 0.44-0.69 and unrelated ones 0.28-0.56. No fixed floor works, so frames say "may be relevant" instead.
+
+## Trust rests on independent checks (W0.5, phase 2)
+
+A skill's streak (`experience.clean_streak`) counts a run only when it succeeded, needed no person, and a check
+independent of the worker passed: its own files read back clean by code (`code`), every record it declared read back
+from the application with its values shown (`ledger`, `records.all_read_back`), or a person (`person`). The screen
+(every step's result appeared) and the model's judgement are kept on the verdict as `basis` and never advance the
+streak: a replay can show each step's result and still have entered the wrong thing. Verdicts written before `basis`
+existed count for nothing, so every skill earned its trust again. A trusted replay is still judged on a deterministic
+share of task ids, 1 in `DECURIX_SPOT_JUDGE_EVERY` (default 5; 0 never, 1 always), through the same judge
+(`py.judge.spot`); a spot "not done" records a failure and the skill is learning again. Every outcome carries a
+structured verdict (`verdict.py`, decurix.verdict/v1): `checked` is always `verdict == "done"`, a stop is `stopped`
+(`messaging.write_stopped`, never done), and a report whose path gave no verdict of its own gets a `legacy` one with no
+basis.
+
+## What labels a run is kept until exported (W0.8, phase 2)
+
+Retention is by label, not age (`retention.py`). A run is labelled when its final report goes out or a person replies
+on it (`~/.decurix/runs/<task>/LABELLED`); until the control plane has pulled its bundle and written `EXPORTED`, the
+2-day note prune and the recordings' disk budget skip it. Over budget with only such runs left, nothing is deleted
+and the log says so (at most hourly). The run's manifest (`run.json`) names the agent's code and soul by hash and lists
+the parts that exist.
