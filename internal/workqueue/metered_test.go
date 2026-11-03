@@ -2,6 +2,7 @@ package workqueue
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,5 +81,12 @@ func TestDoneItemsLoseTheirFilesAfterAWeek(t *testing.T) {
 	}
 	if fs, _ := e.store.Files(failed.ID); len(fs) != 1 {
 		t.Fatal("a retriable item lost its files")
+	}
+}
+
+// The limits API says what each limit is checked against: a dollar limit never looks metered (RW1-F-02).
+func TestTheLimitsAPISaysTheDollarLimitIsSelfReported(t *testing.T) {
+	if !strings.Contains(LimitEnforcement, "Token limits are enforced") || !strings.Contains(LimitEnforcement, "reports about itself") {
+		t.Fatalf("enforcement note: %q", LimitEnforcement)
 	}
 }

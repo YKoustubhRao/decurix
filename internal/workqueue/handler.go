@@ -155,7 +155,7 @@ func (h *Handler) limits(w http.ResponseWriter, r *http.Request) {
 			storeError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"limits": all})
+		writeJSON(w, http.StatusOK, map[string]any{"limits": all, "enforcement": LimitEnforcement})
 	case http.MethodPost:
 		var in Limit
 		if !decode(w, r, &in) {

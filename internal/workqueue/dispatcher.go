@@ -348,6 +348,12 @@ func contains(list []string, v string) bool {
 	return false
 }
 
+// LimitEnforcement says, for the API and the page, what each kind of limit is checked against (review RW1-F-02): the
+// token limit against what the model proxy itself counted, the dollar limit only against the cost each desktop reports
+// when a turn ends - no price is known to the control plane, so it cannot meter dollars.
+const LimitEnforcement = "Token limits are enforced at the model proxy, which counts every hosted call as it is made. " +
+	"Dollar limits are compared with the cost each desktop reports about itself when a task ends: not metered, so set a token limit to cap spend."
+
 // OverBudget says why worker is at or over a spend limit for the current day or month, "" when it is under every
 // limit that applies, read now - what the model proxy asks before it forwards a call (C-08).
 func (d *Dispatcher) OverBudget(worker string) (string, error) {
@@ -380,7 +386,7 @@ func (d *Dispatcher) overBudget(st *tickState, worker string) (string, error) {
 			return "", fmt.Errorf("reading spend of %s: %w", worker, err)
 		}
 		if l.MaxUSD > 0 && spent.USD >= l.MaxUSD {
-			why = fmt.Sprintf("%s has spent $%.2f of its $%.2f %s limit", worker, spent.USD, l.MaxUSD, period)
+			why = fmt.Sprintf("%s has spent $%.2f of its $%.2f %s limit (the cost its desktop reported)", worker, spent.USD, l.MaxUSD, period)
 			break
 		}
 		if l.MaxTokens > 0 && spent.Tokens >= l.MaxTokens {
