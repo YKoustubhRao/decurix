@@ -193,6 +193,13 @@ func (s *server) storePaused(sessionID string, cp *scheduler.Checkpoint) {
 		return
 	}
 	s.pausedMu.Lock()
+	// Paused jobs past their wait are dropped as new ones come: a soul that lives for months does not keep every
+	// session's last question (review T-24).
+	for id, old := range s.paused {
+		if time.Since(old.CreatedAt) > pausedJobTTL {
+			delete(s.paused, id)
+		}
+	}
 	s.paused[sessionID] = cp
 	s.pausedMu.Unlock()
 }

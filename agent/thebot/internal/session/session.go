@@ -18,13 +18,21 @@ import (
 // conversation.
 const maxHistoryMessages = 40
 
+// maxSessions bounds how many sessions are kept: past it the one used longest ago is dropped (review T-24 - a soul
+// that lives for months kept every session it ever saw).
+const maxSessions = 500
+
+// Store is every session's turns, in memory, bounded per session and in number.
 type Store struct {
 	mu       sync.Mutex
 	sessions map[string][]llm.Message
+	used     map[string]int64 // the order each session was last appended to
+	clock    int64
 }
 
+// NewStore is an empty Store.
 func NewStore() *Store {
-	return &Store{sessions: map[string][]llm.Message{}}
+	return &Store{sessions: map[string][]llm.Message{}, used: map[string]int64{}}
 }
 
 // Append records one real turn (user or assistant) into a session -
@@ -41,6 +49,18 @@ func (s *Store) Append(sessionID string, msg llm.Message) {
 		history = history[len(history)-maxHistoryMessages:]
 	}
 	s.sessions[sessionID] = history
+	s.clock++
+	s.used[sessionID] = s.clock
+	if len(s.sessions) > maxSessions {
+		oldest, at := "", int64(0)
+		for id, t := range s.used {
+			if oldest == "" || t < at {
+				oldest, at = id, t
+			}
+		}
+		delete(s.sessions, oldest)
+		delete(s.used, oldest)
+	}
 }
 
 // History returns a real copy of the session's turns so far - safe for a
