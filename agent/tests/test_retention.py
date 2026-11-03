@@ -37,7 +37,10 @@ class Base(unittest.TestCase):
             self.addCleanup(p.stop)
 
     def export(self, task):
-        (self.root / "runs" / task / "EXPORTED").write_text("e_123\nabc\n", encoding="utf-8")
+        """EXPORTED as the control plane writes it: the execution, the manifest's SHA and LABELLED as its pull read it."""
+        folder = self.root / "runs" / task
+        read = (folder / "LABELLED").read_text(encoding="utf-8") if (folder / "LABELLED").exists() else ""
+        (folder / "EXPORTED").write_text("e_123\nabc\n" + read.rstrip("\r\n") + "\n", encoding="utf-8")
 
 
 class TheMarks(Base):
@@ -155,33 +158,81 @@ if __name__ == "__main__":
 
 
 class AnExportCoversItsOwnAttempt(Base):
-    """Review round 2, B8: attempts share the task's run folder; an earlier attempt's EXPORTED covered a later one."""
+    """Review round 2, B8: attempts share the task's run folder; an earlier attempt's EXPORTED covered a later one.
+    Round 3, R1: the cover was decided by comparing times, and the control plane's tar copy rounds EXPORTED's time to
+    the second - a pull in the same second as the label read as older than it, and the run was held for ever."""
 
     def test_a_label_after_the_export_is_held_again(self):
         retention.mark_labelled(A, "final")
         self.export(A)
         self.assertFalse(retention.held(A))
-        folder = self.root / "runs" / A
-        later = (folder / "EXPORTED").stat().st_mtime + 5
-        retention.mark_labelled(A, "final")          # attempt 2's final
-        os.utime(folder / "LABELLED", (later, later))
+        retention.mark_labelled(A, "reply")          # a person's reply after the export
         self.assertTrue(retention.held(A))
         self.export(A)
-        os.utime(folder / "EXPORTED", (later + 5, later + 5))
         self.assertFalse(retention.held(A))
+
+    def test_a_pull_in_the_same_second_as_the_label_releases_the_run(self):
+        retention.mark_labelled(A, "final")
+        folder = self.root / "runs" / A
+        labelled_at = int(time.time()) + 0.9         # labelled at .9 of a second
+        os.utime(folder / "LABELLED", (labelled_at, labelled_at))
+        self.export(A)
+        whole = int(labelled_at)                     # EXPORTED stamped with the whole second, before the label
+        os.utime(folder / "EXPORTED", (whole, whole))
+        self.assertLess((folder / "EXPORTED").stat().st_mtime_ns, (folder / "LABELLED").stat().st_mtime_ns)
+        self.assertFalse(retention.held(A))
+
+    def test_each_label_has_its_own_number(self):
+        from decurix_agent import task_context
+        task_context.set_execution(A, "e_attempt1")
+        retention.mark_labelled(A, "final")
+        first = (self.root / "runs" / A / "LABELLED").read_text(encoding="utf-8")
+        retention.mark_labelled(A, "final")
+        second = (self.root / "runs" / A / "LABELLED").read_text(encoding="utf-8")
+        self.assertEqual(first.splitlines()[0], "e_attempt1")
+        self.assertNotEqual(first, second)
 
     def test_an_export_of_another_execution_does_not_cover_this_one(self):
         from decurix_agent import task_context
         task_context.set_execution(A, "e_attempt2")
         retention.mark_labelled(A, "final")
         folder = self.root / "runs" / A
-        (folder / "EXPORTED").write_text("e_attempt1\nabc\n", encoding="utf-8")
-        later = (folder / "LABELLED").stat().st_mtime + 5
-        os.utime(folder / "EXPORTED", (later, later))
+        (folder / "EXPORTED").write_text("e_attempt1\nabc\ne_attempt1\n1\n", encoding="utf-8")
         self.assertTrue(retention.held(A))
-        (folder / "EXPORTED").write_text("e_attempt2\nabc\n", encoding="utf-8")
-        os.utime(folder / "EXPORTED", (later, later))
+        self.export(A)
         self.assertFalse(retention.held(A))
+
+
+class AnExportWithoutTheThirdLine(Base):
+    """An EXPORTED written before the control plane echoed LABELLED: the execution, then times two seconds apart."""
+
+    def write_old(self, execution):
+        (self.root / "runs" / A / "EXPORTED").write_text(execution + "\nabc\n", encoding="utf-8")
+
+    def test_the_same_execution_in_the_same_second_is_covered(self):
+        from decurix_agent import task_context
+        task_context.set_execution(A, "e_0001")
+        retention.mark_labelled(A, "final")
+        folder = self.root / "runs" / A
+        at = int(time.time()) + 0.4
+        os.utime(folder / "LABELLED", (at, at))
+        self.write_old("e_0001")
+        os.utime(folder / "EXPORTED", (int(at), int(at)))
+        self.assertFalse(retention.held(A))
+
+    def test_a_label_well_after_it_or_of_another_execution_is_held(self):
+        from decurix_agent import task_context
+        task_context.set_execution(A, "e_0001")
+        retention.mark_labelled(A, "final")
+        folder = self.root / "runs" / A
+        self.write_old("e_0001")
+        later = (folder / "EXPORTED").stat().st_mtime + 5
+        os.utime(folder / "LABELLED", (later, later))
+        self.assertTrue(retention.held(A))
+        os.utime(folder / "LABELLED", (later - 5, later - 5))
+        self.assertFalse(retention.held(A))
+        self.write_old("e_0000")
+        self.assertTrue(retention.held(A))
 
 
 class TheCeiling(Base):

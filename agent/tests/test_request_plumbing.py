@@ -97,3 +97,37 @@ class TheRequestBodysExtraFields(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TeachReplayAndRunSkillNameTheirExecution(unittest.TestCase):
+    """H-CP-10: the control plane names the execution on a teach, a replay and a run-skill request as on /request; the
+    agent kept it only from /request, so those runs' labels named no attempt (retention)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        handler = mock.Mock()
+        handler._json = lambda status, body: body
+        self.handler = handler
+        for p in (mock.patch.object(config, "DECURIX_DIR", Path(tmp.name)),
+                  mock.patch.object(http_api.recording, "load", lambda *a: None),
+                  mock.patch.object(http_api.recording, "valid", lambda *a: True),
+                  mock.patch.object(http_api.replay_task, "hold_params", lambda *a: None),
+                  mock.patch.object(http_api.skill_task, "learn_request", lambda *a: "/learn s1"),
+                  mock.patch.object(http_api.skill_task, "request_text", lambda *a: "/skill s"),
+                  mock.patch.object(http_api.skills, "load", lambda name: {"status": http_api.skills.READY}),
+                  mock.patch.object(http_api, "save_request", lambda content, task_id, **k: Path(tmp.name) / "r.txt")):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_each_keeps_its_execution(self):
+        calls = (("replay", lambda d: http_api.Handler._replay(self.handler, "s1", d)),
+                 ("learn", lambda d: http_api.Handler._learn(self.handler, "s1", d)),
+                 ("run skill", lambda d: http_api.Handler._run_skill(self.handler, "s", d)))
+        for n, (what, call) in enumerate(calls):
+            with self.subTest(what):
+                task = f"t0123456789abc{n:03d}"
+                call({"task_id": task, "execution_id": f"e_{what.replace(' ', '_')}_0001"})
+                self.assertEqual(task_context.execution_id(task), f"e_{what.replace(' ', '_')}_0001")
+                call({"task_id": task, "execution_id": "e/../../x"})  # another shape: ignored
+                self.assertEqual(task_context.execution_id(task), f"e_{what.replace(' ', '_')}_0001")

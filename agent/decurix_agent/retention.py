@@ -7,9 +7,16 @@ replied on it (`reply`). Its evidence - the notes of what the tools read (comput
 whatever the run's state, so the very runs that label a skill's or a model's work could vanish before anyone exported
 them (plan rule 4: nothing that labels a run is deleted). Retention is now by label, not age:
 
-    ~/.decurix/runs/<task>/LABELLED   written here, empty: the run has a label
+    ~/.decurix/runs/<task>/LABELLED   written here at each label: the execution id and the label's sequence
+                                      number, one line each
     ~/.decurix/runs/<task>/EXPORTED   written by the control plane after it pulled the run's bundle (R9): the
-                                      execution id and the manifest's SHA-256, one line each
+                                      execution id and the manifest's SHA-256, one line each, then LABELLED as that
+                                      pull read it
+
+An export covers the run's latest label when what follows its second line is LABELLED's content now: a label written after the pull
+read LABELLED has another sequence number. No clock is compared - the control plane's tar copy rounds EXPORTED's time
+to the second, and a pull in the same second as the label read as older than it, so that run was held for ever
+(review round 3, R1).
 
 A labelled run that is not yet exported is held: neither prune deletes anything of it. Over budget with only held runs
 left, nothing is deleted, and that is said (a log line, at most hourly) - the disk fills visibly instead of labels
@@ -181,9 +188,9 @@ def mark_labelled(task_id, why):
         return False
     try:
         folder.mkdir(parents=True, exist_ok=True)
-        # The execution labelled (the control plane's id for this attempt, when it sent one): an earlier attempt's
-        # export does not cover it (review round 2, B8). Written anew every time, so its time is the latest label's.
-        (folder / LABELLED).write_text(task_context.execution_id(task_id), encoding="utf-8")
+        # The execution labelled (the control plane's id for this attempt, when it sent one) and this label's number:
+        # an export covers it only when the pull read this very content (review round 2, B8; round 3, R1).
+        _write_label(folder, task_context.execution_id(task_id))
         data = read_manifest(task_id) or {"schema": MANIFEST_SCHEMA, "task_id": task_id}
         if why in LABELS and why not in (data.get("labelled_by") or []):
             data["labelled_by"] = list(data.get("labelled_by") or []) + [why]
@@ -192,6 +199,40 @@ def mark_labelled(task_id, why):
     except Exception as exc:  # noqa: BLE001 - decoration for the task; said, never raised
         log(f"retention: could not mark the run of {task_id} labelled: {exc}")
         return False
+
+
+def _write_label(folder, execution):
+    """LABELLED anew: `execution` and the next sequence number, under one lock for every run (a read-then-write; the
+    agent and each `gui` process label), put in place whole so a pull never reads half of it."""
+
+    import tempfile
+    from decurix_agent import filelock
+    root = runs_root()
+    root.mkdir(parents=True, exist_ok=True)
+    with open(root / ".labels.lock", "a+") as lock:
+        filelock.exclusive(lock)
+        try:
+            lines = (folder / LABELLED).read_text(encoding="utf-8").splitlines()
+            seq = int(lines[1]) if len(lines) > 1 and lines[1].strip().isdigit() else 0
+        except OSError:
+            seq = 0
+        fd, tmp = tempfile.mkstemp(prefix=LABELLED + ".", suffix=".tmp", dir=str(folder))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+                f.write(f"{execution}\n{seq + 1}")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, folder / LABELLED)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+
+# An old EXPORTED (no third line) is compared by time, with this much allowed for the tar copy's whole seconds.
+OLD_EXPORT_TOLERANCE_NS = 2_000_000_000
 
 
 def labelled(task_id):
@@ -214,9 +255,10 @@ def exported(task_id):
 def held(task_id):
     """
     Whether the run's evidence must be kept: labelled, and its latest label not yet covered by an export. An export
-    covers a label when it names the same execution (when both name one) and was written after it: a later attempt
-    under the same task (a retry, a reply after the export) is held again until its own export (review round 2, B8).
-    A run that cannot be read is held.
+    covers the label when the LABELLED its pull read (EXPORTED after its second line) is LABELLED's content now: a
+    later label (a retry, a reply after the export) is held again until its own export (review round 2, B8; round 3,
+    R1). An EXPORTED written before the control plane added LABELLED to it covers it when it names the same execution and is no more than two
+    seconds older than the label (the tar copy's whole seconds). A run that cannot be read is held.
     """
 
     if not task_context.valid(task_id):
@@ -227,11 +269,20 @@ def held(task_id):
         if not exported(task_id):
             return True
         folder = _dir(task_id)
-        mark = (folder / LABELLED).read_text(encoding="utf-8").strip()
-        done = (folder / EXPORTED).read_text(encoding="utf-8").split("\n", 1)[0].strip()
+        label = (folder / LABELLED).read_text(encoding="utf-8").rstrip("\r\n")
+        export = (folder / EXPORTED).read_text(encoding="utf-8")
+        lines = export.split("\n")
+        if export.endswith("\n"):
+            lines = lines[:-1]
+        if len(lines) >= 3:
+            # What follows the second line is LABELLED as the pull read it (its own two lines, or "" when none was).
+            return "\n".join(lines[2:]).rstrip("\r\n") != label
+        mark = label.split("\n", 1)[0].strip()
+        done = lines[0].strip()
         if mark and done and mark != done:
             return True
-        return (folder / LABELLED).stat().st_mtime_ns > (folder / EXPORTED).stat().st_mtime_ns
+        return ((folder / LABELLED).stat().st_mtime_ns
+                > (folder / EXPORTED).stat().st_mtime_ns + OLD_EXPORT_TOLERANCE_NS)
     except Exception:  # noqa: BLE001 - when in doubt, keep
         return True
 

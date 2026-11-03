@@ -111,6 +111,15 @@ MAX_BODY = 1024 * 1024
 HEALTH = ["health"]
 
 
+def _keep_execution(task_id, data):
+    """Keep the control plane's execution id that a teach, replay or run-skill request names (H-CP-10), as
+    /request does: its run's label names that attempt (retention). A value of another shape is ignored."""
+
+    from decurix_agent import task_context
+    if task_context.valid(task_id):
+        task_context.set_execution(task_id, data.get("execution_id"))
+
+
 def _text(value, limit):
     return str(value or "").strip()[:limit]
 
@@ -530,6 +539,7 @@ class Handler(BaseHTTPRequestHandler):
 
         start = int(data.get("from") or 1)
         task_id = _text(data.get("task_id"), 64)
+        _keep_execution(task_id, data)
         content = f"/replay {session_id}" + (f" from={start}" if start > 1 else "")
 
         # The request the watcher reads names only the recording: the values
@@ -551,7 +561,9 @@ class Handler(BaseHTTPRequestHandler):
             recording.load(other)
 
         content = skill_task.learn_request(sessions, _text(data.get("name"), 80))
-        path = save_request(content, _text(data.get("task_id"), 64))
+        task_id = _text(data.get("task_id"), 64)
+        _keep_execution(task_id, data)
+        path = save_request(content, task_id)
 
         return self._json(200, {"status": "received", "file": path.name, "content": content})
 
@@ -566,7 +578,9 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("params must be an object of name: value")
 
         content = skill_task.request_text(name, params)
-        path = save_request(content, _text(data.get("task_id"), 64))
+        task_id = _text(data.get("task_id"), 64)
+        _keep_execution(task_id, data)
+        path = save_request(content, task_id)
 
         return self._json(200, {"status": "received", "file": path.name, "content": content})
 

@@ -84,6 +84,14 @@ def _summary_check(checks, what):
                  + ("" if result == PASS else " (some of them did not pass)"))
 
 
+def _clip_ref(ref, n=160):
+    """A ref no longer than `n` characters: a string clipped, a mapping's values clipped."""
+
+    if isinstance(ref, dict):
+        return {k: (str(x)[:n] if isinstance(x, str) else x) for k, x in ref.items()}
+    return str(ref)[:n] if isinstance(ref, str) else ref
+
+
 def bound(v, limit=MAX_BYTES):
     """
     `v` within the schema's counts and `limit` bytes, its verdict never changed: the checks that failed or were not
@@ -108,7 +116,9 @@ def bound(v, limit=MAX_BYTES):
             break
         cut = True
         if step == "refs":
-            v["checks"] = [dict(c, refs=list(c.get("refs") or [])[:2]) for c in v["checks"]]
+            # Two refs a check, each clipped: a long ref must never cost a failing check its place (review round 3,
+            # nit 3 - five of ten fails were dropped while 600-character refs were kept).
+            v["checks"] = [dict(c, refs=[_clip_ref(r) for r in list(c.get("refs") or [])[:2]]) for c in v["checks"]]
         elif step == "detail":
             v["checks"] = [dict(c, detail=str(c.get("detail") or "")[:160]) for c in v["checks"]]
         elif step == "fold":

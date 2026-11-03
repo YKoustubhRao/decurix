@@ -1454,8 +1454,9 @@ def _read_back(run, text):
         if not made and not produced.drafts():
             return [], []
         facts = produced.file_facts(request, made, drafts_made=produced.drafts())
-        # (What the request states, compared against the files and held: the `code` basis rests on this, never on the
-        # files opening - review round 2, B5.)
+        # (A fact of the request's sources the worker did not write, found in the files, and nothing they contradict:
+        # the `code` basis rests on this, never on the files opening nor on the request's own figures - review round
+        # 2, B5; round 3, R2.)
         run["_read_back_compared"] = facts.compared_clean()
     except Exception as exc:  # noqa: BLE001 - a read-back that breaks is a check not made
         log(f"Skill {run['skill']['name']}: could not read the run's files back: {exc}")
@@ -1553,7 +1554,7 @@ def _succeed(run, result, checked_by, seen="", helped=False):
     if checked_by != "person":
         # checked=True only when the files the run made were read back (review 2026-11-03).
         problems, not_made = _read_back(run, text)
-        # Code compared what the request states against at least one file the run made, every fact held, and it
+        # Code found the request's sources in at least one file the run made (FileFacts.compared_clean), and it
         # found nothing wrong and nothing it could not check.
         read_clean = (bool(run.get("_read_back_files")) and bool(run.get("_read_back_compared")) and not problems
                       and not not_made)
@@ -3639,7 +3640,8 @@ def _gate(reply, kind, engine):
         gate_checks = list(decided.get("checks") or [])
         if made and facts.compared_clean():
             gate_checks.append(verdicts.check("files.read_back", verdicts.PASS, "code",
-                                              f"{facts.held} fact(s) the request states held in {len(made)} file(s)"))
+                                              f"{facts.from_sources} fact(s) of the request's sources held in "
+                                              f"{len(made)} file(s)"))
         if "ledger" in _basis(None):
             gate_checks.append(verdicts.check("ledger.read_back", verdicts.PASS, "ledger",
                                               "every declared record read back from the application"))

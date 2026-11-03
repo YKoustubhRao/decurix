@@ -739,16 +739,26 @@ class FileFacts:
         self.missing_files = missing_files
         self.file_faults = list(file_faults)
         # How many facts the request states were looked for in the files made, and how many of them the files hold
-        # (compared_facts). A read-back that compared nothing is no check of what the files say (review round 2, B5).
+        # (compared_facts). Evidence only: the worker read the request, so a file that restates it holds them all
+        # (review round 3, R2).
         self.compared = 0
         self.held = 0
         self.not_held = []
+        # The facts of the request's own input files (what the worker did not write) that the files made hold
+        # (source_facts): what the `code` basis rests on.
+        self.from_sources = 0
 
     def compared_clean(self):
-        """Whether the files were checked against what the request states, and held it: at least one fact compared,
-        every one held, nothing blocking and nothing left unchecked. What the `code` basis of trust rests on."""
+        """
+        Whether code checked the files against what the worker did not write, and they held it: at least one fact of
+        the request's input files carried into the files made (source_facts), no figure a file gives as a source's
+        own that the source does not state (source_mismatch), every fact the request states held, nothing blocking
+        and nothing left unchecked. What the `code` basis of trust rests on. The request's own figures are never the
+        basis: a file that restates the request holds them all (review round 3, R2).
+        """
 
-        return self.compared > 0 and self.held == self.compared and not self.blocking() and not self.not_made()
+        return (self.from_sources > 0 and not self.source_mismatch and self.held == self.compared
+                and not self.blocking() and not self.not_made())
 
     # The facts that fail the work by themselves, in one place for every route (the final gate, a taught run's
     # read-back, a desktop tool's run, a long request's stage). Found (review 2026-11-03, E-27): four routes each listed
@@ -964,6 +974,94 @@ def compared_facts(request, made):
     return compared, compared - len(not_held), not_held
 
 
+def _flat(text):
+    return " ".join(str(text or "").split()).casefold()
+
+
+def _input_facts(path, text):
+    """(figures, codes) an input file states: a table's cells one by one (a CSV's commas are no part of a figure), a
+    document's text as stated_facts reads a request."""
+
+    from decurix_agent import sources, values
+    if Path(path).suffix.lower() not in (".csv", ".tsv", ".xlsx", ".xlsm"):
+        return stated_facts(text)
+    figures, codes = [], []
+    for row in sources._rows(path):
+        for cell in row or ():
+            if cell is None or isinstance(cell, bool):
+                continue
+            value = str(cell).strip()
+            number = values.parse_number(value)
+            if number is not None and not values.parse_date(value):
+                if len(re.sub(r"\D", "", value)) >= 3 or "." in value:
+                    figures.append(value)
+            elif _STATED_CODE.fullmatch(value) and not values.parse_date(value):
+                codes.append(value)
+    return list(dict.fromkeys(figures)), list(dict.fromkeys(codes))
+
+
+def source_facts(request, made, found_inputs=None):
+    """
+    How many facts of the request's input files - the sources the worker read and did not write (sources.inputs) -
+    the files made hold: a figure (three or more digits, or with decimals) by value, a reference code as a whole token.
+    A fact the request's own text also states is not counted (the worker had it from the request), and a file made
+    that holds the request's text, or the whole of an input's, is not read for it (a copy checks nothing). What the
+    `code` basis rests on (review round 3, R2): a fact the worker did not author, found in what it made.
+    """
+
+    from decurix_agent import sources, values
+    from decurix_agent.tools import office
+    request_text = attachments.text(request or "")
+    known = sources.inputs(request, made) if found_inputs is None else found_inputs
+    if not known or not made:
+        return 0
+
+    def text_of(path):
+        try:
+            return office.read_document(str(path)).get("text") or ""
+        except Exception as exc:  # noqa: BLE001 - a file not read holds nothing
+            log(f"produced: could not read {path} to compare it with the sources: {exc}")
+            return ""
+
+    def raw_of(path):
+        try:
+            return Path(path).read_text(encoding="utf-8-sig", errors="replace") if Path(path).suffix.lower() in (
+                ".csv", ".tsv", ".txt") else ""
+        except OSError:
+            return ""
+
+    inputs = {str(i["path"]): text_of(i["path"]) for i in known}
+    copies = [_flat(request_text)] + [_flat(t) for path, read in inputs.items() for t in (read, raw_of(path))
+                                      if len(_flat(t)) >= 80]
+    texts = []
+    for path in dict.fromkeys(str(m) for m in made):
+        if path in inputs:
+            continue
+        text = text_of(path)
+        flat = _flat(text)
+        if flat and not any(c and c in flat for c in copies):
+            texts.append(text)
+    if not texts:
+        return 0
+    whole = "\n".join(texts)
+    tokens = _FIGURE_IN_FILE.findall(whole)
+    asked_figures, asked_codes = stated_facts(request)
+    found = set()
+    for path, source_text in inputs.items():
+        figures, codes = _input_facts(path, source_text)
+        for figure in figures:
+            if any(values.same_value(figure, a) is True for a in asked_figures):
+                continue
+            if any(values.same_value(figure, t) is True for t in tokens):
+                found.add(("figure", str(values.parse_number(figure))))
+        for code in codes:
+            if code.casefold() in (c.casefold() for c in asked_codes):
+                continue
+            if re.search(r"(?<![A-Za-z0-9])" + re.escape(code) + r"(?![A-Za-z0-9])", whole, re.I):
+                found.add(("code", code.casefold()))
+    return len(found)
+
+
 def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_made=None, own_outputs=None):
     """
     The code-decided checks of the files made for `request`, shared by every route that reports work: the final gate
@@ -1017,6 +1115,10 @@ def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_m
         facts.compared, facts.held, facts.not_held = compared_facts(request, every)
     except Exception as exc:  # noqa: BLE001 - nothing compared is no read-back: it counts for nothing
         log(f"produced: could not compare the files with the request: {exc}")
+    try:
+        facts.from_sources = source_facts(request, every)
+    except Exception as exc:  # noqa: BLE001 - nothing compared with the sources is no `code` basis
+        log(f"produced: could not compare the files with the request's sources: {exc}")
     return facts
 
 

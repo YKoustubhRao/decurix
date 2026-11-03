@@ -477,7 +477,7 @@ BLANK_PROBLEM = (
 )
 
 
-def ask_for_query(problem, kind="query", engine=None, secret=False):
+def ask_for_query(problem, kind="query", engine=None, secret=False, _date_query=False):
     """
     Ask the human/control plane a query.
 
@@ -505,20 +505,24 @@ def ask_for_query(problem, kind="query", engine=None, secret=False):
     except Exception as exc:  # noqa: BLE001 - the question still goes out
         log(f"Could not show where the payments go: {exc}")
 
-    # A save waiting on which order a date is written in (task_context.ask_date_order) is asked here, with both
-    # readings, whatever the engine's own question is: only the person's numbered choice settles it (watchers), so
-    # nothing may answer this question for them.
-    asks_date = False
-    if kind != "approval":
+    # A save waiting on which order a date is written in (task_context.ask_date_order) is asked as a question of its
+    # own, in place of this one - never added to it: one reply to two questions answered both, and an engine question
+    # with numbered choices set the date's order with its own answer (review round 3, R3). Only the reply to the date's
+    # own query settles it (watchers); the engine is then told this question was not put to the person.
+    if not _date_query:
         try:
             pending = task_context.date_question()
-            if pending:
-                problem = f"{problem}\n\n{task_context.date_question_text(pending)}"
-                asks_date = True
+            if pending and not pending.get("query_id"):
+                log("A save waits on which way a date is written: that is asked first, on its own; the engine's "
+                    "question is not put to the person now.")
+                query_id = ask_for_query(task_context.date_question_text(pending), kind="query", engine=engine,
+                                         _date_query=True)
+                task_context.mark_date_asked(task_context.current(), query_id)
+                return query_id
         except Exception as exc:  # noqa: BLE001 - the question still goes out
-            log(f"Could not add the date question: {exc}")
+            log(f"Could not ask the date question: {exc}")
 
-    if _query_gate is not None and not asks_date:
+    if _query_gate is not None and not _date_query:
         try:
             if _query_gate(problem, kind, engine):
                 return None
@@ -528,7 +532,7 @@ def ask_for_query(problem, kind="query", engine=None, secret=False):
     # A stage of a long request asks without stopping the stages that do not need the answer (long_task.py).
     try:
         from decurix_agent import long_task
-        if long_task.take_question(problem, kind):
+        if not _date_query and long_task.take_question(problem, kind):
             return None
     except Exception as exc:
         log(f"The long request could not park this question ({exc}); asking as usual.")
@@ -584,6 +588,7 @@ Please send instructions through the Decurix control plane.
 
     state.last_query_text, state.last_query_kind = problem, kind
     state.last_query_secret = bool(secret)
+    state.asked_query_id = query_id
 
     log_banner("AGENT HAS A QUERY", content, f"Query written to: {path}")
 
@@ -772,6 +777,23 @@ def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted
             if kind == "final":
                 reply = (f"Not checked - the final check itself failed ({type(exc).__name__}). Look at the screen "
                          f"and the files before relying on this.\n\n{reply}")
+
+    # A save that waited on which way a date is written, the person not yet answering: the task is not checked, and
+    # the report says the question (review round 3, R3) - whatever the engine or a check made of the rest.
+    if not stopped and not interrupted:
+        try:
+            pending = task_context.date_question(task_id or task_context.current())
+            if pending:
+                from decurix_agent import verdict as verdicts
+                reply = ("Not checked - a save waited on a question to you that has no answer yet: "
+                         + task_context.date_question_text(pending) + "\n\n" + str(reply or ""))
+                checked, gated = False, True
+                if isinstance(verdict, dict) and verdict.get("verdict") == verdicts.DONE:
+                    verdict = verdicts.make(verdicts.UNCHECKED, verdict.get("by") or "none",
+                                            why="a save waited on a date question with no answer",
+                                            checks=verdict.get("checks") or ())
+        except Exception as exc:  # noqa: BLE001 - the report still goes out
+            log(f"Could not look for an open date question: {exc}")
 
     checked, verdict = _settle_verdict(reply, kind, checked, gated, verdict, stopped)
 

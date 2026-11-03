@@ -71,7 +71,7 @@ REGISTRY = {
     "produced.py:host_copies": "local copies of the person's own files",
     "produced.py:note_filled": "paths and placeholder names",
     "retention.py:_write_manifest": "the run manifest: hashes, paths, names",
-    "retention.py:mark_labelled": "an execution id",
+    "retention.py:_write_label": "an execution id and a label number",
     "task_context.py:_keep_context": "ids, date orders and the date question's readings",
     "task_context.py:_write": "the task file's parts; the request copy is withheld by start() before it is written",
     "tool_made.py:remember": "a document the tools saved in the shared folder: its path and words (the person's file)",

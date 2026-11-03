@@ -141,6 +141,8 @@ def parse_amount(value):
             if n.group(1) in ("-", "−"):
                 sign = -sign
             text = text[n.end():]
+    if re.match(r"\.\d", text):
+        text = "0" + text  # ".50" is 0.50
     m = re.fullmatch(r"(" + _DIGITS + r")(?:\s*(%)|\s+([^\W\d_]{1,12}\.?)|\s*([₹$€£¥]))?", text)
     if not m:
         return None
@@ -168,14 +170,32 @@ def parse_number(value):
     return found.sign * found.magnitude
 
 
-def _same_amount(a, b):
+def _same_amount(a, b, field_units=()):
     if a.magnitude != b.magnitude or a.sign != b.sign:
         return Result(False, "number")
     if a.currency and b.currency and a.currency != b.currency:
         return Result(False, "currency")
     if a.unit != b.unit:
-        return Result(None, "unit") if not (a.unit and b.unit) else Result(False, "unit")
+        if a.unit and b.unit:
+            return Result(False, "unit")
+        if (a.unit or b.unit) in field_units:
+            return Result(True, "number")  # the field states the unit the bare figure is written in
+        return Result(None, "unit")
     return Result(True, "number")
+
+
+def field_units(label):
+    """
+    The units a form field's label (or the text shown beside it) states for its figure: "%" and each word, case
+    folded - "GST Rate (%)" states "%", "Weight (kg)" states "kg". Words given as alternatives ("Dr/Cr", "kg / lb")
+    state none of them: such a field does not say which. A figure written bare in that field carries a unit the label
+    states, so "18%" and the "18" of a field labelled "Rate (%)" are one figure (review round 3, R5); without such a
+    label a unit on one side only stays undecided - "15 kg" against the "15" of a field labelled "Weight (lb)" is not
+    a pass.
+    """
+
+    text = re.sub(r"[^\W_]+(?:\s*/\s*[^\W_]+)+", " ", _norm(label).casefold())
+    return frozenset(re.findall(r"%|[^\W\d_]+", text))
 
 
 # ------------------------------------------------------------------ dates
@@ -307,12 +327,12 @@ def _readings_of(day):
 # ------------------------------------------------------------------ text
 
 def text_key(value):
-    """A value as text: NFKC, case folded, every letter, mark and digit of every script, single spaces between words,
-    punctuation aside. A short code in brackets at the end - "Karnataka (29)" - names the same thing as the bare name:
+    """A value as text: NFKC, case folded, every letter, mark and digit of every script; punctuation is a gap like a
+    space, and gaps collapse to one - "Pvt.Ltd." and "Pvt. Ltd.", "Saint-Gobain" and "Saint Gobain" are one name. A short code in brackets at the end - "Karnataka (29)" - names the same thing as the bare name:
     an option's label often carries one (found live 2026-10-26, a right form was stopped once over it)."""
 
     text = re.sub(r"\s*\([^()]{1,12}\)\s*$", "", _norm(value)).casefold()
-    kept = "".join(ch if unicodedata.category(ch)[0] in "LMN" else (" " if ch.isspace() else "") for ch in text)
+    kept = "".join(ch if unicodedata.category(ch)[0] in "LMN" else " " for ch in text)
     return " ".join(kept.split())
 
 
@@ -340,12 +360,14 @@ def _national(value):
 
 # ------------------------------------------------------------------ the comparator
 
-def compare(a, b, a_order=None, b_order=None):
+def compare(a, b, a_order=None, b_order=None, units=()):
     """
     Whether two values of one field are the same whatever their form: Result(same, why), same True, False, or None when
     what is known cannot decide it. `a_order` / `b_order`: the date order each side is written in ("day", "month" or
     None) - the source document's and the application's are different facts. `why` says what decided or what is
-    missing: "date_order:a" / "date_order:b" is the side whose date order would decide it.
+    missing: "date_order:a" / "date_order:b" is the side whose date order would decide it. `units`: what the field
+    states its figure is in (field_units of its label) - a figure written with one of them matches the same figure
+    written bare.
     """
 
     a_order, b_order = _order(a_order), _order(b_order)
@@ -368,12 +390,14 @@ def compare(a, b, a_order=None, b_order=None):
         return Result(sa == sb, "digits")
     na, nb = parse_amount(a), parse_amount(b)
     if isinstance(na, Amount) and isinstance(nb, Amount):
-        return _same_amount(na, nb)
+        return _same_amount(na, nb, frozenset(units or ()))
     if UNDECIDED in (na, nb):
         return Result(None, "number_format")
     if isinstance(na, Amount) or isinstance(nb, Amount):
         return Result(None, "kinds")
-    ka, kb = text_key(a), text_key(b)
+    # Two texts are one when their letters and digits agree in order, gaps aside: a gap is where punctuation or a
+    # space stood, and apps write the same name both ways ("ACME-LTD" / "acme ltd", "INV-0042" / "inv0042").
+    ka, kb = text_key(a).replace(" ", ""), text_key(b).replace(" ", "")
     return Result(bool(ka) and ka == kb, "text")
 
 

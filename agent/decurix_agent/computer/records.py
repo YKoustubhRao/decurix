@@ -56,13 +56,14 @@ def as_date(value, order=None):
     return values.as_iso(value, task_context.source_date_order() if order is None else order)
 
 
-def compare_shown(shown, wanted, source_order=None):
+def compare_shown(shown, wanted, source_order=None, label=""):
     """values.compare of what the application shows (`shown`, read under the application's date order) against what
     the record wants (`wanted`, read under its source's order: `source_order`, else the task's) - two orders, never one
-    for both (review round 2, B4)."""
+    for both (review round 2, B4). `label`: the form field's label, whose stated unit a bare figure carries
+    (values.field_units, review round 3, R5)."""
 
     return values.compare(shown, wanted, task_context.app_date_order(),
-                          source_order or task_context.source_date_order())
+                          source_order or task_context.source_date_order(), values.field_units(label))
 
 
 def same_value(a, b, order=None):
@@ -467,13 +468,19 @@ def _undecided(flabel, fvalue, want, why):
         question = task_context.ask_date_order(task_context.current(), side, value)
         if question:
             return (f"{flabel} holds {fvalue!r} and the record says {want!r}, and which day {value!r} is cannot be told "
-                    "from here - this needs the person: " + task_context.date_question_text(question)
-                    + " (ask them; do not retype the field: a date written the same way is no answer).")
+                    "from here - this needs the person. The agent puts the two readings to them itself, as a question "
+                    "of its own, when you next ask them anything (HELP: say the save waits on this date) or stop; "
+                    "do not retype the field (a date written the same way is no answer).")
         return (f"{flabel} holds {fvalue!r} and the record says {want!r}: the dates cannot be compared under the date "
                 "order known for this task - this needs the person.")
+    if why == "unit":
+        return (f"{flabel} holds {fvalue!r} and the record says {want!r}: a unit is written on one side only and the "
+                "field's label does not state it, so they cannot be compared. When the field's label (or the text "
+                "beside it) carries the unit, declare the record's figure without the unit (gui record declare); "
+                "otherwise ask the person which unit the field takes.")
     return (f"{flabel} holds {fvalue!r} and the record says {want!r}, and they cannot be compared ({why}: a number "
-            "against text, separators that read two ways, or a unit on one side only) - type the value as the "
-            "document writes it, or ask the person.")
+            "against text, or separators that read two ways) - type the value as the document writes it, or ask the "
+            "person.")
 
 
 def presave(rec, form_fields):
@@ -497,11 +504,11 @@ def presave(rec, form_fields):
                 blocking.append(f"{flabel} is empty where the record says {want!r} - a record is saved with its identifier")
             else:
                 advisory.append(f"{flabel} is empty where the record says {want}")
-        elif (decided := compare_shown(fvalue, want, _source_order(rec))).same is None:
-            blocking.append(_undecided(flabel, fvalue, want, decided.why))
-        elif not decided.same:
+        elif (decided := compare_shown(fvalue, want, _source_order(rec), flabel)).same is not True:
             if chosen is None:
                 chosen = chosen_values()
+            # The rescue is tried for an undecided pair too ("1188" against "INV-1188" is undecided, not "differs"),
+            # before the save waits on a question (review round 3, nit 4).
             if any(same_value(fvalue, c, order=task_context.app_date_order() or "") for c in chosen):
                 # The application's own entry for what the document names (a party found by its identifier under
                 # another spelling): the application holds it so, and that is right - and it is what the page will
@@ -509,7 +516,10 @@ def presave(rec, form_fields):
                 advisory.append(f"{flabel} holds the application's own entry {fvalue!r} for the document's {want!r}")
                 fields[label]["entered"] = str(fvalue)
                 continue
-            blocking.append(f"{flabel} holds {fvalue!r} where the record says {want!r}")
+            if decided.same is None:
+                blocking.append(_undecided(flabel, fvalue, want, decided.why))
+            else:
+                blocking.append(f"{flabel} holds {fvalue!r} where the record says {want!r}")
     named = {m[0] for m in matched}
     missing = [l for l in fields if l not in named]
     if missing:

@@ -299,6 +299,33 @@ class AVerdictAlwaysFits(unittest.TestCase):
         v = verdict.bound(self.big("not_done"))
         self.assertTrue(any(c["result"] == "fail" for c in v["checks"]))
 
+    def test_long_refs_are_clipped_before_a_failing_check_is_dropped(self):
+        """Review round 3, nit 3: ten failing checks with 600-character refs - only five were listed."""
+        checks = [verdict.check(f"code.{n}", "fail", "code", "d" * 600, refs=["r" * 600] * 16) for n in range(10)]
+        v = verdict.bound({"schema": verdict.SCHEMA, "verdict": "not_done", "by": "verify", "why": "w",
+                           "basis": ["code"], "checks": checks, "evidence": []})
+        self.assertLessEqual(len(json.dumps(v, ensure_ascii=False).encode("utf-8")), verdict.MAX_BYTES)
+        self.assertEqual([c["id"] for c in v["checks"]], [f"code.{n}" for n in range(10)])
+        self.assertTrue(all(len(r) <= 160 for c in v["checks"] for r in c["refs"]))
+        self.assertEqual(verdict.validate(v), [])
+
+    def test_send_query_bounds_a_verdict_its_caller_assembled(self):
+        """Review round 3, nit 2 (mutation N5): a hand-made verdict over 12 KB goes out bounded on the first post."""
+        from decurix_agent import messaging
+        posted = []
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(messaging, "_post_querytext", lambda p: (posted.append(p), ("sent", ""))[1]), \
+                mock.patch.object(messaging.progress, "flush", lambda: None), \
+                mock.patch.object(config, "DECURIX_DIR", Path(tmp)), mock.patch.object(config, "WORK_DIR", Path(tmp)):
+            big = self.big("not_done")
+            self.assertGreater(len(json.dumps(big).encode("utf-8")), verdict.MAX_BYTES)
+            self.assertTrue(messaging.send_query("f.txt", "not done", kind="error", reply="not done", checked=False,
+                                                 verdict=big, task_id="t0123456789abcdef"))
+        first = posted[0]["verdict"]
+        self.assertLessEqual(len(json.dumps(first, ensure_ascii=False).encode("utf-8")), verdict.MAX_BYTES)
+        self.assertTrue(first["truncated"])
+        self.assertEqual(first["verdict"], "not_done")
+
     def test_more_than_64_checks_are_summed_up_not_dropped_silently(self):
         checks = [verdict.check(f"c{n}", "pass", "code") for n in range(70)] + [verdict.check("bad", "fail", "code")]
         v = verdict.make("not_done", "verify", checks=checks)

@@ -560,10 +560,13 @@ def _derived_order(task_id):
 # The date order a save waits on (review round 2, B3)
 #
 # When a save cannot compare a date - a digit date whose day and month could be either way, and no order known for its
-# side - the save waits and the person is asked, with both readings. The question is kept for the task here; the
-# agent's next question to the person carries it (messaging.ask_for_query), and the reply that picks one of its options
-# by number (watchers) sets that side's order, backed by the reply's judgement. Typing the source's own digits into the
-# application and letting it choose is not an answer: the application's side is then the one asked about.
+# side - the save waits and the person is asked, with both readings. The question is kept for the task here. It goes
+# out as a question of its own, never added to another (messaging.ask_for_query sends it in place of the engine's next
+# question), and only the reply to that very query - its id is kept with the question - may answer it, by one option's
+# number, backed by the reply's judgement (watchers). A reply to any other question, numbered choices or not, answers
+# nothing here (review round 3, R3). A task that ends with it unanswered is not checked (messaging.write_final_reply).
+# Typing the source's own digits into the application and letting it choose is not an answer: the application's side
+# is then the one asked about.
 # ============================================================
 
 def ask_date_order(task_id, side, value):
@@ -600,15 +603,39 @@ def date_question_text(question):
             f"{r['day']} (day first), or 2 if it is {r['month']} (month first).")
 
 
-def take_date_answer(task_id, reply, judgement_id=None):
+def mark_date_asked(task_id, query_id):
+    """The date question went out as the query `query_id` (messaging.ask_for_query): only its reply answers it."""
+
+    question = date_question(task_id)
+    if question and isinstance(query_id, str) and query_id:
+        _keep_context(task_id, date_question=dict(question, query_id=query_id))
+
+
+def unmark_date_asked(task_id):
+    """The reply to the date question picked neither reading: it is still open, and goes out again when next asked."""
+
+    question = date_question(task_id)
+    if question:
+        _keep_context(task_id, date_question={k: v for k, v in question.items() if k != "query_id"})
+
+
+def date_query_answered(task_id, query_id):
+    """Whether `query_id` - the query a reply answers - is the one the date question went out as."""
+
+    question = date_question(task_id)
+    return bool(question and question.get("query_id") and query_id and question["query_id"] == query_id)
+
+
+def take_date_answer(task_id, reply, judgement_id=None, query_id=None):
     """
-    The person's reply to the date-order question, taken when its whole text is one option's number: that side's order
-    is kept with the reply's judgement, and the question is settled. Anything else is not taken (the question stays).
-    Returns the order taken, or None.
+    The person's reply to the date-order question, taken when it is the reply to that question's own query (`query_id`,
+    the query the reply answers) and its whole text is one option's number: that side's order is kept with the reply's
+    judgement, and the question is settled. Anything else is not taken (the question stays). Returns the order taken,
+    or None.
     """
 
     question = date_question(task_id)
-    if not question:
+    if not question or not date_query_answered(task_id, query_id):
         return None
     choice = " ".join(str(reply or "").split()).strip(" .")
     order = question["options"].get(choice)

@@ -548,21 +548,41 @@ def answer_waiting(path, content, already_marked=False):
     from decurix_agent import retention
     retention.mark_labelled(task_context.current(), "reply")
 
-    # A save waiting on a date's order (task_context.ask_date_order) is settled by the reply that picks one of the
-    # question's numbered options, kept with the reply's judgement; any other reply leaves the question open.
-    try:
-        judged = state.message_facts.get(path.name.removesuffix(HANDLED_SUFFIX), {}).get("judgement") or ""
-        taken = task_context.take_date_answer(task_context.current(), attachments.text(content or ""), judged)
-        if taken:
-            log(f"The person said the dates are written {taken} first; the save that waited on it can go on.")
-    except Exception as exc:  # noqa: BLE001
-        log(f"Could not take the reply as the date order: {exc}")
-
     if workflow_task.query_control(content):
         if not already_marked:
             _mark_handled(path)
         threading.Thread(target=workflow_task.perform_control, args=(content,), daemon=True).start()
         return
+
+    # A save waiting on a date's order (task_context.ask_date_order) is settled only by the reply to the date's own
+    # query (it went out alone, messaging.ask_for_query) that picks one of its numbered options, kept with the reply's
+    # judgement. A reply to any other question answers nothing here (review round 3, R3). The engine, whose question
+    # was not put to the person, is told what was asked and answered - never handed the bare number as its answer.
+    # (A reply that calls the task off is left as it is, so it still does.)
+    date_answer = False
+    try:
+        task_id = task_context.current()
+        if task_context.date_query_answered(task_id, state.asked_query_id):
+            question = task_context.date_question(task_id)
+            said = attachments.text(content or "")
+            judged = state.message_facts.get(path.name.removesuffix(HANDLED_SUFFIX), {}).get("judgement") or ""
+            taken = task_context.take_date_answer(task_id, said, judged, state.asked_query_id)
+            if taken:
+                date_answer = True
+                log(f"The person said the dates are written {taken} first; the save that waited on it can go on.")
+                content = (f"(Not your question - the agent asked the person which way {question['value']} is "
+                           f"written, since a save waited on it. They answered: {taken} first. Your own question "
+                           "was not put to them: ask it again if you still need it, and save again.)")
+            else:
+                task_context.unmark_date_asked(task_id)
+                if not guidance.calls_off(said, ""):
+                    date_answer = True
+                    content = (f"(Not your question - the agent asked the person which way {question['value']} is "
+                               "written, since a save waited on it, and their reply picked neither reading, so the "
+                               "save still waits on it. Your own question was not put to them. Their reply: "
+                               + " ".join(said.split())[:300] + ")")
+    except Exception as exc:  # noqa: BLE001
+        log(f"Could not take the reply as the date order: {exc}")
 
     # If what it is waiting on is an on-screen action the
     # approval gate stopped, this reply is what settles it:
@@ -609,7 +629,7 @@ def answer_waiting(path, content, already_marked=False):
     # tasks (lessons.py) - except the answers of a lesson being
     # taught, which the skill itself keeps, question by question.
     teaching =(state.paused_skill or {}).get("mode") == "learn"
-    if not teaching and not secret:
+    if not teaching and not secret and not date_answer:  # (a date answer is kept with its judgement, not as a lesson)
         # A replay's or a skill run's own question (a value, a
         # stuck step); "is it done?" is not one of those.
         mechanical = (state.paused_replay is not None
@@ -643,7 +663,7 @@ def answer_waiting(path, content, already_marked=False):
         guidance.note_reply(content, outcome)
         # An answer to a question a taught task's engine asked
         # (not a yes or no to an approval) is kept on the skill.
-        if outcome is None:
+        if outcome is None and not date_answer:
             try:
                 skill_task.learn_answer(content, secret=secret, judgement_id=state.reply_judgement)
             except Exception as exc:

@@ -102,6 +102,22 @@ class TextOfEveryScript(unittest.TestCase):
         self.assertIs(same("", ""), False)
         self.assertIs(same(None, None), False)
 
+    def test_punctuation_and_spacing_variants_of_one_name(self):
+        """Review round 3, R4: dropping punctuation without a gap while keeping word gaps made each row "differs", so
+        presave blocked correct saves of these names."""
+        for a, b in (("ABC Pvt.Ltd.", "ABC Pvt. Ltd."), ("M/s.ABC Traders", "M/s ABC Traders"),
+                     ("Saint-Gobain", "Saint Gobain"), ("A. B. Enterprises", "A.B. Enterprises"),
+                     ("ACME-LTD", "acme ltd")):
+            self.assertIs(same(a, b), True, (a, b))
+        self.assertEqual(values.text_key("ABC Pvt.Ltd."), "abc pvt ltd")  # punctuation is a gap, gaps collapse
+        self.assertIs(same("Müller", "Möller"), False)
+        self.assertIs(same("Ram राम", "Ram श्याम"), False)
+
+    def test_a_leading_point(self):
+        """Review round 3, nit 5."""
+        self.assertIs(same(".50", "0.50"), True)
+        self.assertIs(same(".50", "0.05"), False)
+
 
 class Dates(unittest.TestCase):
     def test_a_thirteenth_month_is_no_date(self):
@@ -217,11 +233,52 @@ class TheTasksDateOrders(Base):
 
 
 class TheSaveAsksThePerson(Base):
-    """Review round 2, B3: the save waits on a real question, and the person's numbered answer decides it."""
+    """Review round 2, B3: the save waits on a real question, and the person's numbered answer decides it. Round 3, R3:
+    it was added to the engine's own question and any "1" or "2" answered it - one reply to an engine question with
+    numbered choices set the date's order too. It goes out alone now, and only the reply to its own query answers it."""
+
+    JUDGED = "j_0123456789abcdef"
+
+    def setUp(self):
+        super().setUp()
+        from decurix_agent import messaging
+        self.messaging = messaging
+        self.sent = []
+        for p in (mock.patch.object(messaging, "send_query", lambda *a, **k: self.sent.append((a, k)) or True),
+                  mock.patch.object(messaging, "_query_gate", lambda *a: True),
+                  mock.patch.object(state, "asked_query_id", "")):
+            p.start()
+            self.addCleanup(p.stop)
 
     def rec(self):
         return {"key": "B1", "source": "bill.pdf", "source_order": None,
                 "fields": {"Bill date": {"intent": "03/04/2026", "from": "source"}}}
+
+    def ask(self, question="I could not save the bill. What should I do?"):
+        return self.messaging.ask_for_query(question)
+
+    def reply(self, text, judgement=JUDGED):
+        """The person's reply, through the watcher; what the engine is handed."""
+        path = self.root / "reply.txt"
+        path.write_text(text, encoding="utf-8")
+        state.message_facts[path.name] = {"secret": False, "judgement": judgement}
+        handed = []
+
+        class Started:
+            """The thread the watcher hands the reply on with: what it would run, not run."""
+            def __init__(self, target=None, args=(), **kw):
+                handed.append(args[0] if args else None)
+
+            def start(self):
+                pass
+
+        with mock.patch.object(watchers, "is_reply_file", lambda name: True), \
+                mock.patch.object(watchers.threading, "Thread", Started), \
+                mock.patch.object(watchers.lessons, "note", lambda *a, **k: None), \
+                mock.patch.object(watchers.skill_task, "learn_answer", lambda *a, **k: None), \
+                mock.patch.object(watchers, "_mark_handled", lambda p: None):
+            watchers.answer_waiting(path, text, already_marked=True)
+        return handed[-1] if handed else None
 
     def test_an_undecided_date_asks_with_both_readings_and_the_answer_decides(self):
         blocking, _, _ = records.presave(self.rec(), [("Bill date", "2026-04-03")])
@@ -232,20 +289,18 @@ class TheSaveAsksThePerson(Base):
         self.assertIn("3 April 2026", text)
         self.assertIn("4 March 2026", text)
         self.assertIn("this needs the person", blocking[0])
-
-        # The person's reply arrives with its judgement; only the numbered choice is taken.
-        task_context.set_reply_judgement(TASK, "j_0123456789abcdef")
-        self.assertIsNone(task_context.take_date_answer(TASK, "maybe the first?"))
+        query = self.ask()
+        self.assertIsNone(task_context.take_date_answer(TASK, "maybe the first?", self.JUDGED, query))
         self.assertIsNotNone(task_context.date_question(TASK))
-        self.assertEqual(task_context.take_date_answer(TASK, "1"), "day")
+        self.assertEqual(task_context.take_date_answer(TASK, "1", self.JUDGED, query), "day")
         self.assertIsNone(task_context.date_question(TASK))
         blocking, _, _ = records.presave(self.rec(), [("Bill date", "2026-04-03")])
         self.assertEqual(blocking, [])
 
     def test_the_other_answer_makes_the_same_save_differ(self):
         records.presave(self.rec(), [("Bill date", "2026-04-03")])
-        task_context.set_reply_judgement(TASK, "j_0123456789abcdef")
-        self.assertEqual(task_context.take_date_answer(TASK, "2"), "month")
+        query = self.ask()
+        self.assertEqual(task_context.take_date_answer(TASK, "2", self.JUDGED, query), "month")
         blocking, _, _ = records.presave(self.rec(), [("Bill date", "2026-04-03")])
         self.assertEqual(len(blocking), 1)
         self.assertIn("holds '2026-04-03' where the record says '03/04/2026'", blocking[0])
@@ -254,30 +309,67 @@ class TheSaveAsksThePerson(Base):
         blocking, _, _ = records.presave(self.rec(), [("Bill date", "03/04/2026")])
         self.assertEqual(len(blocking), 1)
 
-    def test_the_question_goes_out_with_the_engines_own(self):
-        from decurix_agent import messaging
+    def test_the_question_goes_out_alone_in_place_of_the_engines(self):
         records.presave(self.rec(), [("Bill date", "2026-04-03")])
-        sent = []
-        with mock.patch.object(messaging, "send_query", lambda *a, **k: sent.append((a, k)) or True), \
-                mock.patch.object(messaging, "_query_gate", lambda *a: True):
-            messaging.ask_for_query("I could not save the bill. What should I do?")
-        self.assertTrue(sent, "the date question is never answered for the person by the query gate")
-        self.assertIn("Reply 1 if it is 3 April 2026", sent[-1][0][1])
+        self.ask("Which ledger? 1. Sales ledger 2. Purchase ledger")
+        self.assertEqual(len(self.sent), 1, "the date question is never answered for the person by the query gate")
+        body = self.sent[-1][0][1]
+        self.assertIn("Reply 1 if it is 3 April 2026", body)
+        self.assertNotIn("Sales ledger", body)  # never added to the engine's question
+        self.assertTrue(task_context.date_question(TASK)["query_id"])
 
-    def test_a_reply_to_the_question_through_the_watcher_takes_the_order(self):
+    def test_a_1_to_an_engine_question_with_numbered_choices_sets_no_order(self):
+        # The engine's question with its own numbered choices is the one out; the date question is kept but not yet
+        # asked. The reply "1" is the engine's answer, and the date's order is not set by it.
+        self.ask("Which ledger? 1. Sales ledger 2. Purchase ledger")
         records.presave(self.rec(), [("Bill date", "2026-04-03")])
-        task_context.set_reply_judgement(TASK, "j_0123456789abcdef")
-        path = self.root / "reply.txt"
-        path.write_text("1", encoding="utf-8")
-        state.message_facts[path.name] = {"secret": False, "judgement": "j_0123456789abcdef"}
-        with mock.patch.object(watchers, "is_reply_file", lambda name: True), \
-                mock.patch.object(watchers.workflow_task, "query_control", lambda c: True), \
-                mock.patch.object(watchers.workflow_task, "perform_control", lambda c: None), \
-                mock.patch.object(watchers, "_mark_handled", lambda p: None):
-            watchers.answer_waiting(path, "1", already_marked=True)
+        handed = self.reply("1")
+        self.assertEqual(handed, "1")  # the engine gets its own answer, untouched
+        self.assertIsNone(task_context.source_date_order())
+        self.assertIsNotNone(task_context.date_question(TASK))
+        self.assertIsNone(task_context.take_date_answer(TASK, "1", self.JUDGED, state.asked_query_id))
+
+    def test_a_reply_to_the_date_query_through_the_watcher_takes_the_order(self):
+        records.presave(self.rec(), [("Bill date", "2026-04-03")])
+        self.ask("Which ledger? 1. Sales ledger 2. Purchase ledger")
+        handed = self.reply("1")
         self.assertEqual(task_context.source_date_order(), "day")
+        self.assertIn("Not your question", handed)  # the engine is told what was asked, never handed a bare "1"
+        self.assertIn("day first", handed)
         labelled = json.loads((self.root / "runs" / TASK / "run.json").read_text(encoding="utf-8"))
         self.assertIn("reply", labelled["labelled_by"])  # (review round 2: the reply labels the run)
+
+    def test_a_reply_to_the_date_query_without_a_judgement_sets_nothing(self):
+        records.presave(self.rec(), [("Bill date", "2026-04-03")])
+        self.ask()
+        self.reply("1", judgement="")
+        self.assertIsNone(task_context.source_date_order())
+
+    def test_a_reply_that_picks_neither_leaves_it_to_be_asked_again(self):
+        records.presave(self.rec(), [("Bill date", "2026-04-03")])
+        self.ask()
+        handed = self.reply("the third of April")
+        self.assertIn("picked neither reading", handed)
+        self.assertIsNone(task_context.source_date_order())
+        self.assertNotIn("query_id", task_context.date_question(TASK))
+        self.ask()
+        self.assertEqual(len(self.sent), 2)
+        self.assertIn("Reply 1 if it is 3 April 2026", self.sent[-1][0][1])
+
+    def test_a_task_that_ends_with_it_unanswered_is_not_checked(self):
+        from decurix_agent import verdict as verdicts
+        records.presave(self.rec(), [("Bill date", "2026-04-03")])
+        posted = []
+        with mock.patch.object(self.messaging, "send_query", lambda *a, **k: posted.append(k) or True), \
+                mock.patch.object(self.messaging, "_final_gate", None), \
+                mock.patch.object(self.messaging.progress, "flush", lambda: None):
+            self.messaging.write_final_reply("Saved the bill.", checked=True,
+                                             verdict=verdicts.make(verdicts.DONE, "verify",
+                                                                   checks=[verdicts.check("c", "pass", "code")]))
+        self.assertTrue(posted)
+        self.assertFalse(posted[-1].get("checked"))
+        self.assertEqual(posted[-1]["verdict"]["verdict"], verdicts.UNCHECKED)
+        self.assertIn("Reply 1 if it is 3 April 2026", posted[-1]["reply"])
 
 
 class TheCallersShareIt(Base):
@@ -325,6 +417,14 @@ class CrossedValues(Base):
         rows = [["Asha Rao", "asha@example.test", "2026-03-04"], ["Ravi Kumar", "ravi@example.test", "2026-04-03"]]
         form = [("Email", "asha@example.test"), ("Due date", "03/04/2026")]
         self.assertEqual(core.crossed_values(form, [(header, rows)]), [])
+        # Round 3 (nit 1): the own row decidedly different and the other row undecided - the case that separates "is
+        # True" from "is not False". The other row's date is not decided to be the typed one, so it is no crossing.
+        rows = [["Asha Rao", "asha@example.test", "2026-05-05"], ["Ravi Kumar", "ravi@example.test", "2026-04-03"]]
+        self.assertEqual(core.crossed_values(form, [(header, rows)]), [])
+        # ... and the other row decidedly the typed date is one.
+        form = [("Email", "asha@example.test"), ("Due date", "2026-04-03")]
+        self.assertEqual(core.crossed_values(form, [(header, rows)]),
+                         [("Due date", "2026-04-03", "Ravi Kumar", "2026-05-05")])
 
 
 if __name__ == "__main__":

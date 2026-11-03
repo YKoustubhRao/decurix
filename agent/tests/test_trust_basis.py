@@ -86,9 +86,9 @@ class TheBasisOfATaughtRun(unittest.TestCase):
         return noted.get("basis")
 
     @staticmethod
-    def compared(n, held):
+    def compared(n, held, from_sources=1):
         facts = produced.FileFacts()
-        facts.compared, facts.held = n, held
+        facts.compared, facts.held, facts.from_sources = n, held, from_sources
         return facts
 
     def test_files_whose_stated_facts_were_compared_and_held_are_code(self):
@@ -96,7 +96,7 @@ class TheBasisOfATaughtRun(unittest.TestCase):
 
     def test_files_that_only_opened_are_no_code(self):
         # Review round 2, B5: a read-back that compared nothing is no check of what the files say.
-        self.assertEqual(self.basis(facts=self.compared(0, 0)), ["screen"])
+        self.assertEqual(self.basis(facts=self.compared(0, 0, from_sources=0)), ["screen"])
         self.assertEqual(self.basis(facts=self.compared(2, 1)), ["screen"])
 
     def test_the_comparison_reads_the_file_against_the_request(self):
@@ -115,6 +115,11 @@ class TheBasisOfATaughtRun(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as f:
             f.write("done")
         self.assertEqual(produced.compared_facts("Write a note.", [path])[:2], (0, 0))
+
+    def test_the_requests_own_facts_are_never_the_basis(self):
+        # Review round 3, R2: every fact the request states held, nothing from a source - no code.
+        self.assertEqual(self.basis(facts=self.compared(2, 2, from_sources=0)), ["screen"])
+        self.assertEqual(self.basis(facts=self.compared(0, 0, from_sources=1)), ["code", "screen"])
 
     def test_no_file_made_is_no_code(self):
         self.assertEqual(self.basis(files=()), ["screen"])
@@ -191,3 +196,53 @@ class TheSpotJudgement(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WhatTheWorkerDidNotWrite(unittest.TestCase):
+    """Review round 3, R2 (probe r2p4): the facts compared were the request's own, looked for in the files the worker
+    wrote - a file that restates the request held them all and gave the `code` basis. The basis is now a fact of the
+    request's input files the worker did not write, found in what it made."""
+
+    REQUEST = "Pay the vendor 12,500.00 against INV-2024-0042 as invoice.csv says and write summary.txt"
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        from pathlib import Path
+        from decurix_agent import config
+        self.folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.folder, True)
+        p = mock.patch.object(config, "WORK_DIR", self.folder)
+        p.start()
+        self.addCleanup(p.stop)
+        (self.folder / "invoice.csv").write_text(
+            "Item,Ref,Amount\nSteel angles,INV-2024-0042,10670.00\nFreight,FRT-77310,1830.00\nTotal,,12500.00\n",
+            encoding="utf-8")
+
+    def facts(self, text, request=None):
+        path = self.folder / "summary.txt"
+        path.write_text(text, encoding="utf-8")
+        return produced.file_facts(request or self.REQUEST, [str(path)])
+
+    def test_the_request_echoed_is_no_code(self):
+        for text in (self.REQUEST, "Task: " + self.REQUEST + "\nStatus: could not log in, nothing paid.",
+                     "Paid 12,500.00 for INV-2024-0042"):
+            with self.subTest(text):
+                facts = self.facts(text)
+                self.assertEqual(facts.from_sources, 0)
+                self.assertFalse(facts.compared_clean())
+
+    def test_a_sources_figure_carried_into_the_output_is_code(self):
+        facts = self.facts("Paid 12,500.00 for INV-2024-0042: steel 10,670.00 and freight 1,830.00 (FRT-77310)")
+        self.assertEqual(facts.from_sources, 3)  # 10670.00, 1830.00 and FRT-77310; the request's own are not counted
+        self.assertTrue(facts.compared_clean())
+
+    def test_a_copy_of_the_source_checks_nothing(self):
+        source = (self.folder / "invoice.csv").read_text(encoding="utf-8")
+        facts = self.facts("Copied:\n" + source)
+        self.assertEqual(facts.from_sources, 0)
+
+    def test_the_request_not_held_still_withholds_it(self):
+        facts = self.facts("Paid 99,999.00: steel 10,670.00 and freight 1,830.00")
+        self.assertGreater(facts.from_sources, 0)
+        self.assertFalse(facts.compared_clean())

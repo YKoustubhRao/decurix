@@ -344,12 +344,19 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   their explicit act; say so in recordings.md or check `held` there.
 - **The skill a run noted on its task** (`task_context.set_skill`) stays when the skill run hands the task to the
   general harness; the outcome then names a skill that did not drive its end.
-- **The `code` basis of trust** now needs a fact the request states (a figure, a reference code) compared against the
-  files made and held (`produced.compared_facts`); a request that states none earns no `code` basis however clean
-  its files read. Watch the L3 matrix for skills that can no longer earn trust by code alone.
-- **A date the save waits on** is asked through the next question the engine puts to the person
-  (`messaging.ask_for_query`); an engine that reports instead of asking leaves the record unsaved (not done), and the
-  question is not asked by itself.
+- **The `code` basis of trust** now needs a fact of the request's input files (which the worker did not write) found
+  in the files made, with nothing contradicting a source (`produced.source_facts`, review round 3, R2). A request
+  with no input file earns no `code` basis however clean its files read. Watch the L3 matrix for skills that can no
+  longer earn trust by code alone. A total recomputed in code from source data does not count yet.
+- **A date the save waits on** goes out as a question of its own at the engine's next question, in place of it
+  (round 3, R3). An engine that reports instead ends the task unchecked, with the question in the report. Asked
+  during a taught skill's lesson, the engine's lesson question is not put to the person, and the lesson gets the
+  "not your question" note as its reply.
+- **A unit on one side only** is compared by the field's label (`values.field_units`, round 3, R5): "18%" against a
+  field labelled "Rate (%)" is one figure; with no such label it still waits on the person. Owed: an eval case that
+  counts the questions unit fields cost (GST rates, quantities in Nos), in a future suite.
+- **EXPORTED carries LABELLED's two lines** (execution id, label number), so it is four lines, not three: the agent
+  reads everything after the second line as the copy (round 3, R1). docs/trajectory.md says "third line".
 - **Secrets, round 2 leftovers** (the security review of 2026-11-04):
   - The task's secret values as they are live in the task file's `.secrets` (tmpfs, 0600) until the task's final
     report; a container restart loses them (the interrupted task is then reported, not resumed). The word hashes stay

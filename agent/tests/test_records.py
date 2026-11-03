@@ -286,6 +286,51 @@ class WholeCodeTests(Declaring):
         self.assertEqual(rec["fields"]["No."]["from"], "source")
 
 
+class AUnitTheFieldStates(Declaring):
+    """Review round 3, R5: a unit on one side only made every GST rate wait ("18%" against the form's "18"); the form's
+    label decides it, and without a label that states the unit it still waits."""
+
+    def _rec(self, fields):
+        doc = Path(self.tmp.name) / "line.txt"
+        doc.write_text("Rate: 18%\nWeight: 15 kg\nQuantity: 2 Nos\n", encoding="utf-8")
+        rec, _ = records.declare("line", str(doc), fields)
+        return rec
+
+    def test_the_label_states_the_unit(self):
+        rec = self._rec({"Rate": "18%", "Weight": "15 kg", "Quantity": "2 Nos"})
+        blocking, _, _ = records.presave(rec, [("Rate (%)", "18.000"), ("Weight (kg)", "15"), ("Quantity (Nos.)", "2")])
+        self.assertEqual(blocking, [])
+        blocking, _, _ = records.presave(rec, [("Rate (%)", "12"), ("Weight (kg)", "15"), ("Quantity (Nos.)", "2")])
+        self.assertEqual(blocking, ["Rate (%) holds '12' where the record says '18%'"])
+
+    def test_no_label_or_another_unit_still_waits_and_says_how(self):
+        rec = self._rec({"Rate": "18%", "Weight": "15 kg"})
+        blocking, _, _ = records.presave(rec, [("Rate", "18"), ("Weight (lb)", "15")])
+        self.assertEqual(len(blocking), 2, blocking)
+        self.assertTrue(all("declare the record's figure without the unit" in b for b in blocking), blocking)
+        blocking, _, _ = records.presave(rec, [("Rate (%)", "18"), ("Weight kg/lb", "15")])  # alternatives state none
+        self.assertEqual(len(blocking), 1, blocking)
+        self.assertIn("Weight kg/lb", blocking[0])
+
+
+class TheApplicationsOwnEntryWhenUndecided(Declaring):
+    """Review round 3, nit 4: the application's own entry was tried only on "differs", so an undecided pair - a figure
+    against an identifier - blocked without trying it."""
+
+    def test_an_undecided_pair_is_rescued_by_the_applications_entry(self):
+        rec, _ = records.declare("1188", str(self.bill), FIELDS)
+        form = [(k, v) for k, v in FIELDS.items()]
+        form[0] = ("No.", "INV-1188")
+        self.assertIsNone(records.compare_shown("INV-1188", "1188").same)
+        blocking, _, _ = records.presave(rec, form)
+        self.assertEqual(len(blocking), 1, blocking)
+        chosen = [{"kind": "select", "outcome": "done", "option": "INV-1188"}]
+        with mock.patch("decurix_agent.computer.evidence._task_events", lambda task_id=None: chosen):
+            blocking, advisory, _ = records.presave(rec, form)
+        self.assertEqual(blocking, [])
+        self.assertTrue(any("application's own entry 'INV-1188'" in a for a in advisory), advisory)
+
+
 class IdentifierOnTheForm(Declaring):
     """Found live (2026-10-27): a customer ledger saved with its identifier left empty; nothing could resolve it after."""
 

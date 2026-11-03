@@ -52,7 +52,12 @@ On a desktop with a shared folder, `source_guard.take` notes and copies the fold
 ## Trust rests on independent checks (W0.5, phase 2)
 
 A skill's streak (`experience.clean_streak`) counts a run only when it succeeded, needed no person, and a check
-independent of the worker passed: what the request states (a figure, a reference code) compared against its own files and held, with nothing blocking (`code`, `produced.compared_facts`: files that only opened are no check), every record it declared read back
+independent of the worker passed: a fact of the request's input files, which the worker read and did not write (a
+figure or a reference code), found in the files it made, with nothing contradicting a source, every figure the
+request states held, and nothing blocking (`code`, `produced.source_facts` and `FileFacts.compared_clean`). Files
+that only opened are no check. The request's own figures are evidence and never the basis, because a file that
+restates the request holds them all. A made file that holds the request's text, or the whole of an input's, is not
+read for it. Every record it declared read back
 from the application with its values shown (`ledger`, `records.all_read_back`), or a person (`person`). The screen
 (every step's result appeared) and the model's judgement are kept on the verdict as `basis` and never advance the
 streak: a replay can show each step's result and still have entered the wrong thing. Verdicts written before `basis`
@@ -67,6 +72,11 @@ basis.
 
 Retention is by label, not age (`retention.py`). A run is labelled when its final report goes out or a person replies
 on it (`~/.decurix/runs/<task>/LABELLED`); until the control plane has pulled its bundle and written `EXPORTED`, the
-2-day note prune and the recordings' disk budget skip it. Over budget with only such runs left, nothing is deleted
+2-day note prune and the recordings' disk budget skip it. `LABELLED` holds the execution id and the label's
+sequence number, one line each, rewritten at every label. `EXPORTED` holds the execution id, the manifest SHA, then
+`LABELLED` as that pull read it. An export covers the run only while that copy equals `LABELLED` now; no clock is
+compared, because the control plane's tar copy rounds file times to the second. An `EXPORTED` written before it
+carried that copy falls back to the execution id and a 2-second tolerance on times. Over budget with only such runs
+left, nothing is deleted
 and the log says so (at most hourly). The run's manifest (`run.json`) names the agent's code and soul by hash and lists
 the parts that exist.

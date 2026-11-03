@@ -35,6 +35,9 @@ last_query_kind = ""
 # Whether that question was raised for a secret (a password or code field, a step the recorder kept private): its reply
 # may be the secret itself, so it is withheld whole wherever it is kept (messaging "secret", watchers.answer_waiting).
 last_query_secret = False
+# The id of the query the agent is waiting on (messaging.ask_for_query): a reply answers that one only - the date
+# question is answered by the reply to its own query (task_context.take_date_answer, review round 3, R3).
+asked_query_id = ""
 
 # Whether the harness's reasoning backend has been reached at least once.
 # Set by harness.wait_for_backend() on the thread app.py starts, read by
