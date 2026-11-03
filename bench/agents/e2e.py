@@ -28,6 +28,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from agent_token import PY_AGENT, docker_env as token_env  # noqa: E402
+
 REPO = str(Path(__file__).resolve().parents[2])
 NAME = "decurix-e2e-agents"
 IMAGE = "decurix-desktop:basic"
@@ -60,7 +63,7 @@ def main():
         "docker", "run", "-d", "--name", NAME, "--add-host", "host.docker.internal:host-gateway", "--shm-size=1g",
         "--security-opt", f"seccomp={REPO}/internal/desktop/seccomp-desktop.json", "--ulimit", "core=0",
         "-e", "VNC_PW=admin", "-e", "VNC_RESOLUTION=1280x720", "-e", "DESKTOP_ID=e2e", "-e", "DESKTOP_NAME=e2e",
-        "-e", "CONTROL_PLANE_URL=http://host.docker.internal:18082", "-e", "AGENT_HARNESS=ollama",
+        "-e", "CONTROL_PLANE_URL=http://host.docker.internal:18082", "-e", "AGENT_HARNESS=ollama", *token_env(),
         "-e", "DECURIX_REPLAY_FIND_SECONDS=5", "-e", "DECURIX_REPLAY_EXPECT_SECONDS=3",
         "-v", f"{REPO}/agent/decurix_agent:/opt/decurix_agent:ro", IMAGE,
     ], check=True, capture_output=True)
@@ -78,7 +81,7 @@ def main():
 def run(traj, pages, formats):
     print("waiting for the desktop's agent...")
     for _ in range(80):
-        if sh("python3", "-c", "import urllib.request as u;u.urlopen('http://localhost:8081/recordings',timeout=3)",
+        if sh("python3", "-c", PY_AGENT + "agent('/recordings', timeout=3)",
               check=False).returncode == 0:
             break
         time.sleep(3)

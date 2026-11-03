@@ -30,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import brain  # noqa: E402
+from agent_token import docker_env as token_env  # noqa: E402
 
 # The checks here are assert statements. Under python -O they all vanish, and this would report a pass it never
 # checked (review 2026-11-02): it refuses to run that way.
@@ -132,6 +133,7 @@ def main():
         "--security-opt", f"seccomp={REPO}/internal/desktop/seccomp-desktop.json", "--ulimit", "core=0",
         "-e", "VNC_PW=admin", "-e", "VNC_RESOLUTION=1280x720", "-e", "DESKTOP_ID=e2e", "-e", "DESKTOP_NAME=e2e",
         "-e", f"CONTROL_PLANE_URL=http://host.docker.internal:{PORT}",
+        *token_env(),
         *brain.docker_env(brain.chosen(), f"http://host.docker.internal:{PORT}"),
         "-e", "OLLAMA_URL=" + ("http://host.docker.internal:11434" if brain.chosen() == "ollama" else "http://127.0.0.1:11434"),
         "-e", "DECURIX_REPLAY_FIND_SECONDS=6",
