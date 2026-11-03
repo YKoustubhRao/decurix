@@ -8,6 +8,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { setupMobileAccess } = require('./mobile-access');
+const { lanPort } = require('./gated-port');
 const { ensureLanForward } = require('./windows-lan');
 const windowsRuntime = require('./windows-runtime');
 const { createLocalModels } = require('./local-models');
@@ -122,8 +123,46 @@ function tunnelCommand(port, provider = 'cloudflare') {
   return { file: cloudflared(), args: ['tunnel', '--protocol', 'http2', '--url', `http://127.0.0.1:${port}`] };
 }
 
+// The public link is a tunnel from the internet to the gated listener. It is
+// off until the person turns it on in the Mobile menu (preload.js): a firm
+// that never asked for phone access should not have an internet-reachable
+// sign-in page. The choice is the app's own setting, kept beside its others.
+function publicLinkFile() {
+  return path.join(dataDir(), 'public-link.json');
+}
+
+function publicLinkEnabled() {
+  try { return JSON.parse(fs.readFileSync(publicLinkFile(), 'utf8')).enabled === true; }
+  catch (error) { if (error.code !== 'ENOENT') console.warn('Could not read the public link setting:', error.message); return false; }
+}
+
+function publicLinkStatus() {
+  return { available: Boolean(cloudflared()), enabled: publicLinkEnabled() };
+}
+
+async function setPublicLink(enabled) {
+  if (typeof enabled !== 'boolean') throw new Error('The public link is turned on or off, nothing else.');
+  fs.mkdirSync(dataDir(), { recursive: true });
+  fs.writeFileSync(publicLinkFile(), JSON.stringify({ enabled }) + '\n', 'utf8');
+  logLine(`Public link turned ${enabled ? 'on' : 'off'} from the dashboard`);
+  if (enabled) { if (showingDashboard) startMobileAccess(); } else await stopMobileAccess();
+  return publicLinkStatus();
+}
+
+for (const [channel, action] of [
+  ['public-link-status', () => publicLinkStatus()],
+  ['public-link-set', value => setPublicLink(value)],
+]) {
+  ipcMain.handle(channel, (event, value) => {
+    if (!fromDashboard(event)) throw new Error('The public link is only set from the desktop dashboard.');
+    return action(value);
+  });
+}
+
 function startMobileAccess() {
   if (mobileAccessPromise || closing) return;
+  // Off unless the person turned it on (publicLinkEnabled).
+  if (!publicLinkEnabled()) return;
   // No cloudflared, no tunnel: the dashboard works without one.
   if (!cloudflared()) return;
   mobileAccessPromise = setupMobileAccess(dataDir(), tunnelCommand, { log: logLine }).then(async (access) => {
@@ -823,10 +862,11 @@ function reportLanAddress() {
       publishLanURL('');
       return;
     }
-    let port = '8090';
+    // The same reading of .env as the tunnel's (gated-port.js); whether it
+    // really is the gated listener is checked before Windows forwards it.
+    const port = String(lanPort(dataDir(), {}));
     let settings = '';
     try { settings = fs.readFileSync(path.join(dataDir(), '.env'), 'utf8'); } catch { /* the defaults */ }
-    port = settings.match(/^\s*DECURIX_LAN_PORT\s*=\s*['"]?(\d+)/m)?.[1] || port;
     if (windows) {
       if (/^\s*DECURIX_WSL_LAN_FORWARD\s*=\s*['"]?0/m.test(settings)) { publishLanURL(''); return; }
       if (lanForward.address !== address || lanForward.port !== Number(port) || !lanForward.ok) {

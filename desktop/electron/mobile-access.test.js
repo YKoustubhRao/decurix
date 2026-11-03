@@ -8,6 +8,17 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'mobile-access.js'), 'utf8');
+const gatedSource = fs.readFileSync(path.join(__dirname, 'gated-port.js'), 'utf8');
+
+// load runs a module's source with the given modules standing in for require.
+function load(text, modules, filename, extra = {}) {
+  const module = { exports: {} };
+  vm.runInNewContext(text, {
+    require: (name) => modules[name], module, exports: module.exports,
+    process: { env: {} }, Buffer, setTimeout, clearTimeout, ...extra,
+  }, { filename });
+  return module.exports;
+}
 
 // What main.js passes: the cloudflared shipped with the app.
 const tunnelCommand = (port) => ({ file: 'cloudflared.exe', args: ['tunnel', '--url', `http://127.0.0.1:${port}`] });
@@ -53,20 +64,12 @@ function harness(namedConfigured = false, held = '', dns = {}) {
     'node:dns': dns,
     'node:path': path,
   };
-  const module = { exports: {} };
-  vm.runInNewContext(source, {
-    require: (name) => modules[name],
-    module,
-    exports: module.exports,
-    process: { env: {} },
-    Buffer,
-    setTimeout,
-    clearTimeout,
-    console: { warn: (...args) => warnings.push(args) },
-  }, { filename: 'mobile-access.js' });
-  const setup = module.exports.setupMobileAccess;
-  module.exports.setupMobileAccess = (dir, command, options) => setup(dir, command, { probe: async () => true, provider: 'cloudflare', ...options });
-  return { api: module.exports, state, spawns, warnings, get child() { return child; } };
+  modules['./gated-port'] = load(gatedSource, modules, 'gated-port.js');
+  const api = load(source, modules, 'mobile-access.js', { console: { warn: (...args) => warnings.push(args) } });
+  const setup = api.setupMobileAccess;
+  // The gated-port check is its own test below; here the port counts as gated.
+  api.setupMobileAccess = (dir, command, options) => setup(dir, command, { probe: async () => true, checkPort: async (port) => port, provider: 'cloudflare', ...options });
+  return { api, state, spawns, warnings, get child() { return child; } };
 }
 
 test('publishes only the gated quick tunnel URL, then clears the temporary link', async () => {
@@ -228,4 +231,29 @@ test('a late successful probe cannot republish a stopped tunnel', async () => {
   finish(true);
   await settle();
   assert.equal(h.state.lan_tunnel_url, '');
+});
+
+test('no tunnel starts on a port that is not the gated listener, and any held link is cleared', async () => {
+  const h = harness(false, 'https://old-dead.trycloudflare.com');
+  const lines = [];
+  const checked = [];
+  const access = await h.api.setupMobileAccess('/data', tunnelCommand, {
+    retryMs: 1, log: (line) => lines.push(line),
+    checkPort: async (port) => { checked.push(port); throw new Error('not the gated listener'); },
+  });
+  assert.equal(access, null);
+  assert.equal(h.spawns.length, 0);
+  assert.deepEqual(checked, [8123, 8123, 8123]);
+  assert.equal(h.state.lan_tunnel_url, '');
+  assert.match(lines.join(' '), /not started - not the gated listener/);
+});
+
+test('a gated listener that answers on a later try still gets its tunnel', async () => {
+  const h = harness();
+  let tries = 0;
+  const access = await h.api.setupMobileAccess('/data', tunnelCommand, {
+    retryMs: 1, checkPort: async (port) => { tries += 1; if (tries < 2) throw new Error('not up yet'); return port; },
+  });
+  assert.equal(h.spawns.length, 1);
+  await access.stop();
 });

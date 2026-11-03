@@ -28,11 +28,11 @@ async function boot(landing = true, initial = {}, preferences = {}) {
       if (name === 'local-model-hosting') { calls.push(value); state = { ...state, enabled: value, phase: value ? 'ready' : 'off', detail: value ? 'Model loaded' : 'Model files deleted' }; }
       return state;
     } } }), process: { platform: 'win32' }, document,
-    window: { localStorage: { getItem: key => preferences[key] || null, setItem: (key, value) => { preferences[key] = value; } }, addEventListener: (name, fn) => { callbacks[name] = fn; }, matchMedia: () => ({ matches: false, addEventListener() {} }) },
+    window: { localStorage: { getItem: key => preferences[key] || null, setItem: (key, value) => { preferences[key] = value; } }, addEventListener: (name, fn) => { (callbacks[name] = callbacks[name] || []).push(fn); }, matchMedia: () => ({ matches: false, addEventListener() {} }) },
     MutationObserver: class { observe() {} }, getComputedStyle: () => ({ getPropertyValue: () => '#ffffff' }),
     setInterval: fn => timers.push(fn),
   });
-  callbacks.DOMContentLoaded();
+  for (const fn of callbacks.DOMContentLoaded) fn();
   await new Promise(resolve => setImmediate(resolve));
   const rail = document.body.children[0], sidebar = document.body.children[1], card = sidebar.children[1].children[0];
   const trigger = rail.children[0], close = sidebar.children[0].children[1];
@@ -101,4 +101,49 @@ test('Ctrl+Shift+L toggles the sidebar and Escape elsewhere does not close it', 
   assert.equal(prevented, true);
   assert.equal(ui.sidebar.hidden, true);
   assert.deepEqual(ui.calls, []);
+});
+
+// publicLink boots the preload with a Mobile menu panel and a public-link
+// status, and records what is asked of main.js.
+async function publicLink(status) {
+  const calls = [], callbacks = [], observers = [];
+  const panel = new Node('div');
+  Object.defineProperty(panel, 'firstChild', { get() { return this.children[0]; } });
+  panel.prepend = function (node) { this.children = [node, ...this.children.filter(n => n !== node)]; };
+  const document = { body: new Node('body'), head: new Node('head'), documentElement: new Node('html'), createElement: tag => new Node(tag),
+    querySelector: () => null, getElementById: id => id === 'tunnelPanel' ? panel : null, addEventListener() {} };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'preload.js'), 'utf8'), {
+    require: () => ({ contextBridge: { exposeInMainWorld() {} }, ipcRenderer: { send() {}, invoke: async (name, value) => {
+      calls.push([name, value]);
+      if (name === 'public-link-set') status = { ...status, enabled: value };
+      return status;
+    } } }), process: { platform: 'linux' }, document,
+    window: { addEventListener: (name, fn) => { if (name === 'DOMContentLoaded') callbacks.push(fn); } },
+    MutationObserver: class { constructor(fn) { observers.push(fn); } observe() {} },
+  });
+  for (const fn of callbacks) await fn();
+  return { panel, calls, observers, row: panel.children[0] };
+}
+test('the Mobile menu shows the public link switch off by default, and turning it on asks main', async () => {
+  const ui = await publicLink({ available: true, enabled: false });
+  const toggle = all(ui.row).find(n => n.tag === 'input');
+  assert.equal(toggle.attributes.role, 'switch');
+  assert.equal(toggle.checked, false);
+  assert.ok(all(ui.row).some(n => /^Off:/.test(n.textContent || '')));
+  toggle.checked = true;
+  await toggle.events.change();
+  assert.deepEqual(ui.calls.at(-1), ['public-link-set', true]);
+  assert.equal(toggle.checked, true);
+  assert.ok(all(ui.row).some(n => /^On:/.test(n.textContent || '')));
+});
+test('the switch stays at the top of the Mobile menu when the menu redraws', async () => {
+  const ui = await publicLink({ available: true, enabled: false });
+  ui.panel.children = [new Node('p'), new Node('p')];
+  ui.observers[0]();
+  assert.equal(ui.panel.children[0], ui.row);
+  assert.equal(ui.panel.children.length, 3);
+});
+test('no switch is shown where there is no tunnel program', async () => {
+  const ui = await publicLink({ available: false, enabled: false });
+  assert.equal(ui.panel.children.length, 0);
 });

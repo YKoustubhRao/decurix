@@ -6,6 +6,7 @@ const http = require('node:http');
 const https = require('node:https');
 const dns = require('node:dns');
 const path = require('node:path');
+const { gatedPort, lanPort } = require('./gated-port');
 
 const dashboard = 'http://127.0.0.1:8080';
 const quickTunnelPattern = /https:\/\/[a-z0-9]+(?:-[a-z0-9]+)+\.trycloudflare\.com/i;
@@ -54,18 +55,6 @@ function probeURL(url, log = () => {}) {
   });
 }
 
-function lanPort(dataDir, env = process.env) {
-  let value = env.DECURIX_LAN_PORT;
-  if (!value) {
-    try {
-      const config = fs.readFileSync(path.join(dataDir, '.env'), 'utf8');
-      value = config.match(/^\s*DECURIX_LAN_PORT\s*=\s*['"]?(\d+)['"]?\s*(?:#.*)?$/m)?.[1];
-    } catch { /* The Go control plane also defaults to 8090. */ }
-  }
-  const port = Number(value || 8090);
-  return Number.isInteger(port) && port > 0 && port < 65536 ? port : 8090;
-}
-
 function requestJSON(route, method = 'GET', body) {
   return new Promise((resolve, reject) => {
     const data = body === undefined ? '' : JSON.stringify(body);
@@ -101,7 +90,7 @@ function requestJSON(route, method = 'GET', body) {
 // own (the network dropped) takes its link with it and is started again.
 async function setupMobileAccess(dataDir, tunnelCommand, {
   retryMs = 5000, maxRetryMs = 60000, startupMs = 45000, checkMs = 15000,
-  probe, provider = tunnelProvider(dataDir), log = () => {},
+  probe, provider = tunnelProvider(dataDir), log = () => {}, checkPort = gatedPort, portTries = 3,
 } = {}) {
   probe = probe || ((url) => probeURL(url, log));
   const port = lanPort(dataDir);
@@ -112,6 +101,20 @@ async function setupMobileAccess(dataDir, tunnelCommand, {
   } catch (error) {
     console.warn('Could not check existing tunnels:', error.message);
     return null;
+  }
+
+  // Only the access-code-gated listener may be tunnelled: the port .env names
+  // is checked to be it before anything starts (gated-port.js). The control
+  // plane may still be coming up, so a few tries; then no tunnel at all.
+  for (let attempt = 1; ; attempt += 1) {
+    try { await checkPort(port); break; } catch (error) {
+      if (attempt >= portTries) {
+        log(`Public link: not started - ${error.message}`);
+        try { await requestJSON('/api/tunnel', 'POST', { lan_tunnel_url: '' }); } catch { /* nothing held */ }
+        return null;
+      }
+      await new Promise((resolve) => setTimeout(resolve, retryMs));
+    }
   }
 
   let stopping = false;

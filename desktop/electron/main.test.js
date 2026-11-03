@@ -8,6 +8,18 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+const gatedSource = fs.readFileSync(path.join(__dirname, 'gated-port.js'), 'utf8');
+
+// loadGatedPort runs gated-port.js against the harness's fake fs and http, as
+// main.js would see it.
+function loadGatedPort(fileSystem, http) {
+  const module = { exports: {} };
+  vm.runInNewContext(gatedSource, {
+    require: (name) => ({ 'node:fs': fileSystem, 'node:http': http, 'node:path': path })[name],
+    module, exports: module.exports, process: { env: {} },
+  }, { filename: 'gated-port.js' });
+  return module.exports;
+}
 const favicon = fs.readFileSync(path.join(__dirname, '..', '..', 'web', 'favicon.svg'), 'utf8');
 const log = Buffer.from('2026/10/01 18:05:17 Decurix dev starting\r\n2026/10/01 18:05:17 listen tcp 127.0.0.1:8080: bind: address in use\r\n\r\n');
 
@@ -66,7 +78,7 @@ async function boot(initialState, {
   backendStarts = true, stopFails = false, platform = 'win32', dockerRun = () => 0, files = [], staged = platform === 'win32' ? 'build-2' : null,
   wsl = {}, pickedFolders = [], canceledPicker = false, savedRuntime, hosting = false, holdOllama = false, ollamaFails = false,
   release = '10.0.26200', arch = 'x64', freeGB = 100, restartAsked = null, restartedSince = true,
-  lanAddress = null, lanForwards = true, settings = '',
+  lanAddress = null, lanForwards = true, settings = '', publicLink = null,
 } = {}) {
   const machine = { installed: true, installedAfterAsking: false, distro: true, daemon: true, setupFails: false, existing: {}, ...wsl };
   const intervals = [];
@@ -231,6 +243,7 @@ async function boot(initialState, {
       const saved = written.findLast(entry => entry.file === file);
       if (saved) return saved.content;
       if (file === path.join(data, 'local-hosting.json')) return JSON.stringify({ enabled: hosting });
+      if (file === path.join(data, 'public-link.json') && publicLink !== null) return JSON.stringify({ enabled: publicLink });
       // An earlier start asked for a restart (restartedSince: and Windows has booted since).
       if (file === path.join(data, 'restart-asked.json') && restartAsked) return JSON.stringify({ reason: restartAsked, at: restartedSince ? 0 : Date.now() });
       if (file === path.join(data, 'windows-runtime.json') && savedRuntime !== undefined) return savedRuntime;
@@ -269,6 +282,7 @@ async function boot(initialState, {
       windowsHost: () => '172.28.0.1',
       stackSettings: () => 'OLLAMA_URL=http://172.28.0.1:11435\n',
     },
+    './gated-port': loadGatedPort(fileSystem, http),
     './windows-lan': { ensureLanForward: async (dir, address, port) => { lanCalls.push({ dir, address, port }); return lanForwards; } },
     './mobile-access': { setupMobileAccess: async (_dir, tunnelCommand) => {
       mobileCalls.push('start');
@@ -575,7 +589,7 @@ test('shows a retry screen with the last log line when the stack never comes up'
 // by an earlier run of the app, so nothing told this one, and the window went on
 // showing a dashboard that no longer answered.
 test('starts the stack again when it dies under an open window', async () => {
-  const result = await boot('ready');
+  const result = await boot('ready', { publicLink: true });
   assert.equal(result.ups, 0);
 
   // One missed answer is a busy moment, not a death.
@@ -598,7 +612,7 @@ test('starts the stack again when it dies under an open window', async () => {
 // Found on the installed app: stopping the phone link reports to the control
 // plane, which is exactly what is gone - and that error stopped the restart.
 test('starts it again even though the phone link cannot be cleared', async () => {
-  const result = await boot('ready', { stopFails: true });
+  const result = await boot('ready', { stopFails: true, publicLink: true });
   result.setState('absent');
   await result.tick(3);
   assert.equal(result.ups, 1, 'the stack was not started again');
@@ -631,8 +645,34 @@ test('does not start it again while the app is closing', async () => {
   assert.equal(result.ups, 0);
 });
 
-test('runs the shipped cloudflared for the phone link and stops it when the app closes', async () => {
+test('the public link is off until the person turns it on: no tunnel by default', async () => {
   const result = await boot('ready');
+  assert.deepEqual(result.mobileCalls, []);
+  assert.equal(result.tunnel, null);
+  assert.deepEqual({ ...(await result.modelAction('public-link-status')) }, { available: true, enabled: false });
+});
+
+test('turning the public link on from the dashboard starts the tunnel, saves the choice, and off stops it', async () => {
+  const result = await boot('ready');
+  assert.deepEqual({ ...(await result.modelAction('public-link-set', true)) }, { available: true, enabled: true });
+  await result.settle(3);
+  assert.deepEqual(result.mobileCalls, ['start']);
+  const saved = result.written.findLast((w) => w.file === path.join(data, 'public-link.json'));
+  assert.deepEqual(JSON.parse(saved.content), { enabled: true });
+  assert.deepEqual({ ...(await result.modelAction('public-link-set', false)) }, { available: true, enabled: false });
+  assert.deepEqual(result.mobileCalls, ['start', 'stop']);
+});
+
+test('only the dashboard may turn the public link on, and only with a yes or no', async () => {
+  const result = await boot('ready');
+  await assert.rejects(async () => result.modelAction('public-link-set', true, 'https://example.com/'), /only set from the desktop dashboard/);
+  await assert.rejects(async () => result.modelAction('public-link-set', true, 'http://127.0.0.1:8080/', true), /only set from the desktop dashboard/);
+  await assert.rejects(async () => result.modelAction('public-link-set', 'yes'), /on or off/);
+  assert.deepEqual(result.mobileCalls, []);
+});
+
+test('runs the shipped cloudflared for the phone link and stops it when the app closes', async () => {
+  const result = await boot('ready', { publicLink: true });
   assert.deepEqual(result.mobileCalls, ['start']);
   assert.equal(result.tunnel.file, path.join('/installed/resources', 'cloudflared.exe'));
   assert.equal(result.tunnel.args.at(-1), 'http://127.0.0.1:8090');
@@ -736,10 +776,13 @@ test('a stack this build started is used as it is', async () => {
 });
 
 test('the phone link there uses the cloudflared the computer has, and is left out without one', async () => {
-  const without = await boot('ready', { platform: 'darwin' });
+  const without = await boot('ready', { platform: 'darwin', publicLink: true });
   assert.deepEqual(without.mobileCalls, []);
 
-  const withOne = await boot('ready', { platform: 'darwin', files: [cloudflaredOnPath] });
+  const off = await boot('ready', { platform: 'darwin', files: [cloudflaredOnPath] });
+  assert.deepEqual(off.mobileCalls, []);
+
+  const withOne = await boot('ready', { platform: 'darwin', files: [cloudflaredOnPath], publicLink: true });
   assert.deepEqual(withOne.mobileCalls, ['start']);
   assert.equal(withOne.tunnel.file, cloudflaredOnPath);
 });
