@@ -69,5 +69,40 @@ class AnswerKeyTests(unittest.TestCase):
         self.assertTrue(all(k.get("user") == "root" for _, k in calls))
 
 
+class PanelStateTests(unittest.TestCase):
+    """The admin panel's state, which the checks read, is out of the agent's
+    reach: the panel runs as its own user, its state lives outside the agent's
+    home in a 0700 directory, and nothing writes it as the agent's user."""
+
+    def test_the_panel_runs_as_its_own_user_with_private_state(self):
+        start = run.panel_start_command("c")
+        self.assertEqual(start[start.index("-u") + 1], run.PANEL_USER)
+        self.assertNotEqual(run.PANEL_USER, "headless")
+        self.assertIn(run.PANEL_STATE, start)
+        self.assertFalse(run.PANEL_STATE.startswith("/home/"))
+        script = run.panel_setup_script()
+        self.assertIn(f"chown {run.PANEL_USER}:{run.PANEL_USER} {run.PANEL_STATE_DIR}", script)
+        self.assertIn(f"chmod 0700 {run.PANEL_STATE_DIR}", script)
+        self.assertNotIn("adminpanel.py", run.AGENT_FILES)
+
+    def test_reset_and_check_never_write_the_state_as_the_agent(self):
+        calls = []
+        def fake_docker(*a, **k):
+            calls.append((a, k))
+            return type("P", (), {"stdout": '{"pass": true}', "stderr": "", "returncode": 0})()
+        with patch.object(run, "docker", side_effect=fake_docker), \
+                patch.object(run.subprocess, "run", side_effect=lambda cmd, **k: calls.append((tuple(cmd), k))):
+            run.reset_task("c", {"id": "web-login", "start": {"browser": "/login"}})
+            run.check_task("c", {"id": "web-login"}, "")
+        for args, kwargs in calls:
+            line = " ".join(args)
+            if run.PANEL_STATE in line or "adminpanel" in line:
+                user = kwargs.get("user") or (args[args.index("-u") + 1] if "-u" in args else "headless")
+                self.assertNotEqual(user, "headless", line)
+        headless = [" ".join(a) for a, k in calls if k.get("user", "headless") == "headless" and a and a[0] != "docker"]
+        self.assertTrue(all(run.PANEL_STATE not in line for line in headless))
+        self.assertTrue(any(k.get("user") == "root" and "check" in a for a, k in calls))
+
+
 if __name__ == "__main__":
     unittest.main()

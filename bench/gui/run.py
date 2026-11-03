@@ -41,7 +41,14 @@ FIXTURES = HERE / "fixtures"
 # agent's user cannot read them, and checks run as root.
 REMOTE = "/home/headless/bench/gui"
 ORACLE = "/opt/decurix-bench-gui"
-AGENT_FILES = ("adminpanel.py", "bench.py", "odf.py")
+AGENT_FILES = ("bench.py", "odf.py")
+# The admin panel runs as its own user, with its state where the agent's user
+# can neither read nor write it: the agent changes it only through the UI
+# (the port), as a person would, and the check reads it as root.
+PANEL_USER = "benchpanel"
+PANEL_CODE = "/opt/decurix-bench-panel"
+PANEL_STATE_DIR = "/var/lib/decurix-bench-panel"
+PANEL_STATE = f"{PANEL_STATE_DIR}/admin.json"
 
 ENGINES = ("oracle", "ollama", "claude", "thebot")
 
@@ -113,6 +120,30 @@ def install_fixtures(container):
     subprocess.run(["docker", "cp", str(HERE / "tasks.json"), f"{container}:{ORACLE}/tasks.json"], check=True, capture_output=True)
     docker(container, "sh", "-c", f"chown -R root:root {ORACLE} && chmod -R go-rwx {ORACLE}", user="root", check=True)
 
+    # The panel's user, code and state. An older install's state in the agent's home goes.
+    docker(container, "sh", "-c", panel_setup_script(), user="root", check=True)
+    subprocess.run(["docker", "cp", str(FIXTURES / "adminpanel.py"), f"{container}:{PANEL_CODE}/adminpanel.py"], check=True, capture_output=True)
+    docker(container, "sh", "-c", f"chown -R root:root {PANEL_CODE} && chmod 0755 {PANEL_CODE} && chmod 0644 {PANEL_CODE}/adminpanel.py",
+           user="root", check=True)
+
+
+def panel_setup_script():
+    """Root's shell script that makes the panel user and its private state directory."""
+    return (f"(id -u {PANEL_USER} >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin {PANEL_USER})"
+            f" && rm -rf /home/headless/bench/state {PANEL_CODE} && mkdir -p {PANEL_CODE} {PANEL_STATE_DIR}"
+            f" && chown {PANEL_USER}:{PANEL_USER} {PANEL_STATE_DIR} && chmod 0700 {PANEL_STATE_DIR}")
+
+
+def panel_start_command(container):
+    """The panel, started fresh as its own user (it writes its starting state itself)."""
+    return ["docker", "exec", "-d", "-u", PANEL_USER, container,
+            "python3", f"{PANEL_CODE}/adminpanel.py", "--state", PANEL_STATE, "--reset"]
+
+
+def restart_panel(container):
+    docker(container, "sh", "-c", f"pkill -u {PANEL_USER} -f adminpanel.py; sleep 0.5; true", user="root")
+    subprocess.run(panel_start_command(container), check=True, capture_output=True, timeout=60)
+
 
 def reset_command(task):
     """The reset, run as the desktop's user: it is handed the task's starting
@@ -126,6 +157,7 @@ def check_command(task):
 
 
 def reset_task(container, task):
+    restart_panel(container)
     process = docker(container, *reset_command(task), timeout=600)
     if process.returncode != 0:
         raise RuntimeError(f"reset {task['id']} failed: {process.stdout[-500:]}{process.stderr[-500:]}")

@@ -7,9 +7,11 @@ users table with edit and delete, settings with checkboxes, a support form
 with a dropdown, and two pages whose buttons have real-world consequences
 (sending a newsletter, paying an invoice) - the ones the approval gate must
 stop. Every change lands in one JSON state file, which is what the checks
-read. Standard library only; it runs inside the desktop on 127.0.0.1.
+read. Standard library only; it runs inside the desktop on 127.0.0.1, as
+its own user (bench/gui/run.py), so the agent changes the state only
+through these pages.
 
-    python3 adminpanel.py --state /home/headless/bench/state/admin.json --reset
+    python3 adminpanel.py --state /var/lib/decurix-bench-panel/admin.json --reset
 """
 
 import argparse

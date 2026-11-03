@@ -36,7 +36,9 @@ import odf  # noqa: E402
 ROOT = Path("/home/headless/bench")
 FILES = ROOT / "files"
 OUT = ROOT / "out"
-STATE = ROOT / "state" / "admin.json"
+# The panel's state: its own user's, mode 0700 (bench/gui/run.py); only the
+# root check reads it.
+STATE = Path("/var/lib/decurix-bench-panel/admin.json")
 PANEL = "http://127.0.0.1:8765"
 
 # The desktop's own session - `docker exec` starts with none of it.
@@ -157,7 +159,7 @@ def kill_apps():
             cmdline = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
         except OSError:
             continue
-        if comm in APP_PROCESSES or "adminpanel.py --state" in cmdline:
+        if comm in APP_PROCESSES:
             try:
                 os.kill(int(proc.name), 15)
             except OSError:
@@ -214,9 +216,8 @@ def reset_files():
     (FILES / "draft.txt").write_text("Quarterly plan draft.\n", encoding="utf-8")
 
 
-def start_panel():
-    launch([sys.executable, str(HERE / "adminpanel.py"), "--state", str(STATE), "--reset"])
-
+def wait_for_panel():
+    """The panel runs as its own user, restarted by run.py before each reset."""
     deadline = time.time() + 20
     while time.time() < deadline:
         try:
@@ -225,7 +226,7 @@ def start_panel():
         except OSError:
             time.sleep(0.3)
 
-    raise SystemExit("admin panel did not start")
+    raise SystemExit("admin panel is not answering (run.py starts it as its own user)")
 
 
 def start_app(start):
@@ -281,7 +282,7 @@ def start_app(start):
 def reset(task):
     kill_apps()
     reset_files()
-    start_panel()
+    wait_for_panel()
     start_app(task.get("start"))
 
     # Whatever the last task left in the agent's own screen state (element
