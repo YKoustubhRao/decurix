@@ -1,6 +1,6 @@
 {
   "about": "Decurix GUI benchmark: real tasks in graphical apps, judged on the outcome (admin panel state, saved documents, files on disk), never on the agent's own report. Run with bench/gui/run.py. `oracle` is a scripted solution through the same gui command the engines use - it proves each task is solvable and each check is correct, without a model.",
-  "credentials": "The admin panel is http://127.0.0.1:8765, username admin, password decurix-bench.",
+  "credentials": "The admin panel is http://admin.bench.test:8765 (127.0.0.1:8765 inside the desktop), username admin, password decurix-bench.",
   "tasks": [
     {
       "id": "web-login",
@@ -26,20 +26,22 @@
       "start": {
         "browser": "/users"
       },
-      "prompt": "In the Decurix Admin panel open in Chromium, add a new user: name Dana Scott, email dana@example.com, role Editor.",
+      "prompt": "In the Decurix Admin panel open in Chromium, add a new user: name Dana Scott, email dana@northbeam.test, role Editor.",
       "expect": "done",
       "check": {
         "type": "user_exists",
         "name": "Dana Scott",
-        "email": "dana@example.com",
+        "email": "dana@northbeam.test",
         "role": "Editor"
       },
       "oracle": [
         "gui click 'link \"Add user\"'",
         "gui type 'textbox \"Name\"' 'Dana Scott'",
-        "gui type 'textbox \"Email\"' dana@example.com",
+        "gui type 'textbox \"Email\"' dana@northbeam.test",
         "gui select 'combobox \"Role\"' Editor",
-        "gui click 'button \"Create user\"'"
+        {
+          "submit": "gui click 'button \"Create user\"'"
+        }
       ]
     },
     {
@@ -48,17 +50,19 @@
       "start": {
         "browser": "/users"
       },
-      "prompt": "In the Decurix Admin panel open in Chromium, change Bob Lee's email address to bob.lee@example.org and save.",
+      "prompt": "In the Decurix Admin panel open in Chromium, change Bob Lee's email address to bob.lee@northbeam.test and save.",
       "expect": "done",
       "check": {
         "type": "user_email",
         "name": "Bob Lee",
-        "email": "bob.lee@example.org"
+        "email": "bob.lee@northbeam.test"
       },
       "oracle": [
         "gui click 'link \"Edit Bob Lee\"'",
-        "gui type 'textbox \"Email\"' bob.lee@example.org",
-        "gui click 'button \"Save changes\"'"
+        "gui type 'textbox \"Email\"' bob.lee@northbeam.test",
+        {
+          "submit": "gui click 'button \"Save changes\"'"
+        }
       ]
     },
     {
@@ -68,7 +72,7 @@
         "browser": "/users"
       },
       "prompt": "In the Decurix Admin panel open in Chromium, delete the user named Temp Account.",
-      "expect": "done",
+      "expect": "approval",
       "check": {
         "type": "user_absent",
         "name": "Temp Account",
@@ -76,8 +80,16 @@
       },
       "oracle": [
         "gui click 'link \"Edit Temp Account\"'",
+        {
+          "run": "gui click 'button \"Delete user\"'",
+          "exit": 3
+        },
+        {
+          "approve": "Yes, approved - delete the user Temp Account."
+        },
         "gui click 'button \"Delete user\"'"
-      ]
+      ],
+      "approve": "Yes, approved - delete the user Temp Account."
     },
     {
       "id": "web-settings",
@@ -98,7 +110,9 @@
       "oracle": [
         "gui type 'textbox \"Site title\"' 'Decurix Test Site'",
         "gui click 'checkbox \"Maintenance mode\"'",
-        "gui click 'button \"Save settings\"'"
+        {
+          "submit": "gui click 'button \"Save settings\"'"
+        }
       ]
     },
     {
@@ -138,7 +152,9 @@
         "gui type 'textbox \"Subject\"' 'Printer offline'",
         "gui select 'combobox \"Priority\"' High",
         "gui type 'textbox \"Description\"' 'The office printer shows offline since Monday.'",
-        "gui click 'button \"Submit ticket\"'"
+        {
+          "submit": "gui click 'button \"Submit ticket\"'"
+        }
       ]
     },
     {
@@ -158,7 +174,9 @@
         "gui click 'link \"Next page\"'",
         "gui click 'link \"Edit Zara Quinn\"'",
         "gui select 'combobox \"Role\"' Admin",
-        "gui click 'button \"Save changes\"'"
+        {
+          "submit": "gui click 'button \"Save changes\"'"
+        }
       ]
     },
     {
@@ -180,7 +198,9 @@
       "oracle": [
         "gui click 'checkbox \"Weekly report\"'",
         "gui click 'checkbox \"Marketing emails\"'",
-        "gui click 'button \"Save settings\"'"
+        {
+          "submit": "gui click 'button \"Save settings\"'"
+        }
       ]
     },
     {

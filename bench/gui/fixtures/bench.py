@@ -40,6 +40,10 @@ OUT = ROOT / "out"
 # root check reads it.
 STATE = Path("/var/lib/decurix-bench-panel/admin.json")
 PANEL = "http://127.0.0.1:8765"
+# The browser reaches the panel by a host name, as a person's browser reaches an app: a request can name a site by
+# its name, never by an address (approval.site_known reads host names), so a sign-in there is to a named site.
+PANEL_HOST = "admin.bench.test"
+BROWSER_PANEL = f"http://{PANEL_HOST}:8765"
 
 # The desktop's own session - `docker exec` starts with none of it.
 SESSION = {
@@ -235,20 +239,15 @@ def start_app(start):
 
     if "browser" in start:
         path = start["browser"]
-        url = PANEL + path if path == "/login" else (
-            f"{PANEL}/autologin?token=bench-autologin&next={path}"
-        )
-        profile = "/tmp/bench-chromium"
-        shutil.rmtree(profile, ignore_errors=True)
-        launch([
-            "chromium-browser", f"--user-data-dir={profile}",
-            "--remote-debugging-port=9222", "--no-first-run",
-            "--no-default-browser-check", "--disable-gpu", "--start-maximized",
-            "--password-store=basic", url,
-        ])
-        wait_for_window(r"Chromium|Google Chrome")
-        wait_for_page(path)
-        return
+        # A start page that did not load (found live: web-settings began on about:blank) is tried once more from a
+        # fresh browser, then stops the reset: a task must never run on a page it was not given.
+        for _ in range(2):
+            kill_apps()
+            launch(browser_command(path))
+            wait_for_window(r"Chromium|Google Chrome")
+            if wait_for_page(path):
+                return
+        raise SystemExit(f"the start page {path} did not load in the browser")
 
     office = ["soffice", "--norestore", "--nologo"]
 
@@ -277,6 +276,21 @@ def start_app(start):
         launch(["thunar", str(ROOT / start["thunar"])])
         wait_for_window(start["thunar"])
         return
+
+
+def browser_command(path):
+    """The browser a web task starts in: a fresh profile, the panel reached by its name, on `path` (signed in, except
+    on the sign-in page itself)."""
+
+    url = BROWSER_PANEL + path if path == "/login" else f"{BROWSER_PANEL}/autologin?token=bench-autologin&next={path}"
+    profile = "/tmp/bench-chromium"
+    shutil.rmtree(profile, ignore_errors=True)
+    return [
+        "chromium-browser", f"--user-data-dir={profile}",
+        "--remote-debugging-port=9222", "--no-first-run",
+        "--no-default-browser-check", "--disable-gpu", "--start-maximized",
+        "--password-store=basic", f"--host-resolver-rules=MAP {PANEL_HOST} 127.0.0.1", url,
+    ]
 
 
 def reset(task):

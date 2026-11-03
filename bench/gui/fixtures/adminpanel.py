@@ -36,17 +36,17 @@ STATE_PATH = None
 
 def initial_state():
     names = [
-        ("Alice Park", "alice@example.com", "Admin"),
-        ("Bob Lee", "bob@example.com", "Editor"),
-        ("Carmen Diaz", "carmen@example.com", "Viewer"),
-        ("Temp Account", "temp@example.com", "Viewer"),
-        ("Deepak Rao", "deepak@example.com", "Editor"),
-        ("Elena Petrova", "elena@example.com", "Viewer"),
-        ("Farah Khan", "farah@example.com", "Viewer"),
-        ("George Hill", "george@example.com", "Editor"),
-        ("Hana Sato", "hana@example.com", "Viewer"),
-        ("Ivan Horvat", "ivan@example.com", "Viewer"),
-        ("Zara Quinn", "zara@example.com", "Viewer"),
+        ("Alice Park", "alice@northbeam.test", "Admin"),
+        ("Bob Lee", "bob@northbeam.test", "Editor"),
+        ("Carmen Diaz", "carmen@northbeam.test", "Viewer"),
+        ("Temp Account", "temp@northbeam.test", "Viewer"),
+        ("Deepak Rao", "deepak@northbeam.test", "Editor"),
+        ("Elena Petrova", "elena@northbeam.test", "Viewer"),
+        ("Farah Khan", "farah@northbeam.test", "Viewer"),
+        ("George Hill", "george@northbeam.test", "Editor"),
+        ("Hana Sato", "hana@northbeam.test", "Viewer"),
+        ("Ivan Horvat", "ivan@northbeam.test", "Viewer"),
+        ("Zara Quinn", "zara@northbeam.test", "Viewer"),
     ]
 
     orders = [

@@ -52,6 +52,16 @@ PANEL_STATE = f"{PANEL_STATE_DIR}/admin.json"
 
 ENGINES = ("oracle", "ollama", "claude", "thebot")
 
+# Where the desktop's browser reaches the admin panel (bench.py's PANEL_HOST): a request names a site by its name.
+PANEL_SITE = "http://admin.bench.test:8765"
+
+# Why the oracle does not run a task whose solution needs a person's yes: only the approval gate makes a yes, from a
+# reply the control plane signed for an approval it holds on a task it opened (docs/gate-boundary.md). The oracle
+# opens no task on the control plane, and a reply sent to a desktop with none would reach it as a new request, which
+# its engine would carry out. It never approves locally, so such a task is reported skipped, not passed.
+APPROVAL_NEEDS_A_TASK = ("needs a person's signed reply to an approval on a task the control plane opened; "
+                         "the oracle opens none - an engine run covers it")
+
 
 # ============================================================
 # docker
@@ -321,13 +331,49 @@ def gate_fired(message):
 # engines
 # ============================================================
 
+def request_text(task):
+    """What the person asks for a task: its prompt, and for a web task the site it is on (a person names it; the
+    approval gate asks before a password goes to a site the request does not name)."""
+
+    if "browser" in (task.get("start") or {}):
+        return task["prompt"] + f"\n\nThe admin panel is at {PANEL_SITE}."
+    return task["prompt"]
+
+
+# Run in the desktop as its user: the task's request, as the agent keeps it when a person sends one (task_context.start),
+# so every guard reads the request a person would have given - the values it names and the site it is on.
+REQUEST_CONTEXT = (
+    "import sys; sys.path.insert(0, '/opt')\n"
+    "from decurix_agent import task_context\n"
+    "task_context.start(sys.argv[1], sys.argv[2])\n"
+)
+
+# Run in the desktop: whether the click just made listed its form for checking (core._form_check's note for the task).
+FORM_LISTED = "test -f /tmp/decurix-form-check.$0.json"
+
+
+def oracle_task_id(task):
+    """A task id of the agent's shape (t + 16 hex), fixed per bench task."""
+    import hashlib
+    return "t" + hashlib.sha256(("gui-oracle:" + task["id"]).encode()).hexdigest()[:16]
+
+
 def run_oracle(container, task):
-    """Execute a task's scripted solution through the gui command."""
+    """Execute a task's scripted solution through the gui command, inside the request a person would have sent."""
 
     answer = ""
     paused = False
     failures = []
     started = time.time()
+
+    if any(isinstance(step, dict) and "approve" in step for step in task.get("oracle") or []):
+        return {"answer": "", "paused_for_approval": False, "gate_fired": False, "reply_kind": None,
+                "screen_actions": None, "seconds": 0.0, "errors": [], "skipped": APPROVAL_NEEDS_A_TASK}
+
+    task_id = oracle_task_id(task)
+    context = docker(container, "python3", "-c", REQUEST_CONTEXT, task_id, request_text(task))
+    if context.returncode != 0:
+        failures.append(f"the task's request could not be set on the desktop: {context.stderr.strip()[-300:]}")
 
     for step in task.get("oracle") or []:
         if isinstance(step, str):
@@ -341,16 +387,17 @@ def run_oracle(container, task):
             answer = step["answer"]
             continue
 
-        if "approve" in step:
-            # Exactly what the agent's command watcher does with a human reply.
-            code = (
-                "import sys; sys.path.insert(0, '/opt')\n"
-                "from decurix_agent.computer import approval\n"
-                "print(approval.resolve_reply(sys.argv[1]))\n"
-            )
-            process = docker(container, "python3", "-c", code, step["approve"])
-            if process.stdout.strip() != "granted":
-                failures.append(f"approval was not granted: {process.stdout.strip()} {process.stderr.strip()}")
+        if "submit" in step:
+            # A form with several filled fields is listed before it is sent (core._form_check), and sent by the same
+            # click with --checked, the form unchanged: what an engine is told to do after reading the list.
+            command = step["submit"] + " --checked"
+            process = docker(container, "bash", "-c", "cd /tmp && " + command, timeout=180)
+            if process.returncode != 0 and docker(container, "bash", "-c", FORM_LISTED, task_id).returncode == 0:
+                process = docker(container, "bash", "-c", "cd /tmp && " + command, timeout=180)
+            if process.returncode == 3:
+                paused = True
+            if process.returncode != 0:
+                failures.append(f"`{command}` exited {process.returncode}: {(process.stdout + process.stderr).strip()[-400:]}")
             continue
 
         process = docker(container, "bash", "-c", "cd /tmp && " + step["run"], timeout=180)
@@ -374,7 +421,7 @@ def run_oracle(container, task):
 def run_engine_task(plane, desktop_id, task, timeout):
     started = time.time()
     plane.clear(desktop_id)
-    plane.send(desktop_id, task["prompt"])
+    plane.send(desktop_id, request_text(task))
 
     reply, thread = wait_for_reply(plane, desktop_id, 1, timeout)
     result = {
@@ -520,12 +567,19 @@ def main():
                         run = run_oracle(container, task)
                     else:
                         run = run_engine_task(plane, created["id"], task, args.timeout)
-                    checked = check_task(container, task, run["answer"])
-                    passed, why = verdict(task, run, checked)
+                    if run.get("skipped"):
+                        checked, passed, why = {}, False, ""
+                    else:
+                        checked = check_task(container, task, run["answer"])
+                        passed, why = verdict(task, run, checked)
                 except Exception as exc:  # one broken task must not end the run
                     run, checked, passed, why = {"seconds": None, "errors": [str(exc)]}, {}, False, f"runner error: {exc}"
 
-                print(("PASS" if passed else "FAIL") + (f" ({why})" if why else "") + f" [{run.get('seconds')}s]", flush=True)
+                if run.get("skipped"):
+                    passed, why, checked = False, "skipped: " + run["skipped"], {}
+                    print(f"SKIP ({run['skipped']})", flush=True)
+                else:
+                    print(("PASS" if passed else "FAIL") + (f" ({why})" if why else "") + f" [{run.get('seconds')}s]", flush=True)
                 rows.append({"task": task["id"], "app": task.get("app"), "pass": passed, "why": why,
                              "check": checked, **{k: v for k, v in run.items() if k != "errors"}})
 
@@ -533,11 +587,13 @@ def main():
                     restart_agent(plane, created["id"], container)
 
             passed_count = sum(1 for r in rows if r["pass"])
+            ran = [r for r in rows if not r.get("skipped")]
             report["engines"][engine] = {
                 "container": container,
                 "passed": passed_count,
-                "total": len(rows),
-                "success_rate": round(passed_count / len(rows), 3) if rows else None,
+                "total": len(ran),
+                "skipped": [r["task"] for r in rows if r.get("skipped")],
+                "success_rate": round(passed_count / len(ran), 3) if ran else None,
                 "tasks": rows,
             }
         finally:
@@ -556,7 +612,9 @@ def main():
     print("| engine | passed | success rate |")
     print("|---|---|---|")
     for engine, summary in report["engines"].items():
-        print(f"| {engine} | {summary['passed']}/{summary['total']} | {summary['success_rate']:.0%} |")
+        rate = f"{summary['success_rate']:.0%}" if summary["success_rate"] is not None else "-"
+        skipped = f" ({len(summary['skipped'])} skipped)" if summary.get("skipped") else ""
+        print(f"| {engine} | {summary['passed']}/{summary['total']}{skipped} | {rate} |")
 
     ids = [t["id"] for t in tasks]
     engines = list(report["engines"])
@@ -567,7 +625,7 @@ def main():
         cells = []
         for engine in engines:
             row = next(r for r in report["engines"][engine]["tasks"] if r["task"] == task_id)
-            cells.append("pass" if row["pass"] else "FAIL")
+            cells.append("skip" if row.get("skipped") else "pass" if row["pass"] else "FAIL")
         print(f"| {task_id} | " + " | ".join(cells) + " |")
 
     print(f"\nFull results: {out_path}")
