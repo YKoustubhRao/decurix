@@ -110,6 +110,54 @@ def verify_request(key, data, now=None):
     return _fresh(ts, nonce, now)
 
 
+def sign_secrets(key, task_id, ts, nonce, values):
+    """The control plane's signature on a task's secret values (/secrets): its own label, so it stands for nothing
+    else; the values are signed as the SHA-256 of each one's own SHA-256, NUL-terminated, in order (no JSON to match
+    across languages)."""
+
+    return _mac(key, ("secrets", task_id, ts, nonce, _sha("".join(_sha(v) + "\0" for v in values))))
+
+
+def verify_secrets(key, data, now=None):
+    """Whether `data` (a parsed /secrets body) is the control plane's, fresh and not seen before: why not, or ""."""
+
+    if not key:
+        return "this gate has no key"
+    try:
+        task_id, ts, nonce, sig = str(data["task_id"]), str(data["ts"]), str(data["nonce"]), str(data["sig"])
+        values = data["secrets"]
+    except (KeyError, TypeError):
+        return "incomplete"
+    if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+        return "incomplete"
+    if not hmac.compare_digest(sign_secrets(key, task_id, ts, nonce, values).encode("utf-8"), sig.encode("utf-8")):
+        return "bad signature"
+    return _fresh(ts, nonce, now)
+
+
+# How many tasks' secret values the gate keeps, and how many values a task.
+SECRET_TASKS = 50
+SECRET_VALUES = 200
+
+
+def keep_secrets(task_id, values):
+    """Add a task's signed secret values to the gate's own copy (approval.shown_by_gate withholds them)."""
+
+    path = approval.gate_secrets_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data = data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        data = {}
+    kept = data.pop(task_id, [])
+    kept = list(dict.fromkeys(kept + [v.strip() for v in values if v.strip()]))[-SECRET_VALUES:]
+    data[task_id] = kept
+    data = dict(list(data.items())[-SECRET_TASKS:])
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def keep_request(task_id, text):
     """Keep the latest signed request as the gate's own copy (approval.gate_request_text): what a site the request
     names is read from, never the worker's task file."""
@@ -338,7 +386,7 @@ class ReplyHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         # A web page cannot sign; a request that names an origin is not the control plane's.
-        if self.path not in ("/reply", "/request") or self.headers.get("Origin") is not None:
+        if self.path not in ("/reply", "/request", "/secrets") or self.headers.get("Origin") is not None:
             return self._send(404)
         try:
             length = int(self.headers.get("Content-Length") or "0")
@@ -348,6 +396,17 @@ class ReplyHandler(BaseHTTPRequestHandler):
         except (ValueError, OSError):
             return self._send(400)
         data = data if isinstance(data, dict) else {}
+        if self.path == "/secrets":
+            why = verify_secrets(self.key, data)
+            if why:
+                log(f"secret values were refused: {why}")
+                return self._send(403)
+            try:
+                keep_secrets(str(data["task_id"]), data["secrets"])
+            except OSError as exc:
+                log(f"could not keep the secret values: {exc}")
+                return self._send(500)
+            return self._send(204)
         if self.path == "/request":
             why = verify_request(self.key, data)
             if why:

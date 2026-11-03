@@ -1158,7 +1158,7 @@ def from_material(material):
             description = f"run the command `{command[:600]}`" + (f" in {workdir}" if workdir else "")
         else:
             description = f"start this request: {request[:600]}"
-        return fingerprint, description, None, ""
+        return fingerprint, shown_by_gate(description), None, ""
     element = material.get("element") if isinstance(material.get("element"), dict) else None
     text = material.get("text")
     text = None if text is None else str(text)
@@ -1169,7 +1169,46 @@ def from_material(material):
     about = str(material.get("about") or "")
     fingerprint = _fingerprint(kind, element, text, keys, point, context=context, about=about,
                                sends=str(material.get("sends") or ""))
-    return fingerprint, describe_action(kind, element, text=text, keys=keys, point=point), element, about
+    return (fingerprint, shown_by_gate(describe_action(kind, element, text=text, keys=keys, point=point)), element,
+            shown_by_gate(about))
+
+
+# The secret values of the desktop's tasks as the control plane sent them to the gate, signed (gate_server's /secrets),
+# in the gate's own directory. The words the gate shows a person are withheld with them; what it fingerprints and
+# matches stays the raw action (review S3, 2026-11-04: a secret typed by a command reached the approval question, the
+# chat and the judgement in the clear).
+GATE_SECRETS_FILE = "gate-secrets.json"
+
+
+def gate_secrets_path():
+    return Path(config.DECURIX_DIR) / GATE_SECRETS_FILE
+
+
+def gate_secret_values():
+    """Every secret value the gate keeps (only ever read in the gate)."""
+
+    try:
+        data = json.loads(gate_secrets_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    return [str(v) for values in data.values() if isinstance(values, list) for v in values if str(v or "").strip()]
+
+
+def shown_by_gate(text):
+    """The words of a question the gate shows, with the tasks' secret values (as the control plane signed them) and
+    any credential the words spell out withheld. Fails closed: words that cannot be checked are held back."""
+
+    if not text:
+        return text
+    try:
+        text = str(text)
+        for value in sorted(gate_secret_values(), key=len, reverse=True):
+            text = text.replace(value, "[withheld]")
+        return privacy.withhold_spoken_secrets(text)
+    except Exception:  # noqa: BLE001
+        return privacy.HELD_BACK
 
 
 def reason_from_material(material):
