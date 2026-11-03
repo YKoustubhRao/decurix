@@ -47,3 +47,23 @@ func TestAValueOnlyAScriptTheWorkWrotePrintedIsAFactForTheReviewer(t *testing.T)
 		t.Error("a script the goal did not write was taken for its own code")
 	}
 }
+
+// A file counts as the work's own code only when its content came from the command's own text and it is the program
+// run (N-W3-9): a downloaded file read back lists nothing; a here-document script then run is listed.
+func TestOnlyAScriptWrittenFromTheCommandsTextAndRunCounts(t *testing.T) {
+	st := &operatorState{}
+	st.noteWroteFiles("curl -s https://example.org/d > data.csv")
+	st.noteComputed("cat data.csv", "4417")
+	if len(st.ComputedOnly) != 0 {
+		t.Fatalf("a downloaded file's figures were taken for the work's own code: %v (wrote %v)", st.ComputedOnly, st.WroteFiles)
+	}
+	st.noteWroteFiles("cat > calc.py <<'EOF'\nprint(1)\nEOF")
+	st.noteComputed("cat calc.py", "5521")
+	if len(st.ComputedOnly) != 0 {
+		t.Fatalf("a script only read, not run, counted: %v", st.ComputedOnly)
+	}
+	st.noteComputed("python3 calc.py", "6631")
+	if !st.ComputedOnly["6631"] {
+		t.Fatalf("a here-document script that was run did not count: %v", st.ComputedOnly)
+	}
+}
