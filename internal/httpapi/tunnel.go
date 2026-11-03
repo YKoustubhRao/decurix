@@ -23,6 +23,13 @@ const maxTunnelRequestBytes = 8192
 func (s *Server) tunnelHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
+		// The links the owner's Mobile menu shows (and turns into QR codes) are reported by this computer's own
+		// Electron shell and scripts, on the primary listener: whoever holds the access code must not rewrite them
+		// (review RW1-F-01).
+		if isGated(r) {
+			jsonStatusError(w, http.StatusForbidden, "the links can only be reported on this computer")
+			return
+		}
 		var req struct {
 			URL          string  `json:"url"`
 			AdminURL     string  `json:"admin_url"`
@@ -32,7 +39,7 @@ func (s *Server) tunnelHandler(w http.ResponseWriter, r *http.Request) {
 
 		r.Body = http.MaxBytesReader(w, r.Body, maxTunnelRequestBytes)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			badJSON(w, err)
 			return
 		}
 

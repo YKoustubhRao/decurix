@@ -79,3 +79,15 @@ func TestOrgWritesAreRefusedFromTheGatedListener(t *testing.T) {
 		t.Fatalf("gated read refused: %d", rec.Code)
 	}
 }
+
+// Host-state writes the gated listener may read but never make: the Mobile menu's links (RW1-F-01).
+func TestTheGatedListenerCannotRewriteTheLinks(t *testing.T) {
+	s := &Server{}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/tunnel", strings.NewReader(`{"url":"https://elsewhere.example"}`))
+	req.Header.Set("Content-Type", "application/json")
+	MarkGated(http.HandlerFunc(s.tunnelHandler)).ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("gated POST /api/tunnel: %d %s", rec.Code, rec.Body)
+	}
+}
