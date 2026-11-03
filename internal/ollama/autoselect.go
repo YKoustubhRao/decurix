@@ -27,6 +27,8 @@ var auto struct {
 	enabled bool
 	sel     *Selection
 	at      time.Time
+	// seed is the model existing desktops run (SeedCurrentModel), the "current" of a fresh process's first pick.
+	seed string
 }
 
 // liveCacheTTL is how long Status reuses one measurement. Probing samples the
@@ -134,6 +136,11 @@ func Reselect(ctx context.Context, desktopsExist bool) {
 
 func apply(ctx context.Context) error {
 	cur, _ := autoModel()
+	if cur == "" {
+		auto.mu.Lock()
+		cur = auto.seed
+		auto.mu.Unlock()
+	}
 
 	sel, res, mode, err := evaluate(ctx, cur)
 	if err != nil {

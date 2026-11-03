@@ -10,6 +10,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/httpapi"
 	"github.com/YKoustubhRao/decurix/internal/idlepause"
+	"github.com/YKoustubhRao/decurix/internal/ollama"
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
@@ -66,6 +67,17 @@ func dockerStartup(ctx context.Context, desktops *desktop.Manager, server *httpa
 		log.Printf("warning: cleanup practice containers: %v", err)
 	}
 	cleanupDone()
+
+	// Model selection keeps to the model existing desktops run (C-11): a fresh process has no pick of its own yet, and
+	// a different one would make the one-model Ollama swap between the two on every turn.
+	if all, err := desktops.List(ctx); err == nil {
+		for _, d := range all {
+			if d.Brain == desktop.BrainOllama && d.Model != "" {
+				ollama.SeedCurrentModel(d.Model)
+				break
+			}
+		}
+	}
 
 	// Tasks of desktops whose container went away while the control plane was down (or crashed without its agent
 	// reporting) were left running for good, keeping the PC awake and the worker busy (C-17).

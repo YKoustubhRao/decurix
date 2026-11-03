@@ -1,0 +1,35 @@
+package ollama
+
+import (
+	"context"
+	"strconv"
+	"strings"
+)
+
+// EmbedWouldEvict reports whether embedding now would push the desktops' chat model out of memory (C-10): the Ollama
+// the desktops use holds one model at a time and the chat model is the one loaded. Loading the embedder then unloads
+// the chat model, and the next agent turn reloads it - minutes on a CPU host. A caller with something optional to
+// embed (a suggestion) skips it then. Anything unknown counts as "would not evict": the cost is only a slower turn.
+func EmbedWouldEvict(ctx context.Context) bool {
+	if n, err := strconv.Atoi(strings.TrimSpace(defaultMaxLoadedModels())); err != nil || n != 1 {
+		return false
+	}
+	raw := DesktopURL()
+	base := raw
+	if raw != BundledURL {
+		base = dialableURL(ctx, raw)
+	}
+	return resident(ctx, base, DesktopModel()) && !resident(ctx, base, EmbedModel)
+}
+
+// SeedCurrentModel tells model selection which chat model the existing desktops were made with (C-11), before the
+// first pick of a fresh process: the pick then keeps to it unless another is clearly better (Choose's stickiness), so
+// a restart with less free memory does not give new desktops a second model that the one-model Ollama swaps against
+// on every turn. "" or a pick already made leaves things as they are.
+func SeedCurrentModel(name string) {
+	auto.mu.Lock()
+	defer auto.mu.Unlock()
+	if name != "" && auto.seed == "" {
+		auto.seed = name
+	}
+}
