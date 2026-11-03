@@ -108,7 +108,12 @@ class WhereMoneyGoes(Fixture):
         self.assertTrue(found and found[0].startswith("PAYMENT TO AN ACCOUNT ON NO RECORD:"))
 
     def test_nothing_to_check_against_decides_nothing(self):
-        self.assertEqual(payees.mismatches("", [proposal(self.dir / "p.xlsx")], found=([], [str(self.email)])), [])
+        # With no record, the account from the message is not checked (unchecked); the two that are in no input at
+        # all are found (review 2026-11-03, F-01: an identifier in no input is a finding, whatever the headers say).
+        found = payees.mismatches("", [proposal(self.dir / "p.xlsx")], found=([], [str(self.email)]))
+        self.assertEqual(len(found), 2, found)
+        self.assertTrue(all(f.startswith("PAYMENT TO AN ACCOUNT ON NO RECORD:") for f in found), found)
+        self.assertFalse(any("Shree Ganesh" in f for f in found), found)
         not_payments = self.dir / "notes.xlsx"
         wb = openpyxl.Workbook()
         wb.active.append(["Customer", "Phone"])
@@ -143,9 +148,14 @@ class WhereMoneyGoes(Fixture):
         ws.append(["Vendor", "Amount Payable", "Account No", "IFSC"])
         ws.append(["Ram", 5000, "50100012345678", "HDFC0000123"])
         wb.save(self.dir / "pay2.xlsx")
-        found = payees.mismatches("", [str(self.dir / "pay2.xlsx")], found=([str(self.dir / "master2.xlsx")], []))
-        self.assertTrue(found and found[0].startswith("PAYMENT TO ANOTHER PARTY'S ACCOUNT:"), found)
-        self.assertIn("Ramesh Traders", found[0])
+        # Review 2026-11-03 (F-04): a payee whose name differs from the record's is asked about, with both names -
+        # never passed, and not sent back as another party's when the payee has no account of its own on record.
+        found = (str(self.dir / "master2.xlsx"),), ()
+        self.assertEqual(payees.mismatches("", [str(self.dir / "pay2.xlsx")], found=found), [])
+        said = payees.unchecked("", [str(self.dir / "pay2.xlsx")], found=found)
+        self.assertTrue(said and said[0].startswith("PAYEE NOT CONFIRMED:"), said)
+        self.assertIn("\"Ramesh Traders\"", said[0])
+        self.assertIn("\"Ram\"", said[0])
 
     def test_a_message_from_a_lookalike_domain_is_suspicious(self):
         found = payees.suspicious_messages("", found=self.found)

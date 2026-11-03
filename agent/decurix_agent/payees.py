@@ -43,10 +43,12 @@ ID_COLUMN = re.compile(r"\b(?:a/?c|acc(?:oun)?t|acc|account\s*(?:no|number|#)?|i
 PAYEE_COLUMN = re.compile(r"\b(?:vendor|supplier|payee|beneficiary|party|customer|employee|name|account\s*name)\b", re.I)
 MAX_ROWS = 5000
 
-# Review 2026-11-03: any table with an "account" column and a column of figures was taken for a payment file, so a
-# sales report with customers' bank accounts, a ledger's "GL Account" or a stock table's "Stock Account" drew "PAYEES
-# NOT CHECKED". A payment file is a table of money going out to bank details: a column of bank details and a column of
-# what is paid.
+# Which columns hold bank details is all a column's label decides here. Whether a table pays anyone is never read from
+# its headers: found in review (2026-11-03, F-01), header vocabularies ("Amount", "Payable", "Net"...) decided what a
+# payment file was, so a payroll ("Net Salary", "Wages", "Fees") was never checked while some customer reports were
+# blocked, and each round added words. Now every bank identifier a produced table holds must come from an input - a
+# record, a document or a message the request gave, or the request itself - whatever the headers say; and the
+# approval card's "where each payment goes" is built from those identifiers.
 # A column of bank details by its own name.
 _BANK_DETAIL = re.compile(r"\b(?:ifsc|iban|swift|bic|micr|upi|vpa|routing|sort\s*code)\b", re.I)
 # An account column that is a ledger's, not a bank's: "GL Account", "Account Head", "Stock Account", "Account Name".
@@ -55,75 +57,26 @@ _LEDGER_ACCOUNT = re.compile(r"\b(?:gl|g/l|ledger|head|group|code|name|type|cate
                              r"|balance)\b", re.I)
 # ("Acc" too: round-4 recheck, a column headed "Acc" was no account, so a wrong one went unchecked.)
 _ACCOUNT_WORD = re.compile(r"\b(?:a/?c|acc(?:oun)?t|acc|account)\b", re.I)
-# Who an account is for, or a bank, in its own label: "Bank Account", "Beneficiary A/c".
-_BANK_ACCOUNT = re.compile(r"\b(?:bank|beneficiary|payee|vendor|supplier|employee|party|creditor)\b", re.I)
-_ACCOUNT_NUMBER = re.compile(r"\b(?:no|number|num|#)\b|#", re.I)
-# A column of what is paid out, by its last word ("Amount Payable (Rs)", "Net Pay", "Total") or by a word of paying
-# anywhere in it ("Payment Value") - never a measure of something else ("Total Sales", "Taxable Value", "GST Amount").
-_PAID_HEAD = {"amount", "amt", "payable", "payment", "pay", "paid", "transfer", "refund", "remittance", "disbursement",
-              "net", "total"}
-_PAID_WORD = re.compile(r"\b(?:pay|payment|payable|paid|transfer|remit(?:tance)?|refund|disburse(?:ment)?)\b", re.I)
-# A column of money going back out to whoever is in the table: a customer refunded is a customer paid.
-_OUTGOING = re.compile(r"\b(?:refunds?|refunded|disburse(?:d|ments?)?|payouts?|reimburse(?:d|ments?)?|remit(?:ted|tances?)?"
-                       r"|transfer(?:red|s)?)\b", re.I)
-_NOT_PAID = re.compile(r"\b(?:sales|revenue|turnover|taxable|tax|gst|cgst|sgst|igst|cess|stock|opening|closing|limit"
-                       r"|budget)\b", re.I)
-
-
-def _paid_column(label):
-    """Whether a column's label names an amount paid out."""
-
-    text = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", str(label or "")).lower()
-    words = re.findall(r"[a-z]+", text)
-    if not words or _NOT_PAID.search(text):
-        return False
-    # Money going back out counts too (round-5 recheck: "Employee, Acc, Reimbursement" was no payment file).
-    return words[-1] in _PAID_HEAD or _PAID_WORD.search(text) is not None or _OUTGOING.search(text) is not None
 
 
 def bank_columns(header):
     """The columns of a table's header that hold bank details: an IFSC, IBAN, SWIFT, UPI... column by its name, and an
-    account column that is a bank's - its label says so ("Bank Account", "Beneficiary A/c"), or the table has a
-    column of bank details or a bank's name beside it, or it is an account number ("Account No") in a table that names
-    a payee. A ledger's account ("GL Account", "Account Head", "Account Name") is never one."""
+    account column ("Account No", "Bank A/c", "Account") that is not a ledger's ("GL Account", "Account Head",
+    "Account Name")."""
 
-    labels = [str(h or "") for h in header]
-    has_bank = any(_BANK_DETAIL.search(h) or re.search(r"\b(?:bank|branch)\b", h, re.I) for h in labels)
-    has_payee = any(PAYEE_COLUMN.search(h) or re.search(r"\bholder\b", h, re.I) for h in labels)
-    # Someone who is paid, not only billed: a customer's account beside sales figures is a report's, not a payment's.
-    # A customer beside a refund is paid (round-4 recheck: "Customer, Account, Refund" was no payment file).
-    pays_someone = any((PAYEE_COLUMN.search(h) or re.search(r"\bholder\b", h, re.I))
-                       and not re.search(r"\bcustomers?\b", h, re.I) for h in labels) or (
-        has_payee and any(_OUTGOING.search(h) for h in labels))
     cols = []
-    for i, h in enumerate(labels):
-        if _BANK_DETAIL.search(h):
+    for i, h in enumerate(str(h or "") for h in header):
+        if _BANK_DETAIL.search(h) or (_ACCOUNT_WORD.search(h) and not _LEDGER_ACCOUNT.search(h)):
             cols.append(i)
-        elif _ACCOUNT_WORD.search(h) and not _LEDGER_ACCOUNT.search(h):
-            if (_BANK_ACCOUNT.search(h) or has_bank or (has_payee and _ACCOUNT_NUMBER.search(h))
-                    or (pays_someone and _bare_account(h))):
-                cols.append(i)
     return cols
 
 
-_BARE_ACCOUNT_WORDS = {"a", "c", "ac", "acc", "acct", "account", "no", "number", "num"}
-
-
-def _bare_account(label):
-    """Whether a label is an account and nothing else ("A/c", "Acct", "Account", "Account No"). Beside a column of who
-    is paid it is that payee's bank account (round-3 recheck: "Payee, A/c, Amount" and "Party, Account, Amount" were no
-    longer read as payment files, so a wrong account went through unchecked)."""
-
-    words = re.findall(r"[a-z]+", str(label or "").lower())
-    return bool(words) and all(w in _BARE_ACCOUNT_WORDS for w in words)
-
-
 def payment_table(header):
-    """(bank columns, payee column or None) when a table's header is a payment file's - bank details and an amount
-    paid out - else None."""
+    """(bank columns, payee column or None) when a table's header has a column of bank details, else None. Every such
+    table's identifiers are checked (_payment_findings): whether it pays anyone is the judge's to weigh."""
 
     cols = bank_columns(header)
-    if not cols or not any(_paid_column(h) for i, h in enumerate(header) if i not in cols):
+    if not cols:
         return None
     payee_col = next((i for i, h in enumerate(header) if PAYEE_COLUMN.search(h or "") and i not in cols
                       and not _ACCOUNT_WORD.search(h or "")), None)
@@ -143,6 +96,9 @@ def _name_tokens(text):
 
     text = re.sub(r"(?i)\bm/s\b\.?", " ", str(text or ""))
     text = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", text)
+    # Initials written with dots are one word: "A.B.C. Traders" is "ABC Traders" (review 2026-11-03, F-04: the two
+    # were different parties, and a correct payment was refused as another party's account).
+    text = re.sub(r"\b(?:[A-Za-z]\.\s?){2,}", lambda m: re.sub(r"[.\s]", "", m.group(0)) + " ", text)
     return [w for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in _LEGAL_FORM]
 
 
@@ -303,22 +259,34 @@ def _message_identifiers(messages):
     return in_messages
 
 
+def _by_format(text):
+    """The bank identifiers a cell holds by their own format, whatever its column: IFSC and IBAN codes."""
+
+    text = str(text or "")
+    return set(IFSC.findall(text)) | set(IBAN.findall(text))
+
+
 def _payment_rows(path):
-    """[(payee, identifier, where)] for the rows of a produced payment file that pay to an identifier."""
+    """[(payee, identifier, where)] for the rows of a produced table that hold a bank identifier: one in a column of
+    bank details (bank_columns), or an IFSC or IBAN code in any column (by its format)."""
 
     out = []
     for header, rows in _tables(path, report=True):
         table = payment_table(header)
-        if table is None:
-            continue
-        id_cols, payee_col = table
+        id_cols, payee_col = table if table is not None else ([], None)
+        if payee_col is None:
+            payee_col = next((i for i, h in enumerate(header) if PAYEE_COLUMN.search(h or "") and i not in id_cols
+                              and not ID_COLUMN.search(h or "")), None)
         for n, row in enumerate(rows, 2):
             payee = (row[payee_col] if payee_col is not None and payee_col < len(row) else
-                     next((c for c in row if re.search(r"[A-Za-z]{3}", c or "") and not ID_COLUMN.search(c)), ""))
-            for i in id_cols:
-                if i < len(row):
-                    for ident in _identifiers(row[i], header[i]):
-                        out.append((payee.strip(), ident, f"{Path(path).name} row {n}"))
+                     next((c for c in row if re.search(r"[A-Za-z]{3}", c or "") and not ID_COLUMN.search(c)
+                           and not _by_format(c)), ""))
+            found = []
+            for i, cell in enumerate(row):
+                idents = _identifiers(cell, header[i] if i < len(header) else "") if i in id_cols else _by_format(cell)
+                found += sorted(idents)
+            for ident in dict.fromkeys(found):
+                out.append((payee.strip(), ident, f"{Path(path).name} row {n}"))
     return out
 
 
@@ -341,11 +309,12 @@ def declare_message_details(request, given):
 
 def mismatches(request, made, found=None):
     """
-    Sentences for each payment a produced file makes to an identifier that is not on record for its payee - loudly, in
-    plain words. [] when no produced file holds payments, or the inputs hold no master with such identifiers (nothing
-    to check against: decided only where it is precise - and said, as not checked, by unchecked). A payment to details
-    from a message the request gives as
-    their source, for a payee no record holds an account for, is not here: it is message_payments', for approval.
+    Sentences for each payment a produced file makes to an identifier that is not that payee's - loudly, in plain
+    words: an account a record holds for another party when the payee has one of its own on record (or the same file
+    pays that account to its owner as well), one taken from a message the request did not give as a source, one that
+    is in no input at all. A name written differently from the record's is not here: it is unchecked's, for the person.
+    A payment to details from a message the request gives as their source, for a payee no record holds an account for,
+    is message_payments', for approval.
     """
 
     return _payment_findings(request, made, found)[0]
@@ -353,24 +322,14 @@ def mismatches(request, made, found=None):
 
 def unchecked(request, made, found=None):
     """
-    Sentences saying a produced file's payments could not be checked: it pays to bank details, and the inputs hold no
-    record of payees' accounts (a master) to check them against. [] when no produced file holds payments or a master
-    is there (mismatches then decides). Found in review (2026-11-02): with no master nothing was checked and nothing was
-    said, so a payment run to any account read as checked. A payee no record confirms is "not checked", never passed.
+    Sentences for each payment a produced file makes that could not be confirmed, for the person: an account a record
+    holds under a name written differently from the payee's (both names are shown), one taken from a document the
+    request gave that no record confirms, and payments when nothing the request gave holds bank details to check them
+    against. [] when every payment is decided (mismatches). Found in review (2026-11-02): with no master nothing was
+    checked and nothing was said, so a payment run to any account read as checked. Never passed.
     """
 
-    files = [p for p in made if Path(str(p)).suffix.lower() in RECORD_KINDS]
-    rows = [(path, r) for path in files for r in _payment_rows(path)]
-    if not rows:
-        return []
-    records, _messages = found if found is not None else inputs(request, made)
-    if any(record_identifiers(record) for record in records):
-        return []
-    names = list(dict.fromkeys(payee or "a payee" for _, (payee, _i, _w) in rows))
-    where = ", ".join(dict.fromkeys(Path(str(path)).name for path, _ in rows))
-    return [f"PAYEES NOT CHECKED: {where} pays {', '.join(names[:6])}{' and others' if len(names) > 6 else ''} to bank "
-            "details, and no record the request gave (a vendor, employee or party master with their accounts) holds "
-            "an account to check them against - where this money goes is not confirmed."]
+    return _payment_findings(request, made, found)[2]
 
 
 def message_payments(request, made, found=None):
@@ -385,62 +344,148 @@ def message_payments(request, made, found=None):
     return _payment_findings(request, made, found)[1]
 
 
+def _split_found(found, request, made):
+    """(records, messages, documents) of the inputs: `found` as given - (records, messages) or with documents - or
+    the request's own inputs."""
+
+    if found is None:
+        records, messages = inputs(request, made)
+        documents = [d for d in bill_documents(request, made) if Path(d).suffix.lower() not in RECORD_KINDS
+                     and Path(d).suffix.lower() not in MESSAGE_KINDS]
+        return records, messages, documents
+    records, messages = found[0], found[1]
+    return records, messages, (found[2] if len(found) > 2 else [])
+
+
+def _text_identifiers(text):
+    """Every bank identifier free text holds: as written, and with the spaces of a grouped number taken out."""
+
+    text = str(text or "")
+    found = _identifiers(text, "upi swift")
+    for line in text.splitlines():
+        found |= set(ACCOUNT.findall(line.replace(" ", "")))
+    return found
+
+
+def _sourced(request, records, documents):
+    """{identifier: where it is} for every bank identifier the request or an input record or document holds, in any
+    cell or line: the provenance an identifier in a produced table must have."""
+
+    out = {}
+    for ident in _text_identifiers(attachments.text(request or "")):
+        out.setdefault(ident, "the request")
+    for record in records:
+        for _header, rows in _tables(record):
+            for row in rows:
+                for cell in row:
+                    for ident in _text_identifiers(cell):
+                        out.setdefault(ident, Path(record).name)
+    for document in documents:
+        for ident in _text_identifiers(_doc_text(document)):
+            out.setdefault(ident, Path(document).name)
+    return out
+
+
 def _payment_findings(request, made, found=None):
-    """(mismatches, for approval) - see mismatches and message_payments."""
+    """(mismatches, for approval, unchecked) - see mismatches, message_payments and unchecked. Each bank identifier a
+    produced table holds is decided by where it comes from, never by the table's headers (review 2026-11-03, F-01)."""
 
     files = [p for p in made if Path(str(p)).suffix.lower() in RECORD_KINDS]
-    if not files:
-        return [], []
-    records, messages = found if found is not None else inputs(request, made)
+    rows = [(payee, ident, where, str(path)) for path in files for payee, ident, where in _payment_rows(path)]
+    if not rows:
+        return [], [], []
+    records, messages, documents = _split_found(found, request, made)
     on_record = {}
     for record in records:
-        for ident, rows in record_identifiers(record).items():
-            on_record.setdefault(ident, []).extend((Path(record).name, row) for row in rows)
-    if not on_record:
-        return [], []
+        for ident, texts in record_identifiers(record).items():
+            on_record.setdefault(ident, []).extend((Path(record).name, row) for row in texts)
     given = bool(_MESSAGE_DETAILS.get(_request_key(request)))
     in_messages = _message_identifiers(messages)
+    sourced = _sourced(request, records, documents)
+    any_input = bool(records or messages or documents)
+
     def recorded_for(payee):
         """The identifiers the records hold for a payee, and the record file they are in."""
-        found = [(ident, name) for ident, places in on_record.items() for name, row in places
-                 if payee and names_payee(payee, row)]
-        return sorted({i for i, _ in found}), sorted({n for _, n in found})
+        hits = [(ident, name) for ident, places in on_record.items() for name, row in places
+                if payee and names_payee(payee, row)]
+        return sorted({i for i, _ in hits}), sorted({n for _, n in hits})
 
-    wrong = {}
-    for path in files:
-        for payee, ident, where in _payment_rows(path):
+    # Who each file pays each identifier to: the same account paid to its owner on record and to another payee in one
+    # file is another party's account, whatever the names.
+    paid_to = {}
+    for payee, ident, _where, path in rows:
+        paid_to.setdefault((path, ident), set()).add(payee)
+
+    wrong, approve, unsure, nothing = {}, [], [], []
+    for payee, ident, where, path in rows:
+        places = on_record.get(ident, [])
+        own, files_on_record = recorded_for(payee)
+        if places:
             # The identifier exactly as on record (a dict key: never a part of one), for this payee by name.
-            places = on_record.get(ident, [])
-            if places and (not payee or any(names_payee(payee, row) for _, row in places)):
+            if not payee or any(names_payee(payee, row) for _, row in places):
                 continue
-            key = (where, payee)
-            entry = wrong.setdefault(key, {"idents": [], "message": "", "owner": ""})
+            owner_file, owner_row = places[0]
+            owner = owner_row.split(" | ")[0]
+            owner_paid_too = any(other != payee and any(names_payee(other, row) for _, row in places)
+                                 for other in paid_to[(path, ident)])
+            if own or owner_paid_too:
+                entry = wrong.setdefault((where, payee), {"idents": [], "kind": "another", "detail": ""})
+                entry["idents"].append(ident)
+                entry["detail"] = entry["detail"] or f"{owner_file} has it for {owner}"
+            else:
+                unsure.append(f"PAYEE NOT CONFIRMED: {where} pays {payee} to {ident}, which {owner_file} holds for "
+                              f"\"{owner}\" - the file names the payee \"{payee}\". Confirm they are the same party "
+                              "before this is used; it is not checked until you do.")
+        elif ident in in_messages:
+            if given and not own:
+                approve.append(f"PAYMENT DETAILS FROM A MESSAGE, FOR YOUR APPROVAL: {where} pays {payee or 'a payee'} "
+                               f"to {ident}, taken from the message \"{in_messages[ident]}\" (the request gives "
+                               "messages as the source of these details; no record holds an account for this payee).")
+            elif own or on_record:
+                entry = wrong.setdefault((where, payee), {"idents": [], "kind": "message", "detail": ""})
+                entry["idents"].append(ident)
+                entry["detail"] = entry["detail"] or in_messages[ident]
+            else:
+                nothing.append((payee, path))
+        elif ident in sourced:
+            if sourced[ident] == "the request":
+                continue
+            if own:
+                entry = wrong.setdefault((where, payee), {"idents": [], "kind": "nowhere", "detail": ""})
+                entry["idents"].append(ident)
+            else:
+                unsure.append(f"PAYEE NOT CONFIRMED: {where} pays {payee or 'a payee'} to {ident}, taken from "
+                              f"{sourced[ident]}; no record the request gave holds an account for "
+                              f"{payee or 'this payee'} to confirm it. It is not checked until you confirm it.")
+        elif any_input:
+            entry = wrong.setdefault((where, payee), {"idents": [], "kind": "nowhere", "detail": ""})
             entry["idents"].append(ident)
-            if places:
-                entry["owner"] = entry["owner"] or f"{places[0][0]} has it for {places[0][1].split(' | ')[0]}"
-            elif ident in in_messages:
-                entry["message"] = entry["message"] or in_messages[ident]
-    out, approve = [], []
+        else:
+            nothing.append((payee, path))
+
+    out = []
     for (where, payee), entry in wrong.items():
         idents = " / ".join(dict.fromkeys(entry["idents"]))
         own, files_on_record = recorded_for(payee)
         on_file = (f"the account in {', '.join(files_on_record)} ({' / '.join(own)})" if own
                    else "an account on record for them")
-        if entry["message"] and given and not own and not entry["owner"]:
-            approve.append(f"PAYMENT DETAILS FROM A MESSAGE, FOR YOUR APPROVAL: {where} pays {payee or 'a payee'} to "
-                           f"{idents}, taken from the message \"{entry['message']}\" (the request gives messages as the "
-                           "source of these details; no record holds an account for this payee).")
-        elif entry["message"]:
+        if entry["kind"] == "message":
             out.append(f"PAYMENT TO AN ACCOUNT FROM A MESSAGE: {where} pays {payee or 'a payee'} to {idents}, taken from "
-                       f"the message \"{entry['message']}\" - not {on_file}. A message never changes where money goes: "
+                       f"the message \"{entry['detail']}\" - not {on_file}. A message never changes where money goes: "
                        "use the account on record and report the message to the person as a change request.")
-        elif entry["owner"]:
+        elif entry["kind"] == "another":
             out.append(f"PAYMENT TO ANOTHER PARTY'S ACCOUNT: {where} pays {payee or 'a payee'} to {idents}; "
-                       f"{entry['owner']}, not {on_file}.")
+                       f"{entry['detail']}, not {on_file}.")
         else:
             out.append(f"PAYMENT TO AN ACCOUNT ON NO RECORD: {where} pays {payee or 'a payee'} to {idents}, which is in "
-                       f"no record the request gave - not {on_file}.")
-    return out, approve
+                       f"no record, document or message the request gave, nor in the request - not {on_file}.")
+    if nothing:
+        names = list(dict.fromkeys(payee or "a payee" for payee, _ in nothing))
+        where = ", ".join(dict.fromkeys(Path(path).name for _, path in nothing))
+        unsure.append(f"PAYEES NOT CHECKED: {where} pays {', '.join(names[:6])}{' and others' if len(names) > 6 else ''} "
+                      "to bank details, and no record the request gave (a vendor, employee or party master with their "
+                      "accounts) holds an account to check them against - where this money goes is not confirmed.")
+    return out, approve, list(dict.fromkeys(unsure))
 
 
 def suspicious_messages(request, made=(), found=None):
@@ -449,7 +494,8 @@ def suspicious_messages(request, made=(), found=None):
     one on record for it: reported whether or not anything used it.
     """
 
-    return [sentence for _path, _subject, sentence in _suspicious(found if found is not None else inputs(request, made))]
+    found = found if found is not None else inputs(request, made)
+    return [sentence for _path, _subject, sentence in _suspicious((found[0], found[1]))]
 
 
 def _suspicious(found):
@@ -487,28 +533,35 @@ def _suspicious(found):
 
 def payments_summary(request, made, found=None):
     """
-    Per payee, the account a produced payment file pays to and where that account came from - for the approval of a
-    payment run, so the person sees it. "" when no produced file holds payments.
+    Per payee, each bank identifier a produced table holds and where it came from - for the approval of a payment run,
+    so the person sees it. Built from the identifiers, whatever the table's headers say (review 2026-11-03, F-01). ""
+    when no produced table holds one.
     """
 
     files = [p for p in made if Path(str(p)).suffix.lower() in RECORD_KINDS]
     rows = [r for path in files for r in _payment_rows(path)]
     if not rows:
         return ""
-    records, messages = found if found is not None else inputs(request, made)
+    records, messages, documents = _split_found(found, request, made)
     on_record = {}
     for record in records:
         for ident, texts in record_identifiers(record).items():
             on_record.setdefault(ident, (Path(record).name, texts))
     in_messages = _message_identifiers(messages)
+    sourced = _sourced(request, records, documents)
     grouped = {}
     for payee, ident, _ in rows:
         if ident in on_record and (not payee or any(names_payee(payee, t) for t in on_record[ident][1])):
             source = f"from {on_record[ident][0]}"
+        elif ident in on_record:
+            holder = sorted(on_record[ident][1])[0].split(" | ")[0]
+            source = f"NOT THIS PAYEE'S ON RECORD - {on_record[ident][0]} has it for \"{holder}\""
         elif ident in in_messages:
             source = f"NOT ON RECORD - from the message \"{in_messages[ident]}\""
+        elif ident in sourced:
+            source = f"NOT ON RECORD - from {sourced[ident]}"
         else:
-            source = "NOT ON RECORD"
+            source = "NOT IN ANY INPUT"
         idents = grouped.setdefault((payee or "(no payee)", source), [])
         if ident not in idents:
             idents.append(ident)
@@ -887,33 +940,45 @@ def _party_key(text):
 
 def party_address(name, records=None, request=""):
     """
-    The one email address the records hold for a party, by its name (case and punctuation aside; a name that is part
-    of one row's name when none is equal). `records` is the file to look in (a workbook or CSV), or the request's record
-    inputs when None. Raises PartyError when no row, no address, or more than one address answers.
+    The one email address the records hold for a party, by its name (word for word: case, punctuation and legal form
+    aside). `records` is the file to look in (a workbook or CSV), or the request's record inputs when None. Raises
+    PartyError when no row, no address, or more than one address answers - naming the rows whose names are only like
+    it.
     """
 
     files = [str(records)] if records else inputs(request)[0]
     if records and not Path(str(records)).is_file():
         raise PartyError(f"there is no records file {records}")
-    want = _party_key(name)
+    want = _name_tokens(name)
     if not want:
         raise PartyError("give the party's name as the records write it")
-    exact, partial = {}, {}
+    # The party is the row whose name is the given one word for word, its legal form aside (as names_payee). Found in
+    # review (2026-11-03, F-03): a name that was part of one row's ("Shah" in "Shahid Enterprises") took that row's
+    # address, and every later recipient check passed the draft because the address was on record. A name that only
+    # shares words with rows names candidates, never a party.
+    exact, same, near = {}, {}, []
     for path in files:
         for header, rows in _tables(path, report=True):
             name_col = next((i for i, h in enumerate(header) if PAYEE_COLUMN.search(h or "")), 0)
             for row in rows:
                 who = row[name_col].strip() if name_col < len(row) else ""
                 mails = sorted({a for cell in row for a in _addresses(cell)})
-                key = _party_key(who)
-                if not key or not mails:
+                tokens = _name_tokens(who)
+                if not tokens or not mails:
                     continue
-                target = exact if key == want else partial if (want in key or key in want) and len(want) >= 4 else None
+                # As written (a branch in brackets is another row), else word for word with the legal form aside.
+                target = exact if _party_key(who) == _party_key(name) else same if tokens == want else None
                 if target is not None:
                     for mail in mails:
                         target.setdefault(mail, (Path(path).name, who))
-    found = exact or partial
+                elif _party_key(name) in _party_key(who) or set(want) & set(tokens):
+                    near.append(who)
+    found = exact or same
     where = Path(str(records)).name if records else "the records you were given"
+    if not found and near:
+        raise PartyError(f"{where} has no row named exactly \"{name}\"; rows with a name like it: "
+                         + "; ".join(dict.fromkeys(near[:8])) + " - give the row's name as the records write it, or "
+                         "ask the person which party is meant")
     if not found:
         raise PartyError(f"{where} has no row for \"{name}\" with an email address - check the name as the records "
                          "write it, or ask the person for the address")

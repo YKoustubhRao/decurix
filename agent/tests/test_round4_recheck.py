@@ -43,12 +43,13 @@ class ShellWorkThatChangesThings(unittest.TestCase):
 
 
 class RefundFiles(unittest.TestCase):
-    def test_a_refund_to_a_customer_is_a_payment(self):
-        # A customer beside an account and a refund is money going out; beside sales figures it is still a report.
-        self.assertIsNotNone(payees.payment_table(["Customer", "Account", "Refund"]))
-        self.assertIsNotNone(payees.payment_table(["Customer Name", "A/c No", "Refund Amount"]))
-        self.assertIsNone(payees.payment_table(["Customer", "Account", "Amount"]))
-        self.assertIsNone(payees.payment_table(["Customer", "Account", "Total Sales"]))
+    def test_a_refund_to_a_customer_is_checked(self):
+        # A customer's account beside a refund is checked. Since review 2026-11-03 (F-01) so is one beside any other
+        # figure: whether a table pays anyone is not read from its headers - its bank identifiers must come from an
+        # input, which a report's do.
+        for header in (["Customer", "Account", "Refund"], ["Customer Name", "A/c No", "Refund Amount"],
+                       ["Customer", "Account", "Amount"], ["Customer", "Account", "Total Sales"]):
+            self.assertIsNotNone(payees.payment_table(header), header)
 
     def test_acc_is_an_account_column(self):
         self.assertIsNotNone(payees.payment_table(["Payee", "Acc", "Amount"]))

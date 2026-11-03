@@ -45,8 +45,10 @@ class MoneyBackOut(unittest.TestCase):
             with self.subTest(header=header):
                 self.assertIsNotNone(payees.payment_table(header))
 
-    def test_reports_and_ledgers_are_not(self):
-        for header in (["GL Account", "Amount"], ["Customer", "Account", "Sales"], ["Item", "Stock Account", "Stock Transfer"]):
+    def test_ledgers_hold_no_bank_details(self):
+        # A ledger's or a stock table's "account" is no bank's. (A customer's "Account" beside sales is a bank
+        # account, checked by where it comes from since review 2026-11-03, F-01.)
+        for header in (["GL Account", "Amount"], ["Item", "Stock Account", "Stock Transfer"]):
             with self.subTest(header=header):
                 self.assertIsNone(payees.payment_table(header))
 
