@@ -591,7 +591,9 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		if body.Reply == nil || *body.Reply {
 			req.Resume = paused
 			job.Resumed = true
+			job.mu.Lock()               // the job is already published: its values change under its own lock
 			job.secrets = pausedSecrets // a reply carries on the paused job: its values stay withheld
+			job.mu.Unlock()
 			job.appendLog(fmt.Sprintf("scheduler: this request answers the paused job %q", quoted))
 		} else {
 			job.appendLog(fmt.Sprintf("scheduler: dropping the paused job %q - this is a new request", quoted))
@@ -654,7 +656,9 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 			if gatePresent() {
 				gateAsk(result.Checkpoint)
 			}
+			job.mu.Lock()
 			result.Checkpoint.Secrets = append([]string(nil), job.secrets...) // a reply resuming it keeps them
+			job.mu.Unlock()
 			s.storePaused(body.SessionID, result.Checkpoint)
 		}
 
