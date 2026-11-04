@@ -36,13 +36,15 @@ var auto struct {
 const liveCacheTTL = 20 * time.Second
 
 var live struct {
-	mu   sync.Mutex
-	at   time.Time
-	url  string
-	sel  Selection
-	res  Resources
-	mode string
-	err  error
+	mu sync.Mutex
+	// refreshing is a measurement in flight (refreshLive): one at a time, and nobody waits on it.
+	refreshing bool
+	at         time.Time
+	url        string
+	sel        Selection
+	res        Resources
+	mode       string
+	err        error
 }
 
 // EnableAutoSelect turns model selection on. It is off until main calls this,
@@ -218,11 +220,27 @@ type Status struct {
 	ChosenAt  *time.Time  `json:"chosen_at,omitempty"`
 }
 
-// CurrentStatus reports the model in use and what fits the machine now.
+// CurrentStatus reports the model in use and what fits the machine now, from what is already known: it never waits on a
+// measurement (liveEvaluation). The dashboard's top bar asks on every page load and every minute, and a measurement
+// waits on the model host - the Windows selector answers in up to 30-35 s, or not at all when local hosting is off -
+// so every page load and every minute took 30 s (resource bench, 2026-11-05).
 func CurrentStatus(ctx context.Context) Status {
-	sel, res, mode, err := liveEvaluation(ctx)
+	// An Ollama on another machine needs no measurement: said at once.
+	if raw := DesktopURL(); raw != BundledURL && !isLocalURL(raw) {
+		return Status{Mode: "remote", Model: DesktopModel(),
+			Reason: "The Ollama server is on another machine, so its model is used as configured."}
+	}
+	sel, res, mode, err, known := liveEvaluation()
 
 	st := Status{Mode: mode, Model: DesktopModel()}
+	if !known {
+		st.Mode = "auto"
+		if pinnedModel() != "" {
+			st.Mode = "pinned"
+		}
+		st.Reason = "Measuring this machine…"
+		return st
+	}
 	if err != nil {
 		st.Reason = "Could not measure this machine."
 		return st
@@ -274,19 +292,58 @@ func CurrentStatus(ctx context.Context) Status {
 	return st
 }
 
-func liveEvaluation(ctx context.Context) (Selection, Resources, string, error) {
+// liveEvaluation is the latest measurement of what fits the machine now, and whether there is one for the Ollama the
+// desktops use. It returns at once: a measurement older than liveCacheTTL, or none, starts one in the background
+// (refreshLive), one at a time, and the caller gets what was known before it.
+func liveEvaluation() (Selection, Resources, string, error, bool) {
+	url := DesktopURL()
 	live.mu.Lock()
 	defer live.mu.Unlock()
-
-	if !live.at.IsZero() && live.url == DesktopURL() && time.Since(live.at) < liveCacheTTL {
-		return live.sel, live.res, live.mode, live.err
+	known := !live.at.IsZero() && live.url == url
+	if (!known || time.Since(live.at) >= liveCacheTTL) && !live.refreshing {
+		live.refreshing = true
+		go refreshLive(url)
 	}
+	return live.sel, live.res, live.mode, live.err, known
+}
 
-	// No current model here: this is what fits now, not what is in use.
-	live.sel, live.res, live.mode, live.err = evaluate(ctx, "")
-	live.at, live.url = time.Now(), DesktopURL()
+// RefreshStatus measures now and waits for it, for a caller that wants the answer measured (a test, a refresh asked
+// for by hand); CurrentStatus never waits.
+func RefreshStatus(ctx context.Context) {
+	url := DesktopURL()
+	sel, res, mode, err := liveEvaluate(ctx, "")
+	live.mu.Lock()
+	live.sel, live.res, live.mode, live.err = sel, res, mode, err
+	live.at, live.url = time.Now(), url
+	live.mu.Unlock()
+}
 
-	return live.sel, live.res, live.mode, live.err
+// PrimeStatus starts the first measurement in the background, so the dashboard's first look already has one.
+func PrimeStatus() {
+	_, _, _, _, _ = liveEvaluation()
+}
+
+// liveEvaluate measures what fits now (evaluate, with no current model: what fits, not what is in use); a test
+// stands in a slow one.
+var liveEvaluate = evaluate
+
+// liveRefreshed is called after each background measurement; a test waits on it.
+var liveRefreshed = func() {}
+
+// liveRefreshTimeout bounds one background measurement, so a host that never answers frees the next one.
+const liveRefreshTimeout = 45 * time.Second
+
+// refreshLive measures in the background and keeps the result for liveEvaluation.
+func refreshLive(url string) {
+	ctx, cancel := context.WithTimeout(context.Background(), liveRefreshTimeout)
+	defer cancel()
+	sel, res, mode, err := liveEvaluate(ctx, "")
+	live.mu.Lock()
+	live.sel, live.res, live.mode, live.err = sel, res, mode, err
+	live.at, live.url = time.Now(), url
+	live.refreshing = false
+	live.mu.Unlock()
+	liveRefreshed()
 }
 
 // listInstalled lists the chat models the Ollama at baseURL has (GET

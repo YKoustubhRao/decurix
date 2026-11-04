@@ -1,10 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/YKoustubhRao/decurix/internal/ollama"
 )
 
 // GET /api/model reports the machine's resources and the model that fits it,
@@ -26,6 +29,8 @@ func TestModelHandlerReportsTheFit(t *testing.T) {
 	t.Setenv("OLLAMA_MODEL", "")
 
 	rec := httptest.NewRecorder()
+	// The route answers from the last measurement and never waits for one (ollama.CurrentStatus): measured first.
+	ollama.RefreshStatus(context.Background())
 	(&Server{}).modelHandler(rec, httptest.NewRequest(http.MethodGet, "/api/model", nil))
 
 	if rec.Code != http.StatusOK {
@@ -58,6 +63,8 @@ func TestModelHandlerReportsAPinnedModel(t *testing.T) {
 	t.Setenv("OLLAMA_MODEL", "llama3.2:1b")
 
 	rec := httptest.NewRecorder()
+	// The route answers from the last measurement and never waits for one (ollama.CurrentStatus): measured first.
+	ollama.RefreshStatus(context.Background())
 	(&Server{}).modelHandler(rec, httptest.NewRequest(http.MethodGet, "/api/model", nil))
 
 	var got struct{ Mode, Model string }

@@ -610,6 +610,8 @@ func main() {
 
 	go func() {
 		<-dockerReady
+		// The top bar's model status answers from a measurement made in the background (ollama.CurrentStatus).
+		ollama.PrimeStatus()
 		if !ollama.Needed() {
 			log.Println("Ollama: not preloading - a hosted model is configured and no desktop uses a local-model engine yet.")
 			// Still choose the model (it reads /api/tags and /api/show, and
