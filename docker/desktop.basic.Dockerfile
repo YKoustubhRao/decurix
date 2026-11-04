@@ -132,20 +132,32 @@ RUN chmod 644 /etc/opt/chrome/policies/managed/decurix.json \
 # are installed into it by its own pip, named by path. There was a venv for python-pptx first on the image's PATH: the
 # "system" pip3 below then installed into the venv, practice desktops (which kept the image's PATH) had pandas and the
 # rest, and real desktops (the control plane's PATH, no venv) had none of them (resource plan B1). One environment
-# also drops the second copy of python-pptx and of numpy. Pinned, like everything here.
+# also drops the second copy of python-pptx and of numpy. Pinned, like everything here, but for requests and
+# python-dateutil, which Ubuntu's own packages may already hold: those are floors (with a ceiling), so pip keeps an apt
+# copy that satisfies them instead of replacing a package apt owns. --break-system-packages is this image's norm for
+# worker installs (PIP_BREAK_SYSTEM_PACKAGES below). It must never shadow or replace an apt-owned package: pip writes
+# what it installed (--report), and the build stops if any of it is a package apt installed too.
 RUN for try in 1 2 3; do /usr/bin/python3 -m pip install --no-cache-dir --timeout 60 --retries 5 --break-system-packages \
+        --report /tmp/pip-report.json \
         python-pptx==1.0.2 \
         pandas==2.2.3 \
-        requests==2.32.3 \
+        "requests>=2.31,<3" \
         beautifulsoup4==4.12.3 \
         pdfplumber==0.11.4 \
         pymupdf==1.24.14 \
         matplotlib==3.9.2 \
-        python-dateutil==2.9.0.post0 \
+        "python-dateutil>=2.8.2,<3" \
         xlrd==2.0.1 \
         tabulate==0.9.0 \
         reportlab==4.2.5 && break; \
-    [ "$try" = 3 ] && exit 1; echo "pip3: try $try failed; trying again"; sleep $((try * 20 - 10)); done
+    [ "$try" = 3 ] && exit 1; echo "pip3: try $try failed; trying again"; sleep $((try * 20 - 10)); done \
+    && /usr/bin/python3 -c "import json, re, sys, importlib.metadata as md; norm = lambda n: re.sub(r'[-_.]+', '-', n).lower(); apt = {norm(d.metadata['Name']) for d in md.distributions(path=['/usr/lib/python3/dist-packages']) if d.metadata['Name']}; got = {norm(i['metadata']['name']) for i in json.load(open('/tmp/pip-report.json'))['install']}; both = sorted(apt & got); print('pip installed over apt-owned packages: ' + ', '.join(both)) if both else None; sys.exit(1 if both else 0)" \
+    && rm -f /tmp/pip-report.json
+
+# Every worker library imports in the python3 a desktop runs, under exactly the PATH a desktop gets
+# (desktop.desktopPath, pinned by internal/desktop/onepython_test.go): the build fails here, not a task later, if any
+# is missing or broken.
+RUN env -i PATH=/opt/tools/bin:/opt/tools/go/bin:/opt/tools/node/bin:/opt/tools/rust/bin:/home/headless/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin python3 -c "import pptx, pandas, requests, bs4, pdfplumber, fitz, matplotlib, dateutil, xlrd, tabulate, reportlab, openpyxl, docx, pypdf, PIL"
 
 COPY agent/vm_server.py /opt/vm_server.py
 COPY agent/decurix_agent /opt/decurix_agent

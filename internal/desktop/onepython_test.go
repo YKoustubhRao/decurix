@@ -3,6 +3,7 @@ package desktop
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -58,9 +59,53 @@ func TestRealAndPracticeDesktopsRunOnePython(t *testing.T) {
 	if !strings.Contains(install, "/usr/bin/python3 -m pip install") {
 		t.Fatalf("the worker libraries are not installed by /usr/bin/python3's own pip: %s", clipRun(install))
 	}
-	for _, lib := range []string{"pandas==", "requests==", "pymupdf==", "python-pptx==", "pdfplumber==", "matplotlib=="} {
-		if strings.Count(string(raw), lib) != 1 {
-			t.Errorf("%s is installed %d times, want once (one environment)", lib, strings.Count(string(raw), lib))
+	// pip never shadows or replaces an apt-owned package: its report is checked against apt's packages.
+	if !strings.Contains(install, "--report /tmp/pip-report.json") || !strings.Contains(install, "/usr/lib/python3/dist-packages") {
+		t.Error("the pip RUN does not check what it installed against apt's packages")
+	}
+
+	// Every library the pip RUN installs, and the apt ones a worker reaches for, are imported at build time by the
+	// python3 of exactly the PATH a desktop gets (review RES-CP-1: the owed live check, made a build step).
+	module := map[string]string{"python-pptx": "pptx", "pandas": "pandas", "requests": "requests", "beautifulsoup4": "bs4",
+		"pdfplumber": "pdfplumber", "pymupdf": "fitz", "matplotlib": "matplotlib", "python-dateutil": "dateutil",
+		"xlrd": "xlrd", "tabulate": "tabulate", "reportlab": "reportlab"}
+	pins := regexp.MustCompile(`"?([A-Za-z0-9][A-Za-z0-9._-]*)(==|>=)`).FindAllStringSubmatch(install, -1)
+	if len(pins) < len(module) {
+		t.Fatalf("read %d pins from the pip RUN, want at least %d", len(pins), len(module))
+	}
+	var check string
+	for _, run := range runInstructions(string(raw)) {
+		if strings.Contains(run, "python3 -c \"import ") && strings.HasPrefix(run, "env -i PATH=") {
+			check = run
+		}
+	}
+	m := regexp.MustCompile(`^env -i PATH=(\S+) python3 -c "import ([^"]+)"$`).FindStringSubmatch(check)
+	if m == nil {
+		t.Fatalf("no build-time import of the worker libraries under a desktop's PATH: %q", clipRun(check))
+	}
+	if m[1] != desktopPath {
+		t.Fatalf("the import check runs under PATH %q, not desktopPath %q", m[1], desktopPath)
+	}
+	imported := map[string]bool{}
+	for _, name := range strings.Split(m[2], ",") {
+		imported[strings.TrimSpace(name)] = true
+	}
+	for _, pin := range pins {
+		mod, ok := module[pin[1]]
+		if !ok {
+			t.Errorf("the pip RUN installs %s, which the import check does not know: add it to both", pin[1])
+			continue
+		}
+		if !imported[mod] {
+			t.Errorf("%s (import %s) is installed but not imported by the build-time check", pin[1], mod)
+		}
+		if n := strings.Count(string(raw), pin[1]+pin[2]); n != 1 {
+			t.Errorf("%s is installed %d times, want once (one environment)", pin[1], n)
+		}
+	}
+	for _, aptOwned := range []string{"openpyxl", "docx"} {
+		if !imported[aptOwned] {
+			t.Errorf("the apt library %s is not imported by the build-time check", aptOwned)
 		}
 	}
 }
