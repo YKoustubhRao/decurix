@@ -11,6 +11,33 @@ set -u
 # 10.212.0.0/24 is the daemon's default bridge, 10.213.0.0/16 the networks it
 # makes (daemon.json); together 10.212.0.0/15.
 ours=10.212.0.0/15
+# The pool every network this daemon makes comes from (default-address-pools in setup.sh's daemon.json): each
+# desktop's own network, the shared one and the practice one.
+desktop_pool=10.213.0.0/16
+
+# Each desktop has a network of its own, so no desktop reaches another (internal/desktop/desknet.go). With
+# "iptables": false Docker adds none of its own isolation between its networks, and the rules below forward the whole
+# range, so traffic from one desktop network to another, routed through this distro, would go through. fence drops
+# exactly that: forwarding whose source and destination are both in desktop_pool. Nothing else is touched - another
+# distro's Docker (WSL2 distros share one network stack: an ERPNext demo published from Ubuntu's Docker), its
+# bridges, a desktop's way out, or a desktop reaching a service published elsewhere; and traffic within one network
+# (a desktop and the control plane or the model server on it) is switched, never forwarded. Idempotent; unfence
+# takes it out when this daemon ends and when the app is uninstalled (installer.nsh).
+fence() {
+    # The broader form of an earlier build, which dropped every bridge-to-bridge forward, goes first.
+    while iptables -C FORWARD -i br-+ -o br-+ -j DROP 2>/dev/null; do iptables -D FORWARD -i br-+ -o br-+ -j DROP; done
+    iptables -C FORWARD -s "$desktop_pool" -d "$desktop_pool" -j DROP 2>/dev/null ||
+        iptables -I FORWARD 1 -s "$desktop_pool" -d "$desktop_pool" -j DROP
+}
+unfence() {
+    while iptables -C FORWARD -s "$desktop_pool" -d "$desktop_pool" -j DROP 2>/dev/null; do
+        iptables -D FORWARD -s "$desktop_pool" -d "$desktop_pool" -j DROP
+    done
+}
+if [ "${1:-}" = unfence ]; then
+    unfence
+    exit 0
+fi
 
 running=$(pidof dockerd 2>/dev/null | awk '{print $1}')
 if [ -n "$running" ]; then
@@ -38,13 +65,8 @@ for side in -s -d; do
     iptables -C FORWARD "$side" "$ours" -j ACCEPT 2>/dev/null ||
         iptables -I FORWARD 1 "$side" "$ours" -j ACCEPT
 done
-# Each desktop has a network (a bridge) of its own, so no desktop reaches another (internal/desktop/desknet.go). With
-# "iptables": false Docker adds none of its own isolation between bridges, and the rules above forward the whole
-# range: traffic from one bridge to another, routed through this distro, would go through. Dropped here, first in
-# FORWARD. Traffic within one bridge is switched, never forwarded, so the control plane's and the model server's legs on
-# each desktop's network are untouched, and so is the way out (to eth0).
-iptables -C FORWARD -i br-+ -o br-+ -j DROP 2>/dev/null ||
-    iptables -I FORWARD 1 -i br-+ -o br-+ -j DROP
+# Desktops' networks kept apart (fence, above), first in FORWARD.
+fence
 
 rm -f /var/run/docker.pid
 
@@ -65,3 +87,7 @@ while kill -0 "$daemon" 2>/dev/null; do
     rotate
 done
 wait "$daemon"
+status=$?
+# The stack stopped: its rule goes with it (the next start puts it back).
+unfence
+exit "$status"

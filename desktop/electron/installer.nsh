@@ -60,6 +60,9 @@
         MessageBox MB_OK|MB_ICONEXCLAMATION "Some of Decurix's resources in your own WSL runtime could not be removed (its Docker Engine did not answer, or a removal failed). Everything else was deleted. To remove those too, start that Docker Engine and delete Decurix's desktop_* containers and volumes there." /SD IDOK
       ${endIf}
       ; Unregistering the app-owned distro deletes its disk.
+      ; Its forwarding rule (dockerd.sh fence) lives in the network stack WSL2 distros share, so it would outlive the
+      ; distro: taken out first.
+      nsExec::Exec `"$R6" -d Decurix -u root -e /opt/decurix/dockerd.sh unfence`
       nsExec::Exec `"$R6" --unregister Decurix`
       Pop $R8
       Sleep 1500
