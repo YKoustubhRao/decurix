@@ -52,12 +52,15 @@ On a desktop with a shared folder, `source_guard.take` notes and copies the fold
 ## Trust rests on independent checks (W0.5, phase 2)
 
 A skill's streak (`experience.clean_streak`) counts a run only when it succeeded, needed no person, and a check
-independent of the worker passed: a fact of the request's input files, which the worker read and did not write (a
-figure or a reference code), found in the files it made, with nothing contradicting a source, every figure the
-request states held, and nothing blocking (`code`, `produced.source_facts` and `FileFacts.compared_clean`). Files
-that only opened are no check. The request's own figures are evidence and never the basis, because a file that
-restates the request holds them all. A made file that holds the request's text, or the whole of an input's, is not
-read for it. Every record it declared read back
+independent of the worker passed: a comparison that could have failed and did not. For files (`code`,
+`FileFacts.compared_clean`), that means at least one figure a made workbook presents as a source's own ("Total as
+per bills", "Closing balance per bank statement") was compared with what that source states (`sources.mismatches`,
+counted in `FileFacts.source_compared`), none of them differed, every figure the request states is held, and nothing
+blocks. Files that only opened are no check. The request's own figures, and an input's facts merely found in the
+output, are evidence and never the basis: a file that restates the request holds them all, and so do a copy of the
+input, a partial copy, a failure note quoting one figure and a file with one figure wrong (review rounds 3 and 4).
+A total that code recomputed from source data would also count, but no check computes one yet. Every record it
+declared read back
 from the application with its values shown (`ledger`, `records.all_read_back`), or a person (`person`). The screen
 (every step's result appeared) and the model's judgement are kept on the verdict as `basis` and never advance the
 streak: a replay can show each step's result and still have entered the wrong thing. Verdicts written before `basis`
@@ -67,6 +70,17 @@ share of task ids, 1 in `DECURIX_SPOT_JUDGE_EVERY` (default 5; 0 never, 1 always
 structured verdict (`verdict.py`, decurix.verdict/v1): `checked` is always `verdict == "done"`, a stop is `stopped`
 (`messaging.write_stopped`, never done), and a report whose path gave no verdict of its own gets a `legacy` one with no
 basis.
+
+## A date the save cannot read either way (review rounds 2-4)
+
+When a save cannot compare a date because its day and month could be either way and no order is known for that side,
+the save waits, and the person is asked the date question with both readings. It goes out as a query of its own in
+the engine's next turn (`messaging.ask_for_query`) and takes the place of whatever the engine asked then. That
+includes an approval question and a question raised for a secret: these are replaced too, not added to and not
+asked alongside. The engine is told its question was not put to the person and asks it again. A replaced approval's
+held action is withdrawn, because the date reply is no yes. Only the reply to the date query, with the whole text "1"
+or "2" and a judgement, sets that side's order. A task that ends with the question open is unchecked, and its report
+says the question.
 
 ## What labels a run is kept until exported (W0.8, phase 2)
 

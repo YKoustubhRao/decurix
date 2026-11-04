@@ -167,6 +167,9 @@ def readable_step(line):
         if match:
             text = rewrite(match).strip()
             break
+    # The text a `gui type` command types is never quoted in a step line (review round 4, R3-B1).
+    from decurix_agent.computer import privacy
+    text = privacy.step_command(text)
 
     return text[:1].upper() + text[1:] if text else None
 

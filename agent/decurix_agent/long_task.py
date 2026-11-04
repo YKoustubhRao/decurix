@@ -637,6 +637,13 @@ def ledger(run_id):
                 log(f"long_task: could not move the unreadable ledger aside: {move}")
             raise LedgerError(f"the ledger of run {run_id} could not be read ({type(exc).__name__}); it is kept as "
                               f"{aside.name}") from exc
+    # The ledger on disk holds the request withheld: the run goes on with the request as it was, while its task's
+    # secret store still has it (review round 4).
+    if "[withheld" in str(data.get("request") or ""):
+        from decurix_agent.computer import privacy
+        kept = privacy.resume_copy(run_id)
+        if kept:
+            data["request"] = kept
     data.setdefault("facts", [])
     data.setdefault("decisions", [])
     data.setdefault("amendments", [])
@@ -683,10 +690,11 @@ def _save_ledger(run_id, data):
     with _lock:
         path = _ledger_path(run_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        # The task's secret values withheld as they are; no shape matching (a stage's cells and figures are compared
-        # later).
+        # Every secret known withheld, shapes too; the request comes back from the task's resume copy (ledger), and
+        # the host documents' snapshot, compared later, is withheld without shapes (review round 4).
         from decurix_agent.computer import privacy
-        privacy.write_scrubbed(path, data, atomic=True, shapes=False, json_kw={"indent": 1, "ensure_ascii": False})
+        privacy.write_scrubbed(path, data, atomic=True, exempt=("host_docs_start",),
+                               json_kw={"indent": 1, "ensure_ascii": False})
 
 
 def _update(run_id, change):
@@ -791,6 +799,10 @@ def perform(content, task_file):
     # The ledger first, then the run: a crash between the two leaves a ledger with no run (nothing resumes it), never
     # a run with no request to resume (E-23).
     run_id = uuid.uuid4().hex
+    # The request as it is, to resume by after an agent restart, in the task's secret store (tmpfs, let go at the
+    # final report); every copy on disk is withheld (review round 4).
+    from decurix_agent.computer import privacy
+    privacy.keep_resume_copy(run_id, task_id, request)
     _save_ledger(run_id, {"request": request, "task_id": task_id, "started": time.time(),
                           "task_file": str(task_file or ""), "host_docs_start": _host_snapshot()})
     run_state = _runner().create(spec, {"request": request}, run_id=run_id, work_dir=str(config.WORK_DIR))

@@ -28,13 +28,15 @@ ALLOWED = {
     "computer/privacy.py:_keep_hashes": "the secrets file: SHA-256 hashes, never text",
     "computer/privacy.py:_write_literals": "the tasks' secret values themselves, tmpfs, 0600, let go at the task's end",
     "computer/privacy.py:_with_literals": "the literal store's lock file",
+    "computer/privacy.py:_with_resume": "a planned run's resume copy of its request, beside the tasks' secret values: "
+                                        "tmpfs, 0600, let go at the task's end",
     "gate_server.py:__enter__": "the gate's lock file, in its own 0700 directory",
     "gate_server.py:_write_private": "the gate's own stores (the signed request, the tasks' secret values), 0600, in "
                                      "the gate's 0700 directory, which the worker cannot read",
     # Lock files: an empty handle to lock, no content.
-    "computer/approval.py:_locked": "the approval store: its lock and its state (fingerprints and the gate's own "
-                                    "words, withheld by shown_by_gate); the gate keeps it as its own user, which "
-                                    "cannot read the worker's secret values",
+    "computer/approval.py:_locked": "the approval store's lock, and its state in the gate only (fingerprints and "
+                                    "the gate's own words, withheld by shown_by_gate; the gate's user cannot read "
+                                    "the worker's values) - a desktop with no gate writes it through write_scrubbed",
     "computer/core.py:_state_lock": "the observation lock file",
     "computer/recording.py:_locked": "a recording's lock file",
     "computer/skill_engine.py:run": "the skill engine's lock file",
@@ -93,6 +95,7 @@ FORMS = {
     "computer/privacy.py:_keep_hashes": {"write_text"},
     "computer/privacy.py:_write_literals": {"os.fdopen", "os.replace"},
     "computer/privacy.py:_with_literals": {"open"},
+    "computer/privacy.py:_with_resume": {"open", "os.fdopen", "os.replace"},
     "gate_server.py:__enter__": {"open"},
     "gate_server.py:_write_private": {"os.fdopen", "os.replace"},
     "computer/approval.py:_locked": {"open", "path.replace", "write_text"},
@@ -139,6 +142,24 @@ FORMS = {
 }
 
 COPIES = {"copy", "copy2", "copyfile", "copyfileobj", "copytree", "move"}
+TEMP_FILES = {"NamedTemporaryFile", "TemporaryFile", "SpooledTemporaryFile"}
+
+# The listed writers that write what their caller hands them, raw, and every function that may call them: a new
+# caller is a new raw writer (review round 3: `recording.write_bytes_whole(path, text.encode())` wrote through
+# unchecked). Each is a transport, a secret store or bytes.
+RAW_HELPERS = {
+    "write_bytes_whole": {"computer/recording.py:write_whole"},
+    "_hold": {"long_task.py:_take_message", "long_task.py:_take_new_request"},
+    "_write_private": {"gate_server.py:end_task", "gate_server.py:keep_request", "gate_server.py:keep_secrets"},
+    "save_request": {"http_api.py:_learn", "http_api.py:_replay", "http_api.py:_request", "http_api.py:_run_skill"},
+    "_write_literals": {"computer/privacy.py:_with_literals"},
+    "_with_literals": {"computer/privacy.py:clear_literals", "computer/privacy.py:remember_literals"},
+    "_with_resume": {"computer/privacy.py:clear_literals", "computer/privacy.py:keep_resume_copy"},
+    "keep_observation": {"computer/audit.py:record"},
+    "save_screenshot": {"computer/cli.py:main"},
+    "_pending_request_reply": {"long_task.py:_take_message"},
+    "_release": {"long_task.py:_pending_request_reply"},
+}
 
 
 def _mode(call, at):
@@ -159,12 +180,20 @@ def write_form(call):
 
     f = call.func
     if isinstance(f, ast.Name):
-        return "open" if f.id == "open" and _writing(_mode(call, 1)) else ""
+        if f.id == "open" and _writing(_mode(call, 1)):
+            return "open"
+        return "tempfile." + f.id if f.id in TEMP_FILES else ""
     if not isinstance(f, ast.Attribute):
         return ""
     owner = f.value.id if isinstance(f.value, ast.Name) else ""
     if f.attr in ("write_text", "write_bytes"):
         return f.attr
+    if owner in ("io", "codecs") and f.attr == "open" and _writing(_mode(call, 1)):
+        return owner + ".open"
+    if owner == "os" and f.attr in ("open", "write"):
+        return "os." + f.attr  # (a raw descriptor: whatever its flags, nothing withholds what goes through it)
+    if owner == "tempfile" and f.attr in TEMP_FILES:
+        return "tempfile." + f.attr  # (opened for writing by default: "w+b")
     if f.attr == "open" and owner not in ("os", "io", "codecs", "tarfile", "zipfile", "gzip") and _writing(
             _mode(call, 0)):
         return "Path.open"
@@ -214,6 +243,26 @@ def writes():
     return found
 
 
+def raw_helper_callers():
+    """{helper: {"file:function"}} of every call to a RAW_HELPERS function in the agent's package."""
+
+    found = {name: set() for name in RAW_HELPERS}
+    for path in sorted(ROOT.rglob("*.py")):
+        rel = path.relative_to(ROOT).as_posix()
+        if "thebot" in path.relative_to(ROOT).parts:
+            continue
+        for top in ast.parse(path.read_text(encoding="utf-8")).body:
+            items = top.body if isinstance(top, ast.ClassDef) else [top]
+            for item in items:
+                where = item.name if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) else "<module>"
+                for node in ast.walk(item):
+                    if isinstance(node, ast.Call):
+                        name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+                        if name in found:
+                            found[name].add(f"{rel}:{where}")
+    return found
+
+
 class EveryWriteGoesThroughTheWriter(unittest.TestCase):
     def test_no_other_write_in_the_agents_code(self):
         bare = {k: v for k, v in writes().items()
@@ -225,6 +274,11 @@ class EveryWriteGoesThroughTheWriter(unittest.TestCase):
         self.assertEqual(sorted(set(ALLOWED) - set(writes())), [], "a listed writer writes through write_scrubbed "
                          "now, or is gone: take it off ALLOWED")
         self.assertEqual(set(ALLOWED), set(FORMS))
+
+    def test_no_new_caller_of_a_raw_helper(self):
+        self.assertEqual({k: sorted(v) for k, v in raw_helper_callers().items() if v != RAW_HELPERS[k]}, {},
+                         "a raw writer has a caller it did not have: write through privacy.write_scrubbed, or list "
+                         "the caller in RAW_HELPERS with why what it hands over holds no secret")
 
     def test_the_walk_sees_each_form(self):
         source = '''
@@ -242,11 +296,14 @@ def e(p):
 def f(p):
     p.write_bytes(b"")
 def g(s):
-    return s.replace("a", "b"), open(s).read(), s.open().read()
+    return s.replace("a", "b"), open(s).read(), s.open().read(), io.open(s).read()
+def h(p):
+    io.open(p, "w"); codecs.open(p, "a"); tempfile.NamedTemporaryFile("w"); os.write(os.open(p, 1), b"")
 '''
         tree = ast.parse(source)
         forms = sorted(write_form(n) for n in ast.walk(tree) if isinstance(n, ast.Call) and write_form(n))
-        self.assertEqual(forms, ["Path.open", "json.dump", "open", "os.fdopen", "path.replace", "shutil.copyfile",
+        self.assertEqual(forms, ["Path.open", "codecs.open", "io.open", "json.dump", "open", "os.fdopen", "os.open",
+                                 "os.write", "path.replace", "shutil.copyfile", "tempfile.NamedTemporaryFile",
                                  "write_bytes"])
 
     def test_skills_save_goes_through_the_writer(self):

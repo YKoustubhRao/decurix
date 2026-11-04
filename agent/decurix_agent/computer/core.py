@@ -52,7 +52,8 @@ def _save_state(observation, next_ref):
     data["next_ref"] = next_ref
     data["sample"] = base64.b64encode(observation["frame"].sample()).decode("ascii")
 
-    privacy.write_scrubbed(STATE_FILE, data, atomic=True, shapes=False)
+    # Shapes on: a key or code shown in an ordinary field is withheld; the values compared later are exempt by name.
+    privacy.write_scrubbed(STATE_FILE, data, atomic=True, exempt=("value", "next_ref", "sample"))
 
 
 @contextmanager
@@ -3806,6 +3807,13 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     # were typed into this one: live, "Admin\tadmin123\n" put the password into
     # the username's step in plain text. Typing each field on its own lets the
     # password field be recognised as one.
+
+    # A withheld mark is never typed: it is where a value was kept out of a copy (a resumed run's request, a note),
+    # not the value. Into a password field it is a wrong password; into any other it is saved into the person's
+    # record (review round 4).
+    if text is not None and ("[withheld" in str(text) or "[held back" in str(text)):
+        raise ComputerError("Not typed: the text holds a withheld mark ([withheld]), not the value it stands for. "
+                            "Ask the person for this value (HELP:), and type what they give.")
 
     before = observe()
 

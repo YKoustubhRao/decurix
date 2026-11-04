@@ -510,6 +510,8 @@ def ask_for_query(problem, kind="query", engine=None, secret=False, _date_query=
     # own, in place of this one - never added to it: one reply to two questions answered both, and an engine question
     # with numbered choices set the date's order with its own answer (review round 3, R3). Only the reply to the date's
     # own query settles it (watchers); the engine is then told this question was not put to the person.
+    # An approval question or a question raised for a secret is replaced the same way, on purpose: the replaced
+    # approval's held action is withdrawn by the date reply (no yes), and the engine asks again (review round 4).
     if not _date_query:
         try:
             pending = task_context.date_question()

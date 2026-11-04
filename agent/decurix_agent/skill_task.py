@@ -3640,8 +3640,8 @@ def _gate(reply, kind, engine):
         gate_checks = list(decided.get("checks") or [])
         if made and facts.compared_clean():
             gate_checks.append(verdicts.check("files.read_back", verdicts.PASS, "code",
-                                              f"{facts.from_sources} fact(s) of the request's sources held in "
-                                              f"{len(made)} file(s)"))
+                                              f"{facts.source_compared} figure(s) given as a source's own matched "
+                                              f"that source, in {len(made)} file(s)"))
         if "ledger" in _basis(None):
             gate_checks.append(verdicts.check("ledger.read_back", verdicts.PASS, "ledger",
                                               "every declared record read back from the application"))

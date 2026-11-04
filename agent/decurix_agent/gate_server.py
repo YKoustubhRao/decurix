@@ -47,8 +47,9 @@ KEY_FILE = "key"
 # The reason in the gate's question when it finds none of its own in the action (never the caller's words).
 GATE_REASON = "it needs your approval"
 # A refusal's reason: fixed, so it carries none of the action's words.
-REFUSED_REASON = ("the gate could not check this action's words for secrets, so it was refused without asking anyone; "
-                  "do it another way or report that it could not be done")
+REFUSED_REASON = ("the gate could not check this action's words for secrets, so it was refused without asking anyone "
+                  "(no reply can allow it): do not try it again - do it another way, or report that it could not be "
+                  "done")
 
 _lock = threading.Condition()
 _nonces = {}   # nonce -> expiry: one use each

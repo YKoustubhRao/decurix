@@ -345,10 +345,15 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   their explicit act; say so in recordings.md or check `held` there.
 - **The skill a run noted on its task** (`task_context.set_skill`) stays when the skill run hands the task to the
   general harness; the outcome then names a skill that did not drive its end.
-- **The `code` basis of trust** now needs a fact of the request's input files (which the worker did not write) found
-  in the files made, with nothing contradicting a source (`produced.source_facts`, review round 3, R2). A request
-  with no input file earns no `code` basis however clean its files read. Watch the L3 matrix for skills that can no
-  longer earn trust by code alone. A total recomputed in code from source data does not count yet.
+- **The `code` basis of trust** now comes only from a comparison that could have failed (review round 4, R2): a
+  figure a made workbook presents as a source's own, compared with what that source states (`sources.mismatches`),
+  at least one compared and none different. Most file work names no such figure and earns no `code` basis, however
+  clean its files read, so watch the L3 matrix for skills that can no longer earn trust by code. Owed: a check that
+  recomputes a total from source data, which would count too.
+- **Priority for the learning loop: a person's answer about a field's unit is kept for that field.** A field whose
+  label states no unit (ERPNext's tax table column `Rate`, with no `%`) makes every save of "18%" against "18" wait
+  on the person, once per task. Keep their answer as that field's unit, backed by its judgement and scoped to the
+  application and the form field, so it is asked once.
 - **A date the save waits on** goes out as a question of its own at the engine's next question, in place of it
   (round 3, R3). An engine that reports instead ends the task unchecked, with the question in the report. Asked
   during a taught skill's lesson, the engine's lesson question is not put to the person, and the lesson gets the
@@ -367,12 +372,14 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
     way of writing a file in the agent's package except a listed few: bytes, the person's own files, lock files, the
     secret stores, and the command-file transport. Stores whose values are compared later (the record ledger, a
     stage's ledger and cells, context.json) withhold the literal secrets only, with no shape matching.
-  - A planned run's ledger and a workflow checkpoint now hold the request with its secret values withheld from the
-    first save, so a run resumed after an agent restart has `[withheld]` where a password was. It asks, or fails a
-    check, instead of typing the password.
-  - A wholly marked message is withheld whole, plus what its structure names (round 3, R2-B1). An unlabelled secret
-    word in a long marked message, typed on its own later, is no longer withheld: the coordinator's accepted cost
-    against withholding a later task's ordinary words.
+  - A planned run's ledger and a workflow checkpoint hold the request withheld on disk. The request as it was, and
+    a workflow's inputs, are kept in the task's resume copy (tmpfs, beside its secret values, let go at the final
+    report), so an agent restart resumes with the value (round 4). Only a container restart loses it, and that
+    already reports the task as interrupted. `core.act` never types a `[withheld]` mark: it says to ask the person.
+  - A wholly marked message is withheld whole, plus what its structure names, plus each word of it shaped like a
+    value: 4+ characters with a digit or a mark (round 4, R3-B1, reversing round 3's accepted cost). A step line never
+    quotes what `gui type` types. Residual cost: an all-letter secret word in a long marked message, typed on its
+    own, is withheld only where the whole message stands.
   - Not done from REVIEW-PY-A-2's nits: `core._shown_by_app` still takes the application's value from any observation,
     not only one before the worker's first input on that form; `skill_task._correct` still reads the reply's
     judgement and secret flag from globals.

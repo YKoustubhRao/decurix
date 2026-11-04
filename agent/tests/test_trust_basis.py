@@ -86,9 +86,9 @@ class TheBasisOfATaughtRun(unittest.TestCase):
         return noted.get("basis")
 
     @staticmethod
-    def compared(n, held, from_sources=1):
+    def compared(n, held, source_compared=1):
         facts = produced.FileFacts()
-        facts.compared, facts.held, facts.from_sources = n, held, from_sources
+        facts.compared, facts.held, facts.source_compared = n, held, source_compared
         return facts
 
     def test_files_whose_stated_facts_were_compared_and_held_are_code(self):
@@ -96,7 +96,7 @@ class TheBasisOfATaughtRun(unittest.TestCase):
 
     def test_files_that_only_opened_are_no_code(self):
         # Review round 2, B5: a read-back that compared nothing is no check of what the files say.
-        self.assertEqual(self.basis(facts=self.compared(0, 0, from_sources=0)), ["screen"])
+        self.assertEqual(self.basis(facts=self.compared(0, 0, source_compared=0)), ["screen"])
         self.assertEqual(self.basis(facts=self.compared(2, 1)), ["screen"])
 
     def test_the_comparison_reads_the_file_against_the_request(self):
@@ -118,8 +118,8 @@ class TheBasisOfATaughtRun(unittest.TestCase):
 
     def test_the_requests_own_facts_are_never_the_basis(self):
         # Review round 3, R2: every fact the request states held, nothing from a source - no code.
-        self.assertEqual(self.basis(facts=self.compared(2, 2, from_sources=0)), ["screen"])
-        self.assertEqual(self.basis(facts=self.compared(0, 0, from_sources=1)), ["code", "screen"])
+        self.assertEqual(self.basis(facts=self.compared(2, 2, source_compared=0)), ["screen"])
+        self.assertEqual(self.basis(facts=self.compared(0, 0, source_compared=1)), ["code", "screen"])
 
     def test_no_file_made_is_no_code(self):
         self.assertEqual(self.basis(files=()), ["screen"])
@@ -198,12 +198,18 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class WhatTheWorkerDidNotWrite(unittest.TestCase):
-    """Review round 3, R2 (probe r2p4): the facts compared were the request's own, looked for in the files the worker
-    wrote - a file that restates the request held them all and gave the `code` basis. The basis is now a fact of the
-    request's input files the worker did not write, found in what it made."""
 
-    REQUEST = "Pay the vendor 12,500.00 against INV-2024-0042 as invoice.csv says and write summary.txt"
+
+class OnlyAComparisonThatCouldHaveFailed(unittest.TestCase):
+    """Review rounds 3 and 4, R2: `code` trust came from the request's own figures found in a file (a file restating the
+    request held them all), then from any of an input's facts found in a file - a byte copy of the input workbook, a
+    renamed or cut copy, a partial copy, a failure note quoting one figure and a file with one figure wrong all held
+    some. It now comes only from a figure a file presents as a source's own, compared with what that source states."""
+
+    REQUEST = "Enter every bill in bills.xlsx into the books and write a summary"
+    ROWS = [("BL-20931", "Coastal Infra", 45210.50), ("BL-20932", "Malnad Agro", 7342.25),
+            ("BL-20933", "Karkala Steel", 12000.00)]
+    TOTAL = 64552.75
 
     def setUp(self):
         import shutil
@@ -215,34 +221,55 @@ class WhatTheWorkerDidNotWrite(unittest.TestCase):
         p = mock.patch.object(config, "WORK_DIR", self.folder)
         p.start()
         self.addCleanup(p.stop)
-        (self.folder / "invoice.csv").write_text(
-            "Item,Ref,Amount\nSteel angles,INV-2024-0042,10670.00\nFreight,FRT-77310,1830.00\nTotal,,12500.00\n",
-            encoding="utf-8")
+        self.source = self.folder / "bills.xlsx"
+        self.book(self.source, [("Bill", "Party", "Amount")] + self.ROWS + [("Total", "", self.TOTAL)])
 
-    def facts(self, text, request=None):
-        path = self.folder / "summary.txt"
-        path.write_text(text, encoding="utf-8")
-        return produced.file_facts(request or self.REQUEST, [str(path)])
+    @staticmethod
+    def book(path, rows):
+        import openpyxl
+        wb = openpyxl.Workbook()
+        for row in rows:
+            wb.active.append(list(row))
+        wb.save(str(path))
+        return str(path)
 
-    def test_the_request_echoed_is_no_code(self):
-        for text in (self.REQUEST, "Task: " + self.REQUEST + "\nStatus: could not log in, nothing paid.",
-                     "Paid 12,500.00 for INV-2024-0042"):
-            with self.subTest(text):
-                facts = self.facts(text)
-                self.assertEqual(facts.from_sources, 0)
-                self.assertFalse(facts.compared_clean())
+    def facts(self, *made):
+        return produced.file_facts(self.REQUEST, [str(m) for m in made])
 
-    def test_a_sources_figure_carried_into_the_output_is_code(self):
-        facts = self.facts("Paid 12,500.00 for INV-2024-0042: steel 10,670.00 and freight 1,830.00 (FRT-77310)")
-        self.assertEqual(facts.from_sources, 3)  # 10670.00, 1830.00 and FRT-77310; the request's own are not counted
-        self.assertTrue(facts.compared_clean())
-
-    def test_a_copy_of_the_source_checks_nothing(self):
-        source = (self.folder / "invoice.csv").read_text(encoding="utf-8")
-        facts = self.facts("Copied:\n" + source)
-        self.assertEqual(facts.from_sources, 0)
-
-    def test_the_request_not_held_still_withholds_it(self):
-        facts = self.facts("Paid 99,999.00: steel 10,670.00 and freight 1,830.00")
-        self.assertGreater(facts.from_sources, 0)
+    def assert_no_code(self, facts):
+        self.assertEqual(facts.source_compared, 0)
         self.assertFalse(facts.compared_clean())
+
+    def test_copies_and_notes_are_no_code(self):
+        import shutil
+        copy = self.folder / "copy.xlsx"
+        shutil.copyfile(self.source, copy)
+        self.assert_no_code(self.facts(copy))
+        renamed = self.book(self.folder / "renamed.xlsx", [("No.", "Name", "Value")] + self.ROWS)
+        self.assert_no_code(self.facts(renamed))
+        cut = self.book(self.folder / "cut.xlsx", [("Bill", "Party", "Amount")] + self.ROWS[:2])
+        self.assert_no_code(self.facts(cut))
+        partial = self.folder / "partial.csv"
+        partial.write_text("Bill,Party,Amount\nBL-20931,Coastal Infra,45210.50\nBL-20932,Malnad Agro,7342.25\n",
+                           encoding="utf-8")
+        self.assert_no_code(self.facts(partial))
+        note = self.folder / "fail.txt"
+        note.write_text("Could not log in to the books. Nothing was entered. First bill seen: BL-20931 for 45,210.50.",
+                        encoding="utf-8")
+        self.assert_no_code(self.facts(note))
+
+    def test_a_wrong_figure_is_a_mismatch_and_no_code(self):
+        wrong = self.book(self.folder / "summary.xlsx", [("Bill", "Amount")] + [(r[0], r[2]) for r in self.ROWS]
+                          + [("Total as per bills", 64642.75)])
+        facts = self.facts(wrong)
+        self.assertEqual(facts.source_compared, 1)
+        self.assertTrue(facts.source_mismatch, "the wrong total is said")
+        self.assertFalse(facts.compared_clean())
+
+    def test_a_figure_compared_with_its_source_and_matching_is_code(self):
+        right = self.book(self.folder / "summary.xlsx", [("Bill", "Amount")] + [(r[0], r[2]) for r in self.ROWS]
+                          + [("Total as per bills", self.TOTAL)])
+        facts = self.facts(right)
+        self.assertEqual(facts.source_compared, 1)
+        self.assertEqual(facts.source_mismatch, [])
+        self.assertTrue(facts.compared_clean())

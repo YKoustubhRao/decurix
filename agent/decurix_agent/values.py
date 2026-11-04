@@ -191,10 +191,15 @@ def field_units(label):
     state none of them: such a field does not say which. A figure written bare in that field carries a unit the label
     states, so "18%" and the "18" of a field labelled "Rate (%)" are one figure (review round 3, R5); without such a
     label a unit on one side only stays undecided - "15 kg" against the "15" of a field labelled "Weight (lb)" is not
-    a pass.
+    a pass. A label that names more than one unit names none: words joined by "/", "or" or a comma are alternatives
+    ("Weight in kg or lb", "Weight (kg, lb)"), and so is a "%" beside a bracketed word - such a field does not say
+    which (review round 4).
     """
 
-    text = re.sub(r"[^\W_]+(?:\s*/\s*[^\W_]+)+", " ", _norm(label).casefold())
+    text = _norm(label).casefold()
+    if "%" in text and re.search(r"\([^()%]*[^\W\d_][^()%]*\)", text):
+        return frozenset()  # "%" and a unit in brackets: two units named
+    text = re.sub(r"[^\W_]+(?:\s*(?:/|,|\bor\b)\s*[^\W_]+)+", " ", text)
     return frozenset(re.findall(r"%|[^\W\d_]+", text))
 
 
@@ -331,9 +336,31 @@ def text_key(value):
     space, and gaps collapse to one - "Pvt.Ltd." and "Pvt. Ltd.", "Saint-Gobain" and "Saint Gobain" are one name. A short code in brackets at the end - "Karnataka (29)" - names the same thing as the bare name:
     an option's label often carries one (found live 2026-10-26, a right form was stopped once over it)."""
 
-    text = re.sub(r"\s*\([^()]{1,12}\)\s*$", "", _norm(value)).casefold()
-    kept = "".join(ch if unicodedata.category(ch)[0] in "LMN" else " " for ch in text)
+    kept = "".join(ch if unicodedata.category(ch)[0] in "LMN" else " " for ch in _text_of(value))
     return " ".join(kept.split())
+
+
+def _text_of(value):
+    return re.sub(r"\s*\([^()]{1,12}\)\s*$", "", _norm(value)).casefold()
+
+
+def _compare_key(value):
+    """What two texts are compared by: their letters, marks and digits in order, gaps aside - except a gap between
+    two digits, punctuation or space, which is kept as one gap ("12-345" is not "123-45", "PO 12/3" is not "PO 1/23",
+    "INV-2024-0042" is "INV 2024 0042"): digits grouped differently are a different code or address (review round 4).
+    A value of digits and spaces only is compared by its digits before this (_spaced_digits), so an account written
+    "1234 5678" is still "12345678"; inside text the grouping counts, which can only make a save wait."""
+
+    out, gap = [], False
+    for ch in _text_of(value):
+        if unicodedata.category(ch)[0] in "LMN":
+            if gap and out and out[-1].isdigit() and ch.isdigit():
+                out.append("|")
+            out.append(ch)
+            gap = False
+        else:
+            gap = True
+    return "".join(out)
 
 
 def _spaced_digits(value):
@@ -396,8 +423,9 @@ def compare(a, b, a_order=None, b_order=None, units=()):
     if isinstance(na, Amount) or isinstance(nb, Amount):
         return Result(None, "kinds")
     # Two texts are one when their letters and digits agree in order, gaps aside: a gap is where punctuation or a
-    # space stood, and apps write the same name both ways ("ACME-LTD" / "acme ltd", "INV-0042" / "inv0042").
-    ka, kb = text_key(a).replace(" ", ""), text_key(b).replace(" ", "")
+    # space stood, and apps write the same name both ways ("ACME-LTD" / "acme ltd", "INV-0042" / "inv0042") - but
+    # never a gap between two digits (_compare_key).
+    ka, kb = _compare_key(a), _compare_key(b)
     return Result(bool(ka) and ka == kb, "text")
 
 

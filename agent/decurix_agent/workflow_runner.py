@@ -533,8 +533,9 @@ class WorkflowRunner:
         p = self._path(state["run_id"])
         p.parent.mkdir(parents=True, exist_ok=True)
         from decurix_agent.computer import privacy
-        # (Its claim token is no secret to withhold by its shape: literal secrets only.)
-        privacy.write_scrubbed(p, state, atomic=True, shapes=False, json_kw={"indent": 2, "allow_nan": False})
+        # Shapes on, but not over what the run executes and compares (its spec, its claim lease, its folder).
+        privacy.write_scrubbed(p, state, atomic=True, exempt=("spec", "lease", "work_dir"),
+                               json_kw={"indent": 2, "allow_nan": False})
         return copy.deepcopy(state)
 
     def prune(self, older_than=24 * 3600):
@@ -598,10 +599,21 @@ class WorkflowRunner:
                 raise ValueError("work_dir must be absolute")
             Path(work_dir).mkdir(parents=True, exist_ok=True)
             state["work_dir"] = str(Path(work_dir).resolve())
+        # The inputs as they are, to run by: every checkpoint on disk holds them withheld (privacy.write_scrubbed), so
+        # a secret input is kept in the task's secret store (tmpfs, let go at the final report - review round 4).
+        from decurix_agent import task_context
+        from decurix_agent.computer import privacy
+        privacy.keep_resume_copy("workflow:" + run_id, task_context.current(), json.dumps(state["inputs"]))
         return self._save(state)
 
     def status(self, run_id):
         state = json.loads(self._path(run_id).read_text(encoding="utf-8"))
+        if isinstance(state, dict) and isinstance(state.get("inputs"), dict) and "[withheld" in json.dumps(
+                state["inputs"]):
+            from decurix_agent.computer import privacy
+            kept = privacy.resume_copy("workflow:" + run_id)
+            if kept:
+                state["inputs"] = json.loads(kept)
         if not isinstance(state, dict) or "spec" not in state:
             raise ValueError("checkpoint must contain a workflow object")
         validate(state["spec"])

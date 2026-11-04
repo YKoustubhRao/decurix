@@ -2,6 +2,7 @@ import hashlib
 import math
 import os
 import re
+import unicodedata
 import urllib.parse
 from pathlib import Path
 
@@ -350,16 +351,94 @@ def literals(task_id=None):
 
 
 def clear_literals(task_id):
-    """The task is over: its secret values are let go."""
+    """The task is over: its secret values are let go, with the values of a request that named no task (an old control
+    plane's: nothing else ever ends them - review round 4) and the task's resume copies (keep_resume_copy)."""
 
     def drop(tasks):
         tasks.pop(task_id or "", None)
+        tasks.pop("", None)
         return tasks
     try:
         _with_literals(drop)
         _unsaved_literals.clear()
     except Exception:  # noqa: BLE001
         pass
+    try:
+        _with_resume(lambda kept: {k: v for k, v in kept.items() if v.get("task") != (task_id or "")})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ============================================================
+# A planned run's resume copy of its request (review round 4)
+#
+# A planned run keeps its request to resume by, and every store on disk keeps it withheld - so a run resumed after an
+# agent restart had "[withheld]" where a password was. The request as it was is kept here instead: beside the task's
+# secret values, in tmpfs (the task file's ".resume"), 0600, let go at the task's final report. Only a container
+# restart loses it, and that already reports the task as interrupted.
+# ============================================================
+
+def _resume_file():
+    from decurix_agent import task_context
+    return Path(task_context.CURRENT_FILE + ".resume")
+
+
+def _read_resume():
+    import json
+    try:
+        data = json.loads(_resume_file().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise _Unreadable(str(exc)) from exc
+    return {str(k): v for k, v in data.items() if isinstance(v, dict) and isinstance(v.get("text"), str)} \
+        if isinstance(data, dict) else {}
+
+
+def _with_resume(change):
+    """Read, change and write the resume copies under the literal store's lock. An unreadable file is kept."""
+
+    import json
+    import tempfile
+    from decurix_agent import filelock
+    path = _resume_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(_literal_file()) + ".lock", "a+") as lock:
+        filelock.exclusive(lock)
+        kept = change(dict(_read_resume()))
+        if not kept:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            return
+        fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(kept, ensure_ascii=False))
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+
+
+def keep_resume_copy(key, task_id, text):
+    """Keep `text` (a request with its secrets) to resume the run `key` by, for the task. Never raises."""
+
+    try:
+        _with_resume(lambda kept: dict(kept, **{str(key): {"task": task_id or "", "text": str(text or "")}}))
+    except Exception:  # noqa: BLE001 - the withheld copy on disk is still there; the resume then asks
+        pass
+
+
+def resume_copy(key):
+    """The request kept to resume the run `key` by, or None (a container restarted, or the task ended)."""
+
+    try:
+        found = _read_resume().get(str(key))
+    except Exception:  # noqa: BLE001
+        return None
+    return found["text"] if found else None
 
 
 _unsaved_literals = set()
@@ -472,22 +551,23 @@ class WithholdError(OSError):
     """What was to be written could not be checked for secrets, so nothing was written (write_scrubbed)."""
 
 
-def _withhold_tree(obj, shapes):
+def _withhold_tree(obj, shapes, exempt=frozenset()):
     """`obj` (what JSON holds) with every string in it - keys too - through _withhold_known: string by string, so the
-    JSON written stays JSON (a text pass over the dumped JSON could take a quote with a "password": "..." value)."""
+    JSON written stays JSON (a text pass over the dumped JSON could take a quote with a "password": "..." value). The
+    value of a key named in `exempt`, wherever it stands, is withheld without shapes (literal secrets only)."""
 
     if isinstance(obj, str):
         return _withhold_known(obj, shapes=shapes) if obj else obj
     if isinstance(obj, dict):
-        return {(_withhold_tree(k, shapes) if isinstance(k, str) else k): _withhold_tree(v, shapes)
-                for k, v in obj.items()}
+        return {(_withhold_tree(k, shapes) if isinstance(k, str) else k):
+                _withhold_tree(v, shapes and k not in exempt, exempt) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
-        return [_withhold_tree(v, shapes) for v in obj]
+        return [_withhold_tree(v, shapes, exempt) for v in obj]
     return obj
 
 
 def write_scrubbed(path, content, append=False, atomic=False, private=False, shapes=True, newline=None, json_kw=None,
-                   end=""):
+                   end="", exempt=()):
     """
     The one way the agent's code writes desktop state (~/.decurix, /tmp/decurix-*): `content` with every secret known
     withheld first - the tasks' values as they are (remember_literals), the hashed words, and, with `shapes` (the
@@ -496,7 +576,9 @@ def write_scrubbed(path, content, append=False, atomic=False, private=False, sha
     then `end` ("\\n" for a line of a .jsonl). `append` adds it to the file; `atomic` writes a temporary file of this
     writer's own, flushed to disk, and puts it in place (a reader never sees half of it); `private` makes the file
     0600. `shapes=False` is for stores whose values the agent compares later (a record's 16-digit account is no card
-    to withhold there, a run's claim token no token): their literal secrets are still withheld.
+    to withhold there): their literal secrets are still withheld. `exempt` names the keys of a dict or list whose
+    values are compared later (a field's value, a run's claim token): only those are withheld without shapes (review
+    round 4).
 
     Raises WithholdError (an OSError: every writer's existing "could not write" path) when the content cannot be
     checked: what cannot be checked is never written (fail closed). agent/tests/test_writers_withhold.py fails for any
@@ -512,7 +594,7 @@ def write_scrubbed(path, content, append=False, atomic=False, private=False, sha
         if isinstance(content, str):
             safe = _withhold_known(content, shapes=shapes) if content else content
         else:
-            safe = json.dumps(_withhold_tree(content, shapes), **(json_kw or {}))
+            safe = json.dumps(_withhold_tree(content, shapes, frozenset(exempt)), **(json_kw or {}))
         safe += end
     except Exception as exc:  # noqa: BLE001 - fail closed: nothing is written
         raise WithholdError(f"{getattr(path, 'name', path)} was not written: its content could not be checked for "
@@ -894,21 +976,49 @@ def withhold_spoken_secrets(text):
         return HELD_BACK
 
 
+# A word of a marked message that has a value's shape: 4 or more characters with a digit or a mark (punctuation or a
+# symbol) in it - the shape _request_value takes for a value written straight after a password's name (review round 4,
+# R3-B1).
+_EDGE_PUNCTUATION = ".,;:!?\"'()[]{}"
+
+
 def marked_values(text):
     """
-    The values a message the person marked secret makes secret: the message whole, and the secrets its structure
-    spells out (request_secrets: after a name, quoted, a card's or a PIN's shape). Never its every word: a marked
-    message's ordinary words, kept as substrings, withheld "download" in "downloading" in every later line (review
-    round 3, R2-B1). What remember_marked remembers, and what the job to soul names as secret (C14). Never raises.
+    The values a message the person marked secret makes secret: the message whole, the secrets its structure spells
+    out (request_secrets: after a name, quoted, a card's or a PIN's shape), and each of its words that has a value's
+    shape - 4 or more characters with a digit or a mark in it, a sentence's own punctuation at its ends aside. A
+    person marks a message because they did not label the value in it: "sign in as mira.k with Quartz58lantern"
+    marked secret leaked the unlabelled word through a step line (review round 4, R3-B1, the live F-S3). Never its
+    every word: a marked message's ordinary words, kept as substrings, withheld "download" in "downloading" in every
+    later line (review round 3, R2-B1). Kept for the message's own task only (remember_marked). What remember_marked
+    remembers, and what the job to soul names as secret (C14). Never raises.
     """
 
     try:
         text = " ".join(str(text or "").split())
         if not text:
             return []
-        return list(dict.fromkeys(v for v in list(request_secrets(text)) + [text] if v))
+        shaped = []
+        for word in text.split():
+            word = word.strip(_EDGE_PUNCTUATION)
+            if len(word) >= 4 and any(ch.isdigit() or unicodedata.category(ch)[0] in "PS" for ch in word):
+                shaped.append(word)
+        return list(dict.fromkeys(v for v in list(request_secrets(text)) + [text] + shaped if v))
     except Exception:  # noqa: BLE001
         return [str(text or "")] if text else []
+
+
+# `gui type REF TEXT` in a command shown as a step: the text is never quoted (review round 4, R3-B1). Up to the end of
+# that command (a shell separator or the line's end).
+_GUI_TYPE = re.compile(r"(\bgui\s+type\s+(?:--?\w[\w-]*\s+)*\S+)(\s+)(.+?)(?=\s*(?:&&|\|\||;|\||\n|$))", re.S)
+
+
+def step_command(command):
+    """A command as a step line shows it: the text a `gui type` types is "[text]", whatever it is - the step line goes
+    to the chat, the task page and the control plane's record, and a value typed by command was quoted there before
+    anything knew it was secret (F-S3). Everything else as it is (still withheld by every writer)."""
+
+    return _GUI_TYPE.sub(lambda m: m.group(1) + m.group(2) + "[text]", str(command or ""))
 
 
 def remember_marked(text, task_id):

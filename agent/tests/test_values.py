@@ -43,6 +43,12 @@ class SignsUnitsAndFormats(unittest.TestCase):
         self.assertIs(same("15 kg", "15 lb"), False)
         self.assertIs(same("15 kg", "15 KG"), True)
         self.assertIsNone(same("15 kg", "15"))  # a unit on one side only is not decided
+        # A label that names more than one unit names none (review round 4).
+        for label in ("Weight in kg or lb", "Weight (kg, lb)", "Weight (kg / lb)", "Rate % (kg)"):
+            self.assertIsNone(values.compare("15 lb", "15", units=values.field_units(label)).same, label)
+            self.assertIsNone(values.compare("15 kg", "15", units=values.field_units(label)).same, label)
+        self.assertIs(values.compare("15 kg", "15", units=values.field_units("Weight (kg)")).same, True)
+        self.assertIs(values.compare("18%", "18", units=values.field_units("GST Rate (%)")).same, True)
         self.assertIs(same("$100", "₹100"), False)
         self.assertIs(same("5900.00 INR", "₹5,900"), True)
 
@@ -112,6 +118,16 @@ class TextOfEveryScript(unittest.TestCase):
         self.assertEqual(values.text_key("ABC Pvt.Ltd."), "abc pvt ltd")  # punctuation is a gap, gaps collapse
         self.assertIs(same("Müller", "Möller"), False)
         self.assertIs(same("Ram राम", "Ram श्याम"), False)
+
+    def test_digits_grouped_otherwise_are_another_value(self):
+        """Review round 4: with every gap removed, "12-345" was "123-45" and "PO 12/3" was "PO 1/23"."""
+        for a, b in (("12-345", "123-45"), ("PO 12/3", "PO 1/23"), ("Unit 1-23", "Unit 12-3"),
+                     ("Flat 12, 34th Cross", "Flat 1, 234th Cross")):
+            self.assertIs(same(a, b), False, (a, b))
+        for a, b in (("INV-0042", "inv0042"), ("ABC Pvt.Ltd.", "ABC Pvt. Ltd."), ("INV-2024-0042", "INV 2024 0042"),
+                     ("PO 12/3", "po 12-3")):
+            self.assertIs(same(a, b), True, (a, b))
+        self.assertIs(same("1234 5678", "12345678"), True)  # digits and spaces only: by its digits
 
     def test_a_leading_point(self):
         """Review round 3, nit 5."""

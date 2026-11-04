@@ -442,7 +442,8 @@ def _describe(name, args):
     """What the chat's live steps show for one tool call."""
 
     if name == "shell":
-        return "Running: " + (args.get("command") or "")[:300]
+        from decurix_agent.computer import privacy
+        return "Running: " + privacy.step_command(args.get("command") or "")[:300]
     if name in ("read_document", "read_workbook"):
         return f"Reading {args.get('path')}"
     if name in ("create_workbook", "update_workbook"):

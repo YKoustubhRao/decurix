@@ -236,7 +236,7 @@ def _same_figure(value, expected):
     return abs(abs(value) - abs(expected)) <= TOLERANCE
 
 
-def mismatches(request, made, found_inputs=None):
+def mismatches(request, made, found_inputs=None, compared=None):
     """
     Sentences for each figure a made workbook presents as a source's own that is not exactly what the source states
     for it (the label names exactly one input file, and that file states figures of that kind). Each says the exact
@@ -245,6 +245,8 @@ def mismatches(request, made, found_inputs=None):
     person, never a verdict by itself: a sign is a book's convention (a cash book's "15,000.00 Dr" is a positive
     debit), and an export listed newest first ends on its oldest line - both refused right work while this blocked
     (review 2026-11-03, E-13). The difference itself is still shown, whichever way it falls (review round 2).
+    `compared`, a list, gets one entry for each figure actually compared with its source - the comparison that could
+    have failed, which the `code` basis of trust rests on (review round 4, R2).
     """
 
     books = [p for p in made if Path(str(p)).suffix.lower() in (".xlsx", ".xlsm")]
@@ -268,7 +270,11 @@ def mismatches(request, made, found_inputs=None):
         facts = stated(candidates[0]["path"])
         head = f"{book}: {where} \"{label}\" is {_money(value)}"
         if what == "total":
-            if not facts["totals"] or any(_equal(value, t) for t, _ in facts["totals"]):
+            if not facts["totals"]:
+                continue
+            if compared is not None:
+                compared.append(f"{book}: {where}")
+            if any(_equal(value, t) for t, _ in facts["totals"]):
                 continue
             expected, said = facts["totals"][-1]
             flipped = next(((t, w) for t, w in facts["totals"] if _same_figure(value, t)), None)
@@ -279,6 +285,8 @@ def mismatches(request, made, found_inputs=None):
         else:
             if kind not in facts:
                 continue
+            if compared is not None:
+                compared.append(f"{book}: {where}")
             expected, said = facts[kind]
             if _equal(value, expected):
                 continue

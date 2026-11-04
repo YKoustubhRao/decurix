@@ -1052,11 +1052,16 @@ def _locked():
 
         yield state
 
-        # (Not write_scrubbed: the gate keeps this store as its own user, which cannot read the worker's secret
-        # values; what it holds is fingerprints and the gate's own words, withheld by shown_by_gate.)
-        tmp = STATE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state), encoding="utf-8")
-        tmp.replace(STATE_FILE)
+        if not IN_GATE:
+            # A desktop with no gate keeps this store as the worker: its words may hold a task's value, so it is
+            # withheld like every other store (review round 4); the fingerprints are compared later.
+            privacy.write_scrubbed(STATE_FILE, state, atomic=True, exempt=("fingerprint", "id", "grants"))
+        else:
+            # The gate keeps it as its own user, which cannot read the worker's secret values; what it holds is
+            # fingerprints and the gate's own words, withheld by shown_by_gate.
+            tmp = STATE_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(state), encoding="utf-8")
+            tmp.replace(STATE_FILE)
 
 
 class Decision:
@@ -1611,6 +1616,10 @@ def _decide(fingerprint, description, reason, element, about, material=None):
         if material is None:
             raise ValueError("no description of the action to give the gate")
         said = gate_call("check", material=json.loads(json.dumps(material, default=str)), reason=reason)
+        if said.get("refused") and not said.get("allowed"):
+            # Refused without asking anyone: the gate's own reason, never the caller's ("make sure it is the right
+            # site" read as "ask the person", who could grant nothing - review round 4).
+            return Decision(False, reason=str(said.get("reason") or "the approval gate refused this action"))
         return Decision(bool(said["allowed"]), reason=reason, approved=bool(said.get("approved")),
                         request=said.get("request"), by_reply=said.get("by_reply") or "")
     except (OSError, ValueError, KeyError) as exc:

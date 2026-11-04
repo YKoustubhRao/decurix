@@ -244,7 +244,7 @@ def _keep(record):
     try:
         RUN_FILE.parent.mkdir(parents=True, exist_ok=True)
         from decurix_agent.computer import privacy
-        privacy.write_scrubbed(RUN_FILE, record, shapes=False)
+        privacy.write_scrubbed(RUN_FILE, record, exempt=("values",))  # (the taught values are compared later)
     except (OSError, TypeError, ValueError):
         pass
 
