@@ -3,6 +3,7 @@ package sqlitedb
 import (
 	"context"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -48,6 +49,16 @@ func TestAnOldDatabaseGetsIncrementalVacuumOnce(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM t`).Scan(&rows); err != nil || rows != 400 {
 		t.Fatalf("rows after the VACUUM: %d %v", rows, err)
 	}
+	// The rebuilt file went through the WAL; the checkpoint after the VACUUM gave it back (review RES-CP-1: it stayed
+	// the database's size for the life of the process).
+	if info, err := os.Stat(path + "-wal"); err == nil && info.Size() > 64<<10 {
+		t.Fatalf("the WAL is %d bytes after the one VACUUM, want it truncated", info.Size())
+	}
+	// The pool's connections keep temp_store = MEMORY (2): the VACUUM's FILE was its own connection's.
+	var temp int
+	if err := db.QueryRow(`PRAGMA temp_store`).Scan(&temp); err != nil || temp != 2 {
+		t.Fatalf("temp_store after Open: %d %v, want 2 (MEMORY)", temp, err)
+	}
 
 	// Freed pages go back: delete most rows, vacuum incrementally, and the file's page count falls.
 	pages := func() int {
@@ -87,5 +98,39 @@ func TestKeepVacuumedStopsWithItsContext(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Minute): // only turns a hang into a failure
 		t.Fatal("KeepVacuumed did not stop")
+	}
+}
+
+// With less than twice the database free in the data or the temp folder, the one VACUUM is not started: the database
+// opens as it is, and it is tried again at the next start.
+func TestTheOneVacuumWaitsForRoomOnTheDisk(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "full.db")
+	uriPath := filepath.ToSlash(path)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	raw, err := open((&url.URL{Scheme: "file", Path: uriPath}).String(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
+	saved := diskFree
+	diskFree = func(string) (uint64, error) { return 0, nil }
+	t.Cleanup(func() { diskFree = saved })
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var mode int
+	if err := db.QueryRow(`PRAGMA auto_vacuum`).Scan(&mode); err != nil || mode != 0 {
+		t.Fatalf("auto_vacuum %d %v: the VACUUM ran on a full disk", mode, err)
+	}
+	diskFree = saved
+	if did, err := ensureIncrementalVacuum(db, path); !did || err != nil {
+		t.Fatalf("with room it was not done: %v %v", did, err)
 	}
 }
