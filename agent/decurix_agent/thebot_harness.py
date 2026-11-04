@@ -290,14 +290,16 @@ JOB_SECRET_BYTES = 64 * 1024
 def _job_secrets():
     """The task's secret values for soul's job (soul takes at most JOB_SECRETS, each at most JOB_SECRET_BYTES)."""
 
-    return task_context.secret_values()[-JOB_SECRETS:]
+    from decurix_agent.computer import privacy
+    return privacy.plain_values(task_context.secret_values())[-JOB_SECRETS:]
 
 
 def _secrets_too_big():
     """Why the task's secret values cannot be handed to soul whole, or "": a value soul cannot take would go into its
     records unredacted, so the job is not sent at all (fails closed; review round 2)."""
 
-    values = task_context.secret_values()
+    from decurix_agent.computer import privacy
+    values = privacy.plain_values(task_context.secret_values())
     if any(len(v.encode("utf-8")) > JOB_SECRET_BYTES for v in values):
         return (f"a secret value of this task is longer than {JOB_SECRET_BYTES // 1024} KB, too long to keep out of the "
                 "engine's records, so the task was not started. Send the secret as a file instead, or shorter.")

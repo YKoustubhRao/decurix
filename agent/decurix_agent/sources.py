@@ -31,7 +31,6 @@ BALANCE_WORK = re.compile(r"\breconcil\w*|\b(?:closing|opening)\s+balance|\bbala
 INPUT_KINDS = {".csv", ".tsv", ".xlsx", ".xlsm", ".txt"}
 NAMED_FILE = re.compile(r"\b[\w][\w.-]*\.(?:csv|tsv|xlsx|xlsm|txt)\b", re.I)
 _STOP = {"the", "our", "a", "an", "of", "as", "per", "my", "their", "its", "and", "file", "sheet"}
-TOLERANCE = Decimal("0.01")
 MAX_ROWS = 20000
 
 
@@ -227,16 +226,19 @@ def _per_source_lines(path):
 
 
 def _equal(value, expected):
-    return abs(value - expected) <= TOLERANCE
+    """The same figure, exactly: every digit counts (W0.3) - a one-paisa tolerance let a miscopy of the last digit pass
+    as the source's own figure (review round 5, N2)."""
+
+    return value == expected
 
 
 def _same_figure(value, expected):
-    """The same figure whatever sign either side writes it with."""
+    """The same figure whatever sign either side writes it with, exactly."""
 
-    return abs(abs(value) - abs(expected)) <= TOLERANCE
+    return abs(value) == abs(expected)
 
 
-def mismatches(request, made, found_inputs=None, compared=None):
+def mismatches(request, made, found_inputs=None, compared=None, unbacked=None):
     """
     Sentences for each figure a made workbook presents as a source's own that is not exactly what the source states
     for it (the label names exactly one input file, and that file states figures of that kind). Each says the exact
@@ -246,7 +248,10 @@ def mismatches(request, made, found_inputs=None, compared=None):
     debit), and an export listed newest first ends on its oldest line - both refused right work while this blocked
     (review 2026-11-03, E-13). The difference itself is still shown, whichever way it falls (review round 2).
     `compared`, a list, gets one entry for each figure actually compared with its source - the comparison that could
-    have failed, which the `code` basis of trust rests on (review round 4, R2).
+    have failed, which the `code` basis of trust rests on (review round 4, R2). `unbacked`, a list, gets one for each
+    figure given as one input's own of a kind that input does not state (a "Closing balance as per bills" where the
+    bills state none): not compared, and it holds the `code` basis back - still evidence, never a failure of the work
+    (review round 5, N1).
     """
 
     books = [p for p in made if Path(str(p)).suffix.lower() in (".xlsx", ".xlsm")]
@@ -271,6 +276,8 @@ def mismatches(request, made, found_inputs=None, compared=None):
         head = f"{book}: {where} \"{label}\" is {_money(value)}"
         if what == "total":
             if not facts["totals"]:
+                if unbacked is not None:
+                    unbacked.append(f"{book}: {where}")
                 continue
             if compared is not None:
                 compared.append(f"{book}: {where}")
@@ -284,6 +291,8 @@ def mismatches(request, made, found_inputs=None, compared=None):
                 continue
         else:
             if kind not in facts:
+                if unbacked is not None:
+                    unbacked.append(f"{book}: {where}")
                 continue
             if compared is not None:
                 compared.append(f"{book}: {where}")

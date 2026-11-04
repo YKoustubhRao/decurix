@@ -44,7 +44,8 @@ class SignsUnitsAndFormats(unittest.TestCase):
         self.assertIs(same("15 kg", "15 KG"), True)
         self.assertIsNone(same("15 kg", "15"))  # a unit on one side only is not decided
         # A label that names more than one unit names none (review round 4).
-        for label in ("Weight in kg or lb", "Weight (kg, lb)", "Weight (kg / lb)", "Rate % (kg)"):
+        for label in ("Weight in kg or lb", "Weight (kg, lb)", "Weight (kg / lb)", "Rate % (kg)",
+                      "Weight (kg) or volume (l)"):
             self.assertIsNone(values.compare("15 lb", "15", units=values.field_units(label)).same, label)
             self.assertIsNone(values.compare("15 kg", "15", units=values.field_units(label)).same, label)
         self.assertIs(values.compare("15 kg", "15", units=values.field_units("Weight (kg)")).same, True)
@@ -121,9 +122,11 @@ class TextOfEveryScript(unittest.TestCase):
 
     def test_digits_grouped_otherwise_are_another_value(self):
         """Review round 4: with every gap removed, "12-345" was "123-45" and "PO 12/3" was "PO 1/23"."""
+        # Round 5 (N4): undecided, not "differs" - it may be one code an application regrouped - so the save asks.
         for a, b in (("12-345", "123-45"), ("PO 12/3", "PO 1/23"), ("Unit 1-23", "Unit 12-3"),
-                     ("Flat 12, 34th Cross", "Flat 1, 234th Cross")):
-            self.assertIs(same(a, b), False, (a, b))
+                     ("Flat 12, 34th Cross", "Flat 1, 234th Cross"), ("HSN 8471 30", "HSN 847130")):
+            self.assertIsNone(same(a, b), (a, b))
+        self.assertIs(same("PO 12/3", "PO 12/4"), False)  # other digits still differ
         for a, b in (("INV-0042", "inv0042"), ("ABC Pvt.Ltd.", "ABC Pvt. Ltd."), ("INV-2024-0042", "INV 2024 0042"),
                      ("PO 12/3", "po 12-3")):
             self.assertIs(same(a, b), True, (a, b))

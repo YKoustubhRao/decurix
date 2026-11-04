@@ -273,3 +273,20 @@ class OnlyAComparisonThatCouldHaveFailed(unittest.TestCase):
         self.assertEqual(facts.source_compared, 1)
         self.assertEqual(facts.source_mismatch, [])
         self.assertTrue(facts.compared_clean())
+
+    def test_a_figure_one_paisa_off_is_a_mismatch(self):
+        """Review round 5, N2: a 0.01 tolerance let a miscopy of the last digit pass as the source's own figure."""
+        off = self.book(self.folder / "summary.xlsx", [("Total as per bills", self.TOTAL + 0.01)])
+        facts = self.facts(off)
+        self.assertTrue(facts.source_mismatch)
+        self.assertFalse(facts.compared_clean())
+
+    def test_a_figure_of_a_kind_the_source_does_not_state_holds_code_back(self):
+        """Review round 5, N1: next to a right compared total, a "Closing balance as per bills" the bills do not
+        state was skipped, and the run earned code."""
+        made = self.book(self.folder / "summary.xlsx", [("Total as per bills", self.TOTAL),
+                                                         ("Closing balance as per bills", 5.00)])
+        facts = self.facts(made)
+        self.assertEqual(facts.source_compared, 1)
+        self.assertEqual(facts.source_unbacked, 1)
+        self.assertFalse(facts.compared_clean())

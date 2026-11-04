@@ -110,7 +110,8 @@ class TeachReplayAndRunSkillNameTheirExecution(unittest.TestCase):
         handler._json = lambda status, body: body
         self.handler = handler
         for p in (mock.patch.object(config, "DECURIX_DIR", Path(tmp.name)),
-                  mock.patch.object(http_api.recording, "load", lambda *a: None),
+                  mock.patch.object(http_api.recording, "load", lambda *a: ({}, [])),
+                  mock.patch.object(http_api.replay, "compile_program", lambda meta, events: {"params": []}),
                   mock.patch.object(http_api.recording, "valid", lambda *a: True),
                   mock.patch.object(http_api.replay_task, "hold_params", lambda *a: None),
                   mock.patch.object(http_api.skill_task, "learn_request", lambda *a: "/learn s1"),

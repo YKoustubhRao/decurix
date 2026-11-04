@@ -115,10 +115,10 @@ def withhold(text, task_id=None):
     from decurix_agent.computer import privacy
     try:
         text = str(text if text is not None else "")
-        held = secret_values(task_id)
+        held = held_values(task_id)
         if " ".join(text.split()) in held:
             return "[withheld]"  # a marked message, whatever its line breaks
-        return privacy.withhold_known(privacy.withhold_spaced(text, held))
+        return privacy.withhold_known(privacy.withhold_held(text, held))
     except Exception:  # noqa: BLE001 - fail closed
         return privacy.HELD_BACK
 
@@ -147,6 +147,13 @@ def note_secret_values(task_id, values):
 def secret_values(task_id=None):
     """The secret values the task's requests and replies gave: as noted in this process, and as kept for the desktop
     (which outlives an agent restart within the task)."""
+
+    from decurix_agent.computer import privacy
+    return privacy.plain_values(held_values(task_id))
+
+
+def held_values(task_id=None):
+    """secret_values as they are kept: a value withheld only as a whole token keeps its mark (privacy.WHOLE_TOKEN)."""
 
     from decurix_agent.computer import privacy
     task_id = task_id or current()

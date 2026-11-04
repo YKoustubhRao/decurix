@@ -46,7 +46,7 @@ class AnUnlabelledWordOfAMarkedMessage(SecretFirst):
         line = thebot_harness.readable_step(f'skill:operator -> $ gui type e3 "{VALUE}"')
         self.assertEqual(line, "Running: gui type e3 [text]")
         self.assertNotIn(VALUE, posted_line(f"Typing {VALUE} into the field"))
-        self.assertIn(VALUE, task_context.secret_values(TASK))  # soul is told the word (the job's "secrets")
+        self.assertIn(VALUE, thebot_harness._job_secrets())  # soul is told the word (the job's "secrets")
         posted = []
         (self.root / "querytext").mkdir()
         with mock.patch.object(messaging, "_post_querytext", lambda p: posted.append(p) or ("sent", "")), \
@@ -61,7 +61,8 @@ class AnUnlabelledWordOfAMarkedMessage(SecretFirst):
         self.assertNotIn(VALUE, written + json.dumps(posted) + "\n".join(self.logged))
 
     def test_only_words_shaped_like_values(self):
-        self.assertEqual(privacy.marked_values(LONG), [LONG, "mira.k", VALUE])
+        # (Round 5, R4-B1: a whole-token value; "mira.k" is a host name's shape, data by structure.)
+        self.assertEqual(privacy.marked_values(LONG), [LONG, privacy.WHOLE_TOKEN + VALUE])
         self.assertEqual(privacy.marked_values("please download the roster, today"),
                          ["please download the roster, today"])
         self.send(LONG)
@@ -71,7 +72,9 @@ class AnUnlabelledWordOfAMarkedMessage(SecretFirst):
 class AStepLineNeverQuotesTypedText(unittest.TestCase):
     def test_each_form_of_the_command(self):
         for command, shown in (('gui type e3 "Zebra-42-quiet"', "gui type e3 [text]"),
-                               ("gui type e3 plain words here && gui click e4", "gui type e3 [text] && gui click e4"),
+                               ("gui type e3 plain words here && gui click e4", "gui type e3 [text]"),
+                               ('gui type e3 "ab;cd9xyz"', "gui type e3 [text]"),  # (round 5: the whole rest)
+                               ("GUI TYPE e3 Zebra-42-quiet", "GUI TYPE e3 [text]"),
                                ('gui type --enter e7 "x"', "gui type --enter e7 [text]"),
                                ("gui click e3", "gui click e3")):
             self.assertEqual(privacy.step_command(command), shown)

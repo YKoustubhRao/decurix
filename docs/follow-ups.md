@@ -376,10 +376,19 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
     a workflow's inputs, are kept in the task's resume copy (tmpfs, beside its secret values, let go at the final
     report), so an agent restart resumes with the value (round 4). Only a container restart loses it, and that
     already reports the task as interrupted. `core.act` never types a `[withheld]` mark: it says to ask the person.
-  - A wholly marked message is withheld whole, plus what its structure names, plus each word of it shaped like a
-    value: 4+ characters with a digit or a mark (round 4, R3-B1, reversing round 3's accepted cost). A step line never
-    quotes what `gui type` types. Residual cost: an all-letter secret word in a long marked message, typed on its
-    own, is withheld only where the whole message stands.
+  - A wholly marked message keeps three kinds of value (rounds 4 and 5):
+    - what its structure names, withheld wherever it stands;
+    - the message whole, unless it is a longer request carrying data (more than 5 words, with a figure, an amount or
+      a date), so that its own checks can read its figures;
+    - each word shaped like a value (4+ characters with a digit or a mark), withheld as a whole token only, and only
+      when it is not data by structure: a number, amount, date or time, an e-mail address, URL or host name, a
+      contraction, or a word the files it brings also hold.
+
+    A step line never quotes what `gui type` types (the whole rest of the line).
+    Residual costs:
+    - An all-letter secret word in a long data-carrying marked message is not withheld when typed alone.
+    - A value-shaped code that is data but has no structure the rules read, like a period code `Q3-2024` in the
+      message and in no input file, is withheld as a whole token in that task's later lines.
   - Not done from REVIEW-PY-A-2's nits: `core._shown_by_app` still takes the application's value from any observation,
     not only one before the worker's first input on that form; `skill_task._correct` still reads the reply's
     judgement and secret flag from globals.

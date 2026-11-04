@@ -746,6 +746,9 @@ class FileFacts:
         # How many figures the files made present as a source's own were compared with what that source states
         # (sources.mismatches): the comparison that could have failed, which the `code` basis rests on.
         self.source_compared = 0
+        # Figures given as one input's own, of a kind that input does not state: compared with nothing (review round 5,
+        # N1). Any holds the `code` basis back.
+        self.source_unbacked = 0
 
     def compared_clean(self):
         """
@@ -758,7 +761,8 @@ class FileFacts:
         round 4, R2) are evidence, never the basis.
         """
 
-        return (self.source_compared > 0 and not self.source_mismatch and self.held == self.compared
+        return (self.source_compared > 0 and not self.source_unbacked and not self.source_mismatch
+                and self.held == self.compared
                 and not self.blocking() and not self.not_made())
 
     # The facts that fail the work by themselves, in one place for every route (the final gate, a taught run's
@@ -991,6 +995,7 @@ def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_m
     named = request if named_in is None else named_in
     unstored = store_results(made)
     source_compared = []  # the figures given as a source's own that were compared with it (_source_mismatch)
+    source_unbacked = []  # ... and those its source states nothing of that kind for
     found_totals = typed_totals(made, request) if not unstored else []
     wrong_totals = found_totals if formulas_asked(request) else []
     every = list(dict.fromkeys(list(made) + [str(c) for c in host_copies]))
@@ -1015,7 +1020,8 @@ def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_m
         request_faults=image_findings(named, every, source_images(named, every, **({"root": root} if root else {})))
         + page_break_findings(named, every),
         # Needs the formula results stored too: the figure checked is the value the file holds (sources.py).
-        source_mismatch=_source_mismatch(request, every, failed, source_compared) if not unstored else [],
+        source_mismatch=_source_mismatch(request, every, failed, source_compared, source_unbacked)
+        if not unstored else [],
         code_notes=miscopied_codes(every, request),
         disclosures=draft_disclosures(drafts_made, request) if drafts_made else [],
         payee_mismatch=_payee_mismatch(request, every, failed),
@@ -1031,6 +1037,7 @@ def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_m
     except Exception as exc:  # noqa: BLE001 - nothing compared is no read-back: it counts for nothing
         log(f"produced: could not compare the files with the request: {exc}")
     facts.source_compared = len(source_compared)
+    facts.source_unbacked = len(source_unbacked)
     return facts
 
 
@@ -1200,10 +1207,10 @@ def _payee_mismatch(request, every, failed=None):
         return []
 
 
-def _source_mismatch(request, every, failed=None, compared=None):
+def _source_mismatch(request, every, failed=None, compared=None, unbacked=None):
     from decurix_agent import sources
     try:
-        return sources.mismatches(request, every, compared=compared)
+        return sources.mismatches(request, every, compared=compared, unbacked=unbacked)
     except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing (and is said: `failed`)
         log(f"produced: could not compare figures with their sources: {exc}")
         _not_made(failed, "could not compare figures with their sources", exc)

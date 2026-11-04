@@ -517,7 +517,7 @@ def withhold_spaced(text, values):
 def _withhold_literals(text):
     tasks = _read_literals()  # raises _Unreadable: the callers fail closed
     values = [v for vs in tasks.values() for v in vs] + sorted(_unsaved_literals)
-    return withhold_spaced(text, values)
+    return withhold_held(text, values)
 
 
 def _withhold_known(text, shapes=True):
@@ -566,6 +566,24 @@ def _withhold_tree(obj, shapes, exempt=frozenset()):
     return obj
 
 
+def _mkstemp_once_more(path):
+    """A temporary file beside `path`, tried once more on an error Windows gives under load and then not again
+    (EINVAL, or WinError 1450 "insufficient system resources"): a checkpoint write that failed once failed a run's
+    creation (review round 5). Any other error, or the second, is raised."""
+
+    import errno
+    import tempfile
+    for attempt in (1, 2):
+        try:
+            return tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=str(path.parent))
+        except OSError as exc:
+            transient = exc.errno == errno.EINVAL or getattr(exc, "winerror", None) == 1450
+            if attempt == 2 or not transient:
+                raise
+            import time
+            time.sleep(0.05)
+
+
 def write_scrubbed(path, content, append=False, atomic=False, private=False, shapes=True, newline=None, json_kw=None,
                    end="", exempt=()):
     """
@@ -587,7 +605,6 @@ def write_scrubbed(path, content, append=False, atomic=False, private=False, sha
     """
 
     import json
-    import tempfile
     if isinstance(content, (bytes, bytearray)):
         raise TypeError("write_scrubbed writes text; bytes are written only by the listed writers")
     try:
@@ -607,7 +624,7 @@ def write_scrubbed(path, content, append=False, atomic=False, private=False, sha
         with open(path, "a", encoding="utf-8", newline=newline) as f:
             f.write(safe)
     elif atomic:
-        fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=str(path.parent))
+        fd, tmp = _mkstemp_once_more(path)
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as f:
                 f.write(safe)
@@ -982,35 +999,146 @@ def withhold_spoken_secrets(text):
 _EDGE_PUNCTUATION = ".,;:!?\"'()[]{}"
 
 
+# A value kept to be withheld only where it stands as a whole token (the code point before and after it no letter or
+# digit), never as a substring: a word of a marked message (review round 5, R4-B1 - "2024" must not withhold
+# "INV-2024-0042"). Marked so in the task's store; plain_values takes the mark off for soul.
+WHOLE_TOKEN = "\x00token:"
+
+_EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+_URL = re.compile(r"(?i)(?:[a-z][a-z0-9+.-]*://|www\.)\S+")
+_HOST = re.compile(r"(?i)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+")
+_TIME_WORD = re.compile(r"(?i)\d{1,2}[:.]\d{2}(?::\d{2})?(?:[ap]\.?m\.?)?")
+_CONTRACTION = re.compile(r"[^\W\d_]+['\u2019][^\W\d_]+")
+
+
+def _is_data(word, data_words):
+    """Whether a value-shaped word of a marked message is data by its structure, not a secret: a number, an amount, a
+    date or a time (values.py reads it so), an e-mail address, a URL or a host name, a word of letters with only an
+    apostrophe (a contraction), or a word the task's input files hold too (their data, not the person's secret) -
+    review round 5, R4-B1: a marked message's own figures and dates were withheld from the task's record ledger, so its
+    saves could never pass."""
+
+    from decurix_agent import values
+    if values.parse_amount(word) is not None or values.parse_number(word) is not None or values.parse_date(word):
+        return True
+    if _TIME_WORD.fullmatch(word) or _EMAIL.fullmatch(word) or _URL.match(word) or _HOST.fullmatch(word):
+        return True
+    if _CONTRACTION.fullmatch(word):
+        return True
+    return word.casefold() in data_words
+
+
+def _input_words(text):
+    """The words of the files a message brings (their names too), case folded: what is the documents' data."""
+
+    from decurix_agent import attachments
+    words = set()
+    try:
+        paths = attachments.files(str(text or ""))
+    except Exception:  # noqa: BLE001
+        return words
+    for path in paths[:20]:
+        words.add(Path(str(path)).name.casefold())
+        try:
+            from decurix_agent.tools import office
+            read = str(office.read_document(str(path)).get("text") or "")[:2_000_000]
+        except Exception:  # noqa: BLE001 - a file not read gives no words: its words stay values (the safe side)
+            continue
+        words.update(w.strip(_EDGE_PUNCTUATION).casefold() for w in read.split())
+    return words
+
+
+# A marked message this short is withheld whole even when it carries data: it is likely the secret itself, or holds it.
+SHORT_MARKED_WORDS = 5
+
+
 def marked_values(text):
     """
-    The values a message the person marked secret makes secret: the message whole, the secrets its structure spells
-    out (request_secrets: after a name, quoted, a card's or a PIN's shape), and each of its words that has a value's
-    shape - 4 or more characters with a digit or a mark in it, a sentence's own punctuation at its ends aside. A
-    person marks a message because they did not label the value in it: "sign in as mira.k with Quartz58lantern"
-    marked secret leaked the unlabelled word through a step line (review round 4, R3-B1, the live F-S3). Never its
-    every word: a marked message's ordinary words, kept as substrings, withheld "download" in "downloading" in every
-    later line (review round 3, R2-B1). Kept for the message's own task only (remember_marked). What remember_marked
-    remembers, and what the job to soul names as secret (C14). Never raises.
+    The values a message the person marked secret makes secret: the secrets its structure spells out
+    (request_secrets: after a name, quoted, a card's or a PIN's shape) and the message whole - unless it is a longer
+    request carrying data (figures, amounts, dates) - withheld wherever they stand; and,
+    as whole tokens only (WHOLE_TOKEN), each of its words that has a value's shape - 4 or more characters with a digit
+    or a mark in it, a sentence's own punctuation at its ends aside - and is not data by its structure (_is_data: a
+    number, an amount, a date, a time, an e-mail address, a URL, a host name, a contraction, a word the files it brings
+    hold). A person marks a message because they did not label the value in it: "sign in as staff with
+    Quartz58lantern" marked secret leaked the unlabelled word through a step line (review round 4, R3-B1, the live
+    F-S3). Never its every word (review round 3, R2-B1), and never its data: its own dates and amounts withheld from the
+    record ledger stopped every save of them (review round 5, R4-B1). Kept for the message's own task only
+    (remember_marked). What the job to soul names as secret (C14, plain_values). Never raises.
     """
 
     try:
-        text = " ".join(str(text or "").split())
+        data_words = _input_words(text)
+        text = " ".join(attachments_text(text).split())
         if not text:
             return []
         shaped = []
         for word in text.split():
             word = word.strip(_EDGE_PUNCTUATION)
-            if len(word) >= 4 and any(ch.isdigit() or unicodedata.category(ch)[0] in "PS" for ch in word):
-                shaped.append(word)
-        return list(dict.fromkeys(v for v in list(request_secrets(text)) + [text] + shaped if v))
+            if len(word) >= 4 and any(ch.isdigit() or unicodedata.category(ch)[0] in "PS" for ch in word) \
+                    and not _is_data(word, data_words):
+                shaped.append(WHOLE_TOKEN + word)
+        # The message whole is a value too, unless it is a request carrying data: longer than SHORT_MARKED_WORDS words
+        # and holding a figure, an amount or a date (its own checks read "[withheld]" for them when the whole was
+        # withheld - review round 5, R4-B1). A short message, or one of words only (a passphrase), is withheld whole.
+        carries_data = any(any(ch.isdigit() for ch in w) and _is_data(w, frozenset())
+                           for w in (w.strip(_EDGE_PUNCTUATION) for w in text.split()))
+        whole = [text] if len(text.split()) <= SHORT_MARKED_WORDS or not carries_data else []
+        return list(dict.fromkeys(v for v in list(request_secrets(text)) + whole + shaped if v))
     except Exception:  # noqa: BLE001
         return [str(text or "")] if text else []
 
 
-# `gui type REF TEXT` in a command shown as a step: the text is never quoted (review round 4, R3-B1). Up to the end of
-# that command (a shell separator or the line's end).
-_GUI_TYPE = re.compile(r"(\bgui\s+type\s+(?:--?\w[\w-]*\s+)*\S+)(\s+)(.+?)(?=\s*(?:&&|\|\||;|\||\n|$))", re.S)
+def attachments_text(text):
+    """A message without the block of files it brought."""
+
+    try:
+        from decurix_agent import attachments
+        return attachments.text(str(text or ""))
+    except Exception:  # noqa: BLE001
+        return str(text or "")
+
+
+def plain_values(values):
+    """Values as they are said (soul's job "secrets"): the whole-token mark taken off."""
+
+    return list(dict.fromkeys(v[len(WHOLE_TOKEN):] if v.startswith(WHOLE_TOKEN) else v for v in values or ()))
+
+
+def withhold_held(text, values):
+    """`text` with a task's held values withheld: those kept as whole tokens where they stand as one (withhold_whole),
+    the rest by the shared rule, whatever their spacing (withhold_spaced)."""
+
+    whole = [v[len(WHOLE_TOKEN):] for v in values or () if v.startswith(WHOLE_TOKEN)]
+    rest = [v for v in values or () if not v.startswith(WHOLE_TOKEN)]
+    return withhold_spaced(withhold_whole(text, whole), rest)
+
+
+def withhold_whole(text, values):
+    """`text` with each value withheld where it stands as a whole token: the code point before it and after it (or
+    the text's edge) no letter or digit (_letter_or_digit). Longest first; a [withheld] mark is never cut into."""
+
+    if not text or not values:
+        return text
+    for value in sorted({v for v in values if v}, key=len, reverse=True):
+        out, at, start = [], text.find(value), 0
+        while at != -1:
+            end = at + len(value)
+            before_ok = at == 0 or not _letter_or_digit(text[at - 1])
+            if before_ok and (end == len(text) or not _letter_or_digit(text[end])):
+                out.append(text[start:at])
+                out.append(_MARKER)
+                start = end
+            at = text.find(value, end if start == end else at + 1)
+        out.append(text[start:])
+        text = "".join(out)
+    return text
+
+
+# `gui type REF TEXT` in a command shown as a step: the text is never quoted (review round 4, R3-B1) - the whole rest
+# of the line after the target, as soul shows it: a separator inside a quoted value is part of the value (review round
+# 5: `gui type e3 "ab;cd9xyz"` showed what followed the ";").
+_GUI_TYPE = re.compile(r"(\bgui\s+type\s+(?:--?\w[\w-]*\s+)*\S+)(\s+)(.+)$", re.S | re.I)
 
 
 def step_command(command):
@@ -1030,10 +1158,10 @@ def remember_marked(text, task_id):
     """
 
     try:
-        text = " ".join(str(text or "").split())
-        remember_secrets(text)
-        remember_value(text)
-        remember_literals(marked_values(text), task_id or "")
+        said = attachments_text(text)
+        remember_secrets(said)
+        remember_value(" ".join(said.split()))
+        remember_literals(marked_values(text), task_id or "")  # (given whole: the files it brings are its data)
     except Exception:  # noqa: BLE001 - remembering is a safety net; the control plane withholds the message too
         pass
 

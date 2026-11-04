@@ -75,9 +75,10 @@ class ValuesLiveAsLongAsTheirTask(SecretFirst):
     def test_a_marked_message_is_one_whole_value_never_its_every_word(self):
         # (Round 4, R3-B1: plus each word shaped like a value - a digit or a mark in it - never an ordinary word.)
         values = privacy.marked_values(LONG)
-        self.assertEqual(values, [LONG, "mira.k", VALUE])
+        self.assertEqual(values, [LONG, privacy.WHOLE_TOKEN + VALUE])  # (round 5: a whole token; "mira.k" is a host)
         self.assertEqual(privacy.marked_values("my password is Zebra-42-quiet, thanks"),
-                         ["Zebra-42-quiet", "my password is Zebra-42-quiet, thanks"])
+                         ["Zebra-42-quiet", "my password is Zebra-42-quiet, thanks",
+                          privacy.WHOLE_TOKEN + "Zebra-42-quiet"])
         # The whole message, with other spacing, inside a longer text.
         task_context.note_secret_values(TASK, values)
         held = task_context.withhold("Use this:\n" + LONG.replace(" with ", "\nwith ") + "\nok", task_id=TASK)

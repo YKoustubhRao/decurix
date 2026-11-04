@@ -120,6 +120,30 @@ def _keep_execution(task_id, data):
         task_context.set_execution(task_id, data.get("execution_id"))
 
 
+def _note_secret_params(task_id, declared, params):
+    """The values of the parameters a skill or a recording marks secret (`declared`: its params list), given with the
+    run: noted as the task's secret values before anything keeps or shows the request (C14), the way /request's
+    "secret" is - the "/skill ... key=..." line was logged, and the guided run kept the value, raw (review round 5,
+    R4-B2). Returns whether any was given (the saved message is then marked secret)."""
+
+    from decurix_agent import task_context
+    secret = {str(p.get("name")) for p in declared or () if isinstance(p, dict) and p.get("secret")}
+    found = [str(v) for k, v in (params or {}).items() if str(k) in secret and str(v if v is not None else "").strip()]
+    if found and task_context.valid(task_id):
+        task_context.note_secret_values(task_id, found)
+    elif found:
+        from decurix_agent.computer import privacy
+        privacy.remember_literals(found, "")
+    return bool(found)
+
+
+def _saved_secret(path, secret):
+    """What the watcher reads beside a saved message: whether it is secret (no judgement: not a person's reply)."""
+
+    from decurix_agent import state as agent_state
+    agent_state.message_facts[path.name] = {"secret": bool(secret), "judgement": ""}
+
+
 def _text(value, limit):
     return str(value or "").strip()[:limit]
 
@@ -531,7 +555,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, {"status": "ok", "ticket": record_task.status()})
 
     def _replay(self, session_id, data):
-        recording.load(session_id)
+        meta, events = recording.load(session_id)
 
         params = data.get("params") or {}
         if not isinstance(params, dict):
@@ -543,9 +567,12 @@ class Handler(BaseHTTPRequestHandler):
         content = f"/replay {session_id}" + (f" from={start}" if start > 1 else "")
 
         # The request the watcher reads names only the recording: the values
-        # stay in this process's memory until the replay takes them.
+        # stay in this process's memory until the replay takes them. The ones its program marks secret are the task's
+        # secret values first (review round 5, R4-B2).
+        secret = _note_secret_params(task_id, replay.compile_program(meta, events).get("params"), params)
         replay_task.hold_params(task_id, params)
-        path = save_request(content, task_id)
+        path = save_request(content, task_id, secret=secret)
+        _saved_secret(path, secret)
 
         return self._json(200, {"status": "received", "file": path.name, "content": content})
 
@@ -580,7 +607,11 @@ class Handler(BaseHTTPRequestHandler):
         content = skill_task.request_text(name, params)
         task_id = _text(data.get("task_id"), 64)
         _keep_execution(task_id, data)
-        path = save_request(content, task_id)
+        # The parameters the skill marks secret are the task's secret values before the request is saved, logged or
+        # kept (review round 5, R4-B2).
+        secret = _note_secret_params(task_id, skill.get("params"), params)
+        path = save_request(content, task_id, secret=secret)
+        _saved_secret(path, secret)
 
         return self._json(200, {"status": "received", "file": path.name, "content": content})
 

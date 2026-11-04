@@ -197,8 +197,10 @@ def field_units(label):
     """
 
     text = _norm(label).casefold()
-    if "%" in text and re.search(r"\([^()%]*[^\W\d_][^()%]*\)", text):
-        return frozenset()  # "%" and a unit in brackets: two units named
+    # Units named in brackets, and "%", counted across the whole label: two or more and it names none ("Weight (kg)
+    # or volume (l)", "Rate % (kg)" - review round 5, N5).
+    if len(re.findall(r"\([^()]*[^\W\d_%][^()]*\)|%", text)) >= 2:
+        return frozenset()
     text = re.sub(r"[^\W_]+(?:\s*(?:/|,|\bor\b)\s*[^\W_]+)+", " ", text)
     return frozenset(re.findall(r"%|[^\W\d_]+", text))
 
@@ -426,6 +428,11 @@ def compare(a, b, a_order=None, b_order=None, units=()):
     # space stood, and apps write the same name both ways ("ACME-LTD" / "acme ltd", "INV-0042" / "inv0042") - but
     # never a gap between two digits (_compare_key).
     ka, kb = _compare_key(a), _compare_key(b)
+    if ka and ka != kb and ka.replace("|", "") == kb.replace("|", ""):
+        # The same letters and digits, grouped otherwise ("HSN 8471 30" / "HSN 847130"): it may be one code an
+        # application regrouped, or two - undecided, so the save asks rather than sends the worker to retype it (review
+        # round 5, N4).
+        return Result(None, "digit_groups")
     return Result(bool(ka) and ka == kb, "text")
 
 

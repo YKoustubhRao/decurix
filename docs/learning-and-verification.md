@@ -59,8 +59,12 @@ counted in `FileFacts.source_compared`), none of them differed, every figure the
 blocks. Files that only opened are no check. The request's own figures, and an input's facts merely found in the
 output, are evidence and never the basis: a file that restates the request holds them all, and so do a copy of the
 input, a partial copy, a failure note quoting one figure and a file with one figure wrong (review rounds 3 and 4).
-A total that code recomputed from source data would also count, but no check computes one yet. Every record it
-declared read back
+A total that code recomputed from source data would also count, but no check computes one yet. So `code` is a
+transcription check: it says a figure the output gives as a source's own was compared with that source, digit for
+digit, and held. It does not say the work was checked. A workbook that says "nothing entered" and restates the
+source's own total earns it (review round 5, N3). A figure given as one input's own of a kind that input does not
+state, such as a "closing balance per bills" where the bills state none, compares with nothing and withholds the
+basis. Every record it declared read back
 from the application with its values shown (`ledger`, `records.all_read_back`), or a person (`person`). The screen
 (every step's result appeared) and the model's judgement are kept on the verdict as `basis` and never advance the
 streak: a replay can show each step's result and still have entered the wrong thing. Verdicts written before `basis`

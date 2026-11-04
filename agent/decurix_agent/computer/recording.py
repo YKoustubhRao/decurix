@@ -150,7 +150,11 @@ def write_whole(path, data, json_kw=None):
     and corrections through here, review round 3); bytes through write_bytes_whole."""
 
     if isinstance(data, bytes):
-        return write_bytes_whole(path, data)
+        # Bytes that read as text are text: checked like any other, never written through unchecked (review round 5).
+        try:
+            data = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return write_bytes_whole(path, data)
     privacy.write_scrubbed(path, data, atomic=True, json_kw=json_kw)
 
 
