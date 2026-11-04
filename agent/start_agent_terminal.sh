@@ -14,6 +14,11 @@ echo "[$(date)] Starting Decurix agent" >> "$LOG"
 
 export DISPLAY=:1
 
+# The screen's password is the base image's startup's to read (it makes the VNC password file from it); nothing the
+# agent starts needs it. Inherited, it was in the environment of every command a model ran, and `env` printed it into
+# the chat and recorded model calls (resource plan B7). The control plane reads its own copy (desktop.screenPassword).
+unset VNC_PW VNC_PASSWORD VNC_VIEW_ONLY_PW
+
 # Only this desktop's own user may open the display. "xhost +" turned X access control off, so anything that could
 # reach the X server - another container on the Docker network, if Xvnc listens on TCP - could drive this screen
 # around the approval gate (review 2026-11-03, N-F2). Every process that drives the screen (the agent, the gui

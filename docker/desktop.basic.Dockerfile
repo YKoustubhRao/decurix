@@ -304,6 +304,10 @@ RUN rm -f /etc/sudoers.d/headless /dockerstartup/.initial_sudo_password \
 # 6001 could drive this screen around the approval gate. Xvnc's own default is already no TCP; the mandatory config
 # of TigerVNC's vncserver (which the base image's startup runs) makes it explicit, as `-nolisten tcp`. A desktop
 # picks this up only when it is recreated. TestDesktopXServerHasNoTCPLive checks a running desktop.
+# The VNC port (5901) stays on the desktop network: the control plane reads thumbnails over RFB from it there
+# (desktop.captureFrame), and a desktop's only interfaces are loopback and that network, so binding it to one address
+# would change nothing. What guards it is the per-desktop password (desktop.screenPassword); keeping desktops from
+# reaching one another's ports at all is a network decision (docs/follow-ups.md, resource plan B7).
 RUN mkdir -p /etc/tigervnc && echo 'nolisten=tcp' >> /etc/tigervnc/vncserver-config-mandatory
 COPY agent/decurix-entrypoint.sh /opt/decurix-entrypoint.sh
 RUN chmod 755 /opt/decurix-entrypoint.sh \
