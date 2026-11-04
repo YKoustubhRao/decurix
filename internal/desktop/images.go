@@ -97,13 +97,12 @@ func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bo
 	_ = m.client.ImageTag(ctx, desktopImageBasic, desktopImageDeveloper)
 	_ = m.client.ImageTag(ctx, desktopImageBasic, desktopImageAI)
 
-	// Prune dangling build layers left behind by image rebuilds to reclaim disk space - after the desktop build too,
-	// the one the app's every start runs, which used to return before it (resource plan P1 #10).
-	defer func() {
-		if reclaimed, err := m.PruneDanglingResources(ctx); err == nil && reclaimed > 0 {
-			fmt.Fprintf(out, "==> Pruned dangling build layers (reclaimed %d MB)\n", reclaimed/(1024*1024))
-		}
-	}()
+	// Prune what the builds superseded - only after every build asked for succeeded (a failed one keeps all it had),
+	// and after the desktop build too, the one the app's every start runs (resource plan P1 #10, review RES-CP-1).
+	// The current builder stages are tagged (buildImage), so their cache is kept; only older copies go.
+	if reclaimed, err := m.PruneDanglingResources(ctx); err == nil && reclaimed > 0 {
+		fmt.Fprintf(out, "==> Pruned superseded build layers (reclaimed %d MB)\n", reclaimed/(1024*1024))
+	}
 
 	if which == "desktop" {
 		return nil
@@ -125,7 +124,8 @@ func (m *Manager) PruneDanglingResources(ctx context.Context) (uint64, error) {
 
 	var reclaimed uint64
 	// The dangling images of Decurix's own builds, and of their builder stages (a Go toolchain, a compiler suite:
-	// gigabytes the final images do not carry), each by its own label. A later rebuild of a stage compiles it again.
+	// gigabytes the final images do not carry), each by its own label. The current stages are tagged
+	// (stageTag), so only superseded copies are dangling: the next build still has its cache.
 	for _, f := range []filters.Args{pruneFilter(), stagePruneFilter()} {
 		report, err := m.client.ImagesPrune(ctx, f)
 		if err != nil {
@@ -147,12 +147,35 @@ func stagePruneFilter() filters.Args {
 	return f
 }
 
-// buildImage streams the embedded build context to the daemon and reports the
-// resulting build output.
+// buildImage builds one image from the embedded build context: first each builder stage of its Dockerfile, tagged
+// (stageTag) so the stage's cache is a tagged image and never pruned as dangling, then the image itself.
 func (m *Manager) buildImage(ctx context.Context, out io.Writer, img desktopImage, hash string) error {
 	if _, err := fs.Stat(decurix.DesktopBuildContext, decurix.TheBotSource); err != nil {
 		return errNoTheBotSource
 	}
+	dockerfile, err := contextDockerfile(decurix.DesktopBuildContext, img.Dockerfile)
+	if err != nil {
+		return err
+	}
+	for _, stage := range builderStages(dockerfile) {
+		fmt.Fprintf(out, "==> Building stage %s of %s\n", stage, img.Tag)
+		if err := m.buildContext(ctx, out, img.Dockerfile, build.ImageBuildOptions{
+			Target: stage,
+			Tags:   []string{stageTag(img.Tag, stage)},
+			Labels: map[string]string{buildStageLabel: "1"},
+		}); err != nil {
+			return fmt.Errorf("stage %s: %w", stage, err)
+		}
+	}
+	return m.buildContext(ctx, out, img.Dockerfile, build.ImageBuildOptions{
+		Tags:   []string{img.Tag},
+		Labels: map[string]string{contextLabel: hash},
+	})
+}
+
+// buildContext streams the embedded build context to the daemon for one build (opts' target, tags and labels) and
+// reports its output.
+func (m *Manager) buildContext(ctx context.Context, out io.Writer, dockerfile string, opts build.ImageBuildOptions) error {
 
 	// The daemon consumes the context as it builds, so produce the tar on a
 	// pipe rather than buffering the whole agent tree in memory.
@@ -164,13 +187,8 @@ func (m *Manager) buildImage(ctx context.Context, out io.Writer, img desktopImag
 
 	defer reader.Close()
 
-	resp, err := m.client.ImageBuild(ctx, reader, build.ImageBuildOptions{
-		Platform:   "linux/amd64",
-		Tags:       []string{img.Tag},
-		Dockerfile: img.Dockerfile,
-		Remove:     true,
-		Labels:     map[string]string{contextLabel: hash},
-	})
+	opts.Platform, opts.Dockerfile, opts.Remove = "linux/amd64", dockerfile, true
+	resp, err := m.client.ImageBuild(ctx, reader, opts)
 	if err != nil {
 		return err
 	}
@@ -237,6 +255,49 @@ var errNoTheBotSource = errors.New("this decurix was built without TheBot's sour
 // tarBuildContext tars every file of fsys into w under its own path, except
 // decurix.TheBotSource, whose files are written under decurix.TheBotDir -
 // where they are in the repository, and where the Dockerfiles COPY them from.
+// contextDockerfile is a Dockerfile as the build context carries it (tarBuildContext): with the prebuilt soul in
+// place of its TheBot build stage when there is one.
+func contextDockerfile(fsys fs.FS, path string) (string, error) {
+	data, err := fs.ReadFile(fsys, path)
+	if err != nil {
+		return "", err
+	}
+	if _, statErr := fs.Stat(fsys, decurix.TheBotSoul); statErr == nil {
+		return prebuiltSoul(string(data)), nil
+	}
+	return string(data), nil
+}
+
+// builderStages is the names of a Dockerfile's named stages but its last (the image): the ones built and tagged on
+// their own (buildImage).
+func builderStages(dockerfile string) []string {
+	var stages []string
+	var last string
+	for _, line := range strings.Split(dockerfile, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || !strings.EqualFold(fields[0], "FROM") {
+			continue
+		}
+		if last != "" {
+			stages = append(stages, last)
+		}
+		last = ""
+		if len(fields) == 4 && strings.EqualFold(fields[2], "AS") {
+			last = fields[3]
+		}
+	}
+	return stages
+}
+
+// stageTag is the tag a builder stage of image is kept under: decurix-build-stage:<image>-<stage>.
+func stageTag(image, stage string) string {
+	name := strings.NewReplacer(":", "-", "/", "-").Replace(image) + "-" + stage
+	if len(name) > 120 {
+		name = name[:120]
+	}
+	return "decurix-build-stage:" + name
+}
+
 func tarBuildContext(w io.Writer, fsys fs.FS) error {
 	tw := tar.NewWriter(w)
 
