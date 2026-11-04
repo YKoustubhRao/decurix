@@ -191,9 +191,12 @@ matches byte for byte). Text is signed as it is sent: a byte that is not valid U
   is their request line, withheld. It names no site, so the gate asks about every password a taught skill types. A
   replay's parameters are held when its recording's program marks them secret or does not list them; when the
   program cannot be read, every value given is held.
-- **A reply**: `/reply` first, then the reply's withheld values by `/secrets`, then the agent. A refused `/secrets`
-  stops the reply (503). A `/reply` the gate did not take is logged and the reply still reaches the agent, where it
-  grants nothing.
+- **A reply** (`httpapi.deliverRequest` too, once the desktop answers): the reply's withheld values by `/secrets`,
+  then `/reply`, then the agent, so the gate already holds the reply's values when it settles it. `/reply` is given
+  once, on the first try whose `/secrets` the gate took. A refused `/secrets` stops the reply (503) and nothing
+  reaches the gate's `/reply` or the agent. A `/reply` the gate refuses or does not answer is only logged, and **the
+  reply is still delivered** to the agent: it grants nothing there (only the gate makes a yes, from a `/reply` it
+  verified), so an approval fails closed, while an answer to a question still reaches the worker as the person's text.
 - **A task's end** never holds up the close. The notice is sent in the background. One the gate did not take is kept
   (at most 256 per desktop, oldest dropped) and sent, oldest first, before the next `/request`, `/secrets` or `/reply`
   to that gate, without failing that delivery. Kept notices are in memory: a control-plane restart loses the ones not

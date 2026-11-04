@@ -30,8 +30,10 @@ type gateDesktop struct {
 	state      string
 	noGate     bool
 	gateStatus int
-	recording  string   // what GET /recordings/<session> answers ("" a 404)
-	log        []string // "start", "unpause", "gate /request", "gate /secrets", "agent"
+	// replyStatus, when set, is what the gate answers /reply alone (gateStatus answers the rest).
+	replyStatus int
+	recording   string   // what GET /recordings/<session> answers ("" a 404)
+	log         []string // "start", "unpause", "gate /request", "gate /secrets", "gate /reply", "agent"
 }
 
 func (g *gateDesktop) record(what string) {
@@ -56,6 +58,9 @@ func newGateDesktop(t *testing.T, s *Server, state string) *gateDesktop {
 			g.record("gate " + path)
 			g.mu.Lock()
 			status := g.gateStatus
+			if path == "/reply" && g.replyStatus != 0 {
+				status = g.replyStatus
+			}
 			g.mu.Unlock()
 			w.WriteHeader(status)
 			return
@@ -300,25 +305,15 @@ func TestAReplysValuesReachTheGateFirst(t *testing.T) {
 	s := chatServer(t)
 	g := newGateDesktop(t, s, "running")
 	task := askedQuestion(t, s, tasks.OutcomeQuery, "I need the password for mira.k to sign in. What is it?")
+	g.mu.Lock()
+	g.log = nil
+	g.mu.Unlock()
 	if rec := sendAs(t, s, url.Values{"id": {"box"}, "content": {"Fern42Kite"}}, false, ""); rec.Code != http.StatusOK {
 		t.Fatalf("reply: %d %s", rec.Code, rec.Body)
 	}
-	events := g.events()
-	secretsAt, agentAt := -1, -1
-	for i, e := range events {
-		switch e {
-		case "gate /secrets":
-			secretsAt = i
-		case "agent":
-			if agentAt < 0 {
-				agentAt = i
-			}
-		case "gate /request":
-			t.Fatalf("a reply gave the gate a request copy: %v", events)
-		}
-	}
-	if secretsAt < 0 || agentAt < 0 || secretsAt > agentAt {
-		t.Fatalf("events = %v: the values must reach the gate before the reply reaches the agent", events)
+	// The reply's values, then the reply itself, once, then the agent; never a request copy (review DOCS-1).
+	if got, want := strings.Join(g.events(), ","), "gate /secrets,gate /reply,agent"; got != want {
+		t.Fatalf("events = %s, want %s", got, want)
 	}
 
 	// A gate that refuses the values stops the reply.
@@ -333,9 +328,39 @@ func TestAReplysValuesReachTheGateFirst(t *testing.T) {
 		t.Fatalf("a reply whose values the gate refused: %d %s", rec.Code, rec.Body)
 	}
 	for _, e := range g.events() {
-		if e == "agent" {
-			t.Fatalf("the reply reached the agent: %v", g.events())
+		if e == "agent" || e == "gate /reply" {
+			t.Fatalf("the reply reached the agent or the gate though its values were refused: %v", g.events())
 		}
+	}
+}
+
+// A reply to a stopped desktop reaches the gate once it is up, after its values and before the agent, and only once
+// however many tries the delivery takes. A /reply the gate refuses grants nothing, and the reply is still delivered.
+func TestAReplyReachesTheGateInOrderOnceAndIsDeliveredIfRefused(t *testing.T) {
+	s := chatServer(t)
+	g := newGateDesktop(t, s, "running")
+	task := askedQuestion(t, s, tasks.OutcomeQuery, "I need the password for mira.k to sign in. What is it?")
+	g.mu.Lock()
+	g.state, g.log = "stopped", nil
+	g.mu.Unlock()
+	if rec := sendAs(t, s, url.Values{"id": {"box"}, "content": {"Fern42Kite"}}, false, ""); rec.Code != http.StatusOK {
+		t.Fatalf("reply: %d %s", rec.Code, rec.Body)
+	}
+	if got, want := strings.Join(g.events(), ","), "start,gate /secrets,gate /reply,agent"; got != want {
+		t.Fatalf("events = %s, want %s", got, want)
+	}
+
+	if _, err := s.Tasks.RecordOutcome("box", task, tasks.Outcome{Kind: tasks.OutcomeQuery, Reply: "And the PIN for the card?"}); err != nil {
+		t.Fatal(err)
+	}
+	g.mu.Lock()
+	g.replyStatus, g.log = http.StatusForbidden, nil
+	g.mu.Unlock()
+	if rec := sendAs(t, s, url.Values{"id": {"box"}, "content": {"4821"}}, false, ""); rec.Code != http.StatusOK {
+		t.Fatalf("a reply whose /reply the gate refused: %d %s", rec.Code, rec.Body)
+	}
+	if got, want := strings.Join(g.events(), ","), "gate /secrets,gate /reply,agent"; got != want {
+		t.Fatalf("events = %s, want %s", got, want)
 	}
 }
 

@@ -365,12 +365,13 @@ func (s *Server) submitStored(ctx context.Context, desktopID, content string, or
 		ctx = context.WithValue(ctx, approvalKey{}, approval)
 	}
 
-	// A reply to an open question goes to the desktop's approval gate first, signed: that is the only way a yes is made.
-	if route.Kind == tasks.RouteReply {
-		s.signReplyToGate(ctx, id, route.TaskID, content, asked, kind, request)
-	}
-
 	ctx = s.markWithheld(ctx, id, route, content)
+
+	// A reply to an open question goes to the desktop's approval gate, signed: that is the only way a yes is made. It
+	// is sent by deliverRequest after the reply's own withheld values (/secrets) and before the agent gets the reply.
+	if route.Kind == tasks.RouteReply {
+		ctx = context.WithValue(ctx, gateReplyKey{}, gateReply{taskID: route.TaskID, text: content, asked: asked, kind: kind, request: request})
+	}
 
 	// Delivered and recorded under the desktop's lifecycle lock: the idle sweep re-checks Busy under the same lock, so
 	// it cannot pause or stop a desktop between the delivery and the record that makes it busy, and a stop or delete
@@ -443,11 +444,21 @@ func (s *Server) deliverRequest(ctx context.Context, desktopID, content string, 
 	// gate cannot be told, nothing is sent (review CP-A-2 B1). A desktop made before the gate gets its request as
 	// before.
 	gated := s.Desktops.HasGate(ctx, desktopID)
+	reply, isReply := ctx.Value(gateReplyKey{}).(gateReply)
 	send := func() error {
 		if gated {
 			if err := s.tellGate(ctx, desktopID); err != nil {
 				return err
 			}
+		}
+		// A reply reaches the gate after its values and before the agent: /secrets, then /reply, then delivery, so
+		// the gate words what it settles with the reply's values already withheld (review DOCS-1). It is given once,
+		// on the first try whose /secrets the gate took. A /reply the gate refuses or does not answer is only logged
+		// and the reply is still delivered: such a reply grants nothing (the gate alone makes a yes, from a /reply it
+		// verified), so for an approval it fails closed, and as an answer to a question it is still the person's text.
+		if isReply {
+			isReply = false
+			s.signReplyToGate(ctx, desktopID, reply.taskID, reply.text, reply.asked, reply.kind, reply.request)
 		}
 		return s.Desktops.SendRequest(ctx, desktopID, body)
 	}

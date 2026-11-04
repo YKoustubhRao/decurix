@@ -25,7 +25,7 @@ type pendingTaskEnded struct {
 }
 
 // SignGateTaskEnded is the signature on a notice that a task ended (/task-ended): its own label, over the task, the
-// time and a one-use nonce, so it can stand for no reply, request or list of values (gate_server.sign_task_ended).
+// time and a one-use nonce, so it can stand for no reply, request or list of values (gate_server.sign_ended).
 func SignGateTaskEnded(key, taskID, ts, nonce string) string {
 	return gateMAC(key, "task-ended", taskID, ts, nonce)
 }

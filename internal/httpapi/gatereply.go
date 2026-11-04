@@ -88,6 +88,12 @@ func (s *Server) replyBinding(ctx context.Context, desktopID string) (asked, kin
 	return asked, kind, newest.GateRequest, nil
 }
 
+// gateReplyKey carries a reply's gateReply from submit to deliverRequest, which gives it to the gate in order.
+type gateReplyKey struct{}
+
+// gateReply is what signReplyToGate needs of a reply: its task, its text and the question it is bound to.
+type gateReply struct{ taskID, text, asked, kind, request string }
+
 // signReplyToGate gives the desktop's approval gate the person's reply, signed, before the agent gets it: only a reply
 // that came this way, bound to the gate's request (replyBinding), can grant anything (desktop.SendGateReply). A
 // desktop without a gate (made before it existed) logs and goes on; it settles replies in its agent as it always did,
