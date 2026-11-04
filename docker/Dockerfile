@@ -4,7 +4,8 @@ FROM golang:1.27 AS builder
 WORKDIR /app
 
 COPY go.mod go.sum ./
-RUN go mod download
+# go has no download timeout of its own: ten minutes a try, three tries.
+RUN for try in 1 2 3; do timeout 600 go mod download && exit 0; echo "go mod download: try $try failed or stalled"; sleep 5; done; exit 1
 
 COPY . .
 
@@ -35,7 +36,11 @@ WORKDIR /app
 # the docker command (the host-app hop) and bash. Alpine with docker-cli is a
 # few MB from apk; Debian with docker.io (the whole engine) took about five
 # minutes of a first start of the app.
-RUN apk add --no-cache docker-cli bash curl ca-certificates
+# Bounded, as every download in a Dockerfile here is (internal/desktop/dockerfile_downloads_test.go): an apk
+# connection to a mirror that stopped sending held a first start at this step for 18 minutes. Five minutes a
+# try (busybox timeout), three tries.
+RUN for try in 1 2 3; do timeout 300 apk add --no-cache docker-cli bash curl ca-certificates && exit 0; \
+        echo "apk add: try $try failed or stalled"; sleep 5; done; exit 1
 
 # The templates are embedded in the binary (web/embed.go). The settings (.env, with the keys) are never copied into
 # an image layer, where anyone with the image could read them: compose hands them to the container when it starts

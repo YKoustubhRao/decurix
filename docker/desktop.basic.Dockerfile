@@ -6,7 +6,8 @@
 FROM golang:1.27 AS thebot-builder
 WORKDIR /src
 COPY agent/thebot/go.mod agent/thebot/go.sum ./
-RUN go mod download
+# go has no download timeout of its own: ten minutes a try, three tries.
+RUN for try in 1 2 3; do timeout 600 go mod download && exit 0; echo "go mod download: try $try failed or stalled"; sleep 5; done; exit 1
 COPY agent/thebot/cmd ./cmd
 COPY agent/thebot/internal ./internal
 COPY agent/thebot/web ./web
@@ -56,8 +57,10 @@ USER root
 #   what turns a Word or Excel file into a faithful PDF (tools/office.combine_pdf).
 #   The developer/ai Dockerfiles install the full suite, but only this image is
 #   built and tagged as all three.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+# Every download bounded (internal/desktop/dockerfile_downloads_test.go): apt gives up on a connection silent for a
+# minute and tries each file three times.
+RUN apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update && \
+    apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y --no-install-recommends \
         xdotool \
         tesseract-ocr \
         tesseract-ocr-eng \
@@ -123,13 +126,13 @@ RUN chmod 644 /etc/opt/chrome/policies/managed/decurix.json \
 # Presentation support uses a venv: python3-pptx is unavailable in Ubuntu noble.
 # System site packages retain apt-provided GI, openpyxl and document readers.
 RUN python3 -m venv --system-site-packages /opt/office-venv && \
-    /opt/office-venv/bin/pip install --no-cache-dir python-pptx==1.0.2
+    /opt/office-venv/bin/pip install --no-cache-dir --timeout 60 --retries 5 python-pptx==1.0.2
 ENV PATH="/opt/office-venv/bin:${PATH}"
 
 # The libraries a worker's own scripts reach for, in the system Python, so every python3 has them: the venv above is
 # not on a worker's PATH (the control plane sets PATH when it creates a desktop), so `import pptx` failed in any script
 # the engine wrote, and a run that needed `requests` failed and asked a person. Pinned, like everything here.
-RUN pip3 install --no-cache-dir --break-system-packages \
+RUN pip3 install --no-cache-dir --timeout 60 --retries 5 --break-system-packages \
         python-pptx==1.0.2 \
         pandas==2.2.3 \
         requests==2.32.3 \

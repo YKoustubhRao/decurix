@@ -12,6 +12,7 @@ const { lanPort } = require('./gated-port');
 const { ensureLanForward } = require('./windows-lan');
 const windowsRuntime = require('./windows-runtime');
 const { createLocalModels } = require('./local-models');
+const { watchBuild, stalledMessage } = require('./build-watchdog');
 
 // The app is a window on the control plane's dashboard, and what starts it.
 //
@@ -853,7 +854,16 @@ async function startStack() {
     const code = await docker(args, (line) => update(message, false, line));
     if (code !== 0) throw new Error(`${failure} Check ${logFile()}`);
   };
-  await step('Preparing Decurix…', ['compose', 'build'], 'Could not build Decurix in Docker.');
+  // A build step that downloads runs under the stall watchdog (build-watchdog.js): no new line for its bound and it
+  // is cancelled and tried once more; a second stall is an error with the last line, and the start's Retry.
+  const buildStep = async (message, args, failure, stallMs, stop) => {
+    update(message);
+    const result = await watchedDocker(args, (line) => update(message, false, line), stallMs, stop,
+      (last) => update(`${message} It stopped making progress, so it is being tried again.`, false, last));
+    if (result.stalled) throw new Error(`${stalledMessage(failure, stallMs, result.lastLine)} Check ${logFile()}`);
+    if (result.code !== 0) throw new Error(`${failure} Check ${logFile()}`);
+  };
+  await buildStep('Preparing Decurix…', ['compose', 'build'], 'Could not build Decurix in Docker.', COMPOSE_STALL_MS, stopComposeBuild);
   // The compose file declares the network external (compose will not adopt one the control plane made), so it must
   // exist before compose runs anything. On a fresh install, or after a `compose down`, it does not.
   if (await docker(['network', 'inspect', 'decurix-network'], undefined, QUICK) !== 0) {
@@ -864,8 +874,9 @@ async function startStack() {
   // waited for: the tools image (Go, Node, Rust, the coding CLIs) is a long
   // run of downloads a desktop does not need to start, and is built after the
   // dashboard is up (buildToolsLater).
-  await step('Checking the worker desktop image. A missing or outdated image is built once; existing images and cached layers are reused.',
-    ['compose', 'run', '--rm', '--no-deps', '-T', 'desktop-manager', './decurix', '--build-images', '-images', 'desktop'], 'Could not build the worker desktop.');
+  await buildStep('Checking the worker desktop image. A missing or outdated image is built once; existing images and cached layers are reused.',
+    ['compose', 'run', '--rm', '--no-deps', '-T', 'desktop-manager', './decurix', '--build-images', '-images', 'desktop'], 'Could not build the worker desktop.',
+    IMAGES_STALL_MS, stopImagesRun);
   await step('Starting Decurix…', ['compose', 'up', '-d', '--no-build'], 'Could not start Decurix in Docker.');
   await waitForDashboard(() => closing);
   buildToolsLater();
@@ -876,9 +887,56 @@ async function startStack() {
 // anything up; its output goes to desktop.log. A desktop made before it is
 // done starts without the tools, which the shared tools volume gets once the
 // image exists.
+// It runs under the stall watchdog too, so a stalled download never holds it (and its
+// container) for good: cancelled and tried once more, then given up with its last line.
 function buildToolsLater() {
-  docker(['compose', 'run', '--rm', '--no-deps', '-T', 'desktop-manager', './decurix', '--build-images', '-images', 'tools'])
-    .then((code) => { if (code !== 0) console.warn('Building the tools image failed; see', logFile()); });
+  watchedDocker(['compose', 'run', '--rm', '--no-deps', '-T', 'desktop-manager', './decurix', '--build-images', '-images', 'tools'],
+    undefined, IMAGES_STALL_MS, stopImagesRun, (last) => console.warn('Building the tools image stopped making progress; trying again. Last line:', last))
+    .then((result) => {
+      if (result.stalled) console.warn(stalledMessage('Building the tools image failed.', IMAGES_STALL_MS, result.lastLine), 'See', logFile());
+      else if (result.code !== 0) console.warn('Building the tools image failed; see', logFile());
+    });
+}
+
+// The silence that counts as a stalled build. compose build prints BuildKit's progress (a layer's bytes as they
+// come, a RUN's own output) as it goes, so five minutes of nothing is a stall. The desktop and tools images are built
+// by the control plane through the daemon's classic builder, which prints a RUN's output but nothing while a quiet
+// step works (a Go build of the soul with -p 1 on two cores takes minutes and prints nothing), so they get fifteen;
+// every download inside them has its own timeout in the Dockerfile as well.
+const COMPOSE_STALL_MS = 5 * 60 * 1000;
+const IMAGES_STALL_MS = 15 * 60 * 1000;
+
+// watchedDocker runs one docker build command under the stall watchdog: cancelled (its process ended, then stop()
+// cleans up what it left) when it prints nothing for stallMs, and tried once more. onRetry is told the last line
+// when a stalled try is to be tried again.
+function watchedDocker(args, onLine, stallMs, stop, onRetry = () => {}) {
+  return watchBuild({
+    stallMs,
+    attempt: (line, signal) => docker(args, line, { signal }),
+    onLine: onLine || (() => {}),
+    onStall: async (n, last) => {
+      console.warn(`docker ${args.join(' ')}: no output for ${Math.round(stallMs / 60000)} minutes; cancelled (try ${n}). Last line: ${last}`);
+      try { await stop(); } catch { /* the next try or the error says what is wrong */ }
+      if (n === 1) onRetry(last);
+    },
+  });
+}
+
+// stopComposeBuild ends a cancelled compose build. Outside Windows the docker client the app started is the build's
+// own process, and ending it (the watchdog's signal) cancels the build. On Windows that process is wsl.exe, and the
+// client runs on inside the distro, so it is ended there too.
+async function stopComposeBuild() {
+  if (windows) await inDistro(['pkill', '-TERM', '-f', 'docker compose build'], undefined, '/', QUICK);
+}
+
+// stopImagesRun ends a cancelled image build run by `compose run` (the control plane's --build-images): its one-off
+// container is removed, which ends the build it asked the daemon for. A container left by an earlier run is too.
+async function stopImagesRun() {
+  const ids = [];
+  await docker(['ps', '-q', '--filter', 'label=com.docker.compose.project=decurix', '--filter', 'label=com.docker.compose.oneoff=True'],
+    (line) => ids.push(line), QUICK);
+  if (ids.length > 0) await docker(['rm', '-f', ...ids], undefined, QUICK);
+  await stopComposeBuild();
 }
 
 // The gated listener is published on the network by compose, so a phone on

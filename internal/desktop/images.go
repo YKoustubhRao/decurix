@@ -348,13 +348,27 @@ func unpackInto(tw *tar.Writer, archive []byte, dir string) error {
 }
 
 // streamBuildOutput decodes the daemon's JSON build stream, echoing progress
-// to out and surfacing any build error as a Go error.
+// to out and surfacing any build error as a Go error. A base image the build
+// pulls is shown too: each layer's own events (a download or pull complete),
+// and, at most every pullProgressEvery while bytes keep coming, how much has
+// come. Without them a large pull printed nothing for many minutes, which the
+// app's stall watchdog (desktop/electron/build-watchdog.js) must tell from a
+// download that stopped.
 func streamBuildOutput(out io.Writer, body io.Reader) error {
 	decoder := json.NewDecoder(body)
+	layers := map[string][2]int64{} // layer id -> bytes come, bytes in all
+	var shown int64 = -1
+	lastShown := buildClock()
 
 	for {
 		var msg struct {
-			Stream      string `json:"stream"`
+			Stream         string `json:"stream"`
+			Status         string `json:"status"`
+			ID             string `json:"id"`
+			ProgressDetail struct {
+				Current int64 `json:"current"`
+				Total   int64 `json:"total"`
+			} `json:"progressDetail"`
 			Error       string `json:"error"`
 			ErrorDetail struct {
 				Message string `json:"message"`
@@ -379,8 +393,36 @@ func streamBuildOutput(out io.Writer, body io.Reader) error {
 		if msg.Stream != "" {
 			fmt.Fprint(out, msg.Stream)
 		}
+
+		if msg.Status == "" {
+			continue
+		}
+		if msg.ProgressDetail.Total > 0 && msg.ID != "" {
+			layers[msg.ID] = [2]int64{msg.ProgressDetail.Current, msg.ProgressDetail.Total}
+			var come, all int64
+			for _, l := range layers {
+				come, all = come+l[0], all+l[1]
+			}
+			if now := buildClock(); come != shown && now.Sub(lastShown) >= pullProgressEvery {
+				fmt.Fprintf(out, "Pulling the base image: %d of %d MB\n", come>>20, all>>20)
+				shown, lastShown = come, now
+			}
+			continue
+		}
+		// A layer's or the pull's own event, without a progress bar: one line each.
+		if msg.ID != "" {
+			fmt.Fprintf(out, "%s: %s\n", msg.ID, msg.Status)
+		} else {
+			fmt.Fprintln(out, msg.Status)
+		}
 	}
 }
+
+// pullProgressEvery is how often, at most, a pull's bytes are reported while they keep coming.
+var pullProgressEvery = 30 * time.Second
+
+// buildClock is the clock streamBuildOutput reports a pull's progress by (a test stands one in).
+var buildClock = time.Now
 
 // pruneFilter selects what PruneDanglingResources removes: dangling images Decurix built.
 func pruneFilter() filters.Args {

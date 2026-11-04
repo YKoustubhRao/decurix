@@ -10,7 +10,11 @@ WORKDIR /app
 # A static binary that runs only docker (the host-app hop) and bash in here:
 # Alpine's docker-cli is a few MB from apk, where Debian's docker.io took about
 # five minutes of a first start.
-RUN apk add --no-cache docker-cli bash curl ca-certificates
+# Bounded, as every download in a Dockerfile here is (internal/desktop/dockerfile_downloads_test.go): an apk
+# connection to a mirror that stopped sending held a first start at this step for 18 minutes. Five minutes a
+# try (busybox timeout), three tries.
+RUN for try in 1 2 3; do timeout 300 apk add --no-cache docker-cli bash curl ca-certificates && exit 0; \
+        echo "apk add: try $try failed or stalled"; sleep 5; done; exit 1
 
 # decurix-android-arm64 is the phone build /phone/decurix hands out.
 COPY decurix decurix-android-arm64 ./

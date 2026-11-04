@@ -113,3 +113,10 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   The async-create test held 500ms, and the icon test ran PowerShell (it compiles C# per call) under the 20s a
   creation allows. Assert the behaviour: hold the stand-in daemon until the test lets go and check the 202 came
   back meanwhile; give a test of output the test's own deadline and pin the production bound in its own test.
+- **A download in a Dockerfile with no timeout can hang a first start for good.** An `apk add` held an ESTABLISHED
+  connection to a mirror that stopped sending and waited 18 minutes, the network otherwise fine; the app sat at the
+  step. Every download step now bounds itself (apt `Acquire::*::Timeout`/`Retries`, pip `--timeout --retries`,
+  curl `--speed-limit/--speed-time --retry`, wget `--timeout --tries`, npm `--fetch-timeout --fetch-retries`, and
+  `timeout N` with three tries for apk, `go mod download` and piped installers), pinned by
+  `TestEveryDockerfileDownloadIsBounded`; the app cancels a build silent for 5 minutes (15 for the image builds,
+  whose quiet compile steps print nothing) and tries once more (`desktop/electron/build-watchdog.js`).

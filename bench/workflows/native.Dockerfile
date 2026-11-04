@@ -3,8 +3,8 @@
 # entire desktop just to qualify the native presentation transfer cases.
 FROM decurix-desktop:basic
 USER root
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends libreoffice-impress && \
+RUN apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update && \
+    apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y --no-install-recommends libreoffice-impress && \
     rm -rf /var/lib/apt/lists/* && \
     chmod 666 /etc/passwd /etc/group
 USER headless

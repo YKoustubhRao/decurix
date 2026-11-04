@@ -285,6 +285,7 @@ async function boot(initialState, {
     'node:http': http,
     'node:path': path,
     './local-models': require('./local-models'),
+    './build-watchdog': require('./build-watchdog'),
     './windows-runtime': {
       readSettings: () => ({ DECURIX_WINDOWS_NATIVE_OLLAMA: '1' }),
       configureResources: () => ({ memoryMB: 8192, workerCPUs: 2, workerMB: 2048, cpus: 8, modelMB: 6144 }),

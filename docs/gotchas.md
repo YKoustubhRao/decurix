@@ -958,3 +958,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): Do not have a model analyse evasion shapes for a guard
 - [part-6.md](gotchas/part-6.md): A test request from httptest comes from 192.0.2.1, not the host, once a desktop manager is set
 - [part-6.md](gotchas/part-6.md): A test that times a handler or a subprocess against a wall-clock number fails under load
+- [part-6.md](gotchas/part-6.md): A download in a Dockerfile with no timeout can hang a first start for good

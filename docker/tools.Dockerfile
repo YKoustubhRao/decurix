@@ -2,7 +2,10 @@ FROM ubuntu:22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Every download here is bounded (internal/desktop/dockerfile_downloads_test.go): apt and wget give up on a
+# connection silent for a minute, curl on one under 1 KB/s for two minutes, and each tries again; an installer that
+# downloads by its own means runs under `timeout` with three tries.
+RUN apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update && apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y --no-install-recommends \
     ca-certificates \
     curl \
     wget \
@@ -22,7 +25,7 @@ RUN mkdir -p /opt/tools/bin /opt/tools/go /opt/tools/node /opt/tools/rust
 
 # 1. Go toolchain (official linux-amd64)
 ARG GO_VERSION=1.26.0
-RUN wget -q https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz -O /tmp/go.tar.gz && \
+RUN wget -q --timeout=60 --tries=3 https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz -O /tmp/go.tar.gz && \
     tar -C /opt/tools -xzf /tmp/go.tar.gz && \
     rm /tmp/go.tar.gz && \
     ln -s /opt/tools/go/bin/go /opt/tools/bin/go && \
@@ -30,7 +33,7 @@ RUN wget -q https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz -O /tmp/go.tar.
 
 # 2. Node.js LTS (official linux-x64 binary distribution)
 ARG NODE_VERSION=24.0.0
-RUN curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz -o /tmp/node.tar.gz && \
+RUN curl -fsSL --connect-timeout 30 --speed-limit 1024 --speed-time 120 --retry 3 --retry-delay 5 https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz -o /tmp/node.tar.gz && \
     tar -C /opt/tools/node --strip-components=1 -xzf /tmp/node.tar.gz && \
     rm /tmp/node.tar.gz && \
     ln -s /opt/tools/node/bin/node /opt/tools/bin/node && \
@@ -40,45 +43,47 @@ RUN curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-li
 # 3. Rust toolchain (minimal cargo + rustc)
 ENV RUSTUP_HOME=/opt/tools/rust
 ENV CARGO_HOME=/opt/tools/rust
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path && \
+RUN for try in 1 2 3; do timeout 1200 sh -c "curl --proto '=https' --tlsv1.2 -sSf --connect-timeout 30 --speed-limit 1024 --speed-time 120 --retry 3 --retry-delay 5 https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path" && break; \
+        [ "$try" = 3 ] && exit 1; echo "rustup: try $try failed or stalled"; sleep 5; done && \
     ln -s /opt/tools/rust/bin/rustc /opt/tools/bin/rustc && \
     ln -s /opt/tools/rust/bin/cargo /opt/tools/bin/cargo
 
 # 4. GitHub CLI (gh)
 ARG GH_VERSION=2.67.0
-RUN (curl -fsSL https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz -o /tmp/gh.tar.gz && \
+RUN (curl -fsSL --connect-timeout 30 --speed-limit 1024 --speed-time 120 --retry 3 --retry-delay 5 https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz -o /tmp/gh.tar.gz && \
      tar -xzf /tmp/gh.tar.gz -C /tmp && \
      mv /tmp/gh_${GH_VERSION}_linux_amd64/bin/gh /opt/tools/bin/gh && \
      rm -rf /tmp/gh*)
 
 # 5. Developer CLIs: ripgrep, fd-find, fzf, jq
 ARG RG_VERSION=14.1.1
-RUN (curl -fsSL https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz -o /tmp/rg.tar.gz && \
+RUN (curl -fsSL --connect-timeout 30 --speed-limit 1024 --speed-time 120 --retry 3 --retry-delay 5 https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz -o /tmp/rg.tar.gz && \
      tar -xzf /tmp/rg.tar.gz -C /tmp && \
      mv /tmp/ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg /opt/tools/bin/rg && \
      rm -rf /tmp/rg*)
 
 ARG FD_VERSION=10.2.0
-RUN (curl -fsSL https://github.com/sharkdp/fd/releases/download/v${FD_VERSION}/fd-v${FD_VERSION}-x86_64-unknown-linux-musl.tar.gz -o /tmp/fd.tar.gz && \
+RUN (curl -fsSL --connect-timeout 30 --speed-limit 1024 --speed-time 120 --retry 3 --retry-delay 5 https://github.com/sharkdp/fd/releases/download/v${FD_VERSION}/fd-v${FD_VERSION}-x86_64-unknown-linux-musl.tar.gz -o /tmp/fd.tar.gz && \
      tar -xzf /tmp/fd.tar.gz -C /tmp && \
      mv /tmp/fd-v${FD_VERSION}-x86_64-unknown-linux-musl/fd /opt/tools/bin/fd && \
      rm -rf /tmp/fd*)
 
 ARG FZF_VERSION=0.60.2
-RUN (curl -fsSL https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/fzf-${FZF_VERSION}-linux_amd64.tar.gz -o /tmp/fzf.tar.gz && \
+RUN (curl -fsSL --connect-timeout 30 --speed-limit 1024 --speed-time 120 --retry 3 --retry-delay 5 https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/fzf-${FZF_VERSION}-linux_amd64.tar.gz -o /tmp/fzf.tar.gz && \
      tar -xzf /tmp/fzf.tar.gz -C /opt/tools/bin && \
      rm -f /tmp/fzf.tar.gz)
 
-RUN (curl -fsSL https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64 -o /opt/tools/bin/jq && \
+RUN (curl -fsSL --connect-timeout 30 --speed-limit 1024 --speed-time 120 --retry 3 --retry-delay 5 https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64 -o /opt/tools/bin/jq && \
      chmod +x /opt/tools/bin/jq)
 
 # 6. Claude Code CLI
-RUN (HOME=/tmp/claude-installer bash -c 'curl -fsSL https://claude.ai/install.sh | bash' && \
+RUN (for try in 1 2 3; do HOME=/tmp/claude-installer timeout 900 bash -c 'curl -fsSL --connect-timeout 30 --speed-limit 1024 --speed-time 120 --retry 3 --retry-delay 5 https://claude.ai/install.sh | bash' && break; \
+        [ "$try" = 3 ] && exit 1; echo "claude installer: try $try failed or stalled"; sleep 5; done && \
      mv /tmp/claude-installer/.local/bin/claude /opt/tools/bin/claude && \
      rm -rf /tmp/claude-installer)
 
 # 7. AI CLIs: @openai/codex
-RUN (PATH="/opt/tools/bin:$PATH" npm install -g --prefix /opt/tools/node @openai/codex && \
+RUN (PATH="/opt/tools/bin:$PATH" npm install -g --fetch-timeout=60000 --fetch-retries=5 --prefix /opt/tools/node @openai/codex && \
      ln -s /opt/tools/node/bin/codex /opt/tools/bin/codex)
 
 # 8. Environment setup script & sentinel marker. The sentinel holds a hash of the whole tree, so a rebuilt tools
