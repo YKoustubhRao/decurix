@@ -374,13 +374,14 @@ def clear_literals(task_id):
 #
 # A planned run keeps its request to resume by, and every store on disk keeps it withheld - so a run resumed after an
 # agent restart had "[withheld]" where a password was. The request as it was is kept here instead: beside the task's
-# secret values, in tmpfs (the task file's ".resume"), 0600, let go at the task's final report. Only a container
-# restart loses it, and that already reports the task as interrupted.
+# secret values, in tmpfs (the task file's ".secrets.resume"), 0600, let go at the task's final report. Only a container
+# restart loses it, and that already reports the task as interrupted. The task's own request, as it is, is kept here
+# too when its kept copy is withheld: what its checks read (task_context.current_request, review round 6).
 # ============================================================
 
 def _resume_file():
     from decurix_agent import task_context
-    return Path(task_context.CURRENT_FILE + ".resume")
+    return Path(task_context.CURRENT_FILE + ".secrets.resume")  # (beside the task's secret values: one store)
 
 
 def _read_resume():
@@ -1048,15 +1049,11 @@ def _input_words(text):
     return words
 
 
-# A marked message this short is withheld whole even when it carries data: it is likely the secret itself, or holds it.
-SHORT_MARKED_WORDS = 5
-
-
 def marked_values(text):
     """
     The values a message the person marked secret makes secret: the secrets its structure spells out
-    (request_secrets: after a name, quoted, a card's or a PIN's shape) and the message whole - unless it is a longer
-    request carrying data (figures, amounts, dates) - withheld wherever they stand; and,
+    (request_secrets: after a name, quoted, a card's or a PIN's shape) and the message whole, withheld wherever they
+    stand; and,
     as whole tokens only (WHOLE_TOKEN), each of its words that has a value's shape - 4 or more characters with a digit
     or a mark in it, a sentence's own punctuation at its ends aside - and is not data by its structure (_is_data: a
     number, an amount, a date, a time, an e-mail address, a URL, a host name, a contraction, a word the files it brings
@@ -1078,13 +1075,11 @@ def marked_values(text):
             if len(word) >= 4 and any(ch.isdigit() or unicodedata.category(ch)[0] in "PS" for ch in word) \
                     and not _is_data(word, data_words):
                 shaped.append(WHOLE_TOKEN + word)
-        # The message whole is a value too, unless it is a request carrying data: longer than SHORT_MARKED_WORDS words
-        # and holding a figure, an amount or a date (its own checks read "[withheld]" for them when the whole was
-        # withheld - review round 5, R4-B1). A short message, or one of words only (a passphrase), is withheld whole.
-        carries_data = any(any(ch.isdigit() for ch in w) and _is_data(w, frozenset())
-                           for w in (w.strip(_EDGE_PUNCTUATION) for w in text.split()))
-        whole = [text] if len(text.split()) <= SHORT_MARKED_WORDS or not carries_data else []
-        return list(dict.fromkeys(v for v in list(request_secrets(text)) + whole + shaped if v))
+        # The message whole is always a value: every kept and emitted copy of it is withheld, whatever its length or
+        # content (review round 6, R5-B1: dropping it for a long message carrying data put the message back in the
+        # handled command file, the request copy, the active-task record and soul's memory - F-S1, F-S2). The task's
+        # own checks read its data from a raw copy in the task's secret store instead (task_context.current_request).
+        return list(dict.fromkeys(v for v in list(request_secrets(text)) + [text] + shaped if v))
     except Exception:  # noqa: BLE001
         return [str(text or "")] if text else []
 

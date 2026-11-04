@@ -376,17 +376,25 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
     a workflow's inputs, are kept in the task's resume copy (tmpfs, beside its secret values, let go at the final
     report), so an agent restart resumes with the value (round 4). Only a container restart loses it, and that
     already reports the task as interrupted. `core.act` never types a `[withheld]` mark: it says to ask the person.
-  - A wholly marked message keeps three kinds of value (rounds 4 and 5):
+  - A wholly marked message keeps three kinds of value (rounds 4 to 6):
     - what its structure names, withheld wherever it stands;
-    - the message whole, unless it is a longer request carrying data (more than 5 words, with a figure, an amount or
-      a date), so that its own checks can read its figures;
+    - the message whole, always, so every kept and emitted copy of it is withheld (round 6, R5-B1). The task's own
+      checks read the request from a raw copy in the task's secret store (`task_context.current_request`: tmpfs,
+      0600, let go at the final report);
     - each word shaped like a value (4+ characters with a digit or a mark), withheld as a whole token only, and only
       when it is not data by structure: a number, amount, date or time, an e-mail address, URL or host name, a
       contraction, or a word the files it brings also hold.
 
     A step line never quotes what `gui type` types (the whole rest of the line).
     Residual costs:
-    - An all-letter secret word in a long data-carrying marked message is not withheld when typed alone.
+    - An all-letter secret word of a marked message, typed alone in the task's own new output, is not withheld. It
+      can surface in:
+      - the model's own replies;
+      - step lines of commands other than `gui type` (`sshpass -p`, `curl -u`, `echo ... |`);
+      - a non-password field's "Output" line;
+      - the recorder's later model turns.
+
+      The long-term fix is O-1's input broker, not more rules.
     - A value-shaped code that is data but has no structure the rules read, like a period code `Q3-2024` in the
       message and in no input file, is withheld as a whole token in that task's later lines.
   - Not done from REVIEW-PY-A-2's nits: `core._shown_by_app` still takes the application's value from any observation,

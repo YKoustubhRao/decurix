@@ -48,14 +48,16 @@ class AMarkedMessagesDataIsNoSecret(SecretFirst):
         self.assertIn(VALUE, thebot_harness._job_secrets())
 
     def test_the_request_copy_its_checks_read_keeps_its_data(self):
-        # probe_round4's input class: a long marked request carrying data is not withheld whole - its checks read it.
+        # probe_round4's input class: its checks read its data - from the raw copy in the task's secret store (round
+        # 6: the message is held whole again, so every kept copy of it is withheld).
         self.send(MESSAGE)
         task_context.start(TASK, request=MESSAGE)
-        copy = task_context.current_request()
+        with mock.patch.object(state, "current_task", None):  # another process: the `gui` command's checks
+            copy = task_context.current_request()
         self.assertIn("1,250.00", copy)
         self.assertIn("05/11/2024", copy)
-        self.assertNotIn(VALUE, copy)
-        self.assertNotIn(MESSAGE, privacy.marked_values(MESSAGE))
+        self.assertIn(MESSAGE, privacy.marked_values(MESSAGE))
+        self.assertNotIn(VALUE, (self.root / "current-task.request").read_text(encoding="utf-8"))
 
     def test_a_whole_token_only(self):
         self.send(MESSAGE)

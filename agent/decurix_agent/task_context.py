@@ -89,7 +89,13 @@ def start(task_id, request=None, continues=""):
             writes.append((CURRENT_FILE + ".since", f"{task_id} {time.time():.3f}"))
         if request is not None:
             # Withheld (C14): the copy outlives the task in /tmp, and every process reads it.
-            writes.append((CURRENT_FILE + ".request", _withheld(str(request), task_id)[:REQUEST_CHARS]))
+            kept = _withheld(str(request), task_id)
+            writes.append((CURRENT_FILE + ".request", kept[:REQUEST_CHARS]))
+            if task_id and kept != str(request):
+                # The request as it is, for the task's own checks in every process (current_request): in the task's
+                # secret store (tmpfs, 0600, let go at its final report), never in a kept copy (review round 6).
+                from decurix_agent.computer import privacy
+                privacy.keep_resume_copy("request:" + task_id, task_id, str(request)[:REQUEST_CHARS])
             # The files the request brought, whole: the request above is cut at 500 characters, and its paths come
             # last. What the screen layer checks a chosen record against (core._in_documents).
             from decurix_agent import attachments
@@ -265,6 +271,14 @@ def current_request():
     if state.current_task_id and state.current_task:
         return str(state.current_task)[:REQUEST_CHARS]
 
+    # Another process (the `gui` command, a check): the request as it is from the task's secret store when its kept copy
+    # is withheld - the checks read the data a marked request carries (review round 6, R5-B1).
+    task_id = current()
+    if task_id:
+        from decurix_agent.computer import privacy
+        raw = privacy.resume_copy("request:" + task_id)
+        if raw:
+            return raw
     return _read(".request")
 
 
