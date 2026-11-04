@@ -161,9 +161,11 @@ type proxyTargetCacheEntry struct {
 	expires  time.Time
 }
 
-// InvalidateProxyTarget purges any cached reverse-proxy URLs for the given desktop ID.
+// InvalidateProxyTarget purges any cached reverse-proxy URLs, and the thumbnail's VNC address, for the given desktop ID.
 func (m *Manager) InvalidateProxyTarget(rawID string) {
 	sanitizedID := sanitizeName(rawID)
+	// The thumbnail's cached VNC address goes too: the same lifecycle changes move it.
+	m.forgetShotTarget(sanitizedID)
 	m.proxyTargetMu.Lock()
 	defer m.proxyTargetMu.Unlock()
 	for k := range m.proxyTargets {

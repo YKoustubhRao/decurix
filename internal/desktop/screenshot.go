@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/des"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
@@ -29,7 +31,7 @@ import (
 // websockify's port is the *browser's* path to a desktop: reusing it would
 // mean speaking WebSocket to reach a protocol the control plane can read
 // straight off a TCP socket.
-const vncPort = "5901"
+var vncPort = "5901" // a variable so a test can stand an RFB server in on a free port
 
 // Screenshot capture tuning. captureTimeout bounds one whole capture
 // (connect, RFB handshake, and a full framebuffer read); a desktop that is
@@ -40,8 +42,15 @@ const (
 	// screenshotTTL is how long one captured frame is reused. Every browser
 	// showing the dashboard asks for every desktop's thumbnail, so without
 	// this a second viewer (or a background tab that never stopped
-	// refreshing) would double the capture load on every desktop.
-	screenshotTTL = 3 * time.Second
+	// refreshing) would double the capture load on every desktop. It is the
+	// dashboard's sweep (5 s, index.html SHOT_INTERVAL_MS): one viewer still
+	// gets a fresh frame each sweep (a sweep takes longer than 5 s from one
+	// capture to the next), and every other viewer shares it (resource plan P1 #4).
+	screenshotTTL = 5 * time.Second
+
+	// shotTargetTTL is how long a desktop's VNC address and password, read by one container inspect, are reused by
+	// its captures. A failed capture and every lifecycle change (InvalidateProxyTarget) drop it sooner.
+	shotTargetTTL = 30 * time.Second
 
 	// jpegQuality is deliberately modest: these are thumbnails a few hundred
 	// pixels wide, and the smaller the frame the sooner the dashboard's
@@ -70,12 +79,31 @@ const (
 // desktop wait for the frame already being fetched instead of each opening
 // their own VNC session.
 type shotEntry struct {
-	mu      sync.Mutex
+	mu sync.Mutex
+	// byWidth is the frame captured at `at`, encoded at each width asked for since: a viewer at another width gets
+	// its own size, never another viewer's.
+	byWidth map[int][]byte
+	// data is the latest encoding of any width: what a paused desktop shows.
 	data    []byte
 	at      time.Time
 	lastErr error
 	errAt   time.Time
+	// target is the desktop's VNC address and password, reused for shotTargetTTL (captureTarget).
+	target atomic.Pointer[shotTarget]
+	// savedSum is the digest of the thumbnail last written to disk: an unchanged screen is not written again.
+	savedSum [32]byte
 }
+
+// shotTarget is a desktop's VNC address and password as one container inspect read them, and until when they are
+// reused.
+type shotTarget struct {
+	addr, password string
+	until          time.Time
+}
+
+// saveShot has a thumbnail written to disk, in the background (saveShotToDisk): the request never waits on the disk.
+// A test stands in a counter.
+var saveShot = func(sanitizedID string, data []byte) { go saveShotToDisk(sanitizedID, data) }
 
 // shotCacheFor returns the cache entry for a desktop, creating it on first
 // use. It only guards the map itself - the returned entry carries its own
@@ -141,9 +169,9 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	if entry.data != nil && time.Since(entry.at) < screenshotTTL {
+	if cached := entry.byWidth[maxWidth]; cached != nil && time.Since(entry.at) < screenshotTTL {
 		m.touchViewed(sanitizedID)
-		return entry.data, nil
+		return cached, nil
 	}
 
 	// Negative caching: if capture failed very recently (e.g. desktop booting or VNC down),
@@ -154,8 +182,18 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 
 	// Only a cache miss pays for the ContainerInspect captureTarget needs to
 	// resolve the desktop's address and password - a cache hit above never
-	// touches Docker at all.
-	addr, password, err := m.captureTarget(ctx, rawID)
+	// touches Docker at all - and that answer is itself reused for
+	// shotTargetTTL, so a capture every sweep is not an inspect every sweep.
+	var addr, password string
+	var err error
+	if target := entry.target.Load(); target != nil && time.Now().Before(target.until) {
+		addr, password = target.addr, target.password
+	} else {
+		addr, password, err = m.captureTarget(ctx, rawID)
+		if err == nil {
+			entry.target.Store(&shotTarget{addr: addr, password: password, until: time.Now().Add(shotTargetTTL)})
+		}
+	}
 	if err != nil {
 		if errors.Is(err, ErrPaused) {
 			if entry.data != nil {
@@ -167,6 +205,7 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 			// Fall back to the screenshot persisted on disk before the pause or restart.
 			if diskData, diskErr := loadShotFromDisk(sanitizedID); diskErr == nil && len(diskData) > 0 {
 				entry.data = diskData
+				entry.byWidth = nil
 				entry.at = time.Now()
 				entry.lastErr = nil
 				m.touchViewed(sanitizedID)
@@ -180,6 +219,8 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 
 	frame, err := captureFrame(ctx, addr, password)
 	if err != nil {
+		// The address may be stale (a restart, a pause): the next capture asks Docker again.
+		entry.target.Store(nil)
 		return entry.fail(err)
 	}
 
@@ -188,12 +229,30 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 		return entry.fail(err)
 	}
 
+	if time.Since(entry.at) >= screenshotTTL || entry.byWidth == nil {
+		entry.byWidth = map[int][]byte{}
+	}
+	entry.byWidth[maxWidth] = encoded
 	entry.data = encoded
 	entry.at = time.Now()
 	entry.lastErr = nil
-	go saveShotToDisk(sanitizedID, encoded)
+	// The disk copy is what a paused or restarted desktop shows; an unchanged screen is not written again.
+	if sum := sha256.Sum256(encoded); sum != entry.savedSum {
+		entry.savedSum = sum
+		saveShot(sanitizedID, encoded)
+	}
 
 	return encoded, nil
+}
+
+// forgetShotTarget drops a desktop's cached VNC address, so its next capture asks Docker (a lifecycle change).
+func (m *Manager) forgetShotTarget(sanitizedID string) {
+	m.shotMu.Lock()
+	entry := m.shots[sanitizedID]
+	m.shotMu.Unlock()
+	if entry != nil {
+		entry.target.Store(nil)
+	}
 }
 
 // fail remembers a failed capture for the negative cache and returns it. The caller holds e.mu.

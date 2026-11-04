@@ -1466,30 +1466,50 @@
     var width = Math.min(960, Math.max(120,
       Math.round((img.clientWidth || 320) * (window.devicePixelRatio || 1))));
 
-    return "/api/desktops/screenshot?id=" + encodeURIComponent(img.dataset.shot) +
-      "&w=" + width + "&t=" + Date.now();
+    return "/api/desktops/screenshot?id=" + encodeURIComponent(img.dataset.shot) + "&w=" + width;
   }
 
+  /* Each sweep asks again, with the ETag of the picture the card shows: a
+     screen that has not changed is a 304 - no bytes, no decode - and a changed
+     one comes at once, as before. The URL stays the same (no cache-buster), and
+     the HTTP cache is left out (no-store) so the 304 reaches this code instead
+     of being answered from a cached copy (resource plan P1 #4). */
   function loadShot(img){
-    return new Promise(function(resolve){
-      var next = new Image();
+    var headers = {};
+    if(img._shotTag){ headers["If-None-Match"] = img._shotTag; }
 
-      next.onload = function(){
-        img.src = next.src;
-        img.classList.add("is-live");
+    return fetch(shotURL(img), {cache: "no-store", credentials: "same-origin", headers: headers})
+      .then(function(res){
+        if(res.status === 304){ return; }
+        /* A desktop that is still booting has no screen to read yet. Leave the
+           placeholder showing and try again on the next sweep. */
+        if(!res.ok){ return; }
 
-        var placeholder = img.parentNode.querySelector("[data-shot-placeholder]");
-        if(placeholder){ placeholder.style.display = "none"; }
+        var tag = res.headers.get("ETag");
+        return res.blob().then(function(blob){
+          return new Promise(function(resolve){
+            var url = URL.createObjectURL(blob);
+            var next = new Image();
 
-        resolve();
-      };
+            next.onload = function(){
+              var old = img._shotURL;
+              img.src = url;
+              img._shotURL = url;
+              img._shotTag = tag;
+              if(old){ URL.revokeObjectURL(old); }
+              img.classList.add("is-live");
 
-      /* A desktop that is still booting has no screen to read yet. Leave the
-         placeholder showing and try again on the next sweep. */
-      next.onerror = function(){ resolve(); };
+              var placeholder = img.parentNode.querySelector("[data-shot-placeholder]");
+              if(placeholder){ placeholder.style.display = "none"; }
 
-      next.src = shotURL(img);
-    });
+              resolve();
+            };
+            next.onerror = function(){ URL.revokeObjectURL(url); resolve(); };
+            next.src = url;
+          });
+        });
+      })
+      .catch(function(){ /* the next sweep tries again */ });
   }
 
   async function sweepShots(){
