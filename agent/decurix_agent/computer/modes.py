@@ -72,9 +72,8 @@ def set_stage(stage):
         raise ValueError(f"invalid worker stage: {stage!r}, must be one of {sorted(VALID_STAGES)}")
 
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
-    tmp.write_text(json.dumps({"stage": stage}, indent=2), encoding="utf-8")
-    tmp.replace(STATE_FILE)
+    from decurix_agent.computer import privacy
+    privacy.write_scrubbed(STATE_FILE, {"stage": stage}, atomic=True, json_kw={"indent": 2})
     return stage
 
 

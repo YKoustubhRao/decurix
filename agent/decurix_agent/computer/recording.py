@@ -144,14 +144,21 @@ def _read_meta(directory):
         return None
 
 
-def write_whole(path, data):
-    """Write `data` (bytes, or text as UTF-8) to `path` at once: to a .tmp file beside it, then moved over it."""
+def write_whole(path, data, json_kw=None):
+    """Write `data` (bytes, text as UTF-8, or what JSON holds) to `path` at once: a temporary file beside it, then
+    moved over it. Text and JSON go through privacy.write_scrubbed (every secret known withheld first - skills.save writes people's run answers
+    and corrections through here, review round 3); bytes through write_bytes_whole."""
+
+    if isinstance(data, bytes):
+        return write_bytes_whole(path, data)
+    privacy.write_scrubbed(path, data, atomic=True, json_kw=json_kw)
+
+
+def write_bytes_whole(path, data):
+    """Bytes at once (a frame, a picture: pixels, password fields painted over by their callers)."""
 
     tmp = path.with_name(path.name + ".tmp")
-    if isinstance(data, bytes):
-        tmp.write_bytes(data)
-    else:
-        tmp.write_text(data, encoding="utf-8")
+    tmp.write_bytes(data)
     tmp.replace(path)
 
 
@@ -159,7 +166,7 @@ def _write_meta(directory, meta):
     """Write a session's meta, through privacy.scrub, and return what was written."""
 
     meta = privacy.scrub(meta)
-    write_whole(directory / "meta.json", json.dumps(meta, ensure_ascii=False, indent=1))
+    write_whole(directory / "meta.json", meta, json_kw={"ensure_ascii": False, "indent": 1})
     return meta
 
 
@@ -326,8 +333,8 @@ def append(session_id, event, before=None, after=None, at=None, defaults=None):
                 meta["screen"] = [width, height]
 
         event = privacy.scrub(event)
-        with open(directory / "events.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        privacy.write_scrubbed(directory / "events.jsonl", event, append=True,
+                               json_kw={"ensure_ascii": False}, end="\n")
 
         meta["event_count"] += 1
 

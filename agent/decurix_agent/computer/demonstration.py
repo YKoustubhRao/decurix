@@ -128,7 +128,7 @@ def _read_active():
 
 def _write_active(data):
     ACTIVE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    recording.write_whole(ACTIVE_FILE, json.dumps(data))
+    recording.write_whole(ACTIVE_FILE, data)
 
 
 def _clear_active():
@@ -1373,7 +1373,7 @@ class Recorder:
         # Input is being captured now. The first full screen/accessibility
         # observation can take longer than start()'s deadline on a busy
         # desktop, so it must not hold up the ready handshake.
-        READY_FILE.write_text(str(os.getpid()), encoding="utf-8")
+        privacy.write_scrubbed(READY_FILE, str(os.getpid()))
         log(f"Recording demonstration {self.session_id}; ignoring input from devices {sorted(self.agent_devices)}")
 
         return self._record(reader)

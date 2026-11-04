@@ -174,3 +174,20 @@ class TheControlPlanesVectors(unittest.TestCase):
             self.assertIn("�", bad["text"])
             body = {k: bad[k] for k in ("task_id", "ts", "nonce", "text", "sig")}
             self.assertEqual(gate.verify_request(key, body, now=float(bad["ts"])), "")
+
+    def test_the_task_ended_notice_and_a_tampered_secrets_body(self):
+        # H-CP-11: the control plane's "task ended" (/task-ended) under its own label; and a secrets body whose values
+        # were changed after signing is refused (review round 2 nit: only its valid form was checked).
+        path = Path(__file__).resolve().parents[2] / "internal" / "desktop" / "testdata" / "gate-signatures.json"
+        if not path.exists():
+            self.skipTest(f"{path} is not in this tree")
+        vectors = json.loads(path.read_text(encoding="utf-8"))
+        key, ended, secrets = vectors["key"], vectors["task_ended"], vectors["secrets"]
+        self.assertEqual(gate.verify_ended(key, ended, now=float(ended["ts"])), "")
+        self.assertEqual(gate.verify_ended(key, dict(ended, task_id=ended["task_id"][:-1] + "0"),
+                                           now=float(ended["ts"])), "bad signature")
+        # A request or secrets signature never stands as a task's end.
+        self.assertEqual(gate.verify_ended(key, dict(ended, sig=secrets["sig"]), now=float(ended["ts"])),
+                         "bad signature")
+        tampered = dict(secrets, secrets=list(secrets["secrets"]) + ["one more"])
+        self.assertEqual(gate.verify_secrets(key, tampered, now=float(secrets["ts"])), "bad signature")

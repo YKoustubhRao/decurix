@@ -41,8 +41,8 @@ def _log_path(task_id):
 
 def _note(path, record):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    from decurix_agent.computer import privacy
+    privacy.write_scrubbed(path, record, append=True, json_kw={"ensure_ascii": False}, end="\n")
 
 
 def _trim_logs():

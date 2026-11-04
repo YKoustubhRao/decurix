@@ -365,6 +365,7 @@ def _write_note(path, name, last, stopped):
     else:
         done[name] = last
         done.pop(f"{name}#stopped", None)
-    path.write_text(json.dumps(done), encoding="utf-8")
+    from decurix_agent.computer import privacy
+    privacy.write_scrubbed(path, done)
     for old in sorted(REPLAYED_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime)[:-KEEP_REPLAYED]:
         old.unlink()

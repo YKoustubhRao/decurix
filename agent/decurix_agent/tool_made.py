@@ -106,8 +106,8 @@ def remember(local):
         store.mkdir(parents=True, exist_ok=True)
         key = _key(p)
         shutil.copy2(p, store / (key + p.suffix.lower()))
-        (store / (key + ".json")).write_text(json.dumps({"path": str(p.resolve()), "words": sorted(words)}),
-                                              encoding="utf-8")
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(store / (key + ".json"), {"path": str(p.resolve()), "words": sorted(words)})
     except OSError as exc:
         log(f"tool_made: could not keep {p}: {exc}")
 

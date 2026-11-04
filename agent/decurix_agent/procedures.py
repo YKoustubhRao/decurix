@@ -112,7 +112,8 @@ def _save(name, applies_when, procedure, said, task_id):
     record = {"name": name, "applies_when": applies_when, "procedure": procedure, "said": _squash(said, MAX_PROCEDURE_CHARS),
               "task_id": task_id, "updated": time.time()}
     path = DIR / f"{_slug(name)}.json"
-    path.write_text(json.dumps(record, indent=1, ensure_ascii=False), encoding="utf-8")
+    from decurix_agent.computer import privacy
+    privacy.write_scrubbed(path, record, json_kw={"indent": 1, "ensure_ascii": False})
     for old in kept()[MAX_KEPT:]:
         try:
             (DIR / old["file"]).unlink()

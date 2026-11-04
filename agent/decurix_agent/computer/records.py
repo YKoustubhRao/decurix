@@ -212,9 +212,10 @@ def load(task_id=None):
 
 def _save(task_id, records):
     LEDGER_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = _path(task_id).with_suffix(".tmp")
-    tmp.write_text(json.dumps(records, ensure_ascii=False, indent=0), encoding="utf-8")
-    tmp.replace(_path(task_id))
+    # The task's secret values withheld as they are; no shape matching (a record's 16-digit account is no card here).
+    from decurix_agent.computer import privacy
+    privacy.write_scrubbed(_path(task_id), records, atomic=True,
+                           shapes=False, json_kw={"ensure_ascii": False, "indent": 0})
 
 
 def _key_number_on_form(rec, form):
@@ -684,7 +685,8 @@ def stop_once(task_id, what):
         return False
     try:
         mark.parent.mkdir(parents=True, exist_ok=True)
-        mark.write_text("1", encoding="utf-8")
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(mark, "1")
     except OSError:
         return False
     return True

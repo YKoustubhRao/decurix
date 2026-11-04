@@ -786,15 +786,21 @@ def _host(url):
     import urllib.parse
 
     try:
-        host = (urllib.parse.urlparse(url or "").hostname or "").lower()
+        parts = urllib.parse.urlparse(url or "")
+        host = (parts.hostname or "").lower()
     except ValueError:
-        return ""
+        # A URL that cannot be read is a site nothing names: the question is asked (review round 3: "" let it go).
+        return "an address that cannot be read" if url else ""
     endpoint = _endpoint(url) if _ip(host) is not None else None
     if endpoint:
         scheme, address, port = endpoint
         shown = f"[{address}]" if address.version == 6 else str(address)
         return f"{scheme}://{shown}:{port}"
-    return "" if _ip(host) is not None else host
+    if _ip(host) is not None:
+        # An address whose scheme has no default port and none written: no endpoint, so a site nothing names - it is
+        # asked about, never let go as "" was (review round 3).
+        return f"{host} over {parts.scheme or 'an unknown scheme'}, with no port written"
+    return host
 
 
 def _taught_text():
@@ -1046,6 +1052,8 @@ def _locked():
 
         yield state
 
+        # (Not write_scrubbed: the gate keeps this store as its own user, which cannot read the worker's secret
+        # values; what it holds is fingerprints and the gate's own words, withheld by shown_by_gate.)
         tmp = STATE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(state), encoding="utf-8")
         tmp.replace(STATE_FILE)
@@ -1216,10 +1224,14 @@ def from_material(material):
         workdir = str(material.get("workdir") or "")
         fingerprint = hashlib.sha256("".join(["command", command, request, workdir]).encode("utf-8")).hexdigest()[:24]
         # The words are withheld whole, then cut (review round 2, B4): a secret across the cut leaves nothing of itself.
+        shown = shown_by_gate(command if command else request)
+        if shown == privacy.HELD_BACK:
+            # A part that cannot be checked holds the whole question back (review round 3, R2-B3): the gate refuses.
+            return fingerprint, privacy.HELD_BACK, None, ""
         if command:
-            description = f"run the command `{shown_by_gate(command)[:600]}`" + (f" in {workdir}" if workdir else "")
+            description = f"run the command `{shown[:600]}`" + (f" in {workdir}" if workdir else "")
         else:
-            description = f"start this request: {shown_by_gate(request)[:600]}"
+            description = f"start this request: {shown[:600]}"
         return fingerprint, shown_by_gate(description), None, ""
     element = material.get("element") if isinstance(material.get("element"), dict) else None
     text = material.get("text")
@@ -1231,10 +1243,14 @@ def from_material(material):
     about = str(material.get("about") or "")
     fingerprint = _fingerprint(kind, element, text, keys, point, context=context, about=about,
                                sends=str(material.get("sends") or ""))
-    # The typed text is withheld before describe_action cuts it to its quote (review round 2, B4).
+    # The typed text is withheld before describe_action cuts it to its quote (review round 2, B4). Any part that cannot
+    # be checked - the typed text, what it acts on, the description - holds the whole question back (round 3, R2-B3).
     shown = None if text is None else shown_by_gate(text)
+    about_shown = shown_by_gate(about)
+    if privacy.HELD_BACK in (shown, about_shown):
+        return fingerprint, privacy.HELD_BACK, element, privacy.HELD_BACK
     return (fingerprint, shown_by_gate(describe_action(kind, element, text=shown, keys=keys, point=point)), element,
-            shown_by_gate(about))
+            about_shown)
 
 
 # The secret values of the desktop's tasks as the control plane sent them to the gate, signed (gate_server's /secrets),
@@ -1251,13 +1267,22 @@ def gate_secrets_path():
 def gate_secret_values():
     """Every secret value the gate keeps (only ever read in the gate)."""
 
+    # Not there: no values. There and unreadable: it raises, and shown_by_gate holds the words back (fail closed -
+    # review round 3: an unreadable store read as no values showed the words in the clear).
     try:
-        data = json.loads(gate_secrets_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        text = gate_secrets_path().read_text(encoding="utf-8")
+    except FileNotFoundError:
         return []
+    data = json.loads(text)
     if not isinstance(data, dict):
-        return []
-    return [str(v) for values in data.values() if isinstance(values, list) for v in values if str(v or "").strip()]
+        raise ValueError("the gate's secrets store is not an object")
+    tasks = data.get("tasks") if isinstance(data.get("tasks"), dict) else data
+    out = []
+    for entry in tasks.values():
+        values = entry.get("values") if isinstance(entry, dict) else entry
+        if isinstance(values, list):
+            out += [str(v) for v in values if str(v or "").strip()]
+    return out
 
 
 def shown_by_gate(text):
@@ -1497,8 +1522,10 @@ def blocked_command(exit_code, output):
 
 
 def request_text(request):
-    """The words an engine and a human see for a pending approval."""
+    """The words an engine and a human see for a pending approval ("" for none: a refusal asks nobody)."""
 
+    if not request:
+        return ""
     about = f" {request['about'].rstrip('.')}." if request.get("about") else ""
     return (
         f"Approval needed before I {request['action']}: {request['reason']}.{about} "

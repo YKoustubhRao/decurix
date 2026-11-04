@@ -46,6 +46,9 @@ MAX_CALLS = 32
 KEY_FILE = "key"
 # The reason in the gate's question when it finds none of its own in the action (never the caller's words).
 GATE_REASON = "it needs your approval"
+# A refusal's reason: fixed, so it carries none of the action's words.
+REFUSED_REASON = ("the gate could not check this action's words for secrets, so it was refused without asking anyone; "
+                  "do it another way or report that it could not be done")
 
 _lock = threading.Condition()
 _nonces = {}   # nonce -> expiry: one use each
@@ -121,6 +124,28 @@ def sign_secrets(key, task_id, ts, nonce, values):
     return _mac(key, ("secrets", task_id, ts, nonce, _sha("".join(_sha(v) + "\0" for v in values))))
 
 
+def sign_ended(key, task_id, ts, nonce):
+    """The control plane's signature on "this task has ended" (/task-ended, desktop.SignGateTaskEnded, H-CP-11): its
+    own label, so it stands for nothing else. The gate then lets go of the task's secret values and its request copy
+    (review round 3, R2-B2)."""
+
+    return _mac(key, ("task-ended", task_id, ts, nonce))
+
+
+def verify_ended(key, data, now=None):
+    """Whether `data` (a parsed /task-ended body) is the control plane's, fresh and not seen before: why not, or ""."""
+
+    if not key:
+        return "this gate has no key"
+    try:
+        task_id, ts, nonce, sig = str(data["task_id"]), str(data["ts"]), str(data["nonce"]), str(data["sig"])
+    except (KeyError, TypeError):
+        return "incomplete"
+    if not hmac.compare_digest(sign_ended(key, task_id, ts, nonce).encode("utf-8"), sig.encode("utf-8")):
+        return "bad signature"
+    return _fresh(ts, nonce, now)
+
+
 def verify_secrets(key, data, now=None):
     """Whether `data` (a parsed /secrets body) is the control plane's, fresh and not seen before: why not, or ""."""
 
@@ -138,11 +163,14 @@ def verify_secrets(key, data, now=None):
     return _fresh(ts, nonce, now)
 
 
-# How many tasks' secret values the gate keeps, and how many values a task.
-# The tasks whose secret values the gate keeps: the open ones, as far as the gate can tell - the task of the latest
-# request and the one before it (a reply or an amendment may still come on it). A task further back has ended; its
-# values are let go (review round 2: the gate's plaintext store kept 50 tasks for good).
-SECRET_TASKS = 2
+# The tasks whose secret values the gate keeps: every task the control plane has not said is over (/task-ended). The
+# gate cannot tell an open task from an ended one by counting requests - a task waiting on a person while newer requests
+# queue behind it, a long request taking amendments - so a count let an open task's values go and its command reached
+# the question in the clear (review round 3, R2-B2). Until the control plane says a task ended, its values are kept
+# for SECRET_KEEP_SECONDS after they last came, and the store is held under SECRET_STORE_BYTES (oldest tasks first).
+# Keeping too much only withholds more: the safe direction.
+SECRET_KEEP_SECONDS = 24 * 3600
+SECRET_STORE_BYTES = 4 * 1024 * 1024
 SECRET_VALUES = 1000
 _store_lock = threading.Lock()
 
@@ -191,41 +219,95 @@ def _write_private(path, data):
         raise
 
 
+class StoreUnreadable(OSError):
+    """A store of the gate's that is there and cannot be read: it is kept as it is, never written over."""
+
+
 def _read_store(path):
+    """A store of the gate's as a dict: {} when it is not there. One that is there and cannot be read raises
+    StoreUnreadable - writing over it would drop what it holds (review round 3: an unreadable store was wiped)."""
+
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return {}
+    except OSError as exc:
+        raise StoreUnreadable(f"{path.name} cannot be read: {exc}") from exc
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise StoreUnreadable(f"{path.name} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise StoreUnreadable(f"{path.name} is not an object")
+    return data
 
 
-def keep_secrets(task_id, values):
+def _secret_tasks(data, now=None):
+    """{task: {"values", "at"}} of a secrets store as read (the round-2 shape, {task: [values]}, is read too), less the
+    tasks whose values came more than SECRET_KEEP_SECONDS ago, and held under SECRET_STORE_BYTES, oldest first out."""
+
+    now = time.time() if now is None else now
+    tasks = data.get("tasks") if isinstance(data.get("tasks"), dict) else {
+        t: {"values": v, "at": now} for t, v in data.items() if isinstance(v, list)}
+    out = {}
+    for task, entry in tasks.items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("values"), list):
+            continue
+        at = entry.get("at") if isinstance(entry.get("at"), (int, float)) else now
+        if now - at <= SECRET_KEEP_SECONDS:
+            out[str(task)] = {"values": [str(v) for v in entry["values"]], "at": at}
+    while out and len(json.dumps({"tasks": out}, ensure_ascii=False).encode("utf-8")) > SECRET_STORE_BYTES:
+        out.pop(min(out, key=lambda t: out[t]["at"]))
+    return out
+
+
+def keep_secrets(task_id, values, now=None):
     """Add a task's signed secret values to the gate's own copy (approval.shown_by_gate withholds them). Read, merge
     and write under one lock: two posts at once both keep their values (review round 2, B5)."""
 
     path = approval.gate_secrets_path()
+    now = time.time() if now is None else now
     with _locked_store():
-        data = _read_store(path)
-        kept = data.pop(task_id, [])
+        tasks = _secret_tasks(_read_store(path), now)
+        kept = (tasks.pop(task_id, None) or {}).get("values", [])
         kept = list(dict.fromkeys(kept + [v.strip() for v in values if v.strip()]))[-SECRET_VALUES:]
-        data[task_id] = kept
-        _write_private(path, data)
+        tasks[task_id] = {"values": kept, "at": now}
+        _write_private(path, {"tasks": _secret_tasks({"tasks": tasks}, now)})
+
+
+def end_task(task_id, now=None):
+    """The control plane says the task ended (/task-ended): its secret values are let go, and so are any past their
+    age; the request copy goes too when it is that task's. A task the gate holds nothing for is no error. The age and
+    size bounds stay as the backstop: the control plane keeps notices it could not deliver in memory only."""
+
+    path = approval.gate_secrets_path()
+    with _locked_store():
+        tasks = _secret_tasks(_read_store(path), now)
+        tasks.pop(str(task_id), None)
+        _write_private(path, {"tasks": tasks})
+        copy = approval.gate_request_path()
+        try:
+            if str(_read_store(copy).get("task_id") or "") == str(task_id):
+                copy.unlink()
+        except FileNotFoundError:
+            pass
+        except StoreUnreadable as exc:
+            log(f"the request copy is kept: {exc}")
 
 
 def keep_request(task_id, text):
     """Keep the latest signed request as the gate's own copy (approval.gate_request_text): what a site the request
-    names is read from, never the worker's task file. A new task's request lets go of the values of tasks before the
-    last two."""
+    names is read from, never the worker's task file. The tasks' secret values are not let go here: a new request
+    says nothing of whether an older task is over (review round 3, R2-B2)."""
 
     with _locked_store():
         path = approval.gate_request_path()
-        previous = _read_store(path).get("task_id") or ""
+        try:
+            previous = _read_store(path).get("task_id") or ""
+        except StoreUnreadable as exc:
+            log(f"the request copy is written anew: {exc}")  # (it holds no secret; the next request replaces it)
+            previous = ""
         _write_private(path, {"task_id": task_id, "text": text, "at": time.time(), "previous": previous})
-        secrets = approval.gate_secrets_path()
-        data = _read_store(secrets)
-        open_tasks = {task_id, previous}
-        if data and set(data) - open_tasks:
-            _write_private(secrets, {t: v for t, v in data.items() if t in open_tasks})
 
 
 def verify(key, data, now=None):
@@ -354,10 +436,12 @@ def handle(call):
             return {"error": "no material"}
         fingerprint, description, element, about = approval.from_material(material)
         if privacy.HELD_BACK in (description, about):
-            # Words that could not be checked for secrets are never shown, and a person is never asked to approve an
-            # action they cannot see: it is refused (review round 2).
-            return decision_json(approval.Decision(False, reason="the action could not be shown without its secrets, "
-                                                                 "so it is refused"))
+            # Words that could not be checked for secrets - any part of them: the command, the typed text, what it
+            # acts on (approval.from_material) - are never shown, and a person is never asked to approve an action
+            # they cannot see: it is refused, a no to this one action that waits on nobody (review round 3, R2-B3).
+            # "refused" tells soul to resume at once (H-SOUL-8).
+            return dict(decision_json(approval.Decision(False, reason=REFUSED_REASON)), refused=True,
+                        reason=REFUSED_REASON)
         # The gate's own reason, or a fixed one: the caller's reason is the worker's words, and these words are the
         # gate's signed question (round-4 recheck: "it only saves a draft" could stand in the gate's voice). The
         # worker's text still reaches the person, as the worker's note.
@@ -456,7 +540,7 @@ class ReplyHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         # A web page cannot sign; a request that names an origin is not the control plane's.
-        if self.path not in ("/reply", "/request", "/secrets") or self.headers.get("Origin") is not None:
+        if self.path not in ("/reply", "/request", "/secrets", "/task-ended") or self.headers.get("Origin") is not None:
             return self._send(404)
         try:
             length = int(self.headers.get("Content-Length") or "0")
@@ -475,6 +559,17 @@ class ReplyHandler(BaseHTTPRequestHandler):
                 keep_secrets(str(data["task_id"]), data["secrets"])
             except OSError as exc:
                 log(f"could not keep the secret values: {exc}")
+                return self._send(500)
+            return self._send(204)
+        if self.path == "/task-ended":
+            why = verify_ended(self.key, data)
+            if why:
+                log(f"a task's end was refused: {why}")
+                return self._send(403)
+            try:
+                end_task(str(data["task_id"]))
+            except OSError as exc:
+                log(f"could not let go of the task's secret values: {exc}")
                 return self._send(500)
             return self._send(204)
         if self.path == "/request":

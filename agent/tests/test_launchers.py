@@ -53,14 +53,16 @@ class Desktop(unittest.TestCase):
             patch.object(launchers.screen, "windows", side_effect=lambda: list(self.windows)),
             patch.object(launchers.session, "launch", side_effect=launch),
             patch.object(launchers.xinput, "activate", side_effect=self.activated.append),
+            # (launchers.time and replay.time are the one time module: patched once. Patched twice and stopped in
+            # the order started, the second stop put the first mock back, and time.sleep stayed a mock for every
+            # later test of the run - a test that waited by sleeping waited no time at all, review round 3.)
             patch.object(launchers.time, "sleep"),
-            patch.object(replay.time, "sleep"),
         ]
         for p in self.patches:
             p.start()
 
     def tearDown(self):
-        for p in self.patches:
+        for p in reversed(self.patches):
             p.stop()
         self.tmp.cleanup()
 

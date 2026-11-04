@@ -537,9 +537,8 @@ def note_filled(output, source, placeholders):
         if len(data) > FILLED_MAX:
             data = dict(sorted(data.items(), key=lambda kv: kv[1].get("at") or 0)[-FILLED_MAX:])
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(data), encoding="utf-8")
-        os.replace(tmp, path)
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(path, data, atomic=True, shapes=False)
     except Exception as exc:  # noqa: BLE001
         log(f"produced: could not note what {output} was filled from: {exc}")
 
@@ -881,7 +880,8 @@ def _note_opened(paths):
         known[str(Path(path).resolve())] = time.time()
     try:
         _opened_file().parent.mkdir(parents=True, exist_ok=True)
-        _opened_file().write_text(json.dumps(dict(list(known.items())[-2000:])), encoding="utf-8")
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(_opened_file(), dict(list(known.items())[-2000:]), shapes=False)
     except OSError as exc:
         log(f"produced: could not note the files that opened: {exc}")
 

@@ -134,10 +134,7 @@ def save(book):
         log(f"Playbooks: {book['name']} could not be checked for secrets, so it was not kept")
         return False
     ROOT.mkdir(parents=True, exist_ok=True)
-    tmp = _path(book["name"]).with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(kept, f, indent=1, ensure_ascii=False)
-    os.replace(tmp, _path(book["name"]))
+    privacy.write_scrubbed(_path(book["name"]), kept, atomic=True, json_kw={"indent": 1, "ensure_ascii": False})
     return True
 
 
@@ -1065,7 +1062,7 @@ def _distil(book):
         if not wrong:
             try:
                 TOOLS.mkdir(parents=True, exist_ok=True)
-                path.write_text(answer["script"].rstrip() + "\n", encoding="utf-8", newline="\n")
+                privacy.write_scrubbed(path, answer["script"].rstrip() + "\n", newline="\n")
                 wrong = _prove(tool)
             except OSError as exc:
                 wrong = f"it could not be saved or tried ({exc})"

@@ -176,8 +176,9 @@ def note(text):
     text = kept if isinstance(kept, str) else json.dumps(kept, ensure_ascii=False)
     try:
         NOTES_DIR.mkdir(parents=True, exist_ok=True)
-        with open(NOTES_DIR / f"{task_id}.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps({"at": time.time(), "text": text[:MAX_NOTE]}, ensure_ascii=False) + "\n")
+        privacy.write_scrubbed(NOTES_DIR / f"{task_id}.jsonl",
+                               {"at": time.time(), "text": text[:MAX_NOTE]},
+                               append=True, json_kw={"ensure_ascii": False}, end="\n")
         _prune()
     except OSError as exc:
         log(f"evidence: could not keep a note: {exc}")
@@ -379,8 +380,8 @@ def note_file_read(path):
         return
     try:
         NOTES_DIR.mkdir(parents=True, exist_ok=True)
-        with open(NOTES_DIR / f"{task_id}.files", "a", encoding="utf-8") as f:
-            f.write(str(path).replace("\n", " ") + "\n")
+        privacy.write_scrubbed(NOTES_DIR / f"{task_id}.files", str(path).replace("\n", " ") + "\n", append=True,
+                               shapes=False)
     except OSError as exc:
         log(f"evidence: could not keep a file read: {exc}")
 

@@ -224,7 +224,8 @@ def overlap_lines(path, header, facts):
     known[str(path)] = {"sig": sig, "lo": lo, "hi": hi, **record}
     try:
         store.parent.mkdir(parents=True, exist_ok=True)
-        store.write_text(json.dumps(known), encoding="utf-8")
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(store, known, shapes=False)
     except OSError:
         pass
     return out

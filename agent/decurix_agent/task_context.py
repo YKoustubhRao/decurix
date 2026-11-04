@@ -118,7 +118,7 @@ def withhold(text, task_id=None):
         held = secret_values(task_id)
         if " ".join(text.split()) in held:
             return "[withheld]"  # a marked message, whatever its line breaks
-        return privacy.withhold_known(privacy.withhold_values(text, held))
+        return privacy.withhold_known(privacy.withhold_spaced(text, held))
     except Exception:  # noqa: BLE001 - fail closed
         return privacy.HELD_BACK
 
@@ -157,10 +157,8 @@ def _write(path, value):
     """Replace a file the out-of-process reporters read, whole."""
 
     try:
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(value)
-        os.replace(tmp, path)
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(path, value, atomic=True, shapes=False)
     except OSError:
         # Only the out-of-process reporters lose it, and the control
         # plane still attributes their steps to the live task.
@@ -215,10 +213,10 @@ def mark_active(task_id, request=None):
     try:
         path = _active_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"task_id": task_id, "request": _withheld(str(request or ""), task_id)[:500],
-                                   "since": time.time()}), encoding="utf-8")
-        tmp.replace(path)
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(path, {"task_id": task_id, "request": _withheld(str(request or ""),
+                                                                                        task_id)[:500],
+                                                 "since": time.time()}, atomic=True)
     except OSError:
         pass
 
@@ -357,9 +355,9 @@ def _keep_context(task_id, **fields):
         data.update(fields)
         try:
             folder.mkdir(parents=True, exist_ok=True)
-            tmp = folder / "context.json.tmp"
-            tmp.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
-            os.replace(tmp, folder / "context.json")
+            from decurix_agent.computer import privacy
+            privacy.write_scrubbed(folder / "context.json", data, atomic=True,
+                                   shapes=False, json_kw={"sort_keys": True})
         except OSError:
             pass
 

@@ -57,9 +57,12 @@ class AMarkedMessageIsWithheldFromThenOn(unittest.TestCase):
         return posted[0]["text"]
 
     def test_a_short_marked_message_is_withheld_in_a_later_line_and_a_recording(self):
+        # The message is one value, whole (review round 3, R2-B1: never its every word, which withheld a later task's
+        # ordinary words as substrings); the line that copies it does not hold it.
         self.send({"content": f"it is {WORD}", "task_id": "t0123456789abcdef", "secret": True})
-        self.assertNotIn(WORD, self.posted_line(f"Typing {WORD} into the field"))
-        recording.append("task-t0123456789abcdef", {"kind": "type", "text": WORD, "summary": f"type {WORD}"})
+        self.assertNotIn(WORD, self.posted_line(f"The person said: it is {WORD}"))
+        recording.append("task-t0123456789abcdef", {"kind": "type", "text": f"it is {WORD}",
+                                                    "summary": f"type it is {WORD}"})
         kept = "".join(p.read_text(encoding="utf-8") for p in (self.root / "recordings").rglob("*") if p.is_file())
         self.assertNotIn(WORD, kept)
 

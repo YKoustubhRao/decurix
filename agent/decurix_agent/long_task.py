@@ -683,12 +683,10 @@ def _save_ledger(run_id, data):
     with _lock:
         path = _ledger_path(run_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(json.dumps(data, indent=1, ensure_ascii=False))
-            f.flush()
-            os.fsync(f.fileno())
-        tmp.replace(path)
+        # The task's secret values withheld as they are; no shape matching (a stage's cells and figures are compared
+        # later).
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(path, data, atomic=True, shapes=False, json_kw={"indent": 1, "ensure_ascii": False})
 
 
 def _update(run_id, change):
@@ -2112,11 +2110,13 @@ def _snapshot_sheets(run_id, step_id, made):
                     if path in kept and name in kept[path] and kept[path][name] != sheets[name]:
                         sheets[name] = kept[path][name]
                         moved = True
+            from decurix_agent.computer import privacy
             if moved:
-                other.write_text(json.dumps(theirs, default=str), encoding="utf-8")
+                privacy.write_scrubbed(other, theirs, shapes=False, json_kw={"default": str})
         if kept:
+            from decurix_agent.computer import privacy
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps(kept, default=str), encoding="utf-8")
+            privacy.write_scrubbed(target, kept, shapes=False, json_kw={"default": str})
         elif target.exists():
             target.unlink()
     except (OSError, ValueError) as exc:
@@ -5323,7 +5323,7 @@ def _remember_reported(data, report, outputs):
         kept = {"task_id": task_id, "request": task_context.withhold(str(data.get("request") or ""), task_id)[:20000],
                 "report": task_context.withhold(str(report or ""), task_id)[:4000], "outputs": list(outputs)[:40],
                 "at": time.time()}
-        _follow_up_path().write_text(json.dumps(privacy.scrub(kept)), encoding="utf-8")
+        privacy.write_scrubbed(_follow_up_path(), privacy.scrub(kept))
     except OSError as exc:
         log(f"long_task: could not keep the reported run for a follow-up: {exc}")
 
@@ -5413,7 +5413,8 @@ def _report_message(run_id, work, parts, head, done, not_done, needs, changes, d
         folder = Path(work) / messaging.REPORTS_DIR
         folder.mkdir(parents=True, exist_ok=True)
         saved = folder / f"run-report-{time.strftime('%Y%m%d-%H%M%S')}-{run_id[:8]}.txt"
-        saved.write_text(messaging._withheld(whole), encoding="utf-8")  # no secret in a saved report either
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(saved, messaging._withheld(whole))  # no secret in a saved report either
     except OSError as exc:
         log(f"long_task: could not save the full report: {exc}")
         saved = None

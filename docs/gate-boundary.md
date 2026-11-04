@@ -161,6 +161,22 @@ Guard rails, not the boundary, but each closed a hole the recheck found:
 - **Question files, the final-reply file, the log banner and the saved run report** go through `privacy.withhold_known`.
 - **A proven fix stands in the build's own folder**, not the workspace that holds every project.
 
+## The gate's secret values and its refusals (2026-11-04, secrets review round 3)
+
+- **Kept until the task ends.** The gate keeps each task's signed secret values (`/secrets`) until the control plane
+  signs `POST /task-ended` for that task (label `task-ended`, the same window and one-use nonce as `/secrets`). The
+  notice drops the task's values, and its request copy too when the copy is that task's. Counting requests did not
+  work: a task waiting on a person lost its values when two newer requests came, and its command reached the
+  question in the clear. As a backstop, values are dropped 24 h after they last came, and the store is held under
+  4 MB with the oldest tasks dropped first, because the control plane keeps undelivered notices in memory only.
+- **A store that cannot be read is kept**, never written over. While it cannot be read, every question the gate
+  would word is held back, so the check is refused.
+- **Any part that cannot be checked refuses the question.** If the command, the typed text or what the action acts
+  on cannot be checked for secrets, the gate asks nobody. It answers
+  `{"allowed": false, "request": null, "refused": true, "reason": <fixed text>}`. `gui` raises that reason as an
+  error, and soul takes it as a no to that one action and resumes (H-SOUL-8). Nothing waits on a question no reply
+  could approve.
+
 ## Next: the input broker (proposed, not built)
 
 The gate decides whether a yes exists; nothing yet stands between the worker and the screen. The worker's Linux user

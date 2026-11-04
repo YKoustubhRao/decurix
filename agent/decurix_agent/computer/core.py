@@ -52,9 +52,7 @@ def _save_state(observation, next_ref):
     data["next_ref"] = next_ref
     data["sample"] = base64.b64encode(observation["frame"].sample()).decode("ascii")
 
-    tmp = STATE_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
-    tmp.replace(STATE_FILE)
+    privacy.write_scrubbed(STATE_FILE, data, atomic=True, shapes=False)
 
 
 @contextmanager
@@ -407,9 +405,8 @@ def _note_front():
         if front is None:
             return
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        FRONT_FILE.write_text(json.dumps({"task": _task_now(), "at": time.time(), "id": front["id"],
-                                          "title": front["title"], "known": [w["id"] for w in wins]}),
-                              encoding="utf-8")
+        privacy.write_scrubbed(FRONT_FILE, {"task": _task_now(), "at": time.time(), "id": front["id"],
+                                                       "title": front["title"], "known": [w["id"] for w in wins]})
     except Exception:  # a note for later must never fail the action
         pass
 
@@ -477,7 +474,7 @@ def _task_windows(windows=None):
 def _save_task_windows(record):
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        TASK_WINDOWS_FILE.write_text(json.dumps(record), encoding="utf-8")
+        privacy.write_scrubbed(TASK_WINDOWS_FILE, record)
     except OSError:
         pass
 
@@ -1886,7 +1883,7 @@ def _unsearched_record(element):
                     "different party - and only with their yes, create it.")
         try:
             ID_REFUSALS_DIR.mkdir(parents=True, exist_ok=True)
-            mark.write_text("1", encoding="utf-8")
+            privacy.write_scrubbed(mark, "1")
         except OSError:
             return ""  # a stop that cannot be kept to once is not made
         head = f"Not pressed: this makes a new record holding {ident}, "
@@ -1915,14 +1912,6 @@ def _unsearched_record(element):
                 "already holds it is the one to use, whatever its name. When it reports that none holds it, save again - "
                 "it is then a new one.")
     return ""
-
-
-def _typed_fields(fields):
-    """[(label, value)] of a form's fields that are the worker's: every one but a value the application itself showed
-    there before the worker acted (_not_the_apps; review round 2, B9 - an exact-string match let a reformatted,
-    re-cased, pasted or picked value pass as the application's)."""
-
-    return _not_the_apps(fields)
 
 
 def _entered_fields(fields):
@@ -2144,8 +2133,8 @@ def _form_check(element, checked=False, found=None, confirm=None, listing=True):
         # filing was put to the person five more times.
         return ""
     try:
-        note_file.write_text(json.dumps({"key": key, "at": time.time(), "ref": element.get("ref") or "",
-                                         "task": task_context.current()}), encoding="utf-8")
+        privacy.write_scrubbed(note_file, {"key": key, "at": time.time(), "ref": element.get("ref") or "",
+                                                      "task": task_context.current()}, shapes=False)
     except OSError as exc:
         # Without the note the listing cannot be confirmed later, and letting the press through unlisted is the check
         # skipped (review 2026-11-02). It waits for a person instead.
@@ -2813,8 +2802,9 @@ def _telling_words(text):
 def _note_failed_search(element, wanted):
     try:
         FAILED_SEARCH_FILE.parent.mkdir(parents=True, exist_ok=True)
-        FAILED_SEARCH_FILE.write_text(json.dumps({"at": time.time(), "task": _task_now(), "field": element.get("name") or "",
-                                                  "role": element.get("role") or "", "wanted": wanted}), encoding="utf-8")
+        privacy.write_scrubbed(FAILED_SEARCH_FILE, {"at": time.time(), "task": _task_now(),
+                                                               "field": element.get("name") or "",
+                                                               "role": element.get("role") or "", "wanted": wanted})
     except OSError:
         pass
 
@@ -4083,6 +4073,14 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             _form_check_file().unlink()  # the checked form is sent now (_form_check)
         except OSError:
             pass
+
+    if not decision.allowed and not decision.request:
+        # Refused without asking anyone (the gate could not check its words for secrets): a no to this one action,
+        # said to the engine with the gate's reason - nothing waits on a person (review round 3, R2-B3).
+        entry.update({"outcome": "refused", "reason": decision.reason,
+                      "summary": f"{described} - refused by the approval gate: {decision.reason}"})
+        audit.record(entry, before=before["frame"], masks=masks, observation=before)
+        raise ComputerError(f"Not done: {decision.reason or 'the approval gate refused this action'}.")
 
     if not decision.allowed:
         text = approval.request_text(decision.request)

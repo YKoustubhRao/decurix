@@ -297,6 +297,16 @@ class TheSaveAsksThePerson(Base):
         blocking, _, _ = records.presave(self.rec(), [("Bill date", "2026-04-03")])
         self.assertEqual(blocking, [])
 
+    def test_only_a_reply_that_is_the_number_answers(self):
+        # Review round 3 (the "number anywhere" mutation): a reply that holds an option's number among other words
+        # answers nothing.
+        records.presave(self.rec(), [("Bill date", "2026-04-03")])
+        query = self.ask()
+        for said in ("I think 1", "1 or 2, not sure", "option 2 maybe", "12", "21"):
+            self.assertIsNone(task_context.take_date_answer(TASK, said, self.JUDGED, query), said)
+        self.assertIsNone(task_context.source_date_order())
+        self.assertEqual(task_context.take_date_answer(TASK, " 1. ", self.JUDGED, query), "day")
+
     def test_the_other_answer_makes_the_same_save_differ(self):
         records.presave(self.rec(), [("Bill date", "2026-04-03")])
         query = self.ask()

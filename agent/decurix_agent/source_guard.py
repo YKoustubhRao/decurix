@@ -135,7 +135,7 @@ def take(request, task_id, notify=None):
     from decurix_agent.computer import privacy
     manifest = {"task_id": task_id, "at": time.time(),
                 "request": task_context.withhold(attachments.text(request or ""), task_id)[:4000], "files": files}
-    _manifest_path(task_id).write_text(json.dumps(privacy.scrub(manifest), indent=1), encoding="utf-8")
+    privacy.write_scrubbed(_manifest_path(task_id), privacy.scrub(manifest), json_kw={"indent": 1})
     _prune(task_id)
     if skipped and notify:
         notify("Too large to keep a copy of before I start (I will still notice if it changes): " + ", ".join(skipped))

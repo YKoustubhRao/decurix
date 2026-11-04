@@ -100,7 +100,7 @@ def save(skill):
     path = _path(skill["name"])
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    recording.write_whole(path, json.dumps(skill, ensure_ascii=False, indent=1))
+    recording.write_whole(path, skill, json_kw={"ensure_ascii": False, "indent": 1})
 
     return skill
 

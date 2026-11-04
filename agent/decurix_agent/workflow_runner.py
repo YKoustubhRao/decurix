@@ -532,12 +532,9 @@ class WorkflowRunner:
     def _save(self, state):
         p = self._path(state["run_id"])
         p.parent.mkdir(parents=True, exist_ok=True)
-        temp = p.with_name(p.name + "." + uuid.uuid4().hex + ".tmp")
-        with temp.open("w", encoding="utf-8") as output:
-            json.dump(state, output, indent=2, allow_nan=False)
-            output.flush()
-            os.fsync(output.fileno())
-        temp.replace(p)
+        from decurix_agent.computer import privacy
+        # (Its claim token is no secret to withhold by its shape: literal secrets only.)
+        privacy.write_scrubbed(p, state, atomic=True, shapes=False, json_kw={"indent": 2, "allow_nan": False})
         return copy.deepcopy(state)
 
     def prune(self, older_than=24 * 3600):

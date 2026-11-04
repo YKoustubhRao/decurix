@@ -299,10 +299,15 @@ def _with_literals(change):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(str(path) + ".lock", "a+") as lock:
         filelock.exclusive(lock)
+        # A file that is there and cannot be read is never written over: that would drop every other task's values.
+        # The change fails (the caller keeps the values in this process, _unsaved_literals), and it is said (review
+        # round 3).
         try:
             tasks = dict(_read_literals())
-        except _Unreadable:
-            tasks = {}
+        except _Unreadable as exc:
+            from decurix_agent.logging_utils import log
+            log(f"privacy: the task's secret values file cannot be read, so it is kept as it is: {exc}")
+            raise
         _write_literals(change(tasks))
     _literal_cache.clear()
 
@@ -416,15 +421,30 @@ def withhold_values(text, values):
     return "".join(out)
 
 
-def _withhold_literals(text):
-    tasks = _read_literals()  # raises _Unreadable: the callers fail closed
-    values = [v for vs in tasks.values() for v in vs] + sorted(_unsaved_literals)
+def withhold_spaced(text, values):
+    """withhold_values, and before it each value of several words wherever it stands with other spacing between them
+    (a line break where the value had a space): values are kept with their whitespace collapsed, so a marked message
+    copied into a longer text with its line breaks is still withheld whole (review round 3). Only ever more is withheld
+    than the shared rule withholds."""
+
+    if not text or not values:
+        return text
+    for value in sorted({v for v in values if v and " " in v}, key=len, reverse=True):
+        pattern = r"\s+".join(re.escape(w) for w in value.split(" "))
+        text = re.sub(pattern, lambda m: m.group(0) if m.group(0) == value else _MARKER, text)
     return withhold_values(text, values)
 
 
-def _withhold_known(text):
+def _withhold_literals(text):
+    tasks = _read_literals()  # raises _Unreadable: the callers fail closed
+    values = [v for vs in tasks.values() for v in vs] + sorted(_unsaved_literals)
+    return withhold_spaced(text, values)
+
+
+def _withhold_known(text, shapes=True):
     text = _withhold_literals(text)
-    text = _withhold_shapes(text)
+    if shapes:
+        text = _withhold_shapes(text)
     known = _known()
     if not known:
         return text
@@ -446,6 +466,93 @@ def _withhold_known(text):
         return "[withheld]" if is_known(re.sub(r"\D", "", match.group(0))) else match.group(0)
     text = CARD_NUMBER.sub(hide_card, text)
     return _WORD.sub(hide, _SPACED_WORD.sub(hide, text))
+
+
+class WithholdError(OSError):
+    """What was to be written could not be checked for secrets, so nothing was written (write_scrubbed)."""
+
+
+def _withhold_tree(obj, shapes):
+    """`obj` (what JSON holds) with every string in it - keys too - through _withhold_known: string by string, so the
+    JSON written stays JSON (a text pass over the dumped JSON could take a quote with a "password": "..." value)."""
+
+    if isinstance(obj, str):
+        return _withhold_known(obj, shapes=shapes) if obj else obj
+    if isinstance(obj, dict):
+        return {(_withhold_tree(k, shapes) if isinstance(k, str) else k): _withhold_tree(v, shapes)
+                for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_withhold_tree(v, shapes) for v in obj]
+    return obj
+
+
+def write_scrubbed(path, content, append=False, atomic=False, private=False, shapes=True, newline=None, json_kw=None,
+                   end=""):
+    """
+    The one way the agent's code writes desktop state (~/.decurix, /tmp/decurix-*): `content` with every secret known
+    withheld first - the tasks' values as they are (remember_literals), the hashed words, and, with `shapes` (the
+    default), every credential its shape or its name spells out - then written. A string is written as it comes out;
+    anything else (a dict, a list) is withheld string by string and written as JSON (`json_kw`: json.dumps' options),
+    then `end` ("\\n" for a line of a .jsonl). `append` adds it to the file; `atomic` writes a temporary file of this
+    writer's own, flushed to disk, and puts it in place (a reader never sees half of it); `private` makes the file
+    0600. `shapes=False` is for stores whose values the agent compares later (a record's 16-digit account is no card
+    to withhold there, a run's claim token no token): their literal secrets are still withheld.
+
+    Raises WithholdError (an OSError: every writer's existing "could not write" path) when the content cannot be
+    checked: what cannot be checked is never written (fail closed). agent/tests/test_writers_withhold.py fails for any
+    other way of writing a file in the agent's code that is not on its short list, each with its reason (review
+    round 3).
+    """
+
+    import json
+    import tempfile
+    if isinstance(content, (bytes, bytearray)):
+        raise TypeError("write_scrubbed writes text; bytes are written only by the listed writers")
+    try:
+        if isinstance(content, str):
+            safe = _withhold_known(content, shapes=shapes) if content else content
+        else:
+            safe = json.dumps(_withhold_tree(content, shapes), **(json_kw or {}))
+        safe += end
+    except Exception as exc:  # noqa: BLE001 - fail closed: nothing is written
+        raise WithholdError(f"{getattr(path, 'name', path)} was not written: its content could not be checked for "
+                            f"secrets ({exc})")
+    if not isinstance(path, (str, Path)):
+        # A stand-in a test put where a folder is (a mock): written through as it would have been.
+        return path.write_text(safe, encoding="utf-8")
+    path = Path(path)
+    if append:
+        with open(path, "a", encoding="utf-8", newline=newline) as f:
+            f.write(safe)
+    elif atomic:
+        fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as f:
+                f.write(safe)
+                f.flush()
+                os.fsync(f.fileno())
+            if private:
+                try:
+                    os.chmod(tmp, 0o600)
+                except OSError:
+                    pass
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return path
+    else:
+        with open(path, "w", encoding="utf-8", newline=newline) as f:
+            f.write(safe)
+    if private:
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    return path
 
 
 def safe_text(text):
@@ -787,46 +894,36 @@ def withhold_spoken_secrets(text):
         return HELD_BACK
 
 
-# A message the person marked secret that is this short is likely the secret itself, or holds it as one of its words.
-SHORT_MARKED_WORDS = 5
-
-
 def marked_values(text):
     """
-    The values a message the person marked secret makes secret: the secrets it spells out, the whole message, and - in
-    a short one - each of its words of 4 characters or more. What remember_marked remembers, and what the job to soul
-    names as secret (C14). Never raises.
+    The values a message the person marked secret makes secret: the message whole, and the secrets its structure
+    spells out (request_secrets: after a name, quoted, a card's or a PIN's shape). Never its every word: a marked
+    message's ordinary words, kept as substrings, withheld "download" in "downloading" in every later line (review
+    round 3, R2-B1). What remember_marked remembers, and what the job to soul names as secret (C14). Never raises.
     """
 
     try:
         text = " ".join(str(text or "").split())
         if not text:
             return []
-        values = list(request_secrets(text)) + [text]
-        # Every word of 4 or more characters, however long the message (review round 2, B1: a long marked message's
-        # unlabelled secret word was never withheld) - for this task only (remember_literals).
-        words = [w.strip(".,:;!?'\"()[]{}") for w in text.split()]
-        values += [w for w in words if len(w) >= 4]
-        return list(dict.fromkeys(v for v in values if v))
+        return list(dict.fromkeys(v for v in list(request_secrets(text)) + [text] if v))
     except Exception:  # noqa: BLE001
         return [str(text or "")] if text else []
 
 
-def remember_marked(text):
+def remember_marked(text, task_id):
     """
-    A message the person marked secret (the control plane's "secret" on /request, F-2): the secrets it spells out,
-    the whole message, and each of its words of 4 characters or more (marked_values), so withhold_known keeps them out
-    of every line, record and recording from here on. Withholding a common word too is the safe side. Never raises.
+    A message the person marked secret (the control plane's "secret" on /request, F-2), for the task the message
+    itself names (`task_id`, never the task in hand: on an idle desktop that is the one that ended before it, and its
+    values outlived their own task - review round 3, R2-B1): marked_values as they are, cleared at that task's end, and
+    the hashes of the secrets it spells out. Never raises.
     """
 
     try:
         text = " ".join(str(text or "").split())
         remember_secrets(text)
         remember_value(text)
-        # The message and its words as they are, for this task (remember_literals: substrings, cleared at its end) -
-        # not as desktop-wide word hashes, which withheld common words in every later task (review round 2).
-        from decurix_agent import task_context
-        remember_literals(marked_values(text), task_context.current())
+        remember_literals(marked_values(text), task_id or "")
     except Exception:  # noqa: BLE001 - remembering is a safety net; the control plane withholds the message too
         pass
 

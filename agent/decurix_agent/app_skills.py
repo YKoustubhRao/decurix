@@ -124,9 +124,11 @@ def learn(name, applies_to, description, body, task_id="", stage=""):
     folder = LEARNED / PENDING / _part(task_id or "no-task") / _part(stage) / name
     folder.mkdir(parents=True, exist_ok=True)
     flat = lambda s: " ".join(str(s or "").split()).replace('"', "'")  # noqa: E731
-    (folder / "SKILL.md").write_text(
+    from decurix_agent.computer import privacy
+    privacy.write_scrubbed(
+        folder / "SKILL.md",
         f"---\nname: {name}\ndescription: \"{flat(description)[:200]}\"\napplies-to: \"{', '.join(terms)}\"\n"
-        f"learned: {datetime.date.today().isoformat()}\nfrom-task: {task_id}\n---\n\n{body}\n", encoding="utf-8")
+        f"learned: {datetime.date.today().isoformat()}\nfrom-task: {task_id}\n---\n\n{body}\n")
     return (f"Kept the guide {name!r} for now: it becomes a guide on this desktop when this "
             f"{'stage' if stage else 'task'} is checked done (gui guide {name} shows it to later tasks).")
 
@@ -146,9 +148,10 @@ def promote(task_id, stage=None):
             for folder in sorted(p for p in source.iterdir() if (p / "SKILL.md").is_file()):
                 target = LEARNED / folder.name
                 target.mkdir(parents=True, exist_ok=True)
+                from decurix_agent.computer import privacy
                 if (target / "SKILL.md").is_file():
-                    shutil.copyfile(target / "SKILL.md", target / "SKILL.prev.md")
-                shutil.copyfile(folder / "SKILL.md", target / "SKILL.md")
+                    privacy.write_scrubbed(target / "SKILL.prev.md", (target / "SKILL.md").read_text(encoding="utf-8"))
+                privacy.write_scrubbed(target / "SKILL.md", (folder / "SKILL.md").read_text(encoding="utf-8"))
                 promoted.append(folder.name)
             shutil.rmtree(source, ignore_errors=True)
         if task_id and task.is_dir() and not any(task.iterdir()):

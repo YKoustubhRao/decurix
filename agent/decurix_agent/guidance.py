@@ -243,7 +243,8 @@ def end():
 def _keep(record):
     try:
         RUN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        RUN_FILE.write_text(json.dumps(record), encoding="utf-8")
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(RUN_FILE, record, shapes=False)
     except (OSError, TypeError, ValueError):
         pass
 
@@ -336,7 +337,8 @@ def taught_values_check(skill, given):
         return ""
     try:
         told_path.parent.mkdir(parents=True, exist_ok=True)
-        told_path.write_text(json.dumps(sorted(told | keys)), encoding="utf-8")
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(told_path, sorted(told | keys))
     except OSError:
         pass
 

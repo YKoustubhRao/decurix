@@ -1,4 +1,3 @@
-import os
 import sys
 import threading
 import time
@@ -308,9 +307,8 @@ def _mark_handled(path):
         text = path.read_text(encoding="utf-8")
         kept = task_context.withhold(text, task_context.task_id_from_filename(path.name))
         if kept != text:
-            tmp = done.with_name(done.name + ".tmp")
-            tmp.write_text(kept, encoding="utf-8")
-            os.replace(tmp, done)
+            from decurix_agent.computer import privacy
+            privacy.write_scrubbed(done, kept, atomic=True)
             path.unlink()
             return
     except (OSError, UnicodeDecodeError) as exc:
@@ -318,7 +316,8 @@ def _mark_handled(path):
         # (review round 2: this fell back to keeping the file verbatim).
         log(f"Could not withhold the handled copy of {path.name}: {exc}; it is held back.")
         try:
-            done.write_text("[held back: this request could not be checked for secrets]", encoding="utf-8")
+            from decurix_agent.computer import privacy
+            privacy.write_scrubbed(done, "[held back: this request could not be checked for secrets]", shapes=False)
             path.unlink()
             return
         except OSError as exc2:

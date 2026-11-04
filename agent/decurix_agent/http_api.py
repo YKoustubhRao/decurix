@@ -608,7 +608,7 @@ class Handler(BaseHTTPRequestHandler):
             from decurix_agent import task_context
             from decurix_agent.computer import privacy
             if data.get("secret", False) is True:
-                privacy.remember_marked(content)
+                privacy.remember_marked(content, task_id if task_context.valid(task_id) else "")
                 task_context.note_secret_values(task_id, privacy.marked_values(content))
             # A secret the words spell out ("password: ...") is one too, marked or not (C14): soul is told of it.
             task_context.note_secret_values(task_id, privacy.request_secrets(content))

@@ -190,7 +190,8 @@ def _run(tool, args, drafts=None):
         copy = scratch / "work"
         # The script runs as read now, from the scratch copy: it cannot change under the run.
         own = scratch / ("tool" + Path(tool["path"]).suffix)
-        own.write_text(script, encoding="utf-8", newline="\n")
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(own, script, newline="\n")
         args = [a.replace(str(work), str(copy)).replace("~/work", str(copy)) for a in args]
         before = script_sandbox.snapshot(copy)
         try:

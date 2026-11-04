@@ -68,7 +68,8 @@ def save_whole(name, text):
         folder = config.WORK_DIR / REPORTS_DIR
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / (name if name.endswith(".txt") else name + ".txt")
-        path.write_text(text, encoding="utf-8")
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(path, text)
         return path
     except OSError as exc:
         log(f"Could not keep the whole message: {exc}")
@@ -372,9 +373,8 @@ def _keep_unsent(payload):
         folder.mkdir(parents=True, exist_ok=True)
         # Named by the moment to the nanosecond: sent again in the order they happened.
         path = folder / (f"{time.time_ns():020d}_" + uuid.uuid4().hex[:8] + ".json")
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload), encoding="utf-8")
-        tmp.replace(path)
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(path, payload, atomic=True)
         log(f"Kept the undelivered outcome of task {payload.get('task_id') or '?'} to send again: {path.name}")
     except OSError as exc:
         log(f"Could not keep the undelivered outcome: {exc}")
@@ -413,7 +413,8 @@ def resend_unsent():
             log(f"The control plane refused the kept outcome {path.name} ({detail}); keeping its least form to send.")
             try:
                 smaller = path.with_name(path.name[:-len(".json")] + ".min.json")
-                smaller.write_text(json.dumps(_minimal(payload)), encoding="utf-8")
+                from decurix_agent.computer import privacy
+                privacy.write_scrubbed(smaller, _minimal(payload))
             except OSError as exc:
                 log(f"Could not keep the least form of {path.name}: {exc}")
             path.unlink(missing_ok=True)
@@ -581,10 +582,8 @@ Please send instructions through the Decurix control plane.
 
     path = config.QUERYTEXT_DIR / filename
 
-    path.write_text(
-        content,
-        encoding="utf-8"
-    )
+    from decurix_agent.computer import privacy
+    privacy.write_scrubbed(path, content)
 
     state.last_query_text, state.last_query_kind = problem, kind
     state.last_query_secret = bool(secret)
@@ -837,10 +836,8 @@ Completed at:
     if not quiet:
         path = config.QUERYTEXT_DIR / filename
 
-        path.write_text(
-            _withheld(final_note),
-            encoding="utf-8"
-        )
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(path, _withheld(final_note))
 
         log(f"Final reply written to: {path}")
 
@@ -884,6 +881,12 @@ Completed at:
     state.current_task_file = None
     state.waiting_for_query = False
     task_context.clear_active()
+    # No task is in hand any more: what arrives next (a marked request on an idle desktop) is never filed under the
+    # task that just ended (review round 3, R2-B1).
+    try:
+        task_context.start("")
+    except Exception as exc:  # noqa: BLE001 - the report is out
+        log(f"Could not let go of the ended task: {exc}")
 
 
 def _settle_verdict(reply, kind, checked, gated, given, stopped):
@@ -1014,8 +1017,8 @@ def _queue_learned(task_id, body):
     try:
         with _learned_lock:
             path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(body, ensure_ascii=False) + "\n")
+            from decurix_agent.computer import privacy
+            privacy.write_scrubbed(path, body, append=True, json_kw={"ensure_ascii": False}, end="\n")
     except OSError as exc:
         log(f"Could not keep the {body['kind']} to post later: {exc}")
 
@@ -1065,7 +1068,8 @@ def resend_learned():
                 now = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
                 rest = left + [line for line in now if line not in lines]
                 if rest:
-                    path.write_text("\n".join(rest) + "\n", encoding="utf-8")
+                    from decurix_agent.computer import privacy
+                    privacy.write_scrubbed(path, "\n".join(rest) + "\n")
                 else:
                     path.unlink()
         except Exception as exc:  # noqa: BLE001

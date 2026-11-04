@@ -361,9 +361,19 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   - The task's secret values as they are live in the task file's `.secrets` (tmpfs, 0600) until the task's final
     report; a container restart loses them (the interrupted task is then reported, not resumed). The word hashes stay
     desktop-wide.
-  - Writers listed in `agent/tests/test_writers_withhold.py` with "follow-up" hold model- or document-derived text
-    that is not yet withheld: app guides, methods, procedures, email-draft records, the record ledger (which needs a
-    literal-only withholding, since shape matching would withhold a 16-digit account as a card number).
+  - Every write of desktop state now goes through `privacy.write_scrubbed` (round 3). An AST test forbids any other
+    way of writing a file in the agent's package except a listed few: bytes, the person's own files, lock files, the
+    secret stores, and the command-file transport. Stores whose values are compared later (the record ledger, a
+    stage's ledger and cells, context.json) withhold the literal secrets only, with no shape matching.
+  - A planned run's ledger and a workflow checkpoint now hold the request with its secret values withheld from the
+    first save, so a run resumed after an agent restart has `[withheld]` where a password was. It asks, or fails a
+    check, instead of typing the password.
+  - A wholly marked message is withheld whole, plus what its structure names (round 3, R2-B1). An unlabelled secret
+    word in a long marked message, typed on its own later, is no longer withheld: the coordinator's accepted cost
+    against withholding a later task's ordinary words.
+  - Not done from REVIEW-PY-A-2's nits: `core._shown_by_app` still takes the application's value from any observation,
+    not only one before the worker's first input on that form; `skill_task._correct` still reads the reply's
+    judgement and secret flag from globals.
   - `resend_learned` can post a line twice when two threads read it at once (no client id for the control plane to
     dedupe on).
   - The gate's nonces are in memory: after a gate restart a signed body still within its 120 s window replays (the

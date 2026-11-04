@@ -68,22 +68,12 @@ def _write_manifest(task_id, data):
     """run.json, whole or not at all: a temporary file of this writer's own, flushed to disk, then put in place (two
     processes writing at once never share a temporary file, and a crash never leaves it half written)."""
 
-    import tempfile
+    from decurix_agent.computer import privacy
     folder = _dir(task_id)
     folder.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=MANIFEST + ".", suffix=".tmp", dir=str(folder))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps(data, sort_keys=True, ensure_ascii=False))
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, folder / MANIFEST)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    # Hashes and names: the literal secrets withheld, no shape matching (a SHA-256 is no token).
+    privacy.write_scrubbed(folder / MANIFEST, data, atomic=True,
+                           shapes=False, json_kw={"sort_keys": True, "ensure_ascii": False})
 
 
 # ------------------------------------------------------------------ the run's manifest (PLAN-P2 §5.3, R1)
@@ -205,7 +195,6 @@ def _write_label(folder, execution):
     """LABELLED anew: `execution` and the next sequence number, under one lock for every run (a read-then-write; the
     agent and each `gui` process label), put in place whole so a pull never reads half of it."""
 
-    import tempfile
     from decurix_agent import filelock
     root = runs_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -216,19 +205,8 @@ def _write_label(folder, execution):
             seq = int(lines[1]) if len(lines) > 1 and lines[1].strip().isdigit() else 0
         except OSError:
             seq = 0
-        fd, tmp = tempfile.mkstemp(prefix=LABELLED + ".", suffix=".tmp", dir=str(folder))
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-                f.write(f"{execution}\n{seq + 1}")
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, folder / LABELLED)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(folder / LABELLED, f"{execution}\n{seq + 1}", atomic=True, shapes=False, newline="")
 
 
 # An old EXPORTED (no third line) is compared by time, with this much allowed for the tar copy's whole seconds.

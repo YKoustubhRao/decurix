@@ -136,9 +136,14 @@ class EverySecretClass(SecretFirst):
             self.assertNotIn(value, logging_utils._withheld(text))
 
     def test_a_long_marked_message_whose_secret_is_an_unlabelled_word(self):
-        self.send(f"Please sign in to the staff portal as mira.k using {VALUE} and then download the roster")
+        # Round 3 (R2-B1): the message is kept whole, never as its every word - so the value is withheld wherever
+        # the message stands, and the worker's later ordinary words are not withheld. A value typed alone is withheld
+        # only when the message's structure names it (a label, quotes, a card's shape).
+        message = f"Please sign in to the staff portal as mira.k using {VALUE} and then download the roster"
+        self.send(message)
         self.assertIn("Received request: [withheld: marked secret]", self.logged)
-        self.assert_nowhere(VALUE)
+        self.assert_nowhere(message)
+        self.assertEqual(privacy.withhold_known("downloading the staff roster"), "downloading the staff roster")
 
     def test_a_passphrase_of_six_words(self):
         phrase = "correct horse battery staple ocean lantern"

@@ -1,12 +1,15 @@
 """
-Every writer of desktop state withholds secrets, or says why it holds none (review round 2 of 2026-11-04, B2; CLAUDE.md:
+Every write of desktop state goes through one function that withholds secrets first (privacy.write_scrubbed); any
+other way of writing a file is on a short list, each with its reason (review rounds 2 and 3 of 2026-11-04; CLAUDE.md:
 "every writer of desktop state ends with privacy.scrub").
 
-Three writers kept a marked request verbatim after its task (the shared folder's snapshot manifest, a planned run's
-ledger, the follow-up file). This walks the agent's code for every function that writes a file (write_text,
-write_bytes, json.dump, open(..., "w"/"a"/"x"), os.fdopen for writing) and fails for one that neither withholds (a call
-of privacy.scrub, withhold_known, task_context.withhold, messaging's _withheld ...) nor is listed below with the
-reason it holds no secret. A new writer must do one or the other: this is the test that catches the next one.
+Round 2 walked each function for a write and passed it when the function called any withholding function anywhere -
+so a function that scrubbed one field and wrote another raw passed, and so did a write through a helper
+(recording.write_whole, which skills.save writes through), Path.open("w") and shutil.copyfile, none of which it saw.
+Round 3 makes it structural: the walk forbids every form of writing a file in the agent's package - write_text,
+write_bytes, open / Path.open / os.fdopen for writing, json.dump, os.replace / os.rename and a path's own
+replace / rename, the shutil copies - except inside privacy.write_scrubbed and the writers listed below. A new writer
+either goes through write_scrubbed or is listed here with why what it writes holds no secret.
 """
 
 import ast
@@ -14,129 +17,243 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "decurix_agent"
-WITHHOLDS = {"scrub", "withhold_known", "withhold", "_withheld", "withheld", "safe_text", "_withhold_derived",
-             "withhold_text", "shown_by_gate"}
 
-# file:function -> why what it writes holds no secret (or where it is withheld before it gets there).
-REGISTRY = {
-    "app_skills.py:learn": "an app guide the engine wrote; kept pending, promoted only after checked work (follow-up: "
-                           "withhold the guide's text)",
-    "attachments.py:_extract": "the person's own files, unpacked from their archive",
-    "computer/approval.py:_locked": "the local approval store's lock file and state: fingerprints and the gate's words",
-    "computer/audit.py:keep_observation": "an observation blob: privacy.scrub'd in _observation_doc before it is hashed",
-    "computer/cli.py:_look": "a screenshot (pixels; password fields are painted over by the caller)",
-    "computer/cli.py:main": "stderr of the gui command (its own error line)",
-    "computer/cli.py:run": "a screenshot file the command was asked for",
-    "computer/cli.py:save_screenshot": "a screenshot file the command was asked for",
-    "computer/core.py:_form_check": "the pending-submit note: a hash of the form, a ref and a time",
-    "computer/core.py:_note_failed_search": "the failed search: a field's label and time (the typed text is not kept)",
-    "computer/core.py:_note_front": "the front window's id and title",
-    "computer/core.py:_save_state": "the last observation's refs; a secret field's value is withheld at observe",
-    "computer/core.py:_save_task_windows": "window ids and titles",
-    "computer/core.py:_state_lock": "a lock file",
-    "computer/core.py:_unsearched_record": "a once-per-task mark ('1')",
-    "computer/demonstration.py:run": "the recorder's pid",
-    "computer/demonstration.py:start": "the recorder's session id, pid and times",
-    "computer/evidence.py:note_file_read": "a path the tools read",
-    "computer/modes.py:set_stage": "a stage name",
-    "computer/privacy.py:_keep_hashes": "SHA-256 hashes of secrets, never the text",
-    "computer/privacy.py:_with_literals": "the task's secret values themselves, in tmpfs, mode 0600, cleared at the "
-                                          "task's end: what every withholding reads",
-    "computer/privacy.py:_write_literals": "as _with_literals",
-    "computer/recording.py:_locked": "a recording's lock file",
-    "computer/recording.py:write_whole": "a recording's files, each event and meta privacy.scrub'd in append",
-    "computer/records.py:_save": "the record ledger: field values as the documents give them, for the save gate to "
-                                 "compare (follow-up: withhold the task's literal secrets without shape matching)",
-    "computer/records.py:stop_once": "a once-per-task mark ('1')",
-    "computer/shown.py:note": "refs and element names the gui command printed",
-    "computer/skill_engine.py:_note_replayed": "which skill step was replayed",
-    "computer/skill_engine.py:_write_note": "which skill step was replayed",
-    "computer/skill_engine.py:run": "the skill engine's own progress note",
+# The function every write of desktop state goes through.
+THE_WRITER = "computer/privacy.py:write_scrubbed"
+
+# file:function -> why it writes another way. Kept short: bytes nothing can scrub, the person's own files, lock files,
+# the secret stores themselves, and transports that must carry what they carry.
+ALLOWED = {
+    # The secret stores themselves: what every withholding reads (scrubbing them would erase what they hold).
+    "computer/privacy.py:_keep_hashes": "the secrets file: SHA-256 hashes, never text",
+    "computer/privacy.py:_write_literals": "the tasks' secret values themselves, tmpfs, 0600, let go at the task's end",
+    "computer/privacy.py:_with_literals": "the literal store's lock file",
     "gate_server.py:__enter__": "the gate's lock file, in its own 0700 directory",
-    "gate_server.py:_write_private": "the gate's own store, mode 0600, in its own 0700 directory",
-    "guidance.py:_keep": "the guided run in hand: a skill's name, step and values, read by the next gui command",
-    "guidance.py:taught_values_check": "parameter names told",
-    "long_task.py:_hold": "a new request held aside word for word until the person says what to do: a transport, "
-                          "like the command file",
-    "long_task.py:_pending_request_reply": "the held request, put back as a command file: a transport",
-    "long_task.py:_snapshot_sheets": "cells of the workbooks the work made (the person's own outputs)",
-    "messaging.py:_keep_unsent": "an outcome already withheld by send_query",
-    "messaging.py:_queue_learned": "a learned row already withheld and scrubbed by post_learned",
-    "messaging.py:resend_learned": "rows already withheld when queued",
-    "messaging.py:resend_unsent": "outcomes already withheld when kept",
-    "messaging.py:save_whole": "a report's whole text, from a payload send_query already withheld",
-    "methods.py:_save": "a learned method: steps and commands (follow-up: withhold its text)",
-    "procedures.py:_save": "a learned procedure (follow-up: withhold its text)",
-    "produced.py:_note_opened": "paths of files opened",
+    "gate_server.py:_write_private": "the gate's own stores (the signed request, the tasks' secret values), 0600, in "
+                                     "the gate's 0700 directory, which the worker cannot read",
+    # Lock files: an empty handle to lock, no content.
+    "computer/approval.py:_locked": "the approval store: its lock and its state (fingerprints and the gate's own "
+                                    "words, withheld by shown_by_gate); the gate keeps it as its own user, which "
+                                    "cannot read the worker's secret values",
+    "computer/core.py:_state_lock": "the observation lock file",
+    "computer/recording.py:_locked": "a recording's lock file",
+    "computer/skill_engine.py:run": "the skill engine's lock file",
+    "computer/skill_engine.py:_note_replayed": "the replay notes' lock file",
+    "retention.py:_write_label": "the labels' lock file",
+    "workflow_runner.py:_lock": "a workflow run's lock file",
+    # Bytes, which no text withholding can read: pictures (secret fields painted over by their callers) and blobs.
+    "computer/audit.py:keep_observation": "an observation blob, privacy.scrub'd in _observation_doc before it is "
+                                          "encoded",
+    "computer/cli.py:_look": "a screenshot (pixels; password fields painted over)",
+    "computer/cli.py:save_screenshot": "a screenshot file the command was asked for",
+    "computer/cli.py:run": "a screenshot file the command was asked for",
+    "computer/recording.py:write_bytes_whole": "a recording's frames (pixels; password fields painted over)",
+    # Not a file this code writes content to.
+    "computer/cli.py:main": "stdout pointed at os.devnull",
+    "computer/demonstration.py:start": "the recorder subprocess's own output handle",
+    "http_api.py:_frame": "a recording frame streamed to the HTTP client, not a file",
+    "logging_utils.py:log": "the log itself: every line is withheld by _withheld first (write_scrubbed logs, so it "
+                            "cannot be its own writer)",
+    # The person's own files: their documents and copies of them, which the work is about.
+    "attachments.py:keep_originals": "copies of the person's own attachments",
+    "attachments.py:_extract": "the person's own files, unpacked from their archive",
+    "playbooks.py:_run_in_copy": "a learned tool's script copied into its sandbox",
     "produced.py:host_copies": "local copies of the person's own files",
-    "produced.py:note_filled": "paths and placeholder names",
-    "retention.py:_write_manifest": "the run manifest: hashes, paths, names",
-    "retention.py:_write_label": "an execution id and a label number",
-    "task_context.py:_keep_context": "ids, date orders and the date question's readings",
-    "task_context.py:_write": "the task file's parts; the request copy is withheld by start() before it is written",
-    "tool_made.py:remember": "a document the tools saved in the shared folder: its path and words (the person's file)",
-    "tool_task.py:_run": "a learned tool's script, written to its sandbox",
-    "tools/office.py:_image_to_pdf": "a PDF made from the person's picture",
+    "script_sandbox.py:copy_work": "the person's work files copied into a sandbox",
+    "script_sandbox.py:copy_back": "the person's work files copied back out of a sandbox",
+    "shared.py:copy_file": "a copy of the person's file to their shared folder",
+    "source_guard.py:take": "a snapshot copy of the person's source file (its manifest goes through write_scrubbed)",
+    "tool_made.py:remember": "a copy of a document the tools saved for the person (its record goes through "
+                             "write_scrubbed)",
     "tools/office.py:_read_eml": "an email's attachment, unpacked to read it",
-    "tools/office.py:_recalculated_values": "a workbook copy, to read its computed values",
-    "tools/office.py:combine_pdf": "a PDF the tools were asked to make",
-    "tools/outbox.py:_note": "an email draft's record: the draft the work made (follow-up: withhold its text)",
-    "tools/table_quality.py:overlap_lines": "a scratch file of a table's rows",
-    "workflow_runner.py:_save": "a run's checkpoint; its request input is replaced withheld at the run's final report "
-                                "(long_task._withhold_request)",
+    "tools/office.py:_write_zip": "an Office document the person asked for",
+    "tools/office.py:combine_pdf": "a PDF the person asked for",
+    "tools/office.py:create_pdf": "a PDF the person asked for",
+    "tools/office.py:_recalculated_values": "a copy of the person's workbook, to read its computed values",
+    "tools/office.py:_image_to_pdf": "a PDF made from the person's picture",
+    "tools/office.py:create_presentation": "a presentation the person asked for",
+    "tools/office.py:update_presentation": "the person's presentation, updated as asked",
+    # Transports: the request itself, read by the watcher and replaced by its withheld copy once read
+    # (watchers._mark_handled).
+    "messaging.py:save_request": "the command file: the request the worker must read, renamed into place",
+    "long_task.py:_hold": "a new request held aside word for word until the person says what to do, like the command "
+                          "file",
+    "long_task.py:_pending_request_reply": "the held request, put back as a command file",
+    "computer/recording.py:import_legacy_audit": "renames an imported audit index (no new content)",
+    "long_task.py:_release": "puts a held request back as a command file (a transport, renamed)",
+    "long_task.py:ledger": "moves an unreadable ledger aside (no new content)",
+    "tools/office.py:update_document": "the person's document, updated as asked",
+    "watchers.py:_mark_handled": "renames a command file it found holding no secret (its withheld copy goes "
+                                 "through write_scrubbed)",
 }
 
+# The forms of writing each listed writer uses, and no other: a listed function that writes some other way (a
+# field scrubbed, another written raw) fails too.
+FORMS = {
+    "computer/privacy.py:_keep_hashes": {"write_text"},
+    "computer/privacy.py:_write_literals": {"os.fdopen", "os.replace"},
+    "computer/privacy.py:_with_literals": {"open"},
+    "gate_server.py:__enter__": {"open"},
+    "gate_server.py:_write_private": {"os.fdopen", "os.replace"},
+    "computer/approval.py:_locked": {"open", "path.replace", "write_text"},
+    "computer/core.py:_state_lock": {"open"},
+    "computer/recording.py:_locked": {"open"},
+    "computer/skill_engine.py:run": {"open"},
+    "computer/skill_engine.py:_note_replayed": {"open"},
+    "retention.py:_write_label": {"open"},
+    "workflow_runner.py:_lock": {"Path.open"},
+    "computer/audit.py:keep_observation": {"os.replace", "write_bytes"},
+    "computer/cli.py:_look": {"open", "os.replace"},
+    "computer/cli.py:save_screenshot": {"open", "os.replace"},
+    "computer/cli.py:run": {"open"},
+    "computer/recording.py:write_bytes_whole": {"path.replace", "write_bytes"},
+    "computer/cli.py:main": {"open"},
+    "computer/demonstration.py:start": {"open"},
+    "http_api.py:_frame": {"shutil.copyfileobj"},
+    "logging_utils.py:log": {"open"},
+    "attachments.py:keep_originals": {"shutil.copy2"},
+    "attachments.py:_extract": {"open"},
+    "playbooks.py:_run_in_copy": {"shutil.copy2"},
+    "produced.py:host_copies": {"write_bytes"},
+    "script_sandbox.py:copy_work": {"shutil.copy2"},
+    "script_sandbox.py:copy_back": {"os.replace", "shutil.copy2"},
+    "shared.py:copy_file": {"shutil.copyfile"},
+    "source_guard.py:take": {"shutil.copy2"},
+    "tool_made.py:remember": {"shutil.copy2"},
+    "tools/office.py:_read_eml": {"write_bytes"},
+    "tools/office.py:_write_zip": {"os.replace"},
+    "tools/office.py:combine_pdf": {"open"},
+    "tools/office.py:create_pdf": {"shutil.copyfile"},
+    "tools/office.py:_recalculated_values": {"shutil.copyfile", "write_text"},
+    "tools/office.py:_image_to_pdf": {"write_bytes"},
+    "tools/office.py:create_presentation": {"os.replace"},
+    "tools/office.py:update_presentation": {"os.replace"},
+    "messaging.py:save_request": {"path.replace", "write_text"},
+    "long_task.py:_hold": {"path.replace", "write_text"},
+    "long_task.py:_pending_request_reply": {"write_text"},
+    "computer/recording.py:import_legacy_audit": {"path.rename"},
+    "long_task.py:_release": {"path.replace"},
+    "long_task.py:ledger": {"path.replace"},
+    "tools/office.py:update_document": {"path.replace"},
+    "watchers.py:_mark_handled": {"path.rename"},
+}
 
-def _name(call):
-    f = call.func
-    return f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+COPIES = {"copy", "copy2", "copyfile", "copyfileobj", "copytree", "move"}
 
 
-def _mode_writes(call, at=1):
-    mode = None
-    if len(call.args) > at and isinstance(call.args[at], ast.Constant):
-        mode = call.args[at].value
+def _mode(call, at):
     for k in call.keywords:
         if k.arg == "mode" and isinstance(k.value, ast.Constant):
-            mode = k.value.value
-    return isinstance(mode, str) and any(c in mode for c in "wax")
+            return str(k.value.value)
+    if len(call.args) > at and isinstance(call.args[at], ast.Constant):
+        return str(call.args[at].value)
+    return ""
 
 
-def _writes(func):
-    for node in ast.walk(func):
-        if isinstance(node, ast.Call):
-            name = _name(node)
-            if name in ("write_text", "write_bytes", "dump") or (name == "open" and _mode_writes(node)) \
-                    or (name == "fdopen" and _mode_writes(node)):
-                return True
-    return False
+def _writing(mode):
+    return any(c in mode for c in "wax+")
 
 
-def _withholds(func):
-    return any(isinstance(n, ast.Call) and _name(n) in WITHHOLDS for n in ast.walk(func))
+def write_form(call):
+    """The form of writing a file this call is, or "" - by structure, whatever it is named."""
+
+    f = call.func
+    if isinstance(f, ast.Name):
+        return "open" if f.id == "open" and _writing(_mode(call, 1)) else ""
+    if not isinstance(f, ast.Attribute):
+        return ""
+    owner = f.value.id if isinstance(f.value, ast.Name) else ""
+    if f.attr in ("write_text", "write_bytes"):
+        return f.attr
+    if f.attr == "open" and owner not in ("os", "io", "codecs", "tarfile", "zipfile", "gzip") and _writing(
+            _mode(call, 0)):
+        return "Path.open"
+    if owner == "os" and f.attr in ("replace", "rename"):
+        return "os." + f.attr
+    if owner == "os" and f.attr == "fdopen" and _writing(_mode(call, 1)):
+        return "os.fdopen"
+    if owner == "shutil" and f.attr in COPIES:
+        return "shutil." + f.attr
+    if owner == "json" and f.attr == "dump":
+        return "json.dump"
+    # A path's own replace(target) / rename(target): one argument (str.replace takes two).
+    if f.attr in ("replace", "rename") and len(call.args) == 1 and not call.keywords:
+        return "path." + f.attr
+    return ""
 
 
-def writers_left_bare():
-    found = set()
+def writes():
+    """{"file:function": [(form, line)]} of every write in the agent's package outside THE_WRITER."""
+
+    found = {}
     for path in sorted(ROOT.rglob("*.py")):
+        rel = path.relative_to(ROOT).as_posix()
         if "thebot" in path.relative_to(ROOT).parts:
             continue
-        for func in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)) and _writes(func) and not _withholds(func):
-                found.add(f"{path.relative_to(ROOT).as_posix()}:{func.name}")
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+
+        def visit(node, where):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and where == "<module>":
+                where = node.name
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                pass  # a nested function belongs to the function it is in
+            if isinstance(node, ast.Call):
+                form = write_form(node)
+                if form:
+                    found.setdefault(f"{rel}:{where}", []).append((form, node.lineno))
+            for child in ast.iter_child_nodes(node):
+                visit(child, where)
+
+        for top in tree.body:
+            if isinstance(top, ast.ClassDef):
+                for item in top.body:
+                    visit(item, "<module>")
+            else:
+                visit(top, "<module>")
+    found.pop(THE_WRITER, None)
     return found
 
 
-class EveryWriterWithholds(unittest.TestCase):
-    def test_no_writer_is_left_without_withholding_or_a_reason(self):
-        found = writers_left_bare()
-        self.assertEqual(sorted(found - set(REGISTRY)), [], "a writer of desktop state that withholds nothing: "
-                         "withhold (privacy.scrub / task_context.withhold) or list it with why it holds no secret")
+class EveryWriteGoesThroughTheWriter(unittest.TestCase):
+    def test_no_other_write_in_the_agents_code(self):
+        bare = {k: v for k, v in writes().items()
+                if k not in ALLOWED or any(form not in FORMS.get(k, ()) for form, _ in v)}
+        self.assertEqual(bare, {}, "a write of a file that does not go through privacy.write_scrubbed: write through "
+                         "it, or list the writer in ALLOWED with why what it writes holds no secret")
 
-    def test_the_registry_holds_only_writers_that_are_there(self):
-        self.assertEqual(sorted(set(REGISTRY) - writers_left_bare()), [], "a listed writer withholds now, or is gone: "
-                         "take it out of REGISTRY")
+    def test_the_list_holds_only_writers_that_are_there(self):
+        self.assertEqual(sorted(set(ALLOWED) - set(writes())), [], "a listed writer writes through write_scrubbed "
+                         "now, or is gone: take it off ALLOWED")
+        self.assertEqual(set(ALLOWED), set(FORMS))
 
-    def test_the_three_writers_the_review_found_withhold(self):
-        for writer in ("source_guard.py:take", "long_task.py:_remember_reported"):
-            self.assertNotIn(writer, writers_left_bare())
+    def test_the_walk_sees_each_form(self):
+        source = '''
+def a(p):
+    p.open("w").write("x")
+def b(p):
+    shutil.copyfile(p, p)
+def c(p, t):
+    t.replace(p)
+def d(p):
+    with open(p, "a") as f:
+        json.dump({}, f)
+def e(p):
+    os.fdopen(3, "w")
+def f(p):
+    p.write_bytes(b"")
+def g(s):
+    return s.replace("a", "b"), open(s).read(), s.open().read()
+'''
+        tree = ast.parse(source)
+        forms = sorted(write_form(n) for n in ast.walk(tree) if isinstance(n, ast.Call) and write_form(n))
+        self.assertEqual(forms, ["Path.open", "json.dump", "open", "os.fdopen", "path.replace", "shutil.copyfile",
+                                 "write_bytes"])
+
+    def test_skills_save_goes_through_the_writer(self):
+        # Review round 2 (R2-N1): skills.save keeps people's run answers and corrections, through recording's helper.
+        self.assertNotIn("computer/skills.py:save", writes())
+        self.assertNotIn("computer/recording.py:write_whole", writes())
+
+
+if __name__ == "__main__":
+    unittest.main()
