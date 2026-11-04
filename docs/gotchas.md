@@ -967,3 +967,5 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A bounded recheck that ends in a re-run is a re-run postponed
 - [part-6.md](gotchas/part-6.md): A form's value for a field is its latest, not every value it ever held
 - [part-6.md](gotchas/part-6.md): A refusal nobody records is a refusal nobody learns from
+- [part-6.md](gotchas/part-6.md): A file the worker's user can write is not the person's word
+- [part-6.md](gotchas/part-6.md): "Some word of the option" is not "the words that pick it out"

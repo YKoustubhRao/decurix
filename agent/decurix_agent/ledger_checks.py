@@ -80,7 +80,6 @@ def findings(task_id=None, reports=(), events=None, picks=True):
         out += [f if isinstance(f, Finding) else finding(UNDECLARED, f)
                 for f in records.gate_faults(task_id, created=created)]
         if picks:
-            records.keep_field_answers(task_id, events=events)
             for p in records.unbacked_pick_entries(task_id, events=events):
                 value = p["taken"] or p["option"]
                 out.append(finding(UNBACKED_PICK, f"{p['label'] or 'a field'}: {value!r} was chosen from the "
@@ -94,6 +93,19 @@ def findings(task_id=None, reports=(), events=None, picks=True):
     for report in reports:
         out += [finding(NOT_BACKED, f"the report itself says: {item}") for item in not_backed_items(report)]
     return out
+
+
+def keep_answers(task_id=None, events=None):
+    """At a final report (never inside a check: findings stays free of effects): keep on the control plane each answer
+    of the person that settled a field's pick (records.keep_field_answers). Never raises."""
+
+    try:
+        from decurix_agent.computer import records
+        task_id = task_id or task_context.current()
+        return records.keep_field_answers(task_id, events=_events(task_id) if events is None else events)
+    except Exception as exc:  # noqa: BLE001 - what is kept for later never costs the report
+        log(f"ledger_checks: could not keep the person's field answers: {exc!r}")
+        return 0
 
 
 def faults(found):

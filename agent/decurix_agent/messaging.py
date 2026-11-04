@@ -997,7 +997,8 @@ def _keep_facts(task_id, quiet=False, interrupted=False):
 # post or when the agent starts. A 409 (the control plane does not take the citation) is dropped, not retried.
 # ============================================================
 
-LEARNED_KINDS = ("correction", "run_answer", "lesson")
+# (field_answer: which entry a field takes, as a person's judgement answered it - person_record; H-PY-18.)
+LEARNED_KINDS = ("correction", "run_answer", "lesson", "field_answer")
 LEARNED_TIMEOUT = 5
 LEARNED_FILE = "learned.jsonl"
 _learned_lock = threading.Lock()

@@ -526,10 +526,14 @@ def picked_options(task_id=None):
 
 
 def _taught_text():
+    """The person's own words on this desktop's tasks that taught or ran the skill being run, as the control plane
+    keeps them (person_record.taught) - never the skill file, which the worker's user can write and whose steps are
+    partly model-written (review round 10, R10-B1)."""
+
     try:
-        from decurix_agent import guidance
-        return guidance.taught_words()
-    except Exception:  # noqa: BLE001 - a skill that cannot be read backs nothing
+        from decurix_agent import guidance, person_record
+        return "\n".join(person_record.taught(guidance.current_skill()))
+    except Exception:  # noqa: BLE001 - what cannot be confirmed backs nothing
         return ""
 
 
@@ -549,32 +553,45 @@ def _org_text():
         return ""
 
 
-def given_text(task_id=None):
+def _answers_text(task_id=None):
+    """This task's replies the control plane confirms as the person's (person_record.answers), in its own text."""
+
+    try:
+        from decurix_agent import person_record
+        return "\n".join(a["text"] for a in person_record.answers(task_id))
+    except Exception:  # noqa: BLE001 - what cannot be confirmed backs nothing
+        return ""
+
+
+def given_sources(task_id=None):
     """
-    What a picked option must stand in to be backed: the request, the files it brought, and what a person authored -
-    their answers in this task, what they taught the skill it runs (its explanation, answers, dialogue, corrections and
-    the steps they showed), and the organisation's knowledge (written by people: a desktop may only read it). Never the
-    application's pages, whose option list is the menu, not a source for which entry to pick; never the worker's own
-    memory or notes.
+    What a picked option may be backed by, as {"free": text, "files": [text]}. Free: the request, the person's replies
+    in this task that the control plane confirms, the person's words on the skill being run (from the control plane),
+    and the organisation's knowledge (people write it; a desktop may only read it). Files: the request's own files,
+    which back a pick only where they state that field (option_beside_label). Never the application's pages, whose
+    option list is the menu; never the worker's own memory, notes or files.
     """
 
-    parts = [task_context.current_request() or ""]
+    free = [task_context.current_request() or "", _answers_text(task_id), _taught_text(), _org_text()]
+    files = []
     try:
         from decurix_agent.tools import office
         for path in (task_context.current_files() or [])[:12]:
             try:
-                parts.append(str(office.read_document(str(path)).get("text") or "")[:MAX_PAGE_TEXT])
+                files.append(str(office.read_document(str(path)).get("text") or "")[:MAX_PAGE_TEXT])
             except Exception:  # noqa: BLE001 - a file not read backs nothing
                 continue
     except Exception:  # noqa: BLE001
         pass
-    try:
-        from decurix_agent import guidance
-        parts.append(guidance.answers(task_id))
-    except Exception:  # noqa: BLE001
-        pass
-    parts += [_taught_text(), _org_text()]
-    return "\n".join(p for p in parts if p)
+    return {"free": "\n".join(p for p in free if p), "files": [f for f in files if f]}
+
+
+def given_text(task_id=None):
+    """given_sources as one text (the free sources and the files): for a reader that needs one; a pick's backing is
+    pick_backed's, which holds a file to the field's own label."""
+
+    sources = given_sources(task_id)
+    return "\n".join([sources["free"]] + sources["files"])
 
 
 def _option_words(text):
@@ -582,8 +599,8 @@ def _option_words(text):
 
 
 def _digits_backed(digits, option, given):
-    """A run of figures alone ("18") backs an option only as the option writes it with its sign ("18%"), written so
-    in what was given: a bare figure of a document (a quantity of 18) names no rate."""
+    """A figure backs an option only as the option writes it with its sign ("18%"), written so in what was given: a
+    bare figure of a document (a quantity of 18) names no rate."""
 
     for d in digits:
         m = re.search(r"(?<![\w.])" + re.escape(d) + r"\s?([^\w\s])", option)
@@ -592,43 +609,102 @@ def _digits_backed(digits, option, given):
     return True
 
 
+def _joined_figure(digits, option):
+    """Whether a figure is joined to a name in the option ("29-Karnataka", "Karnataka/29"): a code's part, not a word
+    that tells this entry from the others."""
+
+    d = re.escape(digits)
+    return bool(re.search(r"[A-Za-z][-/]" + d + r"(?!\d)|(?<!\d)" + d + r"[-/][A-Za-z]", option))
+
+
 def option_backed(option, given, offered=None):
     """
-    Whether what was given picks out `option` among the entries a list offered (`offered`; None when they were not
-    read). Backed: the option stands in the given text as it is; or a run of the given text's words (values.text_key:
-    case, punctuation and a code in brackets aside) is all words of the option, and - when the list was read - no
-    other entry holds all of those words: "Cedar" picks "Project Cedar" out of Project Maple and Project Cedar,
-    "Karnataka" picks "29-Karnataka", "18%" picks "GST 18%" among GST 5%, 12% and 18% - never "Sales @ 18%" beside
-    "Purchase @ 18%". When the list was not read, the run must hold every word of the option. Structure only: which
-    words, never a list of them.
+    Whether `given` (a text) picks out `option` among the entries a list offered (`offered`; None when not read).
+    Every word that tells the option from the other entries - each of its words no other entry has - must stand in
+    the given text as a whole word: a figure only with its sign ("18%"), and a single letter only beside another of
+    the option's words ("grade A", never "item a"). "Cedar" picks "Project Cedar" out of Project Maple and Project
+    Cedar; "Karnataka" picks "29-Karnataka" (the joined figure is the code's); "18%" picks "GST 18%" among 5%, 12%
+    and 18%. "to" never backs "Transfer to Reserve": "transfer" and "reserve" tell it apart. An option whose every word
+    another entry has too is never picked out by words. With the list not read, every word of the option must be
+    given. Structure only, never a list of words (review round 10, R10-B2).
     """
 
     option = " ".join(str(option or "").split())
     if not option or not given:
         return False
-    if stands_in(option, given):
-        return True
-    mine = set(_option_words(option))
+    words = _option_words(option)
+    mine = set(words)
     if not mine:
         return False
     others = [set(_option_words(o)) for o in offered or ()
               if " ".join(str(o).split()).casefold() != option.casefold()]
     others = [o for o in others if o]
-    run = []
-    for word in _option_words(given) + [None]:
-        if word is not None and word in mine:
-            run.append(word)
+    if not others and stands_in(option, given):
+        return True
+    need = mine - set().union(*others) if others else set(mine)
+    need = {w for w in need if not (w.isdigit() and _joined_figure(w, option))}
+    if not need:
+        return False
+    text = _option_words(given)
+    have = set(text)
+    for w in need:
+        if w not in have:
+            return False
+        if w.isdigit() and not _digits_backed([w], option, given):
+            return False
+        if len(w) == 1 and not any(text[i] == w and ((i > 0 and text[i - 1] in mine - {w})
+                                                     or (i + 1 < len(text) and text[i + 1] in mine - {w}))
+                                   for i in range(len(text))):
+            return False
+    return True
+
+
+def _cells(line):
+    """A line's cells, when it is a table's row (cells split by | or a tab); else None."""
+
+    for mark in ("|", "\t"):
+        if mark in line:
+            return [c.strip() for c in line.split(mark)]
+    return None
+
+
+def option_beside_label(option, label, text, offered=None):
+    """
+    Whether a document states `option` for the field `label`: on the line that names the field (after its label), or
+    on the next line when that one holds the label alone, or in a table in the cell beside the label's or under its
+    column. A document's other words - a footer's "General terms and conditions" - back nothing (review round 10,
+    R10-B2: a bill's footer backed a guessed "General" cost centre).
+    """
+
+    want = set(label_words(label))
+    if not want or not text:
+        return False
+    lines = str(text).splitlines()
+    for i, line in enumerate(lines):
+        cells = _cells(line)
+        if cells is not None:
+            for j, cell in enumerate(cells):
+                if not cell or not want <= set(label_words(cell)):
+                    continue
+                if j + 1 < len(cells) and option_backed(option, cells[j + 1], offered):
+                    return True
+                for below in lines[i + 1:]:
+                    row = _cells(below)
+                    if row is None or len(row) != len(cells):
+                        break
+                    if j < len(row) and option_backed(option, row[j], offered):
+                        return True
             continue
-        got, run = set(run), []
-        if not got or not any(len(w) >= 2 for w in got):
+        if not want <= set(label_words(line)):
             continue
-        if all(w.isdigit() for w in got) and not _digits_backed(sorted(got), option, given):
-            continue
-        if others:
-            if not any(got <= o for o in others):
-                return True
-        elif got == mine:
+        own = set(_option_words(label))
+        rest = " ".join(w for w in _option_words(line) if w not in own)
+        if rest and option_backed(option, rest, offered):
             return True
+        if not rest:
+            after = next((l for l in lines[i + 1:] if l.strip()), "")
+            if after and option_backed(option, after, offered):
+                return True
     return False
 
 
@@ -648,87 +724,93 @@ def resolved_names(task_id=None, events=None):
 
 # ------------------------------------------------------------------ a person's answer about a field, kept
 
-MAX_FIELD_ANSWERS = 200
-
-
-def _field_answers_path():
-    return Path(LEDGER_DIR).parent / "field-answers.json"
-
-
-def field_answers():
-    """The answers people gave about which entry a field takes, kept across tasks: [{label, option, host, task,
-    asked}] (keep_field_answers)."""
+def _kept_answer(label, option, host, offered=None):
+    """Whether a person's answer about this field (its label, in this application), kept on the control plane as a
+    learned row derived from their judgement, names `option` - checked against that judgement's own text."""
 
     try:
-        data = json.loads(_field_answers_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    return [a for a in data if isinstance(a, dict)] if isinstance(data, list) else []
-
-
-def _kept_answer(label, option, host):
-    """Whether a person's kept answer about this field (its label, in this application) names `option`."""
-
-    for a in field_answers():
+        from decurix_agent import person_record
+        rows = person_record.field_answers()
+    except Exception:  # noqa: BLE001 - what cannot be read backs nothing
+        return False
+    for a in rows:
         if a.get("host") and host and a["host"] != host:
             continue
-        if label_matches(a.get("label", ""), label) and same_value(a.get("option", ""), option, order=""):
+        if not (label_matches(a.get("label", ""), label) and same_value(a.get("option", ""), option, order="")):
+            continue
+        if option_backed(option, a.get("source_text", ""), offered):
             return True
     return False
 
 
+_kept_now = set()
+
+
 def keep_field_answers(task_id=None, events=None):
     """
-    Keep each answer of this task's person that settled a field's pick: a pick into a saved form that nothing but
-    their answer backs, where the question they answered named that field. The next task's pick of the same entry in
-    that field of that application is then backed by it, and the person is not asked again (review round 9: the
-    person's answer about an account had to be given every task). Returns how many were kept. Never raises.
+    Keep each of this task's answers that settled a field's pick, on the control plane: a pick into a saved form that
+    only the person's reply backs - a reply the control plane confirms as their judgement on this task, to a question
+    that named that field. The next task's pick of the same entry in that field of that application is then backed by
+    it (_kept_answer), and the person is not asked again. Only at a final report, never inside a check. Returns how
+    many were posted. Never raises.
     """
 
     try:
-        from decurix_agent import guidance
-        said = guidance.exchanges(task_id)
+        from decurix_agent import person_record
+        task_id = task_id or task_context.current()
+        said = person_record.answers(task_id)
         if not said:
             return 0
-        task_id = task_id or task_context.current()
-        own = "\n".join([task_context.current_request() or ""])
-        kept, added = field_answers(), 0
+        sources = None
+        posted = 0
         for p in picks(task_id, events=events):
             value = p["taken"] or p["option"]
-            if not p["label"] or p["by_id"] or option_backed(value, own, p["offered"]):
+            if not p["label"] or p["by_id"]:
+                continue
+            if sources is None:
+                sources = given_sources(task_id)
+                without = "\n".join([task_context.current_request() or "", _taught_text(), _org_text()])
+            if option_backed(value, without, p["offered"]) or any(
+                    option_beside_label(value, p["label"], f, p["offered"]) for f in sources["files"]):
                 continue
             words = set(label_words(p["label"]))
-            for asked, reply in said:
-                if words and words <= set(label_words(asked)) and option_backed(value, reply, p["offered"]):
-                    kept = [a for a in kept if not (a.get("host") == p["host"] and label_matches(a.get("label", ""), p["label"]))]
-                    kept.append({"label": p["label"], "option": value, "host": p["host"], "task": task_id,
-                                 "asked": " ".join(str(asked).split())[:200]})
-                    added += 1
-                    break
-        if added:
-            from decurix_agent.computer import privacy
-            _field_answers_path().parent.mkdir(parents=True, exist_ok=True)
-            privacy.write_scrubbed(_field_answers_path(), kept[-MAX_FIELD_ANSWERS:], atomic=True, shapes=False,
-                                   json_kw={"ensure_ascii": False, "indent": 0})
-        return added
+            for a in said:
+                if not (words and words <= set(label_words(a["asked"])) and option_backed(value, a["text"], p["offered"])):
+                    continue
+                mark = (a["id"], p["host"], " ".join(label_words(p["label"])))
+                if mark not in _kept_now:
+                    _kept_now.add(mark)
+                    person_record.keep_field_answer(task_id, a["id"], p["label"], p["host"], value, asked=a["asked"])
+                    posted += 1
+                break
+        return posted
     except Exception:  # noqa: BLE001 - what is kept for later never costs the check
         return 0
 
 
-def pick_backed(pick, given=None, resolved=None, value=None):
-    """Whether a pick (picks()) is backed: chosen by an identifier, the entry a resolution matched, picked out by what
-    was given (option_backed, with the entries the list offered), or a person's kept answer about that field."""
+def pick_backed(pick, given=None, resolved=None, value=None, labels=()):
+    """
+    Whether a pick (picks()) is backed: chosen by an identifier, the entry a resolution matched, picked out by the
+    free sources (option_backed, with the entries the list offered), stated for its field by a file
+    (option_beside_label: the pick's label, or `labels`), or a person's kept answer about that field. `given`:
+    given_sources (a text is taken as free sources only).
+    """
 
     value = value or pick.get("taken") or pick.get("option")
     if pick.get("by_id"):
         return True
     if any(same_value(r, value, order="") for r in (resolved or ())):
         return True
-    if option_backed(value, given if given is not None else "", pick.get("offered")):
-        return True
-    if pick.get("option") and pick["option"] != value and option_backed(pick["option"], given or "", pick.get("offered")):
-        return True
-    return bool(pick.get("label")) and _kept_answer(pick["label"], value, pick.get("host", ""))
+    sources = given if isinstance(given, dict) else {"free": given or "", "files": []}
+    candidates = [value] + ([pick["option"]] if pick.get("option") and pick["option"] != value else [])
+    offered = pick.get("offered")
+    for v in candidates:
+        if option_backed(v, sources.get("free") or "", offered):
+            return True
+        for label in [pick.get("label")] + list(labels or ()):
+            if label and any(option_beside_label(v, label, f, offered) for f in sources.get("files") or ()):
+                return True
+    return bool(pick.get("label")) and _kept_answer(pick["label"], value, pick.get("host", ""), offered)
 
 
 def unbacked_pick_entries(task_id=None, events=None):
@@ -745,7 +827,7 @@ def unbacked_pick_entries(task_id=None, events=None):
         if p["by_id"] or any(same_value(r, p["taken"] or p["option"], order="") for r in resolved):
             continue
         if given is None:
-            given = given_text(task_id)
+            given = given_sources(task_id)
         if not pick_backed(p, given, resolved):
             if not any(o["label"] == p["label"] and o["option"] == p["option"] for o in out):
                 out.append(p)
@@ -826,7 +908,7 @@ def declare(key, source, fields, scope="", task_id=None):
     elsewhere = chosen = selects = resolved = given = None
     kept, unsourced, partial, unbacked = {}, [], [], []
 
-    def backed(value):
+    def backed(value, label):
         # Whether a value the worker took from an application's list is backed (pick_backed): by an identifier, a
         # resolution, what was given, or a person's kept answer about its field. An option the worker picked itself is
         # no source for itself (review round 9, A and R9-B1).
@@ -835,8 +917,8 @@ def declare(key, source, fields, scope="", task_id=None):
         if not mine:
             return None
         if given is None:
-            given = given_text(task_id)
-        return any(pick_backed(p, given, resolved, value=value) for p in mine)
+            given = given_sources(task_id)
+        return any(pick_backed(p, given, resolved, value=value, labels=(label,)) for p in mine)
     for label, value in fields.items():
         label = " ".join(str(label).split())
         value = " ".join(str(value if value is not None else "").split())[:MAX_VALUE]
@@ -858,12 +940,12 @@ def declare(key, source, fields, scope="", task_id=None):
         if any(compare_shown(c, value, source_order).same is True for c in chosen):
             # An entry of the application's own list - backed only when it was reached from a source value (review
             # round 9, A: "General" picked for a cost centre no source gives was declared, saved and passed as checked).
-            if backed(value) is False:
+            if backed(value, label) is False:
                 unbacked.append(f"{label}: {value}")
                 continue
             kept[label] = {"intent": value, "from": "chosen"}
             continue
-        if backed(value) is False:
+        if backed(value, label) is False:
             # (A value the worker picked from a list, standing only on the pages it read - the list itself - is no
             # more backed than above.)
             unbacked.append(f"{label}: {value}")

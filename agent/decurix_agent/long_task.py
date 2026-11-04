@@ -5245,6 +5245,7 @@ def final_report(run_state):
         found = ledger_checks.findings(task_context.current(),
                                        [str(run_state["steps"][s["id"]].get("report") or "") for s in _steps(run_state)])
         not_done += [f"A record saved in the application: {f}" for f in ledger_checks.faults(found)]
+        ledger_checks.keep_answers(task_context.current())
         end_not_made += [str(f) for f in ledger_checks.not_made(found)]
     except Exception as exc:  # noqa: BLE001 - not checked, never passed (E-01)
         log(f"long_task: could not check the saved records at the end: {exc}")

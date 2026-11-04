@@ -3452,6 +3452,9 @@ def _gate(reply, kind, engine):
     # is decided here; a check of them that could not be made is a check not made.
     found_in_ledger = _ledger_faults(reply)
     ledger_faults = ledger_checks.faults(found_in_ledger)
+    if kind == "final":
+        # (The person's confirmed answers about a field's pick, kept on the control plane for later tasks.)
+        ledger_checks.keep_answers(task_context.current())
     gate_not_made += ledger_checks.not_made(found_in_ledger)
     facts.could_not.extend(gate_not_made)
     made = made + host_copies

@@ -31,8 +31,8 @@ import test_watcher_restart  # noqa: E402
 from test_long_requests import LONG, LongRunBase  # noqa: E402
 from test_round9_false_done import NOT_BACKED_REPORT, TASK, Ledger  # noqa: E402
 
-from decurix_agent import (guidance, ledger_checks, lessons, long_task, replay_task, skill_task, state,  # noqa: E402
-                           task_context, verify, watchers)
+from decurix_agent import (guidance, ledger_checks, lessons, long_task, person_record, replay_task, skill_task,  # noqa: E402
+                           state, task_context, verify, watchers)
 from decurix_agent.computer import approval, audit, core, evidence, privacy, records  # noqa: E402
 from decurix_agent.computer.errors import ComputerError  # noqa: E402
 
@@ -200,38 +200,7 @@ class APickNamedInAnotherForm(unittest.TestCase):
         self.assertTrue(records.option_backed("Project Cedar", "charge it to Cedar Project"))
 
 
-class APersonAuthoredSourceBacksAPick(Ledger):
-    def setUp(self):
-        super().setUp()
-        self.events = saved_form(pick("General"))
-
-    def test_a_taught_skill_and_the_organisations_knowledge(self):
-        self.assertEqual(records.unbacked_picks(TASK), ["General"])
-        with mock.patch.object(guidance, "taught_words", lambda: '{"answers": [{"cost centre": "General"}]}'):
-            self.assertEqual(records.unbacked_picks(TASK), [])
-        with mock.patch.object(records, "_org_text", lambda: "Rule (org): bills of this kind go to cost centre General"):
-            self.assertEqual(records.unbacked_picks(TASK), [])
-
-    def test_a_persons_answer_about_the_field_is_kept_for_that_field(self):
-        asked = [("Which cost centre should the bill go to?", "General, please.")]
-        with mock.patch.object(guidance, "exchanges", lambda task_id=None: asked):
-            self.said = "General, please."
-            self.assertEqual(ledger_checks.faults(ledger_checks.findings(TASK)), [])
-        kept = records.field_answers()
-        self.assertEqual([(a["label"], a["option"], a["host"]) for a in kept], [("Cost centre", "General", "app")])
-        # The next task: nothing said, nothing in the request - the kept answer backs the same field, in that app only.
-        self.said = ""
-        self.assertEqual(records.unbacked_picks(TASK), [])
-        self.events = saved_form(pick("General", label="Department"))
-        self.assertEqual(records.unbacked_picks(TASK), ["General"])
-        self.events = saved_form(pick("General", url="http://other-app/bills/new"))
-        self.assertEqual(records.unbacked_picks(TASK), ["General"])
-
-    def test_an_answer_to_another_question_is_not_kept_for_the_field(self):
-        asked = [("Is the bill dated 3 April?", "Yes - and General.")]
-        with mock.patch.object(guidance, "exchanges", lambda task_id=None: asked):
-            records.keep_field_answers(TASK)
-        self.assertEqual(records.field_answers(), [])
+# (What a person authored backs a pick only as the control plane recorded it: test_round11_persons_word.py.)
 
 
 # ------------------------------------------------------------------ R9-B3
@@ -493,10 +462,11 @@ class ThePersonsAnswersOnDisk(unittest.TestCase):
         tid = "t00000000000000ab"
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(evidence, "NOTES_DIR", Path(tmp)), \
                 mock.patch("decurix_agent.task_context.current", lambda: tid):
-            guidance.note_exchange("Which cost centre?", "Charge it to General.")
+            guidance.note_exchange("Which cost centre?", "Charge it to General.", judgement_id="j_111111111111")
             said = Path(tmp) / f"{tid}.said"
             self.assertEqual(json.loads(said.read_text(encoding="utf-8").splitlines()[0]),
-                             {"asked": "Which cost centre?", "reply": "Charge it to General."})
+                             {"asked": "Which cost centre?", "reply": "Charge it to General.", "judgement": "j_111111111111",
+                              "sha256": person_record.text_hash("Charge it to General.")})
             self.assertEqual(guidance.exchanges(tid), [("Which cost centre?", "Charge it to General.")])
             privacy.clear_literals(tid)
             self.assertFalse(said.exists())

@@ -679,7 +679,8 @@ def answer_waiting(path, content, already_marked=False):
         if state.paused_replay is not None or (state.paused_skill or {}).get("mode") == "run":
             # A replay's or a skill run's own question (a value it needs) and its answer: a source a record's value may
             # come from, like any other answer of the task (records.given_text; review round 9).
-            guidance.note_exchange(guidance.open_question() or getattr(state, "last_query_text", ""), content)
+            guidance.note_exchange(guidance.open_question() or getattr(state, "last_query_text", ""), content,
+                                   judgement_id=state.reply_judgement, secret=secret)
         # A paused replay or taught skill reads "stop" itself: a lesson
         # keeps its draft and says how to carry on, a run records that
         # it was stopped and where. Inside a /workflow stage the stop
@@ -697,7 +698,8 @@ def answer_waiting(path, content, already_marked=False):
         # gate's grant - starts it (review 2026-11-03, F-09).
         target, args = workflow_task.answer_start, (content, outcome)
     else:
-        guidance.note_exchange(guidance.open_question() or getattr(state, "last_query_text", ""), content)
+        guidance.note_exchange(guidance.open_question() or getattr(state, "last_query_text", ""), content,
+                               judgement_id=state.reply_judgement, secret=secret)
         guidance.note_reply(content, outcome)
         # An answer to a question a taught task's engine asked
         # (not a yes or no to an approval) is kept on the skill.

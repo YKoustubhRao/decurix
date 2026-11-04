@@ -153,3 +153,10 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   recorded, so the task's events, its trajectory and its bundle never showed which guard stopped which save, or why.
   `core.act` now records a refused action (`outcome: "refused"`, `guard`, `reason`) before raising; the checks that
   read events read only done ones.
+- **A file the worker's user can write is not the person's word.** Round 10 let `<task>.said`, a local
+  `field-answers.json` and the skill file back a pick, and a forged line or row in any of them backed the worker's
+  own guess (review round 10, R10-B1). The person's word now counts only as the control plane recorded it, read from
+  the control plane (`person_record.py`). With no such read, it backs nothing.
+- **"Some word of the option" is not "the words that pick it out".** "to" backed "Transfer to Reserve", and a bill's
+  "General terms and conditions" backed a guessed "General" cost centre (R10-B2). Every word that tells the option
+  apart from the other entries must be given, and a file counts only where it states that field.

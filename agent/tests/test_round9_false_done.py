@@ -20,7 +20,8 @@ import config_stub  # noqa: F401
 
 import test_skills as ts  # noqa: E402
 
-from decurix_agent import guidance, llm_client, long_task, skill_task, state, task_context, verify  # noqa: E402
+from decurix_agent import (guidance, llm_client, long_task, person_record, skill_task, state, task_context,  # noqa: E402
+                           verify)
 from decurix_agent.computer import core, evidence, records  # noqa: E402
 from decurix_agent.computer.errors import ComputerError  # noqa: E402
 
@@ -68,7 +69,11 @@ class Ledger(unittest.TestCase):
                   mock.patch.object(evidence, "looks", lambda task_id=None: self.looks),
                   mock.patch.object(guidance, "answers", lambda task_id=None: self.said),
                   mock.patch.object(guidance, "exchanges", lambda task_id=None: [], create=True),
-                  mock.patch.object(guidance, "taught_words", lambda: "", create=True),
+                  # (The person's word comes from the control plane - person_record: none read here, and a reply
+                  # this test's person gave is one the control plane confirmed.)
+                  mock.patch.object(person_record, "_get", lambda path, query: None),
+                  mock.patch.object(person_record, "answers", lambda task_id=None: (
+                      [{"id": "j_111111111111", "asked": "", "text": self.said}] if self.said else [])),
                   mock.patch.object(records, "_org_text", lambda: "", create=True),
                   mock.patch.object(core, "_task_events_now", lambda: self.events),
                   mock.patch("decurix_agent.task_context.source_date_order", lambda task_id=None: "day"),

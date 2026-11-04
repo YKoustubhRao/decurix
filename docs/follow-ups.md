@@ -346,6 +346,23 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
 - **The person's answers are kept for the task's other processes** in its evidence notes
   (`<task>.said`, withheld like every store), so `gui record` can count them as a source.
 
+## Phase 2: Python agent, the person's word and what picks an option out (rounds 10 and 11)
+
+- **CP owed (H-PY-18): desktop-scoped reads of the person's judgements.** The agent backs a pick with the person's
+  word only as the control plane recorded it (`person_record.py`). It needs `GET /api/desktops/judgements?task=` and
+  `?skill=`, a `field_answer` learned kind, and `GET /api/desktops/learned?kind=field_answer`. Until they land, a pick
+  only the person's word backs is NOT backed: the gate asks, and the answer cannot settle it (fail closed).
+  - Also not backing anything any more: `<task>.said`, the gone `field-answers.json`, and the skill file.
+  - Org knowledge still counts.
+- **Accepted residual: a word of the option in an unrelated phrase of the request.** "the general manager approved
+  it" backs a "General" entry when no other offered entry has that word (`records.option_backed`). A file is held to
+  the field's own label (`option_beside_label`), so a bill's "General terms" footer backs nothing. The request and
+  the person's replies are not, since they rarely name a field.
+- **The full Python suite depends on module order.**
+  `test_apprentice.WithTheModel.test_what_the_person_says_is_wrong_is_remembered_and_tried_again` fails after the
+  round-4 to round-6 secrets, per-document-run and run-evidence modules, and passes alone. It fails the same way on
+  the commit before round 10, so state leaks between modules. Find the leak.
+
 ## Phase 2: Python agent, review round 2
 
 - **Comparators still outside `values.py`** (known divergences, each to move as its area is next touched):

@@ -101,9 +101,14 @@ _exchanges = {"task": None, "said": []}
 MAX_EXCHANGES = 12
 
 
-def note_exchange(asked, reply):
-    """Keep one question of this task with the person's reply, for the final check (said_this_task), and on disk for
-    the task's other processes (exchanges, answers)."""
+def note_exchange(asked, reply, judgement_id="", secret=False):
+    """
+    Keep one question of this task with the person's reply, for the final check (said_this_task), and on disk for the
+    task's other processes: the question, the reply (withheld like every store), the reply's judgement on the control
+    plane (`judgement_id`, captured with this very reply) and its text's hash. What is on disk is the worker's own
+    user's file: it backs nothing by itself - person_record.answers confirms each row from the control plane, and the
+    text it then uses is the control plane's (review round 10, R10-B1). A secret reply carries no hash.
+    """
 
     tid = task_context.current()
     if _exchanges["task"] != tid:
@@ -112,24 +117,24 @@ def note_exchange(asked, reply):
     if reply:
         _exchanges["said"].append((" ".join(str(asked or "").split())[:400], reply[:800]))
         del _exchanges["said"][:-MAX_EXCHANGES]
-        # Kept for the task's other processes too (the `gui record` command): the person's answers are a source a
-        # record's value may come from (records.declare, review round 9). Withheld like every store.
         try:
+            from decurix_agent import person_record
             from decurix_agent.computer import evidence, privacy
             if tid:
                 evidence.NOTES_DIR.mkdir(parents=True, exist_ok=True)
-                # (The question too: a person's answer about a field is kept for that field only when the question
-                # named it - records.keep_field_answers.)
-                privacy.write_scrubbed(evidence.NOTES_DIR / f"{tid}.said",
-                                       {"asked": " ".join(str(asked or "").split())[:400], "reply": reply[:800]},
-                                       append=True, end="\n")
+                row = {"asked": " ".join(str(asked or "").split())[:400], "reply": reply[:800],
+                       "judgement": str(judgement_id or "") if task_context.valid_judgement(judgement_id) else ""}
+                if row["judgement"] and not secret:
+                    row["sha256"] = person_record.text_hash(reply)
+                privacy.write_scrubbed(evidence.NOTES_DIR / f"{tid}.said", row, append=True, end="\n",
+                                       exempt=("sha256", "judgement"))
         except Exception as exc:  # noqa: BLE001 - the in-process copy stays
             log(f"guidance: could not keep the person's answer for the task's other processes: {exc}")
 
 
-def exchanges(task_id=None):
-    """[(question, reply)] of the task, as kept on disk by every process ([] when none). Only the kept copy: what is
-    on disk is withheld (privacy.write_scrubbed), and nothing raw from this process is handed on (review round 9)."""
+def kept_replies(task_id=None):
+    """The task's kept replies as rows {asked, reply, judgement, sha256}, from every process ([] when none). Rows of
+    the worker's own file: person_record.answers confirms them; nothing here backs anything."""
 
     tid = task_id or task_context.current()
     out = []
@@ -141,14 +146,21 @@ def exchanges(task_id=None):
             except ValueError:
                 continue
             if isinstance(data, dict) and data.get("reply"):
-                out.append((str(data.get("asked") or ""), str(data["reply"])))
+                out.append({k: str(data.get(k) or "") for k in ("asked", "reply", "judgement", "sha256")})
     except (OSError, TypeError):
         pass
-    return list(dict.fromkeys(out))
+    return out
+
+
+def exchanges(task_id=None):
+    """[(question, reply)] of the task, as kept on disk by every process ([] when none)."""
+
+    return list(dict.fromkeys((r["asked"], r["reply"]) for r in kept_replies(task_id)))
 
 
 def answers(task_id=None):
-    """The person's answers during the task, as one text, from every process ("" when none were kept)."""
+    """The person's answers during the task, as one text, as kept on disk ("" when none). Not a source a pick may
+    rest on: that is person_record.answers, confirmed from the control plane."""
 
     return "\n".join(dict.fromkeys(reply for _, reply in exchanges(task_id)))
 
@@ -165,31 +177,17 @@ def forget_exchanges(task_id):
         _exchanges.update(task=None, said=[])
 
 
-def taught_words():
-    """
-    What a person taught the skill the task being worked on runs, as text: its explanation, the answers, dialogue and
-    corrections they gave, their answers to its runs, and the steps they showed. "" when the task runs none. Not the
-    worker's own understanding or memory: a source a picked entry may be backed by is a person's (records.given_text).
-    """
+def current_skill():
+    """The skill the task being worked on runs: this process's guided run's, else the guided-run file's (a `gui`
+    command's process has no guided run of its own; the final gate, in the agent's process, reads its own). None."""
 
+    if _current and _current.get("skill"):
+        return _current["skill"]
     try:
         kept = json.loads(RUN_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return ""
-    name = kept.get("skill") if isinstance(kept, dict) and kept.get("task_id") == task_context.current() else None
-    if not name:
-        return ""
-    parts = []
-    try:
-        from decurix_agent.computer import skills
-        skill = skills.load(name) or {}
-        parts.append(skills.explanation(skill) or "")
-        for key in ("answers", "dialogue", "corrections", "run_answers", "steps"):
-            if skill.get(key):
-                parts.append(json.dumps(skill[key], ensure_ascii=False))
-    except Exception:  # noqa: BLE001 - a skill that cannot be read says nothing
-        return ""
-    return "\n".join(p for p in parts if p)
+        return None
+    return kept.get("skill") if isinstance(kept, dict) and kept.get("task_id") == task_context.current() else None
 
 
 def said_this_task():
