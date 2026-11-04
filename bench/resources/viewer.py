@@ -79,36 +79,42 @@ class Counter:
         self.by = {}
         self.errors = 0
 
-    def add(self, endpoint, nbytes, ok):
+    def add(self, endpoint, nbytes, ok, ms=0.0):
         with self.lock:
-            n, b = self.by.get(endpoint, (0, 0))
-            self.by[endpoint] = (n + 1, b + nbytes)
+            n, b, slowest = self.by.get(endpoint, (0, 0, 0.0))
+            self.by[endpoint] = (n + 1, b + nbytes, max(slowest, ms))
             if not ok:
                 self.errors += 1
 
     def totals(self):
         with self.lock:
-            return sum(n for n, _ in self.by.values()), sum(b for _, b in self.by.values()), dict(self.by), self.errors
+            return sum(v[0] for v in self.by.values()), sum(v[1] for v in self.by.values()), dict(self.by), self.errors
 
 
-def fetch(base, path, counter, timeout=30):
-    """GET path as the tab would; counts it under its path without the query. Returns the body (decompressed) or None."""
+def fetch(base, path, counter, timeout=120):
+    """GET path as the tab would; counts it under its path without the query, with the slowest answer's time. Returns
+    the body (decompressed) or None. A browser waits as long as the server takes, so the timeout is long."""
 
     endpoint = path.split("?", 1)[0]
     request = urllib.request.Request(base + path, headers={"Accept-Encoding": "gzip", "Cache-Control": "no-store"})
+    started = time.monotonic()
+
+    def took():
+        return (time.monotonic() - started) * 1000
+
     try:
         with urllib.request.urlopen(request, timeout=timeout) as r:
             raw = r.read()
             head = f"HTTP/1.1 {r.status} {r.reason}\r\n" + str(r.headers)
-            counter.add(endpoint, len(head.encode()) + len(raw), True)
+            counter.add(endpoint, len(head.encode()) + len(raw), True, took())
             if r.headers.get("Content-Encoding") == "gzip":
                 raw = gzip.decompress(raw)
             return raw
     except urllib.error.HTTPError as e:
         body = e.read()
-        counter.add(endpoint, len(str(e.headers).encode()) + len(body), False)
+        counter.add(endpoint, len(str(e.headers).encode()) + len(body), False, took())
     except (urllib.error.URLError, OSError):
-        counter.add(endpoint, 0, False)
+        counter.add(endpoint, 0, False, took())
     return None
 
 
@@ -175,7 +181,9 @@ def watch(base, seconds, shot_width=320, hidden=False, simulate=0):
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout=seconds + 60)
+        t.join(timeout=seconds + 180)
+    # The tab is held open for the whole window, even when its last request came early (a hidden tab's 30 s polls).
+    time.sleep(max(0.0, stop - time.monotonic()))
     elapsed = time.monotonic() - started
     n, b, by, errors = counter.totals()
     return {
@@ -189,5 +197,5 @@ def watch(base, seconds, shot_width=320, hidden=False, simulate=0):
         "requests_per_s": round(n / elapsed, 2) if elapsed else None,
         "bytes_per_s": round(b / elapsed) if elapsed else None,
         "errors": errors,
-        "by_endpoint": {k: {"requests": v[0], "bytes": v[1]} for k, v in sorted(by.items())},
+        "by_endpoint": {k: {"requests": v[0], "bytes": v[1], "slowest_ms": round(v[2])} for k, v in sorted(by.items())},
     }

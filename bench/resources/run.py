@@ -86,11 +86,16 @@ class Host:
         self.prefix = shlex.split(prefix) if prefix else []
 
     def run(self, argv, timeout=300, stdin=None):
-        return subprocess.run(self.prefix + list(argv), capture_output=True, text=True, timeout=timeout, input=stdin,
-                              encoding="utf-8", errors="replace")
+        # Bytes in: text mode would turn each newline into CRLF on Windows, and a shell reading the script chokes.
+        p = subprocess.run(self.prefix + list(argv), capture_output=True, timeout=timeout,
+                           input=stdin.encode("utf-8") if stdin is not None else None)
+        return subprocess.CompletedProcess(p.args, p.returncode, p.stdout.decode("utf-8", "replace"),
+                                           p.stderr.decode("utf-8", "replace"))
 
     def sh(self, script, *args, timeout=300):
-        return self.run(["sh", "-c", script, "sh", *args], timeout=timeout)
+        # The script goes in on stdin: through a prefix such as wsl.exe, a script in an argument loses its quotes and
+        # newlines to the Windows command line.
+        return self.run(["sh", "-s", "--", *args], timeout=timeout, stdin=script)
 
     def docker(self, *args, timeout=300):
         return self.run(["docker", *args], timeout=timeout)
