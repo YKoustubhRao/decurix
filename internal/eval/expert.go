@@ -42,8 +42,9 @@ const ExpertPrompt = `A worker doing a task asked the question below. These are 
 // modelChanged is the problem a row gets when its calls were not all served by the pinned deployment (D10).
 const modelChanged = "model changed during the run"
 
-// DontKnow is the reply a worker gets when no fact answers its question.
-const DontKnow = "I don't know that. Use what you have, or stop and say what is missing."
+// DontKnow is the reply a worker gets when no fact answers its question. It says only that the person does not know:
+// nothing in it reads as leave to guess or to fill in a value (FALSE-DONE item 1).
+const DontKnow = "I don't know that, so I can't give it to you. Do not make it up: if the task needs it, say it is missing."
 
 // Expert chooses facts for one run.
 type Expert struct {

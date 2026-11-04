@@ -48,24 +48,27 @@ func TestTasksOfAGoneDesktopAreClosed(t *testing.T) {
 	}
 }
 
-// TestAnIdleSweepLeavesTheControlPlanesOwnWorkers: a readiness run or a practice desktop has no desktop container,
-// and a sweep while it runs must not end it; at start-up nothing of theirs is still running, so they are closed then.
+// TestAnIdleSweepLeavesTheControlPlanesOwnWorkers: a readiness run or a practice desktop (Simulate's, or an eval's) has
+// no desktop container, and a sweep while it runs must not end it; at start-up nothing of theirs is still running, so
+// they are closed then. The workers are as their runners register them (the eval's by its engine "eval").
 func TestAnIdleSweepLeavesTheControlPlanesOwnWorkers(t *testing.T) {
 	workers := map[string]tasks.Worker{
-		"readiness-1": {ID: "readiness-1", Engine: "qualified-tool"},
-		"practice-2":  {ID: "practice-2", Engine: "practice"},
-		"box":         {ID: "box", Engine: "thebot"},
+		"readiness-1": {ID: "readiness-1", Engine: "qualified-tool", Profile: "offline-artifacts"},
+		"practice-2":  {ID: "practice-2", Engine: "practice", Profile: "practice"},
+		"practice-e3": {ID: "practice-e3", Engine: "eval", Profile: "practice"},
+		"box":         {ID: "box", Engine: "thebot", Profile: "basic"},
 	}
-	gone := fakeGone{gone: map[string]bool{"readiness-1": true, "practice-2": true, "box": true}}
-	sweep := &fakeLive{live: []string{"readiness-1", "practice-2", "box"}, workers: workers}
+	ids := []string{"readiness-1", "practice-2", "practice-e3", "box"}
+	gone := fakeGone{gone: map[string]bool{"readiness-1": true, "practice-2": true, "practice-e3": true, "box": true}}
+	sweep := &fakeLive{live: ids, workers: workers}
 	closeGone(context.Background(), gone, sweep, false)
 	if len(sweep.closed) != 1 || sweep.closed[0] != "box" {
 		t.Fatalf("an idle sweep closed %v, want only the desktop", sweep.closed)
 	}
-	start := &fakeLive{live: []string{"readiness-1", "practice-2", "box"}, workers: workers}
+	start := &fakeLive{live: ids, workers: workers}
 	CloseGoneAtStart(context.Background(), gone, start)
-	if len(start.closed) != 3 {
-		t.Fatalf("at start-up closed %v, want all three", start.closed)
+	if len(start.closed) != 4 {
+		t.Fatalf("at start-up closed %v, want all four", start.closed)
 	}
 }
 

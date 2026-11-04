@@ -30,10 +30,13 @@ type GoneTasks interface {
 	CloseOpen(workerID, why string) error
 }
 
-// ownWorkerEngines are the engines of workers the control plane runs itself, outside any desktop container: a
-// readiness run (no container at all) and a practice desktop (its own container, not a desktop's). Their live
-// executions are theirs to close; a running one must never be ended as "gone" by an idle sweep.
-var ownWorkerEngines = map[string]bool{"qualified-tool": true, "practice": true}
+// ownWorkerProfiles are the profiles of workers the control plane runs itself, outside any desktop container: a
+// practice desktop, whatever runs in it (Simulate's "practice" engine, an eval's "eval"), and a readiness run (no
+// container at all). Their live executions are their runner's to close; a running one must never be ended as "gone" by
+// an idle sweep. Matched by profile, the kind of desktop, not by engine name: an eval case's execution was closed as
+// abandoned within about two minutes, cutting its run record short, because "eval" was not one of the engines named
+// (FALSE-DONE item D).
+var ownWorkerProfiles = map[string]bool{"practice": true, "offline-artifacts": true}
 
 // CloseGoneAtStart ends the live tasks of every worker whose desktop container is gone, practice and readiness
 // workers included: at start-up nothing of theirs is still running (main cleans up their containers first). store is
@@ -57,7 +60,7 @@ func closeGone(ctx context.Context, desktops DesktopGone, store any, all bool) {
 		return
 	}
 	for _, id := range live {
-		if w, known := t.Worker(id); known && !all && ownWorkerEngines[w.Engine] {
+		if w, known := t.Worker(id); known && !all && ownWorkerProfiles[w.Profile] {
 			continue
 		}
 		gone, err := desktops.Gone(ctx, id)
