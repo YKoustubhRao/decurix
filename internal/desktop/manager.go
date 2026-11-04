@@ -1036,7 +1036,10 @@ func (m *Manager) Pause(
 	}
 	cancel()
 
-	return notFound(id, m.client.ContainerPause(ctx, name))
+	err := m.client.ContainerPause(ctx, name)
+	// The capture above cached the screen's address; a frozen screen answers nothing, so it goes.
+	m.forgetShotTarget(sanitizedID)
+	return notFound(id, err)
 }
 
 // Unpause unpauses the Docker container processes backing the given desktop ID.

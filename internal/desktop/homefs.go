@@ -128,6 +128,7 @@ func (m *Manager) homeAccessOf(ctx context.Context, name, id string) (string, fu
 		if err := m.client.ContainerPause(pctx, inspect.ID); err != nil {
 			log.Printf("desktop: pausing %s again after a copy: %v", name, err)
 		}
+		m.forgetShotTargetOf(inspect.ID) // a frozen screen: the thumbnail asks Docker next time
 	}
 	switch {
 	case state != nil && state.Running && state.Paused:

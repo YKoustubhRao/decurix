@@ -80,7 +80,10 @@ func (m *Manager) execTarOut(ctx context.Context, id, from string, limit int64) 
 		if err := m.client.ContainerUnpause(ctx, id); err != nil {
 			return nil, err
 		}
-		defer func() { _ = m.client.ContainerPause(context.WithoutCancel(ctx), id) }()
+		defer func() {
+			_ = m.client.ContainerPause(context.WithoutCancel(ctx), id)
+			m.forgetShotTargetOf(id) // a frozen screen: the thumbnail asks Docker next time
+		}()
 	}
 	script := fmt.Sprintf(`kill -s STOP -- -1 2>/dev/null; [ -e "$1" ] || exit %d; exec tar -c -C "$2" -- "$3"`, execTarMissingCode)
 	cmd := []string{"/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "/bin/sh", "-c", script, "sh", from, path.Dir(from), path.Base(from)}

@@ -21,6 +21,8 @@ type fakeRFB struct {
 	sessions atomic.Int32
 	colour   atomic.Uint32
 	w, h     int
+	// name is the screen's RFB desktop name (a string); unset or "" for "desktop_box:1 (headless)".
+	name atomic.Value
 }
 
 func (f *fakeRFB) serve(t *testing.T) string {
@@ -59,10 +61,15 @@ func (f *fakeRFB) session(conn net.Conn) {
 	if !discard(1) {                      // ClientInit
 		return
 	}
+	name, _ := f.name.Load().(string)
+	if name == "" {
+		name = "desktop_box:1 (headless)" // TigerVNC's desktop name: the container's hostname first
+	}
 	init := make([]byte, 24)
 	binary.BigEndian.PutUint16(init[0:2], uint16(f.w))
 	binary.BigEndian.PutUint16(init[2:4], uint16(f.h))
-	_, _ = conn.Write(init)
+	binary.BigEndian.PutUint32(init[20:24], uint32(len(name)))
+	_, _ = conn.Write(append(init, name...))
 	if !discard(20 + 8 + 10) { // SetPixelFormat, SetEncodings (one), FramebufferUpdateRequest
 		return
 	}
@@ -146,12 +153,7 @@ func TestThumbnailsAreSharedPerWidthAndCostNoInspectEachCapture(t *testing.T) {
 	}
 
 	// After the TTL: captured again, the address reused, and the same picture not written again.
-	expire := func() {
-		e := m.shotCacheFor("box")
-		e.mu.Lock()
-		e.at = time.Now().Add(-time.Hour)
-		e.mu.Unlock()
-	}
+	expire := func() { ageShots(m, "box", time.Hour) }
 	expire()
 	before := saves.Load()
 	if _, err := m.Screenshot(ctx, "box", 64); err != nil {
@@ -180,5 +182,122 @@ func TestThumbnailsAreSharedPerWidthAndCostNoInspectEachCapture(t *testing.T) {
 	}
 	if got := len(fake.called("ContainerInspect")); got != 2 {
 		t.Fatalf("after a lifecycle change the capture did not ask Docker (%d inspects)", got)
+	}
+}
+
+// ageShots makes every width's cached capture of desktop id older by d.
+func ageShots(m *Manager, id string, d time.Duration) {
+	e := m.shotCacheFor(id)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for w, f := range e.byWidth {
+		f.at = f.at.Add(-d)
+		e.byWidth[w] = f
+	}
+}
+
+// centreRed is the red of a thumbnail's centre pixel.
+func centreRed(t *testing.T, data []byte) uint32 {
+	t.Helper()
+	img, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := img.Bounds()
+	r, _, _, _ := img.At(b.Dx()/2, b.Dy()/2).RGBA()
+	return r >> 8
+}
+
+// A capture for one width never keeps another width's older frame alive: each width's frame has its own time
+// (review RES-CP-1, the reviewer's case: a width-48 viewer was served a frame ~8.9 s old because a width-64 capture
+// reset a shared time).
+func TestAnotherWidthNeverExtendsAStaleFrame(t *testing.T) {
+	rfb := &fakeRFB{w: 64, h: 32}
+	rfb.colour.Store(0x00ff0000) // red
+	m, _, _ := shotManager(t, rfb)
+	ctx := context.Background()
+	first, err := m.Screenshot(ctx, "box", 48)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rfb.colour.Store(0x000000ff) // the screen changes to blue
+	ageShots(m, "box", 4*time.Second)
+	if _, err := m.Screenshot(ctx, "box", 64); err != nil { // another viewer, inside the TTL
+		t.Fatal(err)
+	}
+	ageShots(m, "box", 1100*time.Millisecond) // width 48's frame is now 5.1 s old; width 64's 1.1 s
+	again, err := m.Screenshot(ctx, "box", 48)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(again, first) || centreRed(t, again) > 100 {
+		t.Fatalf("width 48 was served its frame from more than a sweep ago (red %d)", centreRed(t, again))
+	}
+}
+
+// A failed capture drops the cached address, so the next capture asks Docker; a cached address that reaches a screen
+// naming another container is refused and dropped; and a screen that names no container at all is checked by Docker
+// on every capture (review RES-CP-1).
+func TestTheCachedScreenAddressIsCheckedAndDropped(t *testing.T) {
+	rfb := &fakeRFB{w: 32, h: 16}
+	m, fake, _ := shotManager(t, rfb)
+	ctx := context.Background()
+	if _, err := m.Screenshot(ctx, "box", 32); err != nil {
+		t.Fatal(err)
+	}
+	inspects := func() int { return len(fake.called("ContainerInspect")) }
+
+	// Another container now answers at the cached address: refused, never shown as box's.
+	rfb.name.Store("desktop_other:1 (headless)")
+	ageShots(m, "box", time.Hour)
+	if _, err := m.Screenshot(ctx, "box", 32); err == nil {
+		t.Fatal("a screen naming another container was shown as this desktop's")
+	}
+	if m.shotCacheFor("box").target.Load() != nil {
+		t.Fatal("the address that reached another screen is still cached")
+	}
+
+	// A failed capture drops the address: the next capture inspects.
+	rfb.name.Store("")
+	before := inspects()
+	m.shotCacheFor("box").lastErr = nil
+	if _, err := m.Screenshot(ctx, "box", 32); err != nil {
+		t.Fatal(err)
+	}
+	if inspects() != before+1 {
+		t.Fatalf("after a failure the capture did not ask Docker (%d -> %d inspects)", before, inspects())
+	}
+
+	// A screen that names no container: every capture asks Docker.
+	rfb.name.Store("x11")
+	m2, fake2, _ := shotManager(t, rfb)
+	for i := 0; i < 3; i++ {
+		ageShots(m2, "box", time.Hour)
+		if _, err := m2.Screenshot(ctx, "box", 32); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(fake2.called("ContainerInspect")); n != 3 {
+		t.Fatalf("a nameless screen's captures made %d inspects, want one each (3)", n)
+	}
+}
+
+// Pausing a desktop, here or around a home copy or a tar out, drops its cached screen address.
+func TestAPauseDropsTheCachedScreenAddress(t *testing.T) {
+	rfb := &fakeRFB{w: 32, h: 16}
+	m, _, _ := shotManager(t, rfb)
+	if _, err := m.Screenshot(context.Background(), "box", 32); err != nil {
+		t.Fatal(err)
+	}
+	m.forgetShotTargetOf("cid-box") // a pause by container ID (homefs, exectar)
+	if m.shotCacheFor("box").target.Load() != nil {
+		t.Fatal("a pause by container ID kept the address")
+	}
+	if _, err := m.Screenshot(context.Background(), "box", 48); err != nil {
+		t.Fatal(err)
+	}
+	m.forgetShotTargetOf("desktop_box") // by container name
+	if m.shotCacheFor("box").target.Load() != nil {
+		t.Fatal("a pause by container name kept the address")
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,7 +32,7 @@ import (
 // websockify's port is the *browser's* path to a desktop: reusing it would
 // mean speaking WebSocket to reach a protocol the control plane can read
 // straight off a TCP socket.
-var vncPort = "5901" // a variable so a test can stand an RFB server in on a free port
+var vncPort = "5901" // a variable only so a test can stand an RFB server in on a free port
 
 // Screenshot capture tuning. captureTimeout bounds one whole capture
 // (connect, RFB handshake, and a full framebuffer read); a desktop that is
@@ -80,9 +81,10 @@ const (
 // their own VNC session.
 type shotEntry struct {
 	mu sync.Mutex
-	// byWidth is the frame captured at `at`, encoded at each width asked for since: a viewer at another width gets
-	// its own size, never another viewer's.
-	byWidth map[int][]byte
+	// byWidth is each width's own latest capture, with its own time: a viewer at another width gets its own size,
+	// and no width's frame is kept past screenshotTTL by a capture made for another (review RES-CP-1: one shared time
+	// served a frame k sweeps old with k widths in use).
+	byWidth map[int]shotFrame
 	// data is the latest encoding of any width: what a paused desktop shows.
 	data    []byte
 	at      time.Time
@@ -92,17 +94,28 @@ type shotEntry struct {
 	target atomic.Pointer[shotTarget]
 	// savedSum is the digest of the thumbnail last written to disk: an unchanged screen is not written again.
 	savedSum [32]byte
+	// nameless is a desktop whose screen does not name its container (the RFB desktop name lacks its hostname): its
+	// cached address cannot be checked, so every capture asks Docker.
+	nameless bool
 }
 
-// shotTarget is a desktop's VNC address and password as one container inspect read them, and until when they are
-// reused.
+// shotFrame is one width's capture and when it was made.
+type shotFrame struct {
+	data []byte
+	at   time.Time
+}
+
+// shotTarget is a desktop's VNC address and password as one container inspect read them, the container they were
+// read for and its hostname (which the screen's RFB desktop name carries), and until when they are reused.
 type shotTarget struct {
 	addr, password string
+	containerID    string
+	hostname       string
 	until          time.Time
 }
 
 // saveShot has a thumbnail written to disk, in the background (saveShotToDisk): the request never waits on the disk.
-// A test stands in a counter.
+// A variable only so a test can stand in a counter.
 var saveShot = func(sanitizedID string, data []byte) { go saveShotToDisk(sanitizedID, data) }
 
 // shotCacheFor returns the cache entry for a desktop, creating it on first
@@ -169,9 +182,9 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	if cached := entry.byWidth[maxWidth]; cached != nil && time.Since(entry.at) < screenshotTTL {
+	if cached := entry.byWidth[maxWidth]; cached.data != nil && time.Since(cached.at) < screenshotTTL {
 		m.touchViewed(sanitizedID)
-		return cached, nil
+		return cached.data, nil
 	}
 
 	// Negative caching: if capture failed very recently (e.g. desktop booting or VNC down),
@@ -184,14 +197,15 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 	// resolve the desktop's address and password - a cache hit above never
 	// touches Docker at all - and that answer is itself reused for
 	// shotTargetTTL, so a capture every sweep is not an inspect every sweep.
-	var addr, password string
+	var target *shotTarget
 	var err error
-	if target := entry.target.Load(); target != nil && time.Now().Before(target.until) {
-		addr, password = target.addr, target.password
+	cached := false
+	if t := entry.target.Load(); t != nil && time.Now().Before(t.until) && !entry.nameless {
+		target, cached = t, true
 	} else {
-		addr, password, err = m.captureTarget(ctx, rawID)
+		target, err = m.captureTarget(ctx, rawID)
 		if err == nil {
-			entry.target.Store(&shotTarget{addr: addr, password: password, until: time.Now().Add(shotTargetTTL)})
+			entry.target.Store(target)
 		}
 	}
 	if err != nil {
@@ -217,11 +231,22 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 
 	m.touchViewed(sanitizedID)
 
-	frame, err := captureFrame(ctx, addr, password)
+	frame, screenName, err := captureFrame(ctx, target.addr, target.password)
 	if err != nil {
 		// The address may be stale (a restart, a pause): the next capture asks Docker again.
 		entry.target.Store(nil)
 		return entry.fail(err)
+	}
+	// The screen must be this desktop's. A cached address is used only while the screen it reaches names the container
+	// it was read for: an address another container now holds (a restart, a daemon restart) is never shown as this
+	// desktop's, even where desktops share one password (the old default). A screen that does not name its container
+	// at all is checked by Docker on every capture instead.
+	if !strings.Contains(screenName, target.hostname) {
+		entry.target.Store(nil)
+		if cached {
+			return entry.fail(errors.New("the cached screen address reached another screen"))
+		}
+		entry.nameless = true
 	}
 
 	encoded, err := encodeThumbnail(frame, maxWidth)
@@ -229,12 +254,18 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 		return entry.fail(err)
 	}
 
-	if time.Since(entry.at) >= screenshotTTL || entry.byWidth == nil {
-		entry.byWidth = map[int][]byte{}
+	now := time.Now()
+	if entry.byWidth == nil {
+		entry.byWidth = map[int]shotFrame{}
 	}
-	entry.byWidth[maxWidth] = encoded
+	for w, f := range entry.byWidth {
+		if now.Sub(f.at) >= screenshotTTL {
+			delete(entry.byWidth, w)
+		}
+	}
+	entry.byWidth[maxWidth] = shotFrame{data: encoded, at: now}
 	entry.data = encoded
-	entry.at = time.Now()
+	entry.at = now
 	entry.lastErr = nil
 	// The disk copy is what a paused or restarted desktop shows; an unchanged screen is not written again.
 	if sum := sha256.Sum256(encoded); sum != entry.savedSum {
@@ -247,11 +278,21 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 
 // forgetShotTarget drops a desktop's cached VNC address, so its next capture asks Docker (a lifecycle change).
 func (m *Manager) forgetShotTarget(sanitizedID string) {
+	m.forgetShotTargetOf(sanitizedID)
+}
+
+// forgetShotTargetOf drops the cached VNC address of the desktop a container reference names: its desktop id, its
+// container name (desktop_<id>) or its container ID. Every pause and resume calls it, so a frozen desktop's next
+// capture asks Docker (and is told it is paused) instead of waiting on a frozen screen.
+func (m *Manager) forgetShotTargetOf(ref string) {
 	m.shotMu.Lock()
-	entry := m.shots[sanitizedID]
-	m.shotMu.Unlock()
-	if entry != nil {
-		entry.target.Store(nil)
+	defer m.shotMu.Unlock()
+	id := strings.TrimPrefix(strings.TrimPrefix(ref, "/"), "desktop_")
+	for key, entry := range m.shots {
+		t := entry.target.Load()
+		if key == id || (t != nil && t.containerID != "" && (t.containerID == ref || strings.HasPrefix(t.containerID, ref))) {
+			entry.target.Store(nil)
+		}
 	}
 }
 
@@ -266,46 +307,53 @@ func (e *shotEntry) fail(err error) ([]byte, error) {
 // its Xvnc was started with. Both are read from the container itself rather
 // than from the control plane's own DEFAULT_PASSWORD, so a desktop created
 // before that value changed still has its screen readable.
-func (m *Manager) captureTarget(ctx context.Context, rawID string) (addr, password string, err error) {
-	inspect, err := m.client.ContainerInspect(ctx, "desktop_"+sanitizeName(rawID))
+func (m *Manager) captureTarget(ctx context.Context, rawID string) (*shotTarget, error) {
+	name := "desktop_" + sanitizeName(rawID)
+	inspect, err := m.client.ContainerInspect(ctx, name)
 	if err != nil {
-		return "", "", ErrNotFound
+		return nil, ErrNotFound
 	}
 
 	if inspect.State == nil || !inspect.State.Running {
-		return "", "", ErrNotRunning
+		return nil, ErrNotRunning
 	}
 
 	if inspect.State.Paused {
-		return "", "", ErrPaused
+		return nil, ErrPaused
 	}
 
 	if inspect.NetworkSettings == nil {
-		return "", "", ErrNoNetwork
+		return nil, ErrNoNetwork
 	}
 	ip := desktopAddress(sanitizeName(rawID), inspect.NetworkSettings.Networks)
 	if ip == "" {
-		return "", "", ErrNoAddress
+		return nil, ErrNoAddress
 	}
 
+	target := &shotTarget{addr: net.JoinHostPort(ip, vncPort), hostname: name, until: time.Now().Add(shotTargetTTL)}
+	if inspect.ContainerJSONBase != nil {
+		target.containerID = inspect.ID
+	}
 	if inspect.Config != nil {
-		password = envValue(inspect.Config.Env, "VNC_PW")
+		target.password = envValue(inspect.Config.Env, "VNC_PW")
+		if inspect.Config.Hostname != "" {
+			target.hostname = inspect.Config.Hostname
+		}
 	}
-
-	return net.JoinHostPort(ip, vncPort), password, nil
+	return target, nil
 }
 
 // captureFrame opens one RFB session against a desktop's Xvnc and returns its
 // full screen as an image. The session is deliberately short-lived: connect,
 // authenticate, ask for one non-incremental update, read it, hang up.
-func captureFrame(ctx context.Context, addr, password string) (*image.RGBA, error) {
+func captureFrame(ctx context.Context, addr, password string) (*image.RGBA, string, error) {
 	dialer := net.Dialer{
 		Timeout: 2 * time.Second,
 	}
 
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("connect to desktop screen: %w", err)
+		return nil, "", fmt.Errorf("connect to desktop screen: %w", err)
 	}
 
 	defer conn.Close()
@@ -317,21 +365,22 @@ func captureFrame(ctx context.Context, addr, password string) (*image.RGBA, erro
 	}
 
 	if err := conn.SetDeadline(deadline); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	reader := bufio.NewReaderSize(conn, 64*1024)
 
 	if err := rfbHandshake(reader, conn, password); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	width, height, err := rfbInit(reader, conn)
+	width, height, name, err := rfbInit(reader, conn)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	return rfbReadFrame(reader, conn, width, height)
+	frame, err := rfbReadFrame(reader, conn, width, height)
+	return frame, name, err
 }
 
 // rfbHandshake performs the RFB 3.8 version and security exchange, answering
@@ -487,17 +536,17 @@ func bits8Reverse(b byte) byte {
 
 // rfbInit completes ClientInit/ServerInit and pins the session to a pixel
 // format this client can decode, returning the desktop's screen size.
-func rfbInit(reader io.Reader, writer io.Writer) (width, height int, err error) {
+func rfbInit(reader io.Reader, writer io.Writer) (width, height int, name string, err error) {
 	// shared=1: never disconnect whoever is already looking at this desktop.
 	// A thumbnail must be invisible to the human using the screen.
 	if _, err := writer.Write([]byte{1}); err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
 	}
 
 	header := make([]byte, 24)
 
 	if _, err := io.ReadFull(reader, header); err != nil {
-		return 0, 0, fmt.Errorf("read desktop size: %w", err)
+		return 0, 0, "", fmt.Errorf("read desktop size: %w", err)
 	}
 
 	width = int(binary.BigEndian.Uint16(header[0:2]))
@@ -505,14 +554,24 @@ func rfbInit(reader io.Reader, writer io.Writer) (width, height int, err error) 
 
 	nameLength := binary.BigEndian.Uint32(header[20:24])
 
+	// The screen's desktop name (TigerVNC: "<hostname>:<display> (<user>)"): what Screenshot checks a cached address
+	// against. Kept to 1 KiB; a longer one is read and dropped.
 	if nameLength > 0 {
-		if _, err := io.CopyN(io.Discard, reader, int64(nameLength)); err != nil {
-			return 0, 0, fmt.Errorf("read desktop name: %w", err)
+		keep := min(nameLength, 1024)
+		raw := make([]byte, keep)
+		if _, err := io.ReadFull(reader, raw); err != nil {
+			return 0, 0, "", fmt.Errorf("read desktop name: %w", err)
+		}
+		name = string(raw)
+		if nameLength > keep {
+			if _, err := io.CopyN(io.Discard, reader, int64(nameLength-keep)); err != nil {
+				return 0, 0, "", fmt.Errorf("read desktop name: %w", err)
+			}
 		}
 	}
 
 	if width <= 0 || height <= 0 || width > 16384 || height > 16384 {
-		return 0, 0, fmt.Errorf("desktop reported an unusable screen size %dx%d", width, height)
+		return 0, 0, "", fmt.Errorf("desktop reported an unusable screen size %dx%d", width, height)
 	}
 
 	// Ask for little-endian 32-bit true colour so every pixel is a fixed
@@ -534,7 +593,7 @@ func rfbInit(reader io.Reader, writer io.Writer) (width, height int, err error) 
 	}
 
 	if _, err := writer.Write(setPixelFormat); err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
 	}
 
 	// Offer Raw only. Anything else would need a decoder here, and a
@@ -545,10 +604,10 @@ func rfbInit(reader io.Reader, writer io.Writer) (width, height int, err error) 
 	binary.BigEndian.PutUint32(setEncodings[4:8], uint32(encodingRaw))
 
 	if _, err := writer.Write(setEncodings); err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
 	}
 
-	return width, height, nil
+	return width, height, name, nil
 }
 
 // rfbReadFrame requests one full (non-incremental) framebuffer update and
