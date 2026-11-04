@@ -64,3 +64,31 @@ func TestRealAndPracticeDesktopsRunOnePython(t *testing.T) {
 		}
 	}
 }
+
+// The agent is compiled at image build after its last COPY, and before the tree is made root's, so the .pyc are
+// there, read-only, for every import (resource plan P1 #1: a gui call imported the agent from source, about 1 s).
+func TestTheAgentIsCompiledAfterItsLastCopy(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docker", "desktop.basic.Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
+	lastCopy, compile, chown := -1, -1, -1
+	for i, line := range lines {
+		l := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(l, "COPY ") && strings.Contains(l, "/opt/decurix_agent"):
+			lastCopy = i
+		case strings.Contains(l, "python3 -m compileall") && strings.Contains(l, "/opt/decurix_agent"):
+			compile = i
+		case strings.Contains(l, "chown -R root:root /opt/decurix_agent"):
+			chown = i
+		}
+	}
+	if lastCopy < 0 || compile < 0 || chown < 0 {
+		t.Fatalf("copy %d, compile %d, chown %d", lastCopy, compile, chown)
+	}
+	if compile < lastCopy || chown < compile {
+		t.Fatalf("the agent is compiled at line %d, its last COPY is at %d and it is made root's at %d", compile+1, lastCopy+1, chown+1)
+	}
+}

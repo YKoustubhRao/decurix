@@ -312,7 +312,14 @@ RUN rm -f /etc/sudoers.d/headless /dockerstartup/.initial_sudo_password \
 # reaching one another's ports at all is a network decision (docs/follow-ups.md, resource plan B7).
 RUN mkdir -p /etc/tigervnc && echo 'nolisten=tcp' >> /etc/tigervnc/vncserver-config-mandatory
 COPY agent/decurix-entrypoint.sh /opt/decurix-entrypoint.sh
-RUN chmod 755 /opt/decurix-entrypoint.sh \
+# The agent compiled once, here, after its last COPY and before it is made root's (resource plan P1 #1): every `gui`
+# call and every start of the agent and the gate imported it from source, about a second each, because the worker
+# cannot write __pycache__ into a root-owned tree (and PYTHONDONTWRITEBYTECODE=1 says not to). The .pyc are root's,
+# read-only, beside their sources. Python checks each against its source's mtime and size, so a tree copied over this
+# one (a practice desktop's, a dev loop's docker cp) is compiled in memory as before, never run stale; the gate's
+# `python3 -I` reads them too (isolated mode leaves bytecode caching alone).
+RUN /usr/bin/python3 -m compileall -q -j 0 /opt/decurix_agent \
+    && chmod 755 /opt/decurix-entrypoint.sh \
     && chown -R root:root /opt/decurix_agent /opt/decurix-entrypoint.sh \
     && chmod -R go-w /opt/decurix_agent
 
