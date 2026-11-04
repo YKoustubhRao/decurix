@@ -282,10 +282,26 @@ func (st *operatorState) reviewFacts(report string, items []string, action strin
 			b.WriteString("- " + l.Command + " " + strings.Join(l.Links, " ") + "\n")
 		}
 	}
-	if unfound := unbackedCalls(items, st.judgementSources()); len(unfound) > 0 {
+	var unfound, notBacked []string
+	for _, item := range unbackedCalls(items, st.judgementSources()) {
+		if notBackedRe.MatchString(item) {
+			notBacked = append(notBacked, item)
+		} else {
+			unfound = append(unfound, item)
+		}
+	}
+	if len(unfound) > 0 {
 		b.WriteString("\nDECISIONS WHOSE CITED WORDS APPEAR IN NO TEXT THE WORKER WAS SHOWN (pictures it looked at are not " +
-			"searched), or that say they rest on nothing:\n- " +
-			strings.Join(unfound, "\n- ") + "\n")
+			"searched):\n- " + strings.Join(unfound, "\n- ") + "\n")
+	}
+	if len(notBacked) > 0 && action == "" {
+		// Points already open, decided in code (notBackedIssues): the review is told so, not shown them as facts it
+		// may let stand.
+		b.WriteString("\nALREADY OPEN, DECIDED IN CODE - the worker itself says these rest on nothing given; each goes to " +
+			"the person, whatever this review finds, and the work is not done while one stands:\n- " +
+			strings.Join(notBacked, "\n- ") + "\n")
+	} else if len(notBacked) > 0 {
+		b.WriteString("\nDECISIONS THE WORKER SAYS REST ON NOTHING GIVEN:\n- " + strings.Join(notBacked, "\n- ") + "\n")
 	}
 	if passages := quotedPassages(items, st.judgementSources()); len(passages) > 0 {
 		b.WriteString("\nWHERE THE WORDS ITS DECISIONS CITE APPEAR IN WHAT IT WAS SHOWN (the passage around each, from the full outputs):\n- " +

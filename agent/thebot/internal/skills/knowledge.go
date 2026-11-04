@@ -169,6 +169,8 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 		issues = append(issues, st.handoffIssues(said)...)
 		// ... and a plan with steps for the person's OK of which none went through (plan.go).
 		issues = append(issues, st.commitsIssue()...)
+		// ... and every call the worker itself marks as resting on nothing given (judgements.go notBackedIssues).
+		issues = append(issues, notBackedIssues(items)...)
 		// ... and a one-word value written into a file that no source holds (evidence.go noteInventedCodes).
 		issues = append(issues, st.inventedCodeIssues(said)...)
 		// The figures the work leaves on a screen it typed into are worked out again from the sources, as before a

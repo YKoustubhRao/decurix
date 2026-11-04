@@ -531,6 +531,9 @@ func unmarkedCommand(reply string) string {
 // on from exactly where it paused.
 type operatorState struct {
 	Messages []llm.Message
+	// approvedRun is the command the person's OK is letting through right now (already counted in CommitsRun), so
+	// execute does not count it a second time as a commit that needed no approval.
+	approvedRun string
 	// taskID and turnID are the control plane's task and the operator's current turn ("<job>:<n>", llm.NextTurn):
 	// what every command of the turn is told (guiEnv) and its trace line names. Neither goes into a prompt.
 	taskID, turnID string
@@ -928,7 +931,10 @@ func (o *OperatorSkill) resume(rc RunContext, subtask Subtask, st *operatorState
 				}
 				st.CommitsDone = append(st.CommitsDone, truncateText(what, 240))
 			}
-			if blocked := o.execute(rc, st, pending); blocked != "" {
+			st.approvedRun = pending
+			blocked := o.execute(rc, st, pending)
+			st.approvedRun = ""
+			if blocked != "" {
 				st.Pending = pausedRest(pending, blocked)
 				return st, blocked
 			}
@@ -1143,6 +1149,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 		rc.Logf("operator", "approval needed on screen - %s", reason)
 		return reason
 	}
+	st.noteUngatedCommit(command, res)
 	// The task's trace carries the output, bounded, not its first line alone; withheld before it is bounded.
 	rc.Logf("operator", "%s", traceLine(shellResult{ExitCode: res.ExitCode, TimedOut: res.TimedOut, Output: clean(res.Output)}))
 	st.CommandsRun++
