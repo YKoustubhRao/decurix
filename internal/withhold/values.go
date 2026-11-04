@@ -56,3 +56,13 @@ func wholeValue(text string) []string {
 	}
 	return out
 }
+
+// HeldValues is every value withheld from original in its stored form (Values), and, when stored is the whole text
+// withheld (Secret), the values Text would withhold of it too: what the call recorder and an approval gate are told.
+func HeldValues(original, stored string) []string {
+	values := Values(original, stored)
+	if stored == Secret {
+		values = append(values, Values(original, Text(original))...)
+	}
+	return values
+}

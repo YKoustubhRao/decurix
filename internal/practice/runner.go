@@ -553,7 +553,7 @@ func (s *Service) runCase(ctx context.Context, run qualification.PracticeRun, su
 			mockID = id
 		}
 		obs = s.Broker.StartCase(route.TaskID)
-		if err := s.post(ctx, d, "/request", map[string]string{"content": c.Request, "task_id": route.TaskID}); err != nil {
+		if err := s.post(desktop.WithGateNotice(ctx, RequestGateNotice(route.TaskID, c.Request)), d, "/request", map[string]string{"content": c.Request, "task_id": route.TaskID}); err != nil {
 			ev.RunErr = err
 			return
 		}

@@ -106,6 +106,9 @@ type PracticeSpec struct {
 	AgentTree []byte
 	// Snapshot is a tar of the agent's state folders (PracticeSnapshot), restored before each case.
 	Snapshot []byte
+	// LegacyGate is pinned old code in AgentTree, whose gate may predate /secrets and /request: a 404 from those is
+	// then passed (TellGate). Only an eval arm with its own agent tree sets it; the practice runner never does.
+	LegacyGate bool
 }
 
 // PracticeDesktop is a created practice desktop.
@@ -502,6 +505,14 @@ func (m *Manager) CreatePractice(ctx context.Context, spec PracticeSpec) (d Prac
 		return d, err
 	}
 	d = PracticeDesktop{ContainerID: created.ID, Name: PracticeDesktopID(spec.RunID)}
+	if spec.LegacyGate && len(spec.AgentTree) > 0 {
+		m.legacyMu.Lock()
+		if m.legacyGates == nil {
+			m.legacyGates = map[string]bool{}
+		}
+		m.legacyGates[created.ID] = true
+		m.legacyMu.Unlock()
+	}
 	defer func() {
 		if err != nil {
 			_ = m.RemovePractice(context.WithoutCancel(ctx), created.ID)
@@ -941,6 +952,9 @@ func (m *Manager) RemovePractice(ctx context.Context, ids ...string) error {
 		if id == "" {
 			continue
 		}
+		m.legacyMu.Lock()
+		delete(m.legacyGates, id)
+		m.legacyMu.Unlock()
 		if err := m.client.ContainerRemove(ctx, id, container.RemoveOptions{Force: true, RemoveVolumes: true}); err != nil && !client.IsErrNotFound(err) && first == nil {
 			first = err
 		}
@@ -989,6 +1003,14 @@ func (m *Manager) CleanupPractice(ctx context.Context) error {
 func (m *Manager) PracticeAgentRequest(ctx context.Context, d PracticeDesktop, method, path string, body io.Reader) (*http.Response, error) {
 	if net, err := netip.ParseAddr(d.IP); err != nil || !net.Is4() {
 		return nil, qualification.ErrInvalid
+	}
+	// A request or a reply reaches the agent only after its gate was told, as in production (TellGate).
+	if method == http.MethodPost && path == "/request" {
+		told, err := m.tellPracticeGate(ctx, d, body)
+		if err != nil {
+			return nil, err
+		}
+		body = told
 	}
 	req, err := http.NewRequestWithContext(ctx, method, d.AgentURL()+path, body)
 	if err != nil {

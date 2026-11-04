@@ -547,7 +547,7 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 	armRun := fmt.Sprintf("%s-a%d", run.ID, index+1)
 	desktopID := desktop.PracticeDesktopID(armRun)
 	spec := desktop.PracticeSpec{RunID: armRun, Image: image, Harness: "thebot", Brain: arm.Provider, Model: arm.Model,
-		MemoryMB: 2048, BrokerURL: broker, Hosts: suite.Hosts(), AgentTree: arm.AgentTree, Snapshot: emptySnapshot}
+		MemoryMB: 2048, BrokerURL: broker, Hosts: suite.Hosts(), AgentTree: arm.AgentTree, Snapshot: emptySnapshot, LegacyGate: arm.AgentTreeRev != ""}
 	if spec.Model == "" {
 		spec.Model = "default"
 	}
@@ -909,7 +909,7 @@ func (s *Service) readLedger(ctx context.Context, d desktop.PracticeDesktop, tas
 // or an error ends it; so do the case's minutes and its token budget.
 func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, desktopID, taskID string, c Case, arm Arm, expert *Expert, obs <-chan practice.Observation, ev *Evidence) []string {
 	var problems []string
-	if err := s.post(ctx, d, "/request", map[string]string{"content": c.Request, "task_id": taskID}); err != nil {
+	if err := s.post(desktop.WithGateNotice(ctx, practice.RequestGateNotice(taskID, c.Request)), d, "/request", map[string]string{"content": c.Request, "task_id": taskID}); err != nil {
 		notDelivered(ev, err, "The request could not be sent to the worker.")
 		return problems
 	}
@@ -939,7 +939,7 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 				}
 				asked.Reply = Reply(c, asked.Fact)
 				ev.Questions = append(ev.Questions, asked)
-				if err := s.post(ctx, d, "/request", map[string]string{"content": asked.Reply, "task_id": taskID}); err != nil {
+				if err := s.post(desktop.WithGateNotice(ctx, practice.ReplyGateNotice(taskID, asked.Reply, o.Text, o.Secret)), d, "/request", map[string]string{"content": asked.Reply, "task_id": taskID}); err != nil {
 					ev.Observation, ev.FinalText = ObservedQuery, o.Text
 					notDelivered(ev, err, "The expert's reply could not be sent to the worker.")
 					return problems

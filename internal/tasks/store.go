@@ -771,6 +771,20 @@ func replyForm(stored, question string, askedSecret bool) string {
 	return withhold.Reply(question, stored)
 }
 
+// RequestForm is the C14 decision on a new request where no route is kept (a practice or eval case): how the records
+// keep it, as StoredForm decides it for a request, and whether anything of it is withheld.
+func RequestForm(text string, marked bool) (string, bool) {
+	stored := requestForm(text, marked)
+	return stored, stored != text
+}
+
+// ReplyForm is the C14 decision on a reply to question where no route is kept (an eval expert's reply): as
+// StoredForm decides it for a reply against the question open now, and whether anything of it is withheld.
+func ReplyForm(text string, marked bool, question string, askedSecret bool) (string, bool) {
+	stored := replyForm(requestForm(text, marked), question, askedSecret)
+	return stored, stored != text
+}
+
 // StoredForm is how the records will keep text sent along route, decided before it is sent by the same rules
 // CommitReply keeps it by (requestForm, then replyForm against the question open now), and whether anything of it
 // is withheld. The control plane tells the desktop "secret" exactly when this says withheld (contract C14), so the

@@ -137,33 +137,25 @@ type withheldKey struct{}
 func (s *Server) markWithheld(ctx context.Context, desktopID string, route tasks.Route, content string) context.Context {
 	marked, _ := ctx.Value(sentSecretKey{}).(bool)
 	stored, withheld := s.Tasks.StoredForm(route, content, marked)
-	notice := gateNotice{taskID: route.TaskID}
+	var values []string
 	if withheld {
-		notice.values = s.rememberWithheld(desktopID, content, stored)
+		values = s.rememberWithheld(desktopID, content, stored)
 		ctx = context.WithValue(ctx, withheldKey{}, true)
 	}
-	if route.Kind != tasks.RouteReply {
-		// The gate's own copy of a new request, which it keeps on its disk: the withheld form whenever anything of it
-		// was withheld (a site's name is kept; a value never is), the text as sent otherwise.
-		notice.copy, notice.sendCopy = content, true
-		if withheld {
-			notice.copy = stored
+	// The gate's own copy of a new request (the withheld form whenever anything was withheld), or, for a reply, the
+	// reply bound to its question (gateReplyKey): desktop.RequestNotice and ReplyNotice, shared with practice and eval.
+	notice := desktop.RequestNotice(route.TaskID, content, stored, withheld, values)
+	if route.Kind == tasks.RouteReply {
+		var reply *desktop.GateReply
+		if r, ok := ctx.Value(gateReplyKey{}).(desktop.GateReply); ok {
+			reply = &r
 		}
+		notice = desktop.ReplyNotice(route.TaskID, withheld, values, reply)
 	}
 	return context.WithValue(ctx, gateNoticeKey{}, notice)
 }
 
-// gateNotice is what a desktop's approval gate is told, signed, before its agent has a request: its own copy of a
-// new request (so whether a site is named is decided from that copy, never from a file the worker could write) and
-// the values the records withheld (so the gate's own approval question withholds them).
-type gateNotice struct {
-	taskID   string
-	copy     string
-	sendCopy bool
-	values   []string
-}
-
-// gateNoticeKey carries a request's gateNotice (markWithheld) to deliverRequest.
+// gateNoticeKey carries a request's desktop.GateNotice (markWithheld) to deliverRequest.
 type gateNoticeKey struct{}
 
 // withHeldValues adds values to ctx's gateNotice and to the call recorder.
@@ -178,8 +170,8 @@ func (s *Server) withHeldValues(ctx context.Context, desktopID string, values []
 		return ctx
 	}
 	s.secretsSeen.Remember(desktopID, kept...)
-	notice, _ := ctx.Value(gateNoticeKey{}).(gateNotice)
-	notice.values = append(notice.values, kept...)
+	notice, _ := ctx.Value(gateNoticeKey{}).(desktop.GateNotice)
+	notice.Values = append(notice.Values, kept...)
 	return context.WithValue(ctx, gateNoticeKey{}, notice)
 }
 
@@ -199,43 +191,32 @@ func (s *Server) withParamSecrets(ctx context.Context, desktopID string, params 
 		return ctx
 	}
 	s.secretsSeen.Remember(desktopID, values...)
-	notice, _ := ctx.Value(gateNoticeKey{}).(gateNotice)
-	notice.values = append(notice.values, values...)
+	notice, _ := ctx.Value(gateNoticeKey{}).(desktop.GateNotice)
+	notice.Values = append(notice.Values, values...)
 	return context.WithValue(ctx, gateNoticeKey{}, notice)
 }
 
-// tellGate gives desktopID's approval gate the notice ctx carries. It fails closed: an error means the gate does not
-// know what it must, and the request is then not sent.
-func (s *Server) tellGate(ctx context.Context, desktopID string) error {
-	notice, ok := ctx.Value(gateNoticeKey{}).(gateNotice)
+// tellGate gives desktopID's approval gate the notice ctx carries, by desktop.TellGate (the one order and rule
+// production, practice and eval share), within its own 8 s. It fails closed: an error means the gate does not know
+// what it must, and the request is then not sent. skipReply leaves out a /reply already given on an earlier try.
+func (s *Server) tellGate(ctx context.Context, desktopID string, skipReply bool) error {
+	notice, ok := ctx.Value(gateNoticeKey{}).(desktop.GateNotice)
 	if !ok {
 		return nil
 	}
+	if skipReply {
+		notice.Reply = nil
+	}
 	gateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
 	defer cancel()
-	// The values first: a copy the gate accepted must never stand for a request whose values it was refused (the
-	// send then stops, and the gate keeps the earlier copy, which H-CP-5 binds to its own task).
-	if len(notice.values) > 0 {
-		if err := s.Desktops.SendGateSecrets(gateCtx, desktopID, notice.taskID, notice.values); err != nil {
-			return err
-		}
-	}
-	if notice.sendCopy {
-		if err := s.Desktops.SendGateRequest(gateCtx, desktopID, notice.taskID, notice.copy); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.Desktops.TellGate(gateCtx, desktopID, notice)
 }
 
 // rememberWithheld tells the call recorder the values the records withheld from content (stored is the form they
 // keep): each withheld value, and the whole text only when it was withheld whole, plus any labelled value inside it.
 // Never a word around a value: the recorder replaces what it is told everywhere in that desktop's calls.
 func (s *Server) rememberWithheld(desktopID, content, stored string) []string {
-	values := withhold.Values(content, stored)
-	if stored == withhold.Secret {
-		values = append(values, withhold.Values(content, withhold.Text(content))...)
-	}
+	values := withhold.HeldValues(content, stored)
 	s.secretsSeen.Remember(desktopID, values...)
 	return values
 }
@@ -365,13 +346,12 @@ func (s *Server) submitStored(ctx context.Context, desktopID, content string, or
 		ctx = context.WithValue(ctx, approvalKey{}, approval)
 	}
 
-	ctx = s.markWithheld(ctx, id, route, content)
-
 	// A reply to an open question goes to the desktop's approval gate, signed: that is the only way a yes is made. It
 	// is sent by deliverRequest after the reply's own withheld values (/secrets) and before the agent gets the reply.
 	if route.Kind == tasks.RouteReply {
-		ctx = context.WithValue(ctx, gateReplyKey{}, gateReply{taskID: route.TaskID, text: content, asked: asked, kind: kind, request: request})
+		ctx = context.WithValue(ctx, gateReplyKey{}, desktop.GateReply{Text: content, Asked: asked, Kind: kind, RequestID: request})
 	}
+	ctx = s.markWithheld(ctx, id, route, content)
 
 	// Delivered and recorded under the desktop's lifecycle lock: the idle sweep re-checks Busy under the same lock, so
 	// it cannot pause or stop a desktop between the delivery and the record that makes it busy, and a stop or delete
@@ -444,21 +424,18 @@ func (s *Server) deliverRequest(ctx context.Context, desktopID, content string, 
 	// gate cannot be told, nothing is sent (review CP-A-2 B1). A desktop made before the gate gets its request as
 	// before.
 	gated := s.Desktops.HasGate(ctx, desktopID)
-	reply, isReply := ctx.Value(gateReplyKey{}).(gateReply)
+	// A reply reaches the gate after its values and before the agent: /secrets, then /reply, then delivery
+	// (desktop.TellGate), so the gate settles it with the reply's values already held (review DOCS-1). /reply is given
+	// once, on the first try whose /secrets the gate took. A /reply the gate refuses or does not answer is only logged
+	// and the reply is still delivered: such a reply grants nothing (the gate alone makes a yes, from a /reply it
+	// verified), so for an approval it fails closed, and as an answer to a question it is still the person's text.
+	replied := false
 	send := func() error {
 		if gated {
-			if err := s.tellGate(ctx, desktopID); err != nil {
+			if err := s.tellGate(ctx, desktopID, replied); err != nil {
 				return err
 			}
-		}
-		// A reply reaches the gate after its values and before the agent: /secrets, then /reply, then delivery, so
-		// the gate words what it settles with the reply's values already withheld (review DOCS-1). It is given once,
-		// on the first try whose /secrets the gate took. A /reply the gate refuses or does not answer is only logged
-		// and the reply is still delivered: such a reply grants nothing (the gate alone makes a yes, from a /reply it
-		// verified), so for an approval it fails closed, and as an answer to a question it is still the person's text.
-		if isReply {
-			isReply = false
-			s.signReplyToGate(ctx, desktopID, reply.taskID, reply.text, reply.asked, reply.kind, reply.request)
+			replied = true
 		}
 		return s.Desktops.SendRequest(ctx, desktopID, body)
 	}

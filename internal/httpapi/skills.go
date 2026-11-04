@@ -189,7 +189,7 @@ func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content,
 		ctx = s.withParamSecrets(ctx, worker, params) // a second wall: a value secret by its form
 	}
 	if s.Desktops.HasGate(ctx, worker) {
-		if err := s.tellGate(ctx, worker); err != nil {
+		if err := s.tellGate(ctx, worker, false); err != nil {
 			log.Printf("%s to %s: not sent, its approval gate could not be told: %v", what, worker, err)
 			sendRequestError(w, err)
 			return

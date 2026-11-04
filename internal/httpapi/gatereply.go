@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"sort"
 	"time"
@@ -88,20 +87,7 @@ func (s *Server) replyBinding(ctx context.Context, desktopID string) (asked, kin
 	return asked, kind, newest.GateRequest, nil
 }
 
-// gateReplyKey carries a reply's gateReply from submit to deliverRequest, which gives it to the gate in order.
+// gateReplyKey carries a reply's desktop.GateReply (its text and the question it is bound to) from submit to
+// markWithheld, whose notice deliverRequest gives the gate in order (desktop.TellGate). Only a reply that came this
+// way, bound to the gate's request (replyBinding), can grant anything.
 type gateReplyKey struct{}
-
-// gateReply is what signReplyToGate needs of a reply: its task, its text and the question it is bound to.
-type gateReply struct{ taskID, text, asked, kind, request string }
-
-// signReplyToGate gives the desktop's approval gate the person's reply, signed, before the agent gets it: only a reply
-// that came this way, bound to the gate's request (replyBinding), can grant anything (desktop.SendGateReply). A
-// desktop without a gate (made before it existed) logs and goes on; it settles replies in its agent as it always did,
-// and is recreated to get the boundary.
-func (s *Server) signReplyToGate(ctx context.Context, desktopID, taskID, text, asked, kind, request string) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
-	defer cancel()
-	if err := s.Desktops.SendGateReply(ctx, desktopID, taskID, text, asked, kind, request); err != nil {
-		log.Printf("reply to %s: not given to its approval gate: %v", desktopID, err)
-	}
-}

@@ -60,54 +60,12 @@ func (m *Manager) VerifyGateQuestion(id, requestID, question, sig string) bool {
 // was the gate's own (VerifyGateQuestion); the gate settles nothing for a reply without one. A desktop without a gate (made before it existed) answers
 // nothing here; the error says so and the caller goes on, since that desktop still settles replies in its agent.
 func (m *Manager) SendGateReply(ctx context.Context, id, taskID, text, asked, kind, requestID string) error {
-	key := m.GateKey(id)
-	if key == "" {
-		return fmt.Errorf("no secret to sign with")
-	}
-	m.flushTaskEnded(ctx, sanitizeName(id)) // what ended before this reply is told first; never fails the reply
-	desktopID := sanitizeName(id)
-	name := "desktop_" + desktopID
-	inspect, err := m.client.ContainerInspect(ctx, name)
-	if err != nil {
-		return fmt.Errorf("find desktop %s: %w", desktopID, ErrNotFound)
-	}
-	host := name
-	if inspect.NetworkSettings != nil {
-		if n, ok := inspect.NetworkSettings.Networks[NetworkName]; ok && n != nil && n.IPAddress != "" {
-			host = n.IPAddress
+	return m.postToGate(ctx, id, "/reply", func(key, ts, nonce string) map[string]any {
+		return map[string]any{
+			"task_id": taskID, "ts": ts, "nonce": nonce, "text": GateText(text), "asked": GateText(asked), "kind": kind, "request_id": requestID,
+			"sig": SignGateReply(key, taskID, ts, nonce, text, asked, kind, requestID),
 		}
-	}
-	nonce := make([]byte, 16)
-	if _, err := rand.Read(nonce); err != nil {
-		return err
-	}
-	ts := strconv.FormatInt(time.Now().Unix(), 10)
-	n := hex.EncodeToString(nonce)
-	body, err := json.Marshal(map[string]string{
-		"task_id": taskID, "ts": ts, "nonce": n, "text": GateText(text), "asked": GateText(asked), "kind": kind, "request_id": requestID,
-		"sig": SignGateReply(key, taskID, ts, n, text, asked, kind, requestID),
 	})
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+host+":"+GatePort+"/reply", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	cli := m.httpClient
-	if cli == nil {
-		cli = &http.Client{Timeout: 10 * time.Second}
-	}
-	resp, err := cli.Do(req)
-	if err != nil {
-		return fmt.Errorf("send reply to desktop %s's gate: %w", desktopID, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("desktop %s's gate returned HTTP %d", desktopID, resp.StatusCode)
-	}
-	return nil
 }
 
 // SignGateRequest is the signature on a request the control plane gives the gate (/request): its own label, so a
@@ -223,8 +181,7 @@ func (m *Manager) postToGateNow(ctx context.Context, id, path string, body func(
 		return fmt.Errorf("no secret to sign with")
 	}
 	desktopID := sanitizeName(id)
-	name := "desktop_" + desktopID
-	inspect, err := m.client.ContainerInspect(ctx, name)
+	inspect, name, err := m.gateContainer(ctx, id)
 	if err != nil {
 		if client.IsErrNotFound(err) {
 			return fmt.Errorf("find desktop %s: %w: %w", desktopID, ErrNotFound, errDesktopGone)
@@ -241,8 +198,11 @@ func (m *Manager) postToGateNow(ctx context.Context, id, path string, body func(
 	}
 	host := name
 	if inspect.NetworkSettings != nil {
-		if n, ok := inspect.NetworkSettings.Networks[NetworkName]; ok && n != nil && n.IPAddress != "" {
-			host = n.IPAddress
+		for _, network := range []string{NetworkName, PracticeNetworkName} {
+			if n, ok := inspect.NetworkSettings.Networks[network]; ok && n != nil && n.IPAddress != "" {
+				host = n.IPAddress
+				break
+			}
 		}
 	}
 	raw := make([]byte, 16)
@@ -272,6 +232,9 @@ func (m *Manager) postToGateNow(ctx context.Context, id, path string, body func(
 		return fmt.Errorf("%w: %w: send %s to desktop %s's gate: %v", ErrGateNotTold, ErrAgentUnreachable, path, desktopID, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("%w: %w: desktop %s's gate returned HTTP 404 for %s", ErrGateNotTold, ErrGateNoRoute, desktopID, path)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("%w: desktop %s's gate returned HTTP %d for %s", ErrGateNotTold, desktopID, resp.StatusCode, path)
 	}

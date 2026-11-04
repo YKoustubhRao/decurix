@@ -197,6 +197,21 @@ matches byte for byte). Text is signed as it is sent: a byte that is not valid U
   reaches the gate's `/reply` or the agent. A `/reply` the gate refuses or does not answer is only logged, and **the
   reply is still delivered** to the agent: it grants nothing there (only the gate makes a yes, from a `/reply` it
   verified), so an approval fails closed, while an answer to a question still reaches the worker as the person's text.
+- **Practice and eval** give a practice desktop's agent its request (and an eval expert's reply) through
+  `desktop.Manager.PracticeAgentRequest`, which tells the gate first in the same order, by the same function
+  (`desktop.TellGate`) and from the same C14 decision (`practice.RequestGateNotice` / `ReplyGateNotice`, which apply
+  `tasks.RequestForm` / `tasks.ReplyForm`, the rules `tasks.Store.StoredForm` applies). A practice `/request` with no
+  notice, or with a notice for another task, is refused, and the agent is told "secret" exactly when production would
+  tell it. So an eval measures the gate production runs. (A practice calibration replay or skill run tells the gate
+  nothing yet; its gate then names no site and asks about every password, the safe side.)
+- **The one exception: pinned old code in practice.** An eval arm that runs its own agent tree (`agent_tree`, for
+  example eb15981 to measure old code) runs that tree's gate, which may predate `/secrets` and `/request`. Only such
+  an arm creates its practice desktop with `PracticeSpec.LegacyGate`; `CreatePractice` records that container, and
+  for it alone a 404 from `/secrets` or `/request` is logged and the request still delivered. Any other failure there
+  fails closed, the practice runner never sets it, and no desktop of a person can have it: it is a control-plane
+  record of a practice container, not a label or a file. A practice desktop holds only fictional case data, so what
+  the old gate does not withhold is fictional; this is an accommodation for measuring old code, never a production
+  path.
 - **A task's end** never holds up the close. The notice is sent in the background. One the gate did not take is kept
   (at most 256 per desktop, oldest dropped) and sent, oldest first, before the next `/request`, `/secrets` or `/reply`
   to that gate, without failing that delivery. Kept notices are in memory: a control-plane restart loses the ones not

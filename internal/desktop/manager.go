@@ -44,6 +44,11 @@ type Manager struct {
 	// taskEnded is the task-ended notices each desktop's gate has not taken yet (gateended.go).
 	taskEnded pendingTaskEnded
 
+	// legacyGates is the practice containers CreatePractice made with PracticeSpec.LegacyGate (by container ID):
+	// the only desktops whose gate may answer 404 to /secrets and /request (TellGate).
+	legacyMu    sync.Mutex
+	legacyGates map[string]bool
+
 	// listMu guards the List result cache: one Docker round trip answers every
 	// List call inside listCacheTTL, and concurrent callers share the one in
 	// flight. Measured: 20 dashboards polling /api/desktops at once made the
