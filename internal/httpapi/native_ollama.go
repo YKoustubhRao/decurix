@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/YKoustubhRao/decurix/internal/llm"
 	"github.com/YKoustubhRao/decurix/internal/ollama"
 )
 
@@ -103,9 +104,10 @@ func applyModelPolicy(r *http.Request, route string) bool {
 	default:
 		return true
 	}
-	raw, err := io.ReadAll(r.Body)
+	// The same cap BodyLimit puts on the route (a model request's largest), here too where the body is read.
+	raw, err := io.ReadAll(io.LimitReader(r.Body, llm.MaxRequestBytes+1))
 	r.Body.Close()
-	if err != nil {
+	if err != nil || len(raw) > llm.MaxRequestBytes {
 		return false
 	}
 	out, ok := modelRequestPolicy(raw, route)

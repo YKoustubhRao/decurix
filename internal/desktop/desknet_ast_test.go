@@ -20,7 +20,7 @@ import (
 // network, or any network, directly. By type, not by spelling (review NET-R3): every index of, and every range over,
 // a map[string]*network.EndpointSettings - however it was reached, through an alias or a field - and every read of
 // the legacy container NetworkSettings.IPAddress, in every non-test file of the control plane, outside desknet.go and
-// the practice network's own code (practice.go). The packages are type-checked from the build cache's export data
+// the practice network's own endpoint (practice.go's practiceEndpoint). The packages are type-checked from the build cache's export data
 // (go list -export), so it costs a build that has mostly happened already.
 func TestNoAddressIsReadFromTheSharedNetworkDirectly(t *testing.T) {
 	if testing.Short() {
@@ -90,29 +90,34 @@ func TestNoAddressIsReadFromTheSharedNetworkDirectly(t *testing.T) {
 			if dir == "desktop" && base == "desknet.go" {
 				sawDesknet = true
 			}
-			allowed := dir == "desktop" && (base == "desknet.go" || base == "practice.go")
-			ast.Inspect(f, func(n ast.Node) bool {
-				var bad ast.Node
-				switch x := n.(type) {
-				case *ast.IndexExpr:
-					if isEndpointMap(info.TypeOf(x.X)) {
-						bad = x
+			for _, decl := range f.Decls {
+				// desknet.go is where addresses are read; of practice.go, only practiceEndpoint (the practice
+				// network's own endpoint) may read one (review NET-R3-2).
+				fn, _ := decl.(*ast.FuncDecl)
+				allowed := dir == "desktop" && (base == "desknet.go" || base == "practice.go" && fn != nil && fn.Name.Name == "practiceEndpoint")
+				ast.Inspect(decl, func(n ast.Node) bool {
+					var bad ast.Node
+					switch x := n.(type) {
+					case *ast.IndexExpr:
+						if isEndpointMap(info.TypeOf(x.X)) {
+							bad = x
+						}
+					case *ast.RangeStmt:
+						if isEndpointMap(info.TypeOf(x.X)) {
+							bad = x
+						}
+					case *ast.SelectorExpr:
+						if sel := info.Selections[x]; sel != nil && sel.Kind() == types.FieldVal && sel.Obj().Name() == "IPAddress" &&
+							sel.Obj().Pkg() != nil && sel.Obj().Pkg().Path() == "github.com/docker/docker/api/types/container" {
+							bad = x
+						}
 					}
-				case *ast.RangeStmt:
-					if isEndpointMap(info.TypeOf(x.X)) {
-						bad = x
+					if bad != nil && !allowed {
+						t.Errorf("%s: a container's address read outside desktopEndpoint", fset.Position(bad.Pos()))
 					}
-				case *ast.SelectorExpr:
-					if sel := info.Selections[x]; sel != nil && sel.Kind() == types.FieldVal && sel.Obj().Name() == "IPAddress" &&
-						sel.Obj().Pkg() != nil && sel.Obj().Pkg().Path() == "github.com/docker/docker/api/types/container" {
-						bad = x
-					}
-				}
-				if bad != nil && !allowed {
-					t.Errorf("%s: a container's address read outside desktopEndpoint", fset.Position(bad.Pos()))
-				}
-				return true
-			})
+					return true
+				})
+			}
 		}
 	}
 	if files < 50 || !sawDesknet {

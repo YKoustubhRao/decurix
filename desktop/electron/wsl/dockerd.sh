@@ -51,15 +51,33 @@ drop_all() {
     # shellcheck disable=SC2086
     while iptables -t mangle -C FORWARD $guard_rule 2>/dev/null; do iptables -t mangle -D FORWARD $guard_rule; done
 }
+# What is in place is written where the control plane reads it (the distro's /tmp is the control plane's /tmp,
+# docker-compose.yaml): its state - ok only when both rules are there, checked after adding them - and the ranges it
+# covers, the one source of truth for where desktop networks may be (desktop.HostFence). With anything but ok, the
+# control plane refuses to make or start desktops on this host and says so (/api/docker/status): a missing fence is a
+# gap between desktops, never only a line on stderr (review NET-R3-2).
+fence_status=/tmp/decurix-wsl/fence
+say_fence() {
+    mkdir -p "${fence_status%/*}" && chmod 755 "${fence_status%/*}"
+    printf 'state=%s\npool=%s\nours=%s\n' "$1" "$desktop_pool" "$ours" > "$fence_status.new" &&
+        chmod 644 "$fence_status.new" && mv -f "$fence_status.new" "$fence_status"
+}
 fence() {
     drop_all
     # shellcheck disable=SC2086
     iptables -I FORWARD 1 $fence_rule || echo "dockerd.sh: the desktop fence could not be added" >&2
     # shellcheck disable=SC2086
     iptables -t mangle -I FORWARD 1 $guard_rule || echo "dockerd.sh: the forward guard could not be added" >&2
+    # shellcheck disable=SC2086
+    if iptables -C FORWARD $fence_rule 2>/dev/null && iptables -t mangle -C FORWARD $guard_rule 2>/dev/null; then
+        say_fence ok
+    else
+        say_fence failed
+    fi
 }
 unfence() {
     drop_all
+    say_fence off
 }
 if [ "${1:-}" = unfence ]; then
     unfence

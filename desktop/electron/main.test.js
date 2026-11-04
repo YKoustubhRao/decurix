@@ -435,6 +435,8 @@ test('a first launch imports the distro, prepares it, starts Docker and the stac
   // The gated port is published on the distro's loopback only: a desktop must not come back in through Docker's
   // proxy on another address of the distro, where it looks like this computer (review 2026-11-02).
   assert.ok(Array.from(up.args).includes('DECURIX_LAN_BIND=127.0.0.1'));
+  // The control plane is told it is on the app's WSL host, where desktops need dockerd.sh's fence.
+  assert.ok(Array.from(up.args).includes('DECURIX_HOST_KIND=wsl'));
   assert.equal(up.options.windowsHide, true);
 
   // The person's settings name the control plane's own model server.

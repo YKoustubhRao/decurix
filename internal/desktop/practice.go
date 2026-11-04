@@ -654,15 +654,14 @@ func tarOf(files map[string][]byte, mode int64, uid int) io.Reader {
 	return &buf
 }
 
+// practiceIP is practice container id's address on the practice network (practiceEndpoint).
 func (m *Manager) practiceIP(ctx context.Context, id string) (string, error) {
 	inspect, err := m.client.ContainerInspect(ctx, id)
 	if err != nil {
 		return "", err
 	}
-	if inspect.NetworkSettings != nil {
-		if ep := inspect.NetworkSettings.Networks[PracticeNetworkName]; ep != nil && ep.IPAddress != "" {
-			return ep.IPAddress, nil
-		}
+	if ep := practiceEndpoint(inspect); ep != nil && ep.IPAddress != "" {
+		return ep.IPAddress, nil
 	}
 	return "", errors.New("the practice desktop has no address on the practice network")
 }

@@ -413,8 +413,9 @@ func (s *Server) thenClose(act func(context.Context, string) error, why string) 
 }
 
 // dockerStatusHandler answers GET /api/docker/status: whether the control plane has asked Docker yet, and whether it
-// answered - what the "Docker is not running" banner reads (W-08) - and whether a tools update waits for running
-// desktops to stop (tools_waiting). Never a round trip to Docker itself.
+// answered - what the "Docker is not running" banner reads (W-08) - whether a tools update waits for running
+// desktops to stop (tools_waiting), and, on the Windows app's WSL host, whether the fence between desktops holds
+// (fence; fence_missing is the one bit a banner needs). Never a round trip to Docker itself.
 func (s *Server) dockerStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if !allowMethod(w, r, http.MethodGet) {
 		return
@@ -423,7 +424,9 @@ func (s *Server) dockerStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if s.Desktops != nil {
 		checked, reachable, toolsWaiting = s.Desktops.DockerChecked(), s.Desktops.DockerReachable(), s.Desktops.ToolsRefreshWaiting(r.Context())
 	}
-	jsonResponse(w, map[string]bool{"checked": checked, "reachable": reachable, "tools_waiting": toolsWaiting})
+	fence := desktop.HostFence()
+	jsonResponse(w, map[string]any{"checked": checked, "reachable": reachable, "tools_waiting": toolsWaiting,
+		"fence": fence, "fence_missing": fence.Required && !fence.Holds})
 }
 
 // startDesktopHandler starts an existing desktop by ID.

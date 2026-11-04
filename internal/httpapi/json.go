@@ -37,6 +37,16 @@ func jsonError(w http.ResponseWriter, err error) {
 		return
 	}
 
+	if errors.Is(err, desktop.ErrNoFence) {
+		jsonStatusError(w, http.StatusServiceUnavailable, "Desktops are not started while the network fence that keeps them apart is not in place. Restart Decurix; if this stays, the app's Linux host could not add its firewall rules.")
+		return
+	}
+
+	if errors.Is(err, desktop.ErrSubnetsOutsideFence) {
+		jsonStatusError(w, http.StatusServiceUnavailable, "DECURIX_DESKTOP_SUBNETS names a range this computer's network fence does not cover. Remove it from your settings, or keep it inside 10.213.0.0/16.")
+		return
+	}
+
 	if errors.Is(err, memory.ErrInvalid) {
 		jsonStatusError(w, http.StatusBadRequest, "invalid request")
 		return

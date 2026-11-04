@@ -1874,6 +1874,9 @@ body.busy{cursor:progress}
       banner.hidden = !(state.checked && !state.reachable);
       var tools = document.getElementById("toolsBanner");
       if(tools){ tools.hidden = !state.tools_waiting; }
+      // The Windows app's fence between desktops is not in place: no desktop is made or started until it is.
+      var fence = document.getElementById("fenceBanner");
+      if(fence){ fence.hidden = !state.fence_missing; }
     }catch(e){ /* the next tick asks again */ }
   }
 
@@ -1950,5 +1953,6 @@ body.busy{cursor:progress}
   </div>
 </header>
 <div class="docker-banner" id="dockerBanner" role="status" hidden>Docker is not running, so desktops cannot start or be reached. Start Docker Desktop (or the Decurix runtime); this page notices by itself when it is back.</div>
+<div class="docker-banner" id="fenceBanner" role="alert" hidden>The network fence that keeps desktops apart is not in place, so desktops are not made or started. Restart Decurix; if this stays, the app's Linux host could not add its firewall rules.</div>
 <div class="tools-banner" id="toolsBanner" role="status" hidden>A tools update is waiting for the running desktops to stop, so they keep the tools they started with. It is applied when a desktop is next created with none running.</div>
 {{end}}

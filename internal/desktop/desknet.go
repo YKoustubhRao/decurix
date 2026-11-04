@@ -31,6 +31,8 @@ import (
 // Each desktop network is a /28 of a Decurix range (DECURIX_DESKTOP_SUBNETS, 10.213.0.0/16 by default: the range the
 // Windows app's daemon and its fence use), never one of Docker's default pools: those give about 30 networks per
 // machine, shared with every compose project, and on a Mac's Docker Desktop one can shadow the person's own LAN (S1).
+// A /28 overlapping any network Docker has or any route of the host (hostroutes.go) is skipped, and on the Windows
+// app the range must be inside what dockerd.sh's fence covers (hostfence.go).
 //
 // A desktop made before this is on the shared decurix-network and stays there, said on its card (SharedNetwork) and at
 // each start as one to recreate to isolate: moving a running desktop's network was not tried without a live check,
@@ -185,11 +187,16 @@ func (m *Manager) ensureDesktopNetwork(ctx context.Context, id string) (bool, er
 func (m *Manager) createDesktopNetwork(ctx context.Context, name, id string) error {
 	desktopNetMu.Lock()
 	defer desktopNetMu.Unlock()
-	within := desktopSubnetRange()
+	within, err := fencedSubnetRange()
+	if err != nil {
+		return err
+	}
 	taken, err := m.takenSubnets(ctx)
 	if err != nil {
 		return fmt.Errorf("list the networks there are: %w", err)
 	}
+	// Nor any range the host itself routes (a VPN, a LAN): Docker checks none for an explicit subnet.
+	taken = append(taken, hostRoutes(ctx)...)
 	free := freeDesktopSubnets(within, taken)
 	if len(free) == 0 {
 		return fmt.Errorf("%w in %s: delete a desktop you no longer need, or give DECURIX_DESKTOP_SUBNETS a larger range", ErrNoNetworkAddresses, within)

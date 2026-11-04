@@ -66,7 +66,18 @@ func TestTheDesktopFenceIsScopedToTheDesktopPool(t *testing.T) {
 	if acceptAt < 0 || lastFence < acceptAt {
 		t.Error("the fence is not put back above the ACCEPT rules")
 	}
-	if !regexp.MustCompile(`unfence\(\) \{\n    drop_all\n\}`).MatchString(dockerd) ||
+	// What is in place is said where the control plane reads it (desktop.HostFence): ok only when both rules are
+	// checked present after adding them, failed otherwise, off once taken out (review NET-R3-2).
+	for _, want := range []string{
+		"fence_status=/tmp/decurix-wsl/fence",
+		`printf 'state=%s\npool=%s\nours=%s\n' "$1" "$desktop_pool" "$ours"`,
+		"if iptables -C FORWARD $fence_rule 2>/dev/null && iptables -t mangle -C FORWARD $guard_rule 2>/dev/null; then\n        say_fence ok\n    else\n        say_fence failed\n    fi",
+	} {
+		if !strings.Contains(dockerd, want) {
+			t.Errorf("dockerd.sh does not say what is in place: lacks %q", want)
+		}
+	}
+	if !regexp.MustCompile(`unfence\(\) \{\n    drop_all\n    say_fence off\n\}`).MatchString(dockerd) ||
 		!regexp.MustCompile(`wait "\$daemon"\nstatus=\$\?\n(?:#[^\n]*\n)*unfence\n`).MatchString(dockerd) {
 		t.Error("the rules are not taken out when the daemon ends")
 	}

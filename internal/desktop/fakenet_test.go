@@ -2,10 +2,17 @@ package desktop
 
 import (
 	"context"
+	"io"
 	"sort"
+	"strings"
 
 	"github.com/docker/docker/api/types/network"
 )
+
+// No test reads the real host's routes (hostroutes.go): the host it runs on has none, unless a test says so.
+func init() {
+	readHostRouteTable = func(context.Context) (io.Reader, error) { return strings.NewReader(""), nil }
+}
 
 // The fake daemon's networks: one exists once NetworkCreate made it (or the test put it in fakeNets) and NetworkRemove
 // has not removed it since. Every call is recorded (fakeAPI.called); each connect's gateway priority is kept.

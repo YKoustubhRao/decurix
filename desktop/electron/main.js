@@ -441,9 +441,12 @@ const QUICK = { timeout: 30000 };
 // (DECURIX_LAN_BIND): the LAN link and the tunnel reach it through Windows'
 // own 127.0.0.1 (windows-lan.js), and published on every address it let a
 // desktop come back in through Docker's proxy looking like this computer.
+// DECURIX_HOST_KIND=wsl tells the control plane it runs on the app's WSL host,
+// whose desktops are kept apart by dockerd.sh's fence: it then refuses to
+// make or start a desktop while that fence is not in place (desktop.HostFence).
 function docker(args, onLine, options = {}) {
   if (windows) {
-    return inDistro(['env', 'COMPOSE_PROJECT_NAME=decurix', 'DECURIX_HOST_HOME=/home', 'DECURIX_HOST_MNT_C=/mnt/c', 'DECURIX_LAN_BIND=127.0.0.1', 'docker', ...(runtimeDistro !== DISTRO ? ['--host', 'unix:///var/run/docker.sock'] : []), ...args], onLine, DISTRO_STACK, options);
+    return inDistro(['env', 'COMPOSE_PROJECT_NAME=decurix', 'DECURIX_HOST_HOME=/home', 'DECURIX_HOST_MNT_C=/mnt/c', 'DECURIX_LAN_BIND=127.0.0.1', 'DECURIX_HOST_KIND=wsl', 'docker', ...(runtimeDistro !== DISTRO ? ['--host', 'unix:///var/run/docker.sock'] : []), ...args], onLine, DISTRO_STACK, options);
   }
   return run(findProgram('docker') || 'docker', args, onLine, { ...options, cwd: stackDir(), env: stackEnv() });
 }

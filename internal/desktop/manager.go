@@ -233,6 +233,10 @@ func (m *Manager) BeginProvisioning(
 	if sanitizedID == "" {
 		return nil, fmt.Errorf("invalid desktop name")
 	}
+	// On the Windows app's WSL host, no desktop is made while the fence between desktops is not in place.
+	if err := requireFence(); err != nil {
+		return nil, err
+	}
 	if ReservedName(sanitizedID) {
 		return nil, fmt.Errorf("%w: %q", ErrReservedName, name)
 	}
@@ -986,6 +990,11 @@ func (m *Manager) Start(
 	id string,
 ) error {
 	defer m.invalidateList()
+
+	// On the Windows app's WSL host, no desktop is started while the fence between desktops is not in place.
+	if err := requireFence(); err != nil {
+		return err
+	}
 
 	name := "desktop_" + sanitizeName(id)
 

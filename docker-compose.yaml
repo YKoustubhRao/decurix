@@ -49,6 +49,9 @@ services:
       - DECURIX_CONTROL_PLANE_URL=http://decurix:8080
       - DECURIX_HOST_MNT_C=/mnt/c
       - DECURIX_HOST_HOME=/host-home
+      # "wsl" from the Windows app (main.js): desktops are made only while the WSL host's fence between them is in
+      # place, read from /tmp/decurix-wsl/fence (desktop/electron/wsl/dockerd.sh). Empty elsewhere.
+      - DECURIX_HOST_KIND=${DECURIX_HOST_KIND:-}
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
