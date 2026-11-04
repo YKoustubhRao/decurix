@@ -12,7 +12,8 @@ import (
 
 // The TheBot archive carries no tests (resource plan P1 #10): go build reads neither _test.go files nor testdata, and
 // the archive is in the binary and in every desktop image's build context. An archive older than its packer
-// (embed_gen.go) was made by an earlier one and is not judged: `go generate .` makes it again.
+// (embed_gen.go) was made by an earlier one and is not judged: `go generate .` makes it again. The packer's filter
+// itself is tested on a tree of its own, with no archive needed (internal/thebotpack).
 func TestTheBotArchiveCarriesNoTests(t *testing.T) {
 	archive, err := os.Stat(filepath.FromSlash(TheBotSource))
 	if err != nil {

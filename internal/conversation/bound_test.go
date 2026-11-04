@@ -47,6 +47,8 @@ func TestTheThreadsInMemoryAreBounded(t *testing.T) {
 	updates, stop := s.Subscribe("watched")
 	defer stop()
 	s.AppendUserRequest("watched", "tw", "keep me")
+	// Its turn ended: only its watcher keeps it (review RES-CP-1: a running turn hid that the watcher did not).
+	s.EndTurn("watched", "done")
 	for i := 0; i < maxThreads+40; i++ {
 		s.AppendUserRequest(fmt.Sprintf("box-%d", i), "t", fmt.Sprintf("request %d", i))
 		s.EndTurn(fmt.Sprintf("box-%d", i), "done")
@@ -67,5 +69,41 @@ func TestTheThreadsInMemoryAreBounded(t *testing.T) {
 	select {
 	case <-updates:
 	default:
+	}
+}
+
+// A watcher that waited for a chat and joined its thread leaves it when it stops: no subscriber is left behind to pin
+// the thread in memory (review RES-CP-1).
+func TestAWaitingWatcherThatStopsLeavesItsThread(t *testing.T) {
+	s := newStore(t)
+	_, stop := s.Subscribe("later")
+	s.AppendUserRequest("later", "t1", "hello")
+	stop()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if th := s.threads["later"]; th == nil || len(th.subscribers) != 0 {
+		t.Fatalf("thread %v kept a subscriber after it stopped", th)
+	}
+	if len(s.waiting) != 0 {
+		t.Fatalf("waiting lists left: %v", s.waiting)
+	}
+}
+
+// A desktop with no chat reads with one version every time (a polling page does not re-render it), and clearing it
+// writes nothing.
+func TestNoChatIsStableAndClearingItWritesNothing(t *testing.T) {
+	s := newStore(t)
+	if a, b := s.Snapshot("ghost"), s.Snapshot("ghost"); a.Version != b.Version {
+		t.Fatalf("versions %d, %d for no chat", a.Version, b.Version)
+	}
+	s.Clear("ghost")
+	var rows int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM chat_threads WHERE desktop_id = 'ghost'`).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("clearing no chat wrote %d rows (%v)", rows, err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.threads) != 0 {
+		t.Fatal("clearing no chat kept a thread")
 	}
 }

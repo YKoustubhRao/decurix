@@ -122,7 +122,7 @@ const noteColumns = `id, desktop_id, vm_name, filename, content, created_ns, kin
 // rows before returning (no query may run while a *sql.Rows is open).
 func (s *Store) list(where, order string, args ...any) []QueryNote {
 	rows, err := s.db.Query(
-		`SELECT `+noteColumns+` FROM query_notes WHERE `+where+` ORDER BY `+order, args...,
+		listQuery(where, order), args...,
 	)
 	if err != nil {
 		log.Printf("querynotes: list: %v", err)
@@ -159,13 +159,29 @@ func (s *Store) list(where, order string, args ...any) []QueryNote {
 func (s *Store) List() []QueryNote {
 	// Older versions also stored successful replies here. Hide those reports
 	// without deleting them or changing their chat/task history.
-	return s.list(`resolved_ns = 0 AND kind NOT IN ('done', 'final', 'message')`, `created_ns`)
+	return s.list(openWhere, openOrder)
+}
+
+// The open notes' and the resolved history's clauses: List and ListResolved read by them, and the index test checks
+// the plan of exactly these (querynotes/index_test.go).
+const (
+	openWhere     = `resolved_ns = 0 AND kind NOT IN ('done', 'final', 'message')`
+	openOrder     = `created_ns`
+	resolvedWhere = `resolved_ns != 0`
+)
+
+// resolvedOrder is the resolved history's order, at most maxResolved.
+var resolvedOrder = `resolved_ns DESC LIMIT ` + fmt.Sprint(maxResolved)
+
+// listQuery is the SELECT list runs for a WHERE clause and an order.
+func listQuery(where, order string) string {
+	return `SELECT ` + noteColumns + ` FROM query_notes WHERE ` + where + ` ORDER BY ` + order
 }
 
 // ListResolved returns the notes that have been resolved, most recently
 // resolved first, up to maxResolved.
 func (s *Store) ListResolved() []QueryNote {
-	return s.list(`resolved_ns != 0`, `resolved_ns DESC LIMIT `+fmt.Sprint(maxResolved))
+	return s.list(resolvedWhere, resolvedOrder)
 }
 
 // Close resolves a query note by ID, keeping it in the history. It is a no-op

@@ -23,6 +23,8 @@ type fakeRFB struct {
 	w, h     int
 	// name is the screen's RFB desktop name (a string); unset or "" for "desktop_box:1 (headless)".
 	name atomic.Value
+	// refuse closes each connection at once, as a screen that went away.
+	refuse atomic.Bool
 }
 
 func (f *fakeRFB) serve(t *testing.T) string {
@@ -46,6 +48,9 @@ func (f *fakeRFB) serve(t *testing.T) string {
 
 func (f *fakeRFB) session(conn net.Conn) {
 	defer conn.Close()
+	if f.refuse.Load() {
+		return
+	}
 	f.sessions.Add(1)
 	r := conn
 	discard := func(n int) bool { _, err := io.CopyN(io.Discard, r, int64(n)); return err == nil }
@@ -299,5 +304,33 @@ func TestAPauseDropsTheCachedScreenAddress(t *testing.T) {
 	m.forgetShotTargetOf("desktop_box") // by container name
 	if m.shotCacheFor("box").target.Load() != nil {
 		t.Fatal("a pause by container name kept the address")
+	}
+}
+
+// A capture that fails at the screen (the connection closes) drops the cached address, so the next capture asks
+// Docker again (review RES-CP-1 test gap).
+func TestAFailedCaptureDropsTheCachedAddress(t *testing.T) {
+	rfb := &fakeRFB{w: 32, h: 16}
+	m, fake, _ := shotManager(t, rfb)
+	ctx := context.Background()
+	if _, err := m.Screenshot(ctx, "box", 32); err != nil {
+		t.Fatal(err)
+	}
+	inspects := len(fake.called("ContainerInspect"))
+	rfb.refuse.Store(true)
+	ageShots(m, "box", time.Hour)
+	if _, err := m.Screenshot(ctx, "box", 32); err == nil {
+		t.Fatal("a screen that closed the connection gave a thumbnail")
+	}
+	if len(fake.called("ContainerInspect")) != inspects {
+		t.Fatal("the failing capture did not use the cached address")
+	}
+	rfb.refuse.Store(false)
+	m.shotCacheFor("box").lastErr = nil
+	if _, err := m.Screenshot(ctx, "box", 32); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(fake.called("ContainerInspect")); got != inspects+1 {
+		t.Fatalf("after the failure the capture made %d inspects, want one more (%d)", got, inspects+1)
 	}
 }

@@ -9,7 +9,7 @@ import (
 func TestTheQueriesRailReadsByIndex(t *testing.T) {
 	s := newTestStore(t)
 	plan := func(where, order string) string {
-		rows, err := s.db.Query(`EXPLAIN QUERY PLAN SELECT ` + noteColumns + ` FROM query_notes WHERE ` + where + ` ORDER BY ` + order)
+		rows, err := s.db.Query(`EXPLAIN QUERY PLAN ` + listQuery(where, order))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -25,10 +25,8 @@ func TestTheQueriesRailReadsByIndex(t *testing.T) {
 		}
 		return strings.Join(out, " | ")
 	}
-	for _, q := range [][2]string{
-		{`resolved_ns = 0 AND kind NOT IN ('done', 'final', 'message')`, `created_ns`},
-		{`resolved_ns != 0`, `resolved_ns DESC LIMIT 200`},
-	} {
+	// The store's own clauses, so a query that drifts is checked as it now is.
+	for _, q := range [][2]string{{openWhere, openOrder}, {resolvedWhere, resolvedOrder}} {
 		if p := plan(q[0], q[1]); !strings.Contains(p, "query_notes_resolved_created") || strings.Contains(p, "TEMP B-TREE") {
 			t.Errorf("%s ORDER BY %s: plan %q", q[0], q[1], p)
 		}

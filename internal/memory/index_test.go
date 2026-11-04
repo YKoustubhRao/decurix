@@ -8,7 +8,8 @@ import (
 // The newest entries of every desktop are read by index, not by scanning and sorting the table (resource plan P1 #6).
 func TestEveryDesktopsNewestEntriesAreReadByIndex(t *testing.T) {
 	s := newStore(t)
-	rows, err := s.db.Query(`EXPLAIN QUERY PLAN SELECT id, desktop_id, title, summary, category, created_ns FROM worker_memory ORDER BY created_ns DESC LIMIT 2000`)
+	query, args := listQuery("") // the store's own query
+	rows, err := s.db.Query(`EXPLAIN QUERY PLAN `+query, args...)
 	if err != nil {
 		t.Fatal(err)
 	}

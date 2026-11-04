@@ -190,20 +190,24 @@ func (s *Store) Record(desktopID, title, summary, category string) (WorkerMemory
 // history grows instead of materializing every entry ever recorded.
 const maxListedEntries = 2000
 
-// List returns worker memory entries, most recent first, up to
-// maxListedEntries. When desktopID is empty, entries for every desktop are
-// returned.
-func (s *Store) List(desktopID string) []WorkerMemoryEntry {
+// listQuery is the SELECT List runs, and its arguments: one desktop's entries, or every desktop's for "", newest
+// first, at most maxListedEntries (the index test checks the plan of exactly this).
+func listQuery(desktopID string) (string, []any) {
 	query := `SELECT id, desktop_id, title, summary, category, created_ns FROM worker_memory`
 	args := []any{}
-
 	if desktopID != "" {
 		query += ` WHERE desktop_id = ?`
 		args = append(args, desktopID)
 	}
-
 	query += ` ORDER BY created_ns DESC LIMIT ?`
-	args = append(args, maxListedEntries)
+	return query, append(args, maxListedEntries)
+}
+
+// List returns worker memory entries, most recent first, up to
+// maxListedEntries. When desktopID is empty, entries for every desktop are
+// returned.
+func (s *Store) List(desktopID string) []WorkerMemoryEntry {
+	query, args := listQuery(desktopID)
 
 	entries := make([]WorkerMemoryEntry, 0)
 

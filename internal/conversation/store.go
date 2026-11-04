@@ -231,6 +231,9 @@ func (s *Store) readThread(desktopID string) *thread {
 	loaded := s.load(desktopID)
 	if loaded.stored {
 		s.keep(desktopID, loaded)
+	} else {
+		// No chat: one version for "none", so a polling page does not re-render an empty chat each time.
+		loaded.version = 0
 	}
 	return loaded
 }
@@ -600,6 +603,10 @@ func (s *Store) Clear(desktopID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Clearing a chat that does not exist writes nothing: an id any client names must not make a row.
+	if _, kept := s.threads[desktopID]; !kept && !s.readThread(desktopID).stored {
+		return
+	}
 	current := s.threadFor(desktopID)
 
 	current.entries = nil
