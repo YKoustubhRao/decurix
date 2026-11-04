@@ -736,8 +736,23 @@ async function linuxReady() {
 
   const message = 'Preparing Linux. The first time, this installs Docker.';
   update(message);
-  const setup = await inDistro(['sh', linuxPath(resource(path.join('wsl', 'setup.sh'))), linuxPath(resource('stack')), linuxPath(ensureSettings())], (line) => update(message, false, line));
-  if (setup !== 0) throw new Error(`Could not prepare Linux for Decurix. Check ${logFile()}`);
+  // setup.sh downloads Docker Engine on a first start, so it runs under the stall watchdog like a build: every apk
+  // call in it is bounded and falls back to another mirror (apk-safe.sh), and says it is still running every 30 s, so
+  // silence for SETUP_STALL_MS means something else hung. Then it is ended in the distro and run again (it is safe
+  // to run again), and a second stall is an error with its last line and the start's Retry.
+  const setup = await watchBuild({
+    stallMs: SETUP_STALL_MS,
+    attempt: (line, signal) => inDistro(['sh', linuxPath(resource(path.join('wsl', 'setup.sh'))), linuxPath(resource('stack')), linuxPath(ensureSettings())],
+      line, '/', { signal }),
+    onLine: (line) => update(message, false, line),
+    onStall: async (n, last) => {
+      console.warn(`setup.sh: no output for ${Math.round(SETUP_STALL_MS / 60000)} minutes; ended (try ${n}). Last line: ${last}`);
+      await stopSetup();
+      if (n === 1) update(`${message} It stopped making progress, so it is being tried again.`, false, last);
+    },
+  });
+  if (setup.stalled) throw new Error(`${stalledMessage('Could not prepare Linux for Decurix.', SETUP_STALL_MS, setup.lastLine)} Check ${logFile()}`);
+  if (setup.code !== 0) throw new Error(`Could not prepare Linux for Decurix. Check ${logFile()}`);
 
   const ask = () => inDistro(['docker', 'version', '--format', '{{.Server.Version}}'], undefined, '/', QUICK);
   if (await ask() === 0) return;
@@ -750,6 +765,19 @@ async function linuxReady() {
     await sleep(1000);
   }
   throw new Error(`Docker did not start in Decurix's Linux. Its log is /var/log/dockerd.log there (wsl -d ${DISTRO}).`);
+}
+
+// SETUP_STALL_MS is the silence that counts as a stalled setup.sh: its apk calls print at least every 30 s while
+// they run (apk-safe.sh), and nothing else in it waits on the network.
+const SETUP_STALL_MS = 5 * 60 * 1000;
+
+// stopSetup ends a setup.sh the watchdog cancelled, in the distro (ending wsl.exe does not end it there), and the apk
+// it was waiting on, so the next run takes apk's lock cleanly.
+async function stopSetup() {
+  try {
+    await inDistro(['pkill', '-f', 'wsl/setup.sh'], undefined, '/', QUICK);
+    await inDistro(['pkill', '-x', 'apk'], undefined, '/', QUICK);
+  } catch { /* the next run, or its error, says what is wrong */ }
 }
 
 // Windows gets a native model server; only the control plane and desktops use

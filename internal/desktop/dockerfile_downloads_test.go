@@ -162,3 +162,77 @@ func clipRun(run string) string {
 	}
 	return run
 }
+
+// Nothing that installs with apk depends on one mirror (one CDN's community index stalled every time on the owner's
+// network, 2026-11-04): each apk RUN in a Dockerfile loops over exactly the mirror list desktop/electron/wsl/apk-safe.sh
+// tries, under a timeout, and every apk call in the app's own shell scripts goes through that helper (apk_safe).
+func TestEveryApkUseFallsBackAcrossMirrors(t *testing.T) {
+	root := filepath.Join("..", "..")
+	helper, err := os.ReadFile(filepath.Join(root, "desktop", "electron", "wsl", "apk-safe.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^APK_MIRRORS="([^"]+)"`).FindSubmatch(helper)
+	if m == nil {
+		t.Fatal("apk-safe.sh names no APK_MIRRORS")
+	}
+	mirrors := strings.Fields(string(m[1]))
+	if len(mirrors) < 3 || mirrors[0] != "https://dl-cdn.alpinelinux.org/alpine" {
+		t.Fatalf("mirrors %v: want at least three, the CDN first", mirrors)
+	}
+	loop := "for mirror in " + strings.Join(mirrors, " ") + "; do"
+
+	apkRuns := 0
+	for _, file := range []string{filepath.Join(root, "docker", "Dockerfile"), filepath.Join(root, "desktop", "electron", "stack", "Dockerfile")} {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, run := range runInstructions(string(raw)) {
+			if !strings.Contains(run, "apk add") {
+				continue
+			}
+			apkRuns++
+			if !strings.Contains(run, loop) || !timedApk.MatchString(run) || !strings.Contains(run, "/etc/apk/repositories") {
+				t.Errorf("%s: an apk RUN without the mirror loop of apk-safe.sh under a timeout:\n\t%s", file, clipRun(run))
+			}
+		}
+	}
+	if apkRuns != 2 {
+		t.Errorf("found %d apk RUNs in the two Alpine Dockerfiles, want 2", apkRuns)
+	}
+
+	apkCall := regexp.MustCompile(`(^|[;&|(]\s*|\s)apk\s+(add|update|upgrade|fix|del)\b`)
+	scripts := 0
+	for _, dir := range []string{filepath.Join(root, "desktop", "electron", "wsl"), filepath.Join(root, "scripts")} {
+		_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(p, ".sh") || filepath.Base(p) == "apk-safe.sh" {
+				return nil
+			}
+			raw, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scripts++
+			for i, line := range strings.Split(string(raw), "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "#") {
+					continue
+				}
+				if apkCall.MatchString(line) {
+					t.Errorf("%s:%d: apk outside apk_safe: %s", p, i+1, strings.TrimSpace(line))
+				}
+			}
+			return nil
+		})
+	}
+	setup, err := os.ReadFile(filepath.Join(root, "desktop", "electron", "wsl", "setup.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(setup), `. "$here/apk-safe.sh"`) || strings.Count(string(setup), "apk_safe ") < 3 {
+		t.Error("setup.sh does not install through apk_safe")
+	}
+	if scripts == 0 {
+		t.Fatal("no script was read")
+	}
+}

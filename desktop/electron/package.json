@@ -7,7 +7,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test main.test.js mobile-access.test.js wsl.test.js windows-runtime.test.js local-models.test.js native-ollama.test.js preload.test.js windows-lan.test.js gated-port.test.js build-watchdog.test.js",
+    "test": "node --test main.test.js mobile-access.test.js wsl.test.js windows-runtime.test.js local-models.test.js native-ollama.test.js preload.test.js windows-lan.test.js gated-port.test.js build-watchdog.test.js apk-safe.test.js",
     "dist:win": "electron-builder --win nsis --x64",
     "dist:mac": "electron-builder --mac dir",
     "dist:linux": "electron-builder --linux AppImage"

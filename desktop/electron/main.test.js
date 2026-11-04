@@ -81,7 +81,7 @@ async function boot(initialState, {
   backendStarts = true, stopFails = false, platform = 'win32', dockerRun = () => 0, files = [], staged = platform === 'win32' ? 'build-2' : null,
   wsl = {}, pickedFolders = [], canceledPicker = false, savedRuntime, hosting = false, holdOllama = false, ollamaFails = false,
   release = '10.0.26200', arch = 'x64', freeGB = 100, restartAsked = null, restartedSince = true,
-  lanAddress = null, lanForwards = true, settings = '', publicLink = null, adopt = true,
+  lanAddress = null, lanForwards = true, settings = '', publicLink = null, adopt = true, watchdogMs = 0,
 } = {}) {
   const machine = { installed: true, installedAfterAsking: false, distro: true, daemon: true, setupFails: false, existing: {}, ...wsl };
   const intervals = [];
@@ -203,7 +203,14 @@ async function boot(initialState, {
     if (program[0] === 'sh' && /maintain-existing\.sh$/.test(program[1] || '')) {
       say((machine.inventory || []).map((name) => `decurix-resource ${name}`).join('\n'), machine.inventoryFails ? 1 : 0); return;
     }
-    if (program[0] === 'sh') { say('decurix-setup: ready', machine.setupFails ? 1 : 0); return; }
+    // setup.sh that hangs: it says one line and then nothing, ending only when the app ends it.
+    if (program[0] === 'sh' && /setup\.sh$/.test(program[1] || '') && machine.setupHangs > 0) {
+      machine.setupHangs -= 1;
+      machine.setupRuns = (machine.setupRuns || 0) + 1;
+      setImmediate(() => child.stdout.emit('data', Buffer.from('decurix-setup: installing Docker Engine\n')));
+      return;
+    }
+    if (program[0] === 'sh') { machine.setupRuns = (machine.setupRuns || 0) + 1; say('decurix-setup: ready', machine.setupFails ? 1 : 0); return; }
     if (program[0] === '/opt/decurix/dockerd.sh') { machine.daemon = true; return; }
     let docker = program[0] === 'env' ? program.slice(program.indexOf('docker') + 1) : program.slice(1);
     if (docker[0] === '--host') docker = docker.slice(2);
@@ -216,6 +223,8 @@ async function boot(initialState, {
       spawns.push({ file, args, options });
       const child = new EventEmitter();
       children.push(child);
+      // A child the app cancels (the stall watchdog's signal) ends, as a real one is killed.
+      if (options && options.signal) options.signal.addEventListener('abort', () => setImmediate(() => child.emit('exit', null)), { once: true });
       child.unref = () => {};
       child.stdout = new EventEmitter();
       child.stderr = new EventEmitter();
@@ -285,7 +294,10 @@ async function boot(initialState, {
     'node:http': http,
     'node:path': path,
     './local-models': require('./local-models'),
-    './build-watchdog': require('./build-watchdog'),
+    // watchdogMs: the stall watchdog with a bound of that many (real) milliseconds, so a test of a stall is quick.
+    './build-watchdog': watchdogMs ? { ...require('./build-watchdog'),
+      watchBuild: (options) => require('./build-watchdog').watchBuild({ ...options, stallMs: watchdogMs, graceMs: watchdogMs }) }
+      : require('./build-watchdog'),
     './windows-runtime': {
       readSettings: () => ({ DECURIX_WINDOWS_NATIVE_OLLAMA: '1' }),
       configureResources: () => ({ memoryMB: 8192, workerCPUs: 2, workerMB: 2048, cpus: 8, modelMB: 6144 }),
@@ -536,6 +548,36 @@ test('a distro that cannot be prepared stops the start, with the log', async () 
   assert.match(result.window.lastStatus.value.message, /Could not prepare Linux/);
   assert.match(result.window.lastStatus.value.detail, /address in use/);
   assert.deepEqual(result.docker, []);
+});
+
+// waitFor polls cond on real time, up to a bound that only turns a hang into a failure.
+async function waitFor(cond) {
+  for (let i = 0; i < 400 && !cond(); i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  return cond();
+}
+
+test('a setup.sh that stops printing is ended in the distro and run again, and goes on when the second run works', async () => {
+  const result = await boot('absent', { wsl: { setupHangs: 1 }, watchdogMs: 40 });
+  assert.ok(await waitFor(() => result.window.url === 'http://127.0.0.1:8080'), `status ${JSON.stringify(result.window.lastStatus)}`);
+  assert.equal(result.machine.setupRuns, 2);
+  assert.ok(result.wsl.some((w) => w.endsWith('-e pkill -f wsl/setup.sh')));
+  assert.ok(result.wsl.some((w) => w.endsWith('-e pkill -x apk')));
+});
+
+test('a setup.sh that stalls twice stops the start with its last line, for Retry', async () => {
+  const result = await boot('absent', { wsl: { setupHangs: 2 }, watchdogMs: 40 });
+  assert.ok(await waitFor(() => result.window.lastStatus && result.window.lastStatus.value.failed === true));
+  assert.match(result.window.lastStatus.value.message, /Could not prepare Linux for Decurix\. It stopped making progress twice/);
+  assert.match(result.window.lastStatus.value.message, /installing Docker Engine/);
+  assert.equal(result.machine.setupRuns, 2);
+  assert.deepEqual(result.docker, []);
+});
+
+test('a setup.sh that keeps printing is never ended', async () => {
+  const result = await boot('absent', { watchdogMs: 40 });
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.equal(result.machine.setupRuns, 1);
+  assert.ok(!result.wsl.some((w) => w.includes('pkill')));
 });
 
 test('Windows gets the plain IP link once the address is forwarded to WSL', async () => {
