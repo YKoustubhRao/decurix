@@ -2618,8 +2618,6 @@ def _judge(state, step, reply, made, drafts, note="", start=None, evidence=()):
         # Found live (round 5 P4, 2026-10-20): the person said to skip one joiner until her ID arrives; the stage left her
         # out, and the check - shown the answer only as context - failed it twice against the tracker.
         task += "\n" + binding
-    if note:
-        task += "\n" + note
     overridden = [o for o in data.get("overrides") or [] if o.get("stage") == step["id"]]
     if overridden:
         task += ("\nThe person kept the work as it is against these findings of a code check - BINDING: do not refuse "
@@ -2668,6 +2666,10 @@ def _judge(state, step, reply, made, drafts, note="", start=None, evidence=()):
         task += ("\nA record entered in an application counts only where the report shows it read back from the "
                  "application and compared with what was meant to go in; a 'saved' message or the worker's own log is "
                  "not that. Every record the stage asks for must be there.")
+    if note:
+        # Last, never inside: a re-check's prompt then starts with the first check's whole, so the provider's prompt
+        # cache serves it (resource plan P1 #8; ships after an eval rerun, since it moves the line in the prompt).
+        task += "\n" + note
     return verify.judge(task, claim=reply, live_png=live, observed=observed, screen_text=screen_text,
                         screen=on_screen,
                         produced="\n".join(x for x in (produced.text(made), produced.drafts_text(drafts),
