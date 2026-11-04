@@ -7,7 +7,7 @@ FROM golang:1.27 AS thebot-builder
 WORKDIR /src
 COPY agent/thebot/go.mod agent/thebot/go.sum ./
 # go has no download timeout of its own: ten minutes a try, three tries.
-RUN for try in 1 2 3; do timeout 600 go mod download && exit 0; echo "go mod download: try $try failed or stalled"; sleep 5; done; exit 1
+RUN for try in 1 2 3; do timeout 600 go mod download && exit 0; echo "go mod download: try $try failed or stalled"; sleep $((try * 20 - 10)); done; exit 1
 COPY agent/thebot/cmd ./cmd
 COPY agent/thebot/internal ./internal
 COPY agent/thebot/web ./web
@@ -57,9 +57,10 @@ USER root
 #   what turns a Word or Excel file into a faithful PDF (tools/office.combine_pdf).
 #   The developer/ai Dockerfiles install the full suite, but only this image is
 #   built and tagged as all three.
-# Every download bounded (internal/desktop/dockerfile_downloads_test.go): apt gives up on a connection silent for a
-# minute and tries each file three times.
-RUN apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update && \
+# Every download bounded and the step tried again (internal/desktop/dockerfile_downloads_test.go): apt gives up on a
+# connection silent for a minute and tries each file three times, and the whole download is tried three times, 10 s
+# and then 30 s apart, so one bad moment of a CDN never fails the build.
+RUN for try in 1 2 3; do apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update && \
     apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y --no-install-recommends \
         xdotool \
         tesseract-ocr \
@@ -100,7 +101,8 @@ RUN apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https
         imagemagick \
         qpdf \
         xclip \
-        wmctrl && \
+        wmctrl && break; \
+    [ "$try" = 3 ] && exit 1; echo "apt-get: try $try failed; trying again"; sleep $((try * 20 - 10)); done && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -126,13 +128,14 @@ RUN chmod 644 /etc/opt/chrome/policies/managed/decurix.json \
 # Presentation support uses a venv: python3-pptx is unavailable in Ubuntu noble.
 # System site packages retain apt-provided GI, openpyxl and document readers.
 RUN python3 -m venv --system-site-packages /opt/office-venv && \
-    /opt/office-venv/bin/pip install --no-cache-dir --timeout 60 --retries 5 python-pptx==1.0.2
+    for try in 1 2 3; do /opt/office-venv/bin/pip install --no-cache-dir --timeout 60 --retries 5 python-pptx==1.0.2 && break; \
+    [ "$try" = 3 ] && exit 1; echo "pip: try $try failed; trying again"; sleep $((try * 20 - 10)); done
 ENV PATH="/opt/office-venv/bin:${PATH}"
 
 # The libraries a worker's own scripts reach for, in the system Python, so every python3 has them: the venv above is
 # not on a worker's PATH (the control plane sets PATH when it creates a desktop), so `import pptx` failed in any script
 # the engine wrote, and a run that needed `requests` failed and asked a person. Pinned, like everything here.
-RUN pip3 install --no-cache-dir --timeout 60 --retries 5 --break-system-packages \
+RUN for try in 1 2 3; do pip3 install --no-cache-dir --timeout 60 --retries 5 --break-system-packages \
         python-pptx==1.0.2 \
         pandas==2.2.3 \
         requests==2.32.3 \
@@ -143,7 +146,8 @@ RUN pip3 install --no-cache-dir --timeout 60 --retries 5 --break-system-packages
         python-dateutil==2.9.0.post0 \
         xlrd==2.0.1 \
         tabulate==0.9.0 \
-        reportlab==4.2.5
+        reportlab==4.2.5 && break; \
+    [ "$try" = 3 ] && exit 1; echo "pip3: try $try failed; trying again"; sleep $((try * 20 - 10)); done
 
 COPY agent/vm_server.py /opt/vm_server.py
 COPY agent/decurix_agent /opt/decurix_agent

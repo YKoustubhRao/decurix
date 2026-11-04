@@ -17,7 +17,7 @@ WORKDIR /app
 RUN for mirror in https://dl-cdn.alpinelinux.org/alpine https://mirrors.edge.kernel.org/alpine https://uk.alpinelinux.org/alpine; do \
         sed -i -E "s#^[a-z]+://[^ ]*(/(v[0-9]+\.[0-9]+|edge)/)#${mirror}\1#" /etc/apk/repositories; \
         timeout 180 apk add --no-cache docker-cli bash curl ca-certificates && exit 0; \
-        echo "apk add: failed or did not finish within 180 s from ${mirror}; trying the next mirror"; \
+        echo "apk add: failed or did not finish within 180 s from ${mirror}; trying the next mirror"; sleep 10; \
     done; echo "apk add: failed from every Alpine mirror" >&2; exit 1
 
 # decurix-android-arm64 is the phone build /phone/decurix hands out.

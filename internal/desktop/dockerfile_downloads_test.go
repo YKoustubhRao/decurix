@@ -40,8 +40,30 @@ func TestEveryDockerfileDownloadIsBounded(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, run := range runInstructions(string(raw)) {
-			for _, problem := range unboundedDownloads(run) {
+			for _, problem := range append(unboundedDownloads(run), unretriedDownloads(run)...) {
 				t.Errorf("%s: %s\n\t%s", file, problem, clipRun(run))
+			}
+			checked++
+		}
+		// A script the Dockerfile copies in and runs at build time downloads too (agent/install-browser.sh): each of
+		// its download lines is bounded the same way and goes through its retry function.
+		for _, script := range buildScripts(root, string(raw)) {
+			body, err := os.ReadFile(script)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(body)
+			if !retryFunc.MatchString(text) {
+				t.Errorf("%s (run by %s) defines no retry() with the backoff", script, file)
+			}
+			for _, line := range scriptLines(text) {
+				problems := unboundedDownloads(line)
+				if downloads(line) && !strings.HasPrefix(line, "retry ") {
+					problems = append(problems, "a download not run through retry")
+				}
+				for _, problem := range problems {
+					t.Errorf("%s (run by %s): %s\n\t%s", script, file, problem, clipRun(line))
+				}
 			}
 			checked++
 		}
@@ -49,6 +71,90 @@ func TestEveryDockerfileDownloadIsBounded(t *testing.T) {
 	if checked == 0 {
 		t.Fatal("no RUN instruction was read")
 	}
+}
+
+// The retry check refuses a download RUN that is tried once, and lets the retried shapes through: the loop with its
+// backoff, apk's mirror loop with its pause, and a RUN that downloads nothing.
+func TestTheRetryCheckKnowsEachShape(t *testing.T) {
+	for run, bad := range map[string]bool{
+		"pip3 install --timeout 60 --retries 5 x==1": true,
+		`for try in 1 2 3; do pip3 install --timeout 60 --retries 5 x==1 && break; [ "$try" = 3 ] && exit 1; sleep $((try * 20 - 10)); done`: false,
+		// A loop without its backoff is refused too.
+		`for try in 1 2 3; do pip3 install x==1 && break; done`:                                         true,
+		"for mirror in a b c; do timeout 180 apk add --no-cache curl && exit 0; sleep 10; done; exit 1": false,
+		"for mirror in a b c; do timeout 180 apk add --no-cache curl && exit 0; done; exit 1":           true,
+		"chmod 755 /opt/x": false,
+	} {
+		if got := len(unretriedDownloads(run)) > 0; got != bad {
+			t.Errorf("%q: unretried = %v, want %v", run, !bad, bad)
+		}
+	}
+}
+
+var (
+	retryLoop    = regexp.MustCompile(`for try in 1 2 3; do .*sleep \$\(\(try \* 20 - 10\)\)`)
+	mirrorLoop   = regexp.MustCompile(`for mirror in .*sleep \d+`)
+	retryFunc    = regexp.MustCompile(`(?s)retry\(\) \{.*for try in 1 2 3; do.*sleep \$\(\(try \* 20 - 10\)\)`)
+	copiedScript = regexp.MustCompile(`(?m)^COPY\s+(\S+\.sh)\s+(/tmp/\S+\.sh)\s*$`)
+)
+
+// downloads reports whether a RUN or a script line fetches anything from the network.
+func downloads(run string) bool {
+	return strings.Contains(run, "apk add") || strings.Contains(run, "go mod download") || aptCommand.MatchString(run) ||
+		pipInstall.MatchString(run) || curlCommand.MatchString(run) || wgetCommand.MatchString(run) || npmInstall.MatchString(run)
+}
+
+// unretriedDownloads is a download RUN tried only once: one bad moment of a CDN (a ReadTimeout from PyPI, 2026-11-04)
+// failed a whole image build. A download is tried three times as a whole, 10 s and then 30 s apart; apk's mirror loop
+// is its retry, with a pause between mirrors.
+func unretriedDownloads(run string) []string {
+	if !downloads(run) {
+		return nil
+	}
+	if strings.Contains(run, "apk add") {
+		if !mirrorLoop.MatchString(run) {
+			return []string{"apk add outside the mirror loop with a pause between mirrors"}
+		}
+		return nil
+	}
+	if !retryLoop.MatchString(run) {
+		return []string{"a download tried once: wrap it in `for try in 1 2 3; do ... && break; ...; sleep $((try * 20 - 10)); done`"}
+	}
+	return nil
+}
+
+// buildScripts is each shell script a Dockerfile copies to /tmp and runs with sh, as a path in the repository.
+func buildScripts(root, dockerfile string) []string {
+	var out []string
+	for _, m := range copiedScript.FindAllStringSubmatch(dockerfile, -1) {
+		for _, run := range runInstructions(dockerfile) {
+			if strings.Contains(run, "sh "+m[2]) {
+				out = append(out, filepath.Join(root, filepath.FromSlash(m[1])))
+				break
+			}
+		}
+	}
+	return out
+}
+
+// scriptLines is a shell script's commands, comment lines left out and continuation lines joined.
+func scriptLines(script string) []string {
+	var lines []string
+	var cur strings.Builder
+	for _, line := range strings.Split(strings.ReplaceAll(script, "\r\n", "\n"), "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "#") || (t == "" && cur.Len() == 0) {
+			continue
+		}
+		if strings.HasSuffix(t, "\\") {
+			cur.WriteString(strings.TrimSuffix(t, "\\") + " ")
+			continue
+		}
+		cur.WriteString(t)
+		lines = append(lines, cur.String())
+		cur.Reset()
+	}
+	return lines
 }
 
 // The check itself refuses each unbounded shape, and lets each bounded one through.

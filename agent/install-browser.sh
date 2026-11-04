@@ -23,6 +23,18 @@ KEY_FINGERPRINT=EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796
 
 export DEBIAN_FRONTEND=noninteractive
 
+# Every download here is bounded and tried again (internal/desktop/dockerfile_downloads_test.go, which reads this
+# script too): curl and apt give up on a stalled connection by their own options, and each download is tried three
+# times as a whole, 10 s and then 30 s apart, so one bad moment of Google's CDN never fails the image build.
+retry() {
+    for try in 1 2 3; do
+        "$@" && return 0
+        [ "$try" = 3 ] && return 1
+        echo "install-browser: $1 failed (try $try); trying again" >&2
+        sleep $((try * 20 - 10))
+    done
+}
+
 # 1. The old Chromium, held by the base image.
 apt-mark unhold chromium-browser chromium-browser-l10n chromium-codecs-ffmpeg chromium-codecs-ffmpeg-extra >/dev/null 2>&1 || true
 apt-get purge -y chromium-browser chromium-browser-l10n chromium-codecs-ffmpeg chromium-codecs-ffmpeg-extra >/dev/null 2>&1 || true
@@ -36,7 +48,7 @@ install -m 755 /tmp/chromium-browser /usr/bin/chromium-browser
 # 2. Google's repository, pinned to the verified key. /etc/default/google-chrome
 #    stops the package's postinst and daily cron job from rewriting the source
 #    list without signed-by, which apt then rejects as a conflicting duplicate.
-curl -fsSL https://dl.google.com/linux/linux_signing_key.pub -o /tmp/google-linux.pub
+retry curl -fsSL --connect-timeout 30 --speed-limit 1024 --speed-time 120 --retry 3 --retry-delay 5 https://dl.google.com/linux/linux_signing_key.pub -o /tmp/google-linux.pub
 got=$(gpg --show-keys --with-colons /tmp/google-linux.pub 2>/dev/null | awk -F: '/^fpr/ {print $10; exit}')
 if [ "$got" != "$KEY_FINGERPRINT" ]; then
     echo "install-browser: Google's signing key has fingerprint '$got', expected $KEY_FINGERPRINT - refusing to install" >&2
@@ -49,8 +61,8 @@ printf 'repo_add_once="false"\nrepo_reenable_on_distupgrade="false"\n' > /etc/de
 echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
     > /etc/apt/sources.list.d/google-chrome.list
 
-apt-get update
-apt-get install -y --no-install-recommends google-chrome-stable
+retry apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update
+retry apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y --no-install-recommends google-chrome-stable
 
 # 3. Chrome's own command leads to the launcher. google-chrome-stable is the
 #    package's file (dpkg-divert, so an upgrade puts its copy beside ours, not

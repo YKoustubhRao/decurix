@@ -190,10 +190,62 @@ function startupPalette() {
     : { color: '#f6f5f2', symbolColor: '#1a1917' };
 }
 
+// The start screen's latest status, numbered. It is sent again whenever the screen is loaded again, and the screen
+// says which one it has shown (preload.js, startup-status-shown). A start that failed with the screen frozen on a
+// line from the middle of a build, and no error (2026-11-04), is why: a failure the screen has not shown within
+// SHOWN_WITHIN_MS loads the screen again and is put in front of the person in a dialog of the app's own, with Retry.
+let lastStatus = null;
+let statusSeq = 0;
+let shownSeq = 0;
+let reloadedAt = 0;
+const SHOWN_WITHIN_MS = 10000;
+
+// update tells the start screen where the start is. It never throws: a screen that cannot take it is loaded again.
 function update(message, failed = false, detail = '') {
-  if (window && !window.isDestroyed()) {
-    window.webContents.send('startup-status', { message, failed, detail });
+  statusSeq += 1;
+  lastStatus = { message, failed, detail, seq: statusSeq };
+  if (failed) logLine(`Start failed: ${message}${detail ? ` | ${detail}` : ''}`);
+  sendStatus();
+  if (failed) {
+    const seq = statusSeq;
+    setTimeout(() => {
+      if (shownSeq < seq && lastStatus && lastStatus.seq === seq) failureNotShown(lastStatus);
+    }, SHOWN_WITHIN_MS);
   }
+}
+
+// sendStatus sends the latest status to the start screen, loading the screen again when it cannot take it.
+function sendStatus() {
+  if (!lastStatus || showingDashboard || !window || window.isDestroyed()) return;
+  try {
+    window.webContents.send('startup-status', lastStatus);
+  } catch (error) {
+    logLine(`The start screen did not take a status (${error.message}); loading it again`);
+    reloadStartScreen();
+  }
+}
+
+// reloadStartScreen loads the start screen again (a renderer that died or stopped answering) and sends it the latest
+// status. At most once in five seconds, so a screen that keeps failing is not loaded in a loop.
+function reloadStartScreen() {
+  if (showingDashboard || !window || window.isDestroyed() || Date.now() - reloadedAt < 5000) return;
+  reloadedAt = Date.now();
+  Promise.resolve()
+    .then(() => window.loadFile(path.join(__dirname, 'loading.html')))
+    .then(() => sendStatus())
+    .catch((error) => logLine(`The start screen could not be loaded again: ${error.message}`));
+}
+
+// failureNotShown puts a failure the start screen did not show in front of the person, in a dialog with Retry.
+function failureNotShown(status) {
+  logLine(`The start screen did not show the failure; asking in a dialog: ${status.message}`);
+  reloadStartScreen();
+  if (!window || window.isDestroyed()) return;
+  Promise.resolve()
+    .then(() => dialog.showMessageBox(window, { type: 'error', title: 'Decurix could not start', message: status.message,
+      detail: status.detail || '', buttons: ['Retry', 'Close'], defaultId: 0, cancelId: 1 }))
+    .then((answer) => { if (answer && answer.response === 0 && !starting && window) start(); })
+    .catch((error) => logLine(`The failure dialog could not be shown: ${error.message}`));
 }
 
 function logFile() {
@@ -334,16 +386,30 @@ function run(file, args, onLine, options = {}) {
     // replaced by an update or removed by the uninstaller.
     const child = spawn(file, args, { windowsHide: true, cwd: os.tmpdir(), ...options, stdio: ['ignore', 'pipe', 'pipe'] });
     let rest = '';
+    let warned = false;
+    // A callback that throws (a start screen that cannot take a line) must not stop the output being read and logged,
+    // nor the program's end being seen.
+    const give = (line) => {
+      try { onLine(line); } catch (error) {
+        if (!warned) { warned = true; logLine(`${path.basename(file)}: a line of its output could not be shown: ${error.message}`); }
+      }
+    };
     const take = (chunk) => {
       if (log !== null) { try { fs.writeSync(log, chunk); } catch { /* decoration */ } }
       if (!onLine) return;
       const lines = (rest + chunk.toString()).split(/[\r\n]+/);
       rest = lines.pop();
-      for (const line of lines) if (line.trim()) onLine(line.trim().slice(0, 4096));
+      for (const line of lines) if (line.trim()) give(line.trim().slice(0, 4096));
     };
     child.stdout.on('data', take);
     child.stderr.on('data', take);
+    let settled = false;
     const done = (result) => {
+      if (settled) return;
+      settled = true;
+      // The last line, printed without a newline, is often the error.
+      if (onLine && rest.trim()) give(rest.trim().slice(0, 4096));
+      rest = '';
       if (log !== null) { try { fs.closeSync(log); } catch { /* already closed */ } log = null; }
       resolve(result);
     };
@@ -680,6 +746,7 @@ async function importDistro() {
 
   const asking = 'Turning on Windows\' Virtual Machine Platform. Windows will ask you to allow it.';
   update(asking);
+  // Its exit is not the answer (a declined prompt and a done one both end it): the import tried again is.
   await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ENABLE_WSL], (line) => update(asking, false, line));
   if ((await attempt()).code === 0) return;
   askForRestart('platform', 'Windows cannot run Linux on this computer yet. Restart Windows, then open Decurix again. '
@@ -703,6 +770,7 @@ async function stopEarlierWindowsApp() {
   const script = `$cp = ${folder}; Get-CimInstance Win32_Process | `
     + "? { $_.ExecutablePath -and $_.ExecutablePath -ieq $cp } | "
     + '% { Stop-Process -Id $_.ProcessId -Force }';
+  // Best effort: an earlier app still holding 8080 is found by the next check (checkDashboard, 'occupied').
   await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], undefined, QUICK);
 }
 
@@ -887,7 +955,7 @@ async function startStack() {
   const buildStep = async (message, args, failure, stallMs, stop) => {
     update(message);
     const result = await watchedDocker(args, (line) => update(message, false, line), stallMs, stop,
-      (last) => update(`${message} It stopped making progress, so it is being tried again.`, false, last));
+      (last, why) => update(`${message} It ${why === 'failed' ? 'failed' : 'stopped making progress'}, so it is being tried once more.`, false, last));
     if (result.stalled) throw new Error(`${stalledMessage(failure, stallMs, result.lastLine)} Check ${logFile()}`);
     if (result.code !== 0) throw new Error(`${failure} Check ${logFile()}`);
   };
@@ -919,7 +987,7 @@ async function startStack() {
 // container) for good: cancelled and tried once more, then given up with its last line.
 function buildToolsLater() {
   watchedDocker(['compose', 'run', '--rm', '--no-deps', '-T', 'desktop-manager', './decurix', '--build-images', '-images', 'tools'],
-    undefined, IMAGES_STALL_MS, stopImagesRun, (last) => console.warn('Building the tools image stopped making progress; trying again. Last line:', last))
+    undefined, IMAGES_STALL_MS, stopImagesRun, (last, why) => console.warn(`Building the tools image ${why === 'failed' ? 'failed' : 'stopped making progress'}; trying once more. Last line:`, last))
     .then((result) => {
       if (result.stalled) console.warn(stalledMessage('Building the tools image failed.', IMAGES_STALL_MS, result.lastLine), 'See', logFile());
       else if (result.code !== 0) console.warn('Building the tools image failed; see', logFile());
@@ -937,17 +1005,26 @@ const IMAGES_STALL_MS = 15 * 60 * 1000;
 // watchedDocker runs one docker build command under the stall watchdog: cancelled (its process ended, then stop()
 // cleans up what it left) when it prints nothing for stallMs, and tried once more. onRetry is told the last line
 // when a stalled try is to be tried again.
-function watchedDocker(args, onLine, stallMs, stop, onRetry = () => {}) {
-  return watchBuild({
+// A build that fails (exits non-zero, not a stall) is tried once more on its own: its cached layers make that cheap,
+// and a moment's failure of a CDN (a ReadTimeout from PyPI, 2026-11-04) is the common cause. onRetry is told why
+// ('stalled' or 'failed') and the last line.
+async function watchedDocker(args, onLine, stallMs, stop, onRetry = () => {}) {
+  const once = () => watchBuild({
     stallMs,
     attempt: (line, signal) => docker(args, line, { signal }),
     onLine: onLine || (() => {}),
     onStall: async (n, last) => {
       console.warn(`docker ${args.join(' ')}: no output for ${Math.round(stallMs / 60000)} minutes; cancelled (try ${n}). Last line: ${last}`);
       try { await stop(); } catch { /* the next try or the error says what is wrong */ }
-      if (n === 1) onRetry(last);
+      if (n === 1) onRetry(last, 'stalled');
     },
   });
+  const result = await once();
+  if (result.stalled || result.code === 0 || closing) return result;
+  logLine(`docker ${args.join(' ')} exited ${result.code}: build failed, trying once more. Last line: ${result.lastLine}`);
+  onRetry(result.lastLine, 'failed');
+  try { await stop(); } catch { /* the second try or its error says what is wrong */ }
+  return once();
 }
 
 // stopComposeBuild ends a cancelled compose build. Outside Windows the docker client the app started is the build's
@@ -1202,6 +1279,16 @@ function openWindow() {
   });
 
   configureNavigation(window.webContents);
+  // A start screen whose renderer died or stopped answering is loaded again and given the latest status, so a start
+  // never sits behind a frozen screen.
+  window.webContents.on('render-process-gone', (_event, details) => {
+    logLine(`The window's renderer ended (${(details && details.reason) || 'unknown'})`);
+    reloadStartScreen();
+  });
+  window.on('unresponsive', () => {
+    logLine('The window stopped answering');
+    reloadStartScreen();
+  });
   window.loadFile(path.join(__dirname, 'loading.html')).then(start);
   window.on('closed', () => { window = null; });
 }
@@ -1230,4 +1317,13 @@ if (!app.requestSingleInstanceLock()) {
     app.quit();
   });
   ipcMain.on('retry-startup', () => { if (!starting && window) start(); });
+  // The start screen says which status it has shown (update, failureNotShown).
+  ipcMain.on('startup-status-shown', (event, seq) => {
+    if (window && event && event.sender === window.webContents) shownSeq = Math.max(shownSeq, Number(seq) || 0);
+  });
+  // What would otherwise vanish goes to desktop.log, where a failed start is looked for.
+  if (typeof process.on === 'function') {
+    process.on('uncaughtException', (error) => { logLine(`Uncaught: ${error && error.stack ? error.stack : error}`); });
+    process.on('unhandledRejection', (error) => { logLine(`Unhandled: ${error && error.stack ? error.stack : error}`); });
+  }
 }

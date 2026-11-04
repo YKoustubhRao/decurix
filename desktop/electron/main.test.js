@@ -82,6 +82,9 @@ async function boot(initialState, {
   wsl = {}, pickedFolders = [], canceledPicker = false, savedRuntime, hosting = false, holdOllama = false, ollamaFails = false,
   release = '10.0.26200', arch = 'x64', freeGB = 100, restartAsked = null, restartedSince = true,
   lanAddress = null, lanForwards = true, settings = '', publicLink = null, adopt = true, watchdogMs = 0,
+  // screen: 'ok' (the start screen shows every status and says so), 'silent' (it shows nothing: a frozen renderer)
+  // or 'throws' (sending to it throws: a renderer that is gone).
+  screen = 'ok',
 } = {}) {
   const machine = { installed: true, installedAfterAsking: false, distro: true, daemon: true, setupFails: false, existing: {}, ...wsl };
   const intervals = [];
@@ -111,7 +114,14 @@ async function boot(initialState, {
       this.options = options;
       this.webContents = new EventEmitter();
       this.webContents.setWindowOpenHandler = (handler) => { this.popup = handler; };
-      this.webContents.send = (channel, value) => { this.lastStatus = { channel, value }; };
+      this.webContents.send = (channel, value) => {
+        if (screen === 'throws') throw new Error('Render frame was disposed before WebFrameMain could be accessed');
+        if (screen === 'silent') return;
+        this.lastStatus = { channel, value };
+        this.statuses = (this.statuses || []).concat([value]);
+        // The screen says it has shown it (preload.js).
+        if (channel === 'startup-status') ipcMain.emit('startup-status-shown', { sender: this.webContents }, value.seq);
+      };
       this.loadFile = async () => { this.loadFileCount = (this.loadFileCount || 0) + 1; };
       this.loadURL = async (url) => { this.url = url; };
       this.isDestroyed = () => false;
@@ -248,7 +258,10 @@ async function boot(initialState, {
     },
   };
 
+  const appended = [];
+  const logText = () => appended.join('');
   const fileSystem = {
+    appendFileSync(_file, text) { appended.push(String(text)); },
     mkdirSync() {},
     existsSync(file) { return present.has(file); },
     copyFileSync(from, to) { copied.push({ from, to }); },
@@ -329,7 +342,7 @@ async function boot(initialState, {
   await settle(40);
   const wslWords = (s) => Array.from(s.args).join(' ');
   return {
-    window: windows[0], app, spawns, questions, children, copied, written, external, mobileCalls, posts, lanCalls, intervals, settle, blockers, stack, home, machine, pickerCalls,
+    window: windows[0], app, spawns, questions, logged: () => logText(), children, copied, written, external, mobileCalls, posts, lanCalls, intervals, settle, blockers, stack, home, machine, pickerCalls,
     titleBarTheme: (palette, url = 'http://127.0.0.1:8080/', { childFrame = false, otherWindow = false } = {}) => {
       const sender = windows[0].webContents;
       sender.mainFrame = { url };
@@ -814,6 +827,51 @@ test('a worker image that cannot be built stops the start, with the log', async 
   assert.match(result.window.lastStatus.value.message, /Could not build the worker desktop/);
   assert.match(result.window.lastStatus.value.detail, /address in use/);
   assert.ok(!result.docker.includes('compose up -d --no-build'));
+});
+
+test('a worker image build that fails once is tried once more on its own, and the start goes on', async () => {
+  let builds = 0;
+  const dockerRun = (args) => (args.includes('desktop') && args.includes('--build-images') && (builds += 1) === 1 ? 1 : 0);
+  const result = await boot('absent', { platform: 'darwin', files: [dockerOnPath], dockerRun });
+  await result.settle(20);
+  assert.equal(builds, 2);
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.match(result.logged(), /build failed, trying once more/);
+  assert.ok(result.window.statuses.some((s) => /It failed, so it is being tried once more/.test(s.message)));
+});
+
+test('a worker image build that fails twice stops the start on the error screen, with its last line and Retry', async () => {
+  let builds = 0;
+  const dockerRun = (args) => (args.includes('desktop') && args.includes('--build-images') ? ((builds += 1), 1) : 0);
+  const result = await boot('absent', { platform: 'darwin', files: [dockerOnPath], dockerRun });
+  assert.equal(builds, 2);
+  assert.equal(result.window.lastStatus.value.failed, true);
+  assert.match(result.window.lastStatus.value.message, /Could not build the worker desktop/);
+  assert.ok(!result.docker.includes('compose up -d --no-build'));
+  assert.match(result.logged(), /Start failed: Could not build the worker desktop/);
+  assert.equal(result.questions.length, 0, 'the screen showed it, so no dialog');
+});
+
+test('the control plane image build is tried once more too, and a second failure is shown', async () => {
+  let builds = 0;
+  const dockerRun = (args) => (args[0] === 'compose' && args[1] === 'build' ? ((builds += 1), 1) : 0);
+  const result = await boot('absent', { platform: 'darwin', files: [dockerOnPath], dockerRun });
+  assert.equal(builds, 2);
+  assert.match(result.window.lastStatus.value.message, /Could not build Decurix in Docker/);
+});
+
+test('a failure the start screen never shows is put in a dialog of the app, and the screen is loaded again', async () => {
+  const dockerRun = (args) => (args.includes('desktop') && args.includes('--build-images') ? 1 : 0);
+  for (const screen of ['silent', 'throws']) {
+    const result = await boot('absent', { platform: 'darwin', files: [dockerOnPath], dockerRun, screen, adopt: false });
+    await result.settle(40);
+    const asked = result.questions.find((q) => q && q.type === 'error');
+    assert.ok(asked, `${screen}: no dialog`);
+    assert.match(asked.message, /Could not build the worker desktop/);
+    assert.deepEqual(Array.from(asked.buttons), ['Retry', 'Close']);
+    assert.ok(result.window.loadFileCount >= 2, `${screen}: the screen was not loaded again`);
+    assert.match(result.logged(), /did not show the failure/);
+  }
 });
 
 test('a stack an older build of the app left running is replaced by this one', async () => {

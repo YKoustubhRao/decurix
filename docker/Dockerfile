@@ -5,7 +5,7 @@ WORKDIR /app
 
 COPY go.mod go.sum ./
 # go has no download timeout of its own: ten minutes a try, three tries.
-RUN for try in 1 2 3; do timeout 600 go mod download && exit 0; echo "go mod download: try $try failed or stalled"; sleep 5; done; exit 1
+RUN for try in 1 2 3; do timeout 600 go mod download && exit 0; echo "go mod download: try $try failed or stalled"; sleep $((try * 20 - 10)); done; exit 1
 
 COPY . .
 
@@ -43,7 +43,7 @@ WORKDIR /app
 RUN for mirror in https://dl-cdn.alpinelinux.org/alpine https://mirrors.edge.kernel.org/alpine https://uk.alpinelinux.org/alpine; do \
         sed -i -E "s#^[a-z]+://[^ ]*(/(v[0-9]+\.[0-9]+|edge)/)#${mirror}\1#" /etc/apk/repositories; \
         timeout 180 apk add --no-cache docker-cli bash curl ca-certificates && exit 0; \
-        echo "apk add: failed or did not finish within 180 s from ${mirror}; trying the next mirror"; \
+        echo "apk add: failed or did not finish within 180 s from ${mirror}; trying the next mirror"; sleep 10; \
     done; echo "apk add: failed from every Alpine mirror" >&2; exit 1
 
 # The templates are embedded in the binary (web/embed.go). The settings (.env, with the keys) are never copied into

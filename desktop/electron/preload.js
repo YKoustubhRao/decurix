@@ -8,7 +8,11 @@ contextBridge.exposeInMainWorld('decurixHost', {
 
 contextBridge.exposeInMainWorld('decurixStartup', {
   retry: () => ipcRenderer.send('retry-startup'),
-  onStatus: (callback) => ipcRenderer.on('startup-status', (_event, status) => callback(status)),
+  // Each status shown is acknowledged by its number, so the app knows a failure reached the person (main.js update).
+  onStatus: (callback) => ipcRenderer.on('startup-status', (_event, status) => {
+    callback(status);
+    ipcRenderer.send('startup-status-shown', status && status.seq);
+  }),
 });
 
 // The public link's switch, at the top of the dashboard's Mobile menu
