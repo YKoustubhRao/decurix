@@ -928,21 +928,46 @@ body.busy{cursor:progress}
      finished task or a question). The first call is the caller's: poll only
      repeats. Returns {stop()}. */
   function poll(fn, ms, opts){
+    /* One call at a time: a tick while fn's promise is still pending is
+       skipped, so a slow control plane never piles requests up. A call that
+       fails (throws, or its promise rejects) doubles the interval, up to 8x,
+       until one succeeds (resource plan P1 #9). */
     var hiddenMs = (opts && opts.hidden) || 0;
     var timer = 0;
     var stopped = false;
+    var running = false;
+    var failures = 0;
+
+    function settle(failed){
+      running = false;
+      var before = failures;
+      failures = failed ? Math.min(failures + 1, 3) : 0;
+      if(failures !== before){ schedule(); }
+    }
+
+    function tick(){
+      if(running || stopped){ return; }
+      var result;
+      try { result = fn(); } catch(e){ settle(true); return; }
+      if(result && typeof result.then === "function"){
+        running = true;
+        result.then(function(){ settle(false); }, function(){ settle(true); });
+      } else {
+        settle(false);
+      }
+    }
 
     function schedule(){
       clearInterval(timer);
       timer = 0;
       if(stopped){ return; }
       var every = document.visibilityState === "hidden" ? hiddenMs : ms;
-      if(every > 0){ timer = setInterval(fn, every); }
+      if(every > 0){ timer = setInterval(tick, every * Math.pow(2, failures)); }
     }
 
     function changed(){
       if(stopped){ return; }
-      if(document.visibilityState === "visible"){ fn(); }
+      if(document.visibilityState === "visible"){ tick(); }
       schedule();
     }
 

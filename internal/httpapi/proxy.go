@@ -722,7 +722,11 @@ window.addEventListener("resize", function(){
   placeAt(r.left, r.top);
 });
 
+// One ticket read at a time (resource plan P1 #9): a tick while one is in flight is skipped.
+var refreshing = false;
 function refresh(){
+  if(refreshing){ return; }
+  refreshing = true;
   fetch("/api/desktops/ticket?id=" + encodeURIComponent(DESKTOP_ID), {cache: "no-store"})
     .then(function(r){ return r.ok ? r.json() : {ticket: null}; })
     .then(function(data){
@@ -739,7 +743,8 @@ function refresh(){
 
       setTicket(next);
     })
-    .catch(function(){});
+    .catch(function(){})
+    .then(function(){ refreshing = false; });
 }
 
 function downloadUrl(session){
@@ -1171,7 +1176,9 @@ tab.addEventListener("click", function(){
 
 render();
 refresh();
-setInterval(refresh, POLL_MS);
+// Polled while the screen tab is seen, read at once when it is seen again (resource plan P1 #9).
+setInterval(function(){ if(document.visibilityState !== "hidden"){ refresh(); } }, POLL_MS);
+document.addEventListener("visibilitychange", function(){ if(document.visibilityState === "visible"){ refresh(); } });
 })();
 </script>
 `
@@ -1367,8 +1374,11 @@ const resourceAlertPopup = `
   var activeAlert = null;
   var dismissed = false;
 
+  // One alert read at a time, and none while the tab is hidden (resource plan P1 #9).
+  var alerting = false;
   function pollAlert() {
-    if (dismissed) return;
+    if (dismissed || alerting || document.visibilityState === "hidden") return;
+    alerting = true;
     fetch("/api/desktops/resource-alerts?id=" + encodeURIComponent(desktopID))
       .then(function(r) { return r.json(); })
       .then(function(data) {
@@ -1383,7 +1393,8 @@ const resourceAlertPopup = `
           wrap.style.display = "none";
         }
       })
-      .catch(function() {});
+      .catch(function() {})
+      .then(function() { alerting = false; });
   }
 
   function dismissAlert() {
@@ -1436,6 +1447,7 @@ const resourceAlertPopup = `
 
   setInterval(pollAlert, 4000);
   setTimeout(pollAlert, 1500);
+  document.addEventListener("visibilitychange", function() { if (document.visibilityState === "visible") pollAlert(); });
 })();
 </script>
 `
