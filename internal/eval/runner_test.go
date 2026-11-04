@@ -203,6 +203,9 @@ type fakeSandbox struct {
 	// home is the files in the desktop's home that outlive a case unless the reset clears them.
 	home     map[string]bool
 	onCreate func(n int)
+	// hold, when set, keeps every CreatePractice waiting until it is closed; created says one is waiting.
+	hold    chan struct{}
+	created chan struct{}
 	// failCollect makes every collection of a case's files fail.
 	failCollect bool
 	blockReq    chan struct{}
@@ -215,6 +218,13 @@ func newSandbox(t *testing.T, b *practice.Broker, w worker) *fakeSandbox {
 }
 
 func (f *fakeSandbox) CreatePractice(_ context.Context, spec desktop.PracticeSpec) (desktop.PracticeDesktop, error) {
+	if f.hold != nil {
+		select {
+		case f.created <- struct{}{}:
+		default: // the test has already seen one
+		}
+		<-f.hold
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.specs = append(f.specs, spec)
@@ -463,25 +473,22 @@ func newService(t *testing.T, w worker) (*Service, *fakeSandbox, *fakeHub, *prac
 	slot := &practice.Service{}
 	s := &Service{Store: store, Sandbox: sb, Broker: b, BrokerURL: func(context.Context) (string, error) { return "http://172.30.0.1:8091", nil },
 		Hub: hub, Recorder: rec, Practice: slot, FreeMemory: func() (uint64, error) { return 8 << 30, nil },
-		Minute: 400 * time.Millisecond, BootTimeout: time.Second}
+		BootTimeout: time.Minute}
 	return s, sb, hub, slot, rec
 }
 
+// waitDone waits for the run's end as an event (Service.Wait), with no deadline of its own: go test's -timeout ends a
+// run that hangs.
 func waitDone(t *testing.T, s *Service, id string) Run {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, active := s.Progress(id); !active {
-			run, err := s.Store.Get(id)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return run
-		}
-		time.Sleep(10 * time.Millisecond)
+	if err := s.Wait(context.Background(), id); err != nil {
+		t.Fatal(err)
 	}
-	t.Fatal("the run never ended")
-	return Run{}
+	run, err := s.Store.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return run
 }
 
 func rowsBy(rows []Row, arm, caseID string) []Row {
@@ -498,12 +505,15 @@ func rowsBy(rows []Row, arm, caseID string) []Row {
 
 func TestMatrixTwoArmsTwoRepeatsThreeCases(t *testing.T) {
 	s, sb, hub, slot, rec := newService(t, diligent)
+	// The first arm waits at its desktop's creation until the test has checked what holds meanwhile.
+	sb.hold, sb.created = make(chan struct{}), make(chan struct{}, 1)
 	tree := agentTree(t)
 	run, err := s.Start(context.Background(), MatrixRequest{SuiteTar: runnerSuite(t), Repeats: 2,
 		Arms: []Arm{{Name: "default", Kind: ArmModel}, {Name: "fast+expert", Kind: ArmModel, Model: "fast", Expert: true, AgentTree: tree, AgentTreeRev: "abc123"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	<-sb.created
 	// Meanwhile no second eval and no Simulate run starts: the practice slot is held.
 	if _, err := s.Start(context.Background(), MatrixRequest{SuiteTar: runnerSuite(t), Repeats: 1, Arms: []Arm{{Name: "nothing", Kind: ArmNothing}}}); !errors.Is(err, ErrBusy) {
 		t.Fatalf("a second eval started: %v", err)
@@ -511,6 +521,7 @@ func TestMatrixTwoArmsTwoRepeatsThreeCases(t *testing.T) {
 	if _, err := slot.Reserve(); !errors.Is(err, practice.ErrBusy) {
 		t.Fatalf("the practice slot was free during an eval: %v", err)
 	}
+	close(sb.hold)
 	run = waitDone(t, s, run.ID)
 	if run.Status != RunDone || strings.Contains(run.Note, "invalid") {
 		t.Fatalf("run: %+v", run)
@@ -662,7 +673,9 @@ func TestATimeoutRowAndABudgetRow(t *testing.T) {
 			fs.think(6000) // more than the suite's 5,000-token case budget
 		}
 	})
-	tar := runnerSuite(t, silentCase("slow", 0.1), silentCase("costly", 1))
+	// The budget minute is a real minute: "slow" has 60 ms and does nothing, so its timer is what this tests;
+	// "costly" has a minute, and its first call passes its token budget long before that.
+	tar := runnerSuite(t, silentCase("slow", 0.001), silentCase("costly", 1))
 	run, err := s.Start(context.Background(), MatrixRequest{SuiteTar: tar, Repeats: 1, Cases: []string{"slow", "costly"}, Arms: []Arm{{Name: "default", Kind: ArmModel}}})
 	if err != nil {
 		t.Fatal(err)
@@ -705,11 +718,7 @@ func TestCancelMidCaseRemovesTheDesktopAndTheMock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-sb.seenWork:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the case never started")
-	}
+	<-sb.seenWork // go test's -timeout ends a case that never starts
 	sb.mu.Lock()
 	mid := len(sb.live)
 	sb.mu.Unlock()

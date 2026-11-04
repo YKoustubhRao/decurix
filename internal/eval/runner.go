@@ -110,6 +110,8 @@ type Service struct {
 type activeRun struct {
 	cancel   context.CancelFunc
 	progress Progress
+	// done is closed when the run has ended and released the practice slot.
+	done chan struct{}
 }
 
 // Progress is where a running matrix is.
@@ -190,7 +192,7 @@ func (s *Service) Start(ctx context.Context, req MatrixRequest) (Run, error) {
 	if s.active == nil {
 		s.active = map[string]*activeRun{}
 	}
-	s.active[run.ID] = &activeRun{cancel: cancel, progress: Progress{Total: len(arms) * req.Repeats * len(cases)}}
+	s.active[run.ID] = &activeRun{cancel: cancel, progress: Progress{Total: len(arms) * req.Repeats * len(cases)}, done: make(chan struct{})}
 	s.mu.Unlock()
 	ok = true
 	go s.execute(runCtx, run, suite, cases, arms, release)
@@ -427,6 +429,23 @@ func (s *Service) setProgress(id string, fn func(p *Progress)) {
 	}
 }
 
+// Wait returns once the run has ended here and released the practice slot (at once when it is not running in this
+// process), or ctx's error.
+func (s *Service) Wait(ctx context.Context, id string) error {
+	s.mu.Lock()
+	a := s.active[id]
+	s.mu.Unlock()
+	if a == nil {
+		return nil
+	}
+	select {
+	case <-a.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // Running reports whether any matrix is running in this process.
 func (s *Service) Running() bool {
 	s.mu.Lock()
@@ -470,6 +489,7 @@ func (s *Service) execute(ctx context.Context, run Run, suite Suite, cases []Cas
 		s.mu.Lock()
 		if a := s.active[run.ID]; a != nil {
 			a.cancel()
+			close(a.done)
 		}
 		delete(s.active, run.ID)
 		s.mu.Unlock()

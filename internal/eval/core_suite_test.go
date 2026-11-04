@@ -337,16 +337,21 @@ func startMock(t *testing.T, py string, source, fixture []byte) (string, string)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-exited })
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	// The app is up when it answers and has failed when it exits; how long it takes to start is not under test.
+	for {
 		if resp, err := http.Get(base + "/"); err == nil {
 			resp.Body.Close()
 			return base, state
 		}
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case err := <-exited:
+			exited <- err
+			t.Fatalf("the mock app exited before it answered: %v", err)
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
-	t.Fatal("the mock app did not start")
-	return "", ""
 }
