@@ -27,9 +27,21 @@ func TestMaskTypedText(t *testing.T) {
 		"skill:operator -> $ gui type e3 'v9'":             "skill:operator -> $ gui type e3 [text]",
 		"gui type e3 - <<'EOF'\nline one\nline two\nEOF":   "gui type e3 - <<'EOF'\n[text]\nEOF",
 		`gui click e5`:                                     `gui click e5`,
-		`Ran gui type e3 "v1" and it is in the field`:      `Ran gui type e3 [text] and it is in the field`,
-		"Done: `gui type e3 'v2'` worked.":                 "Done: `gui type e3 [text]` worked.",
-		`echo gui type is a command`:                       `echo gui type is [text]`,
+		// Fails closed: everything after the target and flags is the text, to the command's end.
+		`gui type e3 'a' b`:                           `gui type e3 [text]`,
+		`gui type e3 'x' --append`:                    `gui type e3 [text]`,
+		`Ran gui type e3 "v1" and it is in the field`: `Ran gui type e3 [text]`,
+		"Done: `gui type e3 'v2'` worked.":            "Done: `gui type e3 [text]` worked.",
+		`echo gui type is a command`:                  `echo gui type is [text]`,
+		// What feeds a gui type that reads stdin is masked too.
+		`printf '%s' 'quince-77' | gui type e3 -`:                `printf [text] | gui type e3 -`,
+		`echo 'quince-77' | tr a-z A-Z | gui type e3 -`:          `echo [text] | tr [text] | gui type e3 -`,
+		"skill:operator -> $ printf 'quince-77' | gui type e3 -": "skill:operator -> $ printf [text] | gui type e3 -",
+		`gui observe; cat secret.txt | gui type e3`:              `gui observe; cat [text] | gui type e3`,
+		`gui type e3 - <<< 'quince-77'`:                          `gui type e3 - <<< [text]`,
+		`gui type e3 - < input.txt`:                              `gui type e3 - < input.txt`,
+		`printf 'a|b' | gui type e3 -`:                           `printf [text] | gui type e3 -`,
+		`printf x || gui type e3 -`:                              `printf x || gui type e3 -`,
 	}
 	for in, want := range cases {
 		if got := MaskTypedText(in); got != want {
@@ -38,6 +50,9 @@ func TestMaskTypedText(t *testing.T) {
 	}
 	if got := TypedTexts(`gui type e3 "it's \"x\"" && gui type e4 'two words'`); strings.Join(got, "|") != `it's "x"|two words` {
 		t.Errorf("TypedTexts = %q", got)
+	}
+	if got := TypedTexts(`printf '%s' 'quince-77' | gui type e3 - && gui type e4 - <<< 'pear-12'`); strings.Join(got, "|") != `%s|quince-77|pear-12` {
+		t.Errorf("TypedTexts of what feeds stdin = %q", got)
 	}
 }
 

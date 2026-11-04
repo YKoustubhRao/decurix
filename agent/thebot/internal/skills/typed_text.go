@@ -2,6 +2,7 @@ package skills
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -19,27 +20,166 @@ var typeValueFlags = map[string]bool{"--role": true, "--name": true, "--see": tr
 
 // MaskTypedText is s with the text every gui type command in it types shown as TypedTextMark (F-S3, defence in
 // depth): the step line, the job log, the stream and the snapshot never quote what is typed, so a secret nobody named
-// as one does not leave soul in them. The target stays (an element ref, a cell, a role and name, or --role/--name/
-// --see), and so do the flags; a here-document's body that gui type reads its text from is masked too. The command
-// that runs is never this text: only what soul shows of it.
+// as one does not leave soul in them. It fails closed:
+//   - the target stays (an element ref, a cell, a role and name, or --role/--name/--see), and so do the flags before
+//     it; everything after them to the command's end is the text, one mark;
+//   - a here-document's body or a here-string gui type reads is masked;
+//   - when gui type reads its text from stdin ("-", or no text) and a pipeline feeds it, the arguments of every
+//     command in that pipeline are masked too (printf [text] | gui type e3 -): their program names stay.
+//
+// The command that runs is never this text: only what soul shows of it.
 func MaskTypedText(s string) string {
 	if !strings.Contains(s, "gui") {
 		return s
 	}
-	var out strings.Builder
-	rest := s
-	for {
-		loc := guiTypeRe.FindStringIndex(rest)
-		if loc == nil {
-			out.WriteString(rest)
-			return out.String()
-		}
-		at := loc[1] // just past "type" and the blank after it (or the end)
-		out.WriteString(rest[:at])
-		masked, consumed, _ := maskTypeArgs(rest[at:])
-		out.WriteString(masked)
-		rest = rest[at+consumed:]
+	var spans []maskSpan
+	for _, g := range findGuiTypes(s) {
+		spans = append(spans, g.feeders...)
+		spans = append(spans, maskSpan{g.argsAt, g.argsAt + g.consumed, g.masked})
 	}
+	sort.SliceStable(spans, func(a, b int) bool { return spans[a].from < spans[b].from })
+	var out strings.Builder
+	last := 0
+	for _, sp := range spans {
+		if sp.from < last {
+			continue // inside a span already masked
+		}
+		out.WriteString(s[last:sp.from])
+		out.WriteString(sp.with)
+		last = sp.to
+	}
+	out.WriteString(s[last:])
+	return out.String()
+}
+
+// maskSpan is a part of a text to show as with.
+type maskSpan struct {
+	from, to int
+	with     string
+}
+
+// guiType is one gui type command found in a text: where its arguments start, what they are shown as and cover, the
+// texts it types (quotes undone), and the spans of the commands feeding its stdin.
+type guiType struct {
+	argsAt, consumed int
+	masked           string
+	typed            []string
+	feeders          []maskSpan
+	fed              []string // the feeding commands' arguments, quotes undone
+}
+
+// findGuiTypes is every gui type command in s.
+func findGuiTypes(s string) []guiType {
+	var out []guiType
+	pos := 0
+	for pos <= len(s) {
+		loc := guiTypeRe.FindStringIndex(s[pos:])
+		if loc == nil {
+			break
+		}
+		start := pos + loc[0]
+		if s[start] != 'g' {
+			start++ // the separator before "gui"
+		}
+		at := pos + loc[1]
+		a := maskTypeArgs(s[at:])
+		g := guiType{argsAt: at, consumed: a.consumed, masked: a.masked, typed: a.typed}
+		if a.stdin {
+			g.feeders, g.fed = feeders(s, start)
+		}
+		out = append(out, g)
+		pos = at + a.consumed
+		if a.consumed == 0 {
+			pos = at + 1
+		}
+	}
+	return out
+}
+
+// feeders are the commands of the pipeline that feeds the command starting at at (the commands before it, on its
+// line, joined to it by single pipes), as spans that keep each command's program name and mask its arguments, with
+// those arguments' words, quotes undone. None when the command is not fed by a pipe.
+func feeders(s string, at int) ([]maskSpan, []string) {
+	lineStart := strings.LastIndexByte(s[:at], '\n') + 1
+	line := s[lineStart:at]
+	// The commands of the line, split at separators and pipes, quotes kept whole.
+	type command struct {
+		from, to  int
+		pipeAfter bool
+	}
+	var cmds []command
+	from, i := 0, 0
+	for i < len(line) {
+		c := line[i]
+		switch {
+		case c == '\'' || c == '"':
+			j := i + 1
+			for j < len(line) && line[j] != c {
+				if c == '"' && line[j] == '\\' {
+					j++
+				}
+				j++
+			}
+			i = j + 1
+			continue
+		case c == '|' && i+1 < len(line) && line[i+1] == '|', c == '&' && i+1 < len(line) && line[i+1] == '&':
+			cmds = append(cmds, command{from, i, false})
+			i += 2
+			from = i
+			continue
+		case c == '|':
+			cmds = append(cmds, command{from, i, true})
+			i++
+			from = i
+			continue
+		case c == ';', c == '(', c == '`':
+			cmds = append(cmds, command{from, i, false})
+			i++
+			from = i
+			continue
+		case c == '$' && (i+1 == len(line) || line[i+1] == ' ') && (i == 0 || line[i-1] == ' '):
+			// a prompt ("$ command") starts a command
+			cmds = append(cmds, command{from, i, false})
+			i++
+			from = i
+			continue
+		}
+		i++
+	}
+	if strings.TrimSpace(line[min(from, len(line)):]) != "" || len(cmds) == 0 || !cmds[len(cmds)-1].pipeAfter {
+		return nil, nil // the gui type is not the end of a pipeline
+	}
+	var spans []maskSpan
+	var fed []string
+	for k := len(cmds) - 1; k >= 0 && cmds[k].pipeAfter; k-- {
+		c := cmds[k]
+		body := line[c.from:c.to]
+		lead := len(body) - len(strings.TrimLeft(body, " \t"))
+		trimmed := strings.TrimRight(body[lead:], " \t")
+		w, n := readWord(trimmed)
+		if n == 0 || n >= len(trimmed) {
+			_ = w
+			continue // a program with no arguments: nothing to mask
+		}
+		argsFrom := lineStart + c.from + lead + n
+		argsTo := lineStart + c.from + lead + len(trimmed)
+		spans = append(spans, maskSpan{argsFrom, argsTo, " " + TypedTextMark})
+		rest := trimmed[n:]
+		for {
+			rest = strings.TrimLeft(rest, " \t")
+			if rest == "" {
+				break
+			}
+			aw, an := readWord(rest)
+			if an == 0 {
+				rest = rest[1:]
+				continue
+			}
+			fed = append(fed, shellUnquote(aw.raw))
+			rest = rest[an:]
+		}
+	}
+	return spans, fed
 }
 
 // shellWord is one word of a command line as written: its raw span and whether it was quoted.
@@ -96,9 +236,18 @@ type piece struct {
 	end  int // where it ends in the arguments read
 }
 
-// maskTypeArgs masks the text of one gui type's arguments at the start of s, and returns what it wrote and how many
-// bytes of s that covers (up to the command's end: a separator, a newline, or past a here-document it reads).
-func maskTypeArgs(s string) (string, int, []piece) {
+// typeArgs is one gui type's arguments as shown: the masked text, how many bytes of the arguments it covers, the texts
+// it types (quotes undone; a here-document's body and a here-string included), and whether it reads stdin.
+type typeArgs struct {
+	masked   string
+	consumed int
+	typed    []string
+	stdin    bool
+}
+
+// maskTypeArgs masks the text of one gui type's arguments at the start of s: everything after the target and the
+// flags before it, to the command's end (a separator or a newline), and past a here-document or here-string it reads.
+func maskTypeArgs(s string) typeArgs {
 	var words []piece
 	i := 0
 	for {
@@ -142,10 +291,17 @@ func maskTypeArgs(s string) (string, int, []piece) {
 	}
 	text := plain
 	consumed := i
-	if len(text) > 1 && text[0].word.quoted {
-		// A quoted text is the whole of it as written: what follows is the line's own (in a sentence quoting the
-		// command, the words after it), and is kept.
-		consumed, text = text[0].end, text[:1]
+	var typed []string
+	stdin := len(text) == 0 || (len(text) == 1 && text[0].word.raw == "-")
+	if !stdin {
+		var words []string
+		for _, p := range text {
+			words = append(words, shellUnquote(p.word.raw))
+		}
+		typed = append(typed, strings.Join(words, " "))
+		if len(words) > 1 {
+			typed = append(typed, words...)
+		}
 	}
 
 	var b strings.Builder
@@ -159,13 +315,30 @@ func maskTypeArgs(s string) (string, int, []piece) {
 			b.WriteString(text[0].lead + TypedTextMark)
 		}
 	}
-	// A here-document gui type reads its text from: its body is masked, its markers kept.
-	if rest := s[consumed:]; strings.HasPrefix(strings.TrimLeft(rest, " \t"), "<<") {
-		body, n := maskHeredoc(rest)
+	rest := s[consumed:]
+	trimmed := strings.TrimLeft(rest, " \t")
+	switch {
+	case strings.HasPrefix(trimmed, "<<<"):
+		// A here-string gui type reads its text from: the word after it is the text.
+		lead := len(rest) - len(trimmed)
+		after := strings.TrimLeft(trimmed[3:], " \t")
+		w, n := readWord(after)
+		gap := len(trimmed) - 3 - len(after)
+		b.WriteString(rest[:lead] + "<<<" + strings.Repeat(" ", max(gap, 1)) + TypedTextMark)
+		consumed += lead + 3 + gap + n
+		typed = append(typed, shellUnquote(w.raw))
+		stdin = false
+	case strings.HasPrefix(trimmed, "<<"):
+		// A here-document gui type reads its text from: its body is masked, its markers kept.
+		body, n, lines := maskHeredoc(rest)
 		b.WriteString(body)
 		consumed += n
+		typed = append(typed, lines...)
+		stdin = false
+	case stdin && strings.HasPrefix(trimmed, "<"):
+		stdin = false // a file: its name is not the text
 	}
-	return b.String(), consumed, text
+	return typeArgs{masked: b.String(), consumed: consumed, typed: typed, stdin: stdin}
 }
 
 // hasValueFlag reports whether pieces hold --role, --name or --see.
@@ -183,16 +356,16 @@ var typeHeredocRe = regexp.MustCompile(`^([ \t]*<<-?[ \t]*)(['"]?)([A-Za-z_][A-Z
 
 // maskHeredoc is a here-document at the start of s (its "<<DELIM" first) with its body shown as TypedTextMark, and the
 // bytes it covers: through the delimiter's own line, or to the end when it never closes.
-func maskHeredoc(s string) (string, int) {
+func maskHeredoc(s string) (string, int, []string) {
 	m := typeHeredocRe.FindStringSubmatch(s)
 	if m == nil {
-		return "", 0
+		return "", 0, nil
 	}
 	head := m[0]
 	delim := m[3]
 	nl := strings.IndexByte(s, '\n')
 	if nl < 0 {
-		return s, len(s) // the operator and no body yet
+		return s, len(s), nil // the operator and no body yet
 	}
 	lineRest := s[len(head):nl] // anything after the delimiter on its line (a pipe, a flag) is kept
 	body := s[nl+1:]
@@ -203,43 +376,41 @@ func maskHeredoc(s string) (string, int) {
 			line = body[off : off+end]
 		}
 		if strings.TrimLeft(line, "\t") == delim {
-			return head + lineRest + "\n" + TypedTextMark + "\n" + line, nl + 1 + off + len(line)
+			return head + lineRest + "\n" + TypedTextMark + "\n" + line, nl + 1 + off + len(line), bodyLines(body[:off])
 		}
 		if end < 0 {
 			break
 		}
 		off += end + 1
 	}
-	return head + lineRest + "\n" + TypedTextMark, len(s)
+	return head + lineRest + "\n" + TypedTextMark, len(s), bodyLines(body)
+}
+
+// bodyLines is a here-document body's non-blank lines, and the body whole.
+func bodyLines(body string) []string {
+	body = strings.TrimRight(body, "\n")
+	if strings.TrimSpace(body) == "" {
+		return nil
+	}
+	out := []string{body}
+	for _, l := range strings.Split(body, "\n") {
+		if strings.TrimSpace(l) != "" && l != body {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // TypedTexts is what every gui type command in command types, as the shell would hand it over (quotes undone): the
-// whole text and each of its words. A here-document's body is not here (it is masked where shown, and gui reads it).
+// whole text and each of its words, a here-document's body and a here-string, and the arguments of the commands
+// piped into one that reads stdin.
 func TypedTexts(command string) []string {
 	var out []string
-	rest := command
-	for {
-		loc := guiTypeRe.FindStringIndex(rest)
-		if loc == nil {
-			return out
-		}
-		at := loc[1]
-		_, consumed, text := maskTypeArgs(rest[at:])
-		var words []string
-		for _, p := range text {
-			if p.word.raw == "-" {
-				continue
-			}
-			words = append(words, shellUnquote(p.word.raw))
-		}
-		if len(words) > 0 {
-			out = append(out, strings.Join(words, " "))
-			if len(words) > 1 {
-				out = append(out, words...)
-			}
-		}
-		rest = rest[at+consumed:]
+	for _, g := range findGuiTypes(command) {
+		out = append(out, g.typed...)
+		out = append(out, g.fed...)
 	}
+	return out
 }
 
 // shellUnquote is a shell word with its quoting undone: '...' as is, "..." and bare text with backslash escapes undone.
