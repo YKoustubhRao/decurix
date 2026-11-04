@@ -125,7 +125,7 @@ type pull struct {
 	events   string // the recording's events.jsonl blob, to order observations and frames
 	found    bool
 	gone     bool
-	labelled string         // the run folder's LABELLED as this pull read it, for EXPORTED's third line
+	labelled string         // the run folder's LABELLED as this pull read it: what EXPORTED carries after its 2nd line
 	capped   map[string]int // entries not kept for the file cap, by part
 	counted  map[string]int // entries kept or held, by part
 }
@@ -512,11 +512,13 @@ func sortedKeys(m map[string]int) []string {
 	return out
 }
 
-// writeExported writes ~/.decurix/runs/<task>/EXPORTED (C8), as the worker: the execution id, the manifest's SHA-256,
-// and the LABELLED this pull read (its content exactly, less trailing newlines; "" when it was not there), one line
-// each. The agent's retention compares the third line with LABELLED's content to know whether this export covers the
-// run's latest label: a tar copy rounds times to the second, so it cannot compare times. The folders on the way are
-// made when missing; existing ones keep their owner and mode.
+// writeExported writes ~/.decurix/runs/<task>/EXPORTED (C8), as the worker: the execution id and the manifest's
+// SHA-256, a line each, then the LABELLED this pull read, its content exactly, less trailing newlines. The agent writes
+// LABELLED as two lines (the execution id and the label's sequence number, H-PY-13), so EXPORTED is four lines; with
+// no LABELLED it is three, the last empty. The agent's retention compares everything after the second line with
+// LABELLED's content now to know whether this export covers the run's latest label: a tar copy rounds times to the
+// second, so it cannot compare times. The folders on the way are made when missing; existing ones keep their owner and
+// mode.
 func (p *Puller) writeExported(ctx context.Context, ref ExecutionRef, manifest, labelled string) error {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
