@@ -960,3 +960,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A test that times a handler or a subprocess against a wall-clock number fails under load
 - [part-6.md](gotchas/part-6.md): A download in a Dockerfile with no timeout can hang a first start for good
 - [part-6.md](gotchas/part-6.md): One Alpine mirror can stall for one repository only, every time
+- [part-6.md](gotchas/part-6.md): A timeout is not a retry, and a status sent is not a status seen

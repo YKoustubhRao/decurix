@@ -125,3 +125,8 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   for good. A timeout alone only fails the start: every apk use now loops over Alpine's official mirrors under a
   timeout (`desktop/electron/wsl/apk-safe.sh`, the same list inlined in the Alpine Dockerfiles), and the app's
   watchdog covers setup.sh too (`TestEveryApkUseFallsBackAcrossMirrors`, `apk-safe.test.js`).
+- **A timeout is not a retry, and a status sent is not a status seen.** A pip ReadTimeout from PyPI failed the
+  desktop image (pip's own retries spent), and the start screen stayed frozen on a line from the middle of the build
+  with no error and no Retry. Every download is now tried three times as a whole (10 s, then 30 s apart), the app
+  tries a failed build once more, and the screen acknowledges each status: a failure it does not show within 10 s
+  reloads it and opens a dialog with Retry; start failures are logged as `Start failed:` in desktop.log.
