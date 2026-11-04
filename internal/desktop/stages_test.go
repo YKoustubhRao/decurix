@@ -75,4 +75,3 @@ func TestBuilderStagesAreTaggedAndPrunedOnlyAfterSuccess(t *testing.T) {
 		t.Fatalf("%d prunes after a failed build, want none", failing.prunes)
 	}
 }
-

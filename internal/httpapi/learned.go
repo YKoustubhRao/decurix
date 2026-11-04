@@ -78,7 +78,7 @@ func (s *Server) desktopLearnedHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	// Withheld with what this desktop's records withheld (the values its person's replies held) before withhold.Text:
 	// the table is append-only, so a value that got in could never be taken out.
-	held := s.secretsSeen.For(worker)
+	held := s.heldFor(worker)
 	text = llmrec.WithholdValues(text, held)
 	payload, _ := json.Marshal(map[string]string{"question": llmrec.WithholdValues(body.Question, held)})
 	id, err := s.Tasks.AddJudgement(tasks.Judgement{

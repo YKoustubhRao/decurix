@@ -28,6 +28,7 @@ type fakeAPI struct {
 	ex    fakeExecs
 
 	inspect      func(name string) (container.InspectResponse, error)
+	containers   []container.Summary // what ContainerList lists
 	create       func(name string, cfg *container.Config, host *container.HostConfig) (container.CreateResponse, error)
 	volumeCreate func(opts volume.CreateOptions) (volume.Volume, error)
 	volumeGet    func(name string) (volume.Volume, error)
@@ -125,8 +126,9 @@ func (f *fakeAPI) CopyToContainer(_ context.Context, name, path string, content 
 	return nil
 }
 
-// ContainerList lists nothing: no fake desktop has home-copy helpers or other containers to list.
+// ContainerList lists containers, nothing unless set: no fake desktop has home-copy helpers or other containers to
+// list.
 func (f *fakeAPI) ContainerList(_ context.Context, o container.ListOptions) ([]container.Summary, error) {
 	f.record("list")
-	return nil, nil
+	return f.containers, nil
 }

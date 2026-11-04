@@ -449,7 +449,7 @@ func (s *Store) newEntry(desktopID, taskID, role, kind, content string) Entry {
 		DesktopID: desktopID,
 		Role:      role,
 		Kind:      kind,
-		Content:   content,
+		Content:   withhold.Known(content), // a value held for its owner's life, as the desktop may have written it
 		TaskID:    taskID,
 		CreatedAt: time.Now().UTC(),
 	}
@@ -492,9 +492,14 @@ func (s *Store) appendStep(desktopID, taskID, text string, action *Action) Step 
 
 	current := s.threadFor(desktopID)
 
+	if action != nil {
+		a := *action
+		a.Target, a.Change, a.Reason = withhold.Known(a.Target), withhold.Known(a.Change), withhold.Known(a.Reason)
+		action = &a
+	}
 	step := Step{
 		ID:        s.nextID(),
-		Text:      text,
+		Text:      withhold.Known(text),
 		Action:    action,
 		CreatedAt: time.Now().UTC(),
 	}

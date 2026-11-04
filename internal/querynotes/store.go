@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/withhold"
 )
 
 // QueryNote is a support note submitted from inside a running desktop, tied to a specific desktop and VM.
@@ -104,6 +105,8 @@ func NewStore(db *sql.DB) (*Store, error) {
 // than failing the desktop's callback: the same callback also carries the
 // chat reply and the task outcome, which must still land.
 func (s *Store) Add(note QueryNote) {
+	// A value held for its owner's life (a desktop's screen password) is withheld as the desktop may have written it.
+	note.Content, note.GateQuestion = withhold.Known(note.Content), withhold.Known(note.GateQuestion)
 	_, err := s.db.Exec(
 		`INSERT INTO query_notes (id, desktop_id, vm_name, filename, content, created_ns, kind, gate_request, gate_question)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)

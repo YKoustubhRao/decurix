@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/withhold"
 )
 
 // WorkerMemoryEntry stores a reusable workflow or decision learned while a desktop worker was operating.
@@ -109,6 +110,8 @@ func nextEntryID() string {
 // If an identical (desktop_id, title, summary) entry already exists, its timestamp
 // and category are refreshed and the existing entry is returned to prevent prompt bloat.
 func (s *Store) Record(desktopID, title, summary, category string) (WorkerMemoryEntry, error) {
+	// A value held for its owner's life (a desktop's screen password) is withheld as the desktop may have written it.
+	title, summary = withhold.Known(title), withhold.Known(summary)
 	if strings.TrimSpace(desktopID) == "" {
 		return WorkerMemoryEntry{}, fmt.Errorf("%w: desktop_id is required", ErrInvalid)
 	}

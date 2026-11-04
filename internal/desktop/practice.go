@@ -507,6 +507,7 @@ func (m *Manager) CreatePractice(ctx context.Context, spec PracticeSpec) (d Prac
 		return d, err
 	}
 	d = PracticeDesktop{ContainerID: created.ID, Name: PracticeDesktopID(spec.RunID)}
+	holdScreenPassword(d.Name, envValue(env, "VNC_PW")) // as a real desktop's (screenheld.go)
 	m.legacyMu.Lock()
 	if m.practiceDesks == nil {
 		m.practiceDesks = map[string]string{}
@@ -998,6 +999,7 @@ func (m *Manager) RemovePractice(ctx context.Context, ids ...string) error {
 		for name, cid := range m.practiceDesks {
 			if cid == id {
 				delete(m.practiceDesks, name)
+				releaseScreenPassword(name)
 			}
 		}
 		m.legacyMu.Unlock()
@@ -1027,6 +1029,9 @@ func (m *Manager) CleanupPractice(ctx context.Context) error {
 	for _, c := range list {
 		if err := m.client.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true, RemoveVolumes: true}); err != nil && !client.IsErrNotFound(err) {
 			return err
+		}
+		for _, n := range c.Names {
+			releaseScreenPassword(strings.TrimPrefix(n, "/"))
 		}
 	}
 	nets, err := m.client.NetworkList(ctx, network.ListOptions{Filters: filters.NewArgs(filters.Arg("label", PracticeLabel+"=true"))})

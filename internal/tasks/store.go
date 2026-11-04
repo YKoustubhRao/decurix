@@ -1108,6 +1108,13 @@ func promote(tx *sql.Tx, ref *executionRef, now time.Time) error {
 // belongs to no task - work a desktop did with nobody having asked, such as a
 // `gui` command typed by hand - which the records leave out.
 func (s *Store) AddStep(workerID, taskID string, step Step) (bool, error) {
+	// A value held for its owner's life (a desktop's screen password) is withheld as the desktop may have written it.
+	step.Text = withhold.Known(step.Text)
+	if step.Action != nil {
+		a := *step.Action
+		a.Target, a.Change, a.Reason = withhold.Known(a.Target), withhold.Known(a.Change), withhold.Known(a.Reason)
+		step.Action = &a
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1191,6 +1198,7 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 
 // RecordOutcomeExec is RecordOutcome, also returning the execution the outcome closed or paused ("" with the task).
 func (s *Store) RecordOutcomeExec(workerID, taskID string, outcome Outcome) (string, string, error) {
+	outcome.Reply = withhold.Known(outcome.Reply) // as AddStep
 	ended := ""
 	defer func() { s.tellEnded(workerID, ended) }() // runs after the unlock below
 	s.mu.Lock()

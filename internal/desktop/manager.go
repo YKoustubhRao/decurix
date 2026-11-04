@@ -379,6 +379,7 @@ func (m *Manager) runProvisioning(
 		if createdNetwork {
 			m.removeDesktopNetwork(context.Background(), sanitizedID)
 		}
+		// Its screen password stays held: a failed creation's is never used, and holding it only withholds more.
 
 		// A creation stopped by a delete is gone at once; a failure is kept 60s so the page can show it.
 		if ctx.Err() == context.Canceled {
@@ -427,6 +428,7 @@ func (m *Manager) runProvisioning(
 		env = append(env, AgentTokenEnv+"="+token)
 	}
 	env = m.withScreenPassword(env, name)
+	holdScreenPassword(name, m.screenPassword(name)) // its worker can read it (screenheld.go)
 	m.provisioningMu.Lock()
 	prov.Model = desktopModel(env)
 	m.provisioningMu.Unlock()
@@ -1212,8 +1214,9 @@ func (m *Manager) Delete(
 	// Its gate went with it: nothing is left to tell that its tasks ended.
 	m.forgetTaskEnded(sanitizedID)
 
-	// Its own network goes with it (kept while it is only stopped or paused).
+	// Its own network goes with it (kept while it is only stopped or paused), and so does its screen password.
 	m.removeDesktopNetwork(ctx, sanitizedID)
+	releaseScreenPassword(sanitizedID)
 
 	// A desktop made again under this name starts at the size it is given, not the old one's (B-25).
 	m.resourceMu.Lock()

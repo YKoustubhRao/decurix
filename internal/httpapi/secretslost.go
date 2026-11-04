@@ -3,6 +3,8 @@ package httpapi
 import (
 	"log"
 	"sync"
+
+	"github.com/YKoustubhRao/decurix/internal/desktop"
 )
 
 // What a person marked secret is held in memory only (secretsSeen), so a control-plane restart forgets it while a
@@ -61,4 +63,10 @@ func (s *Server) taskEnded(desktop, taskID string) {
 			delete(s.lostSecrets.byDesk, desktop)
 		}
 	}
+}
+
+// heldFor is what the records withhold of desktop worker's own values: what its person marked secret (secretsSeen)
+// and its screen password, which its worker can read (desktop.ScreenHeld, review RES-CP-1 B7).
+func (s *Server) heldFor(worker string) []string {
+	return append(s.secretsSeen.For(worker), desktop.ScreenHeld(worker)...)
 }

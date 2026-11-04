@@ -85,10 +85,13 @@ var notCardWord = regexp.MustCompile(`(?i)\b(?:a/c|account|acct|order|invoice|in
 // digit or a mark ("the password is incorrect" stays), and after a key's or token's name only when it reads as a
 // machine's token. A postal code is kept: "PIN code 576104", "Bengaluru PIN 560001"; six digits after a bare "PIN"
 // with no address beside them are withheld.
+//
+// A value held for its owner's life (HoldAlways: a desktop's screen password) is withheld first, wherever it is.
 func Text(text string) string {
 	if text == "" {
 		return text
 	}
+	text = Known(text)
 	for _, re := range shapes {
 		text = re.ReplaceAllString(text, Marker)
 	}

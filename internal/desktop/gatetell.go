@@ -74,8 +74,17 @@ func (m *Manager) TellGate(ctx context.Context, id string, n GateNotice) error {
 		}
 		return err
 	}
-	if len(n.Values) > 0 {
-		if err := pass("/secrets", m.SendGateSecrets(ctx, id, n.TaskID, n.Values)); err != nil {
+	// The desktop's screen password goes with every task's values (screenheld.go), so the gate withholds it from the
+	// questions it words. With no value of the task's own it is only a second wall: a gate that does not take it
+	// (one older than /secrets, or not up yet) is logged and the notice goes on as it did before.
+	screen := ScreenHeld(id)
+	if values := append(append([]string(nil), n.Values...), screen...); len(values) > 0 {
+		err := m.SendGateSecrets(ctx, id, n.TaskID, values)
+		if err != nil && len(n.Values) == 0 {
+			log.Printf("desktop %s: its gate did not take the screen password: %v", id, err)
+			err = nil
+		}
+		if err := pass("/secrets", err); err != nil {
 			return err
 		}
 	}
