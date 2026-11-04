@@ -58,6 +58,16 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The screen's WebSocket: bridged to the desktop's Xvnc by the control plane (screenbridge.go).
+	if len(parts) == 2 && isScreenStream(parts[1], isWebSocket) && screenBridgeOn() {
+		answered, err := s.bridgeScreen(w, r, parts[0])
+		if answered || (err != nil && provisioning()) {
+			return
+		}
+		proxyTargetFailed(w, r, err)
+		return
+	}
+
 	proxyURL, desktopID, err := s.Desktops.ProxyTarget(r.Context(), parts[0])
 
 	if err != nil && provisioning() {

@@ -1,7 +1,6 @@
 package desktop
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/des"
@@ -95,14 +94,18 @@ type shotEntry struct {
 	// savedSum is the digest of the thumbnail last written to disk: an unchanged screen is not written again.
 	savedSum [32]byte
 	// nameless is a desktop whose screen does not name its container (the RFB desktop name lacks its hostname): its
-	// cached address cannot be checked, so every capture asks Docker.
+	// cached address cannot be checked, so every session it opens asks Docker first.
 	nameless bool
+	// session is the open RFB session the thumbnails are taken from (screensession.go), nil when none is.
+	session atomic.Pointer[shotSession]
 }
 
-// shotFrame is one width's capture and when it was made.
+// shotFrame is one width's capture, when it was made, and the session's screen version it was encoded from.
 type shotFrame struct {
-	data []byte
-	at   time.Time
+	data    []byte
+	at      time.Time
+	version uint64
+	session *shotSession
 }
 
 // shotTarget is a desktop's VNC address and password as one container inspect read them, the container they were
@@ -172,8 +175,10 @@ func loadShotFromDisk(sanitizedID string) ([]byte, error) {
 //
 // It reads the framebuffer straight off the desktop's Xvnc over the Decurix
 // bridge network, which is what lets the dashboard show what a desktop is
-// actually doing without embedding a noVNC client per card. Frames are cached
-// for screenshotTTL and captured one-at-a-time per desktop.
+// actually doing without embedding a noVNC client per card. The screen comes
+// from one RFB session kept open while it is watched (screensession.go), which
+// Xvnc keeps up to date with what changed; a width's thumbnail is encoded again
+// only when the screen did change. Thumbnails are reused for screenshotTTL.
 func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([]byte, error) {
 	sanitizedID := sanitizeName(rawID)
 
@@ -193,10 +198,73 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 		return nil, entry.lastErr
 	}
 
-	// Only a cache miss pays for the ContainerInspect captureTarget needs to
-	// resolve the desktop's address and password - a cache hit above never
-	// touches Docker at all - and that answer is itself reused for
-	// shotTargetTTL, so a capture every sweep is not an inspect every sweep.
+	// An open session is the screen as it is now: nothing to connect to or ask Docker.
+	sess := entry.session.Load()
+	if sess != nil && !sess.alive() {
+		entry.session.CompareAndSwap(sess, nil)
+		if !errors.Is(sess.ended(), errSessionIdle) && !errors.Is(sess.ended(), errSessionDropped) {
+			// The screen went away (a restart, a pause): the address may be stale, so the next session asks Docker.
+			entry.target.Store(nil)
+		}
+		sess = nil
+	}
+	if sess == nil {
+		var err error
+		if sess, err = m.openShotSessionFor(ctx, rawID, sanitizedID, entry); err != nil || sess == nil {
+			if err == nil {
+				// Paused: the frozen thumbnail (openShotSessionFor found it).
+				m.touchViewed(sanitizedID)
+				return entry.data, nil
+			}
+			return entry.fail(err)
+		}
+	}
+
+	m.touchViewed(sanitizedID)
+
+	cached := entry.byWidth[maxWidth]
+	frame, version := sess.snapshot(cached.version, cached.data != nil && cached.session == sess)
+	now := time.Now()
+	if frame == nil {
+		// The screen did not change since this width was encoded: the same thumbnail, no encode.
+		cached.at = now
+		entry.byWidth[maxWidth] = cached
+		entry.lastErr = nil
+		return cached.data, nil
+	}
+
+	encoded, err := encodeThumbnail(frame, maxWidth)
+	if err != nil {
+		return entry.fail(err)
+	}
+
+	if entry.byWidth == nil {
+		entry.byWidth = map[int]shotFrame{}
+	}
+	for w, f := range entry.byWidth {
+		if now.Sub(f.at) >= screenshotTTL {
+			delete(entry.byWidth, w)
+		}
+	}
+	entry.byWidth[maxWidth] = shotFrame{data: encoded, at: now, version: version, session: sess}
+	entry.data = encoded
+	entry.at = now
+	entry.lastErr = nil
+	// The disk copy is what a paused or restarted desktop shows; an unchanged screen is not written again.
+	if sum := sha256.Sum256(encoded); sum != entry.savedSum {
+		entry.savedSum = sum
+		saveShot(sanitizedID, encoded)
+	}
+
+	return encoded, nil
+}
+
+// openShotSessionFor opens a session on desktop rawID's screen for entry (whose lock the caller holds), and keeps it
+// on the entry. A paused desktop opens none: its frozen thumbnail is put in entry.data and (nil, nil) returned.
+//
+// Only opening a session pays for the ContainerInspect captureTarget needs to resolve the desktop's address and
+// password, and that answer is itself reused for shotTargetTTL.
+func (m *Manager) openShotSessionFor(ctx context.Context, rawID, sanitizedID string, entry *shotEntry) (*shotSession, error) {
 	var target *shotTarget
 	var err error
 	cached := false
@@ -213,8 +281,7 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 			if entry.data != nil {
 				// Container is frozen: its screen is completely static. Return
 				// the frozen thumbnail without attempting to dial VNC or failing.
-				m.touchViewed(sanitizedID)
-				return entry.data, nil
+				return nil, nil
 			}
 			// Fall back to the screenshot persisted on disk before the pause or restart.
 			if diskData, diskErr := loadShotFromDisk(sanitizedID); diskErr == nil && len(diskData) > 0 {
@@ -222,58 +289,32 @@ func (m *Manager) Screenshot(ctx context.Context, rawID string, maxWidth int) ([
 				entry.byWidth = nil
 				entry.at = time.Now()
 				entry.lastErr = nil
-				m.touchViewed(sanitizedID)
-				return diskData, nil
+				return nil, nil
 			}
 		}
-		return entry.fail(err)
+		return nil, err
 	}
 
-	m.touchViewed(sanitizedID)
-
-	frame, screenName, err := captureFrame(ctx, target.addr, target.password)
+	sess, err := openShotSession(ctx, target)
 	if err != nil {
 		// The address may be stale (a restart, a pause): the next capture asks Docker again.
 		entry.target.Store(nil)
-		return entry.fail(err)
+		return nil, err
 	}
 	// The screen must be this desktop's. A cached address is used only while the screen it reaches names the container
 	// it was read for: an address another container now holds (a restart, a daemon restart) is never shown as this
 	// desktop's, even where desktops share one password (the old default). A screen that does not name its container
-	// at all is checked by Docker on every capture instead.
-	if !strings.Contains(screenName, target.hostname) {
+	// at all is checked by Docker before every session instead.
+	if !strings.Contains(sess.name, target.hostname) {
 		entry.target.Store(nil)
 		if cached {
-			return entry.fail(errors.New("the cached screen address reached another screen"))
+			sess.close(errSessionDropped)
+			return nil, errors.New("the cached screen address reached another screen")
 		}
 		entry.nameless = true
 	}
-
-	encoded, err := encodeThumbnail(frame, maxWidth)
-	if err != nil {
-		return entry.fail(err)
-	}
-
-	now := time.Now()
-	if entry.byWidth == nil {
-		entry.byWidth = map[int]shotFrame{}
-	}
-	for w, f := range entry.byWidth {
-		if now.Sub(f.at) >= screenshotTTL {
-			delete(entry.byWidth, w)
-		}
-	}
-	entry.byWidth[maxWidth] = shotFrame{data: encoded, at: now}
-	entry.data = encoded
-	entry.at = now
-	entry.lastErr = nil
-	// The disk copy is what a paused or restarted desktop shows; an unchanged screen is not written again.
-	if sum := sha256.Sum256(encoded); sum != entry.savedSum {
-		entry.savedSum = sum
-		saveShot(sanitizedID, encoded)
-	}
-
-	return encoded, nil
+	entry.session.Store(sess)
+	return sess, nil
 }
 
 // forgetShotTarget drops a desktop's cached VNC address, so its next capture asks Docker (a lifecycle change).
@@ -292,6 +333,23 @@ func (m *Manager) forgetShotTargetOf(ref string) {
 		t := entry.target.Load()
 		if key == id || (t != nil && t.containerID != "" && (t.containerID == ref || strings.HasPrefix(t.containerID, ref))) {
 			entry.target.Store(nil)
+			// Its session goes too: a frozen or restarted screen is not the one it was keeping.
+			if sess := entry.session.Swap(nil); sess != nil {
+				sess.close(errSessionDropped)
+			}
+		}
+	}
+}
+
+// dropShots forgets desktop id's thumbnails and closes its session (it was deleted).
+func (m *Manager) dropShots(id string) {
+	m.shotMu.Lock()
+	entry := m.shots[id]
+	delete(m.shots, id)
+	m.shotMu.Unlock()
+	if entry != nil {
+		if sess := entry.session.Swap(nil); sess != nil {
+			sess.close(errSessionDropped)
 		}
 	}
 }
@@ -341,46 +399,6 @@ func (m *Manager) captureTarget(ctx context.Context, rawID string) (*shotTarget,
 		}
 	}
 	return target, nil
-}
-
-// captureFrame opens one RFB session against a desktop's Xvnc and returns its
-// full screen as an image. The session is deliberately short-lived: connect,
-// authenticate, ask for one non-incremental update, read it, hang up.
-func captureFrame(ctx context.Context, addr, password string) (*image.RGBA, string, error) {
-	dialer := net.Dialer{
-		Timeout: 2 * time.Second,
-	}
-
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return nil, "", fmt.Errorf("connect to desktop screen: %w", err)
-	}
-
-	defer conn.Close()
-
-	deadline := time.Now().Add(captureTimeout)
-
-	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
-		deadline = ctxDeadline
-	}
-
-	if err := conn.SetDeadline(deadline); err != nil {
-		return nil, "", err
-	}
-
-	reader := bufio.NewReaderSize(conn, 64*1024)
-
-	if err := rfbHandshake(reader, conn, password); err != nil {
-		return nil, "", err
-	}
-
-	width, height, name, err := rfbInit(reader, conn)
-	if err != nil {
-		return nil, "", err
-	}
-
-	frame, err := rfbReadFrame(reader, conn, width, height)
-	return frame, name, err
 }
 
 // rfbHandshake performs the RFB 3.8 version and security exchange, answering
@@ -534,9 +552,10 @@ func bits8Reverse(b byte) byte {
 	return out
 }
 
-// rfbInit completes ClientInit/ServerInit and pins the session to a pixel
-// format this client can decode, returning the desktop's screen size.
-func rfbInit(reader io.Reader, writer io.Writer) (width, height int, name string, err error) {
+// rfbInit completes ClientInit/ServerInit, pins the session to a pixel format
+// this client can decode and offers encodings, returning the desktop's screen
+// size and name.
+func rfbInit(reader io.Reader, writer io.Writer, encodings ...int32) (width, height int, name string, err error) {
 	// shared=1: never disconnect whoever is already looking at this desktop.
 	// A thumbnail must be invisible to the human using the screen.
 	if _, err := writer.Write([]byte{1}); err != nil {
@@ -596,132 +615,20 @@ func rfbInit(reader io.Reader, writer io.Writer) (width, height int, name string
 		return 0, 0, "", err
 	}
 
-	// Offer Raw only. Anything else would need a decoder here, and a
+	// Only what the session decodes (Raw, CopyRect, DesktopSize): anything else would need a decoder here, and a
 	// thumbnail is not worth carrying one.
-	setEncodings := make([]byte, 8)
+	setEncodings := make([]byte, 4+4*len(encodings))
 	setEncodings[0] = msgSetEncodings
-	binary.BigEndian.PutUint16(setEncodings[2:4], 1)
-	binary.BigEndian.PutUint32(setEncodings[4:8], uint32(encodingRaw))
+	binary.BigEndian.PutUint16(setEncodings[2:4], uint16(len(encodings)))
+	for i, e := range encodings {
+		binary.BigEndian.PutUint32(setEncodings[4+4*i:8+4*i], uint32(e))
+	}
 
 	if _, err := writer.Write(setEncodings); err != nil {
 		return 0, 0, "", err
 	}
 
 	return width, height, name, nil
-}
-
-// rfbReadFrame requests one full (non-incremental) framebuffer update and
-// paints every rectangle it returns into a single image.
-func rfbReadFrame(reader io.Reader, writer io.Writer, width, height int) (*image.RGBA, error) {
-	request := make([]byte, 10)
-	request[0] = msgFramebufferUpdateRequest
-	request[1] = 0 // non-incremental: send the whole screen, not a delta
-	binary.BigEndian.PutUint16(request[6:8], uint16(width))
-	binary.BigEndian.PutUint16(request[8:10], uint16(height))
-
-	if _, err := writer.Write(request); err != nil {
-		return nil, err
-	}
-
-	frame := image.NewRGBA(image.Rect(0, 0, width, height))
-
-	for {
-		messageType := make([]byte, 1)
-
-		if _, err := io.ReadFull(reader, messageType); err != nil {
-			return nil, fmt.Errorf("read screen update: %w", err)
-		}
-
-		switch messageType[0] {
-		case msgFramebufferUpdate:
-			if err := rfbPaintUpdate(reader, frame); err != nil {
-				return nil, err
-			}
-
-			return frame, nil
-
-		// The server may volunteer these before the update lands; skipping
-		// them keeps the read in sync rather than treating a bell as data.
-		case msgSetColourMapEntries:
-			if err := rfbSkipColourMap(reader); err != nil {
-				return nil, err
-			}
-
-		case msgBell:
-
-		case msgServerCutText:
-			if err := rfbSkipCutText(reader); err != nil {
-				return nil, err
-			}
-
-		default:
-			return nil, fmt.Errorf("unexpected RFB message type %d", messageType[0])
-		}
-	}
-}
-
-// rfbPaintUpdate reads one FramebufferUpdate's rectangles into frame.
-func rfbPaintUpdate(reader io.Reader, frame *image.RGBA) error {
-	var header [3]byte
-
-	if _, err := io.ReadFull(reader, header[:]); err != nil {
-		return fmt.Errorf("read update header: %w", err)
-	}
-
-	bounds := frame.Bounds()
-	rectangles := binary.BigEndian.Uint16(header[1:3])
-
-	// Reuse a single row buffer across all rectangles and scanlines.
-	rowBuf := make([]byte, bounds.Dx()*4)
-
-	for i := 0; i < int(rectangles); i++ {
-		var spec [12]byte
-
-		if _, err := io.ReadFull(reader, spec[:]); err != nil {
-			return fmt.Errorf("read rectangle header: %w", err)
-		}
-
-		x := int(binary.BigEndian.Uint16(spec[0:2]))
-		y := int(binary.BigEndian.Uint16(spec[2:4]))
-		w := int(binary.BigEndian.Uint16(spec[4:6]))
-		h := int(binary.BigEndian.Uint16(spec[6:8]))
-		encoding := int32(binary.BigEndian.Uint32(spec[8:12]))
-
-		if encoding != encodingRaw {
-			return fmt.Errorf("desktop sent unsupported encoding %d", encoding)
-		}
-
-		if w == 0 || h == 0 {
-			continue
-		}
-
-		if x < 0 || y < 0 || x+w > bounds.Dx() || y+h > bounds.Dy() {
-			return fmt.Errorf("desktop sent a rectangle outside the screen")
-		}
-
-		row := rowBuf[:w*4]
-
-		for line := 0; line < h; line++ {
-			if _, err := io.ReadFull(reader, row); err != nil {
-				return fmt.Errorf("read rectangle pixels: %w", err)
-			}
-
-			offset := frame.PixOffset(x, y+line)
-
-			// Little-endian BGRA on the wire (see the pixel format pinned in
-			// rfbInit) to RGBA in the image, alpha forced opaque.
-			for px := 0; px < w; px++ {
-				frame.Pix[offset+0] = row[px*4+2]
-				frame.Pix[offset+1] = row[px*4+1]
-				frame.Pix[offset+2] = row[px*4+0]
-				frame.Pix[offset+3] = 255
-
-				offset += 4
-			}
-		}
-	}
-
-	return nil
 }
 
 // rfbSkipColourMap discards a SetColourMapEntries message.

@@ -1206,9 +1206,8 @@ func (m *Manager) Delete(
 	delete(m.startedCache, name)
 	m.startedMu.Unlock()
 
-	m.shotMu.Lock()
-	delete(m.shots, sanitizeName(id))
-	m.shotMu.Unlock()
+	// Its thumbnails go, and the screen session they came from.
+	m.dropShots(sanitizeName(id))
 
 	m.viewedMu.Lock()
 	delete(m.viewed, sanitizeName(id))
