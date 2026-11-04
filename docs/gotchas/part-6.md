@@ -120,3 +120,8 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   `timeout N` with three tries for apk, `go mod download` and piped installers), pinned by
   `TestEveryDockerfileDownloadIsBounded`; the app cancels a build silent for 5 minutes (15 for the image builds,
   whose quiet compile steps print nothing) and tries once more (`desktop/electron/build-watchdog.js`).
+- **One Alpine mirror can stall for one repository only, every time.** On the owner's network dl-cdn served
+  main/APKINDEX in a second while community/APKINDEX opened and sent nothing; `apk update` in the WSL setup waited
+  for good. A timeout alone only fails the start: every apk use now loops over Alpine's official mirrors under a
+  timeout (`desktop/electron/wsl/apk-safe.sh`, the same list inlined in the Alpine Dockerfiles), and the app's
+  watchdog covers setup.sh too (`TestEveryApkUseFallsBackAcrossMirrors`, `apk-safe.test.js`).
