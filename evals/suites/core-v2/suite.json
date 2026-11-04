@@ -16,6 +16,7 @@
   "cases": [
     "bill-entry-month-first",
     "payment-shared-tail",
+    "payee-shared-tail-slip",
     "customer-state-custom",
     "ticket-filter-then-edit",
     "bill-needs-centre-custom"

@@ -67,7 +67,7 @@ func TestCoreSuiteLoads(t *testing.T) { calibrateSuite(t, "core-v1", 12, 9) }
 
 // TestCoreV2SuiteLoads is the same for the mechanism suite. Its gui-driven solutions (the comparator's own decision,
 // a dropdown the page draws, a list filter) need the practice desktop: the live calibration covers them.
-func TestCoreV2SuiteLoads(t *testing.T) { calibrateSuite(t, "core-v2", 5, 2) }
+func TestCoreV2SuiteLoads(t *testing.T) { calibrateSuite(t, "core-v2", 6, 2) }
 
 // calibrateSuite loads a dev suite and calibrates it offline: nothing and ask pass no case, and at least minOffline
 // cases' scripted solutions pass their own graders on the real mock.

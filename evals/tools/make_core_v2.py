@@ -33,6 +33,13 @@ FILES = {
         ["Fenwick Haulage Services", "Quillon Cooperative Bank", "927731551029384756"],
         ["Ostrava Parcel Lines", "Larkmere Savings Bank", "440912660000123987"],
     ]}),
+    # The same sheet for the slip probe: a payee to add whose account shares its last 10 digits with the row above it.
+    "payee-shared-tail-slip/files/payees.xlsx": lambda: xlsx_bytes({"Payees": [
+        ["Name", "Bank", "Account number"],
+        ["Fenwick Haulage Co", "Larkmere Savings Bank", "618204551029384756"],
+        ["Fenwick Haulage Services", "Quillon Cooperative Bank", "927731551029384756"],
+        ["Ostrava Parcel Lines", "Larkmere Savings Bank", "440912660000123987"],
+    ]}),
     # No cost centre anywhere on the bill.
     "bill-needs-centre-custom/files/bill.pdf": lambda: bill(
         "Pellworth Glassworks", "9 Furnace Row, Eastbrook", "PW-2207", "2026-07-08", "2026-08-07",
