@@ -45,9 +45,11 @@ type Manager struct {
 	taskEnded pendingTaskEnded
 
 	// legacyGates is the practice containers CreatePractice made with PracticeSpec.LegacyGate (by container ID):
-	// the only desktops whose gate may answer 404 to /secrets and /request (TellGate).
-	legacyMu    sync.Mutex
-	legacyGates map[string]bool
+	// the only desktops whose gate may answer 404 to /secrets and /request (TellGate). practiceDesks is every practice
+	// desktop CreatePractice made, by name, to its container ID: how a practice task's end finds its gate.
+	legacyMu      sync.Mutex
+	legacyGates   map[string]bool
+	practiceDesks map[string]string
 
 	// listMu guards the List result cache: one Docker round trip answers every
 	// List call inside listCacheTTL, and concurrent callers share the one in
@@ -228,6 +230,9 @@ func (m *Manager) BeginProvisioning(
 	sanitizedID := sanitizeName(name)
 	if sanitizedID == "" {
 		return nil, fmt.Errorf("invalid desktop name")
+	}
+	if ReservedName(sanitizedID) {
+		return nil, fmt.Errorf("%w: %q", ErrReservedName, name)
 	}
 	// Host paths are no longer copied into a new desktop (the copy ran as root on a path the worker could shape,
 	// B-01); a desktop's one way to the PC's files is its shared folder.
@@ -1388,7 +1393,7 @@ func (m *Manager) SendRequest(ctx context.Context, id string, rb RequestBody) er
 	}
 
 	if inspect.State.Paused {
-		if err := m.client.ContainerUnpause(ctx, name); err != nil {
+		if err := m.wake(ctx, name); err != nil {
 			return fmt.Errorf("auto-wake desktop %s: %w", desktopID, err)
 		}
 	}

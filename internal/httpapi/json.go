@@ -32,6 +32,11 @@ func jsonError(w http.ResponseWriter, err error) {
 		return
 	}
 
+	if errors.Is(err, desktop.ErrReservedName) {
+		jsonStatusError(w, http.StatusBadRequest, "Names starting with practice- or readiness- are kept for practice and readiness runs. Pick another name.")
+		return
+	}
+
 	if errors.Is(err, memory.ErrInvalid) {
 		jsonStatusError(w, http.StatusBadRequest, "invalid request")
 		return

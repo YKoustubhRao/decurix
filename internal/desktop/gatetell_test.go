@@ -56,11 +56,11 @@ func practiceGateManager(t *testing.T, ports *practicePorts) (*Manager, Practice
 	t.Helper()
 	fake := &fakeAPI{}
 	fake.inspect = func(name string) (container.InspectResponse, error) {
-		if name != "practice-r1" {
+		if name != "cid-practice-r1" {
 			return container.InspectResponse{}, errFakeNotFound
 		}
 		return container.InspectResponse{
-			ContainerJSONBase: &container.ContainerJSONBase{ID: "cid-practice-r1", State: &container.State{Running: true}},
+			ContainerJSONBase: &container.ContainerJSONBase{ID: "cid-practice-r1", Name: "/practice-r1", State: &container.State{Running: true}},
 			Config:            &container.Config{Labels: map[string]string{PracticeLabel: "true", "decurix-practice-run": "r1"}},
 			NetworkSettings: &container.NetworkSettings{Networks: map[string]*network.EndpointSettings{
 				PracticeNetworkName: {IPAddress: "172.30.0.5"},
@@ -70,6 +70,7 @@ func practiceGateManager(t *testing.T, ports *practicePorts) (*Manager, Practice
 	m := newManagerWith(fake)
 	m.HostGUISecret = []byte("secret")
 	m.httpClient = &http.Client{Transport: ports}
+	m.practiceDesks = map[string]string{"practice-r1": "cid-practice-r1"} // as CreatePractice records it
 	saved := agentClient
 	agentClient = &http.Client{Transport: ports}
 	t.Cleanup(func() { agentClient = saved })
@@ -222,11 +223,125 @@ func TestAPracticeTaskEndReachesItsGate(t *testing.T) {
 	ports := &practicePorts{}
 	m, _ := practiceGateManager(t, ports)
 	m.queueTaskEnded("practice-r1", "t1")
-	m.flushTaskEnded(context.Background(), "practice-r1")
+	m.flushTaskEnded(m.taskEndedContext("practice-r1"), "practice-r1")
 	if got := ports.events(); got != "gate /task-ended" {
 		t.Fatalf("events = %s", got)
 	}
 	if left := m.pendingTaskEndedFor("practice-r1"); len(left) != 0 {
 		t.Fatalf("kept %v", left)
+	}
+}
+
+// A gate post reaches a practice container only when the practice caller opts into that container, and only while it
+// is that practice desktop: a container without PracticeLabel, a mock app, or one of another name is refused, and is
+// never legacy whatever the record says (review CP-A-6 N2). A production door naming practice-r1 opts into nothing,
+// so it never reaches the practice container.
+func TestOnlyTheRecordedPracticeContainerIsAGateTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		labels map[string]string
+		cname  string
+	}{
+		{"no practice label", map[string]string{"decurix-practice-run": "r1"}, "/practice-r1"},
+		{"a mock app", map[string]string{PracticeLabel: "true", "decurix-practice-mock": "true"}, "/practice-r1"},
+		{"another name", map[string]string{PracticeLabel: "true"}, "/practice-r2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ports := &practicePorts{status: map[string]int{"/secrets": http.StatusNotFound, "/request": http.StatusNotFound}}
+			m, d := practiceGateManager(t, ports)
+			m.legacyGates = map[string]bool{d.ContainerID: true}
+			m.client.(*fakeAPI).inspect = func(string) (container.InspectResponse, error) {
+				return container.InspectResponse{
+					ContainerJSONBase: &container.ContainerJSONBase{ID: d.ContainerID, Name: tc.cname, State: &container.State{Running: true}},
+					Config:            &container.Config{Labels: tc.labels},
+					NetworkSettings: &container.NetworkSettings{Networks: map[string]*network.EndpointSettings{
+						PracticeNetworkName: {IPAddress: "172.30.0.5"}}},
+				}, nil
+			}
+			ctx := withPracticeTarget(context.Background(), d.ContainerID)
+			if m.legacyPracticeGate(ctx, d.Name) {
+				t.Fatal("legacy though the container is not the practice desktop")
+			}
+			if err := postPractice(m, WithGateNotice(context.Background(), practiceRequest("t1", practiceSecretRequest)), d, "t1", practiceSecretRequest); err == nil {
+				t.Fatalf("delivered: %s", ports.events())
+			}
+			if ports.events() != "" {
+				t.Fatalf("something was posted: %s", ports.events())
+			}
+		})
+	}
+
+	ports := &practicePorts{}
+	m, d := practiceGateManager(t, ports)
+	m.legacyGates = map[string]bool{d.ContainerID: true}
+	if err := m.TellGate(context.Background(), d.Name, practiceRequest("t1", practiceSecretRequest)); err == nil || ports.events() != "" {
+		t.Fatalf("a production door reached the practice container: %v, %s", err, ports.events())
+	}
+	if m.legacyPracticeGate(context.Background(), d.Name) {
+		t.Fatal("a production door is legacy")
+	}
+}
+
+// Names practice and readiness runs give their workers are refused at create, on every path (BeginProvisioning).
+func TestPracticeAndReadinessNamesAreRefusedAtCreate(t *testing.T) {
+	m := newManagerWith(&fakeAPI{})
+	m.HostGUISecret = []byte("secret")
+	for _, name := range []string{"practice-e0123456789abcdef", "Readiness-x", "readiness-e01"} {
+		if _, err := m.BeginProvisioning(name, "basic", "thebot", Brain{}, 1, 2048, "", "", "", nil, nil, nil); !errors.Is(err, ErrReservedName) {
+			t.Errorf("%q: %v, want ErrReservedName", name, err)
+		}
+	}
+	if ReservedName("my-practice-box") || ReservedName("box") {
+		t.Error("a name that only contains the word is reserved")
+	}
+}
+
+// unpauseRacer is a daemon whose desktop someone else wakes first: its unpause fails as Docker's "is not paused".
+type unpauseRacer struct {
+	*fakeAPI
+	mu     sync.Mutex
+	paused bool
+}
+
+func (u *unpauseRacer) ContainerUnpause(context.Context, string) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.paused = false
+	return errors.New("Error response from daemon: Container cid-box is not paused")
+}
+
+// A desktop another caller woke first is woken, not a failure (review CP-A-6 N3): a gate post and a request to it go on.
+func TestADesktopWokenByAnotherCallerCountsAsWoken(t *testing.T) {
+	racer := &unpauseRacer{fakeAPI: &fakeAPI{}, paused: true}
+	racer.inspect = func(string) (container.InspectResponse, error) {
+		racer.mu.Lock()
+		defer racer.mu.Unlock()
+		return container.InspectResponse{
+			ContainerJSONBase: &container.ContainerJSONBase{ID: "cid-box", State: &container.State{Running: true, Paused: racer.paused}},
+			Config:            &container.Config{Labels: map[string]string{GateLabel: "1"}},
+			NetworkSettings: &container.NetworkSettings{Networks: map[string]*network.EndpointSettings{
+				NetworkName: {IPAddress: "10.0.0.5"}}},
+		}, nil
+	}
+	gate := &gateRecorder{}
+	m := newManagerWith(racer)
+	m.HostGUISecret = []byte("secret")
+	m.httpClient = &http.Client{Transport: gate}
+	if err := m.SendGateRequest(context.Background(), "box", "t1", "export the ledger"); err != nil {
+		t.Fatalf("a gate post to a desktop woken by another caller: %v", err)
+	}
+	racer.mu.Lock()
+	racer.paused = true
+	racer.mu.Unlock()
+	if err := m.SendRequest(context.Background(), "box", RequestBody{Content: "export the ledger", TaskID: "t1"}); err != nil {
+		t.Fatalf("a request to a desktop woken by another caller: %v", err)
+	}
+	// A desktop still paused after a failed unpause is still a failure.
+	stuck := &unpauseRacer{fakeAPI: &fakeAPI{}}
+	stuck.inspect = func(string) (container.InspectResponse, error) {
+		return container.InspectResponse{ContainerJSONBase: &container.ContainerJSONBase{ID: "cid-box", State: &container.State{Running: true, Paused: true}}}, nil
+	}
+	if err := newManagerWith(stuck).wake(context.Background(), "desktop_box"); err == nil {
+		t.Fatal("a desktop still paused counted as woken")
 	}
 }

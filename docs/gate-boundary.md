@@ -202,14 +202,23 @@ matches byte for byte). Text is signed as it is sent: a byte that is not valid U
   (`desktop.TellGate`) and from the same C14 decision (`practice.RequestGateNotice` / `ReplyGateNotice`, which apply
   `tasks.RequestForm` / `tasks.ReplyForm`, the rules `tasks.Store.StoredForm` applies). A practice `/request` with no
   notice, or with a notice for another task, is refused, and the agent is told "secret" exactly when production would
-  tell it. So an eval measures the gate production runs. (A practice calibration replay or skill run tells the gate
-  nothing yet; its gate then names no site and asks about every password, the safe side.)
+  tell it. So an eval measures the gate production runs.
+  - The practice caller opts into its own container (`PracticeAgentRequest`, and a practice task's end by the container
+    `CreatePractice` recorded); nothing finds a practice gate by a desktop's name, and a production door never reaches
+    one. The container must still carry `PracticeLabel`, be no mock app and bear that name.
+  - Names starting with `practice-` or `readiness-` are refused at every create (`desktop.ReservedName`, in
+    `BeginProvisioning`), so a person's desktop never shares a practice desktop's id, gate key or gate.
+  - A practice calibration replay or skill run tells the gate nothing yet, and that fails closed: the gate binds its
+    request copy to the task (H-CP-5, `approval.gate_request_text(task_id)`), so another task's copy names no site
+    and the gate asks about every password.
 - **The one exception: pinned old code in practice.** An eval arm that runs its own agent tree (`agent_tree`, for
   example eb15981 to measure old code) runs that tree's gate, which may predate `/secrets` and `/request`. Only such
   an arm creates its practice desktop with `PracticeSpec.LegacyGate`; `CreatePractice` records that container, and
   for it alone a 404 from `/secrets` or `/request` is logged and the request still delivered. Any other failure there
   fails closed, the practice runner never sets it, and no desktop of a person can have it: it is a control-plane
-  record of a practice container, not a label or a file. A practice desktop holds only fictional case data, so what
+  record of a practice container, not a label or a file. The record is in memory only: a control-plane restart
+  clears it, and a pinned old arm then fails closed (its requests are not delivered), so an eval in flight across a
+  restart loses its old arm. A practice desktop holds only fictional case data, so what
   the old gate does not withhold is fictional; this is an accommodation for measuring old code, never a production
   path.
 - **A task's end** never holds up the close. The notice is sent in the background. One the gate did not take is kept

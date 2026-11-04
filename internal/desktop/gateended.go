@@ -42,7 +42,17 @@ func (m *Manager) GateTaskEnded(id, taskID string) {
 		return
 	}
 	m.queueTaskEnded(id, taskID)
-	go m.flushTaskEnded(context.Background(), id)
+	go m.flushTaskEnded(m.taskEndedContext(id), id)
+}
+
+// taskEndedContext is the context a task's end is told to desktop id's gate in: for a practice desktop, its gate is
+// the container CreatePractice recorded for that name (withPracticeTarget), never one found by the name.
+func (m *Manager) taskEndedContext(id string) context.Context {
+	ctx := context.Background()
+	if cid := m.practiceContainer(id); cid != "" {
+		ctx = withPracticeTarget(ctx, cid)
+	}
+	return ctx
 }
 
 // queueTaskEnded keeps a notice for desktop id's gate until the gate takes it, within maxPendingTaskEnded.

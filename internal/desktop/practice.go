@@ -505,14 +505,18 @@ func (m *Manager) CreatePractice(ctx context.Context, spec PracticeSpec) (d Prac
 		return d, err
 	}
 	d = PracticeDesktop{ContainerID: created.ID, Name: PracticeDesktopID(spec.RunID)}
+	m.legacyMu.Lock()
+	if m.practiceDesks == nil {
+		m.practiceDesks = map[string]string{}
+	}
+	m.practiceDesks[d.Name] = created.ID
 	if spec.LegacyGate && len(spec.AgentTree) > 0 {
-		m.legacyMu.Lock()
 		if m.legacyGates == nil {
 			m.legacyGates = map[string]bool{}
 		}
 		m.legacyGates[created.ID] = true
-		m.legacyMu.Unlock()
 	}
+	m.legacyMu.Unlock()
 	defer func() {
 		if err != nil {
 			_ = m.RemovePractice(context.WithoutCancel(ctx), created.ID)
@@ -954,6 +958,11 @@ func (m *Manager) RemovePractice(ctx context.Context, ids ...string) error {
 		}
 		m.legacyMu.Lock()
 		delete(m.legacyGates, id)
+		for name, cid := range m.practiceDesks {
+			if cid == id {
+				delete(m.practiceDesks, name)
+			}
+		}
 		m.legacyMu.Unlock()
 		if err := m.client.ContainerRemove(ctx, id, container.RemoveOptions{Force: true, RemoveVolumes: true}); err != nil && !client.IsErrNotFound(err) && first == nil {
 			first = err

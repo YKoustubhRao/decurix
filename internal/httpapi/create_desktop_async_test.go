@@ -187,3 +187,24 @@ func TestBeginProvisioningReturnsASnapshotNotTheLiveRecord(t *testing.T) {
 		t.Fatalf("the record BeginProvisioning returned changed after it was returned: %+v -> %+v", first, *prov)
 	}
 }
+
+// The create door refuses the names practice and readiness runs give their workers, with a fixed reason, and makes
+// nothing (review CP-A-6 N1).
+func TestCreateDesktopRefusesPracticeAndReadinessNames(t *testing.T) {
+	mgr := fakeDesktopManager(t)
+	srv := &Server{Desktops: mgr}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	for _, name := range []string{"practice-e0123456789abcdef", "readiness-r1"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/desktops/create", strings.NewReader("name="+name+"&profile=basic&brain=ollama"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "kept for practice and readiness runs") {
+			t.Fatalf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+		if _, ok := mgr.GetProvisioning(name); ok {
+			t.Fatalf("%s is being made", name)
+		}
+	}
+}

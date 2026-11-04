@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
 )
 
 // What a desktop's approval gate is told before its agent has a text, and in what order, is decided here once for
@@ -138,7 +137,7 @@ func (m *Manager) tellPracticeGate(ctx context.Context, d PracticeDesktop, body 
 	if task, _ := fields["task_id"].(string); task == "" || task != n.TaskID {
 		return nil, fmt.Errorf("%w: the notice is for task %q, the request for %q", ErrGateNotTold, n.TaskID, task)
 	}
-	if err := m.TellGate(ctx, d.Name, n); err != nil {
+	if err := m.TellGate(withPracticeTarget(ctx, d.ContainerID), d.Name, n); err != nil {
 		return nil, err
 	}
 	if n.Withheld {
@@ -150,42 +149,80 @@ func (m *Manager) tellPracticeGate(ctx context.Context, d PracticeDesktop, body 
 	return bytes.NewReader(raw), nil
 }
 
-// gateContainer is desktop id's container as the gate is reached in it: desktop_<id>, or, for a practice desktop
-// (practice-<run>), the practice container of that name, which carries PracticeLabel and is no mock app.
-func (m *Manager) gateContainer(ctx context.Context, id string) (container.InspectResponse, string, error) {
-	desktopID := sanitizeName(id)
-	name := "desktop_" + desktopID
-	inspect, err := m.client.ContainerInspect(ctx, name)
-	if err == nil || !client.IsErrNotFound(err) || !strings.HasPrefix(desktopID, "practice-") {
-		return inspect, name, err
-	}
-	practice, perr := m.client.ContainerInspect(ctx, desktopID)
-	if perr != nil {
-		return practice, desktopID, perr
-	}
-	if practice.Config == nil || practice.Config.Labels[PracticeLabel] != "true" || practice.Config.Labels["decurix-practice-mock"] == "true" {
-		return inspect, name, err
-	}
-	return practice, desktopID, nil
+// practiceTargetKey carries the practice container a gate post is for (withPracticeTarget).
+type practiceTargetKey struct{}
+
+// withPracticeTarget returns ctx saying its gate posts are for the practice container containerID: what the practice
+// caller (PracticeAgentRequest, or a practice task's end) opts into. Nothing infers it from a desktop's name.
+func withPracticeTarget(ctx context.Context, containerID string) context.Context {
+	return context.WithValue(ctx, practiceTargetKey{}, containerID)
 }
 
-// legacyPracticeGate reports whether desktop id is a practice desktop CreatePractice made with LegacyGate: known by
-// the container ID this control plane recorded at create, never by anything on the container itself.
-func (m *Manager) legacyPracticeGate(ctx context.Context, id string) bool {
-	if !strings.HasPrefix(sanitizeName(id), "practice-") {
-		return false
-	}
-	m.legacyMu.Lock()
-	none := len(m.legacyGates) == 0
-	m.legacyMu.Unlock()
-	if none {
-		return false
-	}
-	inspect, name, err := m.gateContainer(ctx, id)
-	if err != nil || name != sanitizeName(id) || inspect.ContainerJSONBase == nil {
-		return false
-	}
+// practiceContainer is the container CreatePractice made for practice desktop name, "" for any other name.
+func (m *Manager) practiceContainer(name string) string {
 	m.legacyMu.Lock()
 	defer m.legacyMu.Unlock()
-	return m.legacyGates[inspect.ID]
+	return m.practiceDesks[sanitizeName(name)]
+}
+
+// ErrReservedName is a desktop name kept for the control plane's own practice and readiness workers.
+var ErrReservedName = errors.New("names starting with practice- or readiness- are kept for practice and readiness runs")
+
+// ReservedName reports whether a desktop name is one practice or readiness runs name their workers by: refused at
+// every create (BeginProvisioning), so a person's desktop never shares a practice desktop's id, gate key or gate.
+func ReservedName(name string) bool {
+	id := sanitizeName(name)
+	return strings.HasPrefix(id, "practice-") || strings.HasPrefix(id, "readiness-")
+}
+
+// gateContainer is desktop id's container as the gate is reached in it: desktop_<id>, or, when ctx opts into a
+// practice container (withPracticeTarget), that container, which must carry PracticeLabel, be no mock app and bear
+// id as its name.
+func (m *Manager) gateContainer(ctx context.Context, id string) (container.InspectResponse, string, error) {
+	desktopID := sanitizeName(id)
+	if cid, ok := ctx.Value(practiceTargetKey{}).(string); ok {
+		practice, err := m.client.ContainerInspect(ctx, cid)
+		if err != nil {
+			return practice, desktopID, err
+		}
+		if practice.Config == nil || practice.Config.Labels[PracticeLabel] != "true" || practice.Config.Labels["decurix-practice-mock"] == "true" ||
+			practice.ContainerJSONBase == nil || strings.TrimPrefix(practice.Name, "/") != desktopID {
+			return practice, desktopID, fmt.Errorf("container %s is not practice desktop %s", cid, desktopID)
+		}
+		return practice, desktopID, nil
+	}
+	name := "desktop_" + desktopID
+	inspect, err := m.client.ContainerInspect(ctx, name)
+	return inspect, name, err
+}
+
+// legacyPracticeGate reports whether this gate post is for a practice container CreatePractice made with LegacyGate:
+// the practice caller's own container (withPracticeTarget), known by the ID this control plane recorded at create,
+// and still that practice desktop. Never by a name or anything on a container.
+func (m *Manager) legacyPracticeGate(ctx context.Context, id string) bool {
+	cid, ok := ctx.Value(practiceTargetKey{}).(string)
+	if !ok {
+		return false
+	}
+	m.legacyMu.Lock()
+	recorded := m.legacyGates[cid]
+	m.legacyMu.Unlock()
+	if !recorded {
+		return false
+	}
+	_, _, err := m.gateContainer(ctx, id)
+	return err == nil
+}
+
+// wake unpauses container name. One that is no longer paused (another caller woke it first: Docker answers "is not
+// paused") and is running counts as woken.
+func (m *Manager) wake(ctx context.Context, name string) error {
+	err := m.client.ContainerUnpause(ctx, name)
+	if err == nil {
+		return nil
+	}
+	if inspect, ierr := m.client.ContainerInspect(ctx, name); ierr == nil && inspect.State != nil && inspect.State.Running && !inspect.State.Paused {
+		return nil
+	}
+	return err
 }

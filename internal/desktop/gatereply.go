@@ -192,7 +192,7 @@ func (m *Manager) postToGateNow(ctx context.Context, id, path string, body func(
 		return fmt.Errorf("desktop %s: %w", desktopID, ErrNotRunning)
 	}
 	if inspect.State.Paused {
-		if err := m.client.ContainerUnpause(ctx, name); err != nil {
+		if err := m.wake(ctx, name); err != nil {
 			return fmt.Errorf("auto-wake desktop %s: %w", desktopID, err)
 		}
 	}
