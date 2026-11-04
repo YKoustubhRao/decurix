@@ -458,13 +458,18 @@ func desktopReservation(memoryMB int64) int64 {
 }
 
 // desktopResources is the CPU and memory a desktop is given: cpus whole CPUs and up to memoryMB of memory, only the
-// idle floor of it reserved, never swapped.
+// idle floor of it reserved, never swapped. "Never swapped" is MemorySwap equal to Memory (memory plus swap no more
+// than memory), which Docker writes as memory.swap.max = 0 on cgroup v2 and as the memsw limit on v1.
+// MemorySwappiness = 0 alone did it on cgroup v1 only: v2 has no per-cgroup swappiness, and Docker discards it there
+// with a warning, so on WSL2 and every current Linux a desktop could swap (resource plan B3). It is kept for v1 hosts
+// without swap accounting, where Docker in turn discards the MemorySwap limit.
 func desktopResources(cpus, memoryMB int64) container.Resources {
 	swappinessZero := int64(0)
 	return container.Resources{
 		NanoCPUs:          cpus * 1_000_000_000,
 		CPUShares:         cpus * 1024,
 		Memory:            memoryMB * 1024 * 1024,
+		MemorySwap:        memoryMB * 1024 * 1024,
 		MemoryReservation: desktopReservation(memoryMB),
 		MemorySwappiness:  &swappinessZero,
 	}

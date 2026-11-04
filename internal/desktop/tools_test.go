@@ -51,6 +51,10 @@ func TestBuildContainerConfigsMountsSharedToolsAndCacheVolume(t *testing.T) {
 	if host.Resources.MemorySwappiness == nil || *host.Resources.MemorySwappiness != 0 {
 		t.Errorf("expected MemorySwappiness to be 0, got: %v", host.Resources.MemorySwappiness)
 	}
+	// Never swapped on cgroup v2 too, where swappiness is discarded: memory plus swap is the memory (resource plan B3).
+	if host.Resources.MemorySwap != host.Resources.Memory || host.Resources.Memory == 0 {
+		t.Errorf("MemorySwap %d, want the memory limit %d", host.Resources.MemorySwap, host.Resources.Memory)
+	}
 	if host.Tmpfs == nil || host.Tmpfs["/tmp"] == "" || host.Tmpfs["/run"] == "" {
 		t.Errorf("expected Tmpfs to contain /tmp and /run, got: %v", host.Tmpfs)
 	}
