@@ -325,6 +325,8 @@ func main() {
 	defer cli.Close()
 
 	desktops := desktop.NewManager(cli)
+	// The bundled model server joins every desktop's own network, as the control plane does.
+	desktops.ModelServer = ollama.ContainerName
 	// The key that signs the launch tokens in a desktop's host-app launchers (internal/winhost). It lives in the data
 	// directory so launchers already written keep working across restarts; a failure only disables those apps.
 	hostGUISecret, err := winhost.LoadSecret(sqlitedb.DataDir())
@@ -622,6 +624,8 @@ func main() {
 			log.Printf("warning: Ollama initialization failed: %v", err)
 			return
 		}
+		// A model server started after the desktops joins their networks now.
+		desktops.JoinDesktopNetworks(ctx)
 
 		log.Println("Ollama ready.")
 	}()

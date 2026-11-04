@@ -280,12 +280,11 @@ func (m *Manager) captureTarget(ctx context.Context, rawID string) (addr, passwo
 		return "", "", ErrPaused
 	}
 
-	networkInfo, ok := inspect.NetworkSettings.Networks[NetworkName]
-	if !ok || networkInfo == nil {
+	if inspect.NetworkSettings == nil {
 		return "", "", ErrNoNetwork
 	}
-
-	if networkInfo.IPAddress == "" {
+	ip := desktopAddress(sanitizeName(rawID), inspect.NetworkSettings.Networks)
+	if ip == "" {
 		return "", "", ErrNoAddress
 	}
 
@@ -293,7 +292,7 @@ func (m *Manager) captureTarget(ctx context.Context, rawID string) (addr, passwo
 		password = envValue(inspect.Config.Env, "VNC_PW")
 	}
 
-	return net.JoinHostPort(networkInfo.IPAddress, vncPort), password, nil
+	return net.JoinHostPort(ip, vncPort), password, nil
 }
 
 // captureFrame opens one RFB session against a desktop's Xvnc and returns its

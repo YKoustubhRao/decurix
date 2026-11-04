@@ -21,6 +21,9 @@ func dockerStartup(ctx context.Context, desktops *desktop.Manager, server *httpa
 	if err := desktops.EnsureNetwork(ctx); err != nil {
 		return fmt.Errorf("create the Decurix network: %w", err)
 	}
+	// Each desktop has a network of its own; a control plane container made again (an update) is on none of them
+	// until it joins, and neither reaches the other till then.
+	desktops.JoinDesktopNetworks(ctx)
 	// Host hops (privileged containers that run something on the host) left by an earlier run go first: their owner is
 	// gone, and the Windows helper a hop runs keeps its app and its memory for as long as the hop lives.
 	desktop.SweepHopsAtStart()

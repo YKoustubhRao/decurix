@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	containerName = "decurix-ollama"
+	containerName = ContainerName
 	// containerImage is pinned to the release the Windows app installs natively (desktop/electron/wsl/
 	// native-ollama.ps1), so every setup runs one reviewed Ollama, not whatever :latest is on the day (C-29). Its
 	// digest is the owner's to add once pulled: `docker image inspect --format '{{index .RepoDigests 0}}'`.
@@ -678,6 +678,10 @@ func (m *Manager) execWait(ctx context.Context, what string, poll time.Duration,
 		}
 	}
 }
+
+// ContainerName is the bundled model server's container: joined to every desktop's own network, so desktops reach it
+// by this name (desktop.Manager.ModelServer).
+const ContainerName = "decurix-ollama"
 
 // warmState guards WarmAsync: at most one warm-up in flight, and at most one
 // attempt per warmMinGap however many requests arrive.

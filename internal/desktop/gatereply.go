@@ -198,11 +198,10 @@ func (m *Manager) postToGateNow(ctx context.Context, id, path string, body func(
 	}
 	host := name
 	if inspect.NetworkSettings != nil {
-		for _, network := range []string{NetworkName, PracticeNetworkName} {
-			if n, ok := inspect.NetworkSettings.Networks[network]; ok && n != nil && n.IPAddress != "" {
-				host = n.IPAddress
-				break
-			}
+		if ip := desktopAddress(desktopID, inspect.NetworkSettings.Networks); ip != "" {
+			host = ip
+		} else if n := inspect.NetworkSettings.Networks[PracticeNetworkName]; n != nil && n.IPAddress != "" {
+			host = n.IPAddress
 		}
 	}
 	raw := make([]byte, 16)

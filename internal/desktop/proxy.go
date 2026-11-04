@@ -77,12 +77,10 @@ func (m *Manager) resolveProxyTarget(ctx context.Context, rawID, port string) (p
 		m.invalidateList()
 	}
 
-	networkInfo, ok := inspect.NetworkSettings.Networks[NetworkName]
-	if !ok || networkInfo == nil {
+	if inspect.NetworkSettings == nil {
 		return nil, sanitizedID, ErrNoNetwork
 	}
-
-	ip := networkInfo.IPAddress
+	ip := desktopAddress(sanitizedID, inspect.NetworkSettings.Networks)
 	if ip == "" {
 		return nil, sanitizedID, ErrNoAddress
 	}

@@ -38,6 +38,13 @@ for side in -s -d; do
     iptables -C FORWARD "$side" "$ours" -j ACCEPT 2>/dev/null ||
         iptables -I FORWARD 1 "$side" "$ours" -j ACCEPT
 done
+# Each desktop has a network (a bridge) of its own, so no desktop reaches another (internal/desktop/desknet.go). With
+# "iptables": false Docker adds none of its own isolation between bridges, and the rules above forward the whole
+# range: traffic from one bridge to another, routed through this distro, would go through. Dropped here, first in
+# FORWARD. Traffic within one bridge is switched, never forwarded, so the control plane's and the model server's legs on
+# each desktop's network are untouched, and so is the way out (to eth0).
+iptables -C FORWARD -i br-+ -o br-+ -j DROP 2>/dev/null ||
+    iptables -I FORWARD 1 -i br-+ -o br-+ -j DROP
 
 rm -f /var/run/docker.pid
 

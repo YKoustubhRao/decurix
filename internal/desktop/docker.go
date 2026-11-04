@@ -438,13 +438,16 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 		hostConfig.Mounts = append(hostConfig.Mounts, shared[0].Mount())
 	}
 
-	networkingConfig := &network.NetworkingConfig{
+	return config, hostConfig, desktopNetworking(strings.TrimPrefix(containerName, "desktop_"))
+}
+
+// desktopNetworking puts a desktop container on its own network only (desknet.go).
+func desktopNetworking(id string) *network.NetworkingConfig {
+	return &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{
-			NetworkName: {},
+			DesktopNetworkName(id): {},
 		},
 	}
-
-	return config, hostConfig, networkingConfig
 }
 
 // desktopIdleMB is the memory a desktop is guaranteed whatever size was chosen: what an idle one uses (measured

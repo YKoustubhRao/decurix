@@ -41,6 +41,10 @@ type Manager struct {
 	// internal/winhost); set by main before any desktop is created.
 	HostGUISecret []byte
 
+	// ModelServer is the bundled model server's container name, joined to every desktop's own network (desknet.go);
+	// "" for none. Set by main.
+	ModelServer string
+
 	// taskEnded is the task-ended notices each desktop's gate has not taken yet (gateended.go).
 	taskEnded pendingTaskEnded
 
@@ -353,7 +357,7 @@ func (m *Manager) runProvisioning(
 
 	// What this run made, and so all a failure may remove: never anything that was there before it (B-03).
 	var createdContainer string
-	createdVolume, createdCache := false, false
+	createdVolume, createdCache, createdNetwork := false, false, false
 	cacheName := cacheVolumeFor(containerName)
 	fail := func(err error) {
 		log.Printf("desktop provisioning failed for %s: %v", sanitizedID, err)
@@ -371,6 +375,9 @@ func (m *Manager) runProvisioning(
 		}
 		if createdCache {
 			_ = m.client.VolumeRemove(context.Background(), cacheName, true)
+		}
+		if createdNetwork {
+			m.removeDesktopNetwork(context.Background(), sanitizedID)
 		}
 
 		// A creation stopped by a delete is gone at once; a failure is kept 60s so the page can show it.
@@ -423,6 +430,14 @@ func (m *Manager) runProvisioning(
 	m.provisioningMu.Lock()
 	prov.Model = desktopModel(env)
 	m.provisioningMu.Unlock()
+
+	// Its own network, with the control plane on it, before the container: it shares none with another desktop.
+	netMade, err := m.ensureDesktopNetwork(ctx, sanitizedID)
+	createdNetwork = netMade
+	if err != nil {
+		fail(err)
+		return
+	}
 
 	config, hostConfig, networkingConfig := buildContainerConfigs(
 		imageName,
@@ -979,6 +994,16 @@ func (m *Manager) Start(
 	if err == nil && inspect.State != nil && inspect.State.Paused {
 		return notFound(id, m.client.ContainerUnpause(ctx, name))
 	}
+	if err == nil && inspect.NetworkSettings != nil {
+		// The control plane is on the desktop's own network before the desktop starts (it may have been made again
+		// since); a desktop still on the shared network is said to need recreating to be isolated.
+		if onOwnNetwork(sanitizeName(id), inspect.NetworkSettings.Networks) {
+			if jerr := m.joinDesktopNetwork(ctx, DesktopNetworkName(id)); jerr != nil {
+				log.Printf("desktop %s: %v", sanitizeName(id), jerr)
+			}
+		}
+		logSharedNetwork(sanitizeName(id), inspect.NetworkSettings.Networks)
+	}
 
 	return notFound(id, m.startDesktopContainer(ctx, name))
 }
@@ -1183,6 +1208,9 @@ func (m *Manager) Delete(
 
 	// Its gate went with it: nothing is left to tell that its tasks ended.
 	m.forgetTaskEnded(sanitizedID)
+
+	// Its own network goes with it (kept while it is only stopped or paused).
+	m.removeDesktopNetwork(ctx, sanitizedID)
 
 	// A desktop made again under this name starts at the size it is given, not the old one's (B-25).
 	m.resourceMu.Lock()
@@ -1438,8 +1466,8 @@ func (m *Manager) SendRequest(ctx context.Context, id string, rb RequestBody) er
 	// screen and the recordings.
 	host := name
 	if inspect.NetworkSettings != nil {
-		if n, ok := inspect.NetworkSettings.Networks[NetworkName]; ok && n != nil && n.IPAddress != "" {
-			host = n.IPAddress
+		if ip := desktopAddress(desktopID, inspect.NetworkSettings.Networks); ip != "" {
+			host = ip
 		}
 	}
 	url := fmt.Sprintf(

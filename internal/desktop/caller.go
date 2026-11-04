@@ -88,8 +88,8 @@ func (m *Manager) fetchCallers(ctx context.Context, _ map[netip.Addr]string) map
 		if id == "" || c.NetworkSettings == nil {
 			continue
 		}
-		if n := c.NetworkSettings.Networks[NetworkName]; n != nil {
-			if a, err := netip.ParseAddr(n.IPAddress); err == nil {
+		if ip := desktopAddress(id, c.NetworkSettings.Networks); ip != "" {
+			if a, err := netip.ParseAddr(ip); err == nil {
 				byAddr[a.Unmap()] = id
 			}
 		}

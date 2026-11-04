@@ -22,6 +22,7 @@
 #             the entrypoint, the gate's code and /etc/passwd in folders root used to chown, and a ~/tempfile.py, two
 #             restarts later nothing ran as root or as the gate, and those files are still root's and unwritable
 #   no key    a second desktop started without a key has the gate's directory, and a gated click is not allowed
+#   network   a container on another network reaches none of that desktop's 8081, 5901, 6901 (a network per desktop)
 
 set -u
 IMAGE=decurix-desktop:basic
@@ -272,8 +273,27 @@ gate = os.path.isdir("/run/decurix-gate") and not os.path.exists("/run/decurix-g
 print("ok" if gate and approval.remote() and not d.allowed else f"dir {gate} remote {approval.remote()} allowed {d.allowed}")
 PY
 )"
+# ---- network: a desktop's ports (8081, 5901, 6901) are closed to a container on another network (resource plan R3:
+# a network per desktop). The desktop joins network A; a probe on A reaches its screen (6901, the control: the check
+# means something only if the port is up), and a probe on network B reaches none of the three.
+docker network create "$RUN-a" >/dev/null && docker network create "$RUN-b" >/dev/null \
+    && docker network connect "$RUN-a" "$RUN-nokey"
+NOKEY_IP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$RUN-a\").IPAddress}}" "$RUN-nokey" 2>/dev/null)
+probe() { # probe NETWORK PORTS...: "open P" for each port a container on NETWORK can open at the desktop's address
+    net=$1; shift
+    docker run --rm --network "$net" --entrypoint /bin/bash "$IMAGE" -c \
+        'ip=$1; shift; for p in "$@"; do timeout 3 bash -c "</dev/tcp/$ip/$p" 2>/dev/null && echo "open $p"; done; true' \
+        _ "$NOKEY_IP" "$@" 2>/dev/null
+}
+i=0
+while [ $i -lt 20 ] && [ "$(probe "$RUN-a" 6901)" != "open 6901" ]; do sleep 3; i=$((i + 1)); done
+check "network: another desktop's network reaches none of 8081, 5901, 6901" "$(
+    if [ -z "$NOKEY_IP" ] || [ "$(probe "$RUN-a" 6901)" != "open 6901" ]; then echo "inconclusive: the screen is not up on network A"
+    elif open=$(probe "$RUN-b" 8081 5901 6901) && [ -n "$open" ]; then echo "reached from network B: $open"
+    else echo ok; fi)"
 docker rm -f -v "$RUN-nokey" >/dev/null 2>&1
 docker volume rm "$VOL-nokey" >/dev/null 2>&1
+docker network rm "$RUN-a" "$RUN-b" >/dev/null 2>&1
 
 echo
 if [ "$FAILS" = 0 ]; then echo "boundary holds ($IMAGE)"; exit 0; fi
