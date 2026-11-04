@@ -22,6 +22,9 @@ import (
 // or not. It is in bodyLimits: under the default 1 MiB outer cap an agent tree (3.5 MB) was cut off mid-upload (F-ENV-1).
 const maxEvalUpload = 256 << 20
 
+// evalRunsPath is the route that starts a matrix (and lists runs).
+const evalRunsPath = "/api/evals/runs"
+
 // maxAgentTree bounds one arm's agent tree once unpacked.
 const maxAgentTree = 64 << 20
 
@@ -32,7 +35,7 @@ type evalRoutes struct {
 // RegisterEvalRoutes registers the eval routes on mux, which must be the primary listener's (C13).
 func (s *Server) RegisterEvalRoutes(mux *http.ServeMux, e *eval.Service) {
 	h := &evalRoutes{e: e}
-	mux.HandleFunc("/api/evals/runs", s.humansOnly(h.runs))
+	mux.HandleFunc(evalRunsPath, s.humansOnly(h.runs))
 	mux.HandleFunc("/api/evals/runs/", s.humansOnly(h.run))
 }
 

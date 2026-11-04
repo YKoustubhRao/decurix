@@ -28,7 +28,7 @@ var bodyLimits = map[string]int64{
 	"/api/agent/events":               maxAgentEventBytes, // steps with their screenshots
 	"/api/outbox":                     32 << 20,           // a drafted email with its attachments
 	"/api/queue":                      48 << 20,           // a work item with its files (workqueue maxBody)
-	"/api/evals/runs":                 maxEvalUpload,      // a suite and agent trees (evalFile bounds each, unpacked)
+	evalRunsPath:                      maxEvalUpload,      // a suite and agent trees (evalFile bounds each, unpacked)
 	"/desktop/":                       maxUploadBytes,     // the desktop's own pages, proxied
 	"/agent/":                         maxUploadBytes,
 }
