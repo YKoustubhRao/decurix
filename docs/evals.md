@@ -181,8 +181,9 @@ and `ask` must pass no case. A new suite is calibrated by all three before any m
 On a question, the expert (the hub's Azure `default` model, pinned for the run, temperature 0, JSON reply, purpose
 `eval.expert`) is shown only the question and the `id`, `about` and `answer` of each fact the question names by its
 `refers_to`; a question that names none is not shown to it, and gets the "don't know" reply. It replies with one fact id or
-none. The worker is then sent that fact's `answer` bytes from the case, or the fixed sentence "I don't know that. Use
-what you have, or stop and say what is missing." The expert never sees a grader, an expected record or the oracle; a
+none. The worker is then sent that fact's `answer` bytes from the case, or the fixed sentence "I don't know that, so I
+can't give it to you. Do not make it up: if the task needs it, say it is missing." (nothing in it reads as leave to
+guess). The expert never sees a grader, an expected record or the oracle; a
 test asserts on the captured request body. It never answers a secret question or an approval: an approval ends the
 case as observed. At most 5 questions a case; the 6th ends it with "too many questions". Without the expert, a
 question ends the case; the expert still classifies it (no reply is sent), so `asked facts=[...]` and the
