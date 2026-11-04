@@ -28,21 +28,6 @@ from email import policy
 from email.parser import BytesParser
 from pathlib import Path
 
-# Libraries the desktop image keeps in a venv of its own (python-pptx: Ubuntu has no package for it). The image's
-# ENV PATH names the venv, but the agent and soul are started by the desktop session, whose PATH is its own: found
-# live (2026-10-14), every deck failed with "No module named 'pptx'" in a desktop that had it. The venv's packages
-# are added after the system's, so a package both have is still the system's.
-OFFICE_VENV = os.environ.get("DECURIX_OFFICE_VENV", "/opt/office-venv")
-
-
-def _use_office_venv(root=OFFICE_VENV):
-    import glob
-    for site in sorted(glob.glob(os.path.join(root, "lib", "python3*", "site-packages"))):
-        if site not in sys.path:
-            sys.path.append(site)
-
-
-_use_office_venv()
 
 # How much of one document is handed to the model as text.
 MAX_TEXT_CHARS = int(os.environ.get("DECURIX_DOC_TEXT_CHARS", "30000"))
@@ -337,8 +322,45 @@ def _read_pdf(p, pages, as_images):
     return {"text": header + body, "images": images}
 
 
+# A PDF's pages drawn as pictures go into a temporary folder of this prefix. Each is let go when its pictures are
+# used up (drop_pages), and a folder older than PAGES_KEEP_SECONDS is swept when the next one is made: an engine
+# reads a "[page image: ...]" after the `office read` that drew it has ended, so that one cannot go at once (resource
+# plan B5: they were never deleted).
+PAGES_PREFIX = "decurix-pages-"
+PAGES_KEEP_SECONDS = 3600
+
+
+def sweep_page_folders(now=None, root=None):
+    """Delete the page-picture folders older than PAGES_KEEP_SECONDS. Returns how many went. Never raises."""
+
+    import time
+    now = time.time() if now is None else now
+    gone = 0
+    try:
+        folders = list(Path(root or tempfile.gettempdir()).glob(PAGES_PREFIX + "*"))
+    except OSError:
+        return 0
+    for folder in folders:
+        try:
+            if folder.is_dir() and now - folder.stat().st_mtime > PAGES_KEEP_SECONDS:
+                shutil.rmtree(folder, ignore_errors=True)
+                gone += 1
+        except OSError:
+            continue
+    return gone
+
+
+def drop_pages(images):
+    """Let go of the page pictures a caller has used up: each one's folder, when it is a page-picture folder."""
+
+    for folder in {Path(str(i)).parent for i in images or ()}:
+        if folder.name.startswith(PAGES_PREFIX):
+            shutil.rmtree(folder, ignore_errors=True)
+
+
 def _pdf_pages_as_png(p, first, last):
-    out_dir = Path(tempfile.mkdtemp(prefix="decurix-pages-"))
+    sweep_page_folders()
+    out_dir = Path(tempfile.mkdtemp(prefix=PAGES_PREFIX))
     subprocess.run(
         ["pdftoppm", "-r", "110", "-png", "-f", str(first), "-l", str(last), str(p), str(out_dir / "page")],
         capture_output=True, timeout=180, check=False,
@@ -4295,6 +4317,7 @@ def _main(argv=None):
                 for n, img in enumerate(r["images"], 1):
                     print(f"\n--- picture {n} of {len(r['images'])}, read by OCR (check figures against the context: OCR misreads) ---")
                     print(_ocr_file(img) or "(OCR read no text here)")
+                drop_pages(r["images"])  # (read here: nothing is left to look at them)
             else:
                 for img in r["images"]:
                     print(f"[page image: {img}]")

@@ -4231,7 +4231,9 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         raise ActedError(reason) from exc
 
     settled = _wait_for_settle(before["frame"])
-    after = observe()
+    # The settled frame is the after-look's picture: the screen stopped changing on it, and a second full grab at once
+    # is the same screen again (resource plan P1 #5: one full grab an action fewer).
+    after = observe(frame=settled)
     _note_front()
     if not untargeted:
         _adopt_front()
@@ -4256,7 +4258,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             time.sleep(RETYPE_PAUSE)
             _perform(kind, again, point, text, keys, direction, amount, option, append, end, files=files)
             settled = _wait_for_settle(before["frame"])
-            after = observe()
+            after = observe(frame=settled)
             retyped = True
 
     if kind == "type" and element is not None and text and not append and element.get("role") == "textbox" \

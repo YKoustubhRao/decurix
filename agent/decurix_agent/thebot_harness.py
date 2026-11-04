@@ -950,9 +950,21 @@ def warm_after_ready():
     """
     Load the embedding model too, in the background: soul embeds every
     memory read and write, and its first embed otherwise pays a cold load
-    inside the first job.
+    inside the first job. Only when soul embeds through Ollama (its
+    /api/health says "embeddings": "ollama") and the brain is local: a hosted
+    brain's soul does not embed through this Ollama, and the warm load cost
+    about 300 MB of host RAM for nothing (resource plan, H-SOUL-9).
     """
 
+    if config.HOSTED_BRAIN:
+        return
+    try:
+        health = _get_json(config.THEBOT_URL.rstrip("/") + "/api/health")
+    except Exception as exc:  # noqa: BLE001 - not known to embed through Ollama: nothing is warmed
+        log(f"Not warming the embedding model: soul's health could not be read ({exc})")
+        return
+    if not isinstance(health, dict) or health.get("embeddings") != "ollama":
+        return
     try:
         body = json.dumps(
             {"model": EMBED_MODEL, "input": "warm", "keep_alive": "60m"}

@@ -286,6 +286,35 @@ def watchdog():
             pass
 
 
+# A handled command file (".done", withheld) is read by nothing: the watcher globs *.txt, the control plane pulls no
+# command folder. Kept this long for a person looking at the desktop, then deleted (resource plan B5: never were).
+DONE_KEEP_SECONDS = 3600
+_last_sweep = {"at": 0.0}
+
+
+def sweep_handled(now=None, every=600):
+    """Delete handled command files older than DONE_KEEP_SECONDS, at most once every `every` seconds. Returns how many
+    went. Never raises."""
+
+    now = time.time() if now is None else now
+    if now - _last_sweep["at"] < every:
+        return 0
+    _last_sweep["at"] = now
+    gone = 0
+    try:
+        handled = list(config.COMMAND_DIR.glob("*" + HANDLED_SUFFIX))
+    except OSError:
+        return 0
+    for path in handled:
+        try:
+            if now - path.stat().st_mtime > DONE_KEEP_SECONDS:
+                path.unlink()
+                gone += 1
+        except OSError:
+            continue
+    return gone
+
+
 def _mark_handled(path):
     """
     Rename a dispatched request file so no later pass - and no later life of
@@ -300,6 +329,7 @@ def _mark_handled(path):
     the desktop was asked stays on disk.
     """
 
+    sweep_handled()  # (handled copies older than DONE_KEEP_SECONDS go; nothing reads them)
     # The copy kept is withheld (C14): the request's secrets, remembered when it arrived, never stay on the desktop's
     # disk in the clear. The file was the transport; what it said has been read by now.
     done = path.with_name(path.name + HANDLED_SUFFIX)

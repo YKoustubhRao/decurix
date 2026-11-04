@@ -100,6 +100,7 @@ def parts(paths, heading):
                 break
             out.append(llm_client.image_part(path=image))
             pictures += 1
+        office.drop_pages(doc.get("images"))  # (read into the parts above: the pictures are used up)
 
     if out:
         out.insert(0, {"type": "text", "text": heading})

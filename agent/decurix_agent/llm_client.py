@@ -175,7 +175,8 @@ def chat(messages, tools=None, model="default", max_tokens=4000, temperature=Non
     # values, the final check and a kept lesson are model calls like the
     # engine's own, and a task's record used to show only some of them.
     spent = answer.get("usage") or {}
-    usage.add(input_tokens=spent.get("prompt_tokens"), output_tokens=spent.get("completion_tokens"))
+    usage.add(input_tokens=spent.get("prompt_tokens"), output_tokens=spent.get("completion_tokens"),
+              cached_input_tokens=cached_tokens(spent))
 
     message = choices[0].get("message") or {}
     if (choices[0].get("finish_reason") == "length" and not message.get("tool_calls")
@@ -190,6 +191,22 @@ def chat(messages, tools=None, model="default", max_tokens=4000, temperature=Non
         return chat(messages, tools=tools, model=model, max_tokens=EMPTY_RETRY_TOKENS, temperature=temperature,
                     response_format=response_format, purpose=purpose)
     return message, spent
+
+
+def cached_tokens(spent):
+    """The part of an answer's prompt tokens the provider read from its prompt cache, as the proxy passes the answer
+    on: OpenAI's prompt_tokens_details.cached_tokens, or an Anthropic-shaped cache_read_input_tokens. None when the
+    answer says nothing of it (unknown, not 0). Counted so the tokens-per-task measure shows the cached share
+    (resource plan B6: it was dropped)."""
+
+    details = (spent or {}).get("prompt_tokens_details")
+    found = details.get("cached_tokens") if isinstance(details, dict) else None
+    if found is None:
+        found = (spent or {}).get("cache_read_input_tokens")
+    try:
+        return max(0, int(found)) if found is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def ask_once(system, prompt, *, purpose):

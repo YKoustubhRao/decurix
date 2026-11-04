@@ -238,6 +238,7 @@ def _ask(skill, params, context, files, note="", rows=True):
             parts.append(llm_client.image_part(path=image))
             texts.append(office._ocr_file(image))
             images += 1
+        office.drop_pages(doc["images"])  # (read into the parts above: the pictures are used up)
 
     if any(_is_date_param(p) for p in params):
         parts.append({"type": "text", "text": "\n" + _date_note(skill, texts)})
