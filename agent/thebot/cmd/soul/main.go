@@ -263,6 +263,10 @@ type server struct {
 	paused   map[string]*scheduler.Checkpoint
 	// storesOff are the stores this run started without (storeOff), shown by /api/health.
 	storesOff []string
+	// embeddings is who embeds for this run: "ollama", the chat provider's name when it embeds itself, or "off" (no
+	// embedder: the Data RAG, feedback and L1 are off). /api/health says it, so the agent warms an embedding model
+	// only when one will be used (resource plan P1 #7).
+	embeddings string
 	// tracer writes each task's trace (internal/trace); nil writes none.
 	tracer *trace.Writer
 	// secrets is every secret value a job was told this process (C14): the memory API's second wall.
@@ -329,7 +333,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	writeJSON(w, 200, map[string]any{"ollama": s.provider.IsReachable(ctx), "ollamaHost": s.cfg.OllamaHost, "workspace": s.ws.Root(),
-		"storesOff": s.storesOff})
+		"storesOff": s.storesOff, "embeddings": s.embeddings})
 }
 
 // handleRAGStats and handleFeedbackStats back the UI's live header
@@ -911,6 +915,20 @@ func buildProvider(cfg config.Config) (llm.Provider, llm.Models, llm.Embedder) {
 	}
 }
 
+// embeddingsOf names the embedder of this run for /api/health: "ollama" for the local one, the provider's own name
+// when the chat provider embeds itself, "off" for none.
+func embeddingsOf(e llm.Embedder) string {
+	switch p := e.(type) {
+	case nil:
+		return "off"
+	case *llm.OllamaProvider:
+		return "ollama"
+	case llm.Provider:
+		return p.Name()
+	}
+	return "on"
+}
+
 // storeOff reports whether a store's init error is only that a newer soul wrote its database: then soul starts
 // without that store (it is memory or a cache, nil-safe everywhere), says so in the log, and lists it in off for
 // /api/health. Any other error is not one to start through (review N-W3-7).
@@ -1059,6 +1077,7 @@ func main() {
 	sched.SkillLib = skillLib
 	s := newServer(cfg, provider, ws, sched)
 	s.storesOff = storesOff
+	s.embeddings = embeddingsOf(embedder)
 	s.tracer = trace.New(filepath.Join(ws.Root(), "traces"))
 
 	// Binds all interfaces (0.0.0.0), not just 127.0.0.1 - a real bug

@@ -53,3 +53,30 @@ func TestIngestWithholdsTheJobsSecrets(t *testing.T) {
 		t.Fatalf("indexed %q, embedded %q", stored, emb.texts)
 	}
 }
+
+// An empty index is queried without the embedder: nothing loads an embedding model for an index with nothing in it
+// (resource plan P1 #7); with chunks, the query embeds as before.
+func TestAnEmptyIndexIsQueriedWithoutEmbedding(t *testing.T) {
+	root := t.TempDir()
+	emb := &fakeEmbedder{}
+	r, err := New(root, emb, "unused.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	results, err := r.Query(context.Background(), "what does the plan say", 3)
+	if err != nil || len(results) != 0 || len(emb.texts) != 0 {
+		t.Fatalf("results %v, err %v, embedded %q", results, err, emb.texts)
+	}
+	writeTestFile(t, root, "plan.txt", "the plan says to mail the folder on Monday")
+	if _, _, err := r.IngestFile(context.Background(), "plan.txt"); err != nil {
+		t.Fatal(err)
+	}
+	before := len(emb.texts)
+	if _, err := r.Query(context.Background(), "what does the plan say", 3); err != nil {
+		t.Fatal(err)
+	}
+	if len(emb.texts) != before+1 {
+		t.Fatalf("a query of a filled index did not embed: %d -> %d", before, len(emb.texts))
+	}
+}

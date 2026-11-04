@@ -266,6 +266,15 @@ func (r *RAG) IngestFile(ctx context.Context, relPath string) (chunks int, metho
 // Query performs real brute-force cosine similarity over every stored
 // chunk - grounded results only, never an invented file or excerpt.
 func (r *RAG) Query(ctx context.Context, query string, topK int) ([]Result, error) {
+	// An empty index answers nothing, and asks nothing of the embedder: the embedding model is loaded on the first use
+	// that needs it, never for an index with nothing in it (resource plan P1 #7).
+	var chunks int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chunks`).Scan(&chunks); err != nil {
+		return nil, fmt.Errorf("rag: count chunks: %w", err)
+	}
+	if chunks == 0 {
+		return nil, nil
+	}
 	queryVec, err := r.embedder.Embed(ctx, embedModel, query)
 	if err != nil {
 		return nil, fmt.Errorf("rag: embed query: %w", err)
