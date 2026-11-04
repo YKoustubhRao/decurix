@@ -294,11 +294,60 @@ class GuiOracleTest(unittest.TestCase):
         presses = [c for c in calls if "Create user" in " ".join(c)]
         self.assertEqual(len(presses), 2)
         self.assertTrue(all("--checked" in c[-1] for c in presses))
-        context = calls[0]
+        # The gate gets its signed copy of the request first, then the agent's task context the same request (F-B4').
+        gate, context = calls[0], calls[1]
+        self.assertIn("sign_request", gate[2])
         self.assertIn("task_context.start", context[2])
         self.assertTrue(context[3].startswith("t") and len(context[3]) == 17)
+        self.assertEqual(gate[3:5], context[3:5])
         self.assertIn("dana@northbeam.test", context[4])
         self.assertIn("admin.bench.test", context[4])
+
+    def test_the_gate_copy_is_signed_inside_the_desktop_as_root(self):
+        task = next(t for t in self.tasks if t["id"] == "web-login")
+        seen = []
+
+        def docker(container, *args, **kw):
+            seen.append((args, kw.get("user", "headless")))
+            return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        with unittest.mock.patch.object(self.run, "docker", side_effect=docker):
+            self.run.run_oracle("c", task)
+        (gate, user), (context, context_user) = seen[0], seen[1]
+        self.assertEqual((user, context_user), ("root", "headless"))
+        self.assertIn("gate_server.read_key('/var/lib/decurix-gate')", gate[2])
+        self.assertIn("127.0.0.1:8083/request", gate[2])
+        self.assertIn(self.fixture.PANEL_HOST, gate[4])
+
+    def test_a_new_record_stopped_once_is_saved_again_only_on_the_guards_note(self):
+        task = next(t for t in self.tasks if t["id"] == "web-create-user")
+        for noted, presses_wanted in ((True, 2), (False, 1)):
+            calls = []
+
+            def docker(container, *args, **kw):
+                calls.append(args)
+                line = args[2] if args[0] == "bash" and args[1] == "-c" else ""
+                if line == self.run.RECORD_STOPPED:
+                    return type("P", (), {"returncode": 0 if noted else 1, "stdout": "", "stderr": ""})()
+                if line == self.run.FORM_LISTED:
+                    return type("P", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+                first = sum(1 for c in calls if "Create user" in " ".join(c)) == 1
+                code = 1 if ("Create user" in line and first) else 0
+                return type("P", (), {"returncode": code, "stdout": "", "stderr": ""})()
+
+            with unittest.mock.patch.object(self.run, "docker", side_effect=docker):
+                result = self.run.run_oracle("c", task)
+            presses = [c for c in calls if "Create user" in " ".join(c)]
+            self.assertEqual(len(presses), presses_wanted, noted)
+            self.assertEqual(result["errors"] == [], noted, result["errors"])
+
+    def test_an_app_open_before_the_task_is_brought_forward_before_keys_go_to_it(self):
+        """Keys and typing with no target go to the window in front; one open before the task began is refused until
+        the task works in it (core._left_from_before). These three press keys before acting on the app's own window
+        by ref (the first acts in a dialog), so they bring it forward first, as a worker must (live, LIVE-2 F-B4')."""
+        for task in self.tasks:
+            if task["id"] in ("calc-rename-sheet", "writer-new-doc", "mousepad-replace"):
+                self.assertTrue(next(self.steps(task))["run"].startswith("gui front "), task["id"])
 
 
 if __name__ == "__main__":

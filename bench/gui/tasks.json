@@ -343,6 +343,7 @@
         ]
       },
       "oracle": [
+        "gui front budget.ods",
         "gui double-click 'tab \"Sheet1\"'",
         {
           "sleep": 1
@@ -401,6 +402,7 @@
         "text": "Quarterly review notes"
       },
       "oracle": [
+        "gui front 'Untitled 1'",
         "gui type 'Quarterly review notes'",
         "gui key ctrl+shift+s",
         {
@@ -447,6 +449,7 @@
         "text": "The color of the logo is blue.\nPick a color for the header.\nNo other color changes."
       },
       "oracle": [
+        "gui front notes.txt",
         "gui key ctrl+r",
         {
           "sleep": 1

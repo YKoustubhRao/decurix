@@ -348,8 +348,33 @@ REQUEST_CONTEXT = (
     "task_context.start(sys.argv[1], sys.argv[2])\n"
 )
 
+# Run in the desktop as root, standing in for the control plane, which the oracle does not go through: the desktop's
+# approval gate gets its own signed copy of the task's request first, as production gives it before the agent has the
+# request (desktop.TellGate, POST /request). The gate reads only that copy for the sites and values a request names, so
+# without it a password typed on the site the request names is asked about (F-B4'). The key is read and used inside the
+# container, by the gate's own signing function, and never leaves it; the gate verifies the copy as it verifies the
+# control plane's.
+GATE_REQUEST = (
+    "import json, sys, time, uuid, urllib.request; sys.path.insert(0, '/opt')\n"
+    "from decurix_agent import gate_server\n"
+    "key = gate_server.read_key('/var/lib/decurix-gate')\n"
+    "if not key: sys.exit('the gate has no key')\n"
+    "task, text = sys.argv[1], sys.argv[2]\n"
+    "ts, nonce = str(int(time.time())), uuid.uuid4().hex\n"
+    "body = {'task_id': task, 'ts': ts, 'nonce': nonce, 'text': text,\n"
+    "        'sig': gate_server.sign_request(key, task, ts, nonce, text)}\n"
+    "req = urllib.request.Request('http://127.0.0.1:8083/request', data=json.dumps(body).encode(),\n"
+    "                             headers={'Content-Type': 'application/json'}, method='POST')\n"
+    "urllib.request.urlopen(req, timeout=20).read()\n"
+)
+
 # Run in the desktop: whether the click just made listed its form for checking (core._form_check's note for the task).
 FORM_LISTED = "test -f /tmp/decurix-form-check.$0.json"
+
+# Run in the desktop: whether the record guard stopped this task's save of a new record once over an identifier that
+# nothing in the task resolved (core._unsearched_record keeps a note per task and identifier). The guard lets the worker
+# save again as it decided after that one stop; one that a record already holds stays refused every time.
+RECORD_STOPPED = "ls ~/.decurix/computer/id-refusals/$0-* >/dev/null 2>&1"
 
 
 def oracle_task_id(task):
@@ -371,6 +396,9 @@ def run_oracle(container, task):
                 "screen_actions": None, "seconds": 0.0, "errors": [], "skipped": APPROVAL_NEEDS_A_TASK}
 
     task_id = oracle_task_id(task)
+    told = docker(container, "python3", "-c", GATE_REQUEST, task_id, request_text(task), user="root")
+    if told.returncode != 0:
+        failures.append(f"the desktop's approval gate could not be given the task's request: {told.stderr.strip()[-300:]}")
     context = docker(container, "python3", "-c", REQUEST_CONTEXT, task_id, request_text(task))
     if context.returncode != 0:
         failures.append(f"the task's request could not be set on the desktop: {context.stderr.strip()[-300:]}")
@@ -390,9 +418,13 @@ def run_oracle(container, task):
         if "submit" in step:
             # A form with several filled fields is listed before it is sent (core._form_check), and sent by the same
             # click with --checked, the form unchanged: what an engine is told to do after reading the list.
+            # A new record whose identifier nothing resolved is stopped once (RECORD_STOPPED); the worker then decides
+            # and saves again, as the oracle does here. Each retry is asked for by a note the guard itself left.
             command = step["submit"] + " --checked"
             process = docker(container, "bash", "-c", "cd /tmp && " + command, timeout=180)
             if process.returncode != 0 and docker(container, "bash", "-c", FORM_LISTED, task_id).returncode == 0:
+                process = docker(container, "bash", "-c", "cd /tmp && " + command, timeout=180)
+            if process.returncode not in (0, 3) and docker(container, "bash", "-c", RECORD_STOPPED, task_id).returncode == 0:
                 process = docker(container, "bash", "-c", "cd /tmp && " + command, timeout=180)
             if process.returncode == 3:
                 paused = True
