@@ -2,7 +2,7 @@
 # Live check of the approval gate's boundary on a desktop image (docs/gate-boundary.md). Run it on every new image:
 # each row is an attack from a security review, and a FAIL means the worker can approve its own actions.
 #
-#   sh bench/security/boundary.sh [--image decurix-desktop:basic] [--layer] [--keep]
+#   sh bench/security/boundary.sh [--image decurix-desktop:basic] [--layer] [--keep] [--cp URL] [--desktops A,B]
 #
 # --layer builds a throwaway image from --image with this checkout's entrypoint and agent code on top, to check a
 # change before a full image build. Needs a Linux Docker (in the Decurix WSL distro: run as root there). Starts one
@@ -22,18 +22,25 @@
 #             the entrypoint, the gate's code and /etc/passwd in folders root used to chown, and a ~/tempfile.py, two
 #             restarts later nothing ran as root or as the gate, and those files are still root's and unwritable
 #   no key    a second desktop started without a key has the gate's directory, and a gated click is not allowed
-#   network   a container on another network reaches none of that desktop's 8081, 5901, 6901 (a network per desktop)
+#   network   on the product's own networks (decurix-vm-<id>): from inside desktop A, as its worker, desktop B's 8081,
+#             5901 and 6901 are unreachable, while A reaches the control plane (decurix:8080). The two desktops are
+#             made through the control plane at --cp (default http://127.0.0.1:8080) and deleted after, or --desktops
+#             names two that exist (left as they are)
 
 set -u
 IMAGE=decurix-desktop:basic
 LAYER=0
 KEEP=0
+CP=http://127.0.0.1:8080
+DESKTOPS=
 while [ $# -gt 0 ]; do
     case "$1" in
         --image) IMAGE=$2; shift 2 ;;
         --layer) LAYER=1; shift ;;
         --keep) KEEP=1; shift ;;
-        *) echo "usage: $0 [--image IMAGE] [--layer] [--keep]" >&2; exit 2 ;;
+        --cp) CP=$2; shift 2 ;;
+        --desktops) DESKTOPS=$2; shift 2 ;;
+        *) echo "usage: $0 [--image IMAGE] [--layer] [--keep] [--cp URL] [--desktops A,B]" >&2; exit 2 ;;
     esac
 done
 
@@ -57,6 +64,8 @@ as_worker() { docker exec -i -u 1001:1001 "$RUN" /usr/bin/env -i PATH=/usr/bin:/
 as_root() { docker exec -i -u 0 "$RUN" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/sh -s; }
 
 cleanup() {
+    # The two desktops the network row made through the control plane, if the run ended before it deleted them.
+    for d in ${MADE:-}; do wget -qO- --post-data "id=$d" "$CP/api/desktops/delete" >/dev/null 2>&1; done
     if [ "$KEEP" = 0 ]; then
         docker rm -f -v "$RUN" "$RUN-nokey" >/dev/null 2>&1
         docker volume rm "$VOL" "$VOL-nokey" >/dev/null 2>&1
@@ -273,27 +282,41 @@ gate = os.path.isdir("/run/decurix-gate") and not os.path.exists("/run/decurix-g
 print("ok" if gate and approval.remote() and not d.allowed else f"dir {gate} remote {approval.remote()} allowed {d.allowed}")
 PY
 )"
-# ---- network: a desktop's ports (8081, 5901, 6901) are closed to a container on another network (resource plan R3:
-# a network per desktop). The desktop joins network A; a probe on A reaches its screen (6901, the control: the check
-# means something only if the port is up), and a probe on network B reaches none of the three.
-docker network create "$RUN-a" >/dev/null && docker network create "$RUN-b" >/dev/null \
-    && docker network connect "$RUN-a" "$RUN-nokey"
-NOKEY_IP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$RUN-a\").IPAddress}}" "$RUN-nokey" 2>/dev/null)
-probe() { # probe NETWORK PORTS...: "open P" for each port a container on NETWORK can open at the desktop's address
-    net=$1; shift
-    docker run --rm --network "$net" --entrypoint /bin/bash "$IMAGE" -c \
-        'ip=$1; shift; for p in "$@"; do timeout 3 bash -c "</dev/tcp/$ip/$p" 2>/dev/null && echo "open $p"; done; true' \
-        _ "$NOKEY_IP" "$@" 2>/dev/null
-}
-i=0
-while [ $i -lt 20 ] && [ "$(probe "$RUN-a" 6901)" != "open 6901" ]; do sleep 3; i=$((i + 1)); done
-check "network: another desktop's network reaches none of 8081, 5901, 6901" "$(
-    if [ -z "$NOKEY_IP" ] || [ "$(probe "$RUN-a" 6901)" != "open 6901" ]; then echo "inconclusive: the screen is not up on network A"
-    elif open=$(probe "$RUN-b" 8081 5901 6901) && [ -n "$open" ]; then echo "reached from network B: $open"
-    else echo ok; fi)"
 docker rm -f -v "$RUN-nokey" >/dev/null 2>&1
 docker volume rm "$VOL-nokey" >/dev/null 2>&1
-docker network rm "$RUN-a" "$RUN-b" >/dev/null 2>&1
+
+# ---- network: the product's own networks (resource plan R3, c4d8fa0: a decurix-vm-<id> /28 per desktop). Two real
+# desktops, as the control plane makes them; from inside A, as A's worker (where an attacker in A stands), B's agent
+# (8081), VNC (5901) and screen (6901) at B's address on its own network are unreachable. Two controls make the check
+# mean something: B's screen is up (from inside B), and A reaches the control plane by its name (decurix:8080).
+cp_get() { wget -qO- "$CP$1" 2>/dev/null; }
+cp_post() { wget -qO- --post-data "$2" "$CP$1" 2>/dev/null; }
+MADE=""
+if [ -n "$DESKTOPS" ]; then
+    NA=${DESKTOPS%%,*}; NB=${DESKTOPS#*,}
+else
+    NA=boundary-a-$$; NB=boundary-b-$$
+    for d in "$NA" "$NB"; do
+        cp_post /api/desktops/create "name=$d&profile=basic" >/dev/null && MADE="$MADE $d"
+    done
+fi
+in_desktop() { # in_desktop NAME: a shell script on stdin, run as that desktop's worker
+    docker exec -i -u 1001:1001 "desktop_$1" /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash -s 2>/dev/null
+}
+i=0
+while [ $i -lt 100 ] && ! echo 'timeout 3 bash -c "</dev/tcp/127.0.0.1/6901"' | in_desktop "$NB"; do sleep 3; i=$((i + 1)); done
+B_IP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"decurix-vm-$NB\").IPAddress}}" "desktop_$NB" 2>/dev/null)
+A_OWN=$(docker inspect -f "{{(index .NetworkSettings.Networks \"decurix-vm-$NA\").IPAddress}}" "desktop_$NA" 2>/dev/null)
+check "network: from inside desktop A, desktop B's 8081, 5901 and 6901 are unreachable; A reaches decurix:8080" "$(
+    if [ -z "$B_IP" ] || [ -z "$A_OWN" ]; then echo "inconclusive: $NA or $NB has no network of its own (made before desktops had one?)"
+    elif ! echo 'timeout 3 bash -c "</dev/tcp/127.0.0.1/6901"' | in_desktop "$NB"; then echo "inconclusive: $NB's screen is not up"
+    elif ! echo 'timeout 5 bash -c "</dev/tcp/decurix/8080"' | in_desktop "$NA"; then echo "$NA cannot reach the control plane (decurix:8080): the control failed"
+    else
+        open=$(printf 'for p in 8081 5901 6901; do timeout 3 bash -c "</dev/tcp/%s/$p" 2>/dev/null && echo "open $p"; done; true\n' "$B_IP" | in_desktop "$NA")
+        if [ -n "$open" ]; then echo "reached $NB ($B_IP) from inside $NA: $open"; else echo ok; fi
+    fi)"
+for d in $MADE; do cp_post /api/desktops/delete "id=$d" >/dev/null; done
+MADE=""
 
 echo
 if [ "$FAILS" = 0 ]; then echo "boundary holds ($IMAGE)"; exit 0; fi

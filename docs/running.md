@@ -72,7 +72,10 @@ sh bench/security/boundary.sh [--image decurix-desktop:basic] [--layer]   # the 
                                                   # new image; --layer puts this checkout's entrypoint and agent on top
                                                   # first. Linux Docker as root (the Decurix distro: wsl -d Decurix -u root
                                                   # -- sh /mnt/c/.../bench/security/boundary.sh --layer); one throwaway
-                                                  # desktop, ~2 min
+                                                  # desktop, ~2 min. Its network row needs the control plane (--cp,
+                                                  # default http://127.0.0.1:8080): it makes two desktops there, probes
+                                                  # B's 8081/5901/6901 from inside A on their own networks, and deletes
+                                                  # them (--desktops A,B uses two that exist instead)
 DECURIX_PRACTICE_IMAGE=decurix-desktop:basic go test ./internal/desktop -run TestPracticeResetLive -count=1 -v
                                                   # the practice reset on a throwaway container of the real image:
                                                   # planted state is gone, the gate key kept, /health 200 after. Run

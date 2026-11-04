@@ -166,9 +166,22 @@ volumes:
 
     post("/api/desktops/create", name=DESKTOP, profile="basic", harness="ollama")
     until(lambda: get(f"/api/desktops/status?id={DESKTOP}").get("status") == "running", 300, "the desktop")
+    join_desktop_network()
     until(lambda: sh("docker", "exec", f"desktop_{DESKTOP}", "curl", "-s", "-o", "/dev/null",
                      "http://127.0.0.1:8081/", check_rc=False).returncode == 0, 300, "the desktop's agent")
     return compose
+
+
+def join_desktop_network():
+    """Dovecot joins the bench desktop's own network as `dovecot` (S7). Since c4d8fa0 every desktop has a network of
+    its own (decurix-vm-<id>), so a name on the shared decurix-network no longer resolves from inside it. The control
+    plane still reads the mailbox over decurix-network, where Dovecot stays. A desktop made before own networks is on
+    decurix-network itself, and nothing more is needed."""
+
+    nets = json.loads(sh("docker", "inspect", "-f", "{{json .NetworkSettings.Networks}}", f"desktop_{DESKTOP}").stdout or "{}")
+    own = sorted(n for n in nets if n.startswith("decurix-vm-"))
+    if own:
+        sh("docker", "network", "connect", "--alias", "dovecot", own[0], DOVECOT)
 
 
 def teardown(compose):
