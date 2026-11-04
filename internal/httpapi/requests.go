@@ -142,6 +142,14 @@ func (s *Server) markWithheld(ctx context.Context, desktopID string, route tasks
 		values = s.rememberWithheld(desktopID, content, stored)
 		ctx = context.WithValue(ctx, withheldKey{}, true)
 	}
+	if marked {
+		// A message the person marked holds the same values the agent holds for it (withhold.MarkedValues,
+		// privacy.marked_values): its unlabelled value-shaped words too, never its data. The recorder held only the
+		// whole text, and a value the model restated in its own commands was kept in 42 recorded calls (live L1).
+		extra := withhold.MarkedValues(content)
+		s.secretsSeen.Remember(desktopID, extra...)
+		values = append(values, extra...)
+	}
 	// The gate's own copy of a new request (the withheld form whenever anything was withheld), or, for a reply, the
 	// reply bound to its question (gateReplyKey): desktop.RequestNotice and ReplyNotice, shared with practice and eval.
 	notice := desktop.RequestNotice(route.TaskID, content, stored, withheld, values)

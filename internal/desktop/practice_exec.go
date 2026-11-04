@@ -43,11 +43,8 @@ func (m *Manager) ExecPracticeAsWorker(ctx context.Context, containerID string, 
 	ctx, cancel := context.WithTimeout(ctx, timeout+10*time.Second)
 	defer cancel()
 
-	// Whole seconds, rounded up: a timeout under a second is 1s, never 0s (which coreutils reads as no limit).
-	secs := int((timeout + time.Second - 1) / time.Second)
-	cmd := append([]string{"/usr/bin/timeout", "-k", "5", fmt.Sprintf("%ds", secs), "--"}, argv...)
 	exec, err := m.client.ContainerExecCreate(ctx, inspect.ID, container.ExecOptions{
-		User: "headless", Cmd: workerCmd(cmd...), AttachStdout: true, AttachStderr: true,
+		User: "headless", Cmd: workerCmd(timedCommand(timeout, argv)...), AttachStdout: true, AttachStderr: true,
 	})
 	if err != nil {
 		return 0, nil, err
@@ -109,4 +106,14 @@ func (c *cappedOutput) result() []byte {
 		out = append(out, fmt.Sprintf("\n[%d more bytes of output not kept]\n", c.dropped)...)
 	}
 	return out
+}
+
+// timedCommand is argv under coreutils timeout: TERM when the time is up, KILL 5 s later. The duration is whole
+// seconds, rounded up (a timeout under a second is 1s, never 0s, which timeout reads as no limit). The "--" ends
+// timeout's options before the duration: coreutils stops reading options at its first operand, so a "--" after the
+// duration was taken as the command, and every practice step exited 127 ("failed to run command '--'", live L2,
+// 2026-11-04). Before the duration it is still what keeps an argv[0] that starts with "-" from being read as an option.
+func timedCommand(timeout time.Duration, argv []string) []string {
+	secs := int((timeout + time.Second - 1) / time.Second)
+	return append([]string{"/usr/bin/timeout", "-k", "5", "--", fmt.Sprintf("%ds", secs)}, argv...)
 }

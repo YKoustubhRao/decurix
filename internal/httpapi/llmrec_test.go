@@ -209,6 +209,48 @@ func TestAMarkedSecretIsInNoStoredCall(t *testing.T) {
 	}
 }
 
+// The live L1 case's input class: a marked request holding an amount, a date and an unlabelled password-shaped token.
+// A model call that restates the token on its own, in a command, is recorded with the token withheld, and the amount
+// and the date, the request's data, stay as they are (withhold.MarkedValues, the agent's marked_values).
+func TestAMarkedRequestsUnlabelledTokenIsInNoStoredCallButItsDataIs(t *testing.T) {
+	s := recordingServer(t)
+	fakeAgentDesktop(t, s)
+	const request = "Pay the March invoice of Rs. 1,250.00 due 03/04/2026 and sign in with Fern42Kite first."
+	form := url.Values{"id": {"box"}, "content": {request}, "secret": {"1"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/desktops/send", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	s.sendRequestHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("send: %d %s", w.Code, w.Body)
+	}
+
+	body, _ := json.Marshal(map[string]any{"messages": []any{
+		map[string]any{"role": "user", "content": "Pay the invoice."},
+		map[string]any{"role": "assistant", "content": "Running: login --as staff Fern42Kite, then paying 1,250.00 due 03/04/2026."},
+	}})
+	if rec := proxyCall(t, s, "azure", "box", string(body), map[string]string{llmrec.HeaderPurpose: "operator.turn"}); rec.Code != 200 {
+		t.Fatalf("call: %d", rec.Code)
+	}
+	var all strings.Builder
+	_ = filepath.Walk(s.LLMRec.Blobs().Root(), func(p string, info os.FileInfo, err error) error {
+		if err != nil || !info.Mode().IsRegular() {
+			return nil
+		}
+		data, _ := os.ReadFile(p)
+		all.Write(data)
+		return nil
+	})
+	if strings.Contains(all.String(), "Fern42Kite") {
+		t.Fatal("a stored call holds the marked request's unlabelled token")
+	}
+	for _, data := range []string{"1,250.00", "03/04/2026"} {
+		if !strings.Contains(all.String(), data) {
+			t.Errorf("the request's data %q was withheld from the stored call", data)
+		}
+	}
+}
+
 // A recorder that cannot write still lets the call through, and the failure is counted where a person looks.
 func TestAFailedRecordingNeverFailsTheCall(t *testing.T) {
 	s := recordingServer(t)

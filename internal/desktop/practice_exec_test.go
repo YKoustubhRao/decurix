@@ -125,7 +125,7 @@ func TestExecPracticeAsWorkerRefusesAnythingButAPracticeDesktop(t *testing.T) {
 		t.Fatalf("ran as %v", d.execs)
 	}
 	cmd := strings.Join(d.cmds[0], " ")
-	if !strings.HasPrefix(cmd, "/usr/bin/env -i ") || !strings.HasSuffix(cmd, " /usr/bin/timeout -k 5 5s -- gui type x") {
+	if !strings.HasPrefix(cmd, "/usr/bin/env -i ") || !strings.HasSuffix(cmd, " /usr/bin/timeout -k 5 -- 5s gui type x") {
 		t.Fatalf("command = %q, want the worker's empty environment", cmd)
 	}
 }
@@ -168,7 +168,7 @@ func TestATimedOutPracticeCommandIsEnded(t *testing.T) {
 	if err == nil || exit != 124 {
 		t.Fatalf("a timed-out command = %d, %v", exit, err)
 	}
-	if cmd := strings.Join(d.cmds[0], " "); !strings.Contains(cmd, "/usr/bin/timeout -k 5 2s -- sleep 999") {
+	if cmd := strings.Join(d.cmds[0], " "); !strings.Contains(cmd, "/usr/bin/timeout -k 5 -- 2s sleep 999") {
 		t.Fatalf("command = %q", cmd)
 	}
 }
@@ -178,7 +178,7 @@ func TestAShortTimeoutIsNeverNoTimeout(t *testing.T) {
 	d := &execDaemon{t: t, output: []byte(""), labels: map[string]map[string]string{"practice": {PracticeLabel: "true"}}}
 	m := execManager(t, d)
 	_, _, _ = m.ExecPracticeAsWorker(context.Background(), "practice", []string{"true"}, 300*time.Millisecond)
-	if cmd := strings.Join(d.cmds[0], " "); !strings.Contains(cmd, "/usr/bin/timeout -k 5 1s -- true") {
+	if cmd := strings.Join(d.cmds[0], " "); !strings.Contains(cmd, "/usr/bin/timeout -k 5 -- 1s true") {
 		t.Fatalf("command = %q", cmd)
 	}
 }

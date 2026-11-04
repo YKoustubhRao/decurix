@@ -1,0 +1,73 @@
+{
+  "rule": "The values a message the person marked secret makes secret (agent privacy.marked_values, Go withhold.MarkedValues): the message whole (without the block of files it brings, its spaces folded), the secrets its structure spells out, and each word - split on white space, the characters .,;:!?\"'()[]{} trimmed from its ends - of 4 or more code points with a digit or a punctuation or symbol character in it that is not data by its structure: an amount or number (values.parse_amount), a date (values.parse_date), a time, an e-mail address, a URL, a host name, or a contraction. Values are compared as a set.",
+  "cases": [
+    {
+      "text": "Create ~/work/out/b.txt holding hello, then make ~/work/out/b.zip from it, encrypted with Plum7Orbit.",
+      "values": [
+        "Create ~/work/out/b.txt holding hello, then make ~/work/out/b.zip from it, encrypted with Plum7Orbit.",
+        "~/work/out/b.txt",
+        "~/work/out/b.zip",
+        "Plum7Orbit"
+      ]
+    },
+    {
+      "text": "Pay the March invoice of Rs. 1,250.00 due 03/04/2026 and sign in with Fern42Kite first.",
+      "values": [
+        "Pay the March invoice of Rs. 1,250.00 due 03/04/2026 and sign in with Fern42Kite first.",
+        "Fern42Kite"
+      ]
+    },
+    {
+      "text": "Transfer ₹12,500 on 2026-04-03 using the code Qz9!lamp then report back.",
+      "values": [
+        "Transfer ₹12,500 on 2026-04-03 using the code Qz9!lamp then report back.",
+        "Qz9!lamp"
+      ]
+    },
+    {
+      "text": "Totals: 1,25,000 and 12.50 and 1.250,00 and -500 and 500/- and $40 and 18% and 0042 stay.",
+      "values": [
+        "Totals: 1,25,000 and 12.50 and 1.250,00 and -500 and 500/- and $40 and 18% and 0042 stay.",
+        "0042"
+      ]
+    },
+    {
+      "text": "Due 3-Apr-2026 or 13/04/26 or 29/02/2025 or 2026-13-04, at 10:30 or 9.45am today.",
+      "values": [
+        "Due 3-Apr-2026 or 13/04/26 or 29/02/2025 or 2026-13-04, at 10:30 or 9.45am today.",
+        "29/02/2025",
+        "2026-13-04"
+      ]
+    },
+    {
+      "text": "Mail ana@example.test at https://records.example.test/login via www.example.test and records.example.test; don't, it’s fine.",
+      "values": [
+        "Mail ana@example.test at https://records.example.test/login via www.example.test and records.example.test; don't, it’s fine."
+      ]
+    },
+    {
+      "text": "Open INV-2024-0042 with key x7#Kp and pin 4821 then close.",
+      "values": [
+        "4821",
+        "Open INV-2024-0042 with key x7#Kp and pin 4821 then close.",
+        "INV-2024-0042",
+        "x7#Kp"
+      ]
+    },
+    {
+      "text": "Use ab1 and (Tango-77) and \"Mx9q\" now.",
+      "values": [
+        "Use ab1 and (Tango-77) and \"Mx9q\" now.",
+        "Tango-77",
+        "Mx9q"
+      ]
+    },
+    {
+      "text": "Summarise it with Quartz58lantern.\nFiles attached to this request, saved on this desktop:\n  /home/headless/work/inbox/q3-report.pdf",
+      "values": [
+        "Summarise it with Quartz58lantern.",
+        "Quartz58lantern"
+      ]
+    }
+  ]
+}
