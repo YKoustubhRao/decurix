@@ -1215,6 +1215,69 @@ def _for_gate(context):
     return context
 
 
+# A `gui` command that acts on an element by its ref: `gui click e33`, `gui type --enter e7 "..."`.
+_GUI_REF_COMMAND = re.compile(r"^\s*gui\s+([a-z][a-z_-]*)\s+(?:--?[\w-]+(?:=\S+)?\s+)*(e\d+)\b", re.I)
+
+
+def command_ref(command):
+    """(verb, ref) of a `gui <verb> <ref>` command, or None."""
+
+    m = _GUI_REF_COMMAND.match(str(command or ""))
+    return (m.group(1).lower(), m.group(2)) if m else None
+
+
+def command_target(command, observation=None):
+    """
+    What the ref of a `gui <verb> <ref>` command is, read from the observation the action would act on (the latest
+    one the `gui` command saved, computer/core.py): {"ref", "role", "name", "window_title"}; {"ref", "unresolved":
+    True} when that observation has no such ref; None for a command that names no ref. Sent with a held command
+    (material's "target"), so the gate's question names the control, not only its ref (live round 3, F-R3-3: "run the
+    command `gui click e33`" asked a person to approve a Pay button they could not see). Never raises.
+    """
+
+    found = command_ref(command)
+    if not found:
+        return None
+    ref = found[1]
+    try:
+        if observation is None:
+            from decurix_agent.computer import core
+            observation = core._load_state() or {}
+        titles = {g.get("id"): g.get("window_title") or g.get("title") or "" for g in observation.get("groups") or []}
+        element = next((e for e in observation.get("elements") or [] if e.get("ref") == ref), None)
+    except Exception:  # noqa: BLE001 - what cannot be read is said to be unknown
+        element = None
+    if not element:
+        return {"ref": ref, "unresolved": True}
+    return {"ref": ref, "role": str(element.get("role") or ""), "name": str(element.get("name") or ""),
+            "window_title": str(element.get("window_title") or titles.get(element.get("group")) or
+                                observation.get("active_title") or "")}
+
+
+def _command_target_words(command, target):
+    """
+    How the gate's question names what a `gui <verb> <ref>` command acts on: `click button "Pay ₹12,400" (e33) in
+    "Checkout"` from the target the caller resolved; when it resolved none (or one for another ref), that what the ref
+    is cannot be told - never the bare ref as if it said what it is. "" for a command with no ref; HELD_BACK when the
+    named words cannot be checked for secrets.
+    """
+
+    found = command_ref(command)
+    if not found:
+        return ""
+    verb, ref = found
+    good = (isinstance(target, dict) and target.get("ref") == ref and not target.get("unresolved")
+            and str(target.get("role") or "").strip())
+    if not good:
+        return (f"{verb} {ref} - what {ref} is cannot be told from here (no record of that control on the screen "
+                "was sent with it): look at the screen before you approve, or say no")
+    name, window = shown_by_gate(str(target.get("name") or "")), shown_by_gate(str(target.get("window_title") or ""))
+    if privacy.HELD_BACK in (name, window):
+        return privacy.HELD_BACK
+    words = el.describe({"role": str(target["role"]), "name": name[:200], "ref": ref})
+    return f"{verb} {words}" + (f' in "{window[:120]}"' if window else "")
+
+
 def from_material(material):
     """
     (fingerprint, description, element, about) of an action described by `material` (check's, or TheBot's paused
@@ -1235,8 +1298,14 @@ def from_material(material):
             return fingerprint, privacy.HELD_BACK, None, ""
         if command:
             description = f"run the command `{shown[:600]}`" + (f" in {workdir}" if workdir else "")
+            named = _command_target_words(command, material.get("target"))
+            if named == privacy.HELD_BACK:
+                return fingerprint, privacy.HELD_BACK, None, ""
+            if named:
+                description = f"{named} - by the command `{shown[:300]}`"
         else:
             description = f"start this request: {shown[:600]}"
+        # (The fingerprint is the raw command, request and folder above: what the question names is words only.)
         return fingerprint, shown_by_gate(description), None, ""
     element = material.get("element") if isinstance(material.get("element"), dict) else None
     text = material.get("text")

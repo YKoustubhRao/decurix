@@ -26,8 +26,13 @@ def gated():
 def material(command, request="", workdir=""):
     """The command as the gate makes its fingerprint and words from it - the same shape soul sends."""
 
-    return {"kind": "command", "command": str(command or ""), "request": str(request or ""),
+    held = {"kind": "command", "command": str(command or ""), "request": str(request or ""),
             "workdir": str(workdir or "")}
+    # A `gui` command on a ref: what the ref is on the screen, so the gate's question names the control (F-R3-3).
+    target = approval.command_target(command)
+    if target is not None:
+        held["target"] = target
+    return held
 
 
 def check(held):
