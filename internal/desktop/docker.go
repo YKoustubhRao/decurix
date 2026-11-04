@@ -329,7 +329,7 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 	}
 
 	env = append(env,
-		"PATH=/opt/tools/bin:/opt/tools/go/bin:/opt/tools/node/bin:/opt/tools/rust/bin:/home/headless/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"PATH="+desktopPath,
 		"GOROOT=/opt/tools/go",
 		"RUSTUP_HOME=/opt/tools/rust",
 		"CARGO_HOME=/home/headless/.cargo",
@@ -346,6 +346,11 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 
 	return env
 }
+
+// desktopPath is the PATH every desktop gets, real and practice alike: the shared tools first, the worker's own
+// installs, then the system's. Its python3 is /usr/bin/python3, the one Python the image installs the worker
+// libraries into (docker/desktop.basic.Dockerfile, resource plan B1).
+const desktopPath = "/opt/tools/bin:/opt/tools/go/bin:/opt/tools/node/bin:/opt/tools/rust/bin:/home/headless/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 // envOr is the control plane's own value of the environment variable name, or def when it is unset or empty.
 func envOr(name, def string) string {

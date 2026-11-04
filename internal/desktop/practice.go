@@ -402,6 +402,8 @@ func practiceEnvironment(inherited []string, spec PracticeSpec, vncPassword stri
 		"DECURIX_PRACTICE=1",
 		GateRequiredEnv+"=1",
 		"PYTHONDONTWRITEBYTECODE=1", "PYTHONUNBUFFERED=1",
+		// The PATH a real desktop gets, never the image's: one Python on both (resource plan B1).
+		"PATH="+desktopPath,
 	)
 	if (Brain{Kind: spec.Brain}).Hosted() {
 		vision := "0"

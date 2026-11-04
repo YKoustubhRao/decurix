@@ -125,17 +125,13 @@ COPY agent/install-browser.sh /tmp/install-browser.sh
 RUN chmod 644 /etc/opt/chrome/policies/managed/decurix.json \
     && sh /tmp/install-browser.sh && rm -f /tmp/install-browser.sh /tmp/chromium-browser
 
-# Presentation support uses a venv: python3-pptx is unavailable in Ubuntu noble.
-# System site packages retain apt-provided GI, openpyxl and document readers.
-RUN python3 -m venv --system-site-packages /opt/office-venv && \
-    for try in 1 2 3; do /opt/office-venv/bin/pip install --no-cache-dir --timeout 60 --retries 5 python-pptx==1.0.2 && break; \
-    [ "$try" = 3 ] && exit 1; echo "pip: try $try failed; trying again"; sleep $((try * 20 - 10)); done
-ENV PATH="/opt/office-venv/bin:${PATH}"
-
-# The libraries a worker's own scripts reach for, in the system Python, so every python3 has them: the venv above is
-# not on a worker's PATH (the control plane sets PATH when it creates a desktop), so `import pptx` failed in any script
-# the engine wrote, and a run that needed `requests` failed and asked a person. Pinned, like everything here.
-RUN for try in 1 2 3; do pip3 install --no-cache-dir --timeout 60 --retries 5 --break-system-packages \
+# One Python for the agent and every worker script: the system's, /usr/bin/python3, which is the python3 on the PATH
+# every desktop gets, real and practice alike (desktop.desktopPath). The libraries a worker's own scripts reach for
+# are installed into it by its own pip, named by path. There was a venv for python-pptx first on the image's PATH: the
+# "system" pip3 below then installed into the venv, practice desktops (which kept the image's PATH) had pandas and the
+# rest, and real desktops (the control plane's PATH, no venv) had none of them (resource plan B1). One environment
+# also drops the second copy of python-pptx and of numpy. Pinned, like everything here.
+RUN for try in 1 2 3; do /usr/bin/python3 -m pip install --no-cache-dir --timeout 60 --retries 5 --break-system-packages \
         python-pptx==1.0.2 \
         pandas==2.2.3 \
         requests==2.32.3 \
