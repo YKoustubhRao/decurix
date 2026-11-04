@@ -206,10 +206,11 @@ question, so a change case (which starts with the worker's plan question) cannot
 
 One practice run at a time across Simulate and evals; the runner refuses below 2.5 GB free memory, and removes the
 practice desktop and the mock at the end, on cancel and on error. Results are stored in the control plane
-(`eval_runs`, `eval_rows`; insert only) and written to `evals/results/<run-id>/` (git-ignored). A model row names its
+(`eval_runs`, `eval_rows`; insert only) and written to `evals/results/<run-id>/` (git-ignored). A model or oracle row names its
 `trajectory_id`: the case's execution id, which `GET /api/runs/<id>/trajectory` serves. It is set once the case's bundle
 (recording, ledger, notes, soul trace) was pulled off the practice desktop, before the next case's reset wipes it. A
-calibration row names none, since no worker ran; a pull that fails is said in the row's problems (O-6).
+`nothing` or `ask` row names none, since nothing ran on the desktop; a pull that fails is said in the row's problems (O-6). A
+case's mock app is handed to the case only once it answers HTTP on its port (at most 25 s; past that the row is infra).
 
 ## Adding a case (fails before, passes after)
 

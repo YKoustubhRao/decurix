@@ -903,8 +903,38 @@ func (m *Manager) StartPracticeMock(ctx context.Context, image, runID string, so
 	if err = m.execTarIn(ctx, created.ID, "/work", &buf); err != nil {
 		return "", err
 	}
+	// The entrypoint starts the app only once ready is in: a case that began now raced its start, and the oracle's
+	// first curl met "connection refused" (LIVE-2 round 3, F-R3-1). The mock is handed over once it answers.
+	if err = m.practiceExec(ctx, created.ID, "headless", []string{"/usr/bin/python3", "-I", "-c", practiceMockWaitScript,
+		PracticeMockPort, fmt.Sprint(PracticeMockWaitSeconds)}); err != nil {
+		return "", fmt.Errorf("%w (%v)", ErrMockNotAnswering, err)
+	}
 	return created.ID, nil
 }
+
+// PracticeMockWaitSeconds bounds how long StartPracticeMock waits for the mock app to answer on its port (within
+// practiceExec's own 30 s wait for a command).
+const PracticeMockWaitSeconds = 25
+
+// ErrMockNotAnswering is a practice mock app that did not answer on its port within PracticeMockWaitSeconds.
+var ErrMockNotAnswering = errors.New("desktop: the practice mock app did not answer on its port in time")
+
+// practiceMockWaitScript, run in the mock's container, exits 0 once anything answers HTTP on 127.0.0.1:<port> (any
+// status: the app is up), and 1 when the seconds it is given pass first.
+const practiceMockWaitScript = `import http.client, sys, time
+end = time.time() + float(sys.argv[2])
+while True:
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", int(sys.argv[1]), timeout=2)
+        c.request("GET", "/")
+        c.getresponse()
+        sys.exit(0)
+    except Exception:
+        pass
+    if time.time() > end:
+        sys.exit(1)
+    time.sleep(0.2)
+`
 
 // PracticeMockState reads the mock's state.json after it is paused; empty when
 // the app stored nothing.

@@ -752,6 +752,10 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 		}
 		if c.Start.Mock != "" {
 			id, err := s.Sandbox.StartPracticeMock(ctx, arm.Image, armRun, suite.MockSources[c.Start.Mock], c.Fixture)
+			if errors.Is(err, desktop.ErrMockNotAnswering) {
+				ev.Infra = append(ev.Infra, fmt.Sprintf("The case's mock app did not answer on its port within %d s.", desktop.PracticeMockWaitSeconds))
+				return
+			}
 			if err != nil {
 				ev.Infra = append(ev.Infra, "The case's mock app could not start.")
 				return
@@ -918,11 +922,13 @@ func (s *Service) readLedger(ctx context.Context, d desktop.PracticeDesktop, tas
 	return out
 }
 
-// pullBundle pulls a model case's bundle (its recording, ledger, notes, soul trace) off the practice desktop before
-// the next case resets it, and returns the execution id its trajectory is served by. A calibration arm ran no worker,
-// so it has no run to pull ("", ""); a pull that fails returns "" and says why, in a sentence of this file's own.
+// pullBundle pulls a case's bundle (its recording, ledger, notes, soul trace) off the practice desktop before the next
+// case resets it, and returns the execution id its trajectory is served by: for a model arm, and for the oracle, whose
+// steps run as the worker under the case's task id (its gui and office steps record as a worker's do). The nothing
+// and ask arms run nothing on the desktop, so there is no run to pull ("", ""). A pull that fails returns "" and says
+// why, in a sentence of this file's own.
 func (s *Service) pullBundle(ctx context.Context, arm Arm, d desktop.PracticeDesktop, route tasks.Route) (string, string) {
-	if arm.Kind != ArmModel || s.Bundles == nil || s.Tasks == nil || route.ExecutionID == "" {
+	if (arm.Kind != ArmModel && arm.Kind != ArmOracle) || s.Bundles == nil || s.Tasks == nil || route.ExecutionID == "" {
 		return "", ""
 	}
 	_, err := s.Bundles.Pull(ctx, runs.ExecutionRef{ExecID: route.ExecutionID, TaskID: route.TaskID, Worker: d.ContainerID})

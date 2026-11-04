@@ -70,15 +70,16 @@ func (b *fakeBundles) Pull(_ context.Context, ref runs.ExecutionRef) (runs.Bundl
 	return runs.Bundle{ExecID: ref.ExecID}, nil
 }
 
-// O-6: a model case's row names its trajectory (the execution id) once its bundle was pulled off the practice
-// desktop, before the next case resets it; a calibration arm pulls nothing; a pull that fails names none and says so.
+// O-6: a model or oracle case's row names its trajectory (the execution id) once its bundle was pulled off the
+// practice desktop, before the next case resets it (round 7, F-R3-1: oracle rows too); the nothing arm pulls nothing;
+// a pull that fails names none and says so.
 func TestARowNamesItsTrajectoryOnceTheBundleIsPulled(t *testing.T) {
 	s, sb, _, _, _ := newService(t, diligent)
 	s.Tasks = &evalTasks{}
 	b := &fakeBundles{sb: sb, fail: map[string]error{}}
 	s.Bundles = b
 	run, err := s.Start(context.Background(), MatrixRequest{SuiteTar: runnerSuite(t), Repeats: 1,
-		Arms: []Arm{{Name: "nothing", Kind: ArmNothing}, {Name: "default", Kind: ArmModel}}})
+		Arms: []Arm{{Name: "nothing", Kind: ArmNothing}, {Name: "oracle", Kind: ArmOracle}, {Name: "default", Kind: ArmModel}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +89,7 @@ func TestARowNamesItsTrajectoryOnceTheBundleIsPulled(t *testing.T) {
 	refs, resets := b.refs, b.reset
 	b.mu.Unlock()
 	sb.mu.Lock()
-	container := "c-" + sb.specs[len(sb.specs)-1].RunID // the model arm's desktop, made last
+	containers := map[string]string{"oracle": "c-" + sb.specs[1].RunID, "default": "c-" + sb.specs[2].RunID} // made in arm order
 	sb.mu.Unlock()
 	model := 0
 	for _, r := range rows {
@@ -104,17 +105,17 @@ func TestARowNamesItsTrajectoryOnceTheBundleIsPulled(t *testing.T) {
 				ref = &refs[i]
 			}
 		}
-		if ref == nil || r.TrajectoryID == "" || r.TrajectoryID != ref.ExecID || ref.Worker != container {
+		if ref == nil || r.TrajectoryID == "" || r.TrajectoryID != ref.ExecID || ref.Worker != containers[r.Arm] {
 			t.Fatalf("%s: trajectory %q, pull %+v", r.CaseID, r.TrajectoryID, ref)
 		}
 		model++
 	}
-	if model != 3 || len(refs) != 3 {
-		t.Fatalf("model rows %d, pulls %d", model, len(refs))
+	if model != 6 || len(refs) != 6 {
+		t.Fatalf("model and oracle rows %d, pulls %d", model, len(refs))
 	}
-	// Each pull came before the next case's reset of the arm's desktop.
+	// Each pull came before the next case's reset of the arm's desktop (a new arm's desktop is made, not reset).
 	for i := 1; i < len(resets); i++ {
-		if resets[i] <= resets[i-1] {
+		if refs[i].Worker == refs[i-1].Worker && resets[i] <= resets[i-1] {
 			t.Fatalf("resets at each pull: %v", resets)
 		}
 	}

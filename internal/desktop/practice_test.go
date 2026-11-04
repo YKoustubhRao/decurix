@@ -398,6 +398,17 @@ func TestPracticeMockAndCollection(t *testing.T) {
 	if err != nil || mock != "mock" {
 		t.Fatal(err)
 	}
+	// It is handed over only after it answered on its port: the wait runs in the mock, after its files are in
+	// (F-R3-1).
+	waited := false
+	for _, info := range d.execs {
+		if info[0] == "mock" && info[1] == "run" && strings.Contains(info[2], "http.client") && strings.Contains(info[2], PracticeMockPort) {
+			waited = true
+		}
+	}
+	if !waited {
+		t.Fatalf("the mock was handed over without waiting for it to answer: %v", d.execs)
+	}
 	cfg := d.created[0]
 	host := cfg["HostConfig"].(map[string]any)
 	if host["NetworkMode"] != PracticeNetworkName || host["ReadonlyRootfs"] != true || host["PortBindings"] != nil || host["Binds"] != nil {
