@@ -64,6 +64,8 @@ var schema = []string{
 	// sentence in its problems, so the report can leave such rows out of k/n (review EVAL-1, B4).
 	`ALTER TABLE eval_rows ADD COLUMN invalid INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE eval_rows ADD COLUMN infra INTEGER NOT NULL DEFAULT 0;`,
+	// The run record of a row's case: its execution id, once the case's bundle was pulled (O-6).
+	`ALTER TABLE eval_rows ADD COLUMN trajectory_id TEXT NOT NULL DEFAULT '';`,
 }
 
 // Blobs keeps a run's suite tar by content (*blobstore.Store), so a run can be read again later.
@@ -116,6 +118,9 @@ type Row struct {
 	Infra bool `json:"infra"`
 	// Served is the model the upstream's answers said served the case (kept in the row's checks).
 	Served []string `json:"served,omitempty"`
+	// TrajectoryID is the case's execution id, which /api/runs/<id>/trajectory serves: set once the case's bundle was
+	// pulled off the practice desktop. "" for a calibration arm (no worker ran) or a pull that failed (said in problems).
+	TrajectoryID string `json:"trajectory_id"`
 }
 
 // Store keeps eval runs and their rows in SQLite.
@@ -230,11 +235,11 @@ func (s *Store) AddRow(r Row) error {
 	}
 	_, err := s.db.Exec(`INSERT INTO eval_rows (run_id, arm, repeat, case_id, task_id, observed, checked, passed, false_done,
 		done_unchecked_wrong, q_required, q_other, tokens_in, tokens_cached, tokens_out, minutes, deployments, checks, problems, at_ns,
-		invalid, infra)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		invalid, infra, trajectory_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.RunID, r.Arm, r.Repeat, r.CaseID, r.TaskID, r.Observed, r.Checked, r.Passed, r.FalseDone, r.DoneUncheckedWrong,
 		r.QRequired, r.QOther, r.TokensIn, r.TokensCached, r.TokensOut, r.Minutes, string(deps), string(checks), string(probs),
-		sqlitedb.ToNS(r.At), r.Invalid, r.Infra)
+		sqlitedb.ToNS(r.At), r.Invalid, r.Infra, r.TrajectoryID)
 	return err
 }
 
@@ -294,7 +299,8 @@ func (s *Store) query(where string, args ...any) ([]Run, error) {
 // Rows returns a run's rows in the order they were stored.
 func (s *Store) Rows(runID string) ([]Row, error) {
 	rows, err := s.db.Query(`SELECT run_id, arm, repeat, case_id, task_id, observed, checked, passed, false_done, done_unchecked_wrong,
-		q_required, q_other, tokens_in, tokens_cached, tokens_out, minutes, deployments, checks, problems, at_ns, invalid, infra
+		q_required, q_other, tokens_in, tokens_cached, tokens_out, minutes, deployments, checks, problems, at_ns, invalid, infra,
+		trajectory_id
 		FROM eval_rows WHERE run_id=? ORDER BY rowid`, runID)
 	if err != nil {
 		return nil, err
@@ -307,7 +313,7 @@ func (s *Store) Rows(runID string) ([]Row, error) {
 		var at int64
 		if err := rows.Scan(&r.RunID, &r.Arm, &r.Repeat, &r.CaseID, &r.TaskID, &r.Observed, &r.Checked, &r.Passed, &r.FalseDone,
 			&r.DoneUncheckedWrong, &r.QRequired, &r.QOther, &r.TokensIn, &r.TokensCached, &r.TokensOut, &r.Minutes, &deps, &checks, &probs, &at,
-			&r.Invalid, &r.Infra); err != nil {
+			&r.Invalid, &r.Infra, &r.TrajectoryID); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(deps), &r.Deployments)

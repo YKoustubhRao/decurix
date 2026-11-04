@@ -20,6 +20,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/llmrec"
 	"github.com/YKoustubhRao/decurix/internal/practice"
 	"github.com/YKoustubhRao/decurix/internal/qualification"
+	"github.com/YKoustubhRao/decurix/internal/runs"
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
@@ -78,6 +79,12 @@ type Sandbox interface {
 	VerifyGateQuestion(desktopID, requestID, question, sig string) bool
 }
 
+// Bundles pulls a case's run bundle off its practice desktop (*runs.Puller over desktop.PracticeHome), before the
+// next case resets the desktop; the worker is the practice container's id.
+type Bundles interface {
+	Pull(ctx context.Context, ref runs.ExecutionRef) (runs.Bundle, error)
+}
+
 // Slot is the control plane's one practice slot (*practice.Service): Simulate and evals take turns.
 type Slot interface {
 	Reserve() (release func(), err error)
@@ -93,6 +100,8 @@ type Service struct {
 	// Recorder keeps the expert's calls (the broker records the desktop's own).
 	Recorder llmrec.Recorder
 	Tasks    practice.Tasks
+	// Bundles pulls each model case's bundle, so its row names its trajectory (nil: rows name none).
+	Bundles  Bundles
 	Practice Slot
 	// Vision reports whether a hosted provider reads images.
 	Vision func(provider string) bool
@@ -787,6 +796,10 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 	_ = s.Sandbox.UnpausePractice(clean, d.ContainerID, mockID)
 	// The worker's own ledger is read once it runs again: it is worker-written, reported and never a pass (D8).
 	ev.Ledger = s.readLedger(clean, d, route.TaskID)
+	trajectory, why := s.pullBundle(clean, arm, d, route)
+	if why != "" {
+		problems = append(problems, why)
+	}
 	if mockID != "" {
 		_ = s.Sandbox.RemovePractice(clean, mockID)
 	}
@@ -800,6 +813,7 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 		Minutes: ev.Minutes, Deployments: usage.Deployments, At: s.Store.now(), Infra: res.Infra}
 	row.Problems = append(append([]string{}, res.Problems...), problems...)
 	row.Served = usage.Served
+	row.TrajectoryID = trajectory
 	if arm.Kind == ArmModel && servedByOther(usage.Deployments, arm.Deployment) {
 		row.Invalid = true
 		row.Problems = append(row.Problems, fmt.Sprintf("%s: calls served by %s, the run pinned %q", modelChanged, strings.Join(usage.Deployments, ", "), arm.Deployment))
@@ -902,6 +916,25 @@ func (s *Service) readLedger(ctx context.Context, d desktop.PracticeDesktop, tas
 		return nil
 	}
 	return out
+}
+
+// pullBundle pulls a model case's bundle (its recording, ledger, notes, soul trace) off the practice desktop before
+// the next case resets it, and returns the execution id its trajectory is served by. A calibration arm ran no worker,
+// so it has no run to pull ("", ""); a pull that fails returns "" and says why, in a sentence of this file's own.
+func (s *Service) pullBundle(ctx context.Context, arm Arm, d desktop.PracticeDesktop, route tasks.Route) (string, string) {
+	if arm.Kind != ArmModel || s.Bundles == nil || s.Tasks == nil || route.ExecutionID == "" {
+		return "", ""
+	}
+	_, err := s.Bundles.Pull(ctx, runs.ExecutionRef{ExecID: route.ExecutionID, TaskID: route.TaskID, Worker: d.ContainerID})
+	switch {
+	case err == nil:
+		return route.ExecutionID, ""
+	case errors.Is(err, runs.ErrNothingFound):
+		return "", "The practice desktop held no part of the case's run, so the row names no trajectory."
+	default:
+		log.Printf("eval: pulling the bundle of %s: %v", route.TaskID, err)
+		return "", "The case's run bundle could not be pulled, so the row names no trajectory."
+	}
 }
 
 // observeModel sends the case's request and follows the worker turn by turn: a question gets the expert's chosen

@@ -480,13 +480,15 @@ func main() {
 	var evalSvc *eval.Service
 	if evalStore != nil {
 		evalSvc = &eval.Service{
-			Store:      evalStore,
-			Sandbox:    desktops,
-			Broker:     practiceSvc.Broker,
-			BrokerURL:  practiceSvc.BrokerURL,
-			Hub:        server.LLM,
-			Recorder:   llmrecStore,
-			Tasks:      tasksStore,
+			Store:     evalStore,
+			Sandbox:   desktops,
+			Broker:    practiceSvc.Broker,
+			BrokerURL: practiceSvc.BrokerURL,
+			Hub:       server.LLM,
+			Recorder:  llmrecStore,
+			Tasks:     tasksStore,
+			// Each model case's bundle, pulled off its practice desktop before the next case resets it (O-6).
+			Bundles:    &runs.Puller{Home: desktop.PracticeHome{M: desktops}, Store: runStore, Blobs: blobs},
 			Practice:   practiceSvc,
 			Vision:     practiceSvc.Vision,
 			FreeMemory: practiceSvc.FreeMemory,
