@@ -8,10 +8,12 @@
 package sqlitedb
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -100,7 +102,59 @@ func Open(path string) (*sql.DB, error) {
 		uriPath = "/" + uriPath // Windows drive letter in a file URI.
 	}
 	dsn := url.URL{Scheme: "file", Path: uriPath, RawQuery: query.Encode()}
-	return open(dsn.String(), maxOpenConns)
+	db, err := open(dsn.String(), maxOpenConns)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := ensureIncrementalVacuum(db, absPath); err != nil {
+		log.Printf("sqlitedb: %s: could not turn on incremental vacuum: %v", absPath, err)
+	}
+	return db, nil
+}
+
+// ensureIncrementalVacuum turns on incremental vacuum for a database made before it was asked for: the
+// auto_vacuum(INCREMENTAL) above takes effect only on a database that has no tables yet, so on an existing one it
+// did nothing and freed pages were never given back (resource plan B2). Only when the setting differs: it is set, and
+// one VACUUM rebuilds the file so it holds (logged; it takes a while on a large database, once). It reports whether
+// it did.
+func ensureIncrementalVacuum(db *sql.DB, path string) (bool, error) {
+	var mode int
+	if err := db.QueryRow(`PRAGMA auto_vacuum`).Scan(&mode); err != nil {
+		return false, err
+	}
+	if mode == 2 { // INCREMENTAL
+		return false, nil
+	}
+	log.Printf("sqlitedb: %s: turning on incremental vacuum (auto_vacuum was %d); one VACUUM", path, mode)
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(context.Background(), `PRAGMA auto_vacuum = INCREMENTAL`); err != nil {
+		return false, err
+	}
+	if _, err := conn.ExecContext(context.Background(), `VACUUM`); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// KeepVacuumed gives freed pages back to the filesystem every interval, a batch at a time (IncrementalVacuum), until
+// ctx ends. A database whose rows come and go (calls, steps, chat) otherwise only grows.
+func KeepVacuumed(ctx context.Context, db *sql.DB, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := IncrementalVacuum(db, 2000); err != nil {
+				log.Printf("sqlitedb: incremental vacuum: %v", err)
+			}
+		}
+	}
 }
 
 // IncrementalVacuum frees up to pages unused database pages back to the host filesystem.

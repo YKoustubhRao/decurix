@@ -357,6 +357,8 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
+	// Freed pages go back to the disk, a batch an hour (resource plan B2).
+	go sqlitedb.KeepVacuumed(context.Background(), db, time.Hour)
 
 	log.Printf("Records: %s", dbPath)
 
