@@ -95,7 +95,7 @@ def start(task_id, request=None, continues=""):
                 # The request as it is, for the task's own checks in every process (current_request): in the task's
                 # secret store (tmpfs, 0600, let go at its final report), never in a kept copy (review round 6).
                 from decurix_agent.computer import privacy
-                privacy.keep_resume_copy("request:" + task_id, task_id, str(request)[:REQUEST_CHARS])
+                privacy.keep_resume_copy("request:" + task_id, task_id, str(request))  # (uncut: current_request(full))
             # The files the request brought, whole: the request above is cut at 500 characters, and its paths come
             # last. What the screen layer checks a chosen record against (core._in_documents).
             from decurix_agent import attachments
@@ -265,11 +265,14 @@ def take_interrupted():
     return record
 
 
-def current_request():
-    """What the current task asked for, as far as this process can tell, or ""."""
+def current_request(full=False):
+    """What the current task asked for, as far as this process can tell, or "". Cut at REQUEST_CHARS unless `full`: a
+    writer withholds the request whole before it cuts it, or a cut prefix of a marked message no longer matches the
+    message held whole (review round 7)."""
 
+    cut = (lambda text: text) if full else (lambda text: text[:REQUEST_CHARS])
     if state.current_task_id and state.current_task:
-        return str(state.current_task)[:REQUEST_CHARS]
+        return cut(str(state.current_task))
 
     # Another process (the `gui` command, a check): the request as it is from the task's secret store when its kept copy
     # is withheld - the checks read the data a marked request carries (review round 6, R5-B1).
@@ -278,7 +281,7 @@ def current_request():
         from decurix_agent.computer import privacy
         raw = privacy.resume_copy("request:" + task_id)
         if raw:
-            return raw
+            return cut(raw)
     return _read(".request")
 
 

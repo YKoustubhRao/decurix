@@ -165,17 +165,20 @@ def client_of(answer, request):
     return client if names_whole(client, request) else ""
 
 
-def _holds_secret(*texts):
-    """Whether any of the texts holds a secret (computer/privacy.py) - or cannot be checked: fails closed."""
+def _holds_secret(*texts, held=()):
+    """Whether any of the texts holds a secret (computer/privacy.py) - one spelled out, one remembered, or one of
+    `held` (the task's values as they were when its facts thread started: the task lets go of its own at its final
+    report, which may come first - review round 7) - or cannot be checked: fails closed."""
 
     try:
         from decurix_agent.computer import privacy
-        return any(t and (privacy.credential_in(t) or privacy.withhold_known(t) != t) for t in texts)
+        return any(t and (privacy.credential_in(t) or privacy.withhold_known(t) != t
+                          or privacy.withhold_held(t, list(held)) != t) for t in texts)
     except Exception:  # noqa: BLE001 - a fact that cannot be checked is not kept
         return True
 
 
-def keep(task_id, request):
+def keep(task_id, request, held=()):
     """
     Distil and keep the facts and places of a finished task (in the worker's memory). Returns how many were kept.
 
@@ -194,9 +197,9 @@ def keep(task_id, request):
     if facts and not client:
         log(f"Facts: {len(facts)} fact(s) not kept - the request names no client to keep them for")
         facts = []
-    secret = [f for f in facts if _holds_secret(f["about"], f["quote"], f["where"])]
+    secret = [f for f in facts if _holds_secret(f["about"], f["quote"], f["where"], held=held)]
     facts = [f for f in facts if f not in secret]
-    unsafe_places = [p for p in places if _holds_secret(p["what"], p["where"])]
+    unsafe_places = [p for p in places if _holds_secret(p["what"], p["where"], held=held)]
     places = [p for p in places if p not in unsafe_places]
     if secret or unsafe_places:
         log(f"Facts: {len(secret) + len(unsafe_places)} not kept - each holds something shaped like a secret")
@@ -219,16 +222,18 @@ def keep(task_id, request):
     return n
 
 
-def after_task(task_id, request):
+def after_task(task_id, request, held=()):
     """Keep the task's facts on a thread of their own (the caller may wait for it). Never raises; None when nothing
-    is to be kept (no task, or no hosted model)."""
+    is to be kept (no task, or no hosted model). `held`: the task's secret values now, checked against every fact
+    whenever the thread gets to it."""
 
     if not task_id or not config.HOSTED_BRAIN:
         return None
+    held = tuple(held or ())
 
     def run():
         try:
-            keep(task_id, request)
+            keep(task_id, request, held=held)
         except Exception as exc:  # noqa: BLE001 - what is kept for later must never cost this task
             log(f"Facts: could not keep this task's facts: {exc}")
 

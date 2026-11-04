@@ -864,16 +864,19 @@ Completed at:
     else:
         log("WARNING: could not send final reply to control plane.")
 
-    _keep_facts(task_id, quiet=quiet, interrupted=interrupted)
+    facts_thread = _keep_facts(task_id, quiet=quiet, interrupted=interrupted)
 
-    # The task is over: its secret values as they are let go (privacy.remember_literals; the word hashes stay).
-    try:
-        from decurix_agent.computer import privacy
-        ended = task_id or task_context.current()
-        privacy.clear_literals(ended)
-        task_context._secret_values.pop(ended, None)
-    except Exception as exc:  # noqa: BLE001
-        log(f"Could not let go of the task's secret values: {exc}")
+    # The task is over: its secret values as they are let go (privacy.remember_literals; the word hashes stay) - once
+    # its facts thread is done with them, if it is still running (review round 7: a model call slower than WAIT_S made
+    # its secret check after the values were gone).
+    ended = task_id or task_context.current()
+    if facts_thread is not None and facts_thread.is_alive():
+        def let_go_after():
+            facts_thread.join()
+            _let_go_of_values(ended)
+        threading.Thread(target=let_go_after, daemon=True, name="let-go-after-facts").start()
+    else:
+        _let_go_of_values(ended)
 
     if task_id and task_id != task_context.current():
         # The report of a task that is not the one in hand (a stopped run's, sent on its own task): the task in hand
@@ -935,6 +938,17 @@ def write_stopped(text, engine=None, task_id=None, send=None):
                                        gated=True)
 
 
+def _let_go_of_values(task_id):
+    """The task's secret values as they are, let go (privacy.clear_literals). Never raises."""
+
+    try:
+        from decurix_agent.computer import privacy
+        privacy.clear_literals(task_id)
+        task_context._secret_values.pop(task_id, None)
+    except Exception as exc:  # noqa: BLE001
+        log(f"Could not let go of the task's secret values: {exc}")
+
+
 def _keep_facts(task_id, quiet=False, interrupted=False):
     """
     What the sources said that a later task will need, kept in the worker's memory (kept_facts.py) - after the report
@@ -943,23 +957,33 @@ def _keep_facts(task_id, quiet=False, interrupted=False):
     task as soon as it is free would otherwise lose them. Given the whole request (the client may be named past its
     first lines). Not after a demonstration (it ends quietly: the person's own work, and another client's, is taught,
     not learned about - found live 2026-10-23, a taught example's figures were kept as facts) nor a command (/learn,
-    /skill). Never raises.
+    /skill). Nothing either from a task any message of which was marked or withheld as secret: its request is that
+    message, and a fact distilled from it - an unlabelled secret written as a "place" - would enter later tasks'
+    prompts (review round 7, R6-B1), as secret replies keep no lessons. Returns the facts thread (None when none was
+    started) so the task's values are let go only once it is done with them. Never raises.
     """
 
     if interrupted or quiet or str(state.current_task or "").lstrip().startswith("/"):
-        return
+        return None
     if task_id and task_id != task_context.current():
         # The report of another task (a stopped run's, sent on its own task): its reading is not the request in hand,
         # so nothing is kept from pairing the two (review 2026-11-03 rework).
-        return
+        return None
     try:
         from decurix_agent import kept_facts
+        task = task_id or task_context.current()
+        held = task_context.held_values(task) if task else []
+        if held or getattr(state, "reply_secret", False):
+            log("Facts: none kept - this task's messages held a secret")
+            return None
         request = task_context.current_request() or str(state.current_task or "")
-        thread = kept_facts.after_task(task_id or task_context.current(), request)
+        thread = kept_facts.after_task(task, request, held=held)
         if thread is not None:
             thread.join(kept_facts.WAIT_S)
+        return thread
     except Exception as exc:  # noqa: BLE001 - what is kept for later must never cost this report
         log(f"Could not keep this task's facts: {exc}")
+        return None
 
 
 # ============================================================

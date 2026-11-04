@@ -24,7 +24,7 @@ class FactsAfterTheReport(unittest.TestCase):
                 mock.patch.object(messaging.config, "QUERYTEXT_DIR", mock.MagicMock()), \
                 mock.patch.object(task_context, "current_request", return_value=request), \
                 mock.patch.object(kept_facts, "after_task",
-                                  side_effect=lambda t, r: order.append(("facts", r)) or None):
+                                  side_effect=lambda t, r, **k: order.append(("facts", r)) or None):
             messaging.write_final_reply("Done.", kind="final", checked=True)
         self.assertEqual(order[0], "sent")
         self.assertEqual(order[1][0], "facts")

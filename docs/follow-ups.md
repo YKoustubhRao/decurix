@@ -395,6 +395,9 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
       - the recorder's later model turns.
 
       The long-term fix is O-1's input broker, not more rules.
+    - No end-of-task facts are kept from a task any message of which was marked or withheld as secret (round 7,
+      R6-B1). For other tasks the facts thread checks every fact against the task's values captured when it starts,
+      and the values are let go only after it ends.
     - A value-shaped code that is data but has no structure the rules read, like a period code `Q3-2024` in the
       message and in no input file, is withheld as a whole token in that task's later lines.
   - Not done from REVIEW-PY-A-2's nits: `core._shown_by_app` still takes the application's value from any observation,
