@@ -187,7 +187,10 @@ func (m *Manager) buildContext(ctx context.Context, out io.Writer, dockerfile st
 
 	defer reader.Close()
 
-	opts.Platform, opts.Dockerfile, opts.Remove = "linux/amd64", dockerfile, true
+	// Every intermediate container goes, a failed step's too: the daemon's legacy builder (what an API build without
+	// BuildKit is) keeps a failed step's container with Remove alone, and a PyPI timeout left one behind (live,
+	// 2026-11-05). ForceRemove is the builder's --force-rm.
+	opts.Platform, opts.Dockerfile, opts.Remove, opts.ForceRemove = "linux/amd64", dockerfile, true, true
 	resp, err := m.client.ImageBuild(ctx, reader, opts)
 	if err != nil {
 		return err

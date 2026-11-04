@@ -20,11 +20,15 @@ type builder struct {
 	builds []string
 	prunes int
 	fail   bool
+	leaves bool // a build asked to keep its intermediate containers
 }
 
 func (b *builder) ImageBuild(_ context.Context, ctx io.Reader, opts build.ImageBuildOptions) (build.ImageBuildResponse, error) {
 	_, _ = io.Copy(io.Discard, ctx)
 	b.builds = append(b.builds, opts.Target+" -> "+strings.Join(opts.Tags, ","))
+	if !opts.Remove || !opts.ForceRemove {
+		b.leaves = true
+	}
 	if b.fail {
 		return build.ImageBuildResponse{Body: io.NopCloser(strings.NewReader(`{"error":"boom","errorDetail":{"message":"boom"}}`))}, nil
 	}
@@ -73,5 +77,17 @@ func TestBuilderStagesAreTaggedAndPrunedOnlyAfterSuccess(t *testing.T) {
 	}
 	if failing.prunes != 0 {
 		t.Fatalf("%d prunes after a failed build, want none", failing.prunes)
+	}
+}
+
+// Every build removes its intermediate containers, a failed step's too (ForceRemove: the legacy builder keeps a failed
+// step's container with Remove alone).
+func TestABuildLeavesNoIntermediateContainers(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		b := &builder{fakeAPI: &fakeAPI{}, fail: fail}
+		_ = newManagerWith(b).BuildImages(context.Background(), io.Discard, false, "desktop")
+		if len(b.builds) == 0 || b.leaves {
+			t.Fatalf("fail=%v: builds %v, one kept its intermediate containers: %v", fail, b.builds, b.leaves)
+		}
 	}
 }
