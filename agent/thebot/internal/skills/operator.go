@@ -1365,12 +1365,16 @@ func (st *operatorState) withholdFor(command string) func(string) string {
 	}
 	sort.Slice(structural, func(i, j int) bool { return len(structural[i]) > len(structural[j]) })
 	job := st.jobSecrets
+	// What a gui type types is never shown (F-S3, defence in depth: a secret nobody named as one): not as the
+	// command's argument (MaskTypedText), and not where its output echoes it (by the held-value rule, so a short
+	// text is withheld only as a whole token).
+	typed := withheld.Clean(TypedTexts(command))
 	return func(text string) string {
 		text = job.Text(text)
 		for _, secret := range structural {
 			text = strings.ReplaceAll(text, secret, secretShown)
 		}
-		return text
+		return MaskTypedText(typed.Text(text))
 	}
 }
 

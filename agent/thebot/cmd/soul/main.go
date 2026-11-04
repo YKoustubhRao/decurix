@@ -117,7 +117,7 @@ func (j *jobRecord) isDone() bool {
 // ("$ gui type e3 '...'") leaves soul without them (C14).
 func (j *jobRecord) appendLog(line string) {
 	j.mu.Lock()
-	line = j.secrets.Text(line)
+	line = skills.MaskTypedText(j.secrets.Text(line)) // and what a gui type types, never shown (F-S3)
 	j.Log = append(j.Log, line)
 	subs := make([]chan string, 0, len(j.subscribers))
 	for ch := range j.subscribers {
@@ -160,7 +160,7 @@ func (j *jobRecord) snapshot() map[string]any {
 		"steps": j.Steps, "resumed": j.Resumed,
 		"usage": map[string]int{"promptTokens": promptTokens, "responseTokens": responseTokens, "calls": calls,
 			"cachedTokens": j.Usage.Cached()},
-	}, j.secrets.Text)
+	}, func(text string) string { return skills.MaskTypedText(j.secrets.Text(text)) })
 }
 
 // servedResults is results as soul serves them: a paused action is the form its skill says may be shown
