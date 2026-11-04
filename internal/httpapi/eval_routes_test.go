@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -161,5 +163,49 @@ func TestEvalRunRowsAndCancel(t *testing.T) {
 	}
 	if w := get("/api/evals/runs/e1/nope"); w.Code != http.StatusNotFound {
 		t.Fatalf("unknown sub-route: %d", w.Code)
+	}
+}
+
+// An agent tree of several MB reaches the eval runner through the listener's outer body cap, plain or
+// gzip-compressed. Under the default 1 MiB cap it was cut off mid-upload, which the WSL localhost relay showed as a
+// stall (F-ENV-1).
+func TestAnAgentTreeOfSeveralMBGoesThroughTheBodyCap(t *testing.T) {
+	_, mux, _ := evalServer(t)
+	srv := httptest.NewServer(BodyLimit(mux))
+	defer srv.Close()
+	tree := bytes.Repeat([]byte("decurix_agent/ tree bytes "), (3<<20+500<<10)/26) // about 3.5 MB, as eb15981's
+	var packed bytes.Buffer
+	zw := gzip.NewWriter(&packed)
+	_, _ = zw.Write(tree)
+	_ = zw.Close()
+	post := func(files map[string][]byte) (int, string) {
+		body, ct := multipartBody(t, map[string]string{"arms": `[{"name":"default@abc","kind":"nothing"}]`, "repeats": "1"}, files)
+		resp, err := srv.Client().Post(srv.URL+"/api/evals/runs", ct, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		said, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(said)
+	}
+	for name, sent := range map[string][]byte{"plain": tree, "gzip": packed.Bytes()} {
+		// The whole form was read: the refusal is the runner's own (not set up here), not the body cap's.
+		if code, said := post(map[string][]byte{"suite": []byte("x"), "tree_default@abc": sent}); code != http.StatusBadRequest || !strings.Contains(said, "not set up") {
+			t.Errorf("%s tree of %d bytes: %d %s", name, len(sent), code, said)
+		}
+	}
+	// A tree that was sent and cannot be read is refused, never run as the image's code: a corrupt gzip, and one that
+	// unpacks past the cap.
+	var bomb bytes.Buffer
+	zw = gzip.NewWriter(&bomb)
+	_, _ = zw.Write(make([]byte, maxAgentTree+1))
+	_ = zw.Close()
+	for name, sent := range map[string][]byte{"corrupt": {0x1f, 0x8b, 1, 2, 3}, "over the cap unpacked": bomb.Bytes()} {
+		if code, said := post(map[string][]byte{"suite": []byte("x"), "tree_default@abc": sent}); code != http.StatusBadRequest || !strings.Contains(said, "agent tree of arm default@abc") {
+			t.Errorf("%s: %d %s", name, code, said)
+		}
+	}
+	if code, said := post(map[string][]byte{"suite": {0x1f, 0x8b, 9}}); code != http.StatusBadRequest || !strings.Contains(said, "the suite:") {
+		t.Errorf("a corrupt suite: %d %s", code, said)
 	}
 }

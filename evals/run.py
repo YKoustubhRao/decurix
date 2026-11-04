@@ -5,6 +5,8 @@ Run an eval suite on the control plane's matrix runner, and read its results (do
     py -3 evals/run.py run    --suite evals/suites/core-v1 --arm default --arm fast+expert [--arm default@eb15981]
                               [--arm oracle] [--arm nothing] --repeats 5 [--cases a,b] [--cp http://127.0.0.1:8080]
                               [--detach]
+    py -3 evals/run.py run    --suite evals/suites/core-v1 --arm default+expert@eb15981 --arm default+expert --repeats 5
+                              # old code against the image's, both answered by the expert (the L3 shape)
     py -3 evals/run.py status <run-id>
     py -3 evals/run.py table  <run-id>      # prints the markdown and writes evals/results/<id>/table.md
     py -3 evals/run.py rows   <run-id>      # writes evals/results/<id>/rows.jsonl
@@ -12,7 +14,9 @@ Run an eval suite on the control plane's matrix runner, and read its results (do
 An arm is <model>[+expert][@<git-rev>], or oracle, nothing or ask:
   - <model> is default or fast (the hub's two deployments), on azure; claude:default (or claude:fast) uses claude;
   - +expert answers the worker's questions with the scripted expert;
-  - @<rev> runs the agent tree of that git revision (git archive of agent/decurix_agent), not the image's;
+  - @<rev> runs the agent tree of that git revision (git archive of agent/decurix_agent), not the image's; it combines
+    with +expert (default+expert@<rev>). An arm whose rev is not lower-case (HEAD, a branch) is named
+    <model>[+expert]@<first 12 of its commit id>, which the control plane accepts and the table shows;
   - oracle runs each case's scripted solution; nothing claims "done" and does nothing; ask asks one question about
     nothing and stops (calibration: oracle must pass every case, nothing and ask none).
 
@@ -21,6 +25,7 @@ listener only (127.0.0.1:8080), never the gated one.
 """
 
 import argparse
+import gzip
 import io
 import json
 import os
@@ -39,6 +44,8 @@ RESULTS = ROOT / "evals" / "results"
 DEFAULT_CP = os.environ.get("DECURIX_URL", "http://127.0.0.1:8080")
 POLL_SECONDS = 30
 
+# The control plane's own rule for an arm's name (eval.armName).
+ARM_NAME = re.compile(r"^[a-z0-9][a-z0-9+@._:-]{0,63}$")
 ARM = re.compile(r"^(?:(?P<provider>azure|claude):)?(?P<model>default|fast)(?P<expert>\+expert)?(?:@(?P<rev>[A-Za-z0-9._/~^-]{1,80}))?$")
 
 
@@ -118,6 +125,13 @@ def suite_tar(suite_dir):
     return buf.getvalue()
 
 
+def packed(tar):
+    """A tar as it is sent: gzip-compressed with no name or time in its header, so the same tar packs the same. The
+    control plane unpacks it and bounds it unpacked; the suite's sha and a tree's fingerprint are of the tar itself."""
+
+    return gzip.compress(tar, compresslevel=9, mtime=0)
+
+
 def multipart(fields, files):
     """A multipart/form-data body: (content type, bytes)."""
 
@@ -128,7 +142,7 @@ def multipart(fields, files):
         out.write(str(value).encode() + b"\r\n")
     for name, (filename, body) in files.items():
         out.write(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n"
-                  "Content-Type: application/x-tar\r\n\r\n".encode())
+                  "Content-Type: application/gzip\r\n\r\n".encode())
         out.write(body + b"\r\n")
     out.write(f"--{boundary}--\r\n".encode())
     return f"multipart/form-data; boundary={boundary}", out.getvalue()
@@ -164,10 +178,10 @@ class ControlPlane:
 def start(cp, suite_dir, arms, repeats, cases):
     fields = {"arms": json.dumps([{k: v for k, v in a.items() if k != "tree"} for a in arms]), "repeats": repeats,
               "cases": ",".join(cases)}
-    files = {"suite": ("suite.tar", suite_tar(suite_dir))}
+    files = {"suite": ("suite.tar.gz", packed(suite_tar(suite_dir)))}
     for a in arms:
         if a.get("tree"):
-            files["tree_" + a["name"]] = ("agent.tar", a["tree"])
+            files["tree_" + a["name"]] = ("agent.tar.gz", packed(a["tree"]))
     content_type, body = multipart(fields, files)
     return cp.json("/api/evals/runs", data=body, content_type=content_type, timeout=600)["run"]
 
@@ -240,8 +254,14 @@ def main(argv=None):
                 print("note: one repeat shows what happened once; rates need at least 5 (n=1: not a result).", flush=True)
             for a in arms:
                 if a.get("agent_tree_rev"):
-                    a["agent_tree_rev"] = resolve_rev(a["agent_tree_rev"])
+                    typed = a["agent_tree_rev"]
+                    a["agent_tree_rev"] = resolve_rev(typed)
                     a["tree"] = agent_tree(a["agent_tree_rev"])
+                    if not ARM_NAME.match(a["name"]):
+                        a["name"] = a["name"][: -len(typed)] + a["agent_tree_rev"][:12]
+            names = [a["name"] for a in arms]
+            if len(set(names)) != len(names):
+                raise Usage("each --arm is named once (two revs name the same commit)")
             cases = [c.strip() for c in args.cases.split(",") if c.strip()]
             run = start(cp, args.suite, arms, args.repeats, cases)
             print(f"started {run['id']}: suite {run.get('suite_name')} ({run.get('suite_sha', '')[:12]}), "

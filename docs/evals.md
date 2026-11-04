@@ -194,8 +194,15 @@ required/other split are decided the same way in both modes.
 py -3 evals/run.py run --suite evals/suites/<suite> --arm oracle --arm nothing --arm ask --repeats 1
 py -3 evals/run.py run --suite evals/suites/<suite> --arm default --arm fast+expert --repeats 5
 py -3 evals/run.py run --suite evals/suites/<suite> --arm default@<rev> --arm default --repeats 5 --cases a,b
+py -3 evals/run.py run --suite evals/suites/<suite> --arm default+expert@<rev> --arm default+expert --repeats 5
 py -3 evals/run.py status|table|rows <run-id>
 ```
+
+The suite and each `@<rev>` arm's agent tree are sent gzip-compressed; the control plane unpacks each and bounds it
+unpacked (64 MiB a suite or a tree), and `/api/evals/runs` has its own outer body cap (256 MiB), not the default 1 MiB
+that once cut a 3.5 MB tree off mid-upload (F-ENV-1). An arm without `+expert` ends a case at the worker's first
+question, so a change case (which starts with the worker's plan question) cannot pass it: compare code with
+`default+expert@<rev>` against `default+expert`.
 
 One practice run at a time across Simulate and evals; the runner refuses below 2.5 GB free memory, and removes the
 practice desktop and the mock at the end, on cancel and on error. Results are stored in the control plane

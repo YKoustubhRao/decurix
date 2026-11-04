@@ -2,6 +2,7 @@
 Run: py -3 -m unittest discover -s evals/tests"""
 
 import contextlib
+import gzip
 import io
 import json
 import sys
@@ -161,6 +162,9 @@ class CommandTest(unittest.TestCase):
         self.assertEqual([a["name"] for a in arms], ["default", "nothing"])
         self.assertEqual(sent["repeats"], b"2")
         self.assertEqual(sent["cases"], b"calc-sum,web-create-user")
+        # Sent gzip-compressed (F-ENV-1), and the same suite packs to the same bytes.
+        self.assertEqual(sent["suite"][:2], b"\x1f\x8b")
+        self.assertEqual(gzip.decompress(sent["suite"]), run.suite_tar(EVALS / "suites" / "core-v1"))
         with tarfile.open(fileobj=io.BytesIO(sent["suite"])) as tar:
             self.assertIn("suite.json", tar.getnames())
         self.assertEqual((self.out / "e1" / "table.md").read_text(encoding="utf-8"), "# Eval e1: core-v1\n")
@@ -176,10 +180,36 @@ class CommandTest(unittest.TestCase):
         rev.assert_called_once_with("eb15981")
         tree.assert_called_once_with(full)
         sent = FakeControlPlane.started[0]
-        self.assertEqual(sent["tree_default@eb15981"], b"TREE")
+        self.assertEqual(gzip.decompress(sent["tree_default@eb15981"]), b"TREE")
         self.assertEqual(json.loads(sent["arms"])[0]["agent_tree_rev"], full)
         self.assertIn("n=1: not a result", said)
         self.assertTrue(said.strip().endswith("e1"))
+
+    def test_the_l3_shape_old_and_new_code_both_with_the_expert(self):
+        full = "eb15981" + "0" * 33
+        with unittest.mock.patch.object(run, "agent_tree", return_value=b"OLD") as tree, \
+                unittest.mock.patch.object(run, "resolve_rev", return_value=full):
+            code, said = self.main("run", "--suite", str(EVALS / "suites" / "core-v1"), "--arm", "default+expert@eb15981",
+                                   "--arm", "default+expert", "--repeats", "5", "--detach")
+        self.assertEqual(code, 0, said)
+        tree.assert_called_once_with(full)
+        sent = FakeControlPlane.started[0]
+        arms = json.loads(sent["arms"])
+        self.assertEqual([(a["name"], a["expert"], a.get("agent_tree_rev")) for a in arms],
+                         [("default+expert@eb15981", True, full), ("default+expert", True, None)])
+        self.assertEqual(gzip.decompress(sent["tree_default+expert@eb15981"]), b"OLD")
+        self.assertNotIn("tree_default+expert", sent)
+
+    def test_an_arm_at_a_named_rev_is_named_by_its_commit(self):
+        full = "abcdef1234567890" + "0" * 24
+        with unittest.mock.patch.object(run, "agent_tree", return_value=b"T"), \
+                unittest.mock.patch.object(run, "resolve_rev", return_value=full):
+            code, said = self.main("run", "--suite", str(EVALS / "suites" / "core-v1"), "--arm", "default+expert@HEAD",
+                                   "--repeats", "1", "--detach")
+        self.assertEqual(code, 0, said)
+        sent = FakeControlPlane.started[0]
+        self.assertEqual(json.loads(sent["arms"])[0]["name"], "default+expert@abcdef123456")
+        self.assertIn("tree_default+expert@abcdef123456", sent)
 
     def test_table_rows_and_status(self):
         self.assertEqual(self.main("table", "e1")[0], 0)

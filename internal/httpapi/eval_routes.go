@@ -1,8 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -15,8 +18,12 @@ import (
 // The eval runner's routes (docs/evals.md): start a matrix, follow it, read its rows and table, cancel it. They are
 // host-only: registered on the primary listener alone (never the gated :8090) and refused from inside a desktop.
 
-// maxEvalUpload bounds a matrix upload: the suite tar and the arms' agent trees together.
+// maxEvalUpload bounds a matrix upload as sent: the suite tar and the arms' agent trees together, each gzip-compressed
+// or not. It is in bodyLimits: under the default 1 MiB outer cap an agent tree (3.5 MB) was cut off mid-upload (F-ENV-1).
 const maxEvalUpload = 256 << 20
+
+// maxAgentTree bounds one arm's agent tree once unpacked.
+const maxAgentTree = 64 << 20
 
 type evalRoutes struct {
 	e *eval.Service
@@ -74,9 +81,13 @@ func (h *evalRoutes) start(w http.ResponseWriter, r *http.Request) {
 			_ = r.MultipartForm.RemoveAll()
 		}
 	}()
-	suite, ok := formFile(r, "suite", eval.MaxSuiteBytes)
-	if !ok {
+	suite, sent, ok := evalFile(r, "suite", eval.MaxSuiteBytes)
+	if !sent {
 		jsonStatusError(w, http.StatusBadRequest, "a suite tar is needed (field \"suite\")")
+		return
+	}
+	if !ok {
+		jsonStatusError(w, http.StatusBadRequest, "the suite: "+unreadableUpload)
 		return
 	}
 	var arms []eval.Arm
@@ -85,10 +96,16 @@ func (h *evalRoutes) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range arms {
-		if tree, ok := formFile(r, "tree_"+arms[i].Name, 64<<20); ok {
-			arms[i].AgentTree = tree
-		} else {
+		tree, sent, ok := evalFile(r, "tree_"+arms[i].Name, maxAgentTree)
+		switch {
+		case !sent:
 			arms[i].AgentTree, arms[i].AgentTreeRev = nil, ""
+		case !ok:
+			// A tree that was sent and cannot be read is refused, never run as the image's code under the arm's name.
+			jsonStatusError(w, http.StatusBadRequest, fmt.Sprintf("the agent tree of arm %s: %s", clipArmName(arms[i].Name), unreadableUpload))
+			return
+		default:
+			arms[i].AgentTree = tree
 		}
 	}
 	repeats, err := strconv.Atoi(strings.TrimSpace(r.FormValue("repeats")))
@@ -128,6 +145,43 @@ func (h *evalRoutes) refuse(w http.ResponseWriter, err error) {
 	default:
 		internalError(w, "eval: start", err)
 	}
+}
+
+// unreadableUpload is said of an uploaded tar that could not be read.
+const unreadableUpload = "empty, not a gzip or tar that can be read, or too large unpacked"
+
+// evalFile reads one uploaded tar, gunzipped first when it was sent gzip-compressed (known by its magic bytes). The
+// limit holds after decompression, so a small upload cannot expand past it. sent is false when the field is absent,
+// ok false when it was sent and could not be read.
+func evalFile(r *http.Request, field string, limit int64) (b []byte, sent, ok bool) {
+	if r.MultipartForm == nil || len(r.MultipartForm.File[field]) == 0 {
+		return nil, false, false
+	}
+	b, ok = formFile(r, field, limit)
+	if !ok {
+		return nil, true, false
+	}
+	if len(b) < 2 || b[0] != 0x1f || b[1] != 0x8b {
+		return b, true, true
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		return nil, true, false
+	}
+	defer zr.Close()
+	out, err := io.ReadAll(io.LimitReader(zr, limit+1))
+	if err != nil || int64(len(out)) > limit || len(out) == 0 {
+		return nil, true, false
+	}
+	return out, true, true
+}
+
+// clipArmName keeps an arm's name short in a refusal (checkArms validates it later).
+func clipArmName(name string) string {
+	if len(name) > 64 {
+		return name[:64]
+	}
+	return name
 }
 
 // formFile reads one uploaded file of at most limit bytes.
