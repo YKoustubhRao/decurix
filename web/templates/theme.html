@@ -931,29 +931,43 @@ body.busy{cursor:progress}
     /* One call at a time: a tick while fn's promise is still pending is
        skipped, so a slow control plane never piles requests up. A call that
        fails (throws, or its promise rejects) doubles the interval, up to 8x,
-       until one succeeds (resource plan P1 #9). */
+       until one succeeds (resource plan P1 #9). A call still pending after
+       max(30 s, 4 intervals) counts as failed and the poll goes on: a fetch
+       has no timeout, and one answer that never came used to stop the poll -
+       and the card - for good (review RES-CP-1). Its late answer, if it comes,
+       changes nothing. */
     var hiddenMs = (opts && opts.hidden) || 0;
     var timer = 0;
     var stopped = false;
-    var running = false;
+    var running = 0;   /* the number of the call in flight, 0 for none */
+    var since = 0;     /* when it was made */
+    var calls = 0;
     var failures = 0;
 
-    function settle(failed){
-      running = false;
+    function settle(call, failed){
+      if(call !== running){ return; }  /* a call given up on, answering late */
+      running = 0;
       var before = failures;
       failures = failed ? Math.min(failures + 1, 3) : 0;
       if(failures !== before){ schedule(); }
     }
 
     function tick(){
-      if(running || stopped){ return; }
+      if(stopped){ return; }
+      if(running){
+        if(Date.now() - since < Math.max(30000, 4 * ms)){ return; }
+        settle(running, true);  /* given up on: counted as failed */
+      }
+      var call = ++calls;
       var result;
-      try { result = fn(); } catch(e){ settle(true); return; }
+      try { result = fn(); } catch(e){ running = call; settle(call, true); return; }
       if(result && typeof result.then === "function"){
-        running = true;
-        result.then(function(){ settle(false); }, function(){ settle(true); });
+        running = call;
+        since = Date.now();
+        result.then(function(){ settle(call, false); }, function(){ settle(call, true); });
       } else {
-        settle(false);
+        running = call;
+        settle(call, false);
       }
     }
 

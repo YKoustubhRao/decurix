@@ -722,15 +722,18 @@ window.addEventListener("resize", function(){
   placeAt(r.left, r.top);
 });
 
-// One ticket read at a time (resource plan P1 #9): a tick while one is in flight is skipped.
-var refreshing = false;
+// One ticket read at a time (resource plan P1 #9): a tick while one is in flight is skipped - unless it has been in
+// flight for max(30 s, 4 polls), when it is given up on and its late answer ignored (a fetch has no timeout, and one
+// answer that never came stopped the toolbar for good: review RES-CP-1).
+var refreshing = 0, refreshSince = 0, refreshCalls = 0;
 function refresh(){
-  if(refreshing){ return; }
-  refreshing = true;
+  if(refreshing && Date.now() - refreshSince < Math.max(30000, 4 * POLL_MS)){ return; }
+  var call = refreshing = ++refreshCalls;
+  refreshSince = Date.now();
   fetch("/api/desktops/ticket?id=" + encodeURIComponent(DESKTOP_ID), {cache: "no-store"})
     .then(function(r){ return r.ok ? r.json() : {ticket: null}; })
     .then(function(data){
-      if(busy){ return; }
+      if(busy || call !== refreshing){ return; }
 
       var next = data.ticket || null;
 
@@ -744,7 +747,7 @@ function refresh(){
       setTicket(next);
     })
     .catch(function(){})
-    .then(function(){ refreshing = false; });
+    .then(function(){ if(call === refreshing){ refreshing = 0; } });
 }
 
 function downloadUrl(session){
@@ -1374,14 +1377,18 @@ const resourceAlertPopup = `
   var activeAlert = null;
   var dismissed = false;
 
-  // One alert read at a time, and none while the tab is hidden (resource plan P1 #9).
-  var alerting = false;
+  // One alert read at a time, and none while the tab is hidden (resource plan P1 #9); one in flight past
+  // max(30 s, 4 polls) is given up on, so a lost answer never stops the alert (review RES-CP-1).
+  var alerting = 0, alertSince = 0, alertCalls = 0;
   function pollAlert() {
-    if (dismissed || alerting || document.visibilityState === "hidden") return;
-    alerting = true;
+    if (dismissed || document.visibilityState === "hidden") return;
+    if (alerting && Date.now() - alertSince < Math.max(30000, 4 * 4000)) return;
+    var call = alerting = ++alertCalls;
+    alertSince = Date.now();
     fetch("/api/desktops/resource-alerts?id=" + encodeURIComponent(desktopID))
       .then(function(r) { return r.json(); })
       .then(function(data) {
+        if (call !== alerting) return;
         if (data && data.alert) {
           activeAlert = data.alert;
           bodyText.textContent = data.alert.message || (
@@ -1394,7 +1401,7 @@ const resourceAlertPopup = `
         }
       })
       .catch(function() {})
-      .then(function() { alerting = false; });
+      .then(function() { if (call === alerting) alerting = 0; });
   }
 
   function dismissAlert() {

@@ -30,6 +30,8 @@ func TestPollWaitsForItsCallAndBacksOffOnErrors(t *testing.T) {
 	harness := `
 const assert = require("node:assert/strict");
 let timers = [], listeners = {};
+let clock = 1000000;
+Date.now = () => clock;
 const document = { visibilityState: "visible", addEventListener(n, f){ listeners[n] = f; }, removeEventListener(n){ delete listeners[n]; } };
 function setInterval(fn, ms){ timers.push({fn, ms}); return timers.length; }
 function clearInterval(id){ if(id){ timers[id - 1] = null; } }
@@ -54,6 +56,19 @@ const tick = () => live().forEach((t) => t.fn());
   for (const want of [2000, 4000, 8000, 8000]) { tick(); await settle(); assert.equal(live()[0].ms, want); }
   fail = false; tick(); await settle();
   assert.equal(live()[0].ms, 1000, "a success restores the interval");
+
+  // A call that never settles is given up on after max(30 s, 4 intervals), and the poll goes on; its late answer
+  // changes nothing.
+  timers = []; listeners = {};
+  let stuck = 0, lateFinish;
+  poll(() => { stuck++; return stuck === 1 ? new Promise((r) => { lateFinish = r; }) : Promise.resolve(); }, 1000);
+  tick(); assert.equal(stuck, 1);
+  clock += 29999; tick(); assert.equal(stuck, 1, "a call in flight under 30 s is waited for");
+  clock += 2; tick(); await settle();
+  assert.equal(stuck, 2, "a call in flight past 30 s must be given up on");
+  lateFinish(); await settle();
+  tick(); await settle();
+  assert.equal(stuck, 3, "the late answer of a call given up on must not stop the poll");
 
   // Hidden: nothing scheduled; seen again: asked at once.
   timers = []; listeners = {};

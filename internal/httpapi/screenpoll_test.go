@@ -15,10 +15,18 @@ func TestTheScreenTabsPollsRespectVisibilityAndWaitForTheirCall(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(ticketToolbar, "if(refreshing){ return; }") || !strings.Contains(ticketToolbar, "refreshing = false") {
-		t.Error("the ticket poll has no in-flight guard")
+	// One at a time, but a call in flight past max(30 s, 4 polls) is given up on and its late answer ignored, so one
+	// answer that never comes cannot stop the poll (review RES-CP-1).
+	for _, want := range []string{"Date.now() - refreshSince < Math.max(30000, 4 * POLL_MS)", "if(busy || call !== refreshing){ return; }",
+		"if(call === refreshing){ refreshing = 0; }"} {
+		if !strings.Contains(ticketToolbar, want) {
+			t.Errorf("the ticket poll lacks %q", want)
+		}
 	}
-	if !strings.Contains(resourceAlertPopup, "alerting = true") || !strings.Contains(resourceAlertPopup, "alerting = false") {
-		t.Error("the alert poll has no in-flight guard")
+	for _, want := range []string{"Date.now() - alertSince < Math.max(30000, 4 * 4000)", "if (call !== alerting) return;",
+		"if (call === alerting) alerting = 0;"} {
+		if !strings.Contains(resourceAlertPopup, want) {
+			t.Errorf("the alert poll lacks %q", want)
+		}
 	}
 }
