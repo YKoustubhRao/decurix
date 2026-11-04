@@ -9,13 +9,20 @@ it serves its pages, and writes the whole state, {"collections": {name: [records
 every change, which is what the graders read once the practice desktop is paused. Standard library only; no external
 assets.
 
-Collections: users, bills, payees, payments and tickets. Each has a list page, a page per record, a new form and an
-edit form. A payment has a Pay button that leads to a confirmation page (both are committing actions, so a worker's
+Collections: users, customers, bills, payees, payments and tickets. Each has a list page, a page per record, a new
+form and an edit form. A payment has a Pay button that leads to a confirmation page (both are committing actions, so a worker's
 approval gate asks before either). Date inputs are <input type=date>, so the state holds ISO dates. Every field has a
 <label for>, so the accessibility tree names it.
 
-The fixture is {"collections": {...}, "options": {...}, "auth": {"user": ..., "password": ...}}, every key optional.
-With "auth", every page needs a sign-in first; without it, the app is open.
+The fixture is {"collections": {...}, "options": {...}, "auth": {"user": ..., "password": ...}, "settings": {...}},
+every key optional. With "auth", every page needs a sign-in first; without it, the app is open. "settings" changes how
+the app is drawn, the way real apps differ, never what it stores:
+
+  - "custom_selects": {collection: [field, ...]}: those choice fields are drawn as a dropdown the page makes itself (a
+    button with role=combobox that opens a list of role=option entries, and a hidden input), not a native <select>.
+  - "filters": {collection: [field, ...]}: the list page has a filter for each (a native <select>, "All" first), read
+    from the query string, e.g. /tickets?status=Pending.
+  - "page_size": N: list pages show N records a page, with a "Rows per page" choice and Previous/Next page links.
 """
 
 import argparse
@@ -34,6 +41,7 @@ STATE_PATH = ""
 STATE = {"collections": {}}
 OPTIONS = {}
 AUTH = None
+SETTINGS = {}
 SESSION = secrets.token_hex(16)
 
 DEFAULT_OPTIONS = {
@@ -41,7 +49,9 @@ DEFAULT_OPTIONS = {
     "cost_centres": ["General"],
     "priorities": ["Low", "Normal", "High"],
     "statuses": ["Open", "Pending", "Closed"],
+    "states": ["27-Maharashtra", "29-Karnataka", "32-Kerala", "33-Tamil Nadu"],
 }
+ROWS_PER_PAGE = (10, 25, 50)
 
 # name, label, input type ("text", "email", "date", "number", "textarea" or "select:<options key>"), required
 SCHEMA = {
@@ -49,6 +59,11 @@ SCHEMA = {
         ("name", "Name", "text", True),
         ("email", "Email", "email", True),
         ("role", "Role", "select:roles", True),
+    ]},
+    "customers": {"title": "Customers", "one": "customer", "label": "name", "fields": [
+        ("name", "Name", "text", True),
+        ("email", "Email", "email", True),
+        ("state", "Place of supply", "select:states", True),
     ]},
     "bills": {"title": "Bills", "one": "bill", "label": "number", "fields": [
         ("number", "Bill number", "text", True),
@@ -107,6 +122,8 @@ def load_fixture(path):
     OPTIONS.clear()
     OPTIONS.update(DEFAULT_OPTIONS)
     OPTIONS.update(fixture.get("options") or {})
+    SETTINGS.clear()
+    SETTINGS.update(fixture.get("settings") or {})
     auth = fixture.get("auth")
     AUTH = auth if isinstance(auth, dict) and auth.get("user") else None
 
@@ -142,9 +159,40 @@ table{{border-collapse:collapse;margin:12px 0}} td,th{{border:1px solid #bbb;pad
 .field{{margin:10px 0}} .field label{{display:inline-block;min-width:150px}}
 input,select,textarea{{font-size:15px;padding:4px}} button{{font-size:15px;padding:6px 14px;margin-top:8px}}
 .note{{color:#060}} .error{{color:#a00}} nav{{margin-bottom:16px}}
+.combo{{display:inline-block;position:relative}} .combo-box{{display:inline-block;min-width:180px;border:1px solid #888;padding:4px;cursor:pointer}}
+.combo ul{{position:absolute;z-index:2;background:#fff;border:1px solid #888;margin:0;padding:0;list-style:none;min-width:180px}}
+.combo li{{padding:4px 8px;cursor:pointer}} .combo li:hover{{background:#def}}
 </style></head>
 <body><header><strong>Records</strong></header><nav aria-label="Main">{nav}</nav>
-<main><h1>{esc(title)}</h1>{body}</main></body></html>"""
+<main><h1>{esc(title)}</h1>{body}</main>{COMBO_JS}</body></html>"""
+
+
+# The page's own dropdown (settings.custom_selects): the button opens the list, an entry clicked is the value.
+COMBO_JS = """<script>
+document.querySelectorAll("[data-combo]").forEach(function(c){
+  var box = c.querySelector("[role=combobox]"), list = c.querySelector("[role=listbox]"), input = c.querySelector("input");
+  function show(open){ list.hidden = !open; box.setAttribute("aria-expanded", open ? "true" : "false"); }
+  box.addEventListener("click", function(){ show(list.hidden); });
+  box.addEventListener("keydown", function(e){
+    if(e.key === "Enter" || e.key === " " || e.key === "ArrowDown"){ e.preventDefault(); show(true); }
+    if(e.key === "Escape"){ show(false); }
+  });
+  list.querySelectorAll("[role=option]").forEach(function(o){
+    o.addEventListener("click", function(){
+      input.value = o.dataset.value;
+      box.textContent = o.textContent;
+      list.querySelectorAll("[role=option]").forEach(function(x){ x.setAttribute("aria-selected", x === o ? "true" : "false"); });
+      show(false);
+      box.focus();
+    });
+  });
+  document.addEventListener("click", function(e){ if(!c.contains(e.target)){ show(false); } });
+});
+</script>"""
+
+
+def custom_select(name, field):
+    return field in ((SETTINGS.get("custom_selects") or {}).get(name) or [])
 
 
 def form_html(name, rec, action, button, errors=()):
@@ -153,6 +201,16 @@ def form_html(name, rec, action, button, errors=()):
         value = rec.get(field, "") if rec else ""
         fid = "f-" + field
         req = " required" if required else ""
+        if kind.startswith("select:") and custom_select(name, field):
+            entries = "".join(
+                f'<li role="option" data-value="{esc(o)}" aria-selected="{"true" if str(o) == str(value) else "false"}">{esc(o)}</li>'
+                for o in OPTIONS.get(kind.split(":", 1)[1], []))
+            rows.append(f'<div class="field"><span class="label" id="l-{fid}">{esc(label)}</span> <div class="combo" data-combo>'
+                        f'<input type="hidden" id="{fid}" name="{field}" value="{esc(value)}">'
+                        f'<div class="combo-box" role="combobox" tabindex="0" aria-haspopup="listbox" aria-expanded="false" '
+                        f'aria-labelledby="l-{fid}" aria-controls="{fid}-list">{esc(value) if value else "-- Select --"}</div>'
+                        f'<ul role="listbox" id="{fid}-list" aria-labelledby="l-{fid}" hidden>{entries}</ul></div></div>')
+            continue
         if kind.startswith("select:"):
             opts = ['<option value="">Choose...</option>'] + [
                 f'<option value="{esc(o)}"{" selected" if str(o) == str(value) else ""}>{esc(o)}</option>'
@@ -183,12 +241,60 @@ def validate(name, form):
     return values, errors
 
 
-def list_html(name):
+def _int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def list_html(name, query=None):
     spec = SCHEMA[name]
+    query = query or {}
     head = "".join(f"<th>{esc(label)}</th>" for _, label, _, _ in spec["fields"])
     extra = "<th>Status</th>" if name == "payments" else ""
+    kinds = {field: kind for field, _, kind, _ in spec["fields"]}
+    shown = records(name)
+    controls = []
+    for field in (SETTINGS.get("filters") or {}).get(name) or []:
+        kind = kinds.get(field, "")
+        if not kind.startswith("select:"):
+            continue
+        label = next(l for f, l, _, _ in spec["fields"] if f == field)
+        chosen = (query.get(field) or [""])[-1]
+        opts = '<option value="">All</option>' + "".join(
+            f'<option value="{esc(o)}"{" selected" if str(o) == chosen else ""}>{esc(o)}</option>'
+            for o in OPTIONS.get(kind.split(":", 1)[1], []))
+        controls.append(f'<label for="flt-{field}">{esc(label)} filter</label> '
+                        f'<select id="flt-{field}" name="{field}" onchange="this.form.submit()">{opts}</select>')
+        if chosen:
+            shown = [r for r in shown if str(r.get(field, "")) == chosen]
+    size = _int(SETTINGS.get("page_size"), 0)
+    pager = ""
+    if size > 0:
+        size = _int((query.get("per_page") or [""])[-1], size)
+        opts = "".join(f'<option value="{n}"{" selected" if n == size else ""}>{n}</option>'
+                       for n in sorted(set(ROWS_PER_PAGE) | {_int(SETTINGS.get("page_size"), 10)}))
+        controls.append(f'<label for="flt-per-page">Rows per page</label> '
+                        f'<select id="flt-per-page" name="per_page" onchange="this.form.submit()">{opts}</select>')
+        pages = max(1, (len(shown) + size - 1) // size)
+        number = min(max(1, _int((query.get("page") or [""])[-1], 1)), pages)
+        keep = {k: v[-1] for k, v in query.items() if k != "page" and v and v[-1]}
+        link = lambda n: f"/{name}?" + urllib.parse.urlencode(dict(keep, page=n))  # noqa: E731
+        pager = f"<p>Page {number} of {pages}. "
+        if number > 1:
+            pager += f'<a href="{esc(link(number - 1))}">Previous page</a> '
+        if number < pages:
+            pager += f'<a href="{esc(link(number + 1))}">Next page</a>'
+        pager += "</p>"
+        total = len(shown)
+        shown = shown[(number - 1) * size: number * size]
+    else:
+        total = len(shown)
+    form = (f'<form method="get" action="/{name}" aria-label="Filter {esc(spec["title"].lower())}">{" ".join(controls)} '
+            f'<button type="submit">Show</button></form>') if controls else ""
     rows = []
-    for rec in records(name):
+    for rec in shown:
         cells = "".join(f"<td>{esc(rec.get(field, ''))}</td>" for field, _, _, _ in spec["fields"])
         if name == "payments":
             cells += f"<td>{esc(rec.get('status', 'unpaid'))}</td>"
@@ -197,8 +303,8 @@ def list_html(name):
                     f'<a href="/{name}/{esc(rec["id"])}/edit">Edit {esc(label)}</a></td></tr>')
     table = (f'<table aria-label="{esc(spec["title"])}"><thead><tr>{head}{extra}<th>Actions</th></tr></thead>'
              f'<tbody>{"".join(rows)}</tbody></table>') if rows else f"<p>No {esc(spec['title'].lower())} yet.</p>"
-    return (f'<p><a href="/{name}/new">New {esc(spec["one"])}</a></p>'
-            f'<p>{len(records(name))} {esc(spec["title"].lower())}.</p>{table}')
+    return (f'<p><a href="/{name}/new">New {esc(spec["one"])}</a></p>{form}'
+            f'<p>{total} {esc(spec["title"].lower())}.</p>{table}{pager}')
 
 
 def detail_html(name, rec, note=""):
@@ -273,7 +379,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.not_found()
             spec = SCHEMA[name]
             if len(parts) == 1:
-                return self.send_html(page(spec["title"], list_html(name)))
+                return self.send_html(page(spec["title"], list_html(name, query)))
             if parts[1] == "new" and len(parts) == 2:
                 return self.send_html(page(f"New {spec['one']}", form_html(name, {}, f"/{name}/new", f"Save {spec['one']}")))
             rec = find(name, parts[1])

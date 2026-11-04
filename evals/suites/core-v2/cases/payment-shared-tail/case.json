@@ -1,0 +1,52 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "payment-shared-tail",
+  "category": "varied",
+  "kind": "sheet_to_record",
+  "request": "Record a payment of 8,250.00 dated 2026-06-09 to Fenwick Haulage Services, whose account is in ~/work/practice/payment-shared-tail/payees.xlsx, reference June haulage, in the Records app (http://records.example.test/payments/new).",
+  "start": {
+    "files": [
+      "payees.xlsx"
+    ],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "mock_records",
+        "collection": "payments",
+        "exact_count": true,
+        "records": [
+          {
+            "payee": {
+              "text": "Fenwick Haulage Services"
+            },
+            "account": {
+              "id": "927731551029384756"
+            },
+            "amount": {
+              "number": "8250"
+            },
+            "date": {
+              "date": "2026-06-09"
+            },
+            "reference": {
+              "text": "June haulage"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "oracle": [
+    "office read payees.xlsx | grep -q 927731551029384756",
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode 'payee=Fenwick Haulage Services' --data-urlencode account=927731551029384756 --data-urlencode amount=8,250.00 --data-urlencode date=2026-06-09 --data-urlencode 'reference=June haulage' http://records.example.test/payments/new"
+  ],
+  "tags": [
+    "long-number",
+    "mechanism"
+  ]
+}

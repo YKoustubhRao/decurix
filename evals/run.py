@@ -18,7 +18,9 @@ An arm is <model>[+expert][@<git-rev>], or oracle, nothing or ask:
     with +expert (default+expert@<rev>). An arm whose rev is not lower-case (HEAD, a branch) is named
     <model>[+expert]@<first 12 of its commit id>, which the control plane accepts and the table shows;
   - oracle runs each case's scripted solution; nothing claims "done" and does nothing; ask asks one question about
-    nothing and stops (calibration: oracle must pass every case, nothing and ask none).
+    nothing and stops (calibration: oracle must pass every case, nothing and ask none);
+  - oracle@<rev> runs the scripted solution with that revision's agent tree: a case whose solution meets a guard
+    (a comparator deciding a save) shows the old code's decision against the image's, with no model.
 
 Standard library only, Python 3.11+, run from the repository root. The control plane's eval routes are on its primary
 listener only (127.0.0.1:8080), never the gated one.
@@ -44,6 +46,8 @@ RESULTS = ROOT / "evals" / "results"
 DEFAULT_CP = os.environ.get("DECURIX_URL", "http://127.0.0.1:8080")
 POLL_SECONDS = 30
 
+ORACLE_AT = re.compile(r"^oracle@(?P<rev>[A-Za-z0-9._/~^-]{1,80})$")
+
 # The control plane's own rule for an arm's name (eval.armName).
 ARM_NAME = re.compile(r"^[a-z0-9][a-z0-9+@._:-]{0,63}$")
 ARM = re.compile(r"^(?:(?P<provider>azure|claude):)?(?P<model>default|fast)(?P<expert>\+expert)?(?:@(?P<rev>[A-Za-z0-9._/~^-]{1,80}))?$")
@@ -63,6 +67,12 @@ def parse_arm(text):
     text = text.strip()
     if text in ("oracle", "nothing", "ask"):
         return {"name": text, "kind": text, "expert": False}
+    m = ORACLE_AT.match(text)
+    if m:
+        # The scripted solution run with another revision's agent tree: its gui, office and record steps meet that
+        # code's guards, so a case built on a mechanism (a comparator's own decision) tells old code from new with
+        # no model at all.
+        return {"name": text, "kind": "oracle", "expert": False, "agent_tree_rev": m.group("rev")}
     m = ARM.match(text)
     if not m:
         raise Usage(f"--arm {text!r}: an arm is <model>[+expert][@<git-rev>] (model default or fast, optionally "

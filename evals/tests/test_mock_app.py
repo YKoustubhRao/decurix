@@ -163,5 +163,54 @@ class SignInTest(unittest.TestCase):
         self.assertEqual((status, location), (303, "/"))
 
 
+class SettingsTest(unittest.TestCase):
+    """settings draw the app the way real apps differ - a dropdown the page makes, list filters, pages - and never
+    change what it stores."""
+
+    def test_a_custom_dropdown_is_no_native_select_and_saves_its_entry(self):
+        app = MockApp(dict(FIXTURE, settings={"custom_selects": {"customers": ["state"]}}))
+        self.addCleanup(app.close)
+        _, body = app.get("/customers/new")
+        self.assertNotIn('<select id="f-state"', body)
+        self.assertIn('role="combobox"', body)
+        self.assertIn('aria-labelledby="l-f-state"', body)
+        self.assertIn('<li role="option" data-value="29-Karnataka"', body)
+        self.assertIn('<input type="hidden" id="f-state" name="state"', body)
+        status, location, _ = app.post("/customers/new", name="Ashgrove Tiles", email="a@ashgrove.example.test",
+                                       state="29-Karnataka")
+        self.assertEqual(status, 303, location)
+        self.assertEqual(app.read_state()["collections"]["customers"][0]["state"], "29-Karnataka")
+        # The same choice rule as a native select: only an entry of the list.
+        status, _, body = app.post("/customers/new", name="X", email="x@example.test", state="Karnataka")
+        self.assertEqual(status, 400)
+        # Without the setting, the field is a native select.
+        plain = MockApp(FIXTURE)
+        self.addCleanup(plain.close)
+        self.assertIn('<select id="f-state"', plain.get("/customers/new")[1])
+
+    def test_list_filters_and_pages(self):
+        tickets = [{"id": i, "subject": f"Ticket {i}", "priority": "Low", "status": "Pending" if i % 4 == 0 else "Open"}
+                   for i in range(1, 24)]
+        app = MockApp({"collections": {"tickets": tickets},
+                       "settings": {"filters": {"tickets": ["status"]}, "page_size": 10}})
+        self.addCleanup(app.close)
+        _, body = app.get("/tickets")
+        self.assertIn('<label for="flt-status">Status filter</label>', body)
+        self.assertIn("Page 1 of 3.", body)
+        self.assertIn("Open Ticket 10<", body)
+        self.assertNotIn("Open Ticket 11<", body)
+        _, body = app.get("/tickets?page=3")
+        self.assertIn("Open Ticket 23<", body)
+        self.assertIn("Previous page", body)
+        _, body = app.get("/tickets?status=Pending")
+        self.assertIn("5 support tickets.", body)
+        self.assertIn("Open Ticket 20<", body)
+        self.assertNotIn("Open Ticket 1<", body)
+        _, body = app.get("/tickets?per_page=25")
+        self.assertIn("Page 1 of 1.", body)
+        # Filters only change what is shown.
+        self.assertEqual(len(app.read_state()["collections"]["tickets"]), 23)
+
+
 if __name__ == "__main__":
     unittest.main()

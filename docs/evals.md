@@ -35,7 +35,16 @@ cases/<case-id>/<fixture>.json      the mock's start state (start.fixture), opti
 mocks/<mock>/mock_app.py            each mock the suite names
 ```
 
-In the repo the mocks are shared: `evals/mocks/<mock>/mock_app.py`, packed into every suite that names them.
+In the repo the mocks are shared: `evals/mocks/<mock>/mock_app.py`, packed into every suite that names them (so a
+change to a mock changes every suite's SHA that names it). The records mock's fixture may carry `settings`, which
+change how the app is drawn, the way real apps differ, never what it stores: `custom_selects` (choice fields drawn as a
+dropdown the page makes itself: a role=combobox button, role=option entries and a hidden input), `filters` (list
+filters, read from the query string) and `page_size` (pages, a "Rows per page" choice, Previous/Next links).
+
+Suites: `core-v1` (twelve short cases, the regression yardstick) and `core-v2` (five cases that tell code apart by
+mechanism rather than by a model's luck: a month-first bill whose order only the document's other date decides, two
+accounts sharing their last 10 digits, a dropdown the page draws, a list filter before an edit, and a required choice
+no source gives).
 
 ### suite.json
 
@@ -175,6 +184,9 @@ Three calibration arms run no model: `oracle` runs each case's scripted solution
 since the oracle knows them) and must pass every case; `nothing` claims "done", checked, without doing anything; and
 `ask` asks one question about nothing ("Before I go on: is there anything else I should know?") and stops. `nothing`
 and `ask` must pass no case. A new suite is calibrated by all three before any model arm means anything.
+`oracle@<rev>` runs the scripted solution with that revision's agent tree: where the solution meets a guard (it
+declares a record and saves it through `gui`, so the old comparator decides the save), the old code's decision shows
+against the image's with no model at all.
 
 ## The scripted expert (D9)
 
@@ -224,7 +236,10 @@ repeats showing no regression elsewhere.
    fail it for `nothing`. `go test ./internal/eval -run TestCoreSuiteLoads` (or the suite's own load test) must pass.
 3. Run before and after in one command, the old agent tree against the new:
    `py -3 evals/run.py run --suite ... --arm default@<old-rev> --arm default --repeats 5`.
-   For example, a bill that writes its date `03/04/2026` and is made day-first by another date it writes
-   (`28/09/2026`): the old comparator reads the save as a mismatch or the wrong month, so the case fails at the old
-   rev, and passes after the fix in the value comparator, with every other case's Wilson lower bound no lower than
-   before.
+   The case must fail the old rev by its mechanism, not by luck. L3 showed it: core-v1's day-first bill
+   (`03/04/2026`, made day-first by `28/09/2026`) passed the old code 4 of 5, because the old comparator always read
+   digit dates day first, and so read that bill right. core-v2's month-first bill (`03/04/2026` and `05/03/2026`, made
+   month-first only by its delivery date `03/21/2026`) is the one the old comparator decides wrong: it reads the right
+   save (2026-03-04) as a mismatch and the wrong one (2026-04-03) as the document's. Its oracle declares the record as
+   the document writes it and saves through `gui`, so `--arm oracle@<old-rev> --arm oracle` shows the difference with
+   no model.

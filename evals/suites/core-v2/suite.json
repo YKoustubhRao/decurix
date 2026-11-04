@@ -1,0 +1,23 @@
+{
+  "schema": "decurix.eval-suite/v1",
+  "name": "core-v2",
+  "description": "Five cases that tell code apart by mechanism, not by a model's luck: a month-first bill whose order only the document's other date decides, two accounts sharing their last 10 digits, a dropdown the page draws itself, a list filter before an edit, and a required choice no source gives. Fictional data; the records app of core-v1.",
+  "mocks": {
+    "records-app": {
+      "hosts": [
+        "records.example.test"
+      ]
+    }
+  },
+  "budget": {
+    "max_tokens": 1500000,
+    "max_minutes": 15
+  },
+  "cases": [
+    "bill-entry-month-first",
+    "payment-shared-tail",
+    "customer-state-custom",
+    "ticket-filter-then-edit",
+    "bill-needs-centre-custom"
+  ]
+}

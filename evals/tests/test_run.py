@@ -211,6 +211,20 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(json.loads(sent["arms"])[0]["name"], "default+expert@abcdef123456")
         self.assertIn("tree_default+expert@abcdef123456", sent)
 
+    def test_an_oracle_at_a_rev_sends_its_tree(self):
+        full = "eb15981" + "0" * 33
+        with unittest.mock.patch.object(run, "agent_tree", return_value=b"OLD") as tree, \
+                unittest.mock.patch.object(run, "resolve_rev", return_value=full):
+            code, said = self.main("run", "--suite", str(EVALS / "suites" / "core-v1"), "--arm", "oracle@eb15981",
+                                   "--arm", "oracle", "--repeats", "1", "--detach")
+        self.assertEqual(code, 0, said)
+        tree.assert_called_once_with(full)
+        sent = FakeControlPlane.started[0]
+        arms = json.loads(sent["arms"])
+        self.assertEqual([(a["name"], a["kind"], a.get("agent_tree_rev")) for a in arms],
+                         [("oracle@eb15981", "oracle", full), ("oracle", "oracle", None)])
+        self.assertEqual(gzip.decompress(sent["tree_oracle@eb15981"]), b"OLD")
+
     def test_table_rows_and_status(self):
         self.assertEqual(self.main("table", "e1")[0], 0)
         self.assertTrue((self.out / "e1" / "table.md").exists())

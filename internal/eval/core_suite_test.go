@@ -60,23 +60,31 @@ func packSuite(t *testing.T, root, suite string) []byte {
 	return buf.Bytes()
 }
 
-// TestCoreSuiteLoads loads the first dev suite from the repo (the one test that reads evals/) and calibrates it as
-// far as can be done without a practice desktop: a worker that only claims "done" passes no case, and every case
-// whose scripted solution needs only the mock and Python passes on the mock's own state.
-func TestCoreSuiteLoads(t *testing.T) {
+// TestCoreSuiteLoads loads the first dev suite from the repo (the tests that read evals/) and calibrates it as far as
+// can be done without a practice desktop: a worker that only claims "done" passes no case, and every case whose
+// scripted solution needs only the mock and Python passes on the mock's own state.
+func TestCoreSuiteLoads(t *testing.T) { calibrateSuite(t, "core-v1", 12, 9) }
+
+// TestCoreV2SuiteLoads is the same for the mechanism suite. Its gui-driven solutions (the comparator's own decision,
+// a dropdown the page draws, a list filter) need the practice desktop: the live calibration covers them.
+func TestCoreV2SuiteLoads(t *testing.T) { calibrateSuite(t, "core-v2", 5, 2) }
+
+// calibrateSuite loads a dev suite and calibrates it offline: nothing and ask pass no case, and at least minOffline
+// cases' scripted solutions pass their own graders on the real mock.
+func calibrateSuite(t *testing.T, name string, cases, minOffline int) {
 	root := repoRoot(t)
-	s, err := Load(packSuite(t, root, "core-v1"))
+	s, err := Load(packSuite(t, root, name))
 	if err != nil {
-		t.Fatalf("core-v1 does not load:\n%v", err)
+		t.Fatalf("%s does not load:\n%v", name, err)
 	}
-	if len(s.Cases) != 12 || s.SHA == "" {
-		t.Fatalf("core-v1 has %d cases", len(s.Cases))
+	if len(s.Cases) != cases || s.SHA == "" {
+		t.Fatalf("%s has %d cases", name, len(s.Cases))
 	}
 	byOutcome := map[string]int{}
 	for _, c := range s.Cases {
 		byOutcome[c.Expected.Outcome]++
 	}
-	t.Logf("core-v1: %d cases %v, SHA %s", len(s.Cases), byOutcome, s.SHA)
+	t.Logf("%s: %d cases %v, SHA %s", name, len(s.Cases), byOutcome, s.SHA)
 
 	// The "nothing" arm: claims done and checked, changes nothing. No case may pass, in either mode.
 	for _, c := range s.Cases {
@@ -139,8 +147,8 @@ func TestCoreSuiteLoads(t *testing.T) {
 		}
 		calibrated++
 	}
-	if calibrated < 9 {
-		t.Fatalf("only %d cases calibrated offline; expected every case but the gate and the formula ones", calibrated)
+	if calibrated < minOffline {
+		t.Fatalf("only %d cases calibrated offline; expected at least %d", calibrated, minOffline)
 	}
 	t.Logf("oracle calibrated offline on %d of %d cases", calibrated, len(s.Cases))
 }

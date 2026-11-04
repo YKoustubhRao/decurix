@@ -1,0 +1,57 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "ticket-filter-then-edit",
+  "category": "ordinary",
+  "kind": "web_form",
+  "request": "In the Records app (http://records.example.test/tickets), set the priority of the ticket about the badge printer that jams to High.",
+  "start": {
+    "files": [],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "mock_records",
+        "collection": "tickets",
+        "exact_count": true,
+        "records": [
+          {
+            "id": {
+              "number": "26"
+            },
+            "subject": "Badge printer on the third floor jams",
+            "priority": "High",
+            "status": "Pending"
+          }
+        ]
+      }
+    ]
+  },
+  "oracle": [
+    "gui open http://records.example.test/tickets",
+    {
+      "sleep": 3
+    },
+    "gui select 'combobox \"Status filter\"' Pending",
+    {
+      "sleep": 3
+    },
+    "gui click 'link \"Edit Badge printer on the third floor jams\"'",
+    {
+      "sleep": 3
+    },
+    "gui select 'combobox \"Priority\"' High",
+    "gui click 'button \"Save changes\"' --checked || gui click 'button \"Save changes\"' --checked",
+    {
+      "sleep": 2
+    },
+    "gui verify --text Saved"
+  ],
+  "tags": [
+    "list-filter",
+    "regression"
+  ]
+}

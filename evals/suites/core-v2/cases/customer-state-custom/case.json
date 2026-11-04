@@ -1,0 +1,52 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "customer-state-custom",
+  "category": "ordinary",
+  "kind": "web_form",
+  "request": "In the Records app (http://records.example.test/customers/new), add the customer Ashgrove Tiles, email accounts@ashgrove-tiles.example.test, place of supply Karnataka.",
+  "start": {
+    "files": [],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "mock_records",
+        "collection": "customers",
+        "exact_count": true,
+        "records": [
+          {
+            "name": {
+              "text": "Ashgrove Tiles"
+            },
+            "email": {
+              "id": "accounts@ashgrove-tiles.example.test"
+            },
+            "state": "29-Karnataka"
+          }
+        ]
+      }
+    ]
+  },
+  "oracle": [
+    "gui open http://records.example.test/customers/new",
+    {
+      "sleep": 3
+    },
+    "gui type 'textbox \"Name\"' 'Ashgrove Tiles'",
+    "gui type 'textbox \"Email\"' accounts@ashgrove-tiles.example.test",
+    "gui select 'combobox \"Place of supply\"' Karnataka",
+    "gui click 'button \"Save customer\"' --checked || gui click 'button \"Save customer\"' --checked",
+    {
+      "sleep": 2
+    },
+    "gui verify --text Saved"
+  ],
+  "tags": [
+    "custom-dropdown",
+    "regression"
+  ]
+}
