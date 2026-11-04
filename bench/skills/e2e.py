@@ -228,6 +228,24 @@ def run():
           "| params:", [(p["name"], p["varies"]) for p in skill["params"]])
     assert skill["status"] == "ready"
 
+    # A worker whose brain plans puts its plan of the work to the person before its first change; the person agrees
+    # it, with what they know (teach_answers.PLAN_ANSWER). The plan is known by the agent's own marker, read from the
+    # desktop, so a reply is never matched by its words. Model-free runs make no plan, and none is answered.
+    marker = subprocess.run(["docker", "exec", "-u", "headless", "-e", "PYTHONPATH=/opt", NAME, "python3", "-c",
+                             teach_answers.PLAN_MARKER_PROBE], capture_output=True, text=True, timeout=60)
+    if marker.returncode or not marker.stdout.strip():
+        raise SystemExit(f"could not read the plan question's marker on the desktop:\n{marker.stderr[-600:]}")
+    plan_marker = marker.stdout.strip()
+
+    def past_plan(reply, index, task_id):
+        """The reply after any plan question was agreed, and its index among the replies."""
+        while teach_answers.is_plan(reply, plan_marker):
+            send(teach_answers.PLAN_ANSWER, task_id)
+            index += 1
+            reply = wait_reply(index, timeout=180)
+            show("plan agreed; next", reply)
+        return reply, index
+
     def confirmed(reply, index, task_id, shown):
         """
         A run that could not check every step on the screen is not reported
@@ -249,12 +267,14 @@ def run():
     send("/skill add a customer", "t00000000000000c1")
     q = wait_reply(before + 1)
     show("it asks", q)
+    q, n = past_plan(q, before + 1, "t00000000000000c1")
     assert "customer_name" in q["reply"] and q["kind"] == "query"
 
     send("Initech", "t00000000000000c1")
-    done = wait_reply(before + 2, timeout=180)
+    done = wait_reply(n + 1, timeout=180)
     show("result", done)
-    done = confirmed(done, before + 2, "t00000000000000c1", "Saved Initech")
+    done, n = past_plan(done, n + 1, "t00000000000000c1")
+    done = confirmed(done, n, "t00000000000000c1", "Saved Initech")
     assert done["kind"] == "final", "the skill run did not complete"
 
     v = bash("gui verify --text 'Saved Initech'", check=False)
@@ -271,13 +291,15 @@ def run():
     send('/skill add-a-customer customer_name="Umbrella"', "t00000000000000d1")
     asked = wait_reply(before + 1, timeout=180)
     show("it asks", asked)
+    asked, n = past_plan(asked, before + 1, "t00000000000000d1")
     assert asked["kind"] == "query", "a heal onto another name was not put to the person (D-09)"
     offered = re.search(r'(\d+)\) button "Save changes"', asked["reply"])
     assert offered, "the question does not offer the renamed button by number"
     send(offered.group(1), "t00000000000000d1")
-    healed = wait_reply(before + 2, timeout=180)
+    healed = wait_reply(n + 1, timeout=180)
     show("result", healed)
-    healed = confirmed(healed, before + 2, "t00000000000000d1", "Saved Umbrella")
+    healed, n = past_plan(healed, n + 1, "t00000000000000d1")
+    healed = confirmed(healed, n, "t00000000000000d1", "Saved Umbrella")
     assert healed["kind"] == "final", "the run did not finish after the person chose the renamed button"
 
     v = bash("gui verify --text 'Saved Umbrella'", check=False)
@@ -292,12 +314,14 @@ def run():
     send('/skill add-a-customer customer_name="Wayne"', "t00000000000000e1")
     stuck = wait_reply(before + 1, timeout=180)
     show("it asks", stuck)
+    stuck, n = past_plan(stuck, before + 1, "t00000000000000e1")
     assert stuck["kind"] == "query" and "is not on the screen" in stuck["reply"]
 
     send('use "Go"', "t00000000000000e1")
-    fixed = wait_reply(before + 2, timeout=180)
+    fixed = wait_reply(n + 1, timeout=180)
     show("result", fixed)
-    fixed = confirmed(fixed, before + 2, "t00000000000000e1", "Saved Wayne")
+    fixed, n = past_plan(fixed, n + 1, "t00000000000000e1")
+    fixed = confirmed(fixed, n, "t00000000000000e1", "Saved Wayne")
     assert fixed["kind"] == "final" and "remembered" in fixed["reply"]
 
     v = bash("gui verify --text 'Saved Wayne'", check=False)

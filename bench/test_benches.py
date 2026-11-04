@@ -177,6 +177,22 @@ class TeachAnswersTest(unittest.TestCase):
         with self.assertRaises(self.answers.UnknownQuestion):
             self.answers.answer({"question": {"kind": "start", "text": "Should I check that?"}}, "Something else entirely was asked.")
 
+    def test_the_plan_question_is_known_by_the_agents_own_marker(self):
+        """F-B2': a planning brain's first reply in a run is its plan; the bench agrees it, and knows it by the marker
+        the agent itself writes (read on the desktop by PLAN_MARKER_PROBE), which soul's plan.go writes too."""
+        env = dict(os.environ, PYTHONPATH=str(REPO / "agent"))
+        r = subprocess.run([sys.executable, "-c", self.answers.PLAN_MARKER_PROBE], capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr[-800:])
+        marker = r.stdout.strip()
+        self.assertIn(marker, (REPO / "agent" / "thebot" / "internal" / "skills" / "plan.go").read_text(encoding="utf-8"))
+        plan = {"kind": "query", "reply": marker + "\n- Covering: one customer\nIs there a list I should check?"}
+        self.assertTrue(self.answers.is_plan(plan, marker))
+        heal = {"kind": "query", "reply": 'The button "Save" is not on the screen. 1) button "Save changes"'}
+        self.assertFalse(self.answers.is_plan(heal, marker))
+        self.assertFalse(self.answers.is_plan({"kind": "final", "reply": marker}, marker))
+        self.assertFalse(self.answers.is_plan(plan, ""))
+        self.assertIn(self.answers.FACTS["sources"], self.answers.PLAN_ANSWER)
+
 
 class GuiOracleTest(unittest.TestCase):
     """The GUI bench's oracle runs inside the request a person would send, under every guard rail as it is."""

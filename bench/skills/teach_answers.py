@@ -41,6 +41,21 @@ FACTS = {
 }
 
 
+# The person's answer to the worker's plan of the work (soul's plan.go puts it to them before its first change): the
+# plan is agreed as stated, with what the person knows about where the data comes from and what to look up - the same
+# facts the study's questions get. Recognised by the plan's own marker (PLAN_MARKER_PROBE), never by its words.
+PLAN_ANSWER = "Yes, do it that way. " + FACTS["sources"] + " " + FACTS["matching"]
+
+# Run on the desktop (PYTHONPATH=/opt): the marker every plan question starts with, the agent's own constant.
+PLAN_MARKER_PROBE = "from decurix_agent.thebot_harness import PLAN_QUESTION; print(PLAN_QUESTION)"
+
+
+def is_plan(reply, marker):
+    """Whether a chat reply is the worker's plan of the work: a question that starts with the plan's marker."""
+
+    return bool(marker) and reply.get("kind") == "query" and (reply.get("reply") or "").lstrip().startswith(marker)
+
+
 class UnknownQuestion(SystemExit):
     """A question whose structure this bench has no answer for: the bench stops and says so."""
 
