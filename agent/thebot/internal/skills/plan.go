@@ -169,7 +169,7 @@ func (st *operatorState) planText() string {
 	return text
 }
 
-// ledgerSavedRe is the record ledger's own line for a save it read back ("Record FJ-1190: saved; the page now shows
+// ledgerSavedRe is the record ledger's own line for a save it read back ("Record INV-0001: saved; the page now shows
 // ..."), which the gui command prints after the save (the agent's records.readback): a save that went through,
 // decided in code.
 var ledgerSavedRe = regexp.MustCompile(`(?m)^\s*Record (.{1,200}?): saved\b`)

@@ -12,11 +12,11 @@ import (
 // back, so the plan's commit is counted and commitsIssue raises no false "none of them went through".
 func TestASaveThatNeededNoApprovalCountsAsTheCommit(t *testing.T) {
 	plan := &workPlan{Scope: "enter the bill", Commits: []string{"save the bill"}}
-	saved := shellResult{ExitCode: 0, Output: "Clicked button \"Save\"\nRecord FJ-1190: saved; the page now shows 6 of 6 declared value(s) - all of them."}
+	saved := shellResult{ExitCode: 0, Output: "Clicked button \"Save\"\nRecord INV-0001: saved; the page now shows 6 of 6 declared value(s) - all of them."}
 
 	st := &operatorState{Plan: plan}
 	st.noteUngatedCommit(`gui click e20`, saved)
-	if st.CommitsRun != 1 || len(st.CommitsDone) != 1 || !strings.Contains(st.CommitsDone[0], "FJ-1190") {
+	if st.CommitsRun != 1 || len(st.CommitsDone) != 1 || !strings.Contains(st.CommitsDone[0], "INV-0001") {
 		t.Fatalf("the save was not counted: run %d, done %v", st.CommitsRun, st.CommitsDone)
 	}
 	if got := st.commitsIssue(); got != nil {
@@ -55,7 +55,7 @@ func TestASaveThatNeededNoApprovalCountsAsTheCommit(t *testing.T) {
 // decided in code, not a fact the review may let stand; the review is shown it as already open.
 func TestANotBackedCallIsAnOpenPointNotAFact(t *testing.T) {
 	items := []string{
-		`Vendor "Finchmoor Joinery Works" | backed by: "Finchmoor Joinery Works"`,
+		`Vendor "Example Vendor Ltd" | backed by: "Example Vendor Ltd"`,
 		`Cost centre set to "General" | not backed: the source document gives no cost centre, "General" was the default`,
 	}
 	issues := notBackedIssues(items)
@@ -87,7 +87,7 @@ func TestExecuteCountsASaveThatNeededNoApproval(t *testing.T) {
 		t.Skip("a stand-in gui on PATH")
 	}
 	bin := t.TempDir()
-	script := "#!/bin/sh\necho 'Clicked button \"Save\"'\necho 'Record FJ-1190: saved; the page now shows 6 of 6 declared value(s) - all of them.'\n"
+	script := "#!/bin/sh\necho 'Clicked button \"Save\"'\necho 'Record INV-0001: saved; the page now shows 6 of 6 declared value(s) - all of them.'\n"
 	if err := os.WriteFile(filepath.Join(bin, "gui"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
