@@ -38,7 +38,7 @@
     },
     "gui type 'textbox \"Name\"' 'Ashgrove Tiles'",
     "gui type 'textbox \"Email\"' accounts@ashgrove-tiles.example.test",
-    "gui select 'combobox \"Place of supply\"' Karnataka",
+    "gui select 'combobox \"Place of supply\"' 29-Karnataka",
     "gui click 'button \"Save customer\"' --checked || gui click 'button \"Save customer\"' --checked",
     {
       "sleep": 2

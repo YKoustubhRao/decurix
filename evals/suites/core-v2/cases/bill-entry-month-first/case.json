@@ -48,6 +48,7 @@
   },
   "oracle": [
     "office read bill.pdf | grep -q HS-0318",
+    "python3 -I -c 'import sys; sys.path.insert(0, \"/opt\"); from decurix_agent import task_context; task_context.start(sys.argv[1], sys.argv[2])' \"$DECURIX_TASK_ID\" \"Enter the bill in ~/work/practice/bill-entry-month-first/bill.pdf into the Records app (http://records.example.test/bills/new). Charge it to General.\"",
     "printf '%s' '{\"Bill number\": \"HS-0318\", \"Vendor\": \"Harrowgate Signworks\", \"Bill date\": \"03/04/2026\", \"Due date\": \"05/03/2026\", \"Total\": \"1,770.00\", \"Cost centre\": \"General\"}' | gui record HS-0318 --from /home/headless/work/practice/bill-entry-month-first/bill.pdf --fields -",
     "gui open http://records.example.test/bills/new",
     {

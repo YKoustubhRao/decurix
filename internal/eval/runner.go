@@ -1065,6 +1065,13 @@ done
 cd "$2" || exit 97
 eval "$3"`
 
+// oracleContextScript makes the case's task the worker's current one, with its request, as the agent does when a
+// request arrives (task_context.start). The solution's gui and office steps then meet the task's guards with the
+// request a person sent, and record under the task, so its bundle has a run to pull. Without it the steps saw no task
+// at all (the prelude's DECURIX_TASK_ID is read by nothing): a record could not be declared, nothing was recorded, and
+// oracle rows named no trajectory (core-v2 calibration, round 8).
+const oracleContextScript = `import sys; sys.path.insert(0, "/opt"); from decurix_agent import task_context; task_context.start(sys.argv[1], sys.argv[2])`
+
 // oracleArgv is the command line one oracle step runs as.
 func oracleArgv(taskID, caseID, line string) []string {
 	return []string{"/bin/bash", "-c", oraclePrelude, "oracle", taskID, desktop.PracticeWorkDir + "/" + caseID, line}
@@ -1075,6 +1082,10 @@ func oracleArgv(taskID, caseID, line string) []string {
 // solution's answer.
 func (s *Service) runOracle(ctx context.Context, d desktop.PracticeDesktop, desktopID, taskID string, c Case, ev *Evidence) []string {
 	answer := "Done."
+	if exit, _, err := s.Sandbox.ExecPracticeAsWorker(ctx, d.ContainerID, []string{"/usr/bin/python3", "-I", "-c", oracleContextScript, taskID, c.Request}, time.Minute); err != nil || exit != 0 {
+		ev.Infra = append(ev.Infra, "The oracle's task could not be made the worker's current one.")
+		return nil
+	}
 	for i, st := range c.Oracle {
 		if ctx.Err() != nil {
 			ev.Observation = ObservedTimeout
