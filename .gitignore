@@ -5,6 +5,7 @@ dist/
 
 bench/gui/results/
 bench/workflows/results/
+bench/resources/results/
 /decurix
 node_modules/
 desktop/electron/build/

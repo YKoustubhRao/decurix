@@ -59,6 +59,13 @@ go test -tags e2e -run TestAPhoneAppIsButtonsInARealDesktop ./internal/httpapi/ 
                                                   # approval gate in a real desktop's Chromium (fake phone; Docker, ~2 min)
 python3 bench/gui/run.py --engine oracle --container desktop_<id>   # GUI benchmark, no model
 python3 bench/gui/run.py --engine ollama --engine thebot --engine claude  # per-engine success rate
+python3 bench/resources/run.py [--eval-run <id> --arm <name>] [--label ...]   # what a desktop, gui, a dashboard tab
+                                                  # and a task cost: idle RAM/CPU by process group (Chrome or not,
+                                                  # running and paused), gui p50/p95 and CPU, the dashboard's req/s and
+                                                  # bytes/s (a scripted viewer on the page's own timers), host RAM with
+                                                  # 0 and 1-2 desktops, input tokens per task and the cached share. One
+                                                  # throwaway desktop, ~10 min; rows in bench/resources/results/. From
+                                                  # Windows: --cp http://127.0.0.1:18080 --host-shell "wsl -d Decurix -u root --"
 sh bench/security/boundary.sh [--image decurix-desktop:basic] [--layer]   # the approval gate's boundary on an image:
                                                   # every self-approval attack of the security reviews (root on restart,
                                                   # the key in an environment, forged and misbound replies). Run on every

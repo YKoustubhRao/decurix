@@ -350,5 +350,120 @@ class GuiOracleTest(unittest.TestCase):
                 self.assertTrue(next(self.steps(task))["run"].startswith("gui front "), task["id"])
 
 
+class ResourceBenchTest(unittest.TestCase):
+    """The resource bench's viewer follows the dashboard's own timers, and its sums and groups are right."""
+
+    def setUp(self):
+        import importlib.util
+        sys.path.insert(0, str(BENCH / "resources"))
+        import viewer
+        # By its path: bench/gui's run.py is imported as "run" by the GUI bench's tests.
+        spec = importlib.util.spec_from_file_location("resources_run", BENCH / "resources" / "run.py")
+        resources_run = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(resources_run)
+        self.viewer, self.run = viewer, resources_run
+
+    def test_the_viewer_polls_on_the_dashboards_own_timers(self):
+        text = (REPO / "web" / "templates" / "index.html").read_text(encoding="utf-8")
+        theme = (REPO / "web" / "templates" / "theme.html").read_text(encoding="utf-8")
+        found = {}
+        for m in re.finditer(r"\bpoll\((\w+),\s*(\d+)(?:,\s*\{hidden:\s*(\d+)\})?\)", text + "\n" + theme):
+            found[m.group(1)] = (int(m.group(2)), int(m.group(3) or 0))
+        mirrored = {name: (ms, hidden) for name, ms, hidden, *_ in self.viewer.POLLS}
+        for name, timing in mirrored.items():
+            self.assertEqual(found.get(name), timing, f"{name}: the page polls it as {found.get(name)}")
+        unaccounted = set(found) - set(mirrored) - set(self.viewer.SILENT)
+        self.assertEqual(unaccounted, set(), "a dashboard timer the viewer neither mirrors nor names as silent")
+        shot = re.search(r"SHOT_INTERVAL_MS = (\d+)", text)
+        self.assertEqual(int(shot.group(1)), self.viewer.SHOT_INTERVAL_MS)
+        # Each mirrored poll asks what the page's function asks.
+        for name, _, _, _, path, _ in self.viewer.POLLS:
+            body = re.search(r"function " + name + r"\(\)\{(.*?)\n  \}", text + theme, re.S)
+            self.assertIsNotNone(body, name)
+            self.assertIn(path.split("?")[0].split("{")[0], body.group(1), name)
+
+    def test_the_viewer_reads_the_cards_and_asks_what_they_hold(self):
+        page = ('<article class="dcard" data-desktop-id="a"><span data-base-status="running"></span>'
+                '<img data-shot="a"><a data-activity="a"></a><details data-mem-list="a"></details>'
+                '<div data-task-pick="a"></div></article>'
+                '<article class="dcard" data-desktop-id="b"><span data-base-status="paused"></span><img data-shot="b"></article>')
+        seen = []
+
+        class Plane(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.path)
+                body = page.encode() if self.path == "/" else (b"\x89PNG" if "screenshot" in self.path else b"{}")
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Plane)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            got = self.viewer.watch(f"http://127.0.0.1:{server.server_address[1]}", 1.5)
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertEqual(seen[0], "/")
+        self.assertEqual(got["desktops"], 2)
+        shots = [p for p in seen if p.startswith("/api/desktops/screenshot")]
+        self.assertEqual({p.split("id=")[1].split("&")[0] for p in shots}, {"a", "b"})
+        self.assertIn("/api/desktops/activity?ids=a", seen)
+        self.assertIn("/api/desktops/tasks?ids=a", seen)
+        self.assertNotIn("/api/desktops/memory", seen, "pollMemory is not called at load, only on its timer")
+        for path in ("/api/querynotes", "/api/desktops/resource-alerts", "/api/model", "/api/docker/status", "/api/tasks/finished"):
+            self.assertIn(path, seen)
+        self.assertEqual(got["requests"], len(seen) - 1)
+        self.assertGreater(got["bytes"], 0)
+
+    def test_a_hidden_tab_keeps_only_its_slow_polls(self):
+        hidden = {name for name, ms, hidden_ms, *_ in self.viewer.POLLS if hidden_ms}
+        self.assertEqual(hidden, {"loadNotes", "refreshDocker", "refreshFinished"})
+
+    def test_processes_are_grouped_by_what_they_run(self):
+        g = self.run.group_of
+        self.assertEqual(g("/usr/lib/chromium/chromium --type=renderer"), "chrome")
+        self.assertEqual(g("/usr/bin/python3 -I -c import sys, runpy; runpy.run_module(\"decurix_agent.gate_server\")"), "gate")
+        self.assertEqual(g("/usr/bin/python3 /opt/vm_server.py"), "agent")
+        self.assertEqual(g("python3 -m decurix_agent.agent"), "agent")
+        self.assertEqual(g("/opt/soul serve"), "soul")
+        self.assertEqual(g("python3 /usr/bin/websockify --web /usr/share/novnc 6901 localhost:5901"), "websockify")
+        self.assertEqual(g("xfdesktop --display :1"), "xfdesktop")
+        self.assertEqual(g("/usr/lib/x86_64-linux-gnu/xfce4/panel/wrapper-2.0 /usr/lib/x86_64-linux-gnu/xfce4/panel/plugins/libsystray.so"), "panel")
+        self.assertEqual(g("/usr/bin/Xtigervnc :1 -desktop"), "x")
+        self.assertEqual(g("/bin/bash /dockerstartup/startup.sh"), "other")
+
+    def test_tokens_per_task_and_the_cached_share(self):
+        calls = {"t1": [{"input_tokens": 100, "cached_input_tokens": 80, "output_tokens": 5, "purpose": "operator.turn"},
+                        {"input_tokens": 300, "cached_input_tokens": 0, "output_tokens": 9, "purpose": "agent.py.judge"}],
+                 "t2": [{"input_tokens": 600, "cached_input_tokens": 420, "output_tokens": 1, "purpose": "operator.turn"}],
+                 "t3": []}
+
+        class Plane:
+            def get(self, path):
+                return {"calls": calls[path.split("task=")[1]]}
+
+        got = self.run.tokens(Plane(), ["t1", "t2", "t3"])
+        self.assertEqual(got["tasks"], 2)  # a task with no recorded call is left out
+        self.assertEqual(got["input_per_task_median"], 500)
+        self.assertEqual(got["cached_share"], 0.5)
+        self.assertEqual(list(got["by_purpose"]), ["operator.turn", "agent.py.judge"])
+        self.assertEqual(got["by_purpose"]["operator.turn"]["cached_share"], 0.714)
+        md = self.run.table({"at": "now", "tokens": got, "gui": {"shell_overhead_ms_p50": 3.0,
+                             "all": {"n": 1, "failed": 0, "p50_ms": 1, "p95_ms": 1, "own_cpu_ms_p50": 1, "container_cpu_ms_p50": 1},
+                             "by_kind": {}}})
+        self.assertIn("| 2 | 500 |", md)
+        self.assertIn("## gui", md)
+
+    def test_percentiles(self):
+        self.assertEqual(self.run.pct([1, 2, 3, 4], 0.5), 2.5)
+        self.assertEqual(self.run.pct([10], 0.95), 10)
+        self.assertIsNone(self.run.pct([], 0.5))
+
+
 if __name__ == "__main__":
     unittest.main()
