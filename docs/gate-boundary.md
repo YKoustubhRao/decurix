@@ -161,6 +161,59 @@ Guard rails, not the boundary, but each closed a hole the recheck found:
 - **Question files, the final-reply file, the log banner and the saved run report** go through `privacy.withhold_known`.
 - **A proven fix stands in the build's own folder**, not the workspace that holds every project.
 
+## What the control plane tells the gate (phase 2, 2026-11-04)
+
+**Four signed inputs.** The gate's TCP port (:8083) takes four POSTs from the control plane, and answers `GET /health`;
+a POST that carries an `Origin` is refused. Each body
+carries the task id, the time and a fresh nonce, signed with the desktop's gate key under a label of its own
+(`request`, `secrets`, `reply`, `task-ended`), so no one of them can stand for another (`desktop.SignGate*`,
+`gate_server.sign_*`; vectors signed by the Python gate in `internal/desktop/testdata/gate-signatures.json`, which Go
+matches byte for byte). Text is signed as it is sent: a byte that is not valid UTF-8 becomes U+FFFD
+(`desktop.GateText`). Values are signed over the SHA-256 of each value's SHA-256 followed by a NUL.
+- **`/request`**: the gate's own copy of each new request, never of a reply. When anything of it was withheld the copy
+  is the withheld form: a site's name is kept, a value never is, and a request marked secret is withheld whole, so it
+  names no site. Whether a password may go to a site (`approval.site_known`) is read from this copy, never from the
+  worker's task file, and only for the task the action belongs to: a copy of another task names nothing
+  (`approval.gate_request_text`).
+- **`/secrets`**: the values the records withheld from a request or a reply (`httpapi.markWithheld`, the one C14
+  decision), and the secret parameters of a replay or a skill run. The gate withholds them from the questions it words.
+- **`/reply`**: the person's reply, signed with the gate's request id when it is bound to that approval. It is the
+  only way a yes is made (above).
+- **`/task-ended`**: sent on every task close (done, error, stop, restart, delete, abandon; `tasks.Store.OnTaskEnded`
+  calls `Manager.GateTaskEnded`). The gate then drops that task's values, and its request copy when the copy is that
+  task's (below).
+
+**Sent in order, failing closed.**
+- **A request** (`httpapi.deliverRequest`, once the desktop answers, on every try): `/secrets`, then `/request`, then
+  the agent. If the gate cannot be told (no answer, or not 2xx), nothing reaches the agent and the sender gets 503. A
+  desktop with no `decurix.gate` label whose gate does not answer gets "recreate this desktop" (`ErrGateMaybeMissing`).
+- **Teach, replay and run-skill** (`httpapi.sendTaught`) do the same before calling their own agent endpoints. The copy
+  is their request line, withheld. It names no site, so the gate asks about every password a taught skill types. A
+  replay's parameters are held when its recording's program marks them secret or does not list them; when the
+  program cannot be read, every value given is held.
+- **A reply**: `/reply` first, then the reply's withheld values by `/secrets`, then the agent. A refused `/secrets`
+  stops the reply (503). A `/reply` the gate did not take is logged and the reply still reaches the agent, where it
+  grants nothing.
+- **A task's end** never holds up the close. The notice is sent in the background. One the gate did not take is kept
+  (at most 256 per desktop, oldest dropped) and sent, oldest first, before the next `/request`, `/secrets` or `/reply`
+  to that gate, without failing that delivery. Kept notices are in memory: a control-plane restart loses the ones not
+  yet taken, and the gate's own 24 h and 4 MB bounds cover them.
+
+**The gate's own state.** The request copy (`gate-request.json`, the latest request with its task) and the values
+(`gate-secrets.json`, per task) are 0600 files in the gate's directory. The nonces it has seen are kept in memory only,
+for twice the 120 s window a signed body is accepted in. So after a gate restart, a body signed less than 120 s before
+can be replayed once more. The worker cannot capture one: `NET_RAW` is dropped.
+
+**The gated listener** forwards no soul route but `GET /agent/<id>/api/health` (`httpapi.gatedAgentRoutes`). A
+phone or the tunnel cannot drive the worker through soul.
+
+**What a recording's program can and cannot do (the trust statement).**
+- The program (its `params[].secret`) can only *add* withholding. A parameter it does not list, or a program that
+  cannot be read, is held. A worker that under-flags a parameter leaks only what it already holds.
+- The call recorder's withholding and the gate's wording of its questions are walls for an honest worker.
+- Against a dishonest worker, what holds is the gate's site check (from its own signed copy of the request) and the
+  yes the gate alone makes from a signed reply. Neither reads the program.
+
 ## The gate's secret values and its refusals (2026-11-04, secrets review round 3)
 
 - **Kept until the task ends.** The gate keeps each task's signed secret values (`/secrets`) until the control plane

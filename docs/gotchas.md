@@ -931,10 +931,14 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): Identifiers in sources are matched as one run of digits, never digits joined across cells
 - [part-6.md](gotchas/part-6.md): Lessons are the whole worker's (every client's)
 - [part-6.md](gotchas/part-6.md): Check copies of host files go in a folder per task and per full path
+- [part-6.md](gotchas/part-6.md): Every write of desktop state goes through privacy.write_scrubbed
+- [part-6.md](gotchas/part-6.md): Withholding by shape breaks machine state
 - [part-6.md](gotchas/part-6.md): Raw nomic-embed-text cosine does not separate relevant from unrelated facts
 - [part-6.md](gotchas/part-6.md): Tests can pin a fail-open as a feature
 - [part-6.md](gotchas/part-6.md): A token estimate must never under-count
 - [part-6.md](gotchas/part-6.md): A file is the work's own code only when it was written from the command's own text and then run as the program
+- [part-6.md](gotchas/part-6.md): The trace's withholding and L1's secret test are one rule set
+- [part-6.md](gotchas/part-6.md): A turn id is the job's, not the operator run's
 - [part-6.md](gotchas/part-6.md): A stream that ends is not an answer that finished
 - [part-6.md](gotchas/part-6.md): WaitGroup.Add after the pointer was handed out races Wait
 - [part-6.md](gotchas/part-6.md): Landlock has no right for connecting to a pathname Unix socket, and a network namespace does not cover one
@@ -950,6 +954,7 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): go test -overlay with Windows paths failed
 - [part-6.md](gotchas/part-6.md): go:embed can fail with "unexpected length"
 - [part-6.md](gotchas/part-6.md): Run the module's suite before each commit, not only before the report
+- [part-6.md](gotchas/part-6.md): Patching one module through two names, then stopping in start order, leaks the mock
 - [part-6.md](gotchas/part-6.md): Do not have a model analyse evasion shapes for a guard
 - [part-6.md](gotchas/part-6.md): A test request from httptest comes from 192.0.2.1, not the host, once a desktop manager is set
 - [part-6.md](gotchas/part-6.md): A test that times a handler or a subprocess against a wall-clock number fails under load

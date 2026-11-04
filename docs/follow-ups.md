@@ -110,6 +110,7 @@ The writers could not run these. Run them on the next build, before calling this
 **Rebuild and recreate.**
 - Rebuild the desktop and tools images, then **recreate every desktop**. Desktop state is fixed at creation; these changes reach a desktop only then: no-new-privileges, the setuid and setgid strip, per-desktop caches, new host session ids, the tools populator, `-nolisten tcp`, no `xhost +`, the browser-agent removal.
 - On the first start, remove this instance's own old-tagged helpers and hops by hand ([running.md](running.md), "Upgrading to the random instance tag").
+- The practice reset on the new image: `DECURIX_PRACTICE_IMAGE=decurix-desktop:basic go test ./internal/desktop -run TestPracticeResetLive -count=1 -v` in the Decurix distro ([running.md](running.md)). It skips without the variable.
 
 **Security and the gate.**
 - `sh bench/security/boundary.sh --layer` on the new image (as root in the Decurix distro).
@@ -150,14 +151,14 @@ What the SOUL lane left for later (PLAN-P2 §9; schema and limits in [trajectory
   recording proxy in front of Ollama or soul writing them; measure the size and the `num_ctx`/prefix effect first.
 - **The bundle limit is a fixed 64 MB a run** (`runs.DefaultLimit`); past it frames go, oldest first, and are named
   in `integrity.missing`. Make it a setting once real runs show their sizes.
-- **Bundles of practice and eval desktops are not pulled yet.** They have no home volume to read after a reset;
-  collect them by exec tar before the reset.
+- **Bundles of practice and eval desktops are not pulled yet.** They have no home volume, so R9's puller does not run
+  there; collect the run folder by an exec tar before each reset, so an eval row links to its trajectory.
 - **Soul's traces are never pruned on the desktop** (`~/.decurix/ai/traces/`, at most 32 MB a task, any number of
   tasks). Prune an exported one by the W0.8 rule (`EXPORTED` present).
 - **`request.files` and `worker.image` are empty** in v1: neither is kept per execution.
-- **Build reads an execution's verdict, origin, skill and resolved model by their JSON names** until CP-4/CP-5 land;
-  then a test with the real fields. An execution with no bundle builds only once `tasks.Store` can name its task
-  (`TaskOfExecution`).
+- **Done: Build reads an execution's verdict, origin, skill and resolved model from the task records' own fields**
+  (CP-4/CP-5 landed, 7f2c26d, 22e3c3e; `TestViewReadsTheExecutionsFields`, 515091f). An execution with no bundle
+  builds through `tasks.Store.TaskOfExecution` (7f2c26d).
 - **Live check (L0):** `/api/llm/calls/stats` shows no `untagged` from `caller=soul`; a task's
   `~/.decurix/ai/traces/<task>.jsonl` exists, and its call lines' turns are the turns on that task's `llm_calls` rows.
 
@@ -168,7 +169,8 @@ What the PY lane left for later (lane-PY.md; PLAN-P2 §9).
 - **Legacy verdicts.** Two paths still send `checked=True` with no verdict of their own and so get a `legacy` done
   (no checks, no basis; it never counts towards trust): `tool_task.perform` (a learned tool's run) and
   `workflow_task._report` (a workflow stage's report). `agent/tests/test_verdict.py` (`LEGACY`) lists them; the list
-  may only shrink. The control plane must accept `by: "legacy"` with no checks (handoff H-PY-1).
+  may only shrink. The control plane accepts `by: "legacy"` with no checks and no basis (H-PY-1, done in 7f2c26d and
+  754cd9c).
 - **Python's model calls, still to move behind soul** (plan rule 3; every one is tagged `py.*` or `legacy.*`, so the
   proxy's stats show the share): `py.judge`, `py.judge.spot`, `py.skill.ask`, `py.skill.calls_off`, `py.stage`,
   `py.binding.fill`, `py.approval.read`, `py.approval.choice`, `py.ground`, `py.escalation.ground`, `.judge`,
@@ -232,7 +234,8 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
 - **Pass rates** (`/api/tasks/pass-rates`) count every ended attempt under its own skill version x model x origin
   class (production, practice, eval); the headline is the first-attempt rate, `checked_independent` counts only code,
   ledger or person bases, and a person's verdict joins only the attempt it judged. Wilson bounds are the reader's.
-- **What a recording's program can and cannot do (the trust statement).** The program (its `params[].secret`) can only *add* withholding: a parameter it does not list, or a program that cannot be read, is held. A worker that under-flags a parameter leaks only what it already holds. The call recorder's withholding and the gate's wording of its questions are walls for an honest worker; against a dishonest one, what holds is the gate's site check (from its own signed copy of the request) and the yes the gate alone makes from a signed reply, neither of which reads the program.
+- **The trust statement** (what a recording's program can and cannot do) is in [gate-boundary.md](gate-boundary.md),
+  "What the control plane tells the gate".
 - **The `decurix.gate` label's "0"** is a branch nothing takes today: no code makes a desktop without a gate. It stays
   as the one explicit "no" HasGate honours. A desktop with no label (made before 718220f) is gated; if its gate does
   not answer, the person is told to recreate it.
@@ -243,7 +246,7 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
   taught skill asks each time. Proposal: the control plane sends the gate the taught skill's named sites, signed the
   same way as `/request` (its own label, the task id, the time, a one-use nonce, the gate key), from the skill as the
   control plane holds it, never from the worker's files. What makes any door that leaves out the copy safe is the
-  gate binding its copy to its own task (H-CP-5, PY); until then the gate may read an earlier task's copy.
+  gate binding its copy to its own task (H-CP-5): done in 1890a94, a copy of another task names nothing.
 - **`withhold.Reply` takes a username for a secret.** "sure, the password is Fern42Kite and the user is mira.k" withholds
   `mira.k` too (any word with a digit or a mark), and since round 2 that value is held for 24 h by the call recorder
   and given to the gate, so the username is withheld from that desktop's calls and the gate's questions. Narrow the
@@ -265,6 +268,13 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
   `gatedAgentRoutes` with a reason, never `/api/chat` (it would drive the worker with no task record or author).
 - **The tools image is re-checked by its ID**, not its sentinel: a tools image rebuilt with the same tree but a new
   ID is applied again (a cheap no-op copy, since the tools CMD compares sentinels).
+- **A checked-only final with no verdict still records as checked** (an image from before R6, D5's one release).
+  After this build every desktop sends a verdict: switch it to fail closed (checked-without-verdict stored unchecked)
+  at the next release.
+- **A judgement id is chosen before delivery** (C6). If delivery errs after the desktop accepted the request, the
+  desktop holds an id never committed, and what it keeps from that reply answers 409 (fails closed).
+- **`tools_waiting` says nothing after a failed populate**, though the tools CMD empties the volume first: report
+  "tools not ready" too.
 
 ## Phase 2: soul and run record, review round 3
 
@@ -274,8 +284,8 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
   LIVE-1's `live1` (4 copies) is deleted after the L1 recheck.
 - **Full command outputs in `/tmp/thebot-outputs-*`** (`internal/skills/screen_digest.go`, `keepOutput`, 0600) are
   kept as printed, not withheld: the model reads them back. They never leave the desktop, but they are not withheld.
-- **A value written in shell-escaped form** (`'\''`, backslashes) is not matched by the withholding. The stdin rule
-  covers `gui type`; other commands are not covered.
+- **Done: a value written in shell-escaped form** (`'\''`, backslashes) is matched by soul's withholding of the job's
+  secret values, in any command (99d7962, `TestAShellQuotedValueLeavesTheStepLineWithheld`).
 - **The coding harness's log lines** (`internal/coding`, standalone soul only) cut commands and outputs without
   withholding; it is off inside Decurix (O-8).
 - **`GuardRefused`** is never written by soul: the trace's guard is worked out again from `AssessCommand` after the
@@ -291,11 +301,9 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   halve L3. Key 3 matters only then.
 - **E5: local brains.** Practice and evals refuse Ollama and Brainiac brains (`practice.ErrHostedOnly`); the broker would
   proxy an OpenAI-compatible local endpoint, and soul's trace is then the only record of a call.
-- **Bundles from practice and eval desktops.** They have no home volume, so R9's puller does not run there; collect the
-  run folder by an exec tar before each reset, so an eval row links to its trajectory.
+- **Bundles from practice and eval desktops:** see "Phase 2: soul and run record" above.
 - **More suites:** `docs-v1` (documents becoming records), `gst-v1` (a returns portal and a client chat mock, written by
-  someone who does not tune the harness) and `learn-v1` (memory kept between cases; needs a runner mode that skips the
-  snapshot reset).
+  someone who does not tune the harness) and `learn-v1` (memory kept between cases; its runner mode is below).
 - **D7 waits on the owner.** Dev suites live in `evals/` with fictional data only. The CLAUDE.md working-agreement line
   ("Test data and checkers live outside the repo") still says otherwise: the writer did not edit CLAUDE.md, since only
   the owner may approve that. Proposed line: "Dev eval suites with fictional data live in `evals/`; the sealed held-out
@@ -315,17 +323,10 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   snapshot (`ResetPractice` clears all of `~/.decurix`, the work folder, the browser profiles and `/tmp/decurix-*`). A
   suite that carries state between cases must say so explicitly (a suite or run flag that skips the clear), never by
   default; not built.
-- **Practice and eval desktops are reset by ending the worker's processes and clearing its home's agent state**, then
-  restarting. L2 should check `ls -A ~/.decurix` after a reset holds only the snapshot.
-- **`approval.site_known` reads the request from a file the worker's user can write** (`/tmp/decurix-current-task.request`),
-  so a worker's command could name a site there and skip the "password to an unnamed site" question. For PY / O-1.
-- **A checked-only final with no verdict still records as checked** (an image from before R6, D5's one release).
-  After this build every desktop sends a verdict: switch it to fail closed (checked-without-verdict stored unchecked)
-  at the next release.
-- **A judgement id is chosen before delivery** (C6). If delivery errs after the desktop accepted the request, the
-  desktop holds an id never committed, and what it keeps from that reply answers 409 (fails closed).
-- **`tools_waiting` says nothing after a failed populate**, though the tools CMD empties the volume first: report
-  "tools not ready" too.
+- **Practice and eval desktops are reset by stopping the worker's processes and clearing its home's agent state**, then
+  restarting ([evals.md](evals.md); `TestPracticeResetLive` passed on the real image, a9609b3). L2 should check `ls -A ~/.decurix` after a reset holds only the snapshot.
+- **Done: `approval.site_known` no longer reads the worker's task file.** On a gated desktop it reads the gate's own
+  signed copy of the request, for the action's task only (e343065, 1890a94; [gate-boundary.md](gate-boundary.md)).
 
 ## Phase 2: Python agent, review round 2
 
@@ -336,8 +337,8 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   - `provenance.fact_value` / `same_figure` (`provenance.py`): figures within the coarser precision, and an ambiguous
     date with no convention compared as written.
   - `stage_facts`: amounts as floats (`round(..., 2)`, `abs(...) <= 0.011`).
-- **The control plane does not yet send `execution_id` on `/request`** (handoff H-PY-7). Until it does, a run is held
-  by time: a label written after the last EXPORTED is held again.
+- **Done: every request and reply names its execution** (`execution_id`, H-PY-7: 0f82aad). Teach, replay and
+  run-skill send it too (a498b96), and the agent keeps it on those doors as on `/request` (H-CP-10, cc96751).
 - **A run open or paused for days is not held** before it has a label: `evidence._prune` can take its notes after 2
   days (review round 2, non-blocking 10). Hold an open task's run as well.
 - **The person's own delete of a recording** (`recording.delete`) removes a held run's recording before its export:
@@ -355,8 +356,9 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
 - **A unit on one side only** is compared by the field's label (`values.field_units`, round 3, R5): "18%" against a
   field labelled "Rate (%)" is one figure; with no such label it still waits on the person. Owed: an eval case that
   counts the questions unit fields cost (GST rates, quantities in Nos), in a future suite.
-- **EXPORTED carries LABELLED's two lines** (execution id, label number), so it is four lines, not three: the agent
-  reads everything after the second line as the copy (round 3, R1). docs/trajectory.md says "third line".
+- **Done: EXPORTED carries LABELLED's two lines** (execution id, label number), so it is four lines, not three: the
+  agent reads everything after the second line as the copy (round 3, R1). docs/trajectory.md says so now (phase 2
+  docs integration). The Go comments in `internal/runs/puller.go` and its test still say "third line".
 - **Secrets, round 2 leftovers** (the security review of 2026-11-04):
   - The task's secret values as they are live in the task file's `.secrets` (tmpfs, 0600) until the task's final
     report; a container restart loses them (the interrupted task is then reported, not resumed). The word hashes stay
@@ -377,5 +379,6 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   - `resend_learned` can post a line twice when two threads read it at once (no client id for the control plane to
     dedupe on).
   - The gate's nonces are in memory: after a gate restart a signed body still within its 120 s window replays (the
-    worker cannot capture the traffic: NET_RAW is dropped). Say so in gate-boundary.md.
-  - Soul's step text (`Running: gui type e3 "<value>"`) has the same escaped-form exposure the gate had: relay to SOUL.
+    worker cannot capture the traffic: NET_RAW is dropped). Said in gate-boundary.md.
+  - Done: soul's step text (`Running: gui type e3 "<value>"`) withholds a job's secret values in every written form
+    the agent's `approval.written_forms` gives (H-PY-9, 99d7962).

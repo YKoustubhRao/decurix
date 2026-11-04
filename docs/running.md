@@ -66,6 +66,12 @@ sh bench/security/boundary.sh [--image decurix-desktop:basic] [--layer]   # the 
                                                   # first. Linux Docker as root (the Decurix distro: wsl -d Decurix -u root
                                                   # -- sh /mnt/c/.../bench/security/boundary.sh --layer); one throwaway
                                                   # desktop, ~2 min
+DECURIX_PRACTICE_IMAGE=decurix-desktop:basic go test ./internal/desktop -run TestPracticeResetLive -count=1 -v
+                                                  # the practice reset on a throwaway container of the real image:
+                                                  # planted state is gone, the gate key kept, /health 200 after. Run
+                                                  # after every desktop image rebuild, in the Decurix distro (a golang
+                                                  # container with the Docker socket). Without the variable it skips
+                                                  # silently, so a plain go test proves nothing about the reset
 ```
 
 `scripts/` is split by who runs it: `mac/` (`setup.sh`, `build-images.sh`, `build.sh`, `rebuild.sh`, `quickstart.sh`, `test-vm.sh`, with `lib/`), `linux/` (`setup.sh`, `build-images.sh`, `build.sh`, `rebuild.sh`, `quickstart.sh`, `test-vm.sh`, with `lib/`), `windows/` (the same as `.ps1`, with `lib/Ollama-Setup.ps1`), and `release/` (`release.sh` + `release.ps1`). Each `.sh` has a `.ps1` twin at the same position in the other directory — they are hand-maintained, not generated from each other, so a change to one needs the same change to the other; the `lib/` sharing is within a platform only; `build.sh`/`build.ps1` and `rebuild.sh`/`rebuild.ps1` each source it independently rather than duplicating the ~200-line "find an Ollama the desktops can reach" logic. Every script resolves the repo root from its own location, never from `$PWD`.
@@ -159,4 +165,4 @@ See [README.md](README.md#-getting-started-running-it-locally) for full step-by-
 
 **Python tests without the office libraries.** Office tests skip with their reason when openpyxl, python-docx or lxml is missing (`agent/tests/needs.py`: `@needs`, `require` for an office-only module, `optional`). On WSL's system `python3` the suite runs with skips, not failures; the Windows `py -3` (3.11) runs everything. The replay gate's in-repo corpus always runs; run once with `DECURIX_REQUIRE_FIXTURES=1` on the machine that has the private corpus.
 
-**What the owner runs after a build.** The live checks the writers could not run are listed in [follow-ups.md](follow-ups.md), "Live checks after the next build".
+**What the owner runs after a build.** The live checks the writers could not run are listed in [follow-ups.md](follow-ups.md), "Live checks after the next build". After a desktop image rebuild, run `DECURIX_PRACTICE_IMAGE=decurix-desktop:basic go test ./internal/desktop -run TestPracticeResetLive` (with `-count=1 -v`, as above): it is the one proof that the practice reset works on the real image, and it skips without the variable.

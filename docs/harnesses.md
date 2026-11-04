@@ -45,3 +45,16 @@ The operator's guards read a command line as the shell runs it (`shellSegments`)
 - **Downloads never overwrite** an existing file.
 - **The Python task runner** compacts its history by size whatever the number of turns: old outputs first, the last exchange whole, nothing dropped. Within budget the history is returned untouched. The task message is outside `history`.
 - **The Claude harness's PreToolUse guard** covers `mcp__computer__.*` too ([gate-boundary.md](gate-boundary.md)).
+
+**What soul tags and records (phase 2, 2026-11-04).**
+- **Every model call names a purpose** (`llm.Options.Purpose`, constants in `agent/thebot/internal/llm/purpose.go`;
+  `purpose_test.go` fails on a call site without one, and a call that has none goes out as `untagged`). It leaves soul
+  as `X-Decurix-Purpose`, with `X-Decurix-Task` (from `/api/chat`'s `taskId`), `X-Decurix-Turn` (`<job>:<n>`, one per
+  operator turn, counted across the whole job: `llm.NextTurn`) and `X-Decurix-Caller: soul`. These are headers only:
+  the body, and so the prompt prefix, is byte-identical whatever the tags (`TestTagsNeverChangeTheRequestBody`).
+- **Commands the operator runs** get `DECURIX_TASK_ID` and `DECURIX_TURN_ID`.
+- **Soul's own trace** of each task goes to `~/.decurix/ai/traces/<task>.jsonl` (`internal/trace`), withheld by
+  `memory.RedactSecrets` first; the control plane pulls it with the run's bundle ([trajectory.md](trajectory.md)).
+- **One path for hosted calls.** Inside Decurix (`THEBOT_STANDALONE` not `1`), `LLM_PROVIDER=anthropic` is refused at
+  start, and `LLM_PROVIDER=openai` must point at the control plane's proxy (`<CONTROL_PLANE_URL>/api/llm/...`, same
+  scheme and host, parsed): a hosted model is reached only where the call recorder sees it (`config.Validate`).

@@ -72,6 +72,8 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
 - **Identifiers in sources are matched as one run of digits, never digits joined across cells** (E-28, provenance). A prefix is cut only after `+` or as a trunk `0`.
 - **Lessons are the whole worker's (every client's)** (E-28). They are context for the model, never grounding for a run's values (`request_reading`).
 - **Check copies of host files go in a folder per task and per full path** (E-31). Two files with the same name in two folders were one copy.
+- **Every write of desktop state goes through `privacy.write_scrubbed`** (phase 2, round 3). `test_writers_withhold` forbids every other way of writing a file in the agent's package outside a short list. A new writer either calls `write_scrubbed` (`shapes=False` for a store whose values are compared later) or is added to the list with its reason and its forms.
+- **Withholding by shape breaks machine state** (phase 2, round 3). When the writers first went through `write_scrubbed`, 185 tests failed: shape withholding read a workflow checkpoint's `"claim_token": "..."` as a token and withheld it, so every stage failed "requires its current claim token". A text pass over dumped JSON also took a quote along with a `"password": "..."` value and broke the line. Write JSON as an object (withheld string by string), and use `shapes=False` for stores of ids, tokens and compared values.
 
 ## TheBot
 
@@ -79,6 +81,8 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
 - **Tests can pin a fail-open as a feature.** Two TheBot tests asserted that a decomposed recovery with a failed step was verified, and two more pinned an unread vouch as a yes. Read what a test asserts before keeping it green.
 - **A token estimate must never under-count** (N-W3-6). A byte-based estimate under-counted non-Latin scripts. Calibrate from `prompt_eval_count`, and keep the highest measured rate: a call served partly from the prompt cache reports fewer tokens than the prompt holds.
 - **A file is the work's own code only when it was written from the command's own text and then run as the program** (N-W3-9). Any word equal to a written file counted, so a downloaded file read with `cat` passed off its figures as "values only the work's own code printed".
+- **The trace's withholding and L1's secret test are one rule set** (phase 2). `memory.RedactSecrets` replaces exactly what `memory.LooksSecret` finds, and a test holds both to the same samples. A new secret shape goes into `secrets.go` once.
+- **A turn id is the job's, not the operator run's** (phase 2). Counted per run, a plan with two operator steps in one job numbered both "<job>:1", and the run record joined one step's commands to the other's calls (`TestTwoOperatorRunsInOneJobShareTheTurnCount`). `llm.NextTurn` counts on the job's context.
 
 ## Brainiac
 
@@ -100,6 +104,7 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
 - **`go test -overlay` with Windows paths failed** ("open :"). Swapping a file in briefly worked.
 - **`go:embed` can fail with "unexpected length"** while another writer is editing an embedded agent file. Retry.
 - **Run the module's suite before each commit, not only before the report.** One commit landed with a failing test and the next fixed it.
+- **Patching one module through two names, then stopping in start order, leaks the mock.** `test_launchers` patched `launchers.time.sleep` and `replay.time.sleep`, which are the one `time` module. The second patch saved the first mock as the original, so the in-order stop put the mock back, and `time.sleep` stayed a mock for the rest of the run: a later test's sleep-based wait took no time. Patch a shared module once, and stop patches in reverse.
 - **Do not have a model analyse evasion shapes for a guard.** A safety classifier stopped two agents three times while they prepared guard fixes from attack shapes. Write such fixes by input class and build their tests mechanically from the guard's own existing examples (O-1.a), or leave them to a person.
 - **A test request from `httptest.NewRequest` comes from 192.0.2.1, which is not the host once the server has a
   desktop manager.** `fromContainer` then holds and `ActorContext` carries no actor: a reply is refused as "a desktop
