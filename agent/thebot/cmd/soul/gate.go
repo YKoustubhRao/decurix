@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -90,8 +92,11 @@ func gateAsk(cp *scheduler.Checkpoint) (refused bool) {
 			Fingerprint string `json:"fingerprint"`
 		} `json:"request"`
 	}
-	call := map[string]any{"op": "check", "reason": "it needs your approval",
-		"material": map[string]any{"kind": "command", "command": command, "request": request, "workdir": cp.WorkDir}}
+	material := map[string]any{"kind": "command", "command": command, "request": request, "workdir": cp.WorkDir}
+	if target := commandTarget(command); target != nil {
+		material["target"] = target // what the ref is, so the gate's question names it (H-PY-17); not fingerprinted
+	}
+	call := map[string]any{"op": "check", "reason": "it needs your approval", "material": material}
 	if !gateCall(call, 15*time.Second, &said) {
 		return false // no answer: the job waits, and no reply is ever a yes
 	}
@@ -113,6 +118,81 @@ const gateRefusalNote = "The action was not allowed and did not run: its approva
 
 // maxGateRefusals bounds how many of a job's actions in a row the gate may refuse before the job ends.
 const maxGateRefusals = 3
+
+// guiRefCommandRe is a gui command on an element ref ("gui click e33", "gui type --enter e7 x"): the agent's
+// approval._GUI_REF_COMMAND, the same pattern.
+var guiRefCommandRe = regexp.MustCompile(`(?i)^\s*gui\s+([a-z][a-z_-]*)\s+(?:--?[\w-]+(?:=\S+)?\s+)*(e\d+)\b`)
+
+// observationFile is the latest observation the gui command saved (the agent's computer/core.py STATE_FILE): what a
+// ref means on the screen now. A var so a test can point it elsewhere.
+var observationFile = func() string {
+	dir := os.Getenv("DECURIX_DIR")
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".decurix")
+	}
+	return filepath.Join(dir, "computer", "observation.json")
+}
+
+// commandTarget is what the ref of a held gui command acts on, as the agent's approval.command_target gives it (H-PY-17):
+// {"ref", "role", "name", "window_title"} from the element of the latest observation with that ref, the window title
+// being the element's own, else its group's, else the observation's active window; {"ref", "unresolved": true} when
+// the observation has no such element or cannot be read; nil for a command that names no ref.
+func commandTarget(command string) map[string]any {
+	m := guiRefCommandRe.FindStringSubmatch(command)
+	if m == nil {
+		return nil
+	}
+	ref := m[2]
+	unresolved := map[string]any{"ref": ref, "unresolved": true}
+	raw, err := os.ReadFile(observationFile())
+	if err != nil {
+		return unresolved
+	}
+	var obs struct {
+		ActiveTitle string           `json:"active_title"`
+		Groups      []map[string]any `json:"groups"`
+		Elements    []map[string]any `json:"elements"`
+	}
+	if json.Unmarshal(raw, &obs) != nil {
+		return unresolved
+	}
+	text := func(v any) string {
+		if s, ok := v.(string); ok {
+			return s
+		}
+		return ""
+	}
+	key := func(v any) string {
+		if v == nil {
+			return ""
+		}
+		b, _ := json.Marshal(v)
+		return string(b)
+	}
+	titles := map[string]string{}
+	for _, g := range obs.Groups {
+		title := text(g["window_title"])
+		if title == "" {
+			title = text(g["title"])
+		}
+		titles[key(g["id"])] = title
+	}
+	for _, e := range obs.Elements {
+		if text(e["ref"]) != ref {
+			continue
+		}
+		window := text(e["window_title"])
+		if window == "" && e["group"] != nil {
+			window = titles[key(e["group"])]
+		}
+		if window == "" {
+			window = obs.ActiveTitle
+		}
+		return map[string]any{"ref": ref, "role": text(e["role"]), "name": text(e["name"]), "window_title": window}
+	}
+	return unresolved
+}
 
 // gateSettled is the gate's reading of the person's reply to cp's own request: the decision, condition and what they
 // want first. Anything the gate did not settle for that request is "unclear": it approves nothing.
