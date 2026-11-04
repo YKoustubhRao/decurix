@@ -67,6 +67,9 @@ class Ledger(unittest.TestCase):
                                                                         "Project Alder | Project Birch"),
                   mock.patch.object(evidence, "looks", lambda task_id=None: self.looks),
                   mock.patch.object(guidance, "answers", lambda task_id=None: self.said),
+                  mock.patch.object(guidance, "exchanges", lambda task_id=None: [], create=True),
+                  mock.patch.object(guidance, "taught_words", lambda: "", create=True),
+                  mock.patch.object(records, "_org_text", lambda: "", create=True),
                   mock.patch.object(core, "_task_events_now", lambda: self.events),
                   mock.patch("decurix_agent.task_context.source_date_order", lambda task_id=None: "day"),
                   mock.patch("decurix_agent.task_context.app_date_order", lambda task_id=None: "day")):
@@ -96,7 +99,9 @@ class A_APickNothingBacks(Ledger):
         self.assertEqual(rec["fields"]["Cost centre"]["from"], "chosen")
 
     def test_the_final_checks_typing_check_names_the_pick(self):
-        self.events = [self.PICK]
+        # (A pick into a form the task then saved: round 10, R9-B2.)
+        self.events = [{"kind": "click", "outcome": "done", "change": "page is now http://app/bills/new"}, self.PICK,
+                       {"kind": "click", "outcome": "done", "change": "saved; page is now http://app/bills/3"}]
         found = long_task.invented_typing([], self.request, chosen=records.unbacked_picks(TASK))
         self.assertTrue(found and found[0].startswith(long_task.CHOSEN_UNBACKED), found)
         self.request = "Enter bill.pdf in the books, charged to General"
@@ -166,7 +171,8 @@ class TheFinalGate(ts.TeachingBase):
                 self.assertNotIn("ledger", skill_task._basis("model"))
                 self.assertTrue(skill_task._gate("Saved INV-0002.", "final", "thebot"))
         self.assertEqual(self.finals, [])
-        self.assertIn("made 2 new record(s), and 1 declared record(s) were saved", self.asked[-1][0])
+        self.assertIn("made 2 new record(s), and 1 declared record(s) were saved: a record was made that no "
+                      "declaration covers", self.asked[-1][0])
 
 
 class B_ACutOffCheck(unittest.TestCase):

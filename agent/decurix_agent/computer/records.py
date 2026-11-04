@@ -281,6 +281,75 @@ def saved_record(records, key=None, text=None):
     return None
 
 
+def saved_on_form(records, form_fields):
+    """The record of this task already saved whose own key field - the declared field whose intent is its key - holds
+    its key on this form (`form_fields`: (label, value) pairs), or None. Only that field: a payment's "Against bill"
+    naming a bill saved before is another record (review round 9: the key's text anywhere in the form blocked it)."""
+
+    for rec in reversed([r for r in records if r.get("saved_at")]):
+        key = rec.get("key") or ""
+        own = [label for label, f in (rec.get("fields") or {}).items()
+               if isinstance(f, dict) and f.get("intent") and same_value(f["intent"], key, order=_source_order(rec))]
+        if any(label_matches(label, flabel) and same_value(str(fvalue if fvalue is not None else ""), key, order="")
+               for label in own for flabel, fvalue in form_fields):
+            return rec
+    return None
+
+
+def _shown_now(task_id=None):
+    """The page the task looked at last, as its look was noted ("" when none)."""
+
+    try:
+        from decurix_agent.computer import evidence
+        looks = evidence.looks(task_id)
+    except Exception:  # noqa: BLE001
+        return ""
+    return looks[-1] if looks else ""
+
+
+def _add_to_saved(task_id, records, done, kept):
+    """
+    A declaration of a record this task saved already. The fields it adds (or gives again where the page did not show
+    them) are taken onto the saved record - checked against the source by declare, read back off the page the task
+    looks at now - and the undeclared fields they cover are let go: a field set on the form with no declaration can be
+    declared after the save, instead of the worker being left only to ask (review round 9). No new field, or a field
+    given otherwise than the saved declaration, is refused: a second save of the record makes a second record.
+    """
+
+    fields = done.get("fields") or {}
+    absent = set((done.get("readback") or {}).get("absent") or [])
+    order = _source_order(done)
+    changed = [f"{l}: {f['intent']} (declared {fields[l].get('intent')})" for l, f in kept.items()
+               if l in fields and f.get("intent") and fields[l].get("intent")
+               and not same_value(fields[l]["intent"], f["intent"], order=order)]
+    new = {l: f for l, f in kept.items() if f.get("intent") and (l not in fields or l in absent)}
+    if changed or not new:
+        raise ComputerError("not declared - " + saved_again_text(done)
+                            + (" It gives otherwise than declared: " + "; ".join(changed) + "." if changed else ""))
+    page = _shown_now(task_id)
+    seen = [l for l, f in new.items() if stands_in(f["intent"], page, order)]
+    rec = done
+    for r in records:
+        if r.get("key") == done.get("key") and r.get("declared_at") == done.get("declared_at"):
+            r.setdefault("fields", {}).update(new)
+            rb = r.setdefault("readback", {})
+            rb["seen"] = list(dict.fromkeys(list(rb.get("seen") or []) + seen))
+            rb["absent"] = [l for l in list(rb.get("absent") or []) + list(new) if l not in rb["seen"]]
+            rb["absent"] = list(dict.fromkeys(rb["absent"]))
+            r["undeclared"] = [u for u in r.get("undeclared") or []
+                               if not any(label_matches(l, u.split("=", 1)[0]) for l in new)]
+            rec = r
+    _save(task_id, records)
+    lines = [f"Record {done.get('key')} is saved already; its declaration now also covers: "
+             + ", ".join(f"{l}={f['intent']}" for l, f in new.items())]
+    missing = [l for l in new if l not in seen]
+    if missing:
+        lines.append("NOT shown on the page the task looked at last: " + ", ".join(missing) + ". Open the saved record, "
+                     "look at it, and declare those again to read them back; correct the saved record if they are "
+                     "wrong - never enter it again.")
+    return rec, lines
+
+
 def saved_again_text(rec):
     """What a second save or declaration of a saved record is told."""
 
@@ -319,6 +388,7 @@ def _source_text(source):
         raise ComputerError(f"cannot read the record's source {source}: {exc}")
 
 
+_FIELDS_PART = "What every field of the page held (in view or not):\n"
 _WORDS_PART = "The words the page showed outside its fields, in its order (in view or not):\n"
 _IN_VIEW_PART = "\nThe part in view, as the tool listed it:"
 
@@ -334,11 +404,18 @@ def _key_on_an_app_page(key, source, task_id=None):
     except Exception:  # noqa: BLE001 - nothing read, nothing shown
         return ""
     name = Path(str(source)).name if source and source != "screen" else ""
+    # (--from screen: the looks the values were read from - _source_text's - are the source, not the application.)
+    looks = looks[:-6] if source == "screen" else looks
     for look in looks:
         if name and name.lower() in look.lower():
             continue
         start = look.find(_WORDS_PART)
         if start == -1:
+            continue
+        fields = look.find(_FIELDS_PART)
+        if fields != -1 and stands_in(key, look[fields + len(_FIELDS_PART):start]):
+            # A field of the page holds the key: a search for it, whose page then echoes the query ("No bills match
+            # 'X'") - the diligent look before entering, not the application holding it (review round 9, C).
             continue
         words = look[start + len(_WORDS_PART):]
         end = words.find(_IN_VIEW_PART)
@@ -348,18 +425,138 @@ def _key_on_an_app_page(key, source, task_id=None):
     return ""
 
 
-def picked_options(task_id=None):
-    """The options this task picked from the application's own lists with a plain gui select - the worker's own
-    choice, which the list's offering it never backs (review round 9, A)."""
+class Finding(str):
+    """A finding's line with its kind as structure (`kind`): what a caller sorts findings by, never their words."""
 
-    from decurix_agent.computer import evidence
-    return list(dict.fromkeys(" ".join(str(e["option"]).split()) for e in evidence._task_events(task_id)
-                              if e.get("outcome") in (None, "done") and e.get("kind") == "select" and e.get("option")))
+    kind = ""
+
+
+def finding(kind, line):
+    out = Finding(line)
+    out.kind = kind
+    return out
+
+
+# The kinds of what the final check holds against the task's saved records (ledger_checks.findings).
+UNDECLARED = "undeclared_field"
+UNCOVERED = "record_not_declared"
+SAVED_TWICE = "saved_twice"
+UNBACKED_PICK = "unbacked_pick"
+NOT_BACKED = "report_not_backed"
+NOT_MADE = "not_made"
+
+
+def _page_of(url):
+    """(host, path) of an address, the query and a trailing slash aside; ("", "") for none."""
+
+    import urllib.parse
+    try:
+        parts = urllib.parse.urlsplit(str(url or "").rstrip(";,"))
+    except ValueError:
+        return "", ""
+    return parts.netloc.lower(), parts.path.rstrip("/")
+
+
+def _pick_of(event, host=""):
+    element = event.get("element") or {}
+    offered = event.get("offered")
+    return {"label": " ".join(str(element.get("name") or "").split()),
+            "option": " ".join(str(event.get("option") or "").split()),
+            "taken": " ".join(str(event.get("taken") or "").split()),
+            "offered": list(offered) if isinstance(offered, list) and offered else None,
+            "by_id": event.get("resolved_by") == "identifier",
+            "host": _page_of(event.get("url"))[0] or host}
+
+
+def _selects(task_id=None, events=None):
+    """Every select this task made that was done, as picks (_pick_of), oldest first."""
+
+    if events is None:
+        from decurix_agent.computer import evidence
+        events = evidence._task_events(task_id)
+    return [_pick_of(e) for e in events if e.get("outcome") in (None, "done") and e.get("kind") == "select"
+            and (e.get("option") or e.get("taken"))]
+
+
+def picks(task_id=None, events=None, open_form=False):
+    """
+    The selects this task made into a form it then saved: [{label, option, taken, offered, by_id, host}], oldest
+    first. A select counts from the page its form is on until that form's save is answered as saved; one made on a
+    page the task then left without saving (a list's filter, its pager, a sort order), or that itself moved the page
+    (a pager, a view), was no record's value. `open_form`: also those into the form being filled now, not yet saved.
+    Review round 9 (R9-B2): every select of the task counted, list filters and pagers included, and correct work was
+    refused done.
+    """
+
+    from decurix_agent.computer import core
+    if events is None:
+        from decurix_agent.computer import evidence
+        events = evidence._task_events(task_id)
+    out, pending, page = [], [], None
+    for event in events:
+        if event.get("outcome") not in (None, "done"):
+            continue
+        kind, change = event.get("kind"), str(event.get("change") or "")
+        moved = re.search(r"page is now (\S+)", change)
+        to = moved.group(1) if moved else (str(event.get("target") or "") if kind == "open" else "")
+        left = False
+        if to:
+            here = _page_of(to)
+            left = page is not None and here != page
+            page = here
+        if kind in ("click", "key") and core._saved(change):
+            out += pending
+            pending = []
+            continue
+        if left or core._FORM_START.search(change) or (kind == "open" and core._FORM_START.search("page is now " + to)):
+            pending = []
+        if kind == "select" and not left and (event.get("option") or event.get("taken")):
+            pending.append(_pick_of(event, host=(page or ("", ""))[0]))
+    return out + pending if open_form else out
+
+
+def picked_options(task_id=None):
+    """The options this task took from the application's own lists with gui select (what was asked and the entry
+    taken) - the worker's own choice, which the list's offering it never backs (review round 9, A)."""
+
+    out = []
+    for p in _selects(task_id):
+        out += [p["option"], p["taken"]]
+    return list(dict.fromkeys(v for v in out if v))
+
+
+def _taught_text():
+    try:
+        from decurix_agent import guidance
+        return guidance.taught_words()
+    except Exception:  # noqa: BLE001 - a skill that cannot be read backs nothing
+        return ""
+
+
+# The organisation's knowledge as last read, kept for org_knowledge.CACHE_SECONDS whether or not it could be read: a
+# control plane that does not answer costs one wait, not one per pick.
+_org_read = {"at": None, "text": ""}
+
+
+def _org_text():
+    try:
+        from decurix_agent import org_knowledge
+        now = time.monotonic()
+        if _org_read["at"] is None or now - _org_read["at"] > org_knowledge.CACHE_SECONDS:
+            _org_read.update(at=now, text="\n".join(org_knowledge.cached()))
+        return _org_read["text"]
+    except Exception:  # noqa: BLE001 - knowledge that cannot be read backs nothing
+        return ""
 
 
 def given_text(task_id=None):
-    """What a picked option must stand in to be backed: the request, the files it brought, and the person's answers -
-    never the application's pages, whose option list is the menu, not a source for which entry to pick."""
+    """
+    What a picked option must stand in to be backed: the request, the files it brought, and what a person authored -
+    their answers in this task, what they taught the skill it runs (its explanation, answers, dialogue, corrections and
+    the steps they showed), and the organisation's knowledge (written by people: a desktop may only read it). Never the
+    application's pages, whose option list is the menu, not a source for which entry to pick; never the worker's own
+    memory or notes.
+    """
 
     parts = [task_context.current_request() or ""]
     try:
@@ -376,20 +573,71 @@ def given_text(task_id=None):
         parts.append(guidance.answers(task_id))
     except Exception:  # noqa: BLE001
         pass
-    return "\n".join(parts)
+    parts += [_taught_text(), _org_text()]
+    return "\n".join(p for p in parts if p)
 
 
-def resolved_names(task_id=None):
-    """The entries this task reached from a source value: a party found by its identifier (gui select --id), whose
-    summary names the document's value it was taken for."""
+def _option_words(text):
+    return values.text_key(text).split()
 
-    from decurix_agent.computer import evidence
-    out = []
-    for event in evidence._task_events(task_id):
-        m = re.search(r'took the entry "([^"]{1,120})"|Selected the entry "([^"]{1,120})"',
-                      str(event.get("summary") or ""))
-        if m:
-            out.append(m.group(1) or m.group(2))
+
+def _digits_backed(digits, option, given):
+    """A run of figures alone ("18") backs an option only as the option writes it with its sign ("18%"), written so
+    in what was given: a bare figure of a document (a quantity of 18) names no rate."""
+
+    for d in digits:
+        m = re.search(r"(?<![\w.])" + re.escape(d) + r"\s?([^\w\s])", option)
+        if not m or not re.search(r"(?<![\w.])" + re.escape(d) + r"\s?" + re.escape(m.group(1)), given):
+            return False
+    return True
+
+
+def option_backed(option, given, offered=None):
+    """
+    Whether what was given picks out `option` among the entries a list offered (`offered`; None when they were not
+    read). Backed: the option stands in the given text as it is; or a run of the given text's words (values.text_key:
+    case, punctuation and a code in brackets aside) is all words of the option, and - when the list was read - no
+    other entry holds all of those words: "Cedar" picks "Project Cedar" out of Project Maple and Project Cedar,
+    "Karnataka" picks "29-Karnataka", "18%" picks "GST 18%" among GST 5%, 12% and 18% - never "Sales @ 18%" beside
+    "Purchase @ 18%". When the list was not read, the run must hold every word of the option. Structure only: which
+    words, never a list of them.
+    """
+
+    option = " ".join(str(option or "").split())
+    if not option or not given:
+        return False
+    if stands_in(option, given):
+        return True
+    mine = set(_option_words(option))
+    if not mine:
+        return False
+    others = [set(_option_words(o)) for o in offered or ()
+              if " ".join(str(o).split()).casefold() != option.casefold()]
+    others = [o for o in others if o]
+    run = []
+    for word in _option_words(given) + [None]:
+        if word is not None and word in mine:
+            run.append(word)
+            continue
+        got, run = set(run), []
+        if not got or not any(len(w) >= 2 for w in got):
+            continue
+        if all(w.isdigit() for w in got) and not _digits_backed(sorted(got), option, given):
+            continue
+        if others:
+            if not any(got <= o for o in others):
+                return True
+        elif got == mine:
+            return True
+    return False
+
+
+def resolved_names(task_id=None, events=None):
+    """The entries this task reached from a source value by its identifier: a select whose record says an identifier
+    the documents give chose it (core.act's `resolved_by`), and the records resolve.facts matched. Never an action's
+    summary words: a plain pick's summary names the entry it took too (review round 9, R9-B1)."""
+
+    out = [p["taken"] or p["option"] for p in _selects(task_id, events) if p["by_id"]]
     try:
         from decurix_agent.computer import resolve
         out += [str(f["name"]) for f in resolve.facts(task_id) if f.get("status") == "matched" and f.get("name")]
@@ -398,41 +646,128 @@ def resolved_names(task_id=None):
     return list(dict.fromkeys(" ".join(v.split()) for v in out if v and v.strip()))
 
 
-def unbacked_picks(task_id=None):
-    """The options this task picked that nothing given backs: not a resolved entry, and in neither the request, its
-    files nor the person's answers. What the final check holds against the task (long_task.invented_typing)."""
+# ------------------------------------------------------------------ a person's answer about a field, kept
 
-    picks = picked_options(task_id)
-    if not picks:
+MAX_FIELD_ANSWERS = 200
+
+
+def _field_answers_path():
+    return Path(LEDGER_DIR).parent / "field-answers.json"
+
+
+def field_answers():
+    """The answers people gave about which entry a field takes, kept across tasks: [{label, option, host, task,
+    asked}] (keep_field_answers)."""
+
+    try:
+        data = json.loads(_field_answers_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return []
-    resolved, given = resolved_names(task_id), given_text(task_id)
-    return [p for p in picks if not any(same_value(p, r, order="") for r in resolved) and not stands_in(p, given)]
+    return [a for a in data if isinstance(a, dict)] if isinstance(data, list) else []
+
+
+def _kept_answer(label, option, host):
+    """Whether a person's kept answer about this field (its label, in this application) names `option`."""
+
+    for a in field_answers():
+        if a.get("host") and host and a["host"] != host:
+            continue
+        if label_matches(a.get("label", ""), label) and same_value(a.get("option", ""), option, order=""):
+            return True
+    return False
+
+
+def keep_field_answers(task_id=None, events=None):
+    """
+    Keep each answer of this task's person that settled a field's pick: a pick into a saved form that nothing but
+    their answer backs, where the question they answered named that field. The next task's pick of the same entry in
+    that field of that application is then backed by it, and the person is not asked again (review round 9: the
+    person's answer about an account had to be given every task). Returns how many were kept. Never raises.
+    """
+
+    try:
+        from decurix_agent import guidance
+        said = guidance.exchanges(task_id)
+        if not said:
+            return 0
+        task_id = task_id or task_context.current()
+        own = "\n".join([task_context.current_request() or ""])
+        kept, added = field_answers(), 0
+        for p in picks(task_id, events=events):
+            value = p["taken"] or p["option"]
+            if not p["label"] or p["by_id"] or option_backed(value, own, p["offered"]):
+                continue
+            words = set(label_words(p["label"]))
+            for asked, reply in said:
+                if words and words <= set(label_words(asked)) and option_backed(value, reply, p["offered"]):
+                    kept = [a for a in kept if not (a.get("host") == p["host"] and label_matches(a.get("label", ""), p["label"]))]
+                    kept.append({"label": p["label"], "option": value, "host": p["host"], "task": task_id,
+                                 "asked": " ".join(str(asked).split())[:200]})
+                    added += 1
+                    break
+        if added:
+            from decurix_agent.computer import privacy
+            _field_answers_path().parent.mkdir(parents=True, exist_ok=True)
+            privacy.write_scrubbed(_field_answers_path(), kept[-MAX_FIELD_ANSWERS:], atomic=True, shapes=False,
+                                   json_kw={"ensure_ascii": False, "indent": 0})
+        return added
+    except Exception:  # noqa: BLE001 - what is kept for later never costs the check
+        return 0
+
+
+def pick_backed(pick, given=None, resolved=None, value=None):
+    """Whether a pick (picks()) is backed: chosen by an identifier, the entry a resolution matched, picked out by what
+    was given (option_backed, with the entries the list offered), or a person's kept answer about that field."""
+
+    value = value or pick.get("taken") or pick.get("option")
+    if pick.get("by_id"):
+        return True
+    if any(same_value(r, value, order="") for r in (resolved or ())):
+        return True
+    if option_backed(value, given if given is not None else "", pick.get("offered")):
+        return True
+    if pick.get("option") and pick["option"] != value and option_backed(pick["option"], given or "", pick.get("offered")):
+        return True
+    return bool(pick.get("label")) and _kept_answer(pick["label"], value, pick.get("host", ""))
+
+
+def unbacked_pick_entries(task_id=None, events=None):
+    """The picks into the forms this task saved that nothing backs (pick_backed), each once: what the final check
+    holds against the task (review round 9, A)."""
+
+    found = picks(task_id, events=events)
+    if not found:
+        return []
+    resolved = resolved_names(task_id, events)
+    given = None
+    out = []
+    for p in found:
+        if p["by_id"] or any(same_value(r, p["taken"] or p["option"], order="") for r in resolved):
+            continue
+        if given is None:
+            given = given_text(task_id)
+        if not pick_backed(p, given, resolved):
+            if not any(o["label"] == p["label"] and o["option"] == p["option"] for o in out):
+                out.append(p)
+    return out
+
+
+def unbacked_picks(task_id=None, events=None):
+    """The options of unbacked_pick_entries, as entries taken (long_task.invented_typing's `chosen`)."""
+
+    return list(dict.fromkeys(p["taken"] or p["option"] for p in unbacked_pick_entries(task_id, events)))
 
 
 def chosen_values(task_id=None):
     """
-    The entries this task chose from the application's own lists (gui select), and the records its identifiers resolved
-    to: values the application holds, so a record may name them even when no document writes them that way. Found live
-    (2026-10-26): a customer's ledger, found by its tax number, was named otherwise than the bill wrote it; declared
-    with the ledger's name the record was refused, declared with the bill's the save was stopped.
+    The entries this task chose from the application's own lists (gui select: what was asked and the entry taken), and
+    the records its identifiers resolved to: values the application holds, so a record may name them even when no
+    document writes them that way. Found live (2026-10-26): a customer's ledger, found by its tax number, was named
+    otherwise than the bill wrote it; declared with the ledger's name the record was refused, declared with the bill's
+    the save was stopped. (Whether such a value is backed is declare's to decide: pick_backed.)
     """
 
-    from decurix_agent.computer import evidence
-    out = []
-    for event in evidence._task_events(task_id):
-        if event.get("outcome") in (None, "done") and event.get("kind") == "select" and event.get("option"):
-            out.append(str(event["option"]))
-        m = re.search(r'took the entry "([^"]{1,120})"|Selected the entry "([^"]{1,120})"', str(event.get("summary") or ""))
-        if m:
-            out.append(m.group(1) or m.group(2))
-    try:
-        from decurix_agent.computer import resolve
-        for fact in resolve.facts(task_id):
-            if fact.get("status") == "matched" and fact.get("name"):
-                out.append(str(fact["name"]))
-    except Exception:  # noqa: BLE001
-        pass
-    return list(dict.fromkeys(" ".join(v.split()) for v in out if v and v.strip()))
+    return list(dict.fromkeys(picked_options(task_id) + resolved_names(task_id)))
 
 
 def _elsewhere_text():
@@ -475,12 +810,10 @@ def declare(key, source, fields, scope="", task_id=None):
     # A record this task saved already is not declared again: a second save of it makes a second record (review round
     # 9, B: a task tried again from the start declared and saved its bill twice).
     done = saved_record(load(task_id), key=key)
-    if done is not None:
-        raise ComputerError("not declared - " + saved_again_text(done))
     text = _source_text(source)
     # The key on a page of the application this task read before (a list, a record): it may be entered already - the
     # task stops once and asks (review round 9, C: a bill already in the books was entered again).
-    shown = _key_on_an_app_page(key, source, task_id)
+    shown = _key_on_an_app_page(key, source, task_id) if done is None else ""  # (this task's own saved record)
     if shown and stop_once(task_id, f"already-{key}"):
         raise ComputerError(f"not declared - {key} stands on a page of the application this task read ({shown}): it "
                             "may be entered already. Ask the person (HELP) whether it is already in the application "
@@ -490,8 +823,20 @@ def declare(key, source, fields, scope="", task_id=None):
     from decurix_agent import binding
     source_order = binding.date_order([text]) or task_context.source_date_order()
     picture = is_picture(source)
-    elsewhere = chosen = picks = None
+    elsewhere = chosen = selects = resolved = given = None
     kept, unsourced, partial, unbacked = {}, [], [], []
+
+    def backed(value):
+        # Whether a value the worker took from an application's list is backed (pick_backed): by an identifier, a
+        # resolution, what was given, or a person's kept answer about its field. An option the worker picked itself is
+        # no source for itself (review round 9, A and R9-B1).
+        nonlocal given
+        mine = [p for p in selects if same_value(p["option"], value, order="") or same_value(p["taken"], value, order="")]
+        if not mine:
+            return None
+        if given is None:
+            given = given_text(task_id)
+        return any(pick_backed(p, given, resolved, value=value) for p in mine)
     for label, value in fields.items():
         label = " ".join(str(label).split())
         value = " ".join(str(value if value is not None else "").split())[:MAX_VALUE]
@@ -508,31 +853,21 @@ def declare(key, source, fields, scope="", task_id=None):
             kept[label] = {"intent": value, "from": "source"}
             continue
         if chosen is None:
-            chosen = chosen_values(task_id)
-            picks = picked_options(task_id)
-            given = None
+            selects, resolved = _selects(task_id), resolved_names(task_id)
+            chosen = list(dict.fromkeys([v for p in selects for v in (p["option"], p["taken"]) if v] + resolved))
         if any(compare_shown(c, value, source_order).same is True for c in chosen):
-            # An entry of the application's own list - backed only when it was reached from a source value: resolved
-            # by identifier, or written in the request, its files or the person's answers. An option the worker picked
-            # itself is no source for itself (review round 9, A: "General" picked for a cost centre no source gives
-            # was declared, saved and passed as checked).
-            mine = any(same_value(p, value, order="") for p in picks)
-            if mine and not any(same_value(r, value, order="") for r in resolved_names(task_id)):
-                if given is None:
-                    given = given_text(task_id)
-                if not stands_in(value, given):
-                    unbacked.append(f"{label}: {value}")
-                    continue
-            kept[label] = {"intent": value, "from": "chosen"}
-            continue
-        if any(same_value(p, value, order="") for p in (picks or [])):
-            # (A value the worker picked from a list, standing only on the pages it read - the list itself - is no
-            # more backed than above.)
-            if given is None:
-                given = given_text(task_id)
-            if not stands_in(value, given) and not any(same_value(r, value, order="") for r in resolved_names(task_id)):
+            # An entry of the application's own list - backed only when it was reached from a source value (review
+            # round 9, A: "General" picked for a cost centre no source gives was declared, saved and passed as checked).
+            if backed(value) is False:
                 unbacked.append(f"{label}: {value}")
                 continue
+            kept[label] = {"intent": value, "from": "chosen"}
+            continue
+        if backed(value) is False:
+            # (A value the worker picked from a list, standing only on the pages it read - the list itself - is no
+            # more backed than above.)
+            unbacked.append(f"{label}: {value}")
+            continue
         if elsewhere is None:
             elsewhere = _elsewhere_text()
         if stands_in(value, elsewhere, source_order):
@@ -560,6 +895,8 @@ def declare(key, source, fields, scope="", task_id=None):
                             "document names it): the application's own wording of an option or an entry chosen from "
                             "its list is accepted at the save. A value the document does not give at all is not typed.")
     records = load(task_id)
+    if done is not None:
+        return _add_to_saved(task_id, records, done, kept)
     records = [r for r in records if not (r.get("key") == key and not r.get("saved_at"))]  # declared again: replaced
     rec = {"key": key, "source": source, "scope": " ".join(str(scope or "").split()), "fields": kept,
            "source_order": source_order, "declared_at": time.time(), "saved_at": None, "saved": "", "window": "", "readback": {}, "checks": 0}
@@ -832,12 +1169,12 @@ def gate_faults(task_id=None, created=None):
     out = []
     for rec in found:
         if rec.get("saved_at") and rec.get("undeclared"):
-            out.append(f"record {rec['key']} was saved with " + ", ".join(rec["undeclared"][:6])
-                       + " - a value this task set that no declaration backs")
+            out.append(finding(UNDECLARED, f"record {rec['key']} was saved with " + ", ".join(rec["undeclared"][:6])
+                               + " - a value this task set that no declaration backs"))
     saved = sum(1 for r in found if r.get("saved_at"))
     if created is not None and created > saved:
-        out.append(f"this task's saves made {created} new record(s), and {saved} declared record(s) were saved: a "
-                   "save outside the declared records, or the same record saved twice")
+        out.append(finding(UNCOVERED, f"this task's saves made {created} new record(s), and {saved} declared record(s) "
+                           "were saved: a record was made that no declaration covers"))
     return out
 
 

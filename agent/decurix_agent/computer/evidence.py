@@ -255,7 +255,8 @@ def _prune():
 
     from decurix_agent import retention
     cutoff = time.time() - NOTES_KEEP_SECONDS
-    for path in list(NOTES_DIR.glob("*.jsonl")) + list(NOTES_DIR.glob("*.files")) + list(NOTES_DIR.glob("*.outputs")):
+    for path in (list(NOTES_DIR.glob("*.jsonl")) + list(NOTES_DIR.glob("*.files")) + list(NOTES_DIR.glob("*.outputs"))
+                 + list(NOTES_DIR.glob("*.said"))):
         try:
             if path.stat().st_mtime < cutoff and not retention.held(path.name.split(".", 1)[0]):
                 path.unlink()

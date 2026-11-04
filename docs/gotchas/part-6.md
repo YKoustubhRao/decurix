@@ -130,3 +130,26 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   with no error and no Retry. Every download is now tried three times as a whole (10 s, then 30 s apart), the app
   tries a failed build once more, and the screen acknowledges each status: a failure it does not show within 10 s
   reloads it and opens a dialog with Retry; start failures are logged as `Start failed:` in desktop.log.
+- **An action's summary is words, not who chose the entry.** A plain pick on a dropdown the page drew itself wrote
+  `took the entry "X"`, the same words an identifier's match wrote, and the ledger read them as a resolution: the
+  worker's guess backed itself (review round 9, R9-B1). Who chose an entry is now a field of the action's record
+  (`resolved_by: "identifier"`, set only where resolve matched), with the entry taken and what the list offered;
+  `records.resolved_names` reads that and `resolve.facts`, never a summary.
+- **A select is a record's value only when its form was saved.** Counting every `gui select` of a task as a pick
+  refused done to any task that filtered, paged or sorted a list first (R9-B2). `records.picks` counts the selects
+  from the form's page until its save is answered as saved; a page left, or a select that moved the page, drops them.
+- **A check that only the general gate makes is a check a planned run skips.** The ledger's checks ran in
+  `skill_task._gate` only, so a planned run, a taught skill's read-back and a replay could still say done over a value
+  no source gives (R9-B3). They are one function, `ledger_checks.findings`, and every route that can say done calls it.
+- **A bounded recheck that ends in a re-run is a re-run postponed.** After two rechecks of a check not made, the third
+  "I don't know that" ran the task again, and a skill run kept it as a lesson (R9-B4). It now ends not checked,
+  quoting the question; the watcher leaves such a reply to the final check's reading, which keeps a lesson only from
+  a reply read as a correction.
+- **A form's value for a field is its latest, not every value it ever held.** `core._current_form` kept each value
+  typed since the form opened, so an account typed wrong and corrected in place was still held against every save,
+  and a worker doing what the refusal said was stuck (W0.3 slip probe, 2026-11-05). A field is one field by its path
+  (else its label) and holds what was typed last.
+- **A refusal nobody records is a refusal nobody learns from.** The pre-save guards raised before the action was
+  recorded, so the task's events, its trajectory and its bundle never showed which guard stopped which save, or why.
+  `core.act` now records a refused action (`outcome: "refused"`, `guard`, `reason`) before raising; the checks that
+  read events read only done ones.

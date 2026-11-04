@@ -2709,6 +2709,10 @@ CHECK_MATURITY = {
     "removed_still_there": ADVISORY,
     "filler_values": MUST_PASS,  # provenance: an address, identifier or amount typed into a form that no source and
     # no recorded work holds (provenance.Sources.unsourced: the blocking kinds only)
+    # An entry picked from an application's own list into a form the stage saved that nothing given backs, a field it
+    # set with no declaration, a record no declaration covers (ledger_checks.findings). ADVISORY at the stage until it
+    # passes the replay gate (CLAUDE.md); the run's final report holds these against the run now (review round 9).
+    "ledger_findings": ADVISORY,
     "typed_doubtful": ADVISORY,  # dates and codes typed that no source holds, or only the work's own files explain
     "draft_facts": MUST_PASS,  # provenance: a fact a draft states that no source and no recorded work holds
     "draft_fields": ADVISORY,  # DE: a draft's fact against its recipient's own row (which column is meant is judgement)
@@ -3341,6 +3345,7 @@ def stage_code_findings(run_id, run_state, step, made, drafts, request, reply, s
     add("status_conflicts", _status_conflicts, run_state, step, made, drafts)
     found.extend(_left_undone_found(made, request, not_made))
     add("filler_values", lambda: invented_typing(typed(), request))
+    add("ledger_findings", _stage_ledger_findings, reply)
     add("typed_doubtful", lambda: doubtful_typing(typed(), request, made))
     if CHANGED_REQUEST in (run_state["steps"][step["id"]].get("reopened") or ""):
         # (Only for a change the person made: a decision may well undo a hold - AW's redo.)
@@ -3435,8 +3440,18 @@ def please_check(data):
     """The final report's "Please check" lines: each advisory finding, with the stage it was seen in (the LOUD ones are
     under "Needs you": loud_advisories)."""
 
-    return [f"({a.get('title') or a.get('stage')}) {' '.join(str(a.get('text') or '').split())[:400]}"
-            for a in data.get("advisories") or [] if a.get("check") not in LOUD]
+    out, seen = [], set()
+    for a in data.get("advisories") or []:
+        if a.get("check") in LOUD:
+            continue
+        text = " ".join(str(a.get("text") or "").split())[:400]
+        if a.get("check") == "ledger_findings":
+            # (The task's saved records, seen again after every later stage: said once, with the first stage.)
+            if text in seen:
+                continue
+            seen.add(text)
+        out.append(f"({a.get('title') or a.get('stage')}) {text}")
+    return out
 
 
 def loud_advisories(data):
@@ -3894,6 +3909,19 @@ def _typed_count():
 
 # How invented_typing's finding on options picked with no backing begins (the final gate puts it to the person).
 CHOSEN_UNBACKED = "Chosen in a form from the application's own list, and backed by nothing given"
+
+
+def _stage_ledger_findings(reply):
+    """What the shared ledger check holds against the task's saved records after a stage (ledger_checks.findings,
+    with the stage's report): its faults; a check of them that could not be made raises, so the stage is not
+    checked on it (never passed)."""
+
+    from decurix_agent import ledger_checks
+    found = ledger_checks.findings(task_context.current(), reply)
+    unmade = ledger_checks.not_made(found)
+    if unmade:
+        raise LookupError("; ".join(unmade))
+    return [str(f) for f in ledger_checks.faults(found)]
 
 
 def invented_typing(typed, request, chosen=()):
@@ -5209,6 +5237,18 @@ def final_report(run_state):
     except Exception as exc:  # noqa: BLE001 - not checked, never passed (E-01)
         log(f"long_task: could not open the run's files at the end: {exc}")
         end_not_made.append("the files handed in could not all be opened again at the end")
+    # What code holds against the run's saved records (ledger_checks.findings, with every stage's report): the one check
+    # every route that can say done makes. A planned run that saved a value no source gives, or a record twice, is not
+    # done (review round 9, R9-B3: only the general gate made it, and a planned run said done over it).
+    try:
+        from decurix_agent import ledger_checks
+        found = ledger_checks.findings(task_context.current(),
+                                       [str(run_state["steps"][s["id"]].get("report") or "") for s in _steps(run_state)])
+        not_done += [f"A record saved in the application: {f}" for f in ledger_checks.faults(found)]
+        end_not_made += [str(f) for f in ledger_checks.not_made(found)]
+    except Exception as exc:  # noqa: BLE001 - not checked, never passed (E-01)
+        log(f"long_task: could not check the saved records at the end: {exc}")
+        end_not_made.append("the saved records could not be checked against the declared ones")
     finished = run_state["status"] == "completed" and not not_done
     unresolved = [d for d in cross["disagreements"] if not d.get("resolved")]
     loud = loud_advisories(data)

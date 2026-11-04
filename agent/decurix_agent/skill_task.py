@@ -9,6 +9,7 @@ from pathlib import Path
 from decurix_agent import org_knowledge
 from decurix_agent import values as field_values
 from decurix_agent import verdict as verdicts
+from decurix_agent import ledger_checks
 from decurix_agent import (app_skills, attachments, binding, config, guidance, lessons, llm_client, messaging, playbooks, procedures, produced,
                            progress, request_reading, source_guard, sources, state, study, task_context, usage, verify)
 from decurix_agent.computer import (approval, constraints, core, escalation, evidence, experience, launchers, learning,
@@ -1514,43 +1515,33 @@ def _basis(checked_by, code=False):
 
 
 def _ledger_faults(reply=""):
-    """What code holds against the task's saved records (records.gate_faults: an undeclared field this task set, more
-    records made than declared), and each item of the report's JUDGEMENTS list the worker itself marked "| not backed"
-    (the protocol's own marker): points decided in code, which no judge may pass. [] when none. Never raises - a
-    check that cannot be made says so."""
+    """What code holds against the task's saved records, and each item of the report's JUDGEMENTS list the worker
+    itself marked "| not backed": ledger_checks.findings, the one check every route that can say done makes (review
+    round 9, R9-B3). [] when none; a check that could not be made is a finding of its own kind. Never raises."""
 
-    from decurix_agent.computer import core, records
-    try:
-        found = records.gate_faults(task_context.current(), created=core.records_created(core._task_events_now()))
-    except Exception as exc:  # noqa: BLE001 - not made, never passed
-        found = [f"the saved records could not be checked against the declared ones ({type(exc).__name__})"]
-    return found + [f"the report itself says: {item}" for item in not_backed_items(reply)]
+    return ledger_checks.findings(task_context.current(), reply)
 
 
-_JUDGEMENTS_HEAD = re.compile(r"(?im)^[ \t>*_#-]*JUDG(?:E)?MENTS?[ \t*_]*:[ \t]*(.*)$")
-_JUDGEMENT_ITEM = re.compile(r"^\s*(?:[-*\u2022]|\d{1,2}[.)])\s+(.+)$")
-_NOT_BACKED = re.compile(r"(?i)\|\s*not backed\b")
-_CONTROL_LINE = re.compile(r"(?im)^\s*(?:DONE|COMMAND|HELP)\s*:")
+not_backed_items = ledger_checks.not_backed_items
 
 
-def not_backed_items(report):
-    """The items of a report's JUDGEMENTS list that carry the list's own "| not backed" marker (soul's judgements.go
-    protocol): a call that rests on nothing given. Words inside a call never decide it - only the marker."""
+def _ledger_why(found):
+    """What a task the ledger check holds back is told to do, for the kinds of what it found."""
 
-    text = str(report or "")
-    head = _JUDGEMENTS_HEAD.search(text)
-    if not head:
-        return []
+    kinds = {getattr(f, "kind", "") for f in found}
     out = []
-    lines = ([head.group(1)] if head.group(1).strip() else []) + text[head.end():].splitlines()
-    for line in lines:
-        if _CONTROL_LINE.match(line):
-            break
-        item = _JUDGEMENT_ITEM.match(line)
-        body = item.group(1) if item else line
-        if _NOT_BACKED.search(body):
-            out.append(" ".join(body.split())[:300])
-    return out
+    if kinds & {ledger_checks.UNDECLARED, ledger_checks.UNBACKED_PICK, ledger_checks.NOT_BACKED}:
+        out.append("A record saved in the application holds a value nothing given backs. Ask the person (HELP) for "
+                   "each value no source gives, then correct the saved record in the application (never enter it "
+                   "again); a field you can show a source for is declared on the saved record (gui record KEY --from "
+                   "SOURCE).")
+    if ledger_checks.UNCOVERED in kinds:
+        out.append("A record was made that no declaration covers: say in your report which record it is and why it "
+                   "was made, or ask the person (HELP) whether it should be there.")
+    if ledger_checks.SAVED_TWICE in kinds:
+        out.append("The same record was saved twice: the second one is the person's to remove - write the WRONG IN "
+                   "THE APPLICATION line for it.")
+    return " ".join(out) or "A check in code holds a saved record back: ask the person (HELP)."
 
 
 def _keep_noted_since(skill):
@@ -1597,6 +1588,11 @@ def _succeed(run, result, checked_by, seen="", helped=False):
     if checked_by != "person":
         # checked=True only when the files the run made were read back (review 2026-11-03).
         problems, not_made = _read_back(run, text)
+        # What code holds against the saved records (review round 9, R9-B3: a run's read-back passed over a value no
+        # source gives, and done stood).
+        found_in_ledger = _ledger_faults(text)
+        problems = list(problems) + ledger_checks.faults(found_in_ledger)
+        not_made = list(not_made) + ledger_checks.not_made(found_in_ledger)
         # Code found the request's sources in at least one file the run made (FileFacts.compared_clean), and it
         # found nothing wrong and nothing it could not check.
         read_clean = (bool(run.get("_read_back_files")) and bool(run.get("_read_back_compared")) and not problems
@@ -3152,9 +3148,8 @@ def _invented_typing():
 
     try:
         from decurix_agent import long_task
-        from decurix_agent.computer import records
-        return long_task.invented_typing(long_task._entered(), state.current_task or "",
-                                         chosen=records.unbacked_picks(task_context.current())), []
+        # (The picks from the application's lists are the shared ledger check's: _ledger_faults.)
+        return long_task.invented_typing(long_task._entered(), state.current_task or ""), []
     except Exception as exc:  # noqa: BLE001 - not made, never passed
         log(f"Could not check typed values: {exc}")
         return [], [f"the values typed into forms could not be checked against the sources ({type(exc).__name__})"]
@@ -3453,13 +3448,12 @@ def _gate(reply, kind, engine):
         typed_found, typed_failed = _invented_typing()
         facts.file_faults.extend(f for f in typed_found if f not in facts.file_faults)
         gate_not_made += typed_failed
+    # What code holds against the saved records - on every run, a taught skill's too (ledger_checks.findings): a fault
+    # is decided here; a check of them that could not be made is a check not made.
+    found_in_ledger = _ledger_faults(reply)
+    ledger_faults = ledger_checks.faults(found_in_ledger)
+    gate_not_made += ledger_checks.not_made(found_in_ledger)
     facts.could_not.extend(gate_not_made)
-    ledger_faults = _ledger_faults(reply)
-    # An option picked with no backing is the person's to give, like a ledger fault (long_task.invented_typing).
-    from decurix_agent import long_task as _long_task
-    picked = [f for f in facts.file_faults if f.startswith(_long_task.CHOSEN_UNBACKED)]
-    facts.file_faults = [f for f in facts.file_faults if f not in picked]
-    ledger_faults += picked
     made = made + host_copies
     # Evidence, never a verdict (harness audit, 2026-10-21): what reads the request or needs judgement goes to the
     # judge to weigh and, on a done, to the person under "Please check"; figures that include rows an input repeats
@@ -3497,10 +3491,7 @@ def _gate(reply, kind, engine):
         # report itself marks "not backed" is a fact code decides - and the person is the one to give the value (review
         # round 9, A and B: each was judged done, and the application kept a guessed cost centre or a second bill).
         verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "; ".join(ledger_faults)[:600],
-                   "why": "A record saved in the application holds a value nothing given backs, or a record was saved "
-                          "outside the declared ones. Ask the person (HELP) for each value no source gives, then "
-                          "correct the saved record in the application (never enter it again); a record saved twice "
-                          "is the person's to remove - write the WRONG IN THE APPLICATION line for it."}
+                   "why": _ledger_why(ledger_faults)}
     elif facts.missing_files:
         # No model is asked: whether a file the request named was written is a fact about the disk.
         verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": facts.missing_files,
@@ -3809,6 +3800,27 @@ def _first_attempt_text(run):
             "please check it.\n\nThen: ")
 
 
+def ledger_held(claim, engine, picks=True):
+    """
+    Report the task not done (or not checked) when the shared ledger check (ledger_checks.findings) holds its saved
+    records back; True when it did. For a route whose report goes out without the final gate (a replay): what the
+    gate holds against a task holds there too (review round 9, R9-B3). `picks`: a replay's picks are the person's
+    recorded ones, so they are not held against it.
+    """
+
+    found = ledger_checks.findings(task_context.current(), claim, picks=picks)
+    wrong, unmade = ledger_checks.faults(found), ledger_checks.not_made(found)
+    if not wrong and not unmade:
+        return False
+    decided = verify.outcome({"verdict": verify.NOT_DONE, "seen": "; ".join(wrong)} if wrong else None,
+                             wrong, unmade)
+    head = (("Not done - " + "; ".join(wrong)[:600] + ". " + _ledger_why(wrong)) if wrong
+            else _not_checked_line("; ".join(unmade)) + " Look at the result before relying on it.")
+    write_final_reply(f"{head}\n\n{claim}", kind=decided["kind"], engine=engine, checked=decided["checked"],
+                      gated=True, verdict=verdicts.from_outcome(decided, "skill_gate"))
+    return True
+
+
 def check_unchecked(claim, engine):
     """
     A run that ended without seeing every result (a /replay's
@@ -3816,6 +3828,8 @@ def check_unchecked(claim, engine):
     done unseen.
     """
 
+    if ledger_held(claim, engine, picks=False):
+        return
     progress.emit("Checking the screen to see that the task was really done.")
     gone = _record_unread()
     verdict = ({"verdict": verify.UNSURE, "confidence": 0.0, "seen": "",
@@ -3909,9 +3923,21 @@ def _calls_off(reply, said=""):
         return False
 
 
-# How many times a check that could not be made is made again after a reply that settled nothing (_confirm_reply).
+# How many times a check that could not be made is made again after a reply that settled nothing (_confirm_reply); after
+# that the task ends not checked, saying so - never with the work run again.
 MAX_RECHECKS = 2
 _rechecks = {}
+
+
+def _keep_lesson(reply):
+    """Keep a reply as the watcher keeps one (lessons.note). Never raises."""
+
+    try:
+        lessons.note(getattr(state, "last_query_text", ""), reply, kind=getattr(state, "last_query_kind", "query"),
+                     task=state.current_task or "", skill=guided_skill_title(),
+                     judgement_id=getattr(state, "reply_judgement", ""))
+    except Exception as exc:  # noqa: BLE001 - what is kept for later never costs the task
+        log(f"Could not keep what the person said: {exc}")
 
 
 def _check_not_made(verdict):
@@ -3955,15 +3981,32 @@ def _confirm_reply(paused, reply):
     choice, told = said["choice"], said["instruction"]
 
     # The check itself was not made (it failed, or its answer was cut off) and the reply settles nothing - no
-    # confirmation, no stop, no correction: the check is made again, never the work. Found in an eval (review round 9):
-    # a cut-off check, then "I don't know that", re-ran the whole task, which saved a second bill. Bounded.
-    if run is None and _check_not_made(paused["verdict"]) and (choice == "unclear" or (choice in ("redo", "correction")
-                                                                                        and not told.strip())):
+    # confirmation, no stop, no correction, not the protocol's own `retry`: the check is made again, never the work, on
+    # every route (a taught skill's run too); after MAX_RECHECKS the task ends not checked, quoting what was asked.
+    # Found in an eval (review round 9, R9-B4): a cut-off check, then "I don't know that", re-ran the whole task, which
+    # saved a second bill; the third such reply still did, and a skill run kept the reply as a lesson.
+    not_made_check = _check_not_made(paused["verdict"])
+    if not_made_check and (choice == "unclear" or (choice in ("redo", "correction") and not told.strip())) \
+            and approval._bare(reply) not in DONE_PLAIN["redo"]:
         tried = _rechecks.get(task_context.current(), 0)
         if tried < MAX_RECHECKS:
             _rechecks[task_context.current()] = tried + 1
             progress.emit("Checking it again - the check could not be made the first time.")
+            if run is not None:
+                # (The run is the gate's to check again: handed back to it as it was when it reported.)
+                guidance.begin(skill=(run.get("skill") or {}).get("name"), task=paused.get("task") or claim, text="",
+                               values=run.get("values"), mode="model", run=run)
             return write_final_reply(claim, kind="final", engine=engine)
+        _rechecks.pop(task_context.current(), None)
+        asked = " ".join(str(getattr(state, "last_query_text", "") or "").split())[:400]
+        return write_final_reply("Not checked - the check of this result could not be made, and what you said did not "
+                                 "settle it" + (f" (I asked: {el._quote(asked, 400)})" if asked else "") + ". Look at "
+                                 "the result yourself before relying on it; nothing was run again.\n\n" + claim,
+                                 kind="final", engine=engine, checked=False, gated=True)
+    if not_made_check and choice == "correction" and told.strip():
+        # (What the watcher left to this reading: a reply after a check not made is kept as a lesson only once it was
+        # read as saying what is wrong.)
+        _keep_lesson(reply)
 
     opens = (approval._bare(reply).split() or [""])[0]
     # With no model to read it, a reply that opens like a yes but says something is still to do ("Right, the ticket

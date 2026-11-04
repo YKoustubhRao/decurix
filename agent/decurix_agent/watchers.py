@@ -658,7 +658,12 @@ def answer_waiting(path, content, already_marked=False):
     # tasks (lessons.py) - except the answers of a lesson being
     # taught, which the skill itself keeps, question by question.
     teaching =(state.paused_skill or {}).get("mode") == "learn"
-    if not teaching and not secret and not date_answer:  # (a date answer is kept with its judgement, not as a lesson)
+    # A reply to "the check could not be made - is it done?" is the final check's to read: it keeps what is a lesson
+    # in it itself, once it has read it; a reply that settles nothing ("I don't know that") is never one (review round
+    # 9, R9-B4).
+    unmade_check = ((state.paused_skill or {}).get("mode") == "confirm"
+                    and skill_task._check_not_made((state.paused_skill or {}).get("verdict")))
+    if not teaching and not secret and not date_answer and not unmade_check:  # (a date answer is kept with its judgement, not as a lesson)
         # A replay's or a skill run's own question (a value, a
         # stuck step); "is it done?" is not one of those.
         mechanical = (state.paused_replay is not None
@@ -671,6 +676,10 @@ def answer_waiting(path, content, already_marked=False):
             log(f"Could not keep what the person said: {exc}")
 
     if state.paused_replay is not None or state.paused_skill is not None:
+        if state.paused_replay is not None or (state.paused_skill or {}).get("mode") == "run":
+            # A replay's or a skill run's own question (a value it needs) and its answer: a source a record's value may
+            # come from, like any other answer of the task (records.given_text; review round 9).
+            guidance.note_exchange(guidance.open_question() or getattr(state, "last_query_text", ""), content)
         # A paused replay or taught skill reads "stop" itself: a lesson
         # keeps its draft and says how to carry on, a run records that
         # it was stopped and where. Inside a /workflow stage the stop

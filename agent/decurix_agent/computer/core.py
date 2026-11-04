@@ -1504,22 +1504,41 @@ def possibly_entered(events):
 
 
 def _current_form(events):
-    """[(field label, value)] put into the record's form being filled: since it opened afresh or the last save."""
+    """
+    [(field label, value)] put into the record's form being filled: since it opened afresh or the last save, each
+    field once, with its latest value - a field typed again holds what was typed last (appended to, when the typing
+    appended), and a select's entry is the one taken. Found in an eval probe (W0.3 slip, 2026-11-05): a slipped account
+    corrected in place was still held against every later save, because each value ever typed into the form stayed in
+    it - a worker doing what the refusal said was stuck.
+    """
 
-    current = []
+    current, where = [], {}
     for event in events:
         if event.get("outcome") not in (None, "done"):
             continue
         change = str(event.get("change") or "")
         if _FORM_START.search(change) or _FORM_START.search("page is now " + str(event.get("target") or "")):
-            current = []
-        label = str((event.get("element") or {}).get("name") or "")
+            current, where = [], {}
+        element = event.get("element") or {}
+        label = str(element.get("name") or "")
+        value = None
         if event.get("kind") == "type" and event.get("text"):
-            current.append((label, str(event["text"])))
-        if event.get("kind") == "select" and event.get("option"):
-            current.append((label, str(event["option"])))
+            value = str(event["text"])
+        if event.get("kind") == "select" and (event.get("taken") or event.get("option")):
+            value = str(event.get("taken") or event["option"])
+        if value is not None:
+            # (A field is the same field by its path on the page, else by its label.)
+            field = str(element.get("path") or "") or "label:" + label
+            if field in where:
+                n = where[field]
+                if event.get("kind") == "type" and event.get("append"):
+                    value = current[n][1] + value
+                current[n] = (label, value)
+            else:
+                where[field] = len(current)
+                current.append((label, value))
         if event.get("kind") in ("click", "key") and _saved(change) and current:
-            current = []
+            current, where = [], {}
     return current
 
 
@@ -2269,9 +2288,10 @@ def _ledger_check(form_fields):
         return None
     events = _task_events_now()
     if rec is None:
-        # A new record's form holding the key of a record this task saved already: the second save would make a second
-        # record (review round 9, B: a task tried again from the start saved its bill twice, outside the ledger).
-        done = records.saved_record(found, text=form_text)
+        # A new record's form holding the key of a record this task saved already, in that record's own key field: the
+        # second save would make a second record (review round 9, B: a task tried again from the start saved its bill
+        # twice, outside the ledger). Only its key field - a payment "Against bill X" after bill X is another record.
+        done = records.saved_on_form(found, form_fields)
         if done is not None and _new_record_fields(events)[1]:
             return ("Not pressed: " + records.saved_again_text(done), False, [])
         return None
@@ -2349,6 +2369,49 @@ def records_created(events):
         elif _NEW_RECORD_PAGE.search(change) or _NEW_RECORD_PAGE.search(str(event.get("target") or "")):
             new_page = True
     return created
+
+
+def saved_twice(events):
+    """
+    {record number: how many saves} for each number that two or more saves of a new record in this task held in the
+    record's own number field (_record_refs: a No., Bill, Invoice, Voucher or Ref field with a digit): one record saved
+    twice, found with no declaration (review round 9, R9-B4: a task run again saved its bill a second time, and with no
+    ledger nothing saw it). A save the application has since deleted no longer counts (already_entered).
+    """
+
+    saves, pairs, new_page, page = [], [], False, ""
+    for event in events:
+        if event.get("outcome") not in (None, "done"):
+            continue
+        change = str(event.get("change") or "")
+        if event.get("kind") in ("click", "key") and saves:
+            answer = urllib.parse.unquote_plus(change).upper()
+            if _DELETED_ANSWER.search(answer) and not _SAVE_REFUSED.search(answer):
+                saves = [s for s in saves if not _released(("", "", s[0], s[1]), answer, page)]
+        if _FORM_START.search(change) or _FORM_START.search("page is now " + str(event.get("target") or "")):
+            new_page, pairs = True, []
+        label = str((event.get("element") or {}).get("name") or "")
+        if event.get("kind") == "type" and event.get("text"):
+            pairs.append((label, str(event["text"])))
+        if event.get("kind") == "select" and event.get("option"):
+            pairs.append((label, str(event["option"])))
+        moved = re.search(r"page is now (\S+)", change)
+        if event.get("kind") in ("click", "key") and _saved(change):
+            if new_page:
+                landed = moved.group(1).rstrip(";,").split("?")[0] if moved else ""
+                saves.append((_record_refs(pairs), landed if re.search(r"/[^/]*\d[^/]*/?$", landed) else ""))
+            pairs, new_page = [], False
+        elif moved:
+            new_page = bool(_NEW_RECORD_PAGE.search("page is now " + moved.group(1).rstrip(";,")))
+        elif _NEW_RECORD_PAGE.search(change) or _NEW_RECORD_PAGE.search(str(event.get("target") or "")):
+            new_page = True
+        if moved:
+            page = moved.group(1).rstrip(";,").split("?")[0]
+    counts = {}
+    for refs, _ in saves:
+        for ref in refs:
+            counts[ref] = counts.get(ref, 0) + 1
+    return {ref: n for ref, n in counts.items() if n > 1}
 
 
 def _ledger_readback(after, change_text):
@@ -2596,7 +2659,7 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             return _perform("type", element, None, option.strip(), None, None, None, None, False, None)
         if element["source"] == "cdp":
             _resolved.clear()
-            _selected.update(name=None, why="")
+            _selected.update(name=None, why="", by_id=False, offered=None)
             if ids:
                 chosen = _select_native_by_id(element, option, ids)
                 if chosen:
@@ -2607,6 +2670,12 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
                     # Not the text asked for: the summary says which option was taken, so the engine and the check
                     # can object.
                     _selected.update(name=label, why="the one option of the list that fits it")
+                try:
+                    # What the list offered, for the ledger's check of whether anything given picks this option out
+                    # among them (records.option_backed). Not read: the check takes it as unknown.
+                    _selected["offered"] = cdp.native_options(element)
+                except (ComputerError, KeyError, TypeError):
+                    pass
                 return "cdp"
             except ComputerError as exc:
                 if "is not a dropdown" not in str(exc):
@@ -2982,7 +3051,13 @@ SUBSTITUTE = ("{field} has no entry for {wanted!r} - the search for it found non
 
 
 # What select chose, when it was not an entry spelt as it was asked for: act() says so in its result.
-_selected = {"name": None, "why": ""}
+# What the last select took: the entry's name, why, whether an identifier the documents give chose it (`by_id`: set
+# only where resolve matched one - the structured fact the ledger's pick check reads, never the summary's words), and
+# the entries the list offered (`offered`, when they were read; None when not).
+_selected = {"name": None, "why": "", "by_id": False, "offered": None}
+# The most entries an action's record keeps of what a list offered; a longer list is kept as not read (None), so a
+# check that needs the whole list never takes a part of it for all of it.
+MAX_OFFERED_KEPT = 200
 
 # How many searches a suggesting field is given before select says what it offered.
 MAX_SEARCHES = 10
@@ -3151,7 +3226,7 @@ def _matched_by_identifier(field, elements, ids, track):
         entry, name = found[0]
         if entry is not None:
             cdp.click(entry)
-        _selected.update(name=name, why=f"matched by identifier {ident}")
+        _selected.update(name=name, why=f"matched by identifier {ident}", by_id=True)
         _keep_fact(track, ident, resolve.matched_line(ident, name))
         forget_failed_search()
         return True
@@ -3176,11 +3251,12 @@ def _select_datalist(element, option, ids=None):
     if entries is None:
         return None
     want = " ".join(option.split()).casefold()
-    pick = None
+    pick, by_id = None, False
+    _selected["offered"] = list(entries)
     for ident in ids or []:
         holders = list(dict.fromkeys(e for e in entries if resolve.holds(e, ident)))
         if len(holders) == 1:
-            pick = holders[0]
+            pick, by_id = holders[0], True
             line = resolve.matched_line(ident, pick)
             resolve.note(line)
             _resolved.append(line)
@@ -3200,7 +3276,7 @@ def _select_datalist(element, option, ids=None):
             if found.get("status") == "matched" and found.get("name"):
                 match = [e for e in entries if " ".join(e.split()).casefold() == " ".join(found["name"].split()).casefold()]
                 if match:
-                    pick = match[0]
+                    pick, by_id = match[0], True
                     _resolved.append(found["line"])
                     break
     if pick is None:
@@ -3218,7 +3294,7 @@ def _select_datalist(element, option, ids=None):
         raise ComputerError(f"{el.describe(element)} offers no entry that is {el._quote(option, 60)}. Its entries: "
                             f"{offered or 'none'}.{how}")
     cdp.type_text(element, pick)
-    _selected.update(name=pick, why="an entry of the field's own list" if not _resolved else _resolved[-1])
+    _selected.update(name=pick, why="an entry of the field's own list" if not _resolved else _resolved[-1], by_id=by_id)
     return "cdp"
 
 
@@ -3238,6 +3314,7 @@ def _select_native_by_id(element, option, ids):
         return None
     if not labels:
         return None
+    _selected["offered"] = list(labels)
     for ident in ids:
         holders = [label for label in labels if resolve.holds(label, ident) and not resolve._NOT_A_RECORD.search(label)]
         names = list(dict.fromkeys(" ".join(label.split()) for label in holders))
@@ -3252,7 +3329,7 @@ def _select_native_by_id(element, option, ids):
                                 + ". One identifier, two records: none was chosen. Use the one the documents or the "
                                 "person name; when neither does, ask the person which (HELP).")
         cdp.select_option(element, holders[0])
-        _selected.update(name=names[0], why=f"matched by identifier {ident}")
+        _selected.update(name=names[0], why=f"matched by identifier {ident}", by_id=True)
         line = resolve.matched_line(ident, names[0])
         resolve.note(line)
         _resolved.append(line)
@@ -3365,7 +3442,7 @@ def _select_in_list(element, option, ids, track):
     # The page's rows before anything was typed: a list page's search box narrows rows that were there already, so
     # none of them "appears" - a change in them is the list's answer.
     rows_before = None
-    _selected.update(name=None, why="")
+    _selected.update(name=None, why="", by_id=False, offered=None)
 
     def offered(now):
         return [e for e in now if e["path"] not in known and e["role"] in _SUGGESTION_ROLES
@@ -3399,6 +3476,8 @@ def _select_in_list(element, option, ids, track):
         candidates = entries(now)
         # Everything any search offered, in order: the engine chooses among real entries when none is the value.
         seen += [n for n in (e.get("name") or "" for e in candidates) if n and n not in seen]
+        # (What every search showed so far: the entries the list offered, as far as they were seen.)
+        _selected["offered"] = list(seen)
         if track is not None:
             track["offered"] = list(seen)
         # An entry whose text holds the document's identifier is the record, whatever its name (resolve.py). Among
@@ -4079,9 +4158,25 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
                                for e in before.get("elements") or []
                                if e.get("role") in approval.PRESS_ROLES and str(e.get("name") or "").strip()]
 
-    _refuse_number_arrows(kind, point)
-    _refuse_unsafe_save(kind, element, keys, before)
-    files = _refuse_files_that_may_not_leave(files)
+    def refused(guard, reason):
+        # A guard's refusal is an event of the task like any action (outcome "refused", the guard and its reason),
+        # withheld like every store, so the run's record and its bundle show which guard stopped what, and why
+        # (W0.3 probe, 2026-11-05: four refused saves left no trace in the task's events).
+        entry.update({"outcome": "refused", "guard": guard, "reason": str(reason),
+                      "summary": f"{described} - refused ({guard}): {reason}"})
+        try:
+            audit.record(entry, before=before["frame"], masks=masks, observation=before)
+        except Exception as exc:  # noqa: BLE001 - the refusal stands whether or not it could be recorded
+            from decurix_agent.logging_utils import log
+            log(f"Could not record a refused action: {exc}")
+        raise ComputerError(str(reason))
+
+    try:
+        _refuse_number_arrows(kind, point)
+        _refuse_unsafe_save(kind, element, keys, before)
+        files = _refuse_files_that_may_not_leave(files)
+    except ComputerError as exc:
+        refused("action_rules", exc)
     downloads_before = _downloads_snapshot() if kind in ("click", "double_click", "key") else None
     acted_at = time.time()
     require = None
@@ -4093,7 +4188,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         if isinstance(held, AskFirst):
             require = str(held)
         elif held:
-            raise ComputerError(held)
+            refused("pre_save", held)
 
     # Enter that submits a form is a press on its submit control, and is asked for when that press would be
     # (_enter_submits).
@@ -4329,6 +4424,17 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     if kind == "select" and _resolved:
         # What the identifiers resolved to is a fact of this action too (resolve.py).
         entry["summary"] += " - " + "; ".join(_resolved)
+    if kind == "select" and backend in ("cdp", "cdp:custom", "relayed:chosen"):
+        # The facts the ledger's pick check reads, as structure (review round 9, R9-B1: a plain pick's summary words
+        # were read as an identifier's resolution, and the worker's guess backed itself): which entry was taken,
+        # whether an identifier the documents give chose it, and what the list offered.
+        if _selected["name"]:
+            entry["taken"] = privacy.kept_text(" ".join(str(_selected["name"]).split())[:200])
+        if _selected.get("by_id"):
+            entry["resolved_by"] = "identifier"
+        offered = _selected.get("offered")
+        if isinstance(offered, list) and 0 < len(offered) <= MAX_OFFERED_KEPT:
+            entry["offered"] = [" ".join(str(o).split())[:200] for o in offered]
 
     audit.record(entry, before=before["frame"], after=after["frame"] or settled,
                  masks=masks + privacy.secret_boxes(after["elements"]), observation=before)

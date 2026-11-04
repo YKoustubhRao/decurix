@@ -158,6 +158,17 @@ def _run(program, params, start):
         _not_checked(result["text"], "the replay ran to the end without seeing every result")
         return
     kind = "final" if result["outcome"] == replay.VERIFIED else "error"
+    if kind == "final":
+        # What code holds against the saved records holds against a replay's too (ledger_checks; review round 9,
+        # R9-B3) - but not its picks: they are the person's own, as recorded.
+        try:
+            from decurix_agent import skill_task  # (skill_task imports this module)
+            if skill_task.ledger_held(result["text"], ENGINE, picks=False):
+                return
+        except Exception as exc:  # noqa: BLE001 - the check could not be made: said, never a plain final
+            log(f"replay: the ledger check failed: {exc!r}")
+            _not_checked(result["text"], f"the check of its saved records could not be made ({type(exc).__name__})")
+            return
     write_final_reply(result["text"], kind=kind, engine=ENGINE)
 
 

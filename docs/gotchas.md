@@ -961,3 +961,9 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A download in a Dockerfile with no timeout can hang a first start for good
 - [part-6.md](gotchas/part-6.md): One Alpine mirror can stall for one repository only, every time
 - [part-6.md](gotchas/part-6.md): A timeout is not a retry, and a status sent is not a status seen
+- [part-6.md](gotchas/part-6.md): An action's summary is words, not who chose the entry
+- [part-6.md](gotchas/part-6.md): A select is a record's value only when its form was saved
+- [part-6.md](gotchas/part-6.md): A check that only the general gate makes is a check a planned run skips
+- [part-6.md](gotchas/part-6.md): A bounded recheck that ends in a re-run is a re-run postponed
+- [part-6.md](gotchas/part-6.md): A form's value for a field is its latest, not every value it ever held
+- [part-6.md](gotchas/part-6.md): A refusal nobody records is a refusal nobody learns from

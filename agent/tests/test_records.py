@@ -217,7 +217,10 @@ class Declaring(unittest.TestCase):
     def test_a_party_chosen_from_the_applications_list_is_a_source_and_never_blocks(self):
         # Found live (2026-10-26): the ledger found by its tax number was named otherwise than the bill wrote it.
         chosen = [{"kind": "select", "outcome": "done", "option": "Malnad Agro Foods Pvt Ltd",
-                   "summary": 'select combobox "Party A/c name" - took the entry "Malnad Agro Foods Pvt Ltd" for "Malnad Agro Foods & Beverages"'}]
+                   "summary": 'select combobox "Party A/c name" - took the entry "Malnad Agro Foods Pvt Ltd" for "Malnad Agro Foods & Beverages"',
+                   # (Who chose the entry is the action's structured fact since review round 10, R9-B1 - never its
+                   # summary's words: found by its tax number, an identifier chose it.)
+                   "taken": "Malnad Agro Foods Pvt Ltd", "resolved_by": "identifier"}]
         with mock.patch("decurix_agent.computer.evidence._task_events", lambda task_id=None: chosen):
             rec, lines = records.declare("1188", str(self.bill), dict(FIELDS, **{"Party A/c name": "Malnad Agro Foods Pvt Ltd"}))
             self.assertEqual(rec["fields"]["Party A/c name"]["from"], "chosen")

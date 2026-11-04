@@ -138,7 +138,8 @@ class ADrawnList(Notes):
         clicked, typed_texts = self.run_select(field, {ID: [entry, subtitle]}, [ID])
         self.assertEqual(clicked, ["Party", RECORD])
         self.assertEqual(typed_texts, [ID])          # found by the first search: the name was never needed
-        self.assertEqual(core._selected, {"name": RECORD, "why": f"matched by identifier {ID}"})
+        self.assertEqual({k: core._selected.get(k) for k in ("name", "why", "by_id")},
+                         {"name": RECORD, "why": f"matched by identifier {ID}", "by_id": True})
         self.assertEqual(self.notes(), [f'resolved {ID}: matched "{RECORD}" by identifier'])
         self.assertEqual(core._resolved, self.notes())
         self.assertEqual(resolve.resolution(TASK, ID), {"status": "matched", "name": RECORD, "line": self.notes()[0]})

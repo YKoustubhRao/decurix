@@ -367,6 +367,14 @@ def clear_literals(task_id):
         _with_resume(lambda kept: {k: v for k, v in kept.items() if v.get("task") != (task_id or "")})
     except Exception:  # noqa: BLE001
         pass
+    try:
+        # The person's questions and answers of the task (guidance.note_exchange): read by the task's own checks only,
+        # and in no bundle - let go with its other secret stores (review round 9).
+        from decurix_agent import guidance
+        if task_id:
+            guidance.forget_exchanges(task_id)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ============================================================
