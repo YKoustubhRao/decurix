@@ -220,6 +220,16 @@ func controlPlaneURL() string {
 	return "http://host.docker.internal:8080"
 }
 
+// DesktopModelURL is the OLLAMA_URL every desktop is given: the control plane's model proxy, with /v1 when the model
+// server is an OpenAI-compatible one (ollama.DesktopURL ends in /v1).
+func DesktopModelURL() string {
+	u := strings.TrimRight(controlPlaneURL(), "/") + "/api/native-ollama"
+	if os.Getenv("DECURIX_WINDOWS_OLLAMA_URL") == "" && strings.HasSuffix(strings.TrimRight(ollama.DesktopURL(), "/"), "/v1") {
+		u += "/v1"
+	}
+	return u
+}
+
 // buildDesktopEnv builds the container environment variables (VNC, desktop identity, control-plane/Ollama URLs, agent harness, brain) for a desktop by name.
 func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain, shared ...*SharedFolder) []string {
 
@@ -246,15 +256,14 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 	// Both come from package ollama, which preloads the model on this same
 	// server at startup - the two must never disagree about which one it is.
 	//
-	// The bundled model server (decurix-ollama) is reached the same way, through the control plane's allow-listed
-	// proxy, never by its own API: no desktop network has the model server on it, and its full API would let any
-	// desktop pull, change or delete the models every other desktop uses (review NET-R3 B3). The agent's chat, its
-	// warm-up and soul's embedder all read OLLAMA_URL (start_agent_terminal.sh hands it to soul as OLLAMA_HOST), and
-	// every route they use is on the proxy's list.
-	ollamaURL := ollama.DesktopURL()
-	if os.Getenv("DECURIX_WINDOWS_OLLAMA_URL") != "" || ollamaURL == ollama.BundledURL {
-		ollamaURL = strings.TrimRight(controlPlaneURL(), "/") + "/api/native-ollama"
-	}
+	// Every desktop reaches the local model server only through the control plane's allow-listed proxy, whatever that
+	// server is - the host's own Ollama (Linux's usual setup), the bundled container, the Windows app's native one -
+	// never by its own API (review NET-R3 B3, R2-B1): that API lets any desktop pull, change or delete the models every
+	// other desktop uses, and unload or reload the shared one. The proxy forwards to ollama.DesktopURL(), the server the
+	// control plane itself warms (httpapi.modelProxyTarget). The agent's chat, its warm-up and soul's embedder all read
+	// OLLAMA_URL (start_agent_terminal.sh hands it to soul as OLLAMA_HOST), and every route they use is on the proxy's
+	// list. An OpenAI-compatible server (a URL ending in /v1) keeps its /v1, so the agent still speaks that format.
+	ollamaURL := DesktopModelURL()
 	ollamaModel := ollama.DesktopModel()
 
 	env := []string{

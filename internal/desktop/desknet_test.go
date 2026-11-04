@@ -246,17 +246,35 @@ func TestADesktopTheControlPlaneCannotJoinDoesNotStart(t *testing.T) {
 	}
 }
 
-// A desktop on the bundled model is given the control plane's allow-listed proxy, never the model server's own API
-// (review NET-R3 B3); one on the host's own model server keeps that address.
-func TestADesktopReachesTheBundledModelThroughTheProxy(t *testing.T) {
-	t.Setenv("DECURIX_WINDOWS_OLLAMA_URL", "")
-	t.Setenv("OLLAMA_URL", ollama.BundledURL)
-	got := envValue(buildDesktopEnv("box", "thebot", "", "", Brain{Kind: BrainOllama}), "OLLAMA_URL")
-	if !strings.HasSuffix(got, "/api/native-ollama") || strings.Contains(got, "decurix-ollama") {
-		t.Fatalf("OLLAMA_URL=%s, want the control plane's proxy", got)
-	}
-	t.Setenv("OLLAMA_URL", "http://host.docker.internal:11434")
-	if got := envValue(buildDesktopEnv("box", "thebot", "", "", Brain{Kind: BrainOllama}), "OLLAMA_URL"); got != "http://host.docker.internal:11434" {
-		t.Fatalf("OLLAMA_URL=%s, want the host's own model server", got)
+// Every desktop is given the control plane's allow-listed model proxy, and no other OLLAMA_URL, whatever the model
+// server is - the host's own Ollama (Linux's usual setup), the bundled container, an operator's server, the Windows
+// app's native one - and whatever its brain (review NET-R3 B3, R2-B1). An OpenAI-compatible server keeps its /v1.
+func TestNoDesktopIsGivenAnyModelURLButTheProxy(t *testing.T) {
+	proxy := strings.TrimRight(controlPlaneURL(), "/") + "/api/native-ollama"
+	for _, tc := range []struct{ ollamaURL, windows, want string }{
+		{"", "", proxy},
+		{"http://host.docker.internal:11434", "", proxy},
+		{ollama.BundledURL, "", proxy},
+		{"http://10.0.0.9:11434/", "", proxy},
+		{"http://llm.lan:8000/v1", "", proxy + "/v1"},
+		{"http://host.docker.internal:11434", "http://172.20.0.1:11434", proxy},
+	} {
+		t.Setenv("OLLAMA_URL", tc.ollamaURL)
+		t.Setenv("DECURIX_WINDOWS_OLLAMA_URL", tc.windows)
+		for _, brain := range []Brain{{Kind: BrainOllama}, {Kind: BrainClaude}, {Kind: BrainAzure}, {Kind: BrainOpenAI}, {}} {
+			env := buildDesktopEnv("box", "thebot", "", "", brain)
+			var urls []string
+			for _, kv := range env {
+				if v, ok := strings.CutPrefix(kv, "OLLAMA_URL="); ok {
+					urls = append(urls, v)
+				}
+				if strings.Contains(kv, "11434") || (tc.ollamaURL != "" && strings.Contains(kv, strings.TrimRight(tc.ollamaURL, "/"))) {
+					t.Errorf("OLLAMA_URL=%q brain %q: the desktop is given the model server itself: %s", tc.ollamaURL, brain.Kind, kv)
+				}
+			}
+			if len(urls) != 1 || urls[0] != tc.want {
+				t.Errorf("OLLAMA_URL=%q brain %q: the desktop is given %v, want %s", tc.ollamaURL, brain.Kind, urls, tc.want)
+			}
+		}
 	}
 }
