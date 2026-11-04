@@ -47,6 +47,9 @@ var schema = []string{
 		PRIMARY KEY (worker_a, worker_b)
 	)`,
 	`CREATE INDEX IF NOT EXISTS worker_memory_desktop_title ON worker_memory (desktop_id, title)`,
+	// The newest entries of every desktop (List with no desktop) were read by a scan and a sort of the whole table
+	// (resource plan P1 #6).
+	`CREATE INDEX IF NOT EXISTS worker_memory_created ON worker_memory (created_ns)`,
 }
 
 // Store is a SQLite-backed collection of WorkerMemoryEntry, keyed by desktop ID.

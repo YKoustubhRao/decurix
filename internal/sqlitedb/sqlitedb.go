@@ -81,7 +81,9 @@ func Open(path string) (*sql.DB, error) {
 	query.Add("_pragma", "foreign_keys(ON)")
 	query.Add("_pragma", "auto_vacuum(INCREMENTAL)")
 	query.Add("_pragma", "temp_store(MEMORY)")
-	query.Add("_pragma", "cache_size(-16000)")
+	// 4 MB of page cache a connection, eight connections: 32 MB at most, where 16 MB each held up to 128 MB for a
+	// database the OS file cache and the mmap below already serve (resource plan P1 #6).
+	query.Add("_pragma", "cache_size(-4000)")
 	query.Add("_pragma", "mmap_size(67108864)")
 	// Every transaction takes the write lock when it begins (BEGIN IMMEDIATE),
 	// waiting under busy_timeout. A deferred one that read first and wrote

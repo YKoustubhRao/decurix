@@ -77,6 +77,9 @@ var schema = []string{
 	// The approval gate's own request and words, for an approval the gate signed (round-3 recheck).
 	`ALTER TABLE query_notes ADD COLUMN gate_request TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE query_notes ADD COLUMN gate_question TEXT NOT NULL DEFAULT ''`,
+	// The open notes (resolved_ns = 0, by created_ns) and the resolved history (by resolved_ns) are read on every poll
+	// of the Queries rail; without an index each read scanned the whole table (resource plan P1 #6).
+	`CREATE INDEX IF NOT EXISTS query_notes_resolved_created ON query_notes (resolved_ns, created_ns)`,
 }
 
 // maxResolved bounds one ListResolved call, so the history stays flat-cost as
