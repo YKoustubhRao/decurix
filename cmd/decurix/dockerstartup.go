@@ -22,8 +22,12 @@ func dockerStartup(ctx context.Context, desktops *desktop.Manager, server *httpa
 		return fmt.Errorf("create the Decurix network: %w", err)
 	}
 	// Each desktop has a network of its own; a control plane container made again (an update) is on none of them
-	// until it joins, and neither reaches the other till then.
-	desktops.JoinDesktopNetworks(ctx)
+	// until it joins, and neither reaches the other till then. Networks whose desktop is gone go first, so none is
+	// joined. A network that cannot be joined is said here, and that desktop's start fails saying so.
+	desktops.SweepDesktopNetworks(ctx)
+	if err := desktops.JoinDesktopNetworks(ctx); err != nil {
+		log.Printf("warning: desktop networks: %v", err)
+	}
 	// Every desktop's screen password is held again: a worker can read its own (desktop.HoldScreenPasswords).
 	desktops.HoldScreenPasswords(ctx)
 	// Host hops (privileged containers that run something on the host) left by an earlier run go first: their owner is

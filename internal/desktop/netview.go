@@ -209,7 +209,13 @@ func (m *Manager) Networks(ctx context.Context) NetView {
 	if !ok {
 		parts, _ = m.callers.nets.fresh(ctx, netsTTL, 0, m.fetchNetworks)
 	}
-	view := parts.docker.merge(parts.local)
+	local := parts.local
+	if len(parts.docker.Gateways) > 0 {
+		// Docker named the one gateway the person comes in from (decurix-network's): the default route this container
+		// has is not taken for another (review NET-R3 B2: a desktop network once held it).
+		local.Gateways = nil
+	}
+	view := parts.docker.merge(local)
 	if len(view.Subnets) == 0 && len(view.Gateways) == 0 {
 		// The first answer is still coming (or ctx ended): what the interfaces say needs no Docker.
 		return localNetView()
@@ -245,10 +251,15 @@ func (m *Manager) fetchNetworks(ctx context.Context, prev netParts) netParts {
 	return parts
 }
 
-// dockerNetworks is every bridge network's ranges, and the gateways of decurix-network and the default bridge (what
-// host.docker.internal resolves to on Linux, and where a port compose publishes is handed over from). Other networks'
-// gateways are not the host's way in to the control plane, and the practice network's never is: a practice desktop
-// reaches only its broker. macvlan and ipvlan networks are left out: they share the LAN's own range, where phones are.
+// dockerNetworks is every bridge network's ranges, and decurix-network's gateway: the one address the person's own
+// browser comes in from, since the ports compose publishes on 127.0.0.1 are on decurix-network (the control plane
+// joins every other network with the lowest gateway priority, desknet.go) and Docker's proxy hands them over from
+// that network's gateway. No other gateway is the host's way in to the control plane: not the default bridge's, not
+// a desktop network's, and never the practice network's (a practice desktop reaches only its broker). An address is
+// a weak signal on its own - on the Windows app's WSL host a sibling distro's container, routed in, arrived
+// masqueraded as decurix-network's gateway - so that host also drops every connection forwarded into Decurix's
+// range from outside it (dockerd.sh's guard, review NET-R3 P1). macvlan and ipvlan networks are left out: they share
+// the LAN's own range, where phones are.
 func (m *Manager) dockerNetworks(ctx context.Context) (NetView, bool) {
 	list, err := m.client.NetworkList(ctx, network.ListOptions{})
 	if err != nil {
@@ -263,7 +274,7 @@ func (m *Manager) dockerNetworks(ctx context.Context) (NetView, bool) {
 			if prefix, err := netip.ParsePrefix(cfg.Subnet); err == nil && !containsPrefix(v.Subnets, prefix.Masked()) {
 				v.Subnets = append(v.Subnets, prefix.Masked())
 			}
-			if n.Name != NetworkName && n.Name != "bridge" {
+			if n.Name != NetworkName {
 				continue
 			}
 			if gw, err := netip.ParseAddr(cfg.Gateway); err == nil && !containsAddr(v.Gateways, gw.Unmap()) {

@@ -679,8 +679,8 @@ func (m *Manager) execWait(ctx context.Context, what string, poll time.Duration,
 	}
 }
 
-// ContainerName is the bundled model server's container: joined to every desktop's own network, so desktops reach it
-// by this name (desktop.Manager.ModelServer).
+// ContainerName is the bundled model server's container, on decurix-network with the control plane. Desktops reach it
+// only through the control plane's allow-listed proxy (/api/native-ollama), never on a network of theirs.
 const ContainerName = "decurix-ollama"
 
 // warmState guards WarmAsync: at most one warm-up in flight, and at most one

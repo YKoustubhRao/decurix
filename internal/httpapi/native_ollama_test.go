@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/YKoustubhRao/decurix/internal/ollama"
 )
 
 func TestNativeOllamaProxy(t *testing.T) {
@@ -52,5 +54,19 @@ func TestNativeOllamaProxy(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatal("nonlocal listener forwarded inference")
+	}
+}
+
+// The bundled model server is reached through the same allow-listed proxy when it is the desktops' model server, and
+// a desktop is given the proxy's address, never the model server's own (review NET-R3 B3).
+func TestTheBundledModelIsReachedThroughTheProxy(t *testing.T) {
+	t.Setenv("DECURIX_WINDOWS_OLLAMA_URL", "")
+	t.Setenv("OLLAMA_URL", ollama.BundledURL)
+	if got := modelProxyTarget(); got != ollama.BundledURL {
+		t.Fatalf("the proxy forwards to %q, want the bundled %s", got, ollama.BundledURL)
+	}
+	t.Setenv("OLLAMA_URL", "http://host.docker.internal:11434")
+	if got := modelProxyTarget(); got != "" {
+		t.Fatalf("with the host's own model server the proxy forwards to %q, want nothing", got)
 	}
 }

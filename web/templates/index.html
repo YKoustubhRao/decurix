@@ -1024,6 +1024,13 @@
           </div>
           {{end}}
 
+          {{if .SharedNetwork}}
+          <div class="dcard-spec" data-shared-network="{{.ID}}">
+            <svg width="13" height="13"><use href="#i-alert"/></svg>
+            <span title="Made before each desktop had a network of its own: it can reach the other older desktops. Recreate it to keep it apart.">Shares a network with older desktops: recreate it to isolate it</span>
+          </div>
+          {{end}}
+
           {{if .SharedFolder}}
           <div class="dcard-spec" data-shared-folder="{{.ID}}">
             <svg width="13" height="13"><use href="#i-clip"/></svg>

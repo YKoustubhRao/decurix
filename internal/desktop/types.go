@@ -45,6 +45,10 @@ type Desktop struct {
 	// (a path like C:/Users/me/Documents/Shared), or "" for none. Fixed at creation, like the mount behind it.
 	SharedFolder string `json:"shared_folder,omitempty"`
 
+	// SharedNetwork is a desktop made before desktops had a network each: still on the shared decurix-network with
+	// the older desktops, so not kept apart from them until it is recreated (its card says so).
+	SharedNetwork bool `json:"shared_network,omitempty"`
+
 	// ParentID is the desktop this one was spawned as a specialized child
 	// of (see httpapi.createDesktopHandler), or "" for a desktop created
 	// standalone. Set once at creation and never changed afterward.

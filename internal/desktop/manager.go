@@ -41,10 +41,6 @@ type Manager struct {
 	// internal/winhost); set by main before any desktop is created.
 	HostGUISecret []byte
 
-	// ModelServer is the bundled model server's container name, joined to every desktop's own network (desknet.go);
-	// "" for none. Set by main.
-	ModelServer string
-
 	// taskEnded is the task-ended notices each desktop's gate has not taken yet (gateended.go).
 	taskEnded pendingTaskEnded
 
@@ -969,6 +965,7 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 		MemoryMB:       memoryMB,
 		Specialization: specialization,
 		SharedFolder:   sharedFolder,
+		SharedNetwork:  c.NetworkSettings != nil && onSharedNetwork(id, c.NetworkSettings.Networks),
 		ParentID:       parentID,
 		MissingApps:    m.MissingApps(id),
 	}
@@ -999,9 +996,10 @@ func (m *Manager) Start(
 	if err == nil && inspect.NetworkSettings != nil {
 		// The control plane is on the desktop's own network before the desktop starts (it may have been made again
 		// since); a desktop still on the shared network is said to need recreating to be isolated.
+		// A desktop the control plane cannot reach is not started as if it could be (S6).
 		if onOwnNetwork(sanitizeName(id), inspect.NetworkSettings.Networks) {
 			if jerr := m.joinDesktopNetwork(ctx, DesktopNetworkName(id)); jerr != nil {
-				log.Printf("desktop %s: %v", sanitizeName(id), jerr)
+				return fmt.Errorf("desktop %s cannot be reached: %w", sanitizeName(id), jerr)
 			}
 		}
 		logSharedNetwork(sanitizeName(id), inspect.NetworkSettings.Networks)
@@ -1170,6 +1168,11 @@ func (m *Manager) Delete(
 			// Stopped before its container was made: the run's own cleanup removed what it had made (a volume it
 			// created), and nothing else is this delete's to remove (B-03).
 			return nil
+		}
+		// A container removed out of band still leaves its own network to remove (review NET-R3 S2).
+		if client.IsErrNotFound(err) {
+			m.removeDesktopNetwork(ctx, sanitizedID)
+			releaseScreenPassword(sanitizedID)
 		}
 		return notFound(id, err)
 	}

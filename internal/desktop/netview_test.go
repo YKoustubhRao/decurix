@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/docker/docker/api/types/network"
 )
 
 func TestNetViewClassify(t *testing.T) {
@@ -199,5 +201,39 @@ func TestNetworksKeepsWhatDockerSaid(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if v := m.Networks(context.Background()); v.Classify(netip.MustParseAddr("172.18.0.5")) != OriginContainer {
 		t.Fatalf("a Docker hiccup forgot the ranges: %+v", v)
+	}
+}
+
+// Only decurix-network's gateway is the person's way in: not the default bridge's, not a desktop network's, and not
+// a default route this container has once Docker has said which gateway that is (review NET-R3 B2, P1).
+func TestOnlyTheSharedNetworksGatewayIsThePerson(t *testing.T) {
+	fake := &fakeAPI{}
+	for _, n := range []struct{ name, subnet, gateway string }{
+		{NetworkName, "10.213.0.0/24", "10.213.0.1"},
+		{"bridge", "10.212.0.0/24", "10.212.0.1"},
+		{DesktopNetworkName("box"), "10.213.1.0/28", "10.213.1.1"},
+	} {
+		fake.putNetwork(network.Summary{Name: n.name, Driver: "bridge", IPAM: network.IPAM{Config: []network.IPAMConfig{{Subnet: n.subnet, Gateway: n.gateway}}}})
+	}
+	m := newManagerWith(fake)
+	v, ok := m.dockerNetworks(context.Background())
+	if !ok || len(v.Gateways) != 1 || v.Gateways[0] != netip.MustParseAddr("10.213.0.1") {
+		t.Fatalf("gateways %v (%v), want decurix-network's alone", v.Gateways, ok)
+	}
+
+	saved := localNetView
+	localNetView = func() NetView {
+		return NetView{Subnets: []netip.Prefix{netip.MustParsePrefix("10.213.1.0/28")}, Gateways: []netip.Addr{netip.MustParseAddr("10.213.1.1")}}
+	}
+	t.Cleanup(func() { localNetView = saved })
+	view := m.Networks(context.Background())
+	if got := view.Classify(netip.MustParseAddr("10.213.1.1")); got != OriginContainer {
+		t.Fatalf("a desktop network's gateway, held as this container's default route, is %v, want a container", got)
+	}
+	if got := view.Classify(netip.MustParseAddr("10.213.0.1")); got != OriginHost {
+		t.Fatalf("decurix-network's gateway is %v, want the host", got)
+	}
+	if got := view.Classify(netip.MustParseAddr("10.212.0.1")); got != OriginContainer {
+		t.Fatalf("the default bridge's gateway is %v, want a container", got)
 	}
 }

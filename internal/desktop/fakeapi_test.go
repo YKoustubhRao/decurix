@@ -29,6 +29,7 @@ type fakeAPI struct {
 
 	inspect      func(name string) (container.InspectResponse, error)
 	containers   []container.Summary // what ContainerList lists
+	nets         fakeNets            // the daemon's networks (fakenet_test.go)
 	create       func(name string, cfg *container.Config, host *container.HostConfig) (container.CreateResponse, error)
 	volumeCreate func(opts volume.CreateOptions) (volume.Volume, error)
 	volumeGet    func(name string) (volume.Volume, error)

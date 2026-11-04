@@ -245,8 +245,14 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 	//
 	// Both come from package ollama, which preloads the model on this same
 	// server at startup - the two must never disagree about which one it is.
+	//
+	// The bundled model server (decurix-ollama) is reached the same way, through the control plane's allow-listed
+	// proxy, never by its own API: no desktop network has the model server on it, and its full API would let any
+	// desktop pull, change or delete the models every other desktop uses (review NET-R3 B3). The agent's chat, its
+	// warm-up and soul's embedder all read OLLAMA_URL (start_agent_terminal.sh hands it to soul as OLLAMA_HOST), and
+	// every route they use is on the proxy's list.
 	ollamaURL := ollama.DesktopURL()
-	if os.Getenv("DECURIX_WINDOWS_OLLAMA_URL") != "" {
+	if os.Getenv("DECURIX_WINDOWS_OLLAMA_URL") != "" || ollamaURL == ollama.BundledURL {
 		ollamaURL = strings.TrimRight(controlPlaneURL(), "/") + "/api/native-ollama"
 	}
 	ollamaModel := ollama.DesktopModel()

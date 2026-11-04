@@ -502,6 +502,25 @@ func TestTheDashboardShowsAndTakesTheSharedFolder(t *testing.T) {
 	}
 }
 
+// A desktop made before desktops had a network each says on its card that it still shares one with the older
+// desktops, and that recreating it isolates it; a desktop on its own network says nothing (review NET-R3 S3).
+func TestADesktopOnTheSharedNetworkSaysSoOnItsCard(t *testing.T) {
+	old := desktop.Desktop{ID: "old-box", Name: "old-box", Profile: "basic", Harness: desktop.HarnessTheBot, Status: "running",
+		URL: "/desktop/old-box/", SharedNetwork: true}
+	own := desktop.Desktop{ID: "new-box", Name: "new-box", Profile: "basic", Harness: desktop.HarnessTheBot, Status: "running", URL: "/desktop/new-box/"}
+	var out bytes.Buffer
+	if err := NewRenderer().RenderIndex(&out, PageData{Desktops: []desktop.Desktop{old, own}}); err != nil {
+		t.Fatal(err)
+	}
+	page := out.String()
+	if !strings.Contains(page, `data-shared-network="old-box"`) || !strings.Contains(page, "recreate it to isolate it") {
+		t.Error("the older desktop's card does not say it shares a network")
+	}
+	if strings.Contains(page, `data-shared-network="new-box"`) {
+		t.Error("a desktop on its own network says it shares one")
+	}
+}
+
 // A requested host app the desktop was made without is on its card with the reason, and one still being tried says so:
 // never a silent skip. A desktop that has everything it asked for shows nothing.
 func TestTheCardSaysWhichRequestedAppsAreMissingAndWhy(t *testing.T) {
