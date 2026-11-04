@@ -183,8 +183,13 @@ func NewManager(cli *client.Client, networkName string) *Manager {
 	return &Manager{client: cli, networkName: networkName}
 }
 
-// EnsureReady warms the Ollama the desktops actually use. When that is the
-// bundled container, it also provisions and starts it and pulls its models.
+// EnsureReady readies the Ollama the desktops actually use: it chooses the model, and when that Ollama is the bundled
+// container it also provisions and starts it and pulls its models. It loads no model (resource plan P1 #7): at boot
+// the chat model's weights (1.8 GB on the 8 GB host) were held from the moment the control plane started, whether or
+// not anybody opened a desktop that day. WarmAsync loads it the first time something is about to need it - a desktop
+// created, viewed or sent a request - so the load still overlaps with what the person is waiting for (a desktop's
+// ~20 s boot, the chat opening), which is what kept "hello" to a fresh desktop from timing out. Those triggers, and
+// the reload after an eviction, are unchanged.
 func (m *Manager) EnsureReady(ctx context.Context) error {
 	// The bundled container is only a fallback, and desktops reach
 	// whatever OLLAMA_URL names. This used to start the bundled container
@@ -214,7 +219,7 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 				log.Printf("Could not prepare embedding model: %v", err)
 			}
 		}
-		preloadModel(ctx, base, DesktopModel())
+		// No load here: WarmAsync, on first use (see above).
 
 		return nil
 	}
@@ -433,14 +438,7 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 		)
 	}
 
-	// Load the chat model before anyone asks a question with it. On a
-	// CPU-only host this is tens of seconds of weight loading that would
-	// otherwise land on the first request a human sends, inside whatever
-	// timeout that harness happens to use - which is exactly how "hello"
-	// to a freshly built desktop came back as a query about a deadline
-	// being exceeded.
-	preloadModel(ctx, BundledURL, DesktopModel())
-
+	// No load here: WarmAsync, on first use (see EnsureReady).
 	log.Println("Ollama ready.")
 
 	return nil
