@@ -991,16 +991,11 @@ func (m *Manager) Start(
 ) error {
 	defer m.invalidateList()
 
-	// On the Windows app's WSL host, no desktop is started while the fence between desktops is not in place.
-	if err := requireFence(); err != nil {
-		return err
-	}
-
 	name := "desktop_" + sanitizeName(id)
 
 	inspect, err := m.client.ContainerInspect(ctx, name)
 	if err == nil && inspect.State != nil && inspect.State.Paused {
-		return notFound(id, m.client.ContainerUnpause(ctx, name))
+		return notFound(id, m.wakeDesktop(ctx, name))
 	}
 	if err == nil && inspect.NetworkSettings != nil {
 		// The control plane is on the desktop's own network before the desktop starts (it may have been made again
@@ -1017,8 +1012,13 @@ func (m *Manager) Start(
 	return notFound(id, m.startDesktopContainer(ctx, name))
 }
 
-// startDesktopContainer starts a desktop's container, never while a tools refresh replaces /opt/tools (toolsRW).
+// startDesktopContainer starts a desktop's container, never while a tools refresh replaces /opt/tools (toolsRW), and
+// never on the Windows app's WSL host while the fence between desktops is not in place (requireFence). With
+// wakeDesktop, the one way a desktop is made to run.
 func (m *Manager) startDesktopContainer(ctx context.Context, name string) error {
+	if err := requireFence(); err != nil {
+		return err
+	}
 	m.toolsRW.RLock()
 	defer m.toolsRW.RUnlock()
 	return m.client.ContainerStart(ctx, name, container.StartOptions{})
@@ -1062,7 +1062,18 @@ func (m *Manager) Unpause(
 	if inspect, err := m.client.ContainerInspect(ctx, name); err == nil {
 		homeCopyPauses.settled(inspect.ID) // a person resumed it: a copy does not pause it again
 	}
-	return notFound(id, m.client.ContainerUnpause(ctx, name))
+	return notFound(id, m.wakeDesktop(ctx, name))
+}
+
+// wakeDesktop unpauses a desktop's container (its name or ID), never on the Windows app's WSL host while the fence
+// between desktops is not in place (requireFence): a paused desktop was fenced when it ran, and must not run again
+// unfenced. With startDesktopContainer, the one way a desktop is made to run: Start, Unpause, the proxy's and the
+// gate's auto-wake, and a copy into or out of a paused desktop all come here (review NET-R3-2).
+func (m *Manager) wakeDesktop(ctx context.Context, ref string) error {
+	if err := requireFence(); err != nil {
+		return err
+	}
+	return m.client.ContainerUnpause(ctx, ref)
 }
 
 // Stop stops the Docker container backing the given desktop ID.

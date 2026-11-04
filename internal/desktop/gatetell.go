@@ -226,9 +226,9 @@ func (m *Manager) legacyPracticeGate(ctx context.Context, id string) bool {
 // wake unpauses container name. One that is no longer paused (another caller woke it first: Docker answers "is not
 // paused") and is running counts as woken.
 func (m *Manager) wake(ctx context.Context, name string) error {
-	err := m.client.ContainerUnpause(ctx, name)
-	if err == nil {
-		return nil
+	err := m.wakeDesktop(ctx, name)
+	if err == nil || errors.Is(err, ErrNoFence) {
+		return err
 	}
 	if inspect, ierr := m.client.ContainerInspect(ctx, name); ierr == nil && inspect.State != nil && inspect.State.Running && !inspect.State.Paused {
 		return nil

@@ -79,7 +79,7 @@ func (m *Manager) resolveProxyTarget(ctx context.Context, rawID, port string) (p
 	}
 
 	if inspect.State.Paused {
-		if err := m.client.ContainerUnpause(ctx, name); err != nil {
+		if err := m.wakeDesktop(ctx, name); err != nil {
 			return nil, sanitizedID, fmt.Errorf("auto-wake paused desktop: %w", err)
 		}
 		// The dashboard's pill and the screen viewer read List's cached

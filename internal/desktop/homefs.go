@@ -132,7 +132,7 @@ func (m *Manager) homeAccessOf(ctx context.Context, name, id string) (string, fu
 	}
 	switch {
 	case state != nil && state.Running && state.Paused:
-		if err := m.client.ContainerUnpause(ctx, inspect.ID); err != nil {
+		if err := m.wakeDesktop(ctx, inspect.ID); err != nil {
 			// Resumed meanwhile from outside the copies (a person's Resume): read it again, and copy into it as into
 			// any running desktop. Still paused, or gone: the copy fails.
 			again, ierr := m.client.ContainerInspect(ctx, name)

@@ -77,7 +77,7 @@ func (m *Manager) execTarOut(ctx context.Context, id, from string, limit int64) 
 		return nil, err
 	}
 	if inspect.State != nil && inspect.State.Paused {
-		if err := m.client.ContainerUnpause(ctx, id); err != nil {
+		if err := m.wakeDesktop(ctx, id); err != nil {
 			return nil, err
 		}
 		defer func() {
