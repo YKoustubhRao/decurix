@@ -322,6 +322,19 @@ func loadCase(s Suite, id string, files entries) (Case, Problems) {
 		if f.Required == nil {
 			add("the fact %s must say \"required\": true or false.", f.ID)
 		}
+		if len(f.RefersTo) == 0 || len(f.RefersTo) > MaxRefersTo {
+			add("the fact %s needs refers_to: 1 to %d phrases a question must use to be about it.", f.ID, MaxRefersTo)
+		}
+		for _, p := range f.RefersTo {
+			if n := len(words(p)); n == 0 || n > 6 || len(p) > 80 {
+				add("the fact %s's refers_to %q must be 1 to 6 words.", f.ID, clipText(p, 80))
+			}
+		}
+		// The ask arm's question is one any worker could ask of any case: no fact may be about it, so asking it
+		// never passes a case whichever model serves the expert.
+		if f.NamedBy(AskAnything) {
+			add("the fact %s's refers_to matches the ask arm's question (%q), which is about nothing.", f.ID, AskAnything)
+		}
 		if qualification.CredentialLike(withheld(f.Answer)) {
 			add("the fact %s's answer looks like it holds a credential.", f.ID)
 		}

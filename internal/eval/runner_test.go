@@ -41,8 +41,8 @@ func runnerSuite(t *testing.T, extra ...map[string]any) []byte {
 			"oracle": []any{"curl -d number=B-1 x"}}),
 		"cases/ask-first/case.json": mustJSON(t, map[string]any{"schema": CaseSchema, "id": "ask-first", "category": "missing_input", "kind": "doc_to_record",
 			"request": "Save bill B-2.", "start": map[string]any{"files": []string{}, "mock": "app", "fixture": "fixture.json"},
-			"facts": []any{map[string]any{"id": "centre", "about": "which cost centre", "answer": "Charge it to Birch.", "required": true},
-				map[string]any{"id": "colour", "about": "the colour of the folder", "answer": "Blue.", "required": false}},
+			"facts": []any{map[string]any{"id": "centre", "about": "which cost centre", "refers_to": []string{"centre", "charge"}, "answer": "Charge it to Birch.", "required": true},
+				map[string]any{"id": "colour", "about": "the colour of the folder", "refers_to": []string{"colour", "color"}, "answer": "Blue.", "required": false}},
 			"expected": map[string]any{"outcome": "complete", "graders": []any{
 				map[string]any{"kind": "mock_records", "collection": "bills", "exact_count": true, "records": []any{map[string]any{"number": "B-2", "centre": "Birch"}}},
 				map[string]any{"kind": "asked", "facts": []string{"centre"}},
@@ -619,7 +619,9 @@ func agentTree(t *testing.T) []byte {
 }
 
 func TestCalibrationArms(t *testing.T) {
-	s, sb, _, _, _ := newService(t, diligent)
+	s, sb, hub, _, _ := newService(t, diligent)
+	// An expert that matches every question to the required fact: the ask arm must still pass nothing (F-L2-2).
+	hub.expert = `{"fact": "centre"}`
 	sb.execExit = func(argv []string) (int, []byte) {
 		if argv[0] == "/bin/sh" {
 			return 3, nil // no ledger
@@ -635,13 +637,20 @@ func TestCalibrationArms(t *testing.T) {
 		}
 		return 0, nil
 	}
-	run, err := s.Start(context.Background(), MatrixRequest{SuiteTar: runnerSuite(t), Repeats: 1, Arms: []Arm{{Name: "oracle", Kind: ArmOracle}, {Name: "nothing", Kind: ArmNothing}}})
+	run, err := s.Start(context.Background(), MatrixRequest{SuiteTar: runnerSuite(t), Repeats: 1, Arms: []Arm{{Name: "oracle", Kind: ArmOracle}, {Name: "nothing", Kind: ArmNothing}, {Name: "ask", Kind: ArmAsk}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	run = waitDone(t, s, run.ID)
 	rows, _ := s.Store.Rows(run.ID)
+	asks := 0
 	for _, r := range rows {
+		if r.Arm == "ask" {
+			asks++
+			if r.Passed || r.Observed != OutcomeAsked {
+				t.Fatalf("the ask arm passed %s: %+v", r.CaseID, r)
+			}
+		}
 		if r.Arm == "oracle" && !r.Passed {
 			t.Fatalf("the oracle fails %s: %+v", r.CaseID, r)
 		}
@@ -661,6 +670,13 @@ func TestCalibrationArms(t *testing.T) {
 	}
 	if len(sb.requests) != 0 {
 		t.Fatalf("a calibration arm sent the worker a request: %v", sb.requests)
+	}
+	// The ask arm's question names no fact by the cases' refers_to, so the expert is never asked about it.
+	hub.mu.Lock()
+	calls := len(hub.expertCalls)
+	hub.mu.Unlock()
+	if asks != 3 || calls != 0 {
+		t.Fatalf("ask rows %d, expert calls %d", asks, calls)
 	}
 }
 

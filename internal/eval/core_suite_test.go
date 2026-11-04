@@ -89,14 +89,23 @@ func TestCoreSuiteLoads(t *testing.T) {
 		}
 	}
 
-	// The "ask" arm: asks one question about nothing (the expert matches no fact to it) and changes nothing. No case
-	// may accept it, in either mode (review EVAL-1, B2).
+	// The "ask" arm: asks one question about nothing and changes nothing. No case may accept it, in either mode
+	// (review EVAL-1, B2), whichever fact an expert matched to it (F-L2-2): it names none by the case's refers_to.
 	for _, c := range s.Cases {
-		ev := Evidence{Observation: ObservedQuery, FinalText: AskAnything, MockState: startState(t, c), Outputs: map[string][]byte{},
-			Questions: []Asked{{Kind: ObservedQuery, Text: AskAnything}}}
-		for _, mode := range []Mode{{}, {Expert: true}} {
-			if r := Grade(c, ev, mode); r.Passed {
-				t.Errorf("%s: a question about nothing passed (expert %v): %+v", c.ID, mode.Expert, r)
+		chosen := []string{""}
+		for _, f := range c.Facts {
+			chosen = append(chosen, f.ID)
+			if f.NamedBy(AskAnything) {
+				t.Errorf("%s: the fact %s is named by the ask arm's question", c.ID, f.ID)
+			}
+		}
+		for _, fact := range chosen {
+			ev := Evidence{Observation: ObservedQuery, FinalText: AskAnything, MockState: startState(t, c), Outputs: map[string][]byte{},
+				Questions: []Asked{{Kind: ObservedQuery, Text: AskAnything, Fact: fact}}}
+			for _, mode := range []Mode{{}, {Expert: true}} {
+				if r := Grade(c, ev, mode); r.Passed {
+					t.Errorf("%s: a question about nothing passed (expert %v, matched %q): %+v", c.ID, mode.Expert, fact, r)
+				}
 			}
 		}
 	}

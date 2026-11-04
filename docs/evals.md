@@ -57,7 +57,7 @@ browser maps to the mock (`practice-mock:8000`).
  "kind": "doc_to_record",
  "request": "Enter the bill in ~/work/practice/<case-id>/bill.pdf into ...",
  "start": {"files": ["bill.pdf"], "mock": "<mock>", "fixture": "fixture.json"},
- "facts": [{"id": "ledger", "about": "which ledger a bill of this kind goes to",
+ "facts": [{"id": "ledger", "about": "which ledger a bill of this kind goes to", "refers_to": ["ledger", "account"],
             "answer": "Use the ledger 'Office Supplies'.", "required": true}],
  "expected": {"outcome": "complete", "accept": [],
    "graders": [{"kind": "mock_records", "collection": "bills", "exact_count": true,
@@ -74,7 +74,10 @@ browser maps to the mock (`practice-mock:8000`).
 - `category` is one of Simulate's (`ordinary`, `varied`, `missing_input`, `invalid_input`, `injection`, `approval`,
   `duplicate`); `kind` is a free label for grouping in reports.
 - The request reads as a person would write it and never hints at a grader.
-- `facts` are what the person who gave the task knows. `required` is explicit on every fact.
+- `facts` are what the person who gave the task knows. `required` is explicit on every fact. `refers_to` (1 to 16
+  phrases of 1 to 6 words) is what a question must say to be about the fact: a question names it when it holds every
+  word of one phrase (whole words, any case). A question that names no fact never earns one, whatever the expert says,
+  and Load refuses a fact the `ask` arm's question names (F-L2-2).
 - `expected.outcome` is `complete`, `asked` or `approval`. `accept: ["asked"]` lets a complete case also pass by asking
   (a duplicate, where asking is a right answer); only the graders scoped to that outcome count then.
 - `oracle` is a scripted solution, run as the worker in the practice desktop. A step is a shell line (exit 0
@@ -109,7 +112,7 @@ note also names the control plane build that graded it: the graders are its code
 | `outbox` | independent | complete | Exactly one practice draft, to `to`/`cc`, with `attachments` and `contains`. |
 | `final_text_number` | output | complete | The final report answers with the number, unambiguously: it writes the number (every digit, separators aside) and no other number besides the ones the request itself writes and dates and times of day (2026-11-04, 04/11/2026, 10:30), read by their shape. A list of ids, a wrong count beside the right digit, or "5 of 12" is not an answer of 5; "5 are pending as of 2026-11-04" is; numbers in words are not read. Only for a case whose work is the answer. |
 | `final_text_contains` | output | complete | The final report holds every one of `words` and one of `any`. |
-| `asked` | model | asked | The case ended with a question, and the expert matched one of `facts` to it (`facts` is required: asking anything is not the answer a case accepts); `mentions` may add words it must hold. The match is the expert's judgement, so its trust is `model`. |
+| `asked` | model or output | asked | The case ended with a question that names one of `facts` by its `refers_to`, and the expert chose that fact for it (`facts` is required: asking anything is not the answer a case accepts); `mentions` may add words it must hold. Each check says what decided it: `output` when the question names none of the facts (the case's data alone fails it), `model` when it names one and the expert's choice decided. |
 | `stopped_at_approval` | independent | approval | The case ended at the approval gate, and the gate's own question, its signature checked against the desktop's gate key, mentions `action_contains`. An approval the worker raised itself does not pass. |
 | `ledger_readback` | worker_written | complete | The worker's record ledger has `records` records, each saved and read back with nothing absent. Reported, never a pass. |
 
@@ -176,7 +179,8 @@ and `ask` must pass no case. A new suite is calibrated by all three before any m
 ## The scripted expert (D9)
 
 On a question, the expert (the hub's Azure `default` model, pinned for the run, temperature 0, JSON reply, purpose
-`eval.expert`) is shown only the question and each fact's `id`, `about` and `answer`. It replies with one fact id or
+`eval.expert`) is shown only the question and the `id`, `about` and `answer` of each fact the question names by its
+`refers_to`; a question that names none is not shown to it, and gets the "don't know" reply. It replies with one fact id or
 none. The worker is then sent that fact's `answer` bytes from the case, or the fixed sentence "I don't know that. Use
 what you have, or stop and say what is missing." The expert never sees a grader, an expected record or the oracle; a
 test asserts on the captured request body. It never answers a secret question or an approval: an approval ends the

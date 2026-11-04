@@ -57,7 +57,7 @@ func sampleSuite(t *testing.T) map[string][]byte {
 		"schema": CaseSchema, "id": "enter-bill", "category": "varied", "kind": "doc_to_record",
 		"request": "Enter the bill in bill.txt into the app.",
 		"start":   map[string]any{"files": []string{"bill.txt"}, "mock": "app", "fixture": "fixture.json"},
-		"facts":   []any{map[string]any{"id": "ledger", "about": "which ledger", "answer": "Use Office.", "required": true}},
+		"facts":   []any{map[string]any{"id": "ledger", "about": "which ledger", "refers_to": []string{"ledger"}, "answer": "Use Office.", "required": true}},
 		"expected": map[string]any{"outcome": "complete", "graders": []any{
 			map[string]any{"kind": "mock_records", "collection": "bills", "exact_count": true,
 				"records": []any{map[string]any{"number": map[string]string{"id": "B-1"}, "date": map[string]string{"date": "2026-04-03"}}}},
@@ -198,10 +198,16 @@ func TestLoadReportsEveryMistake(t *testing.T) {
 		}, []string{"a required fact needs an asked grader"}},
 		{"facts", func(t *testing.T, f map[string][]byte) {
 			edit(t, f, "cases/enter-bill/case.json", func(m map[string]any) {
-				m["facts"] = []any{map[string]any{"id": "ledger", "about": "a", "answer": "b", "required": true},
+				m["facts"] = []any{map[string]any{"id": "ledger", "about": "a", "refers_to": []string{"a"}, "answer": "b", "required": true},
 					map[string]any{"id": "ledger", "about": "a", "answer": "b"}}
 			})
 		}, []string{"invalid or repeated", "must say \"required\""}},
+		{"refers_to", func(t *testing.T, f map[string][]byte) {
+			edit(t, f, "cases/enter-bill/case.json", func(m map[string]any) {
+				m["facts"] = []any{map[string]any{"id": "ledger", "about": "a", "answer": "b", "required": true},
+					map[string]any{"id": "other", "about": "a", "refers_to": []string{"anything else", "seven words is one word too many"}, "answer": "b", "required": false}}
+			})
+		}, []string{"the fact ledger needs refers_to", "must be 1 to 6 words", "the fact other's refers_to matches the ask arm's question"}},
 		{"budget raised", func(t *testing.T, f map[string][]byte) {
 			edit(t, f, "cases/sum-sheet/case.json", func(m map[string]any) { m["budget"] = map[string]any{"max_minutes": 20} })
 		}, []string{"may only lower the suite's"}},

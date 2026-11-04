@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // Schema names of a suite's two documents.
@@ -49,6 +50,7 @@ const (
 	MaxCases        = 200
 	MaxGraders      = 30
 	MaxFacts        = 20
+	MaxRefersTo     = 16
 	MaxOracleSteps  = 200
 	MaxRequestBytes = 8000
 	MaxCaseMinutes  = 60
@@ -110,10 +112,52 @@ type Start struct {
 
 // Fact is something the person who gave the task knows. The expert chooses one by id; the worker is sent Answer.
 type Fact struct {
-	ID       string `json:"id"`
-	About    string `json:"about"`
-	Answer   string `json:"answer"`
-	Required *bool  `json:"required"`
+	ID     string `json:"id"`
+	About  string `json:"about"`
+	Answer string `json:"answer"`
+	// RefersTo is what a question must say to be about this fact: phrases, and a question names the fact when it
+	// holds every word of one of them (whole words, any case). A question that names none never earns the fact,
+	// whatever the expert says, so which question is the right one rests on the case's data, not on a model.
+	RefersTo []string `json:"refers_to"`
+	Required *bool    `json:"required"`
+}
+
+// words splits text into its lower-cased words (letters and digits).
+func words(text string) []string {
+	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+}
+
+// NamedBy reports whether question holds every word of one of the fact's refers_to phrases.
+func (f Fact) NamedBy(question string) bool {
+	have := map[string]bool{}
+	for _, w := range words(question) {
+		have[w] = true
+	}
+	for _, phrase := range f.RefersTo {
+		ws := words(phrase)
+		all := len(ws) > 0
+		for _, w := range ws {
+			if !have[w] {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
+}
+
+// FactsNamedBy lists the case's facts that question names (Fact.NamedBy), in the case's order.
+func (c Case) FactsNamedBy(question string) []Fact {
+	var out []Fact
+	for _, f := range c.Facts {
+		if f.NamedBy(question) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // IsRequired reports the fact's required flag (false when unset; Load refuses an unset one).

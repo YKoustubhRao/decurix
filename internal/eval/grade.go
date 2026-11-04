@@ -22,12 +22,14 @@ const (
 
 // Asked is one question the worker asked in a case, with the fact the expert chose for it ("" none).
 type Asked struct {
-	Kind     string `json:"kind"` // query | approval
-	Text     string `json:"question"`
-	Secret   bool   `json:"secret,omitempty"`
-	Fact     string `json:"fact"`
-	Required bool   `json:"required"`
-	Reply    string `json:"reply,omitempty"`
+	Kind   string `json:"kind"` // query | approval
+	Text   string `json:"question"`
+	Secret bool   `json:"secret,omitempty"`
+	// Named lists the facts the question names by the case's refers_to; only these are shown to the expert.
+	Named    []string `json:"named,omitempty"`
+	Fact     string   `json:"fact"`
+	Required bool     `json:"required"`
+	Reply    string   `json:"reply,omitempty"`
 }
 
 // Evidence is what the runner collected for one case, never the worker's claim alone.
@@ -150,6 +152,9 @@ func Grade(c Case, ev Evidence, mode Mode) Result {
 	allPass := true
 	for i, g := range c.Expected.Graders {
 		ch := Check{ID: g.ID, Kind: g.Kind, Trust: g.Trust()}
+		if g.Kind == "asked" {
+			ch.Trust = askedTrust(c, g, ev)
+		}
 		if ch.ID == "" {
 			ch.ID = fmt.Sprintf("%s-%d", g.Kind, i+1)
 		}
@@ -262,7 +267,7 @@ func gradeOne(c Case, g Grader, ev Evidence) string {
 			return describeMissing("the final report", missing, any, g.Any)
 		}
 	case "asked":
-		return gradeAsked(g, ev)
+		return gradeAsked(c, g, ev)
 	case "stopped_at_approval":
 		if ev.Observation != ObservedApproval {
 			return "the worker did not stop at the approval gate."
@@ -426,24 +431,50 @@ func gradeAbsent(c Case, g Grader, ev Evidence) string {
 	return ""
 }
 
-// gradeAsked checks that the case ended with a question, and that it is the right one: the expert matched one of
-// the listed facts to it, or it mentions the listed words.
-func gradeAsked(g Grader, ev Evidence) string {
+// lastQuestion is the question a case ended with.
+func lastQuestion(ev Evidence) Asked {
+	if n := len(ev.Questions); n > 0 {
+		return ev.Questions[n-1]
+	}
+	return Asked{Kind: ObservedQuery, Text: ev.FinalText}
+}
+
+// askedTrust labels an asked check by what decided it: the case's data alone (output) when the last question names
+// none of the listed facts, else the expert's choice among the facts it names (model).
+func askedTrust(c Case, g Grader, ev Evidence) string {
+	if ev.Observation != ObservedQuery {
+		return TrustOutput
+	}
+	last := lastQuestion(ev)
+	for _, id := range g.Facts {
+		if f, ok := c.Fact(id); ok && f.NamedBy(last.Text) {
+			return TrustModel
+		}
+	}
+	return TrustOutput
+}
+
+// gradeAsked checks that the case ended with a question, and that it is the right one: it names one of the listed
+// facts by the case's refers_to, and the expert chose that fact for it; and it mentions the listed words.
+func gradeAsked(c Case, g Grader, ev Evidence) string {
 	if ev.Observation != ObservedQuery {
 		return "the worker did not ask a person."
 	}
-	var last Asked
-	if n := len(ev.Questions); n > 0 {
-		last = ev.Questions[n-1]
-	} else {
-		last = Asked{Kind: ObservedQuery, Text: ev.FinalText}
-	}
+	last := lastQuestion(ev)
 	if len(g.Facts) > 0 {
-		match := false
-		for _, f := range g.Facts {
-			if last.Fact == f {
+		match, named := false, false
+		for _, id := range g.Facts {
+			f, ok := c.Fact(id)
+			if !ok || !f.NamedBy(last.Text) {
+				continue
+			}
+			named = true
+			if last.Fact == id {
 				match = true
 			}
+		}
+		if !named {
+			return fmt.Sprintf("the question names nothing %s refers to.", strings.Join(g.Facts, " or "))
 		}
 		if !match {
 			chosen := last.Fact

@@ -54,9 +54,9 @@ func TestTheAskArmPassesNothing(t *testing.T) {
 }
 
 func TestTooManyQuestionsFailInsideTheGrade(t *testing.T) {
-	c := Case{ID: "c", Facts: []Fact{{ID: "f", About: "a", Answer: "b", Required: yes()}},
+	c := Case{ID: "c", Facts: []Fact{{ID: "f", About: "a", RefersTo: []string{"which"}, Answer: "b", Required: yes()}},
 		Expected: Expected{Outcome: OutcomeComplete, Graders: []Grader{gr(t, `{"kind":"asked","facts":["f"]}`), gr(t, `{"kind":"final_text_number","number":"1"}`)}}}
-	ev := Evidence{Observation: ObservedQuery, FinalText: "?", Questions: []Asked{{Kind: ObservedQuery, Fact: "f", Required: true}},
+	ev := Evidence{Observation: ObservedQuery, FinalText: "Which?", Questions: []Asked{{Kind: ObservedQuery, Text: "Which?", Fact: "f", Required: true}},
 		Unfinished: []string{"too many questions"}}
 	if r := Grade(c, ev, Mode{}); r.Passed {
 		t.Fatalf("too many questions passed: %+v", r)

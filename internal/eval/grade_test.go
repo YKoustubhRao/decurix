@@ -58,6 +58,7 @@ func no() *bool  { b := false; return &b }
 
 func caseWith(outcome string, graders ...Grader) Case {
 	return Case{ID: "c", Expected: Expected{Outcome: outcome, Graders: graders},
+		Facts:   []Fact{{ID: "ledger", About: "which ledger", RefersTo: []string{"ledger"}, Answer: "Office", Required: no()}},
 		Fixture: []byte(`{"collections": {"users": [{"id": 1, "name": "Ann Lowe", "email": "ann@example.test"}, {"id": 2, "name": "Raj Mehta", "email": "raj@example.test"}]}}`)}
 }
 
@@ -275,7 +276,7 @@ func TestTypedValues(t *testing.T) {
 }
 
 func TestRequiredFactSwitchesTheOutcome(t *testing.T) {
-	c := Case{ID: "needs-ledger", Facts: []Fact{{ID: "ledger", About: "which ledger", Answer: "Office", Required: yes()}},
+	c := Case{ID: "needs-ledger", Facts: []Fact{{ID: "ledger", About: "which ledger", RefersTo: []string{"ledger"}, Answer: "Office", Required: yes()}},
 		Fixture: []byte(`{"collections": {"bills": []}}`),
 		Expected: Expected{Outcome: OutcomeComplete, Graders: []Grader{
 			gr(t, `{"kind":"mock_records","collection":"bills","records":[{"ledger":"Office"}]}`),
@@ -308,6 +309,7 @@ func TestRequiredFactSwitchesTheOutcome(t *testing.T) {
 
 func TestAcceptAskedForADuplicate(t *testing.T) {
 	c := Case{ID: "dup", Fixture: []byte(`{"collections": {"bills": [{"id": 1, "number": "B-7"}]}}`),
+		Facts: []Fact{{ID: "entered", About: "whether the bill is in the app", RefersTo: []string{"already", "entered", "duplicate"}, Answer: "B-7 is in.", Required: no()}},
 		Expected: Expected{Outcome: OutcomeComplete, Accept: []string{OutcomeAsked}, Graders: []Grader{
 			gr(t, `{"kind":"absent","collection":"bills"}`),
 			gr(t, `{"kind":"final_text_contains","any":["already"]}`),

@@ -41,8 +41,8 @@ func content(c string) llm.ChatResult {
 }
 
 var expertCase = Case{ID: "needs-centre",
-	Facts: []Fact{{ID: "centre", About: "which cost centre the bill is charged to", Answer: "Charge it to Project Birch.", Required: yes()},
-		{ID: "colour", About: "the folder colour", Answer: "Blue.", Required: no()}},
+	Facts: []Fact{{ID: "centre", About: "which cost centre the bill is charged to", RefersTo: []string{"centre", "charge"}, Answer: "Charge it to Project Birch.", Required: yes()},
+		{ID: "colour", About: "the folder colour", RefersTo: []string{"colour", "folder"}, Answer: "Blue.", Required: no()}},
 	Expected: Expected{Outcome: OutcomeComplete, Graders: []Grader{{Kind: "mock_records", Collection: "bills",
 		Records: json.RawMessage(`[{"number": {"id": "SECRET-EXPECTED-7731"}, "cost_centre": "Project Birch"}]`)}}},
 	Oracle: []OracleStep{{Kind: StepRun, Line: "curl -d number=ORACLE-LINE-5521 x"}}}

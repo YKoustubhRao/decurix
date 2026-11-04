@@ -973,11 +973,17 @@ func (s *Service) observeModel(ctx context.Context, d desktop.PracticeDesktop, d
 }
 
 // classify asks the expert which fact a question is about (it never answers here) and marks the question required
-// when that fact is; the problems are the expert's, said in the row. A case with no facts asks nobody.
+// when that fact is; the problems are the expert's, said in the row. A question that names no fact asks nobody.
 func (s *Service) classify(ctx context.Context, desktopID, taskID string, c Case, expert *Expert, asked *Asked) []string {
 	var problems []string
-	if expert != nil && len(c.Facts) > 0 {
-		choice, err := expert.ChooseFor(ctx, desktopID, taskID, asked.Text, c.Facts)
+	// Only the facts the question names by the case's own refers_to can be earned, and only they are shown to the
+	// expert: a question that names none asks nobody, so no model can match it to a fact.
+	named := c.FactsNamedBy(asked.Text)
+	for _, f := range named {
+		asked.Named = append(asked.Named, f.ID)
+	}
+	if expert != nil && len(named) > 0 {
+		choice, err := expert.ChooseFor(ctx, desktopID, taskID, asked.Text, named)
 		if err != nil && ctx.Err() == nil {
 			log.Printf("eval: expert: %v", err)
 		}
