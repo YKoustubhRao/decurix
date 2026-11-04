@@ -97,6 +97,14 @@ func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bo
 	_ = m.client.ImageTag(ctx, desktopImageBasic, desktopImageDeveloper)
 	_ = m.client.ImageTag(ctx, desktopImageBasic, desktopImageAI)
 
+	// Prune dangling build layers left behind by image rebuilds to reclaim disk space - after the desktop build too,
+	// the one the app's every start runs, which used to return before it (resource plan P1 #10).
+	defer func() {
+		if reclaimed, err := m.PruneDanglingResources(ctx); err == nil && reclaimed > 0 {
+			fmt.Fprintf(out, "==> Pruned dangling build layers (reclaimed %d MB)\n", reclaimed/(1024*1024))
+		}
+	}()
+
 	if which == "desktop" {
 		return nil
 	}
@@ -107,11 +115,6 @@ func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bo
 		fmt.Fprintf(out, "==> warning: populate tools volume: %v\n", err)
 	}
 
-	// Prune dangling build layers left behind by image rebuilds to reclaim disk space.
-	if reclaimed, err := m.PruneDanglingResources(ctx); err == nil && reclaimed > 0 {
-		fmt.Fprintf(out, "==> Pruned dangling build layers (reclaimed %d MB)\n", reclaimed/(1024*1024))
-	}
-
 	return nil
 }
 
@@ -120,14 +123,28 @@ func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bo
 // shares (L-02): only images carrying contextLabel, which every desktop and tools image Decurix builds has.
 func (m *Manager) PruneDanglingResources(ctx context.Context) (uint64, error) {
 
-	pruneFilters := pruneFilter()
-
-	report, err := m.client.ImagesPrune(ctx, pruneFilters)
-	if err != nil {
-		return 0, fmt.Errorf("prune dangling images: %w", err)
+	var reclaimed uint64
+	// The dangling images of Decurix's own builds, and of their builder stages (a Go toolchain, a compiler suite:
+	// gigabytes the final images do not carry), each by its own label. A later rebuild of a stage compiles it again.
+	for _, f := range []filters.Args{pruneFilter(), stagePruneFilter()} {
+		report, err := m.client.ImagesPrune(ctx, f)
+		if err != nil {
+			return reclaimed, fmt.Errorf("prune dangling images: %w", err)
+		}
+		reclaimed += report.SpaceReclaimed
 	}
+	return reclaimed, nil
+}
 
-	return report.SpaceReclaimed, nil
+// buildStageLabel marks the images a builder stage of Decurix's Dockerfiles leaves (LABEL in the stage).
+const buildStageLabel = "decurix.build-stage"
+
+// stagePruneFilter selects the dangling images Decurix's builder stages left behind.
+func stagePruneFilter() filters.Args {
+	f := filters.NewArgs()
+	f.Add("dangling", "true")
+	f.Add("label", buildStageLabel)
+	return f
 }
 
 // buildImage streams the embedded build context to the daemon and reports the

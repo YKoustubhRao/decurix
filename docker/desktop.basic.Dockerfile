@@ -4,6 +4,8 @@
 # CGO) and its whole UI is embedded via go:embed, so the build output is
 # one self-contained static binary.
 FROM golang:1.27 AS thebot-builder
+# What this stage leaves behind is pruned after a build (desktop.PruneDanglingResources, resource plan P1 #10).
+LABEL decurix.build-stage="1"
 WORKDIR /src
 COPY agent/thebot/go.mod agent/thebot/go.sum ./
 # go has no download timeout of its own: ten minutes a try, three tries.

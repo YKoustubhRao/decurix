@@ -1,4 +1,6 @@
 FROM ubuntu:22.04 AS builder
+# What this stage leaves behind is pruned after a build (desktop.PruneDanglingResources, resource plan P1 #10).
+LABEL decurix.build-stage="1"
 
 ENV DEBIAN_FRONTEND=noninteractive
 

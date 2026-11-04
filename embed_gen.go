@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -47,8 +48,16 @@ func main() {
 		root := filepath.Join(filepath.FromSlash(source), part)
 
 		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-			if err != nil || !d.Type().IsRegular() {
+			if err != nil {
 				return err
+			}
+			// A build needs no tests: go build reads neither _test.go files nor testdata, and every byte here is in
+			// the binary and in each desktop image's build context (resource plan P1 #10).
+			if d.IsDir() && d.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			if !d.Type().IsRegular() || strings.HasSuffix(d.Name(), "_test.go") {
+				return nil
 			}
 
 			data, err := os.ReadFile(p)

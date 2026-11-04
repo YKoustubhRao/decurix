@@ -40,4 +40,21 @@ for side in -s -d; do
 done
 
 rm -f /var/run/docker.pid
-exec dockerd >> /var/log/dockerd.log 2>&1
+
+# The daemon's own log, kept to two files of at most 10 MB: it was appended to for good, and the distro has no
+# logrotate (resource plan P1 #10). Copied and emptied in place, so dockerd keeps writing to the file it opened.
+log=/var/log/dockerd.log
+rotate() {
+    size=$(wc -c < "$log" 2>/dev/null || echo 0)
+    if [ "$size" -gt 10485760 ]; then
+        cp "$log" "$log.1" && : > "$log"
+    fi
+}
+rotate
+dockerd >> "$log" 2>&1 &
+daemon=$!
+while kill -0 "$daemon" 2>/dev/null; do
+    sleep 300
+    rotate
+done
+wait "$daemon"
