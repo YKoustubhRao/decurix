@@ -1,5 +1,5 @@
 """
-False successes in an eval run (core-v1, 2026-11-04; review round 9). Each class is a mechanism the investigation
+False successes in an eval run (2026-11-04; review round 9). Each class is a mechanism the investigation
 found, and a test that fails on the code before.
 
 - A: a value no source gives (a cost centre the worker picked as a "default"), saved and passed as checked. The
@@ -25,12 +25,12 @@ from decurix_agent.computer import core, evidence, records  # noqa: E402
 from decurix_agent.computer.errors import ComputerError  # noqa: E402
 
 TASK = "t0123456789abcdef"
-NOT_BACKED_REPORT = """Entered bill FJ-1190 and saved it.
+NOT_BACKED_REPORT = """Entered bill INV-0001 and saved it.
 
 JUDGEMENTS:
 - Bill date 03/04/2026 read as 3 April | backed by: "28/09/2026" in the bill
 - Cost centre set to "General" | not backed: the source document gives no cost centre, but the form requires one
-DONE: saved FJ-1190
+DONE: saved INV-0001
 """
 
 
@@ -43,7 +43,7 @@ def save_events(*pages):
     out = []
     for n, page in enumerate(pages):
         out += [{"kind": "click", "outcome": "done", "change": f"page is now http://app/{page}/new"},
-                {"kind": "type", "outcome": "done", "text": f"FJ-119{n}", "element": {"name": "Bill no."}},
+                {"kind": "type", "outcome": "done", "text": f"INV-010{n}", "element": {"name": "Bill no."}},
                 {"kind": "click", "outcome": "done", "change": f"saved; page is now http://app/{page}/{n + 3}?saved=1"}]
     return out
 
@@ -56,7 +56,7 @@ class Ledger(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.bill = self.root / "bill.txt"
-        self.bill.write_text("Finchmoor Joinery Works\nBill FJ-1190\nTotal 3,540.00\n", encoding="utf-8")
+        self.bill.write_text("Example Vendor Ltd\nBill INV-0001\nTotal 3,540.00\n", encoding="utf-8")
         self.events, self.looks, self.request, self.said = [], [], "Enter bill.pdf in the books", ""
         for p in (mock.patch.object(records, "LEDGER_DIR", self.root / "ledger"),
                   mock.patch("decurix_agent.task_context.current", lambda: TASK),
@@ -73,7 +73,7 @@ class Ledger(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    def declare(self, fields, key="FJ-1190"):
+    def declare(self, fields, key="INV-0001"):
         return records.declare(key, str(self.bill), fields)
 
 
@@ -83,16 +83,16 @@ class A_APickNothingBacks(Ledger):
     def test_declare_refuses_the_workers_own_pick(self):
         self.events = [self.PICK]
         with self.assertRaises(ComputerError) as caught:
-            self.declare({"Bill no.": "FJ-1190", "Cost centre": "General"})
+            self.declare({"Bill no.": "INV-0001", "Cost centre": "General"})
         self.assertIn("ask the person (HELP) which one", str(caught.exception))
 
     def test_a_pick_the_request_or_the_person_gives_is_backed(self):
         self.events = [self.PICK]
         self.request = "Enter bill.pdf in the books, charged to General"
-        rec, _ = self.declare({"Bill no.": "FJ-1190", "Cost centre": "General"})
+        rec, _ = self.declare({"Bill no.": "INV-0001", "Cost centre": "General"})
         self.assertEqual(rec["fields"]["Cost centre"]["from"], "chosen")
         self.request, self.said = "Enter bill.pdf in the books", "Charge it to General."
-        rec, _ = self.declare({"Bill no.": "FJ-1190", "Cost centre": "General"})
+        rec, _ = self.declare({"Bill no.": "INV-0001", "Cost centre": "General"})
         self.assertEqual(rec["fields"]["Cost centre"]["from"], "chosen")
 
     def test_the_final_checks_typing_check_names_the_pick(self):
@@ -103,16 +103,16 @@ class A_APickNothingBacks(Ledger):
         self.assertEqual(records.unbacked_picks(TASK), [])
 
     def test_an_undeclared_field_the_task_set_is_held_against_the_saved_record(self):
-        rec, _ = self.declare({"Bill no.": "FJ-1190", "Total": "3,540.00"})
+        rec, _ = self.declare({"Bill no.": "INV-0001", "Total": "3,540.00"})
         self.events = [{"kind": "click", "outcome": "done", "change": "page is now http://app/bills/new"},
-                       {"kind": "type", "outcome": "done", "text": "FJ-1190", "element": {"name": "Bill no."}},
+                       {"kind": "type", "outcome": "done", "text": "INV-0001", "element": {"name": "Bill no."}},
                        {"kind": "type", "outcome": "done", "text": "3540.00", "element": {"name": "Total"}},
                        self.PICK]
-        form = [("Bill no.", "FJ-1190"), ("Total", "3540.00"), ("Cost centre", "General")]
+        form = [("Bill no.", "INV-0001"), ("Total", "3540.00"), ("Cost centre", "General")]
         held, clean, lines = core._ledger_check(form)
         self.assertEqual(held, "")  # ADVISORY at the save (records.UNDECLARED_FIELD_BLOCKS)
         self.assertTrue(any("this task set Cost centre=General and no declaration covers it" in l for l in lines))
-        records.readback(records.open_record(records.load()), "Bill FJ-1190", "FJ-1190 3,540.00 General", "saved")
+        records.readback(records.open_record(records.load()), "Bill INV-0001", "INV-0001 3,540.00 General", "saved")
         self.assertTrue(any("Cost centre=General" in f for f in records.gate_faults(TASK)))
 
 
@@ -159,12 +159,12 @@ class TheFinalGate(ts.TeachingBase):
 
     def test_a_second_save_outside_the_ledger_is_not_done_and_no_ledger_basis(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(records, "LEDGER_DIR", Path(tmp)):
-            records._save(task_context.current() or TASK, [{"key": "RF-0402", "saved_at": 1.0, "fields": {
-                "Bill no.": {"intent": "RF-0402", "from": "source"}}, "readback": {"seen": ["Bill no."], "absent": []}}])
+            records._save(task_context.current() or TASK, [{"key": "INV-0002", "saved_at": 1.0, "fields": {
+                "Bill no.": {"intent": "INV-0002", "from": "source"}}, "readback": {"seen": ["Bill no."], "absent": []}}])
             with mock.patch.object(core, "_task_events_now", lambda: save_events("bills", "bills")), \
                     mock.patch("decurix_agent.task_context.current", lambda: TASK):
                 self.assertNotIn("ledger", skill_task._basis("model"))
-                self.assertTrue(skill_task._gate("Saved RF-0402.", "final", "thebot"))
+                self.assertTrue(skill_task._gate("Saved INV-0002.", "final", "thebot"))
         self.assertEqual(self.finals, [])
         self.assertIn("made 2 new record(s), and 1 declared record(s) were saved", self.asked[-1][0])
 
@@ -180,7 +180,7 @@ class B_ACutOffCheck(unittest.TestCase):
 
         def chat(messages, max_tokens=None, **k):
             asked.append(max_tokens)
-            return {"content": '```json\n{"verdict": "done", "confidence": 1.0, "seen": "Bill RF-0402 sav'}, {}
+            return {"content": '```json\n{"verdict": "done", "confidence": 1.0, "seen": "Bill INV-0002 sav'}, {}
         with mock.patch.object(verify.llm_client, "chat", chat), \
                 mock.patch.object(verify.llm_client, "available", lambda: True):
             found = verify.judge("Enter the bill", claim="Saved it.")
@@ -223,7 +223,7 @@ class B_AReplyThatSettlesNothing(ts.TeachingBase):
     def test_the_check_is_made_again_never_the_work(self):
         made_again = []
         state.current_task = "Enter bill.pdf"
-        paused = {"mode": "confirm", "run": None, "claim": "Saved RF-0402.", "engine": "thebot",
+        paused = {"mode": "confirm", "run": None, "claim": "Saved INV-0002.", "engine": "thebot",
                   "task": "Enter bill.pdf",
                   "verdict": {"verdict": verify.UNSURE, "seen": "", "why": "the check could not be made (cut off)"}}
         skill_task._rechecks.clear()
@@ -234,7 +234,7 @@ class B_AReplyThatSettlesNothing(ts.TeachingBase):
                                   lambda reply, doubt="": {"choice": "unclear", "instruction": ""}), \
                 mock.patch.object(skill_task, "_engine_can_drive", lambda: True):
             skill_task._confirm_reply(paused, "I don't know that. Use what you have, or stop and say what is missing.")
-        self.assertEqual(made_again, [("Saved RF-0402.", "final")])  # through the final gate again
+        self.assertEqual(made_again, [("Saved INV-0002.", "final")])  # through the final gate again
 
     def test_a_check_that_looked_and_doubted_still_takes_the_correction(self):
         retried = []
@@ -251,23 +251,23 @@ class B_AReplyThatSettlesNothing(ts.TeachingBase):
 
 class B_ASecondSave(Ledger):
     def test_a_saved_key_is_not_declared_again(self):
-        rec, _ = self.declare({"Bill no.": "FJ-1190"})
-        records.readback(rec, "Bill FJ-1190", "FJ-1190", "saved; page is now http://app/bills/3")
+        rec, _ = self.declare({"Bill no.": "INV-0001"})
+        records.readback(rec, "Bill INV-0001", "INV-0001", "saved; page is now http://app/bills/3")
         with self.assertRaises(ComputerError) as caught:
-            self.declare({"Bill no.": "FJ-1190"})
+            self.declare({"Bill no.": "INV-0001"})
         self.assertIn("was saved in this task already", str(caught.exception))
 
     def test_a_new_form_holding_a_saved_key_is_not_pressed(self):
-        rec, _ = self.declare({"Bill no.": "FJ-1190"})
-        records.readback(rec, "Bill FJ-1190", "FJ-1190", "saved; page is now http://app/bills/3")
+        rec, _ = self.declare({"Bill no.": "INV-0001"})
+        records.readback(rec, "Bill INV-0001", "INV-0001", "saved; page is now http://app/bills/3")
         self.events = [{"kind": "click", "outcome": "done", "change": "page is now http://app/bills/new"},
-                       {"kind": "type", "outcome": "done", "text": "FJ-1190", "element": {"name": "Bill no."}}]
-        held, clean, _ = core._ledger_check([("Bill no.", "FJ-1190"), ("Total", "3540.00")])
+                       {"kind": "type", "outcome": "done", "text": "INV-0001", "element": {"name": "Bill no."}}]
+        held, clean, _ = core._ledger_check([("Bill no.", "INV-0001"), ("Total", "3540.00")])
         self.assertIn("was saved in this task already", held)
         # Its own saved record's edit page is no second record.
         self.events = [{"kind": "click", "outcome": "done", "change": "page is now http://app/bills/3/edit"},
-                       {"kind": "type", "outcome": "done", "text": "FJ-1190", "element": {"name": "Bill no."}}]
-        self.assertIsNone(core._ledger_check([("Bill no.", "FJ-1190"), ("Total", "3540.00")]))
+                       {"kind": "type", "outcome": "done", "text": "INV-0001", "element": {"name": "Bill no."}}]
+        self.assertIsNone(core._ledger_check([("Bill no.", "INV-0001"), ("Total", "3540.00")]))
 
     def test_the_saves_that_made_a_record_are_counted(self):
         self.assertEqual(core.records_created(save_events("bills")), 1)
@@ -280,21 +280,21 @@ class B_ASecondSave(Ledger):
 class C_AKeyTheApplicationShowedAlready(Ledger):
     def test_stops_once_and_asks(self):
         self.looks = [evidence.LOOK_LEAD + ". What every field of the page held (in view or not):\n(none)\nThe words "
-                      "the page showed outside its fields, in its order (in view or not):\nBills | BL-1987 | Finchmoor "
+                      "the page showed outside its fields, in its order (in view or not):\nBills | INV-0003 | Example Vendor "
                       "| 3,540.00\nThe part in view, as the tool listed it:\n..."]
         with self.assertRaises(ComputerError) as caught:
-            self.bill.write_text("Bill BL-1987\nTotal 3,540.00\n", encoding="utf-8")
-            records.declare("BL-1987", str(self.bill), {"Bill no.": "BL-1987"})
+            self.bill.write_text("Bill INV-0003\nTotal 3,540.00\n", encoding="utf-8")
+            records.declare("INV-0003", str(self.bill), {"Bill no.": "INV-0003"})
         self.assertIn("Ask the person (HELP) whether it is already in the application", str(caught.exception))
-        rec, _ = records.declare("BL-1987", str(self.bill), {"Bill no.": "BL-1987"})  # their answer: once only
-        self.assertEqual(rec["key"], "BL-1987")
+        rec, _ = records.declare("INV-0003", str(self.bill), {"Bill no.": "INV-0003"})  # their answer: once only
+        self.assertEqual(rec["key"], "INV-0003")
 
     def test_the_document_on_the_screen_is_not_the_application(self):
         self.looks = [evidence.LOOK_LEAD + ". What every field of the page held (in view or not):\n(none)\nThe words "
-                      "the page showed outside its fields, in its order (in view or not):\nbill.txt | Bill FJ-1190\n"
+                      "the page showed outside its fields, in its order (in view or not):\nbill.txt | Bill INV-0001\n"
                       "The part in view, as the tool listed it:\n..."]
-        rec, _ = self.declare({"Bill no.": "FJ-1190"})
-        self.assertEqual(rec["key"], "FJ-1190")
+        rec, _ = self.declare({"Bill no.": "INV-0001"})
+        self.assertEqual(rec["key"], "INV-0001")
 
 
 if __name__ == "__main__":
