@@ -15,29 +15,59 @@ ours=10.212.0.0/15
 # desktop's own network, the shared one and the practice one.
 desktop_pool=10.213.0.0/16
 
-# Each desktop has a network of its own, so no desktop reaches another (internal/desktop/desknet.go). With
+# Each desktop has a bridge network of its own, so no desktop reaches another (internal/desktop/desknet.go). With
 # "iptables": false Docker adds none of its own isolation between its networks, and the rules below forward the whole
 # range, so traffic from one desktop network to another, routed through this distro, would go through. fence drops
-# exactly that: forwarding whose source and destination are both in desktop_pool. Nothing else is touched - another
-# distro's Docker (WSL2 distros share one network stack: an ERPNext demo published from Ubuntu's Docker), its
-# bridges, a desktop's way out, or a desktop reaching a service published elsewhere; and traffic within one network
-# (a desktop and the control plane or the model server on it) is switched, never forwarded. Idempotent; unfence
-# takes it out when this daemon ends and when the app is uninstalled (installer.nsh).
-fence() {
-    # The broader form of an earlier build, which dropped every bridge-to-bridge forward, goes first.
+# exactly that: traffic *routed* (not bridged) whose source and destination are both in desktop_pool.
+#
+# Routed, not bridged, matters (review NET-R3 B1): WSL2 distros share one network stack, and once another distro's
+# Docker has run, br_netfilter is loaded with bridge-nf-call-iptables=1, so frames *within* one bridge pass FORWARD
+# too - a desktop and the control plane on its network, the control plane and the model server on decurix-network.
+# `-m physdev ! --physdev-is-bridged` leaves every such frame alone, br_netfilter on or off, so the fence never
+# covers what stays inside one network (decurix-network itself included).
+#
+# Nothing else is touched: another distro's Docker (an ERPNext demo published from Ubuntu's Docker), its bridges, a
+# desktop's way out, or a desktop reaching a service published elsewhere.
+#
+# guard (review NET-R3 P1) drops NEW connections forwarded into this daemon's range from outside it: a sibling
+# distro's container routed to the control plane's address would otherwise arrive masqueraded as decurix-network's
+# gateway, the address the control plane takes for the person on this computer. The person's own way in is a port
+# published on 127.0.0.1, which docker-proxy relays locally (OUTPUT, never FORWARD), so it is not affected; replies
+# to what desktops start are not NEW. In mangle's FORWARD, which Docker never rewrites or reorders.
+#
+# Both are idempotent and kept first in their chains (taken out and put back on every start, so ACCEPT rules added
+# after them never sit above them); unfence takes them out when this daemon ends and when the app is uninstalled
+# (installer.nsh).
+fence_rule="-s $desktop_pool -d $desktop_pool -m physdev ! --physdev-is-bridged -j DROP"
+guard_rule="! -s $ours -d $ours -m conntrack --ctstate NEW -j DROP"
+drop_all() {
+    # Every form this or an earlier build added: the bridge-wide drop, the unrouted pool drop, and the current two.
     while iptables -C FORWARD -i br-+ -o br-+ -j DROP 2>/dev/null; do iptables -D FORWARD -i br-+ -o br-+ -j DROP; done
-    iptables -C FORWARD -s "$desktop_pool" -d "$desktop_pool" -j DROP 2>/dev/null ||
-        iptables -I FORWARD 1 -s "$desktop_pool" -d "$desktop_pool" -j DROP
-}
-unfence() {
     while iptables -C FORWARD -s "$desktop_pool" -d "$desktop_pool" -j DROP 2>/dev/null; do
         iptables -D FORWARD -s "$desktop_pool" -d "$desktop_pool" -j DROP
     done
+    # shellcheck disable=SC2086
+    while iptables -C FORWARD $fence_rule 2>/dev/null; do iptables -D FORWARD $fence_rule; done
+    # shellcheck disable=SC2086
+    while iptables -t mangle -C FORWARD $guard_rule 2>/dev/null; do iptables -t mangle -D FORWARD $guard_rule; done
+}
+fence() {
+    drop_all
+    # shellcheck disable=SC2086
+    iptables -I FORWARD 1 $fence_rule || echo "dockerd.sh: the desktop fence could not be added" >&2
+    # shellcheck disable=SC2086
+    iptables -t mangle -I FORWARD 1 $guard_rule || echo "dockerd.sh: the forward guard could not be added" >&2
+}
+unfence() {
+    drop_all
 }
 if [ "${1:-}" = unfence ]; then
     unfence
     exit 0
 fi
+
+# Fenced before anything else, a daemon kept running across an update included (review NET-R3 B4).
+fence
 
 running=$(pidof dockerd 2>/dev/null | awk '{print $1}')
 if [ -n "$running" ]; then
@@ -65,7 +95,7 @@ for side in -s -d; do
     iptables -C FORWARD "$side" "$ours" -j ACCEPT 2>/dev/null ||
         iptables -I FORWARD 1 "$side" "$ours" -j ACCEPT
 done
-# Desktops' networks kept apart (fence, above), first in FORWARD.
+# Fenced again, so the fence is above the ACCEPT rules just added (S5).
 fence
 
 rm -f /var/run/docker.pid

@@ -9,10 +9,13 @@ import (
 	"testing"
 )
 
-// The one host rule (the Windows app's WSL daemon runs with iptables off): forwarding is dropped only where source
-// and destination are both in the pool desktop networks come from, so no desktop reaches another, and nothing else -
-// another distro's Docker, a service published there, the way out - is touched. Added idempotently, taken out when
-// the daemon ends and at uninstall, and in no script but the WSL host's dockerd.sh (resource plan R3, narrowed).
+// The WSL host's two rules (its daemon runs with iptables off). The fence drops traffic routed - never bridged -
+// between two addresses of the pool desktop networks come from, so no desktop reaches another while every network
+// still carries its own traffic with br_netfilter on (review NET-R3 B1: bridged frames pass FORWARD then). The guard
+// drops NEW connections forwarded into the daemon's range from outside it (P1: a sibling distro's container came in
+// masqueraded as decurix-network's gateway). Both: put first on every start, before the already-running check (B4)
+// and again after the ACCEPT rules (S5), each earlier form taken out, taken out when the daemon ends and at
+// uninstall, and in no script but the WSL host's dockerd.sh.
 func TestTheDesktopFenceIsScopedToTheDesktopPool(t *testing.T) {
 	root := filepath.Join("..", "..")
 	read := func(rel string) string {
@@ -30,17 +33,42 @@ func TestTheDesktopFenceIsScopedToTheDesktopPool(t *testing.T) {
 	if pool == nil || base == nil || pool[1] != base[1] {
 		t.Fatalf("dockerd.sh's desktop_pool %v is not daemon.json's pool %v", pool, base)
 	}
-	insert := `iptables -I FORWARD 1 -s "$desktop_pool" -d "$desktop_pool" -j DROP`
-	check := `iptables -C FORWARD -s "$desktop_pool" -d "$desktop_pool" -j DROP 2>/dev/null ||`
-	if !strings.Contains(dockerd, check+"\n        "+insert) {
-		t.Error("the fence is not added idempotently (-C before -I) with source and destination both in the pool")
+	for _, want := range []string{
+		`fence_rule="-s $desktop_pool -d $desktop_pool -m physdev ! --physdev-is-bridged -j DROP"`,
+		`guard_rule="! -s $ours -d $ours -m conntrack --ctstate NEW -j DROP"`,
+		// Every form out first (so a restart adds nothing twice and each rule goes back on top), then each first.
+		`while iptables -C FORWARD $fence_rule 2>/dev/null; do iptables -D FORWARD $fence_rule; done`,
+		`while iptables -t mangle -C FORWARD $guard_rule 2>/dev/null; do iptables -t mangle -D FORWARD $guard_rule; done`,
+		`while iptables -C FORWARD -s "$desktop_pool" -d "$desktop_pool" -j DROP 2>/dev/null; do`,
+		`while iptables -C FORWARD -i br-+ -o br-+ -j DROP 2>/dev/null; do`,
+		`iptables -I FORWARD 1 $fence_rule`,
+		`iptables -t mangle -I FORWARD 1 $guard_rule`,
+	} {
+		if !strings.Contains(dockerd, want) {
+			t.Errorf("dockerd.sh lacks %s", want)
+		}
 	}
-	if regexp.MustCompile(`iptables -I FORWARD[^\n]*-i br-\+`).MatchString(dockerd) {
-		t.Error("a bridge-wide DROP is still added")
+	// The only FORWARD drop added is the physdev fence: an unrouted pool-wide one cut every network's own traffic
+	// with br_netfilter on, and a bridge-wide one did too.
+	for _, add := range regexp.MustCompile(`iptables (?:-t \S+ )?-I FORWARD[^\n]*`).FindAllString(dockerd, -1) {
+		if strings.Contains(add, "DROP") || !(strings.Contains(add, "$fence_rule") || strings.Contains(add, "$guard_rule") || strings.Contains(add, "-j ACCEPT")) {
+			t.Errorf("dockerd.sh adds %q", add)
+		}
 	}
-	if !strings.Contains(dockerd, `iptables -D FORWARD -s "$desktop_pool" -d "$desktop_pool" -j DROP`) ||
+	// fence runs before the already-running check (B4), and again after the ACCEPT rules (S5).
+	fenceAt := strings.Index(dockerd, "\nfence\n")
+	runningAt := strings.Index(dockerd, "running=$(pidof dockerd")
+	acceptAt := strings.Index(dockerd, `iptables -I FORWARD 1 "$side" "$ours" -j ACCEPT`)
+	lastFence := strings.LastIndex(dockerd, "\nfence\n")
+	if fenceAt < 0 || runningAt < 0 || fenceAt > runningAt {
+		t.Error("the fence is not put in place before the already-running check")
+	}
+	if acceptAt < 0 || lastFence < acceptAt {
+		t.Error("the fence is not put back above the ACCEPT rules")
+	}
+	if !regexp.MustCompile(`unfence\(\) \{\n    drop_all\n\}`).MatchString(dockerd) ||
 		!regexp.MustCompile(`wait "\$daemon"\nstatus=\$\?\n(?:#[^\n]*\n)*unfence\n`).MatchString(dockerd) {
-		t.Error("the fence is not taken out when the daemon ends")
+		t.Error("the rules are not taken out when the daemon ends")
 	}
 	if !strings.Contains(read("desktop/electron/installer.nsh"), "/opt/decurix/dockerd.sh unfence") {
 		t.Error("the uninstaller does not take the fence out")
