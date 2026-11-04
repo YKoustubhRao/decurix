@@ -328,6 +328,24 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
 - **Done: `approval.site_known` no longer reads the worker's task file.** On a gated desktop it reads the gate's own
   signed copy of the request, for the action's task only (e343065, 1890a94; [gate-boundary.md](gate-boundary.md)).
 
+## Phase 2: Python agent, false successes in eval run eb5fdd477d1eb6744 (round 9)
+
+- **Presave's block of an undeclared field this task set is ADVISORY** (`records.UNDECLARED_FIELD_BLOCKS = False`).
+  The final gate already refuses done over it (`records.gate_faults`). Make it blocking only after it passes the
+  replay gate (`agent/tests/test_replay_gate.py`) and a clean live round.
+- **An option the worker picked from an application's list is backed only by a source value:** a party resolved by
+  identifier, or the option's text in the request, its files or the person's answers (`records.given_text`). An
+  inference from the document, such as "Sales@18%" because the bill charges 18% GST, is now the person's to
+  confirm. Watch the next run for extra questions on ledger and account picks.
+- **The ledger basis needs the records this task's saves made to equal its declared, saved records**
+  (`core.records_created`, `records.gate_faults`). A party record created during the task without a `gui record`
+  declaration now holds done back too. Declare every record a task saves.
+- **A declared key already shown on an application page this task read** (a page's words, not the source document)
+  stops the declaration once and asks the person. A record deleted and entered again in the same task is refused as
+  "saved in this task already". It has to be corrected in place, or the person removes it.
+- **The person's answers are kept for the task's other processes** in its evidence notes
+  (`<task>.said`, withheld like every store), so `gui record` can count them as a source.
+
 ## Phase 2: Python agent, review round 2
 
 - **Comparators still outside `values.py`** (known divergences, each to move as its area is next touched):

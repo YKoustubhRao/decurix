@@ -271,6 +271,28 @@ def open_record(records, text=None, form=None):
     return unsaved[-1] if unsaved else None
 
 
+def saved_record(records, key=None, text=None):
+    """The record of this task already saved under `key` (or whose key stands in `text`, a form about to be saved),
+    or None - a second save of it makes a second record (review round 9, B)."""
+
+    for rec in reversed([r for r in records if r.get("saved_at")]):
+        if (key is not None and rec.get("key") == key) or (text and stands_in(rec.get("key", ""), text)):
+            return rec
+    return None
+
+
+def saved_again_text(rec):
+    """What a second save or declaration of a saved record is told."""
+
+    where = rec.get("window") or rec.get("saved") or "the application"
+    return (f"record {rec.get('key')} was saved in this task already (at {el_quote(where)}) - a second save makes a "
+            "second record of the same one. Open the saved record to correct it, and save that; never enter it again.")
+
+
+def el_quote(text):
+    return '"' + " ".join(str(text or "").split())[:120] + '"'
+
+
 # ------------------------------------------------------------------ declaring
 
 def is_picture(source):
@@ -295,6 +317,96 @@ def _source_text(source):
         return office.read_document(source)["text"]
     except Exception as exc:  # noqa: BLE001 - what cannot be read is said
         raise ComputerError(f"cannot read the record's source {source}: {exc}")
+
+
+_WORDS_PART = "The words the page showed outside its fields, in its order (in view or not):\n"
+_IN_VIEW_PART = "\nThe part in view, as the tool listed it:"
+
+
+def _key_on_an_app_page(key, source, task_id=None):
+    """Where `key` stood on a page of the application this task read (as a page's words, not a form's field - a list
+    or a record): the look's lead, or "". A look that names the record's own source (the document open on the
+    screen) is the document, not the application."""
+
+    try:
+        from decurix_agent.computer import evidence
+        looks = evidence.looks(task_id)
+    except Exception:  # noqa: BLE001 - nothing read, nothing shown
+        return ""
+    name = Path(str(source)).name if source and source != "screen" else ""
+    for look in looks:
+        if name and name.lower() in look.lower():
+            continue
+        start = look.find(_WORDS_PART)
+        if start == -1:
+            continue
+        words = look[start + len(_WORDS_PART):]
+        end = words.find(_IN_VIEW_PART)
+        words = words[:end] if end != -1 else words
+        if words.strip() and words.strip() != "(none)" and stands_in(key, words):
+            return "a list or a record it showed"
+    return ""
+
+
+def picked_options(task_id=None):
+    """The options this task picked from the application's own lists with a plain gui select - the worker's own
+    choice, which the list's offering it never backs (review round 9, A)."""
+
+    from decurix_agent.computer import evidence
+    return list(dict.fromkeys(" ".join(str(e["option"]).split()) for e in evidence._task_events(task_id)
+                              if e.get("outcome") in (None, "done") and e.get("kind") == "select" and e.get("option")))
+
+
+def given_text(task_id=None):
+    """What a picked option must stand in to be backed: the request, the files it brought, and the person's answers -
+    never the application's pages, whose option list is the menu, not a source for which entry to pick."""
+
+    parts = [task_context.current_request() or ""]
+    try:
+        from decurix_agent.tools import office
+        for path in (task_context.current_files() or [])[:12]:
+            try:
+                parts.append(str(office.read_document(str(path)).get("text") or "")[:MAX_PAGE_TEXT])
+            except Exception:  # noqa: BLE001 - a file not read backs nothing
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from decurix_agent import guidance
+        parts.append(guidance.answers(task_id))
+    except Exception:  # noqa: BLE001
+        pass
+    return "\n".join(parts)
+
+
+def resolved_names(task_id=None):
+    """The entries this task reached from a source value: a party found by its identifier (gui select --id), whose
+    summary names the document's value it was taken for."""
+
+    from decurix_agent.computer import evidence
+    out = []
+    for event in evidence._task_events(task_id):
+        m = re.search(r'took the entry "([^"]{1,120})"|Selected the entry "([^"]{1,120})"',
+                      str(event.get("summary") or ""))
+        if m:
+            out.append(m.group(1) or m.group(2))
+    try:
+        from decurix_agent.computer import resolve
+        out += [str(f["name"]) for f in resolve.facts(task_id) if f.get("status") == "matched" and f.get("name")]
+    except Exception:  # noqa: BLE001
+        pass
+    return list(dict.fromkeys(" ".join(v.split()) for v in out if v and v.strip()))
+
+
+def unbacked_picks(task_id=None):
+    """The options this task picked that nothing given backs: not a resolved entry, and in neither the request, its
+    files nor the person's answers. What the final check holds against the task (long_task.invented_typing)."""
+
+    picks = picked_options(task_id)
+    if not picks:
+        return []
+    resolved, given = resolved_names(task_id), given_text(task_id)
+    return [p for p in picks if not any(same_value(p, r, order="") for r in resolved) and not stands_in(p, given)]
 
 
 def chosen_values(task_id=None):
@@ -360,14 +472,26 @@ def declare(key, source, fields, scope="", task_id=None):
     source = str(source or "").strip()
     if not source:
         raise ComputerError("a record needs its source: --from PATH (the document it comes from) or --from screen")
+    # A record this task saved already is not declared again: a second save of it makes a second record (review round
+    # 9, B: a task tried again from the start declared and saved its bill twice).
+    done = saved_record(load(task_id), key=key)
+    if done is not None:
+        raise ComputerError("not declared - " + saved_again_text(done))
     text = _source_text(source)
+    # The key on a page of the application this task read before (a list, a record): it may be entered already - the
+    # task stops once and asks (review round 9, C: a bill already in the books was entered again).
+    shown = _key_on_an_app_page(key, source, task_id)
+    if shown and stop_once(task_id, f"already-{key}"):
+        raise ComputerError(f"not declared - {key} stands on a page of the application this task read ({shown}): it "
+                            "may be entered already. Ask the person (HELP) whether it is already in the application "
+                            "before entering it; with their answer, declare it again.")
     # The order this source writes its digit dates in, from its own dates that cannot be read the other way (a bill
     # writing 28/09/2026 is day first), else the task's: kept on the record, so the save reads its dates by it.
     from decurix_agent import binding
     source_order = binding.date_order([text]) or task_context.source_date_order()
     picture = is_picture(source)
-    elsewhere = chosen = None
-    kept, unsourced, partial = {}, [], []
+    elsewhere = chosen = picks = None
+    kept, unsourced, partial, unbacked = {}, [], [], []
     for label, value in fields.items():
         label = " ".join(str(label).split())
         value = " ".join(str(value if value is not None else "").split())[:MAX_VALUE]
@@ -385,9 +509,30 @@ def declare(key, source, fields, scope="", task_id=None):
             continue
         if chosen is None:
             chosen = chosen_values(task_id)
+            picks = picked_options(task_id)
+            given = None
         if any(compare_shown(c, value, source_order).same is True for c in chosen):
-            kept[label] = {"intent": value, "from": "chosen"}  # an entry of the application's own list
+            # An entry of the application's own list - backed only when it was reached from a source value: resolved
+            # by identifier, or written in the request, its files or the person's answers. An option the worker picked
+            # itself is no source for itself (review round 9, A: "General" picked for a cost centre no source gives
+            # was declared, saved and passed as checked).
+            mine = any(same_value(p, value, order="") for p in picks)
+            if mine and not any(same_value(r, value, order="") for r in resolved_names(task_id)):
+                if given is None:
+                    given = given_text(task_id)
+                if not stands_in(value, given):
+                    unbacked.append(f"{label}: {value}")
+                    continue
+            kept[label] = {"intent": value, "from": "chosen"}
             continue
+        if any(same_value(p, value, order="") for p in (picks or [])):
+            # (A value the worker picked from a list, standing only on the pages it read - the list itself - is no
+            # more backed than above.)
+            if given is None:
+                given = given_text(task_id)
+            if not stands_in(value, given) and not any(same_value(r, value, order="") for r in resolved_names(task_id)):
+                unbacked.append(f"{label}: {value}")
+                continue
         if elsewhere is None:
             elsewhere = _elsewhere_text()
         if stands_in(value, elsewhere, source_order):
@@ -402,6 +547,12 @@ def declare(key, source, fields, scope="", task_id=None):
         raise ComputerError("not declared - a code is the document's only whole, as the document writes it: "
                             + "; ".join(partial) + ". Declare the whole token and type it whole; if the application's "
                             "field cannot hold it, leave the record undeclared and ask the person - never a part of it.")
+    if unbacked:
+        raise ComputerError("not declared - these values are options you picked from the application's own list, and "
+                            "nothing given backs them (not the source, the request, its files or the person's "
+                            "answers): "
+                            + "; ".join(unbacked) + ". The list offering an option does not say which one this record "
+                            "takes: ask the person (HELP) which one, then declare it.")
     if unsourced:
         raise ComputerError("not declared - these values stand neither in the source nor in anything this task read "
                             "or was told: " + "; ".join(unsourced) + ". Declare each value as the DOCUMENT writes it "
@@ -533,8 +684,9 @@ def presave(rec, form_fields):
     return blocking, advisory, len(matched)
 
 
-def note_presave(rec, blocking, task_id=None):
-    """Keep the last pre-save diff on the record (what blocked, how many checks)."""
+def note_presave(rec, blocking, task_id=None, undeclared=None):
+    """Keep the last pre-save diff on the record (what blocked, how many checks, and the fields this task set on the
+    form that the record does not declare - what the final check holds against a saved record)."""
 
     task_id = task_id or task_context.current()
     records = load(task_id)
@@ -542,6 +694,8 @@ def note_presave(rec, blocking, task_id=None):
         if r.get("key") == rec.get("key") and r.get("declared_at") == rec.get("declared_at"):
             r["checks"] = int(r.get("checks") or 0) + 1
             r["last_blocked"] = blocking[:12]
+            if undeclared is not None:
+                r["undeclared"] = [f"{l}={v}" for l, v in undeclared][:12]
             for label, f in rec.get("fields", {}).items():
                 if f.get("entered") and label in r.get("fields", {}):
                     r["fields"][label]["entered"] = f["entered"]
@@ -639,6 +793,51 @@ def facts(task_id=None):
         elif (rec.get("readback") or {}).get("absent"):
             out.append(f"record {rec['key']} was saved but the page did not show: "
                        + ", ".join(f"{l}={rec['fields'][l]['intent']}" for l in rec["readback"]["absent"]))
+    return out
+
+
+# Whether presave blocks a save over a field the task set that no declaration covers. ADVISORY until it passes the
+# replay gate (CLAUDE.md: a new code check ships advisory); the final check holds it against a saved record now.
+UNDECLARED_FIELD_BLOCKS = False
+
+
+def undeclared_task_fields(rec, form_fields, task_set):
+    """[(label, value)] of the form's filled fields that this task set (`task_set`: labels typed or chosen into this
+    form) and the record does not declare (review round 9, A)."""
+
+    declared = [l for l, f in (rec.get("fields") or {}).items()]
+    out = []
+    for label, value in form_fields:
+        if not str(value if value is not None else "").strip():
+            continue
+        if not any(label_matches(t, label) or label_words(t) == label_words(label) for t in task_set):
+            continue
+        if any(label_matches(d, label) or label_words(d) == label_words(label) for d in declared):
+            continue
+        out.append((str(label), str(value)))
+    return out
+
+
+def gate_faults(task_id=None, created=None):
+    """
+    What the final check holds against the task's saved records, decided in code (review round 9): a field this task
+    set on a saved record's form that no declaration covers, and more records made by this task's saves (`created`,
+    the saves that made a new record) than the declared records it saved - a save outside the ledger, or one record
+    saved twice. [] when none, or when the task declared no record.
+    """
+
+    found = load(task_id)
+    if not found:
+        return []
+    out = []
+    for rec in found:
+        if rec.get("saved_at") and rec.get("undeclared"):
+            out.append(f"record {rec['key']} was saved with " + ", ".join(rec["undeclared"][:6])
+                       + " - a value this task set that no declaration backs")
+    saved = sum(1 for r in found if r.get("saved_at"))
+    if created is not None and created > saved:
+        out.append(f"this task's saves made {created} new record(s), and {saved} declared record(s) were saved: a "
+                   "save outside the declared records, or the same record saved twice")
     return out
 
 

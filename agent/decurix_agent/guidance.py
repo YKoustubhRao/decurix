@@ -111,6 +111,33 @@ def note_exchange(asked, reply):
     if reply:
         _exchanges["said"].append((" ".join(str(asked or "").split())[:400], reply[:800]))
         del _exchanges["said"][:-MAX_EXCHANGES]
+        # Kept for the task's other processes too (the `gui record` command): the person's answers are a source a
+        # record's value may come from (records.declare, review round 9). Withheld like every store.
+        try:
+            from decurix_agent.computer import evidence, privacy
+            if tid:
+                evidence.NOTES_DIR.mkdir(parents=True, exist_ok=True)
+                privacy.write_scrubbed(evidence.NOTES_DIR / f"{tid}.said", {"reply": reply[:800]}, append=True,
+                                       end="\n")
+        except Exception as exc:  # noqa: BLE001 - the in-process copy stays
+            log(f"guidance: could not keep the person's answer for the task's other processes: {exc}")
+
+
+def answers(task_id=None):
+    """The person's answers during the task, as one text, from every process ("" when none were kept)."""
+
+    tid = task_id or task_context.current()
+    out = [a for _, a in _exchanges["said"]] if _exchanges["task"] == tid else []
+    try:
+        from decurix_agent.computer import evidence
+        for line in (evidence.NOTES_DIR / f"{tid}.said").read_text(encoding="utf-8").splitlines():
+            try:
+                out.append(str(json.loads(line).get("reply") or ""))
+            except ValueError:
+                continue
+    except (OSError, TypeError):
+        pass
+    return "\n".join(dict.fromkeys(a for a in out if a))
 
 
 def said_this_task():

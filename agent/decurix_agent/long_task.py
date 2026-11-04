@@ -3890,7 +3890,11 @@ def _typed_count():
         return None
 
 
-def invented_typing(typed, request):
+# How invented_typing's finding on options picked with no backing begins (the final gate puts it to the person).
+CHOSEN_UNBACKED = "Chosen in a form from the application's own list, and backed by nothing given"
+
+
+def invented_typing(typed, request, chosen=()):
     """
     Values typed into forms that no source holds: a placeholder (9999999999, test, n/a, x@example.com), or a fact - an
     address, a date, a code, a figure of 100 or more - that neither the request, its files, the person's messages, the
@@ -3898,9 +3902,15 @@ def invented_typing(typed, request):
     Found live (2026-10-20, P4): a joiner onboarded with phone 9999999999 - the tracker had her number.
     """
 
+    # Options picked from an application's own list that nothing given backs (`chosen`: records.unbacked_picks): the
+    # list offering one never says which this record takes (review round 9, A).
+    picked = [str(v) for v in dict.fromkeys(chosen or ()) if str(v).strip()]
+    picked_line = ([CHOSEN_UNBACKED + " (the request, its "
+                    "files, the person's answers): " + ", ".join(repr(v) for v in picked[:6]) + ". Ask the person "
+                    "(HELP) which entry it takes, then correct the record in the application."] if picked else [])
     typed = [v for v in dict.fromkeys(typed) if str(v).strip()]
     if not typed:
-        return []
+        return picked_line
     # (A failure raises: the caller makes it a check not made - never a pass.)
     from decurix_agent import filler
     texts = filler.source_texts(request, [i.split(" (= ")[0] for i in run_inputs(request)])
@@ -3917,12 +3927,13 @@ def invented_typing(typed, request):
         made_up += [repr(s) for s in sources.unsourced(value, operands=typed_figures)]
     made_up = list(dict.fromkeys(made_up))
     if not made_up:
-        return []
-    return ["Typed into a form, and held by no source (the request, its files, the person's messages, the system's "
-            "pages, your recorded working): " + ", ".join(made_up[:6]) + ". Find the real value in the sources "
-            "(format it to what the field accepts) - a value you worked out goes into a working file first - correct "
-            "the record in the application, and say what was entered; if it cannot be corrected there, write the "
-            "WRONG IN THE APPLICATION line for it."]
+        return picked_line
+    return picked_line + [
+        "Typed into a form, and held by no source (the request, its files, the person's messages, the system's "
+        "pages, your recorded working): " + ", ".join(made_up[:6]) + ". Find the real value in the sources "
+        "(format it to what the field accepts) - a value you worked out goes into a working file first - correct "
+        "the record in the application, and say what was entered; if it cannot be corrected there, write the "
+        "WRONG IN THE APPLICATION line for it."]
 
 
 def doubtful_typing(typed, request, made=()):

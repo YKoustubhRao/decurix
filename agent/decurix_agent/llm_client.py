@@ -178,12 +178,15 @@ def chat(messages, tools=None, model="default", max_tokens=4000, temperature=Non
     usage.add(input_tokens=spent.get("prompt_tokens"), output_tokens=spent.get("completion_tokens"))
 
     message = choices[0].get("message") or {}
-    if (choices[0].get("finish_reason") == "length" and not (message.get("content") or "").strip()
-            and not message.get("tool_calls") and max_tokens < EMPTY_RETRY_TOKENS):
-        # A reasoning model can spend the whole budget thinking and answer nothing. Found live (2026-11-01): reading a
-        # request against the taught tasks got an empty answer at 800 tokens, and a taught task went to the engine
-        # as a request it had never seen. Once more, with room to answer.
-        log(f"llm: the model used all {max_tokens} tokens and answered nothing - asking again with {EMPTY_RETRY_TOKENS}")
+    if (choices[0].get("finish_reason") == "length" and not message.get("tool_calls")
+            and max_tokens < EMPTY_RETRY_TOKENS):
+        # A reasoning model can spend the whole budget thinking and answer nothing - or answer half. Found live
+        # (2026-11-01): reading a request against the taught tasks got an empty answer at 800 tokens, and a taught task
+        # went to the engine as a request it had never seen. Found in an eval (2026-11-04, review round 9): the final
+        # check's answer was cut off mid-JSON, so the check was not made, and the task was run again and saved a
+        # second bill. An answer cut off at the limit is no answer: once more, with room to answer.
+        cut = "answered nothing" if not (message.get("content") or "").strip() else "was cut off"
+        log(f"llm: the model used all {max_tokens} tokens and {cut} - asking again with {EMPTY_RETRY_TOKENS}")
         return chat(messages, tools=tools, model=model, max_tokens=EMPTY_RETRY_TOKENS, temperature=temperature,
                     response_format=response_format, purpose=purpose)
     return message, spent

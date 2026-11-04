@@ -549,7 +549,8 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
     def ask(parts):
         try:
             message, spent = llm_client.chat([{"role": "system", "content": JUDGE_SYSTEM},
-                                              {"role": "user", "content": parts}], max_tokens=600, purpose=purpose)
+                                              {"role": "user", "content": parts}], max_tokens=JUDGE_TOKENS,
+                                             purpose=purpose)
             found = _parse(message.get("content") or "")
         except (llm_client.LLMError, ValueError) as exc:
             log(f"verify: could not judge: {exc}")
@@ -650,9 +651,20 @@ def _shared_inputs(task):
     return out
 
 
+# The judge's answer budget: room for a reasoning model's thinking and its verdict, still bounded (600 cut a reasoning
+# model's answer off mid-JSON - review round 9).
+JUDGE_TOKENS = 4000
+
+
+class CutOff(ValueError):
+    """The check's answer stopped before its JSON ended: the check was not made (never read as a verdict)."""
+
+
 def _parse(text):
     match = re.search(r"\{.*\}", text or "", re.DOTALL)
     if not match:
+        if "{" in (text or ""):
+            raise CutOff(f"the check's answer was cut off before it ended: {text[:200]!r}")
         raise ValueError(f"the check did not answer in JSON: {text[:200]!r}")
     data = json.loads(match.group(0))
     verdict = str(data.get("verdict") or "").strip().lower().replace(" ", "_")

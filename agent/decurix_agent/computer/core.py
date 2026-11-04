@@ -2262,12 +2262,28 @@ def _ledger_check(form_fields):
     from decurix_agent.computer import evidence, records
 
     try:
-        rec = records.open_record(records.load(), " | ".join(str(v) for _, v in form_fields if v), form=form_fields)
+        found = records.load()
+        form_text = " | ".join(str(v) for _, v in form_fields if v)
+        rec = records.open_record(found, form_text, form=form_fields)
     except Exception:  # noqa: BLE001 - a ledger that cannot be read judges nothing
         return None
+    events = _task_events_now()
     if rec is None:
+        # A new record's form holding the key of a record this task saved already: the second save would make a second
+        # record (review round 9, B: a task tried again from the start saved its bill twice, outside the ledger).
+        done = records.saved_record(found, text=form_text)
+        if done is not None and _new_record_fields(events)[1]:
+            return ("Not pressed: " + records.saved_again_text(done), False, [])
         return None
     blocking, advisory, matched = records.presave(rec, form_fields)
+    # A field this task set on the form that the record does not declare: its value has no source on record. ADVISORY
+    # at the save until it passes the replay gate (records.UNDECLARED_FIELD_BLOCKS); the final check holds it against
+    # the saved record (records.gate_faults) - review round 9, A.
+    undeclared = records.undeclared_task_fields(rec, form_fields, [label for label, _ in _current_form(events)])
+    if undeclared:
+        line = ("this task set " + ", ".join(f"{l}={v}" for l, v in undeclared[:6]) + " and no declaration covers it: "
+                "declare it with its source (gui record), or ask the person (HELP) for it")
+        (blocking if records.UNDECLARED_FIELD_BLOCKS else advisory).append(line)
     key = rec.get("key")
     if rec.get("scope"):
         try:
@@ -2284,7 +2300,7 @@ def _ledger_check(form_fields):
                         "right and only worded otherwise, save again.", False, [])
             advisory.append(f"the window does not show the scope words {', '.join(missing)}")
     try:
-        records.note_presave(rec, blocking)
+        records.note_presave(rec, blocking, undeclared=undeclared)
     except Exception:  # noqa: BLE001
         pass
     if blocking:
@@ -2296,6 +2312,43 @@ def _ledger_check(form_fields):
     wanted = sum(1 for f in rec.get("fields", {}).values() if f.get("intent"))
     clean = matched >= max(1, (wanted + 1) // 2)
     return "", clean, ([f"record {key}: {matched} of {wanted} declared values match the form"] + advisory)
+
+
+def _task_events_now():
+    """The task's recorded events, oldest first; [] when there is no task or no record of it."""
+
+    try:
+        from decurix_agent import task_context
+        from decurix_agent.computer import recording
+        task_id = task_context.current()
+        if not task_id:
+            return []
+        return recording.load(recording.session_for_task(task_id))[1]
+    except (FileNotFoundError, OSError, ValueError, ImportError):
+        return []
+
+
+def records_created(events):
+    """How many of the task's saves made a new record: a save answered as saved, pressed on a new record's page (its
+    address .../new, /create, /add) - what the ledger's declared records must equal (review round 9, B)."""
+
+    created, new_page = 0, False
+    for event in events:
+        if event.get("outcome") not in (None, "done"):
+            continue
+        change = str(event.get("change") or "")
+        if _FORM_START.search(change) or _FORM_START.search("page is now " + str(event.get("target") or "")):
+            new_page = True
+        if event.get("kind") in ("click", "key") and _saved(change) and new_page:
+            created += 1
+            new_page = False
+            continue
+        moved = re.search(r"page is now (\S+)", change)
+        if moved:
+            new_page = bool(_NEW_RECORD_PAGE.search("page is now " + moved.group(1).rstrip(";,")))
+        elif _NEW_RECORD_PAGE.search(change) or _NEW_RECORD_PAGE.search(str(event.get("target") or "")):
+            new_page = True
+    return created
 
 
 def _ledger_readback(after, change_text):

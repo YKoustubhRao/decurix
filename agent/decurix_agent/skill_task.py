@@ -1505,9 +1505,52 @@ def _basis(checked_by, code=False):
     basis = {checked_by} if checked_by else set()
     if code:
         basis.add("code")
-    if records.all_read_back(task_context.current()):
+    # Every declared record read back - and no save outside them: the records this task's saves made equal the
+    # declared records it saved (review round 9, B: a second save, outside the ledger, passed as "every declared
+    # record read back").
+    if records.all_read_back(task_context.current()) and not _ledger_faults():
         basis.add("ledger")
     return sorted(basis)
+
+
+def _ledger_faults(reply=""):
+    """What code holds against the task's saved records (records.gate_faults: an undeclared field this task set, more
+    records made than declared), and each item of the report's JUDGEMENTS list the worker itself marked "| not backed"
+    (the protocol's own marker): points decided in code, which no judge may pass. [] when none. Never raises - a
+    check that cannot be made says so."""
+
+    from decurix_agent.computer import core, records
+    try:
+        found = records.gate_faults(task_context.current(), created=core.records_created(core._task_events_now()))
+    except Exception as exc:  # noqa: BLE001 - not made, never passed
+        found = [f"the saved records could not be checked against the declared ones ({type(exc).__name__})"]
+    return found + [f"the report itself says: {item}" for item in not_backed_items(reply)]
+
+
+_JUDGEMENTS_HEAD = re.compile(r"(?im)^[ \t>*_#-]*JUDG(?:E)?MENTS?[ \t*_]*:[ \t]*(.*)$")
+_JUDGEMENT_ITEM = re.compile(r"^\s*(?:[-*\u2022]|\d{1,2}[.)])\s+(.+)$")
+_NOT_BACKED = re.compile(r"(?i)\|\s*not backed\b")
+_CONTROL_LINE = re.compile(r"(?im)^\s*(?:DONE|COMMAND|HELP)\s*:")
+
+
+def not_backed_items(report):
+    """The items of a report's JUDGEMENTS list that carry the list's own "| not backed" marker (soul's judgements.go
+    protocol): a call that rests on nothing given. Words inside a call never decide it - only the marker."""
+
+    text = str(report or "")
+    head = _JUDGEMENTS_HEAD.search(text)
+    if not head:
+        return []
+    out = []
+    lines = ([head.group(1)] if head.group(1).strip() else []) + text[head.end():].splitlines()
+    for line in lines:
+        if _CONTROL_LINE.match(line):
+            break
+        item = _JUDGEMENT_ITEM.match(line)
+        body = item.group(1) if item else line
+        if _NOT_BACKED.search(body):
+            out.append(" ".join(body.split())[:300])
+    return out
 
 
 def _keep_noted_since(skill):
@@ -3109,7 +3152,9 @@ def _invented_typing():
 
     try:
         from decurix_agent import long_task
-        return long_task.invented_typing(long_task._entered(), state.current_task or ""), []
+        from decurix_agent.computer import records
+        return long_task.invented_typing(long_task._entered(), state.current_task or "",
+                                         chosen=records.unbacked_picks(task_context.current())), []
     except Exception as exc:  # noqa: BLE001 - not made, never passed
         log(f"Could not check typed values: {exc}")
         return [], [f"the values typed into forms could not be checked against the sources ({type(exc).__name__})"]
@@ -3409,6 +3454,12 @@ def _gate(reply, kind, engine):
         facts.file_faults.extend(f for f in typed_found if f not in facts.file_faults)
         gate_not_made += typed_failed
     facts.could_not.extend(gate_not_made)
+    ledger_faults = _ledger_faults(reply)
+    # An option picked with no backing is the person's to give, like a ledger fault (long_task.invented_typing).
+    from decurix_agent import long_task as _long_task
+    picked = [f for f in facts.file_faults if f.startswith(_long_task.CHOSEN_UNBACKED)]
+    facts.file_faults = [f for f in facts.file_faults if f not in picked]
+    ledger_faults += picked
     made = made + host_copies
     # Evidence, never a verdict (harness audit, 2026-10-21): what reads the request or needs judgement goes to the
     # judge to weigh and, on a done, to the person under "Please check"; figures that include rows an input repeats
@@ -3441,6 +3492,15 @@ def _gate(reply, kind, engine):
                    "why": "An email draft states a value no source gives. Take each fact from the sources (the "
                           "request's files, the person's messages, the system's pages, your recorded working) and "
                           "replace the draft (office email --replaces <its id>)."}
+    elif ledger_faults:
+        # No model is asked: a saved record's value no source backs, a save outside the declared records, or a call the
+        # report itself marks "not backed" is a fact code decides - and the person is the one to give the value (review
+        # round 9, A and B: each was judged done, and the application kept a guessed cost centre or a second bill).
+        verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "; ".join(ledger_faults)[:600],
+                   "why": "A record saved in the application holds a value nothing given backs, or a record was saved "
+                          "outside the declared ones. Ask the person (HELP) for each value no source gives, then "
+                          "correct the saved record in the application (never enter it again); a record saved twice "
+                          "is the person's to remove - write the WRONG IN THE APPLICATION line for it."}
     elif facts.missing_files:
         # No model is asked: whether a file the request named was written is a fact about the disk.
         verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": facts.missing_files,
@@ -3849,6 +3909,18 @@ def _calls_off(reply, said=""):
         return False
 
 
+# How many times a check that could not be made is made again after a reply that settled nothing (_confirm_reply).
+MAX_RECHECKS = 2
+_rechecks = {}
+
+
+def _check_not_made(verdict):
+    """Whether a paused verdict is a check that was not made (it failed, or its answer was cut off), not a check that
+    looked and doubted."""
+
+    return str((verdict or {}).get("why") or "").startswith("the check could not be made")
+
+
 def _confirm_reply(paused, reply):
     """The person's answer to "I cannot confirm this is done" - after an engine's run or a replay's."""
 
@@ -3881,6 +3953,17 @@ def _confirm_reply(paused, reply):
     # what is wrong and tried again with their words - never as a confirmation.
     said = _done_reading(reply, seen)
     choice, told = said["choice"], said["instruction"]
+
+    # The check itself was not made (it failed, or its answer was cut off) and the reply settles nothing - no
+    # confirmation, no stop, no correction: the check is made again, never the work. Found in an eval (review round 9):
+    # a cut-off check, then "I don't know that", re-ran the whole task, which saved a second bill. Bounded.
+    if run is None and _check_not_made(paused["verdict"]) and (choice == "unclear" or (choice in ("redo", "correction")
+                                                                                        and not told.strip())):
+        tried = _rechecks.get(task_context.current(), 0)
+        if tried < MAX_RECHECKS:
+            _rechecks[task_context.current()] = tried + 1
+            progress.emit("Checking it again - the check could not be made the first time.")
+            return write_final_reply(claim, kind="final", engine=engine)
 
     opens = (approval._bare(reply).split() or [""])[0]
     # With no model to read it, a reply that opens like a yes but says something is still to do ("Right, the ticket
