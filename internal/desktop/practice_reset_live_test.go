@@ -107,6 +107,46 @@ func TestPracticeResetLive(t *testing.T) {
 			t.Errorf("the gate's key changed with the reset: %s before, %s after", keyBefore, out)
 		}
 	}
+
+	// The next case's worker must own its state folder again: live (LIVE-2 round 3, F-R3-2), ~/.decurix came back
+	// an empty root:root 755 folder after a reset, and every case after the first failed on a PermissionError.
+	workerOwns := func(when string) {
+		t.Helper()
+		if out, _ := liveExec(ctx, cli, id, "root", "stat -c '%U:%G %a' /home/headless/.decurix 2>&1"); !strings.HasPrefix(out, "headless:headless ") {
+			t.Errorf("%s: ~/.decurix is %q, not the worker's", when, out)
+		}
+		if out, _ := liveExec(ctx, cli, id, "headless", "mkdir -p ~/.decurix/computer ~/.decurix/recordings && touch ~/.decurix/computer/probe && echo ok"); out != "ok" {
+			t.Errorf("%s: the worker cannot write its state folder: %q", when, out)
+		}
+	}
+	workerOwns("after a reset")
+
+	// A case's bundle is pulled before the next reset (runs.Puller through PracticeHome): its reads, most of them of
+	// paths a case may not have made, and EXPORTED written back. Then the next case's reset.
+	home := PracticeHome{M: m}
+	for _, p := range []string{"/home/headless/.decurix/runs/t1", "/home/headless/.decurix/computer/evidence/t1.records.json",
+		"/home/headless/.decurix/ai/traces/t1.jsonl", "/home/headless/.decurix/recordings/task-t1/meta.json"} {
+		if rc, err := home.ReadTar(ctx, id, p, 1<<20); err == nil {
+			rc.Close()
+		}
+	}
+	var exported bytes.Buffer
+	tw := tar.NewWriter(&exported)
+	for _, dir := range []string{".decurix/", ".decurix/runs/", ".decurix/runs/t1/"} {
+		_ = tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: dir, Mode: 0o700, ModTime: time.Now()})
+	}
+	body := []byte("x1\nsha\n\n")
+	_ = tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: ".decurix/runs/t1/EXPORTED", Mode: 0o600, Size: int64(len(body)), ModTime: time.Now()})
+	_, _ = tw.Write(body)
+	_ = tw.Close()
+	if err := home.WriteTar(ctx, id, "/home/headless", &exported); err != nil {
+		t.Errorf("EXPORTED could not be written back: %v", err)
+	}
+	if err := m.ResetPractice(ctx, id, empty.Bytes()); err != nil {
+		t.Fatalf("the second reset failed: %v", err)
+	}
+	waitHealthy("after the second reset")
+	workerOwns("after a bundle pull and the next reset")
 }
 
 // liveExec runs a shell line in a container as user and returns its trimmed standard output.

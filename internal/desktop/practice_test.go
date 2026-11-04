@@ -30,6 +30,8 @@ type practiceDaemon struct {
 	calls           []string
 	created         []map[string]any
 	copiedTo        map[string][]map[string]string // "<container>:<path>" -> tars' files
+	copiedRaw       map[string][][]byte            // "<container>:<path>" -> the tars as sent
+	copiedUIDGID    map[string][]string            // "<container>:<path>" -> each copy's copyUIDGID
 	paused          map[string]bool
 	readWhilePaused bool
 	netExists       bool
@@ -118,6 +120,11 @@ func (d *practiceDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			d.copiedTo = map[string][]map[string]string{}
 		}
 		d.copiedTo[key] = append(d.copiedTo[key], tarFiles(b))
+		if d.copiedRaw == nil {
+			d.copiedRaw, d.copiedUIDGID = map[string][][]byte{}, map[string][]string{}
+		}
+		d.copiedRaw[key] = append(d.copiedRaw[key], b)
+		d.copiedUIDGID[key] = append(d.copiedUIDGID[key], r.URL.Query().Get("copyUIDGID"))
 		w.WriteHeader(200)
 	case strings.HasSuffix(p, "/archive") && r.Method == "GET":
 		id, at := strings.Split(p, "/")[2], r.URL.Query().Get("path")
@@ -463,6 +470,22 @@ func TestResetAndCleanupPractice(t *testing.T) {
 	stop, restore, start := strings.Index(joined, "/containers/desk/stop"), strings.Index(joined, "PUT /containers/desk/archive"), strings.LastIndex(joined, "/containers/desk/start")
 	if stop < 0 || restore < stop || start < restore {
 		t.Fatalf("snapshot not restored while stopped: %s", joined)
+	}
+	// The restored state is the worker's: every entry owned by its uid, and copied without copyUIDGID, which would
+	// chown it all to the container's configured user, root (LIVE-2 round 3, F-R3-2).
+	key := "desk:/home/headless"
+	if len(d.copiedRaw[key]) != 1 || d.copiedUIDGID[key][0] == "true" || d.copiedUIDGID[key][0] == "1" {
+		t.Fatalf("snapshot copies %d, copyUIDGID %q", len(d.copiedRaw[key]), d.copiedUIDGID[key])
+	}
+	tr := tar.NewReader(bytes.NewReader(d.copiedRaw[key][0]))
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			break
+		}
+		if h.Uid != 1001 || h.Gid != 1001 {
+			t.Fatalf("%s is owned by %d:%d, not the worker", h.Name, h.Uid, h.Gid)
+		}
 	}
 	d.calls = nil
 	if err := m.CleanupPractice(ctx); err != nil {

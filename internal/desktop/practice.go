@@ -586,14 +586,18 @@ func (m *Manager) restoreSnapshot(ctx context.Context, id string, snapshot []byt
 	if err != nil {
 		return err
 	}
-	return m.client.CopyToContainer(ctx, id, path.Dir(practiceDecurixDir), bytes.NewReader(under), container.CopyToContainerOptions{CopyUIDGID: true})
+	// Not CopyUIDGID: with it the daemon chowns every entry to the container's configured user, which for a desktop is
+	// root (the entrypoint starts as root and drops to the worker). A ~/.decurix the reset had cleared then came back an
+	// empty root:root 755 folder, and every case after the first failed on a PermissionError (LIVE-2 round 3, F-R3-2).
+	// Without it the daemon keeps the tar's own owner, which underFolder makes the worker's on every entry.
+	return m.client.CopyToContainer(ctx, id, path.Dir(practiceDecurixDir), bytes.NewReader(under), container.CopyToContainerOptions{})
 }
 
 // practiceUID is the desktop user's uid and gid in the desktop image.
 const practiceUID = 1001
 
 // underFolder rewrites a tar so every entry sits under folder/, led by the
-// folder's own directory entry owned by uid.
+// folder's own directory entry, every entry owned by uid.
 func underFolder(archive []byte, folder string, uid int) ([]byte, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -617,6 +621,7 @@ func underFolder(archive []byte, folder string, uid int) ([]byte, error) {
 			name += "/"
 		}
 		h.Name = folder + "/" + name
+		h.Uid, h.Gid, h.Uname, h.Gname = uid, uid, "", ""
 		if err := tw.WriteHeader(h); err != nil {
 			return nil, err
 		}
