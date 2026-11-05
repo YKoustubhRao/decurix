@@ -284,7 +284,7 @@ def _token_budget(skill):
 
 def _call(system, content, max_tokens=6000):
     message, _ = llm_client.chat([{"role": "system", "content": system}, {"role": "user", "content": content}],
-                                     max_tokens=max_tokens, response_format={"type": "json_object"})
+                                 max_tokens=max_tokens, response_format={"type": "json_object"}, purpose="py.study")
     text = message.get("content") or ""
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if not match:

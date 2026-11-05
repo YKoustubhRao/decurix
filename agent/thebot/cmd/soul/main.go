@@ -10,10 +10,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,10 +27,13 @@ import (
 	"thebot/internal/feedback"
 	"thebot/internal/llm"
 	"thebot/internal/memory"
+	"thebot/internal/migrate"
 	"thebot/internal/rag"
 	"thebot/internal/scheduler"
 	"thebot/internal/session"
 	"thebot/internal/skills"
+	"thebot/internal/trace"
+	"thebot/internal/withheld"
 	"thebot/internal/workspace"
 	"thebot/web"
 )
@@ -46,20 +53,41 @@ type jobRecord struct {
 	// FinalAnswer (see scheduler.Outcome).
 	Outcome  scheduler.Outcome
 	Question string
-	Route    string
-	Steps    []scheduler.StepRecord
-	Resumed  bool
-	Log      []string
+	// Secret is set when the answer to Question is a secret (scheduler.Job.Secret): "secret" in the job's JSON.
+	Secret  bool
+	Route   string
+	Steps   []scheduler.StepRecord
+	Resumed bool
+	Log     []string
 	// Usage is what this job's model calls read and wrote (llm.Metered).
-	Usage       *llm.Usage
+	Usage *llm.Usage
+	// secrets are this job's own secret values (C14): what its request was sent with, and those of the paused job it
+	// resumes (scheduler.Checkpoint.Secrets). They are withheld from everything the job logs and answers, and never
+	// cut for room. Another job's values never touch this job's text.
+	secrets withheld.Values
+	// TaskID is the control plane's task the job was sent for ("" when none was named).
+	TaskID      string
+	startedAt   time.Time
 	cancel      context.CancelFunc
 	done        chan struct{}
 	subscribers map[chan string]bool
 }
 
 func newJobRecord(id, prompt string) *jobRecord {
-	return &jobRecord{ID: id, Prompt: prompt, Status: "running", done: make(chan struct{}), subscribers: map[chan string]bool{}}
+	return &jobRecord{ID: id, Prompt: prompt, Status: "running", startedAt: time.Now(), done: make(chan struct{}), subscribers: map[chan string]bool{}}
 }
+
+const (
+	// maxRunningJobs caps how many jobs run at once. Each job is a model-driven loop that holds memory and a worker
+	// shell, and the worker (which reads untrusted email and web pages) drives soul's API; without a cap, a flood of
+	// /api/chat posts spawns unbounded goroutines and job records. Over the cap a new request is refused (429) rather
+	// than queued, so the caller backs off instead of soul growing without bound. The scheduler's own model-
+	// concurrency limit (llm.Limited) still bounds the model calls these running jobs make.
+	maxRunningJobs = 16
+	// maxJobRecords bounds how many finished job records are kept for status reads; the oldest finished ones are
+	// pruned past it, so the jobs map does not grow for the life of the process.
+	maxJobRecords = 256
+)
 
 // finish marks the job complete - a real channel close, not a magic
 // string threaded through the log line stream (that was tried first and
@@ -85,8 +113,11 @@ func (j *jobRecord) isDone() bool {
 	}
 }
 
+// appendLog adds a line to the job's log and stream, with the job's secret values withheld: a step's text
+// ("$ gui type e3 '...'") leaves soul without them (C14).
 func (j *jobRecord) appendLog(line string) {
 	j.mu.Lock()
+	line = skills.MaskTypedText(j.secrets.Text(line)) // and what a gui type types, never shown (F-S3)
 	j.Log = append(j.Log, line)
 	subs := make([]chan string, 0, len(j.subscribers))
 	for ch := range j.subscribers {
@@ -116,20 +147,101 @@ func (j *jobRecord) unsubscribe(ch chan string) {
 	j.mu.Unlock()
 }
 
+// snapshot is the job as /api/jobs and the stream answer it, with the job's secret values withheld in every string.
 func (j *jobRecord) snapshot() map[string]any {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	promptTokens, responseTokens, calls := j.Usage.Snapshot()
-	return map[string]any{
+	return scrubbed(map[string]any{
 		"id": j.ID, "prompt": j.Prompt, "status": j.Status,
-		"plan": j.Plan, "results": j.Results, "finalAnswer": j.FinalAnswer,
+		"plan": j.Plan, "results": servedResults(j.Results), "finalAnswer": j.FinalAnswer,
 		"usedSkill": j.UsedSkill, "proposedSkill": j.ProposedSkill,
-		"outcome": j.Outcome, "question": j.Question, "route": j.Route,
+		"outcome": j.Outcome, "question": j.Question, "secret": j.Secret, "route": j.Route,
 		"steps": j.Steps, "resumed": j.Resumed,
 		"usage": map[string]int{"promptTokens": promptTokens, "responseTokens": responseTokens, "calls": calls,
 			"cachedTokens": j.Usage.Cached()},
-	}
+	}, func(text string) string { return skills.MaskTypedText(j.secrets.Text(text)) })
 }
+
+// servedResults is results as soul serves them: a paused action is the form its skill says may be shown
+// (Meta "actionShown", withheld as the step line is), never the raw command the approval matches on.
+func servedResults(results []skills.Result) []skills.Result {
+	out := make([]skills.Result, len(results))
+	for i, r := range results {
+		out[i] = r
+		if shown, ok := r.Meta["actionShown"].(string); ok {
+			meta := make(map[string]any, len(r.Meta))
+			for k, v := range r.Meta {
+				meta[k] = v
+			}
+			meta["action"] = shown
+			out[i].Meta = meta
+		}
+	}
+	return out
+}
+
+// scrubbed is v as its JSON reads, with fix applied to every string in it (keys too): what soul answers is filtered
+// once, whatever shape it has.
+func scrubbed(v map[string]any, fix func(string) string) map[string]any {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return map[string]any{}
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return map[string]any{}
+	}
+	out, _ := scrubAny(decoded, fix).(map[string]any)
+	return out
+}
+
+func scrubAny(x any, fix func(string) string) any {
+	switch t := x.(type) {
+	case string:
+		return fix(t)
+	case []any:
+		for i := range t {
+			t[i] = scrubAny(t[i], fix)
+		}
+		return t
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[fix(k)] = scrubAny(val, fix)
+		}
+		return out
+	}
+	return x
+}
+
+// secretSet is every secret value soul has been told this process, at most maxSecrets, oldest dropped first. It is
+// never written anywhere, and it is only the memory API's second wall over what the stores hold: a job withholds its
+// own values (jobRecord.secrets), never the whole process's.
+type secretSet struct {
+	mu   sync.Mutex
+	vals []string
+}
+
+const maxSecrets = 256
+
+// add keeps values and returns every value known.
+func (s *secretSet) add(values ...string) withheld.Values {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, v := range withheld.Clean(values) {
+		if !slices.Contains(s.vals, v) {
+			s.vals = append(s.vals, v)
+		}
+	}
+	if len(s.vals) > maxSecrets {
+		s.vals = s.vals[len(s.vals)-maxSecrets:]
+	}
+	return withheld.Clean(s.vals)
+}
+
+// all is every value known.
+func (s *secretSet) all() withheld.Values { return s.add() }
 
 // server holds everything the HTTP handlers need - deliberately a struct,
 // not package-level globals, so tests can construct isolated instances
@@ -149,6 +261,16 @@ type server struct {
 	// the host says it is not a reply, discards it.
 	pausedMu sync.Mutex
 	paused   map[string]*scheduler.Checkpoint
+	// storesOff are the stores this run started without (storeOff), shown by /api/health.
+	storesOff []string
+	// embeddings is who embeds for this run: "ollama", the chat provider's name when it embeds itself, or "off" (no
+	// embedder: the Data RAG, feedback and L1 are off). /api/health says it, so the agent warms an embedding model
+	// only when one will be used (resource plan P1 #7).
+	embeddings string
+	// tracer writes each task's trace (internal/trace); nil writes none.
+	tracer *trace.Writer
+	// secrets is every secret value a job was told this process (C14): the memory API's second wall.
+	secrets secretSet
 }
 
 // pausedJobTTL is how long a paused job waits for its reply before the next
@@ -179,6 +301,13 @@ func (s *server) storePaused(sessionID string, cp *scheduler.Checkpoint) {
 		return
 	}
 	s.pausedMu.Lock()
+	// Paused jobs past their wait are dropped as new ones come: a soul that lives for months does not keep every
+	// session's last question (review T-24).
+	for id, old := range s.paused {
+		if time.Since(old.CreatedAt) > pausedJobTTL {
+			delete(s.paused, id)
+		}
+	}
 	s.paused[sessionID] = cp
 	s.pausedMu.Unlock()
 }
@@ -203,7 +332,8 @@ func mustJSON(v any) string {
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	writeJSON(w, 200, map[string]any{"ollama": s.provider.IsReachable(ctx), "ollamaHost": s.cfg.OllamaHost, "workspace": s.ws.Root()})
+	writeJSON(w, 200, map[string]any{"ollama": s.provider.IsReachable(ctx), "ollamaHost": s.cfg.OllamaHost, "workspace": s.ws.Root(),
+		"storesOff": s.storesOff, "embeddings": s.embeddings})
 }
 
 // handleRAGStats and handleFeedbackStats back the UI's live header
@@ -216,7 +346,8 @@ func (s *server) handleRAGStats(w http.ResponseWriter, r *http.Request) {
 	}
 	chunks, files, err := s.sched.RAG.Stats(r.Context())
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		log.Printf("[soul] %s: %v", r.URL.Path, err)
+		writeJSON(w, 500, map[string]any{"error": "could not read the index"})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"totalChunks": chunks, "totalFiles": files})
@@ -229,7 +360,8 @@ func (s *server) handleFeedbackStats(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := s.sched.Feedback.Count(r.Context())
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		log.Printf("[soul] %s: %v", r.URL.Path, err)
+		writeJSON(w, 500, map[string]any{"error": "could not read the feedback store"})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"negativeCount": n})
@@ -304,7 +436,10 @@ func (s *server) handleMemory(w http.ResponseWriter, r *http.Request) {
 	}
 	out["feedback"] = fbInfo
 
-	writeJSON(w, 200, out)
+	// A second wall (C14): what the stores hold passes through the secret values soul was told and its secrets
+	// filter before it is served, whatever was written before either existed.
+	secrets := s.secrets.all()
+	writeJSON(w, 200, scrubbed(out, func(text string) string { return memory.RedactSecrets(secrets.Text(text)) }))
 }
 
 // handleSkills lists real acquired-skill state: what's confirmed and
@@ -318,12 +453,14 @@ func (s *server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	}
 	confirmed, err := s.sched.SkillLib.ListConfirmed()
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		log.Printf("[soul] %s: %v", r.URL.Path, err)
+		writeJSON(w, 500, map[string]any{"error": "could not list the skills"})
 		return
 	}
 	pending, err := s.sched.SkillLib.ListPending()
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"error": err.Error()})
+		log.Printf("[soul] %s: %v", r.URL.Path, err)
+		writeJSON(w, 500, map[string]any{"error": "could not list the skills"})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"confirmed": confirmed, "pending": pending})
@@ -338,7 +475,8 @@ func (s *server) handleSkillAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.sched.SkillLib == nil {
-		writeJSON(w, 400, map[string]any{"error": "no skill library configured for this session"})
+		// Off (inside Decurix, or with no embedder): there is nothing here to confirm.
+		writeJSON(w, 404, map[string]any{"error": "no skill library on this machine"})
 		return
 	}
 	rest := strings.TrimPrefix(r.URL.Path, "/api/skills/")
@@ -353,13 +491,15 @@ func (s *server) handleSkillAction(w http.ResponseWriter, r *http.Request) {
 	case "confirm":
 		skill, err := s.sched.SkillLib.Confirm(r.Context(), slug)
 		if err != nil {
-			writeJSON(w, 404, map[string]any{"error": err.Error()})
+			log.Printf("[soul] %s: %v", r.URL.Path, err)
+			writeJSON(w, 404, map[string]any{"error": "no such skill"})
 			return
 		}
 		writeJSON(w, 200, map[string]any{"confirmed": skill})
 	case "reject":
 		if err := s.sched.SkillLib.Reject(slug); err != nil {
-			writeJSON(w, 404, map[string]any{"error": err.Error()})
+			log.Printf("[soul] %s: %v", r.URL.Path, err)
+			writeJSON(w, 404, map[string]any{"error": "no such skill"})
 			return
 		}
 		writeJSON(w, 200, map[string]any{"rejected": slug})
@@ -367,6 +507,9 @@ func (s *server) handleSkillAction(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]any{"error": "unknown action - use /confirm or /reject"})
 	}
 }
+
+// maxChatBody bounds a chat request's body.
+const maxChatBody = 4 << 20
 
 func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -385,21 +528,57 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// Reply says whether this request answers the session's paused
 		// job. Unset means "if there is one"; false discards it.
 		Reply *bool `json:"reply"`
-		// Approved says the person already said yes to this kind of request
-		// (see scheduler.Request.Approved).
-		Approved bool `json:"approved"`
+		// No "approved" field: a request never approves itself. A yes reaches
+		// a job only as the reply to its own paused approval (Reply, with
+		// ApprovalReading), for that one action, once.
 		// ApprovalReading is the host's one reading of a reply to an approval
 		// (see scheduler.Request.Reading), or null.
 		ApprovalReading *skills.Reading `json:"approvalReading"`
+		// PlanAgreed is the host's own word that this request is a stage of a plan the person already agreed: its goal
+		// puts no plan of its own to them. A flag in the request body, never a marker read from the request's text,
+		// which can hold pasted content (review T-32).
+		PlanAgreed bool `json:"planAgreed"`
+		// TaskID is the control plane's task this request belongs to (PLAN-P2 C2). It tags every model call and command
+		// of the job (llm.WithTags) and names its trace; one not of llm.TaskIDShape is ignored.
+		TaskID string `json:"taskId"`
+		// Secrets are the request's (and its replies') secret values: what the person marked, or the control plane
+		// withheld (C14). Data beside the prompt, never added to it: the model is sent the prompt as it is, and
+		// nothing soul logs, answers or stores keeps a copy of them.
+		Secrets []string `json:"secrets"`
 	}
+	// Bounded: a request is a prompt and its host context, never megabytes (review T-23).
+	r.Body = http.MaxBytesReader(w, r.Body, maxChatBody)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Prompt) == "" {
 		writeJSON(w, 400, map[string]any{"error": "prompt is required"})
+		return
+	}
+	// A job's own secrets are never cut to make room, so what a job may be told is bounded here instead: a job sent
+	// more is refused, not run with some of them unwithheld.
+	if len(body.Secrets) > withheld.MaxValues || slices.ContainsFunc(body.Secrets, func(v string) bool {
+		return len(v) > withheld.MaxValueLen
+	}) {
+		writeJSON(w, 400, map[string]any{"error": fmt.Sprintf("too many or too long secret values (at most %d, each at most %d bytes)",
+			withheld.MaxValues, withheld.MaxValueLen)})
 		return
 	}
 
 	id := genID()
 	job := newJobRecord(id, body.Prompt)
+	job.secrets = withheld.Clean(body.Secrets)
+	s.secrets.add(body.Secrets...)
 	s.jobsMu.Lock()
+	running := 0
+	for _, j := range s.jobs {
+		if !j.isDone() {
+			running++
+		}
+	}
+	if running >= maxRunningJobs {
+		s.jobsMu.Unlock()
+		writeJSON(w, 429, map[string]any{"error": fmt.Sprintf("busy: %d jobs already running (max %d) - retry shortly", running, maxRunningJobs)})
+		return
+	}
+	s.pruneFinishedJobsLocked()
 	s.jobs[id] = job
 	s.jobsMu.Unlock()
 
@@ -407,19 +586,33 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// before it runs - every prior turn is actually handed to the model.
 	history := s.sessions.History(body.SessionID)
 
-	req := scheduler.Request{Prompt: body.Prompt, Context: body.Context, WorkDir: body.WorkDir, History: history, Approved: body.Approved,
-		Reading: body.ApprovalReading}
+	req := scheduler.Request{Prompt: body.Prompt, Context: body.Context, WorkDir: body.WorkDir, History: history,
+		Reading: body.ApprovalReading, PlanAgreed: body.PlanAgreed}
 	if paused := s.takePaused(body.SessionID); paused != nil {
+		// The paused job's prompt is withheld by its own values and this request's, before it is cut or quoted.
+		pausedSecrets := withheld.Clean(append(append([]string{}, body.Secrets...), paused.Secrets...))
+		quoted := truncateLog(pausedSecrets.Shown(paused.Prompt), 80)
 		if body.Reply == nil || *body.Reply {
 			req.Resume = paused
 			job.Resumed = true
-			job.appendLog(fmt.Sprintf("scheduler: this request answers the paused job %q", truncateLog(paused.Prompt, 80)))
+			job.mu.Lock()               // the job is already published: its values change under its own lock
+			job.secrets = pausedSecrets // a reply carries on the paused job: its values stay withheld
+			job.mu.Unlock()
+			job.appendLog(fmt.Sprintf("scheduler: this request answers the paused job %q", quoted))
 		} else {
-			job.appendLog(fmt.Sprintf("scheduler: dropping the paused job %q - this is a new request", truncateLog(paused.Prompt, 80)))
+			job.appendLog(fmt.Sprintf("scheduler: dropping the paused job %q - this is a new request", quoted))
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	taskID := body.TaskID
+	if !llm.TaskIDShape.MatchString(taskID) {
+		taskID = ""
+	}
+	tags := llm.Tags{Task: taskID, Job: id}
+	job.TaskID = taskID
+
+	jobCtx := withheld.With(trace.WithWriter(llm.WithTags(context.Background(), tags), s.tracer), job.secrets)
+	ctx, cancel := context.WithCancel(jobCtx)
 	ctx, used := llm.WithUsage(ctx)
 	job.mu.Lock()
 	job.cancel = cancel
@@ -428,7 +621,38 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		defer cancel()
+		// With an approval gate a reading in the request is not believed; the gate's settlement of the paused job's
+		// own request is (gate.go). Waited for here, in the job, so the request that resumes it is answered at once.
+		if req.Resume != nil && gatePresent() {
+			if _, _, ok := req.Resume.Approval(); ok {
+				req.Reading = gateSettled(req.Resume)
+			} else {
+				req.Reading = nil
+			}
+		}
 		result, err := s.sched.Execute(ctx, req, job.appendLog)
+		// A paused approval becomes the gate's request before anyone can be asked about it (gate.go). A gate that
+		// refuses to ask (it cannot show the question without the task's secrets) is a no to that one action: the
+		// job goes on at once with that no and why, rather than waiting on a question no reply could approve.
+		for refusals := 0; err == nil && result.Checkpoint != nil && gatePresent() && gateAsk(result.Checkpoint); refusals++ {
+			job.appendLog("scheduler: the approval gate refused to ask about this action (its question could not be " +
+				"shown without the task's secrets) - taken as a no to that one action")
+			if refusals+1 >= maxGateRefusals {
+				result.Checkpoint, result.Outcome, result.Status = nil, scheduler.OutcomeFailed, "error"
+				result.FinalAnswer = "I stopped: the approval gate refused to ask about " +
+					fmt.Sprint(maxGateRefusals) + " actions in a row, because their questions could not be shown " +
+					"without the task's secrets. Nothing they needed was done."
+				result.Question = ""
+				break
+			}
+			prompt := result.Prompt
+			result, err = s.sched.Execute(ctx, scheduler.Request{Prompt: gateRefusalNote, Context: req.Context,
+				WorkDir: req.WorkDir, History: req.History, Resume: result.Checkpoint,
+				Reading: &skills.Reading{Decision: "no"}}, job.appendLog)
+			if err == nil && result.Prompt == gateRefusalNote {
+				result.Prompt = prompt
+			}
+		}
 		job.mu.Lock()
 		if err != nil {
 			job.Status = "error"
@@ -443,6 +667,7 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 			job.ProposedSkill = result.ProposedSkill
 			job.Outcome = result.Outcome
 			job.Question = result.Question
+			job.Secret = result.Secret
 			job.Route = string(result.Route)
 			job.Steps = result.Steps
 			if result.Prompt != "" {
@@ -453,6 +678,9 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		job.mu.Unlock()
 
 		if err == nil && result.Checkpoint != nil {
+			job.mu.Lock()
+			result.Checkpoint.Secrets = append([]string(nil), job.secrets...) // a reply resuming it keeps them
+			job.mu.Unlock()
 			s.storePaused(body.SessionID, result.Checkpoint)
 		}
 
@@ -469,13 +697,31 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// next request queues behind, and it evicts that request's cached
 		// prompt prefix on the way.
 		if s.sched.L1 != nil && memory.LooksMemorable(body.Prompt) {
-			go s.sched.L1.ConsiderExchange(context.Background(), body.Prompt, finalAnswer, job.appendLog)
+			go s.sched.L1.ConsiderExchange(jobCtx, body.Prompt, finalAnswer, job.appendLog)
 		}
 
 		job.finish()
 	}()
 
 	writeJSON(w, 200, map[string]any{"id": id})
+}
+
+// pruneFinishedJobsLocked drops the oldest finished job records once the map is at maxJobRecords, so a long-lived
+// soul does not keep every job it ever ran. A running job is never pruned. Called with jobsMu held.
+func (s *server) pruneFinishedJobsLocked() {
+	if len(s.jobs) < maxJobRecords {
+		return
+	}
+	var finished []*jobRecord
+	for _, j := range s.jobs {
+		if j.isDone() {
+			finished = append(finished, j)
+		}
+	}
+	sort.Slice(finished, func(a, b int) bool { return finished[a].startedAt.Before(finished[b].startedAt) })
+	for i := 0; i < len(finished) && len(s.jobs) >= maxJobRecords; i++ {
+		delete(s.jobs, finished[i].ID)
+	}
 }
 
 func truncateLog(s string, n int) string {
@@ -571,7 +817,8 @@ func (s *server) streamJob(w http.ResponseWriter, r *http.Request, job *jobRecor
 	}
 }
 
-func (s *server) mux() *http.ServeMux {
+// mux is soul's routes behind its guard (guard.go).
+func (s *server) mux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/rag/stats", s.handleRAGStats)
@@ -585,7 +832,7 @@ func (s *server) mux() *http.ServeMux {
 	// "/". This is the ONLY thing this loopback server exists to serve to
 	// a browser; everything else is the JSON/SSE API the UI's own JS calls.
 	mux.Handle("/", http.FileServer(http.FS(web.FS)))
-	return mux
+	return s.guard(mux)
 }
 
 // modelConcurrency is how many chat calls may run at once. A local Ollama
@@ -668,6 +915,46 @@ func buildProvider(cfg config.Config) (llm.Provider, llm.Models, llm.Embedder) {
 	}
 }
 
+// embeddingsOf names the embedder of this run for /api/health: "ollama" for the local one, the provider's own name
+// when the chat provider embeds itself, "off" for none.
+func embeddingsOf(e llm.Embedder) string {
+	switch p := e.(type) {
+	case nil:
+		return "off"
+	case *llm.OllamaProvider:
+		return "ollama"
+	case llm.Provider:
+		return p.Name()
+	}
+	return "on"
+}
+
+// storeOff reports whether a store's init error is only that a newer soul wrote its database: then soul starts
+// without that store (it is memory or a cache, nil-safe everywhere), says so in the log, and lists it in off for
+// /api/health. Any other error is not one to start through (review N-W3-7).
+func storeOff(name string, err error, off *[]string) bool {
+	if !errors.Is(err, migrate.ErrNewer) {
+		return false
+	}
+	log.Printf("[soul] %s is OFF for this run: %v. Starting without it; a newer soul will open it again.", name, err)
+	*off = append(*off, name)
+	return true
+}
+
+// standaloneMode reports whether soul runs as a product of its own (THEBOT_STANDALONE=1): only then are the acquired
+// skill library and the coding harness on (owner decision O-8).
+func standaloneMode() bool {
+	return os.Getenv("THEBOT_STANDALONE") == "1"
+}
+
+// skillLibraryFor is the acquired-skill library, or nil: off unless standalone, and off without an embedder.
+func skillLibraryFor(standalone bool, root string, embedder llm.Embedder, model string) (*memory.SkillLibrary, error) {
+	if !standalone || embedder == nil {
+		return nil, nil
+	}
+	return memory.NewSkillLibrary(root, embedder, model)
+}
+
 func main() {
 	cfg := config.Load()
 	if err := cfg.Validate(); err != nil {
@@ -688,7 +975,9 @@ func main() {
 	rawProvider, models, embedder := buildProvider(cfg)
 	// Every chat call in the process - scheduler steps running side by
 	// side, L1's judge, the coding harness - shares one concurrency limit.
-	provider := llm.Limited(llm.Metered(rawProvider), modelConcurrency(cfg))
+	// Each call of a task leaves a line in that task's trace (trace.Calls,
+	// inside Metered, which settles the call's purpose first).
+	provider := llm.Limited(llm.Metered(trace.Calls(rawProvider)), modelConcurrency(cfg))
 	log.Printf("[soul] model concurrency: %d", modelConcurrency(cfg))
 
 	// Which model does which job, said out loud at startup. A hybrid setup
@@ -702,18 +991,27 @@ func main() {
 
 	var dataRAG *rag.RAG
 	var fb *feedback.Store
+	var storesOff []string // stores not opened because a newer soul wrote them (storeOff)
 	if embedder != nil {
 		dataRAG, err = rag.New(ws.Root(), embedder, cfg.DoclingScript)
 		if err != nil {
-			log.Fatalf("[soul] Data RAG init failed: %v", err)
+			if !storeOff("the Data RAG", err, &storesOff) {
+				log.Fatalf("[soul] Data RAG init failed: %v", err)
+			}
+			dataRAG = nil
+		} else {
+			defer dataRAG.Close()
 		}
-		defer dataRAG.Close()
 
 		fb, err = feedback.New(ws.Root(), embedder)
 		if err != nil {
-			log.Fatalf("[soul] feedback store init failed: %v", err)
+			if !storeOff("the feedback store", err, &storesOff) {
+				log.Fatalf("[soul] feedback store init failed: %v", err)
+			}
+			fb = nil
+		} else {
+			defer fb.Close()
 		}
-		defer fb.Close()
 	}
 
 	// L1: curated cross-session memory. Needs both a brain (to judge what
@@ -723,19 +1021,27 @@ func main() {
 	if embedder != nil {
 		l1, err = memory.NewL1(ws.Root(), provider, embedder, models.Judgment)
 		if err != nil {
-			log.Fatalf("[soul] L1 memory init failed: %v", err)
+			if !storeOff("long-term memory (L1)", err, &storesOff) {
+				log.Fatalf("[soul] L1 memory init failed: %v", err)
+			}
+			l1 = nil
+		} else {
+			defer l1.Close()
 		}
-		defer l1.Close()
 	}
+
+	// The parts left from soul's life as a product of its own - acquired skills, remembered build fixes and the coding
+	// harness - are off unless THEBOT_STANDALONE=1 (owner decision O-8; review T-07, T-08, T-21). Inside Decurix a
+	// skill must never be confirmed by anything the worker's shell can reach, and Decurix has its own taught skills.
+	standalone := standaloneMode()
+	log.Printf("[soul] standalone parts (acquired skills, coding harness): %v (THEBOT_STANDALONE=1 turns them on; "+
+		"approval gate present: %v)", standalone, gatePresent())
 
 	// SkillLib: acquired procedural memory. Same nil-safe pattern - needs
 	// an embedder to match a future request against what's been learned.
-	var skillLib *memory.SkillLibrary
-	if embedder != nil {
-		skillLib, err = memory.NewSkillLibrary(ws.Root(), embedder, models.Judgment)
-		if err != nil {
-			log.Fatalf("[soul] skill library init failed: %v", err)
-		}
+	skillLib, err := skillLibraryFor(standalone, ws.Root(), embedder, models.Judgment)
+	if err != nil {
+		log.Fatalf("[soul] skill library init failed: %v", err)
 	}
 
 	skills.Register(skills.NewFeedback())
@@ -744,7 +1050,10 @@ func main() {
 	// reason its classifier is ordered ahead of theirs: a real "build me
 	// software" request must reach the harness that designs, tests and
 	// fixes it, not the one that saves a single unexecuted completion.
-	skills.Register(skills.NewCoding())
+	if standalone {
+		skills.Register(skills.NewCoding())
+	}
+	atomizer.CodingAvailable = standalone
 	skills.Register(skills.NewDownload())
 	skills.Register(skills.NewTerminal())
 	skills.Register(skills.NewFileWrite())
@@ -754,17 +1063,6 @@ func main() {
 	// classifier, so its place in the order only has to be ahead of the
 	// fallback.
 	skills.Register(skills.NewOperator())
-	// The browser skill hands an interactive web task to the browser-agent
-	// Chrome extension (agent/browser-agent) instead of the operator's
-	// coordinate/xdotool loop - also routed to by task type ("browser"),
-	// never by a classifier here.
-	skills.Register(skills.NewBrowser())
-	// No desktop loads the extension any more (the Chrome launcher passes no
-	// --load-extension), so web work goes to the operator unless a machine
-	// says it has one. Found live: a step sent to the browser skill waited
-	// 30 s for a listener that was never there and failed the task.
-	atomizer.BrowserAvailable = os.Getenv("THEBOT_BROWSER_EXTENSION") == "1"
-	log.Printf("[soul] browser extension: %v (THEBOT_BROWSER_EXTENSION=1 turns it on)", atomizer.BrowserAvailable)
 	// general is the conversational catch-all - registered normally (it
 	// matches task type "general", which atomizer.Classify() only ever
 	// returns when nothing more specific already claimed the step) AND
@@ -778,21 +1076,26 @@ func main() {
 	sched.Brain = buildBrain(cfg, models.Default)
 	sched.SkillLib = skillLib
 	s := newServer(cfg, provider, ws, sched)
+	s.storesOff = storesOff
+	s.embeddings = embeddingsOf(embedder)
+	s.tracer = trace.New(filepath.Join(ws.Root(), "traces"))
 
 	// Binds all interfaces (0.0.0.0), not just 127.0.0.1 - a real bug
 	// caught running this inside a container: a process bound to
 	// loopback-only is unreachable through Docker's own -p port mapping,
 	// since an incoming connection arrives on the container's external
-	// interface, not its loopback. This does NOT weaken "embedded, not an
-	// external API" - reachability is still entirely gated by whether
-	// whoever runs the container chooses to publish this port (or proxies
-	// it internally, as decurix's own control plane does), never by a
-	// public listener outside the VM.
+	// interface, not its loopback. Every container on the same Docker network
+	// can reach it too (other desktops among them), so who may call is decided
+	// by the guard (guard.go): the desktop's agent token on every API route,
+	// JSON-only writes, and no request from another site.
 	//
 	// A native Windows worker is not in a container: it shares the person's
 	// own computer, where a listener on every interface is reachable from
 	// the network and makes Windows Firewall ask about it. The control plane
 	// sets SOUL_HOST=127.0.0.1 there.
+	if cfg.AgentToken == "" {
+		log.Printf("[soul] DECURIX_AGENT_TOKEN is not set: every API route but /api/health is refused (%s)", noTokenRefusal)
+	}
 	addr := cfg.Host + ":" + cfg.Port
 	log.Printf("[soul] listening on http://%s", addr)
 	log.Fatal(http.ListenAndServe(addr, s.mux()))

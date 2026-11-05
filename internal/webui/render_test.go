@@ -29,6 +29,10 @@ func TestRenderEveryPage(t *testing.T) {
 	if !strings.Contains(readiness.String(), "Unlock owner controls") || !strings.Contains(readiness.String(), "Enable this scope") {
 		t.Fatal("readiness page lost its owner gate or scoped enable control")
 	}
+	// Its top bar works as on every other page: the shared chrome script is there (W-17).
+	if !strings.Contains(readiness.String(), "window.Decurix = {") {
+		t.Fatal("readiness page lacks the chrome script its top bar needs")
+	}
 
 	running := desktop.Desktop{
 		ID:        "research-box",
@@ -218,10 +222,16 @@ func TestRenderEveryPage(t *testing.T) {
 		tasks.Intervention{Kind: tasks.InterventionQuery, Reason: tasks.ReasonCredentials, Request: "Which account?", Reply: "The second one", RequestedAt: now.Add(5 * time.Second), RepliedAt: now.Add(6 * time.Second)},
 	)
 	traceDetail.Executions[1].FinalReply = "Paid INV-1042."
+	traceDetail.Executions[1].Verdict = &tasks.GateVerdict{Schema: tasks.VerdictSchema, Verdict: tasks.GateDone,
+		By: "verify", Why: "read back", Basis: []string{"code", "model"}, Checks: []tasks.CheckResult{
+			{ID: "files.read_back", Result: "pass", Basis: "code", Detail: "out.xlsx: 3 sheets read"},
+			{ID: "judge", Result: "pass", Basis: "model", Detail: "the screen shows it"},
+		}}
 	traceDetail.Verdict, traceDetail.VerdictNote, traceDetail.VerdictAt = tasks.VerdictWrong, "wrong account", now
 
 	var trace bytes.Buffer
-	if err := renderer.RenderTaskTrace(&trace, TaskTracePageData{Task: traceDetail}); err != nil {
+	traceDetail.Executions[0].EndedAt = now.Add(time.Minute)
+	if err := renderer.RenderTaskTrace(&trace, TaskTracePageData{Task: traceDetail, RunRecords: true}); err != nil {
 		t.Fatalf("RenderTaskTrace: %v", err)
 	}
 	for _, want := range []string{
@@ -229,6 +239,8 @@ func TestRenderEveryPage(t *testing.T) {
 		`<details class="fold">`, "13 lines · show all", "Which account?", "The second one", "Approval needed",
 		"Paid INV-1042.", "timed out", `href="/tasks/t0123456789abcdef/trace.txt?download=1"`, "data-copy-trace",
 		"Verdict: <b class=\"wrong\">wrong</b>", "wrong account", `href="/tasks/t0123456789abcdef"`,
+		"Final check: done · by verify · rests on code, model", "files.read_back", "out.xlsx: 3 sheets read",
+		`href="/api/runs/x1/bundle"`, "Download the run record",
 	} {
 		if !strings.Contains(trace.String(), want) {
 			t.Errorf("the trace page is missing %q", want)
@@ -264,7 +276,7 @@ func TestRenderEveryPage(t *testing.T) {
 		t.Fatalf("RenderIndex with tasks: %v", err)
 	}
 	for _, want := range []string{
-		`data-task-pick="research-box"`, `href="/tasks/t1111111111111111/trace"`, `<option value="t2222222222222222">older task · Done · `,
+		`data-task-pick="research-box"`, `href="/tasks/t1111111111111111/trace"`, `<option value="t2222222222222222">older task · Done, not checked · `,
 		`data-task-pick="spare-box"`, `<option value="">No tasks yet</option>`, "/api/desktops/tasks?",
 	} {
 		if !strings.Contains(index.String(), want) {
@@ -283,6 +295,13 @@ func TestRenderEveryPage(t *testing.T) {
 	}
 	if strings.Contains(gatedIndex.String(), "#simulate") {
 		t.Error("the gated dashboard shows the Simulate button")
+	}
+	// This computer's apps and sign-ins are offered only at this computer (W-05).
+	if strings.Contains(gatedIndex.String(), `id="hostAppsSection"`) {
+		t.Error("the gated dashboard offers this computer's apps")
+	}
+	if !strings.Contains(index.String(), `id="hostAppsSection"`) {
+		t.Error("the dashboard on this computer lost its host apps section")
 	}
 	if strings.Contains(index.String(), strings.Repeat("a very long request ", 10)) {
 		t.Error("the task dropdown shows the whole request instead of a short title")
@@ -379,7 +398,7 @@ func TestRenderEveryPage(t *testing.T) {
 	for _, want := range []string{
 		`id="sec-workers"`, `id="sec-skills"`, `id="sec-queue"`, `id="sec-handoffs"`, `id="sec-knowledge"`, `id="sec-access"`,
 		"/api/skillhub/sync", "/api/queue/limits", "/api/handoffs/cancel", "/api/knowledge/why", "/api/access/policies/check",
-		`href="/workforce" class="active"`, "setInterval(refresh, POLL_MS)",
+		`href="/workforce" class="active"`, "D.poll(refresh, POLL_MS)",
 	} {
 		if !strings.Contains(workforce.String(), want) {
 			t.Errorf("the workforce page is missing %q", want)
@@ -480,6 +499,25 @@ func TestTheDashboardShowsAndTakesTheSharedFolder(t *testing.T) {
 	}
 	if strings.Contains(page, `data-shared-folder="plain-box"`) {
 		t.Error("a worker with no shared folder says it shares one")
+	}
+}
+
+// A desktop made before desktops had a network each says on its card that it still shares one with the older
+// desktops, and that recreating it isolates it; a desktop on its own network says nothing (review NET-R3 S3).
+func TestADesktopOnTheSharedNetworkSaysSoOnItsCard(t *testing.T) {
+	old := desktop.Desktop{ID: "old-box", Name: "old-box", Profile: "basic", Harness: desktop.HarnessTheBot, Status: "running",
+		URL: "/desktop/old-box/", SharedNetwork: true}
+	own := desktop.Desktop{ID: "new-box", Name: "new-box", Profile: "basic", Harness: desktop.HarnessTheBot, Status: "running", URL: "/desktop/new-box/"}
+	var out bytes.Buffer
+	if err := NewRenderer().RenderIndex(&out, PageData{Desktops: []desktop.Desktop{old, own}}); err != nil {
+		t.Fatal(err)
+	}
+	page := out.String()
+	if !strings.Contains(page, `data-shared-network="old-box"`) || !strings.Contains(page, "recreate it to isolate it") {
+		t.Error("the older desktop's card does not say it shares a network")
+	}
+	if strings.Contains(page, `data-shared-network="new-box"`) {
+		t.Error("a desktop on its own network says it shares one")
 	}
 }
 

@@ -7,9 +7,9 @@ from datetime import date
 
 from decurix_agent import progress
 from decurix_agent.computer import approval, audit, browser, constraints, core, launchers, privacy, recording, screen, visual, volatility
-from decurix_agent.computer import detour
+from decurix_agent.computer import detour, identity
 from decurix_agent.computer import elements as el
-from decurix_agent.computer.errors import ComputerError
+from decurix_agent.computer.errors import ActedError, ComputerError
 from decurix_agent.logging_utils import log
 
 
@@ -413,6 +413,89 @@ def _stable_title(title, reference=None):
     return " - ".join(kept) or None
 
 
+# Why a segment of a title with digits in it would change from run to run anyway (volatility.classify).
+_PASSING = {"clock_time", "relative_time", "date", "near_date", "count", "counter"}
+
+
+def _known_documents(steps):
+    """
+    The texts that name a document the recording found rather than made: the window titles of its first step, and
+    what it opened, chose or clicked by name before its first committing step. An identifier only these hold is of a
+    document that existed before the run touched it; one that first shows after a save (the next invoice number), or
+    in a document the app named when it was made ("Untitled 2"), is not (review round 2, D-17).
+    """
+
+    texts = []
+    if steps:
+        first = steps[0]
+        texts += [first.get("window") or "", (first.get("target") or {}).get("window_title") or ""]
+    for step in steps:
+        if step.get("consequential") or _step_commits(step):
+            break
+        texts += [str(step.get("open") or ""), str(step.get("option") or "")]
+        if step.get("kind") in ("click", "double_click"):
+            texts.append(str((step.get("target") or {}).get("name") or ""))
+    return [t for t in texts if t]
+
+
+def _window_ids(step, recorded_values, known=None):
+    """
+    The step with the identifiers its window's title holds ("INV-1043" of "INV-1043 - Sales Invoice") kept as
+    `window_ids`, when none of them is a value the run may change (a parameter's recorded value) and each names a
+    document the recording found rather than made (`known`, _known_documents): the in-front check then needs that
+    document's window, not any of its kind. Found in review (2026-11-03, D-17): titles were compared without their
+    digits, so another invoice's window passed; and (round 2) an id the app gave the run's own new document was pinned,
+    so the next run, given the next number, found nothing.
+    """
+
+    from decurix_agent.computer import identity
+
+    title = step.get("window") or ""
+    ids = [s for s in _segments(title) if re.search(r"\d", s) and volatility.classify(s) not in _PASSING]
+    if not ids:
+        return step
+    lowered = title.lower()
+    if any(v and v.lower() in lowered for v in recorded_values):
+        return step
+    ids = [s for s in ids if any(identity.holds_identifier(text, s) for text in known or ())]
+    return dict(step, window_ids=ids) if ids else step
+
+
+def _titles_follow_values(steps, params, values):
+    """
+    The steps with each changed run value put into the window titles they were recorded in (step["window"],
+    target["window_title"]): a step recorded in "Client One - Customer" is in "Client Two - Customer" on a run for
+    client two. Found in review (round 2, D-10): the window filter then took the recorded value's window only.
+    """
+
+    changes = []
+    for param in params or []:
+        recorded, value = _recorded_value(param), (values or {}).get(param["name"])
+        if recorded is None or value is None or isinstance(value, list) or len(str(recorded).strip()) < 2:
+            continue
+        if str(value) != str(recorded):
+            changes.append((re.compile(re.escape(str(recorded).strip()), re.IGNORECASE), str(value)))
+    if not changes:
+        return steps
+
+    def follow(title):
+        for pattern, value in changes:
+            title = pattern.sub(lambda _m, v=value: v, title)
+        return title
+
+    out = []
+    for step in steps:
+        target = step.get("target") or {}
+        if step.get("window") or target.get("window_title"):
+            step = dict(step)
+            if step.get("window"):
+                step["window"] = follow(step["window"])
+            if target.get("window_title"):
+                step["target"] = dict(target, window_title=follow(target["window_title"]))
+        out.append(step)
+    return out
+
+
 def mine_checks(expect, reference=None):
     """
     What a step's recorded result lets a replay check: only what will read
@@ -728,12 +811,12 @@ def follow_values(steps, params, values):
             if value != recorded and _holds_words(recorded, name):
                 pattern = re.compile(r"\s+".join(re.escape(w) for w in recorded.split()), re.IGNORECASE)
                 renamed = pattern.sub(value, name) if pattern.search(name) else f"{name} {value}"
-                new = dict(target, name=renamed, contains=True, path=None,
+                new = dict(target, name=renamed, contains=True, value=value, path=None,
                            avoid=list(target.get("avoid") or []) + [recorded])
                 break
             if (step["n"] == at + 1 and step.get("kind") in ("click", "double_click") and name
                     and target.get("role") in RESULT_ROLES and volatility.only_a_moment(name)):
-                new = dict(target, name=value, contains=True, path=None,
+                new = dict(target, name=value, contains=True, value=value, path=None,
                            avoid=list(target.get("avoid") or []) + ([recorded] if value != recorded else []))
                 break
 
@@ -827,10 +910,14 @@ def _screen_brief(observation):
 
 class _Halt(Exception):
 
-    def __init__(self, reason, evidence="", missing=False, options=None, observation=None):
+    def __init__(self, reason, evidence="", missing=False, options=None, observation=None, acted=False):
         super().__init__(reason)
         self.reason = reason
         self.evidence = evidence
+        # The step's action was carried out before this was found (core.ActedError; a pressed cell whose field never
+        # appeared): the step is never retried or healed as if it had not happened, and a step that commits is
+        # reconciliation_required (review 2026-11-02: such a halt resumed from the same step and pressed it again).
+        self.acted = acted
         # The screen the target was looked for on, when it was not found:
         # what run() compares with the recording's screens (a detour).
         self.observation = observation
@@ -854,6 +941,16 @@ def resolve(step, observation):
     elements = observation.get("elements") or []
 
     if target:
+        # A step recorded in a window acts only in a window of that kind (the stable part of its title), whatever is
+        # in front - filtered before anything is counted. Found in review (2026-11-03, D-10): the window narrowed only
+        # two or more matches, so the one same-named control of another window was taken.
+        window = _stable_title(target.get("window_title"))
+        if window:
+            elements = [e for e in elements if title_matches(window, e.get("window_title") or "")]
+        if step.get("window_ids"):
+            # ...and of that very document, when its title named one this run does not change (_window_ids, D-17).
+            elements = [e for e in elements
+                        if all(s in _segments(e.get("window_title") or "") for s in step["window_ids"])]
         path = target.get("path")
         if path and not target.get("contains"):
             exact = [e for e in elements if e.get("path") == path]
@@ -868,8 +965,11 @@ def resolve(step, observation):
             # A target that follows this run's value (follow_values) is the
             # control whose name holds that value's words; never one that names
             # what the demonstration typed instead.
-            same = (lambda e: _holds_words(name, e.get("name"))) if target.get("contains") \
-                else (lambda e: _norm(e.get("name")) == _norm(name))
+            # ...and holds this run's whole value, its words in order (identity.holds): found in review
+            # (2026-11-03, D-20), a word subset took a control naming the same first name with another surname.
+            same = (lambda e: _holds_words(name, e.get("name"))
+                    and (not target.get("value") or identity.holds(e.get("name"), target["value"]))) \
+                if target.get("contains") else (lambda e: _norm(e.get("name")) == _norm(name))
             matches = [e for e in elements
                        if (not role or e.get("role") == role) and same(e) and not avoided(target, e)]
 
@@ -911,6 +1011,12 @@ def resolve(step, observation):
         window = _stable_title(step.get("window"))
         if window and not title_matches(window, observation.get("active_title") or ""):
             return None, None, f"{NOT_IN_FRONT} {el._quote(window, 60)}, which is not in front"
+        # ...and the document it was recorded in, when its title named one this run does not change (_window_ids).
+        have = _segments(observation.get("active_title") or "")
+        other = [s for s in step.get("window_ids") or [] if s not in have]
+        if other:
+            return None, None, (f"{NOT_IN_FRONT} {el._quote(step.get('window') or '', 60)} (the window of "
+                                f"{el._quote(other[0], 40)}), which is not in front")
 
         if step.get("look") and observation.get("frame") is not None:
             seen = visual.find(step["look"], observation["frame"])
@@ -922,6 +1028,18 @@ def resolve(step, observation):
                 return None, None, (f"{seen['matches']} places on the screen look like what was clicked, "
                                     "and a replay does not guess which")
             if seen["status"] == visual.FOUND:
+                held = visual.digits_hold(step["look"], observation["frame"], seen["point"])
+                if held == visual.OTHER:
+                    return None, None, ("what is there looks like what was clicked but reads other numbers - another "
+                                        "record, and a replay does not take it")
+                if held == visual.UNREAD:
+                    # Its text could not be read to confirm its numbers: a picture alone passes a one-digit
+                    # difference, so it is not acted on (D-15).
+                    return None, None, ("what is there looks like what was clicked, but its text could not be read to "
+                                        "confirm it is the same record, and a replay does not take it on its picture "
+                                        "alone")
+                # A desktop that reads no text: found by its picture alone - a candidate, and the run is unverified.
+                seen["unconfirmed"] = held == visual.NO_OCR
                 return None, seen["point"], None
 
         return None, point, None
@@ -1143,7 +1261,7 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
                     "raised": {"window": _opened_window(step) or _stable_title((next_step or {}).get("window")),
                                "already": already}}
 
-        target = {}
+        target, seen_look = {}, None
         if kind in NEEDS_TARGET and not (step.get("target") or step.get("point")):
             # Nothing is clicked on a hope: a step recorded with neither a
             # control nor a position (an import that only had a CSS selector)
@@ -1204,24 +1322,57 @@ def _run_step(step, values, ladder=None, report=None, next_step=None):
             append=bool(step.get("append")),
             end=tuple(step["end"]) if step.get("end") else None,
             files=files,
+            # The pre-save checks a committing press of an engine's goes through, for a replay's too; what would list
+            # the form is put to the person with today's values (core._form_check, listing="ask"): the person made the
+            # recording, not a yes to the values this run types (review 2026-11-02).
+            check_form="replay",
             **target,
         )
         if pressed_cell and not _field_appeared(step):
             raise _Halt(f"pressed where {_summary(step).split(' ', 1)[-1]} was when this was recorded, and no such field "
-                        "appeared there - the page is laid out differently now")
+                        "appeared there - the page is laid out differently now", acted=True)
         # A deterministic healing renamed this exact control. Carry its
         # identity to same-step value checks; checking the old label after
         # typing into the healed field would incorrectly reject transfer.
         # A model-grounded guess does not receive an exact-check alias.
+        if seen_look and seen_look.get("unconfirmed"):
+            done = dict(done, unconfirmed=True)
         if repair and repair.get("how") == "healed" and element is not None and element.get("role") == (step.get("target") or {}).get("role"):
             done = dict(done, target_alias={"was": dict(step["target"]),
                                            "now": {"role": element.get("role"), "name": element.get("name")}})
         return done
+    except ActedError as exc:
+        raise _Halt(str(exc), acted=True)
     except ComputerError as exc:
         raise _Halt(str(exc))
 
 
 SELECT_ALL = {"ctrl+a", "control+a", "cmd+a", "meta+a"}
+
+
+def _shown_by_step(checks, before, values):
+    """
+    Whether a step's met checks show this step did it: a value it was to leave in a field (the field holds the run's
+    value now), or another check (a window, a page, a dialog) that was NOT already met on the screen before the step
+    acted (`before`, core.act's). With no `before` to compare (a step that opened something by its launcher), the
+    checks are taken as they stand.
+    """
+
+    if before is None or any(c.get("type") == "value" for c in checks):
+        return True
+    return bool(unmet([c for c in checks if c.get("type") != "value"], before, values))
+
+
+def _step_commits(step):
+    """Whether a step's press commits something (approval.commits on its recorded control; Enter or Ctrl+S)."""
+
+    target = step.get("target") or {}
+    if step.get("kind") in ("click", "double_click") and target.get("name"):
+        return approval.commits({"role": target.get("role") or "button", "name": target["name"]})
+    if step.get("kind") == "key":
+        pressed = {"".join(str(k).lower().split()) for k in step.get("keys") or []}
+        return bool(pressed & {"return", "enter", "kp_enter", "ctrl+s", "control+s"})
+    return False
 
 
 def _replaces_selection(previous, step):
@@ -1482,6 +1633,29 @@ def _with_opening_press(steps, start):
 
 def run(program, params=None, start=1, report=None, ladder=None):
     """
+    _run_program, with the values this run types from the person's demonstration (a parameter today's request gives
+    nothing for keeps the value it was recorded with) known to the pre-save checks as the person's own
+    (core.TAUGHT_VALUES): a replay's save is refused only for a value that is in no source and is not theirs.
+    """
+
+    given = {name for name in (params or {})}
+    taught = {" ".join(str(p.get("default") or "").split()).lower() for p in program.get("params") or []
+              if p.get("name") not in given and not p.get("secret") and str(p.get("default") or "").strip()}
+    store = getattr(core, "TAUGHT_VALUES", None)
+    if store is None:
+        return _run_program(program, params, start, report, ladder)
+    kept = set(store)
+    store.clear()
+    store.update(taught)
+    try:
+        return _run_program(program, params, start, report, ladder)
+    finally:
+        store.clear()
+        store.update(kept)
+
+
+def _run_program(program, params=None, start=1, report=None, ladder=None):
+    """
     Run a program from step `start` and say how it ended: {"outcome",
     "text", "step", "resume_from", "reason", "evidence", "done",
     "verified", "unverified", "total", "missing", "session", "options",
@@ -1590,7 +1764,12 @@ def run(program, params=None, start=1, report=None, ladder=None):
 
     _fit_screen([s for s in steps if s["n"] >= start], report)
     changed_at = _first_change(program, values)
+    known = _known_documents(steps)
     steps = [_typing_checks(s) for s in follow_values(steps, program.get("params"), values)]
+    steps = _titles_follow_values(steps, program.get("params"), values)
+    recorded_values = [str(_recorded_value(p)) for p in program.get("params") or []
+                       if _recorded_value(p) not in (None, "")]
+    steps = [_window_ids(s, recorded_values, known) for s in steps]
 
     if ladder is not None:
         ladder.typed = [(str(p.get("example") if p.get("example") is not None else p.get("default")), str(values[p["name"]]))
@@ -1601,6 +1780,8 @@ def run(program, params=None, start=1, report=None, ladder=None):
 
     # Steps from here up to this one were left out as a detour (_recover).
     skip_until = 0
+    # The last step that committed something, and what the screen showed after it: {"n", "observation"}.
+    committed = {}
 
     for index, step in enumerate(steps):
         if step["n"] < start or step["n"] < skip_until:
@@ -1622,6 +1803,14 @@ def run(program, params=None, start=1, report=None, ladder=None):
             next_step = steps[index + 1] if index + 1 < total else None
             result = _run_step(step, values, ladder, report, next_step=next_step)
         except _Halt as halt:
+            if halt.acted:
+                # The step's action happened and what came after it went wrong: it is not healed, retried or resumed
+                # as if it had not. A step that commits may or may not have taken effect - checked, never redone.
+                counts["done"] += 1
+                if step.get("consequential") or _step_commits(step):
+                    return finish(RECONCILIATION_REQUIRED, step, reason=halt.reason, evidence=halt.evidence)
+                return finish(HALTED, step, reason=halt.reason, resume_from=step["n"], evidence=halt.evidence)
+
             # An optional step (a skill learned that it only sometimes
             # happens) that is not on the screen simply did not happen this
             # time. Nothing else is stepped over: an optional step whose
@@ -1660,6 +1849,12 @@ def run(program, params=None, start=1, report=None, ladder=None):
             return finish(NEEDS_APPROVAL, step, reason=text, resume_from=step["n"])
 
         counts["done"] += 1
+        if result.get("unconfirmed"):
+            counts["unverified"] += 1
+            report(f"Step {step['n']}: what was clicked was found by its picture alone, which another record's row "
+                   "may also pass - the run is not verified")
+        if step.get("consequential") or _step_commits(step):
+            committed.update(n=step["n"], observation=result.get("observation"))
 
         # A step that worked in the window an earlier step opened: that app is
         # in a state the recording's steps work in, and opening it fresh is no
@@ -1701,14 +1896,110 @@ def run(program, params=None, start=1, report=None, ladder=None):
                 return finish(RECONCILIATION_REQUIRED, step, reason=reason, evidence=evidence)
             return finish(HALTED, step, reason=reason, resume_from=step["n"] + 1, evidence=evidence)
 
+        if not _shown_by_step(checks, result.get("before"), values):
+            # What the step should leave was on the screen before it ran (a banner, a window, a page already open):
+            # its presence shows nothing of this step (review 2026-11-02). Ran, not seen.
+            counts["unverified"] += 1
+            report(f"Step {step['n']}: what it should leave on the screen was there before it ran, so nothing shows "
+                   "this step did it")
+            continue
+
         counts["verified"] += 1
         if ladder is not None:
             ladder.confirm(step)
 
-    # Steps left out, or a click placed by the engine reading the screen, are
-    # a judgement: such a run is complete, never verified.
-    judged = counts["detoured"] or (ladder is not None and ladder.grounded)
-    return finish(VERIFIED if counts["unverified"] == 0 and not judged else COMPLETED_UNVERIFIED)
+    # Steps left out, a control found again under means other than its recorded name (healed, or picked by the
+    # engine), or a click placed by the engine reading the screen, are a judgement: such a run is complete, never
+    # verified. Found in review (2026-11-03, D-09): a healed step was not counted, and a run re-aimed onto another
+    # record ended VERIFIED, which skips the final judge.
+    judged = counts["detoured"] or (ladder is not None and (ladder.grounded or ladder.healed))
+    if counts["unverified"] == 0 and not judged:
+        unread = _not_read_back(program, values, committed)
+        if unread:
+            report("The run's values were not read back after it saved: " + ", ".join(unread)
+                   + " - it ran as recorded, unverified")
+            return finish(COMPLETED_UNVERIFIED)
+        return finish(VERIFIED)
+    return finish(COMPLETED_UNVERIFIED)
+
+
+# The controls that take typing (core.TYPING_ROLES), kept here: a test or a caller may stand another `core` in.
+_TYPING_ROLES = frozenset(core.TYPING_ROLES)
+
+
+def _screen_parts(observation):
+    """What an observation shows as text, one part per window title or control: names, and the values of controls that
+    do not take typing. A typing field's value is left out - the replay may have typed it itself, and a field that
+    keeps what was typed after Save says nothing of what was saved (review round 2, D-25; core.verify reads the
+    screen the same way)."""
+
+    observation = observation or {}
+    parts = [observation.get("active_title") or ""] + [w.get("title") or "" for w in observation.get("windows") or []]
+    for e in observation.get("elements") or []:
+        parts.append(str(e.get("name") or ""))
+        if e.get("role") not in _TYPING_ROLES:
+            parts.append(str(e.get("value") or ""))
+    return [p for p in parts if p]
+
+
+def _read_back_form(value, is_path=False):
+    """How a run value is looked for on the screen: the whole value; a file by its file name only when the value is a
+    path by structure (`is_path`: it went to an upload or a file field), never because it holds a slash - "05/03/2026"
+    read back as "2026" was confirmed by any year on the page (R-2, review round 3). A list or anything else not text
+    cannot be read back (None)."""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    if is_path and os.path.basename(value.replace("\\", "/")):
+        return os.path.basename(value.replace("\\", "/"))
+    return value
+
+
+def _path_params(program):
+    """The names of the run's parameters that are files by structure: given to an upload step, or typed into a file
+    field (its recorded target is an input of type file)."""
+
+    out = set()
+    for step in program.get("steps") or []:
+        if not step.get("param"):
+            continue
+        target = step.get("target") or {}
+        handle = target.get("handle") or {}
+        if step.get("kind") == "upload" or str(target.get("input_type") or handle.get("input_type") or "").lower() == "file":
+            out.add(step["param"])
+    return out
+
+
+def _not_read_back(program, values, committed):
+    """
+    The run's own values (its parameters given before the last step that committed, or every one of them when no step
+    was recognised as committing) that the screen does not show at the run's end, by name; [] when every one is there.
+    Found in review (2026-11-03, D-25): VERIFIED meant the pages had the recorded shape - a run that saved another
+    amount or customer was VERIFIED whenever the pages looked alike. A value is read back as records.stands_in reads
+    one (a number in any format, a date in any format, words whole) within one control or title, never across two,
+    and never from a typing field (_screen_parts). A value that cannot be read back (a list) counts as not read back;
+    a file by its name. The screen is looked at once more at the end; unreadable is not read back.
+    """
+
+    until = committed["n"] if committed else float("inf")
+    wanted = [p for p in program.get("params") or []
+              if not p.get("secret") and p.get("step", 0) <= until and p["name"] in values
+              and values[p["name"]] not in (None, "")]
+    if not wanted:
+        return []
+    try:
+        parts = _screen_parts(core.observe(remember=False))
+    except Exception:  # noqa: BLE001 - the end could not be looked at: what the committing step left is used
+        parts = _screen_parts((committed or {}).get("observation"))
+    from decurix_agent.computer import records
+
+    unread = []
+    paths = _path_params(program)
+    for p in wanted:
+        form = _read_back_form(values[p["name"]], is_path=p["name"] in paths)
+        if form is None or not any(records.stands_in(form, part) for part in parts):
+            unread.append(p["name"])
+    return unread
 
 
 def _summary_text(program, result, step):

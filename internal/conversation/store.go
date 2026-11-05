@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/YKoustubhRao/decurix/internal/withhold"
 	"log"
 	"sync"
 	"time"
@@ -131,6 +132,10 @@ type thread struct {
 	startedAt   time.Time
 	version     uint64
 	subscribers map[chan struct{}]bool
+	// stored is whether the database had this desktop's chat when it was loaded (load).
+	stored bool
+	// used is when it was last asked for (Store.seq), for keeping the most recent in memory.
+	used uint64
 }
 
 var schema = []string{
@@ -179,7 +184,14 @@ type Store struct {
 	db      *sql.DB
 	threads map[string]*thread
 	seq     uint64
+	// waiting is the subscribers to a desktop with no chat yet: a read never makes a thread (an id any client names,
+	// on the gated listener too, must not grow this store), so they wait here and join the thread when it is made.
+	waiting map[string]map[chan struct{}]bool
 }
+
+// maxThreads bounds the threads kept in memory. Past it the least recently used one that nobody is watching and that
+// has no turn running is let go: its chat is in the database and is loaded again when asked for.
+const maxThreads = 256
 
 // NewStore opens the conversation Store on db, creating its tables if needed.
 func NewStore(db *sql.DB) (*Store, error) {
@@ -190,21 +202,67 @@ func NewStore(db *sql.DB) (*Store, error) {
 	return &Store{
 		db:      db,
 		threads: make(map[string]*thread),
+		waiting: make(map[string]map[chan struct{}]bool),
 	}, nil
 }
 
-// threadFor returns the thread for a desktop, loading it from the database on
-// first use. The caller must hold the lock.
+// threadFor returns the thread for a desktop to write to, loading it from the database on first use and keeping it.
+// The caller must hold the lock.
 func (s *Store) threadFor(desktopID string) *thread {
-	existing, ok := s.threads[desktopID]
-	if ok {
+	if existing, ok := s.threads[desktopID]; ok {
+		s.seq++
+		existing.used = s.seq
 		return existing
 	}
-
 	loaded := s.load(desktopID)
-	s.threads[desktopID] = loaded
-
+	s.keep(desktopID, loaded)
 	return loaded
+}
+
+// readThread returns the thread for a desktop to read: the one in memory, or the one the database has, which is then
+// kept. An id the database knows nothing of gets an empty thread that is not kept: a read creates nothing (resource
+// plan B4). The caller must hold the lock.
+func (s *Store) readThread(desktopID string) *thread {
+	if existing, ok := s.threads[desktopID]; ok {
+		s.seq++
+		existing.used = s.seq
+		return existing
+	}
+	loaded := s.load(desktopID)
+	if loaded.stored {
+		s.keep(desktopID, loaded)
+	} else {
+		// No chat: one version for "none", so a polling page does not re-render an empty chat each time.
+		loaded.version = 0
+	}
+	return loaded
+}
+
+// keep puts a loaded thread in memory, with the subscribers that were waiting for it, and lets the least recently
+// used idle threads go past maxThreads. The caller must hold the lock.
+func (s *Store) keep(desktopID string, t *thread) {
+	s.seq++
+	t.used = s.seq
+	for ch := range s.waiting[desktopID] {
+		t.subscribers[ch] = true
+	}
+	delete(s.waiting, desktopID)
+	s.threads[desktopID] = t
+	for len(s.threads) > maxThreads {
+		oldest, at := "", uint64(0)
+		for id, th := range s.threads {
+			if id == desktopID || th.running || len(th.subscribers) > 0 {
+				continue
+			}
+			if oldest == "" || th.used < at {
+				oldest, at = id, th.used
+			}
+		}
+		if oldest == "" {
+			return // every other thread is watched or running: none may go
+		}
+		delete(s.threads, oldest)
+	}
 }
 
 // nextID returns a unique identifier for an entry or step. The caller must
@@ -235,6 +293,8 @@ func (t *thread) touch() {
 // new turn: the agent is now considered busy, and the steps it reports from
 // here on belong to this turn.
 func (s *Store) AppendUserRequest(desktopID, taskID, content string) Entry {
+	// The chat keeps the request with any secret it holds withheld (withhold.Text); the desktop was sent it as written.
+	content = withhold.Text(content)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -389,7 +449,7 @@ func (s *Store) newEntry(desktopID, taskID, role, kind, content string) Entry {
 		DesktopID: desktopID,
 		Role:      role,
 		Kind:      kind,
-		Content:   content,
+		Content:   withhold.Known(content), // a value held for its owner's life, as the desktop may have written it
 		TaskID:    taskID,
 		CreatedAt: time.Now().UTC(),
 	}
@@ -432,9 +492,14 @@ func (s *Store) appendStep(desktopID, taskID, text string, action *Action) Step 
 
 	current := s.threadFor(desktopID)
 
+	if action != nil {
+		a := *action
+		a.Target, a.Change, a.Reason = withhold.Known(a.Target), withhold.Known(a.Change), withhold.Known(a.Reason)
+		action = &a
+	}
 	step := Step{
 		ID:        s.nextID(),
-		Text:      text,
+		Text:      withhold.Known(text),
 		Action:    action,
 		CreatedAt: time.Now().UTC(),
 	}
@@ -519,7 +584,7 @@ func (s *Store) Snapshot(desktopID string) Thread {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	current := s.threadFor(desktopID)
+	current := s.readThread(desktopID)
 
 	entries := make([]Entry, len(current.entries))
 	copy(entries, current.entries)
@@ -543,6 +608,10 @@ func (s *Store) Clear(desktopID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Clearing a chat that does not exist writes nothing: an id any client names must not make a row.
+	if _, kept := s.threads[desktopID]; !kept && !s.readThread(desktopID).stored {
+		return
+	}
 	current := s.threadFor(desktopID)
 
 	current.entries = nil
@@ -569,16 +638,32 @@ func (s *Store) Subscribe(desktopID string) (<-chan struct{}, func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	current := s.threadFor(desktopID)
-
 	updates := make(chan struct{}, 1)
-	current.subscribers[updates] = true
+	current := s.readThread(desktopID)
+	if _, kept := s.threads[desktopID]; kept {
+		current.subscribers[updates] = true
+	} else {
+		// No chat yet: wait aside, and join the thread when a write makes it (keep).
+		if s.waiting[desktopID] == nil {
+			s.waiting[desktopID] = map[chan struct{}]bool{}
+		}
+		s.waiting[desktopID][updates] = true
+	}
 
 	return updates, func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
+		if t, ok := s.threads[desktopID]; ok {
+			delete(t.subscribers, updates)
+		}
 		delete(current.subscribers, updates)
+		if w := s.waiting[desktopID]; w != nil {
+			delete(w, updates)
+			if len(w) == 0 {
+				delete(s.waiting, desktopID)
+			}
+		}
 	}
 }
 
@@ -726,6 +811,7 @@ func (s *Store) load(desktopID string) *thread {
 		return loaded
 	}
 
+	loaded.stored = err == nil
 	loaded.running = running
 	loaded.startedAt = sqlitedb.FromNS(started)
 
@@ -781,6 +867,9 @@ func (s *Store) load(desktopID string) *thread {
 	}
 
 	loaded.entries = entries
+	if len(entries) > 0 || len(loaded.steps) > 0 {
+		loaded.stored = true
+	}
 
 	return loaded
 }

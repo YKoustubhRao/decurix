@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -54,7 +55,7 @@ foreach ($id in [DecurixRm]::Holders('` + quoted + `')) {
   $cur = $p; $ours = $false
   for ($i = 0; $i -lt 6 -and $cur; $i++) {
     $cur = Get-CimInstance Win32_Process -Filter "ProcessId=$($cur.ParentProcessId)"
-    if ($cur -and $cur.CommandLine -like '` + helperMatch + `') { $ours = $true; break }
+    if ($cur -and $cur.CommandLine -like '` + ownHelperMatch(hostInstanceTag()) + `') { $ours = $true; break }
   }
   if ($ours) { taskkill.exe /T /F /PID $id | Out-Null; 'RELEASED ' + $id + ' ' + $p.Name } else { 'HELD ' + $id + ' ' + $p.Name }
 }
@@ -80,9 +81,16 @@ func releaseLines(out string) (released, held []string) {
 // hostFileReleaseHandler ends the apps our host-app helpers started that hold a file of the person's computer named in
 // the desktop's open task (POST ?desktop=&path=). It answers what it ended and what holds the file that is not ours.
 func (s *Server) hostFileReleaseHandler(w http.ResponseWriter, r *http.Request) {
-	asked, _, ok := s.hostFileAsked(w, r, http.MethodPost)
+	asked, rel, ok := s.hostFileAsked(w, r, http.MethodPost)
 	if !ok {
 		return
+	}
+	// The same rule as reading it: not a path that resolves under a private folder or behind a link out of the drive.
+	for _, drive := range hostCDrives() {
+		if _, err := resolveHostFile(drive, rel); errors.Is(err, errHostFileRefused) {
+			http.Error(w, refusedHostFile, http.StatusForbidden)
+			return
+		}
 	}
 	out, err := runOnHost(releaseScript(asked), 60*time.Second)
 	if err != nil {

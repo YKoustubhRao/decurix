@@ -621,6 +621,10 @@ func TestStoppingADesktopEndsItsHostAppsAtOnce(t *testing.T) {
 
 func TestAKeptAppsSlugAndName(t *testing.T) {
 	if got := keptAppSlug("pc2", "pc2-microsoft-paint"); got != "microsoft-paint" {
+		t.Errorf("an id from before the hash: slug = %q", got)
+	}
+	// Today's ids carry a hash after the slug; the card's name comes from the slug alone (RW1-D-05).
+	if got := keptAppSlug("pc2", "microsoft-paint-0a1b2c3d4e5f"); got != "microsoft-paint" {
 		t.Errorf("slug = %q", got)
 	}
 }

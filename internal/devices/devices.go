@@ -62,9 +62,21 @@ var schema = []string{
 type Store struct {
 	db *sql.DB
 
-	// mu guards seen, the in-memory throttle on last-seen writes.
-	mu   sync.Mutex
-	seen map[string]time.Time
+	// mu guards seen, the in-memory throttle on last-seen writes, and
+	// onRevoke.
+	mu       sync.Mutex
+	seen     map[string]time.Time
+	onRevoke []func(id string)
+}
+
+// OnRevoke registers f to be called with a device's id once it is unpaired,
+// by Revoke or Forget: what that device holds open beyond its next request
+// (a phone's live link) is ended there (review 2026-11-03, B-18).
+func (s *Store) OnRevoke(f func(id string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.onRevoke = append(s.onRevoke, f)
 }
 
 // NewStore opens the devices Store on db, creating its table if needed.
@@ -160,13 +172,20 @@ func (s *Store) Valid(token string) bool {
 	return true
 }
 
+// DeviceID returns the id of the paired device token belongs to, whichever of its tokens it is: how the gate tracks
+// what a device holds open, to end it when the device is unpaired (lanaccess.CloseDevice).
+func (s *Store) DeviceID(token string) (string, bool) { return s.deviceFor(token) }
+
 // deviceFor returns the id of the device token belongs to, whichever of its
 // tokens it is.
 func (s *Store) deviceFor(token string) (string, bool) {
 	var id string
 
+	// An extra token counts only while its device is paired: one left behind
+	// by a revoke that raced AddToken must not pass the gate unlisted.
 	err := s.db.QueryRow(`SELECT id FROM paired_devices WHERE token_hash = ?
-		UNION ALL SELECT device_id FROM device_tokens WHERE token_hash = ? LIMIT 1`,
+		UNION ALL SELECT t.device_id FROM device_tokens t JOIN paired_devices d ON d.id = t.device_id
+		WHERE t.token_hash = ? LIMIT 1`,
 		hashToken(token), hashToken(token)).Scan(&id)
 
 	return id, err == nil
@@ -181,16 +200,15 @@ func (s *Store) AddToken(id string) (string, error) {
 		return "", fmt.Errorf("devices: generating a token: %w", err)
 	}
 
-	var exists int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM paired_devices WHERE id = ?`, id).Scan(&exists); err != nil {
-		return "", err
-	}
-	if exists == 0 {
-		return "", ErrNotFound
-	}
-
-	if _, err := s.db.Exec(`INSERT INTO device_tokens (token_hash, device_id) VALUES (?, ?)`, hashToken(token), id); err != nil {
+	// One statement, so a Revoke between a check and the insert cannot leave
+	// a token for a device that is gone.
+	res, err := s.db.Exec(`INSERT INTO device_tokens (token_hash, device_id)
+		SELECT ?, ? WHERE EXISTS (SELECT 1 FROM paired_devices WHERE id = ?)`, hashToken(token), id, id)
+	if err != nil {
 		return "", fmt.Errorf("devices: adding a token: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return "", ErrNotFound
 	}
 
 	return token, nil
@@ -242,13 +260,20 @@ func (s *Store) Forget(token string) error {
 }
 
 // Revoke unpairs the device with this id - the Mobile menu's Revoke button.
+// The device and every token it has go in one transaction.
 func (s *Store) Revoke(id string) error {
-	result, err := s.db.Exec(`DELETE FROM paired_devices WHERE id = ?`, id)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.Exec(`DELETE FROM paired_devices WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
 
-	if _, err := s.db.Exec(`DELETE FROM device_tokens WHERE device_id = ?`, id); err != nil {
+	if _, err := tx.Exec(`DELETE FROM device_tokens WHERE device_id = ?`, id); err != nil {
 		return err
 	}
 
@@ -256,9 +281,18 @@ func (s *Store) Revoke(id string) error {
 		return ErrNotFound
 	}
 
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	delete(s.seen, id)
+	hooks := append([]func(string){}, s.onRevoke...)
 	s.mu.Unlock()
+
+	for _, f := range hooks {
+		f(id)
+	}
 
 	return nil
 }

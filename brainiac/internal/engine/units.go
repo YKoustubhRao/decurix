@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"brainiac/internal/backend"
@@ -31,10 +32,53 @@ type unit struct {
 	llama  *LlamaProc
 	ollama *backend.Ollama
 	tag    string
-	// shared: Ollama already held the model for someone else when Brainiac
-	// first used it, so Brainiac never unloads it.
+	// shared: someone else uses the model in Ollama (it was held when
+	// Brainiac first used it, or someone used it after Brainiac last did),
+	// so Brainiac never unloads it.
 	shared bool
-	wk     *worker.Worker
+	// lastCall is when Brainiac last sent the model a request.
+	lastCall time.Time
+	callMu   sync.Mutex
+	wk       *worker.Worker
+	sw       *sharedProc // the worker process this unit shares with the other worker units
+}
+
+// stoppable is a process several units share (the Python worker).
+type stoppable interface {
+	Start(ctx context.Context) error
+	Stop() error
+}
+
+// sharedProc is one process that several units use (OCR and speech run in
+// the same worker). Each unit's load is a hold on it, and the process stops
+// only when the last unit holding it is unloaded: evicting an idle OCR unit
+// never ends a transcription the speech unit is running.
+type sharedProc struct {
+	p     stoppable
+	mu    sync.Mutex
+	holds int
+}
+
+func (s *sharedProc) acquire(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.p.Start(ctx); err != nil {
+		return err
+	}
+	s.holds++
+	return nil
+}
+
+func (s *sharedProc) release() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.holds > 0 {
+		s.holds--
+	}
+	if s.holds == 0 {
+		// A process exit returns every byte; Python rarely gives a heap back.
+		_ = s.p.Stop()
+	}
 }
 
 func (u *unit) key() string    { return u.k }
@@ -57,9 +101,19 @@ func (u *unit) load(ctx context.Context) error {
 		}
 		return nil // Ollama loads on the first call
 	case catalog.RuntimeWorker:
-		return u.wk.Start(ctx)
+		return u.sw.acquire(ctx)
 	}
 	return nil
+}
+
+// alive reports whether a loaded unit is still in memory. A llama-server can
+// die after loading; Ollama keeps its own models; the worker starts again on
+// its next call.
+func (u *unit) alive() bool {
+	if u.runtime == catalog.RuntimeLlamaCpp {
+		return u.llama.Running()
+	}
+	return true
 }
 
 func (u *unit) unload() {
@@ -67,18 +121,48 @@ func (u *unit) unload() {
 	case catalog.RuntimeLlamaCpp:
 		u.llama.Stop()
 	case catalog.RuntimeOllama:
-		if !u.shared {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			_ = u.ollama.Unload(ctx, u.tag)
+		if u.shared {
+			return
 		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if u.usedByOthers(ctx) {
+			u.shared = true // a desktop started using it: never unload it from under them
+			return
+		}
+		_ = u.ollama.Unload(ctx, u.tag)
 	case catalog.RuntimeWorker:
-		// A process exit returns every byte; Python rarely gives a heap back.
-		_ = u.wk.Stop()
+		u.sw.release()
 	}
 }
 
 // chat sends one conversation turn to the unit's model.
+// usedByOthers reports whether Ollama's copy of the model was used after
+// Brainiac's last call: its unload time is later than Brainiac's keep_alive
+// from that call. When Ollama cannot be asked, it is treated as used.
+func (u *unit) usedByOthers(ctx context.Context) bool {
+	exp, err := u.ollama.Expires(ctx)
+	if err != nil {
+		return true
+	}
+	u.callMu.Lock()
+	last := u.lastCall
+	u.callMu.Unlock()
+	for name, at := range exp {
+		if sameTag(name, u.tag) {
+			return !last.IsZero() && at.After(last.Add(u.ollama.KeepAliveFor()+time.Minute))
+		}
+	}
+	return false // not loaded at all: nothing to unload, nothing to take
+}
+
+// called notes a request Brainiac sent to an Ollama model.
+func (u *unit) called() {
+	u.callMu.Lock()
+	u.lastCall = time.Now()
+	u.callMu.Unlock()
+}
+
 func (u *unit) chat(ctx context.Context, req backend.ChatRequest) (backend.ChatResult, error) {
 	switch u.runtime {
 	case catalog.RuntimeLlamaCpp:
@@ -93,7 +177,9 @@ func (u *unit) chat(ctx context.Context, req backend.ChatRequest) (backend.ChatR
 		return c.Chat(ctx, req)
 	default:
 		req.Model = u.tag
-		return u.ollama.Chat(ctx, req)
+		res, err := u.ollama.Chat(ctx, req)
+		u.called()
+		return res, err
 	}
 }
 
@@ -108,7 +194,9 @@ func (u *unit) embed(ctx context.Context, inputs []string) ([][]float32, error) 
 		}
 		return c.Embed(ctx, u.model, inputs)
 	}
-	return u.ollama.Embed(ctx, u.tag, inputs)
+	v, err := u.ollama.Embed(ctx, u.tag, inputs)
+	u.called()
+	return v, err
 }
 
 // asrModel describes the unit's speech model for the worker.
@@ -132,6 +220,10 @@ func buildUnits(lock *install.Lock, cat *catalog.Catalog, ollamaURL, logDir stri
 	units := map[string]*unit{}
 	byRole := map[string]*unit{}
 	var ol *backend.Ollama
+	var sw *sharedProc
+	if wk != nil {
+		sw = &sharedProc{p: wk}
+	}
 	for _, p := range lock.Plan.Picks {
 		k := install.UnitKey(p.Model, p.Source)
 		u, ok := units[k]
@@ -157,7 +249,7 @@ func buildUnits(lock *install.Lock, cat *catalog.Catalog, ollamaURL, logDir stri
 				}
 				u.ollama, u.tag = ol, p.Source.Tag
 			case catalog.RuntimeWorker:
-				u.wk = wk
+				u.wk, u.sw = wk, sw
 			}
 			units[k] = u
 		}

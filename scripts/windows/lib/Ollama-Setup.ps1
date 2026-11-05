@@ -14,52 +14,105 @@
     their own copy of it.
 #>
 
-# .env is read by the control plane (docker/Dockerfile copies it into the
-# image) and by docker compose. Written as UTF-8 *without* a BOM and with LF
-# endings: Windows PowerShell 5.1's own Set-Content/Out-File would add a BOM
-# (or write UTF-16), and a BOM glued to the first key turns DEFAULT_PASSWORD
-# into a variable nobody reads.
+# .env is given to the control plane by docker compose (env_file) when it
+# starts. Read and written as UTF-8 *without* a BOM and with LF endings:
+# Windows PowerShell 5.1's own Get-Content reads it in the ANSI code page
+# (so every run mangled a non-ASCII value a little more), and its
+# Set-Content/Out-File would add a BOM (or write UTF-16) - a BOM glued to the
+# first key turns DEFAULT_PASSWORD into a variable nobody reads.
+function Read-EnvLines {
+    if (-not (Test-Path -LiteralPath $script:EnvFile)) { return @() }
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    return @([System.IO.File]::ReadAllLines($script:EnvFile, $utf8) | ForEach-Object { $_.TrimEnd("`r") })
+}
+
+# Read-EnvVar returns Name's value as compose reads it: the last line that
+# sets it, without one pair of surrounding quotes, and without a trailing
+# " # comment" on an unquoted value.
 function Read-EnvVar {
     param([string]$Name)
 
-    if (-not (Test-Path $script:EnvFile)) { return "" }
-
-    $line = Get-Content $script:EnvFile |
+    $line = Read-EnvLines |
         Where-Object { $_ -match "^$([regex]::Escape($Name))=" } |
         Select-Object -Last 1
+    if (-not $line) { return "" }
 
-    if ($line) { return $line.Substring($Name.Length + 1) }
-    return ""
+    $value = $line.Substring($Name.Length + 1)
+    if ($value.Length -ge 2 -and ($value[0] -eq '"' -or $value[0] -eq "'") -and $value[-1] -eq $value[0]) {
+        return $value.Substring(1, $value.Length - 2)
+    }
+    return ($value -replace '\s+#.*$', '').TrimEnd()
 }
 
 function Set-EnvVar {
     param([string]$Name, [string]$Value)
 
-    $lines = @()
-    if (Test-Path $script:EnvFile) {
-        $lines = @(Get-Content $script:EnvFile)
-    }
+    $lines = @(Read-EnvLines)
 
     $pattern = "^$([regex]::Escape($Name))="
     $found = $false
+    $kept = @()
 
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        if ($lines[$i] -match $pattern) {
-            $lines[$i] = "$Name=$Value"
+    foreach ($line in $lines) {
+        if ($line -match $pattern) {
+            if (-not $found) { $kept += "$Name=$Value" }
             $found = $true
+        } else {
+            $kept += $line
         }
     }
 
     if (-not $found) {
-        $lines += "$Name=$Value"
+        $kept += "$Name=$Value"
     }
 
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     [System.IO.File]::WriteAllText(
         $script:EnvFile,
-        (($lines -join "`n") + "`n"),
+        (($kept -join "`n") + "`n"),
         $utf8NoBom
     )
+}
+
+# A setting this run needs but the person did not choose (a fallback server or
+# model) is used for this run only: it goes into a compose override file,
+# never into .env, so the next run asks again and the person's own choice
+# survives a moment when their server was down. Callers start compose with
+# the files in $script:ComposeFiles.
+$script:RunOnly = [ordered]@{}
+$script:ComposeFiles = @('-f', 'docker-compose.yaml')
+
+function Set-RunOnly {
+    param([string]$Name, [string]$Value)
+
+    if ($Value -match '["\\\r\n]') {
+        Write-Host "WARNING: not using $Name=$Value for this run (it holds a quote, a backslash or a line break)."
+        return
+    }
+    $script:RunOnly[$Name] = $Value
+    Write-Host ""
+    Write-Host "!! THIS RUN ONLY: $Name=$Value"
+    Write-Host "!! .env is left as you set it; the next run checks again."
+}
+
+# Get-EffectiveEnvVar is the value this run uses: a run-only one, else .env's.
+function Get-EffectiveEnvVar {
+    param([string]$Name)
+
+    if ($script:RunOnly.Contains($Name)) { return $script:RunOnly[$Name] }
+    return Read-EnvVar $Name
+}
+
+# Write-RunOverride writes the run-only settings as a compose override and
+# adds it to $script:ComposeFiles.
+function Write-RunOverride {
+    $script:ComposeFiles = @('-f', 'docker-compose.yaml')
+    if ($script:RunOnly.Count -eq 0) { return }
+    $file = Join-Path ([System.IO.Path]::GetTempPath()) ("decurix-run-" + [guid]::NewGuid().ToString('N') + ".yaml")
+    $text = "services:`n  desktop-manager:`n    environment:`n"
+    foreach ($key in $script:RunOnly.Keys) { $text += "      ${key}: `"$($script:RunOnly[$key])`"`n" }
+    [System.IO.File]::WriteAllText($file, $text, (New-Object System.Text.UTF8Encoding $false))
+    $script:ComposeFiles += @('-f', $file)
 }
 
 # Invoke-InDesktopImage runs a Python snippet inside decurix-desktop:basic, on
@@ -157,52 +210,37 @@ except Exception as exc:
     return ($LASTEXITCODE -eq 0)
 }
 
-# The Windows counterpart of the Linux systemd step. The Ollama app for
-# Windows listens on 127.0.0.1 only unless OLLAMA_HOST says otherwise, and it
-# reads that from the user's environment when it starts - so set it there
-# and restart the app. Docker Desktop normally forwards host.docker.internal
-# to the host's loopback, which is why this rarely fires; when it does,
-# nothing short of listening on more than loopback makes Ollama reachable.
-function Enable-OllamaListenAll {
-    param([string]$DefaultOllamaUrl)
+# Docker Desktop forwards host.docker.internal to this computer's 127.0.0.1,
+# where the Ollama app listens by default, so Ollama never needs to be on
+# every address - and with no login, on every address it hands model
+# management to the whole network. Restore-OllamaLoopback takes back what an
+# earlier version of these scripts did (OLLAMA_HOST set to 0.0.0.0 for the user),
+# and restarts the app so it listens on 127.0.0.1 again.
+function Restore-OllamaLoopback {
+    if ([Environment]::GetEnvironmentVariable("OLLAMA_HOST", "User") -ne "0.0.0.0") { return }
+
+    Write-Host "An earlier Decurix put Ollama on every address (OLLAMA_HOST set to 0.0.0.0 for your"
+    Write-Host "user). Removing that, so Ollama listens on 127.0.0.1 only."
+    [Environment]::SetEnvironmentVariable("OLLAMA_HOST", $null, "User")
+    Remove-Item Env:OLLAMA_HOST -ErrorAction SilentlyContinue
 
     $app = Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama app.exe"
-
-    if (-not (Test-Path $app)) {
-        Write-Host "The Ollama app is not in its default location, so it cannot be"
-        Write-Host "restarted from here. Set OLLAMA_HOST=0.0.0.0 in your user"
-        Write-Host "environment variables, restart Ollama, and re-run this script."
-        return $false
-    }
-
-    Write-Host "Setting OLLAMA_HOST=0.0.0.0 for your user and restarting Ollama."
-    Write-Host "(Windows Firewall may ask whether Ollama may accept connections.)"
-    Write-Host ""
-
-    [Environment]::SetEnvironmentVariable("OLLAMA_HOST", "0.0.0.0", "User")
-    $env:OLLAMA_HOST = "0.0.0.0"
-
-    Get-Process -Name "ollama app", "ollama" -ErrorAction SilentlyContinue |
-        Stop-Process -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
-    Start-Process -FilePath $app
-
-    for ($i = 1; $i -le 15; $i++) {
-        if (Test-OllamaReachable $DefaultOllamaUrl) {
-            return $true
-        }
+    if (Test-Path -LiteralPath $app) {
+        Get-Process -Name "ollama app", "ollama" -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
+        Start-Process -FilePath $app
+        Start-Sleep -Seconds 3
+    } else {
+        Write-Host "Restart Ollama yourself for this to take effect."
     }
-
-    return $false
 }
 
-# Ensures OLLAMA_URL/OLLAMA_MODEL in .env name a server the desktop
-# containers can reach, with the chat and embedding models pulled onto it.
-# Everything here writes .env, which docker/Dockerfile copies into the
-# control plane image - so callers must run this before "docker compose
-# build"/"up --build", not after. Assumes the current directory is the repo
-# root (the caller has already Set-Location'd there).
+# Ensures OLLAMA_URL/OLLAMA_MODEL name a server the desktop containers can
+# reach, with the chat and embedding models pulled onto it. A fallback is
+# used for this run only (Set-RunOnly); callers start compose with
+# $script:ComposeFiles. Assumes the current directory is the repo root (the
+# caller has already Set-Location'd there).
 function Invoke-EnsureOllamaReady {
     $script:EnvFile = Join-Path (Get-Location).Path ".env"
     $defaultOllamaUrl = "http://host.docker.internal:11434"
@@ -218,6 +256,7 @@ function Invoke-EnsureOllamaReady {
         docker network create decurix-network | Out-Null
     }
 
+    Restore-OllamaLoopback
     $ollamaUrl = ""
 
     # Whatever is already in .env wins, as long as it actually works.
@@ -254,15 +293,9 @@ function Invoke-EnsureOllamaReady {
 
         if ($hostOllama) {
             Write-Host ""
-            Write-Host "Ollama is running on this machine but no desktop container"
-            Write-Host "can reach it."
-
-            if (Enable-OllamaListenAll -DefaultOllamaUrl $defaultOllamaUrl) {
-                Write-Host "Host Ollama is now reachable from containers."
-                $ollamaUrl = $defaultOllamaUrl
-            } else {
-                Write-Host "Could not make the host's Ollama reachable."
-            }
+            Write-Host "Ollama answers on this computer but not from a desktop container."
+            Write-Host "Docker Desktop normally forwards host.docker.internal to this computer;"
+            Write-Host "check that Docker Desktop (not another engine) is running, then re-run."
         }
     }
 
@@ -271,17 +304,28 @@ function Invoke-EnsureOllamaReady {
     # desktop a URL that answers nowhere. qwen2.5-coder:3b, not qwen3:0.6b -
     # the 0.6b model was too weak to reliably follow the agent's own
     # COMMAND/DONE/HELP contract (see internal/ollama.Model's comment).
+    # For this run only (Set-RunOnly): a server that was down a moment must
+    # not cost the person their own server and model for good.
     if (-not $ollamaUrl) {
         Write-Host ""
-        Write-Host "Falling back to the bundled decurix-ollama container."
+        Write-Host "WARNING: no Ollama the desktops can reach. Falling back to the bundled"
+        Write-Host "decurix-ollama container for this run."
         $ollamaUrl = $bundledOllamaUrl
         # A pinned model is replaced by a small one that always works; "auto"
         # stays auto - the control plane pulls what fits into the container.
         $pinned = Read-EnvVar "OLLAMA_MODEL"
-        if ($pinned -and ($pinned -ne "auto")) { Set-EnvVar "OLLAMA_MODEL" "qwen2.5-coder:3b" }
+        if ($pinned -and ($pinned -ne "auto")) { Set-RunOnly "OLLAMA_MODEL" "qwen2.5-coder:3b" }
     }
 
-    Set-EnvVar "OLLAMA_URL" $ollamaUrl
+    # .env keeps the person's server. A URL is written only when .env named
+    # none and the one found is not the fallback; anything else is this run's.
+    if ($ollamaUrl -ne $configuredUrl) {
+        if ((-not $configuredUrl) -and ($ollamaUrl -ne $bundledOllamaUrl)) {
+            Set-EnvVar "OLLAMA_URL" $ollamaUrl
+        } else {
+            Set-RunOnly "OLLAMA_URL" $ollamaUrl
+        }
+    }
 
     # The bundled container gets both models from the control plane itself
     # (internal/ollama.EnsureReady). A host or remote server does not.
@@ -311,23 +355,20 @@ function Invoke-EnsureOllamaReady {
             }
         } elseif (Test-ModelPresent $availableModels $wantedModel) {
             Write-Host "Chat model $wantedModel is present."
-            Set-EnvVar "OLLAMA_MODEL" $wantedModel
         } else {
             Write-Host ""
             Write-Host "Pulling the chat model $wantedModel (once; a 3B model is ~2GB)."
 
             if (Invoke-OllamaPull $ollamaUrl $wantedModel) {
                 Write-Host "Chat model $wantedModel is ready."
-                Set-EnvVar "OLLAMA_MODEL" $wantedModel
             } elseif ($availableModels.Count -gt 0) {
                 $firstModel = $availableModels[0]
-                Write-Host "WARNING: could not pull $wantedModel; using $firstModel."
-                Set-EnvVar "OLLAMA_MODEL" $firstModel
+                Write-Host "WARNING: could not pull $wantedModel; using $firstModel for this run."
+                Set-RunOnly "OLLAMA_MODEL" $firstModel
             } else {
                 Write-Host "WARNING: could not pull $wantedModel, and that server has"
                 Write-Host "no models at all. Desktops will not be able to reason until"
                 Write-Host "you run: ollama pull $wantedModel"
-                Set-EnvVar "OLLAMA_MODEL" $wantedModel
             }
         }
 
@@ -351,6 +392,10 @@ function Invoke-EnsureOllamaReady {
         }
     }
 
+    Write-RunOverride
     Write-Host ""
-    Write-Host "Desktops will use OLLAMA_URL=$(Read-EnvVar 'OLLAMA_URL') OLLAMA_MODEL=$(Read-EnvVar 'OLLAMA_MODEL')"
+    Write-Host "Desktops will use OLLAMA_URL=$(Get-EffectiveEnvVar 'OLLAMA_URL') OLLAMA_MODEL=$(Get-EffectiveEnvVar 'OLLAMA_MODEL')"
+    if ($script:RunOnly.Count -gt 0) {
+        Write-Host "!! Some of that is for this run only (see above); .env is unchanged there."
+    }
 }

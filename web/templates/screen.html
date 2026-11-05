@@ -310,17 +310,40 @@ async function startDesktop(){
 }
 
 veilBtn.addEventListener("click", async () => {
+  if(rfb || connecting){ return; }
   attempts = 0;
   refused = false;
-  const st = await desktopStatus();
-  if(st && st.status !== "running" && !await startDesktop()){ return; }
-  connect();
+  clearTimeout(retryTimer);
+  connecting = true;
+  let started = true;
+  try{
+    const st = await desktopStatus();
+    if(st && st.status !== "running" && !await startDesktop()){ started = false; }
+  }finally{
+    connecting = false;
+  }
+  if(started){ connect(); }
 });
+
+/* One session at a time. connect() waits on the desktop's status (and may
+   start it) before it makes the RFB, so a second call in that window - a
+   click on the veil while a retry is under way - found no rfb yet and opened
+   a second session beside the first. */
+let connecting = false;
 
 async function connect(){
   clearTimeout(retryTimer);
-  if(rfb){ return; }
+  if(rfb || connecting){ return; }
 
+  connecting = true;
+  try{
+    await openSession();
+  }finally{
+    connecting = false;
+  }
+}
+
+async function openSession(){
   let st = await desktopStatus();
   if(st && st.status === "provisioning"){
     showVeil("Setting up " + NAME + "…");
@@ -645,12 +668,10 @@ let remoteClip = "";
 
 function onRemoteClipboard(e){
   remoteClip = e.detail.text || "";
+  // It waits in the pop-over, and reaches this computer's clipboard only when the person presses "Copy to this
+  // computer" (W-12): the desktop's clipboard is the worker's, and text it put there silently replacing what the
+  // person had copied could be pasted somewhere it runs.
   $("clip-text").value = remoteClip;
-  // Straight onto this computer's clipboard when the browser allows it (a
-  // secure page with focus); otherwise it waits in the pop-over.
-  if(remoteClip && navigator.clipboard && window.isSecureContext && document.hasFocus()){
-    navigator.clipboard.writeText(remoteClip).then(() => toast("Copied from the desktop")).catch(() => {});
-  }
 }
 
 $("clip-copy").addEventListener("click", async () => {

@@ -802,3 +802,172 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-5.md](gotchas/part-5.md): First learning curve on the per-document path: all checks over four months, 15% less billed in full; three months ended on a question code could answer (the saved files are a code-checked fact for the judge), a phase's "enter nothing" was read as the task's rule (the rest phase is told the phases in order), the gather report says "saved, not entered in this phase"
 - [part-5.md](gotchas/part-5.md): Code-checked facts handed to the judge among the person's words read as a claim (own `found` slot now); a worked-out value is kept but told to the judge as an assumption; a party the procedure chooses is never a reason to set a document aside
 - [part-5.md](gotchas/part-5.md): A person's answer naming the control of a spot-only press is applied to the step (study._aim_spots), so the replay finds that control instead of pressing the spot
+- [part-5.md](gotchas/part-5.md): A page on another site created a desktop and queued a task on the no-login listener
+- [part-5.md](gotchas/part-5.md): A desktop could reach every route a person can, and named itself in the body
+- [part-5.md](gotchas/part-5.md): A field the host bridge's signature did not cover went onto a host shell line as root
+- [part-5.md](gotchas/part-5.md): "Copy apps & sessions" copied the person's accounts into a worker
+- [part-5.md](gotchas/part-5.md): When something could not be checked, the default was "done"
+- [part-5.md](gotchas/part-5.md): A yes granted any action that shared a word with it
+- [part-5.md](gotchas/part-5.md): Identifiers went through number comparisons
+- [part-5.md](gotchas/part-5.md): One email crash-looped the control plane
+- [part-5.md](gotchas/part-5.md): Keys were baked into an image layer
+- [part-5.md](gotchas/part-5.md): Shell edits on this Windows host
+- [part-5.md](gotchas/part-5.md): The agent's own ports took a person's reply from anyone
+- [part-5.md](gotchas/part-5.md): TheBot verified what it had not seen, and a yes paid twice
+- [part-5.md](gotchas/part-5.md): The recheck of the morning's fixes found the fixes' own holes
+- [part-5.md](gotchas/part-5.md): Fixes for identifiers and PINs widened into new leaks
+- [part-5.md](gotchas/part-5.md): A small marked figure hid a large one in an approval policy
+- [part-5.md](gotchas/part-5.md): A person's typed password was kept in the task records and the chat
+- [part-5.md](gotchas/part-5.md): On Windows, `filepath.IsAbs("/etc/passwd")` is false
+- [part-5.md](gotchas/part-5.md): A label is read as a whole, not as a bag of words
+- [part-5.md](gotchas/part-5.md): A replay's save is not a person's decision to make again
+- [part-5.md](gotchas/part-5.md): A press has three doors, and the gate saw one
+- [part-5.md](gotchas/part-5.md): "Nothing readable was written" is not "nothing changed"
+- [part-5.md](gotchas/part-5.md): checked=True means a result was read back
+- [part-5.md](gotchas/part-5.md): Drafting a real email before its check made a redo draft it twice
+- [part-5.md](gotchas/part-5.md): A word filter is not a boundary; fail closed on what it cannot read
+- [part-5.md](gotchas/part-5.md): `(?i)` over a whole regex made curl's `-f` read as `-F`
+- [part-5.md](gotchas/part-5.md): A secret detector must read the VALUE, not the word
+- [part-5.md](gotchas/part-5.md): A fix a person approved once may run again unasked, from a record only the harness writes
+- [part-5.md](gotchas/part-5.md): A proxied network lost downloads and web search
+- [part-5.md](gotchas/part-5.md): Anthropic has one system, and a second system message broke the call
+- [part-5.md](gotchas/part-5.md): Unbounded jobs (soul job caps)
+- [part-5.md](gotchas/part-5.md): A byte cut of the operator's seen text left half a rune
+- [part-5.md](gotchas/part-5.md): A figure glued to its currency was no figure, so a policy's two approvers were skipped
+- [part-5.md](gotchas/part-5.md): A postal code remembered as a secret hid every matching total
+- [part-5.md](gotchas/part-5.md): A label's value stopped at ";" and a password without a colon got through
+- [part-5.md](gotchas/part-5.md): An identifier in digits went into a sheet as a number
+- [part-5.md](gotchas/part-5.md): Every table with an account column was a payment run, and a run of a payee's words was the payee
+- [part-5.md](gotchas/part-5.md): A stolen backup opened every saved secret
+- [part-5.md](gotchas/part-5.md): A saved key went wherever a new endpoint pointed
+- [part-5.md](gotchas/part-5.md): Hidden tabs polled and every page held the access code
+- [part-5.md](gotchas/part-5.md): Tests that need what is not here skipped without a word
+- [part-5.md](gotchas/part-5.md): A race test on one connection cannot race
+- [part-5.md](gotchas/part-5.md): The binary carried the agent's tests
+- [part-5.md](gotchas/part-5.md): Bench verdicts that could not fail
+- [part-5.md](gotchas/part-5.md): A container on a network the control plane did not know was a person
+- [part-5.md](gotchas/part-5.md): One lock around every Docker lookup made every poll wait
+- [part-5.md](gotchas/part-5.md): "Is this a Windows program" read the base name of the whole command line
+- [part-5.md](gotchas/part-5.md): host-bridge open and clip needed no token, so any desktop drove the person's own browser
+- [part-5.md](gotchas/part-5.md): The host-files deny-list was decided on the path as written
+- [part-5.md](gotchas/part-5.md): The Windows app published the gated port on every address of its WSL distro
+- [part-5.md](gotchas/part-5.md): A practice desktop was made with no token when the secret was missing
+- [part-5.md](gotchas/part-5.md): The worker was root-capable the whole time: sudo with the image's public password, writable /etc/passwd
+- [part-5.md](gotchas/part-5.md): A yes now exists only in a process the worker cannot touch: signed replies to a separate gate user
+- [part-5.md](gotchas/part-5.md): The agent's shell net now fails closed on what it cannot read
+- [part-5.md](gotchas/part-5.md): A long run kept "You approved" for any file in the command folder
+- [part-5.md](gotchas/part-5.md): The entrypoint ran as root through the worker's PATH and the worker's hard links
+- [part-5.md](gotchas/part-5.md): The gate's key in the container's environment reached every docker exec
+- [part-5.md](gotchas/part-5.md): A yes was tied to wording, not to the action
+- [part-5.md](gotchas/part-5.md): A bare shell in a root docker exec runs the worker's code
+- [part-5.md](gotchas/part-5.md): Read-only answers and shell clean-up were over-asked
+- [part-5.md](gotchas/part-5.md): Proven fixes were an always-allow
+- [part-5.md](gotchas/part-5.md): Bare account columns stopped making a payment file
+- [part-5.md](gotchas/part-5.md): A desktop with no gate fell back silently to the worker's store
+- [part-5.md](gotchas/part-5.md): A "yes" typed in the chat landed on the newest question, whichever it was
+- [part-5.md](gotchas/part-5.md): The gate's signed question carried the worker's reason
+- [part-5.md](gotchas/part-5.md): "Could this have changed something" was a list of writers
+- [part-5.md](gotchas/part-5.md): Refund files and "Acc" columns were not payment files
+- [part-5.md](gotchas/part-5.md): The rm check read the text, so each review found a new spelling
+- [part-5.md](gotchas/part-5.md): A local address beside an outside one passed as local
+- [part-5.md](gotchas/part-5.md): "Reimbursement" was no money paid out
+- [part-5.md](gotchas/part-5.md): claude_guard failed open when it could not start
+- [part-5.md](gotchas/part-5.md): Question and final-reply files were written unredacted
+- [part-5.md](gotchas/part-5.md): The browser extension took a yes from anyone with the agent token
+- [part-5.md](gotchas/part-5.md): A proven fix stood in every project of the desktop
+- [part-6.md](gotchas/part-6.md): Docker's copy API is root inside the desktop
+- [part-6.md](gotchas/part-6.md): A heredoc built from text is not a safe way to write a file into a desktop
+- [part-6.md](gotchas/part-6.md): Killing processes by command-line pattern on a shared machine needs an owner tag
+- [part-6.md](gotchas/part-6.md): A path hash is not an instance id when every container has the same path
+- [part-6.md](gotchas/part-6.md): An empty instance-id older than 5 s is a crash's leftover
+- [part-6.md](gotchas/part-6.md): A creation that fails must remove only what it made
+- [part-6.md](gotchas/part-6.md): Docker's one-shot stats have no PreCPUStats
+- [part-6.md](gotchas/part-6.md): A full stderr sink that returns an error ends stdcopy.StdCopy
+- [part-6.md](gotchas/part-6.md): Copies into one paused desktop decide one at a time
+- [part-6.md](gotchas/part-6.md): A paused desktop is a running desktop for the tools refresh
+- [part-6.md](gotchas/part-6.md): Docker's --filter name=X matches substrings (and regex)
+- [part-6.md](gotchas/part-6.md): A whole-/dev bind carries the host's /dev/shm and /dev/mqueue into a sandbox
+- [part-6.md](gotchas/part-6.md): A fallback written to .env is a permanent downgrade
+- [part-6.md](gotchas/part-6.md): PowerShell 5.1's Get-Content reads .env in the ANSI code page
+- [part-6.md](gotchas/part-6.md): A partial inventory is worse than none
+- [part-6.md](gotchas/part-6.md): A setting that only exists for an opt-in feature must not be required without it
+- [part-6.md](gotchas/part-6.md): GNU sed replacement text with \L-like sequences lowercases the rest of the line
+- [part-6.md](gotchas/part-6.md): Git for Windows' grep does not see \r in CRLF files
+- [part-6.md](gotchas/part-6.md): A verified-only mail rule must write out the sender's domain
+- [part-6.md](gotchas/part-6.md): Whether a mail rule's request is a slash command is decided from the rule's text, before the email's values go in
+- [part-6.md](gotchas/part-6.md): Outgoing mail headers are rendered from parsed addresses and parsed media types
+- [part-6.md](gotchas/part-6.md): A mail poll commits each batch
+- [part-6.md](gotchas/part-6.md): Only a fault in the email itself counts against its three tries
+- [part-6.md](gotchas/part-6.md): A link fault that one email causes recurs forever at that UID
+- [part-6.md](gotchas/part-6.md): An SMTP QUIT failure after the server accepted DATA is a sent email
+- [part-6.md](gotchas/part-6.md): Attachments an email carried but that were not kept are named
+- [part-6.md](gotchas/part-6.md): A schedule's failed run is consumed but keeps last_error
+- [part-6.md](gotchas/part-6.md): An extra device token is valid only while its device row exists
+- [part-6.md](gotchas/part-6.md): decurix --phone never sends a saved token to another control plane address
+- [part-6.md](gotchas/part-6.md): Phone viewers pass only ordinary typing and navigation keycodes
+- [part-6.md](gotchas/part-6.md): Phone setup never turns on unencrypted network debugging
+- [part-6.md](gotchas/part-6.md): A setup one-liner checks what it runs
+- [part-6.md](gotchas/part-6.md): Person-facing validation errors are typed
+- [part-6.md](gotchas/part-6.md): A name-based walker is a net, not a proof
+- [part-6.md](gotchas/part-6.md): An identifier-labelled figure larger than every money figure makes the amount unknown
+- [part-6.md](gotchas/part-6.md): A check's own except: return [] is a pass
+- [part-6.md](gotchas/part-6.md): "Could not read" is not "none"
+- [part-6.md](gotchas/part-6.md): A word list that unblocks or refuses is a bug that comes back
+- [part-6.md](gotchas/part-6.md): A word list that un-gates a committing verb is a hole
+- [part-6.md](gotchas/part-6.md): A fallback that turns an unread reply into a yes grants changed actions
+- [part-6.md](gotchas/part-6.md): A retry after a stale node is a second action
+- [part-6.md](gotchas/part-6.md): Healing onto another name is acting on another record
+- [part-6.md](gotchas/part-6.md): A value with a slash is not a path
+- [part-6.md](gotchas/part-6.md): A digit string compared as a float is not an identifier
+- [part-6.md](gotchas/part-6.md): A substring replace of a file name rewrites other files
+- [part-6.md](gotchas/part-6.md): Never decide what a table is (a payment file or not) from its headers
+- [part-6.md](gotchas/part-6.md): A reply file is a channel, not a person
+- [part-6.md](gotchas/part-6.md): engine_returned runs in a finally and on the reply thread
+- [part-6.md](gotchas/part-6.md): os.scandir order is the filesystem's
+- [part-6.md](gotchas/part-6.md): binding.held_by compared amounts sign-blind
+- [part-6.md](gotchas/part-6.md): A quoted-name regex must not open on an apostrophe
+- [part-6.md](gotchas/part-6.md): A sum that ends a sentence was never checked
+- [part-6.md](gotchas/part-6.md): Scientific notation counts as a program's number only with its sign
+- [part-6.md](gotchas/part-6.md): Identifiers in sources are matched as one run of digits, never digits joined across cells
+- [part-6.md](gotchas/part-6.md): Lessons are the whole worker's (every client's)
+- [part-6.md](gotchas/part-6.md): Check copies of host files go in a folder per task and per full path
+- [part-6.md](gotchas/part-6.md): Every write of desktop state goes through privacy.write_scrubbed
+- [part-6.md](gotchas/part-6.md): Withholding by shape breaks machine state
+- [part-6.md](gotchas/part-6.md): Raw nomic-embed-text cosine does not separate relevant from unrelated facts
+- [part-6.md](gotchas/part-6.md): Tests can pin a fail-open as a feature
+- [part-6.md](gotchas/part-6.md): A token estimate must never under-count
+- [part-6.md](gotchas/part-6.md): A file is the work's own code only when it was written from the command's own text and then run as the program
+- [part-6.md](gotchas/part-6.md): The trace's withholding and L1's secret test are one rule set
+- [part-6.md](gotchas/part-6.md): A turn id is the job's, not the operator run's
+- [part-6.md](gotchas/part-6.md): A stream that ends is not an answer that finished
+- [part-6.md](gotchas/part-6.md): WaitGroup.Add after the pointer was handed out races Wait
+- [part-6.md](gotchas/part-6.md): Landlock has no right for connecting to a pathname Unix socket, and a network namespace does not cover one
+- [part-6.md](gotchas/part-6.md): pivot_root from a tmpfs on /tmp keeps /tmp's real contents reachable at /oldroot/tmp
+- [part-6.md](gotchas/part-6.md): Pdeathsig fires when the creating thread exits
+- [part-6.md](gotchas/part-6.md): Run go test -c binaries for Linux sandbox tests from a private directory, not /tmp
+- [part-6.md](gotchas/part-6.md): A mount view hides /proc/self/exe, and with it the program's $ORIGIN and ggml's backends
+- [part-6.md](gotchas/part-6.md): Margin 0 makes "B proven as good as A, and A proven as good as B" impossible
+- [part-6.md](gotchas/part-6.md): A strict checker is not neutral in a comparison
+- [part-6.md](gotchas/part-6.md): Chrome's own networking bypasses a Go dialer guard
+- [part-6.md](gotchas/part-6.md): A path proven by name is not proven when routed
+- [part-6.md](gotchas/part-6.md): Shell heredocs on this host collapse backslashes
+- [part-6.md](gotchas/part-6.md): go test -overlay with Windows paths failed
+- [part-6.md](gotchas/part-6.md): go:embed can fail with "unexpected length"
+- [part-6.md](gotchas/part-6.md): Run the module's suite before each commit, not only before the report
+- [part-6.md](gotchas/part-6.md): Patching one module through two names, then stopping in start order, leaks the mock
+- [part-6.md](gotchas/part-6.md): Do not have a model analyse evasion shapes for a guard
+- [part-6.md](gotchas/part-6.md): A test request from httptest comes from 192.0.2.1, not the host, once a desktop manager is set
+- [part-6.md](gotchas/part-6.md): A test that times a handler or a subprocess against a wall-clock number fails under load
+- [part-6.md](gotchas/part-6.md): A download in a Dockerfile with no timeout can hang a first start for good
+- [part-6.md](gotchas/part-6.md): One Alpine mirror can stall for one repository only, every time
+- [part-6.md](gotchas/part-6.md): A timeout is not a retry, and a status sent is not a status seen
+- [part-6.md](gotchas/part-6.md): An action's summary is words, not who chose the entry
+- [part-6.md](gotchas/part-6.md): A select is a record's value only when its form was saved
+- [part-6.md](gotchas/part-6.md): A check that only the general gate makes is a check a planned run skips
+- [part-6.md](gotchas/part-6.md): A bounded recheck that ends in a re-run is a re-run postponed
+- [part-6.md](gotchas/part-6.md): A form's value for a field is its latest, not every value it ever held
+- [part-6.md](gotchas/part-6.md): A refusal nobody records is a refusal nobody learns from
+- [part-6.md](gotchas/part-6.md): A file the worker's user can write is not the person's word
+- [part-6.md](gotchas/part-6.md): "Some word of the option" is not "the words that pick it out"
+- [part-6.md](gotchas/part-6.md): A daemon started as plain `python3` reads the worker's home
+- [part-6.md](gotchas/part-6.md): A label's value is its cell, not its line

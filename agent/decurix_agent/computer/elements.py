@@ -176,20 +176,25 @@ def _inside(box, outer):
     return outer[0] <= cx <= outer[0] + outer[2] and outer[1] <= cy <= outer[1] + outer[3]
 
 
-def find(elements, ref=None, role=None, name=None, path=None, active_group=None):
+def find(elements, ref=None, role=None, name=None, path=None, active_group=None, gone=None, exact=False):
     """
     Resolve a target against a fresh observation, or raise a ComputerError
-    that tells the engine what to do instead.
+    that tells the engine what to do instead. `gone`: where refs no longer on
+    the screen were last seen (the observation's "gone", core.observe).
+    `exact`: a name is matched only as itself (or as a name quoted cut short),
+    never as words inside a longer name - what a check of the screen needs
+    ("Submitted" is not "Not Submitted", review 2026-11-03 D-14).
     """
 
     if ref:
         for element in elements:
             if element["ref"] == ref:
                 return element
-        # The ref is gone but the element it named may be on the screen under a new ref: the same role and name,
-        # once. Found live (2026-10-26): the review walked to another page before the person's yes, and the approved
-        # click came back as "no longer on the screen" and a "could not finish" to the person.
-        same = _same_named(elements, ref)
+        # The ref is gone but the element it named may be on the screen under a new ref: the same role and name, in
+        # the same window and document, once. Found live (2026-10-26): the review walked to another page before the
+        # person's yes, and the approved click came back as "no longer on the screen" and a "could not finish" to the
+        # person.
+        same = _same_named(elements, ref, gone)
         if same is not None:
             return same
         raise ComputerError(
@@ -225,11 +230,24 @@ def find(elements, ref=None, role=None, name=None, path=None, active_group=None)
 
     if name:
         wanted = " ".join(name.split()).lower()
+        # The name itself; then a name that holds it as whole words, at its start first ("Save" for "Save & New");
+        # never inside another word ("Post" is not "Repost", "Rent" is not "Current"). A name quoted cut short
+        # ("Leased Line, Ser…", as _quote shows a long one) is matched by what it begins with.
+        whole = re.compile(r"(?<!\w)" + re.escape(wanted) + r"(?!\w)") if wanted else None
+        cut = re.sub(r"(?:…|\.\.\.)$", "", wanted).rstrip() if re.search(r"(?:…|\.\.\.)$", wanted) else ""
+
+        def shown(e):
+            return " ".join((e.get("name") or "").split()).lower()
+
         tiers = [
-            [e for e in candidates if " ".join((e.get("name") or "").split()).lower() == wanted],
-            [e for e in candidates if (e.get("name") or "").lower().startswith(wanted)],
-            [e for e in candidates if wanted in (e.get("name") or "").lower()],
+            [e for e in candidates if shown(e) == wanted],
+            [e for e in candidates if cut and shown(e).startswith(cut)],
         ]
+        if not exact:
+            tiers += [
+                [e for e in candidates if whole and whole.match(shown(e))],
+                [e for e in candidates if whole and whole.search(shown(e))],
+            ]
         matches = next((tier for tier in tiers if tier), [])
     else:
         matches = candidates
@@ -567,15 +585,30 @@ def render(observation, budget=3500, coords=False, only_group=None):
     return "\n".join(lines)
 
 
-def _same_named(elements, ref):
-    """The one element on the screen with the role and name a gone ref was printed with, else None."""
-    try:
-        from decurix_agent.computer import shown
-        prior = shown.named(ref)
-    except Exception:
+def where_seen(element, url=""):
+    """What a gone ref is re-bound by (_same_named): its role and name, and the window and document it was in."""
+
+    return {"role": element.get("role") or "", "name": element.get("name") or "", "group": element.get("group") or "",
+            "window_title": element.get("window_title") or "", "url": url or ""}
+
+
+def _same_named(elements, ref, gone=None):
+    """
+    The one element on the screen that is a gone ref's control drawn anew, else None: the same role and name, in the
+    same window (its group and title) and, on a web page, the same document (the page's address now, gone["urls"]).
+    A ref whose window was never kept is not re-bound; neither is one that two elements could be. `gone` is
+    {"refs": {ref: where_seen}, "urls": {group: the address it shows now}} (core.observe). Found in review
+    (2026-11-02): re-bound by role and name anywhere, an approved "Submit" landed on another document's Submit.
+    """
+
+    prior = ((gone or {}).get("refs") or {}).get(ref)
+    if not prior or not prior.get("name") or not (prior.get("group") or prior.get("window_title")):
         return None
-    if not prior or not prior[1]:
-        return None
-    role, name = normalize_role(prior[0]), prior[1]
-    same = [e for e in elements if normalize_role(e.get("role")) == role and (e.get("name") or "") == name]
+    role = normalize_role(prior.get("role"))
+    urls = (gone or {}).get("urls") or {}
+    same = [e for e in elements
+            if normalize_role(e.get("role")) == role and (e.get("name") or "") == prior["name"]
+            and (e.get("group") or "") == (prior.get("group") or "")
+            and (e.get("window_title") or "") == (prior.get("window_title") or "")
+            and (not prior.get("url") or urls.get(e.get("group") or "") == prior["url"])]
     return same[0] if len(same) == 1 else None

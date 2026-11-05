@@ -233,6 +233,14 @@ class Ladder:
 
         if ranked and self._may_ground(step):
             picked = self._ground(step, observation, ranked)
+            if picked is not None and healing.retargets(step, picked[0]["element"]):
+                # The engine's pick is a control that commits or is gated, under another name: a person decides that.
+                self.trail.append(f"the engine chose {healing.describe(picked[0])}, which commits - asked instead")
+                picked = None
+            if picked is not None and not healing.keeps_identity(step, picked[0]["element"]):
+                # Another name is another record or party, whoever picks it (D-09): a person decides that.
+                self.trail.append(f"the engine chose {healing.describe(picked[0])}, under another name - asked instead")
+                picked = None
             if picked is not None:
                 return {"element": picked[0]["element"], "how": GROUNDED, "confidence": picked[1],
                         "reason": "", "options": [], "observation": observation}
@@ -276,7 +284,7 @@ class Ladder:
         )
 
         try:
-            answer = parse_reply(self.ask_model(GROUND_SYSTEM, prompt))
+            answer = parse_reply(self.ask_model(GROUND_SYSTEM, prompt, purpose="py.escalation.ground"))
         except Exception as exc:
             self.trail.append(f"the engine could not be asked ({str(exc)[:80]})")
             return None
@@ -324,7 +332,7 @@ class Ladder:
         )
 
         try:
-            answer = parse_reply(self.ask_model(JUDGE_SYSTEM, prompt)) or {}
+            answer = parse_reply(self.ask_model(JUDGE_SYSTEM, prompt, purpose="py.escalation.judge")) or {}
         except Exception as exc:
             self.trail.append(f"the engine could not be asked to judge step {step['n']} ({str(exc)[:80]})")
             return False
@@ -373,7 +381,7 @@ class Ladder:
                 + f"The screen now:\n{ocr.text(texts[2], 700)}"
             )
             try:
-                answer = parse_reply(self.ask_model(DETOUR_SYSTEM, prompt)) or {}
+                answer = parse_reply(self.ask_model(DETOUR_SYSTEM, prompt, purpose="py.escalation.detour")) or {}
             except Exception as exc:
                 self.trail.append(f"the engine could not be asked about {span} ({str(exc)[:80]})")
                 answer = {}
@@ -481,7 +489,7 @@ class Ladder:
         )
 
         try:
-            answer = parse_reply(self.ask_model(POINT_SYSTEM, prompt)) or {}
+            answer = parse_reply(self.ask_model(POINT_SYSTEM, prompt, purpose="py.escalation.point")) or {}
         except Exception as exc:
             self.trail.append(f"the engine could not be asked where step {step['n']} clicks ({str(exc)[:80]})")
             return None

@@ -35,6 +35,7 @@ a password - and this run has its own.
 
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -45,7 +46,7 @@ import threading
 import time
 from pathlib import Path
 
-from decurix_agent import attachments, commands as shell_rules, config, llm_client, produced, usage
+from decurix_agent import attachments, commands as shell_rules, config, llm_client, produced, script_sandbox, usage
 from decurix_agent.computer import privacy
 from decurix_agent.logging_utils import log
 
@@ -104,7 +105,7 @@ TYPES = re.compile(r"^\s*gui\s+(type|select)\b")
 
 _lock = threading.Lock()
 _run = {"segments": [], "turns": 0, "offered": None, "said": False, "paused": False, "declined": False,
-        "answered": False}
+        "answered": False, "shell": []}
 
 
 # ============================================================
@@ -125,11 +126,16 @@ def load(name):
 
 
 def save(book):
+    """Write a playbook, through privacy.scrub (review 2026-11-03, E-14: a request's password was kept in the store).
+    A book that cannot be checked for secrets is not written: False."""
+
+    kept = privacy.scrub(book)
+    if not isinstance(kept, dict) or kept.get("name") != book["name"]:
+        log(f"Playbooks: {book['name']} could not be checked for secrets, so it was not kept")
+        return False
     ROOT.mkdir(parents=True, exist_ok=True)
-    tmp = _path(book["name"]).with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(book, f, indent=1, ensure_ascii=False)
-    os.replace(tmp, _path(book["name"]))
+    privacy.write_scrubbed(_path(book["name"]), kept, atomic=True, json_kw={"indent": 1, "ensure_ascii": False})
+    return True
 
 
 def delete(name):
@@ -163,10 +169,13 @@ def shape(request):
     """
     The words that say what kind of request this is, in order: its own words
     (not its attachments), without what is quoted, numbers and filler. Two
-    orders for two customers have the same shape but for the names.
+    orders for two customers have the same shape but for the names. Read
+    from the request with its secrets withheld: a shape is kept in the store
+    and names the playbook (review 2026-11-03: a password's letters were in
+    both).
     """
 
-    words = attachments.text(request or "").strip().splitlines()
+    words = privacy.safe_text(attachments.text(request or "").strip()).splitlines()
     text = QUOTED.sub(" ", " ".join(words))
     seen, out = set(), []
     for word in WORD.findall(text.lower()):
@@ -190,7 +199,13 @@ def _alike(mine, theirs):
 
 
 def find(request, skill=None):
-    """The playbook for this kind of request (a taught skill's own, when `skill` names one), or None."""
+    """The playbook for this kind of request (a taught skill's own, when `skill` names one), or None.
+
+    Without a skill this is a pre-filter by shared words, never the decision: "Create a credit note" shares enough
+    words with "Create a sales invoice" to be found (review 2026-11-03, E-44). Nothing runs on it alone - the context
+    it gives the engine is a suggestion the engine weighs, and a tool runs with no engine only when the worker's own
+    model reads the request as exactly what the tool does, every argument in the request's words
+    (tool_task.read_args)."""
 
     if not ENABLED:
         return None
@@ -265,7 +280,8 @@ def begin():
     """A new task: nothing of the last one's commands or playbook carries over."""
 
     with _lock:
-        _run.update(segments=[], turns=0, offered=None, said=False, paused=False, declined=False, answered=False)
+        _run.update(segments=[], turns=0, offered=None, said=False, paused=False, declined=False, answered=False,
+                    shell=[])
 
 
 def note_job(job):
@@ -295,6 +311,221 @@ def note_job(job):
         else:
             _run["segments"].append(worked)
         _run["turns"] += turns
+
+
+def ran_commands():
+    """The shell commands this task's engine jobs ran that worked (soul's `worked`), oldest first."""
+
+    with _lock:
+        return [c for seg in _run["segments"] for c in seg]
+
+
+# A command that can change something outside the engine's own memory: a redirect into a file, a program whose job is
+# to write, move, delete, install, send or run a script. A shell-only task that ran one has side effects nothing
+# read back (review 2026-11-03: such a task returned early at the final gate and went out unchecked).
+#
+# Round-3 recheck: every python3, curl and git counted, so read-only answers ("git status", "curl -s URL", "python3 -c
+# 'print(...)'") went to the final check and came back "Not checked". Those three now count only when they write:
+# git by its subcommand, curl when it sends or saves, an interpreter when its code is not plainly read-only (a script
+# file the check cannot see always counts). Anything not plainly read-only still counts.
+CHANGES_THINGS = re.compile(
+    r"(?<![<>&0-9])>>?(?!&)(?!\s*/dev/null)|\b(tee|touch|mkdir|cp|mv|rm|rmdir|ln|install|dd|truncate|chmod|chown|"
+    r"unzip|zip|tar|wget|sed\s+-i|apt(-get)?|pip3?|npm|sqlite3|psql|mysql|sendmail|mail|scp|rsync|ssh|kill|pkill|"
+    r"xdotool|soffice|libreoffice)\b|\boffice\s+(?!read\b)\S")
+_GIT_READS = {"status", "log", "diff", "show", "rev-parse", "ls-files", "grep", "blame", "describe", "shortlog",
+              "cat-file", "ls-tree", "reflog", "help", "version"}
+_GIT = re.compile(r"\bgit((?:\s+-[-\w]+(?:[ =](?!-)\S+)?)*)\s+([a-z][-a-z]*)(\s+[^;&|\n]*)?")
+_CURL_WRITES = re.compile(r"(?:^|\s)(?:-[a-zA-Z]*[dFTOo][a-zA-Z]*\b|--data\S*|--form\S*|--json|--upload-file|--output"
+                          r"|--remote-name\S*|-X\s*(?:POST|PUT|PATCH|DELETE)|--request\s+(?:POST|PUT|PATCH|DELETE))")
+_INTERPRETER = re.compile(r"(?:^|[;&|(`]|\$\(|\s)\s*(?:sudo\s+|env\s+)?(?:\S*/)?(python[0-9.]*|node|nodejs|ruby|perl|php"
+                          r"|bash|sh|zsh)(?=\s|$|;|\|)")
+_INLINE_CODE = re.compile(r"\b(?:python[0-9.]*|node|nodejs|ruby|perl|php|bash|sh|zsh)\s+(?:-[a-zA-Z]*[ceE]\b|-\s*<<|<<)")
+_CODE_WRITES = re.compile(
+    r"open\s*\(|\.write|\bos\.|shutil|subprocess|requests|urllib|http\.client|socket|pathlib|Path\s*\(|\.to_(?:csv|excel|"
+    r"json|parquet)|\.save\s*\(|json\.dump\b|pickle\.dump|\bunlink|\bremove|\brmdir|\bmkdir|\brename|smtplib|sqlite3"
+    r"|\bfs\.|writeFile|child_process|\bexec|\bsystem\b|\bFile\.|\bIO\.|`|\$\(|\brm\b")
+
+
+# Round-4 recheck: CHANGES_THINGS is a list of writers, and any list of writers misses some - mutt, msmtp, rclone, lp,
+# pandoc -o, convert, crontab all ran "read-only", so a shell-only task that sent or converted files went out
+# unchecked. So it is turned round: a command changes nothing only when every program in it is one that only reads or
+# prints (what it prints can still be redirected, which CHANGES_THINGS sees), with git, curl and interpreters judged by
+# what they do as above. Any other program might change something, and the task goes to the final check.
+_READS = frozenset("""
+ls dir vdir cat tac nl head tail less more grep egrep fgrep zgrep zcat bzcat xzcat rg ag ack wc sort uniq cut tr paste
+join comm fold fmt expand unexpand rev column file stat du df free uptime ps pgrep pidof whoami id groups uname arch
+nproc lscpu lsblk date cal pwd echo printf true false test [ [[ ]] sleep which whereis type hash basename dirname
+realpath readlink printenv locale lsof ss netstat ping dig nslookup host getent jq yq xmllint md5sum sha1sum sha224sum
+sha256sum sha384sum sha512sum cksum b2sum sum diff cmp od xxd hexdump strings seq awk gawk mawk sed find cd pushd popd
+export unset read local declare typeset readonly let shift wait exit return break continue : tree base64 base32 numfmt
+expr bc factor tput w who journalctl dmesg identify ffprobe pdfinfo pdffonts lsattr getfacl ldd readelf iconv shuf look
+man help pdftotext set
+""".split())
+# Words that start a command without being its program, and which of their options take the next word as a value (the
+# program comes after them).
+_PREFIX_ARGS = {"sudo": {"-u", "-g", "-C", "-p", "-h"}, "env": {"-u", "-C", "-S"}, "nice": {"-n"}, "nohup": set(),
+                "time": set(), "stdbuf": set(), "ionice": {"-c", "-n", "-p"}, "command": set(), "builtin": set(),
+                "exec": {"-a"}, "xargs": {"-I", "-n", "-P", "-L", "-d", "-s", "-E", "-a"}, "timeout": {"-s", "-k"},
+                "then": set(), "do": set(), "else": set(), "elif": set(), "if": set(), "while": set(), "until": set(),
+                "!": set(), "{": set(), "}": set(), "coproc": set()}
+# Words that end a compound command (`done < list` only reads), and ones whose segment names no program to run.
+_CLOSERS = {"fi", "done", "esac"}
+_NOT_COMMANDS = {"for", "case", "select", "function", "in"}
+_SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+_JUDGED_ABOVE = {"git", "curl", "node", "nodejs", "ruby", "perl", "php"}
+_FIND_ACTS = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
+_HEREDOC = re.compile(r"(<<-?\s*(['\"]?)(\w+)\2[^\n]*)\n.*?\n[ \t]*\3[ \t]*(?=\n|$)", re.S)
+_ASSIGNMENT = re.compile(r"[A-Za-z_]\w*=")
+
+
+def _substitutions(text):
+    """The commands inside $( ), <( ), >( ) and backticks in text (each outermost one; _simple_commands recurses)."""
+
+    found = re.findall(r"`([^`]*)`", text)
+    i = 0
+    while True:
+        starts = [p for p in (text.find("$(", i), text.find("<(", i), text.find(">(", i)) if p >= 0]
+        if not starts:
+            return found
+        i = min(starts)
+        depth, j = 1, i + 2
+        while j < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[j], 0)
+            j += 1
+        found.append(text[i + 2:j - 1] if not depth else text[i + 2:])
+        i = j
+
+
+def _program_of(words):
+    """[(program, its words)] of one simple command's words, or [] when it runs none."""
+
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if _ASSIGNMENT.match(word):
+            i += 1
+        elif word in _NOT_COMMANDS:
+            return []
+        elif word in _PREFIX_ARGS:
+            takes = _PREFIX_ARGS[word]
+            i += 1
+            while i < len(words) and (words[i].startswith("-") or (word == "env" and _ASSIGNMENT.match(words[i]))):
+                i += 2 if words[i] in takes else 1
+            if word == "timeout" and i < len(words):
+                i += 1  # its duration
+        else:
+            break
+    if i >= len(words) or words[i] in _CLOSERS:
+        return []
+    return [(posixpath.basename(words[i].lstrip("\\")), words[i + 1:])]
+
+
+def _simple_commands(command):
+    """(program, its words) of each simple command in a shell command: every pipeline part, list item and
+    substitution. Raises ValueError when the quoting cannot be read."""
+
+    text = _HEREDOC.sub(lambda m: m.group(1), command or "")
+    out = []
+    for inner in _substitutions(text):
+        out.extend(_simple_commands(inner))
+    lex = shlex.shlex(text.replace("\n", " ; "), posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    segment, skip = [], False
+    for token in list(lex) + [";"]:
+        if skip:
+            skip = False
+            continue
+        if token and all(c in "();<>|&" for c in token):
+            if any(c in "<>" for c in token) and not any(c in "();|" for c in token):
+                skip = True  # a redirect: the next word is its file, not a command
+                continue
+            out.extend(_program_of(segment))
+            segment = []
+            continue
+        segment.append(token)
+    return out
+
+
+def _program_changes(program, args):
+    """Whether one program run with args could change something (git, curl and interpreters are judged in _changes)."""
+
+    if program in _JUDGED_ABOVE or re.fullmatch(r"python[0-9.]*", program) or program == "gui":
+        return False  # (gui's acts are on the screen, which the final gate reads from the screen work)
+    if program in _SHELLS:
+        if "-c" in args and args.index("-c") + 1 < len(args):
+            return _changes(args[args.index("-c") + 1])
+        return False  # a script or stdin: the interpreter rule in _changes counted it
+    if program == "office":
+        return not args or args[0] != "read"
+    positional = [a for a in args if a == "-" or not a.startswith("-")]
+    if program == "find":
+        return any(a in _FIND_ACTS for a in args)
+    if program == "sed":
+        return any(re.fullmatch(r"-[a-zA-Z]*i\S*|--in-place\S*", a) for a in args)
+    if program in ("sort", "iconv"):
+        return any(a in ("-o", "--output") or a.startswith(("--output=", "-o")) for a in args)
+    if program == "xmllint":
+        return any(a == "--output" or a.startswith("--output=") for a in args)
+    if program in ("awk", "gawk", "mawk"):
+        return any(re.search(r"\bsystem\s*\(|\|\s*getline|\bprintf?\b[^;}]*\|", a) for a in args)
+    if program == "uniq":
+        return len(positional) >= 2
+    if program == "xxd":
+        return "-r" in args
+    if program == "date":
+        return any(a in ("-s", "--set") or a.startswith("--set=") for a in args)
+    if program == "pdftotext":
+        return not positional or positional[-1] != "-"
+    return program not in _READS
+
+
+def _changes(command):
+    """Whether one command an engine ran could have changed something (see CHANGES_THINGS and _READS)."""
+
+    command = command or ""
+    if CHANGES_THINGS.search(command):
+        return True
+    for m in _GIT.finditer(command):
+        sub, rest = m.group(2), m.group(3) or ""
+        if sub not in _GIT_READS and not (sub == "branch" and not re.search(r"\s-[dDmMcC]\b|--(delete|move|copy)", rest)
+                                          ) and not (sub in ("remote", "config", "stash", "tag") and
+                                                     re.fullmatch(r"\s*(-v|--list|-l|--get\S*\s+\S+|list|show\s.*)?\s*",
+                                                                  rest or "")):
+            return True
+    if re.search(r"\bcurl\b", command) and _CURL_WRITES.search(command):
+        return True
+    if _INTERPRETER.search(command):
+        # Inline code that plainly only reads and prints is not a change; a script file, or code that writes, runs a
+        # program or reaches the network, is.
+        if not _INLINE_CODE.search(command) or _CODE_WRITES.search(command):
+            return True
+    try:
+        return any(_program_changes(program, args) for program, args in _simple_commands(command))
+    except ValueError:
+        return True  # quoting that cannot be read: what it runs cannot be told
+
+
+def note_command(command):
+    """A shell command an engine ran in this task, whichever engine (its own runner calls this): the final gate's
+    "could this have changed something" sees every engine's commands, not only TheBot's (round-3 recheck). Its lines
+    stay lines: two commands on two lines are two commands, not one with the second's words as its arguments."""
+
+    command = "\n".join(" ".join(line.split()) for line in str(command or "").splitlines() if line.strip())
+    if command:
+        with _lock:
+            if len(_run["shell"]) < 500:
+                _run["shell"].append(command)
+
+
+def changed_things(commands=None):
+    """The commands among `commands` (the task's own, from every engine, when None) that could have changed
+    something."""
+
+    if commands is None:
+        with _lock:
+            shell = list(_run["shell"])
+        commands = ran_commands() + shell
+    return [c for c in commands if _changes(c)]
 
 
 def use(ok, commands):
@@ -489,8 +720,63 @@ def _stated(tool, request, commands=None):
     return ""
 
 
+# What a kept script may not do, because nothing would ask the person first: it is run in a proof (_prove) and then,
+# with no engine, by tool_task - outside the screen's approval gate. A script works on files; acting on the screen
+# (the gui command, xdotool, a browser), reaching the network or another machine, or sending mail is the engine's, under
+# the gate (review 2026-11-02: model-written scripts ran for real during the proof and then with no approval).
+# (`office email` only drafts into the Outbox, which a person sends: a script may draft.)
+# This reading is an early refusal and nothing more: a list of words cannot be made sound (`"cu" + "rl"`, an aliased
+# import). The boundary is where the script runs - script_sandbox: no network, no display, a scratch copy of the work.
+_UNGATED_PROGRAMS = (r"gui|xdotool|xte|ydotool|wmctrl|xdg-open|chromium|chromium-browser|google-chrome|firefox|curl|"
+                     r"wget|ssh|scp|sftp|rsync|nc|ncat|netcat|telnet|ftp|sendmail|mailx|mutt|msmtp|swaks")
+# In a shell script: one of those programs where a command starts (a line, after ; & | ( ` $( or sudo/env).
+UNGATED_IN_SHELL = re.compile(r"(?:^|[;&|(`{]|\$\()\s*(?:(?:sudo|env|exec|command|nohup|time|do|then|else|if|while|until|"
+                              r"!)\s+)*(?:[\w./~-]*/)?(?:" + _UNGATED_PROGRAMS
+                              + r")(?=$|[\s;&|)`])", re.MULTILINE)
+# In a Python script: a module that reaches the network, the screen or a browser, or one of those programs run.
+UNGATED_IN_PYTHON = re.compile(
+    r"^\s*(?:import|from)\s+(?:urllib|http|requests|httpx|aiohttp|socket|smtplib|ftplib|telnetlib|paramiko|websockets?|"
+    r"selenium|playwright|pyautogui|pynput|webbrowser|imaplib|poplib|xmlrpc|ssl|ctypes|multiprocessing\.connection)\b"
+    # (code it builds at run time is not read here, so it is not run: exec/eval of a string.)
+    r"|(?<![\w.])(?:exec|eval)\("
+    r"|\b(?:subprocess\.\w+|os\.system|os\.popen|os\.exec\w*|os\.spawn\w*)\(\s*\[?\s*[rbf]?[\"'](?:[\w./~-]*/)?(?:"
+    + _UNGATED_PROGRAMS
+    + r")(?=[\s\"'])"
+    r"|\b__import__\(|\bimportlib\b",
+    re.MULTILINE,
+)
+
+
+# What only the gate, the agent or the screen use, named in a script in any language: the worker's own folder (the
+# approval store, the command channel), the display and its key, the agent's token, the browser's DevTools port and the
+# agent's and soul's ports. With `unshare` alone the sandbox still shows the filesystem (script_sandbox), so a script
+# that names these is refused before it runs - an early refusal, never the boundary.
+GATE_STATE = re.compile(r"\.decurix\b|X11-unix|\.Xauthority|\b(?:DISPLAY|XAUTHORITY|DBUS_SESSION_BUS_ADDRESS|"
+                        r"DECURIX_AGENT_TOKEN)\b|:(?:9222|8080|8081|4900|8092)\b|approval\.json|-reply\.txt")
+
+
+def ungated_effect(script, language="python"):
+    """What a script does that only the engine may do under the approval gate, or "". A shell script is read for the
+    programs it runs (UNGATED_IN_SHELL); a Python one for what it imports and runs (UNGATED_IN_PYTHON) - and a Python
+    one that runs a shell (`bash -c`, shell=True) is read as a shell script too."""
+
+    script = script or ""
+    touched = GATE_STATE.search(script)
+    if touched:
+        return " ".join(touched.group(0).split())
+    found = None
+    if language == "bash":
+        found = UNGATED_IN_SHELL.search(script)
+    else:
+        found = UNGATED_IN_PYTHON.search(script)
+        if found is None and re.search(r"shell\s*=\s*True|[\"'](?:ba|z)?sh[\"']\s*,\s*[\"']-c[\"']", script):
+            found = re.search(r"\b(?:" + _UNGATED_PROGRAMS + r")\b(?=\s)", script)
+    return " ".join(found.group(0).split()) if found else ""
+
+
 def _sound(script, language):
-    """Why a script the model wrote is not kept, or "": it must parse, and hold no credential and nothing commands.py stops."""
+    """Why a script the model wrote is not kept, or "": it must parse, and hold no credential, nothing commands.py
+    stops, and nothing that acts beyond the work folder's files (ungated_effect)."""
 
     if not script.strip() or len(script) > MAX_SCRIPT_CHARS:
         return "empty or too long"
@@ -500,6 +786,10 @@ def _sound(script, language):
         reason = shell_rules.dangerous_reason(line)
         if reason:
             return f"a line of it would need approval ({reason})"
+    effect = ungated_effect(script, language)
+    if effect:
+        return (f"it acts beyond the work folder's files ({effect!r}): a kept script runs with no approval, so it may "
+                "only read and write files - the screen, the network and mail are the engine's, under the approval gate")
     if language == "python":
         try:
             compile(script, "tool.py", "exec")
@@ -572,28 +862,20 @@ def _reading(path):
 
 
 def _copy_work(work, sandbox, leave_out=()):
-    """Copy the work folder into `sandbox`/work; False when it is too big to prove anything in."""
+    """Copy the work folder into `sandbox`/work; False when it is too big to prove anything in (script_sandbox)."""
 
-    count = size = 0
-    for root, dirs, files in os.walk(work):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
-        for name in files:
-            source = Path(root) / name
-            relative = source.relative_to(work)
-            if relative.as_posix() in leave_out:
-                continue
-            try:
-                size += source.stat().st_size
-            except OSError:
-                continue
-            count += 1
-            if count > PROOF_MAX_FILES or size > PROOF_MAX_BYTES:
-                return False
-            target = sandbox / "work" / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
-    (sandbox / "work").mkdir(parents=True, exist_ok=True)
-    return True
+    return script_sandbox.copy_work(work, sandbox, leave_out)
+
+
+def proof_env(sandbox):
+    """
+    The environment a script is proven and run in (script_sandbox.clean_env): built from nothing, HOME and the
+    worker's own folder in the sandbox (a fresh approval store, no secrets, no command channel), drafts kept there, no
+    display or bus, no agent token, the control plane, soul and every proxy pointed at nothing - inside a network
+    namespace of its own (script_sandbox.run), which is the boundary; this and _sound's reading are fences before it.
+    """
+
+    return script_sandbox.clean_env(sandbox)
 
 
 def _run_in_copy(tool, sandbox, work):
@@ -605,13 +887,16 @@ def _run_in_copy(tool, sandbox, work):
     except ValueError as exc:
         return [], f"its example arguments could not be read ({exc})"
 
-    before = {p.relative_to(copy).as_posix(): p.stat().st_mtime_ns for p in copy.rglob("*") if p.is_file()}
+    before = script_sandbox.snapshot(copy)
     try:
-        # A Python tool is tried with the interpreter this agent runs on - the one its `python3` is.
+        # A Python tool is tried with the interpreter this agent runs on - the one its `python3` is. The script is
+        # copied into the sandbox first: it runs from there, and what it is cannot change under the run.
         interpreter = "bash" if tool["path"].endswith(".sh") else sys.executable
-        done = subprocess.run([interpreter, tool["path"]] + args, cwd=str(copy), capture_output=True,
-                              text=True, timeout=PROOF_SECONDS,
-                              env=dict(os.environ, HOME=str(sandbox), DECURIX_OUTBOX_DRY=str(sandbox / "drafts.jsonl")))
+        script = Path(sandbox) / ("tool" + Path(tool["path"]).suffix)
+        shutil.copy2(tool["path"], script)
+        done = script_sandbox.run([interpreter, str(script)] + args, sandbox, PROOF_SECONDS)
+    except RuntimeError as exc:
+        return [], f"it cannot be tried here: {exc}"
     except (OSError, subprocess.TimeoutExpired) as exc:
         return [], f"it could not be run ({exc})"
     if done.returncode != 0:
@@ -619,9 +904,7 @@ def _run_in_copy(tool, sandbox, work):
     if not (done.stdout or "").strip():
         return [], "it printed nothing: it has to print what it wrote"
 
-    written = [p.relative_to(copy).as_posix() for p in copy.rglob("*")
-               if p.is_file() and before.get(p.relative_to(copy).as_posix()) != p.stat().st_mtime_ns]
-    return written, ""
+    return script_sandbox.written(copy, before), ""
 
 
 def _same_drafts(sandbox):
@@ -633,7 +916,10 @@ def _same_drafts(sandbox):
 
     from decurix_agent.tools import outbox
 
-    task, trial = produced.drafts(), outbox.read_log(sandbox / "drafts.jsonl")
+    try:
+        task, trial = produced.drafts(), outbox.read_log(sandbox / "drafts.jsonl")
+    except Exception as exc:  # noqa: BLE001 - not compared: the tool is not kept on a guess (N-1)
+        return f"The drafts could not be read to compare them ({type(exc).__name__})."
     if len(task) != len(trial):
         return (f"The task drafted {len(task)} email(s) with `office email`; the script drafted {len(trial)}. It "
                 "must draft exactly what the task did.")
@@ -677,7 +963,11 @@ def _prove(tool):
         wrong = _same_drafts(sandbox)
         if wrong:
             return wrong
-        if not written and not produced.drafts():
+        try:
+            drafted = produced.drafts()
+        except Exception as exc:  # noqa: BLE001 - not known: the tool is not kept (N-1)
+            return f"The task's drafts could not be read ({type(exc).__name__})."
+        if not written and not drafted:
             return ("It wrote no file in the work folder it was run in. It must write where its arguments say, "
                     "not to a fixed path.")
         for relative in written:
@@ -721,19 +1011,28 @@ def _distil(book):
     book["tool_tried"] = True
     if not llm_client.available():
         return False
+    if not script_sandbox.available():
+        # A kept script runs with nobody watching, and only shut off from the network and the screen
+        # (script_sandbox): where that cannot be done, none is written - no model call is spent on one that could
+        # never be proven or run. A later run on a desktop that can may try again.
+        log(f"Playbooks: no tool for {book['name']}: {script_sandbox.why_not()}")
+        book["tool_tried"] = False
+        return False
     book["tool_sessions"] = book.get("tool_sessions", 0) + 1
 
     messages = [
         {"role": "system", "content": DISTIL_SYSTEM},
         {"role": "user", "content": f"The request:\n{book['request']}\n\nThe commands that did it, in order (each "
-                                    "exited 0):\n\n" + "\n\n".join(f"[{n}]\n{c}" for n, c in enumerate(book["commands"], 1))
+                                    "exited 0):\n\n" + "\n\n".join(f"[{n}]\n{c}" for n, c
+                                                                   in enumerate(privacy.scrub(book["commands"]), 1))
                                     + _faults_note(book)},
     ]
     one_line = lambda text, limit: " ".join(str(text or "").split())[:limit]  # noqa: E731
 
     for attempt in range(DISTIL_ATTEMPTS):
         try:
-            message, _ = llm_client.chat(messages, max_tokens=5000, response_format={"type": "json_object"})
+            message, _ = llm_client.chat(messages, max_tokens=5000, response_format={"type": "json_object"},
+                                         purpose="py.playbook")
             found = re.search(r"\{.*\}", message.get("content") or "", re.DOTALL)
             answer = json.loads(found.group(0)) if found else {}
         except (llm_client.LLMError, ValueError) as exc:
@@ -752,11 +1051,18 @@ def _distil(book):
             "does": one_line(answer.get("does"), 300), "unused": 0,
         }
 
+        # A kept script runs again and again with nobody watching: one that holds a request's secret or a credential
+        # is never written (review 2026-11-03, round 2). Fails closed - with no tool, the engine does the request.
+        held = privacy.credential_in(answer["script"])
+        if held:
+            log(f"Playbooks: no tool for {book['name']}: the script it wrote holds a {held}")
+            return False
+
         wrong = _sound(answer["script"], language) or _stated(tool, book["request"], book["commands"])
         if not wrong:
             try:
                 TOOLS.mkdir(parents=True, exist_ok=True)
-                path.write_text(answer["script"].rstrip() + "\n", encoding="utf-8", newline="\n")
+                privacy.write_scrubbed(path, answer["script"].rstrip() + "\n", newline="\n")
                 wrong = _prove(tool)
             except OSError as exc:
                 wrong = f"it could not be saved or tried ({exc})"
@@ -840,7 +1146,8 @@ def _mark_proven(request):
         for other in recording.sessions():
             if other.get("proven") and other["id"] != session and _alike(words, shape(other.get("task") or other.get("title") or "")) >= MATCH:
                 recording.update(other["id"], proven=False)
-        recording.update(session, proven=True, task=attachments.text(request or "").strip()[:1000])
+        recording.update(session, proven=True,
+                         task=privacy.safe_text(attachments.text(request or "").strip())[:1000])
     except (OSError, ValueError, KeyError) as exc:
         log(f"Playbooks: could not keep this task's recording as its way: {exc}")
         return False
@@ -969,7 +1276,8 @@ def keep(request, skill=None):
         if len(words) < 2:
             return None
         book = {
-            "name": _unique_name(words), "request": attachments.text(request or "").strip()[:1000], "shape": words,
+            "name": _unique_name(words), "request": privacy.safe_text(attachments.text(request or "").strip())[:1000],
+            "shape": words,
             "skill": skill or None, "commands": commands,
             "made": {k: run[k] for k in ("at", "tokens", "turns", "commands")}, "uses": [], "misses": 0,
         }

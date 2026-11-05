@@ -290,6 +290,8 @@ window.Triggers = (function(){
       meta.appendChild(el("span", "", "Held" + (since ? " since " + since : "") + ": " + sch.waiting));
     }
     if(lastRun && !fired){ meta.appendChild(el("span", "", "Last ran " + lastRun)); }
+    /* Why the last run did not reach its desktop (B-28): a failed run is never consumed without a trace. */
+    if(sch.last_error){ meta.appendChild(el("span", "err", "Last run failed: " + sch.last_error)); }
     main.appendChild(meta);
     row.appendChild(main);
 
@@ -300,6 +302,9 @@ window.Triggers = (function(){
       }));
     }
     actions.appendChild(iconButton("trash", "Delete schedule", function(){
+      var what = String(sch.content || "").trim();
+      if(what.length > 80){ what = what.slice(0, 77) + "…"; }
+      if(!confirm("Delete this schedule" + (what ? " (\"" + what + "\")" : "") + "? It will not run again.")){ return; }
       act("/api/schedules/delete", {id: sch.id}, reload);
     }));
     row.appendChild(actions);
@@ -373,6 +378,7 @@ window.Triggers = (function(){
 .trig-title{font-size:13.5px;font-weight:600;color:var(--text);word-break:break-word}
 .trig-content{font-size:13px;color:var(--text);white-space:pre-wrap;word-break:break-word;max-width:64ch}
 .trig-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 11px;font-size:11.5px;color:var(--text-3)}
+.trig-meta .err{color:var(--danger)}
 .trig-kind{
   display:inline-flex;align-items:center;height:19px;padding:0 7px;border-radius:999px;
   background:var(--surface-2);color:var(--text-2);font-weight:600

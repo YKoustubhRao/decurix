@@ -1,5 +1,5 @@
 """
-CZ (round 5 P2 on pc3, 2026-10-21, series 12): stage 2 was refused twice, fairly, for "numbers written as a program
+CZ (round 5 P2, 2026-10-21, series 12): stage 2 was refused twice, fairly, for "numbers written as a program
 prints them: 7640.220000000001, 40123.60000000001", and the worker did not correct it. office now writes a float's
 rounding error as the figure it is - in workbooks (create, update) and in the text of documents, decks and PDFs it
 makes - and never changes a figure that really has many digits. The fact check still catches a file a raw script wrote.
@@ -9,6 +9,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from needs import require
+
+require("openpyxl", "python-docx")  # every test here reads or writes workbooks or documents
 import openpyxl
 
 import test_long_requests as base  # noqa: F401 - stubs config first

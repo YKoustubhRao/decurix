@@ -72,6 +72,11 @@ func (s *Server) desktopScreenshotHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	writeScreenshot(w, r, image)
+}
+
+// writeScreenshot answers with image as a JPEG, or 304 when the caller already has it (its ETag).
+func writeScreenshot(w http.ResponseWriter, r *http.Request, image []byte) {
 	etag := fmt.Sprintf("\"%x\"", sha256.Sum256(image))
 	w.Header().Set("ETag", etag)
 

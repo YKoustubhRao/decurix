@@ -110,23 +110,31 @@ type openAIPart struct {
 // OpenAI-shaped answer: the upstream status, the body, and the retry headers
 // of a rate limit (RetryHeaders plus Claude's own retry-after).
 func (c *Claude) Chat(ctx context.Context, body []byte) (int, []byte, http.Header, error) {
+	r, err := c.chat(ctx, body)
+	return r.Status, r.Body, r.Retry, err
+}
+
+// chat is Chat, also saying which model the request was resolved to ("" when it was not resolved).
+func (c *Claude) chat(ctx context.Context, body []byte) (ChatResult, error) {
 	if !c.Configured() {
-		return 0, nil, nil, ErrNotConfigured
+		return ChatResult{}, ErrNotConfigured
 	}
 
 	var req openAIRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return 0, nil, nil, fmt.Errorf("llm: request is not a chat request: %w", err)
+		return ChatResult{}, fmt.Errorf("llm: request is not a chat request: %w", err)
 	}
 
 	model, err := resolve(req.Model, c.Model, c.FastModel)
 	if err != nil {
-		return 0, nil, nil, err
+		return ChatResult{}, err
 	}
+	res := ChatResult{Deployment: model}
 
 	params, err := toClaudeParams(req, model)
 	if err != nil {
-		return http.StatusBadRequest, errorBody(err.Error()), nil, nil
+		res.Status, res.Body = http.StatusBadRequest, errorBody(err.Error())
+		return res, nil
 	}
 
 	opts := []option.RequestOption{
@@ -155,18 +163,20 @@ func (c *Claude) Chat(ctx context.Context, body []byte) (int, []byte, http.Heade
 				retry = copyHeaders(apiErr.Response.Header, append([]string{"retry-after"}, RetryHeaders...))
 			}
 
-			return apiErr.StatusCode, errorBody(claudeErrorMessage(apiErr)), retry, nil
+			res.Status, res.Body, res.Retry = apiErr.StatusCode, errorBody(claudeErrorMessage(apiErr)), retry
+			return res, nil
 		}
 
-		return 0, nil, nil, fmt.Errorf("llm: %w", err)
+		return res, fmt.Errorf("llm: %w", err)
 	}
 
 	out, err := json.Marshal(fromClaudeMessage(msg))
 	if err != nil {
-		return 0, nil, nil, err
+		return res, err
 	}
 
-	return http.StatusOK, out, http.Header{}, nil
+	res.Status, res.Body, res.Retry = http.StatusOK, out, http.Header{}
+	return res, nil
 }
 
 // toClaudeParams translates an OpenAI chat request: system/developer

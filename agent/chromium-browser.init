@@ -38,7 +38,15 @@
 #   the page, which shows its current state; an application's own in-page navigation never
 #   used it. Tried and not worth it there: the GPU or network service in the browser
 #   process, --enable-low-end-device-mode (each within the runs' spread).
-CHROMIUM_FLAGS="--disable-gpu --start-maximized --remote-debugging-port=9222 --password-store=basic --no-default-browser-check --no-first-run --disable-breakpad --hide-crash-restore-bubble --renderer-process-limit=2 --disk-cache-dir=$HOME/.cache/decurix-browser --disk-cache-size=67108864 --disable-features=AudioServiceOutOfProcess,Translate,AutofillServerCommunication,OptimizationHints,MediaRouter,BackForwardCache --disable-background-networking --disable-component-update --disable-domain-reliability --disable-sync --no-pings --mute-audio"
+# OptimizationGuideOnDeviceModel off: Chrome's on-device language model (Gemini Nano) - a
+#   download of gigabytes and a model held in memory for features no task uses (writing help,
+#   tab organisation). A page's own scripts never see it. With the managed policy
+#   GenAILocalFoundationalModelSettings = 1 (chrome-policies.json) it is not downloaded either.
+# PreloadTopChromeWebUI off: Chrome loads its own tab-search and side-panel pages into a
+#   renderer in advance, a process kept for UI a desktop's single maximised window never opens;
+#   they load when opened instead (resource plan P1 #3). Neither touches site isolation or the
+#   sandbox: no --disable-site-isolation-trials, no --no-sandbox but the one below when needed.
+CHROMIUM_FLAGS="--disable-gpu --start-maximized --remote-debugging-port=9222 --password-store=basic --no-default-browser-check --no-first-run --disable-breakpad --hide-crash-restore-bubble --renderer-process-limit=2 --disk-cache-dir=$HOME/.cache/decurix-browser --disk-cache-size=67108864 --disable-features=AudioServiceOutOfProcess,Translate,AutofillServerCommunication,OptimizationHints,MediaRouter,BackForwardCache,OptimizationGuideOnDeviceModel,PreloadTopChromeWebUI --disable-background-networking --disable-component-update --disable-domain-reliability --disable-sync --no-pings --mute-audio"
 
 # The warning bar is left alone in that case: the browser really is
 # running unsandboxed there, and hiding that would be a lie.

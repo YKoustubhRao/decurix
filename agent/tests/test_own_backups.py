@@ -9,6 +9,9 @@ import time
 import unittest
 from unittest import mock
 
+from needs import require
+
+require("openpyxl", "python-docx")  # every test here reads or writes workbooks or documents
 import openpyxl
 
 from temp_case import TempDirCase

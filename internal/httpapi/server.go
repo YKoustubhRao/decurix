@@ -9,9 +9,12 @@ import (
 	"database/sql"
 	"github.com/YKoustubhRao/decurix/internal/concierge"
 	"github.com/YKoustubhRao/decurix/internal/llm"
+	"github.com/YKoustubhRao/decurix/internal/llmrec"
 	"github.com/YKoustubhRao/decurix/internal/outbox"
+	"github.com/YKoustubhRao/decurix/internal/runs"
 	"io"
 	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 
@@ -121,6 +124,33 @@ type Server struct {
 	// with one saved in the database.
 	// NewServer reads it from the environment; unconfigured, its routes say so.
 	LLM *llm.Hub
+	// LLMRec records every hosted call the proxy forwards (plan R2: purpose, task, turn, deployment, usage, the
+	// withheld messages as blobs). Assigned by cmd/decurix/main.go; nil records nothing.
+	LLMRec *llmrec.Store
+	// Runs pulls a run's bundle off its desktop (runs.Puller), and RunBundles says which are stored (runs.Store);
+	// both assigned by main, nil pulls nothing (runpull.go, plan R9).
+	Runs       RunPuller
+	RunBundles RunBundles
+	runPulls   runPulls
+	// RunStore keeps the bundles and serves the run records (runs_routes.go); assigned by main.
+	RunStore *runs.Store
+	// buildRun stands in for runs.Build in tests.
+	buildRun func(ctx context.Context, execID string) (runs.Trajectory, error)
+	// agentTarget stands in for Desktops.AgentProxyTarget in agentProxyHandler, in tests.
+	agentTarget func(ctx context.Context, id string) (*url.URL, string, error)
+	// deleteDesktop stands in for Desktops.Delete in deleteDesktopHandler, in tests.
+	deleteDesktop func(ctx context.Context, id string) error
+	// DateOrder is the organisation's date order, "day" or "month" ("" unknown), sent with every request to a
+	// desktop (C6) so a date like 03/04/2026 is read one way (W0.2). main reads it from DECURIX_DATE_ORDER.
+	DateOrder string
+	// RequirePurpose refuses a model call that does not say what it is for (DECURIX_LLM_REQUIRE_PURPOSE=1, read by
+	// main). Off, such a call is stored as "untagged" and counted (D3).
+	RequirePurpose bool
+	// secretsSeen is, per desktop and in memory only, what a person marked secret: the recorder withholds it from
+	// every call of that desktop afterwards (never persisted).
+	secretsSeen llmrec.SecretSet
+	// lostSecrets are the desktops whose tasks were open at start: their calls keep no text (secretslost.go).
+	lostSecrets secretsLost
 	// Outbox holds the emails agents drafted for a person to send
 	// (internal/outbox). Assigned by cmd/decurix/main.go; nil turns it off.
 	Outbox *outbox.Store
@@ -134,8 +164,8 @@ type Server struct {
 
 	// sends serialises every send to one desktop (sendlock.go).
 	sends sendLocks
-	// nets caches the Docker networks' address ranges (humansonly.go).
-	nets containerNets
+	// netsFor stands in for Desktops.Networks, in tests (humansonly.go).
+	netsFor func() desktop.NetView
 	// keepAwakeScriptAt is when a host keep-awake script last asked
 	// (UnixNano; mail.go's keepAwakeHandler).
 	keepAwakeScriptAt atomic.Int64
@@ -163,6 +193,9 @@ type Server struct {
 	// hostVision is each host app's vision fallback for reading its controls (hostcontrols.go).
 	hostVisionMu sync.Mutex
 	hostVision   map[string]*hostVision
+
+	// callerAt stands in for Desktops.DesktopAt in callerDesktop, in tests.
+	callerAt func(r *http.Request) (string, bool)
 
 	// agentRequest stands in for Desktops.AgentRequest there, in tests.
 	agentRequest func(ctx context.Context, id, method, path string, body io.Reader) (*http.Response, error)
@@ -218,6 +251,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/chat", s.humansOnly(s.conciergePageHandler))
 	mux.HandleFunc("/api/concierge", s.humansOnly(s.conciergeStateHandler))
 	mux.HandleFunc("/api/concierge/send", s.humansOnly(s.conciergeSendHandler))
+	mux.HandleFunc("/api/concierge/answer", s.humansOnly(s.conciergeAnswerHandler))
 	mux.HandleFunc("/desktop/", s.desktopProxyHandler)
 	mux.HandleFunc("/agent/", s.agentProxyHandler)
 	mux.HandleFunc("/api/desktops", s.desktopsAPIHandler)
@@ -236,8 +270,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/requests", s.requestsDashboardHandler)
 	mux.HandleFunc("/api/desktops/send", s.sendRequestHandler)
 	mux.HandleFunc("/api/desktops/suggest", s.suggestDesktopHandler)
-	mux.HandleFunc("/api/host-apps/detect", s.detectHostAppsHandler)
-	mux.HandleFunc("/api/host-paths/validate", s.validateHostPathHandler)
 	// A linked phone connects here as a paired device (the gate checks its
 	// cookie on the tunnel's listener, the handler checks it on both).
 	mux.HandleFunc("/api/phones/connect", s.phoneConnectHandler)
@@ -251,7 +283,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/phone/setup.sh", s.phoneSetupScriptHandler)
 	mux.HandleFunc("/phone/decurix", s.phoneBinaryHandler)
 	mux.HandleFunc("/api/phones/claim", s.phoneClaimHandler)
-	mux.HandleFunc("/api/desktops/host-apps/copy", s.copyHostAppsHandler)
 	mux.HandleFunc("/api/schedules", s.schedulesHandler)
 	mux.HandleFunc("/api/schedules/create", s.createScheduleHandler)
 	mux.HandleFunc("/api/schedules/delete", s.deleteScheduleHandler)
@@ -279,6 +310,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/mail/rules/test", s.humansOnly(s.testMailRuleHandler))
 	mux.HandleFunc("/api/mail/jobs", s.humansOnly(s.mailJobHandler))
 	mux.HandleFunc("/api/keep-awake", s.keepAwakeHandler)
+	// Whether Docker answers, for the banner every page shows while it does not (W-08).
+	mux.HandleFunc("/api/docker/status", s.dockerStatusHandler)
 	mux.HandleFunc("/dags", s.dagsPageHandler)
 	mux.HandleFunc("/dags/", s.dagPageHandler)
 	mux.HandleFunc("/api/dags", s.dagsAPIHandler)
@@ -348,17 +381,12 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/ticket/attach", s.ticketAttachHandler)
 	mux.HandleFunc("/api/tunnel", s.tunnelHandler)
 	mux.HandleFunc("/api/model", s.modelHandler)
-	mux.HandleFunc("/api/claude-auth/status", s.claudeAuthStatusHandler)
-	mux.HandleFunc("/api/claude-auth/login/start", s.claudeAuthLoginStartHandler)
-	mux.HandleFunc("/api/claude-auth/login/code", s.claudeAuthLoginCodeHandler)
-	mux.HandleFunc("/api/claude-auth/login/cancel", s.claudeAuthLoginCancelHandler)
 	mux.HandleFunc("/api/personas", s.personasHandler)
 	mux.HandleFunc("/api/personas/get", s.personaHandler)
 	mux.HandleFunc("/api/personas/create-desktop", s.createPersonaDesktopHandler)
 	mux.HandleFunc("/api/teams", s.teamsHandler)
 	mux.HandleFunc("/api/teams/get", s.teamHandler)
 	mux.HandleFunc("/api/teams/deploy", s.deployTeamHandler)
-	mux.HandleFunc("/api/channels/inbound", s.inboundChannelHandler)
 	if s.SkillHub != nil {
 		hub := http.NewServeMux()
 		(&skillhub.Handler{Store: s.SkillHub, Agent: s.Desktops}).Register(hub)
@@ -373,7 +401,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		if s.SkillHub != nil {
 			roles = s.SkillHub
 		}
-		(&knowledge.Handler{Store: s.Knowledge, Roles: roles}).Register(known)
+		(&knowledge.Handler{Store: s.Knowledge, Roles: roles, Caller: requestDesktop, TaskOf: s.taskOfWorker}).Register(known)
 		for _, path := range []string{"/api/knowledge", "/api/knowledge/supersede", "/api/knowledge/why"} {
 			mux.Handle(path, s.readsForAll(known))
 		}
@@ -384,7 +412,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/skills/catalog", s.skillsCatalogHandler)
 	mux.HandleFunc("/api/skills/catalog/install", s.installCatalogSkillHandler)
 	mux.HandleFunc("/api/desktops/mode", s.workerModeHandler)
-	mux.HandleFunc("/api/desktops/shadowing", s.shadowingHandler)
 	mux.HandleFunc("/favicon.svg", s.faviconHandler)
 	mux.HandleFunc(noVNCPath, s.noVNCHandler)
 }
@@ -416,7 +443,6 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	// access code must not become command execution on the host.
 	mux.HandleFunc("/api/host-bridge/exec", s.hostBridgeExecHandler)
 	mux.HandleFunc("/api/host-bridge/open", s.hostBridgeOpenHandler)
-	mux.HandleFunc("/api/host-bridge/clip", s.hostBridgeClipHandler)
 	mux.HandleFunc("/api/host-gui/start", hostGUIDirectOnly(s.hostGUIStartHandler))
 	mux.HandleFunc("/api/host-gui/ws", hostGUIDirectOnly(s.hostGUIWSHandler))
 	mux.HandleFunc("/api/host-gui/stop", hostGUIDirectOnly(s.hostGUIStopHandler))
@@ -428,6 +454,17 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	// The file chooser opens on this computer's own screen: for the person
 	// sitting at it, never a phone or a desktop's agent.
 	mux.HandleFunc("/api/host-paths/browse", s.humansOnly(s.browseHostPathHandler))
+	// The host's own apps and sign-ins: listing them, and copying them into a desktop, are for the person at this
+	// machine - never a phone or tunnel visitor, never a desktop's agent (review 2026-11-03, A-02, W-05, N-B2).
+	mux.HandleFunc("/api/host-apps/detect", s.humansOnly(s.detectHostAppsHandler))
+	mux.HandleFunc("/api/desktops/host-apps/copy", s.humansOnly(s.copyHostAppsHandler))
+	// The owner's Claude account (its email, its sign-in flow) is this machine's, not the tunnel's (A-04).
+	mux.HandleFunc("/api/claude-auth/status", s.humansOnly(s.claudeAuthStatusHandler))
+	mux.HandleFunc("/api/claude-auth/login/start", s.humansOnly(s.claudeAuthLoginStartHandler))
+	mux.HandleFunc("/api/claude-auth/login/code", s.humansOnly(s.claudeAuthLoginCodeHandler))
+	mux.HandleFunc("/api/claude-auth/login/cancel", s.humansOnly(s.claudeAuthLoginCancelHandler))
+	// Giving up on a DAG run is a person's call, at this machine (dag.Runner.Cancel).
+	mux.HandleFunc("/api/dags/runs/cancel", s.humansOnly(s.cancelDagRunHandler))
 	// Whether a file a task was asked to save on this computer is there - for the check of that task.
 	mux.HandleFunc("/api/host-files/stat", hostGUIDirectOnly(s.hostFileStatHandler))
 	mux.HandleFunc("/api/host-files/release", hostGUIDirectOnly(s.hostFileReleaseHandler))
@@ -449,6 +486,22 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/llm/settings", s.humansOnly(s.llmSettingsHandler))
 	mux.HandleFunc("/api/llm/settings/forget", s.humansOnly(s.llmForgetHandler))
 	mux.HandleFunc("/api/llm/", s.llmProxyHandler)
+	// What the proxy recorded of those calls: a person's to read, at this machine (llmrec_routes.go).
+	mux.HandleFunc("/api/llm/calls", s.humansOnly(s.llmCallsHandler))
+	mux.HandleFunc("/api/llm/calls/stats", s.humansOnly(s.llmCallStatsHandler))
+	mux.HandleFunc("/api/llm/blobs/", s.humansOnly(s.llmBlobHandler))
+	// Every human input with its author (plan R5): a person's to read, at this machine (judgements.go).
+	mux.HandleFunc("/api/judgements", s.humansOnly(s.judgementsHandler))
+	// What each skill version did on each model (plan R7, ran.go).
+	mux.HandleFunc("/api/tasks/pass-rates", s.humansOnly(s.passRatesHandler))
+	// What a desktop keeps from a person's reply, kept here too when it is made (plan R8, learned.go): a desktop's
+	// callback, on this listener only.
+	mux.HandleFunc("/api/desktops/learned", s.desktopLearnedHandler)
+	// A person's judgements on the calling desktop's own tasks, for its agent to back a pick with (H-PY-18,
+	// desktop_judgements.go): this listener only.
+	mux.HandleFunc("/api/desktops/judgements", s.desktopJudgementsHandler)
+	// A run's record and bundle (plan R1, runs_routes.go): a person's, at this machine.
+	mux.HandleFunc("/api/runs/", s.humansOnly(s.runsHandler))
 	// Where something is on a screenshot, for a desktop's `gui` (grounder.go).
 	mux.HandleFunc("/api/grounder", s.grounderStatusHandler)
 	mux.HandleFunc("/api/grounder/locate", s.grounderLocateHandler)
@@ -458,7 +511,7 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	// Handoffs between workers: the callers are desktops' agents, named in the body, which only this listener can
 	// trust - and a handoff starts work on another desktop and moves files between them (docs/handoff.md).
 	if s.Handoffs != nil {
-		(&handoff.Handler{Service: s.Handoffs}).Register(mux)
+		(&handoff.Handler{Service: s.Handoffs, Caller: requestDesktop}).Register(mux)
 	}
 	// The work queue starts work on desktops and spends model budget: primary listener only, and desktops may only
 	// read it - worker-to-worker work is a handoff (docs/workqueue.md).

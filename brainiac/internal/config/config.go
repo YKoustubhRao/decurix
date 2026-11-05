@@ -21,7 +21,9 @@ import (
 
 // The modes.
 const (
-	// ModeLocal: every model runs on this machine; nothing leaves it.
+	// ModeLocal: every model runs on this machine. Nothing leaves it except a
+	// web search query the client itself wrote and sent ("web": true with
+	// "web_query"), and then only when web is not "off".
 	ModeLocal = "local"
 	// ModeHybrid: pictures and audio are read here; the remote brain gets
 	// text evidence (and the pictures only if ShareMedia), and answers.
@@ -69,33 +71,51 @@ type Config struct {
 	// ImageMaxSide shrinks pictures shown to a local vision model; on a CPU
 	// every pixel is prompt to read. 0 means 1280; -1 means never shrink.
 	ImageMaxSide int `json:"image_max_side,omitempty"`
-	// Web decides when answers use live web pages: "auto" (when a request
-	// asks about the world now, or the client asks), "on-request" (only when
-	// the client sends "web": true) or "off". Only a scrubbed search query
-	// leaves the machine - never the conversation.
+	// Web decides when an answer may read live web pages. The search query is
+	// always one the client wrote and sent as "web_query"; Brainiac never
+	// builds a query from the conversation, so with no web_query nothing is
+	// looked up. "on-request" (the default): only when the request also sends
+	// "web": true. "auto": a request that sends a web_query reads the web
+	// without "web": true; refused in local mode. "off": never. What leaves
+	// the machine is that query, scrubbed of identity numbers and secrets, and
+	// the requests that fetch the result pages.
 	Web string `json:"web,omitempty"`
 	// SearxURL is a SearXNG instance to search with first.
 	SearxURL string `json:"searx_url,omitempty"`
 	// BraveKeyEnv names the variable holding a Brave Search API key.
 	BraveKeyEnv string `json:"brave_key_env,omitempty"`
-	// WebRender lets a headless browser read pages that need JavaScript.
-	// Default on; it costs a few hundred MB for a few seconds.
+	// WebRender lets a client ask for a page to be read with a headless
+	// browser (/v1/brainiac/fetch "render": true), for pages that need
+	// JavaScript. Default on (off on an appliance); answers never use it on
+	// their own. It costs a few hundred MB for a few seconds.
 	WebRender *bool `json:"web_render,omitempty"`
-	// UpdateEvery is how often `serve` looks for better open models and
-	// switches to them on its own ("24h" by default, "off" never): it reads
-	// public evaluations, installs a better plan beside the running one,
-	// checks it, and switches only when the check passes.
+	// UpdateEvery is how often `serve` looks for better open models ("off"
+	// by default; "24h" for daily): it reads public evaluations, installs a
+	// better plan beside the running one, checks it and stages it. It never
+	// switches what is served: a person runs `brainiac update promote`.
 	UpdateEvery string `json:"update_every,omitempty"`
 	// Sandbox "off" lets model processes read and write what this user can.
 	// It is for a GPU whose driver needs a path the sandbox does not allow.
+	// "required" refuses to start a model process that cannot be fully
+	// confined (no network, only its own files): the default on an appliance
+	// (BRAINIAC_APPLIANCE set). Empty confines as far as the system allows
+	// and reports the rest in status.unconfined.
 	Sandbox string `json:"sandbox,omitempty"`
 	// MaxLocalSeconds keeps a field with the remote brain when a local model
 	// that earned it takes longer than this on average; 0 means no limit.
 	MaxLocalSeconds float64 `json:"max_local_seconds,omitempty"`
 }
 
-// SandboxOff turns the model processes' file sandbox off.
-const SandboxOff = "off"
+// The sandbox settings: SandboxOff turns the model processes' file sandbox
+// off; SandboxRequired starts none that cannot be fully confined.
+const (
+	SandboxOff      = "off"
+	SandboxRequired = "required"
+)
+
+// Appliance reports whether this Brainiac runs as an office appliance
+// (BRAINIAC_APPLIANCE set), where the safe settings are the defaults.
+func Appliance() bool { return strings.TrimSpace(os.Getenv("BRAINIAC_APPLIANCE")) != "" }
 
 // The web settings.
 const (
@@ -154,10 +174,19 @@ func Load(home string) (Config, error) {
 		}
 	}
 	if c.Web == "" {
-		c.Web = WebAuto
+		c.Web = WebOnRequest
 	}
 	if c.UpdateEvery == "" {
-		c.UpdateEvery = "24h"
+		c.UpdateEvery = "off"
+	}
+	if c.Sandbox == "" && Appliance() {
+		c.Sandbox = SandboxRequired
+	}
+	if c.WebRender == nil && Appliance() {
+		// A headless browser is a large program running a stranger's
+		// JavaScript; an office box runs it only when its operator says so.
+		off := false
+		c.WebRender = &off
 	}
 	return c, c.Validate()
 }
@@ -247,6 +276,17 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("web %q is not auto, on-request or off", c.Web)
 	}
+	switch c.Sandbox {
+	case "", SandboxOff, SandboxRequired:
+	default:
+		return fmt.Errorf("sandbox %q is not off or required", c.Sandbox)
+	}
+	if c.Sandbox == SandboxOff && Appliance() {
+		return fmt.Errorf("sandbox off is refused on an appliance: a model process there must not reach what this user can")
+	}
+	if c.Mode == ModeLocal && c.Web == WebAuto {
+		return fmt.Errorf("web auto is refused in local mode, which keeps everything on this machine: use on-request (a request sends \"web\": true and its own \"web_query\") or off")
+	}
 	if (c.Mode == ModeHybrid || c.Mode == ModeRemote) && c.Remote == nil {
 		return fmt.Errorf("mode %s needs a remote brain (BRAINIAC_REMOTE=decurix:azure, azure or openai)", c.Mode)
 	}
@@ -267,6 +307,9 @@ func (c Config) Validate() error {
 	host, _, err := net.SplitHostPort(c.Listen)
 	if err != nil {
 		return fmt.Errorf("listen %q: %w", c.Listen, err)
+	}
+	if Appliance() && c.APIKey() == "" {
+		return fmt.Errorf("an appliance is a shared office machine, so its Brainiac needs an API key (set BRAINIAC_API_KEY_ENV to a variable holding one), even on loopback")
 	}
 	if !Loopback(host) && c.APIKey() == "" {
 		return fmt.Errorf("listening on %s needs an API key (set BRAINIAC_API_KEY_ENV to a variable holding one): Brainiac can use this machine's memory and disk, so it is never open beyond it without one", host)

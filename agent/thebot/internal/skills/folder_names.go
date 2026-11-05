@@ -9,10 +9,11 @@ import (
 	"time"
 )
 
-// A new folder among siblings that share a naming shape is named like them. Found live (2026-10-27): a client's month
-// folders were "APR 2026" ... "OCT 2026"; the worker made "November" beside them, filed the month's bills there, and
-// every check of the folder failed though every entry was right. A month is a calendar fact, not a domain's: the
-// shape of a month's name among its siblings is decided in code before the folder is made.
+// A new folder among siblings that share a naming shape is named like them. Found live (2026-10-27): the month folders
+// beside it were "APR 2026" ... "OCT 2026"; the worker made "November" beside them, filed the month's bills there, and
+// every check of the folder failed though every entry was right. How a new folder's name differs from its siblings'
+// is a fact handed to the reviewer, with the name their naming gives it - never a block or a verdict in code (review
+// T-18): whether the folder should follow them is the reviewer's to judge, and the person's.
 
 // mkdirRe is a mkdir command and its arguments up to the end of that simple command.
 var mkdirRe = regexp.MustCompile(`(?:^|&&|;|\|\||\n)\s*mkdir\s+([^;&|\n]+)`)
@@ -198,41 +199,6 @@ func mkdirTargets(command string) []string {
 	return out
 }
 
-// folderNameNudge is what the model is told instead of running a mkdir whose new folder names a month in another
-// shape than the month folders beside it; "" to run it. Told once a path: a second send runs as written.
-func (o *OperatorSkill) folderNameNudge(rc RunContext, st *operatorState, command string) string {
-	for _, target := range mkdirTargets(command) {
-		name, parent := path.Base(target), path.Dir(target)
-		if name == "" || parent == "" || parent == "." || st.FolderNudged[target] {
-			continue
-		}
-		mine := monthShape(name)
-		if mine == "" {
-			continue
-		}
-		res := runShell(rc.Ctx, rc.Dir(), "ls -1 "+shellQuote(parent)+" 2>/dev/null", 15*time.Second, st.guiEnv()...)
-		var siblings []string
-		for _, l := range strings.Split(res.Output, "\n") {
-			if l = strings.TrimSpace(l); l != "" && l != name {
-				siblings = append(siblings, l)
-			}
-		}
-		why, examples := monthFolderMismatch(name, siblings)
-		if why == "" {
-			continue
-		}
-		if st.FolderNudged == nil {
-			st.FolderNudged = map[string]bool{}
-		}
-		st.FolderNudged[target] = true
-		rc.Logf("operator", "a new month folder named unlike the ones beside it - sent back (%s among %s)", name, strings.Join(examples, ", "))
-		return fmt.Sprintf("Not run: the new folder %q sits beside month folders named like %s - %s. Look at the folder "+
-			"(ls) and make it that way; then copy into it. If a folder for this month already exists there in another "+
-			"spelling, use that one.", name, strings.Join(quoteAll(examples), ", "), why)
-	}
-	return ""
-}
-
 // monthFolderMismatch says how a month folder's name differs from the month folders beside it - their form, or
 // their numbering - with the name it would take among them when that can be said; "" when it is named like them.
 func monthFolderMismatch(name string, siblings []string) (string, []string) {
@@ -250,9 +216,9 @@ func monthFolderMismatch(name string, siblings []string) (string, []string) {
 	if shape == mine && !wrongNumber {
 		return "", nil
 	}
-	why := "a new month's folder is named the same way (the same month form, case, separators and numbering as theirs)"
+	why := "its name does not share their form (month form, case, separators, numbering)"
 	if want := expectedMonthName(siblings, folderMonth(name)); want != "" && want != name {
-		why += "; by their naming this month's folder is " + fmt.Sprintf("%q", want)
+		why += "; by their naming it would be " + fmt.Sprintf("%q", want)
 	}
 	return why, examples
 }
@@ -264,11 +230,11 @@ var typedFolderRe = regexp.MustCompile(`gui type (?:e\d+ )?"([^"/\n]{2,60})"`)
 // maxFolderChecks bounds the folders checked at a report.
 const maxFolderChecks = 4
 
-// folderNameIssues are the month folders this task named - with mkdir, or by typing a name into a dialog - that are
-// named unlike the month folders beside them on disk at the report: points that are the worker's to do (rename it).
-// Checked at the report, so a folder made by any means is checked. Found live (2026-10-28): the folder was made in the
-// file manager's own dialog, the mkdir check never saw it, and every bill was filed under the wrong month folder.
-func (o *OperatorSkill) folderNameIssues(rc RunContext, st *operatorState) []reviewIssue {
+// folderNameFacts are the folders this task named - with mkdir, or by typing a name into a dialog - whose name differs
+// from the shape the folders beside them on disk share, read when the work is reviewed: facts for the reviewer, with
+// no verdict. Read at the review, so a folder made by any means is seen (found live, 2026-10-28: made in a file
+// manager's own dialog).
+func (o *OperatorSkill) folderNameFacts(rc RunContext, st *operatorState) []string {
 	type folder struct{ parent, name string }
 	var cands []folder
 	seen := map[folder]bool{}
@@ -294,7 +260,7 @@ func (o *OperatorSkill) folderNameIssues(rc RunContext, st *operatorState) []rev
 			}
 		}
 	}
-	var out []reviewIssue
+	var out []string
 	for _, f := range cands {
 		res := runShell(rc.Ctx, rc.Dir(), "ls -1 "+shellQuote(f.parent)+" 2>/dev/null", 15*time.Second, st.guiEnv()...)
 		var siblings []string
@@ -314,12 +280,8 @@ func (o *OperatorSkill) folderNameIssues(rc RunContext, st *operatorState) []rev
 		if why == "" {
 			continue
 		}
-		out = append(out, reviewIssue{
-			What:   fmt.Sprintf("the folder %q in %s is named unlike the month folders beside it (%s)", f.name, f.parent, strings.Join(quoteAll(examples), ", ")),
-			Why:    why,
-			Settle: "rename it (keep what is in it), or say in the report why this folder is named otherwise",
-			Work:   true,
-		})
+		out = append(out, fmt.Sprintf("the folder %q in %s, beside folders named like %s: %s", f.name, f.parent,
+			strings.Join(quoteAll(examples), ", "), why))
 	}
 	return out
 }

@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
+	"io"
 	"log"
+	"net"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -20,7 +24,7 @@ import (
 // with nothing running, queued or waiting, and otherwise refuses with an
 // error that has a DesktopBusy method - "try again later", not "failed".
 type Submitter interface {
-	SubmitTracked(ctx context.Context, desktopID, content string) (string, error)
+	SubmitTracked(ctx context.Context, desktopID, content string, origin tasks.Origin) (string, error)
 }
 
 const (
@@ -137,6 +141,28 @@ func (r *Runner) step(ctx context.Context) {
 	r.dispatch(ctx)
 }
 
+// readSafely is read, with a panic on one email turned into that poll's error: one email must never be able to stop
+// the control plane (review 2026-11-02). What the poll read before the panic stays read (batches are committed as
+// they go), and the email it panicked on counts as one failed read of it: after maxReadTries it is passed over, so
+// it cannot stop the mailbox for good either (review 2026-11-03, B-17).
+func (r *Runner) readSafely(ctx context.Context, acct Account) (p Poll) {
+	p = Poll{At: r.clock(), UIDValidity: acct.uidValidity, LastUID: acct.lastUID, StuckUID: acct.stuckUID, StuckTries: acct.stuckTries, StuckLinkTries: acct.stuckLinkTries}
+	defer func() {
+		if v := recover(); v != nil {
+			log.Printf("mailtrigger: %s: reading the mailbox failed: %v", acct.Email, v)
+			p.Err = fmt.Errorf("an email in this mailbox could not be read")
+			if uid := p.reading; uid != 0 {
+				if p.failedRead(uid, errReadPanicked) {
+					p.Err = fmt.Errorf("email %d in this mailbox could not be read after %d tries and was skipped; open it in the mailbox", uid, maxReadTries)
+					p.passed(uid, true)
+				}
+			}
+		}
+	}()
+	r.read(ctx, acct, &p)
+	return p
+}
+
 // due decides whether a mailbox is polled this tick. A paused one never is,
 // nor one waiting for a new password (only a person can fix that, and
 // repeating a refused login is how an account gets locked). One that keeps
@@ -227,7 +253,7 @@ func (r *Runner) poll(ctx context.Context, acct Account) error {
 	}
 	defer r.release(acct.ID)
 
-	p := r.read(ctx, acct)
+	p := r.readSafely(ctx, acct)
 	if p.Err != nil {
 		log.Printf("mailtrigger: %s: %v", acct.Email, p.Err)
 	}
@@ -240,12 +266,10 @@ func (r *Runner) poll(ctx context.Context, acct Account) error {
 	return p.Err
 }
 
-func (r *Runner) read(ctx context.Context, acct Account) Poll {
-	p := Poll{At: r.clock(), UIDValidity: acct.uidValidity, LastUID: acct.lastUID}
-
+func (r *Runner) read(ctx context.Context, acct Account, p *Poll) {
 	if acct.passwordErr != nil {
 		p.Err = acct.passwordErr
-		return p
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, sessionTimeout)
@@ -254,14 +278,14 @@ func (r *Runner) read(ctx context.Context, acct Account) Poll {
 	mb, err := r.dial(ctx, acct)
 	if err != nil {
 		p.Err = err
-		return p
+		return
 	}
 	defer mb.Close()
 
 	validity, next, err := mb.Examine(acct.Folder)
 	if err != nil {
 		p.Err = err
-		return p
+		return
 	}
 
 	// A new UIDVALIDITY means the server renumbered the folder (rare: it was
@@ -272,18 +296,19 @@ func (r *Runner) read(ctx context.Context, acct Account) Poll {
 
 		p.UIDValidity = validity
 		p.LastUID = lastBefore(next)
+		p.StuckUID, p.StuckTries, p.StuckLinkTries = 0, 0, 0
 
-		return p
+		return
 	}
 
 	if lastBefore(next) <= acct.lastUID {
-		return p
+		return
 	}
 
 	uids, err := mb.UIDsAfter(acct.lastUID)
 	if err != nil {
 		p.Err = err
-		return p
+		return
 	}
 
 	if len(uids) > maxPerPoll {
@@ -293,7 +318,7 @@ func (r *Runner) read(ctx context.Context, acct Account) Poll {
 	rules, err := r.Store.Rules(acct.ID)
 	if err != nil {
 		p.Err = err
-		return p
+		return
 	}
 
 	matchers := compileRules(rules)
@@ -304,18 +329,62 @@ func (r *Runner) read(ctx context.Context, acct Account) Poll {
 			end = len(uids)
 		}
 
-		if err := r.readBatch(ctx, mb, acct, uids[start:end], matchers, &p); err != nil {
+		if err := r.readBatch(ctx, mb, acct, uids[start:end], matchers, p); err != nil {
 			p.Err = err
-			return p
+			return
+		}
+
+		// Each batch is committed as it is read, so a poll holds one batch of
+		// emails and their files in memory, not maxPerPoll of them (review
+		// 2026-11-03, B-17).
+		if err := r.commit(acct, p); err != nil {
+			p.Err = err
+			return
 		}
 	}
-
-	return p
 }
+
+// commit saves the jobs p has queued so far and how far it has read, and
+// forgets the jobs it saved. When saving fails p is left whole, so the poll's
+// final RecordPoll saves the same jobs with the same position.
+func (r *Runner) commit(acct Account, p *Poll) error {
+	if len(p.Jobs) == 0 && p.Seen == 0 {
+		return nil
+	}
+
+	if err := r.Store.RecordProgress(acct.ID, *p); err != nil {
+		return err
+	}
+
+	p.Jobs = nil
+	p.Seen = 0
+
+	return nil
+}
+
+// maxReadTries is how many polls in a row may fail to read one email before
+// it is passed over, with a failed job a person can see for every rule it
+// matched: an email the server never returns must not hold up every email
+// after it (review 2026-11-03, B-17).
+const maxReadTries = 3
+
+// maxLinkTries is how many polls in a row the link to the server may fail while reading the same email (a reset, the
+// session's deadline) before it is passed over in the same way. Higher than maxReadTries, since a link failure is
+// usually not the email's: but an email too large to read within a session on a slow link fails every poll, and
+// must not hold up every email after it for good (RW1-G-01).
+const maxLinkTries = 10
+
+// errReadPanicked stands for a read that panicked: the email's fault, so it counts against maxReadTries.
+var errReadPanicked = errors.New("reading the email panicked")
+
+// maxHeldFileBytes is how many bytes of attachments a poll holds before it
+// commits what it has read, mid-batch.
+const maxHeldFileBytes = 32 << 20
 
 // readBatch matches one batch of new emails, advancing p past each one it is
 // done with. It stops without moving past an email whose text it could not
-// read, so the next poll matches that email again, whole.
+// read, so the next poll matches that email again, whole - until the same
+// email has failed maxReadTries polls in a row, when it is passed over.
 func (r *Runner) readBatch(ctx context.Context, mb Mailbox, acct Account, uids []uint32, matchers []matcher, p *Poll) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -323,69 +392,198 @@ func (r *Runner) readBatch(ctx context.Context, mb Mailbox, acct Account, uids [
 
 	headers, err := mb.Headers(uids)
 	if err != nil {
-		return err
+		// One email the server will not return can fail a whole batch's headers, poll after poll. Asked one at a
+		// time, the emails before it are read and it is counted, so after maxReadTries it is passed over like an
+		// email whose text cannot be read (review RW1-B-01).
+		headers = map[uint32][]byte{}
 	}
+	oneByOne := err != nil
 
 	for _, uid := range uids {
+		p.reading = uid
+
+		if oneByOne {
+			one, herr := mb.Headers([]uint32{uid})
+			if herr != nil {
+				if !p.failedRead(uid, herr) {
+					return herr
+				}
+				log.Printf("mailtrigger: %s: passing over email %d after failed header reads (%s): %v", acct.Email, uid, p.gaveUp(), herr)
+				p.Err = fmt.Errorf("email %d in this mailbox: its headers could not be read (%s), so it was skipped; open it in the mailbox", uid, p.gaveUp())
+				p.passed(uid, true)
+				continue
+			}
+			if h, ok := one[uid]; ok {
+				headers[uid] = h
+			}
+		}
+
 		header, ok := headers[uid]
 		if !ok {
 			// Expunged between the search and the fetch: nothing to match.
-			p.LastUID = uid
+			p.passed(uid, false)
 			continue
 		}
 
 		msg, err := parseHeader(uid, header, acct.Host)
 		if err != nil {
 			log.Printf("mailtrigger: %s: %v", acct.Email, err)
-			p.LastUID = uid
-			p.Seen++
+			p.passed(uid, true)
 			continue
 		}
 
-		var jobs []Job
-		var text string
-		var textRead bool
-		var files []Attachment
-		var filesRead bool
-
+		var matched []Rule
 		for _, m := range matchers {
-			if !m.matches(msg) {
-				continue
+			if m.matches(msg) {
+				matched = append(matched, m.rule)
 			}
-
-			if m.rule.IncludeBody && !textRead {
-				textRead = true
-
-				raw, err := mb.Text(uid)
-				if err != nil {
-					return fmt.Errorf("reading an email's text: %w", err)
-				}
-
-				text = bodyText(header, raw, maxBodyChars)
-			}
-
-			if !filesRead && mayHaveAttachments(header) {
-				filesRead = true
-
-				if full, ok := mb.(interface{ Full(uint32) ([]byte, error) }); ok {
-					raw, err := full.Full(uid)
-					if err != nil {
-						return fmt.Errorf("reading an email's attachments: %w", err)
-					}
-
-					files = uniqueNames(ExtractAttachments(raw))
-				}
-			}
-
-			jobs = append(jobs, newJob(acct, m.rule, msg, text, p.At, files))
 		}
 
-		p.Jobs = append(p.Jobs, jobs...)
-		p.LastUID = uid
+		if len(matched) == 0 {
+			p.passed(uid, true)
+			continue
+		}
+
+		text, files, dropped, err := readContent(mb, uid, header, matched)
+		if err != nil {
+			if !p.failedRead(uid, err) {
+				return err
+			}
+
+			log.Printf("mailtrigger: %s: passing over email %d after failed reads (%s): %v", acct.Email, uid, p.gaveUp(), err)
+
+			for _, rule := range matched {
+				job := newJob(acct, rule, msg, "", p.At, nil, nil)
+				if job.Status == JobSkipped {
+					// The rule would have skipped it anyway (an unverified sender on a verified-only rule): that
+					// reason stands, never "give the desktop the task by hand" (RW1-B-03).
+					p.Jobs = append(p.Jobs, job)
+					continue
+				}
+				job.Status = JobFailed
+				job.Content = "" // nothing was read to send; Run again cannot send it either
+				job.Note = fmt.Sprintf("Not sent: %s (%s), so it was passed over and the emails after it went on. Open it in the mailbox and give the desktop the task by hand.", p.gaveUp(), clip(err.Error()))
+				p.Jobs = append(p.Jobs, job)
+			}
+
+			p.passed(uid, true)
+			continue
+		}
+
+		for _, rule := range matched {
+			p.Jobs = append(p.Jobs, newJob(acct, rule, msg, text, p.At, files, dropped))
+		}
+
+		p.passed(uid, true)
+
+		if heldFileBytes(p.Jobs) > maxHeldFileBytes {
+			if err := r.commit(acct, p); err != nil {
+				return err
+			}
+		}
+	}
+
+	p.reading = 0
+
+	return nil
+}
+
+// passed moves p past uid; seen counts it as an email read.
+func (p *Poll) passed(uid uint32, seen bool) {
+	p.LastUID = uid
+	p.reading = 0
+	if seen {
 		p.Seen++
 	}
 
-	return nil
+	if p.StuckUID != 0 && uid >= p.StuckUID {
+		p.StuckUID, p.StuckTries, p.StuckLinkTries = 0, 0, 0
+	}
+}
+
+// emailFault reports whether a failed read says something about the email itself - the server refused it (a NO or
+// BAD answer) or sent what could not be read as one - rather than about the link to the server: a dropped or reset
+// connection, a timeout, a cancelled poll. Only the first counts against the email's maxReadTries: a connection that
+// fails three polls running must not pass a good email over unread (REVIEW-3 follow-up 5). The link's failures fail
+// the poll, which is retried with its backoff.
+func emailFault(err error) bool {
+	var netErr net.Error
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded),
+		errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, net.ErrClosed), errors.As(err, &netErr):
+		return false
+	}
+	return true
+}
+
+// failedRead counts one failed read of uid with err - against maxReadTries when it is the email's fault, against
+// maxLinkTries when the link's - and reports whether that was the last try it gets.
+func (p *Poll) failedRead(uid uint32, err error) bool {
+	if p.StuckUID != uid {
+		p.StuckUID, p.StuckTries, p.StuckLinkTries = uid, 0, 0
+	}
+
+	if emailFault(err) {
+		p.StuckTries++
+	} else {
+		p.StuckLinkTries++
+	}
+
+	return p.StuckTries >= maxReadTries || p.StuckLinkTries >= maxLinkTries
+}
+
+// gaveUp says why the stuck email is passed over, for its failed job and the mailbox's error.
+func (p *Poll) gaveUp() string {
+	if p.StuckTries >= maxReadTries {
+		return fmt.Sprintf("the mail server would not return this email after %d tries", maxReadTries)
+	}
+	return fmt.Sprintf("the connection to the mail server failed every time this email was read, %d polls in a row; it may be too large for this link", p.StuckLinkTries)
+}
+
+// readContent fetches what the rules an email matched need: its text when one
+// of them includes the body, and its files when the email can carry any.
+// dropped names the files it carried that could not be kept.
+func readContent(mb Mailbox, uid uint32, header []byte, rules []Rule) (text string, files []Attachment, dropped []string, err error) {
+	for _, rule := range rules {
+		if !rule.IncludeBody {
+			continue
+		}
+
+		raw, err := mb.Text(uid)
+		if err != nil {
+			return "", nil, nil, fmt.Errorf("reading an email's text: %w", err)
+		}
+
+		text = bodyText(header, raw, maxBodyChars)
+
+		break
+	}
+
+	if mayHaveAttachments(header) {
+		if full, ok := mb.(interface{ Full(uint32) ([]byte, error) }); ok {
+			raw, err := full.Full(uid)
+			if err != nil {
+				return "", nil, nil, fmt.Errorf("reading an email's attachments: %w", err)
+			}
+
+			files, dropped = ExtractAttachments(raw)
+			files = uniqueNames(files)
+		}
+	}
+
+	return text, files, dropped, nil
+}
+
+// heldFileBytes is the size of the attachments jobs carry.
+func heldFileBytes(jobs []Job) int {
+	n := 0
+	for _, j := range jobs {
+		for _, f := range j.Files {
+			n += len(f.Data)
+		}
+	}
+
+	return n
 }
 
 type matcher struct {
@@ -416,10 +614,26 @@ func compileRules(rules []Rule) []matcher {
 	return out
 }
 
+// matchesDisplayName reports whether the rule's sender pattern matches the name in the From line, outside its
+// address. Only a pattern for a name ("Ada Lovelace") is matched there, and never for a verified-only rule: the name
+// is free text the sender writes, so `"billing@acme.com" <x@evil.com>` would pass a rule for billing@acme.com - and
+// pass verification too, since evil.com can sign its own mail (review 2026-11-02).
+func (m matcher) matchesDisplayName(msg Message) bool {
+	if m.rule.VerifiedOnly || strings.Contains(m.sender.String(), "@") {
+		return false
+	}
+	name := msg.From
+	if i := strings.LastIndex(name, "<"); i >= 0 {
+		name = name[:i]
+	}
+	name = strings.TrimSpace(name)
+	return name != "" && m.sender.MatchString(name)
+}
+
 // matches reports whether a message's sender and subject satisfy a rule's
 // patterns, whatever the rule says about verified senders.
 func (m matcher) matches(msg Message) bool {
-	if m.sender != nil && !m.sender.MatchString(msg.Sender) && !m.sender.MatchString(msg.From) {
+	if m.sender != nil && !m.sender.MatchString(msg.Sender) && !m.matchesDisplayName(msg) {
 		return false
 	}
 
@@ -430,8 +644,10 @@ func (m matcher) matches(msg Message) bool {
 	return true
 }
 
-func newJob(acct Account, rule Rule, msg Message, text string, at time.Time, files []Attachment) Job {
+func newJob(acct Account, rule Rule, msg Message, text string, at time.Time, files []Attachment, dropped []string) Job {
 	id := sqlitedb.NewID("mjob-", 8)
+
+	content, renderErr := RenderWithFiles(rule, msg, text, InboxDir(id), files, dropped)
 
 	job := Job{
 		ID:        id,
@@ -443,7 +659,7 @@ func newJob(acct Account, rule Rule, msg Message, text string, at time.Time, fil
 		From:      msg.From,
 		Subject:   msg.Subject,
 		Received:  msg.Received,
-		Content:   RenderWithFiles(rule, msg, text, InboxDir(id), files),
+		Content:   content,
 		Status:    JobPending,
 		Files:     files,
 	}
@@ -452,9 +668,26 @@ func newJob(acct Account, rule Rule, msg Message, text string, at time.Time, fil
 		job.Received = at
 	}
 
-	if rule.VerifiedOnly && !msg.Verified {
+	switch {
+	case renderErr != nil:
+		// Nothing safe to send: Content stays empty, so Run again cannot send it either.
+		job.Status = JobSkipped
+		job.Note = "Not sent: " + renderErr.Error() + "."
+
+	case rule.VerifiedOnly && !msg.Verified:
 		job.Status = JobSkipped
 		job.Note = "Not sent: " + msg.VerifyNote + ". Anyone can put any address in a From line - send it anyway only if you know it is genuine."
+
+	case rule.VerifiedOnly && rule.SenderRe != "" && !withinDomain(msg.Sender, NamedDomain(rule.SenderRe)):
+		// The provider proved the email comes from its own From domain; the
+		// rule's pattern may match that address as a substring, so the domain
+		// must also be the one the rule names (B-15).
+		job.Status = JobSkipped
+		if named := NamedDomain(rule.SenderRe); named == "" {
+			job.Note = "Not sent: this rule's sender pattern does not write out a domain, so a verified sender cannot be checked against it. Edit the rule to name the sender's address or domain."
+		} else {
+			job.Note = "Not sent: " + msg.VerifyNote + ", which is not " + named + ", the domain this rule names. Send it anyway only if you know it is genuine."
+		}
 	}
 
 	return job
@@ -464,6 +697,14 @@ func newJob(acct Account, rule Rule, msg Message, text string, at time.Time, fil
 // rule's text are filled in, and - unless the request is a slash command such
 // as "/skill name param={subject}", whose words are parsed exactly - the
 // email is written out below it, and the request said again after it.
+//
+// Whether the request is a command is decided from the rule's own text, before
+// anything from the email is put in, so an email cannot turn a request into a
+// command. In a command each value from the email becomes exactly one token:
+// an option's value is quoted, and a value that one token cannot hold (a
+// quote, an "=", a line break, or a space outside an option's quotes) is an
+// error rather than text that would set options the rule never named (review
+// 2026-11-03, B-16).
 //
 // The layout was chosen by measuring it on the desktops' own model
 // (qwen2.5-coder:3b, the Ollama harness, a real desktop, a real email
@@ -478,30 +719,52 @@ func newJob(acct Account, rule Rule, msg Message, text string, at time.Time, fil
 // instructions" is not the last thing the model reads. A "---" in the
 // email's own text is broken up, so it cannot fake the end of the email.
 // Files the email carried are listed inside the email's frame with where
-// they are on the desktop (dir).
-func RenderWithFiles(rule Rule, msg Message, text, dir string, files []Attachment) string {
+// they are on the desktop (dir), and files it carried that could not be kept
+// (dropped) are named there too, so a partial set is never taken for the
+// whole (B-28).
+func RenderWithFiles(rule Rule, msg Message, text, dir string, files []Attachment, dropped []string) (string, error) {
 	date := ""
 	if !msg.Received.IsZero() {
 		date = msg.Received.UTC().Format(time.RFC3339)
 	}
 
-	content := strings.NewReplacer(
-		"{subject}", oneLine(msg.Subject),
-		"{from}", oneLine(msg.From),
-		"{sender}", msg.Sender,
-		"{date}", date,
-	).Replace(rule.Content)
+	values := map[string]string{
+		"subject": oneLine(msg.Subject),
+		"from":    oneLine(msg.From),
+		"sender":  msg.Sender,
+		"date":    date,
+	}
 
 	// A slash command is sent as written - its words are parsed exactly -
 	// except /skill, which reads the values it is not given from lines after
 	// its command (decurix_agent/skill_task.skill_context): a taught workflow
 	// set off by an email fills itself in from that email and its files.
-	trimmed := strings.TrimSpace(content)
-	isSkill := strings.HasPrefix(trimmed, "/skill ") || strings.HasPrefix(trimmed, "/skills ")
+	ruleText := strings.TrimSpace(rule.Content)
+	isCommand := strings.HasPrefix(ruleText, "/")
+	isSkill := strings.HasPrefix(ruleText, "/skill ") || strings.HasPrefix(ruleText, "/skills ")
 
-	if strings.HasPrefix(trimmed, "/") && !isSkill {
-		return content
+	var content string
+	if isCommand {
+		var err error
+		if content, err = fillCommand(rule.Content, values); err != nil {
+			return "", err
+		}
+
+		if !isSkill {
+			return content, nil
+		}
+	} else {
+		content = strings.NewReplacer(
+			"{subject}", values["subject"], "{from}", values["from"], "{sender}", values["sender"], "{date}", values["date"],
+		).Replace(rule.Content)
+
+		// The rule is not a command, so what the email put in must not make it one.
+		if strings.HasPrefix(strings.TrimSpace(content), "/") {
+			content = "Request from an email: " + strings.TrimSpace(content)
+		}
 	}
+
+	trimmed := strings.TrimSpace(content)
 
 	var b strings.Builder
 	if isSkill {
@@ -532,16 +795,69 @@ func RenderWithFiles(rule Rule, msg Message, text, dir string, files []Attachmen
 		}
 	}
 
+	if len(dropped) > 0 {
+		b.WriteString("\n\nFiles attached to the email that are NOT on this desktop (they could not be kept; ask for them if the task needs them):")
+		for _, d := range dropped {
+			b.WriteString("\n  " + strings.ReplaceAll(oneLine(d), "---", "- - -"))
+		}
+	}
+
 	b.WriteString("\n" + emailEnd)
 
 	if isSkill {
-		return b.String()
+		return b.String(), nil
 	}
 
 	b.WriteString("\n\nUse the email above to do this: ")
-	b.WriteString(strings.TrimSpace(content))
+	b.WriteString(trimmed)
 
-	return b.String()
+	return b.String(), nil
+}
+
+// placeholderRe finds a placeholder in a command, with the option name and the
+// quotes around it when it has them.
+var placeholderRe = regexp.MustCompile(`([A-Za-z_]\w*=)?(["']?)\{(subject|from|sender|date)\}(["']?)`)
+
+// fillCommand puts an email's values into a slash command, each as exactly
+// one token: an option's value inside quotes (`order={subject}` becomes
+// `order="..."`), anything else as a single word. It fails on a value that
+// one token cannot hold.
+func fillCommand(command string, values map[string]string) (string, error) {
+	var refused error
+
+	out := placeholderRe.ReplaceAllStringFunc(command, func(m string) string {
+		parts := placeholderRe.FindStringSubmatch(m)
+		option, open, name, closing := parts[1], parts[2], parts[3], parts[4]
+
+		v := values[name]
+		if name == "from" {
+			// Quotes in a From line are the header's syntax around a name, not part of it.
+			v = strings.ReplaceAll(v, `"`, "")
+		}
+
+		bad := strings.ContainsAny(v, "\"'=\r\n") || (option == "" && strings.ContainsAny(v, " \t"))
+		if bad {
+			if refused == nil {
+				refused = fmt.Errorf("the email's %s (%q) cannot be put into the rule's command as one value", name, clip(v))
+			}
+			return m
+		}
+
+		switch {
+		case option != "" && open != "" && open == closing:
+			return option + open + v + closing
+		case option != "":
+			return option + `"` + v + `"` + open + closing
+		default:
+			return open + v + closing
+		}
+	})
+
+	if refused != nil {
+		return "", refused
+	}
+
+	return out, nil
 }
 
 // emailStart and emailEnd frame the email in a request (RenderWithFiles).
@@ -612,14 +928,15 @@ func (r *Runner) send(ctx context.Context, job Job) {
 
 	files, ferr := r.Store.JobFiles(job.ID)
 	fs, canFiles := r.Submitter.(FileSubmitter)
+	origin := tasks.Origin{Kind: tasks.OriginMail, Ref: job.RuleID}
 
 	switch {
 	case ferr != nil:
 		err = ferr
 	case len(files) > 0 && canFiles:
-		taskID, err = fs.SubmitTrackedWithFiles(ctx, job.DesktopID, job.Content, InboxDir(job.ID), files)
+		taskID, err = fs.SubmitTrackedWithFiles(ctx, job.DesktopID, job.Content, InboxDir(job.ID), files, origin)
 	default:
-		taskID, err = r.Submitter.SubmitTracked(ctx, job.DesktopID, job.Content)
+		taskID, err = r.Submitter.SubmitTracked(ctx, job.DesktopID, job.Content, origin)
 	}
 
 	if err == nil {

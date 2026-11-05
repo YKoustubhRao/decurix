@@ -13,8 +13,10 @@ and nothing checked the answer, because it wrote no file.
 So:
   - note(request): a request that sets a standing procedure (its words say so:
     "from now on", "every month", "you'll be doing", "procedure:" ...) is kept.
-    With a hosted model the procedure is separated from this one run's details
-    (this week's date, this batch); without one the request is kept as said.
+    A model decides whether it does and separates the procedure from this one
+    run's details (this week's date, this batch); with no model's reading nothing
+    is kept (review 2026-11-03, E-28: kept by its words alone, "Whenever an entry
+    has no match, flag it" - one request - became a standing procedure).
     It is a file in ~/.decurix/procedures and an entry in the worker's memory
     (category "procedure"), so a person sees it on the card.
   - apply(request): a later request for the same kind of work gets the kept
@@ -22,7 +24,7 @@ So:
     from it, and the final check (skill_task._gate reads state.current_task)
     judges the result against it - deliverables included. With a hosted model
     the model says which procedure, if any, the request is; without one, a
-    request must share the procedure's own distinctive words.
+    request must name the procedure by its whole name.
 
 A request that itself gives a procedure is never given an older one: what the
 person says now is the procedure.
@@ -110,7 +112,8 @@ def _save(name, applies_when, procedure, said, task_id):
     record = {"name": name, "applies_when": applies_when, "procedure": procedure, "said": _squash(said, MAX_PROCEDURE_CHARS),
               "task_id": task_id, "updated": time.time()}
     path = DIR / f"{_slug(name)}.json"
-    path.write_text(json.dumps(record, indent=1, ensure_ascii=False), encoding="utf-8")
+    from decurix_agent.computer import privacy
+    privacy.write_scrubbed(path, record, json_kw={"indent": 1, "ensure_ascii": False})
     for old in kept()[MAX_KEPT:]:
         try:
             (DIR / old["file"]).unlink()
@@ -147,11 +150,9 @@ def note(request, task_id=""):
                     _remember(record)
                     log(f"procedures: kept {name!r}")
                     return record
-        name = _squash(" ".join(w for w in re.findall(r"[A-Za-z][\w'-]*", words)[:8]), 60)
-        record = _save(name, "", _squash(words, MAX_PROCEDURE_CHARS), words, task_id)
-        _remember(record)
-        log(f"procedures: kept {name!r} as it was said")
-        return record
+        # No reading of the request: whether it sets a standing procedure is not decided by its words.
+        log("procedures: no model's reading of this request, so no standing procedure is kept from it")
+        return None
     except Exception as exc:
         log(f"procedures: could not keep the procedure: {exc}")
         return None
@@ -165,6 +166,14 @@ def _remember(record):
 
 def _distinctive(text):
     return {w for w in re.findall(r"[a-z][a-z-]{2,}", (text or "").lower()) if w not in FILLER}
+
+
+def _names_whole(text, name):
+    """Whether `text` holds every word of `name`, as whole words in the same order and next to each other."""
+
+    tokens = re.findall(r"[a-z0-9]+", (name or "").lower())
+    return bool(tokens) and re.search(r"(?<![a-z0-9])" + r"[^a-z0-9]+".join(map(re.escape, tokens)) + r"(?![a-z0-9])",
+                                      (text or "").lower()) is not None
 
 
 def match(request):
@@ -192,14 +201,10 @@ def match(request):
             if 1 <= pick <= len(procedures) and confidence >= MIN_MATCH:
                 return procedures[pick - 1]
             return None
-    # No model: the request must share two of the procedure's own distinctive words (its name's first).
-    asked = _distinctive(words)
-    best = None
-    for p in procedures:
-        common = asked & _distinctive(p["name"])
-        if len(common) >= 2 or (common and len(asked & _distinctive(p["procedure"])) >= 4):
-            best = best or p
-    return best
+    # No model: only a request that names a kept procedure by its whole name (its words, in order, as whole words)
+    # asks for it; two shared words do not (review 2026-11-03, E-28). Two that are both named: none.
+    named = [p for p in procedures if _names_whole(words, p["name"])]
+    return named[0] if len(named) == 1 else None
 
 
 def apply(request):

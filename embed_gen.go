@@ -20,6 +20,8 @@ import (
 	"path"
 	"path/filepath"
 	"time"
+
+	"github.com/YKoustubhRao/decurix/internal/thebotpack"
 )
 
 const (
@@ -47,8 +49,15 @@ func main() {
 		root := filepath.Join(filepath.FromSlash(source), part)
 
 		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-			if err != nil || !d.Type().IsRegular() {
+			if err != nil {
 				return err
+			}
+			// No tests, no testdata (internal/thebotpack, its own test checks it).
+			if leave, folder := thebotpack.Leaves(d); leave {
+				if folder {
+					return filepath.SkipDir
+				}
+				return nil
 			}
 
 			data, err := os.ReadFile(p)

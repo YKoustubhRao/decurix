@@ -79,3 +79,18 @@ func TestExecTokenBindsDesktopProgramAndEveryArgument(t *testing.T) {
 		t.Error("no arguments should sign the same whether nil or empty")
 	}
 }
+
+func TestOpenTokenBindsDesktopAndLink(t *testing.T) {
+	secret := []byte("k")
+	tok := OpenToken(secret, "vm1", "https://claude.ai")
+	if !ValidOpenToken(secret, "vm1", "https://claude.ai", tok) {
+		t.Fatal("the link's own token was refused")
+	}
+	if ValidOpenToken(secret, "vm2", "https://claude.ai", tok) || ValidOpenToken(secret, "vm1", "https://claude.ai/x", tok) ||
+		ValidOpenToken(nil, "vm1", "https://claude.ai", tok) || ValidOpenToken(secret, "vm1", "https://claude.ai", "") {
+		t.Fatal("an open token was valid for another desktop, another link, no secret or no token")
+	}
+	if ValidExecToken(secret, "vm1", "https://claude.ai", nil, tok) || ValidToken(secret, "vm1", "https://claude.ai", "", tok) {
+		t.Fatal("an open token was valid as an exec or a launch token")
+	}
+}

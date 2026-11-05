@@ -63,6 +63,8 @@ type Decision struct {
 	// Message is for the person when the reply was not delivered.
 	Message     string      `json:"message,omitempty"`
 	Requirement Requirement `json:"requirement"`
+	// ApprovalID is the approvals-log entry this decision was recorded as.
+	ApprovalID string `json:"approval_id,omitempty"`
 }
 
 // Approval is one entry of the approvals log.
@@ -112,7 +114,7 @@ func (s *Store) Decide(actor User, worker string, workerRoles []string, taskID, 
 
 	case !CanApprove(actor, req):
 		d.Outcome = OutcomeRefused
-		d.Message = "This needs approval from " + describe(req) + "."
+		d.Message = "This needs approval from " + describe(req) + "." + amountNote(req)
 		if actor.ID == "" {
 			d.Message += " Sign in with your own name to approve it."
 		}
@@ -137,13 +139,15 @@ func (s *Store) Decide(actor User, worker string, workerRoles []string, taskID, 
 			d.Allowed, d.Outcome = true, OutcomeAllowed
 		default:
 			d.Outcome = OutcomeHeld
-			d.Message = "Your yes is recorded. This needs a second approver (" + describe(req) + ") before it goes ahead."
+			d.Message = "Your yes is recorded. This needs a second approver (" + describe(req) + ") before it goes ahead." + amountNote(req)
 		}
 	}
 
-	if err := s.record(actor, worker, taskID, pendingActionText, key, d); err != nil {
+	id, err := s.record(actor, worker, taskID, pendingActionText, key, d)
+	if err != nil {
 		return Decision{}, err
 	}
+	d.ApprovalID = id
 	return d, nil
 }
 
@@ -171,7 +175,7 @@ func (s *Store) heldYeses(key string) (map[string]bool, error) {
 }
 
 // record appends a decision to the approvals log.
-func (s *Store) record(actor User, worker, taskID, action, key string, d Decision) error {
+func (s *Store) record(actor User, worker, taskID, action, key string, d Decision) (string, error) {
 	by, name := actor.ID, actor.Name
 	if by == "" {
 		by, name = anonymousID, "Not signed in"
@@ -183,21 +187,23 @@ func (s *Store) record(actor User, worker, taskID, action, key string, d Decisio
 	if len(action) > 4000 {
 		action = action[:4000]
 	}
+	id := sqlitedb.NewID("a_", 10)
 	_, err := s.db.Exec(`INSERT INTO access_approvals (id, worker, task_id, action, pending_key, decided_by, decided_by_name, decision, outcome, policies, at_ns)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sqlitedb.NewID("a_", 10), worker, taskID, action, key, by, name, d.RecordedAs, d.Outcome, encodeList(ids), sqlitedb.ToNS(s.now()))
+		id, worker, taskID, action, key, by, name, d.RecordedAs, d.Outcome, encodeList(ids), sqlitedb.ToNS(s.now()))
 	if err != nil {
-		return fmt.Errorf("access: record decision: %w", err)
+		return "", fmt.Errorf("access: record decision: %w", err)
 	}
-	return nil
+	return id, nil
 }
 
 // RecordDecision logs a decision made outside Decide (for example a reply the control plane delivered without a policy check).
 func (s *Store) RecordDecision(actor User, worker, taskID, action, decision, outcome string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.record(actor, worker, taskID, action, pendingKey(worker, taskID, action),
+	_, err := s.record(actor, worker, taskID, action, pendingKey(worker, taskID, action),
 		Decision{RecordedAs: decision, Outcome: outcome, Requirement: Requirement{}})
+	return err
 }
 
 // Approvals returns the newest entries of the approvals log, optionally for one worker.

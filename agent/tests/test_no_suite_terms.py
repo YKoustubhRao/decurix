@@ -4,13 +4,16 @@ The harness code names no test suite: none of a suite's names, test ids or data,
 The suites (outside the repo) are probes the harness learns from, never the product: code that names one reads as
 fitted to it and carries to no other task. Each suite lists its own distinctive words in a leak_terms.txt in its
 folder (one regular expression a line, "#" for a note); this scans the harness code for them. Tests may hold example
-data; the code that must generalise may not. Skipped where the suites are not on this machine.
+data; the code that must generalise may not. Skipped where the suites are not on this machine - counted and said at
+the end (fixture_paths), and a failure under DECURIX_REQUIRE_FIXTURES=1.
 """
 
 import os
 import re
 import unittest
 from pathlib import Path
+
+import fixture_paths
 
 REPO = Path(__file__).resolve().parents[2]
 SUITES = Path(os.environ.get("DECURIX_TESTS") or Path.home() / "decurix-tests")
@@ -47,7 +50,7 @@ class NoSuiteTerms(unittest.TestCase):
     def test_the_harness_code_names_no_suite(self):
         terms = _terms()
         if not terms:
-            self.skipTest(f"no leak_terms.txt under {SUITES}")
+            raise fixture_paths.missing(f"no leak_terms.txt under {SUITES} (set DECURIX_TESTS)")
         found = []
         for path in _code_files():
             try:

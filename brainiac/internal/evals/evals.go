@@ -88,26 +88,69 @@ func ReadCases(path string) ([]Case, error) {
 
 var (
 	thinkRe  = regexp.MustCompile(`(?s)<think>.*?</think>`)
-	boxedRe  = regexp.MustCompile(`\\boxed\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}`)
-	answerRe = regexp.MustCompile(`(?i)(?:final answer|the answer is|answer)\s*[:=]?\s*\**\s*([^\n]+)`)
+	boxedRe  = regexp.MustCompile(`\boxed\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}`)
+	markRe   = regexp.MustCompile(`(?i)\b(?:final answer|the answer is|answer)\b\s*[:=]?\s*\**\s*`)
 	numRe    = regexp.MustCompile(`-?\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?`)
-	choiceRe = regexp.MustCompile(`(?i)(?:answer(?: is)?|option|choice)\s*[:=]?\s*\(?\**([A-J])\b|^\s*\(?([A-J])\)?\s*[.)]?\s*$|\\boxed\{([A-J])\}`)
+	choiceRe = regexp.MustCompile(`(?:(?i:answer(?: is)?|option|choice)\s*[:=]?\s*\(?\**([A-J])\b)|(?m:^\s*\(?([A-J])\)?\s*[.)]?\s*$)|\boxed\{([A-J])\}`)
 )
 
-// finalPart is where an answer says its result: a \boxed{}, a line after
-// "answer", or else the whole text (thinking removed).
+// finalPart is the one place an answer states its result: the last
+// \boxed{}; else the rest of the line after the last "answer is" (or
+// "answer:", "final answer"); else the last line that says anything.
+// Thinking is removed first. Only this part is judged: a check never hunts
+// the whole text for a value that happens to appear in it.
 func finalPart(answer string) string {
 	a := thinkRe.ReplaceAllString(answer, "")
 	if m := boxedRe.FindAllStringSubmatch(a, -1); len(m) > 0 {
 		return m[len(m)-1][1]
 	}
-	if m := answerRe.FindAllStringSubmatch(a, -1); len(m) > 0 {
-		return m[len(m)-1][1]
+	if locs := markRe.FindAllStringIndex(a, -1); len(locs) > 0 {
+		line, _, _ := strings.Cut(a[locs[len(locs)-1][1]:], "\n")
+		return line
 	}
-	return a
+	return lastLine(a)
 }
 
-// Correct judges one answer.
+// choicePart is where a multiple-choice answer states its letter: the last
+// \boxed{}; else everything from the last "answer" to the end; else the
+// last line that says anything.
+func choicePart(answer string) string {
+	a := thinkRe.ReplaceAllString(answer, "")
+	if m := boxedRe.FindAllStringSubmatch(a, -1); len(m) > 0 {
+		return `\boxed{` + m[len(m)-1][1] + `}`
+	}
+	if locs := markRe.FindAllStringIndex(a, -1); len(locs) > 0 {
+		return a[locs[len(locs)-1][0]:]
+	}
+	return lastLine(a)
+}
+
+// lastLine is the last line of a text that holds anything.
+func lastLine(a string) string {
+	lines := strings.Split(strings.TrimSpace(a), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			return lines[i]
+		}
+	}
+	return ""
+}
+
+// Decides reports whether a check is decided in code by one stated value
+// (a number, a letter, exact text). Only such cases may move work to a
+// cheaper path (Results.Proven): "contains" and "regex" find words anywhere
+// and cannot tell an answer from a sentence that mentions it.
+func (c Check) Decides() bool {
+	switch c.Kind {
+	case "number", "choice", "exact":
+		return true
+	}
+	return false
+}
+
+// Correct judges one answer. A number or a letter must be stated once, in
+// the answer's final part: two different values there ("13, not 12") is a
+// miss, whichever one is right.
 func (c Check) Correct(answer string) bool {
 	switch c.Kind {
 	case "number":
@@ -115,19 +158,25 @@ func (c Check) Correct(answer string) bool {
 		if err != nil {
 			return false
 		}
-		nums := numRe.FindAllString(finalPart(answer), -1)
-		if len(nums) == 0 {
-			return false
-		}
-		got, err := parseNum(nums[len(nums)-1])
-		if err != nil {
-			return false
-		}
 		tol := c.Tolerance
 		if tol <= 0 {
 			tol = 1e-6
 		}
-		return math.Abs(got-want) <= tol*math.Max(1, math.Abs(want))
+		same := func(a, b float64) bool { return math.Abs(a-b) <= tol*math.Max(1, math.Abs(b)) }
+		nums := numRe.FindAllString(finalPart(answer), -1)
+		if len(nums) == 0 {
+			return false
+		}
+		got, err := parseNum(nums[0])
+		if err != nil {
+			return false
+		}
+		for _, n := range nums[1:] {
+			if v, err := parseNum(n); err != nil || !same(v, got) {
+				return false
+			}
+		}
+		return same(got, want)
 	case "exact":
 		return norm(finalPart(answer)) == norm(c.Value) || norm(answer) == norm(c.Value)
 	case "contains":
@@ -146,18 +195,16 @@ func (c Check) Correct(answer string) bool {
 		re, err := regexp.Compile(c.Value)
 		return err == nil && re.MatchString(thinkRe.ReplaceAllString(answer, ""))
 	case "choice":
-		a := thinkRe.ReplaceAllString(answer, "")
-		var last string
-		for _, line := range strings.Split(a, "\n") {
-			for _, m := range choiceRe.FindAllStringSubmatch(line, -1) {
-				for _, g := range m[1:] {
-					if g != "" {
-						last = g
-					}
+		letters := map[string]bool{}
+		var got string
+		for _, m := range choiceRe.FindAllStringSubmatch(choicePart(answer), -1) {
+			for _, g := range m[1:] {
+				if g != "" {
+					letters[g], got = true, g
 				}
 			}
 		}
-		return strings.EqualFold(last, strings.TrimSpace(c.Value))
+		return len(letters) == 1 && got == strings.ToUpper(strings.TrimSpace(c.Value))
 	}
 	return false
 }
@@ -183,7 +230,14 @@ type Score struct {
 	MeanCompletion int `json:"mean_completion,omitempty"`
 	// At is when it was measured; a live miss after this undoes what it earned.
 	At time.Time `json:"at,omitempty"`
+	// Decided and DecidedCorrect count the cases whose check is decided in
+	// code by one stated value (Check.Decides). Only these prove anything.
+	Decided        int `json:"decided,omitempty"`
+	DecidedCorrect int `json:"decided_correct,omitempty"`
 }
+
+// decided is the part of a score that can prove a cheaper path.
+func (s Score) decided() Score { return Score{N: s.Decided, Correct: s.DecidedCorrect} }
 
 // Accuracy is correct over n.
 func (s Score) Accuracy() float64 {
@@ -218,10 +272,11 @@ func (r *Results) Compare(a, b, domain string) (aAtLeastB, known bool) {
 	return sa.Accuracy() >= sb.Accuracy(), true
 }
 
-// Margin is how much accuracy a cheaper path may give up, and z the one-sided
+// Margin is how much accuracy a cheaper path may give up: none. A path that
+// is measurably worse never takes work to save tokens. z is the one-sided
 // 95% confidence behind LowerBound.
 const (
-	Margin = 0.05
+	Margin = 0.0
 	z      = 1.645
 )
 
@@ -238,20 +293,23 @@ func (s Score) LowerBound() float64 {
 }
 
 // Proven reports whether checked cases show a is not worse than b in a field:
-// the accuracy a can claim is within Margin of what b scored. Compare asks who
-// did better; this asks whether the gap could be chance, so a small sample
-// never moves work to a cheaper path. 20 of 20 is not enough to replace a
-// model that scored 100%; about 55 of 55 is.
+// the accuracy a can claim (its Wilson lower bound) is at least what b
+// scored. Compare asks who did better; this asks whether the gap could be
+// chance, so a small sample never moves work to a cheaper path. Nothing can
+// prove itself as good as a perfect score; 20 of 20 can claim about 88%,
+// enough to replace a model that scored 80% but not one that scored 90%. Only
+// cases decided by one stated value count (Check.Decides).
 func (r *Results) Proven(a, b, domain string) bool {
 	if r == nil {
 		return false
 	}
 	sa, oka := r.Scores[a][domain]
 	sb, okb := r.Scores[b][domain]
-	if !oka || !okb || sa.N < MinCases || sb.N < MinCases {
+	da, db := sa.decided(), sb.decided()
+	if !oka || !okb || da.N < MinCases || db.N < MinCases {
 		return false
 	}
-	return sa.LowerBound() >= sb.Accuracy()-Margin
+	return da.LowerBound() >= db.Accuracy()-Margin
 }
 
 // Set records a score, replacing the model's earlier one in that field.

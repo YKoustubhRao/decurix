@@ -5,6 +5,7 @@ template in one command: in the body, tables, headers and footers, also where Wo
 keeping the formatting; and what is still left is a code-decided fact.
 """
 
+from needs import needs
 import os
 import tempfile
 import unittest
@@ -14,6 +15,7 @@ import test_recordings  # noqa: F401 - stubs config first
 
 from decurix_agent import produced
 from decurix_agent.tools import office
+import fixture_paths  # noqa: E402 - what may not be on this machine is counted
 
 TEMPLATE = Path(r"C:\Users\Administrator\Documents\Decurix demo\process\P4\Offer_letter_template.docx")
 
@@ -33,6 +35,7 @@ def make_template(path):
     document.save(path)
 
 
+@needs("python-docx")
 class FillingATemplate(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -92,7 +95,7 @@ class FillingATemplate(unittest.TestCase):
         self.assertTrue(out.exists())
 
 
-@unittest.skipUnless(TEMPLATE.exists(), "the P4 template is not on this machine")
+@fixture_paths.skip_unless(TEMPLATE.exists(), "the P4 template is not on this machine")
 class TheLiveTemplate(unittest.TestCase):
     def test_every_placeholder_of_the_offer_letter_is_filled(self):
         keys = office.docx_placeholders(str(TEMPLATE))

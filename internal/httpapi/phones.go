@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -35,10 +36,14 @@ const (
 )
 
 // SetPhones turns phone links on: phones can connect, and their apps join
-// the create dialog's app list.
+// the create dialog's app list. Unpairing a device (Revoke, or the device's
+// own Forget) closes its live link at once (B-18); s.Devices is set first.
 func (s *Server) SetPhones(hub *phonehost.Hub) {
 	s.Phones = hub
 	desktop.SetExtraHostApps(s.phoneAppItems)
+	if s.Devices != nil && hub != nil {
+		s.Devices.OnRevoke(hub.Drop)
+	}
 }
 
 // phoneConnectHandler is a linked phone's one connection: it proves itself
@@ -217,7 +222,9 @@ func (s *Server) phoneAppWSHandler(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.Phones.Open(openCtx, device, pkg, atoiIn(q.Get("w"), 720, 240, 2160), atoiIn(q.Get("h"), 1440, 320, 3840), atoiIn(q.Get("dpi"), 280, 120, 640))
 	openCancel()
 	if err != nil {
-		msg := err.Error()
+		// The viewer is told a reason chosen here, never the error's own words (RW1-B-07).
+		log.Printf("phone app: opening %s on %s: %v", pkg, device, err)
+		msg := "The app could not be opened on the phone. Try again, or open it on the phone itself."
 		if errors.Is(err, phonehost.ErrNoPhone) {
 			msg = "The phone disconnected. On the phone, open Termux and run: decurix --phone"
 		}

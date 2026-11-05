@@ -1,6 +1,8 @@
+import hashlib
 import json
+import time
 
-from decurix_agent import config, llm_client, task_context
+from decurix_agent import config, filelock, llm_client, task_context
 from decurix_agent.computer import escalation, core, learning, replay, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
@@ -130,7 +132,8 @@ def other_system(skill, request):
               f"What it does: {(skills.explanation(skill) or skill.get('goal') or '')[:400]}\n\nRequest:\n{request[:1500]}")
     try:
         message, _ = llm_client.chat([{"role": "system", "content": FITS_SYSTEM}, {"role": "user", "content": prompt}],
-                                     max_tokens=200, response_format={"type": "json_object"})
+                                     max_tokens=200, response_format={"type": "json_object"},
+                                     purpose="py.skill_engine.fits")
         answer = json.loads(message.get("content") or "{}")
     except (llm_client.LLMError, ValueError) as exc:
         log(f"skill_engine: could not tell which system {skill['name']} is for: {exc}")
@@ -145,8 +148,30 @@ def run(skill, params=None, start=1, source_files=None):
     Run a ready skill with no model and say how it ended, in replay.run's shape.
     A skill that is not ready, is missing a value the recording could not
     supply, or is not where it began (when a person asked for that to be
-    checked) does nothing and says why.
+    checked) does nothing and says why. One run of a skill at a time per task
+    (or outside any task): a second, started while the first runs, is refused -
+    its check of what was already done would pass before the first noted it.
+    Found in review (2026-11-03, D-30).
     """
+
+    REPLAYED_DIR.mkdir(parents=True, exist_ok=True)
+    # One run of a skill at a time in a scope, whatever its values (its note is kept by values: _note_key).
+    lock_path = REPLAYED_DIR / f".lock-{_scope()}-{skill.get('name') or 'skill'}"
+    try:
+        handle = open(lock_path, "a+")
+    except OSError as exc:
+        return _refusal(skill, f"its run lock could not be opened ({type(exc).__name__}), so it is not run")
+    try:
+        if not filelock.try_exclusive(handle):
+            return _refusal(skill, "another run of it is going on now - wait for that one to end, then look at "
+                                   "what it did before running it again")
+        return _run(skill, params, start, source_files)
+    finally:
+        handle.close()
+
+
+def _run(skill, params=None, start=1, source_files=None):
+    """run(), under its lock."""
 
     if skill.get("status") != skills.READY:
         return _refusal(skill, "it was never finished being taught - a person confirms a skill in the chat with /learn")
@@ -207,7 +232,8 @@ def run(skill, params=None, start=1, source_files=None):
     # A replay that ran to its end did the task - it saves, submits or sends at its end. Run again for the same
     # request from before its end, it does it a second time. Found live (2026-10-14): sent back over one value of a
     # record the replay had saved, the engine ran `gui do` from step 1 and a second employee record was made.
-    done_to = _replayed_to(skill["name"])
+    key = _note_key(skill, params)
+    done_to = _replayed_to(key)
     if done_to and start <= done_to:
         return _refusal(skill, f"this request already had it replayed to its end (step {done_to}) - the task is done, "
                                "and replaying it again from step " + str(start) + " would do it a second time. Open "
@@ -218,20 +244,74 @@ def run(skill, params=None, start=1, source_files=None):
     # renamed is found, and anything less halts as it always did. Nothing is
     # kept from it: a skill is rewritten by a person's correction or by a run
     # skill_task did, never by an engine's.
+    # A run of it this request that stopped part way did the steps before its stop: it carries on from there, never
+    # from an earlier step (review 2026-11-02: only a run that reached its end was noted, so a run halted after its
+    # save could be started again from step 1 and save a second record).
+    stopped = _stopped_at(key)
+    if stopped:
+        at, how = stopped["at"], stopped.get("outcome")
+        if how == replay.RECONCILIATION_REQUIRED and start <= at:
+            return _refusal(skill, f"an earlier run of it for this request did step {at} and its result never "
+                                   "appeared - it may or may not have taken effect, so no step up to it is done again. "
+                                   "Look at the screen (gui observe) and finish or correct the work by hand, or ask "
+                                   "the human")
+        if start < at:
+            return _refusal(skill, f"an earlier run of it for this request did steps up to {at - 1} and stopped at "
+                                   f"step {at}; running it from step {start} would do steps {start}-{at - 1} a second "
+                                   f"time. Put right what stopped it, then carry on with gui do {skill['name']} "
+                                   f"--from {at} (with the same --param values)")
+
     program, expanded = skills.expand(skill, values)
     result = replay.run(program, params=expanded, start=start,
                         ladder=escalation.Ladder(ask_model=None, goal=skill.get("title") or "", total=len(program["steps"])))
 
     if result["outcome"] in replay.SUCCESS:
-        skills.note_run(skill["name"])
-        _note_replayed(skill["name"], len(program["steps"]))
+        # Ran to its end (seen or not): it is never run again for this request. Only a run whose every result was seen
+        # counts as a good run of the skill.
+        if result["outcome"] == replay.VERIFIED:
+            skills.note_run(skill["name"])
+        _note_replayed(key, len(program["steps"]))
+    elif result["outcome"] != replay.HALTED_BEFORE_EFFECT or start > 1:
+        at = result.get("resume_from") or result.get("step") or start
+        _note_stopped(key, int(at), result["outcome"])
 
     return result
 
 
+# Outside any task, what was replayed counts for this long (a run from the shell, a test, an engine with no task):
+# before, nothing was kept there and a second run did the work again (D-30).
+NO_TASK_SECONDS = 3600
+
+
+def _note_key(skill, params):
+    """What a run is noted under: the skill, within the task. Outside any task there is no request to tell runs apart
+    by, so the run's own values are part of it - the same skill with the same values is the same work done twice;
+    with other values it is other work."""
+
+    name = skill.get("name") or "skill"
+    if task_context.current():
+        return name
+    given = json.dumps(params or {}, sort_keys=True, default=str)
+    return f"{name}#{hashlib.sha256(given.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _scope():
+    """The task this run is for, or "no-task"."""
+
+    return task_context.current() or "no-task"
+
+
 def _replayed_path():
-    task_id = task_context.current()
-    return REPLAYED_DIR / f"{task_id}.json" if task_id else None
+    return REPLAYED_DIR / f"{_scope()}.json"
+
+
+def _read_replayed(path):
+    """What a run's note file holds; outside any task, an old note no longer counts."""
+
+    done = json.loads(path.read_text(encoding="utf-8"))
+    if path.stem == "no-task" and time.time() - float(done.get("#at") or 0) > NO_TASK_SECONDS:
+        return {}
+    return done
 
 
 def _replayed_to(name):
@@ -239,21 +319,53 @@ def _replayed_to(name):
 
     path = _replayed_path()
     try:
-        return int(json.loads(path.read_text(encoding="utf-8")).get(name) or 0) if path else 0
+        return int(_read_replayed(path).get(name) or 0) if path else 0
     except (OSError, ValueError, TypeError):
         return 0
 
 
-def _note_replayed(name, last):
+def _stopped_at(name):
+    """Where a run of `name` for this task stopped part way: {"at": the step it carries on from, "outcome"}, or None."""
+
+    path = _replayed_path()
+    try:
+        kept = _read_replayed(path).get(f"{name}#stopped") if path else None
+        return {"at": int(kept["at"]), "outcome": kept.get("outcome")} if kept else None
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def _note_stopped(name, at, outcome):
+    """Keep where a run of `name` stopped part way, so the next run carries on from there (or refuses)."""
+
+    _note_replayed(name, None, stopped={"at": at, "outcome": outcome})
+
+
+def _note_replayed(name, last, stopped=None):
     path = _replayed_path()
     if path is None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        done = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        done[name] = last
-        path.write_text(json.dumps(done), encoding="utf-8")
-        for old in sorted(REPLAYED_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime)[:-KEEP_REPLAYED]:
-            old.unlink()
+        # The note file is read, changed and written back: one writer at a time, across processes (review round 2).
+        with open(REPLAYED_DIR / ".notes.lock", "a+") as guard:
+            filelock.exclusive(guard)
+            _write_note(path, name, last, stopped)
     except (OSError, ValueError):
         pass
+
+
+def _write_note(path, name, last, stopped):
+    """_note_replayed's change to the note file, under its lock."""
+
+    done = _read_replayed(path) if path.exists() else {}
+    done["#at"] = time.time()
+    if stopped is not None:
+        done[f"{name}#stopped"] = stopped
+    else:
+        done[name] = last
+        done.pop(f"{name}#stopped", None)
+    from decurix_agent.computer import privacy
+    privacy.write_scrubbed(path, done)
+    for old in sorted(REPLAYED_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime)[:-KEEP_REPLAYED]:
+        old.unlink()

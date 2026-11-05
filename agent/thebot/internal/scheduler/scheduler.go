@@ -104,6 +104,9 @@ type Job struct {
 	Outcome Outcome
 	// Question is what the human is being asked, when the job paused.
 	Question string
+	// Secret is set when the answer to Question is a secret (a value for a password field): the host withholds the
+	// reply wherever it keeps it (review F-1).
+	Secret bool
 	// Route is the atomizer's decision about the request's shape.
 	Route atomizer.RouteKind
 	Steps []StepRecord
@@ -134,15 +137,11 @@ type Request struct {
 	// Resume, when set, continues that paused job instead of starting a new
 	// one, with Prompt as the human's reply to it.
 	Resume *Checkpoint
-	// Approved says the person already said yes to this request as a kind of
-	// task - they taught it and chose to have it run without asking each
-	// time. It lifts only the check on the request's own words (AssessRequest,
-	// which cannot tell "Purchase Invoice" the document from "purchase" the
-	// act); every consequential command and screen action is still stopped.
-	Approved bool
 	// Reading is the host's one reading of Prompt when it answers a paused approval (skills.Reading), or nil: set, it
 	// decides whether the action was approved, not soul's own word list.
 	Reading *skills.Reading
+	// PlanAgreed is the host's word that the request is a stage of a plan the person agreed (skills.RunContext).
+	PlanAgreed bool
 }
 
 type Scheduler struct {

@@ -1,11 +1,12 @@
 """
-CX (round 5 P4 on pc3, 2026-10-21, series 11): Rohit Kulkarni was onboarded twice in the portal. In ONE attempt the
+CX (round 5 P4, 2026-10-21, series 11): Rohit Kulkarni was onboarded twice in the portal. In ONE attempt the
 worker saved him with another joiner's department (EMP-2043), saw it, could not edit it, and entered him again
 (EMP-2044) - a duplicate in a live system is worse than a missing record. Not a refusal of the entry check: its tool
 record shows both saves in the same attempt. A save that would enter, as new, a record this task already saved is now
 refused in code; and a read-back showing a record twice is not done, the person told to delete the extra one.
 """
 
+from needs import needs
 import json
 import tempfile
 import unittest
@@ -132,8 +133,9 @@ class TheSaveGuard(unittest.TestCase):
 TRACKER = Path(r"C:\Users\Administrator\decurix-tests\wide\process\data\P4\joiners_tracker_Nov2026.xlsx")
 
 
+@needs("openpyxl")
 class AnotherRecordsValues(unittest.TestCase):
-    """CY (round 5 P4 on pc3, 2026-10-21): Rohit Kulkarni's form was saved with Mohammed Arif Khan's department and job
+    """CY (round 5 P4, 2026-10-21): Rohit Kulkarni's form was saved with Mohammed Arif Khan's department and job
     title. A save whose form holds another record's values from the request's own table is refused."""
 
     HEADER = ["Full name", "Personal email", "Mobile", "Department", "Job title", "Date of birth"]
@@ -200,7 +202,7 @@ class AnotherRecordsValues(unittest.TestCase):
                 said = core._crossed_record({"name": "Submit onboarding"})
         self.assertIn("Job title is 'Sales Executive' - that is Mohammed Arif Khan's", said)
 
-    @unittest.skipUnless(TRACKER.is_file(), "round 5 P4's tracker is not on this machine")
+    @fixture_paths.skip_unless(TRACKER.is_file(), "round 5 P4's tracker is not on this machine")
     def test_the_live_saves(self):
         from decurix_agent import stage_facts
         path = fixture_paths.need("p4_duplicate", "events.jsonl")

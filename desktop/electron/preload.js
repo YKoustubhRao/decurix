@@ -8,7 +8,58 @@ contextBridge.exposeInMainWorld('decurixHost', {
 
 contextBridge.exposeInMainWorld('decurixStartup', {
   retry: () => ipcRenderer.send('retry-startup'),
-  onStatus: (callback) => ipcRenderer.on('startup-status', (_event, status) => callback(status)),
+  // Each status shown is acknowledged by its number, so the app knows a failure reached the person (main.js update).
+  onStatus: (callback) => ipcRenderer.on('startup-status', (_event, status) => {
+    callback(status);
+    ipcRenderer.send('startup-status-shown', status && status.seq);
+  }),
+});
+
+// The public link's switch, at the top of the dashboard's Mobile menu
+// (#tunnelPanel). The tunnel is the app's to start (main.js), so its switch is
+// too: off until the person turns it on here. The menu redraws its panel from
+// scratch, so the row is put back at the top whenever that happens. It shows
+// only where a tunnel program exists (the status says so).
+window.addEventListener('DOMContentLoaded', async () => {
+  const panel = document.getElementById('tunnelPanel');
+  if (!panel) return;
+  let status;
+  try { status = await ipcRenderer.invoke('public-link-status'); } catch { return; }
+  if (!status || !status.available) return;
+  const row = document.createElement('div');
+  row.className = 'pl-row';
+  const text = document.createElement('div');
+  const title = document.createElement('strong');
+  title.textContent = 'Public link';
+  const note = document.createElement('small');
+  text.append(title, note);
+  const label = document.createElement('label');
+  label.className = 'pl-switch';
+  const toggle = document.createElement('input');
+  toggle.type = 'checkbox';
+  toggle.setAttribute('role', 'switch');
+  toggle.setAttribute('aria-label', 'Public link from the internet');
+  label.append(toggle);
+  row.append(text, label);
+  const style = document.createElement('style');
+  style.textContent = '.pl-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;margin:0 0 8px;border-bottom:1px solid var(--line,#ddd)}.pl-row strong{display:block;font-size:12px}.pl-row small{display:block;font-size:11px;line-height:1.5;color:var(--text-3,#838390)}.pl-switch input{width:18px;height:18px;cursor:pointer}';
+  document.head.append(style);
+  const show = (value) => {
+    toggle.checked = value.enabled === true;
+    note.textContent = toggle.checked
+      ? 'On: a link from the internet to the access-code page. Turn off when no phone needs it.'
+      : 'Off: phones reach Decurix only on this network. Turn on for a link that works from anywhere (it still needs the access code).';
+  };
+  show(status);
+  toggle.addEventListener('change', async () => {
+    toggle.disabled = true;
+    try { show(await ipcRenderer.invoke('public-link-set', toggle.checked)); }
+    catch (error) { note.textContent = error.message; }
+    finally { toggle.disabled = false; }
+  });
+  const keepFirst = () => { if (panel.firstChild !== row) panel.prepend(row); };
+  keepFirst();
+  new MutationObserver(keepFirst).observe(panel, { childList: true });
 });
 
 // The web dashboard stays ordinary browser content; only the Windows shell

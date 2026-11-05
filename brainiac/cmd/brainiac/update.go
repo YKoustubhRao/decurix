@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -27,15 +29,19 @@ import (
 	"brainiac/internal/update"
 )
 
-// runUpdate runs one update cycle by hand: without --apply it says what
-// `serve` would switch to; with --apply it switches (when no server runs).
+// runUpdate runs one update cycle by hand: without --apply it says what a
+// better plan would change; with --apply it installs, checks and stages it
+// (when no server runs). `update promote` switches to a staged plan.
 func runUpdate(args []string) error {
 	if len(args) > 0 && args[0] == "approve-template" {
 		return runApproveTemplate(args[1:])
 	}
+	if len(args) > 0 && args[0] == "promote" {
+		return runPromote(args[1:])
+	}
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	home := fs.String("home", "", "Brainiac's home")
-	apply := fs.Bool("apply", false, "install, check and switch now (a running `serve` does this on its own)")
+	apply := fs.Bool("apply", false, "install, check and stage a better plan now; `brainiac update promote` switches to it")
 	asJSON := fs.Bool("json", false, "print the report as JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -49,7 +55,7 @@ func runUpdate(args []string) error {
 		return err
 	}
 	if *apply && serverAnswers(cfg.Listen) {
-		return fmt.Errorf("a Brainiac is serving on %s and updates itself when idle; stop it to switch by hand", cfg.Listen)
+		return fmt.Errorf("a Brainiac is serving on %s; stop it to install and check a plan by hand, or set update_every so serve does it when idle", cfg.Listen)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -62,6 +68,33 @@ func runUpdate(args []string) error {
 		return printJSON(res)
 	}
 	renderUpdate(os.Stdout, res)
+	return nil
+}
+
+// runPromote is a person switching to the staged plan. A running serve
+// notices lock.json changed and moves to it, finishing what it is answering
+// on the old models first.
+func runPromote(args []string) error {
+	fs := flag.NewFlagSet("update promote", flag.ContinueOnError)
+	home := fs.String("home", "", "Brainiac's home")
+	if err := fs.Parse(reorder(args)); err != nil {
+		return err
+	}
+	st, err := openStore(&common{home: *home})
+	if err != nil {
+		return err
+	}
+	lock, staged, err := update.Promote(st, time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Switched to the plan checked on %s: %s.\n", staged.At.Local().Format("2006-01-02 15:04"), staged.Why)
+	if staged.Runtime != nil {
+		fmt.Printf("llama.cpp is now pinned to %s.\n", staged.Runtime.LlamaCppTag)
+	}
+	if b, ok := lock.Plan.Pick(catalog.RoleBrain); ok {
+		fmt.Printf("The brain is %s. A running serve moves to the new models within a minute; lock.prev.json is the plan before.\n", b.Model)
+	}
 	return nil
 }
 
@@ -104,7 +137,17 @@ func updateOptions(st *store.Store, cfg config.Config, lg *log.Logger, apply boo
 	}
 	if srv != nil {
 		o.Idle = func() bool { return srv.IdleFor() >= 10*time.Minute && !machineBusy() }
-		o.MakeRoom = func() { srv.Current().Unload() }
+		// The canary's models and the served ones are counted by different
+		// residency managers, so work waits while the canary runs: freeing
+		// the served models, loading the new ones and asking them a few
+		// questions. Requests already running finish first.
+		check := o.Check
+		o.Check = func(ctx context.Context, lock *install.Lock, cat *catalog.Catalog, roles []string) error {
+			release := srv.Hold()
+			defer release()
+			srv.Current().Unload()
+			return check(ctx, lock, cat, roles)
+		}
 	}
 	return o
 }
@@ -135,10 +178,10 @@ func canary(st *store.Store, cfg config.Config, lg *log.Logger) func(context.Con
 	}
 }
 
-// updateLoop keeps the served models the best this machine can run: a cycle
-// ten minutes after start, then every interval. A better plan waiting for an
-// idle moment is tried again every 30 minutes; after a switch, new requests
-// go to the new models and the old engine closes when its requests finish.
+// updateLoop looks for a better plan for this machine: a cycle ten minutes
+// after start, then every interval. A better plan waiting for an idle moment
+// is tried again every 30 minutes. It only installs, checks and stages: it
+// never changes what is served (a person promotes; followLock then moves).
 func updateLoop(ctx context.Context, st *store.Store, cfg config.Config, srv *api.Server, every time.Duration, lg *log.Logger) {
 	wait := 10 * time.Minute
 	for {
@@ -159,19 +202,62 @@ func updateLoop(ctx context.Context, st *store.Store, cfg config.Config, srv *ap
 			wait = min(every, 30*time.Minute)
 		case update.OutcomeFailed:
 			wait = min(every, 6*time.Hour)
-		case update.OutcomeSwitched:
-			cat, err := loadCatalog(st)
-			if err != nil {
-				cat = res.Catalog
-			}
-			eng, err := engine.New(engine.Options{Config: cfg, Store: st, Lock: res.Lock, Logger: lg, Catalog: cat})
-			if err != nil {
-				lg.Printf("update: switched the lock, but the new engine failed (%v); restart serve", err)
-				continue
-			}
-			old := srv.SetEngine(eng)
-			go old.Drain(2 * time.Minute)
-			lg.Printf("update: now serving %s", rolesLine(eng.Status().Roles))
+		case update.OutcomeStaged:
+			lg.Printf("update: %s", res.Why)
+		}
+	}
+}
+
+// updateEvery is how often serve's update loop runs, and whether it runs at
+// all: only when update_every is a positive duration and the web is not off
+// (it reads public evaluations on the web). The default is off.
+func updateEvery(cfg config.Config) (time.Duration, bool) {
+	every, err := time.ParseDuration(cfg.UpdateEvery)
+	return every, err == nil && every > 0 && cfg.Web != config.WebOff
+}
+
+// lockFollower moves a running serve to the plan in lock.json when a person
+// changes it (`brainiac update promote`, or `brainiac pull` by hand). It
+// compares the file's bytes, so nothing else moves the served models.
+type lockFollower struct {
+	path string
+	seen string // the sha256 of the lock the current engine was built from
+	// build makes an engine from the new lock; swap serves it and returns
+	// the engine it replaced, which is retired once its requests finish.
+	build func() (*engine.Engine, error)
+	swap  func(*engine.Engine) *engine.Engine
+	logf  func(string, ...any)
+}
+
+// check moves to a changed lock once, and reports whether it did.
+func (f *lockFollower) check() bool {
+	got := lockSHA(f.path)
+	if got == "" || got == f.seen {
+		return false
+	}
+	eng, err := f.build()
+	if err != nil {
+		f.logf("lock.json changed, but its plan does not load (%v); still serving the old one", err)
+		f.seen = got // say so once, not every minute
+		return false
+	}
+	f.seen = got
+	old := f.swap(eng)
+	go old.Retire(f.logf)
+	f.logf("lock.json changed: now serving %s", rolesLine(eng.Status().Roles))
+	return true
+}
+
+// followLock runs check every interval until ctx ends.
+func (f *lockFollower) run(ctx context.Context, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			f.check()
 		}
 	}
 }
@@ -243,8 +329,11 @@ func renderUpdate(w io.Writer, res *update.Result) {
 			fmt.Fprintf(w, "  %-50s %s\n", c.Repo, c.Why)
 		}
 	}
-	if res.Outcome == update.OutcomeWould {
-		fmt.Fprintln(w, "\nA running `brainiac serve` switches on its own when idle; `brainiac update --apply` switches now.")
+	switch res.Outcome {
+	case update.OutcomeWould:
+		fmt.Fprintln(w, "\n`brainiac update --apply` installs and checks it; it changes nothing served until `brainiac update promote`.")
+	case update.OutcomeStaged:
+		fmt.Fprintln(w, "\n`brainiac update promote` switches to it; a running serve follows.")
 	}
 }
 
@@ -274,4 +363,14 @@ func orBrain(m string) string {
 		return "(the brain)"
 	}
 	return m
+}
+
+// lockSHA is the sha256 of the lock file serve started from ("" if unreadable).
+func lockSHA(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }

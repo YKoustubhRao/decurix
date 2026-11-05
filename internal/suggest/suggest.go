@@ -90,6 +90,10 @@ type Store struct {
 	Tasks    ActivityStore
 	Memory   MemoryLister
 	Embed    Embedder
+	// WouldEvict, when set, reports that embedding now would push the chat model out of a one-model Ollama (it then
+	// reloads for minutes on the next agent turn, C-10); a suggestion then falls back to recency.
+	// ollama.EmbedWouldEvict satisfies it.
+	WouldEvict func(ctx context.Context) bool
 }
 
 // NewStore creates a Store, creating its embedding cache table if needed.
@@ -111,7 +115,7 @@ func (s *Store) Suggest(ctx context.Context, content string) (Suggestion, bool) 
 		return Suggestion{}, false
 	}
 
-	if len(content) >= minContentChars && s.Embed != nil {
+	if len(content) >= minContentChars && s.Embed != nil && (s.WouldEvict == nil || !s.WouldEvict(ctx)) {
 		if match, found := s.memoryPick(ctx, content, desktops); found {
 			return match, true
 		}
@@ -270,9 +274,9 @@ func (s *Store) Forget(memoryIDs []string) {
 // loadCachedVectors reads the cached embedding for each of entries (never
 // the whole suggestion_embeddings table - that would grow with total fleet
 // memory rather than with what this call could ever use). Rows are fully
-// read and closed before returning - the SQLite pool here is one
-// connection, and no query may run while a *sql.Rows from an earlier one is
-// still open.
+// read and closed before returning: no query may run while a *sql.Rows from
+// an earlier one is still open (the CLAUDE.md rule; the pool holds several
+// connections, C-27).
 func (s *Store) loadCachedVectors(entries []memory.WorkerMemoryEntry) map[string][]float32 {
 	vectors := make(map[string][]float32, len(entries))
 	if len(entries) == 0 {

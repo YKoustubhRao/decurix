@@ -9,7 +9,7 @@ person who replies may settle that request, and logs who did.
 
 | Listener | Who is acting | How |
 |---|---|---|
-| Primary `:8080` (never exposed) | The built-in **local owner** (`local-owner`, role `owner`) | No login, ever. Whoever reaches it from this computer is the owner. A request from a desktop container (`fromContainer`) has **no** actor: an agent can never approve its own action. |
+| Primary `:8080` (never exposed) | The built-in **local owner** (`local-owner`, role `owner`) | No login, ever. Whoever reaches it from this computer is the owner. A request from anything but this computer itself (`fromContainer`: loopback or a known Docker gateway is this computer; a desktop or any other container is not) has **no** actor: an agent can never approve its own action. |
 | Gated `:8090` (`internal/lanaccess`, tunnelled) | The **signed-in user**, or nobody | The access code (or a paired device) still decides who gets in at all. Inside, a person signs in with name + password (`POST /api/auth/login`); the session rides in the `decurix_user` cookie (HttpOnly, SameSite=Strict, 12 h). |
 
 `access.Middleware.Actor(r)` returns the actor; `Server.ActorContext(r)` puts
@@ -36,7 +36,7 @@ A policy is data, not code:
 | `worker` | A desktop id, or `*` for all |
 | `worker_role` | Only workers holding this role; empty = any |
 | `action_match` | Case-insensitive regular expression over the approval's action text; empty = every approval |
-| `amount_over` | Optional. Applies only when the largest money figure in the text is over it |
+| `amount_over` | Optional. Applies only when the largest money figure in the text is over it (`access.LargestAmount`, which errs high: glued currency and scales "Rs450000", "$1.5M", "3Cr", "5L"; Western, Indian, European and apostrophe grouping; once any figure is marked as money every standalone figure counts; a figure read two ways takes the larger; no money mark at all means unknown, and the policy applies) |
 | `approver_roles` | The approver must hold one of these (or `owner`) |
 | `min_approvers` | 1, or 2 distinct approvers |
 | `note` | Free text for people |
@@ -58,7 +58,11 @@ Use `\b` for whole words: `file` alone also matches "profile".
 **Money figures.** A figure counts when a currency symbol (any Unicode `Sc`),
 an uppercase three-letter code (`USD 75`, `2500 EUR`), or `Rs`/`amount`/`total`/`sum`
 stands next to it. Commas are grouping (`1,00,000` = 100000). Text with **no**
-money figure is treated as over the threshold: the stricter reading.
+money figure is treated as over the threshold: the stricter reading. When a policy applies only because no amount
+could be read for certain, the refusal, the held message and the Workforce check say "the amount could not be read
+for certain, so the policy for larger amounts applied" (`Requirement.AmountUnknown`, JSON `amount_unknown`). An
+identifier-labelled figure larger than every money figure also makes the amount unknown, so a payment that names a
+larger account or invoice number meets its amount policy.
 
 ## Enforcement
 

@@ -1,0 +1,213 @@
+{
+  "schema": "decurix.trajectory/v1",
+  "run_id": "e_s",
+  "task_id": "t_s",
+  "attempt": 1,
+  "worker": {
+    "id": "sam",
+    "name": "sam",
+    "harness": "thebot",
+    "brain": "azure",
+    "image": "",
+    "agent_sha": "",
+    "soul_sha": "",
+    "rules_sha": ""
+  },
+  "origin": {
+    "kind": "person",
+    "ref": "card",
+    "actor": {
+      "id": "u_op",
+      "roles": [],
+      "kind": "person"
+    }
+  },
+  "skill": {
+    "name": "",
+    "version": 0
+  },
+  "request": {
+    "text": "Pay the payee Acme 1,200.00",
+    "sha256": "52e029907dffeead33ea9e770cc653b453a9c99fac3142aef8468e84be26c6b0",
+    "files": []
+  },
+  "started_at": "2026-11-04T10:02:11Z",
+  "ended_at": "2026-11-04T10:03:51Z",
+  "status": "error",
+  "outcome": "failed",
+  "verdict": {
+    "schema": "decurix.verdict/v1",
+    "verdict": "stopped",
+    "by": "worker",
+    "why": "the person said no to the payment",
+    "basis": [
+      "person"
+    ],
+    "checks": [],
+    "evidence": []
+  },
+  "models": [
+    {
+      "provider": "azure",
+      "deployment": "gpt-6.1-sol",
+      "calls": 1,
+      "purposes": {
+        "operator.turn": 1
+      }
+    }
+  ],
+  "usage": {
+    "input_tokens": 30000,
+    "cached_input_tokens": 28000,
+    "output_tokens": 200,
+    "calls": 1
+  },
+  "steps": [
+    {
+      "i": 0,
+      "at": "2026-11-04T10:02:41Z",
+      "turn": "j9:2",
+      "call": 0,
+      "model": {
+        "provider": "azure",
+        "deployment": "gpt-6.1-sol"
+      },
+      "prompt_sha256": "prompt-s1",
+      "prefix_sha256": "prefix-s1",
+      "observation": {
+        "frame": "c1.png",
+        "ax": "",
+        "window": "Payments - Chromium",
+        "url": "http://records.example.test/payments/new"
+      },
+      "command": {
+        "text": "gui click 'button \"Pay\"'",
+        "tool": "gui",
+        "exit": 3,
+        "ms": 1200,
+        "output_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "guard": "asked"
+      },
+      "action": {
+        "record_id": "20261104T100241-5f6e7d8c",
+        "kind": "click",
+        "target": {
+          "name": "Pay",
+          "role": "button"
+        },
+        "text": null,
+        "withheld": null,
+        "backend": "atspi",
+        "outcome": "needs_approval",
+        "actor": "agent"
+      },
+      "gate": {
+        "decision": "denied",
+        "request_id": "i_a1",
+        "judgement_id": "j_no1"
+      },
+      "diff": {
+        "before": "c1.png",
+        "after": "",
+        "change": "",
+        "expect": null
+      },
+      "ledger_delta": [],
+      "label": "overridden"
+    }
+  ],
+  "calls": [
+    {
+      "i": 0,
+      "id": "s1",
+      "at": "2026-11-04T10:02:36Z",
+      "source": "proxy",
+      "provider": "azure",
+      "deployment": "gpt-6.1-sol",
+      "purpose": "operator.turn",
+      "turn": "j9:2",
+      "caller": "soul",
+      "status": 200,
+      "ms": 2000,
+      "prompt_sha256": "prompt-s1",
+      "prefix_sha256": "prefix-s1",
+      "response_sha256": "resp-s1",
+      "messages": 2,
+      "usage": {
+        "input_tokens": 30000,
+        "cached_input_tokens": 28000,
+        "output_tokens": 200,
+        "calls": 1
+      },
+      "problems": []
+    }
+  ],
+  "questions": [
+    {
+      "intervention_id": "i_a1",
+      "kind": "approval",
+      "asked_at": "2026-11-04T10:02:43Z",
+      "text": "May I click Pay? It moves money.",
+      "secret": false,
+      "answer": {
+        "judgement_id": "j_no1",
+        "at": "2026-11-04T10:03:41Z",
+        "text": "no",
+        "actor": {
+          "id": "u_op",
+          "name": "Priya",
+          "roles": [
+            "operator"
+          ],
+          "kind": "person"
+        }
+      }
+    }
+  ],
+  "judgements": [
+    {
+      "id": "j_no1",
+      "kind": "approval",
+      "actor": {
+        "id": "u_op",
+        "name": "Priya",
+        "roles": [
+          "operator"
+        ],
+        "kind": "person"
+      },
+      "at": "2026-11-04T10:03:41Z",
+      "derived_from": "",
+      "payload": {
+        "approval_id": "ap_1",
+        "outcome": "allowed",
+        "decision": "no"
+      }
+    }
+  ],
+  "ledger": [],
+  "labels": {
+    "run": "stopped",
+    "person_verdict": "",
+    "eval": null
+  },
+  "integrity": {
+    "bundle_sha256": "0ebe3dba987156034a8b191ff3648cfa7028696b3e3ba66fdfbfdbf1e44d20e1",
+    "parts": {
+      "manifest": "sha256:060704c3e244ff3e0697e7d5c64cb1f70380661725f86f47d99f4f2298013e62",
+      "recording": "sha256:f5a1ada344edbbca54c27c424488e3eee0c4d1fae87c09f66ae503bb18396fc5",
+      "soul_trace": "sha256:07ae9dcb52ea987bb31ee786bc41b5d0fcfb98420a2d33a6c304d6feefd5b4de"
+    },
+    "missing": [
+      "notes: not present",
+      "ledger: not present",
+      "files: not present",
+      "outputs: not present"
+    ],
+    "worker_written": [
+      "recording",
+      "manifest",
+      "soul_trace"
+    ]
+  }
+}

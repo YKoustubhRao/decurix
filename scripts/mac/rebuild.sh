@@ -76,7 +76,7 @@ cleanup() {
     docker compose down || true
 
     local containers
-    containers=$(docker ps -a --filter "name=desktop_" --format "{{.ID}}")
+    containers=$(docker ps -a --filter "label=desktop-manager=true" --format "{{.ID}}")
     if [ -n "$containers" ]; then
         echo "$containers" | xargs docker rm -f 2>/dev/null || true
     fi
@@ -103,7 +103,7 @@ docker compose down
 echo ""
 echo "=== Removing old desktop containers ==="
 
-containers=$(docker ps -a --filter "name=desktop_" --format "{{.ID}}")
+containers=$(docker ps -a --filter "label=desktop-manager=true" --format "{{.ID}}")
 if [ -n "$containers" ]; then
     echo "$containers" | xargs docker rm -f
 fi
@@ -111,7 +111,7 @@ fi
 echo ""
 echo "=== Removing old desktop volumes ==="
 
-vols=$(docker volume ls --filter "name=desktop_" --format "{{.Name}}")
+vols=$(docker volume ls --filter "name=^desktop_" --format "{{.Name}}")
 if [ -n "$vols" ]; then
     echo "$vols" | xargs docker volume rm
 fi
@@ -142,7 +142,7 @@ echo ""
 echo "=== Starting Decurix ==="
 
 export_host_mounts
-docker compose up -d --build
+docker compose -f docker-compose.yaml ${DECURIX_COMPOSE_OVERRIDE:+-f "$DECURIX_COMPOSE_OVERRIDE"} up -d --build
 
 echo ""
 echo "=== Waiting for dashboard ==="
@@ -203,7 +203,8 @@ fi
 echo ""
 echo "=== Starting Cloudflare Tunnel ==="
 
-if ! command -v cloudflared >/dev/null 2>&1; then
+# cloudflared is needed only for the public link, which is off unless DECURIX_PUBLIC_LINK=1 (lib/lan-tunnel.sh).
+if public_link_enabled && ! command -v cloudflared >/dev/null 2>&1; then
     echo "cloudflared is not installed (tunnel skipped)."
     echo "Decurix is still running locally at http://127.0.0.1:8080."
     echo "Install via: brew install cloudflared"

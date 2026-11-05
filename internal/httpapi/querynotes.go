@@ -89,6 +89,18 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		// which leaves it unknown rather than "not checked".
 		Checked *bool `json:"checked"`
 
+		// Verdict is the final check, structured (decurix.verdict/v1, C5): stored beside the task, with checked
+		// derived from it. Absent from older images.
+		Verdict json.RawMessage `json:"verdict"`
+
+		// Skill names the taught skill that drove the turn, and its version (C5): stored on the execution (R7).
+		Skill *tasks.Skill `json:"skill"`
+
+		// Secret marks a question raised for a secret (a password or code field): the person's reply to it is kept
+		// withheld whole in every record, and still reaches the desktop as typed (X-6). Ignored on anything but a
+		// question or an approval.
+		Secret bool `json:"secret"`
+
 		// What the task records need from the end of a turn: which task it
 		// was, and what the desktop knows about the model and the spend so
 		// far. All optional, and absent from older images.
@@ -101,14 +113,26 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		// CachedInputTokens is the part of InputTokens the provider served
 		// from its prompt cache.
 		CachedInputTokens *int64 `json:"cached_input_tokens"`
+
+		// Gate is the approval gate's own question for the action it holds, signed by the gate (an approval only).
+		Gate *struct {
+			ID       string `json:"id"`
+			Question string `json:"question"`
+			Sig      string `json:"sig"`
+		} `json:"gate"`
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxQueryTextRequestBytes)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		badJSON(w, err)
 		return
 	}
 
+	acting, ok := actingAs(w, r, req.DesktopID)
+	if !ok {
+		return
+	}
+	req.DesktopID = acting
 	if req.DesktopID == "" {
 		http.Error(w, "desktop_id is required", http.StatusBadRequest)
 		return
@@ -163,11 +187,25 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 	// an approval is answered by one.
 	note.Kind = outcomeKindFor(req.Kind, chatKind)
 
-	if !req.Quiet && note.Kind != tasks.OutcomeDone {
-		s.QueryNotes.Add(note)
+	// An approval the gate worded: the person is shown the gate's words first, and their reply is bound to that
+	// request. The worker's own text follows, said to be the worker's.
+	if note.Kind == querynotes.KindApproval && req.Gate != nil &&
+		s.Desktops.VerifyGateQuestion(desktopID, req.Gate.ID, req.Gate.Question, req.Gate.Sig) {
+		question := strings.Join(strings.Fields(req.Gate.Question), " ")
+		note.GateRequest, note.GateQuestion = req.Gate.ID, question
+		note.Content = withGateQuestion(question, note.Content)
+		chatText = withGateQuestion(question, chatText)
 	}
 
-	taskID, err := s.Tasks.RecordOutcome(desktopID, reportedTaskID(req.TaskID), tasks.Outcome{
+	named := reportedTaskID(req.TaskID)
+	verdict, problems := tasks.ParseVerdict(req.Verdict)
+	if len(problems) > 0 {
+		log.Printf("querytext from %s: the verdict for task %s (stored as %s): %s",
+			desktopID, named, verdict.Verdict, strings.Join(problems, "; "))
+	}
+	taskID, execID, err := s.Tasks.RecordOutcomeExec(desktopID, named, tasks.Outcome{
+		Verdict:           verdict,
+		Skill:             req.Skill,
 		Kind:              note.Kind,
 		Reply:             chatText,
 		Engine:            clip(req.Engine, 32),
@@ -177,9 +215,31 @@ func (s *Server) queryTextHandler(w http.ResponseWriter, r *http.Request) {
 		OutputTokens:      nonNegative(req.OutputTokens),
 		CachedInputTokens: cachedWithin(nonNegative(req.CachedInputTokens), nonNegative(req.InputTokens)),
 		Checked:           req.Checked,
+		Secret:            req.Secret && (note.Kind == tasks.OutcomeQuery || note.Kind == tasks.OutcomeApproval),
 	})
 	if err != nil {
 		log.Printf("querytext from %s: %v", desktopID, err)
+	}
+
+	// An ended execution records the deployment that served it (R7), from the call log (one query, no rows open).
+	if err == nil && execID != "" && (note.Kind == tasks.OutcomeDone || note.Kind == tasks.OutcomeError) {
+		s.resolveModel(execID)
+		s.taskEnded(desktopID, taskID)
+		// Its bundle leaves the desktop now (R9), before anything on the desktop can prune it.
+		s.pullAfterOutcome(note.Kind, desktopID, taskID, execID)
+	}
+
+	// An outcome for a task that is not open here (it ended, or is not this desktop's) is refused, with nothing
+	// shown: it must not close another task, and a resent copy must not land in the chat again. A 4xx is the
+	// desktop's sign to let it go (messaging.resend_unsent drops a refused outcome) - review 2026-11-03, C-01/L-03.
+	if err == nil && named != "" && taskID == "" {
+		log.Printf("querytext from %s: task %s is not open, so its %s outcome was refused", desktopID, named, note.Kind)
+		jsonStatusError(w, http.StatusConflict, "That task is not open on this desktop, so this outcome was not recorded.")
+		return
+	}
+
+	if !req.Quiet && note.Kind != tasks.OutcomeDone {
+		s.QueryNotes.Add(note)
 	}
 
 	if chatText != "" {
@@ -222,6 +282,10 @@ func outcomeKindFor(reported, chatKind string) string {
 		return tasks.OutcomeError
 	case "final", "message":
 		return tasks.OutcomeDone
+	case "":
+	default:
+		// A kind this control plane does not know is not a success it can record: a person looks at it.
+		return tasks.OutcomeQuery
 	}
 
 	switch chatKind {
@@ -251,6 +315,8 @@ type queryNoteView struct {
 	querynotes.QueryNote
 	Task    string `json:"task,omitempty"`
 	Message string `json:"message,omitempty"`
+	// Gated says the desktop's approval gate worded this approval: a button bound to it (note_id) can grant it.
+	Gated bool `json:"gated,omitempty"`
 }
 
 // viewQueryNotes adds each note's task and message, read out of its text so
@@ -258,7 +324,7 @@ type queryNoteView struct {
 func viewQueryNotes(notes []querynotes.QueryNote) []queryNoteView {
 	views := make([]queryNoteView, 0, len(notes))
 	for _, note := range notes {
-		views = append(views, queryNoteView{QueryNote: note, Task: note.Task(), Message: note.Message()})
+		views = append(views, queryNoteView{QueryNote: note, Task: note.Task(), Message: note.Message(), Gated: note.GateRequest != ""})
 	}
 	return views
 }
@@ -307,11 +373,7 @@ func (s *Server) dashboardPostsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Web.RenderQueryNotesDashboard(w, data); err != nil {
-		http.Error(
-			w,
-			err.Error(),
-			http.StatusInternalServerError,
-		)
+		internalError(w, "queries dashboard", err)
 		return
 	}
 }
@@ -327,4 +389,14 @@ func cachedWithin(cached, input *int64) *int64 {
 		return &v
 	}
 	return cached
+}
+
+// withGateQuestion is an approval's text with the gate's own question first and the worker's words after it, marked as
+// the worker's (or the gate's words alone when the worker's only repeat them).
+func withGateQuestion(question, worker string) string {
+	worker = strings.TrimSpace(worker)
+	if worker == "" || strings.Join(strings.Fields(worker), " ") == question {
+		return question
+	}
+	return question + "\n\nThe worker's note: " + worker
 }

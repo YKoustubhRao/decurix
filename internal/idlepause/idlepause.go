@@ -50,7 +50,7 @@ type Checker struct {
 	Tasks     ActivityStore
 	Threshold time.Duration
 	Interval  time.Duration // defaultInterval if zero
-	Action    string        // "pause" (freeze at 0% CPU) or "stop" (default)
+	Action    string        // "stop", or anything else: "pause" (freeze at 0% CPU, the default)
 
 	// now is the test seam - defaults to time.Now.
 	now func() time.Time
@@ -94,8 +94,12 @@ func (c *Checker) Run(ctx context.Context) {
 	}
 }
 
-// sweep checks every running desktop, up to sweepConcurrency at once.
+// sweep checks every running desktop, up to sweepConcurrency at once, after closing the tasks of desktops that are
+// gone (gone.go).
 func (c *Checker) sweep(ctx context.Context) {
+	if g, ok := c.Desktops.(DesktopGone); ok {
+		closeGone(ctx, g, c.Tasks, false)
+	}
 	desktops, err := c.Desktops.List(ctx)
 	if err != nil {
 		log.Printf("idlepause: listing desktops: %v", err)
@@ -151,11 +155,26 @@ func (c *Checker) checkOne(ctx context.Context, d desktop.Desktop) {
 	c.idleOut(ctx, d.ID, idleSince, "", "")
 }
 
+// DesktopLocker is the per-desktop lifecycle lock (desktop.Manager.LockDesktop): held from the last look at whether a
+// desktop is busy to the pause or stop, so a task delivered meanwhile is never frozen (B-23).
+type DesktopLocker interface {
+	LockDesktop(id string) (unlock func())
+}
+
 // idleOut pauses or stops (per Action) an idle desktop, logging it with prefix before the verb and why after the id.
+// Under the desktop's lifecycle lock it asks once more whether the desktop is busy, and leaves it if it now is.
 func (c *Checker) idleOut(ctx context.Context, id string, idleSince time.Time, prefix, why string) {
-	verb, act := "stopping", c.Desktops.Stop
-	if c.Action == "pause" {
-		verb, act = "pausing", c.Desktops.Pause
+	if l, ok := c.Desktops.(DesktopLocker); ok {
+		defer l.LockDesktop(id)()
+	}
+	if reason, err := c.Tasks.Busy(id); err != nil || reason != "" {
+		return
+	}
+	// Only an explicit "stop" stops; anything else, a typo included, pauses (B-37): a stop ends the agent's work in
+	// memory, a pause keeps it.
+	verb, act := "pausing", c.Desktops.Pause
+	if c.Action == "stop" {
+		verb, act = "stopping", c.Desktops.Stop
 	}
 	log.Printf("idlepause: %s%s %s%s - idle since %s", prefix, verb, id, why, idleSince.Format(time.RFC3339))
 	if err := act(ctx, id); err != nil {

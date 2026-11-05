@@ -1,13 +1,14 @@
 import os
 import re
 
-from decurix_agent import config, progress, state
+from decurix_agent import config, gated_command, progress, state
 from decurix_agent.commands import dangerous_reason, run_command
 from decurix_agent.computer import approval
 from decurix_agent.logging_utils import log, log_banner
 from decurix_agent.messaging import (
     ask_for_query,
     backend_failure_note,
+    withheld,
     write_final_reply,
 )
 from decurix_agent.ollama_client import (
@@ -682,19 +683,34 @@ def compact_history(history, max_recent=MAX_RECENT_FULL_TURNS, max_chars=MAX_HIS
     Crucially, avoid eagerly mutating history when total prompt characters are
     well within context limits. Mutating earlier messages destroys llama.cpp's
     KV prefix cache, turning ~0.5s cached turns into ~30s full-prompt evaluations on CPU.
+
+    Size decides, whatever the number of turns: twelve turns of 4,000-character outputs are past num_ctx, and Ollama
+    then drops the oldest messages - the task itself first (ask_agent sends it before the history). Review 2026-11-03
+    (E-32): a history of up to twelve turns was returned whole however large. Old outputs are cut first; the newest
+    turns are cut only when that is not enough, and the last exchange is always kept whole. The task message is not
+    in `history` and is never touched.
     """
-    if len(history) <= max_recent * 2:
+    total_chars = _chars(history)
+    if total_chars <= max_chars and (len(history) <= max_recent * 2 or max_recent >= MAX_RECENT_FULL_TURNS):
+        # Within budget: the exact history, to keep the KV cache prefix intact.
         return history
 
-    total_chars = sum(len(m.get("content", "")) for m in history)
-    # If using default max_recent and character count is well within safety budget,
-    # preserve the exact history to keep KV cache prefix intact.
-    if total_chars <= max_chars and max_recent >= MAX_RECENT_FULL_TURNS:
-        return history
+    keep = min(max_recent * 2, len(history))
+    compacted = _compact_before(history, len(history) - keep)
+    while _chars(compacted) > max_chars and keep > 2:
+        keep -= 2
+        compacted = _compact_before(history, len(history) - keep)
+    return compacted
 
-    cutoff = len(history) - (max_recent * 2)
+
+def _chars(history):
+    return sum(len(m.get("content", "")) for m in history)
+
+
+def _compact_before(history, cutoff):
+    """history with each command output before index `cutoff` cut to OLD_COMMAND_OUTPUT_CHARS."""
+
     compacted = []
-
     for i, msg in enumerate(history):
         if i >= cutoff or msg.get("role") != "user":
             compacted.append(msg)
@@ -774,6 +790,9 @@ def pause_for_screen_approval(command, result):
 # A shell command stopped by commands.dangerous_reason, waiting on a person:
 # run once if they say yes, dropped if they do not.
 _pending_dangerous_command = None
+# On a desktop with an approval gate: the held command as the gate holds it (gated_command.material), so the yes is the
+# gate's, never this process's reading (review 2026-11-03, F-09).
+_pending_gate_material = None
 
 
 def pause_for_dangerous_command(command, reason):
@@ -785,9 +804,26 @@ def pause_for_dangerous_command(command, reason):
     ask is not a pause.
     """
 
-    global _pending_dangerous_command
+    global _pending_dangerous_command, _pending_gate_material
 
     log(f"Command held for approval ({reason}): {command}")
+
+    _pending_gate_material = None
+    if gated_command.gated():
+        held = gated_command.material(command, request=state.current_task or "")
+        decided = gated_command.check(held)
+        if decided == "allowed":
+            # The gate held an unused yes for exactly this command, and this check used it: it runs now. Asking
+            # again would burn the person's yes (review 2026-11-03 rework).
+            log("The approval gate already held a yes for this command - running it.")
+            return True
+        if decided == "no gate":
+            # A reply could grant nothing here, so the person is not asked to give one.
+            log("The approval gate did not answer; the held command is not run.")
+            write_final_reply(f"I stopped before running this command, because {reason}:\n\n$ {command}\n\n"
+                              f"{gated_command.NOT_RUN}", kind="error", checked=False, gated=True)
+            return False
+        _pending_gate_material = held
 
     _pending_dangerous_command = command
     progress.emit(f"Held for approval: {command}")
@@ -801,6 +837,7 @@ Reply "yes" to let me run exactly that, or tell me what to do instead.
 """.strip(),
         kind="approval",
     )
+    return False
 
 
 def resume_approved_dangerous_command(history, reply):
@@ -809,10 +846,19 @@ def resume_approved_dangerous_command(history, reply):
     Returns (command, result), or (None, None) when nothing was run.
     """
 
-    global _pending_dangerous_command
+    global _pending_dangerous_command, _pending_gate_material
 
     command = _pending_dangerous_command
     _pending_dangerous_command = None
+    held, _pending_gate_material = _pending_gate_material, None
+
+    if gated_command.gated():
+        # Only the gate makes this yes: asked again for exactly the command it held, it finds the one-shot grant the
+        # person's signed reply made - or nothing runs. Never this process's reading of the reply.
+        if not command or held is None or gated_command.check(held) != "allowed":
+            return None, None
+        log("The approval gate granted the held command - running it now.")
+        return _run(history, command)
 
     # A catastrophic command is released only by a clean yes: "yes but not
     # that one" is a person changing their mind, not permission - and "yes,
@@ -876,13 +922,14 @@ def resume_approved_screen_action(history):
 
 
 def perform_task(task, task_file):
-    global _pending_gui_command, _pending_dangerous_command
+    global _pending_gui_command, _pending_dangerous_command, _pending_gate_material
 
     state.begin(task, task_file)
     _pending_gui_command = None
     _pending_dangerous_command = None
+    _pending_gate_material = None
 
-    log_banner("STARTING TASK", task)
+    log_banner("STARTING TASK", withheld(task))
 
     history = []
 
@@ -1053,8 +1100,8 @@ def perform_task(task, task_file):
             danger = dangerous_reason(command)
 
             if danger:
-                pause_for_dangerous_command(command, danger)
-                return
+                if not pause_for_dangerous_command(command, danger):
+                    return
 
             target = overwrite_target(task, command)
 
@@ -1135,7 +1182,7 @@ def continue_after_query(query_response):
 
     state.waiting_for_query = False
 
-    log_banner("RECEIVED HUMAN REPLY TO QUERY", query_response)
+    log_banner("RECEIVED HUMAN REPLY TO QUERY", withheld(query_response))
 
     # Continue the same task with the human's
     # response appended as context.
@@ -1256,8 +1303,8 @@ def continue_after_query(query_response):
             danger = dangerous_reason(value)
 
             if danger:
-                pause_for_dangerous_command(value, danger)
-                return
+                if not pause_for_dangerous_command(value, danger):
+                    return
 
             target = overwrite_target(task, value)
 

@@ -221,6 +221,15 @@ func TestLargestAmount(t *testing.T) {
 		{"Rs. 4,000 owed", f(4000)},
 		{"send the report to the team on 27/10", nil},
 		{"delete 3 files", nil},
+		// A tax code is no currency and a rate is never an amount; Indian grouping and lakh/crore are amounts.
+		{"Pay 4,50,000 incl GST 18%", f(450000)},
+		{"Pay 12,34,56,789 to the vendor", f(123456789)},
+		{"Pay ₹4.5 lakh to the vendor", f(450000)},
+		{"Pay Rs 2 crore, fee Rs 500", f(20000000)},
+		{"Pay ₹5L now", f(500000)},
+		{"Pay Rs. 1.2 Cr", f(12000000)},
+		{"GST 18% on the bill", nil},
+		{"Rs.78 paid", f(78)},
 	}
 	for _, c := range cases {
 		got := LargestAmount(c.text)

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/withhold"
 )
 
 // WorkerMemoryEntry stores a reusable workflow or decision learned while a desktop worker was operating.
@@ -47,6 +48,9 @@ var schema = []string{
 		PRIMARY KEY (worker_a, worker_b)
 	)`,
 	`CREATE INDEX IF NOT EXISTS worker_memory_desktop_title ON worker_memory (desktop_id, title)`,
+	// The newest entries of every desktop (List with no desktop) were read by a scan and a sort of the whole table
+	// (resource plan P1 #6).
+	`CREATE INDEX IF NOT EXISTS worker_memory_created ON worker_memory (created_ns)`,
 }
 
 // Store is a SQLite-backed collection of WorkerMemoryEntry, keyed by desktop ID.
@@ -106,6 +110,8 @@ func nextEntryID() string {
 // If an identical (desktop_id, title, summary) entry already exists, its timestamp
 // and category are refreshed and the existing entry is returned to prevent prompt bloat.
 func (s *Store) Record(desktopID, title, summary, category string) (WorkerMemoryEntry, error) {
+	// A value held for its owner's life (a desktop's screen password) is withheld as the desktop may have written it.
+	title, summary = withhold.Known(title), withhold.Known(summary)
 	if strings.TrimSpace(desktopID) == "" {
 		return WorkerMemoryEntry{}, fmt.Errorf("%w: desktop_id is required", ErrInvalid)
 	}
@@ -187,20 +193,24 @@ func (s *Store) Record(desktopID, title, summary, category string) (WorkerMemory
 // history grows instead of materializing every entry ever recorded.
 const maxListedEntries = 2000
 
-// List returns worker memory entries, most recent first, up to
-// maxListedEntries. When desktopID is empty, entries for every desktop are
-// returned.
-func (s *Store) List(desktopID string) []WorkerMemoryEntry {
+// listQuery is the SELECT List runs, and its arguments: one desktop's entries, or every desktop's for "", newest
+// first, at most maxListedEntries (the index test checks the plan of exactly this).
+func listQuery(desktopID string) (string, []any) {
 	query := `SELECT id, desktop_id, title, summary, category, created_ns FROM worker_memory`
 	args := []any{}
-
 	if desktopID != "" {
 		query += ` WHERE desktop_id = ?`
 		args = append(args, desktopID)
 	}
-
 	query += ` ORDER BY created_ns DESC LIMIT ?`
-	args = append(args, maxListedEntries)
+	return query, append(args, maxListedEntries)
+}
+
+// List returns worker memory entries, most recent first, up to
+// maxListedEntries. When desktopID is empty, entries for every desktop are
+// returned.
+func (s *Store) List(desktopID string) []WorkerMemoryEntry {
+	query, args := listQuery(desktopID)
 
 	entries := make([]WorkerMemoryEntry, 0)
 

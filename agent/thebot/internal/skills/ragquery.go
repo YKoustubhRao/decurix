@@ -68,7 +68,7 @@ func (q *RAGQuerySkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	}
 
 	prompt := fmt.Sprintf("Answer using ONLY the real indexed excerpts below - always name the actual file path(s) the answer comes from. Do not invent content that isn't shown.\n\nRequest: %s\n\nReal indexed excerpts:\n%s", subtask.Step, excerpts.String())
-	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{rc.SystemMessage(), {Role: "user", Content: prompt}}, llm.Options{TimeoutMs: 120000})
+	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{rc.SystemMessage(), {Role: "user", Content: prompt}}, llm.Options{TimeoutMs: 120000, Purpose: llm.PurposeRAG})
 	if err != nil {
 		return Result{
 			Subtask: subtask, SkillName: q.Name(),
@@ -81,6 +81,6 @@ func (q *RAGQuerySkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		Subtask: subtask, SkillName: q.Name(),
 		Output:   resp.Text,
 		Verified: true,
-		Meta:     map[string]any{"matches": len(results), "sources": sources, "userFacing": true},
+		Meta:     map[string]any{"matches": len(results), "sources": sources, "userFacing": true, MetaModelReply: true},
 	}, nil
 }

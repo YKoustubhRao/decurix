@@ -1,5 +1,5 @@
 """
-CR (round 5 P2 on pc3, 2026-10-20, run 5dd27a2c): "Enter every approved order in the portal and log entries" was
+CR (round 5 P2, 2026-10-20, run 5dd27a2c): "Enter every approved order in the portal and log entries" was
 reported done, "checked by reading the files back" - the portal had no order and the run no screen action; the worker
 had written a log claiming the entries (its instruction had been restated after an answer as only "Include Cafe Bloom
 ... Exclude Harbour ..."). A record entered in a system is done only with that system's own evidence from the tools.
@@ -96,7 +96,7 @@ class SystemEntry(unittest.TestCase):
                                                              record=([], ""))), 1)
 
     def test_only_the_stages_own_order_to_enter_makes_it_an_entry_stage(self):
-        # Round 5 P2 on pc3 (2026-10-21): stage 1's own text, refused twice for entering nothing.
+        # Round 5 P2 (2026-10-21): stage 1's own text, refused twice for entering nothing.
         stage1 = {"id": "s1", "title": "Extract every order line and pricing basis into a working workbook",
                   "instruction": "Read the 4 WhatsApp chat exports ... and create /home/headless/work/P2_orders_19Oct/"
                                  "orders_working.xlsx with a sheet for every order line ... Use the request's order "

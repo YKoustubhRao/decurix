@@ -41,8 +41,10 @@ from decurix_agent.logging_utils import log
 #
 # Several processes append to one session at once - a `gui` command, Claude
 # Code's MCP server, the demonstration recorder - so every change to a
-# session happens under a file lock on it. This module stores what it is
-# given; what it is given has already been through privacy.py.
+# session happens under a file lock on it. What it is given has already been
+# through privacy.py's helpers; every event and every meta still goes through
+# privacy.scrub as it is written, so a caller that forgot one cannot leak
+# (review 2026-11-03: a task's recording was titled with the raw request).
 # ============================================================
 
 ROOT = Path(os.environ.get("DECURIX_RECORDINGS_DIR") or (config.DECURIX_DIR / "recordings"))
@@ -86,6 +88,11 @@ program.json  the recording compiled for replay: its parameters (the text
               checks before it moves on.
 frames/       the screenshots, named by their content. Password fields are
               painted over.
+obs/          what an action was resolved against: the active window's
+              elements (role, name, value, states, box) as JSON, named by
+              the first 16 hex digits of their SHA-256 and stored once; an
+              event names its blob as "obs". A secret field's value is never
+              kept. An event's "turn" is the model turn (soul's) that chose it.
 """
 
 
@@ -112,12 +119,21 @@ def _dir(session_id):
     return ROOT / session_id
 
 
+# How long a writer waits for another holding a session's lock. Found in review (2026-11-03): the wait had no end, so
+# one stuck process (a `gui` command killed mid-write leaves no lock, but a hung one keeps it) stalled every action.
+LOCK_WAIT_SECONDS = float(os.environ.get("DECURIX_RECORDING_LOCK_S", "30"))
+
+
 @contextmanager
 def _locked(directory):
     directory.mkdir(parents=True, exist_ok=True)
 
     with open(directory / ".lock", "w") as lock:
-        filelock.exclusive(lock)
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        while not filelock.try_exclusive(lock):
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"recording {directory.name} is held by another writer")
+            time.sleep(0.02)
         yield
 
 
@@ -128,19 +144,34 @@ def _read_meta(directory):
         return None
 
 
-def write_whole(path, data):
-    """Write `data` (bytes, or text as UTF-8) to `path` at once: to a .tmp file beside it, then moved over it."""
+def write_whole(path, data, json_kw=None):
+    """Write `data` (bytes, text as UTF-8, or what JSON holds) to `path` at once: a temporary file beside it, then
+    moved over it. Text and JSON go through privacy.write_scrubbed (every secret known withheld first - skills.save writes people's run answers
+    and corrections through here, review round 3); bytes through write_bytes_whole."""
+
+    if isinstance(data, bytes):
+        # Bytes that read as text are text: checked like any other, never written through unchecked (review round 5).
+        try:
+            data = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return write_bytes_whole(path, data)
+    privacy.write_scrubbed(path, data, atomic=True, json_kw=json_kw)
+
+
+def write_bytes_whole(path, data):
+    """Bytes at once (a frame, a picture: pixels, password fields painted over by their callers)."""
 
     tmp = path.with_name(path.name + ".tmp")
-    if isinstance(data, bytes):
-        tmp.write_bytes(data)
-    else:
-        tmp.write_text(data, encoding="utf-8")
+    tmp.write_bytes(data)
     tmp.replace(path)
 
 
 def _write_meta(directory, meta):
-    write_whole(directory / "meta.json", json.dumps(meta, ensure_ascii=False, indent=1))
+    """Write a session's meta, through privacy.scrub, and return what was written."""
+
+    meta = privacy.scrub(meta)
+    write_whole(directory / "meta.json", meta, json_kw={"ensure_ascii": False, "indent": 1})
+    return meta
 
 
 def _new_meta(session_id, started_at=None):
@@ -189,7 +220,7 @@ def ensure(session_id, **fields):
                 changed = True
 
         if changed:
-            _write_meta(directory, meta)
+            meta = _write_meta(directory, meta)
 
     if created:
         prune(keep=session_id)
@@ -226,7 +257,7 @@ def update(session_id, **fields):
             if fields.get(key) is not None:
                 meta[key] = fields[key]
 
-        _write_meta(directory, meta)
+        meta = _write_meta(directory, meta)
 
     return meta
 
@@ -305,8 +336,9 @@ def append(session_id, event, before=None, after=None, at=None, defaults=None):
             if not meta.get("screen") and width:
                 meta["screen"] = [width, height]
 
-        with open(directory / "events.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        event = privacy.scrub(event)
+        privacy.write_scrubbed(directory / "events.jsonl", event, append=True,
+                               json_kw={"ensure_ascii": False}, end="\n")
 
         meta["event_count"] += 1
 
@@ -352,13 +384,24 @@ def sessions():
     return found
 
 
-def load(session_id):
-    """(meta, events) of a recording. Raises FileNotFoundError."""
+class Unreadable(ValueError):
+    """A recording that is there and cannot be read whole (strict load): what it held is unknown, never "nothing"."""
+
+
+def load(session_id, strict=False):
+    """
+    (meta, events) of a recording. Raises FileNotFoundError when there is none. `strict` (what the checks read, N-1,
+    review round 4): a meta that is there and cannot be read, an events file that cannot be read, or a line that is no
+    event raises Unreadable - "nothing typed" must never stand in for "could not be read". Otherwise a line cut short by
+    a process killed mid-write is passed over, as the recordings page and replays need.
+    """
 
     directory = _dir(session_id)
     meta = _read_meta(directory)
 
     if meta is None:
+        if strict and (directory / "meta.json").exists():
+            raise Unreadable(f"the recording {session_id} cannot be read")
         raise FileNotFoundError(f"no recording {session_id}")
 
     events = []
@@ -373,9 +416,15 @@ def load(session_id):
                     events.append(json.loads(line))
                 except ValueError:
                     # A line cut short by a process killed mid-write.
+                    if strict:
+                        raise Unreadable(f"the recording {session_id} has a line that is no event") from None
                     continue
     except FileNotFoundError:
         pass
+    except OSError as exc:
+        if strict:
+            raise Unreadable(f"the recording {session_id}'s events cannot be read ({type(exc).__name__})") from exc
+        raise
 
     return meta, events
 
@@ -432,14 +481,24 @@ def _size(meta):
         events = (ROOT / meta["id"] / "events.jsonl").stat().st_size
     except OSError:
         events = 0
-    return (meta.get("frame_bytes") or 0) + events
+    obs = 0
+    try:
+        obs = sum(p.stat().st_size for p in (ROOT / meta["id"] / "obs").glob("*.json"))
+    except OSError:
+        pass
+    return (meta.get("frame_bytes") or 0) + events + obs
 
 
 def prune(keep=None):
     """
     Delete the oldest task and hand-run recordings until what is left fits in
-    MAX_BYTES. Demonstrations are never pruned, and neither is `keep`.
+    MAX_BYTES. Demonstrations are never pruned, and neither is `keep`, nor a
+    labelled run's recording before the control plane exported it
+    (retention.held, W0.8): over budget with only those left, nothing is
+    deleted and that is said.
     """
+
+    from decurix_agent import retention
 
     found = sessions()
     total = sum(_size(meta) for meta in found)
@@ -447,10 +506,15 @@ def prune(keep=None):
     if total <= MAX_BYTES:
         return
 
+    held = 0
     for meta in reversed(found):
         # A task's recording the worker kept as its own way of doing that kind
         # of request (playbooks.py) is kept like a demonstration.
         if meta.get("kind") == "demonstration" or meta.get("proven") or meta["id"] == keep:
+            continue
+        task_id = str(meta.get("task_id") or "") or (meta["id"][5:] if meta["id"].startswith("task-") else "")
+        if retention.held(task_id):
+            held += 1
             continue
 
         size = _size(meta)
@@ -466,6 +530,9 @@ def prune(keep=None):
         total -= size
         if total <= MAX_BYTES:
             return
+
+    if held:
+        retention.warn_kept(held, "recordings")
 
 
 def _parse_time(value):

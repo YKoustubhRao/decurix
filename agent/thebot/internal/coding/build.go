@@ -55,6 +55,7 @@ func codeGenOptions() llm.Options {
 		NumCtx:      codeGenNumCtx,
 		MaxTokens:   codeGenMaxTokens,
 		KeepAlive:   codeGenKeepAlive,
+		Purpose:     llm.PurposeCodingGen,
 	}
 }
 
@@ -107,7 +108,9 @@ func (h *Harness) scaffold(ctx context.Context, r *Runner, d *Design, tc *Toolch
 		// exists changes how every later command addresses Python) and
 		// retry this exact step once.
 		h.refreshEnv(r, env)
-		if retry := r.Run(ctx, cmd, installTimeout); !retry.OK {
+		retry := r.Run(ctx, cmd, installTimeout)
+		h.settleLearning(ctx, retry.OK)
+		if !retry.OK {
 			report.Failures = append(report.Failures, fmt.Sprintf("setup step still failed after a fix: %s", truncate(cmd, 120)))
 		}
 	}
@@ -142,20 +145,7 @@ func (h *Harness) recoverEnvironment(ctx context.Context, r *Runner, d *Design, 
 	}
 
 	h.logf("coding-diagnosis: %s", diag.Cause)
-	for _, fix := range diag.FixCommands {
-		h.logf("coding: applying a real fix: %s", truncate(fix, 120))
-		if res := r.Run(ctx, fix, installTimeout); !res.OK {
-			h.logf("coding: that fix did not work (exit %d)", res.ExitCode)
-			return false
-		}
-	}
-
-	h.fixesApplied = append(h.fixesApplied, strings.Join(diag.FixCommands, " && "))
-	if diag.Learned {
-		h.learnedFixes = append(h.learnedFixes, diag.Cause+" → "+fixSummary(diag))
-		h.Learn(ctx, failure, diag)
-	}
-	return true
+	return h.applyFix(ctx, r, diag, report)
 }
 
 // ------------------------------------------------------------ file builder
@@ -272,6 +262,7 @@ func (h *Harness) writeSourceFile(ctx context.Context, r *Runner, d *Design, tc 
 			break // nothing honest to check - writing it is the whole job
 		}
 		res := r.Run(ctx, check, quickTimeout)
+		h.settleLearning(ctx, res.OK)
 		if res.OK {
 			if attempt > 1 {
 				h.logf("coding: %s compiles now (attempt %d)", spec.Path, attempt)
@@ -293,7 +284,9 @@ func (h *Harness) writeSourceFile(ctx context.Context, r *Runner, d *Design, tc 
 				h.refreshEnv(r, env)
 				// The code may have been fine all along - re-check before
 				// spending an attempt rewriting something that now works.
-				if again := r.Run(ctx, check, quickTimeout); again.OK {
+				again := r.Run(ctx, check, quickTimeout)
+				h.settleLearning(ctx, again.OK)
+				if again.OK {
 					break
 				}
 			}
@@ -343,6 +336,7 @@ func (h *Harness) testFileUntilPassing(ctx context.Context, r *Runner, d *Design
 		h.spend()
 
 		res := r.Run(ctx, tc.UnitTestCmd(d, env, testPath), testTimeout)
+		h.settleLearning(ctx, res.OK)
 		if res.OK {
 			h.logf("coding: ✓ %s - tests pass", testPath)
 			return true
@@ -390,7 +384,13 @@ func (h *Harness) testFileUntilPassing(ctx context.Context, r *Runner, d *Design
 	return false
 }
 
+// applyFix runs diag's fix commands - a proposal only with the person's
+// approval (mayRun) - and reports whether every one exited 0. A researched
+// fix is remembered only after the check it was for passes (awaitCheck).
 func (h *Harness) applyFix(ctx context.Context, r *Runner, diag Diagnosis, report *BuildReport) bool {
+	if !h.mayRun(diag) {
+		return false
+	}
 	for _, fix := range diag.FixCommands {
 		h.logf("coding: applying a real fix: %s", truncate(fix, 120))
 		if res := r.Run(ctx, fix, installTimeout); !res.OK {
@@ -399,10 +399,7 @@ func (h *Harness) applyFix(ctx context.Context, r *Runner, diag Diagnosis, repor
 		}
 	}
 	h.fixesApplied = append(h.fixesApplied, strings.Join(diag.FixCommands, " && "))
-	if diag.Learned {
-		h.learnedFixes = append(h.learnedFixes, diag.Cause+" → "+fixSummary(diag))
-		h.Learn(ctx, diag.Cause, diag)
-	}
+	h.awaitCheck(diag)
 	return true
 }
 
@@ -659,6 +656,7 @@ func (h *Harness) fullSuiteUntilPassing(ctx context.Context, r *Runner, d *Desig
 		h.spend()
 
 		res := r.Run(ctx, tc.FullTestCmd(d, env), testTimeout)
+		h.settleLearning(ctx, res.OK)
 		report.TestOutput = res.Tail(4000)
 		if res.OK {
 			h.logf("coding: ✓ the FULL test suite passes (attempt %d)", attempt)
@@ -840,8 +838,10 @@ func (h *Harness) smokeRun(ctx context.Context, r *Runner, d *Design, env *EnvFa
 
 	switch {
 	case res.ExitCode == 124:
+		report.SmokePassed = true
 		h.logf("coding: ✓ it starts and keeps running (still alive after 20s)")
 	case res.OK:
+		report.SmokePassed = true
 		h.logf("coding: ✓ it ran and exited cleanly")
 	default:
 		h.logf("coding: ✗ it failed to start: %s", truncate(res.Tail(500), 250))

@@ -109,6 +109,15 @@ func Save(dir string, s Saved) error {
 	return os.WriteFile(filepath.Join(dir, SavedFile), raw, 0o600)
 }
 
+// SameControlPlane reports whether a pairing link names the control plane
+// the saved link was paired with (scheme and host alike). Only then may the
+// saved token be sent to it: a link that names another address is paired
+// with the code it carries, so a sign-in never goes to a host it was not made
+// for, nor from https down to http (review 2026-11-03, B-18).
+func SameControlPlane(saved Saved, base string) bool {
+	return saved.Token != "" && saved.Base != "" && strings.EqualFold(strings.TrimRight(saved.Base, "/"), strings.TrimRight(base, "/"))
+}
+
 // Accepted reports whether the control plane at base still accepts token -
 // how a phone given a new link (the tunnel's address changed) keeps its
 // pairing instead of being listed a second time. The gate answers an

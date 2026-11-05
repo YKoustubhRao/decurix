@@ -92,7 +92,7 @@ func (s *Server) tasksPageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Web.RenderTasks(w, data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, "tasks page", err)
 	}
 }
 
@@ -135,7 +135,7 @@ func (s *Server) taskPageHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.Web.RenderTask(w, data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, "task page", err)
 	}
 }
 
@@ -169,10 +169,19 @@ func (s *Server) taskTraceHandler(w http.ResponseWriter, r *http.Request, id str
 		return
 	}
 
-	if err := s.Web.RenderTaskTrace(w, webui.TaskTracePageData{Task: detail}); err != nil {
+	if err := s.Web.RenderTaskTrace(w, webui.TaskTracePageData{Task: detail, RunRecords: !isGated(r) && s.RunStore != nil}); err != nil {
 		log.Printf("task trace: render: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
+}
+
+// taskOfWorker reports whether task is one of worker's tasks in the records: what a desktop may read scoped to a task.
+func (s *Server) taskOfWorker(worker, task string) bool {
+	if s.Tasks == nil || !tasks.ValidID(task) {
+		return false
+	}
+	d, err := s.Tasks.Get(task)
+	return err == nil && d.WorkerID == desktop.SanitizeID(worker)
 }
 
 // maxTaskPicks bounds how many of a desktop's tasks its card's dropdown lists.
@@ -181,14 +190,17 @@ const maxTaskPicks = 50
 // maxTaskPickIDs bounds one /api/desktops/tasks call, like the activity poll.
 const maxTaskPickIDs = 200
 
-// TaskPick is one entry of a dashboard card's task dropdown.
+// TaskPick is one entry of a dashboard card's task dropdown. StatusLabel is the derived outcome's label
+// (tasks.DisplayOutcome), so a done nobody's check judged reads "Done, not checked" there too.
 type TaskPick struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Request     string    `json:"request"`
-	Status      string    `json:"status"`
-	StatusLabel string    `json:"status_label"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string        `json:"id"`
+	Title       string        `json:"title"`
+	Request     string        `json:"request"`
+	Status      string        `json:"status"`
+	StatusLabel string        `json:"status_label"`
+	Checked     *bool         `json:"checked"`
+	Outcome     tasks.Display `json:"outcome"`
+	CreatedAt   time.Time     `json:"created_at"`
 }
 
 // desktopTasksHandler answers GET /api/desktops/tasks?ids=a,b,c with each
@@ -224,7 +236,9 @@ func (s *Server) desktopTasksHandler(w http.ResponseWriter, r *http.Request) {
 				Title:       tasks.ShortTitle(t.Request, webui.ShortTitleRunes),
 				Request:     t.Request,
 				Status:      t.Status,
-				StatusLabel: tasks.StatusLabel(t.Status),
+				StatusLabel: t.Outcome.Label,
+				Checked:     t.Checked,
+				Outcome:     t.Outcome,
 				CreatedAt:   t.CreatedAt,
 			})
 		}
@@ -322,7 +336,14 @@ func (s *Server) taskVerdictHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := s.Tasks.SetVerdict(id, verdict, note)
+	// A verdict is a person's judgement (plan R5): it is stored with who gave it, and a request with nobody to author
+	// it (a desktop's own) is refused.
+	actor, ok := s.actorOf(r)
+	if !ok {
+		jsonStatusError(w, http.StatusForbidden, "a verdict is a person's to give")
+		return
+	}
+	task, err := s.Tasks.SetVerdict(id, verdict, note, actor)
 	if errors.Is(err, tasks.ErrNotFound) {
 		jsonStatusError(w, http.StatusNotFound, "no such task")
 		return

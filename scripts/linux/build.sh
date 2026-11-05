@@ -70,15 +70,21 @@ if [ ! -f .env ]; then
     fi
 fi
 
-# Enable Linux KSM for RAM deduplication if supported
-if [ -d /sys/kernel/mm/ksm ] && ! grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
+# KSM merges identical memory pages across processes - here across desktops
+# that do not trust each other, which is a known page-sharing side channel -
+# and turning it on from here needs a privileged container on every launch.
+# So it is off unless asked for: DECURIX_ENABLE_KSM=1 in the environment or in
+# .env (internal/desktop reads the same switch).
+if [ "${DECURIX_ENABLE_KSM:-$(read_env_var DECURIX_ENABLE_KSM)}" != "1" ]; then
+    echo "KSM stays off (DECURIX_ENABLE_KSM=1 turns it on)."
+elif [ -d /sys/kernel/mm/ksm ] && ! grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
     if [ -w /sys/kernel/mm/ksm/run ]; then
         echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null || true
         echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null || true
         echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null || true
         echo 20 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
     else
-        docker run --rm --privileged -v /sys/kernel/mm/ksm:/sys/kernel/mm/ksm alpine sh -c "echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null; echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null; echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null; echo 20 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null" >/dev/null 2>&1 || true
+        docker run --rm --privileged -v /sys/kernel/mm/ksm:/sys/kernel/mm/ksm alpine:3.20 sh -c "echo 1 > /sys/kernel/mm/ksm/run 2>/dev/null; echo 1 > /sys/kernel/mm/ksm/use_zero_pages 2>/dev/null; echo 1000 > /sys/kernel/mm/ksm/pages_to_scan 2>/dev/null; echo 20 > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null" >/dev/null 2>&1 || true
     fi
 fi
 
@@ -104,7 +110,11 @@ if [ -d /mnt/c ]; then
         powershell.exe -NoProfile -NonInteractive -InputFormat None -Command "Get-StartApps | Select-Object Name, AppID | ConvertTo-Json -Compress" < /dev/null > /tmp/decurix_host_apps.json 2>/dev/null || true
     fi
 else
-    export DECURIX_HOST_MNT_C="/"
+    # No Windows drive here. Never the host's root: the control plane has no login, and its "C:" is what host-file
+    # checks read from - "/" put /etc/shadow and every home folder in reach (review 2026-11-02). An empty folder.
+    DECURIX_HOST_MNT_C="${XDG_CACHE_HOME:-$HOME/.cache}/decurix/no-windows-drive"
+    mkdir -p "$DECURIX_HOST_MNT_C"
+    export DECURIX_HOST_MNT_C
 fi
 export DECURIX_HOST_HOME="${HOME:-/home}"
 
@@ -125,7 +135,7 @@ if ! docker image inspect "$control_plane_image" >/dev/null 2>&1; then
         docker compose build
     fi
 fi
-docker compose up -d --no-build
+docker compose -f docker-compose.yaml ${DECURIX_COMPOSE_OVERRIDE:+-f "$DECURIX_COMPOSE_OVERRIDE"} up -d --no-build
 
 echo ""
 echo "=== Waiting for dashboard ==="
@@ -197,7 +207,8 @@ fi
 echo ""
 echo "=== Starting Cloudflare Tunnel ==="
 
-if ! command -v cloudflared >/dev/null 2>&1; then
+# cloudflared is needed only for the public link, which is off unless DECURIX_PUBLIC_LINK=1 (lib/lan-tunnel.sh).
+if public_link_enabled && ! command -v cloudflared >/dev/null 2>&1; then
     echo "ERROR: cloudflared is not installed."
     echo "Decurix is still running locally at http://127.0.0.1:8080."
     exit 1

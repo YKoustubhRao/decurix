@@ -67,13 +67,14 @@ def wait_for_backend():
     threading.Thread(target=_after_ready, daemon=True, name="after-ready").start()
 
 
-def ask_model(system, prompt):
+def ask_model(system, prompt, *, purpose):
     """
     One question to whichever engine this desktop runs - the reply text, or
     RuntimeError. Not a task: no history, no tools, no query. It is how the
     computer layer's grounder and judge (computer/escalation.py) get a second
     opinion without knowing which engine is behind them. TheBot has no
     single-question endpoint of its own, so it asks the Ollama it already uses.
+    `purpose` names what the question is for (llm_client.chat): required, so no call goes untagged.
     """
 
     # A hosted model, when the control plane has one, answers these for
@@ -83,7 +84,7 @@ def ask_model(system, prompt):
 
     if llm_client.available():
         try:
-            return llm_client.ask_once(system, prompt)
+            return llm_client.ask_once(system, prompt, purpose=purpose)
         except llm_client.LLMError as exc:
             # A desktop whose brain is the hosted model has no local one to
             # fall back to: asking Ollama would load a model nobody chose
@@ -93,7 +94,7 @@ def ask_model(system, prompt):
                 raise RuntimeError(str(exc)) from exc
             # otherwise fall back to this desktop's own engine
 
-    return _ask_once(system, prompt)
+    return _ask_once(system, prompt, purpose=purpose)
 
 
 # Start the next durable stage only after the previous engine call has returned
@@ -116,6 +117,13 @@ def continue_after_query(query_response):
         return _engine_continue_after_query(query_response)
     finally:
         workflow_task.engine_returned()
+
+
+def drives_screen_with_hosted_model():
+    """Whether this desktop's engine does screen work with a hosted model: TheBot on a hosted brain, or the Office
+    engine (skill_task asks, so that only this file branches on the harness)."""
+
+    return (config.AGENT_HARNESS == "thebot" and bool(config.HOSTED_BRAIN)) or config.AGENT_HARNESS == "azure"
 
 
 def cancel_running():

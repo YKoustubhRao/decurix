@@ -1,0 +1,71 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "payee-shared-tail-slip",
+  "category": "varied",
+  "kind": "sheet_to_record",
+  "request": "Add the payee Fenwick Haulage Services, with its bank and account number from ~/work/practice/payee-shared-tail-slip/payees.xlsx, to the Records app (http://records.example.test/payees/new).",
+  "start": {
+    "files": [
+      "payees.xlsx"
+    ],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "mock_records",
+        "collection": "payees",
+        "exact_count": true,
+        "records": [
+          {
+            "name": {
+              "text": "Fenwick Haulage Services"
+            },
+            "bank": {
+              "text": "Quillon Cooperative Bank"
+            },
+            "account": {
+              "id": "927731551029384756"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "oracle": [
+    "office read payees.xlsx | grep -q 927731551029384756",
+    "python3 -I -c 'import sys; sys.path.insert(0, \"/opt\"); from decurix_agent import task_context; task_context.start(sys.argv[1], sys.argv[2])' \"$DECURIX_TASK_ID\" \"Add the payee Fenwick Haulage Services, with its bank and account number from ~/work/practice/payee-shared-tail-slip/payees.xlsx, to the Records app (http://records.example.test/payees/new).\"",
+    "gui open http://records.example.test/payees/new",
+    {
+      "sleep": 3
+    },
+    "gui type 'textbox \"Name\"' 'Fenwick Haulage Services'",
+    "gui type 'textbox \"Bank\"' 'Quillon Cooperative Bank'",
+    "gui type 'textbox \"Account number\"' 618204551029384756",
+    "ok=; for i in 1 2 3 4; do if gui click 'button \"Save payee\"' --checked; then ok=1; break; fi; sleep 1; done; [ -n \"$ok\" ]; true",
+    {
+      "sleep": 2
+    },
+    "curl $MOCK_ROUTE -fsS -o payees-now.html http://records.example.test/payees && ! grep -q 618204551029384756 payees-now.html && rm -f payees-now.html",
+    "gui open http://records.example.test/payees/new",
+    {
+      "sleep": 3
+    },
+    "gui type 'textbox \"Name\"' 'Fenwick Haulage Services'",
+    "gui type 'textbox \"Bank\"' 'Quillon Cooperative Bank'",
+    "gui type 'textbox \"Account number\"' 927731551029384756",
+    "ok=; for i in 1 2 3 4; do if gui click 'button \"Save payee\"' --checked; then ok=1; break; fi; sleep 1; done; [ -n \"$ok\" ]",
+    {
+      "sleep": 2
+    },
+    "gui verify --text Saved"
+  ],
+  "tags": [
+    "long-number",
+    "mechanism",
+    "slip-probe"
+  ]
+}

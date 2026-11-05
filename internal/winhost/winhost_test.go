@@ -579,7 +579,17 @@ func TestScriptIsEmbedded(t *testing.T) {
 	if !strings.Contains(string(Script), "Initialize-PrivateBrowserProfile") ||
 		!strings.Contains(string(Script), `Google\Chrome\User Data`) ||
 		!strings.Contains(string(Script), ".decurix-host-profile-imported") {
-		t.Fatal("bridge.ps1 must seed a private Chrome profile from the host user's signed-in profile")
+		t.Fatal("bridge.ps1 lost the private Chrome profile setup")
+	}
+	// The person's own browser profile (cookies, saved passwords, the key they are encrypted with) is never copied
+	// into a browser a worker drives unless this computer's owner opted in (review 2026-11-02).
+	src := string(Script)
+	i := strings.Index(src, "function Initialize-PrivateBrowserProfile(")
+	head := src[i:min(len(src), i+1500)]
+	optIn := strings.Index(head, "if ($env:DECURIX_IMPORT_HOST_BROWSER_PROFILE -ne '1') { return }")
+	copyAt := strings.Index(head, "robocopy")
+	if optIn < 0 || (copyAt >= 0 && copyAt < optIn) {
+		t.Fatal("bridge.ps1 must not import the host's browser profile without the explicit opt-in")
 	}
 }
 

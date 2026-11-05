@@ -384,8 +384,9 @@ func explain(s Selection, r Resources) string {
 	case !s.Fits:
 		return fmt.Sprintf("Nothing fits comfortably in %s; %s is the smallest usable model.", where, s.Model.Name)
 	case s.OnGPU:
-		return fmt.Sprintf("Smartest model that fits %s (80%% of what is free).", where)
+		return fmt.Sprintf("Smartest model that fits %s (%.0f%% of what is free).", where, BudgetFraction()*100)
 	}
 
-	return fmt.Sprintf("Smartest model that fits %s (80%% of what is free), ~%.0f tokens/s.", where, s.TPS)
+	// The share is the one Choose used (BudgetFraction), not a number written here (C-21).
+	return fmt.Sprintf("Smartest model that fits %s (%.0f%% of what is free), ~%.0f tokens/s.", where, BudgetFraction()*100, s.TPS)
 }

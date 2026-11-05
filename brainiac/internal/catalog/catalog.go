@@ -124,6 +124,9 @@ type Runtime struct {
 	// llama-server is used; the tag is pinned, never "latest".
 	LlamaCppRepo string `json:"llamacpp_repo"`
 	LlamaCppTag  string `json:"llamacpp_tag"`
+	// LlamaCppSHA256 are the release assets' sha256 by asset name, from a
+	// signed catalog; GitHub's own digest is used when an asset has none here.
+	LlamaCppSHA256 map[string]string `json:"llamacpp_sha256,omitempty"`
 }
 
 // Model is one model, with every way to get it.
@@ -178,7 +181,10 @@ type Source struct {
 	// and the commit is written to the lock file.
 	Revision string `json:"revision,omitempty"`
 	// Asset is the GitHub release asset; Unpack says it is an archive.
-	Asset  string `json:"asset,omitempty"`
+	Asset string `json:"asset,omitempty"`
+	// SHA256 pins a GitHub asset's content. Without it the release's own
+	// digest is required: an asset neither vouches for is not downloaded.
+	SHA256 string `json:"sha256,omitempty"`
 	Unpack bool   `json:"unpack,omitempty"`
 	// Files are the files the runtime is given, by role ("model", "mmproj",
 	// "encoder", "decoder", "joiner", "tokens", "vad"...). For an unpacked

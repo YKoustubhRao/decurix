@@ -65,8 +65,10 @@ func New() *Client {
 	return c
 }
 
-func (c *Client) client() *http.Client {
-	dialer := &net.Dialer{Timeout: 10 * time.Second, Control: func(network, address string, _ syscall.RawConn) error {
+// dialer dials only addresses the browser may read, checked on the address
+// actually dialed.
+func (c *Client) dialer() *net.Dialer {
+	return &net.Dialer{Timeout: 10 * time.Second, Control: func(network, address string, _ syscall.RawConn) error {
 		if c.AllowPrivate {
 			return nil
 		}
@@ -79,7 +81,10 @@ func (c *Client) client() *http.Client {
 		}
 		return nil
 	}}
-	tr := &http.Transport{DialContext: dialer.DialContext, TLSHandshakeTimeout: 10 * time.Second,
+}
+
+func (c *Client) client() *http.Client {
+	tr := &http.Transport{DialContext: c.dialer().DialContext, TLSHandshakeTimeout: 10 * time.Second,
 		ResponseHeaderTimeout: 20 * time.Second, MaxIdleConnsPerHost: 4, IdleConnTimeout: 60 * time.Second}
 	return &http.Client{Transport: tr, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {

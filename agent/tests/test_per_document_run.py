@@ -151,7 +151,7 @@ class APerDocumentRun(unittest.TestCase):
 
     def test_a_trusted_skill_replays_without_the_plan(self):
         for _ in range(experience.TRUST_AFTER):
-            experience.note_verdict(self.skill, "replay", True, checked_by="screen")
+            experience.note_verdict(self.skill, "replay", True, checked_by="screen", basis=["screen", "ledger"])
         run = self.run_for()
         run["gathered"], run["files_before"] = "started", {}
         self.gathered(run)

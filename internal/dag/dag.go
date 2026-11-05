@@ -52,6 +52,15 @@ const (
 // ErrNotFound is returned for a DAG, node, edge or run that does not exist.
 var ErrNotFound = errors.New("dag: not found")
 
+// InputError is an edit the store refused, with a reason for the person (a missing name, a cycle, a run still using a
+// node): the only DAG error the HTTP side shows as it is.
+type InputError struct{ Msg string }
+
+func (e *InputError) Error() string { return "dag: " + e.Msg }
+
+// refuse is an InputError.
+func refuse(format string, a ...any) error { return &InputError{Msg: fmt.Sprintf(format, a...)} }
+
 // nodeNamePattern is what a node's Name must match: charset-restricted so
 // {{nodes.<name>.reply}} always parses unambiguously.
 var nodeNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -243,7 +252,7 @@ func validateNodeName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 
 	if !nodeNamePattern.MatchString(name) {
-		return "", fmt.Errorf("dag: node name must be 1-64 characters of letters, digits, - or _")
+		return "", refuse("node name must be 1-64 characters of letters, digits, - or _")
 	}
 
 	return name, nil
@@ -275,7 +284,7 @@ const dagColumns = `id, name, head_node_id, cron_expr, next_run_ns, last_run_ns,
 func (s *Store) Create(name string) (DAG, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return DAG{}, fmt.Errorf("dag: name is required")
+		return DAG{}, refuse("name is required")
 	}
 
 	now := s.clock()
@@ -456,7 +465,7 @@ func (s *Store) AddNode(dagID, name, desktopID, content string) (Node, error) {
 
 	desktopID = strings.TrimSpace(desktopID)
 	if desktopID == "" {
-		return Node{}, fmt.Errorf("dag: desktop id is required")
+		return Node{}, refuse("desktop id is required")
 	}
 
 	tx, err := s.db.Begin()
@@ -478,7 +487,7 @@ func (s *Store) AddNode(dagID, name, desktopID, content string) (Node, error) {
 		return Node{}, fmt.Errorf("dag: add node: %w", err)
 	}
 	if dup > 0 {
-		return Node{}, fmt.Errorf("dag: a node named %q already exists in this DAG", name)
+		return Node{}, refuse("a node named %q already exists in this DAG", name)
 	}
 
 	now := s.clock()
@@ -522,7 +531,7 @@ func (s *Store) UpdateNode(id, name, desktopID, content string) (Node, error) {
 
 	desktopID = strings.TrimSpace(desktopID)
 	if desktopID == "" {
-		return Node{}, fmt.Errorf("dag: desktop id is required")
+		return Node{}, refuse("desktop id is required")
 	}
 
 	var dagID string
@@ -540,7 +549,7 @@ func (s *Store) UpdateNode(id, name, desktopID, content string) (Node, error) {
 		return Node{}, fmt.Errorf("dag: update node: %w", err)
 	}
 	if dup > 0 {
-		return Node{}, fmt.Errorf("dag: a node named %q already exists in this DAG", name)
+		return Node{}, refuse("a node named %q already exists in this DAG", name)
 	}
 
 	if _, err := s.db.Exec(
@@ -593,7 +602,7 @@ func (s *Store) DeleteNode(id string) error {
 		return fmt.Errorf("dag: delete node: %w", err)
 	}
 	if live > 0 {
-		return fmt.Errorf("dag: a run in progress is still using this node - wait for it to finish before deleting it")
+		return refuse("a run in progress is still using this node - wait for it to finish before deleting it")
 	}
 
 	if _, err := tx.Exec(`DELETE FROM dag_nodes WHERE id = ?`, id); err != nil {
@@ -618,7 +627,7 @@ func (s *Store) SetHead(dagID, nodeID string) (DAG, error) {
 		return DAG{}, fmt.Errorf("dag: set head: %w", err)
 	}
 	if owner != dagID {
-		return DAG{}, fmt.Errorf("dag: that node does not belong to this DAG")
+		return DAG{}, refuse("that node does not belong to this DAG")
 	}
 
 	var incoming int
@@ -626,7 +635,7 @@ func (s *Store) SetHead(dagID, nodeID string) (DAG, error) {
 		return DAG{}, fmt.Errorf("dag: set head: %w", err)
 	}
 	if incoming > 0 {
-		return DAG{}, fmt.Errorf("dag: a node with an incoming edge cannot be the head - remove that edge first")
+		return DAG{}, refuse("a node with an incoming edge cannot be the head - remove that edge first")
 	}
 
 	if _, err := s.db.Exec(
@@ -679,11 +688,11 @@ func (s *Store) AddEdge(dagID, from, to string) (Edge, error) {
 	to = strings.TrimSpace(to)
 
 	if from == "" || to == "" {
-		return Edge{}, fmt.Errorf("dag: both ends of an edge are required")
+		return Edge{}, refuse("both ends of an edge are required")
 	}
 
 	if from == to {
-		return Edge{}, fmt.Errorf("dag: a node cannot depend on itself")
+		return Edge{}, refuse("a node cannot depend on itself")
 	}
 
 	tx, err := s.db.Begin()
@@ -701,7 +710,7 @@ func (s *Store) AddEdge(dagID, from, to string) (Edge, error) {
 	}
 
 	if to == head {
-		return Edge{}, fmt.Errorf("dag: the head node cannot have an incoming edge")
+		return Edge{}, refuse("the head node cannot have an incoming edge")
 	}
 
 	for _, nodeID := range [2]string{from, to} {
@@ -713,7 +722,7 @@ func (s *Store) AddEdge(dagID, from, to string) (Edge, error) {
 			return Edge{}, fmt.Errorf("dag: add edge: %w", err)
 		}
 		if owner != dagID {
-			return Edge{}, fmt.Errorf("dag: both nodes must belong to this DAG")
+			return Edge{}, refuse("both nodes must belong to this DAG")
 		}
 	}
 
@@ -724,12 +733,12 @@ func (s *Store) AddEdge(dagID, from, to string) (Edge, error) {
 
 	for _, e := range edges {
 		if e.FromNodeID == from && e.ToNodeID == to {
-			return Edge{}, fmt.Errorf("dag: that edge already exists")
+			return Edge{}, refuse("that edge already exists")
 		}
 	}
 
 	if reaches(edges, to, from) {
-		return Edge{}, fmt.Errorf("dag: that edge would create a cycle")
+		return Edge{}, refuse("that edge would create a cycle")
 	}
 
 	now := s.clock()
@@ -814,7 +823,7 @@ func (s *Store) DeleteEdge(id string) error {
 		return fmt.Errorf("dag: delete edge %s: %w", id, err)
 	}
 	if live > 0 {
-		return fmt.Errorf("dag: a run in progress is still waiting on this edge's node - wait for it to finish before deleting it")
+		return refuse("a run in progress is still waiting on this edge's node - wait for it to finish before deleting it")
 	}
 
 	if _, err := tx.Exec(`DELETE FROM dag_edges WHERE id = ?`, id); err != nil {
@@ -865,7 +874,7 @@ func (s *Store) SetCron(dagID, cronExpr string) (DAG, error) {
 
 	expr, err := schedule.Parse(cronExpr)
 	if err != nil {
-		return DAG{}, err
+		return DAG{}, refuse("%v", err) // the parser's reason is the person's to read
 	}
 
 	next, ok := expr.Next(now)

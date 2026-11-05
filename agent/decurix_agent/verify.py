@@ -76,8 +76,8 @@ JUDGE_SYSTEM = (
     "were asked for.\n"
     "When the task names a document and you are shown what it says, the values entered or reported must be the "
     "document's: a value that is not in it, or differs from it, is \"not_done\" - except that a thing the document describes is entered as the application's own record of the same "
-    "thing, whose name is usually shorter or worded differently (a document's \"Executive A4 Printing Paper 75 GSM "
-    "(Box of 10 Reams)\" is the record \"A4 Printing Paper\"): that is the value entered correctly. Only a record for a "
+    "thing, whose name is usually shorter or worded differently (a document's \"Premium Ruled Notebook A5, 200 Pages "
+    "(Pack of 6)\" is the record \"A5 Notebook\"): that is the value entered correctly. Only a record for a "
     "different thing is a mismatch. The same value written in its field's format (a date in the field's own order, "
     "thousands separators, a currency) is not a difference: judge the value, not its format.\n"
     "A rule about HOW to work (look for an existing record first, compare before saving) is a step of the method: judge "
@@ -118,11 +118,104 @@ def available():
     return llm_client.available()
 
 
+# ============================================================
+# The one decision: what a check's result lets a report say
+#
+# Every route that reports work - a planned stage and its run's final report, the final gate, a workflow stage - maps
+# what its checks found to the report through outcome(), so "done" means the same everywhere and nothing reaches it by
+# default. It fails closed (review 2026-11-02: across the agent, whatever could not be checked - a judge unsure, a
+# model outage, no model at all, a check that raised - went out as "done", checked).
+# ============================================================
+
+UNCHECKED = "unchecked"
+
+
+def outcome(verdict=None, problems=(), not_made=(), error=None):
+    """
+    What a report may say after its checks: {"status", "checked", "kind", "why"}.
+
+    `verdict` is the judge's answer (judge()) or None when no judgement was made; `problems` what a check in code found
+    wrong; `not_made` the checks that could not be made (they raised, a file could not be read); `error` the check
+    itself failing (an exception, an outage). In this order:
+      "not_done"  any problem, or the judge's not_done / cannot: checked=True (a check saw it), kind "error";
+      "unchecked" an error, a check not made, no judgement, unsure, an unknown verdict, or a done whose confidence is
+                  below DONE_CONFIDENCE: checked=False, kind "final" - the task ended with a result nobody could check,
+                  which the control plane records as not done until a person looks (workqueue: "finished without a
+                  checked final report"). Never a success: the caller asks the person, or reports it saying, first,
+                  what was not checked;
+      "done"      only the judge's done (its confidence, when given, at least DONE_CONFIDENCE) with no problem, no
+                  check left unmade and no error: checked=True, kind "final".
+    Also "checks" (decurix.verdict/v1 checks, verdict.check: each problem a failed code check, each check not made,
+    the judge's answer as the model's check, an error as a check not made) and "basis" (the kinds that passed), for the
+    structured verdict the report carries (R6).
+    """
+
+    decided = _outcome(verdict, problems, not_made, error)
+    from decurix_agent import verdict as verdicts
+    checks = [verdicts.check(f"code.{n}", verdicts.FAIL, "code", p)
+              for n, p in enumerate(" ".join(str(p).split()) for p in problems or () if str(p or "").strip())]
+    checks += [verdicts.check(f"not_made.{n}", verdicts.NOT_MADE, "code", t)
+               for n, t in enumerate(" ".join(str(t).split()) for t in not_made or () if str(t or "").strip())]
+    given = verdict if isinstance(verdict, dict) else {}
+    if given:
+        name = str(given.get("verdict") or "").strip().lower()
+        seen = " ".join(str(x) for x in (given.get("seen"), given.get("why")) if x)
+        try:
+            sure = float(given["confidence"]) >= DONE_CONFIDENCE if "confidence" in given else True
+        except (TypeError, ValueError):
+            sure = False
+        # The judge's own answer: a confident done passed, a not done or cannot failed, anything else was not made.
+        judged = (verdicts.PASS if name == DONE and sure else
+                  verdicts.FAIL if name in (NOT_DONE, CANNOT) else verdicts.NOT_MADE)
+        checks.append(verdicts.check("judge", judged, "model", seen))
+    if error is not None:
+        checks.append(verdicts.check("check.error", verdicts.NOT_MADE, "code", str(error)))
+    decided["checks"] = checks[:verdicts.MAX_CHECKS]
+    decided["basis"] = sorted({c["basis"] for c in decided["checks"] if c["result"] == verdicts.PASS})
+    return decided
+
+
+def _outcome(verdict, problems, not_made, error):
+    problems = [" ".join(str(p).split()) for p in problems or () if str(p or "").strip()]
+    if problems:
+        return {"status": NOT_DONE, "checked": True, "kind": "error", "why": "; ".join(problems)[:600]}
+    given = verdict if isinstance(verdict, dict) else {}
+    name = str(given.get("verdict") or "").strip().lower()
+    said = " ".join(str(x) for x in (given.get("seen"), given.get("why")) if x)
+    if name in (NOT_DONE, CANNOT):
+        return {"status": NOT_DONE, "checked": True, "kind": "error", "why": said[:600] or "the check found it not done"}
+    if error is not None:
+        return {"status": UNCHECKED, "checked": False, "kind": "final",
+                "why": f"the check could not be made ({' '.join(str(error).split())[:300]})"}
+    not_made = [" ".join(str(n).split()) for n in not_made or () if str(n or "").strip()]
+    if not_made:
+        return {"status": UNCHECKED, "checked": False, "kind": "final",
+                "why": "not checked - these checks could not be made: " + "; ".join(not_made)[:500]}
+    if name == DONE:
+        try:
+            sure = float(given["confidence"]) >= DONE_CONFIDENCE if "confidence" in given else True
+        except (TypeError, ValueError):
+            sure = False
+        if sure:
+            return {"status": DONE, "checked": True, "kind": "final", "why": said[:600]}
+        return {"status": UNCHECKED, "checked": False, "kind": "final",
+                "why": f"not sure enough that it is done: {said}".strip()[:600]}
+    if not given:
+        return {"status": UNCHECKED, "checked": False, "kind": "final", "why": "no check judged it"}
+    return {"status": UNCHECKED, "checked": False, "kind": "final",
+            "why": str(given.get("why") or said or "the check could not confirm it")[:600]}
+
+
 # A report's own heading for what it did not do ("Left undone:", "**Not done:**").
 _UNDONE_HEAD = re.compile(r"^\s*(?:[*_#>\-\s]*)(left undone|not done|undone|not completed|could not (?:do|complete))"
                           r"(?:[*_\s]*)[:\-]\s*(.*)$", re.I)
-# What under such a heading says that nothing was left.
-_NOTHING_LEFT = re.compile(r"^[\s*_\-.]*(?:none|nothing|n/?a\b|no (?:part|item|step)s?\b|all (?:done|of it)\b)", re.I)
+# What under such a heading says that nothing was left - the WHOLE item, not only how it begins: "None of 3 bills
+# saved" begins with "none" and lists everything as undone (review 2026-11-02: read as "nothing left", the no-model
+# gate passed it). An item that says more than "nothing (was) left" is kept as undone - asked, never passed.
+_NOTHING_LEFT = re.compile(r"^[\s*_\-.]*(?:none|nothing|n/?a|no (?:part|item|step|thing)s?|all (?:done|of it))"
+                           r"(?:\s+(?:was\s+|is\s+|were\s+|are\s+)?(?:left(?:\s+undone)?|undone|remaining|remains|"
+                           r"outstanding|needed|required|necessary))?(?:\s*[-–—:,;(]\s*(?:all|everything)\s+(?:was\s+|is\s+|of it\s+)?"
+                           r"(?:done|completed?|finished|saved))?[\s*_.!)]*$", re.I)
 # A line that opens the next part of a report ("How I verified:").
 _NEXT_HEAD = re.compile(r"^\s*[*_#]*[A-Z][^:\n]{0,60}:\s*$")
 
@@ -175,11 +268,19 @@ def not_found_undone(undone):
 
 
 # A sum written out in a report: "450.00 + 90.00 + 102.60 = 642.60", "$1,200 - 150 = $1,050", "3 x 25.00 = 75.00".
-_AMOUNT = r"(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|(?:[$€£¥]|USD|EUR|GBP|INR|Rs\.?)?\s?-?\d+(?:\.\d+)?"
+# Indian digit grouping (1,00,000; 12,34,567) and the rupee sign are notation, read the same as any other: found
+# (review 2026-11-03) "1,00,000 + 50,000 = 1,60,000" and "₹1,200 + ₹300 = ₹1,600" were never decided.
+_CURRENCY = r"(?:[$€£¥₹]|USD|EUR|GBP|INR|Rs\.?)"
+_INDIAN_GROUPED = r"\d{1,2}(?:,\d{2})+,\d{3}"
+_AMOUNT = (rf"{_CURRENCY}?\s?-?(?:{_INDIAN_GROUPED}|\d{{1,3}}(?:,\d{{3}})+)(?:\.\d+)?"
+           rf"|{_CURRENCY}?\s?-?\d+(?:\.\d+)?")
 # An operator stands on the same line as its terms: a dash that opens the next line is a bullet, not a minus. Found
 # live (2026-10-27): "... 56,994.00\n- 1191 = 55,802.60" (a list of vouchers and their totals) was read as
 # 56,994.00 - 1191 = 55,802.60, "a sum you wrote is wrong", and the worker undid right work.
-_SUM = re.compile(rf"(?<![\w.,/-])((?:{_AMOUNT})(?:[ \t]*[-+×x*@][ \t]*(?:{_AMOUNT}))+)[ \t]*=[ \t]*({_AMOUNT})(?![\w%/.]|,\d)", re.I)
+# A full stop that ends the sentence (then a space or the end) ends the total too: found (review round 2,
+# 2026-11-03) "... = 1143.00." decided nothing. A dot followed by a digit still does (a version, a date, 2.10.3).
+_SUM = re.compile(rf"(?<![\w.,/-])((?:{_AMOUNT})(?:[ \t]*[-+×x*@][ \t]*(?:{_AMOUNT}))+)[ \t]*=[ \t]*({_AMOUNT})"
+                  rf"(?![\w%/]|\.(?!\s|$)|,\d)", re.I)
 # One token of a written sum: an amount (with its currency) or an operator; a product's "x", "×", "*" or "@".
 _SUM_TOKEN = re.compile(rf"[ \t]*(?:({_AMOUNT})|([-+×x*@]))", re.I)
 
@@ -187,7 +288,7 @@ _SUM_TOKEN = re.compile(rf"[ \t]*(?:({_AMOUNT})|([-+×x*@]))", re.I)
 def _sum_terms(left):
     """[amount, op, amount, op, ...] of the left side of a written sum, read token by token - or None when any part of
     it is not an amount or an operator in turn (then the sum is not decided: a blocking fact must be certain). Found live
-    (round 5 P6 on pc3, 2026-10-21): "60 x Rs 35 = Rs 2,100" was read as one number 6035 - the currency's lower-case
+    (2026-10-21): "60 x Rs 35 = Rs 2,100" was read as one number 6035 - the currency's lower-case
     letters fell outside the old split - and a right line was refused twice."""
 
     tokens, pos = [], 0
@@ -223,8 +324,8 @@ _TAX_RATE = re.compile(r"(\d{1,2}(?:\.\d+)?)\s*%")
 def false_item_totals(text):
     """
     Each stated total of a list of "qty @ rate" items that the items do not come to, as a sentence. Found live
-    (2026-10-20, P2): a stage told the person a saved order was wrong because the lines "should total 13129.00 ex tax
-    from WB-500 40 @ 175.75, MUG-12 24 @ 149, NB-A5 30 @ 95" - they come to 13,456.00, the record's own total. A total
+    (2026-10-20): a stage told the person a saved order was wrong because the lines "should total 13129.00 ex tax
+    from AB-100 40 @ 175.75, CD-12 24 @ 149, EF-30 30 @ 95" - they come to 13,456.00, the record's own total. A total
     stated with a tax rate nearby may be with or without it.
     """
 
@@ -291,14 +392,43 @@ def false_sums(text):
         # Rounded to the result's own precision is right: 33.333 + 33.333 = 66.67.
         shown = len(stated.split(".")[1]) if "." in stated else 0
         if abs(total - want) > Decimal(1).scaleb(-shown) / 2 + Decimal("0.0001"):
-            out.append(f"{m.group(0).strip()} is wrong: it comes to {total:,.{places}f}")
+            out.append(f"{m.group(0).strip()} is wrong: it comes to {_currency_of(stated)}"
+                       f"{_written_like(total, places, m.group(0))}")
     return out
+
+
+def _currency_of(stated):
+    """The currency the stated total is written with ("₹", "Rs ", "$"), so the right total is written the same way."""
+
+    m = re.match(r"\s*(" + _CURRENCY + r")(\s?)", stated or "", re.I)
+    return (m.group(1) + m.group(2)) if m else ""
+
+
+def _written_like(total, places, text):
+    """The total in the notation the sum itself used: Indian grouping when the text groups that way."""
+
+    western = f"{total:,.{places}f}"
+    if not re.search(_INDIAN_GROUPED, text):
+        return western
+    sign, rest = ("-", western[1:]) if western.startswith("-") else ("", western)
+    whole, _, frac = rest.partition(".")
+    digits = whole.replace(",", "")
+    head, tail = digits[:-3], digits[-3:]
+    groups = []
+    while len(head) > 2:
+        groups.insert(0, head[-2:])
+        head = head[:-2]
+    if head:
+        groups.insert(0, head)
+    return sign + ",".join(groups + [tail]) + ("." + frac if frac else "")
 
 
 # A number as a program prints it, never as a person writes one: float noise (1672.7400000000002, 0.30000000000000004,
 # 2.9999999999999996) and scientific notation (3E+1, 1.5e-05).
 _FLOAT_NOISE = re.compile(r"(?<![\w.])-?\d+\.\d*(?:0{6,}|9{6,})\d{1,3}(?![\w.])")
-_SCIENTIFIC = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?[eE][+-]?\d{1,3}(?![\w.])")
+# Only with its sign (3E+1, 1.5e-05), as a program prints it: a bare "3E2" or "12E5" is as often an address or a part
+# number ("Flat 3E2"), and this check blocks (review 2026-11-03, E-25).
+_SCIENTIFIC = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?[eE][+-]\d{1,3}(?![\w.])")
 
 
 def program_numbers(text):
@@ -313,7 +443,8 @@ def program_numbers(text):
 
 
 def judge(task, claim="", criteria="", values=None, steps="", live_png=None, reference_png=None, observed=None,
-          screen_text="", chosen=(), produced="", screen=True, deliverables=(), look_up=None, found=""):
+          screen_text="", chosen=(), produced="", screen=True, deliverables=(), look_up=None, found="",
+          purpose="py.judge"):
     """
     {"verdict", "confidence", "seen", "why"} for whether `task` was done. With
     no model, or when the model cannot be read, the verdict is "unsure" - the
@@ -418,7 +549,8 @@ def judge(task, claim="", criteria="", values=None, steps="", live_png=None, ref
     def ask(parts):
         try:
             message, spent = llm_client.chat([{"role": "system", "content": JUDGE_SYSTEM},
-                                              {"role": "user", "content": parts}], max_tokens=600)
+                                              {"role": "user", "content": parts}], max_tokens=JUDGE_TOKENS,
+                                             purpose=purpose)
             found = _parse(message.get("content") or "")
         except (llm_client.LLMError, ValueError) as exc:
             log(f"verify: could not judge: {exc}")
@@ -519,9 +651,20 @@ def _shared_inputs(task):
     return out
 
 
+# The judge's answer budget: room for a reasoning model's thinking and its verdict, still bounded (600 cut a reasoning
+# model's answer off mid-JSON - review round 9).
+JUDGE_TOKENS = 4000
+
+
+class CutOff(ValueError):
+    """The check's answer stopped before its JSON ended: the check was not made (never read as a verdict)."""
+
+
 def _parse(text):
     match = re.search(r"\{.*\}", text or "", re.DOTALL)
     if not match:
+        if "{" in (text or ""):
+            raise CutOff(f"the check's answer was cut off before it ended: {text[:200]!r}")
         raise ValueError(f"the check did not answer in JSON: {text[:200]!r}")
     data = json.loads(match.group(0))
     verdict = str(data.get("verdict") or "").strip().lower().replace(" ", "_")

@@ -9,9 +9,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from decurix_agent import config, filelock, progress
-from decurix_agent.computer import approval, atspi, audit, browser, cdp, grounder, launchers, privacy, screen, session, volatility, xinput
+from decurix_agent.computer import approval, atspi, audit, browser, cdp, grounder, identity, launchers, privacy, screen, session, volatility, xinput
 from decurix_agent.computer import elements as el
-from decurix_agent.computer.errors import ComputerError
+from decurix_agent.computer.errors import ActedError, ComputerError
 
 
 # ============================================================
@@ -52,9 +52,8 @@ def _save_state(observation, next_ref):
     data["next_ref"] = next_ref
     data["sample"] = base64.b64encode(observation["frame"].sample()).decode("ascii")
 
-    tmp = STATE_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
-    tmp.replace(STATE_FILE)
+    # Shapes on: a key or code shown in an ordinary field is withheld; the values compared later are exempt by name.
+    privacy.write_scrubbed(STATE_FILE, data, atomic=True, exempt=("value", "next_ref", "sample"))
 
 
 @contextmanager
@@ -174,6 +173,7 @@ def observe(remember=True, frame=None):
         notes.append(str(exc))
 
     groups = _order_groups(groups, windows, active_title)
+    _withhold_secret_values(found)
 
     if _human_check(found, page_group):
         notes.append(HUMAN_CHECK_NOTE)
@@ -183,6 +183,7 @@ def observe(remember=True, frame=None):
     with _state_lock():
         previous = _load_state()
         next_ref = el.assign_refs(found, previous)
+        gone = _gone(previous, found, groups)
 
         behind = [g for g in groups if g.get("behind")]
         if behind:
@@ -202,6 +203,7 @@ def observe(remember=True, frame=None):
             "elements": found,
             "notes": notes,
             "page_url": page_group.get("url") if page_group else "",
+            "gone": gone,
             "frame": frame,
             "apps": _desktop_apps(),
         }
@@ -210,6 +212,55 @@ def observe(remember=True, frame=None):
             _save_state(observation, next_ref)
 
     return observation
+
+
+SECRET_VALUE = "[withheld]"
+
+
+def _withhold_secret_values(elements):
+    """
+    Every secret field's value (privacy.secret_field: a password, a one-time code, a key) replaced where it is read, at
+    the look itself, so no renderer, note or record can show it: the field is shown filled, by SECRET_VALUE. Found in
+    review (2026-11-03, D-18): `gui observe` printed a text-type code or key field's value, and the evidence notes the
+    final check reads kept it. The value is not kept anywhere else: acting types what it is given and reads the page
+    itself, never this copy (review round 2: a raw copy in the handle was one more place a secret sat).
+    """
+
+    for e in elements:
+        value = e.get("value")
+        if value in (None, "", SECRET_VALUE):
+            continue
+        try:
+            secret = privacy.secret_field(e)
+        except Exception:  # noqa: BLE001 - not known to be safe to show: withheld
+            secret = True
+        if secret:
+            e["value"] = SECRET_VALUE
+
+
+# How many refs no longer on the screen are kept with where they were (_gone).
+GONE_LIMIT = 600
+
+
+def _gone(previous, found, groups):
+    """
+    {"refs": {ref: where it was seen}, "urls": {group: the address it shows now}}: the refs earlier looks printed that
+    this one no longer has, with their role, name, window and document (elements.where_seen), for a ref an engine uses
+    after its control was drawn anew (elements._same_named re-binds it only within that same window and document).
+    """
+
+    previous = previous or {}
+    urls_then = {g.get("id"): g.get("url") or "" for g in previous.get("groups") or []}
+    refs = dict(((previous.get("gone") or {}).get("refs")) or {})
+    present = {e.get("ref") for e in found}
+    for old in previous.get("elements") or []:
+        if old.get("ref") and old["ref"] not in present:
+            refs[old["ref"]] = el.where_seen(old, urls_then.get(old.get("group"), ""))
+    for ref in present:
+        refs.pop(ref, None)
+    if len(refs) > GONE_LIMIT:
+        refs = dict(list(refs.items())[-GONE_LIMIT:])
+    return {"refs": refs, "urls": {g.get("id"): g.get("url") or "" for g in groups}}
 
 
 def report_observation(observation):
@@ -311,16 +362,25 @@ def _window_id_for(element):
     for w in windows:
         if w["title"] == title:
             return w["id"]
-    for w in windows:
-        if title and (title in w["title"] or w["title"] in title):
-            return w["id"]
-    return None
+    # A near title is the same window drawn differently (a "*" for unsaved changes), never another name: other digits
+    # or other words are another document ("Invoice 104" is inside "Invoice 1042"); and only one window may be meant
+    # (review 2026-11-03, D-27).
+    near = [w for w in windows if title and w["title"] and (title in w["title"] or w["title"] in title)
+            and not identity.changes_identity(title, w["title"])]
+    return near[0]["id"] if len(near) == 1 else None
 
 
 def _focus_window(element):
+    """Put the element's own window in front before keys go to it, or raise: keys sent when it cannot be found, or
+    cannot be told apart from another, go to whatever is in front (D-27)."""
+
     window_id = _window_id_for(element)
     if window_id is not None:
         xinput.activate(window_id)
+    elif element.get("window_title"):
+        raise ComputerError(f"its window {el._quote(element['window_title'], 60)} cannot be found on its own on the "
+                            "screen, so nothing was typed or pressed (it would go to whatever window is in front). "
+                            "Bring that window forward (gui front) and observe again.")
 
 
 # Where the keyboard was left by the last action of this task: the window in front then, and every window there was.
@@ -346,9 +406,8 @@ def _note_front():
         if front is None:
             return
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        FRONT_FILE.write_text(json.dumps({"task": _task_now(), "at": time.time(), "id": front["id"],
-                                          "title": front["title"], "known": [w["id"] for w in wins]}),
-                              encoding="utf-8")
+        privacy.write_scrubbed(FRONT_FILE, {"task": _task_now(), "at": time.time(), "id": front["id"],
+                                                       "title": front["title"], "known": [w["id"] for w in wins]})
     except Exception:  # a note for later must never fail the action
         pass
 
@@ -416,7 +475,7 @@ def _task_windows(windows=None):
 def _save_task_windows(record):
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        TASK_WINDOWS_FILE.write_text(json.dumps(record), encoding="utf-8")
+        privacy.write_scrubbed(TASK_WINDOWS_FILE, record)
     except OSError:
         pass
 
@@ -799,10 +858,15 @@ def _numeric(text):
     import decimal
 
     t = re.sub(r"[\s,]", "", text or "")
-    t = re.sub(r"^[^\d+\-.]+", "", t)
+    # The currency is a token of its own, its dot included: "Rs.78" is 78, never .78.
+    t = re.sub(r"(?i)^(?:rs\.?|inr|rupees?|usd|eur|gbp|[^\w+\-.])+", "", t)
     percent = t.endswith("%")
     t = t.rstrip("%")
     if not re.fullmatch(r"[+-]?(?:\d+\.?\d*|\.\d+)", t):
+        return None
+    # A leading zero is part of an identifier, not of a number: "0012345" is not 12345 (a sheet that drops it has
+    # changed the value).
+    if re.match(r"[+-]?0\d", t):
         return None
     value = decimal.Decimal(t)
     return value / 100 if percent else value
@@ -1198,9 +1262,9 @@ _BLANK_DOC = re.compile(r"^\s*(?:Document|Book|Presentation)\d+(?:\s*-\s*(?:Word
 def _refuse_unsafe_save(kind, element, keys, before):
     """
     A save in an app of the person's computer is refused when what is open there is read-only or a new blank document:
-    Ctrl+S then saves nothing or a copy - or an empty document over the file with Save As. Found live (round 5 P1 on pc3,
-    2026-10-20, CS): Word held the memo from an earlier attempt, the tools rewrote it, and Word's stale and later blank
-    copy was saved over it - the memo ended with 0 headings.
+    Ctrl+S then saves nothing or a copy - or an empty document over the file with Save As. Found live (2026-10-20): a word
+    processor held a memo from an earlier attempt, the tools rewrote it, and the app's stale and later blank copy was
+    saved over it - the memo ended with 0 headings.
     """
 
     if not _relayed_page(before) or not _saves(kind, element, keys):
@@ -1229,9 +1293,37 @@ def _beside_number_fields(target):
     return (20, height // 2)
 
 
-# Where a form waiting to be confirmed is noted between gui commands (each runs as its own process).
+# Where a form waiting to be confirmed is noted between gui commands (each runs as its own process): one note per task
+# (_form_check_file), so a listing in one task is never the confirmation of a click in the next.
 FORM_CHECK_FILE = Path(os.environ.get("TMPDIR", "/tmp")) / "decurix-form-check.json"
 FORM_CHECK_SECONDS = 600
+
+
+def _form_check_file():
+    """This task's form-check note: FORM_CHECK_FILE with the task's id in its name (review 2026-11-02: one global file
+    let a form listed in one task be sent by a --checked click in another). No task: FORM_CHECK_FILE itself."""
+
+    from decurix_agent import task_context
+
+    task = task_context.current()
+    return FORM_CHECK_FILE.with_name(f"{FORM_CHECK_FILE.stem}.{task}{FORM_CHECK_FILE.suffix}") if task else FORM_CHECK_FILE
+
+
+class AskFirst(str):
+    """What a committing press holds that a person checks before it goes: the press is put to them through the approval
+    gate rather than refused. Returned for a button whose form could not be read (_commit_check, D-26)."""
+
+
+# The values a replay running in this process types from the person's demonstration because today's request gives
+# none for them (replay.run sets it for the run): the person's own, never "in no source".
+TAUGHT_VALUES = set()
+
+
+def _taught_value(value):
+    """Whether a typed value is one the replay running now took from the person's demonstration (TAUGHT_VALUES)."""
+
+    value = " ".join(str(value or "").split()).lower()
+    return bool(value) and value in TAUGHT_VALUES
 
 
 # A value that only holds a place: "TEST", "dummy", "xxx", "asdf" anywhere; "123", "abc" in a reference-like field.
@@ -1254,8 +1346,8 @@ def placeholder_fields(fields):
 
 
 # A click that saves a new record, and what the application answers once it has.
-# ("Accept": an accounting application's save, found live 2026-10-26 - its duplicate check had never run.)
-_SAVE_CONTROL = re.compile(r"(?i)\b(?:submit|save|create|add|onboard|post|confirm|place|register|book|finish|accept)\b")
+# (The plain verbs of keeping a record, whatever the application: "Accept" keeps one too.)
+_SAVE_CONTROL = re.compile(r"(?i)\b(?:submit|save|create|add|post|confirm|place|register|book|finish|accept)\b")
 _SAVED_ANSWER = re.compile(r"(?i)/done/|/saved\b|/success|\bsaved\b|\bcreated\b|\bsubmitted\b|\badded\b")
 # What an application says when it did not save: an answer with one of these is no proof of a save, whatever page it
 # is on. Found live (2026-10-25): a form posted to ".../voucher/save" answered "ledger '<name>' does not exist"; the "/save"
@@ -1292,8 +1384,8 @@ def _record_refs(pairs):
     """The values typed into a record's own number fields (No., Bill, Invoice, Voucher, Ref) that hold a digit."""
 
     return {str(v).strip().upper() for label, v in pairs if _REF_LABEL.search(str(label or "")) and re.search(r"\d", str(v))}
-_NEW_RECORD_PAGE = re.compile(r"(?i)page is now \S*/(?:new|create|add)\b|\b(?:new|create|add)\b[^\"]{0,20}(?:record|employee|"
-                              r"order|customer|invoice|entry)")
+# A new record's page, told by its address (review 2026-11-03, D-29: a list of business nouns named it too).
+_NEW_RECORD_PAGE = re.compile(r"(?i)page is now \S*/(?:new|create|add)\b")
 _RECORD_NO = re.compile(r"\b[A-Z]{2,5}-\d{3,}\b")
 # A new record's form opened at its start (".../new", not ".../new?step=2" of the same form).
 _FORM_START = re.compile(r"(?i)page is now \S*/(?:new|create|add)(?:[?#](?![^\s;]*step=(?:[2-9]|\d\d))[^\s;]*)?(?=[\s;]|$)")
@@ -1309,12 +1401,25 @@ def _identity(values):
     return ("name", tuple(words[:2])) if len(words) >= 2 else None
 
 
-def already_entered(events):
+def _replayed_saves(events):
+    """The scan already_entered makes, for possibly_entered: (saved, current, pairs, new_page)."""
+
+    out = {}
+
+    def keep(saved, current, pairs, new_page):
+        out.update(saved=saved, current=current, pairs=pairs, new_page=new_page)
+        return None
+
+    already_entered(events, _scan=keep)
+    return out.get("saved", []), out.get("current", []), out.get("pairs", []), out.get("new_page", False)
+
+
+def already_entered(events, _scan=None):
     """
     (what it is, the system's number) when the new record being saved repeats one this task already saved: the values
     typed since the last save, against those of each earlier save (an email, or its first two words). None otherwise -
-    and never for a form that changes an existing record. Found live (round 5 P4, 2026-10-21): a joiner saved with the
-    wrong department was entered again, and the portal held him twice.
+    and never for a form that changes an existing record. Found live (2026-10-21): a record saved with a wrong
+    value was entered again, and the application held it twice.
 
     A save the application has since deleted no longer counts: found live (2026-10-31): a record saved with a misread
     value was deleted to be entered again, and every re-entry was refused as "already saved" though the application
@@ -1356,6 +1461,21 @@ def already_entered(events):
             current, pairs, new_page = [], [], False
         if moved:
             page = moved.group(1).rstrip(";,").split("?")[0]
+    if _scan is not None:
+        return _scan(saved, current, pairs, new_page)
+    found = _same_saved(current, pairs, new_page, saved)
+    return (found[0], found[1]) if found and found[2] else None
+
+
+def _same_saved(current, pairs, new_page, saved):
+    """
+    (what it is, the system's number, decided) for the earlier save of this task the record being filled repeats, or
+    None. decided: it is the same record by a mechanical identity - the same email, or the same reference typed into
+    its own number field. A record that only shares the first words typed (a name) is not decided (False): two bills
+    to one customer for one item share every word but are two records. Found in review (2026-11-03, D-12): that was
+    refused as a duplicate, and the worker was told never to enter it.
+    """
+
     mine = _identity(current)
     if not mine or not new_page:
         return None
@@ -1365,74 +1485,94 @@ def already_entered(events):
         # for a customer was refused as the first one again).
         if my_refs and their_refs and not (my_refs & their_refs):
             continue
-        if theirs and theirs[0] == mine[0] and (theirs[1] & mine[1] if mine[0] == "mail" else theirs[1] == mine[1]):
-            what = ", ".join(sorted(mine[1])) if mine[0] == "mail" else " ".join(w.title() for w in mine[1])
-            return what, number
+        if not theirs or theirs[0] != mine[0]:
+            continue
+        if mine[0] == "mail" and theirs[1] & mine[1]:
+            return ", ".join(sorted(mine[1])), number, True
+        if mine[0] == "name" and theirs[1] == mine[1]:
+            return " ".join(w.title() for w in mine[1]), number, bool(my_refs & their_refs)
     return None
 
 
-def _current_form(events):
-    """[(field label, value)] put into the record's form being filled: since it opened afresh or the last save."""
+def possibly_entered(events):
+    """(what it is, the system's number) when the record being filled shares only its name with one this task saved:
+    evidence for the final check and the person, never a refusal (already_entered decides only on an identity)."""
 
-    current = []
+    saved, current, pairs, new_page = _replayed_saves(events)
+    found = _same_saved(current, pairs, new_page, saved)
+    return (found[0], found[1]) if found and not found[2] else None
+
+
+def _current_form(events):
+    """
+    [(field label, value)] put into the record's form being filled: since it opened afresh or the last save, each
+    field once, with its latest value - a field typed again holds what was typed last (appended to, when the typing
+    appended), and a select's entry is the one taken. Found in an eval probe (W0.3 slip, 2026-11-05): a slipped account
+    corrected in place was still held against every later save, because each value ever typed into the form stayed in
+    it - a worker doing what the refusal said was stuck.
+    """
+
+    current, where = [], {}
     for event in events:
         if event.get("outcome") not in (None, "done"):
             continue
         change = str(event.get("change") or "")
         if _FORM_START.search(change) or _FORM_START.search("page is now " + str(event.get("target") or "")):
-            current = []
-        label = str((event.get("element") or {}).get("name") or "")
+            current, where = [], {}
+        element = event.get("element") or {}
+        label = str(element.get("name") or "")
+        value = None
         if event.get("kind") == "type" and event.get("text"):
-            current.append((label, str(event["text"])))
-        if event.get("kind") == "select" and event.get("option"):
-            current.append((label, str(event["option"])))
+            value = str(event["text"])
+        if event.get("kind") == "select" and (event.get("taken") or event.get("option")):
+            value = str(event.get("taken") or event["option"])
+        if value is not None:
+            # (A field is the same field by its path on the page, else by its label.)
+            field = str(element.get("path") or "") or "label:" + label
+            if field in where:
+                n = where[field]
+                if event.get("kind") == "type" and event.get("append"):
+                    value = current[n][1] + value
+                current[n] = (label, value)
+            else:
+                where[field] = len(current)
+                current.append((label, value))
         if event.get("kind") in ("click", "key") and _saved(change) and current:
-            current = []
+            current, where = [], {}
     return current
 
 
-_LABEL_NOISE = {"of", "the", "a", "no", "number", "dd", "mm", "yyyy", "rs", "usd", "inr", "per", "recruiter", "status"}
+_LABEL_NOISE = {"of", "the", "a", "no", "number", "dd", "mm", "yyyy", "rs", "usd", "inr", "per", "status"}
 
 
 def _words_of(label):
     return {w for w in re.findall(r"[a-z]+", re.sub(r"\(.*?\)", " ", str(label or "").lower())) if w not in _LABEL_NOISE}
 
 
-def _same_value(a, b):
-    """Two values of one field, the same whatever their form: case, spaces, punctuation, a date's format, a phone's +91."""
+def _same_value(a, b, a_order=None, b_order=None):
+    """Two values of one field, decidedly the same whatever their form (values.same_value is True): case, spaces,
+    punctuation, a date's format under each side's date order, a phone's leading country code. Every digit of a number
+    counts (W0.3: two account numbers that share their last 10 digits are two accounts), and a date whose day and
+    month could be either way is never decided by its layout (W0.2, review round 2)."""
 
-    import datetime
-    def norm(v):
-        if isinstance(v, (datetime.date, datetime.datetime)):
-            return ("date", v.strftime("%Y-%m-%d"))
-        t = str(v if v is not None else "").strip()
-        m = re.fullmatch(r"(\d{1,2})[/.\- ](\d{1,2}|[A-Za-z]{3})[a-z]*[/.\- ](\d{4})", t)
-        if m:
-            months = {k: i for i, k in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
-                                                  "nov", "dec"), 1)}
-            mo = int(m.group(2)) if m.group(2).isdigit() else months.get(m.group(2).lower()[:3], 0)
-            return ("date", f"{int(m.group(3)):04d}-{mo:02d}-{int(m.group(1)):02d}")
-        m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})(?:[ T].*)?", t)
-        if m:
-            return ("date", f"{m.group(1)}-{m.group(2)}-{m.group(3)}")
-        digits = re.sub(r"\D", "", t)
-        if len(digits) >= 7 and len(digits) >= len(re.sub(r"\s", "", t)) - 4:
-            return ("digits", digits[-10:])
-        return ("text", re.sub(r"[^a-z0-9]", "", t.lower()))
-    return norm(a) == norm(b) and norm(a)[1] != ""
+    from decurix_agent import values
+    return values.same_value(a, b, a_order=a_order, b_order=b_order) is True
 
 
 def crossed_values(form, tables):
     """
     The values put into a record's form that are ANOTHER record's in the source table (one row per record) and not
     this one's: [(field, typed, whose, own)]. The record is the row its typed email, else its first two words, names.
-    Nothing when the record or the field's column cannot be told. Found live (round 5 P4, 2026-10-21): Rohit
-    Kulkarni was saved with Mohammed Arif Khan's department and job title.
+    Nothing when the record or the field's column cannot be told. Found live (2026-10-21): one person's record
+    was saved with another person's department and job title.
     """
 
     values = [v for _, v in form]
     mails = [v.strip().lower() for v in values if re.fullmatch(r"\S+@\S+\.\S+", v.strip())]
     words = [v.strip().lower() for v in values if re.fullmatch(r"[A-Za-z][A-Za-z .'-]{1,40}", v.strip())][:2]
+    from decurix_agent import task_context
+    # What was typed is the application's; the table is the request's source (two date orders, review round 2).
+    app, source = task_context.app_date_order(), task_context.source_date_order()
     out = []
     for header, rows in tables:
         cells = lambda row: [str(c).strip().lower() for c in row if c not in (None, "")]  # noqa: E731
@@ -1452,9 +1592,9 @@ def crossed_values(form, tables):
             lw = _words_of(label)
             col = next((i for i, h in enumerate(header) if h and lw and (_words_of(h) and (_words_of(h) <= lw
                                                                                           or lw <= _words_of(h)))), None)
-            if col is None or col >= len(own) or _same_value(typed, own[col]):
+            if col is None or col >= len(own) or _same_value(typed, own[col], app, source):
                 continue
-            others = [r for r in rows if r is not own and col < len(r) and _same_value(typed, r[col])]
+            others = [r for r in rows if r is not own and col < len(r) and _same_value(typed, r[col], app, source)]
             if others:
                 whose = str(others[0][name_col] if name_col < len(others[0]) else "another record")
                 out.append((str(label), typed, whose, "" if own[col] is None else str(own[col])))
@@ -1517,6 +1657,16 @@ def _duplicate_record(element):
         return ""
     found = already_entered(events)
     if not found:
+        maybe = possibly_entered(events)
+        if maybe:
+            # Not a refusal (D-12): the final check and the person see it.
+            try:
+                from decurix_agent.computer import evidence
+                evidence.note(f"a record named {maybe[0]} was saved earlier in this task"
+                              f"{f' ({maybe[1]})' if maybe[1] else ''}, and another with that name is being saved now - "
+                              "two records, or the same one twice")
+            except Exception:  # noqa: BLE001 - evidence is decoration here: the save is not stopped for it
+                pass
         return ""
     what, number = found
     return (f"Not pressed: {what} is already saved in this application{f' ({number})' if number else ''} - entering it "
@@ -1753,7 +1903,7 @@ def _unsearched_record(element):
                     "different party - and only with their yes, create it.")
         try:
             ID_REFUSALS_DIR.mkdir(parents=True, exist_ok=True)
-            mark.write_text("1", encoding="utf-8")
+            privacy.write_scrubbed(mark, "1")
         except OSError:
             return ""  # a stop that cannot be kept to once is not made
         head = f"Not pressed: this makes a new record holding {ident}, "
@@ -1784,6 +1934,71 @@ def _unsearched_record(element):
     return ""
 
 
+def _entered_fields(fields):
+    """
+    [(label, value)] of a form's fields whose value this task's tools typed or chose exactly (evidence.entered): what
+    the source check (_unsourced_fields) holds against the request's sources - an application's own default it never
+    judges. Raises when the task's recording cannot be read (the caller makes that a check not made).
+    """
+
+    from decurix_agent.computer import evidence
+    typed = {" ".join(str(v).split()) for v in evidence.entered()}
+    return [(label, value) for label, value in fields if " ".join(str(value or "").split()) in typed]
+
+
+# Events by which the worker puts something into the field it acts on (a paste is a key event on that field).
+_INPUT_KINDS = ("type", "select", "key")
+_PICK_ROLES = ("option", "listitem", "menuitem", "menuitemradio", "treeitem", "gridcell")
+
+
+def _shown_by_app(task_id=None):
+    """
+    {field label: value} that the application itself showed in a field before any worker input into it: read from the
+    observations kept with this task's actions (audit.keep_observation - each is the screen an action was resolved
+    against, so the first one holding a field shows it before that action). A field the worker typed, chose, pasted
+    or picked an entry into from then on is the worker's (review round 2, B9). Raises when the recording cannot be read.
+    """
+
+    import json as _json
+    from decurix_agent import task_context
+    from decurix_agent.computer import evidence, recording
+    task_id = task_id or task_context.current()
+    events = evidence._task_events(task_id)
+    folder = recording._dir(recording.session_for_task(task_id)) / "obs"
+    shown, touched, last = {}, set(), ""
+    for event in events:
+        name = str((event.get("element") or {}).get("name") or "")
+        role = str((event.get("element") or {}).get("role") or "")
+        if event.get("obs"):
+            try:
+                doc = _json.loads((folder / f"{event['obs']}.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                doc = {}
+            for element in doc.get("elements") or []:
+                label, value = str(element.get("name") or ""), element.get("value")
+                if label and value not in (None, "") and label not in touched and label not in shown:
+                    shown[label] = str(value)
+        if event.get("kind") in _INPUT_KINDS:
+            touched.add(name or last)
+        elif event.get("kind") in ("click", "double_click") and role in _PICK_ROLES and last:
+            touched.add(last)  # an entry picked from a field's list (autocomplete) is put into that field
+        if name and role not in _PICK_ROLES:
+            last = name
+    touched.discard("")
+    return {label: value for label, value in shown.items() if label not in touched}
+
+
+def _not_the_apps(fields):
+    """The form's fields the filler check judges: every one, except a value the application itself showed in that
+    field before the worker put anything there (_shown_by_app), compared by values.compare - a value the application
+    reformatted or re-cased is the same value, so neither dodges the check."""
+
+    from decurix_agent import values
+    shown = _shown_by_app()
+    return [(label, value) for label, value in fields
+            if not (label in shown and values.same_value(value, shown[label]) is True)]
+
+
 def _unsourced_fields(fields):
     """
     [(label, value)] of a form's fields whose value the tools typed during this task and that states a fact (an
@@ -1793,9 +2008,7 @@ def _unsourced_fields(fields):
     """
 
     from decurix_agent import long_task, task_context
-    from decurix_agent.computer import evidence
-    typed = {" ".join(str(v).split()) for v in evidence.entered()}
-    mine = [(label, value) for label, value in fields if " ".join(str(value or "").split()) in typed]
+    mine = _entered_fields(fields)
     if not mine:
         return []
     sources = long_task.work_sources(task_context.current_request())
@@ -1831,31 +2044,46 @@ def _declared_values():
 def _form_check_pending():
     """The ref of the submit control whose form was listed for checking within FORM_CHECK_SECONDS and not confirmed
     since, else "". The note is written at the listing and cleared when the checked click goes through."""
+    from decurix_agent import task_context
+
     try:
-        noted = json.loads(FORM_CHECK_FILE.read_text(encoding="utf-8"))
+        noted = json.loads(_form_check_file().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return ""
-    if time.time() - float(noted.get("at") or 0) < FORM_CHECK_SECONDS and noted.get("key"):
+    if (time.time() - float(noted.get("at") or 0) < FORM_CHECK_SECONDS and noted.get("key")
+            and (noted.get("task") or "") == task_context.current()):
         return noted.get("ref") or "REF"
     return ""
 
 
-def _form_check(element, checked=False):
+def _form_check(element, checked=False, found=None, confirm=None, listing=True):
     """
     Before a form with several filled fields is sent by a click on its submit control: a click lists what the form
     holds and presses nothing; the click again with --checked, the form unchanged since that list, sends it. Found live
     (2026-10-20): an order saved with a quantity the worker had not meant - a list of the fields before Save is the
     one look that catches it. Returns the text that stops the click, or "" to go on.
+
+    found: {"form", "fields"} when the caller has read what the press sends (a page with no <form>, Enter in a form's
+    field - _commit_check); else the <form> of the submit control is read. confirm: how the listing is confirmed, when
+    not by the same click with --checked (an Enter is never confirmed: the form's own submit control is pressed).
+
+    listing="ask" (a replay's press): what would list the form, or a value no source of today's request holds, is
+    returned as AskFirst - the press is put to the person with today's values through the approval gate (core.act),
+    since a recording a person made is not their yes to the values a run types today. What is never sent (a record
+    entered twice, a placeholder, a value the declared record does not hold) still stops it.
     """
 
     import hashlib
+
+    from decurix_agent import task_context
 
     twice = (_duplicate_record(element) or _crossed_record(element) or _unsearched_record(element)
              or _same_named_record(element))
     if twice:
         return twice  # (never sent, --checked or not)
-    found = cdp.submit_form_fields(element, min_fields=1)
-    if not found:
+    if found is None:
+        found = cdp.submit_form_fields(element, min_fields=1)
+    if not found or not found.get("fields"):
         return ""
     probe = placeholder_fields(found["fields"])
     if probe:
@@ -1869,12 +2097,25 @@ def _form_check(element, checked=False):
     try:
         from decurix_agent import filler, task_context
         files = task_context.current_files()
-        made_up = filler.invented(found["fields"], task_context.current_request(), files)
-        made_up += _unsourced_fields(found["fields"])
-    except Exception:  # noqa: BLE001 - a check that cannot be made stops nothing
-        made_up = []
+        # Every field, except a value the application itself showed there before the worker acted (an edit form's
+        # existing record, found in the GUI bench 2026-11-03): decided by the observations, not by what was typed -
+        # a reformatted, re-cased, pasted or picked value is judged (review round 2, B9).
+        made_up = filler.invented(_not_the_apps(found["fields"]), task_context.current_request(), files)
+        unsourced = _unsourced_fields(found["fields"])
+        if listing == "ask":
+            # A replay types what the person demonstrated where today's request gives nothing (replay.run): their own
+            # value, not one made up. Any other value no source holds is refused below, like an engine's.
+            unsourced = [(label, value) for label, value in unsourced if not _taught_value(value)]
+        made_up += unsourced
+    except Exception as exc:  # noqa: BLE001
+        # A check that could not be made is not a check that passed (review 2026-11-02): the press waits for a person.
+        return (f"Not pressed: the check of where {el._quote(found['form'], 60)}'s values come from could not be made "
+                f"({' '.join(str(exc).split())[:160]}), so nothing shows they are the request's. Ask the person (HELP) "
+                "before this is saved.")
+    lines = "\n".join(f"  {label}: {value}" for label, value in found["fields"])
     if made_up:
-        # Never sent, with or without --checked (found live 2026-10-20: a joiner onboarded with phone 9999999999).
+        # Never sent, with or without --checked (found live 2026-10-20: a joiner onboarded with phone 9999999999) - nor
+        # by a replay: a value in no source is refused, never put to a person to wave through (review 2026-11-03).
         return filler.refusal(made_up, files)
     ledger_lines = []
     judged = _ledger_check(found["fields"])
@@ -1884,13 +2125,27 @@ def _form_check(element, checked=False):
             return held
         if clean:
             return ""  # the declared record is the check this listing stood in for: one click saves
-    if len(found["fields"]) < cdp.FORM_CHECK_MIN_FIELDS:
+    if listing == "ask":
+        # A replay of the person's own steps whose every value is today's request's or the person's demonstration:
+        # saving it is the taught task, not a new decision. Asking at every save (review 2026-11-02, second round) made
+        # every taught skill wait on a person at each record - and taught them to say yes without reading
+        # (review 2026-11-03). What commits the person to more than a record in their own system (pay, send, file,
+        # sign, an irrevocable submit) is still the approval gate's to ask, at the press itself.
+        return ""
+    if len(found["fields"]) < cdp.FORM_CHECK_MIN_FIELDS or not listing:
         return ""  # a small form (a search, a sign-in) is sent at once
     key = hashlib.sha256(json.dumps([element.get("path") or element.get("name"), found], sort_keys=True).encode()).hexdigest()
+    note_file = _form_check_file()
     try:
-        noted = json.loads(FORM_CHECK_FILE.read_text(encoding="utf-8"))
+        noted = json.loads(note_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         noted = {}
+    if (noted.get("task") or "") != task_context.current():
+        noted = {}  # another task's listing confirms nothing here
+    if confirm:
+        # Not confirmed this way: the same press would only list it again. The form's own submit control is.
+        return (f"Not pressed - {el._quote(found['form'], 60)} would be sent holding:\n{lines}\n"
+                + ("".join(f"  ({line})\n" for line in ledger_lines)) + confirm)
     if checked and noted.get("key") == key and time.time() - float(noted.get("at") or 0) < FORM_CHECK_SECONDS:
         # Kept until the click is let through (act): a click the approval gate then stops is asked for, and the same
         # --checked click after the person's yes must not list the form again. Found live (2026-10-24): the note was
@@ -1898,15 +2153,121 @@ def _form_check(element, checked=False):
         # filing was put to the person five more times.
         return ""
     try:
-        FORM_CHECK_FILE.write_text(json.dumps({"key": key, "at": time.time(), "ref": element.get("ref") or ""}), encoding="utf-8")
-    except OSError:
-        return ""  # a check that cannot be kept never blocks the click
-    lines = "\n".join(f"  {label}: {value}" for label, value in found["fields"])
+        privacy.write_scrubbed(note_file, {"key": key, "at": time.time(), "ref": element.get("ref") or "",
+                                                      "task": task_context.current()}, shapes=False)
+    except OSError as exc:
+        # Without the note the listing cannot be confirmed later, and letting the press through unlisted is the check
+        # skipped (review 2026-11-02). It waits for a person instead.
+        return (f"Not pressed: the list of what {el._quote(found['form'], 60)} would send could not be kept "
+                f"({' '.join(str(exc).split())[:120]}). Ask the person (HELP) before this is saved.")
     return (f"Not pressed yet - {el._quote(found['form'], 60)} would be sent holding:\n{lines}\n"
             + ("".join(f"  ({line})\n" for line in ledger_lines))
             + "Check every value against what you meant to enter (a quantity, a price, every line). If all are right, "
-            f"send gui click {element.get('ref') or 'REF'} --checked to save; if one is wrong, correct it first "
-            "(gui type REF \"value\") - the form is listed again before it is sent.")
+            f"send gui click {element.get('ref') or 'REF'} --checked to save (the act tool: the same click with "
+            "checked: true); if one is wrong, correct it first (gui type REF \"value\") - the form is listed again "
+            "before it is sent.")
+
+
+# A field that narrows what a list shows ("Filter by status", "Sort by").
+_FILTER_FIELD = re.compile(r"^\s*(?:filter|sort|group by|show|search|find|page size|rows per page)\b", re.I)
+# A control whose label opens a new record or accepts something, rather than saving what the page around it holds:
+# with no <form> and no dialog around it, the page's other fields are not what it sends (review 2026-11-03: "Create"
+# on a list page and "Accept" on a banner were refused over fields they never send).
+_OPENS_OR_ACCEPTS = re.compile(r"^\s*(?:create|new|accept|agree)\b", re.I)
+
+# A value that is a file's name or path (a save dialog's "Name" field): not a record's value, never judged as one.
+_FILE_NAME_VALUE = re.compile(r"(?:[^\s@]*[/\\])?[^\s@/\\]+\.[A-Za-z][A-Za-z0-9]{1,4}")
+
+
+def _page_fields(observation, element):
+    """
+    {"form", "fields": [[label, value]]}: the filled fields in the same window as a committing control that sits in no
+    <form> - an application drawn with divs and spans, a desktop app's dialog. What a press there saves is what the
+    window holds. Secrets and file names are left out.
+    """
+
+    group = (element or {}).get("group") or active_group(observation)
+    fields = []
+    for e in (observation or {}).get("elements") or []:
+        if e.get("role") not in FILLED_ROLES or (group and e.get("group") != group) or e is element:
+            continue
+        value = " ".join(str(e.get("value") or "").split())
+        if not value or privacy.secret_field(e) or privacy.credential_in(value) or _FILE_NAME_VALUE.fullmatch(value):
+            continue
+        if approval.searches(e) or _FILTER_FIELD.match(str(e.get("name") or "")):
+            # A list's search box and filters say what is shown, not what a press saves (review 2026-11-03: a list
+            # page's filters were checked as the record a "Create" there would save).
+            continue
+        fields.append([" ".join(str(e.get("name") or e.get("role") or "").split())[:60], value[:80]])
+    title = (element or {}).get("window_title") or (observation or {}).get("active_title") or "the window"
+    return {"form": str(title)[:80], "fields": fields}
+
+
+def _commit_keys(keys):
+    """(Enter, Ctrl+S): whether these keys press Enter, and whether they save (an application's Ctrl+S)."""
+
+    combos = [xinput.normalize_combo(k).lower() for k in keys or () if k and k.strip()]
+    return (any(c in ("return", "enter", "kp_enter") for c in combos), any(c == "ctrl+s" for c in combos))
+
+
+def _commit_check(kind, element, keys, before, checked=False, text=None, listing=True):
+    """
+    The pre-save checks (_form_check: a record entered twice, a placeholder, an invented or unsourced value, the
+    declared record's ledger, the listing of a full form) for every action that commits what a form or a page holds,
+    whichever way it is pressed: a click or double-click on a <form>'s submit control or on any control whose label
+    says it saves, submits, sends, pays or posts (approval.commits) - a CDP element or an AT-SPI one, found by ref, by
+    name or by --see; Enter in a form's field that submits it; Ctrl+S on a web page. Returns the text that stops the
+    action, or "" to go on. Found in review (2026-11-02): the checks ran only for a single `gui click` on a CDP
+    <form type=submit>, so a double-click, --see, the act tool, an AT-SPI press, an Enter and every button an
+    application draws with divs (the `gui record` ledger among them) went past them.
+    """
+
+    if kind in ("click", "double_click") and element is not None:
+        form = cdp.submit_form_fields(element, min_fields=1, unreadable=cdp.UNREADABLE) \
+            if element.get("source") == "cdp" else None
+        if form is cdp.UNREADABLE:
+            if element.get("role") != "button" and not approval.commits(element):
+                form = None
+            else:
+                # A button whose form could not be read may submit one: the checks cannot be made, so a person looks
+                # first (review 2026-11-03, D-26 - "no form" and "could not read" were the same None).
+                label = " ".join(str(element.get("name") or "").split())[:60]
+                return AskFirst(f'the form "{label}" may submit could not be read, so the checks made before a save '
+                                "could not be made - look at what it holds before it goes")
+        if form is None and not approval.commits(element):
+            return ""
+        if form is None and element.get("source") == "cdp" \
+                and _OPENS_OR_ACCEPTS.match(approval.label_words(element.get("name"))) \
+                and not approval.DIALOG_IN_PATH.search(element.get("path") or "") \
+                and approval.press_effect(element) != "asks":
+            return ""
+        return _form_check(element, checked=checked, found=form or _page_fields(before, element), listing=listing)
+    typed_enter = kind == "type" and bool(text) and "\n" in text and element is not None
+    if kind != "key" and not typed_enter:
+        return ""
+    enter, save = _commit_keys(keys) if kind == "key" else (True, False)
+    field = element if element is not None else _keyboard_field(before)
+    if enter and field is not None and field.get("source") == "cdp":
+        form = cdp.enter_form_fields(field)
+        if not form:
+            return ""
+        if typed_enter:
+            # What the field will hold when its new line submits the form: the text typed before it.
+            label = " ".join(str(field.get("name") or field.get("role") or "").split())[:60]
+            line = text.split("\n", 1)[0]
+            form = dict(form, fields=[f for f in form.get("fields") or [] if f[0] != label]
+                        + ([[label, line[:80]]] if line.strip() and not privacy.secret_field(field) else []))
+        submit = {"name": form.get("submit") or "Submit", "ref": "", "path": field.get("path") or ""}
+        return _form_check(submit, found=form, listing=listing, confirm=(
+            "Enter would send it, and an Enter is not how a full form is sent: press the form's own submit control "
+            "(gui click REF), which lists the form once more and is confirmed with --checked."))
+    if save and before.get("page_url") and not _relayed_page(before):
+        # (Ctrl+S on a web page saves its record: the checks that stop a wrong record stand; the listing of a full
+        # form is the Save control's, since a page saved only by its keys has no control to confirm it on.)
+        save_control = {"name": "Save", "ref": "", "path": (field or {}).get("path") or "",
+                        "group": (field or {}).get("group")}
+        return _form_check(save_control, found=_page_fields(before, field), listing=False)
+    return ""
 
 
 def _ledger_check(form_fields):
@@ -1920,12 +2281,29 @@ def _ledger_check(form_fields):
     from decurix_agent.computer import evidence, records
 
     try:
-        rec = records.open_record(records.load(), " | ".join(str(v) for _, v in form_fields if v), form=form_fields)
+        found = records.load()
+        form_text = " | ".join(str(v) for _, v in form_fields if v)
+        rec = records.open_record(found, form_text, form=form_fields)
     except Exception:  # noqa: BLE001 - a ledger that cannot be read judges nothing
         return None
+    events = _task_events_now()
     if rec is None:
+        # A new record's form holding the key of a record this task saved already, in that record's own key field: the
+        # second save would make a second record (review round 9, B: a task tried again from the start saved its bill
+        # twice, outside the ledger). Only its key field - a payment "Against bill X" after bill X is another record.
+        done = records.saved_on_form(found, form_fields)
+        if done is not None and _new_record_fields(events)[1]:
+            return ("Not pressed: " + records.saved_again_text(done), False, [])
         return None
     blocking, advisory, matched = records.presave(rec, form_fields)
+    # A field this task set on the form that the record does not declare: its value has no source on record. ADVISORY
+    # at the save until it passes the replay gate (records.UNDECLARED_FIELD_BLOCKS); the final check holds it against
+    # the saved record (records.gate_faults) - review round 9, A.
+    undeclared = records.undeclared_task_fields(rec, form_fields, [label for label, _ in _current_form(events)])
+    if undeclared:
+        line = ("this task set " + ", ".join(f"{l}={v}" for l, v in undeclared[:6]) + " and no declaration covers it: "
+                "declare it with its source (gui record), or ask the person (HELP) for it")
+        (blocking if records.UNDECLARED_FIELD_BLOCKS else advisory).append(line)
     key = rec.get("key")
     if rec.get("scope"):
         try:
@@ -1942,7 +2320,7 @@ def _ledger_check(form_fields):
                         "right and only worded otherwise, save again.", False, [])
             advisory.append(f"the window does not show the scope words {', '.join(missing)}")
     try:
-        records.note_presave(rec, blocking)
+        records.note_presave(rec, blocking, undeclared=undeclared)
     except Exception:  # noqa: BLE001
         pass
     if blocking:
@@ -1954,6 +2332,86 @@ def _ledger_check(form_fields):
     wanted = sum(1 for f in rec.get("fields", {}).values() if f.get("intent"))
     clean = matched >= max(1, (wanted + 1) // 2)
     return "", clean, ([f"record {key}: {matched} of {wanted} declared values match the form"] + advisory)
+
+
+def _task_events_now():
+    """The task's recorded events, oldest first; [] when there is no task or no record of it."""
+
+    try:
+        from decurix_agent import task_context
+        from decurix_agent.computer import recording
+        task_id = task_context.current()
+        if not task_id:
+            return []
+        return recording.load(recording.session_for_task(task_id))[1]
+    except (FileNotFoundError, OSError, ValueError, ImportError):
+        return []
+
+
+def records_created(events):
+    """How many of the task's saves made a new record: a save answered as saved, pressed on a new record's page (its
+    address .../new, /create, /add) - what the ledger's declared records must equal (review round 9, B)."""
+
+    created, new_page = 0, False
+    for event in events:
+        if event.get("outcome") not in (None, "done"):
+            continue
+        change = str(event.get("change") or "")
+        if _FORM_START.search(change) or _FORM_START.search("page is now " + str(event.get("target") or "")):
+            new_page = True
+        if event.get("kind") in ("click", "key") and _saved(change) and new_page:
+            created += 1
+            new_page = False
+            continue
+        moved = re.search(r"page is now (\S+)", change)
+        if moved:
+            new_page = bool(_NEW_RECORD_PAGE.search("page is now " + moved.group(1).rstrip(";,")))
+        elif _NEW_RECORD_PAGE.search(change) or _NEW_RECORD_PAGE.search(str(event.get("target") or "")):
+            new_page = True
+    return created
+
+
+def saved_twice(events):
+    """
+    {record number: how many saves} for each number that two or more saves of a new record in this task held in the
+    record's own number field (_record_refs: a No., Bill, Invoice, Voucher or Ref field with a digit): one record saved
+    twice, found with no declaration (review round 9, R9-B4: a task run again saved its bill a second time, and with no
+    ledger nothing saw it). A save the application has since deleted no longer counts (already_entered).
+    """
+
+    saves, pairs, new_page, page = [], [], False, ""
+    for event in events:
+        if event.get("outcome") not in (None, "done"):
+            continue
+        change = str(event.get("change") or "")
+        if event.get("kind") in ("click", "key") and saves:
+            answer = urllib.parse.unquote_plus(change).upper()
+            if _DELETED_ANSWER.search(answer) and not _SAVE_REFUSED.search(answer):
+                saves = [s for s in saves if not _released(("", "", s[0], s[1]), answer, page)]
+        if _FORM_START.search(change) or _FORM_START.search("page is now " + str(event.get("target") or "")):
+            new_page, pairs = True, []
+        label = str((event.get("element") or {}).get("name") or "")
+        if event.get("kind") == "type" and event.get("text"):
+            pairs.append((label, str(event["text"])))
+        if event.get("kind") == "select" and event.get("option"):
+            pairs.append((label, str(event["option"])))
+        moved = re.search(r"page is now (\S+)", change)
+        if event.get("kind") in ("click", "key") and _saved(change):
+            if new_page:
+                landed = moved.group(1).rstrip(";,").split("?")[0] if moved else ""
+                saves.append((_record_refs(pairs), landed if re.search(r"/[^/]*\d[^/]*/?$", landed) else ""))
+            pairs, new_page = [], False
+        elif moved:
+            new_page = bool(_NEW_RECORD_PAGE.search("page is now " + moved.group(1).rstrip(";,")))
+        elif _NEW_RECORD_PAGE.search(change) or _NEW_RECORD_PAGE.search(str(event.get("target") or "")):
+            new_page = True
+        if moved:
+            page = moved.group(1).rstrip(";,").split("?")[0]
+    counts = {}
+    for refs, _ in saves:
+        for ref in refs:
+            counts[ref] = counts.get(ref, 0) + 1
+    return {ref: n for ref, n in counts.items() if n > 1}
 
 
 def _ledger_readback(after, change_text):
@@ -2032,6 +2490,13 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             done = atspi.default_action(element)
             if done:
                 return f"atspi:{done}"
+            # A control that commits or that the gate stops is pressed only as the very widget that was looked at: one
+            # that is no longer at its place (atspi.resolve) is not clicked where it was drawn, where another may now be.
+            if (approval.commits(element) or approval.assess(kind, element) is not None) \
+                    and not element.get("handle", {}).get("sheet_cell") and atspi.resolve(element) is None:
+                raise ComputerError(f"{el.describe(element)} is no longer the control it was when the screen was read "
+                                    "(the window redrew) - nothing was pressed. gui observe again and press it by its "
+                                    "new ref.")
 
         target = point or (el.center(element) if element else None)
         if target is None:
@@ -2194,13 +2659,23 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
             return _perform("type", element, None, option.strip(), None, None, None, None, False, None)
         if element["source"] == "cdp":
             _resolved.clear()
-            _selected.update(name=None, why="")
+            _selected.update(name=None, why="", by_id=False, offered=None)
             if ids:
                 chosen = _select_native_by_id(element, option, ids)
                 if chosen:
                     return chosen
             try:
-                cdp.select_option(element, option)
+                label = cdp.select_option(element, option)
+                if " ".join(str(label or "").split()).casefold() != " ".join(option.split()).casefold():
+                    # Not the text asked for: the summary says which option was taken, so the engine and the check
+                    # can object.
+                    _selected.update(name=label, why="the one option of the list that fits it")
+                try:
+                    # What the list offered, for the ledger's check of whether anything given picks this option out
+                    # among them (records.option_backed). Not read: the check takes it as unknown.
+                    _selected["offered"] = cdp.native_options(element)
+                except (ComputerError, KeyError, TypeError):
+                    pass
                 return "cdp"
             except ComputerError as exc:
                 if "is not a dropdown" not in str(exc):
@@ -2341,20 +2816,17 @@ def _words(text):
 
 
 def _pick(candidates, option):
-    """The one candidate labelled `option`: exact, else starting with it, else holding all its words."""
+    """
+    The one candidate labelled `option` - the same name (identity.same: case, spaces and punctuation aside) - or None.
+    An entry that only starts with it or holds its words is another entry ("Ravi Kumar Jain" for "Ravi Kumar"): it is
+    left in the list the search offered, which is put to the engine, never clicked. Found in review (2026-11-03,
+    D-11): such an entry was clicked and reported as the one asked for.
+    """
 
-    want = option.strip().lower()
-    wanted = _words(option)
-    tests = (lambda n: n == want, lambda n: n.startswith(want), lambda n: wanted and wanted <= _words(n))
-
-    for test in tests:
-        hits = [e for e in candidates if test((e.get("name") or "").strip().lower())]
-        if len(hits) == 1:
-            return hits[0]
-        if len(hits) > 1:
-            raise ComputerError(f"several options fit {option!r}: " + ", ".join(sorted({h['name'] for h in hits})[:8])
-                                + " - pick one yourself")
-    return None
+    hits = [e for e in candidates if identity.same(e.get("name"), option)]
+    if len(hits) > 1:
+        raise ComputerError(f"several options are named {option!r} - pick one yourself by its ref")
+    return hits[0] if hits else None
 
 
 _PLAIN_NUMBER = re.compile(r"[+-]?\d[\d,]*(?:\.\d+)?")
@@ -2416,10 +2888,10 @@ def _named_within(label, text):
     """
     Whether an entry's whole name lies within `text`: every word of the name
     is a word of the text, and the name has at least two. A document describes
-    a thing in more words than the application's record of it has - "Executive
-    A4 Printing Paper 75 GSM (Box of 10 Reams)" for a record named "A4
-    Printing Paper" - so the record is found inside the description, never the
-    other way round. One shared word proves nothing and is not enough.
+    a thing in more words than the application's record of it has - "Premium
+    Lined Notebook 200 Pages (Pack of 5)" for a record named "Lined Notebook"
+    - so the record is found inside the description, never the other way
+    round. One shared word proves nothing and is not enough.
     """
 
     name = set(_own_name(label))
@@ -2453,8 +2925,9 @@ def _telling_words(text):
 def _note_failed_search(element, wanted):
     try:
         FAILED_SEARCH_FILE.parent.mkdir(parents=True, exist_ok=True)
-        FAILED_SEARCH_FILE.write_text(json.dumps({"at": time.time(), "task": _task_now(), "field": element.get("name") or "",
-                                                  "role": element.get("role") or "", "wanted": wanted}), encoding="utf-8")
+        privacy.write_scrubbed(FAILED_SEARCH_FILE, {"at": time.time(), "task": _task_now(),
+                                                               "field": element.get("name") or "",
+                                                               "role": element.get("role") or "", "wanted": wanted})
     except OSError:
         pass
 
@@ -2578,7 +3051,13 @@ SUBSTITUTE = ("{field} has no entry for {wanted!r} - the search for it found non
 
 
 # What select chose, when it was not an entry spelt as it was asked for: act() says so in its result.
-_selected = {"name": None, "why": ""}
+# What the last select took: the entry's name, why, whether an identifier the documents give chose it (`by_id`: set
+# only where resolve matched one - the structured fact the ledger's pick check reads, never the summary's words), and
+# the entries the list offered (`offered`, when they were read; None when not).
+_selected = {"name": None, "why": "", "by_id": False, "offered": None}
+# The most entries an action's record keeps of what a list offered; a longer list is kept as not read (None), so a
+# check that needs the whole list never takes a part of it for all of it.
+MAX_OFFERED_KEPT = 200
 
 # How many searches a suggesting field is given before select says what it offered.
 MAX_SEARCHES = 10
@@ -2747,7 +3226,7 @@ def _matched_by_identifier(field, elements, ids, track):
         entry, name = found[0]
         if entry is not None:
             cdp.click(entry)
-        _selected.update(name=name, why=f"matched by identifier {ident}")
+        _selected.update(name=name, why=f"matched by identifier {ident}", by_id=True)
         _keep_fact(track, ident, resolve.matched_line(ident, name))
         forget_failed_search()
         return True
@@ -2772,11 +3251,12 @@ def _select_datalist(element, option, ids=None):
     if entries is None:
         return None
     want = " ".join(option.split()).casefold()
-    pick = None
+    pick, by_id = None, False
+    _selected["offered"] = list(entries)
     for ident in ids or []:
         holders = list(dict.fromkeys(e for e in entries if resolve.holds(e, ident)))
         if len(holders) == 1:
-            pick = holders[0]
+            pick, by_id = holders[0], True
             line = resolve.matched_line(ident, pick)
             resolve.note(line)
             _resolved.append(line)
@@ -2796,7 +3276,7 @@ def _select_datalist(element, option, ids=None):
             if found.get("status") == "matched" and found.get("name"):
                 match = [e for e in entries if " ".join(e.split()).casefold() == " ".join(found["name"].split()).casefold()]
                 if match:
-                    pick = match[0]
+                    pick, by_id = match[0], True
                     _resolved.append(found["line"])
                     break
     if pick is None:
@@ -2814,7 +3294,7 @@ def _select_datalist(element, option, ids=None):
         raise ComputerError(f"{el.describe(element)} offers no entry that is {el._quote(option, 60)}. Its entries: "
                             f"{offered or 'none'}.{how}")
     cdp.type_text(element, pick)
-    _selected.update(name=pick, why="an entry of the field's own list" if not _resolved else _resolved[-1])
+    _selected.update(name=pick, why="an entry of the field's own list" if not _resolved else _resolved[-1], by_id=by_id)
     return "cdp"
 
 
@@ -2834,6 +3314,7 @@ def _select_native_by_id(element, option, ids):
         return None
     if not labels:
         return None
+    _selected["offered"] = list(labels)
     for ident in ids:
         holders = [label for label in labels if resolve.holds(label, ident) and not resolve._NOT_A_RECORD.search(label)]
         names = list(dict.fromkeys(" ".join(label.split()) for label in holders))
@@ -2848,7 +3329,7 @@ def _select_native_by_id(element, option, ids):
                                 + ". One identifier, two records: none was chosen. Use the one the documents or the "
                                 "person name; when neither does, ask the person which (HELP).")
         cdp.select_option(element, holders[0])
-        _selected.update(name=names[0], why=f"matched by identifier {ident}")
+        _selected.update(name=names[0], why=f"matched by identifier {ident}", by_id=True)
         line = resolve.matched_line(ident, names[0])
         resolve.note(line)
         _resolved.append(line)
@@ -2961,7 +3442,7 @@ def _select_in_list(element, option, ids, track):
     # The page's rows before anything was typed: a list page's search box narrows rows that were there already, so
     # none of them "appears" - a change in them is the list's answer.
     rows_before = None
-    _selected.update(name=None, why="")
+    _selected.update(name=None, why="", by_id=False, offered=None)
 
     def offered(now):
         return [e for e in now if e["path"] not in known and e["role"] in _SUGGESTION_ROLES
@@ -2995,6 +3476,8 @@ def _select_in_list(element, option, ids, track):
         candidates = entries(now)
         # Everything any search offered, in order: the engine chooses among real entries when none is the value.
         seen += [n for n in (e.get("name") or "" for e in candidates) if n and n not in seen]
+        # (What every search showed so far: the entries the list offered, as far as they were seen.)
+        _selected["offered"] = list(seen)
         if track is not None:
             track["offered"] = list(seen)
         # An entry whose text holds the document's identifier is the record, whatever its name (resolve.py). Among
@@ -3213,17 +3696,41 @@ def _redrawn(exc, element, ref, role, name, path):
     """
 
     if element is None or element.get("source") != "cdp" or not (ref or role or name or path):
-        return None
+        return None, None
     if not any(s in str(exc).lower() for s in STALE_NODE):
-        return None
+        return None, None
     fresh = observe()
     try:
-        again = el.find(fresh["elements"], ref=ref, role=role, name=name, path=path, active_group=active_group(fresh))
+        again = el.find(fresh["elements"], ref=ref, role=role, name=name, path=path, active_group=active_group(fresh),
+                        gone=fresh.get("gone"))
     except ComputerError:
-        return None
-    if again is None or again.get("role") != element.get("role") or again.get("name") != element.get("name"):
-        return None
-    return again
+        return None, None
+    # ...and in the same window: the same tab, the same title (an approval judged for one document's control never
+    # passes to another's).
+    if again is None or again.get("role") != element.get("role") or again.get("name") != element.get("name") \
+            or again.get("group") != element.get("group") or again.get("window_title") != element.get("window_title"):
+        return None, None
+    return again, fresh
+
+
+def _changed_under(before, element, fresh, again):
+    """
+    Why the page a redrawn control sits on is not the one the action was judged on, or "": its address, the filled
+    fields shown to the person (_what_it_acts_on) or every field the press sends (_what_it_sends) differ. Found in
+    review (2026-11-03, D-06): the retry compared the control's role, name and window only, so a same-titled tab
+    showing another record or amount was pressed under a grant made for the first. Unreadable is changed.
+    """
+
+    try:
+        if (_context(fresh).get("url") or "") != (_context(before).get("url") or ""):
+            return "its address changed"
+        if _what_it_acts_on(fresh, again) != _what_it_acts_on(before, element):
+            return "what is filled in beside it changed"
+        if _what_it_sends(fresh, again) != _what_it_sends(before, element):
+            return "what it would send changed"
+    except Exception as exc:  # noqa: BLE001 - what the page holds now cannot be read: it is not known to be the same
+        return f"what the page holds now could not be read ({type(exc).__name__})"
+    return ""
 
 
 # Controls whose press does something or chooses something. An engine that
@@ -3255,11 +3762,161 @@ def _what_it_acts_on(observation, element):
         # A message about to be sent is read whole: cut at 80 characters, the person asked to approve it was shown
         # the first few words and refused until the worker pasted it into a question (2026-10-25).
         shown.append(f"{e['role']} {el._quote(e.get('name') or '', 60)} holds {el._quote(value, ACTS_ON_CHARS)}")
-    return ("It would act on what is filled in: " + "; ".join(shown[:3])) if shown else ""
+    # Every filled field is shown up to a length (the grant is bound to all of them, _what_it_sends): an amount in the
+    # fourth field is as much what the person approves as the first three.
+    out, used = [], 0
+    for line in shown:
+        if out and used + len(line) > ACTS_ON_TOTAL:
+            out.append(f"and {len(shown) - len(out)} more filled field(s)")
+            break
+        out.append(line)
+        used += len(line)
+    return ("It would act on what is filled in: " + "; ".join(out)) if out else ""
 
 
-# How much of a filled field's value an approval quotes (_what_it_acts_on).
+# How much of a filled field's value an approval quotes (_what_it_acts_on), and of all of them together.
 ACTS_ON_CHARS = 600
+ACTS_ON_TOTAL = 3000
+
+CHECKED_ROLES = ("checkbox", "radio", "switch")
+
+
+def _what_it_sends(observation, element, enter_form=None):
+    """
+    Every filled field an action the gate stopped would send, for its grant (approval.sent_digest): each filled field
+    of its window, a checked box among them, and the fields of the <form> a click or an Enter submits as the page holds
+    them. A secret field is in it as filled, never by its value. Found in review (2026-11-02): the grant held the first
+    three fields shown, so an amount in a later one could change under a yes.
+    """
+
+    group = (element or {}).get("group") or active_group(observation)
+    out = []
+    for e in (observation or {}).get("elements") or []:
+        if group and e.get("group") != group:
+            continue
+        role = e.get("role")
+        if role in FILLED_ROLES:
+            value = " ".join(str(e.get("value") or "").split())
+            if value:
+                secret = privacy.secret_field(e) or privacy.credential_in(value)
+                out.append([e.get("name") or role, "" if secret else value, bool(secret)])
+        elif role in CHECKED_ROLES and "checked" in (e.get("states") or []):
+            out.append([e.get("name") or role, "checked"])
+    form = enter_form
+    if form is None and element is not None and element.get("source") == "cdp" and element.get("handle"):
+        form = cdp.submit_form_fields(element, min_fields=0)
+    for label, value in (form or {}).get("fields") or []:
+        out.append(["form " + str(label), value])
+    return out
+
+
+def _enter_submits(kind, element, keys, text, before):
+    """
+    The submit control an Enter in this action presses, as an element ({"role": "button", "name": its label, "form":
+    what the form holds}), when the keys (or a typed new line) go to a page's single-line field whose <form> has one;
+    else None. Enter there is a press on that control (cdp.FORM_FIELDS), and is put to the gate as one: found in review
+    (2026-11-02), Enter in a form whose submit was "Pay" went past the gate, which looks at labels it is pressed on.
+    """
+
+    if kind == "key":
+        if not _commit_keys(keys)[0]:
+            return None
+    elif not (kind == "type" and text and "\n" in text):
+        return None
+    field = element if element is not None else _keyboard_field(before)
+    if not field or field.get("source") != "cdp" or not field.get("handle"):
+        return None
+    form = cdp.enter_form_fields(field)
+    if not form:
+        return None
+    return {"role": "button", "name": form.get("submit") or "", "source": "cdp", "path": field.get("path") or "",
+            "group": field.get("group"), "window_title": field.get("window_title"), "form": form}
+
+
+SPACE_KEY = re.compile(r"(^|\+)(space|spacebar)$", re.IGNORECASE)
+
+
+def _focused_control(before):
+    """The button, link or menu entry that has the keyboard, as an element, or None: Return or Space on it presses it
+    (review 2026-11-03: Tab to a "Pay" button and Return went past the gate, which looked at clicks only)."""
+
+    found = next((e for e in before.get("elements") or [] if "focused" in (e.get("states") or [])
+                  and e.get("role") in approval.ACTIVATING_ROLES), None)
+    if found is not None:
+        return found
+    if browser.is_browser_title(before.get("active_title")) and cdp.available():
+        try:
+            field = cdp.focused(before.get("elements") or [])[0]
+        except ComputerError:
+            return None
+        if field is not None and field.get("role") in approval.ACTIVATING_ROLES:
+            return field
+    return None
+
+
+def _pressed_by_key(kind, element, keys, before, focus=None):
+    """The control a Return or Space presses, when the keys go to a focused button/link (or are aimed at one); else None.
+    A press after a key that may move the keyboard is not this one's: approval.assess asks for it (`focus`: the field
+    that has the keyboard, when known)."""
+
+    if kind != "key" or not keys:
+        return None
+    first = next((i for i, k in enumerate(keys) if approval.ENTER_KEY.search(k.strip()) or SPACE_KEY.search(k.strip())),
+                 None)
+    if first is None or approval.press_after_focus_move(keys[:first + 1], element or focus):
+        return None
+    if element is not None:
+        return element if element.get("role") in approval.ACTIVATING_ROLES else None
+    return _focused_control(before)
+
+
+def _unresolved_press(kind, element, point, before):
+    """
+    (element, why) for a click at a point that resolved to no element: the control the page itself says is there
+    (cdp.hit), else the line of text under it (OCR) taken as the label of a button; else (None, why) - a press on a spot
+    nothing could name is put to the person, never let through (review 2026-11-03).
+    """
+
+    if kind not in ("click", "double_click") or element is not None or point is None:
+        return None, None
+    answered = False
+    if before.get("page_url") and cdp.available():
+        try:
+            found, context = cdp.hit(point[0], point[1], before.get("elements") or [], controls_only=True)
+            answered = context is not None
+        except Exception:  # noqa: BLE001 - the page did not answer: look at the picture
+            found = None
+        if found is not None:
+            return found, None
+    try:
+        from decurix_agent.computer import ocr
+        line = ocr.line_at(ocr.read_frame(before.get("frame")), point) if ocr.available() else None
+    except Exception:  # noqa: BLE001
+        line = None
+    if line and str(line.get("text") or "").strip():
+        return {"role": "button", "name": line["text"].strip(), "window_title": before.get("active_title")}, None
+    if answered:
+        return None, None  # the page says no control is there: a click on plain page, nothing to name
+    return None, (f"this presses the spot {point[0]},{point[1]}, which nothing on the screen names - a press there may "
+                  "pay, send or file")
+
+
+def _refuse_files_that_may_not_leave(files):
+    """Raise when a file an upload would hand a page may not leave this desktop (privacy.file_may_leave: the worker's
+    own state, a hidden folder, anything outside the work, shared and download folders). Found in review (2026-11-03,
+    D-08): an upload sent any file on the desktop to any page; only the outbox and handoff asked this."""
+
+    if not files:
+        return files
+    if isinstance(files, (str, bytes)):
+        files = [files]
+    # As the upload reads them (cdp.set_file_input_files): from this process's folder when not absolute.
+    named = [os.path.abspath(os.path.expanduser(str(f))) for f in files]
+    for f in named:
+        _, why = privacy.file_may_leave(f)
+        if why:
+            raise ComputerError(f"{f} is not uploaded: {why}. Nothing was sent.")
+    return named
 
 
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
@@ -3283,6 +3940,13 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     # the username's step in plain text. Typing each field on its own lets the
     # password field be recognised as one.
 
+    # A withheld mark is never typed: it is where a value was kept out of a copy (a resumed run's request, a note),
+    # not the value. Into a password field it is a wrong password; into any other it is saved into the person's
+    # record (review round 4).
+    if text is not None and ("[withheld" in str(text) or "[held back" in str(text)):
+        raise ComputerError("Not typed: the text holds a withheld mark ([withheld]), not the value it stands for. "
+                            "Ask the person for this value (HELP:), and type what they give.")
+
     before = observe()
 
     element = None
@@ -3297,7 +3961,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     elif ref or role or name or path:
         try:
             element = el.find(before["elements"], ref=ref, role=role, name=name, path=path,
-                              active_group=active_group(before))
+                              active_group=active_group(before), gone=before.get("gone"))
         except ComputerError as exc:
             # A control the element list does not have (an icon drawn on a canvas, a page whose tree is
             # empty, a toolkit with no accessibility) is looked for by eye, when a grounding model is set
@@ -3488,23 +4152,91 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     # The dialogs open on the screen, for a yes-button whose own path does not name its dialog (approval.py).
     context["dialogs"] = [str(e.get("name") or "") for e in before.get("elements") or []
                           if str(e.get("role") or "").lower() in ("dialog", "alertdialog") and e.get("name")]
+    if kind == "key" and approval.press_after_focus_move(keys, element or context.get("focused")):
+        # Keys that move the keyboard and then press: any control on the screen may be the one pressed (approval.assess).
+        context["controls"] = [{"role": e.get("role"), "name": e.get("name"), "path": e.get("path") or ""}
+                               for e in before.get("elements") or []
+                               if e.get("role") in approval.PRESS_ROLES and str(e.get("name") or "").strip()]
 
-    _refuse_number_arrows(kind, point)
-    _refuse_unsafe_save(kind, element, keys, before)
+    def refused(guard, reason):
+        # A guard's refusal is an event of the task like any action (outcome "refused", the guard and its reason),
+        # withheld like every store, so the run's record and its bundle show which guard stopped what, and why
+        # (W0.3 probe, 2026-11-05: four refused saves left no trace in the task's events).
+        entry.update({"outcome": "refused", "guard": guard, "reason": str(reason),
+                      "summary": f"{described} - refused ({guard}): {reason}"})
+        try:
+            audit.record(entry, before=before["frame"], masks=masks, observation=before)
+        except Exception as exc:  # noqa: BLE001 - the refusal stands whether or not it could be recorded
+            from decurix_agent.logging_utils import log
+            log(f"Could not record a refused action: {exc}")
+        raise ComputerError(str(reason))
+
+    try:
+        _refuse_number_arrows(kind, point)
+        _refuse_unsafe_save(kind, element, keys, before)
+        files = _refuse_files_that_may_not_leave(files)
+    except ComputerError as exc:
+        refused("action_rules", exc)
     downloads_before = _downloads_snapshot() if kind in ("click", "double_click", "key") else None
     acted_at = time.time()
-    if check_form and kind == "click" and element is not None and element.get("source") == "cdp":
-        held = _form_check(element, checked=check_form == "checked")
-        if held:
-            raise ComputerError(held)
+    require = None
+    if check_form:
+        # Every committing action an engine or a replay takes, however it is pressed (_commit_check). A replay's
+        # (check_form="replay") listing of today's values is put to the person instead (AskFirst).
+        held = _commit_check(kind, element, keys, before, checked=check_form == "checked", text=text,
+                             listing="ask" if check_form == "replay" else True)
+        if isinstance(held, AskFirst):
+            require = str(held)
+        elif held:
+            refused("pre_save", held)
 
+    # Enter that submits a form is a press on its submit control, and is asked for when that press would be
+    # (_enter_submits).
+    by_enter = _enter_submits(kind, element, keys, text, before)
+    if by_enter is not None:
+        why = approval.assess("click", by_enter, context=context)
+        if why:
+            label = " ".join(str(by_enter.get("name") or "").split())[:60]
+            why = f'Enter here submits the form with its "{label}" control - {why}'
+            require = f"{why}; {require}" if require else why
+
+    # Return or Space on a focused button presses it; a click at a spot that resolved to no element presses whatever is
+    # drawn there. Both are put to the gate as the press they are.
+    keyed = _pressed_by_key(kind, element, keys, before, focus=context.get("focused")) if by_enter is None else None
+    if keyed is not None:
+        why = approval.assess("click", keyed, context=context)
+        if why:
+            label = " ".join(str(keyed.get("name") or "").split())[:60]
+            why = f'{" ".join(keys)} on "{label}" presses it - {why}'
+            require = f"{why}; {require}" if require else why
+    if grounded and kind in ("click", "double_click") and element is None:
+        # Found by eye for a description: the description is what it presses.
+        spot, spot_why = {"role": "button", "name": grounded, "window_title": before.get("active_title")}, None
+    else:
+        spot, spot_why = _unresolved_press(kind, element, point, before)
+    if spot is not None:
+        why = approval.assess("click", spot, context=context)
+        if why:
+            require = f"{why}; {require}" if require else why
+    elif spot_why:
+        require = f"{spot_why}; {require}" if require else spot_why
     decision = approval.check(kind, element, text=text, keys=keys, point=point, context=context,
-                              about=_what_it_acts_on(before, element))
+                              about=_what_it_acts_on(before, element), require=require,
+                              sends=lambda: _what_it_sends(before, element if by_enter is None else by_enter,
+                                                           enter_form=(by_enter or {}).get("form")))
     if decision.allowed and check_form == "checked":
         try:
-            FORM_CHECK_FILE.unlink()  # the checked form is sent now (_form_check)
+            _form_check_file().unlink()  # the checked form is sent now (_form_check)
         except OSError:
             pass
+
+    if not decision.allowed and not decision.request:
+        # Refused without asking anyone (the gate could not check its words for secrets): a no to this one action,
+        # said to the engine with the gate's reason - nothing waits on a person (review round 3, R2-B3).
+        entry.update({"outcome": "refused", "reason": decision.reason,
+                      "summary": f"{described} - refused by the approval gate: {decision.reason}"})
+        audit.record(entry, before=before["frame"], masks=masks, observation=before)
+        raise ComputerError(f"Not done: {decision.reason or 'the approval gate refused this action'}.")
 
     if not decision.allowed:
         text = approval.request_text(decision.request)
@@ -3513,7 +4245,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             "reason": decision.reason,
             "summary": f"{described} - paused for approval: {decision.reason}",
         })
-        audit.record(entry, before=before["frame"], masks=masks)
+        audit.record(entry, before=before["frame"], masks=masks, observation=before)
         return {
             "status": "needs_approval",
             "text": "NEEDS_APPROVAL: " + text,
@@ -3560,9 +4292,19 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             try:
                 backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files, ids=ids)
             except ComputerError as exc:
-                again = _redrawn(exc, element, ref, role, name, path)
+                again, fresh = _redrawn(exc, element, ref, role, name, path)
                 if again is None:
                     raise
+                # The second press is judged like the first, on the page as it is now (D-06).
+                changed = _changed_under(before, element, fresh, again)
+                if changed:
+                    raise ComputerError(f"the page changed under the action ({changed}) - nothing more was done. "
+                                        "Observe and do it again.") from exc
+                if check_form:
+                    held = _commit_check(kind, again, keys, fresh, checked=check_form == "checked", text=text,
+                                         listing="ask" if check_form == "replay" else True)
+                    if held:
+                        raise ComputerError(str(held)) from exc
                 element = again
                 backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files, ids=ids)
     except ComputerError as exc:
@@ -3571,11 +4313,22 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             "reason": str(exc),
             "summary": f"{described} - failed: {exc}",
         })
-        audit.record(entry, before=before["frame"], masks=masks)
+        audit.record(entry, before=before["frame"], masks=masks, observation=before)
         raise
+    except OSError as exc:
+        # A connection that broke mid-action (a browser tab that crashed: BrokenPipeError on its DevTools socket) is a
+        # failed action, recorded like any other - it may have half happened. Found in review (2026-11-02): it left
+        # `gui` with exit 0 and no audit step.
+        reason = (f"the connection to the app broke while acting ({type(exc).__name__}: {exc}) - it may or may not "
+                  "have happened; observe before doing anything again")
+        entry.update({"outcome": "failed", "reason": reason, "summary": f"{described} - failed: {reason}"})
+        audit.record(entry, before=before["frame"], masks=masks, observation=before)
+        raise ActedError(reason) from exc
 
     settled = _wait_for_settle(before["frame"])
-    after = observe()
+    # The settled frame is the after-look's picture: the screen stopped changing on it, and a second full grab at once
+    # is the same screen again (resource plan P1 #5: one full grab an action fewer).
+    after = observe(frame=settled)
     _note_front()
     if not untargeted:
         _adopt_front()
@@ -3589,17 +4342,22 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     relayed = _relayed(element, before)
     # Only a field is typed again: in a paragraph, a cell or a document a second typing adds a second copy (found
     # live: an Impress subtitle came out twice).
-    if kind == "type" and element is not None and text and not append and not relayed \
+    # Never typed again when the text pressed Enter or Tab (a field that empties because Enter sent it looks like one the
+    # page cleared, and the retype sent it twice), nor when a person approved this typing: one yes is one action (D-07).
+    typed_keys = bool(text) and ("\n" in text or "\t" in text)
+    if kind == "type" and element is not None and text and not append and not relayed and not typed_keys \
+            and not getattr(decision, "approved", False) \
             and element.get("role") not in ("paragraph", "heading", "cell", "document"):
         again = _same_field(element, after)
         if again is not None and _typing_lost(again, text):
             time.sleep(RETYPE_PAUSE)
             _perform(kind, again, point, text, keys, direction, amount, option, append, end, files=files)
             settled = _wait_for_settle(before["frame"])
-            after = observe()
+            after = observe(frame=settled)
             retyped = True
 
-    if kind == "type" and element is not None and text and not append and element.get("role") == "textbox"             and not relayed:
+    if kind == "type" and element is not None and text and not append and element.get("role") == "textbox" \
+            and not relayed and not typed_keys:
         retained = _same_field(element, after)
         if retained is not None and _typing_lost(retained, text):
             reason = (f"{target} did not retain the requested text after retrying. Observe the field again and "
@@ -3607,8 +4365,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             entry.update({"outcome": "failed", "backend": backend, "reason": reason,
                           "summary": described + " - failed: " + reason})
             audit.record(entry, before=before["frame"], after=after["frame"] or settled,
-                         masks=masks + privacy.secret_boxes(after["elements"]))
-            raise ComputerError(reason)
+                         masks=masks + privacy.secret_boxes(after["elements"]), observation=before)
+            raise ActedError(reason)
 
     block_note, unverified = "", []
     if block is not None and backend == "xdotool:sheet-block":
@@ -3666,9 +4424,20 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     if kind == "select" and _resolved:
         # What the identifiers resolved to is a fact of this action too (resolve.py).
         entry["summary"] += " - " + "; ".join(_resolved)
+    if kind == "select" and backend in ("cdp", "cdp:custom", "relayed:chosen"):
+        # The facts the ledger's pick check reads, as structure (review round 9, R9-B1: a plain pick's summary words
+        # were read as an identifier's resolution, and the worker's guess backed itself): which entry was taken,
+        # whether an identifier the documents give chose it, and what the list offered.
+        if _selected["name"]:
+            entry["taken"] = privacy.kept_text(" ".join(str(_selected["name"]).split())[:200])
+        if _selected.get("by_id"):
+            entry["resolved_by"] = "identifier"
+        offered = _selected.get("offered")
+        if isinstance(offered, list) and 0 < len(offered) <= MAX_OFFERED_KEPT:
+            entry["offered"] = [" ".join(str(o).split())[:200] for o in offered]
 
     audit.record(entry, before=before["frame"], after=after["frame"] or settled,
-                 masks=masks + privacy.secret_boxes(after["elements"]))
+                 masks=masks + privacy.secret_boxes(after["elements"]), observation=before)
 
     verb = {
         "click": "Clicked", "double_click": "Double-clicked", "right_click": "Right-clicked",
@@ -3789,6 +4558,9 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         "element": element,
         "change": change,
         "observation": after,
+        # The screen as it was before the action: what a replay holds a step's expected result against, so a result
+        # that was already there is not taken for the step's (replay.run).
+        "before": before,
         # Cells of a typed block that do not hold what was typed: the gui command fails verification (exit 4).
         "unverified": unverified,
     }
@@ -4119,17 +4891,20 @@ def verify(expect_text=None, role=None, name=None):
     detail = ""
 
     if expect_text:
-        needle = expect_text.lower()
+        # Whole words, in order (identity.holds), in what the screen shows - never the values of fields that take
+        # typing, which the worker may have typed itself. Found in review (2026-11-03, D-14): a substring over every
+        # name and value passed `--text paid` on "Unpaid", and on a notes box the worker had filled.
         haystack = [after.get("active_title") or ""] + [w["title"] for w in after["windows"]]
         for e in after["elements"]:
             haystack.append(e.get("name") or "")
-            haystack.append(e.get("value") or "")
-        ok = any(needle in (h or "").lower() for h in haystack)
+            if e.get("role") not in TYPING_ROLES:
+                haystack.append(e.get("value") or "")
+        ok = any(identity.holds(h, expect_text) for h in haystack)
         detail = f"text {el._quote(expect_text)} is {'on' if ok else 'NOT on'} the screen"
 
     if role or name:
         try:
-            match = el.find(after["elements"], role=role, name=name)
+            match = el.find(after["elements"], role=role, name=name, exact=True)
             hit = True
             found = el.describe(match)
         except ComputerError:
@@ -4356,15 +5131,15 @@ def _open(target, new_tab):
         # guessed points around the icon on every run.
         argv = launchers.argv(launchers.by_name(target))
     else:
-        parts = target.split()
-        if not shutil.which(parts[0]):
-            icons = sorted({entry["name"] for entry in launchers.entries()})
-            raise ComputerError(
-                f"don't know how to open {target!r}: give a URL, an existing file path, or one of "
-                + ", ".join(sorted(APPS))
-                + ("; or the name of an app on this desktop: " + ", ".join(icons) if icons else "")
-            )
-        argv = parts
+        # Found in review (2026-11-03, D-05): anything else was split into words and run when its first word was a
+        # program on PATH - a door to run any program with any arguments, which no guard of the shell looked at. Open
+        # takes a URL, a file, an app of APPS or an icon of this desktop, and nothing else.
+        icons = sorted({entry["name"] for entry in launchers.entries()})
+        raise ComputerError(
+            f"don't know how to open {target!r}: give a URL, an existing file path, or one of "
+            + ", ".join(sorted(APPS))
+            + ("; or the name of an app on this desktop: " + ", ".join(icons) if icons else "")
+        )
 
     started = " ".join(argv)
     raises = launchers.by_name(target) is not None and not path.exists()

@@ -164,7 +164,7 @@ def fill_lists(skill, params, context, files, rules=""):
     left_out = [{"document": str(x.get("document") or ""), "why": str(x.get("why") or "")[:200],
                  "kind": "by_hand" if str(x.get("kind") or "").strip().lower() == "by_hand" else "skip"}
                 for x in (answer.get("left_out") or []) if isinstance(x, dict) and x.get("document")]
-    left_out = [x for x in left_out if any(x["document"] == f or x["document"] in f or f in x["document"] for f in files)]
+    left_out = _left_out_paths(left_out, files)
     entered = len(files) - len({x["document"] for x in left_out})
     values, evidence = _clean(params, answer, texts)
     for param in params:
@@ -173,6 +173,37 @@ def fill_lists(skill, params, context, files, rules=""):
             values.pop(param["name"])
             evidence.pop(param["name"], None)
     return (values, evidence, None, left_out)
+
+
+def _one_path(document, files):
+    """The one file of `files` the model's `document` names: the path itself, else the one file with that file name.
+    None when it names none, or more than one (two folders holding the same file name)."""
+
+    if document in files:
+        return document
+    leaf = document.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    named = [f for f in files if str(f).replace("\\", "/").rsplit("/", 1)[-1].casefold() == leaf]
+    return named[0] if len(named) == 1 else None
+
+
+def _left_out_paths(left_out, files):
+    """
+    Each left-out entry mapped to exactly one of the run's files (its path then stands for it), once. An entry naming
+    no file, or more than one, is dropped: the run's own consumers compare paths exactly, and a loose match ("1.pdf" in
+    ".../11.pdf") listed one document both as "already entered" and as "enter by hand" (review 2026-11-03, E-34).
+    """
+
+    out, seen = [], set()
+    for entry in left_out:
+        path = _one_path(entry["document"], files)
+        if path is None:
+            log(f"binding: left-out {entry['document']!r} names no one document of this run - not left out")
+            continue
+        if path in seen:
+            continue
+        seen.add(path)
+        out.append(dict(entry, document=path))
+    return out
 
 
 def split_items(text):
@@ -207,6 +238,7 @@ def _ask(skill, params, context, files, note="", rows=True):
             parts.append(llm_client.image_part(path=image))
             texts.append(office._ocr_file(image))
             images += 1
+        office.drop_pages(doc["images"])  # (read into the parts above: the pictures are used up)
 
     if any(_is_date_param(p) for p in params):
         parts.append({"type": "text", "text": "\n" + _date_note(skill, texts)})
@@ -215,6 +247,7 @@ def _ask(skill, params, context, files, note="", rows=True):
         message, _ = llm_client.chat(
             [{"role": "system", "content": SYSTEM}, {"role": "user", "content": parts}],
             max_tokens=3000 if len(files) <= MAX_FILES else 8000, response_format={"type": "json_object"},
+            purpose="py.binding.fill",
         )
         answer = json.loads(message.get("content") or "{}")
     except (llm_client.LLMError, ValueError) as exc:
@@ -335,6 +368,11 @@ def _clean(params, answer, texts=(), strict=False):
             if strict and not held_by(written, texts):
                 log(f"binding: {name} = {written!r} is in nothing this run was given; left for the work to read")
                 continue
+            if sign_differs(written, texts):
+                # Held by its amount (held_by is sign-blind on purpose), but this run's documents write it only with
+                # the other sign: said to the check, never decided here (review 2026-11-03 rework, E-45).
+                log(f"binding: {name} = {written!r} - the documents show this amount only with the other sign; kept, and said")
+                evidence[name] = OTHER_SIGN
             if numbered_like_example(written, param, texts):
                 log(f"binding: {name} = {written!r} numbers this run's words the way the taught "
                     f"{param.get('example')!r} did, and nothing of this run says it - kept, and said")
@@ -511,8 +549,30 @@ def held_by(value, texts):
         return False
     joined = " ".join(" ".join(t.split()) for t in texts if t).casefold()
     if BARE_NUMBER.match(plain):
-        return any(_plain(n) == plain for n in re.findall(r"\d[\d,]*(?:\.\d+)?", joined))
+        # Held by its amount, whatever the sign either side writes: a credit typed as -500 is the document's "500",
+        # and a discount the field takes as 500 is the document's "-500". Review 2026-11-03 (E-45): the minus was
+        # dropped from the texts only, so a negative value was never held, and strict fill dropped every one.
+        return any(_plain(n) == plain.lstrip("-") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", joined))
     return re.search(r"(?<!\w)" + re.escape(plain) + r"(?!\w)", joined) is not None
+
+
+OTHER_SIGN = "this run's documents show this amount only with the other sign"
+
+
+def sign_differs(value, texts):
+    """Whether `value` is a bare number whose amount this run's texts hold only with the other sign ("-500" where they
+    say 500, or 500 where they say -500). The fact goes to the check as evidence; nothing is refused on it."""
+
+    plain = _plain(value)
+    if not plain or not BARE_NUMBER.match(plain) or not held_by(value, texts):
+        return False
+    joined = " ".join(" ".join(t.split()) for t in texts if t).casefold()
+    signed = []
+    for m in re.finditer(r"(-?)(\d[\d,]*(?:\.\d+)?)", joined):
+        # A minus right after a word ("inv-500") joins the word; it is no sign.
+        minus = m.group(1) and not (m.start() and re.match(r"\w", joined[m.start() - 1]))
+        signed.append(_plain(("-" if minus else "") + m.group(2)))
+    return plain not in signed
 
 
 def _own_spelling(value, example, texts):

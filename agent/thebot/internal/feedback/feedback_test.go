@@ -95,3 +95,25 @@ func TestCount(t *testing.T) {
 		t.Errorf("Count() after recording 1 entry = %d, want 1", n)
 	}
 }
+
+type unitEmbedder struct{}
+
+func (unitEmbedder) Embed(context.Context, string, string) ([]float32, error) {
+	return []float32{1, 0}, nil
+}
+
+// A limitation whose text holds a secret is not kept: it would be recalled
+// into a later failure's reasoning prompt.
+func TestRecordNegativeRefusesASecret(t *testing.T) {
+	s, err := New(t.TempDir(), unitEmbedder{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer s.Close()
+	if err := s.RecordNegative(context.Background(), "log in to the portal with password Sunrise#77", "the login failed", "self"); err == nil {
+		t.Fatal("RecordNegative kept an entry holding a password")
+	}
+	if n, _ := s.Count(context.Background()); n != 0 {
+		t.Fatalf("count = %d, want 0", n)
+	}
+}

@@ -3,6 +3,7 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,9 @@ func TestAFileACommandWroteThatIsNotItsKindIsSaidAtOnce(t *testing.T) {
 
 // Found live (2026-10-25): a script built its paths (os.path.join) and saved sign-in pages under the bills' names.
 func TestAFileAScriptWroteIntoANamedFolderIsCheckedToo(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs Linux absolute paths: a command's paths are read as /-rooted (namedPathRe), and the test's temp dir has a drive letter")
+	}
 	dir, work := t.TempDir(), t.TempDir()
 	started := time.Now()
 	os.WriteFile(filepath.Join(work, "Invoice_451.pdf"), []byte("<html>Sign in to continue</html>"), 0o644)

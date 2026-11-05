@@ -101,3 +101,80 @@ func TestAnthropicChatAgainstRealServer(t *testing.T) {
 	}
 	t.Logf("real Anthropic response: %q", result.Text)
 }
+
+// stop_reason max_tokens is an answer cut off for want of room.
+func TestAnthropicChatMarksACutOffAnswer(t *testing.T) {
+	for reason, want := range map[string]bool{"max_tokens": true, "end_turn": false} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"content": []map[string]any{{"type": "text", "text": "half a rep"}}, "stop_reason": reason,
+			})
+		}))
+		p := NewAnthropic("test-key", "claude-test")
+		p.BaseURL = srv.URL
+		result, err := p.Chat(context.Background(), "claude-test", []Message{{Role: "user", Content: "hi"}}, Options{})
+		srv.Close()
+		if err != nil || result.Truncated != want {
+			t.Errorf("stop_reason %q: Truncated = %v (%v), want %v", reason, result.Truncated, err, want)
+		}
+	}
+}
+
+// Anthropic has no "system" role inside messages[]: several system-role messages are joined into the top-level
+// `system` field, never sent as a messages[] entry (which the API rejects).
+func TestAnthropicMergesEverySystemMessage(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&body)
+		json.NewEncoder(w).Encode(map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}})
+	}))
+	defer srv.Close()
+	p := &AnthropicProvider{APIKey: "k", Client: srv.Client(), BaseURL: srv.URL}
+	_, err := p.Chat(context.Background(), "claude-test", []Message{
+		{Role: "system", Content: "frame one"},
+		{Role: "user", Content: "hi"},
+		{Role: "system", Content: "frame two"},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["system"] != "frame one\n\nframe two" {
+		t.Errorf("system = %v, want both system messages joined", body["system"])
+	}
+	msgs, _ := body["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("messages length = %d, want 1 (no system-role message left in the array)", len(msgs))
+	}
+	if m, _ := msgs[0].(map[string]any); m["role"] != "user" {
+		t.Errorf("remaining message role = %v, want user", m["role"])
+	}
+}
+
+// IsReachable never makes a chat call - /api/health polls it (review T-25): it asks the Models API about the model.
+func TestAnthropicIsReachableMakesNoChatCall(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		if r.Header.Get("x-api-key") != "k" || r.URL.Path != "/v1/models/claude-test" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id": "claude-test"}`))
+	}))
+	defer srv.Close()
+	p := NewAnthropic("k", "claude-test")
+	p.BaseURL = srv.URL
+	if !p.IsReachable(context.Background()) {
+		t.Fatalf("not reachable: %v", paths)
+	}
+	for _, path := range paths {
+		if strings.Contains(path, "/v1/messages") || !strings.HasPrefix(path, "GET ") {
+			t.Fatalf("a health check made a chat call: %v", paths)
+		}
+	}
+	unknown := NewAnthropic("k", "no-such-model")
+	unknown.BaseURL = srv.URL
+	if unknown.IsReachable(context.Background()) {
+		t.Error("an unknown model reads as reachable")
+	}
+}

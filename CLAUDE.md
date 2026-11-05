@@ -27,8 +27,11 @@ This file holds only what must be in your head for every change. The detail live
 | The learning loop: a task is a case (scope, sources, matrix), a kind of task is a learned method; learning curves | [docs/learning-loop.md](docs/learning-loop.md) |
 | Harness v3: the record ledger (`gui record`), party resolution by identifier (`gui select --id`), the scope on the window, questions the screen answers; why four days of rules did not converge | [docs/harness-v3-plan.md](docs/harness-v3-plan.md) |
 | The workforce: org skill registry and scoped knowledge with provenance; typed handoff between workers and asking a taught worker before a person; users, roles and approval policy as data; a work queue with capacity and spend limits; the Workforce page (`/workforce`) | [docs/skillhub.md](docs/skillhub.md), [docs/handoff.md](docs/handoff.md), [docs/access.md](docs/access.md), [docs/workqueue.md](docs/workqueue.md) |
+| The run record: `decurix.trajectory/v1` (steps, calls, judgements, verdict, bundle) and how a run is assembled from what the control plane and the desktop kept | [docs/trajectory.md](docs/trajectory.md) |
+| Evals: the case format, graders, the matrix runner with Wilson bounds, the scripted expert, suites in `evals/` | [docs/evals.md](docs/evals.md) |
 | Brainiac: many open models behind one OpenAI-compatible endpoint, chosen per machine (own Go module, imports nothing from Decurix) | [brainiac/README.md](brainiac/README.md), [brainiac/DESIGN.md](brainiac/DESIGN.md) |
-| Every lesson learned the hard way (800 entries) | [docs/gotchas.md](docs/gotchas.md): one line each, grep it, then open the named part file |
+| Every lesson learned the hard way (about 950 entries) | [docs/gotchas.md](docs/gotchas.md): one line each, grep it, then open the named part file |
+| Open owner decisions, deferred review items, and the live checks owed after the next build | [docs/follow-ups.md](docs/follow-ups.md) |
 
 ## Commands
 
@@ -46,9 +49,9 @@ Live benches (Docker, minutes each) are listed in [docs/running.md](docs/running
 - **Two listeners.** The primary `:8080` has no login and host-level power (Docker socket, host bridge). It is never exposed beyond this machine and its desktops. The gated `:8090` (`internal/lanaccess`) is the only thing tunnelled. Host-running routes are registered on the primary mux only (`RegisterLocalRoutes`). Details: architecture.md.
 - **`harness.py` is the only file that branches on `AGENT_HARNESS`.** Everything upstream stays harness-agnostic.
 - **No unseen success.** A report goes through the final gate (`verify.py`, `skill_task._gate`); only a confident `done` is done. Facts a program can decide (sums, files, paths, recipients) are checked in code before any model.
-- **The approval gate is not the skill's or the engine's to switch off.** A yes is one action's. No "always allow".
+- **The approval gate is not the skill's or the engine's to switch off.** A yes is one action's. No "always allow". A yes is made only by the gate process (separate Linux user) from a reply the control plane signed; nothing in the worker's user (files, env, `:8081`, `:4900`) may create one. Details and limits: [docs/gate-boundary.md](docs/gate-boundary.md).
 - **Generic tools only.** No per-product or per-workflow helpers; add capabilities (`office read/update/create`, `gui ...`), and put business rules in the operator's `taskRules` as a principle, not a story.
-- **Secrets never reach the chat, the command file, the task record or a recording.** `privacy.py` withholds at the source.
+- **Secrets never reach the chat, the command file, the task record or a recording.** `privacy.py` withholds at the source, and every writer of desktop state ends with `privacy.scrub`. A secret reply rests on data (`secret: true`, set from structure), not on a word list.
 - **SQLite.** A schema change is a new appended step in that component's `Migrate` slice, never an edit. No query while a `*sql.Rows` is open. A read-then-write needs its own mutex.
 - **`go:embed`.** Anything a desktop image needs at docker-build time must be embedded (`embed.go`); it skips `_`-named files and `agent/thebot` (packed by `go generate .`). Use `path.Join` for embed paths.
 - **Scripts.** `.sh` and `.ps1` twins are hand-maintained: change both. Scripts that run in Linux must have LF endings (`.gitattributes`; the build refuses CRLF).
@@ -72,4 +75,4 @@ Live benches (Docker, minutes each) are listed in [docs/running.md](docs/running
 - **Never run `build_app.ps1`**: they run builds (two at once collide). Fix the code; they build.
 - Azure GPT may be used for tests through a dev control plane (key in the repo `.env`).
 - Use the headless dev loop for live checks (start the Decurix distro's Docker, `docker cp` agent code, build soul in a Go container).
-- Test data and checkers live outside the repo in `C:\Users\Administrator\decurix-tests`.
+- Dev eval suites, with fictional data only, live in `evals/`; a boundary test keeps harness code from naming them. The sealed held-out set stays outside the repo and is backed up off-host.

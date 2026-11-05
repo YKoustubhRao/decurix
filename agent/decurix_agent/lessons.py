@@ -46,7 +46,7 @@ OPERATIONAL = re.compile(
 
 # A question whose answer is a secret.
 SECRET_ASKED = re.compile(
-    r"\b(password|passcode|passphrase|pin|otp|one[- ]time (?:code|password)|verification code|security code|"
+    r"\b(password|passcode|passphrase|" + privacy.PIN_WORD + r"|otp|one[- ]time (?:code|password)|verification code|security code|"
     r"2fa|cvv|api key|secret|token)\b", re.IGNORECASE)
 
 DISTILL_SYSTEM ="""A computer worker stopped during a task to ask the person it works for a question, and the person answered. Decide what, if anything, the worker should remember from this for future tasks, and write it as one instruction.
@@ -148,7 +148,7 @@ def distil(question, reply, task="", skill=""):
             log(f"lessons: the model could not be asked ({exc}); keeping the exchange as it was said")
         else:
             if data.get("keep") is not True:
-                log(f"lessons: nothing to keep from {reply[:80]!r} ({_squash(data.get('why'), 120)})")
+                log(f"lessons: nothing to keep from {_shown(reply)!r} ({_squash(data.get('why'), 120)})")
                 return None
             # A lesson that names one record of this run (its row, its number, its amount) is asked for once more as
             # the rule; still naming one, nothing is kept. Found live (2026-10-25): "set A99 from the dashboard ...
@@ -163,7 +163,7 @@ def distil(question, reply, task="", skill=""):
                     data = {"keep": False}
                 still = case_values(f"{data.get('title', '')} {data.get('lesson', '')}", context)
                 if data.get("keep") is not True or still:
-                    log(f"lessons: nothing to keep from {reply[:80]!r} (it names this run's own values: "
+                    log(f"lessons: nothing to keep from {_shown(reply)!r} (it names this run's own values: "
                         f"{', '.join(still or values)})")
                     return None
             lesson = _squash(data.get("lesson"), MAX_LESSON_CHARS)
@@ -189,7 +189,14 @@ def distil(question, reply, task="", skill=""):
                    + (f" (Task: {_squash(skill or task, 120)})" if skill or task else ""))
 
 
-def _keep(question, reply, task, skill):
+def _shown(text):
+    """A reply as a log line shows it: withheld whole, then cut (review round 2, B3/B4)."""
+
+    from decurix_agent.computer import privacy
+    return privacy.withhold_known(str(text or ""))[:80]
+
+
+def _keep(question, reply, task, skill, task_id="", judgement_id=""):
     try:
         found = distil(question, reply, task=task, skill=skill)
         if found is None:
@@ -197,11 +204,15 @@ def _keep(question, reply, task, skill):
         title, text = found
         if remember(f"Lesson: {title}", text, category=CATEGORY):
             log(f"lessons: kept {title!r}")
+            # Copied to the control plane under the person whose reply it came from (R8).
+            from decurix_agent import messaging
+            messaging.post_learned("lesson", skill or "", 0, question, text, task_id=task_id or None,
+                                   derived_from=judgement_id)
     except Exception as exc:
         log(f"lessons: could not keep what the person said: {exc}")
 
 
-def note(question, reply, kind="query", outcome=None, task="", skill="", mechanical=False):
+def note(question, reply, kind="query", outcome=None, task="", skill="", mechanical=False, judgement_id=""):
     """
     Keep what a person answered to a question this worker asked, if there is
     something in it to keep. Returns the thread doing it, or None when the
@@ -218,6 +229,9 @@ def note(question, reply, kind="query", outcome=None, task="", skill="", mechani
     if mechanical and not llm_client.available():
         return None
 
-    thread = threading.Thread(target=_keep, args=(question, reply, task, skill), daemon=True)
+    # (The task is taken now: the thread may finish after the next task began.)
+    from decurix_agent import task_context
+    thread = threading.Thread(target=_keep, args=(question, reply, task, skill, task_context.current(), judgement_id),
+                              daemon=True)
     thread.start()
     return thread

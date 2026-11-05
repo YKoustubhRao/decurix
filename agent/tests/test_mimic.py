@@ -167,7 +167,7 @@ class TestRun(_Recordings):
                     "options": [], "trail": []}
 
         with patch.object(replay, "run", side_effect=fake_run), \
-             patch.object(skill_task, "_ask_model", side_effect=model or (lambda s, p: (_ for _ in ()).throw(RuntimeError()))), \
+             patch.object(skill_task, "_ask_model", side_effect=model or (lambda s, p, purpose=None: (_ for _ in ()).throw(RuntimeError()))), \
              patch.object(skill_task, "write_final_reply", side_effect=lambda t, **k: seen.setdefault("final", t)), \
              patch.object(skill_task, "ask_for_query", side_effect=lambda t, **k: seen.setdefault("asked", t)), \
              patch.object(skill_task.progress, "emit", side_effect=lambda t: seen.setdefault("said", []).append(t)), \
@@ -204,7 +204,7 @@ class TestRun(_Recordings):
         self.record("set the due date to 5 March", [_event("type", text="05/03/2026")])
         asked = []
 
-        def model(system, prompt):
+        def model(system, prompt, purpose=None):
             asked.append(prompt)
             return "07/03/2026"
 
@@ -221,7 +221,7 @@ class TestRun(_Recordings):
 
     def test_a_model_that_would_change_nothing_hands_it_to_the_engine(self):
         self.record("open the due date in Chrome", [_event("type", text="due date")])
-        seen = self.run_request("open the due date in Firefox", model=lambda s, p: "due date")
+        seen = self.run_request("open the due date in Firefox", model=lambda s, p, purpose=None: "due date")
         self.assertEqual(seen.get("engine"), "open the due date in Firefox")
         self.assertNotIn("program", seen)
 

@@ -1,0 +1,424 @@
+{
+  "schema": "decurix.trajectory/v1",
+  "run_id": "e_h",
+  "task_id": "t_h",
+  "attempt": 1,
+  "worker": {
+    "id": "eve",
+    "name": "eve",
+    "harness": "thebot",
+    "brain": "azure",
+    "image": "",
+    "agent_sha": "sha256:agent",
+    "soul_sha": "sha256:soul",
+    "rules_sha": ""
+  },
+  "origin": {
+    "kind": "person",
+    "ref": "chat",
+    "actor": {
+      "id": "local",
+      "roles": [],
+      "kind": "person"
+    }
+  },
+  "skill": {
+    "name": "",
+    "version": 0
+  },
+  "request": {
+    "text": "Enter bill.pdf as a bill",
+    "sha256": "9f9edb880bab5e813ffc9fee97a67327ff549f2b68701bd4216eaa7953429d63",
+    "files": []
+  },
+  "started_at": "2026-11-04T10:02:11Z",
+  "ended_at": "2026-11-04T10:09:40Z",
+  "status": "done",
+  "outcome": "done_checked",
+  "verdict": {
+    "schema": "decurix.verdict/v1",
+    "verdict": "done",
+    "by": "verify",
+    "why": "the saved record reads back",
+    "basis": [
+      "code",
+      "ledger"
+    ],
+    "checks": [
+      {
+        "id": "ledger.read_back",
+        "result": "pass",
+        "basis": "ledger",
+        "detail": "INV-0042: 2 of 2 fields seen",
+        "refs": []
+      }
+    ],
+    "evidence": [
+      "Checked on the screen: INV-0042 saved"
+    ]
+  },
+  "models": [
+    {
+      "provider": "azure",
+      "deployment": "gpt-6.1-sol",
+      "calls": 5,
+      "purposes": {
+        "operator.turn": 4,
+        "review": 1
+      }
+    }
+  ],
+  "usage": {
+    "input_tokens": 150000,
+    "cached_input_tokens": 140000,
+    "output_tokens": 1000,
+    "calls": 5
+  },
+  "steps": [
+    {
+      "i": 0,
+      "at": "2026-11-04T10:03:02Z",
+      "turn": "j42:1",
+      "call": 0,
+      "model": {
+        "provider": "azure",
+        "deployment": "gpt-6.1-sol"
+      },
+      "prompt_sha256": "prompt-c1",
+      "prefix_sha256": "prefix-c1",
+      "observation": {
+        "frame": "a1.png",
+        "ax": "3f9a0c1e22b4d5e6",
+        "window": "Records - Chromium",
+        "url": "http://records.example.test/bills/new"
+      },
+      "command": {
+        "text": "gui type 'textbox \"Total\"' '5900.00'",
+        "tool": "gui",
+        "exit": 0,
+        "ms": 900,
+        "output_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "guard": "allowed"
+      },
+      "action": {
+        "record_id": "20261104T100302-1a2b3c4d",
+        "kind": "type",
+        "target": {
+          "name": "Total",
+          "path": "form/total",
+          "role": "textbox"
+        },
+        "text": "5900.00",
+        "withheld": null,
+        "backend": "atspi",
+        "outcome": "done",
+        "actor": "agent"
+      },
+      "gate": {
+        "decision": "not_needed",
+        "request_id": "",
+        "judgement_id": ""
+      },
+      "diff": {
+        "before": "a1.png",
+        "after": "a2.png",
+        "change": "Total now 5900.00",
+        "expect": {
+          "value": "5900.00"
+        }
+      },
+      "ledger_delta": [],
+      "label": "ok"
+    },
+    {
+      "i": 1,
+      "at": "2026-11-04T10:04:19.5Z",
+      "turn": "j42:2",
+      "call": 1,
+      "model": {
+        "provider": "azure",
+        "deployment": "gpt-6.1-sol"
+      },
+      "prompt_sha256": "prompt-c2",
+      "prefix_sha256": "prefix-c2",
+      "observation": null,
+      "command": {
+        "text": "office read bill.pdf",
+        "tool": "office",
+        "exit": 0,
+        "ms": 1500,
+        "output_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "guard": "allowed"
+      },
+      "action": null,
+      "gate": {
+        "decision": "not_needed",
+        "request_id": "",
+        "judgement_id": ""
+      },
+      "diff": null,
+      "ledger_delta": [],
+      "label": "ok"
+    },
+    {
+      "i": 2,
+      "at": "2026-11-04T10:09:01Z",
+      "turn": "j42:4",
+      "call": 4,
+      "model": {
+        "provider": "azure",
+        "deployment": "gpt-6.1-sol"
+      },
+      "prompt_sha256": "prompt-c5",
+      "prefix_sha256": "prefix-c5",
+      "observation": {
+        "frame": "a2.png",
+        "ax": "4a0b1d2f33c5e6f7",
+        "window": "Records - Chromium",
+        "url": "http://records.example.test/bills/new"
+      },
+      "command": {
+        "text": "gui click 'button \"Save\"'",
+        "tool": "gui",
+        "exit": 0,
+        "ms": 1800,
+        "output_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "guard": "allowed"
+      },
+      "action": {
+        "record_id": "20261104T100901-2b3c4d5e",
+        "kind": "click",
+        "target": {
+          "name": "Save",
+          "role": "button"
+        },
+        "text": null,
+        "withheld": null,
+        "backend": "atspi",
+        "outcome": "done",
+        "actor": "agent"
+      },
+      "gate": {
+        "decision": "not_needed",
+        "request_id": "",
+        "judgement_id": ""
+      },
+      "diff": {
+        "before": "a2.png",
+        "after": "a3.png",
+        "change": "Saved INV-0042",
+        "expect": {}
+      },
+      "ledger_delta": [],
+      "label": "ok"
+    }
+  ],
+  "calls": [
+    {
+      "i": 0,
+      "id": "c1",
+      "at": "2026-11-04T10:02:56Z",
+      "source": "proxy",
+      "provider": "azure",
+      "deployment": "gpt-6.1-sol",
+      "purpose": "operator.turn",
+      "turn": "j42:1",
+      "caller": "soul",
+      "status": 200,
+      "ms": 2000,
+      "prompt_sha256": "prompt-c1",
+      "prefix_sha256": "prefix-c1",
+      "response_sha256": "resp-c1",
+      "messages": 2,
+      "usage": {
+        "input_tokens": 30000,
+        "cached_input_tokens": 28000,
+        "output_tokens": 200,
+        "calls": 1
+      },
+      "problems": []
+    },
+    {
+      "i": 1,
+      "id": "c2",
+      "at": "2026-11-04T10:04:11Z",
+      "source": "proxy",
+      "provider": "azure",
+      "deployment": "gpt-6.1-sol",
+      "purpose": "operator.turn",
+      "turn": "j42:2",
+      "caller": "soul",
+      "status": 200,
+      "ms": 2000,
+      "prompt_sha256": "prompt-c2",
+      "prefix_sha256": "prefix-c2",
+      "response_sha256": "resp-c2",
+      "messages": 2,
+      "usage": {
+        "input_tokens": 30000,
+        "cached_input_tokens": 28000,
+        "output_tokens": 200,
+        "calls": 1
+      },
+      "problems": []
+    },
+    {
+      "i": 2,
+      "id": "c3",
+      "at": "2026-11-04T10:07:11Z",
+      "source": "proxy",
+      "provider": "azure",
+      "deployment": "gpt-6.1-sol",
+      "purpose": "operator.turn",
+      "turn": "j42:3",
+      "caller": "soul",
+      "status": 200,
+      "ms": 2000,
+      "prompt_sha256": "prompt-c3",
+      "prefix_sha256": "prefix-c3",
+      "response_sha256": "resp-c3",
+      "messages": 2,
+      "usage": {
+        "input_tokens": 30000,
+        "cached_input_tokens": 28000,
+        "output_tokens": 200,
+        "calls": 1
+      },
+      "problems": []
+    },
+    {
+      "i": 3,
+      "id": "c4",
+      "at": "2026-11-04T10:07:41Z",
+      "source": "proxy",
+      "provider": "azure",
+      "deployment": "gpt-6.1-sol",
+      "purpose": "operator.turn",
+      "turn": "j42:4",
+      "caller": "soul",
+      "status": 200,
+      "ms": 2000,
+      "prompt_sha256": "prompt-c4",
+      "prefix_sha256": "prefix-c4",
+      "response_sha256": "resp-c4",
+      "messages": 2,
+      "usage": {
+        "input_tokens": 30000,
+        "cached_input_tokens": 28000,
+        "output_tokens": 200,
+        "calls": 1
+      },
+      "problems": []
+    },
+    {
+      "i": 4,
+      "id": "c5",
+      "at": "2026-11-04T10:07:51Z",
+      "source": "proxy",
+      "provider": "azure",
+      "deployment": "gpt-6.1-sol",
+      "purpose": "review",
+      "turn": "j42:4",
+      "caller": "soul",
+      "status": 200,
+      "ms": 2000,
+      "prompt_sha256": "prompt-c5",
+      "prefix_sha256": "prefix-c5",
+      "response_sha256": "resp-c5",
+      "messages": 2,
+      "usage": {
+        "input_tokens": 30000,
+        "cached_input_tokens": 28000,
+        "output_tokens": 200,
+        "calls": 1
+      },
+      "problems": []
+    }
+  ],
+  "questions": [
+    {
+      "intervention_id": "i_q1",
+      "kind": "query",
+      "asked_at": "2026-11-04T10:05:31Z",
+      "text": "Which ledger should this bill go to?",
+      "secret": false,
+      "answer": {
+        "judgement_id": "j_ans1",
+        "at": "2026-11-04T10:06:51Z",
+        "text": "Purchases",
+        "actor": {
+          "id": "local",
+          "roles": [
+            "owner"
+          ],
+          "kind": "person"
+        }
+      }
+    }
+  ],
+  "judgements": [
+    {
+      "id": "j_ans1",
+      "kind": "answer",
+      "actor": {
+        "id": "local",
+        "roles": [
+          "owner"
+        ],
+        "kind": "person"
+      },
+      "at": "2026-11-04T10:06:51Z",
+      "derived_from": "",
+      "payload": {}
+    }
+  ],
+  "ledger": [
+    {
+      "key": "INV-0042",
+      "source": "bill.pdf",
+      "status": "matched",
+      "fields": [
+        {
+          "label": "Total",
+          "intended": "5,900.00",
+          "at_save": "5900.00",
+          "shown": "",
+          "status": "matched"
+        },
+        {
+          "label": "Payee",
+          "intended": "Acme Supplies",
+          "at_save": "",
+          "shown": "",
+          "status": "matched"
+        }
+      ]
+    }
+  ],
+  "labels": {
+    "run": "done",
+    "person_verdict": "",
+    "eval": null
+  },
+  "integrity": {
+    "bundle_sha256": "d17b9808050ad08acd626227aaa963ebf2e6feef3be001f74195f16007fa61d2",
+    "parts": {
+      "ledger": "sha256:c2353b5daa029cc4be5b26d49eecc1495d6dc43fd6fa78192dc4b70f9291b5fc",
+      "manifest": "sha256:5597836619edc1e7e2582cb8b6d5f2ab6431c15dc4a1613aaa2b70c5b81f02dd",
+      "notes": "sha256:0cef139cf4e1a9229e485d6450444290bfac29554d14925b6f1ecbb8aae121fa",
+      "recording": "sha256:2511cc3790496a1ded3bb705df5353653e7a05a4dd835f103d084f28ee3d74dd",
+      "soul_trace": "sha256:19623c0477963fe1dd2422385e74ae35f72b84eb69edc19dc5a2a30462afe734"
+    },
+    "missing": [
+      "files: not present",
+      "outputs: not present"
+    ],
+    "worker_written": [
+      "recording",
+      "notes",
+      "ledger",
+      "manifest",
+      "soul_trace"
+    ]
+  }
+}

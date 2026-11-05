@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 from decurix_agent import config, task_context
-from decurix_agent.computer import recording, screen, visual
+from decurix_agent.computer import privacy, recording, screen, visual
 from decurix_agent.logging_utils import log
 
 
@@ -170,10 +170,15 @@ def note(text):
     task_id = task_context.current()
     if not task_id or not text:
         return
+    # Through privacy.scrub before it is cut or written (review 2026-11-03, D-18: a look's field values were written
+    # here as they were shown). scrub never raises; on an error the note is HELD_BACK.
+    kept = privacy.scrub(text if isinstance(text, (dict, list, tuple)) else str(text))
+    text = kept if isinstance(kept, str) else json.dumps(kept, ensure_ascii=False)
     try:
         NOTES_DIR.mkdir(parents=True, exist_ok=True)
-        with open(NOTES_DIR / f"{task_id}.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps({"at": time.time(), "text": str(text)[:MAX_NOTE]}, ensure_ascii=False) + "\n")
+        privacy.write_scrubbed(NOTES_DIR / f"{task_id}.jsonl",
+                               {"at": time.time(), "text": text[:MAX_NOTE]},
+                               append=True, json_kw={"ensure_ascii": False}, end="\n")
         _prune()
     except OSError as exc:
         log(f"evidence: could not keep a note: {exc}")
@@ -246,24 +251,32 @@ def note_look(shown, observation=None):
 
 
 def _prune():
+    """Delete notes older than NOTES_KEEP_SECONDS - never a labelled run's before it is exported (retention.held, W0.8)."""
+
+    from decurix_agent import retention
     cutoff = time.time() - NOTES_KEEP_SECONDS
-    for path in list(NOTES_DIR.glob("*.jsonl")) + list(NOTES_DIR.glob("*.files")) + list(NOTES_DIR.glob("*.outputs")):
+    for path in (list(NOTES_DIR.glob("*.jsonl")) + list(NOTES_DIR.glob("*.files")) + list(NOTES_DIR.glob("*.outputs"))
+                 + list(NOTES_DIR.glob("*.said"))):
         try:
-            if path.stat().st_mtime < cutoff:
+            if path.stat().st_mtime < cutoff and not retention.held(path.name.split(".", 1)[0]):
                 path.unlink()
         except OSError:
             pass
 
 
 def _task_events(task_id):
-    """The actions a task's tools took on the screen, as recorded, oldest first; [] when there are none."""
+    """
+    The actions a task's tools took on the screen, as recorded, oldest first; [] when there is no task or no recording.
+    A recording that is there and cannot be read raises (recording.Unreadable): the checks that read it make that a
+    check not made, never "nothing typed" (N-1, review round 4).
+    """
 
     task_id = task_id or task_context.current()
     if not task_id:
         return []
     try:
-        return recording.load(recording.session_for_task(task_id))[1]
-    except (FileNotFoundError, OSError, ValueError):
+        return recording.load(recording.session_for_task(task_id), strict=True)[1]
+    except FileNotFoundError:
         return []
 
 
@@ -305,19 +318,25 @@ def looks(task_id=None):
 
 
 def _notes(task_id, last=None):
-    """The texts noted for a task, oldest first: of its `last` lines only, when given."""
+    """The texts noted for a task, oldest first: of its `last` lines only, when given; [] when none were noted. Notes
+    that are there and cannot be read, or a line that is no note, raise recording.Unreadable: what the tools read is
+    then unknown, never "nothing" (N-1, review round 4)."""
 
     try:
         with open(NOTES_DIR / f"{task_id}.jsonl", encoding="utf-8") as f:
             lines = f.readlines()
-    except OSError:
+    except FileNotFoundError:
         return []
+    except OSError as exc:
+        raise recording.Unreadable(f"the notes of task {task_id} cannot be read ({type(exc).__name__})") from exc
     texts = []
     for line in lines[-last:] if last else lines:
+        if not line.strip():
+            continue
         try:
             texts.append(json.loads(line)["text"])
-        except (ValueError, KeyError):
-            continue
+        except (ValueError, KeyError, TypeError):
+            raise recording.Unreadable(f"a note of task {task_id} is no note") from None
     return texts
 
 
@@ -362,8 +381,8 @@ def note_file_read(path):
         return
     try:
         NOTES_DIR.mkdir(parents=True, exist_ok=True)
-        with open(NOTES_DIR / f"{task_id}.files", "a", encoding="utf-8") as f:
-            f.write(str(path).replace("\n", " ") + "\n")
+        privacy.write_scrubbed(NOTES_DIR / f"{task_id}.files", str(path).replace("\n", " ") + "\n", append=True,
+                               shapes=False)
     except OSError as exc:
         log(f"evidence: could not keep a file read: {exc}")
 

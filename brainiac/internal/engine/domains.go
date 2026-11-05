@@ -21,6 +21,20 @@ import (
 // RemoteEvalName is the name the remote brain's eval results are kept under.
 const RemoteEvalName = "remote"
 
+// RoutedEvalName is the name a local model's routed-path results are kept
+// under: in each field, the cases the router sends to that field, answered
+// by that model. A case the router sends to the wrong field is a miss there,
+// so the score measures the path that is served, router included.
+func RoutedEvalName(model string) string { return "routed:" + model }
+
+// Route is the field the router would send a text to, its confidence, and
+// whether that is confident enough to route. `brainiac eval` asks it for
+// every case, to score the routed path.
+func (e *Engine) Route(text string) (string, float64, bool) {
+	d := e.rt.Classify(text)
+	return d.Class, d.P, d.Routes()
+}
+
 // RouterExamplesFile holds checked requests the router learns from, one JSON
 // object {"text": ..., "domain": ...} per line, under the store root.
 const RouterExamplesFile = "router-examples.jsonl"
@@ -115,12 +129,16 @@ func lastUserText(msgs []InMessage) string {
 //
 //   - explicit (the client named the field) always goes to its specialist when
 //     one is installed;
-//   - otherwise the router must be confident (router.Threshold);
+//   - otherwise the router must be confident (router.Threshold), and the
+//     router's guess alone never hands a request to a model nobody measured:
 //   - with a remote brain, a local path takes the field only once it has earned
 //     it (earnedPath), never on its published numbers alone;
-//   - with a local brain, a specialist that has been measured worse than the
-//     brain in its field loses it back to the brain, and so does one the brain
-//     is proven as good as and answers faster than.
+//   - with a local brain, a specialist takes routed requests only once checked
+//     cases prove it at least as good as the brain in its field (so one merely
+//     as good stays with the brain), and loses them on a live miss;
+//   - either way, an earned path serves only requests shaped like the cases
+//     that earned it (likeEvalCases): one question, no long system prompt, no
+//     pictures, recordings or web lookup.
 func (e *Engine) routeDomain(req Request, explicit string, base brainChoice, baseErr error) (brainChoice, error) {
 	d, p := explicit, 1.0
 	if d == "" {
@@ -130,47 +148,58 @@ func (e *Engine) routeDomain(req Request, explicit string, base brainChoice, bas
 		}
 		d, p = dec.Class, dec.P
 	}
-	mode := base.mode
-	if mode == "" {
-		mode = config.ModeLocal
-	}
 	answer := func(u *unit, why string) (brainChoice, error) {
-		return brainChoice{mode: mode, local: u, name: u.model, sees: u.vision, domain: d, domainP: p, thinks: u.thinks, why: why}, nil
+		// A specialist runs here, so the answer is local whatever the mode.
+		return brainChoice{mode: config.ModeLocal, local: u, name: u.model, sees: u.vision, domain: d, domainP: p, thinks: u.thinks, why: why}, nil
 	}
+	keep := func(why string) (brainChoice, error) {
+		base.domain, base.domainP = d, p
+		if why != "" {
+			base.why = why
+		}
+		return base, baseErr
+	}
+	shaped, unlike := likeEvalCases(shapeOf(req))
 	if base.remote != nil && explicit == "" {
+		if !shaped {
+			return keep("the remote brain answers " + d + ": local paths were measured on single questions, and this request has " + unlike)
+		}
 		if u, why := e.earnedPath(d, req); u != nil {
 			return answer(u, why)
 		} else {
-			base.domain, base.domainP, base.why = d, p, why
+			return keep(why)
 		}
-		return base, baseErr
 	}
 	spec := e.byRole[d]
 	if spec == nil || (base.local != nil && spec == base.local && base.remote == nil) {
-		base.domain, base.domainP = d, p
 		if spec == nil {
-			base.why = "no " + d + " specialist is installed here; the brain answers"
+			return keep("no " + d + " specialist is installed here; the brain answers")
 		}
-		return base, baseErr
+		return keep("")
 	}
-	if base.local != nil && base.remote == nil && explicit == "" {
+	if explicit == "" {
+		// Only a local brain is left here (a remote one returned above).
+		if base.local == nil {
+			return keep("")
+		}
 		res := e.evals.get()
 		if better, known := res.Compare(spec.model, base.local.model, d); known && !better {
-			base.domain, base.domainP = d, p
-			base.why = spec.model + " was measured worse than " + base.local.model + " at " + d + "; the brain answers"
-			return base, baseErr
+			return keep(spec.model + " was measured worse than " + base.local.model + " at " + d + "; the brain answers")
 		}
-		if res.Proven(base.local.model, spec.model, d) && res.Scores[base.local.model][d].MeanMs < res.Scores[spec.model][d].MeanMs {
-			base.domain, base.domainP = d, p
-			base.why = base.local.model + " is proven as good as " + spec.model + " at " + d + " and answers faster; the brain answers"
-			return base, baseErr
+		// The router chose this field, so the evidence is the routed path's.
+		if !res.Proven(RoutedEvalName(spec.model), base.local.model, d) {
+			return keep(spec.model + " is not proven on checked cases, as routed, to be as good as " + base.local.model + " at " + d +
+				" (brainiac eval); the brain answers. Name the field (\"domain\": \"" + d + "\") to ask the specialist")
 		}
+		if live := e.outcomes.Get(spec.model, d); live.LastMiss.After(res.Scores[RoutedEvalName(spec.model)][d].At) {
+			return keep("a real " + d + " answer from " + spec.model + " was reported wrong after it was measured; the brain answers until it is measured again")
+		}
+		if !shaped {
+			return keep(spec.model + " was measured on single questions, and this request has " + unlike + "; the brain answers")
+		}
+		return answer(spec, spec.model+" is proven at least as good as "+base.local.model+" at "+d+"; routed to the specialist")
 	}
-	why := "routed to the " + d + " specialist"
-	if explicit != "" {
-		why = "the client asked for the " + d + " specialist"
-	}
-	return answer(spec, why)
+	return answer(spec, "the client asked for the "+d+" specialist")
 }
 
 // PathStatus says why one local model does or does not answer a field.
@@ -196,30 +225,33 @@ func (e *Engine) localPaths(d string) []*unit {
 	return out
 }
 
-// pathStatus judges one local model against the remote brain. Quality comes
-// first and is a gate, not a trade: time and money only choose among the
-// models that passed it.
+// pathStatus judges one local model, as the router serves it, against the
+// remote brain: the evidence is its routed-path score (RoutedEvalName), so a
+// model proven by name on its field still earns nothing if the router sends
+// it questions of other fields. Quality comes first and is a gate, not a
+// trade: time and money only choose among the models that passed it.
 func (e *Engine) pathStatus(u *unit, d string) PathStatus {
 	st := PathStatus{Model: u.model, Live: e.outcomes.Get(u.model, d)}
 	res := e.evals.get()
+	key := RoutedEvalName(u.model)
 	var score evals.Score
 	if res != nil {
-		if s, ok := res.Scores[u.model][d]; ok {
+		if s, ok := res.Scores[key][d]; ok {
 			score, st.Score = s, &s
 		}
 	}
 	switch {
 	case st.Score == nil:
-		st.Why = "not measured in this field (brainiac eval)"
-	case !res.Proven(u.model, RemoteEvalName, d):
-		st.Why = fmt.Sprintf("%d/%d correct can claim only %.0f%%, which does not show it is as good as the remote brain (brainiac eval)", score.Correct, score.N, 100*score.LowerBound())
+		st.Why = "its routed path is not measured in this field (brainiac eval)"
+	case !res.Proven(key, RemoteEvalName, d):
+		st.Why = fmt.Sprintf("%d/%d correct as routed can claim only %.0f%%, which does not show it is as good as the remote brain (brainiac eval)", score.Correct, score.N, 100*score.LowerBound())
 	case st.Live.LastMiss.After(score.At):
 		st.Why = "a real answer was reported wrong after it was measured; it must be measured again (brainiac eval)"
 	case e.cfg.MaxLocalSeconds > 0 && float64(score.MeanMs)/1000 > e.cfg.MaxLocalSeconds:
 		st.Why = fmt.Sprintf("it takes %.0f s on average, over the %.0f s allowed (max_local_seconds)", float64(score.MeanMs)/1000, e.cfg.MaxLocalSeconds)
 	default:
 		st.Earned = true
-		st.Why = fmt.Sprintf("%d/%d correct is proven as good as the remote brain, at no hosted cost", score.Correct, score.N)
+		st.Why = fmt.Sprintf("%d/%d correct as routed is proven as good as the remote brain, at no hosted cost", score.Correct, score.N)
 	}
 	return st
 }
@@ -252,13 +284,21 @@ func (e *Engine) earnedPath(d string, req Request) (*unit, string) {
 
 // fitsWindow reports whether a request can fit a local model's context window,
 // counting about 3 characters a token and leaving a quarter for the answer. A
-// path was proven on short cases, and a cut prompt is a wrong answer.
+// path was proven on short cases, and a cut prompt is a wrong answer. Each
+// picture or recording counts as the most evidence it can add, and a web
+// lookup as the most its pages can.
 func fitsWindow(u *unit, req Request) bool {
 	chars := 0
 	for _, m := range req.Messages {
 		for _, p := range m.Parts {
 			chars += len(p.Text)
+			if p.Kind != "text" {
+				chars += maxOCRChars
+			}
 		}
+	}
+	if (req.Web != nil && *req.Web) || strings.TrimSpace(req.WebQuery) != "" {
+		chars += webResults * webPassageChars
 	}
 	window := u.ctx
 	if window <= 0 {

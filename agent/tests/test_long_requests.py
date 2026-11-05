@@ -7,6 +7,7 @@ they are, and a cross-check of figures across outputs before the report.
     PYTHONPATH="agent;agent/tests" python -m unittest test_long_requests
 """
 
+from needs import needs
 import json
 import sys
 import tempfile
@@ -373,14 +374,49 @@ class RunnerPlannedRuns(unittest.TestCase):
             validate(unplanned)
         run = self.r.create(spec, work_dir=str(self.work))
         (self.work / "out").mkdir()
-        (self.work / "out" / "inv_1.csv").write_text("a,b\n1,2\n", encoding="utf-8")
         self.r.claim(run["run_id"])
+        (self.work / "out" / "inv_1.csv").write_text("a,b\n1,2\n", encoding="utf-8")
         state = self.r.complete(run["run_id"], "inv")
         self.assertIn("at least 2 file(s) matching out/inv_*.csv, found 1", state["steps"]["inv"]["error"])
         (self.work / "out" / "inv_2.csv").write_text("a,b\n3,4\n", encoding="utf-8")
         self.r.claim(run["run_id"])
         state = self.r.complete(run["run_id"], "inv")
         self.assertEqual([e["path"] for e in state["steps"]["inv"]["evidence"]], ["out/inv_1.csv", "out/inv_2.csv"])
+
+    def test_a_file_a_pattern_matched_before_the_stage_does_not_count(self):
+        # Review 2026-11-02: a pattern check was never baselined, so files left from before the task passed it.
+        spec = {"id": "p", "planned": True, "steps": [{"id": "inv", "instruction": "x", "retry_safe": True,
+                                                       "checks": [{"path": "out/inv_*.csv", "format": "csv", "min_count": 2}]}]}
+        run = self.r.create(spec, work_dir=str(self.work))
+        (self.work / "out").mkdir()
+        for n in (1, 2):
+            (self.work / "out" / f"inv_{n}.csv").write_text(f"a,b\n{n},2\n", encoding="utf-8")
+        self.r.claim(run["run_id"])
+        state = self.r.complete(run["run_id"], "inv")
+        self.assertNotEqual(state["steps"]["inv"]["status"], "completed")
+        self.assertIn("2 of the 2 found were already there, unchanged", state["steps"]["inv"]["error"])
+        self.r.claim(run["run_id"])
+        (self.work / "out" / "inv_2.csv").write_text("a,b\n2,9\n", encoding="utf-8")  # changed by the stage
+        (self.work / "out" / "inv_3.csv").write_text("a,b\n3,4\n", encoding="utf-8")  # made by it
+        state = self.r.complete(run["run_id"], "inv")
+        self.assertEqual(state["steps"]["inv"]["status"], "completed")
+
+    def test_a_stage_out_of_attempts_is_failed_when_reopened_never_a_raise(self):
+        # Review 2026-11-02: _reopen_record raised at the lifetime limit; from claim()'s re-check that stopped the run.
+        spec = {"id": "p", "planned": True, "steps": [{"id": "a", "instruction": "x", "retry_safe": True,
+                                                       "checks": [{"path": "a.txt"}]}]}
+        run = self.r.create(spec, work_dir=str(self.work))
+        self.r.claim(run["run_id"])
+        (self.work / "a.txt").write_text("made", encoding="utf-8")
+        self.r.complete(run["run_id"], "a")
+
+        spent = self.r.status(run["run_id"])
+        spent["steps"]["a"].update(attempts=10, additional_attempts=8)  # 2 + 8 more: all ten used
+        self.r._save(spent)
+        state = self.r.reopen(run["run_id"], "a", "the person changed the request")
+        self.assertEqual(state["steps"]["a"]["status"], "failed")
+        self.assertIn("the person changed the request", state["steps"]["a"]["error"])
+        self.assertIn("lifetime limit", state["steps"]["a"]["error"])
 
     def test_drafts_checks_are_for_planned_runs_and_count_drafts(self):
         from decurix_agent.workflow_runner import validate
@@ -503,7 +539,7 @@ class LongRunBase(unittest.TestCase):
         harness.perform_task = self.engine.perform_task
         harness.continue_after_query = self.engine.continue_after_query
         harness.cancel_running = lambda: False
-        harness.ask_model = lambda system, prompt: "{}"
+        harness.ask_model = lambda system, prompt, purpose=None: "{}"
         import decurix_agent
         self.runner = WorkflowRunner(root / "workflows")
         self.classified = []
@@ -583,8 +619,9 @@ class LongRunBase(unittest.TestCase):
         # The run's own reports: sent on its own task (Finding BO), or on no task named; never a reply on another task.
         return [s for s in self.sent if s["kind"] in ("final", "error") and s.get("task_id") in (None, TASK)]
 
-    def message(self, text, task_id=TASK):
-        path = self.root / "command" / f"20261019_101500_{len(self.classified) + len(self.sent):08d}.{task_id}.txt"
+    def message(self, text, task_id=TASK, reply=False):
+        mark = "-reply" if reply else ""  # (messaging.REPLY_MARK: what the agent's own API adds to a reply)
+        path = self.root / "command" / f"20261019_101500_{len(self.classified) + len(self.sent):08d}{mark}.{task_id}.txt"
         path.write_text(text, encoding="utf-8")
         state.processed_commands.add(path.name)
         long_task.take_message(text, path)
@@ -595,6 +632,40 @@ class LongRunBase(unittest.TestCase):
 
 
 class LongRun(LongRunBase):
+
+    def test_a_judge_that_could_not_check_never_makes_a_checked_done(self):
+        # Review 2026-11-02: an "unsure" (here a model outage) completed each stage and the run was reported "Done -
+        # every stage was made and checked", checked=True. Fail closed: completed, said NOT checked first, recorded so.
+        outage = {"verdict": "unsure", "confidence": 0.0, "seen": "", "why": "the check could not be made (rate limit)"}
+        with mock.patch.object(verify, "judge", lambda task, **k: dict(outage)):
+            long_task.perform(LONG, None)
+        steps = self.runner.status(self.run_id())["steps"]
+        self.assertTrue(all(record["status"] == "completed" for record in steps.values()))
+        self.assertTrue(all(record.get("checked_by") == "code only" for record in steps.values()))
+        final = self.finals()[-1]
+        self.assertEqual(final["kind"], "final")
+        self.assertIs(final["checked"], False)
+        self.assertTrue(final["reply"].startswith(f"Made, but not everything is checked: {len(steps)} stages the model "
+                                                  "check could not confirm"), final["reply"][:300])
+        self.assertNotIn("every stage was made and checked", final["reply"])
+        self.assertIn("NOT checked - the code checks passed, the model check could not confirm it (the check could "
+                      "not be made (rate limit))", final["reply"])
+        self.assertIn("yourself before relying on it", final["reply"].split("Needs you:", 1)[1])
+
+    def test_a_blocking_check_that_raised_leaves_the_stage_not_checked(self):
+        # Review 2026-11-02: a code check that crashed counted as passed. The judge's done does not make up for it.
+        sure = {"verdict": "done", "confidence": 0.95, "seen": "the files are right", "why": ""}
+        with mock.patch.object(verify, "judge", lambda task, **k: dict(sure)), \
+                mock.patch("decurix_agent.payees.mismatches", side_effect=RuntimeError("bad account table")):
+            long_task.perform(LONG, None)
+        steps = self.runner.status(self.run_id())["steps"]
+        self.assertTrue(all(record.get("checked_by") == "code only" for record in steps.values()))
+        self.assertTrue(any("could not check where payments go (bad account table)" in record.get("check_note", "")
+                            for record in steps.values()))
+        final = self.finals()[-1]
+        self.assertIs(final["checked"], False)
+        self.assertNotIn("every stage was made and checked", final["reply"])
+
 
     def test_stages_run_one_by_one_and_the_report_is_plain(self):
         self.assertTrue(long_task.perform(LONG, None))
@@ -666,6 +737,7 @@ class LongRun(LongRunBase):
         self.runner.complete(rid, "s3-allocate-and-plan")
         return rid, work / "P2_orders_19Oct" / "portal_order_entry_log.csv"
 
+    @needs("openpyxl")
     def test_a_removal_recheck_recomputes_what_was_built_on_it(self):
         # Round 5 P1 (2026-10-20), Finding BB: the cancelled bill left the register, its ITC stayed in the return.
         rid, _ = self.p2_run()
@@ -833,7 +905,16 @@ class LongRun(LongRunBase):
         self.assertEqual(record["status"], "completed")
         self.assertEqual(record.get("checked_by"), "code only")
         self.assertIn("whom the person left out", record.get("check_note", ""))
+        # Never failed on that ground - and never reported checked either (review 2026-11-02: the run went out as
+        # "Done - every stage was made and checked", checked=True): the report says first what was not checked.
+        final = self.finals()[-1]
+        self.assertIs(final.get("checked"), False)
+        self.assertTrue(final["reply"].startswith("Made, but not everything is checked: 1 stage the model check "
+                                                  "could not confirm"), final["reply"][:300])
+        self.assertNotIn("every stage was made and checked", final["reply"])
+        self.assertIn("it was NOT checked (the check kept counting Priya", final["reply"])
 
+    @needs("openpyxl")
     def test_the_retry_prompt_never_pushes_the_excluded_person_back_in(self):
         rid, _ = self.p2_run()
         long_task._update(rid, lambda d: d["decisions"].append(
@@ -1185,6 +1266,7 @@ class LongRun(LongRunBase):
         long_task.final_report(run_state)
         self.assertIn(kept[0], self.finals()[-1]["reply"])
 
+    @needs("openpyxl")
     def test_a_retry_that_changes_nothing_is_asked_again_in_plain_words(self):
         # Round 5 P4, Finding BH2: after "try again" the retry left the file as it was, and the run ended.
         rid, log_file = self.p2_run()
@@ -1228,6 +1310,7 @@ class LongRun(LongRunBase):
             facts = produced.file_facts(LONG, [str(memo)], root=work, named_in=memo_stage, own_outputs=own)
         self.assertEqual(facts.missing_files, "")
 
+    @needs("openpyxl")
     def test_every_approved_record_must_be_in_the_entry_log(self):
         rid, log_file = self.p2_run()
         log_file.write_text(self.P2_LOG, encoding="utf-8")
@@ -1263,6 +1346,7 @@ class LongRun(LongRunBase):
         "shown): \"payment_proposal.xlsx: the bills to pay in this run, in order, with amount, bank account and the "
         "total.\"")
 
+    @needs("openpyxl")
     def test_a_selection_is_never_held_to_every_record(self):
         import openpyxl
         spec = {"id": "p3", "planned": True, "steps": [
@@ -1297,6 +1381,7 @@ class LongRun(LongRunBase):
         # The P2 entry stage is still held to every approved order.
         self.assertTrue(long_task.covers_every({"instruction": self.P2_ENTRY, "checks": []}))
 
+    @needs("openpyxl")
     def test_an_answer_part_way_never_narrows_the_stage(self):
         rid, _ = self.p2_run()
         self.runner.claim(rid)
@@ -1506,9 +1591,11 @@ class LongRun(LongRunBase):
         run_state = {"spec": {"steps": []}, "steps": {}}
         verdict = long_task.classify("the second one", run_state, data, ask=lambda *a: (_ for _ in ()).throw(ValueError("down")))
         self.assertEqual(verdict["kind"], "unclear")
+        # With no question open it is asked about too, never applied as a change (E-42, review 2026-11-03).
         verdict = long_task.classify("the second one", run_state, {"questions": [], "request": LONG},
                                      ask=lambda *a: (_ for _ in ()).throw(ValueError("down")))
-        self.assertEqual(verdict["kind"], "amendment")
+        self.assertEqual(verdict["kind"], "unclear")
+        self.assertEqual(verdict["amendment"], "")
 
     def test_an_amendment_is_never_the_answer_and_the_answer_leads_the_rerun(self):
         # Only stages that need the answer are left: the question parks its stage and the run asks once.
@@ -1577,9 +1664,41 @@ class LongRun(LongRunBase):
         state.waiting_for_query, state.last_query_kind = True, "approval"
         with mock.patch("decurix_agent.watchers.answer_waiting") as answer, \
                 mock.patch.object(long_task, "classify") as classify:
-            self.message("yes")
+            self.message("yes", reply=True)
             answer.assert_called_once()
             classify.assert_not_called()
+
+    def test_a_file_dropped_in_the_command_folder_is_not_kept_as_an_approval(self):
+        # Round 3: only a message saved as the reply to the open question can be the approval; the run's record must
+        # not say "You approved" for a file anything could write into the folder.
+        long_task._run = {"run_id": "x", "task_id": TASK, "task_file": None, "request": LONG}
+        (self.runner.root / "x").mkdir()
+        state.waiting_for_query, state.last_query_kind = True, "approval"
+        with mock.patch.object(long_task, "_approval_as_decision") as kept, \
+                mock.patch("decurix_agent.watchers.answer_waiting"), \
+                mock.patch.object(long_task, "classify", return_value={"kind": "unrelated"}):
+            self.message("yes")
+            kept.assert_not_called()
+
+    def test_with_a_gate_only_the_gates_reading_is_kept_as_an_approval(self):
+        # Round-3 recheck: a reply-named file still made "You approved". With a gate, only a reply the gate read (the
+        # person's signed copy) is kept, with the gate's decision.
+        from decurix_agent.computer import approval
+        long_task._run = {"run_id": "x", "task_id": TASK, "task_file": None, "request": LONG}
+        (self.runner.root / "x").mkdir()
+        for gate_said, kept_with in ((None, None), ({"decision": "no", "condition": ""}, "no")):
+            state.waiting_for_query, state.last_query_kind = True, "approval"
+            with mock.patch.object(long_task, "_approval_as_decision") as kept, \
+                    mock.patch("decurix_agent.watchers.answer_waiting"), \
+                    mock.patch.object(approval, "remote", return_value=True), \
+                    mock.patch.object(approval, "read_reply", return_value="yes"), \
+                    mock.patch.object(approval, "pending", return_value=None), \
+                    mock.patch.object(approval, "gate_reading", return_value=gate_said):
+                self.message("yes", reply=True)
+            if kept_with is None:
+                kept.assert_not_called()
+            else:
+                self.assertEqual(kept.call_args.kwargs["said"]["decision"], kept_with)
 
     def test_stop_stops_and_reports_where_it_stands(self):
         self.engine.asks["s1-register"] = "Which rate?"
@@ -1609,7 +1728,8 @@ class LongRun(LongRunBase):
         def read(path):
             stage = Path(path).stem
             figure = rows.get(stage) or {"register": "1,000.00", "memo": "1,200.00", "bank": "5"}[stage]
-            return [("Total payable", [figure])] if stage != "bank" else [("Fees", [figure])]
+            # (A named total: "Total payable" alone is every table's and is not compared - E-17.)
+            return [("Vendor bills total payable", [figure])] if stage != "bank" else [("Fees", [figure])]
 
         attempts = []
 
@@ -1641,24 +1761,27 @@ class LongRun(LongRunBase):
         self.assertEqual(bank, [])  # asked once, never sent back to ask again
         report = self.finals()[-1]["reply"]
         self.assertIn("Bank reconciliation: could not be done after 1 attempt(s) - you said no at its approval", report)
-        self.assertIn("and it did not finish another way", report)
+        self.assertIn("so it is not done", report)
         self.assertIn("Memo", report.split("Not done:")[0])
 
-    def test_a_refused_command_does_not_fail_a_stage_that_finished_another_way(self):
+    def test_a_declined_command_ends_its_stage_declined_never_done_another_way(self):
+        # NEW-T1 (review 2026-11-03): a no that stood (nothing was done after it - guidance.refused) ends the stage
+        # "declined, not done". It used to be judged and could complete as "done another way", which teaches the worker
+        # to route around a no. The person is told, and the stage is not tried again.
         from decurix_agent import guidance
         engine_perform = self.engine.perform_task
 
         def bank_other_way(prompt, task_file):
             if "Bank reconciliation." in prompt.split("\n")[0]:
                 with mock.patch.object(guidance, "refused", side_effect=["no, don't send anything", None, None]):
-                    engine_perform(prompt, task_file)  # the engine carries on and makes the file
+                    engine_perform(prompt, task_file)
                 return
             engine_perform(prompt, task_file)
         sys.modules["decurix_agent.harness"].perform_task = bank_other_way
         long_task.perform(LONG, None)
         report = self.finals()[-1]["reply"]
-        self.assertIn("Done - every stage was made and checked.", report)
-        self.assertIn("You declined one of its commands (\"no, don't send anything\"); it was done another way.", report)
+        self.assertNotIn("Done - every stage was made and checked.", report)
+        self.assertIn("you said no at its approval (\"no, don't send anything\"), so it is not done", report)
         self.assertEqual(len([p for p in self.engine.prompts if p.startswith("Stage 2 of 3")]), 1)
 
     def test_the_stage_prompt_carries_the_requests_rules_and_every_ask(self):
@@ -2327,7 +2450,7 @@ class LongRun(LongRunBase):
         self.assertTrue(allocate and answer in allocate[0])  # the stage after carries the decision
 
     def test_an_answered_decision_stage_is_judged_on_its_file_not_on_asking(self):
-        # Round 5 P2 on pc3 (2026-10-20), Finding CM: after the person answered, the decision stage was refused twice -
+        # Round 5 P2 (2026-10-20), Finding CM: after the person answered, the decision stage was refused twice -
         # "The stage also required asking the user in chat ... no chat question from this run is shown" - and the
         # extraction stage before it was reopened for the "dispatch" in dispatch_plan.xlsx.
         self.plan["stages"] = [
@@ -2370,6 +2493,7 @@ class LongRun(LongRunBase):
         self.assertEqual(status["s2-credit-hold"]["status"], "completed")
         self.assertFalse(status["s1-extract"].get("reopened"))
 
+    @needs("openpyxl")
     def test_only_work_the_decision_affects_is_redone_after_it_and_never_on_a_retry(self):
         # CM: the planner says which stages a decision affects ("affects"); no word list reads the stage's text or its
         # file names. With "affects" missing, nothing is redone. "Try again" decides nothing.
@@ -2401,8 +2525,9 @@ class LongRun(LongRunBase):
                                           "Release Cafe Bloom this once, hold Harbour Hotels Group.")
         self.assertNotEqual(self.runner.status(rid)["steps"]["s1-allocate"]["status"], "completed")
 
+    @needs("openpyxl")
     def test_a_restatement_never_adds_a_word_nobody_said(self):
-        # Round 5 P2 on pc3 (2026-10-20), Finding CN: after "hold Harbour Hotels Group until they clear their dues", the
+        # Round 5 P2 (2026-10-20), Finding CN: after "hold Harbour Hotels Group until they clear their dues", the
         # judge required "every line of held order HH/PO/7781 to show allocated quantity 0 and full ordered quantity as
         # backorder"; the code fact requires a held line with 0 backordered. Each attempt failed one of them.
         answer = "Release Cafe Bloom this once, hold Harbour Hotels Group until they clear their dues."
@@ -2470,7 +2595,7 @@ class LongRun(LongRunBase):
         self.assertIn("it keeps 0 of the 40 words", " ".join(self.engine.prompts[3:]))
         self.assertNotIn(long_task.PLEASE_CHECK, " ".join(s["reply"] for s in self.finals()))
 
-    # Round 5 P2 on pc3 (2026-10-20), after CM: the live plan's stage 1, word for word from its checkpoint.
+    # Round 5 P2 (2026-10-20), after CM: the live plan's stage 1, word for word from its checkpoint.
     LIVE_EXTRACT = (
         "Read the 4 WhatsApp chat exports, the 2 POs that came by email (.eml, the PO PDF is inside), the price list, "
         "today's stock and the customer master, using the copies in P2_orders_19Oct. Work out every order per customer "
@@ -2500,6 +2625,7 @@ class LongRun(LongRunBase):
         spec = long_task.spec_from_plan(plan, [], request=P2_REQUEST)
         self.assertFalse(spec["steps"][0].get("before_decision"))
 
+    @needs("openpyxl")
     def test_a_recheck_after_a_decision_refuses_only_on_what_was_decided(self):
         rid, _ = self.p2_run()
         answer = "Release Cafe Bloom this once, hold Harbour Hotels Group until they clear their dues."
@@ -2523,7 +2649,7 @@ class LongRun(LongRunBase):
         # A first check (no decision re-check) is never softened.
         self.assertEqual(long_task._recheck_refusal(rid, step, {"reopened": ""}, live)["verdict"], verify.NOT_DONE)
 
-    # Round 5 P6 on pc3 (2026-10-21), Finding CU: the live email and the live refusal.
+    # Round 5 P6 (2026-10-21), Finding CU: the live email and the live refusal.
     E18 = ("Your invoice for SO-5114 charges the compact umbrellas at Rs 329 each, but the agreed rate on our PO NSL/4502 "
            "is Rs 299. Please correct and reissue.")
     CU_REFUSAL = ("An email asking for money back must be categorized as Refund ... 1019_E18.eml as Complaint ... instead "
@@ -2558,7 +2684,7 @@ class LongRun(LongRunBase):
         self.assertIn("never on the worker's working notes alone", seen[0])
         self.assertIn("The worker's working notes are not a source", " ".join(verify.JUDGE_SYSTEM.split()))
 
-    # Round 5 P1 on pc3 (2026-10-21), Finding DB: the stage's own report, as the parked question quoted it.
+    # Round 5 P1 (2026-10-21), Finding DB: the stage's own report, as the parked question quoted it.
     DB_DONE = ("Done. - Checked what was already in place in P1_month_end/outputs/month_end_close_Oct2026.xlsx. - Updated "
                "the Bank Rec sheet with the reconciling items. - Recalculated and read the saved workbook back.")
 
@@ -2630,6 +2756,7 @@ class LongRun(LongRunBase):
         self.assertEqual(long_task.without_asking("Ask the person to approve the payment run."),
                          "Record what the person decided.")
 
+    @needs("openpyxl")
     def test_a_rechecked_stage_is_judged_on_its_own_sheets(self):
         import openpyxl
         rid, _ = self.p2_run()

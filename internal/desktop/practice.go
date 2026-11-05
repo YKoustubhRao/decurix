@@ -49,16 +49,37 @@ const (
 	practiceMaxTar = 64 << 20
 )
 
+// ErrNoSecret is why a desktop is not made when the control plane could not load its secret: the desktop would get
+// no agent token, and its agent would refuse (or, built before tokens, accept) every request.
+var ErrNoSecret = errors.New("the control plane could not load its secret (hostgui.key in the data folder), so a desktop cannot be made safely; check the data folder and restart Decurix")
+
 // PracticeSnapshotParts are the agent state folders a case starts from, restored before every case.
 var PracticeSnapshotParts = []string{"skills", "experience", "playbooks", "memory"}
 
-// practiceResetPaths are cleared before every case: the browser profile, the
-// scratch folder, the approval state and the snapshot folders themselves.
+// practiceResetPaths are cleared before every case. All of ~/.decurix goes, not a list of the folders known today:
+// whatever the agent or soul learned or kept in a case (methods, app guides, procedures, recordings, workflows, soul's
+// workspace ~/.decurix/ai with its memory) must not reach the next case, or a suite's repeats are one learning curve
+// rather than independent samples (review EVAL-1, B1). Nothing in it is needed to run: the desktop's identity and
+// agent token are its environment, the gate's key lives in /var/lib/decurix-gate, the start script makes soul's
+// workspace again, and the run's snapshot (PracticeSnapshotParts; an eval's is empty) is restored after the clear.
+// The browser profiles and the whole work folder go too: a case may have saved outside its own folder.
 var practiceResetPaths = []string{
-	"/home/headless/.config/chromium", "/home/headless/.config/google-chrome", PracticeWorkDir,
-	practiceDecurixDir + "/computer/approval.json",
-	practiceDecurixDir + "/skills", practiceDecurixDir + "/experience", practiceDecurixDir + "/playbooks", practiceDecurixDir + "/memory",
+	"/home/headless/.config/chromium", "/home/headless/.config/google-chrome", "/home/headless/work", practiceDecurixDir,
 }
+
+// PracticeResetPaths lists what ResetPractice clears before every case, for runners and their tests.
+func PracticeResetPaths() []string { return append([]string{}, practiceResetPaths...) }
+
+// practiceResetScript, run as the worker, stops every process of the worker first (the container is killed and
+// started next, so nothing it runs may write after the clear), then clears the paths it is given, the agent's task
+// files in /tmp and soul's job log. It stops them, never kills them: the desktop's init (tini) has the worker's start
+// script as its one child, and killing that ends the container, the clear with it (review EVAL-2, R2-B1, proved on
+// the image).
+const practiceResetScript = `kill -STOP -1 2>/dev/null; rm -rf -- "$@" /tmp/decurix-* /tmp/decurix.* /tmp/thebot-soul.log`
+
+// practiceGateResetScript, run as root, stops the gate's process too and clears the gate's own store (the pending
+// request, any grant, the last reply), which belongs to the gate's user and is out of the worker's reach. Its key stays.
+const practiceGateResetScript = `kill -STOP -1 2>/dev/null; rm -rf -- /var/lib/decurix-gate/computer`
 
 var (
 	// practiceHostPattern is a host name the browser may map to the mock: no quotes, spaces or ports.
@@ -85,6 +106,9 @@ type PracticeSpec struct {
 	AgentTree []byte
 	// Snapshot is a tar of the agent's state folders (PracticeSnapshot), restored before each case.
 	Snapshot []byte
+	// LegacyGate is pinned old code in AgentTree, whose gate may predate /secrets and /request: a 404 from those is
+	// then passed (TellGate). Only an eval arm with its own agent tree sets it; the practice runner never does.
+	LegacyGate bool
 }
 
 // PracticeDesktop is a created practice desktop.
@@ -219,7 +243,8 @@ func (m *Manager) PracticeSubnets(ctx context.Context) []netip.Prefix {
 	return out
 }
 
-// copyOut reads one path of a container as a tar, bounded.
+// copyOut reads one path of a container as a tar, bounded, by Docker's root-side copy. Only for a fixed root-owned
+// path (/opt, /etc/passwd) or a container that has never run: never a path under a worker's home (homefs.go).
 func (m *Manager) copyOut(ctx context.Context, containerID, from string, limit int64) ([]byte, error) {
 	rc, _, err := m.client.CopyFromContainer(ctx, containerID, from)
 	if err != nil {
@@ -294,9 +319,10 @@ func (m *Manager) PracticeSnapshot(ctx context.Context, workerID string) ([]byte
 	tw := tar.NewWriter(&out)
 	total := int64(0)
 	for _, part := range PracticeSnapshotParts {
-		b, err := m.copyOut(ctx, found.ContainerID, practiceDecurixDir+"/"+part, practiceMaxTar)
+		// The real worker's home, so read as the worker (homefs.go), never by Docker's root-side copy (N-B1).
+		b, err := m.readHomeBytes(ctx, found.ID, practiceDecurixDir+"/"+part, practiceMaxTar)
 		if err != nil {
-			if client.IsErrNotFound(err) {
+			if errors.Is(err, ErrNotFound) {
 				continue
 			}
 			return nil, "", err
@@ -374,7 +400,10 @@ func practiceEnvironment(inherited []string, spec PracticeSpec, vncPassword stri
 		"AGENT_HARNESS="+spec.Harness,
 		"DECURIX_BRAIN="+spec.Brain,
 		"DECURIX_PRACTICE=1",
+		GateRequiredEnv+"=1",
 		"PYTHONDONTWRITEBYTECODE=1", "PYTHONUNBUFFERED=1",
+		// The PATH a real desktop gets, never the image's: one Python on both (resource plan B1).
+		"PATH="+desktopPath,
 	)
 	if (Brain{Kind: spec.Brain}).Hosted() {
 		vision := "0"
@@ -413,11 +442,10 @@ func practiceConfigs(spec PracticeSpec, env, securityOpt []string) (*container.C
 			Labels: map[string]string{PracticeLabel: "true", "decurix-practice-run": spec.RunID},
 		}, &container.HostConfig{
 			NetworkMode: container.NetworkMode(PracticeNetworkName),
-			// The worker's own desktop's options, without no-new-privileges: the
-			// image's startup uses sudo once to hand /dockerstartup and $HOME to
-			// the desktop user, and dies without it (found live 2026-10-28). The
-			// boundary is the internal network, no binds and no host gateway.
-			SecurityOpt: append([]string{}, securityOpt...),
+			// The worker's own desktop's options, no-new-privileges included as on every desktop (B-21): the
+			// image's startup no longer uses sudo (the entrypoint drops privileges with setpriv; B-35 corrected the
+			// old comment). The boundary is also the internal network, no binds and no host gateway.
+			SecurityOpt: append(append([]string{}, securityOpt...), "no-new-privileges:true"),
 			ShmSize:     256 << 20,
 			Resources:   resources,
 			Tmpfs:       map[string]string{"/tmp": "rw,nosuid,size=256m,mode=1777", "/run": "rw,nosuid,size=64m,mode=755"},
@@ -449,6 +477,12 @@ func (m *Manager) CreatePractice(ctx context.Context, spec PracticeSpec) (d Prac
 	if !practiceRunID.MatchString(spec.RunID) || !strings.HasPrefix(spec.Image, "sha256:") || spec.BrokerURL == "" {
 		return d, qualification.ErrInvalid
 	}
+	// A practice desktop gets the same per-desktop token as any desktop, or is not made: without the secret its agent
+	// would have no token, refuse every request the run sends it and the run would fail with no reason (review
+	// 2026-11-02, second round).
+	if len(m.HostGUISecret) == 0 {
+		return d, ErrNoSecret
+	}
 	flags, err := practiceBrowserFlags(spec.Hosts)
 	if err != nil {
 		return d, err
@@ -460,22 +494,48 @@ func (m *Manager) CreatePractice(ctx context.Context, spec PracticeSpec) (d Prac
 	if err != nil {
 		return d, err
 	}
-	config, host, net := practiceConfigs(spec, practiceEnvironment(inherited, spec, practicePassword()), m.desktopSecurityOpt(ctx))
+	env := practiceEnvironment(inherited, spec, practicePassword())
+	// A practice desktop's agent takes requests only with its token, like every desktop's (agenttoken.go).
+	token := m.AgentToken(PracticeDesktopID(spec.RunID))
+	if token == "" {
+		return d, ErrNoSecret
+	}
+	env = append(env, AgentTokenEnv+"="+token)
+	config, host, net := practiceConfigs(spec, env, m.desktopSecurityOpt(ctx))
 	created, err := m.client.ContainerCreate(ctx, config, host, net, nil, PracticeDesktopID(spec.RunID))
 	if err != nil {
 		return d, err
 	}
 	d = PracticeDesktop{ContainerID: created.ID, Name: PracticeDesktopID(spec.RunID)}
+	holdScreenPassword(d.Name, envValue(env, "VNC_PW")) // as a real desktop's (screenheld.go)
+	m.legacyMu.Lock()
+	if m.practiceDesks == nil {
+		m.practiceDesks = map[string]string{}
+	}
+	m.practiceDesks[d.Name] = created.ID
+	if spec.LegacyGate && len(spec.AgentTree) > 0 {
+		if m.legacyGates == nil {
+			m.legacyGates = map[string]bool{}
+		}
+		m.legacyGates[created.ID] = true
+	}
+	m.legacyMu.Unlock()
 	defer func() {
 		if err != nil {
 			_ = m.RemovePractice(context.WithoutCancel(ctx), created.ID)
 		}
 	}()
+	// A practice desktop has the same approval gate as the worker's own: practice tests what will run, and without a
+	// gate its agent would keep approvals in a store the worker can write. The practice broker never grants one.
+	if err = m.prepareGate(ctx, created.ID, m.GateKey(PracticeDesktopID(spec.RunID))); err != nil {
+		return d, fmt.Errorf("give the practice desktop its approval gate: %w", err)
+	}
 	if flags != "" {
 		if err = m.appendBrowserFlags(ctx, created.ID, flags); err != nil {
 			return d, err
 		}
 	}
+	// Root-side copies into a practice desktop that has never started: nothing in it is the worker's yet.
 	if len(spec.AgentTree) > 0 {
 		if err = m.client.CopyToContainer(ctx, created.ID, "/opt", bytes.NewReader(spec.AgentTree), container.CopyToContainerOptions{}); err != nil {
 			return d, fmt.Errorf("copy the agent tree: %w", err)
@@ -486,7 +546,7 @@ func (m *Manager) CreatePractice(ctx context.Context, spec PracticeSpec) (d Prac
 			return d, fmt.Errorf("restore the worker's state: %w", err)
 		}
 	}
-	if err = m.client.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
+	if err = m.startDesktopContainer(ctx, created.ID); err != nil {
 		return d, err
 	}
 	d.IP, err = m.practiceIP(ctx, created.ID)
@@ -519,20 +579,28 @@ func (m *Manager) appendBrowserFlags(ctx context.Context, id, flags string) erro
 // folder) into a practice desktop. A desktop that never started has no .decurix
 // folder and Docker will not copy into a missing one, so the tar is rewritten
 // under .decurix/ with the folder's own entry, owned by the desktop user, and
-// copied into the home folder.
+// copied into the home folder. It is a root-side copy: on creation the desktop has never run; on a reset
+// (ResetPractice) the practice worker has, and its ~/.decurix could be a link - but the practice home has no volume a
+// helper could mount and an exec needs the desktop running, so it stays, and what it can write is confined to the
+// snapshot's own parts' names under that folder. Moving the reset's restore before the stop, as the worker, is the
+// follow-up (it needs a live practice run to check).
 func (m *Manager) restoreSnapshot(ctx context.Context, id string, snapshot []byte) error {
 	under, err := underFolder(snapshot, path.Base(practiceDecurixDir), practiceUID)
 	if err != nil {
 		return err
 	}
-	return m.client.CopyToContainer(ctx, id, path.Dir(practiceDecurixDir), bytes.NewReader(under), container.CopyToContainerOptions{CopyUIDGID: true})
+	// Not CopyUIDGID: with it the daemon chowns every entry to the container's configured user, which for a desktop is
+	// root (the entrypoint starts as root and drops to the worker). A ~/.decurix the reset had cleared then came back an
+	// empty root:root 755 folder, and every case after the first failed on a PermissionError (LIVE-2 round 3, F-R3-2).
+	// Without it the daemon keeps the tar's own owner, which underFolder makes the worker's on every entry.
+	return m.client.CopyToContainer(ctx, id, path.Dir(practiceDecurixDir), bytes.NewReader(under), container.CopyToContainerOptions{})
 }
 
 // practiceUID is the desktop user's uid and gid in the desktop image.
 const practiceUID = 1001
 
 // underFolder rewrites a tar so every entry sits under folder/, led by the
-// folder's own directory entry owned by uid.
+// folder's own directory entry, every entry owned by uid.
 func underFolder(archive []byte, folder string, uid int) ([]byte, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -556,6 +624,7 @@ func underFolder(archive []byte, folder string, uid int) ([]byte, error) {
 			name += "/"
 		}
 		h.Name = folder + "/" + name
+		h.Uid, h.Gid, h.Uname, h.Gname = uid, uid, "", ""
 		if err := tw.WriteHeader(h); err != nil {
 			return nil, err
 		}
@@ -585,15 +654,14 @@ func tarOf(files map[string][]byte, mode int64, uid int) io.Reader {
 	return &buf
 }
 
+// practiceIP is practice container id's address on the practice network (practiceEndpoint).
 func (m *Manager) practiceIP(ctx context.Context, id string) (string, error) {
 	inspect, err := m.client.ContainerInspect(ctx, id)
 	if err != nil {
 		return "", err
 	}
-	if inspect.NetworkSettings != nil {
-		if ep := inspect.NetworkSettings.Networks[PracticeNetworkName]; ep != nil && ep.IPAddress != "" {
-			return ep.IPAddress, nil
-		}
+	if ep := practiceEndpoint(inspect); ep != nil && ep.IPAddress != "" {
+		return ep.IPAddress, nil
 	}
 	return "", errors.New("the practice desktop has no address on the practice network")
 }
@@ -607,15 +675,28 @@ func practicePassword() string {
 }
 
 // ResetPractice returns a practice desktop to the run's starting state before a
-// case: it clears the browser profile, scratch folder, approval state and agent
-// state, restarts the container (the agent's own state goes with its process),
-// and restores the pinned snapshot while it is stopped.
+// case: it ends the worker's processes, clears all of its agent state, the browser
+// profile and the work folder, restarts the container, and restores the pinned
+// snapshot while it is stopped.
 func (m *Manager) ResetPractice(ctx context.Context, id string, snapshot []byte) error {
-	cmd := append([]string{"/bin/rm", "-rf", "--"}, practiceResetPaths...)
-	if err := m.practiceExec(ctx, id, cmd); err != nil {
+	// It deletes a worker's whole state: only a practice desktop the control plane made is reset, never a worker's own
+	// desktop or a mock (the label is the control plane's, set at creation).
+	inspect, err := m.client.ContainerInspect(ctx, id)
+	if err != nil {
+		return err
+	}
+	if inspect.Config == nil || inspect.Config.Labels[PracticeLabel] != "true" || inspect.Config.Labels["decurix-practice-mock"] == "true" {
+		return ErrNotPractice
+	}
+	cmd := append([]string{"/bin/sh", "-c", practiceResetScript, "reset"}, practiceResetPaths...)
+	if err := m.practiceExec(ctx, id, "headless", cmd); err != nil {
 		return fmt.Errorf("clear the practice desktop: %w", err)
 	}
-	timeout := 10
+	if err := m.practiceExec(ctx, id, "root", []string{"/bin/sh", "-c", practiceGateResetScript}); err != nil {
+		return fmt.Errorf("clear the practice desktop's gate: %w", err)
+	}
+	// Every process is stopped and ignores SIGTERM, so the container is killed at once rather than after a timeout.
+	timeout := 0
 	if err := m.client.ContainerStop(ctx, id, container.StopOptions{Timeout: &timeout}); err != nil {
 		return err
 	}
@@ -624,12 +705,12 @@ func (m *Manager) ResetPractice(ctx context.Context, id string, snapshot []byte)
 			return fmt.Errorf("restore the worker's state: %w", err)
 		}
 	}
-	return m.client.ContainerStart(ctx, id, container.StartOptions{})
+	return m.startDesktopContainer(ctx, id)
 }
 
-// practiceExec runs a command as the desktop's user and waits for it to end.
-func (m *Manager) practiceExec(ctx context.Context, id string, cmd []string) error {
-	created, err := m.client.ContainerExecCreate(ctx, id, container.ExecOptions{Cmd: cmd, User: "headless"})
+// practiceExec runs a command as user ("headless" or "root") in a practice desktop and waits for it to end.
+func (m *Manager) practiceExec(ctx context.Context, id, user string, cmd []string) error {
+	created, err := m.client.ContainerExecCreate(ctx, id, container.ExecOptions{Cmd: workerCmd(cmd...), User: user})
 	if err != nil {
 		return err
 	}
@@ -688,10 +769,18 @@ func (m *Manager) CopyPracticeInputs(ctx context.Context, id, caseID string, fil
 	if err := tw.Close(); err != nil {
 		return err
 	}
-	return m.client.CopyToContainer(ctx, id, "/home/headless", &buf, container.CopyToContainerOptions{CopyUIDGID: true})
+	// The practice worker has run in this home, so the inputs go in as that worker (homefs.go), never root-side.
+	target, done, err := m.homeAccessOf(ctx, id, id)
+	if err != nil {
+		return err
+	}
+	defer done()
+	return m.execTarIn(ctx, target, homeDir, &buf, "--no-overwrite-dir")
 }
 
-// CollectPractice reads a case's folder after the desktop is paused. Inputs that
+// CollectPractice reads a case's folder after the desktop is paused. It stays a root-side copy on purpose: the
+// worker must stay frozen while its work is collected, and an exec needs it running. What a link there could reach
+// is the practice container's own (a disposable copy, its own key), and only flat regular files count as evidence. Inputs that
 // changed or went missing are listed, new files are outputs; anything that is not
 // a flat regular file, or over the limits, is a problem rather than evidence.
 func (m *Manager) CollectPractice(ctx context.Context, id, caseID string, inputs map[string][]byte) (outputs map[string][]byte, changed, problems []string, err error) {
@@ -793,7 +882,7 @@ func (m *Manager) StartPracticeMock(ctx context.Context, image, runID string, so
 			_ = m.RemovePractice(context.WithoutCancel(ctx), created.ID)
 		}
 	}()
-	if err = m.client.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
+	if err = m.startDesktopContainer(ctx, created.ID); err != nil {
 		return "", err
 	}
 	// ready goes last, so the entrypoint never starts on a half-copied folder.
@@ -816,8 +905,38 @@ func (m *Manager) StartPracticeMock(ctx context.Context, image, runID string, so
 	if err = m.execTarIn(ctx, created.ID, "/work", &buf); err != nil {
 		return "", err
 	}
+	// The entrypoint starts the app only once ready is in: a case that began now raced its start, and the oracle's
+	// first curl met "connection refused" (LIVE-2 round 3, F-R3-1). The mock is handed over once it answers.
+	if err = m.practiceExec(ctx, created.ID, "headless", []string{"/usr/bin/python3", "-I", "-c", practiceMockWaitScript,
+		PracticeMockPort, fmt.Sprint(PracticeMockWaitSeconds)}); err != nil {
+		return "", fmt.Errorf("%w (%v)", ErrMockNotAnswering, err)
+	}
 	return created.ID, nil
 }
+
+// PracticeMockWaitSeconds bounds how long StartPracticeMock waits for the mock app to answer on its port (within
+// practiceExec's own 30 s wait for a command).
+const PracticeMockWaitSeconds = 25
+
+// ErrMockNotAnswering is a practice mock app that did not answer on its port within PracticeMockWaitSeconds.
+var ErrMockNotAnswering = errors.New("desktop: the practice mock app did not answer on its port in time")
+
+// practiceMockWaitScript, run in the mock's container, exits 0 once anything answers HTTP on 127.0.0.1:<port> (any
+// status: the app is up), and 1 when the seconds it is given pass first.
+const practiceMockWaitScript = `import http.client, sys, time
+end = time.time() + float(sys.argv[2])
+while True:
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", int(sys.argv[1]), timeout=2)
+        c.request("GET", "/")
+        c.getresponse()
+        sys.exit(0)
+    except Exception:
+        pass
+    if time.time() > end:
+        sys.exit(1)
+    time.sleep(0.2)
+`
 
 // PracticeMockState reads the mock's state.json after it is paused; empty when
 // the app stored nothing.
@@ -874,6 +993,15 @@ func (m *Manager) RemovePractice(ctx context.Context, ids ...string) error {
 		if id == "" {
 			continue
 		}
+		m.legacyMu.Lock()
+		delete(m.legacyGates, id)
+		for name, cid := range m.practiceDesks {
+			if cid == id {
+				delete(m.practiceDesks, name)
+				releaseScreenPassword(name)
+			}
+		}
+		m.legacyMu.Unlock()
 		if err := m.client.ContainerRemove(ctx, id, container.RemoveOptions{Force: true, RemoveVolumes: true}); err != nil && !client.IsErrNotFound(err) && first == nil {
 			first = err
 		}
@@ -901,6 +1029,9 @@ func (m *Manager) CleanupPractice(ctx context.Context) error {
 		if err := m.client.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true, RemoveVolumes: true}); err != nil && !client.IsErrNotFound(err) {
 			return err
 		}
+		for _, n := range c.Names {
+			releaseScreenPassword(strings.TrimPrefix(n, "/"))
+		}
 	}
 	nets, err := m.client.NetworkList(ctx, network.ListOptions{Filters: filters.NewArgs(filters.Arg("label", PracticeLabel+"=true"))})
 	if err != nil {
@@ -923,13 +1054,20 @@ func (m *Manager) PracticeAgentRequest(ctx context.Context, d PracticeDesktop, m
 	if net, err := netip.ParseAddr(d.IP); err != nil || !net.Is4() {
 		return nil, qualification.ErrInvalid
 	}
+	// A request or a reply reaches the agent only after its gate was told, as in production (TellGate).
+	if method == http.MethodPost && path == "/request" {
+		told, err := m.tellPracticeGate(ctx, d, body)
+		if err != nil {
+			return nil, err
+		}
+		body = told
+	}
 	req, err := http.NewRequestWithContext(ctx, method, d.AgentURL()+path, body)
 	if err != nil {
 		return nil, err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
+	req.Header.Set("Content-Type", "application/json")
+	m.AuthorizeAgentRequest(req, d.Name)
 	resp, err := agentClient.Do(req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

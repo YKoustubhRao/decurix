@@ -4,9 +4,12 @@
 # CGO) and its whole UI is embedded via go:embed, so the build output is
 # one self-contained static binary.
 FROM golang:1.27 AS thebot-builder
+# What this stage leaves behind is pruned after a build (desktop.PruneDanglingResources, resource plan P1 #10).
+LABEL decurix.build-stage="1"
 WORKDIR /src
 COPY agent/thebot/go.mod agent/thebot/go.sum ./
-RUN go mod download
+# go has no download timeout of its own: ten minutes a try, three tries.
+RUN for try in 1 2 3; do timeout 600 go mod download && exit 0; echo "go mod download: try $try failed or stalled"; sleep $((try * 20 - 10)); done; exit 1
 COPY agent/thebot/cmd ./cmd
 COPY agent/thebot/internal ./internal
 COPY agent/thebot/web ./web
@@ -15,6 +18,9 @@ COPY agent/thebot/web ./web
 # this is developed on. It costs a minute of wall time, not correctness.
 RUN GOMAXPROCS=2 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -p 1 -trimpath -ldflags="-s -w" -o /soul ./cmd/soul
 
+# The base is not pinned by digest yet: no digest is recorded anywhere here, and this loop could not pull to read one.
+# The owner pins it (`docker image inspect --format '{{index .RepoDigests 0}}' accetto/ubuntu-vnc-xfce-chromium-g3`)
+# and moves the pin on purpose (B-24).
 FROM accetto/ubuntu-vnc-xfce-chromium-g3:latest
 
 USER root
@@ -53,8 +59,11 @@ USER root
 #   what turns a Word or Excel file into a faithful PDF (tools/office.combine_pdf).
 #   The developer/ai Dockerfiles install the full suite, but only this image is
 #   built and tagged as all three.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+# Every download bounded and the step tried again (internal/desktop/dockerfile_downloads_test.go): apt gives up on a
+# connection silent for a minute and tries each file three times, and the whole download is tried three times, 10 s
+# and then 30 s apart, so one bad moment of a CDN never fails the build.
+RUN for try in 1 2 3; do apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update && \
+    apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y --no-install-recommends \
         xdotool \
         tesseract-ocr \
         tesseract-ocr-eng \
@@ -94,7 +103,8 @@ RUN apt-get update && \
         imagemagick \
         qpdf \
         xclip \
-        wmctrl && \
+        wmctrl && break; \
+    [ "$try" = 3 ] && exit 1; echo "apt-get: try $try failed; trying again"; sleep $((try * 20 - 10)); done && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -117,40 +127,38 @@ COPY agent/install-browser.sh /tmp/install-browser.sh
 RUN chmod 644 /etc/opt/chrome/policies/managed/decurix.json \
     && sh /tmp/install-browser.sh && rm -f /tmp/install-browser.sh /tmp/chromium-browser
 
-# Presentation support uses a venv: python3-pptx is unavailable in Ubuntu noble.
-# System site packages retain apt-provided GI, openpyxl and document readers.
-RUN python3 -m venv --system-site-packages /opt/office-venv && \
-    /opt/office-venv/bin/pip install --no-cache-dir python-pptx==1.0.2
-ENV PATH="/opt/office-venv/bin:${PATH}"
-
-# The libraries a worker's own scripts reach for, in the system Python, so every python3 has them: the venv above is
-# not on a worker's PATH (the control plane sets PATH when it creates a desktop), so `import pptx` failed in any script
-# the engine wrote, and a run that needed `requests` failed and asked a person. Pinned, like everything here.
-RUN pip3 install --no-cache-dir --break-system-packages \
+# One Python for the agent and every worker script: the system's, /usr/bin/python3, which is the python3 on the PATH
+# every desktop gets, real and practice alike (desktop.desktopPath). The libraries a worker's own scripts reach for
+# are installed into it by its own pip, named by path. There was a venv for python-pptx first on the image's PATH: the
+# "system" pip3 below then installed into the venv, practice desktops (which kept the image's PATH) had pandas and the
+# rest, and real desktops (the control plane's PATH, no venv) had none of them (resource plan B1). One environment
+# also drops the second copy of python-pptx and of numpy. Pinned, like everything here, but for requests and
+# python-dateutil, which Ubuntu's own packages may already hold: those are floors (with a ceiling), so pip keeps an apt
+# copy that satisfies them instead of replacing a package apt owns. --break-system-packages is this image's norm for
+# worker installs (PIP_BREAK_SYSTEM_PACKAGES below). It must never shadow or replace an apt-owned package: pip writes
+# what it installed (--report), and the build stops if any of it is a package apt installed too.
+RUN for try in 1 2 3; do /usr/bin/python3 -m pip install --no-cache-dir --timeout 60 --retries 5 --break-system-packages \
+        --report /tmp/pip-report.json \
         python-pptx==1.0.2 \
         pandas==2.2.3 \
-        requests==2.32.3 \
+        "requests>=2.31,<3" \
         beautifulsoup4==4.12.3 \
         pdfplumber==0.11.4 \
         pymupdf==1.24.14 \
         matplotlib==3.9.2 \
-        python-dateutil==2.9.0.post0 \
+        "python-dateutil>=2.8.2,<3" \
         xlrd==2.0.1 \
         tabulate==0.9.0 \
-        reportlab==4.2.5
+        reportlab==4.2.5 && break; \
+    [ "$try" = 3 ] && exit 1; echo "pip3: try $try failed; trying again"; sleep $((try * 20 - 10)); done \
+    && /usr/bin/python3 -c "import json, re, sys, importlib.metadata as md; norm = lambda n: re.sub(r'[-_.]+', '-', n).lower(); apt = {norm(d.metadata['Name']) for d in md.distributions(path=['/usr/lib/python3/dist-packages']) if d.metadata['Name']}; got = {norm(i['metadata']['name']) for i in json.load(open('/tmp/pip-report.json'))['install']}; both = sorted(apt & got); print('pip installed over apt-owned packages: ' + ', '.join(both)) if both else None; sys.exit(1 if both else 0)" \
+    && rm -f /tmp/pip-report.json
 
-# browser-agent: extension_pipeline/ext_server.py, the backend for the
-# browser-agent extension. No desktop loads the extension today (the Chrome
-# launcher passes no --load-extension), so soul sends web work to the
-# operator unless THEBOT_BROWSER_EXTENSION=1. Placed before the agent's own
-# code so a code change does not re-run this pip install. Only core/, extension/
-# and extension_pipeline/ ship (see agent/BROWSER_INTEGRATION.md).
-COPY agent/browser-agent/core /opt/browser-agent/core
-COPY agent/browser-agent/extension /opt/browser-agent/extension
-COPY agent/browser-agent/extension_pipeline /opt/browser-agent/extension_pipeline
-COPY agent/browser-agent/requirements.txt /opt/browser-agent/requirements.txt
-RUN python3 -m venv /opt/browser-agent-venv && \
-    /opt/browser-agent-venv/bin/pip install --no-cache-dir -r /opt/browser-agent/requirements.txt
+# Every worker library imports in the python3 a desktop runs, under exactly the PATH a desktop gets
+# (desktop.desktopPath, pinned by internal/desktop/onepython_test.go): the build fails here, not a task later, if any
+# is missing or broken.
+RUN env -i PATH=/opt/tools/bin:/opt/tools/go/bin:/opt/tools/node/bin:/opt/tools/rust/bin:/home/headless/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin python3 -c "import pptx, pandas, requests, bs4, pdfplumber, fitz, matplotlib, dateutil, xlrd, tabulate, reportlab, openpyxl, docx, pypdf, PIL"
+
 COPY agent/vm_server.py /opt/vm_server.py
 COPY agent/decurix_agent /opt/decurix_agent
 COPY agent/start_agent_terminal.sh /opt/start_agent_terminal.sh
@@ -271,7 +279,7 @@ RUN chmod 644 /home/headless/.config/autostart/decurix-agent.desktop \
 # Shared tools runtime configuration:
 # When decurix-tools is mounted at /opt/tools, environment scripts and path
 # automatically expose all tools to interactive shells, desktop apps, and daemons.
-RUN mkdir -p /opt/tools /var/cache/decurix /etc/profile.d && \
+RUN mkdir -p /opt/tools /var/cache/decurix /var/cache/decurix-models /etc/profile.d && \
     chmod 1777 /var/cache/decurix && \
     echo 'if [ -f /opt/tools/env.sh ]; then . /opt/tools/env.sh; fi' > /etc/profile.d/decurix-tools.sh && \
     chmod 644 /etc/profile.d/decurix-tools.sh
@@ -286,13 +294,51 @@ ENV PATH="/opt/tools/bin:/opt/tools/go/bin:/opt/tools/node/bin:/opt/tools/rust/b
     PIP_CACHE_DIR="/var/cache/decurix/pip" \
     HF_HOME="/var/cache/decurix/huggingface"
 
-RUN chmod 666 /etc/passwd /etc/group
+# The worker must not be able to become root, or nothing below root's reach (the approval gate's state, its token)
+# is a boundary (docs/gate-boundary.md). The base image gave the desktop user `sudo` with the image's public default
+# password, setuid helpers, and a world-writable /etc/passwd (so its startup could run `sudo chown` as the worker).
+# All of that goes - every setuid and setgid bit in the image, not a list of the ones known today (B-21): a desktop
+# runs with no-new-privileges, so none could work anyway, and Chromium uses its namespace sandbox (sandbox.go). The
+# entrypoint does the one-time setup as root and then drops to the desktop user with no
+# capabilities. The gate gets a user of its own.
+RUN rm -f /etc/sudoers.d/headless /dockerstartup/.initial_sudo_password \
+    && passwd -l root && passwd -l headless \
+    && find / -xdev \( -perm -4000 -o -perm -2000 \) -type f -exec chmod ug-s {} + \
+    && useradd --system --no-create-home --shell /usr/sbin/nologin decurixgate \
+    && chmod 644 /etc/passwd /etc/group \
+    && chown root:root /etc && chmod 755 /etc \
+    && chown -R 1001:1001 /dockerstartup
+# (/dockerstartup is handed to the desktop user here, at build time, and never by root at runtime: with hard-link
+# protection off, a root `chown -R` of a folder the worker can write into hands over whatever it linked there.)
+# /etc itself is root's, 755: the base image leaves it owned by a build user and group (984:980, 775). Nothing writes
+# /etc at runtime but the entrypoint, as root (the gate key, the passwd/group modes); the desktop user's start scripts
+# only test whether /etc/passwd is writable, which it is not either way.
+
+# The X server answers only on its own socket, never on TCP: anything on the Docker network that reached X on port
+# 6001 could drive this screen around the approval gate. Xvnc's own default is already no TCP; the mandatory config
+# of TigerVNC's vncserver (which the base image's startup runs) makes it explicit, as `-nolisten tcp`. A desktop
+# picks this up only when it is recreated. TestDesktopXServerHasNoTCPLive checks a running desktop.
+# The VNC port (5901) stays on the desktop network: the control plane reads thumbnails over RFB from it there
+# (desktop.captureFrame), and a desktop's only interfaces are loopback and that network, so binding it to one address
+# would change nothing. What guards it is the per-desktop password (desktop.screenPassword); keeping desktops from
+# reaching one another's ports at all is a network decision (docs/follow-ups.md, resource plan B7).
+RUN mkdir -p /etc/tigervnc && echo 'nolisten=tcp' >> /etc/tigervnc/vncserver-config-mandatory
+COPY agent/decurix-entrypoint.sh /opt/decurix-entrypoint.sh
+# The agent compiled once, here, after its last COPY and before it is made root's (resource plan P1 #1): every `gui`
+# call and every start of the agent and the gate imported it from source, about a second each, because the worker
+# cannot write __pycache__ into a root-owned tree (and PYTHONDONTWRITEBYTECODE=1 says not to). The .pyc are root's,
+# read-only, beside their sources. Python checks each against its source's mtime and size, so a tree copied over this
+# one (a practice desktop's, a dev loop's docker cp) is compiled in memory as before, never run stale; the gate's
+# `python3 -I` reads them too (isolated mode leaves bytecode caching alone).
+RUN /usr/bin/python3 -m compileall -q -j 0 /opt/decurix_agent \
+    && chmod 755 /opt/decurix-entrypoint.sh \
+    && chown -R root:root /opt/decurix_agent /opt/decurix-entrypoint.sh \
+    && chmod -R go-w /opt/decurix_agent
 
 # A library a task needs beyond the ones installed above: `pip install --user NAME` puts it in the worker's own home
 # (~/.local, on the desktop's persistent volume), so it is there after a restart and needs no administrator rights.
 # Not PIP_USER=1: a venv's pip refuses a --user install, and the coding harness installs into project venvs.
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-USER headless
-
-ENTRYPOINT ["/usr/bin/tini", "--", "/dockerstartup/startup.sh"]
+# No USER line: the entrypoint starts as root for its setup and drops to headless (agent/decurix-entrypoint.sh).
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/decurix-entrypoint.sh"]

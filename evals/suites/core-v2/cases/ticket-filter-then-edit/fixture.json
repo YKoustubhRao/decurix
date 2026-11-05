@@ -1,0 +1,335 @@
+{
+  "options": {
+    "roles": [
+      "Viewer",
+      "Editor",
+      "Admin"
+    ],
+    "cost_centres": [
+      "General",
+      "Project Alder",
+      "Project Birch"
+    ],
+    "priorities": [
+      "Low",
+      "Normal",
+      "High"
+    ],
+    "statuses": [
+      "Open",
+      "Pending",
+      "Closed"
+    ]
+  },
+  "collections": {
+    "users": [
+      {
+        "id": 1,
+        "name": "Ann Lowe",
+        "email": "ann.lowe@example.test",
+        "role": "Admin"
+      },
+      {
+        "id": 2,
+        "name": "Raj Mehta",
+        "email": "raj.mehta@example.test",
+        "role": "Editor"
+      },
+      {
+        "id": 3,
+        "name": "Tomas Berg",
+        "email": "tomas.berg@example.test",
+        "role": "Viewer"
+      },
+      {
+        "id": 4,
+        "name": "Keiko Sato",
+        "email": "keiko.sato@example.test",
+        "role": "Viewer"
+      }
+    ],
+    "bills": [
+      {
+        "id": 1,
+        "number": "BL-1987",
+        "vendor": "Bluequill Stationers",
+        "date": "2026-02-10",
+        "due": "2026-03-12",
+        "total": "512.40",
+        "cost_centre": "General",
+        "notes": ""
+      },
+      {
+        "id": 2,
+        "number": "RF-0331",
+        "vendor": "Wrenfield Cleaning",
+        "date": "2026-04-06",
+        "due": "2026-05-06",
+        "total": "1,180.00",
+        "cost_centre": "General",
+        "notes": ""
+      }
+    ],
+    "payees": [
+      {
+        "id": 1,
+        "name": "Tidewell Freight Lines",
+        "bank": "Larkmere Savings Bank",
+        "account": "7302441987654321"
+      },
+      {
+        "id": 2,
+        "name": "Tidewell Freight Logistics",
+        "bank": "Quillon Cooperative Bank",
+        "account": "5118061987654321"
+      },
+      {
+        "id": 3,
+        "name": "Bluequill Stationers",
+        "bank": "Larkmere Savings Bank",
+        "account": "6620150043218765"
+      },
+      {
+        "id": 4,
+        "name": "Wrenfield Cleaning",
+        "bank": "Quillon Cooperative Bank",
+        "account": "8841009912003456"
+      }
+    ],
+    "payments": [
+      {
+        "id": 1,
+        "payee": "Bluequill Stationers",
+        "account": "6620150043218765",
+        "amount": "512.40",
+        "date": "2026-03-10",
+        "reference": "BL-1987",
+        "status": "unpaid"
+      },
+      {
+        "id": 2,
+        "payee": "Wrenfield Cleaning",
+        "account": "8841009912003456",
+        "amount": "1,180.00",
+        "date": "2026-05-04",
+        "reference": "RF-0331",
+        "status": "paid"
+      }
+    ],
+    "tickets": [
+      {
+        "id": 1,
+        "subject": "Printer on floor 2 jams",
+        "priority": "Normal",
+        "status": "Open"
+      },
+      {
+        "id": 2,
+        "subject": "New starter needs a laptop",
+        "priority": "High",
+        "status": "Pending"
+      },
+      {
+        "id": 3,
+        "subject": "Shared drive is slow",
+        "priority": "Normal",
+        "status": "Closed"
+      },
+      {
+        "id": 4,
+        "subject": "Reset a voicemail PIN",
+        "priority": "Low",
+        "status": "Pending"
+      },
+      {
+        "id": 5,
+        "subject": "Projector in room B flickers",
+        "priority": "Normal",
+        "status": "Open"
+      },
+      {
+        "id": 6,
+        "subject": "Order more headsets",
+        "priority": "Low",
+        "status": "Pending"
+      },
+      {
+        "id": 7,
+        "subject": "VPN drops every hour",
+        "priority": "High",
+        "status": "Open"
+      },
+      {
+        "id": 8,
+        "subject": "Add a user to the finance group",
+        "priority": "Normal",
+        "status": "Closed"
+      },
+      {
+        "id": 9,
+        "subject": "Kitchen screen shows the wrong time",
+        "priority": "Low",
+        "status": "Pending"
+      },
+      {
+        "id": 10,
+        "subject": "Scanner saves blank pages",
+        "priority": "Normal",
+        "status": "Open"
+      },
+      {
+        "id": 11,
+        "subject": "Replace a broken keyboard",
+        "priority": "Low",
+        "status": "Closed"
+      },
+      {
+        "id": 12,
+        "subject": "Badge reader at the side door",
+        "priority": "High",
+        "status": "Pending"
+      },
+      {
+        "id": 13,
+        "subject": "Monitor arm is loose",
+        "priority": "Low",
+        "status": "Open"
+      },
+      {
+        "id": 14,
+        "subject": "Wi-Fi in the annex is weak",
+        "priority": "Normal",
+        "status": "Open"
+      },
+      {
+        "id": 15,
+        "subject": "Laptop battery swells",
+        "priority": "High",
+        "status": "Closed"
+      },
+      {
+        "id": 16,
+        "subject": "Install the drawing tool",
+        "priority": "Normal",
+        "status": "Closed"
+      },
+      {
+        "id": 17,
+        "subject": "Calendar invites arrive late",
+        "priority": "Normal",
+        "status": "Pending"
+      },
+      {
+        "id": 18,
+        "subject": "Desk phone has no dial tone",
+        "priority": "Low",
+        "status": "Closed"
+      },
+      {
+        "id": 19,
+        "subject": "Archive last year's mail",
+        "priority": "Low",
+        "status": "Open"
+      },
+      {
+        "id": 20,
+        "subject": "Spam filter catches invoices",
+        "priority": "High",
+        "status": "Closed"
+      },
+      {
+        "id": 21,
+        "subject": "Rename the sales share",
+        "priority": "Low",
+        "status": "Closed"
+      },
+      {
+        "id": 22,
+        "subject": "Second screen for reception",
+        "priority": "Normal",
+        "status": "Open"
+      },
+      {
+        "id": 23,
+        "subject": "Password expiry emails",
+        "priority": "Low",
+        "status": "Closed"
+      },
+      {
+        "id": 24,
+        "subject": "Webcam freezes in calls",
+        "priority": "Normal",
+        "status": "Open"
+      },
+      {
+        "id": 25,
+        "subject": "Move the server rack labels",
+        "priority": "Low",
+        "status": "Closed"
+      },
+      {
+        "id": 26,
+        "subject": "Badge printer on the third floor jams",
+        "priority": "Normal",
+        "status": "Pending"
+      },
+      {
+        "id": 27,
+        "subject": "Recover a deleted folder",
+        "priority": "High",
+        "status": "Closed"
+      },
+      {
+        "id": 28,
+        "subject": "Update the wall display",
+        "priority": "Low",
+        "status": "Open"
+      },
+      {
+        "id": 29,
+        "subject": "Toner for the plotter",
+        "priority": "Low",
+        "status": "Closed"
+      },
+      {
+        "id": 30,
+        "subject": "Guest network password card",
+        "priority": "Low",
+        "status": "Open"
+      },
+      {
+        "id": 31,
+        "subject": "Mouse double-clicks",
+        "priority": "Low",
+        "status": "Closed"
+      },
+      {
+        "id": 32,
+        "subject": "Meeting room booking screen",
+        "priority": "Normal",
+        "status": "Pending"
+      },
+      {
+        "id": 33,
+        "subject": "Old laptops to recycle",
+        "priority": "Low",
+        "status": "Closed"
+      },
+      {
+        "id": 34,
+        "subject": "Shared mailbox for support",
+        "priority": "Normal",
+        "status": "Open"
+      }
+    ]
+  },
+  "settings": {
+    "filters": {
+      "tickets": [
+        "status",
+        "priority"
+      ]
+    },
+    "page_size": 10
+  }
+}

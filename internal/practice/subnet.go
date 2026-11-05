@@ -46,37 +46,67 @@ func RefuseSubnets(subnets func() []netip.Prefix, next http.Handler) http.Handle
 	})
 }
 
-// SubnetCache remembers the practice network's ranges for a short while, so the
-// listener guard does not ask Docker on every request.
+// SubnetCache remembers the practice network's ranges for a short while, so the listener guard does not ask Docker
+// on every request. Only the very first call waits for Docker; after that the ranges known are answered at once and
+// asked for again in the background, one question at a time (review 2026-11-02: the guard asked Docker under its lock
+// every second while no practice network existed, and every request on both listeners waited behind it).
 type SubnetCache struct {
 	Lookup func(ctx context.Context) []netip.Prefix
 	TTL    time.Duration
 
-	mu   sync.Mutex
-	at   time.Time
-	list []netip.Prefix
+	mu      sync.Mutex
+	at      time.Time
+	list    []netip.Prefix
+	running chan struct{}
 }
 
-// Subnets returns the cached ranges, refreshing them when older than TTL.
+// Subnets returns the ranges known, asking Docker again in the background when they are older than TTL.
 func (c *SubnetCache) Subnets() []netip.Prefix {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	ttl := c.TTL
 	if ttl <= 0 {
 		ttl = 30 * time.Second
 	}
-	if c.Lookup != nil && time.Since(c.at) > ttl {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		c.list = c.Lookup(ctx)
-		cancel()
-		c.at = time.Now()
+	// Knowing no range is not knowing there is none: a practice network made a moment ago is asked for again within
+	// a second, not after the whole TTL (review 2026-11-02).
+	if len(c.list) == 0 && ttl > time.Second {
+		ttl = time.Second
 	}
-	return c.list
+	var done chan struct{}
+	if c.Lookup != nil && time.Since(c.at) > ttl {
+		done = c.startLocked()
+	}
+	first, list := c.at.IsZero(), c.list
+	c.mu.Unlock()
+	if first && done != nil {
+		<-done
+		c.mu.Lock()
+		list = c.list
+		c.mu.Unlock()
+	}
+	return list
 }
 
-// Refresh drops the cache, after the practice network was created or removed.
-func (c *SubnetCache) Refresh() {
-	c.mu.Lock()
-	c.at = time.Time{}
-	c.mu.Unlock()
+// startLocked asks Docker unless a question is out already, and returns the channel closed when it is answered. c.mu
+// is held.
+func (c *SubnetCache) startLocked() chan struct{} {
+	if c.running != nil {
+		return c.running
+	}
+	done := make(chan struct{})
+	c.running = done
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		list := c.Lookup(ctx)
+		cancel()
+		c.mu.Lock()
+		// A Docker hiccup returns nothing: the last ranges known stay refused rather than none.
+		if len(list) > 0 {
+			c.list = list
+		}
+		c.at, c.running = time.Now(), nil
+		c.mu.Unlock()
+		close(done)
+	}()
+	return done
 }

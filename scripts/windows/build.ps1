@@ -140,7 +140,7 @@ try {
     # No --build: an already-built control plane image starts as-is.
     # Existing desktop_* containers and volumes, and the decurix-data
     # volume (task history, chats, worker memory), are untouched.
-    docker compose up -d
+    docker compose $script:ComposeFiles up -d
     if ($LASTEXITCODE -ne 0) { Exit-Build $LASTEXITCODE }
 
     Write-Host ""
@@ -191,7 +191,8 @@ try {
 
     Write-Host ""
     Write-Host "=== Starting Cloudflare Tunnel ==="
-    if (-not (Test-CommandAvailable "cloudflared")) {
+    # cloudflared is needed only for the public link, which is off unless DECURIX_PUBLIC_LINK=1 (lib/Lan-Tunnel.ps1).
+    if ((Test-PublicLinkEnabled) -and -not (Test-CommandAvailable "cloudflared")) {
         Write-Host "ERROR: cloudflared is not installed. Decurix is still running"
         Write-Host "locally; install cloudflared (.\scripts\windows\setup.ps1) for"
         Write-Host "access from other devices."

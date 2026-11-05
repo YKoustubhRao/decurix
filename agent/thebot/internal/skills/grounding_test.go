@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"thebot/internal/llm"
 )
@@ -62,6 +63,59 @@ func TestGroundingRefusesAValueNothingShowed(t *testing.T) {
 	// Found in the document, however it was spaced or capitalised.
 	if n := groundingNudge(st, `gui do enter-po --param customer="gemini  furniture" --param ref=GF-5522 --param q=3`); n != "" {
 		t.Fatalf("a value from the document was refused: %q", n)
+	}
+}
+
+// A value is traced as a whole token: "50" was never shown because "1,500" was, nor "500" by "INV5000"; the same
+// figure written another way (1500 for 1,500) still is.
+func TestGroundingMatchesValuesAsWholeTokens(t *testing.T) {
+	st := groundingState("Enter /w/GF-5522.pdf as a quotation.", "office read /w/GF-5522.pdf")
+	st.noteSeen("Customer: Gemini Furniture\nInvoice INV5000 total 1,500 rate 2.50\nPhone +91 98450 12345")
+
+	for _, v := range []string{"50", "500", "150", "25", "Gemini Furn", "emini", "9845", "4501"} {
+		if n := groundingNudge(st, `gui do enter-po --param v="`+v+`"`); n == "" {
+			t.Errorf("%q was taken as seen inside a longer token", v)
+		}
+	}
+	for _, v := range []string{"1500", "1,500", "1,500.00", "2.50", "Gemini Furniture", "INV5000", "+91 98450 12345"} {
+		if n := groundingNudge(st, `gui do enter-po --param v="`+v+`"`); n != "" {
+			t.Errorf("%q was refused though it was shown: %q", v, n)
+		}
+	}
+	if inSeen("phones 98450 and 12345 elsewhere 5", "984501") || !inSeen("call 98450-12345", "9845012345") {
+		t.Error("a long number is traced by its digits only as consecutive whole groups of one run")
+	}
+	cases := map[[2]string]bool{
+		{"total 1,500", "50"}: false, {"total 1,500", "1,500"}: true, {"1,500.25 due", "1,500"}: false,
+		{"x 2.50 y", "2.5"}: false, {"pune", "pune"}: true, {"puneet", "pune"}: false, {"(50)", "50"}: true,
+		{"50%", "50"}: true, {"mug-12 x", "mug"}: true,
+	}
+	for c, want := range cases {
+		if got := holdsToken(c[0], c[1]); got != want {
+			t.Errorf("holdsToken(%q, %q) = %v, want %v", c[0], c[1], got, want)
+		}
+	}
+	if !numbersIn("total 1,500")["1500"] || numbersIn("total 1,500")["500"] || numbersIn("v1.2.3")["3"] {
+		t.Errorf("numbersIn takes a figure only whole: %v %v", numbersIn("total 1,500"), numbersIn("v1.2.3"))
+	}
+	if !inSeen("Total 2,750.00", "2750") || inSeen("Total 2,750.00", "750") {
+		t.Error("inSeen matches the same figure however written, never a part of one")
+	}
+}
+
+// The seen text is bounded, and what the request said is kept however much output follows.
+func TestSeenTextKeepsTheRequestWhenCut(t *testing.T) {
+	st := &operatorState{}
+	st.noteSeen("Request: enter the bill from Acme Traders")
+	chunk := strings.Repeat("line of output 7\n", 10_000)
+	for i := 0; i < 20; i++ { // 3.4 MB in all
+		st.noteSeen(chunk)
+	}
+	if len(st.Seen) > maxSeenChars {
+		t.Fatalf("seen text is %d chars, over %d", len(st.Seen), maxSeenChars)
+	}
+	if !strings.Contains(st.Seen, "Acme Traders") {
+		t.Fatal("the request was dropped when the seen text was cut")
 	}
 }
 
@@ -248,9 +302,12 @@ func stubTools(t *testing.T, officeOutput string) (log string) {
 	if err := os.WriteFile(said, []byte(officeOutput+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Forward slashes and quotes: on a Windows development host the temp dir is
+	// C:\..., and unquoted backslashes in a sh script are escapes - the log
+	// went nowhere and every "nothing reached the app" check passed vacuously.
 	stubWorkerTools(t,
-		`printf '%s\n' "$*" >> `+log+"\necho done\n",
-		"cat "+said+"\n",
+		`printf '%s\n' "$*" >> '`+filepath.ToSlash(log)+"'\necho done\n",
+		"cat '"+filepath.ToSlash(said)+"'\n",
 		"if \"%2\"==\"decurix_agent.tools.office\" goto office\r\n"+
 			">>\""+log+"\" echo %DECURIX_CLI_ARGS%\r\necho done\r\nexit /b 0\r\n"+
 			":office\r\ntype \""+said+"\"\r\n")
@@ -752,5 +809,39 @@ func TestAMonthsFirstAndLastDayAreTracedByADateInIt(t *testing.T) {
 		if got := set.holds(d) || set.boundsAMonth(d); got != want {
 			t.Errorf("%s traced = %v, want %v", v, got, want)
 		}
+	}
+}
+
+// An identifier with letters is not a number: "INV 5000" typed into a field is not traced by any 5000 the work saw.
+// A currency's mark before the digits is no identifier.
+func TestCanonicalNumberKeepsIdentifiersApart(t *testing.T) {
+	for v, want := range map[string]string{
+		"6,000.00": "6000", "Rs. 6000": "6000", "₹6,000": "6000", "INR 6000": "6000", "US$ 12.5": "12.5", "$ 7": "7",
+		"EUR 1.200": "1.2",
+	} {
+		if got, ok := canonicalNumber(v); !ok || got != want {
+			t.Errorf("canonicalNumber(%q) = %q, %v; want %q", v, got, ok, want)
+		}
+	}
+	for _, v := range []string{"INV 5000", "PO 12", "Bill 456", "A 12", "Invoice No. 455", "v1.27", "Q3 2026"} {
+		if got, ok := canonicalNumber(v); ok {
+			t.Errorf("canonicalNumber(%q) = %q, want no number: it is an identifier", v, got)
+		}
+	}
+}
+
+// A byte-position cut of the seen text must never leave half a multi-byte rune at either edge: the model and the
+// grounding check are both fed this text, and invalid UTF-8 breaks a quote match and an API call alike.
+func TestSeenTextStaysValidUTF8WhenCut(t *testing.T) {
+	st := &operatorState{}
+	// A head longer than maxSeenHeadChars, made of 3-byte runes so a byte cut lands mid-rune unless it is fixed.
+	st.noteSeen("₹" + strings.Repeat("₹", maxSeenHeadChars))
+	// Tail with no line break near the cut, also all multi-byte runes.
+	st.noteSeen(strings.Repeat("€", maxSeenChars))
+	if !utf8.ValidString(st.Seen) {
+		t.Fatal("the seen text holds invalid UTF-8 after being cut")
+	}
+	if len(st.Seen) > maxSeenChars {
+		t.Fatalf("seen text is %d chars, over %d", len(st.Seen), maxSeenChars)
 	}
 }

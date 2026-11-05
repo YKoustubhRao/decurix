@@ -1,0 +1,85 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "bill-needs-centre-custom",
+  "category": "missing_input",
+  "kind": "doc_to_record",
+  "request": "Enter the bill in ~/work/practice/bill-needs-centre-custom/bill.pdf into the Records app (http://records.example.test/bills/new).",
+  "start": {
+    "files": [
+      "bill.pdf"
+    ],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [
+    {
+      "id": "cost-centre",
+      "about": "which cost centre this bill is charged to",
+      "refers_to": [
+        "centre",
+        "center",
+        "centres",
+        "centers",
+        "charge",
+        "charged",
+        "charging",
+        "project",
+        "allocate",
+        "allocated",
+        "allocation"
+      ],
+      "answer": "Charge it to Project Alder.",
+      "required": true
+    }
+  ],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "mock_records",
+        "collection": "bills",
+        "exact_count": true,
+        "records": [
+          {
+            "number": {
+              "id": "PW-2207"
+            },
+            "vendor": {
+              "text": "Pellworth Glassworks"
+            },
+            "date": {
+              "date": "2026-07-08"
+            },
+            "due": {
+              "date": "2026-08-07"
+            },
+            "total": {
+              "number": "2250.00"
+            },
+            "cost_centre": "Project Alder"
+          }
+        ]
+      },
+      {
+        "kind": "asked",
+        "facts": [
+          "cost-centre"
+        ]
+      },
+      {
+        "kind": "absent",
+        "collection": "bills",
+        "when": "asked"
+      }
+    ]
+  },
+  "oracle": [
+    "office read bill.pdf | grep -q PW-2207",
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode number=PW-2207 --data-urlencode 'vendor=Pellworth Glassworks' --data-urlencode date=2026-07-08 --data-urlencode due=2026-08-07 --data-urlencode total=2,250.00 --data-urlencode 'cost_centre=Project Alder' --data-urlencode notes= http://records.example.test/bills/new"
+  ],
+  "tags": [
+    "question",
+    "custom-dropdown",
+    "regression"
+  ]
+}

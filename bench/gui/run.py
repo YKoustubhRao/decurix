@@ -36,9 +36,31 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 FIXTURES = HERE / "fixtures"
+# What the desktop's apps need (the admin panel, the reset half) lives in the
+# agent's home. The answer key (tasks.json) and the checker live where the
+# agent's user cannot read them, and checks run as root.
 REMOTE = "/home/headless/bench/gui"
+ORACLE = "/opt/decurix-bench-gui"
+AGENT_FILES = ("bench.py", "odf.py")
+# The admin panel runs as its own user, with its state where the agent's user
+# can neither read nor write it: the agent changes it only through the UI
+# (the port), as a person would, and the check reads it as root.
+PANEL_USER = "benchpanel"
+PANEL_CODE = "/opt/decurix-bench-panel"
+PANEL_STATE_DIR = "/var/lib/decurix-bench-panel"
+PANEL_STATE = f"{PANEL_STATE_DIR}/admin.json"
 
 ENGINES = ("oracle", "ollama", "claude", "thebot")
+
+# Where the desktop's browser reaches the admin panel (bench.py's PANEL_HOST): a request names a site by its name.
+PANEL_SITE = "http://admin.bench.test:8765"
+
+# Why the oracle does not run a task whose solution needs a person's yes: only the approval gate makes a yes, from a
+# reply the control plane signed for an approval it holds on a task it opened (docs/gate-boundary.md). The oracle
+# opens no task on the control plane, and a reply sent to a desktop with none would reach it as a new request, which
+# its engine would carry out. It never approves locally, so such a task is reported skipped, not passed.
+APPROVAL_NEEDS_A_TASK = ("needs a person's signed reply to an approval on a task the control plane opened; "
+                         "the oracle opens none - an engine run covers it")
 
 
 # ============================================================
@@ -95,14 +117,96 @@ def keep_awake(plane, desktop_id, container):
 
 
 def install_fixtures(container):
+    # The agent's copy: the apps' files only. An older install's answer key goes.
     docker(container, "mkdir", "-p", REMOTE, check=True)
-    subprocess.run(["docker", "cp", f"{FIXTURES}/.", f"{container}:{REMOTE}/"], check=True, capture_output=True)
-    subprocess.run(["docker", "cp", str(HERE / "tasks.json"), f"{container}:{REMOTE}/tasks.json"], check=True, capture_output=True)
+    docker(container, "rm", "-f", f"{REMOTE}/tasks.json", user="root", check=True)
+    for name in AGENT_FILES:
+        subprocess.run(["docker", "cp", str(FIXTURES / name), f"{container}:{REMOTE}/{name}"], check=True, capture_output=True)
     docker(container, "chown", "-R", "headless:headless", "/home/headless/bench", user="root", check=True)
+
+    # The checker's copy, with the answer key: root's, mode 0700.
+    docker(container, "sh", "-c", f"rm -rf {ORACLE} && mkdir -p {ORACLE}", user="root", check=True)
+    subprocess.run(["docker", "cp", f"{FIXTURES}/.", f"{container}:{ORACLE}/"], check=True, capture_output=True)
+    subprocess.run(["docker", "cp", str(HERE / "tasks.json"), f"{container}:{ORACLE}/tasks.json"], check=True, capture_output=True)
+    docker(container, "sh", "-c", f"chown -R root:root {ORACLE} && chmod -R go-rwx {ORACLE}", user="root", check=True)
+
+    # The panel's user, code and state. An older install's state in the agent's home goes.
+    docker(container, "sh", "-c", panel_setup_script(), user="root", check=True)
+    subprocess.run(["docker", "cp", str(FIXTURES / "adminpanel.py"), f"{container}:{PANEL_CODE}/adminpanel.py"], check=True, capture_output=True)
+    docker(container, "sh", "-c", f"chown -R root:root {PANEL_CODE} && chmod 0755 {PANEL_CODE} && chmod 0644 {PANEL_CODE}/adminpanel.py",
+           user="root", check=True)
+
+
+def panel_setup_script():
+    """Root's shell script that makes the panel user and its private state directory."""
+    return (f"(id -u {PANEL_USER} >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin {PANEL_USER})"
+            f" && rm -rf /home/headless/bench/state {PANEL_CODE} && mkdir -p {PANEL_CODE} {PANEL_STATE_DIR}"
+            f" && chown {PANEL_USER}:{PANEL_USER} {PANEL_STATE_DIR} && chmod 0700 {PANEL_STATE_DIR}")
+
+
+PANEL_PORT = 8765
+
+
+def panel_start_command(container):
+    """The panel, started fresh as its own user (it writes its starting state
+    itself), with a clean environment and Python's isolated mode: no
+    PYTHONPATH or other variable from the container can make it import code
+    the agent's user could write."""
+    return ["docker", "exec", "-d", "-u", PANEL_USER, container,
+            "env", "-i", "PATH=/usr/bin:/bin", "python3", "-I", f"{PANEL_CODE}/adminpanel.py",
+            "--state", PANEL_STATE, "--port", str(PANEL_PORT), "--reset"]
+
+
+def listener_uids(port, *tables):
+    """The uids of the sockets listening on port, from /proc/net/tcp and
+    tcp6 text: local address column ends in the port in hex, state 0A is
+    LISTEN, and the eighth column is the socket's owner."""
+    want = f":{port:04X}"
+    uids = []
+    for table in tables:
+        for line in table.splitlines()[1:]:
+            cols = line.split()
+            if len(cols) > 7 and cols[1].upper().endswith(want) and cols[3] == "0A":
+                uids.append(int(cols[7]))
+    return uids
+
+
+def check_panel_owner(container, attempts=50):
+    """Fails unless the panel's port is held by the panel's user alone: a
+    process of the agent's user that took the port while the panel was
+    restarting would serve its own pages."""
+    uid = docker(container, "id", "-u", PANEL_USER, user="root", check=True).stdout.strip()
+    for _ in range(attempts):
+        tables = docker(container, "sh", "-c", "cat /proc/net/tcp; echo; cat /proc/net/tcp6 2>/dev/null", user="root").stdout
+        uids = listener_uids(PANEL_PORT, *tables.split("\n\n"))
+        if uids:
+            if any(str(u) != uid for u in uids):
+                raise RuntimeError(f"port {PANEL_PORT} is held by uid {sorted(set(uids))}, not the panel's user ({uid})")
+            return
+        time.sleep(0.2)
+    raise RuntimeError(f"the admin panel did not start listening on {PANEL_PORT}")
+
+
+def restart_panel(container):
+    docker(container, "sh", "-c", f"pkill -u {PANEL_USER} -f adminpanel.py; sleep 0.5; true", user="root")
+    subprocess.run(panel_start_command(container), check=True, capture_output=True, timeout=60)
+    check_panel_owner(container)
+
+
+def reset_command(task):
+    """The reset, run as the desktop's user: it is handed the task's starting
+    state, so it never needs the answer key."""
+    return ["python3", f"{REMOTE}/bench.py", "reset", task["id"], "--start", json.dumps(task.get("start") or {})]
+
+
+def check_command(task):
+    """The check, run as root from the root-only copy, with the answer key."""
+    return ["python3", f"{ORACLE}/bench.py", "check", task["id"], "--answer-file", f"{ORACLE}/answer.txt"]
 
 
 def reset_task(container, task):
-    process = docker(container, "python3", f"{REMOTE}/bench.py", "reset", task["id"], timeout=600)
+    restart_panel(container)
+    process = docker(container, *reset_command(task), timeout=600)
     if process.returncode != 0:
         raise RuntimeError(f"reset {task['id']} failed: {process.stdout[-500:]}{process.stderr[-500:]}")
 
@@ -120,8 +224,8 @@ def own_words(answer):
 
 def check_task(container, task, answer):
     answer = own_words(answer)
-    docker(container, "sh", "-c", "cat > /tmp/bench-answer.txt", stdin=answer or "", check=True)
-    process = docker(container, "python3", f"{REMOTE}/bench.py", "check", task["id"], "--answer-file", "/tmp/bench-answer.txt")
+    docker(container, "sh", "-c", f"cat > {ORACLE}/answer.txt", stdin=answer or "", user="root", check=True)
+    process = docker(container, *check_command(task), user="root")
     try:
         return json.loads(process.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):
@@ -227,13 +331,77 @@ def gate_fired(message):
 # engines
 # ============================================================
 
+def request_text(task):
+    """What the person asks for a task: its prompt, and for a web task the site it is on (a person names it; the
+    approval gate asks before a password goes to a site the request does not name)."""
+
+    if "browser" in (task.get("start") or {}):
+        return task["prompt"] + f"\n\nThe admin panel is at {PANEL_SITE}."
+    return task["prompt"]
+
+
+# Run in the desktop as its user: the task's request, as the agent keeps it when a person sends one (task_context.start),
+# so every guard reads the request a person would have given - the values it names and the site it is on.
+REQUEST_CONTEXT = (
+    "import sys; sys.path.insert(0, '/opt')\n"
+    "from decurix_agent import task_context\n"
+    "task_context.start(sys.argv[1], sys.argv[2])\n"
+)
+
+# Run in the desktop as root, standing in for the control plane, which the oracle does not go through: the desktop's
+# approval gate gets its own signed copy of the task's request first, as production gives it before the agent has the
+# request (desktop.TellGate, POST /request). The gate reads only that copy for the sites and values a request names, so
+# without it a password typed on the site the request names is asked about (F-B4'). The key is read and used inside the
+# container, by the gate's own signing function, and never leaves it; the gate verifies the copy as it verifies the
+# control plane's.
+GATE_REQUEST = (
+    "import json, sys, time, uuid, urllib.request; sys.path.insert(0, '/opt')\n"
+    "from decurix_agent import gate_server\n"
+    "key = gate_server.read_key('/var/lib/decurix-gate')\n"
+    "if not key: sys.exit('the gate has no key')\n"
+    "task, text = sys.argv[1], sys.argv[2]\n"
+    "ts, nonce = str(int(time.time())), uuid.uuid4().hex\n"
+    "body = {'task_id': task, 'ts': ts, 'nonce': nonce, 'text': text,\n"
+    "        'sig': gate_server.sign_request(key, task, ts, nonce, text)}\n"
+    "req = urllib.request.Request('http://127.0.0.1:8083/request', data=json.dumps(body).encode(),\n"
+    "                             headers={'Content-Type': 'application/json'}, method='POST')\n"
+    "urllib.request.urlopen(req, timeout=20).read()\n"
+)
+
+# Run in the desktop: whether the click just made listed its form for checking (core._form_check's note for the task).
+FORM_LISTED = "test -f /tmp/decurix-form-check.$0.json"
+
+# Run in the desktop: whether the record guard stopped this task's save of a new record once over an identifier that
+# nothing in the task resolved (core._unsearched_record keeps a note per task and identifier). The guard lets the worker
+# save again as it decided after that one stop; one that a record already holds stays refused every time.
+RECORD_STOPPED = "ls ~/.decurix/computer/id-refusals/$0-* >/dev/null 2>&1"
+
+
+def oracle_task_id(task):
+    """A task id of the agent's shape (t + 16 hex), fixed per bench task."""
+    import hashlib
+    return "t" + hashlib.sha256(("gui-oracle:" + task["id"]).encode()).hexdigest()[:16]
+
+
 def run_oracle(container, task):
-    """Execute a task's scripted solution through the gui command."""
+    """Execute a task's scripted solution through the gui command, inside the request a person would have sent."""
 
     answer = ""
     paused = False
     failures = []
     started = time.time()
+
+    if any(isinstance(step, dict) and "approve" in step for step in task.get("oracle") or []):
+        return {"answer": "", "paused_for_approval": False, "gate_fired": False, "reply_kind": None,
+                "screen_actions": None, "seconds": 0.0, "errors": [], "skipped": APPROVAL_NEEDS_A_TASK}
+
+    task_id = oracle_task_id(task)
+    told = docker(container, "python3", "-c", GATE_REQUEST, task_id, request_text(task), user="root")
+    if told.returncode != 0:
+        failures.append(f"the desktop's approval gate could not be given the task's request: {told.stderr.strip()[-300:]}")
+    context = docker(container, "python3", "-c", REQUEST_CONTEXT, task_id, request_text(task))
+    if context.returncode != 0:
+        failures.append(f"the task's request could not be set on the desktop: {context.stderr.strip()[-300:]}")
 
     for step in task.get("oracle") or []:
         if isinstance(step, str):
@@ -247,16 +415,21 @@ def run_oracle(container, task):
             answer = step["answer"]
             continue
 
-        if "approve" in step:
-            # Exactly what the agent's command watcher does with a human reply.
-            code = (
-                "import sys; sys.path.insert(0, '/opt')\n"
-                "from decurix_agent.computer import approval\n"
-                "print(approval.resolve_reply(sys.argv[1]))\n"
-            )
-            process = docker(container, "python3", "-c", code, step["approve"])
-            if process.stdout.strip() != "granted":
-                failures.append(f"approval was not granted: {process.stdout.strip()} {process.stderr.strip()}")
+        if "submit" in step:
+            # A form with several filled fields is listed before it is sent (core._form_check), and sent by the same
+            # click with --checked, the form unchanged: what an engine is told to do after reading the list.
+            # A new record whose identifier nothing resolved is stopped once (RECORD_STOPPED); the worker then decides
+            # and saves again, as the oracle does here. Each retry is asked for by a note the guard itself left.
+            command = step["submit"] + " --checked"
+            process = docker(container, "bash", "-c", "cd /tmp && " + command, timeout=180)
+            if process.returncode != 0 and docker(container, "bash", "-c", FORM_LISTED, task_id).returncode == 0:
+                process = docker(container, "bash", "-c", "cd /tmp && " + command, timeout=180)
+            if process.returncode not in (0, 3) and docker(container, "bash", "-c", RECORD_STOPPED, task_id).returncode == 0:
+                process = docker(container, "bash", "-c", "cd /tmp && " + command, timeout=180)
+            if process.returncode == 3:
+                paused = True
+            if process.returncode != 0:
+                failures.append(f"`{command}` exited {process.returncode}: {(process.stdout + process.stderr).strip()[-400:]}")
             continue
 
         process = docker(container, "bash", "-c", "cd /tmp && " + step["run"], timeout=180)
@@ -280,7 +453,7 @@ def run_oracle(container, task):
 def run_engine_task(plane, desktop_id, task, timeout):
     started = time.time()
     plane.clear(desktop_id)
-    plane.send(desktop_id, task["prompt"])
+    plane.send(desktop_id, request_text(task))
 
     reply, thread = wait_for_reply(plane, desktop_id, 1, timeout)
     result = {
@@ -426,12 +599,19 @@ def main():
                         run = run_oracle(container, task)
                     else:
                         run = run_engine_task(plane, created["id"], task, args.timeout)
-                    checked = check_task(container, task, run["answer"])
-                    passed, why = verdict(task, run, checked)
+                    if run.get("skipped"):
+                        checked, passed, why = {}, False, ""
+                    else:
+                        checked = check_task(container, task, run["answer"])
+                        passed, why = verdict(task, run, checked)
                 except Exception as exc:  # one broken task must not end the run
                     run, checked, passed, why = {"seconds": None, "errors": [str(exc)]}, {}, False, f"runner error: {exc}"
 
-                print(("PASS" if passed else "FAIL") + (f" ({why})" if why else "") + f" [{run.get('seconds')}s]", flush=True)
+                if run.get("skipped"):
+                    passed, why, checked = False, "skipped: " + run["skipped"], {}
+                    print(f"SKIP ({run['skipped']})", flush=True)
+                else:
+                    print(("PASS" if passed else "FAIL") + (f" ({why})" if why else "") + f" [{run.get('seconds')}s]", flush=True)
                 rows.append({"task": task["id"], "app": task.get("app"), "pass": passed, "why": why,
                              "check": checked, **{k: v for k, v in run.items() if k != "errors"}})
 
@@ -439,11 +619,13 @@ def main():
                     restart_agent(plane, created["id"], container)
 
             passed_count = sum(1 for r in rows if r["pass"])
+            ran = [r for r in rows if not r.get("skipped")]
             report["engines"][engine] = {
                 "container": container,
                 "passed": passed_count,
-                "total": len(rows),
-                "success_rate": round(passed_count / len(rows), 3) if rows else None,
+                "total": len(ran),
+                "skipped": [r["task"] for r in rows if r.get("skipped")],
+                "success_rate": round(passed_count / len(ran), 3) if ran else None,
                 "tasks": rows,
             }
         finally:
@@ -462,7 +644,9 @@ def main():
     print("| engine | passed | success rate |")
     print("|---|---|---|")
     for engine, summary in report["engines"].items():
-        print(f"| {engine} | {summary['passed']}/{summary['total']} | {summary['success_rate']:.0%} |")
+        rate = f"{summary['success_rate']:.0%}" if summary["success_rate"] is not None else "-"
+        skipped = f" ({len(summary['skipped'])} skipped)" if summary.get("skipped") else ""
+        print(f"| {engine} | {summary['passed']}/{summary['total']}{skipped} | {rate} |")
 
     ids = [t["id"] for t in tasks]
     engines = list(report["engines"])
@@ -473,7 +657,7 @@ def main():
         cells = []
         for engine in engines:
             row = next(r for r in report["engines"][engine]["tasks"] if r["task"] == task_id)
-            cells.append("pass" if row["pass"] else "FAIL")
+            cells.append("skip" if row.get("skipped") else "pass" if row["pass"] else "FAIL")
         print(f"| {task_id} | " + " | ".join(cells) + " |")
 
     print(f"\nFull results: {out_path}")

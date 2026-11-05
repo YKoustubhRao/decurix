@@ -55,7 +55,7 @@ func send(t *testing.T, s *Store, w Worker, text string) Route {
 		t.Fatal(err)
 	}
 
-	route, err = s.Commit(route, w, text)
+	route, err = s.Commit(route, w, text, Origin{Kind: OriginPerson})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestSlowReplyAttachesToTheInterventionOpenAtCommitTime(t *testing.T) {
 	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeQuery, Reply: "light or dark?"})
 
 	// A's stale route finally reaches Commit.
-	if _, err := s.Commit(routeA, box, "blue"); err != nil {
+	if _, err := s.Commit(routeA, box, "blue", Origin{Kind: OriginPerson}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -403,7 +403,7 @@ func TestVerdict(t *testing.T) {
 	route := send(t, s, box, "how much disk is free?")
 	outcome(t, s, "box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "1.6T available"})
 
-	task, err := s.SetVerdict(route.TaskID, VerdictWrong, "  df says 835G  ")
+	task, err := s.SetVerdict(route.TaskID, VerdictWrong, "  df says 835G  ", LocalOwner)
 	if err != nil || task.Verdict != VerdictWrong || task.VerdictNote != "df says 835G" {
 		t.Fatalf("SetVerdict = %+v, %v", task, err)
 	}
@@ -413,15 +413,15 @@ func TestVerdict(t *testing.T) {
 		t.Fatal("an answer marked wrong is not autonomous")
 	}
 
-	if task, _ := s.SetVerdict(route.TaskID, "", "ignored"); task.Verdict != "" || task.VerdictNote != "" {
+	if task, _ := s.SetVerdict(route.TaskID, "", "ignored", LocalOwner); task.Verdict != "" || task.VerdictNote != "" {
 		t.Fatalf("withdrawing the verdict left %+v", task)
 	}
 
-	if _, err := s.SetVerdict("t0000000000000000", VerdictCorrect, ""); err != ErrNotFound {
+	if _, err := s.SetVerdict("t0000000000000000", VerdictCorrect, "", LocalOwner); err != ErrNotFound {
 		t.Fatalf("unknown task: err = %v", err)
 	}
 
-	if _, err := s.SetVerdict(route.TaskID, "meh", ""); err == nil {
+	if _, err := s.SetVerdict(route.TaskID, "meh", "", LocalOwner); err == nil {
 		t.Fatal("an unknown verdict was accepted")
 	}
 }
@@ -446,7 +446,7 @@ func TestRecordsSurviveRestart(t *testing.T) {
 	}
 
 	outcome(t, reopened, "box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "Sent.", CostUSD: ptrFloat(0.31)})
-	reopened.SetVerdict(route.TaskID, VerdictCorrect, "")
+	reopened.SetVerdict(route.TaskID, VerdictCorrect, "", LocalOwner)
 
 	detail := get(t, reopened, route.TaskID)
 	execution := detail.Executions[0]
@@ -477,7 +477,7 @@ func TestReportAnswersWhichEngineAndWhy(t *testing.T) {
 	for _, text := range []string{"what is the kernel version?", "list files in /work"} {
 		route := send(t, s, claude, text)
 		c.advance(20 * time.Second)
-		outcome(t, s, "claude-box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "ok", CostUSD: ptrFloat(0.05)})
+		outcome(t, s, "claude-box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "ok", CostUSD: ptrFloat(0.05), Checked: &checkedTrue})
 	}
 
 	paid := send(t, s, claude, "pay invoice INV-7")
@@ -488,7 +488,7 @@ func TestReportAnswersWhichEngineAndWhy(t *testing.T) {
 	// Ollama: one done but wrong, one stuck, one timed out, one right.
 	wrong := send(t, s, ollama, "how much disk is free?")
 	outcome(t, s, "ollama-box", wrong.TaskID, Outcome{Kind: OutcomeDone, Reply: "1.6T"})
-	s.SetVerdict(wrong.TaskID, VerdictWrong, "invented numbers")
+	s.SetVerdict(wrong.TaskID, VerdictWrong, "invented numbers", LocalOwner)
 
 	stuck := send(t, s, ollama, "sign in to the admin panel")
 	outcome(t, s, "ollama-box", stuck.TaskID, Outcome{Kind: OutcomeQuery, Reply: "I need the admin password to sign in."})
@@ -499,8 +499,8 @@ func TestReportAnswersWhichEngineAndWhy(t *testing.T) {
 	outcome(t, s, "ollama-box", slow.TaskID, Outcome{Kind: OutcomeError, Reply: "Ollama accepted the request but did not finish answering in time. context deadline exceeded"})
 
 	right := send(t, s, ollama, "uname -r")
-	outcome(t, s, "ollama-box", right.TaskID, Outcome{Kind: OutcomeDone, Reply: "6.6.87.2"})
-	s.SetVerdict(right.TaskID, VerdictCorrect, "")
+	outcome(t, s, "ollama-box", right.TaskID, Outcome{Kind: OutcomeDone, Reply: "6.6.87.2", Checked: &checkedTrue})
+	s.SetVerdict(right.TaskID, VerdictCorrect, "", LocalOwner)
 
 	// A person recording themselves doing a task is not Ollama being autonomous,
 	// even with a screen step attributed to it.
@@ -596,22 +596,23 @@ func TestTaskResult(t *testing.T) {
 	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeError, Reply: "did not finish answering in time"})
 
 	send(t, s, box, "Hello,  whats your name?")
-	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeDone, Reply: "I'm box."})
+	yes := true
+	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeDone, Reply: "I'm box.", Checked: &yes})
 
-	status, reply, ok := s.TaskResult(first.TaskID)
+	status, checked, reply, ok := s.TaskResult(first.TaskID)
 	if !ok {
 		t.Fatal("TaskResult ok = false, want true")
 	}
 
-	if status != StatusDone || reply != "I'm box." {
-		t.Fatalf("TaskResult = (%q, %q), want the latest attempt (%q, %q)", status, reply, StatusDone, "I'm box.")
+	if status != StatusDone || reply != "I'm box." || checked == nil || !*checked {
+		t.Fatalf("TaskResult = (%q, %v, %q), want the latest attempt (%q, checked, %q)", status, checked, reply, StatusDone, "I'm box.")
 	}
 }
 
 func TestTaskResultUnknownID(t *testing.T) {
 	s := openStore(t, newClock())
 
-	if _, _, ok := s.TaskResult("t0000000000000000"); ok {
+	if _, _, _, ok := s.TaskResult("t0000000000000000"); ok {
 		t.Fatal("TaskResult ok = true for an unknown task, want false")
 	}
 }
@@ -668,5 +669,31 @@ func TestAReportShowsWhatTasksCostInTokens(t *testing.T) {
 	}
 	if FormatTokens(nil) != "—" {
 		t.Fatal("no count must not read as a number")
+	}
+}
+
+// checkedTrue is a final check that confirmed the result.
+var checkedTrue = true
+
+// Done on the worker's word alone is not autonomous: the final check has to have confirmed it (review 2026-11-02).
+func TestUncheckedDoneIsNotAutonomous(t *testing.T) {
+	c := newClock()
+	s := openStore(t, c)
+	since := c.now().Add(-time.Minute)
+	box := worker("box", "claude")
+	unchecked := send(t, s, box, "sum the bills")
+	outcome(t, s, "box", unchecked.TaskID, Outcome{Kind: OutcomeDone, Reply: "Total 4,50,000"})
+	notChecked := false
+	failedCheck := send(t, s, box, "file the return")
+	outcome(t, s, "box", failedCheck.TaskID, Outcome{Kind: OutcomeDone, Reply: "Filed", Checked: &notChecked})
+	checked := send(t, s, box, "list the files")
+	outcome(t, s, "box", checked.TaskID, Outcome{Kind: OutcomeDone, Reply: "3 files", Checked: &checkedTrue})
+
+	report, err := s.Report(since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Totals.Autonomous != 1 {
+		t.Fatalf("autonomous = %d, want 1 (only the checked one): %+v", report.Totals.Autonomous, report.Totals)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/conversation"
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
 // fake is a control plane with a few desktops: a send makes the desktop
@@ -20,9 +21,13 @@ type fake struct {
 	waiting    map[string]bool   // desktop -> waiting on a person
 	sent       []string          // "desktop: text"
 	taskStatus map[string]string
-	suggest    string
-	stopped    []string
-	next       int
+	// outcome is what each task's record says of it; a task not here is a checked done.
+	outcome map[string]tasks.Display
+	// questions are the open questions by task, and whether each was asked for a secret.
+	questions map[string]fakeQuestion
+	suggest   string
+	stopped   []string
+	next      int
 }
 
 func newFake(desktops ...desktop.Desktop) *fake {
@@ -33,7 +38,14 @@ func newFake(desktops ...desktop.Desktop) *fake {
 		taskOf:     map[string]string{},
 		waiting:    map[string]bool{},
 		taskStatus: map[string]string{},
+		outcome:    map[string]tasks.Display{},
+		questions:  map[string]fakeQuestion{},
 	}
+}
+
+type fakeQuestion struct {
+	text   string
+	secret bool
 }
 
 func (f *fake) deps() Deps {
@@ -60,6 +72,17 @@ func (f *fake) deps() Deps {
 		},
 		Transcript: func(id string) conversation.Thread { return *f.thread(id) },
 		TaskStatus: func(task string) (string, error) { return f.taskStatus[task], nil },
+		TaskOutcome: func(task string) (tasks.Display, error) {
+			if o, ok := f.outcome[task]; ok {
+				return o, nil
+			}
+			yes := true
+			return tasks.DisplayOutcome(tasks.StatusDone, &yes), nil
+		},
+		OpenQuestion: func(task string) (string, bool, bool) {
+			q, ok := f.questions[task]
+			return q.text, q.secret, ok
+		},
 		Suggest: func(context.Context, string) (string, bool) {
 			return f.suggest, f.suggest != ""
 		},
@@ -258,8 +281,8 @@ func TestAQuestionIsAnsweredByNumberAndByAShortYes(t *testing.T) {
 	f := newFake(running("alpha"))
 	c := newConcierge(t, f)
 
-	send(t, c, "pay the invoice")
-	f.reply("alpha", conversation.KindApproval, "NEEDS_APPROVAL: pay $400 to Acme?")
+	send(t, c, "tidy the folder")
+	f.reply("alpha", conversation.KindQuery, "Delete the empty files too?")
 	c.Tick(context.Background())
 
 	s, _ := c.Store.Session(1)
@@ -275,7 +298,7 @@ func TestAQuestionIsAnsweredByNumberAndByAShortYes(t *testing.T) {
 		t.Fatalf("status %s, want running", s.Status)
 	}
 
-	f.reply("alpha", conversation.KindEntry, "Paid.")
+	f.reply("alpha", conversation.KindEntry, "Tidied.")
 	c.Tick(context.Background())
 	if s, _ = c.Store.Session(1); s.Status != StatusDone {
 		t.Fatalf("status %s, want done", s.Status)
@@ -302,12 +325,12 @@ func TestAShortYesIsNeverStartedAsANewJob(t *testing.T) {
 	// Two jobs waiting: ask which, send nothing.
 	send(t, c, "@alpha one")
 	send(t, c, "@beta two")
-	f.reply("alpha", conversation.KindApproval, "ok?")
-	f.reply("beta", conversation.KindApproval, "ok?")
+	f.reply("alpha", conversation.KindQuery, "ok?")
+	f.reply("beta", conversation.KindQuery, "ok?")
 	c.Tick(context.Background())
 
 	sentBefore := len(f.sent)
-	if got := send(t, c, "approve"); !strings.Contains(got.Text, "which one") || len(f.sent) != sentBefore {
+	if got := send(t, c, "yes"); !strings.Contains(got.Text, "which one") || len(f.sent) != sentBefore {
 		t.Fatalf("said %q, sent %v", got.Text, f.sent)
 	}
 }

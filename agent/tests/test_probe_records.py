@@ -54,13 +54,15 @@ class APlaceholderIsNeverSent(unittest.TestCase):
 
 
 class ATestRecordSavedAnywayIsReportedAtTheTop(base.LongRunBase):
-    def test_the_live_approval_puts_it_in_the_report(self):
-        self.assertTrue(long_task.PROBE_RECORD.search(LIVE_APPROVAL))
-        self.assertIsNone(long_task.PROBE_RECORD.search("Should I hold the order for Cafe Bloom that I created?"))
-        self.engine.asks["s1-register"] = LIVE_APPROVAL
+    def test_records_the_request_asked_for_are_never_called_wrong_by_their_words(self):
+        # E-22 (review 2026-11-03): a regex over the stage's words ("sample ... I created") wrote "WRONG IN THE
+        # APPLICATION - remove it" into the report about records the request asked for. Only the worker's own
+        # WRONG IN THE APPLICATION line says so (APP_ENTRY_RULE).
+        self.engine.asks["s1-register"] = ("I created sample invoices INV-101 to INV-105 as the request asked. "
+                                           "Should I also mark them as sent?")
         long_task.perform(base.LONG, None)
-        data = long_task.ledger(self.run_id())
-        self.assertTrue(any("a test record was saved in the application" in w for w in data.get("wrong_in_app", [])))
+        self.assertFalse(long_task.ledger(self.run_id()).get("wrong_in_app"))
+        self.assertFalse(hasattr(long_task, "PROBE_RECORD"))
 
     def test_the_stage_rule_says_a_test_record_is_wrong_in_the_application(self):
         self.assertIn("A record the request did not ask for (a test or a try) is wrong in the application too",

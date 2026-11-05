@@ -22,6 +22,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/YKoustubhRao/decurix/internal/access"
+	"github.com/YKoustubhRao/decurix/internal/blobstore"
 	"github.com/YKoustubhRao/decurix/internal/cftunnel"
 	"github.com/YKoustubhRao/decurix/internal/claudeauth"
 	"github.com/YKoustubhRao/decurix/internal/concierge"
@@ -29,6 +30,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/dag"
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/devices"
+	"github.com/YKoustubhRao/decurix/internal/eval"
 	"github.com/YKoustubhRao/decurix/internal/grounder"
 	"github.com/YKoustubhRao/decurix/internal/handoff"
 	"github.com/YKoustubhRao/decurix/internal/httpapi"
@@ -37,6 +39,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/knowledge"
 	"github.com/YKoustubhRao/decurix/internal/lanaccess"
 	"github.com/YKoustubhRao/decurix/internal/llm"
+	"github.com/YKoustubhRao/decurix/internal/llmrec"
 	"github.com/YKoustubhRao/decurix/internal/mailtrigger"
 	"github.com/YKoustubhRao/decurix/internal/memory"
 	"github.com/YKoustubhRao/decurix/internal/ollama"
@@ -46,6 +49,7 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/qualification"
 	"github.com/YKoustubhRao/decurix/internal/querynotes"
 	"github.com/YKoustubhRao/decurix/internal/resourcemon"
+	"github.com/YKoustubhRao/decurix/internal/runs"
 	"github.com/YKoustubhRao/decurix/internal/schedule"
 	"github.com/YKoustubhRao/decurix/internal/sealed"
 	"github.com/YKoustubhRao/decurix/internal/skillhub"
@@ -173,9 +177,19 @@ func primaryListenAddrs(gateways func() []string) []string {
 	return addrs
 }
 
-// lanListenAddr reads DECURIX_LAN_PORT, the port internal/lanaccess's gated
-// listener binds; unset or invalid means defaultLANAddr.
+// lanListenAddr is where internal/lanaccess's gated listener binds:
+// DECURIX_LAN_ADDR (host:port) when set - a binary run on the host can keep the
+// gated listener off the LAN, e.g. 127.0.0.1:8090 behind a tunnel (W-18) -
+// else every address on DECURIX_LAN_PORT; unset or invalid means defaultLANAddr.
 func lanListenAddr() string {
+	if addr := strings.TrimSpace(os.Getenv("DECURIX_LAN_ADDR")); addr != "" {
+		if _, port, err := net.SplitHostPort(addr); err == nil {
+			if _, err := strconv.Atoi(port); err == nil {
+				return addr
+			}
+		}
+		log.Printf("warning: DECURIX_LAN_ADDR=%q is not host:port; ignoring it", addr)
+	}
 	port := os.Getenv("DECURIX_LAN_PORT")
 	if port == "" {
 		return defaultLANAddr
@@ -311,12 +325,6 @@ func main() {
 	defer cli.Close()
 
 	desktops := desktop.NewManager(cli)
-	// Host hops (privileged containers that run something on the host) left by an earlier run go first: their owner is
-	// gone, and the Windows helper a hop runs keeps its app and its memory for as long as the hop lives.
-	desktop.SweepHopsAtStart()
-	// And the host-app helpers (with the apps they started) that ran through those hops: a Windows program started
-	// through WSL outlives the hop that started it.
-	httpapi.SweepHostHelpersAtStart()
 	// The key that signs the launch tokens in a desktop's host-app launchers (internal/winhost). It lives in the data
 	// directory so launchers already written keep working across restarts; a failure only disables those apps.
 	hostGUISecret, err := winhost.LoadSecret(sqlitedb.DataDir())
@@ -324,10 +332,6 @@ func main() {
 		log.Printf("host apps: %v - Windows apps shown from the host are disabled", err)
 	}
 	desktops.HostGUISecret = hostGUISecret
-	// Requested apps a desktop was created without (and the retry of ones the host could not be asked about yet) live
-	// in memory; read them back from the desktops, which keep them for their agents. Its retries wait long enough for
-	// the host-app checker that the HTTP server installs below.
-	go desktops.RestoreMissingApps(context.Background())
 	desktop.OptimizeHostKSM()
 	ollamaManager := ollama.NewManager(cli, desktop.NetworkName)
 	ollama.EnableWarm()
@@ -346,44 +350,6 @@ func main() {
 		return
 	}
 
-	// Non-blocking: the dashboard is still useful (and says what is wrong)
-	// when the images have not been built yet.
-	if err := desktops.EnsureImages(ctx); err != nil {
-		log.Printf("warning: %v", err)
-		log.Printf("run `%s --build-images` to build them", exeName())
-	}
-
-	if err := desktops.EnsureNetwork(ctx); err != nil {
-		log.Fatal(err)
-	}
-
-	// Pre-warm the shared tools volume asynchronously in the background so the
-	// first VM creation does not have to wait for volume initialization.
-	go func() {
-		if err := desktops.EnsureToolsVolume(context.Background()); err != nil {
-			log.Printf("background tools volume: %v", err)
-		}
-	}()
-
-	// Desktops created before the control plane moved off the LAN-facing
-	// address keep calling it (see Manager.StaleControlPlane): say so once,
-	// with what to do, rather than leaving them to fail silently.
-	go func() {
-		if stale := desktops.StaleControlPlane(context.Background()); len(stale) > 0 {
-			log.Printf("warning: desktops %s call the control plane at an address it no longer serves them on; "+
-				"recreate them (their environment is fixed when they are created)", strings.Join(stale, ", "))
-		}
-	}()
-
-	// Desktops made when half their chosen memory was reserved get the idle floor instead
-	// (Manager.ReleaseReservations): the rest is taken only when used.
-	go func() {
-		if changed := desktops.ReleaseReservations(context.Background()); len(changed) > 0 {
-			log.Printf("desktops %s now reserve only their idle memory; the size chosen stays their ceiling",
-				strings.Join(changed, ", "))
-		}
-	}()
-
 	dbPath := filepath.Join(sqlitedb.DataDir(), sqlitedb.FileName)
 
 	db, err := sqlitedb.Open(dbPath)
@@ -391,26 +357,35 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
+	// Freed pages go back to the disk, a batch an hour (resource plan B2).
+	go sqlitedb.KeepVacuumed(context.Background(), db, time.Hour)
 
 	log.Printf("Records: %s", dbPath)
 
 	tasksStore := must(tasks.NewStore(db))
+	// A task that closes is told to its desktop's approval gate, which then lets go of that task's secret values
+	// (gate_server /task-ended); never blocking the close, retried with the next delivery to that gate.
+	tasksStore.OnTaskEnded(desktops.GateTaskEnded)
 	lanAccess := lanaccess.NewStore()
 	pairedDevices := must(devices.NewStore(db))
 	lanAccess.SetDevices(pairedDevices)
+	// Unpairing a device also ends the screens and streams it has open through the gate (RW1-B-04).
+	pairedDevices.OnRevoke(func(id string) { lanAccess.CloseDevice(id) })
 
 	// The fixed link on the person's own domain, when they set one up
-	// (internal/cftunnel). A key that cannot be written leaves the tokens
-	// unsealed rather than the feature off.
+	// (internal/cftunnel). A key that cannot be written refuses the setup:
+	// the tokens are never stored unsealed.
 	cfKey, err := sealed.LoadKey(sqlitedb.DataDir(), cftunnel.KeyFile)
 	if err != nil {
-		log.Printf("warning: %s: %v; the Cloudflare tokens will be stored unencrypted", cftunnel.KeyFile, err)
+		log.Printf("warning: %s: %v; your own link cannot be set up until it can be written (no token is stored unencrypted)", cftunnel.KeyFile, err)
 	}
 	namedTunnel := must(cftunnel.NewManager(db, cfKey, lanPort(lanListenAddr())))
 	schedules := must(schedule.NewStore(db))
 	dags := must(dag.NewStore(db))
 	memoryStore := must(memory.NewStore(db))
 	suggestions := must(suggest.NewStore(db, desktops, tasksStore, memoryStore, ollama.Embed))
+	// A suggestion never evicts the chat model from a one-model Ollama to embed (C-10).
+	suggestions.WouldEvict = ollama.EmbedWouldEvict
 
 	server := httpapi.NewServer(
 		desktops,
@@ -430,6 +405,8 @@ func main() {
 
 	server.Devices = pairedDevices
 	server.DB = db
+	server.DateOrder = dateOrderFromEnv()
+	server.RequirePurpose = os.Getenv("DECURIX_LLM_REQUIRE_PURPOSE") == "1"
 	server.SkillHub = must(skillhub.NewStore(db))
 	server.Knowledge = must(knowledge.NewStore(db))
 	server.Handoffs = server.NewHandoffService(must(handoff.NewStore(db)))
@@ -447,35 +424,7 @@ func main() {
 	if err := server.SetQualificationOwner(sqlitedb.DataDir()); err != nil {
 		log.Fatalf("create readiness owner key: %v", err)
 	}
-	// Qualification work is disposable. Never resume a process whose evidence
-	// transaction was interrupted; startup revoked its grant in NewStore.
-	qualificationCleanup, qualificationCleanupDone := context.WithTimeout(context.Background(), 30*time.Second)
-	if err := desktops.CleanupQualification(qualificationCleanup); err != nil {
-		log.Printf("warning: cleanup interrupted readiness containers: %v", err)
-	}
-	// Practice desktops are disposable the same way (docs/simulation.md).
-	if err := desktops.CleanupPractice(qualificationCleanup); err != nil {
-		log.Printf("warning: cleanup practice containers: %v", err)
-	}
-	qualificationCleanupDone()
 	server.CFTunnel = namedTunnel
-
-	// Notes of desktops deleted before deleting resolved them sat in "Needs
-	// you" for good, with a Reply that had nowhere to go. Only when the list
-	// is known: a failed list is not evidence that anything was deleted.
-	go func() {
-		all, err := desktops.List(context.Background())
-		if err != nil {
-			return
-		}
-		ids := make([]string, 0, len(all))
-		for _, d := range all {
-			ids = append(ids, d.ID)
-		}
-		if n := server.QueryNotes.ResolveOrphans(ids); n > 0 {
-			log.Printf("Resolved %d open note(s) of desktops that no longer exist.", n)
-		}
-	}()
 	// Linked Android phones (decurix --phone): their apps join the app list.
 	server.SetPhones(phonehost.NewHub())
 	// A phone that pairs is offered its phone link, set up from the phone
@@ -487,9 +436,18 @@ func main() {
 	// keys sealed like the Cloudflare tokens. Never read from .env.
 	llmKey, err := sealed.LoadKey(sqlitedb.DataDir(), llm.KeyFile)
 	if err != nil {
-		log.Printf("warning: %s: %v; the model API keys will be stored unencrypted", llm.KeyFile, err)
+		log.Printf("warning: %s: %v; model API keys cannot be saved until it can be written (none is stored unencrypted)", llm.KeyFile, err)
 	}
 	server.LLM = must(llm.NewHub(db, llmKey))
+	// The run record (plan R1, R2, R9): every hosted call recorded with its messages kept once each by hash, and
+	// every run's bundle pulled off its desktop when it ends, both in the blob store under the data folder.
+	blobs := must(blobstore.New(filepath.Join(sqlitedb.DataDir(), "blobs")))
+	llmrecStore := must(llmrec.NewStore(db, blobs))
+	server.LLMRec = llmrecStore
+	server.ForgetSecretsAtStart()
+	runStore := must(runs.NewStore(db, blobs))
+	server.RunStore, server.RunBundles = runStore, runStore
+	server.Runs = &runs.Puller{Home: desktops, Store: runStore, Blobs: blobs}
 	// Simulate: practice runs of what a worker was taught, on a practice desktop that reaches only its broker
 	// (docs/simulation.md). Its routes are the owner's, primary listener only.
 	practiceSvc := &practice.Service{
@@ -509,6 +467,35 @@ func main() {
 	brokerLn := &practice.BrokerListener{Network: desktops.PracticeBrokerEndpoint, Port: "8091", Handler: practiceSvc.Broker.Handler()}
 	defer brokerLn.Close()
 	practiceSvc.BrokerURL = brokerLn.URL
+	// Practice and eval desktops' calls go through the broker, which records them (caller practice), and a changed
+	// hosted deployment sends every suite that pins it back to needs-retesting (E4).
+	practiceSvc.Broker.Recorder = llmrecStore
+	server.LLM.OnChange(practiceSvc.BrainChanged)
+	// The eval matrix runner (E3, docs/evals.md): one suite x arms x repeats on the practice sandbox, one run at a
+	// time, sharing Simulate's slot. Its routes are the owner's, primary listener only. A run that was running when
+	// the control plane stopped is marked interrupted (NewStore).
+	// A failure to open the eval store leaves the eval routes answering 503; the control plane runs on.
+	evalStore, err := eval.NewStore(db, blobs)
+	if err != nil {
+		log.Printf("eval store: %v; the eval routes are off", err)
+	}
+	var evalSvc *eval.Service
+	if evalStore != nil {
+		evalSvc = &eval.Service{
+			Store:     evalStore,
+			Sandbox:   desktops,
+			Broker:    practiceSvc.Broker,
+			BrokerURL: practiceSvc.BrokerURL,
+			Hub:       server.LLM,
+			Recorder:  llmrecStore,
+			Tasks:     tasksStore,
+			// Each model case's bundle, pulled off its practice desktop before the next case resets it (O-6).
+			Bundles:    &runs.Puller{Home: desktop.PracticeHome{M: desktops}, Store: runStore, Blobs: blobs},
+			Practice:   practiceSvc,
+			Vision:     practiceSvc.Vision,
+			FreeMemory: practiceSvc.FreeMemory,
+		}
+	}
 	practiceSubnets := &practice.SubnetCache{Lookup: desktops.PracticeSubnets}
 	// A GUI-grounding model, when .env names one (DECURIX_GROUNDER_MODEL):
 	// where on the screen a desktop's `gui click --see "..."` clicks.
@@ -518,10 +505,22 @@ func main() {
 	}
 	// The Windows apps copied into VMs are kept running on the host, ready to show the moment one is opened.
 	server.HostGUIDataDir = sqlitedb.DataDir()
-	go server.RestoreHostApps(context.Background())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Closed once the start-up that needs Docker has run (dockerStartup).
+	dockerReady := make(chan struct{})
+	var dockerReadyOnce sync.Once
+
+	// Run bundles leave their desktops as runs end; once Docker is up, the last week's unpulled ones are caught up.
+	go server.RunPulls(ctx)
+	go func() {
+		select {
+		case <-dockerReady:
+			server.CatchUpRunPulls(ctx)
+		case <-ctx.Done():
+		}
+	}()
 
 	resMon := resourcemon.NewMonitor(desktops)
 	server.ResourceMon = resMon
@@ -532,6 +531,7 @@ func main() {
 	// ticket landed under), so it is built after Server and wired back onto
 	// it rather than passed through NewServer.
 	dagRunner := &dag.Runner{Store: dags, Submitter: server, Tasks: tasksStore}
+	dagRunner.MarkStarted()
 	server.DagRunner = dagRunner
 	go dagRunner.Run(ctx)
 
@@ -545,6 +545,7 @@ func main() {
 	server.RegisterRoutes(mux)
 	server.RegisterLocalRoutes(mux)
 	server.RegisterSimulationRoutes(mux, practiceSvc)
+	server.RegisterEvalRoutes(mux, evalSvc)
 	server.RegisterAccessRoutes(mux)
 	server.RegisterAccessLocalRoutes(mux)
 
@@ -567,16 +568,19 @@ func main() {
 			Handler:           handler,
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       60 * time.Second,
+			// No request needs more than this of headers; the 1 MiB default is memory a caller chooses (A-03).
+			MaxHeaderBytes: 64 << 10,
 		}
 	}
 
 	// A practice desktop reaches only its broker: both listeners refuse its subnet (practice.RefuseSubnets).
-	lanServer := newServer(lanAddr, practice.RefuseSubnets(practiceSubnets.Subnets, lanAccess.Middleware(httpapi.GzipMiddleware(httpapi.MarkGated(lanMux)))))
+	lanServer := newServer(lanAddr, practice.RefuseSubnets(practiceSubnets.Subnets, server.GuardGated(httpapi.BodyLimit(lanAccess.Middleware(httpapi.GzipMiddleware(httpapi.MarkGated(lanMux)))))))
 	// Every listener, for the shutdown below; appended to only before it starts.
 	activeServers := []*http.Server{lanServer}
 
 	go func() {
-		log.Printf("LAN/tunnel listener on %s (access code: %s)", lanAddr, lanAccess.Password())
+		// Never the code itself: logs are copied into bug reports and read by agents.
+		log.Printf("LAN/tunnel listener on %s (access code: in the app's Mobile menu)", lanAddr)
 
 		if err := lanServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("warning: LAN/tunnel listener failed: %v", err)
@@ -603,6 +607,9 @@ func main() {
 	})
 
 	go func() {
+		<-dockerReady
+		// The top bar's model status answers from a measurement made in the background (ollama.CurrentStatus).
+		ollama.PrimeStatus()
 		if !ollama.Needed() {
 			log.Println("Ollama: not preloading - a hosted model is configured and no desktop uses a local-model engine yet.")
 			// Still choose the model (it reads /api/tags and /api/show, and
@@ -617,7 +624,6 @@ func main() {
 			log.Printf("warning: Ollama initialization failed: %v", err)
 			return
 		}
-
 		log.Println("Ollama ready.")
 	}()
 
@@ -696,7 +702,7 @@ func main() {
 	server.KeepAwake = keeper
 	go keeper.Run(ctx)
 
-	addrs := primaryListenAddrs(func() []string {
+	gateways := func() []string {
 		// Only Linux has Docker's bridge gateways as addresses of its own to bind. On macOS and Windows Docker runs in
 		// a VM: those addresses exist only inside it, binding them fails, and host.docker.internal already lands on
 		// loopback there.
@@ -704,31 +710,65 @@ func main() {
 			return nil
 		}
 		return desktops.GatewayIPs(ctx)
-	})
+	}
+	addrs := primaryListenAddrs(func() []string { return nil })
 	log.Printf("Desktop manager listening on %s", strings.Join(addrs, ", "))
 
-	handler := practice.RefuseSubnets(practiceSubnets.Subnets, httpapi.RefuseForwarded(httpapi.GzipMiddleware(mux)))
+	handler := practice.RefuseSubnets(practiceSubnets.Subnets, httpapi.RefuseForwarded(server.GuardPrimary(httpapi.BodyLimit(httpapi.GzipMiddleware(mux)))))
 
-	for _, addr := range addrs[1:] {
+	// Every listener, for the shutdown below. The gateway addresses join once Docker answers (they are Docker's), so
+	// the list is guarded.
+	var serversMu sync.Mutex
+	bound := map[string]bool{}
+	listen := func(addr string) {
+		serversMu.Lock()
+		defer serversMu.Unlock()
+		if bound[addr] || ctx.Err() != nil {
+			return
+		}
+		bound[addr] = true
 		s := newServer(addr, handler)
 		activeServers = append(activeServers, s)
-		go func(srv *http.Server, a string) {
-			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Printf("warning: primary listener on %s failed: %v", a, err)
+		go func() {
+			if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("warning: primary listener on %s failed: %v", addr, err)
 			}
-		}(s, addr)
+		}()
+	}
+	for _, addr := range addrs[1:] {
+		listen(addr)
 	}
 
 	primarySrv := newServer(addrs[0], handler)
+	serversMu.Lock()
+	bound[addrs[0]] = true
 	activeServers = append(activeServers, primarySrv)
+	serversMu.Unlock()
+
+	// The start-up that needs Docker runs once Docker answers, not before: with Docker not running the listeners
+	// still come up and the dashboard says so (W-08), and the host-app sweep runs only for a control plane that is
+	// really going to run (W-04).
+	go desktops.WatchDocker(ctx, 10*time.Second, func(ctx context.Context) error {
+		if err := dockerStartup(ctx, desktops, server, tasksStore); err != nil {
+			return err
+		}
+		for _, a := range primaryListenAddrs(gateways)[1:] {
+			listen(a)
+		}
+		dockerReadyOnce.Do(func() { close(dockerReady) })
+		return nil
+	})
 
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
+		serversMu.Lock()
+		servers := append([]*http.Server(nil), activeServers...)
+		serversMu.Unlock()
 		var wg sync.WaitGroup
-		for _, s := range activeServers {
+		for _, s := range servers {
 			wg.Add(1)
 			go func(srv *http.Server) {
 				defer wg.Done()
@@ -741,4 +781,16 @@ func main() {
 	if err := primarySrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+}
+
+// dateOrderFromEnv is the organisation's date order from DECURIX_DATE_ORDER, "day" or "month" (W0.2, C6); anything
+// else is ignored, with one log line, and the desktops then decide each date from what they read.
+func dateOrderFromEnv() string {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("DECURIX_DATE_ORDER")))
+	switch v {
+	case "", "day", "month":
+		return v
+	}
+	log.Printf("DECURIX_DATE_ORDER=%q is not day or month: ignored", v)
+	return ""
 }

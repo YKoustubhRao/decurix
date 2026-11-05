@@ -10,6 +10,7 @@ model.
 import contextlib
 import io
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -22,7 +23,7 @@ from unittest import mock
 # Imported first: it stubs decurix_agent.config on a machine with no desktop.
 from test_recordings import FakeScreen, event, field
 
-from decurix_agent import http_api, skill_task, state
+from decurix_agent import http_api, playbooks, skill_task, state
 from decurix_agent.computer import cli, learning, mcp_server, recording, replay, skill_engine, skills
 
 
@@ -274,12 +275,19 @@ class Store(unittest.TestCase):
         self.assertEqual(skills.unique_name("Pay an invoice", taken={"pay-an-invoice"}), "pay-an-invoice-2")
         self.assertFalse(skills.valid("../etc"))
 
-    def test_a_skill_finds_a_name_or_the_one_skill_that_fits_the_words(self):
+    def test_a_skill_runs_only_by_its_name_and_words_only_suggest(self):
         self.ready("Pay an invoice")
         self.ready("Add a customer", "demo-20260914T101600-bbbbbb")
 
         self.assertEqual(skills.find("pay-an-invoice")[0]["name"], "pay-an-invoice")
-        self.assertEqual(skills.find("please pay that invoice")[0]["name"], "pay-an-invoice")
+        self.assertEqual(skills.find("Pay an invoice")[0]["name"], "pay-an-invoice")
+        # Words in common only suggest (review 2026-11-03, D-16): "remove a customer" never runs "Add a customer".
+        skill, candidates = skills.find("please pay that invoice")
+        self.assertIsNone(skill)
+        self.assertEqual([s["name"] for s in candidates], ["pay-an-invoice"])
+        skill, candidates = skills.find("remove a customer")
+        self.assertIsNone(skill)
+        self.assertEqual([s["name"] for s in candidates], ["add-a-customer"])
         self.assertEqual(skills.find("something else entirely"), (None, []))
 
     def test_two_skills_that_fit_equally_are_never_chosen_between(self):
@@ -400,9 +408,14 @@ class TeachingBase(unittest.TestCase):
         recording.ROOT, skills.ROOT = Path(self.tmp.name) / "recordings", Path(self.tmp.name) / "skills"
         replay.FIND_SECONDS = replay.EXPECT_SECONDS = replay.POLL_SECONDS = 0
         state.paused_skill = None
+        playbooks.begin()  # (the commands of an earlier test's task are no part of this one: skill_task._gate reads them)
 
         self.asked, self.finals, self.remembered = [], [], []
+        from decurix_agent.tools import outbox
         patches = [
+            # The Outbox's log is this test's own: another test's drafts under the same task id are not this task's
+            # work (review round 3: a gate test read them and sent correct work back).
+            mock.patch.object(outbox, "DRAFTS_DIR", Path(self.tmp.name) / "drafts"),
             mock.patch.object(skill_task, "remember", lambda title, summary, category="workflow": self.remembered.append((title, summary, category))),
             mock.patch.object(skill_task, "_remember_async", lambda skill: skill_task._remember(skill)),
             mock.patch.object(skill_task, "ask_for_query", self._ask_for_query),
@@ -475,6 +488,10 @@ class Teaching(TeachingBase):
         self.teach("the customer is in the list", "yes", "changes")
 
         skill_task.resume("Add a CRM customer")
+        # A name is put back to the person, and only their yes saves it (review 2026-11-03, D-21).
+        self.assertEqual(skills.load("add-a-crm-customer")["status"], skills.DRAFT)
+        self.assertIn('I will save it as "Add a CRM customer"', self.asked[-1][0])
+        skill_task.resume("yes")
 
         self.assertIn("as `add-a-crm-customer`", self.finals[-1][0])
         saved = skills.load("add-a-crm-customer")
@@ -489,6 +506,7 @@ class Teaching(TeachingBase):
         self.teach("the customer is in the list", "yes", "changes")
 
         skill_task.resume("Delete old customers")
+        skill_task.resume("yes")
 
         self.assertEqual(skills.load("delete-old-customers")["status"], skills.READY)
 
@@ -554,6 +572,9 @@ class Teaching(TeachingBase):
 
         skill_task.perform("/skill add a customer")
         self.assertIn("I need: customer_name", self.asked[-1][0])
+        # The saved record shows its name (a value is read back from what the page shows, never from the field it
+        # was typed into: review round 2, D-25).
+        fake.after["adds"].append(field("heading", "Customer Globex"))
 
         skill_task.resume("Globex")
         self.assertIn("yourself", self.asked[-1][0])
@@ -661,7 +682,8 @@ class Teaching(TeachingBase):
     def test_stop_ends_the_run_where_it_is(self):
         name, fake = self.stuck()
         skill_task.resume("stop")
-        self.assertIn("Stopped before step 1", self.finals[-1][0])
+        self.assertIn("Stopped, as you said, before step 1", self.finals[-1][0])
+        self.assertEqual(self.finals[-1][1], "error")  # a stop is never a finished task (E-36)
 
     def test_asking_for_a_skill_that_does_not_exist_lists_what_does(self):
         self.taught_button()
@@ -729,7 +751,7 @@ class Loops(unittest.TestCase):
         skill = learning.build([rows(self.SESSION)])
         learning.answer(skill, learning.next_question(skill), "x")
         learning.answer(skill, learning.next_question(skill), "yes")
-        learning.answer(skill, learning.next_question(skill), "fixed, just those three")
+        learning.answer(skill, learning.next_question(skill), "just those")
 
         self.assertEqual(len(skill["steps"]), 8)
         # The three typed fields are asked about together (test_learn_documents), not one by one.
@@ -910,6 +932,10 @@ class EngineAccess(unittest.TestCase):
         self.saved = (skills.ROOT, replay.core, skill_engine.core, replay.FIND_SECONDS, replay.EXPECT_SECONDS, replay.POLL_SECONDS)
         skills.ROOT = Path(self.tmp.name)
         replay.FIND_SECONDS = replay.EXPECT_SECONDS = replay.POLL_SECONDS = 0
+        # What each test's runs replayed is its own (skill_engine notes runs outside a task too).
+        replayed = mock.patch.object(skill_engine, "REPLAYED_DIR", Path(self.tmp.name) / "replayed")
+        replayed.start()
+        self.addCleanup(replayed.stop)
 
         skill = learning.build([demo("demo-20260914T101500-aaaaaa", "Acme")])
         answer_all(skill)
@@ -1028,10 +1054,14 @@ class Endpoints(unittest.TestCase):
 
         self.sent = []
         patch = mock.patch.object(http_api, "save_request",
-                                  lambda content, task_id="": self.sent.append((content, task_id)) or Path(f"{len(self.sent)}.txt"))
+                                  lambda content, task_id="", secret=False: self.sent.append((content, task_id)) or Path(f"{len(self.sent)}.txt"))
         patch.start()
         self.addCleanup(patch.stop)
 
+        # A desktop's agent serves only with its token (http_api.refusal); the control plane sends it.
+        token = mock.patch.dict(os.environ, {"DECURIX_AGENT_TOKEN": "test-agent-token"})
+        token.start()
+        self.addCleanup(token.stop)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), http_api.Handler)
         threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
@@ -1044,7 +1074,10 @@ class Endpoints(unittest.TestCase):
 
     def call(self, path, body=None):
         data = json.dumps(body).encode() if body is not None else None
-        request = urllib.request.Request(self.base + path, data=data, method="POST" if body is not None else "GET")
+        # JSON, as the control plane sends it: :8081 refuses a write that is not (http_api.refusal).
+        request = urllib.request.Request(self.base + path, data=data, method="POST" if body is not None else "GET",
+                                         headers={"Content-Type": "application/json",
+                                                  "Authorization": "Bearer test-agent-token"})
         try:
             with urllib.request.urlopen(request, timeout=5) as response:
                 return response.status, json.loads(response.read())

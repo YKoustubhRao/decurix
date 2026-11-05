@@ -19,6 +19,8 @@ from decurix_agent.logging_utils import log
 #   - the newest of what the person taught (lessons, workflows), up to a third;
 #   - every entry about the party the request names, then the entries sharing
 #     the request's words, then the newest;
+#   - a fact kept about a party (a client) only when the request names that
+#     party (_scoped): a fact is never shared across clients;
 # and a first line says how much is not shown and how to search it, so a thing
 # not shown never reads as a thing never said.
 # ============================================================
@@ -84,17 +86,63 @@ def _scores(entries, query):
     return scores
 
 
-def _subject_of(entry):
-    """The party of an "About <party>" entry, as plain words; None for any other entry."""
+# A place a task read from, kept for the client its request was for (kept_facts.keep): "Where (for <client>): <what>".
+_PLACE_FOR = re.compile(r"^Where \(for (.+?)\): ")
+_TOKEN = re.compile(r"[^\W_]+")
 
-    return " ".join(_words(entry["title"][6:])) if entry["title"].startswith("About ") else None
+
+def _subject_of(entry):
+    """The party of an "About <party>" entry or of a place kept for a client, as plain words; None for any other entry
+    (a place kept before places had a client has none)."""
+
+    title = entry["title"]
+    if title.startswith("About "):
+        return " ".join(_words(title[6:]))
+    found = _PLACE_FOR.match(title)
+    return " ".join(_words(found.group(1))) if found else None
+
+
+def _scoped_kind(entry):
+    """Whether an entry is kept about one party, and so shown only to a task about that party: a fact, or a place."""
+
+    return entry["category"] in ("fact", "place")
+
+
+def names_whole(name, text):
+    """
+    Whether `text` names `name` whole: its words in order, as words, and not as a part of a longer name. A word that
+    begins with a capital right after it, or right before it (unless that word starts the sentence), continues the
+    name: "Ram" is not named by "Ram Kumar", nor "ABC" by "ABC Traders Pvt Ltd". Review 2026-11-03 (E-29): a fact or a
+    place kept about one client was shown to another client's task whose name held the first one's words.
+    """
+
+    want = _words(name)
+    if not want:
+        return False
+    text = str(text or "")
+    tokens = [(m.group(0), m.start(), m.end()) for m in _TOKEN.finditer(text)]
+    low = [t[0].lower() for t in tokens]
+    n = len(want)
+    for i in range(len(tokens) - n + 1):
+        if low[i:i + n] != want:
+            continue
+        if i + n < len(tokens):
+            after = tokens[i + n]
+            if after[0][:1].isupper() and not text[tokens[i + n - 1][2]:after[1]].strip():
+                continue
+        if i > 0:
+            before = tokens[i - 1]
+            starts = i - 1 == 0 or re.search(r"[.!?:;\n]", text[tokens[i - 2][2]:before[1]])
+            if before[0][:1].isupper() and not starts and not text[before[2]:tokens[i][1]].strip():
+                continue
+        return True
+    return False
 
 
 def _named_subject(entries, query):
-    """The party the request names; of alike names, the longest one named."""
+    """The party the request names; of alike names, the longest one named whole."""
 
-    text = f" {' '.join(_words(query))} "
-    named = {s for s in map(_subject_of, entries) if s and f" {s} " in text}
+    named = {s for s in map(_subject_of, entries) if s and names_whole(s, query)}
     return max(named, key=len) if named else None
 
 
@@ -141,16 +189,18 @@ def get_memory_context(query=None):
     stays byte-identical across its model calls.
     """
 
-    entries = _entries()
+    query = _current_request() if query is None else query
+    entries, hidden = _scoped(_entries(), query)
+    note = (f"({hidden} fact(s) or place(s) kept about parties this request does not name are not shown: each is for "
+            "a task about its own party.)\n\n") if hidden else ""
     if not entries:
-        return ""
+        return note.strip()
 
     whole = "\n\n---\n\n".join(e["text"] for e in reversed(entries))
-    if len(whole) <= config.MEMORY_CONTEXT_CHARS:
-        return whole
+    if len(note) + len(whole) <= config.MEMORY_CONTEXT_CHARS:
+        return note + whole
 
-    query = _current_request() if query is None else query
-    room = max(0, config.MEMORY_CONTEXT_CHARS - 170)  # (the first line)
+    room = max(0, config.MEMORY_CONTEXT_CHARS - 170 - len(note))  # (the first lines)
     chosen = set()
     person = [i for i, e in enumerate(entries) if e["category"] in PERSON_CATEGORIES]
     person_room = room // PERSON_SHARE
@@ -164,7 +214,42 @@ def get_memory_context(query=None):
     head = (f"({len(chosen)} of {len(entries)} remembered entries are shown here, chosen for this task, oldest first; "
             "the rest are not lost: gui recall WORDS searches them all.)")
     # Oldest first: chronological order for the model, so a later statement reads as the later one.
-    return head + "\n\n" + "\n\n---\n\n".join(entries[i]["text"] for i in sorted(chosen, reverse=True))
+    return head + "\n\n" + note + "\n\n---\n\n".join(entries[i]["text"] for i in sorted(chosen, reverse=True))
+
+
+def _scoped(entries, query):
+    """(the entries a task about `query` may see, how many were left out). A fact a source stated, and a place a task
+    read from, are kept about one party - a client (kept_facts.py: "About <client>", "Where (for <client>): ...") - and
+    are shown only to a task whose request names that party whole (names_whole): one client's message ("bill 455 is
+    cancelled") or chat address is never another client's to act on, nor to read. Found in review (2026-11-02, and
+    2026-11-03 for places and for a name inside a longer one). A fact or place kept with no party is shown to no task's
+    view (gui recall still finds it). Everything else is shared as before."""
+
+    named = _named_subjects(entries, query)
+    kept, hidden = [], 0
+    for entry in entries:
+        if _scoped_kind(entry):
+            subject = _subject_of(entry)
+            if not subject or subject not in named:
+                hidden += 1
+                continue
+        kept.append(entry)
+    return kept, hidden
+
+
+def _named_subjects(entries, query):
+    """
+    The kept parties the request is about: each named in it as whole words (case aside), and not one that sits inside
+    another party it names - for "abc traders pvt ltd", "ABC Traders Pvt Ltd" is named and "ABC Traders" is not, in any
+    case of writing (review 2026-11-03 rework: the capitals rule alone let a lower-case request see both). A party's
+    name must also pass names_whole, which hides a name a capitalised word continues even when that longer name is
+    no kept party.
+    """
+
+    text = f" {' '.join(_words(query))} "
+    subjects = {s for s in map(_subject_of, entries) if s and f" {s} " in text}
+    subjects = {s for s in subjects if not any(o != s and f" {s} " in f" {o} " for o in subjects)}
+    return {s for s in subjects if names_whole(s, query)}
 
 
 def search(words, limit=12):

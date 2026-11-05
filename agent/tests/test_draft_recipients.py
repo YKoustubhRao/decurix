@@ -12,6 +12,9 @@ import unittest
 from contextlib import redirect_stdout
 from unittest import mock
 
+from needs import require
+
+require("openpyxl")  # every test here reads or writes workbooks
 import openpyxl
 
 from temp_case import TempDirCase
@@ -77,8 +80,9 @@ class ThePartysAddressFromTheRecords(Fixture):
     def test_ambiguous_and_missing_are_refused_loudly(self):
         with self.assertRaises(payees.PartyError) as caught:
             payees.party_address("Yamuna Schools", self.book)
-        self.assertIn("more than one address", str(caught.exception))
-        self.assertIn("noida@yamunascho.example.in", str(caught.exception))
+        # A name only like two rows' names a party of neither: both are named, neither address is taken (F-03).
+        self.assertIn("no row named exactly", str(caught.exception))
+        self.assertIn("Yamuna Schools Trust (Noida)", str(caught.exception))
         # The exact name picks its own row, though another row's name contains it.
         self.assertEqual(payees.party_address("Yamuna Schools Trust", self.book), "accounts@yamunascho.example.in")
         with self.assertRaises(payees.PartyError) as caught:

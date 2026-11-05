@@ -78,7 +78,7 @@ function Invoke-Cleanup {
 
     docker compose down
 
-    $containers = docker ps -a --filter "name=desktop_" --format "{{.ID}}"
+    $containers = docker ps -a --filter "label=desktop-manager=true" --format "{{.ID}}"
     if ($containers) {
         docker rm -f $containers
     }
@@ -160,7 +160,7 @@ try {
 
     Write-Host ""
     Write-Host "=== Removing old desktop containers ==="
-    $containers = docker ps -a --filter "name=desktop_" --format "{{.ID}}"
+    $containers = docker ps -a --filter "label=desktop-manager=true" --format "{{.ID}}"
     if ($containers) {
         docker rm -f $containers
         if ($LASTEXITCODE -ne 0) { Exit-Build $LASTEXITCODE }
@@ -168,7 +168,7 @@ try {
 
     Write-Host ""
     Write-Host "=== Removing old desktop volumes ==="
-    $volumes = docker volume ls --filter "name=desktop_" --format "{{.Name}}"
+    $volumes = docker volume ls --filter "name=^desktop_" --format "{{.Name}}"
     if ($volumes) {
         docker volume rm $volumes
         if ($LASTEXITCODE -ne 0) { Exit-Build $LASTEXITCODE }
@@ -192,7 +192,7 @@ try {
 
     Write-Host ""
     Write-Host "=== Starting Decurix ==="
-    docker compose up -d --build
+    docker compose $script:ComposeFiles up -d --build
     if ($LASTEXITCODE -ne 0) { Exit-Build $LASTEXITCODE }
 
     Write-Host ""
@@ -245,7 +245,8 @@ try {
 
     Write-Host ""
     Write-Host "=== Starting Cloudflare Tunnel ==="
-    if (-not (Test-CommandAvailable "cloudflared")) {
+    # cloudflared is needed only for the public link, which is off unless DECURIX_PUBLIC_LINK=1 (lib/Lan-Tunnel.ps1).
+    if ((Test-PublicLinkEnabled) -and -not (Test-CommandAvailable "cloudflared")) {
         Write-Host "ERROR: cloudflared is not installed."
         Exit-Build 1
     }

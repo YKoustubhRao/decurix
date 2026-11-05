@@ -1,5 +1,5 @@
 """
-DC (round 5 P1 on pc3, 2026-10-21, series 12): the GSTR-3B sheet gave Eligible ITC CGST/SGST/IGST as 0 while the same
+DC (round 5 P1, 2026-10-21, series 12): the GSTR-3B sheet gave Eligible ITC CGST/SGST/IGST as 0 while the same
 workbook's Purchase Register counted 38,534.40 / 38,534.40 / 14,339.00 over its eligible rows (BCP-7781 once, NS-0457
 cancelled, SP-2291 kept out); the net payable followed the 0. An advisory fact: a summary figure in one sheet against
 the column its label names in another, over the rows that sheet itself counts.
@@ -9,6 +9,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from needs import require
+
+require("openpyxl")  # every test here reads or writes workbooks
 import openpyxl
 
 import test_long_requests as base  # noqa: F401 - stubs config first

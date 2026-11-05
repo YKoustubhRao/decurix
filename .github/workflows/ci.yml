@@ -1,0 +1,108 @@
+# The checks every change must pass, run on every push and pull request (review 2026-11-02: there was no CI, so
+# nothing stopped a red suite from merging). Live benches need Docker and minutes each; they stay manual
+# (docs/running.md).
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # TheBot (packed and built by go generate) needs Go 1.27; the control plane's own go.mod builds with it too.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/thebot/go.mod
+      - run: go generate .
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+
+  thebot:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: agent/thebot
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/thebot/go.mod
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+
+  python:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # What the desktop image installs for the agent (docker/desktop.basic.Dockerfile), python-pptx at its pin.
+      - run: pip install openpyxl pypdf python-docx pillow python-pptx==1.0.2
+      # The script sandbox's own test must run here, not skip: Ubuntu 24.04 holds unprivileged user namespaces back
+      # (AppArmor) unless told otherwise, and DECURIX_REQUIRE_SANDBOX=1 turns that test's skip into a failure
+      # (agent/tests/fixture_paths.py). Tests that need the live-run fixtures still skip - those are customer data and
+      # never in the repository or CI - but the suite ends by counting them, and this job shows it as a warning.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || echo "no such sysctl on this runner"
+      - run: PYTHONPATH=agent python -m unittest discover -s agent/tests
+        env:
+          DECURIX_REQUIRE_SANDBOX: "1"
+
+  javascript:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # The dashboard pages' own scripts: they parse, and the shared chrome polls only while a page is seen.
+      - run: node --test web/templates.test.js
+      # The Electron shell's main-process logic (no window is opened).
+      - run: npm ci
+        working-directory: desktop/electron
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      - run: npm test
+        working-directory: desktop/electron
+
+  scripts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # Scripts that run in Linux must have LF endings (.gitattributes; the build refuses CRLF): every *.sh, and every
+      # other tracked file that starts with a shebang (agent/gui, agent/office, ...), which no extension names.
+      - name: No CRLF in shell scripts
+        run: |
+          bad=$(git ls-files '*.sh' | xargs -r grep -l $'\r' || true)
+          while IFS= read -r file; do
+            if [ -f "$file" ] && [ "$(head -c 2 "$file")" = '#!' ] && grep -q $'\r' "$file"; then bad="$bad"$'\n'"$file"; fi
+          done < <(git ls-files)
+          bad=$(printf '%s\n' "$bad" | sed '/^$/d' | sort -u)
+          if [ -n "$bad" ]; then echo "CRLF line endings in:"; echo "$bad"; exit 1; fi
+      - name: Shell scripts parse
+        run: git ls-files '*.sh' | xargs -r -n1 bash -n
+      # The 14+ PowerShell scripts had no check at all; pwsh is on the runner and parses Windows PowerShell 5.1 syntax.
+      - name: PowerShell scripts parse
+        shell: pwsh
+        run: |
+          $failed = 0
+          foreach ($file in (git ls-files '*.ps1')) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors)
+            foreach ($e in $errors) { Write-Host "${file}:$($e.Extent.StartLineNumber): $($e.Message)"; $failed++ }
+          }
+          if ($failed) { exit 1 }
+      # .env handling shared by the Ollama setup scripts: a fallback never reaches .env (both twins).
+      - name: Ollama setup .env handling
+        run: bash scripts/testing/ollama-env.test.sh
+      - name: Ollama setup .env handling (PowerShell twin)
+        shell: pwsh
+        run: ./scripts/testing/ollama-env.test.ps1

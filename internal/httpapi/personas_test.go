@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -107,43 +106,9 @@ func TestSkillsCatalogAPI(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&catalogResp); err != nil {
 		t.Fatalf("failed to decode catalog response: %v", err)
 	}
-	if catalogResp.CatalogCount != 22 {
-		t.Errorf("expected 22 catalog skills, got %d", catalogResp.CatalogCount)
-	}
-}
-
-func TestInboundChannelRouting(t *testing.T) {
-	s := chatServer(t)
-
-	body := bytes.NewBufferString(`{
-		"channel": "email",
-		"sender": "vendor@billing.com",
-		"text": "Invoice #1024 attached for payment and reconciliation",
-		"subject": "Vendor Invoice"
-	}`)
-
-	req := httptest.NewRequest(http.MethodPost, "/api/channels/inbound", body)
-	rec := httptest.NewRecorder()
-	s.inboundChannelHandler(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var resp struct {
-		Status         string         `json:"status"`
-		MatchedPersona map[string]any `json:"matched_persona"`
-		Channel        string         `json:"channel"`
-		Sender         string         `json:"sender"`
-	}
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to parse json: %v", err)
-	}
-
-	if resp.Status != "received" {
-		t.Errorf("expected status received, got %s", resp.Status)
-	}
-	if resp.MatchedPersona["id"] != "finance" {
-		t.Errorf("expected persona finance, got %v", resp.MatchedPersona["id"])
+	// The built-in catalog is empty (agent/decurix_agent/computer/catalog.py):
+	// the count says so rather than advertise skills nobody taught.
+	if catalogResp.CatalogCount != 0 || len(catalogResp.Departments) != 0 {
+		t.Errorf("expected an empty catalog, got %d skills in %v", catalogResp.CatalogCount, catalogResp.Departments)
 	}
 }

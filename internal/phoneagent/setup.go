@@ -84,8 +84,11 @@ func findService(ctx context.Context, kind string, wait time.Duration) string {
 
 // SetupADB connects ADB to this phone, pairing it first if it never was:
 // the only things asked of the person are the switch in Settings and the
-// numbers Android shows. It ends with ADB on localhost:5555, which keeps
-// working when Wi-Fi changes, until the phone restarts.
+// numbers Android shows. It ends connected through Wireless debugging itself,
+// which is paired and encrypted. It never opens adb's legacy port 5555 (adb
+// tcpip): that listens on every network the phone joins, unencrypted, until
+// the phone restarts (review 2026-11-03, B-26). The cost is that Wireless
+// debugging's port changes with the network; Reconnect finds the new one.
 func SetupADB(ctx context.Context, in *bufio.Reader, out io.Writer) (string, error) {
 	if serial, err := PickSerial(ctx, ""); err == nil {
 		return serial, nil
@@ -143,14 +146,13 @@ The last step needs Android's Wireless debugging, which only you can turn on:
 		connectAt = "localhost:" + strings.TrimSpace(port)
 	}
 
-	return switchToLocalPort(ctx, connectAt)
+	return connectWireless(ctx, connectAt)
 }
 
-// Reconnect brings ADB back to this phone without asking anything: through
-// localhost:5555 while it is still open, else through Wireless debugging
-// when it is on (its port changes, so it is looked up).
+// Reconnect brings ADB back to this phone without asking anything: the
+// device ADB already has, else Wireless debugging when it is on (its port
+// changes, so it is looked up).
 func Reconnect(ctx context.Context) (string, error) {
-	_ = exec.CommandContext(ctx, "adb", "connect", "localhost:5555").Run()
 	if serial, err := PickSerial(ctx, ""); err == nil {
 		return serial, nil
 	}
@@ -160,26 +162,23 @@ func Reconnect(ctx context.Context) (string, error) {
 		return "", errors.New("adb cannot reach this phone: turn on Wireless debugging (Settings > Developer options); the link retries on its own")
 	}
 
-	return switchToLocalPort(ctx, connectAt)
+	return connectWireless(ctx, connectAt)
 }
 
-// switchToLocalPort connects to Wireless debugging at addr, then moves ADB
-// to localhost:5555 (adb tcpip), whose port does not change with the network.
-func switchToLocalPort(ctx context.Context, addr string) (string, error) {
-	if out, err := exec.CommandContext(ctx, "adb", "connect", addr).CombinedOutput(); err != nil || strings.Contains(string(out), "failed") {
+// runADB runs adb with args; a variable so a test can see what is asked of adb.
+var runADB = func(ctx context.Context, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, "adb", args...).CombinedOutput()
+}
+
+// connectWireless connects ADB to Wireless debugging at addr and returns the
+// device's serial there.
+func connectWireless(ctx context.Context, addr string) (string, error) {
+	if out, err := runADB(ctx, "connect", addr); err != nil || strings.Contains(string(out), "failed") {
 		return "", fmt.Errorf("adb connect %s: %s", addr, strings.TrimSpace(string(out)))
 	}
 
-	_ = exec.CommandContext(ctx, "adb", "-s", addr, "tcpip", "5555").Run()
-
-	for i := 0; i < 10 && ctx.Err() == nil; i++ {
-		time.Sleep(time.Second)
-		_ = exec.CommandContext(ctx, "adb", "connect", "localhost:5555").Run()
-		if serial, err := PickSerial(ctx, "localhost:5555"); err == nil {
-			return serial, nil
-		}
-	}
-
-	// tcpip did not take; Wireless debugging itself still works until the network changes.
-	return PickSerial(ctx, addr)
+	return pickSerial(ctx, addr)
 }
+
+// pickSerial is PickSerial, a variable for tests.
+var pickSerial = PickSerial

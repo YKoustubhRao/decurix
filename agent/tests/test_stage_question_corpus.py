@@ -88,7 +88,6 @@ class Pipeline:
                 mock.patch.object(long_task, "_charge", lambda *a: None), \
                 mock.patch.object(long_task, "_input_headers", lambda request: headers), \
                 mock.patch.object(long_task, "run_inputs", lambda request: []), \
-                mock.patch.object(long_task, "_note_probe_record", lambda *a: None), \
                 mock.patch.object(long_task, "_decided", lambda *a: False), \
                 mock.patch.object(long_task, "_park", lambda run_id, step_id, q, *a, **k: self.to_person.append(q)), \
                 mock.patch.object(long_task, "_new_question", lambda *a, **k: "q1"), \
@@ -115,7 +114,7 @@ class Pipeline:
         return "carry_on"
 
 
-@unittest.skipUnless(CORPUS_PATH.is_file(), f"fixture not here: {CORPUS_PATH}")
+@fixture_paths.skip_unless(CORPUS_PATH.is_file(), f"fixture not here: {CORPUS_PATH}")
 class TheCorpus(unittest.TestCase):
     def test_every_live_question_ends_where_its_reading_sends_it(self):
         self.assertGreaterEqual(len(CORPUS["cases"]), 20)
@@ -154,7 +153,7 @@ class TheCorpus(unittest.TestCase):
         self.assertEqual(pipeline.ask(), "person")
 
 
-@unittest.skipUnless(CORPUS_PATH.is_file(), f"fixture not here: {CORPUS_PATH}")
+@fixture_paths.skip_unless(CORPUS_PATH.is_file(), f"fixture not here: {CORPUS_PATH}")
 class TheBounceCap(unittest.TestCase):
     def test_a_question_reaches_the_person_after_two_send_backs_whatever_routes_fire(self):
         case = {"request": "P4", "headers": {"Mobile": ["joiners_tracker_Nov2026.xlsx"]},
@@ -174,7 +173,7 @@ class TheBounceCap(unittest.TestCase):
         self.assertIn("could not get past", pipeline.to_person[-1])
 
     def test_a_question_about_something_not_yet_checked_is_sent_back_once(self):
-        # Round 5 P4 on pc3 (2026-10-21, DD): asked again after checking, it reaches the person.
+        # Round 5 P4 (2026-10-21, DD): asked again after checking, it reaches the person.
         case = {"request": "P4", "question": "I have not yet confirmed whether that exact manager exists as a selectable "
                                              "option in the portal. Which manager should I choose if it is not available?"}
         pipeline = Pipeline(case, routes=["UNCHECKED", "UNCHECKED"])

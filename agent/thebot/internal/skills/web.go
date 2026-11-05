@@ -91,7 +91,7 @@ func extractQuery(step string) string {
 
 func (w *WebSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	// A bare URL means "read this page", not "search for it".
-	if m := findURL(subtask.Step); m != "" && strings.Contains(strings.ToLower(subtask.Step), "http") {
+	if m := givenURL(rc, subtask.Step); m != "" && strings.Contains(strings.ToLower(subtask.Step), "http") {
 		return w.readPage(rc, subtask, m)
 	}
 
@@ -163,13 +163,19 @@ func (w *WebSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		subtask.Step, context.String())
 
 	rc.Logf("web", "synthesizing an answer from %d result(s) and %d deep-read page(s)", len(results), len(reads))
-	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{rc.SystemMessage(), {Role: "user", Content: prompt}}, llm.Options{TimeoutMs: 180000})
+	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{rc.SystemMessage(), {Role: "user", Content: prompt}}, llm.Options{TimeoutMs: 180000, Purpose: llm.PurposeWebSearch})
 	if err != nil {
 		return Result{
 			Subtask: subtask, SkillName: w.Name(),
 			Output:   fmt.Sprintf("Found %d real results but could not compose an answer: %s", len(results), err.Error()),
 			Verified: false, Meta: map[string]any{"error": err.Error(), "results": len(results)},
 		}, nil
+	}
+	if resp.Truncated {
+		// Cut off for want of room: shown as it is, never as a finished answer.
+		return Result{Subtask: subtask, SkillName: w.Name(), Output: stripControlMarker(resp.Text) + cutOffNote, Verified: false,
+			Meta: map[string]any{"query": query, "results": len(results), "userFacing": true, MetaModelReply: true, "fatal": true,
+				"error": errCutOff.Error()}}, nil
 	}
 
 	// Save the real report so the research is reusable - it also gets
@@ -192,7 +198,7 @@ func (w *WebSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	return Result{
 		Subtask: subtask, SkillName: w.Name(),
 		Output: out, Verified: true,
-		Meta: map[string]any{"query": query, "results": len(results), "sources": sources, "path": reportPath, "userFacing": true},
+		Meta: map[string]any{"query": query, "results": len(results), "sources": sources, "path": reportPath, "userFacing": true, MetaModelReply: true},
 	}, nil
 }
 
@@ -211,7 +217,7 @@ func (w *WebSkill) readPage(rc RunContext, subtask Subtask, target string) (Resu
 		"You already fetched this real page with your own tools, successfully - never say you can't access web "+
 			"pages, you just did. Answer using ONLY this real page content from %s.\n\nRequest: %s\n\nPage content:\n%s",
 		target, subtask.Step, text)
-	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{rc.SystemMessage(), {Role: "user", Content: prompt}}, llm.Options{TimeoutMs: 180000})
+	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{rc.SystemMessage(), {Role: "user", Content: prompt}}, llm.Options{TimeoutMs: 180000, Purpose: llm.PurposeWebRead})
 	if err != nil {
 		return Result{
 			Subtask: subtask, SkillName: w.Name(),
@@ -219,9 +225,13 @@ func (w *WebSkill) readPage(rc RunContext, subtask Subtask, target string) (Resu
 			Meta: map[string]any{"error": err.Error(), "url": target},
 		}, nil
 	}
+	if resp.Truncated {
+		return Result{Subtask: subtask, SkillName: w.Name(), Output: stripControlMarker(resp.Text) + cutOffNote, Verified: false,
+			Meta: map[string]any{"url": target, "userFacing": true, MetaModelReply: true, "fatal": true, "error": errCutOff.Error()}}, nil
+	}
 	return Result{
 		Subtask: subtask, SkillName: w.Name(),
-		Output: stripControlMarker(resp.Text), Verified: true, Meta: map[string]any{"url": target, "userFacing": true},
+		Output: stripControlMarker(resp.Text), Verified: true, Meta: map[string]any{"url": target, "userFacing": true, MetaModelReply: true},
 	}, nil
 }
 

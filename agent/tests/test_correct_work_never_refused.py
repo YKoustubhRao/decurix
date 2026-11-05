@@ -7,6 +7,7 @@ Every new check passes this in the spirit of the replay gate: if it would refuse
 Data is built in code; no fixture files.
 """
 
+from needs import needs
 import datetime
 import tempfile
 import unittest
@@ -48,6 +49,7 @@ class World(unittest.TestCase):
         self.assertEqual([f for f in findings if f], [], f"{what}: correct work was refused")
 
 
+@needs("openpyxl")
 class CorrectWorkPasses(World):
 
     def test_a_travel_booking_reply_with_a_computed_trip_total(self):
@@ -132,6 +134,7 @@ class CorrectWorkPasses(World):
         self.assertNothingBlocks(stage_facts.removed_still_present(amendments, [str(book)]), "a removal reversed")
 
 
+@needs("openpyxl")
 class WrongWorkIsStillBlocked(World):
 
     def test_an_invented_amount_in_a_draft(self):
@@ -232,6 +235,48 @@ class EveryStageCheckOnASyntheticStage(unittest.TestCase):
                            request="Count the stock in our store system (http://host.docker.internal:8703).",
                            tool_record=([], ""))
         self.assertEqual([f for _, f, blocks in found if blocks], [], found)
+
+
+class CorrectWorkWordedDifferently(World):
+    """
+    The checks that read the request's or the work's words and used to BLOCK (review 2026-11-03, E-07 to E-13, E-21,
+    E-22): correct work said in other words is never refused - the words become evidence or a question, never a verdict.
+    """
+
+    def test_a_file_the_request_says_not_to_make_or_names_as_elsewhere_is_not_missing(self):
+        for request in ("Reply to the supplier's email. Do not create report.pdf - just answer in the email.",
+                        "Write a two-line note about statement_0423.pdf, which is on the portal.",
+                        "Summarise the client's statement.pdf from the portal in two lines."):
+            facts = produced.file_facts(request, [])
+            self.assertEqual(facts.blocking(), [], request)
+
+    @needs("docx")
+    def test_a_template_the_request_asks_for_keeps_its_placeholders(self):
+        import docx
+        path = self.dir / "merge_template.docx"
+        document = docx.Document()
+        document.add_paragraph("Dear {{Name}}, your balance is {{Amount}}.")
+        document.save(path)
+        facts = produced.file_facts("Make a mail-merge template merge_template.docx with {{Name}} and {{Amount}} fields.",
+                                    [str(path)])
+        self.assertEqual(facts.blocking(), [])
+
+    def test_the_word_reading_checks_are_evidence_only(self):
+        # Each of these read words and refused correct work; none fails a stage now (CHECK_MATURITY).
+        for check in ("removed_still_there", "removed_residue", "source_guard"):
+            self.assertFalse(long_task.is_blocking(check), check)
+            self.assertFalse(long_task.asks_person(check), check)
+        # A figure a source seems to contradict (a Dr balance, a newest-first export) is evidence for the judge.
+        self.assertNotIn("source_mismatch", produced.FileFacts.BLOCKING)
+
+    def test_a_removed_record_shown_cancelled_fails_no_stage(self):
+        register = csv_file(self.dir, "register.csv", [["Bill", "Amount", "Note"], ["B-1", "1200.00", ""],
+                                                       ["B-3", "500.00", "taken out at your request"]])
+        found = stage_facts.removed_still_present([{"text": "Leave B-3 out.", "removed": ["B-3"]}], [str(register)])
+        # Whatever it reports is quoted for the judge - and the check fails no stage.
+        self.assertFalse(long_task.is_blocking("removed_still_there"))
+        for line in found:
+            self.assertIn("B-3", line)
 
 
 if __name__ == "__main__":

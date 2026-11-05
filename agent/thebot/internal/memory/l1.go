@@ -15,6 +15,9 @@ import (
 	_ "modernc.org/sqlite"
 
 	"thebot/internal/llm"
+	"thebot/internal/migrate"
+
+	"thebot/internal/withheld"
 )
 
 // L1 is curated memory: the small set of things actually worth carrying
@@ -54,21 +57,62 @@ func NewL1(workspaceRoot string, provider llm.Provider, embedder llm.Embedder, m
 	}
 	db.SetMaxOpenConns(1)
 
-	schema := `
-CREATE TABLE IF NOT EXISTS facts (
+	if err := migrate.Migrate(db, L1Migrate); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("l1: %w", err)
+	}
+	if _, err := PurgeSecrets(db, "facts", "fact"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("l1: purge secrets: %w", err)
+	}
+	return &L1{db: db, provider: provider, embedder: embedder, model: model}, nil
+}
+
+// L1Migrate is l1.db's schema, step by step: appended only, never edited (internal/migrate).
+var L1Migrate = []string{
+	`CREATE TABLE IF NOT EXISTS facts (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	fact TEXT NOT NULL,
 	source TEXT NOT NULL,
 	embedding TEXT NOT NULL,
 	created_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS facts_fact ON facts (fact);
-`
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("l1: create schema: %w", err)
+CREATE INDEX IF NOT EXISTS facts_fact ON facts (fact);`,
+	fixesSchema,
+}
+
+// PurgeSecrets deletes every row of table whose columns hold a secret-shaped value (LooksSecret) and returns how
+// many it deleted. A store opened by an older soul, whose check let a secret in, is cleaned when it is opened: L1 and
+// the feedback store are recalled into later prompts, so a secret kept there leaks into every one of them. The ids
+// are read first and the rows deleted after the read is closed (no query while a *sql.Rows is open).
+func PurgeSecrets(db *sql.DB, table string, columns ...string) (int, error) {
+	rows, err := db.Query(`SELECT id, ` + strings.Join(columns, ` || char(10) || `) + ` FROM ` + table)
+	if err != nil {
+		return 0, err
 	}
-	return &L1{db: db, provider: provider, embedder: embedder, model: model}, nil
+	var doomed []int64
+	for rows.Next() {
+		var id int64
+		var text string
+		if err := rows.Scan(&id, &text); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if LooksSecret(text) {
+			doomed = append(doomed, id)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range doomed {
+		if _, err := db.Exec(`DELETE FROM `+table+` WHERE id = ?`, id); err != nil {
+			return 0, err
+		}
+	}
+	return len(doomed), nil
 }
 
 func (l *L1) Close() error { return l.db.Close() }
@@ -112,7 +156,7 @@ func (l *L1) ConsiderExchange(ctx context.Context, prompt, answer string, onLog 
 
 	resp, err := l.provider.Chat(ctx, l.model, []llm.Message{
 		{Role: "user", Content: fmt.Sprintf(judgePrompt, prompt, answer)},
-	}, llm.Options{TimeoutMs: 60000})
+	}, llm.Options{TimeoutMs: 60000, Purpose: llm.PurposeMemoryL1})
 	if err != nil {
 		log("could not judge whether this is worth remembering: " + err.Error())
 		return
@@ -127,6 +171,15 @@ func (l *L1) ConsiderExchange(ctx context.Context, prompt, answer string, onLog 
 	source := "inferred"
 	if looksExplicit(prompt) {
 		source = "explicit"
+	}
+	// A fact about the person holds only values the person said. One the
+	// answer carried - a client's GSTIN from an invoice, a total from a
+	// sheet, a number a page printed - belongs to that task's documents, and
+	// L1 has no scope to keep it in: it would be recalled into every later
+	// task as if it were known about the person.
+	if unsaid := unsaidValues(fact, prompt); len(unsaid) > 0 {
+		log(fmt.Sprintf("not stored: %s (it carries %d value(s) the person never said)", ErrUnscoped.Error(), len(unsaid)))
+		return
 	}
 
 	if err := l.Store(ctx, fact, source); err != nil {
@@ -191,7 +244,14 @@ const dedupeThreshold = 0.95
 
 // Store writes one real fact with its real embedding, unless L1 already
 // holds something that means the same thing.
+//
+// A fact holding a secret-shaped value (LooksSecret: a password, PIN, OTP,
+// token or key) is never stored, whoever asks: L1 is recalled into every
+// later job's system frame, and a secret there is in every prompt after it.
 func (l *L1) Store(ctx context.Context, fact, source string) error {
+	if LooksSecret(fact) || withheld.From(ctx).Holds(fact) {
+		return ErrSecret
+	}
 	l.storeMu.Lock()
 	defer l.storeMu.Unlock()
 
@@ -255,6 +315,10 @@ func (l *L1) Store(ctx context.Context, fact, source string) error {
 // Recall returns the facts most relevant to a query, most relevant first.
 // Returns nothing (not an error) when L1 is empty - that's a normal state,
 // not a failure.
+//
+// No score floor (review T-19, measured 2026-11-03 on nomic-embed-text as soul calls it): a fact that answers the
+// query scored 0.44-0.69 and an unrelated one 0.28-0.56, so any fixed floor either drops real facts or keeps
+// unrelated ones. What a recalled fact is worth is said where it is shown instead (prompt.Frame: "may be relevant").
 func (l *L1) Recall(ctx context.Context, query string, topK int) ([]L1Entry, error) {
 	if topK <= 0 {
 		return nil, nil

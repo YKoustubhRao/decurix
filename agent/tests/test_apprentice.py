@@ -12,6 +12,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 
+import config_stub  # noqa: F401  (first: a task file of this test process's own)
 import test_skills as ts
 from test_recordings import event, field
 
@@ -30,16 +31,17 @@ class Maturity(unittest.TestCase):
         skill = {}
         for n in range(experience.TRUST_AFTER):
             self.assertEqual(experience.stage(skill), experience.APPRENTICE)
-            experience.note_verdict(skill, "model", True, checked_by="model")
+            experience.note_verdict(skill, "model", True, checked_by="model", basis=["model", "code"])
         self.assertEqual(experience.stage(skill), experience.TRUSTED)
 
     def test_a_failure_or_a_rescue_starts_the_count_again(self):
         for spoiler in ({"ok": False}, {"ok": True, "helped": True}, {"ok": True, "checked_by": None}):
             skill = {}
             for _ in range(experience.TRUST_AFTER):
-                experience.note_verdict(skill, "replay", True, checked_by="screen")
+                experience.note_verdict(skill, "replay", True, checked_by="screen", basis=["screen", "ledger"])
             experience.note_verdict(skill, "replay", spoiler["ok"], checked_by=spoiler.get("checked_by", "screen"),
-                                    helped=spoiler.get("helped", False))
+                                    helped=spoiler.get("helped", False),
+                                    basis=["ledger"] if spoiler.get("checked_by", "screen") else [])
             with self.subTest(spoiler):
                 self.assertEqual(experience.stage(skill), experience.APPRENTICE)
                 self.assertEqual(experience.clean_streak(skill), 0)
@@ -89,7 +91,7 @@ class WithTheModel(ts.TeachingBase):
     def trust(self, name):
         skill = skills.load(name)
         for _ in range(experience.TRUST_AFTER):
-            experience.note_verdict(skill, "replay", True, checked_by="screen")
+            experience.note_verdict(skill, "replay", True, checked_by="screen", basis=["screen", "ledger"])
         skills.save(skill)
 
     def one_step(self, expect=False):
@@ -641,8 +643,14 @@ class AnyScreenTask(ts.TeachingBase):
         state.current_task = "open the invoice and approve it"
 
     def test_a_chat_answer_is_not_checked(self):
-        with mock.patch.object(skill_task, "_did_screen_work", lambda: False):
-            self.assertFalse(skill_task._gate("The kernel is 6.6.", "final", "thebot"))
+        # Not judged - nothing was read to judge it by - and said NOT checked, never sent as a checked result
+        # (E-02/T-01, review 2026-11-03).
+        with mock.patch.object(skill_task, "_did_screen_work", lambda: False), \
+                mock.patch.object(skill_task.evidence, "observed", lambda *a, **k: []), \
+                mock.patch.object(skill_task.evidence, "files_read", lambda *a, **k: []), \
+                mock.patch.object(skill_task, "_commands_text", lambda: ""):
+            self.assertTrue(skill_task._gate("The kernel is 6.6.", "final", "thebot"))
+        self.assertTrue(self.finals[-1][0].startswith(skill_task.UNCHECKED_ANSWER))
 
     def test_screen_work_is_reported_done_only_once_seen(self):
         self.verdicts = [verdict(verify.DONE, seen="Invoice INV-1 shows Approved")]
@@ -734,7 +742,7 @@ class ReplayCommand(unittest.TestCase):
         for patch in (mock.patch.object(skill_task, "write_final_reply",
                                         lambda text, kind="final", engine=None, **kw: self.finals.append((text, kind))),
                       mock.patch.object(skill_task, "ask_for_query",
-                                        lambda text, kind="query", engine=None: self.asked.append((text, kind))),
+                                        lambda text, kind="query", engine=None, **kw: self.asked.append((text, kind))),
                       mock.patch.object(skill_task.evidence, "live", lambda scale=1: None),
                       mock.patch.object(skill_task.evidence, "observed", lambda task_id=None: []),
                       mock.patch.object(replay_task.replay, "run", lambda program, params=None, start=1: {

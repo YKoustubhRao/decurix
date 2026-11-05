@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -162,6 +161,17 @@ type Requirement struct {
 	MinApprovers int `json:"min_approvers"`
 	// Amount is the largest money figure read from the action text, if any.
 	Amount *float64 `json:"amount,omitempty"`
+	// AmountUnknown says a policy with an amount limit applies only because no amount could be read for certain
+	// (Amount is nil, and an unknown amount fails closed): the approver is told so (REVIEW-3 follow-up 6).
+	AmountUnknown bool `json:"amount_unknown,omitempty"`
+}
+
+// amountNote is the sentence an approver is shown when an amount policy applied because the amount is unknown.
+func amountNote(req Requirement) string {
+	if !req.AmountUnknown {
+		return ""
+	}
+	return " The amount could not be read for certain, so the policy for larger amounts applied."
 }
 
 // None reports whether no policy applies.
@@ -209,6 +219,9 @@ func (s *Store) Required(worker string, workerRoles []string, actionText string)
 	for _, p := range policies {
 		if p.Applies(worker, workerRoles, actionText, req.Amount) {
 			req.Policies = append(req.Policies, p)
+			if p.AmountOver != nil && req.Amount == nil {
+				req.AmountUnknown = true
+			}
 			if p.MinApprovers > req.MinApprovers {
 				req.MinApprovers = p.MinApprovers
 			}
@@ -242,31 +255,4 @@ func CanApprove(u User, req Requirement) bool {
 		}
 	}
 	return true
-}
-
-// moneyRe finds figures marked as money: a currency symbol or an uppercase
-// three-letter currency code before or after the number, or "amount"/"total"
-// before it.
-var moneyRe = regexp.MustCompile(
-	`(?:\p{Sc}|\b[A-Z]{3}\b|\b(?i:rs|amount|total|sum)\b\.?:?)\s?(\d[\d,]*(?:\.\d+)?)` +
-		`|(\d[\d,]*(?:\.\d+)?)\s?(?:\p{Sc}|\b[A-Z]{3}\b)`)
-
-// LargestAmount returns the largest money figure in text, or nil when there is none.
-func LargestAmount(text string) *float64 {
-	var best *float64
-	for _, m := range moneyRe.FindAllStringSubmatch(text, -1) {
-		raw := m[1]
-		if raw == "" {
-			raw = m[2]
-		}
-		v, err := strconv.ParseFloat(strings.ReplaceAll(raw, ",", ""), 64)
-		if err != nil {
-			continue
-		}
-		if best == nil || v > *best {
-			val := v
-			best = &val
-		}
-	}
-	return best
 }

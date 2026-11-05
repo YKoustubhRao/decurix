@@ -32,6 +32,17 @@ func (m *Manager) ProxyTarget(ctx context.Context, rawID string) (proxyURL *url.
 	return m.resolveProxyTarget(ctx, rawID, containerPort)
 }
 
+// ScreenStreamAddress resolves desktop rawID's raw RFB address (host:5901, its Xvnc) the way ProxyTarget resolves its
+// noVNC port, waking it when paused: what the control plane's own WebSocket bridge to the screen dials (screen
+// streams carry RFB as it is, so the desktop needs no websockify for them). It also returns the sanitized ID.
+func (m *Manager) ScreenStreamAddress(ctx context.Context, rawID string) (addr, sanitizedID string, err error) {
+	u, id, err := m.resolveProxyTarget(ctx, rawID, vncPort+"/tcp")
+	if err != nil {
+		return "", id, err
+	}
+	return u.Host, id, nil
+}
+
 // AgentProxyTarget resolves the internal address of TheBot soul's HTTP port
 // (agentPort) for the given desktop ID, the same way ProxyTarget resolves the
 // VNC port. Only desktops created with harness=thebot have anything
@@ -68,7 +79,7 @@ func (m *Manager) resolveProxyTarget(ctx context.Context, rawID, port string) (p
 	}
 
 	if inspect.State.Paused {
-		if err := m.client.ContainerUnpause(ctx, name); err != nil {
+		if err := m.wakeDesktop(ctx, name); err != nil {
 			return nil, sanitizedID, fmt.Errorf("auto-wake paused desktop: %w", err)
 		}
 		// The dashboard's pill and the screen viewer read List's cached
@@ -77,12 +88,10 @@ func (m *Manager) resolveProxyTarget(ctx context.Context, rawID, port string) (p
 		m.invalidateList()
 	}
 
-	networkInfo, ok := inspect.NetworkSettings.Networks[NetworkName]
-	if !ok || networkInfo == nil {
+	if inspect.NetworkSettings == nil {
 		return nil, sanitizedID, ErrNoNetwork
 	}
-
-	ip := networkInfo.IPAddress
+	ip := desktopAddress(sanitizedID, inspect.NetworkSettings.Networks)
 	if ip == "" {
 		return nil, sanitizedID, ErrNoAddress
 	}

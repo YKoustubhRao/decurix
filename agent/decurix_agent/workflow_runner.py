@@ -25,11 +25,28 @@ from decurix_agent import filelock
 MAX_REPORT_CHARS = 2000
 
 
+def bound_inputs(spec):
+    """The run inputs a learned-skill stage binds ({"input": name} in its params or source_files): each is required, as
+    the stage cannot run without it."""
+    names = []
+    for step in spec.get("steps", []) if isinstance(spec, dict) else []:
+        skill = step.get("skill") if isinstance(step, dict) else None
+        if not isinstance(skill, dict):
+            continue
+        for value in list((skill.get("params") or {}).values()) + list((skill.get("source_files") or {}).values()):
+            if isinstance(value, dict) and set(value) == {"input"} and value["input"] not in names:
+                names.append(value["input"])
+    return names
+
+
 def missing_inputs(spec, inputs):
-    """Zero and False are supplied values; absence and empty data are not."""
+    """Zero and False are supplied values; absence and empty data are not. An input a stage binds is required too: a
+    run started without it failed only at that stage, and left the stage pointed at (review 2026-11-03, E-05)."""
     def absent(value):
         return value is None or (isinstance(value, str) and not value.strip()) or (isinstance(value, (list, dict, tuple)) and not value)
-    return [key for key in spec.get("required_inputs", []) if key not in inputs or absent(inputs[key])]
+    wanted = list(spec.get("required_inputs", []))
+    wanted += [name for name in bound_inputs(spec) if name not in wanted]
+    return [key for key in wanted if key not in inputs or absent(inputs[key])]
 
 
 def _attempt_limit(step, record):
@@ -50,7 +67,9 @@ def _unchanged_counts(state, step, record):
     if step.get("decision") and (record.get("answer") or record.get("decided")):
         return {}
     others = {c.get("path") for s in state["spec"]["steps"] if s["id"] != step["id"] for c in s.get("checks", [])}
-    return {path: digest for path, digest in baseline.items() if path not in others}
+    patterns = [o for o in others if _is_pattern(o)]
+    return {path: digest for path, digest in baseline.items()
+            if path not in others and not any(PurePosixPath(path).match(o) for o in patterns)}
 
 
 def _serialized(method):
@@ -147,6 +166,9 @@ def validate(spec):
                 raise ValueError(f"{key} must be boolean")
         if "skill" in s and (not isinstance(s["skill"], dict) or not isinstance(s["skill"].get("name"), str) or not s["skill"]["name"].strip() or not isinstance(s["skill"].get("params", {}), dict)):
             raise ValueError("skill needs a name and parameter object")
+        if "skill" in s and any(isinstance(v, dict) and "input" in v and (set(v) != {"input"} or not isinstance(v["input"], str) or not v["input"].strip())
+                                for v in s["skill"].get("params", {}).values()):
+            raise ValueError("a skill parameter's input binding is {\"input\": NAME}")
         if "skill" in s:
             sources = s["skill"].get("source_files", {})
             if not isinstance(sources, dict) or any(not isinstance(k, str) or not k.strip() or not (
@@ -301,11 +323,14 @@ def artifact_evidence(step, result, context):
                 raise ValueError("invalid PDF")
             text = _pdf_text(p)
         else:
-            text = data.decode("utf-8")
+            text = _decoded(data, check["path"])
             if fmt in {"csv", "tsv"}:
                 import csv
                 import io
                 rows = list(csv.reader(io.StringIO(text), delimiter="\t" if fmt == "tsv" else ",", strict=True))
+                # Blank lines at the end are no rows (a file saved with a final empty line).
+                while rows and not any(cell.strip() for cell in rows[-1]):
+                    rows.pop()
                 if not rows or not rows[0] or any(len(row) != len(rows[0]) for row in rows):
                     raise ValueError("delimited file needs a header and consistent columns")
                 if any(column not in rows[0] for column in check.get("columns", [])):
@@ -344,16 +369,88 @@ def artifact_evidence(step, result, context):
                         raise ValueError("JSON assertions use RFC 6901 pointers")
                     for key in pointer.split("/")[1:] if pointer else []:
                         key = key.replace("~1", "/").replace("~0", "~")
-                        value = value[int(key)] if isinstance(value, list) else value[key]
+                        if isinstance(value, list):
+                            # RFC 6901: an index is digits, counted from the start - "-1" is no index (it read the
+                            # last item through Python's negative indexing; review 2026-11-03, E-46).
+                            if not re.fullmatch(r"0|[1-9]\d*", key) or int(key) >= len(value):
+                                raise ValueError(f"JSON pointer {pointer} names no item")
+                            value = value[int(key)]
+                        elif isinstance(value, dict) and key in value:
+                            value = value[key]
+                        else:
+                            raise ValueError(f"JSON pointer {pointer} names no value")
                     if type(value) is not type(expected) or value != expected:
                         raise ValueError(f"JSON value mismatch at {pointer}")
-            if fmt == "eml" and not all(re.search(rf"^{h}:", text, re.M | re.I) for h in ("To", "Subject")):
+            # The headers are what comes before the first blank line: a "To:" in the body is no header (E-46).
+            head = re.split(r"\r?\n\r?\n", text, maxsplit=1)[0] if fmt == "eml" else ""
+            if fmt == "eml" and not all(re.search(rf"^{h}:", head, re.M | re.I) for h in ("To", "Subject")):
                 raise ValueError("mail draft needs To and Subject headers")
         for needle in check.get("contains", []):
-            if str(needle) not in text:
+            if not _contains(text, needle):
                 raise ValueError(f"{check['path']} missing required content: {needle}")
         evidence.append({"path": check["path"], "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)})
     return evidence
+
+
+def _decoded(data, name):
+    """An artifact's text: UTF-8 (a byte-order mark, as Excel's "CSV UTF-8" writes, dropped), else Windows-1252, as a
+    file saved on an office PC often is. Review 2026-11-03 (E-26): strict UTF-8 refused both, and the BOM stayed in the
+    first column's name."""
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return data.decode("cp1252")
+    except UnicodeDecodeError:
+        raise ValueError(f"{name} is not readable as text") from None
+
+
+_PLAIN_NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+_NUMBER_IN_TEXT = re.compile(r"(?<!\w)(?<!\d[.,])-?\d[\d,]*(?:\.\d+)?(?![\w]|[.,]\d)")
+
+
+def _loses_as_a_number(text):
+    """Whether a number written as text would lose information read as an amount - a leading zero, a leading "+",
+    more than 15 digits (office's F-08 rule): then it is an identifier, matched digit for digit."""
+
+    t = text.strip()
+    digits = re.sub(r"\D", "", t)
+    return t.startswith("+") or (len(digits) > 1 and digits.startswith("0") and not t.startswith("0.")) or len(digits) > 15
+
+
+def _contains(text, needle):
+    """
+    Whether `text` holds `needle` whole: a number as an amount among the text's numbers (1500 is "1,500.00", never
+    "15000" or the 500 inside "1500"), and words as whole tokens ("paid" is not in "unpaid"). Review 2026-11-03 (E-46):
+    a substring test passed a total of 1500 for a check of 500. A number that would lose information as an amount (an
+    account number, "00123") is matched as itself, a whole token, digit for digit - never as a float (R-3, review round
+    3: a different 18-digit account passed, and "00123" passed on "Ref 123"). Amounts compare exactly (Decimal).
+    """
+    from decimal import Decimal, InvalidOperation
+
+    if isinstance(needle, int) and not isinstance(needle, bool) and len(str(abs(needle))) > 15:
+        needle = str(needle)  # (an identifier given as a JSON number: matched as its digits)
+    if isinstance(needle, str) and _PLAIN_NUMBER.fullmatch(needle.strip().lstrip("+")) and not _loses_as_a_number(needle):
+        # A number written as text in the spec is a number all the same (review rework: "500" passed on "1,500.00").
+        needle = Decimal(needle.strip().replace(",", ""))
+    if isinstance(needle, (int, float, Decimal)) and not isinstance(needle, bool):
+        want = Decimal(str(needle))
+        for found in _NUMBER_IN_TEXT.findall(text):
+            if _loses_as_a_number(found):
+                continue  # (an identifier in the text is not an amount either)
+            try:
+                if Decimal(found.replace(",", "")) == want:
+                    return True
+            except InvalidOperation:
+                continue
+        return False
+    needle = str(needle)
+    if not needle:
+        return True
+    left = r"(?<!\w)" if re.match(r"\w", needle) else ""
+    right = r"(?!\w)" if re.search(r"\w$", needle) else ""
+    return re.search(left + re.escape(needle) + right, text) is not None
 
 
 def _pdf_text(path):
@@ -380,7 +477,8 @@ def _draft_evidence(check, result, context):
     if len(usable) < check.get("min_count", 1):
         raise ValueError(f"expected at least {check.get('min_count', 1)} email draft(s) with recipients and a subject, found {len(usable)}")
     for needle in check.get("contains", []):
-        if not any(str(needle) in str(d.get("subject") or "") + "\n" + str(d.get("body") or "") for d in usable):
+        # Whole, as a file's contains is (review 2026-11-03 rework: "500" was found in "1500", "paid" in "unpaid").
+        if not any(_contains(str(d.get("subject") or "") + "\n" + str(d.get("body") or ""), needle) for d in usable):
             raise ValueError(f"no draft contains required content: {needle}")
     digest = hashlib.sha256(json.dumps([[d.get("id"), d.get("to"), d.get("subject")] for d in usable],
                                        sort_keys=True, default=str).encode()).hexdigest()
@@ -434,13 +532,47 @@ class WorkflowRunner:
     def _save(self, state):
         p = self._path(state["run_id"])
         p.parent.mkdir(parents=True, exist_ok=True)
-        temp = p.with_name(p.name + "." + uuid.uuid4().hex + ".tmp")
-        with temp.open("w", encoding="utf-8") as output:
-            json.dump(state, output, indent=2, allow_nan=False)
-            output.flush()
-            os.fsync(output.fileno())
-        temp.replace(p)
+        from decurix_agent.computer import privacy
+        # Shapes on, but not over what the run executes and compares (its spec, its claim lease, its folder).
+        privacy.write_scrubbed(p, state, atomic=True, exempt=("spec", "lease", "work_dir"),
+                               json_kw={"indent": 2, "allow_nan": False})
         return copy.deepcopy(state)
+
+    def prune(self, older_than=24 * 3600):
+        """
+        Remove what nothing will read again: lock files of runs whose folder is gone, and checkpoint temp files a crash
+        left, both older than `older_than` seconds (a run being created has its lock before its folder). Returns how
+        many were removed. Never raises. A run's own folder is not removed: it holds the person's outputs (review
+        2026-11-03, E-43: locks and temp files grew without bound).
+        """
+        removed = 0
+        now = time.time()
+        try:
+            runs = {hashlib.sha256(p.name.encode()).hexdigest() for p in self.root.iterdir() if p.is_dir()}
+            stale = [lock for lock in (self.root / ".locks").glob("*.lock") if lock.stem not in runs]
+            stale += list(self.root.glob("*/checkpoint.json.*.tmp"))
+        except OSError:
+            return 0
+        for path in stale:
+            try:
+                if now - path.stat().st_mtime > older_than:
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                continue
+        return removed
+
+    def task_runs(self, task_id):
+        """The run ids whose checkpoint names `task_id`, read cheaply (the raw JSON's task_id) before anything is
+        validated. Never raises."""
+        found = []
+        for checkpoint in self.root.glob("*/checkpoint.json"):
+            try:
+                if json.loads(checkpoint.read_text(encoding="utf-8")).get("task_id") == task_id:
+                    found.append(checkpoint.parent.name)
+            except (OSError, ValueError, AttributeError):
+                continue
+        return found
 
     def create(self, spec, inputs=None, run_id=None, work_dir=None):
         run_id = run_id or uuid.uuid4().hex
@@ -467,10 +599,21 @@ class WorkflowRunner:
                 raise ValueError("work_dir must be absolute")
             Path(work_dir).mkdir(parents=True, exist_ok=True)
             state["work_dir"] = str(Path(work_dir).resolve())
+        # The inputs as they are, to run by: every checkpoint on disk holds them withheld (privacy.write_scrubbed), so
+        # a secret input is kept in the task's secret store (tmpfs, let go at the final report - review round 4).
+        from decurix_agent import task_context
+        from decurix_agent.computer import privacy
+        privacy.keep_resume_copy("workflow:" + run_id, task_context.current(), json.dumps(state["inputs"]))
         return self._save(state)
 
     def status(self, run_id):
         state = json.loads(self._path(run_id).read_text(encoding="utf-8"))
+        if isinstance(state, dict) and isinstance(state.get("inputs"), dict) and "[withheld" in json.dumps(
+                state["inputs"]):
+            from decurix_agent.computer import privacy
+            kept = privacy.resume_copy("workflow:" + run_id)
+            if kept:
+                state["inputs"] = json.loads(kept)
         if not isinstance(state, dict) or "spec" not in state:
             raise ValueError("checkpoint must contain a workflow object")
         validate(state["spec"])
@@ -487,6 +630,15 @@ class WorkflowRunner:
             if not isinstance(record, dict) or type(record.get("additional_attempts", 0)) is not int or not 0 <= record.get("additional_attempts", 0) <= 10 - step.get("max_attempts", 2) or record.get("status") not in {"pending", "running", "completed", "failed", "parked"} or type(record.get("attempts")) is not int or not 0 <= record["attempts"] <= _attempt_limit(step, record) or not isinstance(record.get("evidence"), list):
                 raise ValueError("invalid checkpoint step record")
         return state
+
+    def withhold_inputs(self, run_id, hide):
+        """Replace each text input of a run's checkpoint by hide(text): the run is over, and its inputs (the
+        person's request) are kept only withheld (long_task._withhold_request)."""
+
+        with self._lock(run_id):
+            state = self.status(run_id)
+            state["inputs"] = {k: hide(v) if isinstance(v, str) else v for k, v in state["inputs"].items()}
+            self._save(state)
 
     def context(self, state):
         return {"run_id": state["run_id"], "inputs": state["inputs"],
@@ -557,14 +709,21 @@ class WorkflowRunner:
             # retried keeps its first baseline. Found live (round 5 P4, 2026-10-20): taken again after the stage
             # asked, it held the stage's own first-attempt files, and a retry that fixed one of its two workbooks was
             # failed for leaving the other "already present and unchanged". A reopened stage has none (reopen).
+            # A pattern check's baseline is every file it matches now: a file there before the stage, unchanged, is not
+            # one the stage made (review 2026-11-02: never baselined, a stale match from before the task passed).
             if not record["attempts"] and "baseline" not in record:
                 record["baseline"] = {}
+                base = Path(context["work_dir"])
                 for c in s["checks"]:
                     if c.get("format") == "drafts":
                         continue
-                    artifact = Path(context["work_dir"]) / c["path"]
-                    if artifact.is_file():
-                        record["baseline"][c["path"]] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                    if _is_pattern(c["path"]):
+                        found = [(m.relative_to(base).as_posix(), m) for m in sorted(base.glob(c["path"]))]
+                    else:
+                        found = [(c["path"], base / c["path"])]
+                    for key, artifact in found:
+                        if artifact.is_file():
+                            record["baseline"][key] = hashlib.sha256(artifact.read_bytes()).hexdigest()
             record["status"], record["attempts"] = "running", record["attempts"] + 1
             token = uuid.uuid4().hex
             record["lease"] = {"token": token, "owner": self.owner, "host": socket.gethostname(), "pid": os.getpid(), "process_identity": _process_identity(os.getpid()), "expires_at": time.time() + self.lease_seconds}
@@ -596,15 +755,25 @@ class WorkflowRunner:
             record["changed_later"] = True
 
     def _reopen_record(self, step, record, reason):
+        """
+        A done stage to run again for `reason`; True when it may. One out of attempts (its lifetime limit of 10) is
+        failed for that reason instead - never left completed after its result stopped being trusted, and never a
+        raise: from claim() that stopped every later claim of the run (review 2026-11-02).
+        """
         need = record["attempts"] + 1 - step.get("max_attempts", 2)
         if need > record.get("additional_attempts", 0):
             if need > 10 - step.get("max_attempts", 2):
-                raise ValueError("stage reached its lifetime limit of 10 attempts")
+                record["status"] = "failed"
+                record["error"] = (f"{reason} - and it has used its lifetime limit of 10 attempts, so it was not run "
+                                   "again")[:MAX_REPORT_CHARS]
+                record.pop("lease", None)
+                return False
             record["additional_attempts"] = need
         record["status"] = "pending"
         record["baseline"] = {}
         record["reopened"] = str(reason)[:MAX_REPORT_CHARS]
         record.pop("lease", None)
+        return True
 
     @_serialized
     def park(self, run_id, step_id, question, report=None):
@@ -689,8 +858,8 @@ class WorkflowRunner:
         record = state["steps"][step_id]
         if record["status"] not in {"completed", "failed"}:
             return state
-        self._reopen_record(step, record, reason)
-        record.pop("error", None)
+        if self._reopen_record(step, record, reason):
+            record.pop("error", None)
         if state["status"] != "running":
             state["status"] = "pending"
         return self._save(state)
@@ -743,9 +912,20 @@ class WorkflowRunner:
             if error:
                 raise ValueError(str(error))
             context = self.context(state)
-            evidence = artifact_evidence(step, result or {}, context)
-            if any(_unchanged_counts(state, step, record).get(item["path"]) == item["sha256"] for item in evidence):
-                raise ValueError("artifact was already present and unchanged before this step")
+            unchanged = _unchanged_counts(state, step, record)
+            evidence = []
+            for check in step["checks"]:
+                items = artifact_evidence({**step, "checks": [check]}, result or {}, context)
+                if check.get("format") != "drafts" and _is_pattern(check.get("path")):
+                    # Of the files a pattern matches, only those the stage made or changed count toward its minimum.
+                    fresh = [item for item in items if unchanged.get(item["path"]) != item["sha256"]]
+                    if len(fresh) < check.get("min_count", 1):
+                        raise ValueError(f"expected at least {check.get('min_count', 1)} new or changed file(s) "
+                                         f"matching {check['path']}; {len(items) - len(fresh)} of the {len(items)} "
+                                         "found were already there, unchanged, before this step")
+                elif any(unchanged.get(item["path"]) == item["sha256"] for item in items):
+                    raise ValueError("artifact was already present and unchanged before this step")
+                evidence += items
             if self.verifier and not self.verifier(step, result or {}, context):
                 raise ValueError("independent verifier rejected output")
             record.update(status="completed", evidence=evidence)

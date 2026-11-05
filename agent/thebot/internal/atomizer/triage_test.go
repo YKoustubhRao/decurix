@@ -15,17 +15,17 @@ func TestTriageRoutesRequestsByShape(t *testing.T) {
 		{"what can you do?", RouteChat},
 		{"my name is Alex, remember that", RouteChat},
 		{"what's my name?", RouteChat},
-		{"who wrote the odyssey?", RouteChat},
-		{"what is 1+1?", RouteChat},
-		// Measured in a real desktop: the bare word "browser" sent this to the
-		// operator, which asked the human to install xclip.
-		{"browser test message one", RouteChat},
-		{"ping - just reply pong", RouteChat},
+		// Any other question goes to the operator, which answers at once when it need not look (review T-04): the
+		// chat skill has no tools, and its answer about the person's own data was reported as verified.
+		{"who wrote the odyssey?", RouteOperate},
+		{"what is 1+1?", RouteOperate},
+		{"browser test message one", RouteOperate},
+		{"ping - just reply pong", RouteOperate},
 
 		// Says how to work a screen, in an app no surface word names.
 		{"On Request REQ-26-00009 the Due Date is empty. Open it, type 03-10-2026 into Due Date, press Escape, save.", RouteOperate},
 		{"press ctrl+s in the editor", RouteOperate},
-		{"what does the escape key do?", RouteChat},
+		{"what does the escape key do?", RouteOperate},
 
 		// On this machine: the operator works it out.
 		{"what is the current kernel version?", RouteOperate},
@@ -44,8 +44,8 @@ func TestTriageRoutesRequestsByShape(t *testing.T) {
 		{"Prepare a payment reminder email for Acme and put it in the outbox", RouteOperate},
 		{"write an email to billing@acme.example about invoice INV-7", RouteOperate},
 		{"compose a reply to the supplier confirming delivery on Friday", RouteOperate},
-		// Wording help is conversation: no address, nothing to attach.
-		{"help me write an email asking my boss for Friday off", RouteChat},
+		// Wording help with no address and nothing to attach: the operator, which can answer with the text at once.
+		{"help me write an email asking my boss for Friday off", RouteOperate},
 
 		// On the screen: the operator, with the gui command - not the web
 		// skill fetching the URL, and not a plan written before looking.
@@ -87,31 +87,17 @@ func TestTriageKeepsCodingWhole(t *testing.T) {
 	}
 }
 
-// Measured live: "content-type" read as a request to type sent a terminal job
-// to the browser extension, which was not running, for 16 minutes.
-func TestTriageSendsOnlyRealPageWorkToTheBrowser(t *testing.T) {
-	notBrowser := []string{
-		"run curl -sI https://example.com in the terminal and tell me the content-type header",
-		"check the content-type example.com returns",
-		"from the shell, search example.com's robots.txt for sitemap lines",
-		// An address is not a website (live: waited on the browser extension).
-		"Create invoices.xlsx in my work folder with three invoices. Then draft an email to ap@example.com with the workbook attached.",
-	}
-	for _, prompt := range notBrowser {
-		if got := Triage(prompt); got.Kind == RouteBrowser {
-			t.Errorf("Triage(%q) = browser, want anything else", prompt)
-		}
-	}
-	browser := []string{
+// Work in a real web page is the operator's, worked on the screen with gui.
+func TestTriageSendsPageWorkToTheOperator(t *testing.T) {
+	for _, prompt := range []string{
 		"open google.com and search for addis ababa",
 		"go to amazon.com and add a kettle to the cart",
 		"browse to example.com then click More information",
 		"on github.com type decurix into the search box",
 		"email sam@acme.com, then open acme.com and click Pricing",
-	}
-	for _, prompt := range browser {
-		if got := Triage(prompt); got.Kind != RouteBrowser {
-			t.Errorf("Triage(%q) = %s, want browser", prompt, got.Kind)
+	} {
+		if got := Triage(prompt); got.Kind != RouteOperate {
+			t.Errorf("Triage(%q) = %s, want operate", prompt, got.Kind)
 		}
 	}
 }
@@ -190,24 +176,14 @@ func TestTriageSendsOfficeDocumentsToTheOperator(t *testing.T) {
 	}
 }
 
-// Without the browser extension, web work goes to the operator: found live,
-// a step sent to the browser skill waited 30 s for a listener that was never
-// there and failed the task.
-func TestWebPageWorkGoesToTheOperatorWithoutTheExtension(t *testing.T) {
-	was := BrowserAvailable
-	defer func() { BrowserAvailable = was }()
-
+// Web page work goes to the operator, planned or not: a [browser] step runs as the operator's.
+func TestWebPageWorkGoesToTheOperator(t *testing.T) {
 	req := "Open https://opensource-demo.orangehrmlive.com, log in and add the new employee"
-	BrowserAvailable = true
-	if r := Triage(req); r.Kind != RouteBrowser {
-		t.Fatalf("with the extension: %+v", r)
-	}
-	BrowserAvailable = false
 	if r := Triage(req); r.Kind != RouteOperate || r.TaskType != "operator" {
-		t.Fatalf("without the extension: %+v", r)
+		t.Fatalf("triage: %+v", r)
 	}
 	if typ := shapeStep("browser", "Open the project portal and create the request").Type; typ != "operator" {
-		t.Errorf("a planned [browser] step without the extension runs as %q", typ)
+		t.Errorf("a planned [browser] step runs as %q", typ)
 	}
 }
 
@@ -245,9 +221,6 @@ func TestTriageSendsARequestWithAttachedFilesToTheOperator(t *testing.T) {
 	p := "what does this say?\n\n" + attachedFilesMark + "\n  /home/headless/work/inbox/up-1/notes.txt"
 	if got := Triage(p); got.Kind != RouteOperate {
 		t.Fatalf("Triage(%q) = %v (%s), want operate", p, got.Kind, got.Reason)
-	}
-	if got := Triage("what does this say?"); got.Kind == RouteOperate {
-		t.Errorf("the same question with no file went to the operator (%s)", got.Reason)
 	}
 }
 
@@ -326,6 +299,27 @@ func TestTriageSendsFilesFromAWebAppToKeepToTheOperator(t *testing.T) {
 	for _, q := range []string{"what does https://go.dev/doc/devel/release say about go 1.22?", "look up the latest Go release and save a note in my work folder"} {
 		if got := Triage(q); got.Kind == RouteOperate && got.Reason == "work with a web page and this machine's files - the operator does both" {
 			t.Fatalf("%q was taken by the keep-on-machine rule", q)
+		}
+	}
+}
+
+// Questions about the person's own records, files, apps or work go to the operator, which can look (review T-04);
+// conversation alone stays with the tool-less chat skill.
+func TestTriageSendsQuestionsAboutThePersonsWorkToTheOperator(t *testing.T) {
+	for _, p := range []string{
+		"What is the total of the invoices the client sent last week?",
+		"Which customer owes us the most right now?",
+		"Did the return for October get filed?",
+		"how much did we pay the supplier in September",
+		"is the backup finished?",
+	} {
+		if got := Triage(p); got.Kind != RouteOperate {
+			t.Errorf("Triage(%q) = %s/%s (%s), want operate", p, got.Kind, got.TaskType, got.Reason)
+		}
+	}
+	for _, p := range []string{"hi", "hello there", "thanks!", "what can you do?"} {
+		if got := Triage(p); got.Kind != RouteChat {
+			t.Errorf("Triage(%q) = %s (%s), want chat", p, got.Kind, got.Reason)
 		}
 	}
 }

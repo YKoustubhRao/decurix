@@ -304,15 +304,23 @@ func TestAtomizePlansRealMultiStepTask(t *testing.T) {
 	}
 }
 
-func TestAtomizeTreatsPlainQuestionAsChat(t *testing.T) {
+func TestAtomizeTreatsConversationAsChat(t *testing.T) {
 	stub := &stubProvider{response: "TASK: no"}
-	plan := Atomize(context.Background(), "who wrote the odyssey?", stub, "m", nil)
+	plan := Atomize(context.Background(), "thanks!", stub, "m", nil)
 
 	if plan.IsTask {
-		t.Errorf("IsTask = true for a plain question, want false")
+		t.Errorf("IsTask = true for conversation, want false")
 	}
-	if len(plan.Steps) != 1 || plan.Steps[0].Text != "who wrote the odyssey?" {
+	if len(plan.Steps) != 1 || plan.Steps[0].Text != "thanks!" {
 		t.Errorf("plan.Steps = %+v, want the original prompt as one step", plan.Steps)
+	}
+}
+
+// A question is the operator's (review T-04): it is real work that may need a look.
+func TestAtomizeTreatsAQuestionAsWork(t *testing.T) {
+	plan := Atomize(context.Background(), "who wrote the odyssey?", &stubProvider{response: "TASK: no"}, "m", nil)
+	if !plan.IsTask || len(plan.Steps) != 1 {
+		t.Errorf("plan = %+v, want one step of work", plan)
 	}
 }
 
@@ -652,6 +660,10 @@ func TestClassifyBusinessWordsAreNotCode(t *testing.T) {
 		"Create the new price list. Rules: the supplier's code is ours without the dash.",
 		"Build the monthly model. Posted lines whose Dept Code is not in Depts do not go into the model.",
 		"make the product codes match the supplier list and write the result",
+		// "code" as data next to a maintenance verb, with no list of business nouns to take it out (review T-18).
+		"fix the code column in the sheet",
+		"rewrite the status code field",
+		"write the code for each item into column B",
 		"write a summary of the quarter and let it go to the board",
 		"create the summary sheet, then react to the overdue items and express the totals in euros",
 	} {

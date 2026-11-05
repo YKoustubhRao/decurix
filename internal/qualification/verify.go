@@ -69,6 +69,31 @@ func Verify(c Case, result Result, runErr error) Finding {
 	return f
 }
 
+// VerifyFileCheck judges saved bytes against one file check (text_equals, json_equals, csv_equals, xlsx_cells) with
+// readiness's own verifier, for other graders (internal/eval) to share it.
+func VerifyFileCheck(check Check, b []byte) error {
+	return verifyCheck(check, b)
+}
+
+// ValidateFileCheck says what is wrong with a file check's own fields, "" when it is well formed.
+func ValidateFileCheck(check Check) string {
+	if !fileCheckKind(check.Kind) {
+		return "unsupported file check."
+	}
+	return validateFileCheck(PracticeCheck{Kind: check.Kind, File: check.File, Text: check.Text, JSON: check.JSON, Rows: check.Rows, Cells: check.Cells})
+}
+
+// DraftMatches says how the drafts differ from an outbox check ("" when exactly one draft matches it).
+func DraftMatches(ch PracticeCheck, drafts []PracticeDraft) string {
+	return draftMatches(ch, drafts)
+}
+
+// PresentWhenAbsent says what is there that an absent check (a file, one record or a recipient) says must not be;
+// "" when it is absent.
+func PresentWhenAbsent(ch PracticeCheck, ev PracticeEvidence) string {
+	return presentWhenAbsent(ch, ev)
+}
+
 func verifyCheck(check Check, b []byte) error {
 	switch check.Kind {
 	case "text_equals":

@@ -54,9 +54,14 @@ FAMILIES = [
 
 # Words a product renames one another to. Deliberately short: a synonym only
 # ever lifts a name to 0.8, never to a match, so this list is for the ordinary
-# renames ("Save" -> "Submit"), not for meaning.
+# renames ("Save" -> "Save changes" is containment; "Apply" -> "Update"), not
+# for meaning. Saving and submitting are not one act: in many applications
+# "Save" keeps a draft and "Submit" makes it final, and "Confirm" answers a
+# question - so neither is a synonym of "Save" (review 2026-11-02: Save~Submit
+# scored 0.90 against an ACCEPT of 0.72).
 SYNONYMS = [
-    {"save", "submit", "apply", "confirm", "update", "done", "ok"},
+    {"save", "apply", "update"},
+    {"done", "ok"},
     {"cancel", "close", "dismiss", "discard"},
     {"delete", "remove", "trash"},
     {"add", "new", "create"},
@@ -305,12 +310,82 @@ def strict(step):
     return bool(step.get("consequential") or step.get("optional"))
 
 
+def _same_control(step, element):
+    """The same control as the step's: the same role, and a name that is one the step's control is known by
+    (recorded, or proven since - aliases), word for word."""
+
+    target = step.get("target") or {}
+    if target.get("role") and target.get("role") != element.get("role"):
+        return False
+    have = _norm(element.get("name"))
+    return bool(have) and any(_norm(name) == have for name in aliases(step))
+
+
+# The words of a label that say what a press commits to: a control renamed to hold one its recorded name did not
+# ("Save" -> "Save and Submit", "Next" -> "Pay") would do another thing.
+COMMIT_WORDS = re.compile(r"\b(save|submit|post|file|book|pay|send|delete|remove|place|confirm|create|register|"
+                          r"finish|complete|accept|approve|update|publish|finali[sz]e|transfer|cancel|buy|purchase|"
+                          r"checkout|order|e-?file|offset|sign)\b")
+
+
+def _commit_words(name):
+    return set(COMMIT_WORDS.findall(_norm(name)))
+
+
+def _gated(element):
+    """Whether the approval gate stops a press on this control (approval.assess); unknown is taken as gated."""
+
+    from decurix_agent.computer import approval
+
+    try:
+        return approval.assess("click", element) is not None
+    except Exception:  # noqa: BLE001 - not known to be harmless is taken to be gated
+        return True
+
+
+def keeps_identity(step, element):
+    """
+    Whether taking `element` keeps the step on the same named thing: its name is one the step's control is known by
+    (aliases), apart from case, spacing and punctuation - the same digit runs and the same whole words
+    (identity.changes_identity). A repair may find a control in another place, container or role; never under
+    another name. Found in review (2026-11-03, D-09): a link to one invoice number was healed "confidently" onto the
+    next number's, and a party's name onto a longer name - another record, then reported verified.
+    """
+
+    from decurix_agent.computer import identity
+
+    names = aliases(step)
+    if not names:
+        return True  # nothing named was recorded: no name to keep
+    return any(not identity.changes_identity(name, element.get("name")) for name in names)
+
+
+def retargets(step, element):
+    """
+    Whether taking `element` for this step would aim it at another control where that matters: a strict step (one
+    the gate stops, or that only sometimes happens) taken by anything but its own control (the same role and name);
+    a control the gate stops, under another name; or one whose label commits to something the recorded one did not
+    ("Save" -> "Save and Submit", "Save" -> "Update"). Synonyms and likeness help find a plain control again ("Save" ->
+    "Save changes"); they never move a press onto a Submit, a Pay or a Delete it was not recorded on.
+    """
+
+    if _same_control(step, element):
+        return False
+    if strict(step) or _gated(element):
+        return True
+    recorded = set().union(*(_commit_words(name) for name in aliases(step))) if aliases(step) else set()
+    return bool(_commit_words(element.get("name")) - recorded)
+
+
 def decide(step, ranked):
     """
     ("confident" | "doubt" | "none", the chosen candidate or None).
 
     Confident needs the score, the label and the lead over the runner-up all
-    to clear their bar - and a stricter bar for a strict step.
+    to clear their bar - and a stricter bar for a strict step. A strict step is
+    healed only onto its own control (the same role and name, moved or redrawn),
+    and no step is healed by likeness onto a control that commits or that the
+    approval gate stops (retargets): that is "doubt", for the person.
     """
 
     if not ranked:
@@ -320,7 +395,8 @@ def decide(step, ranked):
     accept, floor = (STRICT_ACCEPT, STRICT_NAME_FLOOR) if strict(step) else (ACCEPT, NAME_FLOOR)
     lead = top["score"] - (ranked[1]["score"] if len(ranked) > 1 else 0.0)
 
-    if top["score"] >= accept and top["name"] >= floor and lead >= MARGIN:
+    if top["score"] >= accept and top["name"] >= floor and lead >= MARGIN and not retargets(step, top["element"]) \
+            and keeps_identity(step, top["element"]):
         return "confident", top
 
     if top["score"] >= DOUBT:

@@ -94,3 +94,57 @@ func TestADoneThatAsksThePersonIsAQuestion(t *testing.T) {
 		}
 	}
 }
+
+// A README with code examples is written whole: keeping only its first fenced
+// block turned it into one line. A reply that is one fenced block is
+// unwrapped; a code file with several blocks is not guessed at.
+func TestFileBodyKeepsFencesThatAreContent(t *testing.T) {
+	readme := "# Tool\n\nInstall:\n\n```bash\nmake install\n```\n\nRun:\n\n```bash\ntool --help\n```\n"
+	got, err := fileBody("README.md", readme)
+	if err != nil || got != readme {
+		t.Fatalf("README = %q (%v), want it whole", got, err)
+	}
+	if got, err := fileBody("tree.py", "```python\nprint(1)\n```\n"); err != nil || got != "print(1)\n" {
+		t.Errorf("one fenced block = %q (%v), want it unwrapped", got, err)
+	}
+	if got, err := fileBody("tree.py", "Here it is:\n```python\nprint(1)\n```\nEnjoy."); err != nil || got != "print(1)\n" {
+		t.Errorf("one block with prose = %q (%v), want the block", got, err)
+	}
+	if got, err := fileBody("tree.py", "print(1)\n"); err != nil || got != "print(1)\n" {
+		t.Errorf("plain content = %q (%v)", got, err)
+	}
+	if _, err := fileBody("tree.py", "```python\na = 1\n```\nand\n```python\nb = 2\n```\n"); err == nil {
+		t.Error("two code blocks for one code file were written as if one were certain")
+	}
+}
+
+// A version number is not a file name: "Go 1.27" saved a file named 1.27.
+func TestPathFromRequestIgnoresVersionNumbers(t *testing.T) {
+	for step, want := range map[string]string{
+		"write a note about Go 1.27 to notes.md":            "notes.md",
+		"write a note that we upgraded to 1.27":             "",
+		"save the release notes for version 3.5 as rel.txt": "rel.txt",
+		"write hello into out/greeting.txt":                 "out/greeting.txt",
+	} {
+		if got := pathFromRequest(step); got != want {
+			t.Errorf("pathFromRequest(%q) = %q, want %q", step, got, want)
+		}
+	}
+}
+
+// The whole README the model wrote is what lands on disk, and is verified by
+// reading it back.
+func TestFileWriteWritesTheWholeReadme(t *testing.T) {
+	readme := "# Tool\n\n```bash\nmake\n```\n\nMore text.\n\n```bash\ntool\n```\n"
+	chat := &scriptedChat{replies: []string{"PATH: README.md\nCONTENT:\n" + readme}}
+	ws := newTestWorkspace(t)
+	rc := RunContext{Ctx: context.Background(), OnLog: func(string) {}, Workspace: ws, Provider: chat, Model: "m"}
+	res, err := NewFileWrite().Run(rc, Subtask{Step: "write a README for the tool into README.md", Type: "file-write"})
+	if err != nil || !res.Verified {
+		t.Fatalf("result = %+v (%v)", res, err)
+	}
+	got, _ := os.ReadFile(filepath.Join(ws.Root(), "README.md"))
+	if string(got) != readme {
+		t.Errorf("on disk = %q, want %q", got, readme)
+	}
+}

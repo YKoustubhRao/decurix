@@ -3,6 +3,7 @@ The `office` shell command as TheBot uses it: spreadsheet changes that keep
 the workbook's charts, and email drafts that go to the Outbox, never out.
 """
 
+from needs import needs
 import io
 import json
 import os
@@ -43,6 +44,7 @@ def run(argv, stdin=None):
     return code, out.getvalue()
 
 
+@needs("openpyxl")
 class UpdatingASpreadsheetKeepsItsChart(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -126,9 +128,46 @@ class AnEmailIsDraftedNeverSent(unittest.TestCase):
         patcher = mock.patch("decurix_agent.tools.outbox.urllib.request.urlopen", side_effect=urlopen)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The temporary folder is the work folder: only a file of the work is attached (privacy.file_may_leave).
+        from pathlib import Path
+        work = mock.patch.object(outbox.config, "WORK_DIR", Path(self.dir.name))
+        work.start()
+        self.addCleanup(work.stop)
+        # The drafts' log is this test's own: the machine's would be read by any later test of the same task id
+        # (found in review round 3: a later gate test saw these drafts as its own work).
+        log = mock.patch.object(outbox, "DRAFTS_DIR", Path(self.dir.name) / "drafts")
+        log.start()
+        self.addCleanup(log.stop)
 
     def tearDown(self):
         self.dir.cleanup()
+
+    def test_a_file_from_a_hidden_folder_or_outside_the_work_is_never_attached(self):
+        # Review 2026-11-02: any path could be attached, ~/.ssh or ~/.claude/.credentials.json among them.
+        hidden = os.path.join(self.dir.name, ".ssh")
+        os.mkdir(hidden)
+        with open(os.path.join(hidden, "id_rsa"), "w", encoding="utf-8") as f:
+            f.write("key")
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        elsewhere = os.path.join(outside.name, "credentials.json")
+        with open(elsewhere, "w", encoding="utf-8") as f:
+            f.write("{}")
+        for path in (os.path.join(hidden, "id_rsa"), elsewhere, os.path.join(self.dir.name, "..", os.path.basename(outside.name),
+                                                                             "credentials.json")):
+            code, text = run(["email", "--to", "a@b.example", "--subject", "s", "--attach", path], stdin="body")
+            self.assertEqual(code, 1, text)
+            self.assertIn("is not attached", text)
+        self.assertEqual(self.posted, [])
+
+    def test_the_subject_and_body_go_through_the_secret_withholding(self):
+        code, text = run(["email", "--to", "ap@acme.example", "--subject", "Portal password: Lift$2026",
+                          "--attach", self.statement],
+                         stdin="Dear Acme,\n\nGSTIN 29ABCDE1234F1Z5, Rs 1,25,000.00 due.\npassword: Lift$2026\n")
+        self.assertEqual(code, 0, text)
+        _, payload = self.posted[0]
+        self.assertNotIn("Lift$2026", json.dumps(payload))
+        self.assertIn("29ABCDE1234F1Z5, Rs 1,25,000.00 due.", payload["body"], "ordinary figures stay as they are")
 
     def test_it_goes_to_the_outbox_with_its_attachment(self):
         code, text = run(["email", "--to", "ap@acme.example", "--cc", "me@us.example", "--subject", "Overdue statement",
@@ -148,7 +187,8 @@ class AnEmailIsDraftedNeverSent(unittest.TestCase):
         for argv, stdin, why in (
             (["email", "--subject", "s"], "body", "at least one recipient"),
             (["email", "--to", "a@b.example", "--subject", "s"], "", "no body"),
-            (["email", "--to", "a@b.example", "--subject", "s", "--attach", "/nope.pdf"], "body", "does not exist"),
+            (["email", "--to", "a@b.example", "--subject", "s", "--attach", os.path.join(self.dir.name, "nope.pdf")],
+             "body", "does not exist"),
         ):
             code, text = run(argv, stdin=stdin)
             self.assertEqual(code, 1, text)

@@ -22,6 +22,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -88,6 +89,9 @@ type DeviceRegistry interface {
 // the primary listener a desktop agent's callbacks and a human at the control
 // plane's own machine use (see the package doc).
 type Store struct {
+	// streams are the paired devices' live requests (streams.go).
+	streams streams
+
 	mu       sync.Mutex
 	password string
 	sessions map[string]time.Time
@@ -375,7 +379,8 @@ func (s *Store) Middleware(next http.Handler) http.Handler {
 		}
 
 		if s.validDevice(r) {
-			next.ServeHTTP(w, r)
+			// Tracked under its device, so unpairing it ends what this request holds open (CloseDevice).
+			s.serveDevice(next, w, r)
 			return
 		}
 
@@ -577,7 +582,12 @@ func (s *Store) handleSubmit(w http.ResponseWriter, r *http.Request) {
 // that is not an ordinary absolute path (or that starts "//", a
 // protocol-relative URL to somewhere else entirely) collapses to "/".
 func sanitizeNext(next string) string {
-	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
+	// Browsers read a backslash as a slash and drop tabs and newlines, so "/\evil.com" and "/<tab>/evil.com" lead to
+	// other sites too (review 2026-11-02). Only a plain path on this site goes back.
+	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.ContainsAny(next, "\\\t\r\n") {
+		return "/"
+	}
+	if u, err := url.Parse(next); err != nil || u.Scheme != "" || u.Host != "" {
 		return "/"
 	}
 

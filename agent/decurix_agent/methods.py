@@ -57,10 +57,8 @@ def _all():
 
 def _save(method):
     ROOT.mkdir(parents=True, exist_ok=True)
-    tmp = _path(method["name"]).with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(method, f, indent=1, ensure_ascii=False)
-    os.replace(tmp, _path(method["name"]))
+    from decurix_agent.computer import privacy
+    privacy.write_scrubbed(_path(method["name"]), method, atomic=True, json_kw={"indent": 1, "ensure_ascii": False})
 
 
 def _without_values(text):

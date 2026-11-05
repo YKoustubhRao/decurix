@@ -37,7 +37,7 @@ class TheSharedFolderIsWhereTheRequestSaid(SharedBase):
         self.assertIn(self.mount.as_posix() + " IS the person's own folder " + HOST, shared.mapping_note())
         sent = []
 
-        def chat(messages, max_tokens=None):
+        def chat(messages, max_tokens=None, purpose=None):
             sent.append(messages)
             return {"content": '{"verdict": "done", "confidence": 0.95, "seen": "", "why": ""}'}, {}
 

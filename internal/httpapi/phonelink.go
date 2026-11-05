@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -191,7 +192,19 @@ func (s *Server) phoneSetupTokenHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	jsonResponse(w, map[string]any{"token": token, "expires_in": int(phoneSetupTTL.Seconds())})
+	ans := map[string]any{"token": token, "expires_in": int(phoneSetupTTL.Seconds())}
+
+	// With the address the page reached this control plane at (b), the
+	// script that token fetches is known now, so its hash goes to the page
+	// for the one-liner to check before running it (W-13).
+	if base, ok := setupBase(r.FormValue("b")); ok {
+		if script, err := phoneSetupScript(base, token); err == nil {
+			sum := sha256.Sum256([]byte(script))
+			ans["script_sha256"] = hex.EncodeToString(sum[:])
+		}
+	}
+
+	jsonResponse(w, ans)
 }
 
 // setupBase is the control plane's address as the phone reached it, given by
@@ -229,13 +242,36 @@ func (s *Server) phoneSetupScriptHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	script, err := phoneSetupScript(base, token)
+	if err != nil {
+		http.Error(w, "echo 'This Decurix cannot hand out the phone helper right now.'; exit 1\n", http.StatusNotFound)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	fmt.Fprintf(w, `#!/data/data/com.termux/files/usr/bin/sh
+	_, _ = io.WriteString(w, script)
+}
+
+// phoneSetupScript is the script a setup token fetches for base: the same
+// bytes every time for the same token, base and phone build, so the page can
+// pin its hash in the one-liner, and the script pins the helper it downloads
+// (review 2026-11-03, W-13). Over the tunnel's HTTPS this only adds a check;
+// over the LAN's plain http it stops a change made to the script or the
+// helper in transit, but not one made to the page itself, which is why the
+// page tells a person on plain http to prefer the secure link.
+func phoneSetupScript(base, token string) (string, error) {
+	sum, err := phoneBinarySHA256()
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf(`#!/data/data/com.termux/files/usr/bin/sh
 # Decurix phone link setup (served by your Decurix; see /phone/link there).
 set -e
 BASE='%s'
 T='%s'
+HELPER_SHA256='%s'
 BIN="$HOME/.local/bin"
 
 echo "Decurix: setting up this phone. This takes a minute or two."
@@ -248,12 +284,60 @@ fi
 echo "Downloading the Decurix phone helper from your Decurix..."
 mkdir -p "$BIN"
 curl -fL --progress-bar "$BASE/phone/decurix?t=$T" -o "$BIN/decurix.part"
+if ! echo "$HELPER_SHA256  $BIN/decurix.part" | sha256sum -c --status -; then
+    rm -f "$BIN/decurix.part"
+    echo "The downloaded helper is not the one your Decurix offered; it was not run. Open the phone link page again."
+    exit 1
+fi
 mv "$BIN/decurix.part" "$BIN/decurix"
 chmod +x "$BIN/decurix"
 
 # The rest asks for the pairing code, so it reads the keyboard, not this script.
 exec "$BIN/decurix" --phone-setup "$BASE" "$T" < /dev/tty
-`, base, token)
+`, base, token, sum), nil
+}
+
+// phoneBinaryHash caches the phone build's hash by path, size and time.
+var phoneBinaryHash struct {
+	sync.Mutex
+	key string
+	sum string
+}
+
+// phoneBinarySHA256 is the hex SHA-256 of the phone build of decurix.
+func phoneBinarySHA256() (string, error) {
+	path := phoneBinaryPath()
+	if path == "" {
+		return "", os.ErrNotExist
+	}
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	key := fmt.Sprintf("%s|%d|%d", path, fi.Size(), fi.ModTime().UnixNano())
+
+	phoneBinaryHash.Lock()
+	defer phoneBinaryHash.Unlock()
+
+	if phoneBinaryHash.key == key {
+		return phoneBinaryHash.sum, nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+
+	phoneBinaryHash.key, phoneBinaryHash.sum = key, hex.EncodeToString(h.Sum(nil))
+
+	return phoneBinaryHash.sum, nil
 }
 
 // hexToken reports whether t is shaped like a setup token (it goes into a script).

@@ -41,7 +41,9 @@
 #   EVENT open <id>          a shortcut on the wallpaper was double-clicked
 # -Build and -Resolve are for the helper when it runs as a program of its own (see "This class as a program" below):
 # -Build <path> compiles that program and ends; -Resolve <request> answers one question of it and ends.
-param([Parameter(Mandatory = $true)][string]$DesktopName, [string]$Build = '', [string]$Resolve = '')
+# -DecurixInstance is the tag of the control plane that started this helper. The helper never reads it: it is there so
+# that control plane's sweeps end only its own helpers, never another instance's (internal/httpapi/hostinstance_h.go).
+param([Parameter(Mandatory = $true)][string]$DesktopName, [string]$Build = '', [string]$Resolve = '', [string]$DecurixInstance = '')
 
 $NativeSource = @'
 using System;
@@ -346,12 +348,16 @@ public class Native {
             six.lpAttributeList = list;
             PROCESS_INFORMATION pi;
             string cmd = "\"" + exe + "\"" + (string.IsNullOrEmpty(args) ? "" : " " + args);
-            int flags = 0x400 /* CREATE_UNICODE_ENVIRONMENT */ | 0x00080000 /* EXTENDED_STARTUPINFO_PRESENT */ | 0x10 /* CREATE_NEW_CONSOLE */;
+            int flags = 0x400 /* CREATE_UNICODE_ENVIRONMENT */ | 0x00080000 /* EXTENDED_STARTUPINFO_PRESENT */ | 0x10 /* CREATE_NEW_CONSOLE */ | 0x4 /* CREATE_SUSPENDED */;
             bool started = CreateProcessEx(exe, cmd, IntPtr.Zero, IntPtr.Zero, false, flags, env, folder, ref six, out pi);
             int err = Marshal.GetLastWin32Error();
             DeleteProcThreadAttributeList(list);
             if (!started) return "ERR the worker's terminal could not be started in its sandbox (" + err + ")";
-            AssignProcessToJobObject(job, pi.hProcess);
+            if (!AssignProcessToJobObject(job, pi.hProcess)) {
+                TerminateProcess(pi.hProcess, 0); CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+                return "ERR the worker's terminal could not be tied to its helper, so it was not started";
+            }
+            ResumeThread(pi.hThread);
             CloseHandle(pi.hThread);
             process = pi.hProcess;
             return "OK pid=" + pi.dwProcessId + " sandbox=" + sidText;
@@ -386,11 +392,19 @@ public class Native {
             si.dwFlags = 0x100 /* STARTF_USESTDHANDLES, and none given */;
         }
         IntPtr env = CleanEnvironment();
+        // Started suspended, put in the job, and only then let run (B-27): a program that ran first could start children
+        // outside the job before it was assigned, and those would outlive the helper. One that cannot be put in the job is
+        // not started at all.
+        flags |= 0x4 /* CREATE_SUSPENDED */;
         bool started = CreateProcess(app, cmd, IntPtr.Zero, IntPtr.Zero, false, flags, env, string.IsNullOrEmpty(workDir) ? null : workDir, ref si, out pi);
         int err = Marshal.GetLastWin32Error();
         Marshal.FreeHGlobal(env);
         if (!started) return "ERR CreateProcess failed (" + err + ")";
-        AssignProcessToJobObject(job, pi.hProcess);
+        if (!AssignProcessToJobObject(job, pi.hProcess)) {
+            TerminateProcess(pi.hProcess, 0); CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+            return "ERR the app could not be tied to its helper, so it was not started";
+        }
+        ResumeThread(pi.hThread);
         CloseHandle(pi.hThread);
         process = pi.hProcess;
         return "OK pid=" + pi.dwProcessId;
@@ -3600,7 +3614,29 @@ $ProfileSkipDirs = @(
 )
 $ProfileSkipFiles = @('Singleton*', '*lock*', '*.tmp', 'Lock*', 'Parent.lock', '*.pma')
 
+# A private profile an older build imported from the person's own browser (it carries an import marker) still holds
+# their cookies, saved passwords and the key they are encrypted with, and launches kept using it after the import was
+# made opt-in (B-19). Without the opt-in such a profile is deleted once, before the browser starts, so it starts empty
+# like any other; the worker signs in on its own screen. With the opt-in it is left as it is.
+function Remove-ImportedHostProfile([string]$dir) {
+    if ($env:DECURIX_IMPORT_HOST_BROWSER_PROFILE -eq '1') { return }
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return }
+    $marks = @(Get-ChildItem -LiteralPath $dir -Force -Filter '.decurix-host-profile-imported-*' -ErrorAction SilentlyContinue)
+    if ($marks.Count -eq 0) { return }
+    Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $dir) {
+        # Not removable (held open): never launched with it.
+        throw "the private browser profile imported from your own browser could not be removed: $dir"
+    }
+}
+
 function Initialize-PrivateBrowserProfile([string]$base, [string]$dir, [string]$requestedProfile) {
+    # Not imported any more (review 2026-11-02): the copy carried the person's cookies, saved passwords and Local State
+    # (the key they are encrypted with) into a browser a worker drives, and anything that steers the worker - a web
+    # page, an email - could then act as the person on every site they are signed in to. The private profile starts
+    # empty; the worker signs in on its own screen, asking the person when it needs to. The import below is kept only
+    # for an explicit opt-in, DECURIX_IMPORT_HOST_BROWSER_PROFILE=1 in this computer's environment.
+    if ($env:DECURIX_IMPORT_HOST_BROWSER_PROFILE -ne '1') { return }
     if (-not ($Browsers -contains $base)) { return }
     $source = Get-BrowserProfileSource $base
     if (-not $source -or -not (Test-Path -LiteralPath $source -PathType Container)) { return }
@@ -3661,6 +3697,7 @@ function Complete-Launch($p) {
             $m = [regex]::Match($argLine, '(?i)--profile-directory=(?:"([^"]*)"|(\S+))')
             if ($m.Success) { $requested = $m.Groups[1].Value + $m.Groups[2].Value }
         }
+        if ($Browsers -contains $p.Base) { Remove-ImportedHostProfile $dir }
         Initialize-PrivateBrowserProfile $p.Base $dir $requested
         $argLine = (($argLine + " --user-data-dir=`"$dir`"").Trim())
         # Chromium (a browser, an Electron app) builds the accessibility tree of what a page shows only once something

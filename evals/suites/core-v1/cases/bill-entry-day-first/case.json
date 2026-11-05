@@ -1,0 +1,56 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "bill-entry-day-first",
+  "category": "varied",
+  "kind": "doc_to_record",
+  "request": "Enter the bill in ~/work/practice/bill-entry-day-first/bill.pdf into the Records app (http://records.example.test/bills/new). Charge it to General.",
+  "start": {
+    "files": [
+      "bill.pdf"
+    ],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "mock_records",
+        "collection": "bills",
+        "exact_count": true,
+        "records": [
+          {
+            "number": {
+              "id": "KP-0457"
+            },
+            "vendor": {
+              "text": "Kestrelwick Print House"
+            },
+            "date": {
+              "date": "2026-04-03"
+            },
+            "due": {
+              "date": "2026-09-28"
+            },
+            "total": {
+              "number": "2360.00"
+            },
+            "cost_centre": "General"
+          }
+        ]
+      },
+      {
+        "kind": "ledger_readback",
+        "records": 1
+      }
+    ]
+  },
+  "oracle": [
+    "office read bill.pdf | grep -q KP-0457",
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode number=KP-0457 --data-urlencode 'vendor=Kestrelwick Print House' --data-urlencode date=2026-04-03 --data-urlencode due=2026-09-28 --data-urlencode total=2,360.00 --data-urlencode cost_centre=General --data-urlencode notes= http://records.example.test/bills/new"
+  ],
+  "tags": [
+    "date-order"
+  ]
+}

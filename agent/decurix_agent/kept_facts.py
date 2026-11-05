@@ -10,8 +10,9 @@ At the end of an engine task, whatever its outcome (what a source said is so whe
 model is given what the task read and keeps up to MAX_FACTS statements a later task would need and could not easily find
 again: a source's own words about a record, a party or an account that change how it is treated (cancelled, corrected,
 replaced, paid, an instruction or a decision). Each quote is checked in code to stand in what the task read, and is
-kept in the worker's memory (messaging.remember, category "fact"), which every later task reads. Best-effort and off
-the task's thread: a fact not kept never delays or fails the task.
+kept in the worker's memory (messaging.remember, category "fact") about the client the request names - shown only to a
+later task about that client (memory_context._scoped); a request that names no client keeps no facts, and no fact
+holding a secret is kept (keep). Best-effort and off the task's thread: a fact not kept never delays or fails the task.
 """
 
 import json
@@ -44,10 +45,11 @@ fine and common answer.
 Keep also where the sources a later task will need are: each web address or folder the task read from, with what is \
 kept there (whose messages, which documents) - exactly as it appears in the request or what was read. At most \
 {MAX_PLACES}.
-Reply with JSON only: {{"facts": [{{"about": "only the client or party it concerns, as the request or source names \
-them", "quote": "the source's exact \
-words", "where": "the source (file, page, chat, sender) and its date when it shows one"}}], "places": [{{"what": "what \
-is kept there", "where": "the address or folder"}}]}}"""
+Never a password, PIN, code or key, whoever wrote it.
+Reply with JSON only: {{"client": "the client the REQUEST is for, exactly as the request names them; empty when it \
+names none", "facts": [{{"about": "the record or party it concerns, as the source names them", "quote": "the source's \
+exact words", "where": "the source (file, page, chat, sender) and its date when it shows one"}}], "places": \
+[{{"what": "what is kept there", "where": "the address or folder"}}]}}"""
 
 
 def _words(text):
@@ -105,7 +107,7 @@ def _answer(request, read):
         return {}
     message, _ = llm_client.chat([{"role": "system", "content": SYSTEM},
                                   {"role": "user", "content": f"THE REQUEST:\n{request[:3000]}\n\nWHAT IT READ:\n{read}"}],
-                                 max_tokens=1500)
+                                 max_tokens=1500, purpose="py.kept_facts")
     found = re.search(r"\{.*\}", message.get("content") or "", re.DOTALL)
     try:
         answer = json.loads(found.group(0)) if found else {}
@@ -150,39 +152,88 @@ def distil(request, read):
     return _facts(_answer(request, read), read)
 
 
-def keep(task_id, request):
-    """Distil and keep the facts and places of a finished task (in the worker's memory). Returns how many were kept."""
+def client_of(answer, request):
+    """The client the request is for, as the request writes it (the model's reading, checked to stand in the request's
+    own words), or "" when it names none."""
+
+    client = " ".join(str(answer.get("client") or "").split())[:120]
+    words = _words(client)
+    if not words or len(" ".join(words)) < 3:
+        return ""
+    # Whole, as the request names it: a part of a longer name ("Ram" of "Ram Kumar") is not the client (E-29).
+    from decurix_agent.memory_context import names_whole
+    return client if names_whole(client, request) else ""
+
+
+def _holds_secret(*texts, held=()):
+    """Whether any of the texts holds a secret (computer/privacy.py) - one spelled out, one remembered, or one of
+    `held` (the task's values as they were when its facts thread started: the task lets go of its own at its final
+    report, which may come first - review round 7) - or cannot be checked: fails closed."""
+
+    try:
+        from decurix_agent.computer import privacy
+        return any(t and (privacy.credential_in(t) or privacy.withhold_known(t) != t
+                          or privacy.withhold_held(t, list(held)) != t) for t in texts)
+    except Exception:  # noqa: BLE001 - a fact that cannot be checked is not kept
+        return True
+
+
+def keep(task_id, request, held=()):
+    """
+    Distil and keep the facts and places of a finished task (in the worker's memory). Returns how many were kept.
+
+    Memory is the desktop's, shared by every task whichever client it is for, so each fact is kept scoped to the
+    client the request names ("About <client>": memory_context shows it only to a task that names that client), and a
+    task whose request names no client keeps no facts - a value from one client's documents is never a cross-task fact
+    without the scope it came from. No fact or place that holds a secret is kept (review 2026-11-02).
+    """
 
     request, read = request or "", what_was_read(task_id)
     answer = _answer(request, read)
     facts, places = _facts(answer, read), _places(answer, request, read)
     if not facts and not places:
         return 0
+    client = client_of(answer, request)
+    if facts and not client:
+        log(f"Facts: {len(facts)} fact(s) not kept - the request names no client to keep them for")
+        facts = []
+    secret = [f for f in facts if _holds_secret(f["about"], f["quote"], f["where"], held=held)]
+    facts = [f for f in facts if f not in secret]
+    unsafe_places = [p for p in places if _holds_secret(p["what"], p["where"], held=held)]
+    places = [p for p in places if p not in unsafe_places]
+    if secret or unsafe_places:
+        log(f"Facts: {len(secret) + len(unsafe_places)} not kept - each holds something shaped like a secret")
     from decurix_agent import messaging
     n = 0
     for fact in facts:
-        title = f"About {fact['about']}"[:120] if fact["about"] else "A fact a source stated"
-        text = f"{fact['where']}: \"{fact['quote']}\"" if fact["where"] else f"\"{fact['quote']}\""
+        title = f"About {client}"[:120]
+        about = f"{fact['about']} - " if fact["about"] else ""
+        text = (f"{about}{fact['where']}: \"{fact['quote']}\"" if fact["where"] else f"{about}\"{fact['quote']}\"")
         if messaging.remember(title, text, category="fact"):
             n += 1
     for place in places:
-        if messaging.remember(f"Where: {place['what'] or place['where']}"[:120], f"{place['what']}: {place['where']}",
+        # A place is one client's too (a chat's address, their folder): kept for that client and shown only to a task
+        # about them (memory_context._scoped); with no client named it is kept unscoped, which no task's view shows.
+        title = f"Where (for {client}): " if client else "Where: "
+        if messaging.remember((title + (place['what'] or place['where']))[:120], f"{place['what']}: {place['where']}",
                               category="place"):
             n += 1
     log(f"Facts: kept {len(facts)} fact(s) and {len(places)} place(s) a later task may need")
     return n
 
 
-def after_task(task_id, request):
+def after_task(task_id, request, held=()):
     """Keep the task's facts on a thread of their own (the caller may wait for it). Never raises; None when nothing
-    is to be kept (no task, or no hosted model)."""
+    is to be kept (no task, or no hosted model). `held`: the task's secret values now, checked against every fact
+    whenever the thread gets to it."""
 
     if not task_id or not config.HOSTED_BRAIN:
         return None
+    held = tuple(held or ())
 
     def run():
         try:
-            keep(task_id, request)
+            keep(task_id, request, held=held)
         except Exception as exc:  # noqa: BLE001 - what is kept for later must never cost this task
             log(f"Facts: could not keep this task's facts: {exc}")
 

@@ -123,9 +123,11 @@ func hostGUIStarter(ctx context.Context, desktopName string) (*exec.Cmd, error) 
 	if err != nil {
 		return nil, err
 	}
-	// desktopName is already reduced to [A-Za-z0-9_] by winhost, so it is safe in a shell word.
+	// desktopName is already reduced to [A-Za-z0-9_] by winhost, and the instance tag is hex, so both are safe in a
+	// shell word. The tag comes first: the sweep's pattern expects it right after the script (ownHelperMatch).
 	shell := fmt.Sprintf(wslPowershellPath+
-		`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w %s)" -DesktopName %s`, script, desktopName)
+		`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w %s)" %s %s -DesktopName %s`,
+		script, instanceFlag, hostInstanceTag(), desktopName)
 	// Run on the host with stdin left open for the caller: directly when the control plane is on the host itself, through
 	// the same docker/nsenter hop createHostCmd uses when it is in a container - named and removed when its session ends
 	// (desktop.HopCommand): a killed docker client left it running.
@@ -146,11 +148,25 @@ func nativeHostGUICmd(ctx context.Context, desktopName string) (*exec.Cmd, error
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-DesktopName", desktopName)
+	args, err := nativeHostGUICmdArgs(script, desktopName)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, ps, args...)
 	// The control plane has no console when the app starts it, so PowerShell would open one of its own, on the person's
 	// screen, for as long as the helper lives.
 	desktop.HideWindow(cmd)
 	return cmd, nil
+}
+
+// nativeHostGUICmdArgs is PowerShell's arguments for the helper at script: this instance's tag first, right after
+// the script, where the sweeps look for it (ownHelperMatch).
+func nativeHostGUICmdArgs(script, desktopName string) ([]string, error) {
+	if desktopName == "" {
+		return nil, errors.New("no desktop name for the host helper")
+	}
+	return []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
+		instanceFlag, hostInstanceTag(), "-DesktopName", desktopName}, nil
 }
 
 // warmHostGUI starts (or keeps) the helper the next host app will run in. It only makes sense where host apps can run at
@@ -287,9 +303,10 @@ func (s *Server) releaseHostApps(desktopID string) {
 	}
 }
 
-// keptAppSlug is the launcher slug in a kept app's session id (desktop.packContext.sessionID: "<desktop>-<slug>").
+// keptAppSlug is the launcher slug in a kept app's session id (desktop.HostSessionSlug): "<slug>-<hash>", the slug read
+// back whole for the app's name on its card (RW1-D-05). An id from before the hash ("<desktop>-<slug>") still reads.
 func keptAppSlug(desktopID, id string) string {
-	return strings.TrimPrefix(id, desktopID+"-")
+	return desktop.HostSessionSlug(strings.TrimPrefix(id, desktopID+"-"))
 }
 
 // hostAppGaveUp is winhost's OnGiveUp: an app the host cannot keep running is recorded as unavailable on its desktop,
@@ -467,7 +484,7 @@ func (s *Server) hostGUIStartHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("host-gui: start %s: %v", req.ID, err)
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		jsonResponse(w, map[string]string{"error": err.Error()})
+		jsonResponse(w, map[string]string{"error": viewerReason(err)})
 		return
 	}
 	width, height := sess.Size()
@@ -639,7 +656,7 @@ func applyInput(sess *winhost.Session, req hostGUIRequest) (text string, wantsTe
 	case "press":
 		text, err = sess.Press(req.X, req.Y)
 		if err != nil {
-			return "ERR " + err.Error(), true, nil
+			return "ERR " + viewerReason(err), true, nil
 		}
 		return text, true, nil
 	case "setfocus":
@@ -648,14 +665,14 @@ func applyInput(sess *winhost.Session, req hostGUIRequest) (text string, wantsTe
 		// The answer is what the field holds afterwards, or why it could not be set (the viewer then types the text).
 		text, err = sess.SetValue(req.X, req.Y, req.Text, req.Append)
 		if err != nil {
-			return "ERR " + err.Error(), true, nil
+			return "ERR " + viewerReason(err), true, nil
 		}
 		return "SET " + text, true, nil
 	case "choose":
 		// The answer is the entry chosen, or why none was: a drop-down's entries are not shown to the viewer.
 		text, err = sess.Choose(req.X, req.Y, req.Text)
 		if err != nil {
-			return "ERR " + err.Error(), true, nil
+			return "ERR " + viewerReason(err), true, nil
 		}
 		return text, true, nil
 	default:

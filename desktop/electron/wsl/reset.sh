@@ -7,6 +7,10 @@
 # settings saved in the dashboard) and each worker's home. Run as root by
 # scripts/windows/build_app.ps1 -Fresh; unregistering the distro instead threw
 # the images away, and the next start spent ten minutes building them again.
+#
+# It says "clean" only when it has looked and nothing it was to delete is
+# left: a removal that fails is counted, the rest still runs, and the script
+# ends non-zero naming what is still there.
 set -u
 
 keep_volumes='decurix-cache decurix-tools decurix_ollama'
@@ -26,20 +30,38 @@ if ! docker version >/dev/null 2>&1; then
     done
 fi
 
-containers=$(docker ps -aq)
-[ -n "$containers" ] && docker rm -f $containers >/dev/null
+failed=0
+for container in $(docker ps -aq); do
+    docker rm -f "$container" >/dev/null || failed=$((failed + 1))
+done
 
 for volume in $(docker volume ls -q); do
     case " $keep_volumes " in
         *" $volume "*) ;;
-        *) docker volume rm -f "$volume" >/dev/null ;;
+        *) docker volume rm -f "$volume" >/dev/null || failed=$((failed + 1)) ;;
     esac
 done
 
-echo "decurix-reset: kept images: $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -c .), volumes: $(docker volume ls -q | tr '\n' ' ')"
+# What is left, looked at rather than assumed.
+left_containers=$(docker ps -aq | wc -l | tr -d ' ')
+left_volumes=''
+for volume in $(docker volume ls -q); do
+    case " $keep_volumes " in
+        *" $volume "*) ;;
+        *) left_volumes="$left_volumes $volume" ;;
+    esac
+done
+
+kept_images=$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -c .)
 
 # A daemon started only for this is stopped again; the app starts its own.
 if [ -n "$started" ]; then
     pkill -x dockerd
 fi
+
+if [ "$failed" -ne 0 ] || [ "$left_containers" != "0" ] || [ -n "$left_volumes" ]; then
+    echo "decurix-reset: NOT clean - $failed removal(s) failed; left: $left_containers container(s), volumes:${left_volumes:- none}" >&2
+    exit 1
+fi
+echo "decurix-reset: clean. Kept images: $kept_images, volumes: $keep_volumes"
 exit 0

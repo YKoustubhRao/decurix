@@ -39,7 +39,8 @@ LABELS = [
 
 EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
 URL_SHAPE = re.compile(r"^(https?://)?[\w-]+(\.[\w-]+)+(:\d+)?(/\S*)?$", re.IGNORECASE)
-NUMBER_SHAPE = re.compile(r"^[+-]?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?%?$")
+# Grouped the Western way (1,250,000) or the Indian way (12,50,000 and 12,34,56,789), or not grouped at all.
+NUMBER_SHAPE = re.compile(r"^[+-]?(\d{1,3}(,\d{3})+|\d{1,2}(,\d{2})*,\d{3}|\d+)(\.\d+)?%?$")
 DATE_SHAPE = re.compile(r"^(\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}|\d{1,2} [A-Za-z]{3,9},? \d{2,4}|[A-Za-z]{3,9} \d{1,2},? \d{2,4})$")
 PHONE_SHAPE = re.compile(r"^\+?[\d\s().-]{7,20}$")
 

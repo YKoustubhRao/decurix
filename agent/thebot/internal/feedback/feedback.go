@@ -24,7 +24,22 @@ import (
 	_ "modernc.org/sqlite"
 
 	"thebot/internal/llm"
+	"thebot/internal/memory"
+	"thebot/internal/migrate"
+	"thebot/internal/withheld"
 )
+
+// Migrate is the feedback store's schema, step by step: appended only, never edited (internal/migrate).
+var Migrate = []string{
+	`CREATE TABLE IF NOT EXISTS negative_feedback (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	task TEXT NOT NULL,
+	detail TEXT NOT NULL,
+	source TEXT NOT NULL,
+	embedding TEXT NOT NULL,
+	created_at INTEGER NOT NULL
+);`,
+}
 
 // embedModel is deliberately empty - see rag.go's matching comment. Each
 // llm.Embedder implementation owns its own default embed model.
@@ -54,18 +69,13 @@ func New(workspaceRoot string, embedder llm.Embedder) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 
-	schema := `
-CREATE TABLE IF NOT EXISTS negative_feedback (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	task TEXT NOT NULL,
-	detail TEXT NOT NULL,
-	source TEXT NOT NULL,
-	embedding TEXT NOT NULL,
-	created_at INTEGER NOT NULL
-);
-`
-	if _, err := db.Exec(schema); err != nil {
-		return nil, fmt.Errorf("feedback: create schema: %w", err)
+	if err := migrate.Migrate(db, Migrate); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("feedback: %w", err)
+	}
+	if _, err := memory.PurgeSecrets(db, "negative_feedback", "task", "detail"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("feedback: purge secrets: %w", err)
 	}
 	return &Store{db: db, embedder: embedder}, nil
 }
@@ -74,7 +84,13 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // RecordNegative stores one real limitation - task is what was being
 // attempted, detail is what went wrong / what the limitation is.
+// An entry holding a secret-shaped value (memory.LooksSecret) is not kept:
+// it would be recalled into later failures' reasoning prompts.
 func (s *Store) RecordNegative(ctx context.Context, task, detail, source string) error {
+	if secrets := withheld.From(ctx); memory.LooksSecret(task) || memory.LooksSecret(detail) || secrets.Holds(task) ||
+		secrets.Holds(detail) {
+		return memory.ErrSecret
+	}
 	vec, err := s.embedder.Embed(ctx, embedModel, task+"\n"+detail)
 	if err != nil {
 		return fmt.Errorf("feedback: embed entry: %w", err)

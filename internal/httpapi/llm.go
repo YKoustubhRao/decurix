@@ -6,9 +6,11 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/llm"
+	"github.com/YKoustubhRao/decurix/internal/llmrec"
 )
 
 // llmStatusHandler says which hosted models are set up, and with which model
@@ -60,12 +62,18 @@ func (s *Server) llmSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	// need to fix the form - not an internal error to hide.
 	vision, err := s.LLM.Test(r.Context(), provider, settings)
 	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, "Not saved - "+err.Error())
+		jsonStatusError(w, http.StatusBadRequest, "Not saved - "+providerSaid(err))
 		return
 	}
 	settings.Vision = vision
 
 	if err := s.LLM.Save(provider, settings); err != nil {
+		if errors.Is(err, llm.ErrUnsealed) {
+			jsonStatusError(w, http.StatusServiceUnavailable, "Not saved - Decurix could not create the key file it seals "+
+				"API keys with ("+llm.KeyFile+" in its data folder), and it does not store a key unencrypted. Make sure "+
+				"that folder is writable, then restart Decurix and save again.")
+			return
+		}
 		jsonError(w, err)
 		return
 	}
@@ -117,7 +125,7 @@ func (s *Server) llmProxyHandler(w http.ResponseWriter, r *http.Request) {
 		s.llmChat(w, r, provider)
 	case "v1/models":
 		if !s.LLM.Configured(provider) {
-			http.Error(w, llm.ErrNotConfigured.Error(), http.StatusServiceUnavailable)
+			http.Error(w, "this hosted model is not set up", http.StatusServiceUnavailable)
 			return
 		}
 		jsonResponse(w, map[string]any{
@@ -147,16 +155,79 @@ func (s *Server) llmChat(w http.ResponseWriter, r *http.Request, provider string
 		return
 	}
 
-	status, answer, retry, err := s.LLM.Chat(r.Context(), provider, body)
+	// A worker at a hard spend limit gets no more hosted calls: the limit is real where the money is spent (C-08).
+	worker, fromDesktop := requestDesktop(r)
+	if fromDesktop && s.QueueDispatcher != nil {
+		why, err := s.QueueDispatcher.OverBudget(worker)
+		if err != nil {
+			log.Printf("llm %s: reading the spend of %s: %v", provider, worker, err)
+			http.Error(w, "the spend limit could not be read, so the call was not made", http.StatusServiceUnavailable)
+			return
+		}
+		if why != "" {
+			http.Error(w, "over its spend limit: "+why, http.StatusPaymentRequired)
+			return
+		}
+	}
+
+	tags := callTags(r)
+	s.checkTaskTag(&tags, worker, fromDesktop)
+
+	// Off by default (D3): an untagged call is stored and counted, and refused only once a clean live round shows
+	// none are left.
+	if s.RequirePurpose && tags.purpose == llmrec.PurposeUntagged {
+		if s.LLMRec != nil {
+			call := llmrec.Call{Provider: provider, Task: tags.task, Turn: tags.turn, Purpose: tags.purpose,
+				Caller: tags.caller, Request: body, Status: http.StatusBadRequest, At: time.Now(),
+				Problems: append(tags.problems, "refused: no purpose")}
+			if fromDesktop {
+				call.Desktop, call.Secrets, call.NoBodies = worker, s.heldFor(worker), s.secretsUnknown(worker)
+			}
+			s.LLMRec.Record(r.Context(), call)
+		}
+		jsonStatusError(w, http.StatusBadRequest, untaggedRefusal)
+		return
+	}
+
+	started := time.Now()
+	res, err := s.LLM.ChatResult(r.Context(), provider, body)
+	latency := time.Since(started)
+	status, answer, retry := res.Status, res.Body, res.Retry
+	usage := llm.ParseUsage(answer)
+
+	// Every call is recorded, answered or not: synchronously (so a run's record is whole when its outcome lands) but
+	// never failing the call (llmrec.Store.Record logs and counts its own failures).
+	if s.LLMRec != nil {
+		call := llmrec.Call{Provider: provider, Deployment: res.Deployment, Desktop: worker, Task: tags.task,
+			Turn: tags.turn, Purpose: tags.purpose, Caller: tags.caller, Request: body, Response: answer,
+			Status: status, Latency: latency, Usage: usage, At: started, Problems: tags.problems}
+		if fromDesktop {
+			call.Secrets = s.heldFor(worker)
+			call.NoBodies = s.secretsUnknown(worker)
+		} else {
+			call.Desktop = ""
+		}
+		if err != nil {
+			call.Status = recordedStatus(err)
+		}
+		s.LLMRec.Record(r.Context(), call)
+	}
+
 	if err != nil {
 		if errors.Is(err, llm.ErrNotConfigured) {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			http.Error(w, "this hosted model is not set up", http.StatusServiceUnavailable)
 			return
 		}
 
 		log.Printf("llm %s: %v", provider, err)
 		http.Error(w, "the hosted model could not be reached", http.StatusBadGateway)
 		return
+	}
+
+	if fromDesktop {
+		if err := s.LLM.Meter(worker, time.Now(), usage); err != nil {
+			log.Printf("llm %s: %v", provider, err)
+		}
 	}
 
 	// A rate limit's "try again in N seconds" goes through to the desktop.
@@ -170,6 +241,63 @@ func (s *Server) llmChat(w http.ResponseWriter, r *http.Request, provider string
 	w.WriteHeader(status)
 	_, _ = w.Write(answer)
 }
+
+// recordedStatus is the status a call the proxy answered with an error of its own is recorded under: what the desktop
+// was told (503 not set up, 502 not reached).
+func recordedStatus(err error) int {
+	if errors.Is(err, llm.ErrNotConfigured) {
+		return http.StatusServiceUnavailable
+	}
+	return http.StatusBadGateway
+}
+
+// proxyTags are the tags a caller sent with a model call (C1), as stored, and what was wrong with them.
+type proxyTags struct {
+	purpose, task, turn, caller string
+	problems                    []string
+}
+
+// callTags reads a call's tag headers (C1). The desktop is never one of them: it is the connection's
+// (requestDesktop). A missing purpose is stored as "untagged", and a malformed value of any tag as "invalid", each
+// with a problem saying so: never rejected here (D3).
+func callTags(r *http.Request) proxyTags {
+	h := func(name string) string { return strings.TrimSpace(r.Header.Get(name)) }
+	t := proxyTags{purpose: h(llmrec.HeaderPurpose), task: h(llmrec.HeaderTask), turn: h(llmrec.HeaderTurn),
+		caller: h(llmrec.HeaderCaller)}
+	switch {
+	case t.purpose == "":
+		t.purpose = llmrec.PurposeUntagged
+		t.problems = append(t.problems, "untagged")
+	case !llmrec.ValidPurpose(t.purpose):
+		t.purpose = llmrec.PurposeInvalid
+		t.problems = append(t.problems, "invalid purpose")
+	}
+	for _, tag := range []struct {
+		value *string
+		name  string
+		valid func(string) bool
+	}{{&t.task, "task", llmrec.ValidTask}, {&t.turn, "turn", llmrec.ValidTurn}, {&t.caller, "caller", llmrec.ValidCaller}} {
+		if *tag.value != "" && !tag.valid(*tag.value) {
+			*tag.value = llmrec.PurposeInvalid
+			t.problems = append(t.problems, "invalid "+tag.name)
+		}
+	}
+	return t
+}
+
+// checkTaskTag adds a problem when a call names a task that is not the calling desktop's: the row keeps the tag, but
+// a run record joins only rows whose desktop is the execution's worker, so it is never trusted for a join.
+func (s *Server) checkTaskTag(t *proxyTags, worker string, fromDesktop bool) {
+	if !fromDesktop || t.task == "" || t.task == llmrec.PurposeInvalid || s.Tasks == nil {
+		return
+	}
+	if owner, ok := s.Tasks.TaskWorker(t.task); !ok || owner != worker {
+		t.problems = append(t.problems, "task not this desktop's")
+	}
+}
+
+// untaggedRefusal is the answer to an untagged call when DECURIX_LLM_REQUIRE_PURPOSE is on.
+const untaggedRefusal = "say what this call is for (X-Decurix-Purpose)"
 
 // errBrain is a create request's harness or brain refused, in words for the
 // person who chose it.

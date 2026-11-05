@@ -14,11 +14,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import openpyxl
+from needs import needs, optional
+
+openpyxl = optional("openpyxl")
 
 from temp_case import TempDirCase
 
 from decurix_agent import payees, produced
+import fixture_paths  # noqa: E402 - what may not be on this machine is counted
 
 LIVE_IN = Path(r"C:\Users\Administrator\decurix-tests\wide\process\data\P3")
 LIVE_OUT = Path(r"C:\Users\Administrator\decurix-tests\wide\process\out\P3\20261020-034132\worker\P3_payment_run\outputs")
@@ -71,6 +74,7 @@ def proposal(path, sgp_account="002501234567", sgp_ifsc="ICIC0000025"):
     return str(path)
 
 
+@needs("openpyxl")
 class Fixture(TempDirCase):
 
     def setUp(self):
@@ -107,13 +111,54 @@ class WhereMoneyGoes(Fixture):
         self.assertTrue(found and found[0].startswith("PAYMENT TO AN ACCOUNT ON NO RECORD:"))
 
     def test_nothing_to_check_against_decides_nothing(self):
-        self.assertEqual(payees.mismatches("", [proposal(self.dir / "p.xlsx")], found=([], [str(self.email)])), [])
+        # With no record, the account from the message is not checked (unchecked); the two that are in no input at
+        # all are found (review 2026-11-03, F-01: an identifier in no input is a finding, whatever the headers say).
+        found = payees.mismatches("", [proposal(self.dir / "p.xlsx")], found=([], [str(self.email)]))
+        self.assertEqual(len(found), 2, found)
+        self.assertTrue(all(f.startswith("PAYMENT TO AN ACCOUNT ON NO RECORD:") for f in found), found)
+        self.assertFalse(any("Shree Ganesh" in f for f in found), found)
         not_payments = self.dir / "notes.xlsx"
         wb = openpyxl.Workbook()
         wb.active.append(["Customer", "Phone"])
         wb.active.append(["Shree Ganesh Packaging", "9876543210"])
         wb.save(not_payments)
         self.assertEqual(payees.mismatches("", [str(not_payments)], found=self.found), [])
+
+    def test_without_a_master_the_payments_are_not_checked_never_passed(self):
+        # Review 2026-11-02: with no master nothing was checked and nothing said.
+        made = [proposal(self.dir / "p.xlsx")]
+        said = payees.unchecked("", made, found=([], [str(self.email)]))
+        self.assertEqual(len(said), 1)
+        self.assertTrue(said[0].startswith("PAYEES NOT CHECKED: p.xlsx pays Shree Ganesh Packaging"))
+        self.assertEqual(payees.unchecked("", made, found=self.found), [], "a master decides (mismatches)")
+        failed = []
+        with mock.patch.object(payees, "inputs", lambda request, made=(), roots=None: ([], [])):
+            self.assertEqual(produced._payee_mismatch("", made, failed), [])
+        self.assertTrue(failed and "PAYEES NOT CHECKED" in failed[0], "the final check is left unmade: not checked")
+
+    def test_a_payee_is_matched_by_whole_words_never_a_part_of_one(self):
+        # Review 2026-11-02: "Ram" matched "Ramesh" as a substring, so Ramesh's account passed for Ram.
+        self.assertTrue(payees.names_payee("Shree Ganesh Packaging", "M/s Shree Ganesh Packaging Pvt Ltd | 5010"))
+        self.assertFalse(payees.names_payee("Ram", "Ramesh Traders | 50100012345678"))
+        self.assertFalse(payees.names_payee("Apex Office", "Apex Officeware | 000405012345"))
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["Vendor", "Account No", "IFSC"])
+        ws.append(["Ramesh Traders", "50100012345678", "HDFC0000123"])
+        wb.save(self.dir / "master2.xlsx")
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["Vendor", "Amount Payable", "Account No", "IFSC"])
+        ws.append(["Ram", 5000, "50100012345678", "HDFC0000123"])
+        wb.save(self.dir / "pay2.xlsx")
+        # Review 2026-11-03 (F-04): a payee whose name differs from the record's is asked about, with both names -
+        # never passed, and not sent back as another party's when the payee has no account of its own on record.
+        found = (str(self.dir / "master2.xlsx"),), ()
+        self.assertEqual(payees.mismatches("", [str(self.dir / "pay2.xlsx")], found=found), [])
+        said = payees.unchecked("", [str(self.dir / "pay2.xlsx")], found=found)
+        self.assertTrue(said and said[0].startswith("PAYEE NOT CONFIRMED:"), said)
+        self.assertIn("\"Ramesh Traders\"", said[0])
+        self.assertIn("\"Ram\"", said[0])
 
     def test_a_message_from_a_lookalike_domain_is_suspicious(self):
         found = payees.suspicious_messages("", found=self.found)
@@ -160,6 +205,7 @@ from test_produced_files import FileWorkIsChecked  # noqa: E402  (the gate's har
 from decurix_agent import skill_task  # noqa: E402
 
 
+@needs("openpyxl")
 class AtTheFinalCheck(FileWorkIsChecked):
     """A payment to an account not on record is not done, decided before any model is asked."""
 
@@ -188,7 +234,8 @@ class AtTheFinalCheck(FileWorkIsChecked):
         self.assertIn("accounts@gujaratpantrysupplies.example", self.asked[-1][0])
 
 
-@unittest.skipUnless(LIVE_IN.is_dir() and LIVE_OUT.is_dir(), "the round's P3 files are not on this machine")
+@fixture_paths.skip_unless(LIVE_IN.is_dir() and LIVE_OUT.is_dir(), "the round's P3 files are not on this machine")
+@needs("openpyxl")
 class TheRoundsOwnFiles(TempDirCase):
 
     def setUp(self):
@@ -214,7 +261,7 @@ class TheRoundsOwnFiles(TempDirCase):
         # request's folder that has emails and masters of its own.
         requests = LIVE_IN.parent.parent / "requests.json"
         if not requests.is_file():
-            self.skipTest("requests.json is not on this machine")
+            raise fixture_paths.missing("requests.json is not on this machine")
         import json
         p3 = json.loads(requests.read_text(encoding="utf-8"))["P3"]
         work = self.dir / "work"

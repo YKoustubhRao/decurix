@@ -39,7 +39,17 @@ const (
 	MaxBodyChars      = 200_000
 	MaxAttachments    = 20
 	MaxAttachmentSize = 20 << 20 // all files of one draft together
+
+	// MaxOpenDrafts and MaxOpenFileBytes bound what one desktop may leave
+	// waiting for a person (drafts not yet sent or discarded, and their
+	// files): an agent in a loop must not grow the database without end
+	// (review 2026-11-03, B-28).
+	MaxOpenDrafts    = 100
+	MaxOpenFileBytes = 200 << 20
 )
+
+// openFileBytes is MaxOpenFileBytes, a variable for tests.
+var openFileBytes = MaxOpenFileBytes
 
 // ErrNotFound is a draft that does not exist.
 var ErrNotFound = errors.New("outbox: no such draft")
@@ -146,11 +156,30 @@ func (s *Store) Add(d Draft) (Draft, error) {
 	to, _ := json.Marshal(d.To)
 	cc, _ := json.Marshal(d.Cc)
 
+	// The count and the insert are one step, so two drafts at once cannot both
+	// pass the last free place.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Draft{}, err
 	}
 	defer tx.Rollback()
+
+	var open, openBytes int
+	if err := tx.QueryRow(`SELECT COUNT(*), COALESCE((SELECT SUM(LENGTH(f.data)) FROM outbox_files f JOIN outbox_drafts o ON o.id = f.draft_id
+			WHERE o.desktop_id = ? AND o.status IN (?, ?)), 0)
+		FROM outbox_drafts WHERE desktop_id = ? AND status IN (?, ?)`,
+		d.DesktopID, StatusDraft, StatusFailed, d.DesktopID, StatusDraft, StatusFailed).Scan(&open, &openBytes); err != nil {
+		return Draft{}, fmt.Errorf("outbox: add: %w", err)
+	}
+	switch {
+	case open >= MaxOpenDrafts:
+		return Draft{}, fmt.Errorf("%w: this desktop already has %d emails waiting for a person; send or discard some first", ErrInvalid, open)
+	case openBytes+total > openFileBytes:
+		return Draft{}, fmt.Errorf("%w: the files of this desktop's waiting emails would pass %d MB; send or discard some first", ErrInvalid, openFileBytes>>20)
+	}
 
 	if _, err := tx.Exec(`INSERT INTO outbox_drafts (id, desktop_id, task_id, recipients, cc, subject, body, status, created_ns, updated_ns)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

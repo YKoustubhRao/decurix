@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 	"unicode"
 )
 
@@ -159,8 +158,9 @@ func Scrub(q string) (string, bool) {
 	return out, out != strings.Join(strings.Fields(q), " ")
 }
 
-// QueryFrom turns a request into a search query: its own words, scrubbed,
-// at most 200 characters, cut at a word.
+// QueryFrom turns a query the client wrote into what is sent to a search
+// engine: scrubbed, at most 200 characters, cut at a word. It is never given
+// a conversation's text: only a query a client chose to send.
 func QueryFrom(text string) (string, bool) {
 	q, scrubbed := Scrub(strings.Join(strings.Fields(text), " "))
 	if len(q) > 200 {
@@ -170,39 +170,4 @@ func QueryFrom(text string) (string, bool) {
 		}
 	}
 	return q, scrubbed
-}
-
-// fresh are phrases that ask about the state of the world now.
-var freshRes = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\b(latest|newest|most recent|recently|currently|nowadays|right now|as of now|up to date|up-to-date|breaking)\b`),
-	regexp.MustCompile(`(?i)\b(today|tonight|yesterday|tomorrow|this (week|month|year|quarter|season)|last (week|month|night)|next (week|month))\b`),
-	regexp.MustCompile(`(?i)\b(news|headlines|announced|announcement|released|release date|launch(ed)?|upcoming|just came out)\b`),
-	regexp.MustCompile(`(?i)\b(price|prices|rate|rates|stock|share price|exchange rate|weather|forecast|score|scores|results?|standings|election|poll)\s+(of|for|in|today|now)\b`),
-	regexp.MustCompile(`(?i)\bcurrent\s+(\S+\s+){0,2}(price|rate|version|ceo|president|prime minister|chief minister|governor|status|situation|events?|affairs|leader|holder|champion|record|news)\b`),
-	regexp.MustCompile(`(?i)\b(who is|who's) the (current |new )?(ceo|president|prime minister|pm|chief minister|cm|governor|chairman|captain|minister)\b`),
-	regexp.MustCompile(`(?i)\b(new|latest)\s+(\S+\s+){0,2}(version|model|release|update|law|laws|rule|rules|notification|circular|amendment|policy|rate|rates)\b`),
-}
-
-var yearRe = regexp.MustCompile(`\b(19|20)\d{2}\b`)
-
-// NeedsFresh reports whether a request asks about things a model's training
-// cannot know - the state of the world now - and why. It is a set of plain
-// phrase checks plus "it names this year or last", not a judgement of the
-// request's subject.
-func NeedsFresh(text string, now time.Time) (bool, string) {
-	for _, re := range freshRes {
-		if m := re.FindString(text); m != "" {
-			return true, "asks about " + strings.ToLower(m)
-		}
-	}
-	for _, y := range yearRe.FindAllString(text, -1) {
-		var n int
-		for _, c := range y {
-			n = n*10 + int(c-'0')
-		}
-		if n >= now.Year()-1 {
-			return true, "names " + y
-		}
-	}
-	return false, ""
 }

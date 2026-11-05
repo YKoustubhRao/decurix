@@ -141,6 +141,14 @@ func runCLI(baseURL string) int {
 	client := newAPIClient(baseURL)
 	ctx := context.Background()
 
+	// Say "connected" only once something answered there (W-09).
+	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	_, err := client.listDesktops(pingCtx)
+	cancel()
+	if err != nil {
+		fmt.Printf("Decurix CLI - no control plane answered at %s: %v\n", baseURL, err)
+		return 1
+	}
 	fmt.Printf("Decurix CLI - connected to %s\n", baseURL)
 	fmt.Println(`Type "help" for commands, "exit" to quit.`)
 
@@ -208,7 +216,7 @@ func runCLI(baseURL string) int {
 func printCLIHelp() {
 	fmt.Println(`Commands:
   list | ls                          list desktops
-  create <name> [--profile basic|developer|ai] [--harness thebot|claude|ollama] [--cpus N] [--memory-mb N] [--copy-apps] [--apps chrome,gh,ssh]
+  create <name> [--profile basic|developer|ai] [--brain ollama|claude|azure|openai] [--cpus N] [--memory-mb N] [--copy-apps] [--apps chrome,gh,ssh]
   start <id>
   pause <id>                         freeze container CPU (0% CPU)
   unpause | wake <id>                thaw frozen container (< 1ms)
@@ -273,24 +281,21 @@ func printTable(rows [][]string) {
 }
 
 // createFlags maps a create command's flag spelling to the form field
-// internal/httpapi/desktops.go's createDesktopHandler reads it as.
+// internal/httpapi/desktops.go's createDesktopHandler reads it as. Every new
+// desktop runs TheBot, so there is no --harness: --brain chooses its model;
+// and files of this computer reach a desktop only as a shared folder chosen at
+// its screen, so there is no --path (W-09).
 var createFlags = map[string]string{
-	"--profile":    "profile",
-	"--harness":    "harness",
-	"--cpus":       "cpus",
-	"--memory-mb":  "memory_mb",
-	"--apps":       "host_apps",
-	"--path":       "host_paths",
-	"--paths":      "host_paths",
-	"--copy-path":  "host_paths",
-	"--copy-paths": "host_paths",
-	"--host-path":  "host_paths",
-	"--host-paths": "host_paths",
+	"--profile":   "profile",
+	"--brain":     "brain",
+	"--cpus":      "cpus",
+	"--memory-mb": "memory_mb",
+	"--apps":      "host_apps",
 }
 
 func cliCreate(ctx context.Context, c *apiClient, args []string) {
 	if len(args) == 0 {
-		fmt.Println("usage: create <name> [--profile basic|developer|ai] [--harness thebot|claude|ollama] [--cpus N] [--memory-mb N] [--copy-apps] [--apps chrome,gh,ssh] [--path <host_path>[-><vm_path>]]")
+		fmt.Println("usage: create <name> [--profile basic|developer|ai] [--brain ollama|claude|azure|openai] [--cpus N] [--memory-mb N] [--copy-apps] [--apps chrome,gh,ssh]")
 		return
 	}
 
@@ -300,10 +305,6 @@ func cliCreate(ctx context.Context, c *apiClient, args []string) {
 	for i := 0; i < len(rest); i++ {
 		if rest[i] == "--copy-apps" || rest[i] == "--copy-host-apps" {
 			form.Set("copy_host_apps", "1")
-			continue
-		}
-		if rest[i] == "--copy-files" || rest[i] == "--copy-host-files" {
-			form.Set("copy_host_files", "1")
 			continue
 		}
 
@@ -319,12 +320,7 @@ func cliCreate(ctx context.Context, c *apiClient, args []string) {
 			return
 		}
 
-		if field == "host_paths" {
-			form.Add("host_paths", rest[i])
-			form.Set("copy_host_files", "1")
-		} else {
-			form.Set(field, rest[i])
-		}
+		form.Set(field, rest[i])
 		if field == "host_apps" {
 			form.Set("copy_host_apps", "1")
 		}

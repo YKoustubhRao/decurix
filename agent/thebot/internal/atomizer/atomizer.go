@@ -43,23 +43,22 @@ func Register(taskType string, match func(step string) bool) {
 func Classify(step string) string {
 	for _, c := range registry {
 		if c.match(step) {
-			return withoutMissingBrowser(c.taskType)
+			return withoutMissingSkill(c.taskType)
 		}
 	}
 	return "general"
 }
 
-// BrowserAvailable says whether the browser-agent extension is installed on
-// this machine (soul sets it at startup). Without it, work in a web page is
-// the operator's, driving the browser with gui: found live, a recovery plan
-// sent "create the request in the web app" to the browser skill on a desktop with
-// no extension, which waited 30 s and failed the whole task.
-var BrowserAvailable = true
+// CodingAvailable says whether the coding harness is on (soul sets it at startup). Inside Decurix it is off, and on
+// only behind THEBOT_STANDALONE=1 (review T-07/T-21, owner decision O-8): a request to build software is then the
+// operator's, never a skill that is not there.
+var CodingAvailable = true
 
-// withoutMissingBrowser turns the browser task type into the operator's when
-// the extension is not installed.
-func withoutMissingBrowser(taskType string) string {
-	if taskType == "browser" && !BrowserAvailable {
+// withoutMissingSkill turns a task type whose skill is not on this machine into the operator's: work in a web page
+// (the browser extension it once went to is gone - the operator drives the browser with gui), and coding when the
+// harness is off.
+func withoutMissingSkill(taskType string) string {
+	if taskType == "browser" || (taskType == "coding" && !CodingAvailable) {
 		return "operator"
 	}
 	return taskType
@@ -194,17 +193,10 @@ var (
 
 	codeVerbPattern = `\b(build|implement|write|create|code|develop|make|program|generate|design|set ?up|scaffold|port|migrate)\b`
 
-	// businessCodeRe is "code" as a noun of business data - a supplier's
-	// code, a Dept Code, product codes, the code column - which is taken out
-	// before the coding patterns look for "code" as a verb or an object.
-	businessCodeRe = regexp.MustCompile(`(?i)\b[\w-]+'s\s+codes?\b|` +
-		`\b(?:product|item|supplier|vendor|customer|client|dept|department|account|cost|tax|zip|postal|post|country|` +
-		`currency|discount|promo|coupon|reference|ref|sku|part|gl|hs|area|region|status|error|reason|shipping|branch|` +
-		`employee|staff|project|unit|bank|swift|sort|access|pin|verification|confirmation|activation|bar|qr|tracking|` +
-		`category|cost centre|cost center|ledger|nominal|vat|hsn|sac|article|material|location|warehouse|store|site|` +
-		`service|job|expense|payroll|pay|leave|airport|dial|area|language|colou?r|size|style|batch|lot|serial|model)\s+codes?\b|` +
-		`\bcodes?\s+(?:column|field|value|list|number|table|mapping|map|lookup)s?\b|\bcodes\b`)
-
+	// The bare word "code" (or "bug") is never by itself a software request: in office work it is mostly data - a
+	// supplier's code, an error code, the code column. A request is code work only with a software object, a language
+	// or a code file (below). That replaces a list of business nouns that took "code" back out (review T-18), which
+	// could never be complete. "write me some code" stays, as phrasing that leaves no doubt.
 	codingRe = regexp.MustCompile(`(?i)` +
 		codeVerbPattern + `[\s\S]{0,80}?` + codeNounPattern +
 		`|` + codeVerbPattern + `[\s\S]{0,80}?(?:` + codeLangPattern + `|` + codeExtPattern + `)` +
@@ -214,9 +206,9 @@ var (
 		// need a code-shaped object before they mean anything of the kind.
 		`|\b(implement|code up)\b` +
 		`|\b(fix|debug|refactor|optimi[sz]e|rewrite|extend)\b[\s\S]{0,60}?(?:` +
-		codeNounPattern + `|` + codeExtPattern + `|` + codeThingPattern + `|\bcode\b|\bbug\b)` +
+		codeNounPattern + `|` + codeExtPattern + `|` + codeThingPattern + `)` +
 		`|\badd (?:a |some )?(?:unit |integration )?tests?\b` +
-		`|\bwrite (?:me )?(?:some |the )?code\b`)
+		`|\bwrite (?:me )?(?:some )?code\b`)
 
 	// codingExcludeRe carves out requests that LOOK like code work but are
 	// genuinely questions ABOUT code, not projects to build. Without it,
@@ -293,7 +285,7 @@ func isCoding(step string) bool {
 		return false
 	}
 	cleaned := stripNonCodeFilenames(codingURLRe.ReplaceAllString(codingProhibitionRe.ReplaceAllString(step, " "), " "))
-	return codingRe.MatchString(businessCodeRe.ReplaceAllString(cleaned, " "))
+	return codingRe.MatchString(cleaned)
 }
 
 // describesSoftware reports whether a step the planner tagged [code] names
@@ -304,7 +296,7 @@ func describesSoftware(step string) bool {
 	if codingExcludeRe.MatchString(step) || codingOpsRe.MatchString(step) {
 		return false
 	}
-	cleaned := businessCodeRe.ReplaceAllString(stripNonCodeFilenames(codingURLRe.ReplaceAllString(codingProhibitionRe.ReplaceAllString(step, " "), " ")), " ")
+	cleaned := stripNonCodeFilenames(codingURLRe.ReplaceAllString(codingProhibitionRe.ReplaceAllString(step, " "), " "))
 	return codingRe.MatchString(cleaned) || codingRe.MatchString("build "+cleaned)
 }
 
@@ -329,8 +321,8 @@ func init() {
 	Register("file-write", fileWriteRe.MatchString)
 	// browser before web: a step that names a destination AND an action on
 	// it ("search google.com for X") is interactive browsing, not a fetch -
-	// see wantsBrowser in triage.go for the same distinction at the whole-
-	// request level.
+	// the operator's, on the screen (withoutMissingSkill); see wantsBrowser in
+	// triage.go for the same distinction at the whole-request level.
 	Register("browser", wantsBrowser)
 	Register("web", func(step string) bool {
 		return webRe.MatchString(step) || urlOnlyRe.MatchString(step) || siteRe.MatchString(step)

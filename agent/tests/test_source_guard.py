@@ -5,6 +5,7 @@ a source the task changed is put back and reported in plain words; and the check
 source.
 """
 
+from needs import needs
 import os
 import sys
 import time
@@ -61,6 +62,7 @@ class Guard(SharedBase):
         self.assertEqual((self.mount / "receivables_review.xlsx").read_bytes(), b"PK\x03\x04 the result")
         self.assertEqual(source_guard.check_and_restore(TASK, LIVE), "")
 
+    @needs("openpyxl")
     def test_an_app_saving_a_workbook_again_with_the_same_cells_is_a_note_not_a_change(self):
         import openpyxl
         path = self.mount / "monthly_revenue.xlsx"
@@ -171,25 +173,30 @@ from decurix_agent import skill_task, verify  # noqa: E402
 
 
 class TheGateSaysYouChangedMyFile(FileWorkIsChecked):
-    def test_a_changed_source_is_not_done_in_plain_words_without_a_model_and_is_never_read_as_an_output(self):
-        self.verdicts = []
-        said = ("The task changed your file C:\\Users\\Administrator\\Documents\\Decurix demo\\receivables.xlsx, which "
-                "should have stayed as it was; I put the original back from the copy taken before the task "
-                "(receivables.xlsx).")
-        with mock.patch.object(skill_task.source_guard, "check_and_restore", lambda task_id, request: said), \
-                mock.patch.object(skill_task.produced, "store_results", lambda paths: []), \
-                mock.patch.object(skill_task.produced, "missing_requested", lambda request, made, root=None: ""):
-            self.assertTrue(skill_task._gate("Done: receivables_review.xlsx saved and verified.", "final", "thebot"))
-        self.assertEqual(self.judged, [])
-        self.assertEqual(self.finals, [])
-        self.assertIn("The task changed your file", self.asked[-1][0])
-        self.assertIn("should have stayed as it was", self.asked[-1][0])
+    """E-12 (review 2026-11-03): a given file that changed is a fact for the judge and always told to the person; the
+    gate never puts it back before a verdict, and no verb list decides whether the request allowed it."""
 
-    def test_the_contract_why_says_open_never_save(self):
+    CHANGE = {"rel": "receivables.xlsx", "name": "receivables.xlsx",
+              "path": "/shared/Decurix demo/receivables.xlsx", "diff": "D4: open -> paid",
+              "gone": False, "kept": True, "asked": False, "copy": "/kept/receivables.xlsx"}
+
+    @needs("openpyxl")  # (the work is a workbook: without the reader it is not checked, never judged)
+    def test_a_changed_source_goes_to_the_judge_and_the_person_and_is_never_read_as_an_output(self):
+        self.verdicts = [{"verdict": verify.DONE, "confidence": 0.9, "seen": "the review lists every open invoice",
+                          "why": ""}]
+        with mock.patch.object(skill_task.source_guard, "changed_sources", lambda task_id, request: [dict(self.CHANGE)]), \
+                mock.patch.object(skill_task.source_guard, "check_and_restore", lambda *a: self.fail("restored")), \
+                mock.patch.object(skill_task.produced, "store_results", lambda paths: []):
+            self.assertTrue(skill_task._gate("Done: receivables_review.xlsx saved and verified.", "final", "thebot"))
+        self.assertIn("D4: open -> paid", self.judged[0]["produced"])
+        self.assertIn("Checked in code (not a claim)", self.judged[0]["produced"])
+        self.assertIn("Changed your file /shared/Decurix demo/receivables.xlsx", self.finals[-1][0])
+
+    def test_the_gate_still_keeps_sources_out_of_the_outputs(self):
         import inspect
         source = inspect.getsource(skill_task._gate)
-        self.assertIn("open it, never save", source)
         self.assertIn("is_source(", source)
+        self.assertNotIn("check_and_restore", source)
 
 
 if __name__ == "__main__":

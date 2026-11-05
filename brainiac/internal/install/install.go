@@ -7,6 +7,9 @@ package install
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -156,6 +159,11 @@ func Run(ctx context.Context, plan *selector.Plan, opt Options) (*Lock, error) {
 				u.Files[want.Role] = dest
 				if want.Role == "model" && src.Runtime == catalog.RuntimeLlamaCpp {
 					if u.TemplateSHA, err = checkTemplate(st, p.Model, src.Repo, commit, incoming, time.Now()); err != nil {
+						var changed *TemplateChanged
+						if errors.As(err, &changed) && incoming != dest {
+							// A file held for a person is not kept: it is gigabytes.
+							_ = os.Remove(incoming)
+						}
 						return nil, err
 					}
 					if u.TemplateSHA != "" {
@@ -179,7 +187,11 @@ func Run(ctx context.Context, plan *selector.Plan, opt Options) (*Lock, error) {
 			}
 			files := st.SourceFiles(src)
 			if !st.HasFiles(src) {
-				if err := hub.DownloadURL(ctx, gh, asset.URL, dest, asset.Size, asset.SHA256, nil, hub.ProgressPrinter(opt.Log, src.Asset)); err != nil {
+				sha, err := assetSHA(asset, src.SHA256)
+				if err != nil {
+					return nil, fmt.Errorf("%s: %w", p.Model, err)
+				}
+				if err := hub.DownloadURL(ctx, gh, asset.URL, dest, asset.Size, sha, nil, hub.ProgressPrinter(opt.Log, src.Asset)); err != nil {
 					return nil, fmt.Errorf("%s: %w", p.Model, err)
 				}
 				if src.Unpack {
@@ -289,11 +301,92 @@ func ensureVenv(ctx context.Context, groups []string, opt Options) (string, erro
 	return python, nil
 }
 
-// ensureLlama downloads and unpacks the pinned llama-server build.
+// assetSHA is the sha256 a GitHub asset must have: the catalog's pin when it
+// has one (GitHub's digest, if any, must agree), else GitHub's digest. With
+// neither, nothing vouches for the bytes, and the asset is refused.
+func assetSHA(a hub.Asset, pinned string) (string, error) {
+	pinned = strings.ToLower(strings.TrimSpace(pinned))
+	switch {
+	case pinned != "" && a.SHA256 != "" && a.SHA256 != pinned:
+		return "", fmt.Errorf("%s: GitHub's digest %s differs from the catalog's %s; not downloading it", a.Name, a.SHA256, pinned)
+	case pinned != "":
+		return pinned, nil
+	case a.SHA256 != "":
+		return a.SHA256, nil
+	}
+	return "", fmt.Errorf("%s: GitHub gives no digest for it and the catalog pins none, so nothing vouches for its bytes; add its \"sha256\" to the catalog to install it", a.Name)
+}
+
+// llamaManifest is where the sha256 of every file of an unpacked llama.cpp
+// build is recorded, outside the build's own directory.
+func llamaManifest(dir string) string { return dir + ".sha256.json" }
+
+// treeSHAs is the sha256 of every regular file under dir, by relative path.
+func treeSHAs(dir string) (map[string]string, error) {
+	out := map[string]string{}
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return fmt.Errorf("%s is not a regular file", p)
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		h := sha256.New()
+		if _, err := io.Copy(h, f); err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, p)
+		out[filepath.ToSlash(rel)] = hex.EncodeToString(h.Sum(nil))
+		return nil
+	})
+	return out, err
+}
+
+// llamaIntact reports whether an unpacked build is exactly what was
+// recorded when it was installed: same files, same bytes. A build with no
+// record, or one changed since, is installed again.
+func llamaIntact(dir string) bool {
+	data, err := os.ReadFile(llamaManifest(dir))
+	if err != nil {
+		return false
+	}
+	var want map[string]string
+	if json.Unmarshal(data, &want) != nil || len(want) == 0 {
+		return false
+	}
+	got, err := treeSHAs(dir)
+	if err != nil || len(got) != len(want) {
+		return false
+	}
+	for k, v := range want {
+		if got[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// ensureLlama downloads and unpacks the pinned llama-server build. A build
+// already on disk is used only when its files match the record made at its
+// install; otherwise it is downloaded and checked again.
 func ensureLlama(ctx context.Context, l *selector.LlamaCpp, st *store.Store, hc *http.Client, log io.Writer) (string, error) {
 	dir := st.LlamaCppDir(l.Tag, l.Variant)
 	if bin := findExe(dir, "llama-server"); bin != "" {
-		return bin, nil
+		if llamaIntact(dir) {
+			return bin, nil
+		}
+		fmt.Fprintf(log, "   %s does not match its install record; installing it again\n", dir)
+		if err := os.RemoveAll(dir); err != nil {
+			return "", fmt.Errorf("llama.cpp: %w", err)
+		}
 	}
 	fmt.Fprintf(log, "== llama.cpp %s (%s)\n", l.Tag, l.Asset)
 	for _, name := range append([]string{l.Asset}, l.Extra...) {
@@ -301,11 +394,15 @@ func ensureLlama(ctx context.Context, l *selector.LlamaCpp, st *store.Store, hc 
 		if err != nil {
 			return "", fmt.Errorf("llama.cpp: %w", err)
 		}
+		sha, err := assetSHA(asset, l.SHA256[name])
+		if err != nil {
+			return "", fmt.Errorf("llama.cpp: %w", err)
+		}
 		archive := st.Path("bin", "llama.cpp", name)
 		if err := os.MkdirAll(filepath.Dir(archive), 0o755); err != nil {
 			return "", err
 		}
-		if err := hub.DownloadURL(ctx, hc, asset.URL, archive, asset.Size, asset.SHA256, nil, hub.ProgressPrinter(log, name)); err != nil {
+		if err := hub.DownloadURL(ctx, hc, asset.URL, archive, asset.Size, sha, nil, hub.ProgressPrinter(log, name)); err != nil {
 			return "", fmt.Errorf("llama.cpp: %w", err)
 		}
 		target := dir
@@ -328,6 +425,14 @@ func ensureLlama(ctx context.Context, l *selector.LlamaCpp, st *store.Store, hc 
 	bin := findExe(dir, "llama-server")
 	if bin == "" {
 		return "", fmt.Errorf("llama.cpp: no llama-server in %s", l.Asset)
+	}
+	sums, err := treeSHAs(dir)
+	if err != nil {
+		return "", fmt.Errorf("llama.cpp: %w", err)
+	}
+	data, _ := json.MarshalIndent(sums, "", "  ")
+	if err := os.WriteFile(llamaManifest(dir), data, 0o644); err != nil {
+		return "", fmt.Errorf("llama.cpp: %w", err)
 	}
 	return bin, nil
 }

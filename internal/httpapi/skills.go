@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"github.com/YKoustubhRao/decurix/internal/webui"
 )
 
@@ -105,11 +106,11 @@ func (s *Server) runSkillHandler(w http.ResponseWriter, r *http.Request) {
 
 	content, err := skillContent(name, params)
 	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		jsonStatusError(w, http.StatusBadRequest, refusal(err))
 		return
 	}
 
-	s.sendTaught(w, r, id, content, "/skills/"+name+"/run", map[string]any{"params": params}, "skills")
+	s.sendTaught(w, r, id, content, "/skills/"+name+"/run", map[string]any{"params": params}, "skills", nil)
 }
 
 // learnRecordingHandler starts a lesson: the desktop asks whoever recorded a
@@ -144,18 +145,21 @@ func (s *Server) learnRecordingHandler(w http.ResponseWriter, r *http.Request) {
 	name := strings.Join(strings.Fields(r.FormValue("name")), " ")
 	content, err := learnContent(sessions, name)
 	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		jsonStatusError(w, http.StatusBadRequest, refusal(err))
 		return
 	}
 
-	s.sendTaught(w, r, id, content, "/recordings/"+session+"/learn", map[string]any{"sessions": sessions[1:], "name": name}, "skills")
+	s.sendTaught(w, r, id, content, "/recordings/"+session+"/learn", map[string]any{"sessions": sessions[1:], "name": name}, "skills", nil)
 }
 
 // sendTaught delivers a "/skill", "/learn" or "/replay" request to a desktop
 // as a task: refused while the desktop is busy (refuseBusy, which logs a
 // records error under what), otherwise Plan, hand it with payload and its
 // task ID to the desktop's own endpoint agentPath, Commit.
-func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content, agentPath string, payload map[string]any, what string) {
+//
+// held, when given, is the values secret by structure (a replay's parameters its program marks secret), asked for
+// only once the desktop is known not busy: held by the recorder and told to the gate, beside the shape check.
+func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content, agentPath string, payload map[string]any, what string, held func() []string) {
 	worker := desktop.SanitizeID(id)
 
 	// Held until the request is handed over, so no automated send can
@@ -167,12 +171,35 @@ func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content,
 		return
 	}
 
-	route := s.routeRequest(worker, content)
+	// A person's teaching, replay or skill run, from this door (plan R7).
+	teacher, _ := s.actorOf(r)
+	route := s.routeRequest(worker, content, tasks.Origin{Kind: tasks.OriginPerson, Ref: what, ActorID: teacher.ID})
 
 	ctx, cancel := context.WithTimeout(r.Context(), recordingsRequestTimeout)
 	defer cancel()
 
+	// As every other door (review CP-A-3 B1): the gate gets its copy (the withheld form, which for a "/replay" or
+	// "/skill" line names no site, so it asks) and the withheld values, a replay's or skill's secret parameters among
+	// them, before the agent has anything; the recorder holds the same values. A gate that cannot be told stops it.
+	ctx = s.markWithheld(ctx, worker, route, content)
+	if held != nil {
+		ctx = s.withHeldValues(ctx, worker, held())
+	}
+	if params, ok := payload["params"].(map[string]string); ok {
+		ctx = s.withParamSecrets(ctx, worker, params) // a second wall: a value secret by its form
+	}
+	if s.Desktops.HasGate(ctx, worker) {
+		if err := s.tellGate(ctx, worker, false); err != nil {
+			log.Printf("%s to %s: not sent, its approval gate could not be told: %v", what, worker, err)
+			sendRequestError(w, err)
+			return
+		}
+	}
+
 	payload["task_id"] = route.TaskID
+	// The execution it belongs to, as on every /request (H-PY-7): the desktop holds that run's evidence until EXPORTED
+	// names it.
+	payload["execution_id"] = route.ExecutionID
 
 	resp, ok := s.askAgent(ctx, w, id, http.MethodPost, agentPath, payload)
 	if !ok {
@@ -185,7 +212,7 @@ func (s *Server) sendTaught(w http.ResponseWriter, r *http.Request, id, content,
 	}
 	resp.Body.Close()
 
-	route = s.recordDelivered(r.Context(), worker, content, route)
+	route, _ = s.recordDelivered(r.Context(), worker, content, route)
 
 	jsonResponse(w, map[string]string{"status": "sent", "task_id": route.TaskID, "content": content})
 }

@@ -31,13 +31,13 @@ import base64
 import json
 import os
 
-from decurix_agent import config, guidance, llm_client, progress, state, usage
+from decurix_agent import config, gated_command, guidance, llm_client, progress, state, usage
 from decurix_agent.commands import dangerous_reason, run_command
 from decurix_agent.computer import approval
 from decurix_agent.identity import get_identity_context
 from decurix_agent.logging_utils import log, log_banner
 from decurix_agent.memory_context import get_memory_context
-from decurix_agent.messaging import ask_for_query, remember, write_final_reply
+from decurix_agent.messaging import ask_for_query, remember, withheld, write_final_reply
 from decurix_agent.tools import office, outbox
 
 ENGINE = "azure"
@@ -442,7 +442,8 @@ def _describe(name, args):
     """What the chat's live steps show for one tool call."""
 
     if name == "shell":
-        return "Running: " + (args.get("command") or "")[:300]
+        from decurix_agent.computer import privacy
+        return "Running: " + privacy.step_command(args.get("command") or "")[:300]
     if name in ("read_document", "read_workbook"):
         return f"Reading {args.get('path')}"
     if name in ("create_workbook", "update_workbook"):
@@ -572,7 +573,7 @@ def _system_message(task=""):
 
 def _step(messages, tools):
     _trim_images(messages)
-    message, _ = llm_client.chat(messages, tools=tools, max_tokens=6000)
+    message, _ = llm_client.chat(messages, tools=tools, max_tokens=6000, purpose="legacy.azure.turn")
 
     assistant = {"role": "assistant", "content": message.get("content") or ""}
     if message.get("tool_calls"):
@@ -635,11 +636,27 @@ def _run(messages):
                 return
 
             except Pause as pause:
-                _answer_rest(messages, calls[i + 1:])
-                _conversation = messages
-                _paused = {"call_id": call["id"], "tool": name, "command": pause.command}
-                ask_for_query(pause.text, kind=pause.kind, engine=ENGINE)
-                return
+                # On a desktop with an approval gate a held command is the gate's to allow (review 2026-11-03, F-09):
+                # put to it now, and run on the reply only if it finds the grant the person's signed yes made. A gate
+                # that does not answer allows nothing, and the person is not asked for a yes that could grant nothing.
+                held, decided = None, ""
+                if pause.command and gated_command.gated():
+                    held = gated_command.material(pause.command, request=state.current_task or "")
+                    decided = gated_command.check(held)
+                    if decided != "asked":
+                        held = False
+                if held is not False:
+                    _answer_rest(messages, calls[i + 1:])
+                    _conversation = messages
+                    _paused = {"call_id": call["id"], "tool": name, "command": pause.command, "gate": held}
+                    ask_for_query(pause.text, kind=pause.kind, engine=ENGINE)
+                    return
+                if decided == "allowed":
+                    # The gate held an unused yes for exactly this command, and this check used it: it runs now
+                    # (asking again would burn the person's yes; review 2026-11-03 rework).
+                    text, images = "The approval gate held a yes for exactly this command. " + _shell(pause.command), []
+                else:
+                    text, images = gated_command.NOT_RUN, []
 
             except (office.OfficeError, OSError, ValueError, TypeError, KeyError) as exc:
                 text, images = f"(failed) {exc}", []
@@ -698,7 +715,7 @@ def perform_task(task, task_file):
     _finish_pushbacks = 0
     usage.set_model(os.environ.get("AZURE_MODEL") or "hosted model")
 
-    log_banner("STARTING TASK (azure harness)", task)
+    log_banner("STARTING TASK (azure harness)", withheld(task))
 
     messages = [
         {"role": "system", "content": _system_message(task)},
@@ -725,7 +742,13 @@ def continue_after_query(query_response):
 
     reply = (query_response or "").strip()
 
-    if paused.get("command"):
+    if paused.get("command") and gated_command.gated():
+        # Only the gate makes this yes, never this process's reading of the reply (review 2026-11-03, F-09).
+        if paused.get("gate") and gated_command.check(paused["gate"]) == "allowed":
+            result = "The approval gate granted it. " + _shell(paused["command"])
+        else:
+            result = f"The person did not approve running it (the approval gate made no yes). Their reply: {reply}"
+    elif paused.get("command"):
         if approval.says_yes(reply, paused["command"]) and not _qualified(reply):
             result = "The person said yes. " + _shell(paused["command"])
         else:
@@ -741,7 +764,7 @@ def continue_after_query(query_response):
 
     messages.append({"role": "tool", "tool_call_id": paused["call_id"], "content": result})
 
-    log_banner("RECEIVED HUMAN REPLY (azure harness)", reply)
+    log_banner("RECEIVED HUMAN REPLY (azure harness)", withheld(reply))
 
     _run(messages)
 

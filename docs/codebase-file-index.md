@@ -20,7 +20,6 @@ Each file was read for static indexing. Entries combine source comments, definit
 - [bench](#bench) — 38 files
 - [scripts](#scripts) — 38 files
 - [docs](#docs) — 35 files
-- [migration-toolkit](#migration-toolkit) — 30 files
 - [website](#website) — 6 files
 
 ## Root
@@ -66,7 +65,6 @@ Worker execution, computer tools, learning, verification, workflow execution, Th
 
 | File | Kind | Lines | Role and representative definitions |
 |---|---|---:|---|
-| [BROWSER_INTEGRATION.md](../agent/BROWSER_INTEGRATION.md) | documentation | 370 | extension is now actually wired into every desktop's Chromium (see the checklist at the bottom for exactly what's done vs. still open) — this file Headings: Browser-agent, Browser control, Getting the extension into the desktop's Chromium, Logins persist, and that's why it matters, Getting ext_server.py running, How TheBot will actually drive it … (12 total). |
 | [chrome-policies.json](../agent/chrome-policies.json) | data | 19 | JSON data; top-level keys: DefaultBrowserSettingEnabled, MetricsReportingEnabled, BrowserSignin, SyncDisabled, HardwareAccelerationModeEnabled, AutofillCreditCardEnabled, TranslateEnabled, DefaultSearchProviderEnabled, DefaultSearchProviderName, DefaultSearchProviderSearchURL, RemoteDebuggingAllowed, DeveloperToolsAvailability, PasswordManagerEnabled, PasswordLeakDetectionEnabled, InsecureContentAllowedForUrls |
 | [chromium-browser](../agent/chromium-browser) | source | 36 | The desktop's web browser (installed as /usr/bin/chromium-browser; see agent/install-browser.sh). Every way of starting the browser comes here - Chrome's own google-chrome commands are diverted to this file - so it always starts with: - one profile, ~/.config/chromium: sign-ins made in the desktop's earlier Chromium carry over, and Chrome 136+ only accepts a DevTools port on a profile that is not its default one; |
 | [chromium-browser.init](../agent/chromium-browser.init) | source | 45 | Browser launch flags for local CDP, resource limits and crash recovery; sandbox fallback only when required namespaces are unavailable. |
@@ -89,42 +87,6 @@ Worker execution, computer tools, learning, verification, workflow execution, Th
 | [start_agent_terminal.sh](../agent/start_agent_terminal.sh) | source | 248 | Adaptively wait for X11 display :1 to be ready (up to 15s max), proceeding immediately once available Allow incoming display connections for host-bridge display tunneling Chromium's launch flags live in $HOME, which is this desktop's persistent volume - so an image rebuild alone never replaces the base image's copy with its hardcoded --no-sandbox. Reinstall ours on every start. Pre-warm Chromium: a browser that is already running opens an app window in about a second instead Definitions: prewarm_chromium, has_host_apps. |
 | [vm_server.py](../agent/vm_server.py) | source | 4 | Implementation of vm server. |
 
-### agent/browser-agent
-
-| File | Kind | Lines | Role and representative definitions |
-|---|---|---:|---|
-| [README.md](../agent/browser-agent/README.md) | documentation | 141 | An LLM-driven browser agent, built to answer one question: how well can a **local** model (Devstral-24B and others, served by Ollama, on a single Headings: browser-agent, How a step works, Atomizer flavours, Layout, Running it, Model notes. |
-| [requirements.txt](../agent/browser-agent/requirements.txt) | manifest | 9 | fastapi uvicorn[standard] Definitions: extension_pipeline/ext_server.py + the core/ modules it imports. Ollama is, reached via OLLAMA_URL (core/models.py), not a package dependency -- the, desktop's Ollama is whatever OLLAMA_URL points at.. |
-
-### agent/browser-agent/core
-
-| File | Kind | Lines | Role and representative definitions |
-|---|---|---:|---|
-| [atomizer.py](../agent/browser-agent/core/atomizer.py) | source | 112 | Live, state-aware atomization: instead of splitting the whole task into atomic steps upfront (blind to the page), this decides ONE atomic, Playwright-sized instruction at a time, given the live page and whatever of the original task is still left -- so it can react to things an upfront plan can't know about (a cookie banner, needing to scroll first, an unexpected redirect) instead of blindly executing a plan made before the page loaded. Definitions: _strip_wrapping, is_done, next_step. |
-| [models.py](../agent/browser-agent/core/models.py) | source | 157 | Model abstraction over Ollama's NATIVE /api/chat endpoint (not the OpenAI shim, which silently caps context at ~4096 and ignores num_ctx -- see doc-ui/server.py for the same lesson learned earlier in this workspace). Ollama owns model loading/eviction/VRAM management, so switching models in the UI is just changing which `model` name goes in the request -- no process juggling like the raw llama-server path Phase 1 used. Definitions: resident_model_names, will_swap, chat, chat_stream. |
-| [reasoning.py](../agent/browser-agent/core/reasoning.py) | source | 134 | Small LLM calls around the main codegen loop: - expected_outcome / verify_outcome: state up front what should be true after an action succeeds, then check it against the page afterwards, so "the code ran without throwing" isn't mistaken for "the instruction was satisfied." - answer_from_page: grounded Q&A over the current page (used by the manual Interrogate feature) -- one LLM call, no code execution at all. All of these take the page's actual cleaned HTML (see worker.py's g Definitions: expected_outcome, verify_outcome, answer_from_page. |
-| [spec_backend.py](../agent/browser-agent/core/spec_backend.py) | source | 178 | Lifecycle + chat_stream for the speculative-decoding backend: a separate llama-server process running Qwen3-14B as target with Qwen3-0.6B as draft (same pair verified/staged in ../spec-decode/, now wired in as a selectable model here). Reuses Ollama's own GGUF blobs directly -- no re-download. Ollama and this llama-server process both want the whole 16GB card, so only one can be resident at a time: ensure_started() evicts every Ollama-resident model before booting llama-serve Definitions: _health, is_running, stop_if_running, _free_ollama_vram, _wait_for_free_vram, ensure_started … (7 total). |
-| [stack_atomizer.py](../agent/browser-agent/core/stack_atomizer.py) | source | 80 | Stack-based atomizer flavour, shared by both pipelines: instead of deciding one atomic instruction live per step (the existing "live" flavour -- atomizer.py's next_step / fast_step.py's decide / ext_codegen.py's decide_and_act, all called fresh every step with no upfront plan), this runs ONCE at the start of a task and decides the FULL ordered list of atomic sub-instructions up front, held as a stack. Each pipeline's own per-step call (fast_step.decide_stack_step / ext_codege Definitions: plan. |
-| [stats.py](../agent/browser-agent/core/stats.py) | source | 52 | VRAM/RAM/model-context stats for the UI's status bar. Definitions: gpu_vram, system_ram, loaded_models, snapshot. |
-| [worker.py](../agent/browser-agent/core/worker.py) | source | 51 | HTML cleaning and challenge-page signals for the extension pipeline (extension_pipeline/ext_server.py), which hands it the HTML the extension read from its own tab. Definitions: get_full_html. |
-
-### agent/browser-agent/extension
-
-| File | Kind | Lines | Role and representative definitions |
-|---|---|---:|---|
-| [background.js](../agent/browser-agent/extension/background.js) | source | 1673 | Orchestrates the same atomize -&gt; (expectation) -&gt; act -&gt; verify loop as runner.py's run_task, but sourced from a live Chrome tab (this extension's own snapshot + action execution) instead of Playwright/CDP, talking to Definitions: getRun, findRunByLockedTab, findRecordingRun, updateKeepAlive, finishRun, runFailed … (67 total). |
-| [manifest.json](../agent/browser-agent/extension/manifest.json) | data | 15 | JSON data; top-level keys: manifest_version, name, version, description, action, background, permissions, host_permissions |
-| [popup.html](../agent/browser-agent/extension/popup.html) | source | 242 | Implementation of popup. |
-| [popup.js](../agent/browser-agent/extension/popup.js) | source | 457 | chrome.storage.local briefly reads as undefined right after the extension is reloaded from chrome://extensions (its APIs re-attach to the popup a beat after the document itself loads) -- these wrap every call so that Definitions: show, storageGet, storageSet, escapeHtml, classifyLine, appendLog … (24 total). |
-
-### agent/browser-agent/extension_pipeline
-
-| File | Kind | Lines | Role and representative definitions |
-|---|---|---:|---|
-| [_pathfix.py](../agent/browser-agent/extension_pipeline/_pathfix.py) | source | 7 | Adds core/ to sys.path so sibling-package imports (models, atomizer, reasoning, worker, ...) resolve without turning this into a dotted-import package: ext_server.py is run directly as a script, not via python -m. |
-| [ext_codegen.py](../agent/browser-agent/extension_pipeline/ext_codegen.py) | source | 459 | Extension-side sibling of codegen.py: turns one atomized instruction into ONE grounded DOM action instead of a Playwright snippet. codegen.py's output (a Playwright `page....` snippet) has no equivalent that can run inside a Chrome extension's content script -- there's no `page` object in a live tab, only `document`/`window`. Rather than have the model write arbitrary JS for the extension to eval() in the page (which would hand page-controlled prompt-injection content a path Definitions: _action_schema, _unescape, parse_action, _clean_action, _turn, decide_and_act … (8 total). |
-| [ext_server.py](../agent/browser-agent/extension_pipeline/ext_server.py) | source | 547 | Extension-facing server: an atomize -&gt; (expectation) -&gt; act -&gt; verify pipeline whose "act" targets a live Chrome tab's real DOM (via the browser-agent Chrome extension's own tab capture + content-script execution). atomizer.py, reasoning.py and models.py are pure functions over (model_key, text, url, html, screenshot_b64). worker.get_full_html's HTML-cleaning runs via a tiny duck-typed shim below (it only ever calls page.content() on the object it's given). ext_codegen.py tur Definitions: RequestBody, RequestsBody, RequestResultBody, _add_request, cancel_request, is_cancelled … (30 total). |
-
 ### agent/decurix_agent
 
 | File | Kind | Lines | Role and representative definitions |
@@ -140,7 +102,6 @@ Worker execution, computer tools, learning, verification, workflow execution, Th
 | [commands.py](../agent/decurix_agent/commands.py) | source | 135 | Implementation of commands. Definitions: dangerous_reason, run_command. |
 | [config.py](../agent/decurix_agent/config.py) | source | 97 | Worker configuration, paths, providers and execution limits from its creation-time environment. |
 | [filelock.py](../agent/decurix_agent/filelock.py) | source | 48 | One exclusive lock on an open file, on whichever system the agent runs. A Linux desktop has fcntl.flock; a native Windows worker has msvcrt.locking. Both are released when the file is closed, which is how every caller here lets go of one. |
-| [files_browser.ps1](../agent/decurix_agent/files_browser.ps1) | source | 173 | A worker's file browser: the folders and files of its own home, with Up and Open. A private desktop has no Explorer (it is the shell, and none runs there), so this is what the worker's "Files" icon starts. It never leaves the worker's home folder. Definitions: Format-Size, Show-Folder, Go-Back, Go-Forward, Open-Selected. |
 | [filler.py](../agent/decurix_agent/filler.py) | source | 157 | A value that only fills a field - 9999999999, 1234567890, "test", "n/a", name@example.com - is never entered as if it were real. Found live (2026-10-20, round 5 P4): a joiner was onboarded in a portal with the phone number 9999999999; the tracker the request attached had her real one, "+91 90040 55318". The worker had looked at the ID pictures (which turned the guard against untraced values off) and made the number up; nothing in the report said so. A value that looks like fi Definitions: _digits, looks_filler, _cells, headers, in_sources, source_texts … (9 total). |
 | [guidance.py](../agent/decurix_agent/guidance.py) | source | 399 | Implementation of guidance. Definitions: begin, get, calls_off, open_question, note_exchange, said_this_task … (20 total). |
 | [harness.py](../agent/decurix_agent/harness.py) | source | 135 | Engine dispatch and compatibility boundary for TheBot and legacy harnesses. Definitions: _nothing, wait_for_backend, ask_model, perform_task, continue_after_query, cancel_running. |
@@ -282,7 +243,6 @@ Worker execution, computer tools, learning, verification, workflow execution, Th
 | [resolve.py](../agent/decurix_agent/computer/resolve.py) | source | 219 | Resolve business records by identifiers and track the actual application entry chosen. Definitions: key, digits, holds, searches, _quote, _listed … (19 total). |
 | [screen.py](../agent/decurix_agent/computer/screen.py) | source | 441 | Capture, sample and compare desktop screenshot frames. Definitions: Frame, __init__, png, sample, digest, masked … (18 total). |
 | [session.py](../agent/decurix_agent/computer/session.py) | source | 111 | Resolve the graphical session/DBus environment and launch applications within it. Definitions: _session_dbus_address, ensure, app_env, launch. |
-| [shadowing.py](../agent/decurix_agent/computer/shadowing.py) | source | 71 | Track passive demonstration observations and shadowing metrics. Definitions: _empty_metrics, get_metrics, get_recent_observations. |
 | [shown.py](../agent/decurix_agent/computer/shown.py) | source | 100 | Track whether particular task evidence has actually been shown/read. Definitions: _path, _read, note, unseen, was, named. |
 | [skill_engine.py](../agent/decurix_agent/computer/skill_engine.py) | source | 259 | Shared skill execution interface and rendered result/refusal handling. Definitions: summary_line, render_text, _refusal, other_system, run, _replayed_path … (8 total). |
 | [skillmd.py](../agent/decurix_agent/computer/skillmd.py) | source | 183 | Render learned skill definitions as portable SKILL.md instructions. Definitions: _name, _how_found, _ordinal, _description, render. |
@@ -1670,9 +1630,7 @@ Graphical worker image profiles and startup environment.
 | File | Kind | Lines | Role and representative definitions |
 |---|---|---:|---|
 | [Dockerfile](../docker/Dockerfile) | source | 50 | TheBot's sources, packed for go:embed (embed.go): without it the binary cannot build the desktop images itself (--build-images). Two cores and one package at a time (GOMAXPROCS, -p 1): an unbounded build inside Docker brought down the 8 GB WSL host this is developed on. The phone build of the same binary, handed out by /phone/decurix when a phone sets up its link from its own browser (httpapi/phonelink.go). The control plane is one static binary (CGO_ENABLED=0); in here it ru |
-| [desktop.ai.Dockerfile](../docker/desktop.ai.Dockerfile) | source | 333 | TheBot's soul binary, built from its real source (agent/thebot/) rather than a pre-committed binary - genuinely part of this repo, not an opaque blob. Pure-Go (modernc.org/sqlite, no CGO), one self-contained static binary with its whole UI embedded via go:embed. A dedicated builder stage rather than the Go toolchain this image installs further down for developers' own use (that one's 1.26, a version behind what this module needs, and installed into the final image for a diffe |
 | [desktop.basic.Dockerfile](../docker/desktop.basic.Dockerfile) | source | 298 | TheBot's soul binary, built from its real source (agent/thebot/) rather than a pre-committed binary - genuinely part of this repo and buildable by anyone's own CI, not an opaque blob. Pure-Go (modernc.org/sqlite, no CGO) and its whole UI is embedded via go:embed, so the build output is one self-contained static binary. Two cores and one package at a time: an unbounded build inside Docker took every core and a couple of GB at once and brought down the 8 GB WSL host |
-| [desktop.developer.Dockerfile](../docker/desktop.developer.Dockerfile) | source | 325 | TheBot's soul binary, built from its real source (agent/thebot/) rather than a pre-committed binary - genuinely part of this repo, not an opaque blob. Pure-Go (modernc.org/sqlite, no CGO), one self-contained static binary with its whole UI embedded via go:embed. A dedicated builder stage rather than the Go toolchain this image installs further down for developers' own use (that one's 1.26, a version behind what this module needs, and installed into the final image for a diffe |
 | [tools.Dockerfile](../docker/tools.Dockerfile) | source | 104 | 1. Go toolchain (official linux-amd64) 2. Node.js LTS (official linux-x64 binary distribution) 3. Rust toolchain (minimal cargo + rustc) |
 
 
@@ -1946,58 +1904,6 @@ Behavior and architecture references, design work, gotchas and formal protocol m
 | [PlannedRunLive.cfg](../docs/spec/PlannedRunLive.cfg) | source | 10 | Liveness: a person whose message is the answer, who answers every open card as such, gets it applied. |
 | [README.md](../docs/spec/README.md) | documentation | 118 | [docs/harness-v2.md](../harness-v2.md) (section 7, principle 6) asks for one explicit, checked state machine for the person-worker protocol. This folder is the first step: a TLA+ model of the protocol **as it is implemented today** Headings: The person-worker interaction protocol, in TLA+, What is modelled, and from where, What is abstracted (assumptions), How to run. |
 | [check.sh](../docs/spec/check.sh) | source | 75 | Model-check the interaction specs with TLC, one property per run, so that every violation gets its own shortest counterexample (breadth-first search with one worker). Needs Java 11+ and tla2tools.jar in this folder; README.md gives the Docker command. Results: out/&lt;run&gt;.txt, and a summary on stdout. sh check.sh every run sh check.sh Interaction ApprovalIntegrity one property of one module Definitions: tlc, safety, live, want. |
-
-
-## migration-toolkit
-
-Selective environment and session migration, manifests, host bridges and memory sharing.
-
-30 files; 2,336 text lines.
-
-### migration-toolkit
-
-| File | Kind | Lines | Role and representative definitions |
-|---|---|---:|---|
-| [README.md](../migration-toolkit/README.md) | documentation | 112 | This toolkit allows you to migrate your local desktop configurations, developer toolchains, Google tokens/sessions, and project workspaces to a remote Virtual Machine (VM) while ensuring zero redundant memory and storage footprint. --- Headings: VM Desktop & Session Migration Toolkit (Zero-Duplicate Memory), Architecture & How Zero Duplicate Memory is Achieved, Toolkit Structure, Universal Host Remote Bridge (macOS / Windows / Linux), Usage Instructions, Quick Start (Granular Choice-by-Choice Wizard) … (13 total). |
-| [check_memory_savings.sh](../migration-toolkit/check_memory_savings.sh) | source | 26 | Implementation of check memory savings. |
-| [choice_migration.sh](../migration-toolkit/choice_migration.sh) | source | 422 | ============================================================================== choice_migration.sh Choice-by-Choice Itemized Migration Engine Scans all apps, session tokens, toolchains, and files, allowing granular selection of what to copy to the remote VM with zero duplicate memory. ============================================================================== ANSI Colors Definitions: register_item. |
-| [export_manifest.sh](../migration-toolkit/export_manifest.sh) | source | 224 | ============================================================================== export_manifest.sh Scans and exports local application packages, configurations, Google tokens, and toolchain manifests without copying bloated binaries or duplicate libraries. ============================================================================== ANSI Colors 1. System Package Manifest (APT / Homebrew) |
-| [interactive_discover.sh](../migration-toolkit/interactive_discover.sh) | source | 403 | ============================================================================== interactive_discover.sh Step-by-Step Discovery & Migration Wizard (Default Empty VM) Scans your system and walks through each discovered app, session, toolchain, and file one by one, asking if you want to copy it to the empty VM. ============================================================================== ANSI Colors Definitions: add_candidate. |
-| [migrate.sh](../migration-toolkit/migrate.sh) | source | 84 | ============================================================================== migrate.sh Main interactive wizard to migrate local desktop sessions, Google tokens, toolchains, and apps to a VM with zero duplicate memory footprint. ============================================================================== ANSI Colors Make all scripts executable |
-| [setup_host_bridge.sh](../migration-toolkit/setup_host_bridge.sh) | source | 65 | ============================================================================== setup_host_bridge.sh Universal Host &lt;-&gt; Linux VM Remote Execution Bridge (macOS / Windows / Linux) Enables the Linux VM to invoke apps and access files directly on your local host machine with ZERO file copying and ZERO duplicate memory. ============================================================================== ANSI Colors |
-| [setup_vm_memory_dedup.sh](../migration-toolkit/setup_vm_memory_dedup.sh) | source | 155 | ============================================================================== setup_vm_memory_dedup.sh Destination VM post-migration setup: 1. Configures Linux Kernel Samepage Merging (KSM) for RAM deduplication. 2. Installs native packages cleanly via manifest (eliminating library duplication). 3. Configures GNOME Keyring and verifies Google session/auth tokens. ============================================================================== |
-| [setup_windows_bridge.sh](../migration-toolkit/setup_windows_bridge.sh) | source | 17 | ============================================================================== setup_windows_bridge.sh (Compatibility Forwarder) Delegates to setup_host_bridge.sh which provides universal Windows, macOS, and Linux host bridging (win-run, host-run, win-mount, host-clip). ============================================================================== Ensure legacy symlink exists if needed |
-| [transfer_to_vm.sh](../migration-toolkit/transfer_to_vm.sh) | source | 295 | ============================================================================== transfer_to_vm.sh Performs selective, memory-optimized transfer of local desktop data, Google sessions, developer tokens, and manifests to a remote VM via rsync. ============================================================================== ANSI Colors Default configuration Definitions: usage. |
-
-### migration-toolkit/host-bridge
-
-| File | Kind | Lines | Role and representative definitions |
-|---|---|---:|---|
-| [connect-to-vm-with-bridge.sh](../migration-toolkit/host-bridge/connect-to-vm-with-bridge.sh) | source | 19 | connect-to-vm-with-bridge.sh Universal connector: works on macOS, Linux, and Windows (Git Bash / WSL / Cygwin). Opens an interactive SSH session to your Linux VM while forwarding a reverse tunnel so the Linux VM can execute your local host's apps and access files. |
-| [create_app_bridge.sh](../migration-toolkit/host-bridge/create_app_bridge.sh) | source | 58 | ============================================================================== create_app_bridge.sh Creates a zero-RAM desktop launcher and CLI wrapper on this Linux VM that executes an application residing on the local host (Windows / macOS / Linux). ============================================================================== 1. Create executable wrapper in /usr/local/bin Wrapper to run ${APP_NAME} on local host from Linux VM (Zero VM RAM) |
-| [enable_linux_sshd.sh](../migration-toolkit/host-bridge/enable_linux_sshd.sh) | source | 17 | enable_linux_sshd.sh Enables OpenSSH server on a Linux host desktop |
-| [enable_mac_remote_login.sh](../migration-toolkit/host-bridge/enable_mac_remote_login.sh) | source | 29 | enable_mac_remote_login.sh Enables built-in OpenSSH server (Remote Login) on macOS so the Linux VM can connect back. Ensure sshd is running via launchctl |
-| [enable_windows_ssh_server.ps1](../migration-toolkit/host-bridge/enable_windows_ssh_server.ps1) | source | 16 | Run this in PowerShell as Administrator on your Windows machine (once): Installs and starts the built-in Windows OpenSSH Server Confirm firewall rule |
-| [host-clip](../migration-toolkit/host-bridge/host-clip) | source | 4 | host-clip: Copy text or stdin directly to the local host machine clipboard (Mac, Windows, Linux) |
-| [host-mount](../migration-toolkit/host-bridge/host-mount) | source | 26 | host-mount: Mount host machine filesystem onto the Linux VM using SSHFS (Zero storage duplication) |
-| [host-open](../migration-toolkit/host-bridge/host-open) | source | 4 | host-open: Open any URL or file on the local host machine screen (Mac, Windows, Linux) |
-| [host-run](../migration-toolkit/host-bridge/host-run) | source | 101 | ============================================================================== host-run: Universal Host Execution Bridge (Mac / Windows / Linux) Executes commands directly on your local host machine from inside the Linux VM. The executable runs in the host's memory, with zero duplicate RAM on the VM. ============================================================================== Check if reverse tunnel is active Definitions: usage, detect_host_os. |
-| [install_on_linux_vm.sh](../migration-toolkit/host-bridge/install_on_linux_vm.sh) | source | 33 | Create cross-platform alias symlinks Install sshfs and netcat for bridging if available on the Linux VM |
-
-### migration-toolkit/manifest
-
-| File | Kind | Lines | Role and representative definitions |
-|---|---|---:|---|
-| [apt_packages.txt](../migration-toolkit/manifest/apt_packages.txt) | manifest | 103 | Migration discovery manifest: apt packages; local paths and values omitted. |
-| [bun_global.txt](../migration-toolkit/manifest/bun_global.txt) | manifest | 0 | Migration discovery manifest: bun global; local paths and values omitted. |
-| [cargo_packages.txt](../migration-toolkit/manifest/cargo_packages.txt) | manifest | 0 | Migration discovery manifest: cargo packages; local paths and values omitted. |
-| [chrome_paths.txt](../migration-toolkit/manifest/chrome_paths.txt) | manifest | 1 | Migration discovery manifest: chrome paths; local paths and values omitted. |
-| [go_binaries.txt](../migration-toolkit/manifest/go_binaries.txt) | manifest | 3 | Migration discovery manifest: go binaries; local paths and values omitted. |
-| [keyring_paths.txt](../migration-toolkit/manifest/keyring_paths.txt) | manifest | 0 | Migration discovery manifest: keyring paths; local paths and values omitted. |
-| [pip_packages.txt](../migration-toolkit/manifest/pip_packages.txt) | manifest | 97 | Migration discovery manifest: pip packages; local paths and values omitted. |
-| [summary.json](../migration-toolkit/manifest/summary.json) | data | 18 | JSON data; top-level keys: timestamp, hostname, user, arch, kernel, manifest_files |
-| [token_paths.txt](../migration-toolkit/manifest/token_paths.txt) | manifest | 4 | Migration discovery manifest: token paths; local paths and values omitted. |
-| [uv_tools.txt](../migration-toolkit/manifest/uv_tools.txt) | manifest | 0 | Migration discovery manifest: uv tools; local paths and values omitted. |
 
 
 ## website

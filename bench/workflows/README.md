@@ -30,7 +30,7 @@ $env:PYTHONPATH='agent;agent/tests'
 python -m unittest agent.tests.test_workflow_acceptance agent.tests.test_workflow_hardening agent.tests.test_workflow_task agent.tests.test_watcher_restart agent.tests.test_learning_transfer agent.tests.test_office_presentations agent.tests.test_office_cli -v
 ```
 
-The offline transfer suite persists one demonstration and one learned skill per task family, then exercises unseen values, moved controls, renamed controls, ambiguous controls, missing parameters and wrong application results. It uses production recording, learning and skill execution with a scripted screen adapter, and labels this explicitly:
+The offline transfer suite persists one demonstration and one learned skill per task family, then exercises unseen values, moved controls, renamed controls, ambiguous controls and missing parameters. (A "wrong application result" variant was removed: it passed whatever the worker did.) It uses production recording, learning and skill execution with a scripted screen adapter, and labels this explicitly:
 
 ```text
 python bench/workflows/transfer.py --output bench/workflows/results/transfer.json
@@ -63,7 +63,7 @@ The runner uses chat and reopens every saved artifact from a separate process be
 | Check | Result | Evidence and scope |
 |---|---|---|
 | Agent regression suite | 1,284 tests, 9 skipped | `results/agent-tests-final.log`; includes the production fixes found during live testing |
-| Offline learning transfer | 150/150 | 25 families, six variants each; simulated application adapter |
+| Offline learning transfer | 150/150 | 25 families, six variants each; simulated application adapter. One variant (wrong business result) passed regardless of the worker and was removed; the suite now has 125 evaluations, not re-run since |
 | Live browser learning transfer | 75/75 | `results/live-transfer-full.json`; 25 transformations sharing one local browser form, three holdout variants each |
 | Native learning transfer | 7/7 | `results/native-consolidated.json`; Calc, Writer, Impress and Thunar, one agent-recorded lesson per case, unseen values and independently reopened saved artifacts |
 | Native multi-app chain | 9/9 | `results/native-chain-final.json`; three Calc/Writer/Impress cycles, real file handoffs, fresh-worker resume after stage three, one attempt per stage |
@@ -75,7 +75,7 @@ The independent [PM review](PM_REVIEW.md) records the evidence checks and remain
 
 Live testing exposed missing labels on LibreOffice editable fields and loss of earlier supplied parameters when replay resumed at a later step. Both are fixed in production with regressions. The native report preserves failed attempts as well as passing reruns; fixture recovery-state and dialog-scope corrections are identified separately.
 
-Recheck exported evidence from the repository root:
+Recheck exported evidence from the repository root. `audit_evidence.py` is checked for consistency: the runner's exported report against the scenario table and the files on disk (recordings, skills, PNG headers). The pass/fail results are the runner's own and are not re-derived.
 
 ```text
 python bench/workflows/audit_evidence.py

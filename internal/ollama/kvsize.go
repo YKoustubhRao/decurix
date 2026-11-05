@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -91,7 +92,9 @@ func fetchKVBytes(ctx context.Context, baseURL, name string) (float64, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, nil // no such model, or an Ollama without model_info: fall back
+		// Not cached (C-26): a model missing for a moment, or an Ollama still starting, must be asked again later,
+		// not taken as "0 bytes a token" for the rest of the process.
+		return 0, fmt.Errorf("/api/show answered %d", resp.StatusCode)
 	}
 
 	var show struct {

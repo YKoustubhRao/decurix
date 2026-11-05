@@ -1,3 +1,0 @@
-air
-golangci-lint
-gopls

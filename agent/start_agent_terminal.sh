@@ -14,8 +14,16 @@ echo "[$(date)] Starting Decurix agent" >> "$LOG"
 
 export DISPLAY=:1
 
-# Allow incoming display connections for host-bridge display tunneling
-which xhost >/dev/null 2>&1 && xhost + >/dev/null 2>&1 || true
+# The screen's password is the base image's startup's to read (it makes the VNC password file from it); nothing the
+# agent starts needs it. Inherited, it was in the environment of every command a model ran, and `env` printed it into
+# the chat and recorded model calls (resource plan B7). The control plane reads its own copy (desktop.screenPassword).
+unset VNC_PW VNC_PASSWORD VNC_VIEW_ONLY_PW
+
+# Only this desktop's own user may open the display. "xhost +" turned X access control off, so anything that could
+# reach the X server - another container on the Docker network, if Xvnc listens on TCP - could drive this screen
+# around the approval gate (review 2026-11-03, N-F2). Every process that drives the screen (the agent, the gui
+# command, soul, the control plane's docker exec) runs as the desktop's user, headless.
+which xhost >/dev/null 2>&1 && { xhost - >/dev/null 2>&1; xhost +SI:localuser:headless >/dev/null 2>&1; } || true
 
 if [ -z "$XDG_RUNTIME_DIR" ]; then
     export XDG_RUNTIME_DIR="/tmp/runtime-headless"
@@ -176,20 +184,12 @@ fi
 
 # Run background agent daemon with nice -n 10 so interactive GUI (Xvnc, Xorg,
 # xfce4, terminal) always has scheduling priority over background agent reasoning.
-setsid nice -n 10 python3 /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
+# python3 -I, as the gate is (decurix-entrypoint.sh): no PYTHON* variable, no user site-packages, no .pth or
+# usercustomize.py in the worker's home, and not the working directory, is read - only /opt, which vm_server.py
+# puts on sys.path itself (review round 11).
+setsid nice -n 10 python3 -I /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
 
 echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"
-
-# extension_pipeline/ext_server.py: the backend the browser-agent extension
-# talks to on 127.0.0.1:8092. No desktop loads the extension today (the
-# browser's launcher passes no --load-extension) and soul uses it only with
-# THEBOT_BROWSER_EXTENSION=1, so it starts only then: idle it was 48 MB nothing
-# talked to.
-if [ "${THEBOT_BROWSER_EXTENSION:-}" = "1" ] && [ -x /opt/browser-agent-venv/bin/python3 ]; then
-    setsid /opt/browser-agent-venv/bin/python3 /opt/browser-agent/extension_pipeline/ext_server.py \
-        >> /tmp/decurix-ext-server.log 2>&1 < /dev/null &
-    echo "[$(date)] ext_server.py started as background daemon (pid $!)" >> "$LOG"
-fi
 
 # TheBot harness only - its soul binary is a persistent HTTP server
 # thebot_harness.py talks to (see decurix_agent/thebot_harness.py), not a
@@ -224,6 +224,8 @@ if [ "$AGENT_HARNESS" = "thebot" ] && [ -x /opt/soul ]; then
     export THEBOT_WEB_PAGES="${THEBOT_WEB_PAGES:-2}"
     export THEBOT_WEB_PAGE_CHARS="${THEBOT_WEB_PAGE_CHARS:-2500}"
     export SOUL_PORT="4900"
+    # Embedded in Decurix: soul's acquired skills and coding harness stay off (owner decision O-8, review T-07/T-08).
+    export THEBOT_STANDALONE=0
     export DOCLING_SCRIPT="/opt/thebot-scripts/docling_convert.py"
     setsid nice -n 10 /opt/soul >> /tmp/thebot-soul.log 2>&1 < /dev/null &
     echo "[$(date)] soul (TheBot) started as background daemon (pid $!)" >> "$LOG"

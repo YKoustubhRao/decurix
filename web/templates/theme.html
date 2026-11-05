@@ -677,6 +677,10 @@ dialog[open]{animation:dialog-in .16s ease-out}
 
 /* ---------- toasts (replaces alert()) ---------- */
 
+.docker-banner{padding:9px 16px;background:var(--danger-soft);color:var(--danger);font-size:13px;font-weight:550;text-align:center;border-bottom:1px solid var(--line)}
+.docker-banner[hidden]{display:none}
+.tools-banner{padding:7px 16px;background:var(--busy-soft);color:var(--text-2);font-size:13px;text-align:center;border-bottom:1px solid var(--line)}
+.tools-banner[hidden]{display:none}
 #toasts{
   position:fixed;
   top:64px;
@@ -912,6 +916,101 @@ body.busy{cursor:progress}
     });
   }
 
+  /* ---- polling that stops while nobody can see the page ----
+     poll(fn, ms) runs fn every ms while this page is visible and not at all
+     while it is hidden (a tab in the background, a minimised window): ten
+     open tabs used to ask the control plane ~0.7 times a second each, for
+     cards nobody could see (review 2026-11-02). The moment the page is seen
+     again fn runs at once and the interval resumes, so every part of a card is
+     live while it is on screen - never a stale card that needs a reload.
+     opts.hidden is a slower interval kept while hidden, for the few polls
+     whose whole point is a tab in the background (the notifications of a
+     finished task or a question). The first call is the caller's: poll only
+     repeats. Returns {stop()}. */
+  function poll(fn, ms, opts){
+    /* One call at a time: a tick while fn's promise is still pending is
+       skipped, so a slow control plane never piles requests up. A call that
+       fails (throws, or its promise rejects) doubles the interval, up to 8x,
+       until one succeeds (resource plan P1 #9). A call still pending after
+       max(30 s, 4 intervals) counts as failed and the poll goes on: a fetch
+       has no timeout, and one answer that never came used to stop the poll -
+       and the card - for good (review RES-CP-1). Its late answer, if it comes,
+       changes nothing. */
+    var hiddenMs = (opts && opts.hidden) || 0;
+    var timer = 0;
+    var stopped = false;
+    var running = 0;   /* the number of the call in flight, 0 for none */
+    var since = 0;     /* when it was made */
+    var calls = 0;
+    var failures = 0;
+
+    function settle(call, failed){
+      if(call !== running){ return; }  /* a call given up on, answering late */
+      running = 0;
+      var before = failures;
+      failures = failed ? Math.min(failures + 1, 3) : 0;
+      if(failures !== before){ schedule(); }
+    }
+
+    function tick(){
+      if(stopped){ return; }
+      if(running){
+        if(Date.now() - since < Math.max(30000, 4 * ms)){ return; }
+        settle(running, true);  /* given up on: counted as failed */
+      }
+      var call = ++calls;
+      var result;
+      try { result = fn(); } catch(e){ running = call; settle(call, true); return; }
+      if(result && typeof result.then === "function"){
+        running = call;
+        since = Date.now();
+        result.then(function(){ settle(call, false); }, function(){ settle(call, true); });
+      } else {
+        running = call;
+        settle(call, false);
+      }
+    }
+
+    function schedule(){
+      clearInterval(timer);
+      timer = 0;
+      if(stopped){ return; }
+      var every = document.visibilityState === "hidden" ? hiddenMs : ms;
+      if(every > 0){ timer = setInterval(tick, every * Math.pow(2, failures)); }
+    }
+
+    function changed(){
+      if(stopped){ return; }
+      if(document.visibilityState === "visible"){ tick(); }
+      schedule();
+    }
+
+    document.addEventListener("visibilitychange", changed);
+    schedule();
+
+    return {
+      stop: function(){
+        stopped = true;
+        clearInterval(timer);
+        timer = 0;
+        document.removeEventListener("visibilitychange", changed);
+      }
+    };
+  }
+
+  /* later(fn, ms) is setTimeout for a page that schedules its own next look:
+     while the page is hidden the look waits until it is seen again. */
+  function later(fn, ms){
+    return setTimeout(function(){
+      if(document.visibilityState !== "hidden"){ fn(); return; }
+      document.addEventListener("visibilitychange", function wake(){
+        if(document.visibilityState === "hidden"){ return; }
+        document.removeEventListener("visibilitychange", wake);
+        fn();
+      });
+    }, ms);
+  }
+
   /* ---- toasts ---- */
 
   function toast(body, kind){
@@ -1099,6 +1198,16 @@ body.busy{cursor:progress}
 
   /* ---- dropdown menus ---- */
 
+  /* setMenuOpen opens or closes one menu and tells it (a "menuchange" event
+     with detail.open), so a menu can fetch what it shows only while open. */
+  function setMenuOpen(menu, open){
+    var was = menu.classList.contains("open");
+    menu.classList.toggle("open", open);
+    var toggle = menu.querySelector("[data-menu-toggle]");
+    if(toggle){ toggle.setAttribute("aria-expanded", open ? "true" : "false"); }
+    if(was !== open){ menu.dispatchEvent(new CustomEvent("menuchange", {detail: {open: open}})); }
+  }
+
   function bindMenus(){
     document.querySelectorAll(".menu").forEach(function(menu){
       var toggle = menu.querySelector("[data-menu-toggle]");
@@ -1106,18 +1215,13 @@ body.busy{cursor:progress}
 
       toggle.addEventListener("click", function(event){
         event.stopPropagation();
-        var open = menu.classList.toggle("open");
-        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        setMenuOpen(menu, !menu.classList.contains("open"));
       });
     });
 
     document.addEventListener("click", function(event){
       document.querySelectorAll(".menu.open").forEach(function(menu){
-        if(!menu.contains(event.target)){
-          menu.classList.remove("open");
-          var toggle = menu.querySelector("[data-menu-toggle]");
-          if(toggle){ toggle.setAttribute("aria-expanded", "false"); }
-        }
+        if(!menu.contains(event.target)){ setMenuOpen(menu, false); }
       });
     });
 
@@ -1125,7 +1229,7 @@ body.busy{cursor:progress}
       if(event.key !== "Escape"){ return; }
 
       document.querySelectorAll(".menu.open").forEach(function(menu){
-        menu.classList.remove("open");
+        setMenuOpen(menu, false);
       });
     });
   }
@@ -1137,8 +1241,16 @@ body.busy{cursor:progress}
      for the access code the gated ones need, read from internal/lanaccess
      via /api/lan-access/status. One panel, one source of truth for all of
      it, rather than the code living only in a terminal a person has since
-     closed. */
+     closed.
 
+     The code (and the pairing link built from it) is fetched only while the
+     person has this menu open, and forgotten - out of the page and out of
+     memory - when it closes. It used to be fetched every 15 seconds into
+     every page's DOM, menu closed or not, where any script or extension on
+     any page could read it (review 2026-11-02). Nothing else in the menu is
+     on screen while it is closed either, so nothing in it is polled then. */
+
+  var tunnelMenuOpen = false;
   var lastTunnelURL = "";
   var lastAdminURL = "";
   var lastLANURL = "";
@@ -1337,7 +1449,8 @@ body.busy{cursor:progress}
          it that fills in by itself a moment later. */
       addWaiting(panel, tunnelLoaded ? "Getting the link for your phone. This takes a few seconds after Decurix starts…" : "Loading…");
     }else{
-      addNote(panel, "No link yet. It appears here as soon as the tunnel to this computer is up. If it never does, check that this computer is online, then restart Decurix.");
+      /* The public link is off until the person turns it on (the switch the Decurix app puts at the top of this menu). */
+      addNote(panel, "No link yet. A link that works from anywhere needs the public link: turn it on with the switch at the top of this menu in the Decurix app. If it is on and no link comes, check that this computer is online, then restart Decurix.");
     }
 
     /* -- the code the addresses above need -- */
@@ -1390,7 +1503,20 @@ body.busy{cursor:progress}
     }
   }
 
+  /* forgetAccessCode drops the code from memory and the panel once the menu
+     is closed. */
+  function forgetAccessCode(){
+    lastLAN = null;
+    lastDevices = null;
+    lastPhones = null;
+    clearTimeout(tunnelWaitTimer);
+    lastMobileState = "";
+    renderMobilePanel();
+  }
+
   async function refreshTunnel(){
+    if(!tunnelMenuOpen){ return; }
+
     try{
       var response = await fetch("/api/tunnel", {cache: "no-store"});
       if(response.ok){
@@ -1417,6 +1543,9 @@ body.busy{cursor:progress}
       var phonesResponse = await fetch("/api/phones", {cache: "no-store"});
       if(phonesResponse.ok){ lastPhones = await phonesResponse.json(); }
     }catch(e){ /* keep whatever is already rendered */ }
+
+    /* Closed while the answers were on their way: they are not shown. */
+    if(!tunnelMenuOpen){ forgetAccessCode(); return; }
 
     /* No address yet: ask again soon instead of at the next 15 s tick, until
        one arrives or the wait is over (the look after that says there is none). */
@@ -1567,7 +1696,8 @@ body.busy{cursor:progress}
   function noteHeadline(note){
     var who = note.vm_name || note.desktop_id || "A desktop";
     switch(note.kind){
-      case "done": return who + " finished its task";
+      /* A result the worker's own final check did not judge says so (phrase from /api/tasks/finished). */
+      case "done": return who + " " + (note.phrase || "finished its task, not checked");
       case "error": return who + " could not finish its task";
       case "approval": return who + " needs your approval";
       default: return who + " needs you";
@@ -1619,7 +1749,7 @@ body.busy{cursor:progress}
       finishedAfter = data.latest || 0;
       if(first){ return; }
       (data.items || []).forEach(function(item){
-        announce({id: "finished-" + item.seq, kind: "done", desktop_id: item.desktop_id, vm_name: item.vm_name,
+        announce({id: "finished-" + item.seq, kind: "done", phrase: item.phrase, desktop_id: item.desktop_id, vm_name: item.vm_name,
                   task: item.task, message: item.message});
       });
     }catch(e){ /* try again on the next tick */ }
@@ -1705,27 +1835,58 @@ body.busy{cursor:progress}
 
     lastTunnelURL = document.body.dataset.tunnel || "";
     renderMobilePanel();
-    refreshTunnel();
-    setInterval(refreshTunnel, 15000);
+    var tunnelMenu = document.getElementById("tunnelMenu");
+    if(tunnelMenu){
+      tunnelMenu.addEventListener("menuchange", function(event){
+        tunnelMenuOpen = event.detail.open;
+        if(tunnelMenuOpen){ refreshTunnel(); }else{ forgetAccessCode(); }
+      });
+    }
+    poll(refreshTunnel, 15000);
 
     refreshModel();
-    setInterval(refreshModel, 60000);
+    poll(refreshModel, 60000);
 
+    refreshDocker();
+    poll(refreshDocker, 10000, {hidden: 60000});
+
+    /* These two tell a person about a tab in the background, so they keep a
+       slow pace while it is hidden. */
     refreshFinished();
-    setInterval(refreshFinished, 5000);
+    poll(refreshFinished, 5000, {hidden: 30000});
 
     /* Pages that poll query notes themselves feed the badge directly. */
     if(document.body.dataset.queryPoll !== "own"){
       refreshQueryBadge();
-      setInterval(refreshQueryBadge, 5000);
+      poll(refreshQueryBadge, 5000, {hidden: 30000});
     }
   });
+
+  /* Docker not answering: every page says so, and the banner goes by itself once it does (the control plane keeps
+     trying, cmd/decurix dockerstartup.go). */
+  async function refreshDocker(){
+    var banner = document.getElementById("dockerBanner");
+    if(!banner){ return; }
+    try{
+      var response = await fetch("/api/docker/status", {cache: "no-store"});
+      if(!response.ok){ return; }
+      var state = await response.json();
+      banner.hidden = !(state.checked && !state.reachable);
+      var tools = document.getElementById("toolsBanner");
+      if(tools){ tools.hidden = !state.tools_waiting; }
+      // The Windows app's fence between desktops is not in place: no desktop is made or started until it is.
+      var fence = document.getElementById("fenceBanner");
+      if(fence){ fence.hidden = !state.fence_missing; }
+    }catch(e){ /* the next tick asks again */ }
+  }
 
   window.Decurix = {
     node: node,
     icon: icon,
     button: button,
     getJSON: getJSON,
+    poll: poll,
+    later: later,
     relativeTimes: relativeTimes,
     toast: toast,
     markSent: markSent,
@@ -1791,4 +1952,7 @@ body.busy{cursor:progress}
     </button>
   </div>
 </header>
+<div class="docker-banner" id="dockerBanner" role="status" hidden>Docker is not running, so desktops cannot start or be reached. Start Docker Desktop (or the Decurix runtime); this page notices by itself when it is back.</div>
+<div class="docker-banner" id="fenceBanner" role="alert" hidden>The network fence that keeps desktops apart is not in place, so desktops are not made or started. Restart Decurix; if this stays, the app's Linux host could not add its firewall rules.</div>
+<div class="tools-banner" id="toolsBanner" role="status" hidden>A tools update is waiting for the running desktops to stop, so they keep the tools they started with. It is applied when a desktop is next created with none running.</div>
 {{end}}

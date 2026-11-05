@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -158,9 +159,12 @@ type fakeTasks struct {
 	steps    []string
 }
 
-func (f *fakeTasks) CommitTyped(route tasks.Route, w tasks.Worker, text, typ string) (tasks.Route, error) {
+func (f *fakeTasks) CommitTyped(route tasks.Route, w tasks.Worker, text, typ string, origin tasks.Origin) (tasks.Route, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if origin.Kind != tasks.OriginPractice {
+		return route, errors.New("a practice task must say it is practice")
+	}
 	if typ != tasks.TypePractice || !strings.HasPrefix(w.ID, "practice-") {
 		return route, errors.New("practice tasks must be practice-typed")
 	}
@@ -207,6 +211,8 @@ type fakeSandbox struct {
 	removed bool
 	created chan struct{}
 	block   chan struct{} // when set, a delivered request waits on it
+	// failCollect makes every collection of a case's files fail.
+	failCollect bool
 }
 
 func (f *fakeSandbox) note(s string) {
@@ -258,6 +264,9 @@ func (f *fakeSandbox) CollectPractice(_ context.Context, _, caseID string, _ map
 	defer f.mu.Unlock()
 	if !f.paused {
 		f.t.Error("evidence collected from a running desktop")
+	}
+	if f.failCollect {
+		return nil, nil, nil, errors.New("the copy out of the container failed")
 	}
 	f.log = append(f.log, "collect "+caseID)
 	out := map[string][]byte{}
@@ -405,15 +414,48 @@ func TestInSubnetsAndRefuse(t *testing.T) {
 			t.Fatalf("%s: got %d want %d", addr, w.Code, want)
 		}
 	}
-	calls := 0
-	cache := &SubnetCache{Lookup: func(context.Context) []netip.Prefix { calls++; return prefixes }, TTL: time.Hour}
-	cache.Subnets()
-	cache.Subnets()
-	cache.Refresh()
-	cache.Subnets()
-	if calls != 2 {
-		t.Fatalf("cache asked Docker %d times", calls)
+	var calls atomic.Int32
+	cache := &SubnetCache{Lookup: func(context.Context) []netip.Prefix { calls.Add(1); return prefixes }, TTL: time.Hour}
+	if got := cache.Subnets(); len(got) != 1 {
+		t.Fatalf("the first call did not wait for the ranges: %v", got)
 	}
+	cache.Subnets()
+	if calls.Load() != 1 {
+		t.Fatalf("cache asked Docker %d times", calls.Load())
+	}
+}
+
+// Once the ranges are known, a slow Docker never holds up a request: the ranges known are answered while one
+// question is out, and requests meanwhile do not ask again.
+func TestSubnetCacheDoesNotQueueRequestsBehindDocker(t *testing.T) {
+	prefixes := []netip.Prefix{netip.MustParsePrefix("172.30.0.0/16")}
+	release := make(chan struct{})
+	var calls atomic.Int32
+	cache := &SubnetCache{TTL: time.Millisecond, Lookup: func(context.Context) []netip.Prefix {
+		if calls.Add(1) > 1 {
+			<-release
+		}
+		return prefixes
+	}}
+	cache.Subnets()
+	time.Sleep(5 * time.Millisecond)
+	start := time.Now()
+	for range 20 {
+		if got := cache.Subnets(); len(got) != 1 {
+			t.Fatalf("lost the known ranges while Docker was asked again: %v", got)
+		}
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Fatalf("requests waited %s for Docker", waited)
+	}
+	for deadline := time.Now().Add(time.Second); calls.Load() < 2 && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	cache.Subnets()
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("Docker was asked %d times, want one question out at a time", n)
+	}
+	close(release)
 }
 
 func TestBrokerServesOnlyItsPaths(t *testing.T) {

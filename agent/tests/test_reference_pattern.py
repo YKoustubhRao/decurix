@@ -1,3 +1,4 @@
+from needs import needs
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,6 +42,7 @@ def blocks(n, slip_last=False):
     return rows
 
 
+@needs("openpyxl")
 class TestABlockThatReadsAnotherRowThanItsSiblings(unittest.TestCase):
 
     def test_a_reference_a_row_off_is_named(self):

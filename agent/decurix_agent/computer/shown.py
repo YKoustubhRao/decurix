@@ -1,5 +1,4 @@
 import json
-import os
 import re
 
 from decurix_agent import config, task_context
@@ -58,10 +57,8 @@ def note(text):
         names = dict(list(names.items())[-MAX_NAMES:])
     try:
         _path().parent.mkdir(parents=True, exist_ok=True)
-        temp = _path().with_suffix(".tmp")
-        with open(temp, "w", encoding="utf-8") as f:
-            json.dump({"task": task, "refs": merged, "names": names}, f)
-        os.replace(temp, _path())
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(_path(), {"task": task, "refs": merged, "names": names}, atomic=True)
     except OSError:
         pass
 

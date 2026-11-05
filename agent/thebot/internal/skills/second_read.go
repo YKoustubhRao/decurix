@@ -44,7 +44,7 @@ func (o *OperatorSkill) secondRead(rc RunContext, st *operatorState) []reviewIss
 	}
 	msg := llm.Message{Role: "user", Content: "Transcribe these pages.", Images: imgs, ImageLabels: labels}
 	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{{Role: "system", Content: transcribeSystem}, msg},
-		llm.Options{TimeoutMs: verifyTimeoutMs, Temperature: 0})
+		llm.Options{TimeoutMs: verifyTimeoutMs, Temperature: 0, Purpose: llm.PurposeSecondRead})
 	if err != nil || strings.TrimSpace(resp.Text) == "" {
 		rc.Logf("operator", "could not read the pictures a second time: %v", err)
 		return nil

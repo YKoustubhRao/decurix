@@ -49,15 +49,15 @@ func (a queueAdapter) Workers(ctx context.Context) ([]workqueue.Worker, error) {
 func (a queueAdapter) Busy(id string) (string, error) { return a.s.Tasks.Busy(id) }
 
 // Submit sends a queued request to a worker through the automated door, with its files when it has any.
-func (a queueAdapter) Submit(ctx context.Context, worker, request, dir string, files []workqueue.File) (string, error) {
+func (a queueAdapter) Submit(ctx context.Context, worker, request, dir string, files []workqueue.File, origin tasks.Origin) (string, error) {
 	if len(files) == 0 {
-		return a.s.SubmitTracked(ctx, worker, request)
+		return a.s.SubmitTracked(ctx, worker, request, origin)
 	}
 	att := make([]mailtrigger.Attachment, len(files))
 	for i, f := range files {
 		att[i] = mailtrigger.Attachment{Name: f.Name, Data: f.Data}
 	}
-	return a.s.SubmitTrackedWithFiles(ctx, worker, request, dir, att)
+	return a.s.SubmitTrackedWithFiles(ctx, worker, request, dir, att, origin)
 }
 
 // TaskState reads a queued item's task: latest execution status, whether its final was checked, and a person's verdict.
@@ -73,17 +73,23 @@ func (a queueAdapter) TaskState(taskID string) (workqueue.TaskState, error) {
 	if n := len(d.Executions); n > 0 {
 		e := d.Executions[n-1]
 		st.Status, st.Reply, st.Checked = e.Status, e.FinalReply, e.Checked
-		// A checked stop at a person's refusal is not the work done (same rule as handoffAdapter.TaskOutcome).
-		if e.Checked != nil && *e.Checked && stoppedAtRefusal(e.FinalReply) {
-			no := false
-			st.Checked = &no
+		// A checked stop at a person's no is not the work done (same rule as handoffAdapter.TaskOutcome): the
+		// structured verdict says which it is (R6).
+		if e.Checked != nil || e.Verdict != nil {
+			done := e.WorkDone()
+			st.Checked = &done
 		}
 	}
 	return st, nil
 }
 
-// NewQueueDispatcher builds the work queue's dispatcher on this server's plumbing; spend is read from db's task records.
+// NewQueueDispatcher builds the work queue's dispatcher on this server's plumbing; spend is read from db's task records
+// and from what the model proxy metered (llm.Hub.Metered).
 func (s *Server) NewQueueDispatcher(store *workqueue.Store, db *sql.DB) *workqueue.Dispatcher {
 	a := queueAdapter{s}
-	return &workqueue.Dispatcher{Store: store, Workers: a, Submitter: a, Tasks: a, Spend: workqueue.TaskSpend{DB: db}}
+	spend := workqueue.TaskSpend{DB: db}
+	if s.LLM != nil {
+		spend.Metered = s.LLM.Metered
+	}
+	return &workqueue.Dispatcher{Store: store, Workers: a, Submitter: a, Tasks: a, Spend: spend}
 }

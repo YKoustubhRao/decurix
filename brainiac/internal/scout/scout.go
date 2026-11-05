@@ -5,10 +5,12 @@
 // fits this machine - and reports what it found with links and the vendor's
 // own claims.
 //
-// It never changes what Brainiac runs. A candidate becomes part of the
-// catalog only when a person adopts it (`brainiac scout adopt`), and it takes
-// work from the current pick only when `brainiac eval` shows it is better on
-// checked cases. A model is a candidate, not an upgrade, until measured.
+// It never changes what Brainiac runs. A candidate enters the catalog when a
+// person adopts it (`brainiac scout adopt`), or as a candidate the updater
+// adds to the local overlay on public evaluations (internal/update), which
+// only installs, checks and stages a plan: what is served changes when a
+// person runs `brainiac update promote`. A specialist takes routed work from
+// the current pick only when `brainiac eval` proves it on checked cases.
 package scout
 
 import (

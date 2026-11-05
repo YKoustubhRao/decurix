@@ -31,7 +31,7 @@ func (s *Server) grounderLocateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.Grounder == nil {
-		jsonStatusError(w, http.StatusServiceUnavailable, grounder.ErrNotConfigured.Error())
+		jsonStatusError(w, http.StatusServiceUnavailable, "no grounding model is configured")
 		return
 	}
 
@@ -54,12 +54,16 @@ func (s *Server) grounderLocateHandler(w http.ResponseWriter, r *http.Request) {
 		jsonStatusError(w, http.StatusBadRequest, "image must be a base64 PNG")
 		return
 	}
+	if grounder.TooLarge(config.Width, config.Height) {
+		jsonStatusError(w, http.StatusRequestEntityTooLarge, "the screenshot is larger than a screen")
+		return
+	}
 
 	start := time.Now()
 	point, err := s.Grounder.Locate(r.Context(), image, config.Width, config.Height, req.Description)
 	if errors.Is(err, grounder.ErrNoPoint) {
 		log.Printf("grounder: no position for %q in %q", req.Description, point.Answer)
-		jsonStatusError(w, http.StatusUnprocessableEntity, err.Error())
+		jsonStatusError(w, http.StatusUnprocessableEntity, "the grounding model did not name a point on the screenshot")
 		return
 	}
 	if err != nil {

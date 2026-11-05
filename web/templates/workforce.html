@@ -231,7 +231,7 @@ td.actions{white-space:nowrap;text-align:right}
         <div class="field"><label for="limUSD">Max USD</label><input class="input" id="limUSD" type="number" min="0" step="0.01" placeholder="0 = none"></div>
         <div class="field"><label for="limTokens">Max tokens</label><input class="input" id="limTokens" type="number" min="0" step="1" placeholder="0 = none"></div>
       </div>
-      <p class="hint">Both at zero removes the limit.</p>
+      <p class="hint">Both at zero removes the limit. Only the token limit is enforced where the money is spent (the model proxy counts every hosted call); a dollar limit is checked against the cost each desktop reports about itself, after a task ends.</p>
       <div><button type="submit" class="btn btn-primary btn-sm">Save limit</button></div>
     </form>
   </section>
@@ -401,13 +401,32 @@ td.actions{white-space:nowrap;text-align:right}
     });
     var data = await response.json().catch(function(){ return {}; });
     if(!response.ok){ throw new Error(data.error || "Request failed"); }
+    /* Saved: the fields of the row whose button sent it are the server's now (RW1-F-12: cleared on success only, so
+       a failed save leaves what the person typed in place). */
+    if(saving){ saving.querySelectorAll("[data-dirty]").forEach(function(f){ delete f.dataset.dirty; }); }
     return data;
   }
 
   /* A poll leaves alone a block someone is typing in, so it never eats input. */
+  /* A row is left alone while the person is in one of its fields, and while a field of it holds a change they have not
+     saved (W-14): clicking elsewhere used to let the next poll put the server's old value back over what they typed.
+     A field is dirty from its first change until a button of its row (or form) is pressed. */
+  document.addEventListener("input", markDirty, true);
+  document.addEventListener("change", markDirty, true);
+  function markDirty(event){
+    if(event.target.matches && event.target.matches("input,select,textarea")){ event.target.dataset.dirty = "1"; }
+  }
+  /* The row (or form) whose button was pressed last: its dirty marks go once its save succeeds (send). */
+  var saving = null;
+  document.addEventListener("click", function(event){
+    var b = event.target.closest && event.target.closest("button");
+    if(b){ saving = b.closest("tr,form,[data-row]") || b.parentElement; }
+  }, true);
+  document.addEventListener("submit", function(event){ saving = event.target; }, true);
+
   function editing(el){
     var a = document.activeElement;
-    return !!(a && el.contains(a) && a.matches("input,select,textarea"));
+    return !!(a && el.contains(a) && a.matches("input,select,textarea")) || (el.matches && el.matches("[data-dirty]")) || !!el.querySelector("[data-dirty]");
   }
 
   var desktops = [];
@@ -816,6 +835,10 @@ td.actions{white-space:nowrap;text-align:right}
       max_usd: parseFloat($("limUSD").value) || 0,
       max_tokens: parseInt($("limTokens").value, 10) || 0
     });
+    /* A dollar limit is the desktops' own reports, not metered (RW1-F-02): say so when one is set. */
+    if((parseFloat($("limUSD").value) || 0) > 0 && !(parseInt($("limTokens").value, 10) > 0)){
+      return "Limit saved. A dollar limit is checked against what the desktops report after each task; only a token limit is enforced as calls are made.";
+    }
     return "Limit saved.";
   });
 {{end}}
@@ -1157,6 +1180,7 @@ td.actions{white-space:nowrap;text-align:right}
       }else{
         out.appendChild(node("div", null, "Needs approval from " + r.approvers + (req.min_approvers > 1 ? ", " + req.min_approvers + " different people" : "") + "."));
         if(req.amount !== undefined && req.amount !== null){ out.appendChild(node("div", "wf-muted", "Largest amount read: " + req.amount)); }
+        if(req.amount_unknown){ out.appendChild(node("div", "wf-muted", "Amount unknown, so the policy for larger amounts applied.")); }
         ps.forEach(function(p){
           out.appendChild(node("div", "wf-muted", "Policy: " + (p.note || p.action_match || "every approval") + " → " + (p.approver_roles || []).join(" or ")));
         });
@@ -1215,8 +1239,8 @@ td.actions{white-space:nowrap;text-align:right}
 
   show(location.hash.replace("#", ""));
   refresh(true);
-  setInterval(refresh, POLL_MS);
-  document.addEventListener("visibilitychange", function(){ refresh(false); });
+  /* The shared poll: nothing at all while the page is hidden, at once when it is seen again (W-14). */
+  D.poll(refresh, POLL_MS);
 })();
 </script>
 

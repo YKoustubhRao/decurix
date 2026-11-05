@@ -69,7 +69,8 @@ func TestValidID(t *testing.T) {
 		t.Fatal("an issued id is not valid")
 	}
 
-	for _, id := range []string{"", "t123", "../../etc/passwd", "tZZZZZZZZZZZZZZZZ"} {
+	// An execution's or a step's ID has the same shape but is not a task's (C-23).
+	for _, id := range []string{"", "t123", "../../etc/passwd", "tZZZZZZZZZZZZZZZZ", "x0123456789abcdef", "/0123456789abcdef"} {
 		if ValidID(id) {
 			t.Errorf("ValidID(%q) = true", id)
 		}

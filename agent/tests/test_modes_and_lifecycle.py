@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from decurix_agent import state, watchers
-from decurix_agent.computer import approval, catalog, modes, shadowing, skills
+from decurix_agent.computer import approval, catalog, modes, skills
 
 
 class WatcherDispatch(unittest.TestCase):
@@ -45,22 +45,12 @@ class TestModesAndLifecycle(unittest.TestCase):
         self.orig_state_file = modes.STATE_FILE
         modes.STATE_FILE = Path(self.tmp.name) / "worker_mode.json"
 
-        self.orig_shadowing_dir = shadowing.SHADOWING_DIR
-        self.orig_obs_file = shadowing.OBSERVATIONS_FILE
-        self.orig_metrics_file = shadowing.METRICS_FILE
-        shadowing.SHADOWING_DIR = Path(self.tmp.name) / "shadowing"
-        shadowing.OBSERVATIONS_FILE = shadowing.SHADOWING_DIR / "observations.jsonl"
-        shadowing.METRICS_FILE = shadowing.SHADOWING_DIR / "metrics.json"
-
         self.orig_skills_root = skills.ROOT
         skills.ROOT = Path(self.tmp.name) / "skills"
         skills.ROOT.mkdir(parents=True, exist_ok=True)
 
     def tearDown(self):
         modes.STATE_FILE = self.orig_state_file
-        shadowing.SHADOWING_DIR = self.orig_shadowing_dir
-        shadowing.OBSERVATIONS_FILE = self.orig_obs_file
-        shadowing.METRICS_FILE = self.orig_metrics_file
         skills.ROOT = self.orig_skills_root
         self.tmp.cleanup()
 
@@ -86,10 +76,6 @@ class TestModesAndLifecycle(unittest.TestCase):
         with patch.dict(os.environ, {"DECURIX_WORKER_STAGE": "observation"}):
             self.assertEqual(modes.get_stage(), modes.STAGE_OBSERVATION)
 
-    def test_shadowing_reads_nothing_recorded(self):
-        self.assertEqual(shadowing.get_metrics()["total_observations"], 0)
-        self.assertEqual(shadowing.get_recent_observations(), [])
-
     def test_approval_stage_awareness(self):
         btn = {"role": "button", "name": "Edit Profile"}
 
@@ -99,6 +85,18 @@ class TestModesAndLifecycle(unittest.TestCase):
         self.assertIsNotNone(reason)
         self.assertIn("Observation", reason)
 
+        # Every kind that may change something pauses, not only presses and Enter (review 2026-11-03, D-28).
+        field = {"role": "textbox", "name": "Notes"}
+        for kind, kwargs in (("type", {"text": "x"}), ("key", {"keys": ["ctrl+s"]}), ("select", {}), ("drag", {}),
+                             ("upload", {}), ("click", {})):
+            with self.subTest(kind=kind):
+                target = None if kind == "click" else field
+                self.assertIn("Observation", approval.assess(kind, target, **kwargs) or "")
+        self.assertIsNone(approval.assess("click", field), "a click that only focuses a field goes ahead")
+        self.assertIn("Observation", approval.assess("click", {"role": "row", "name": "Record 7"}) or "",
+                      "a row may open a record when clicked")
+        self.assertIsNone(approval.assess("scroll", None))
+
         # In supervised mode, normal non-consequential internal clicks pass
         modes.set_stage(modes.STAGE_SUPERVISED)
         self.assertIsNone(approval.assess("click", btn))
@@ -107,23 +105,22 @@ class TestModesAndLifecycle(unittest.TestCase):
         pay_btn = {"role": "button", "name": "Pay now"}
         self.assertIsNotNone(approval.assess("click", pay_btn))
 
-    def test_catalog_retrieval_and_installation(self):
-        catalog_list = catalog.get_catalog()
-        self.assertGreaterEqual(len(catalog_list), 20)
+    def test_the_catalog_ships_no_skill_nobody_taught(self):
+        # A ready skill is one a person here demonstrated and confirmed; the
+        # catalog has none of its own, so it lists nothing and installs nothing.
+        self.assertEqual(catalog.get_catalog(), [])
+        self.assertIsNone(catalog.get_catalog_skill("morning-brief"))
+        with self.assertRaises(ValueError):
+            catalog.install_catalog_skill("morning-brief")
+        self.assertEqual(list(skills.ROOT.iterdir()), [])
 
-        item = catalog.get_catalog_skill("morning-brief")
-        self.assertIsNotNone(item)
-        self.assertEqual(item["department"], "executive_assistant")
-
-        # Install skill into Decurix ready store
-        installed = catalog.install_catalog_skill("morning-brief")
-        self.assertEqual(installed["name"], "morning-brief")
-        self.assertEqual(installed["status"], skills.READY)
-
-        # Verify it is loaded by Decurix skills system
-        loaded = skills.load("morning-brief")
-        self.assertEqual(loaded["name"], "morning-brief")
-        self.assertEqual(loaded["title"], item["title"])
+    def test_a_catalog_entry_installs_as_a_draft_to_be_taught(self):
+        entry = {"name": "example", "title": "Example", "goal": "g", "done_when": "d", "params": [], "steps": []}
+        with patch.object(catalog, "CATALOG_SKILLS", [entry]):
+            self.assertEqual(catalog.get_catalog(), [entry])
+            installed = catalog.install_catalog_skill("example")
+        self.assertEqual(installed["status"], skills.DRAFT)
+        self.assertEqual(skills.load("example")["title"], "Example")
 
 
 if __name__ == "__main__":

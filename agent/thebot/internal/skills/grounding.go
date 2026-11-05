@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"thebot/internal/atomizer"
 	"thebot/internal/llm"
@@ -60,14 +61,22 @@ func (st *operatorState) untracedSendBack() bool {
 
 // noteTracedTyping starts the refusals' count again when a command typing values passed the trace.
 func (st *operatorState) noteTracedTyping(command string) {
-	if len(typedValues(command)) > 0 {
+	values := typedValues(command)
+	if len(values) > 0 {
 		st.UntracedNudges = 0
 	}
+	st.noteComputedTyped(values)
 }
 
 // maxSeenChars bounds what is kept of the request and command outputs. Long enough for the longest goals measured: a
 // goal is told its checks still know what it was shown, and 400,000 was passed by one that compacted eleven times.
-const maxSeenChars = 2_000_000
+// Values are matched in it as whole tokens (holdsToken), but the more text, the likelier a short value turns up by
+// chance: 2,000,000 was more than any goal needed, so it is a megabyte now, with the request always kept
+// (maxSeenHeadChars).
+const maxSeenChars = 1_000_000
+
+// maxSeenHeadChars bounds the part of the seen text that is never dropped: the request and what earlier steps read.
+const maxSeenHeadChars = 200_000
 
 var (
 	// documentPathRe is a document named by its path in a request.
@@ -189,14 +198,109 @@ func looksFiller(v string) bool {
 	return strings.Contains("01234567890123456789", digits) || strings.Contains("98765432109876543210", digits)
 }
 
-// inSeen reports whether a value was shown: as written, or - a number - by its digits.
+// inSeen reports whether a value was shown: as a whole token (holdsToken), or - a long number such as a phone - by
+// its digits, grouped as the text grouped them ("98450 12345" is 9845012345).
 func inSeen(seen, v string) bool {
-	if strings.Contains(normalise(seen), normalise(v)) {
+	if holdsToken(normalise(seen), normalise(v)) {
 		return true
 	}
+	if n, ok := canonicalNumber(v); ok && numbersIn(seen)[n] {
+		return true // the same figure written another way: 2750 for 2,750.00
+	}
 	digits := nonDigitRe.ReplaceAllString(v, "")
-	return len(digits) >= 5 && strings.Contains(nonDigitRe.ReplaceAllString(seen, ""), digits)
+	return len(digits) >= 5 && digitGroupsHold(seen, digits)
 }
+
+// isWordRune is a rune a token is made of: a letter or a digit.
+func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+
+// holdsToken reports whether text holds v as a whole token, both already normalised: where v starts (or ends) with a
+// letter or digit, the text next to it is no letter or digit, and where v starts (or ends) with a digit it is not
+// inside a longer figure either ("50" is not in "1,500" or "2.50", "1,500" is not in "1,500.25"). A plain substring
+// test made "50" seen because "1,500" was, across up to megabytes of output. (Figures written differently - 1,500
+// and 1500 - are matched by their canonical form, numbersIn, not here.)
+func holdsToken(text, v string) bool {
+	if v == "" {
+		return false
+	}
+	first, _ := utf8.DecodeRuneInString(v)
+	last, _ := utf8.DecodeLastRuneInString(v)
+	for from := 0; from <= len(text)-len(v); {
+		i := strings.Index(text[from:], v)
+		if i < 0 {
+			return false
+		}
+		start, end := from+i, from+i+len(v)
+		if tokenStartsAt(text, start, first) && tokenEndsAt(text, end, last) {
+			return true
+		}
+		_, size := utf8.DecodeRuneInString(text[start:])
+		from = start + size
+	}
+	return false
+}
+
+// tokenStartsAt reports whether a token starting with rune first may start at text[start:].
+func tokenStartsAt(text string, start int, first rune) bool {
+	if start == 0 || !isWordRune(first) {
+		return true
+	}
+	prev, size := utf8.DecodeLastRuneInString(text[:start])
+	if isWordRune(prev) {
+		return false
+	}
+	if unicode.IsDigit(first) && (prev == '.' || prev == ',') {
+		before, _ := utf8.DecodeLastRuneInString(text[:start-size])
+		return !unicode.IsDigit(before) // "1,500" holds no "500"
+	}
+	return true
+}
+
+// tokenEndsAt reports whether a token ending with rune last may end at text[:end].
+func tokenEndsAt(text string, end int, last rune) bool {
+	if end == len(text) || !isWordRune(last) {
+		return true
+	}
+	next, size := utf8.DecodeRuneInString(text[end:])
+	if isWordRune(next) {
+		return false
+	}
+	if unicode.IsDigit(last) && (next == '.' || next == ',') {
+		after, _ := utf8.DecodeRuneInString(text[end+size:])
+		return !unicode.IsDigit(after) // "1,500.25" holds no "1,500"
+	}
+	return true
+}
+
+// digitGroupsRunRe is a run of digit groups joined as a phone or an account number is written: by single spaces, dashes,
+// dots or brackets ("+91 98450-12345", "(080) 2345 6789").
+var digitGroupsRunRe = regexp.MustCompile(`\d+(?:[ ().-]{1,2}\d+)*`)
+
+// digitGroupsHold reports whether text holds digits as consecutive whole groups of one run of digit groups: the
+// digits of "+91 98450 12345" hold 9845012345 and 919845012345, never 4501 or digits joined across two unrelated
+// figures. (Before, every digit of the whole seen text was run together and searched, so almost any long number
+// was "seen".)
+func digitGroupsHold(text, digits string) bool {
+	for _, run := range digitGroupsRunRe.FindAllString(text, -1) {
+		groups := digitGroupRe.FindAllString(run, -1)
+		for i := range groups {
+			joined := ""
+			for _, g := range groups[i:] {
+				joined += g
+				if len(joined) >= len(digits) {
+					break
+				}
+			}
+			if joined == digits {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// digitGroupRe is one group of digits.
+var digitGroupRe = regexp.MustCompile(`\d+`)
 
 // unreadSources are the documents the request names or brings that are sources still to read (one path a file name):
 // a file the request asks to be made is not a source; a file that is not there (yet) cannot be
@@ -299,8 +403,6 @@ func unreadNudge(docs []string) string {
 		"read %s), then type what it says.", strings.Join(names, ", "), docs[0])
 }
 
-// noteSeen adds text the operator has now seen (the request, a command's
-// output, a person's reply), keeping the most recent maxSeenChars.
 // valueTokenRe is a token that can be a value: a run of letters, digits and . , / - _ holding at least one digit.
 var valueTokenRe = regexp.MustCompile(`[\p{L}\p{N}._/,-]*\p{N}[\p{L}\p{N}._/,-]*`)
 
@@ -334,11 +436,52 @@ func withoutCommandValues(output, command string) string {
 	})
 }
 
+// noteSeen adds text the operator has now seen (the request, a command's output, a person's reply), keeping at most
+// maxSeenChars. The first text noted (the request and what earlier steps read, up to maxSeenHeadChars) is always kept; the rest is
+// the most recent output, cut at a line so no token is cut in half.
 func (st *operatorState) noteSeen(text string) {
-	st.Seen += "\n" + text
-	if len(st.Seen) > maxSeenChars {
-		st.Seen = st.Seen[len(st.Seen)-maxSeenChars:]
+	if st.Seen == "" && st.SeenHead == 0 {
+		head := "\n" + text
+		if len(head) > maxSeenHeadChars {
+			head = trimRuneEnd(head[:maxSeenHeadChars])
+		}
+		st.SeenHead = len(head)
 	}
+	st.Seen += "\n" + text
+	if len(st.Seen) <= maxSeenChars {
+		return
+	}
+	head := st.Seen[:min(st.SeenHead, len(st.Seen))]
+	tail := st.Seen[len(st.Seen)-(maxSeenChars-len(head)):]
+	if nl := strings.IndexByte(tail, '\n'); nl >= 0 && nl < 4096 {
+		tail = tail[nl:]
+	} else {
+		tail = trimRuneStart(tail) // no line break near the cut: at least do not keep half a rune
+	}
+	st.Seen = head + tail
+}
+
+// trimRuneStart drops any bytes at the start of s that are the tail of a multi-byte rune cut mid-character, so s
+// begins on a valid UTF-8 boundary. A byte-position cut (noteSeen) can land inside a rune; the model and the
+// grounding check are both fed this text, and invalid UTF-8 at the edge breaks a quote match and an API call alike.
+func trimRuneStart(s string) string {
+	for i := 0; i < len(s) && i < utf8.UTFMax; i++ {
+		if utf8.RuneStart(s[i]) {
+			return s[i:]
+		}
+	}
+	return s
+}
+
+// trimRuneEnd drops any bytes at the end of s that are an incomplete multi-byte rune, so s ends on a whole rune.
+func trimRuneEnd(s string) string {
+	for len(s) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(s); r != utf8.RuneError || size > 1 {
+			break
+		}
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 // shellSegment is one simple command of a command line - the words between ;, &&, ||, | and line ends - with the
@@ -524,12 +667,18 @@ func untracedQuestion(untraced []string, nudge string) string {
 	}
 	if m := unreadNamedRe.FindStringSubmatch(nudge); m != nil {
 		return "I was about to type " + quotedList(untraced) + ", but I have not found it in what I have read, and I " +
-			"could not read " + m[1] + ", so I have not typed it. Where does it come from - or what should I type instead?"
+			"could not read " + m[1] + ", so I have not typed it. Where does it come from - or what should I type instead?" +
+			plainYesNote
 	}
 	return "I was about to type " + quotedList(untraced) + ", but I could not find this in your request or in " +
 		"the files and screens I read, so I have not typed it. Where does it come from - or what should I type " +
-		"instead?"
+		"instead?" + plainYesNote
 }
+
+// plainYesNote tells the person the one answer code can settle without reading their words: a reply that only says
+// yes vouches for the values; any other is read for what it does where a reading is to be had, and otherwise leaves
+// them untraced (review T-11).
+const plainYesNote = " (If it is right as it is, just reply yes.)"
 
 // secretShown is what a refusal or a question says in place of a secret value: the field, never the value. A password
 // in the chat is the leak privacy.py exists to prevent (found live 2026-10-20).
@@ -804,7 +953,7 @@ func groundingCheck(st *operatorState, command string) (string, []string) {
 	var untraced, bare []string
 	authoring := authoringRe.MatchString(st.Request)
 	for _, v := range values {
-		if strings.Contains(seen, normalise(v)) || strings.Contains(seen, normalise(withoutNewlineMarks(v))) {
+		if holdsToken(seen, normalise(v)) || holdsToken(seen, normalise(withoutNewlineMarks(v))) {
 			continue
 		}
 		// Words of the worker's own in something the request asks it to write (a letter, a reply, a memo) are
@@ -830,7 +979,7 @@ func groundingCheck(st *operatorState, command string) (string, []string) {
 				traced = traced && numbers()[n]
 			}
 			for _, t := range texts {
-				traced = traced && strings.Contains(seen, normalise(t))
+				traced = traced && holdsToken(seen, normalise(t))
 			}
 			if traced {
 				continue
@@ -1023,8 +1172,14 @@ const maxNotedOutput = 6000
 // check that a typed or written fact has a source). Found live (2026-10-21): the category totals a
 // script summed from the invoices and printed were refused at the final check as "held by no source" - the agent saw
 // files and screens, never what the work's commands printed. A figure only the model's head holds stays unsourced.
-func noteCommandOutput(command, output string) {
+//
+// What is written is withheld first (clean: the job's secret values and soul's structural ones, withholdFor), then
+// cut; the file is the worker's alone (0600), and the run's bundle carries it off the desktop (C14).
+func noteCommandOutput(command, output string, clean func(string) string) {
 	task := currentTaskID()
+	if clean != nil {
+		output = clean(output)
+	}
 	output = strings.TrimSpace(output)
 	if task == "" || output == "" || guiCommandRe.MatchString(command) {
 		return // (what gui shows is noted by the gui command itself)
@@ -1041,11 +1196,13 @@ func noteCommandOutput(command, output string) {
 	if err != nil {
 		return
 	}
-	f, err := os.OpenFile(filepath.Join(dir, task+".outputs"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	path := filepath.Join(dir, task+".outputs")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}
 	defer f.Close()
+	_ = os.Chmod(path, 0o600) // one made before this rule keeps its old mode otherwise
 	_, _ = f.Write(append(line, '\n'))
 }
 
@@ -1340,7 +1497,7 @@ func pathTraced(v, seen string) bool {
 	}
 	cut := strings.LastIndexAny(v, `\/`)
 	dir, name := v[:cut+1], v[cut+1:]
-	if !strings.Contains(seen, normalise(name)) {
+	if !holdsToken(seen, normalise(name)) {
 		return false
 	}
 	for _, w := range workFolders {
@@ -1853,12 +2010,11 @@ func readBefore(commands []string, doc string) bool {
 var numberRe = regexp.MustCompile(`\d[\d,]*(?:\.\d+)?`)
 
 // canonicalNumber is a value that is only a number - an amount, a rate, a quantity, with any currency mark or
-// separators - written one way (6,000.00, Rs. 6000 and 6000 are all "6000"), or false.
+// separators - written one way (6,000.00, Rs. 6000 and 6000 are all "6000"), or false. Letters before the digits are
+// taken only when they are a currency's code or abbreviation: "INV 5000", "PO 12" and "Bill 456" are identifiers,
+// never the numbers 5000, 12 and 456.
 func canonicalNumber(v string) (string, bool) {
-	// Any currency mark before the digits: a symbol (₹ $ € £ ¥) or a code or abbreviation (Rs., INR, USD, EUR, Fr.).
-	v = strings.TrimLeftFunc(strings.TrimSpace(v), func(r rune) bool {
-		return !unicode.IsDigit(r) && (unicode.IsLetter(r) || unicode.IsSymbol(r) || unicode.IsSpace(r) || r == '.')
-	})
+	v = withoutCurrencyMark(strings.TrimSpace(v))
 	if !numberRe.MatchString(v) || numberRe.FindString(v) != v {
 		return "", false
 	}
@@ -1869,17 +2025,77 @@ func canonicalNumber(v string) (string, bool) {
 	return strconv.FormatFloat(f, 'f', -1, 64), true
 }
 
+// currencyWords are the currency codes and abbreviations written before an amount (ISO 4217 codes and their common
+// short forms), lowercased and without dots.
+var currencyWords = map[string]bool{
+	"rs": true, "inr": true, "re": true, "usd": true, "eur": true, "gbp": true, "jpy": true, "cny": true,
+	"rmb": true, "aud": true, "cad": true, "chf": true, "sgd": true, "aed": true, "sar": true, "qar": true, "kwd": true,
+	"hkd": true, "nzd": true, "zar": true, "sek": true, "nok": true, "dkk": true, "pln": true, "czk": true, "huf": true,
+	"rub": true, "brl": true, "mxn": true, "krw": true, "try": true, "pkr": true, "lkr": true, "npr": true, "bdt": true,
+	"idr": true, "rp": true, "myr": true, "rm": true, "thb": true, "php": true, "vnd": true, "egp": true, "ngn": true,
+	"kes": true, "fr": true, "sfr": true,
+}
+
+// dollarPrefixes name a dollar only written against its sign: US$, A$, C$, S$, NZ$, HK$.
+var dollarPrefixes = map[string]bool{"us": true, "a": true, "c": true, "s": true, "nz": true, "hk": true}
+
+// withoutCurrencyMark is v with any currency mark before its digits taken off - symbols (₹ $ € £ ¥) and the words in
+// currencyWords ("Rs.", "INR", "US$") - or v unchanged from the first letters that are no currency's.
+func withoutCurrencyMark(v string) string {
+	for v != "" {
+		r, size := utf8.DecodeRuneInString(v)
+		switch {
+		case unicode.IsDigit(r):
+			return v
+		case unicode.IsSymbol(r) || unicode.IsSpace(r) || r == '.':
+			v = v[size:]
+		case unicode.IsLetter(r):
+			end := strings.IndexFunc(v, func(r rune) bool { return !unicode.IsLetter(r) })
+			if end < 0 {
+				return v
+			}
+			word := strings.ToLower(v[:end])
+			if !currencyWords[word] && !(dollarPrefixes[word] && strings.HasPrefix(v[end:], "$")) {
+				return v
+			}
+			v = v[end:]
+		default:
+			return v
+		}
+	}
+	return v
+}
+
 // numbersIn is every number written in text, each in canonicalNumber's form. A bill writes a rate as "Rs. 6,000.00"
 // and the form it goes into takes 6000: found live, the plain text match refused the chair's rate on an application bill and
 // the operator stopped to ask whether to type the bill's own figure.
+// A figure is a whole one: the digits after a figure's own point or comma ("1.2.3" -> the "3") are part of it, not a
+// figure of their own. (Digits after letters are kept: a cell's row in "B2" is how a sheet shows the column index a
+// lookup formula types.)
 func numbersIn(text string) map[string]bool {
 	out := map[string]bool{}
-	for _, m := range numberRe.FindAllString(text, -1) {
-		if n, ok := canonicalNumber(m); ok {
+	for _, loc := range numberRe.FindAllStringIndex(text, -1) {
+		if !wholeFigureAt(text, loc[0]) {
+			continue
+		}
+		if n, ok := canonicalNumber(text[loc[0]:loc[1]]); ok {
 			out[n] = true
 		}
 	}
 	return out
+}
+
+// wholeFigureAt reports whether the digits at text[start:] begin a figure of their own (numbersIn).
+func wholeFigureAt(text string, start int) bool {
+	if start == 0 {
+		return true
+	}
+	prev, size := utf8.DecodeLastRuneInString(text[:start])
+	if prev == '.' || prev == ',' {
+		before, _ := utf8.DecodeLastRuneInString(text[:start-size])
+		return !unicode.IsDigit(before)
+	}
+	return true
 }
 
 // dateRe is a date as documents and forms write it: 04-10-2026, 4/10/2026, 2026-10-04, 04-Oct-2026, 4 October 2026,

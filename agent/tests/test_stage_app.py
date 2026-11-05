@@ -1,5 +1,5 @@
 """
-Finding CL (2026-10-20, round 5 P1 on pc3): "3. A 5-slide MIS deck in PowerPoint ... 4. A Word memo" sent the workbook
+Finding CL (2026-10-20, round 5 P1): "3. A 5-slide MIS deck in PowerPoint ... 4. A Word memo" sent the workbook
 stage to open, check and save month_end_close_Oct2026.xlsx in PowerPoint, which could not open it, and the person was
 asked. A named app binds to its deliverable: a stage is held to an app only for a file of that app's kind it hands in.
 """

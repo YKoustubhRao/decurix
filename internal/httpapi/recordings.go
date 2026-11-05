@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -280,14 +281,24 @@ func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	route := s.routeRequest(worker, content)
+	ctx := withDoor(s.ActorContext(r), "chat")
+	recorder, _ := actorFrom(ctx)
+	route := s.routeRequest(worker, content, tasks.Origin{Kind: tasks.OriginRecording, ActorID: recorder.ID})
+	if route.Kind == tasks.RouteReply {
+		if _, ok := actorFrom(ctx); !ok {
+			uploadError(w, errNoReplier)
+			return
+		}
+		route.JudgementID = tasks.NewJudgementID()
+	}
 
-	if err := s.deliverRequest(r.Context(), id, content, route.TaskID); err != nil {
+	ctx = s.markWithheld(ctx, worker, route, content)
+	if err := s.deliverRequest(ctx, id, content, route); err != nil {
 		sendRequestError(w, err)
 		return
 	}
 
-	route = s.recordDelivered(r.Context(), worker, content, route)
+	route, _ = s.recordDelivered(ctx, worker, content, route)
 
 	jsonResponse(w, map[string]string{"status": "sent", "task_id": route.TaskID, "content": content})
 }
@@ -406,7 +417,65 @@ func (s *Server) replayRecordingHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	s.sendTaught(w, r, id, replayContent(session, from), "/recordings/"+session+"/replay", map[string]any{"from": from, "params": params}, "replay")
+	s.sendTaught(w, r, id, replayContent(session, from), "/recordings/"+session+"/replay", map[string]any{"from": from, "params": params}, "replay",
+		func() []string { return s.replaySecrets(r.Context(), id, session, params) })
+}
+
+// maxProgramBytes bounds the recording read for its program's parameters.
+const maxProgramBytes = 16 << 20
+
+// replaySecrets is the values of params that are secret by structure (review CP-A-4 B1): the recording's program
+// says which of its parameters are, because the recorder withheld what was typed or the field was a password field
+// (replay.compile_program's params[].secret). No word list decides it. A parameter the program does not list is held
+// (unknown is secret), and a program that cannot be read holds every value given (fail closed: some ordinary values
+// withheld for one task, never a password kept). The program can only add withholding: a worker that under-flags
+// leaks only what it already holds (docs/follow-ups.md, the trust statement).
+func (s *Server) replaySecrets(ctx context.Context, id, session string, params map[string]string) []string {
+	if len(params) == 0 {
+		return nil
+	}
+	all := func(why string) []string {
+		log.Printf("replay of %s on %s: %s, so every parameter value is held as a secret", session, id, why)
+		out := make([]string, 0, len(params))
+		for _, v := range params {
+			out = append(out, v)
+		}
+		return out
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	resp, err := s.Desktops.AgentRequest(readCtx, id, http.MethodGet, "/recordings/"+session, nil)
+	if err != nil {
+		return all("its program could not be read")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return all(fmt.Sprintf("its program could not be read (HTTP %d)", resp.StatusCode))
+	}
+	var rec struct {
+		Program *struct {
+			Params []struct {
+				Name   string `json:"name"`
+				Secret bool   `json:"secret"`
+			} `json:"params"`
+		} `json:"program"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxProgramBytes)).Decode(&rec); err != nil || rec.Program == nil {
+		return all("its program could not be read")
+	}
+	ordinary := map[string]bool{}
+	for _, p := range rec.Program.Params {
+		if !p.Secret {
+			ordinary[p.Name] = true
+		}
+	}
+	var out []string
+	for name, v := range params {
+		if !ordinary[name] {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // replayContent is the request a replay is sent and recorded as. The desktop's
@@ -564,6 +633,10 @@ func relayAgent(w http.ResponseWriter, resp *http.Response) {
 			w.Header().Set(name, value)
 		}
 	}
+	// The body is the desktop's, served from the control plane's own address: never run as one of its pages
+	// (review 2026-11-02 - a desktop answering with text/html had the dashboard's rights).
+	w.Header().Set("Content-Security-Policy", containerContentPolicy)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)

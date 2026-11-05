@@ -659,8 +659,7 @@
   border-radius:var(--r-lg);
   margin-top:2px;
 }
-.host-apps-head,
-.host-files-head{
+.host-apps-head{
   display:flex;
   align-items:center;
   justify-content:space-between;
@@ -814,72 +813,6 @@
   line-height:1.35;
 }
 
-.host-files-section{
-  padding:12px 14px;
-  background:var(--surface-2);
-  border:1px solid var(--line);
-  border-radius:var(--r-lg);
-  margin-top:6px;
-}
-.host-files-rows{
-  display:flex;
-  flex-direction:column;
-  gap:6px;
-  max-height:200px;
-  overflow-y:auto;
-  margin-top:10px;
-}
-.host-files-rows:empty{display:none}
-.host-file-row{
-  display:flex;
-  gap:10px;
-  align-items:center;
-  padding:6px 8px 6px 10px;
-  background:var(--surface);
-  border:1px solid var(--line);
-  border-radius:var(--r-md, 8px);
-}
-.host-file-kind{
-  flex:none;
-  font-size:11px;
-  font-weight:600;
-  color:var(--text-3);
-  width:42px;
-}
-.host-file-paths{
-  flex:1;
-  min-width:0;
-  font-family:var(--font-mono);
-  font-size:12px;
-  line-height:1.4;
-}
-.host-file-paths div{
-  overflow:hidden;
-  text-overflow:ellipsis;
-  white-space:nowrap;
-}
-.host-file-dest{color:var(--text-3)}
-.host-files-actions{
-  display:flex;
-  flex-wrap:wrap;
-  gap:8px;
-  align-items:center;
-  margin-top:10px;
-}
-.host-files-actions [hidden]{display:none}
-.host-files-actions .input{
-  flex:1;
-  min-width:180px;
-  height:30px;
-  font-family:var(--font-mono);
-  font-size:12px;
-}
-.host-files-note{
-  font-size:12px;
-  color:var(--text-3);
-}
-.host-files-note.err{color:var(--red, #ef4444)}
-
 /* ---------- query rail ---------- */
 
 .rail{
@@ -971,7 +904,7 @@
     </div>
 
     <div class="page-head-actions">
-      <a class="btn btn-default" href="/api/backup" download title="Download what every desktop was taught, what they learned, and this control plane's records and keys. Keep it private: it opens your saved passwords and API keys.">
+      <a class="btn btn-default" href="/api/backup" download title="Download what every desktop was taught, what they learned, and this control plane's records. It holds no keys or passwords: restored on another computer, API keys, mailbox passwords and logins are entered again. Keep it private all the same: it is your firm's history.">
         <svg width="15" height="15"><use href="#i-download"/></svg>
         Back up
       </a>
@@ -1088,6 +1021,13 @@
           <div class="dcard-spec">
             <svg width="13" height="13"><use href="#i-fork"/></svg>
             <span>Specialized for: {{.Specialization}}</span>
+          </div>
+          {{end}}
+
+          {{if .SharedNetwork}}
+          <div class="dcard-spec" data-shared-network="{{.ID}}">
+            <svg width="13" height="13"><use href="#i-alert"/></svg>
+            <span title="Made before each desktop had a network of its own: it can reach the other older desktops. Recreate it to keep it apart.">Shares a network with older desktops: recreate it to isolate it</span>
           </div>
           {{end}}
 
@@ -1244,7 +1184,7 @@
       {{$id := .ID}}{{$picks := index $.TasksByDesktop .ID}}
       <div class="dcard-trace" data-task-pick="{{.ID}}">
         <select class="select dcard-trace-select" data-task-select aria-label="Tasks given to {{.Name}}"{{if not $picks}} disabled{{end}}>
-          {{range $picks}}<option value="{{.ID}}">{{shortTitle .Request}} · {{statusLabel .Status}} · {{clock .CreatedAt}}</option>{{else}}<option value="">No tasks yet</option>{{end}}
+          {{range $picks}}<option value="{{.ID}}">{{shortTitle .Request}} · {{(outcome .Status .Checked).Label}} · {{clock .CreatedAt}}</option>{{else}}<option value="">No tasks yet</option>{{end}}
         </select>
         <a class="btn btn-default btn-sm" data-task-trace {{with $picks}}href="/tasks/{{(index . 0).ID}}/trace"{{else}}aria-disabled="true" tabindex="-1"{{end}} target="_blank" rel="noopener" title="Open the full trace of the task picked: every step, question, answer and the final report">
           <svg width="14" height="14"><use href="#i-clock"/></svg>
@@ -1456,6 +1396,8 @@
         <div class="hint">One folder on this computer that the worker can read and write. Nothing else on this computer is reachable. It is fixed when the worker is made: to share another folder, make a new worker.</div>
       </div>
 
+      {{/* Apps and sign-ins of this computer are given only at this computer: the gated listener refuses them (W-05). */}}
+      {{if not $.Gated}}
       <div class="field host-apps-section" id="hostAppsSection">
         <div class="host-apps-head">
           <div>
@@ -1484,24 +1426,8 @@
           </div>
         </div>
       </div>
+      {{end}}
 
-      <div class="field host-files-section" id="hostFilesSection">
-        <div class="host-files-head">
-          <div>
-            <span class="field-label" style="margin-bottom:2px">Copy folders from host</span>
-            <div class="hint">Each one is put at the same place in the desktop's home folder as it has in yours.</div>
-          </div>
-        </div>
-
-        <div class="host-files-rows" id="hostFilesRows"></div>
-
-        <div class="host-files-actions">
-          <button type="button" class="btn btn-quiet btn-xs" id="hostFilesPick">+ Add</button>
-          <input type="text" class="input input-sm" id="hostFilesTyped" placeholder="Path of a folder on the host" hidden>
-          <button type="button" class="btn btn-quiet btn-xs" id="hostFilesTypedAdd" hidden>Add</button>
-          <span class="host-files-note" id="hostFilesNote"></span>
-        </div>
-      </div>
     </div>
 
     <div class="dialog-foot">
@@ -1547,30 +1473,50 @@
     var width = Math.min(960, Math.max(120,
       Math.round((img.clientWidth || 320) * (window.devicePixelRatio || 1))));
 
-    return "/api/desktops/screenshot?id=" + encodeURIComponent(img.dataset.shot) +
-      "&w=" + width + "&t=" + Date.now();
+    return "/api/desktops/screenshot?id=" + encodeURIComponent(img.dataset.shot) + "&w=" + width;
   }
 
+  /* Each sweep asks again, with the ETag of the picture the card shows: a
+     screen that has not changed is a 304 - no bytes, no decode - and a changed
+     one comes at once, as before. The URL stays the same (no cache-buster), and
+     the HTTP cache is left out (no-store) so the 304 reaches this code instead
+     of being answered from a cached copy (resource plan P1 #4). */
   function loadShot(img){
-    return new Promise(function(resolve){
-      var next = new Image();
+    var headers = {};
+    if(img._shotTag){ headers["If-None-Match"] = img._shotTag; }
 
-      next.onload = function(){
-        img.src = next.src;
-        img.classList.add("is-live");
+    return fetch(shotURL(img), {cache: "no-store", credentials: "same-origin", headers: headers})
+      .then(function(res){
+        if(res.status === 304){ return; }
+        /* A desktop that is still booting has no screen to read yet. Leave the
+           placeholder showing and try again on the next sweep. */
+        if(!res.ok){ return; }
 
-        var placeholder = img.parentNode.querySelector("[data-shot-placeholder]");
-        if(placeholder){ placeholder.style.display = "none"; }
+        var tag = res.headers.get("ETag");
+        return res.blob().then(function(blob){
+          return new Promise(function(resolve){
+            var url = URL.createObjectURL(blob);
+            var next = new Image();
 
-        resolve();
-      };
+            next.onload = function(){
+              var old = img._shotURL;
+              img.src = url;
+              img._shotURL = url;
+              img._shotTag = tag;
+              if(old){ URL.revokeObjectURL(old); }
+              img.classList.add("is-live");
 
-      /* A desktop that is still booting has no screen to read yet. Leave the
-         placeholder showing and try again on the next sweep. */
-      next.onerror = function(){ resolve(); };
+              var placeholder = img.parentNode.querySelector("[data-shot-placeholder]");
+              if(placeholder){ placeholder.style.display = "none"; }
 
-      next.src = shotURL(img);
-    });
+              resolve();
+            };
+            next.onerror = function(){ URL.revokeObjectURL(url); resolve(); };
+            next.src = url;
+          });
+        });
+      })
+      .catch(function(){ /* the next sweep tries again */ });
   }
 
   async function sweepShots(){
@@ -1704,7 +1650,6 @@
     createDialog.showModal();
     document.getElementById(parent ? "dSpecialization" : "dName").focus();
     resetHostAppsSection();
-    resetHostFilesSection();
   }
 
   document.getElementById("newDesktopBtn").addEventListener("click", function(){ openCreate(); });
@@ -1775,6 +1720,13 @@
      this computer's own address; over the phone link they are refused and
      the panel says so. */
   var BRAIN_NAMES = {claude: "Claude", azure: "Azure OpenAI", openai: "OpenAI / compatible"};
+
+  /* isHosted says whether brain p is one of the hosted models above, set up with a key here. Every check of "is a
+     hosted model chosen" goes through it: the create guard once listed claude and azure by hand and missed openai,
+     so a desktop was created on an OpenAI brain that was never set up, or with a half-typed key never checked. */
+  function isHosted(p){
+    return Object.prototype.hasOwnProperty.call(BRAIN_NAMES, p);
+  }
   var modelInfo = null;
   var brainEditing = false;
 
@@ -1801,7 +1753,7 @@
     var p = chosenBrain();
     var status = document.getElementById("brainStatus");
     var setup = document.getElementById("brainSetup");
-    var hosted = p === "claude" || p === "azure" || p === "openai";
+    var hosted = isHosted(p);
     var info = providerInfo(p);
 
     if(!hosted){
@@ -2166,156 +2118,6 @@
     });
   }
 
-  /* ---------------- host files & directories copy ---------------- */
-
-  /* The installed app opens the host chooser; a native control plane can
-     open it itself. Other browsers can enter a path visible to the server. */
-  var hostFilesRows = document.getElementById("hostFilesRows");
-  var hostFilesPick = document.getElementById("hostFilesPick");
-  var hostFilesTyped = document.getElementById("hostFilesTyped");
-  var hostFilesTypedAdd = document.getElementById("hostFilesTypedAdd");
-  var hostFilesNote = document.getElementById("hostFilesNote");
-  var hostFilesChosen = [];
-  var hostFilesNoPicker = false;
-
-  function hostFilesSay(text, isError){
-    hostFilesNote.textContent = text || "";
-    hostFilesNote.className = "host-files-note" + (isError ? " err" : "");
-  }
-
-  function hostFilesShowChoices(show){
-    hostFilesPick.hidden = hostFilesNoPicker;
-    hostFilesTyped.hidden = !show || !hostFilesNoPicker;
-    hostFilesTypedAdd.hidden = !show || !hostFilesNoPicker;
-    if(show && hostFilesNoPicker){ hostFilesTyped.focus(); }
-  }
-
-  function renderHostFiles(){
-    hostFilesRows.textContent = "";
-    hostFilesChosen.forEach(function(item){
-      var row = node("div", "host-file-row");
-
-      var kind = node("span", "host-file-kind", item.is_dir ? "Folder" : "File");
-
-      var paths = node("div", "host-file-paths");
-      var src = node("div", "", item.display_path || item.path);
-      src.title = item.display_path || item.path;
-      var dest = node("div", "host-file-dest");
-      dest.textContent = "→ " + String(item.dest || "").replace(/^\/home\/headless/, "~");
-      dest.title = "Where it will be in the desktop";
-      paths.appendChild(src);
-      paths.appendChild(dest);
-
-      var remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "btn btn-quiet btn-xs";
-      remove.title = "Do not copy this";
-      remove.textContent = "✕";
-      remove.addEventListener("click", function(){
-        hostFilesChosen = hostFilesChosen.filter(function(other){ return other !== item; });
-        renderHostFiles();
-      });
-
-      row.appendChild(kind);
-      row.appendChild(paths);
-      row.appendChild(remove);
-      hostFilesRows.appendChild(row);
-    });
-  }
-
-  function addHostFiles(items){
-    (items || []).forEach(function(item){
-      var known = hostFilesChosen.some(function(other){ return other.path === item.path; });
-      if(item && item.path && !known){ hostFilesChosen.push(item); }
-    });
-    renderHostFiles();
-  }
-
-  function pickHostFiles(type){
-    hostFilesPick.disabled = true;
-    hostFilesSay("Choose in the window that opened on this computer…");
-
-    var selection;
-    if(window.decurixHost && typeof window.decurixHost.pickFolders === "function"){
-      selection = window.decurixHost.pickFolders().then(function(data){
-        if(data.busy){ return data; }
-        return Promise.all((data.paths || []).map(function(item){
-          return fetch("/api/host-paths/validate?path=" + encodeURIComponent(item.path))
-            .then(function(res){
-              if(!res.ok){ throw new Error("Could not check the selected folder."); }
-              return res.json();
-            })
-            .then(function(info){
-              if(!info.exists || !info.is_dir){ throw new Error("The selected folder is not accessible to Decurix: " + item.display_path); }
-              return {path: info.path, display_path: item.display_path, is_dir: true, dest: info.default_dest};
-            });
-        })).then(function(paths){ return {paths: paths}; });
-      });
-    } else {
-      selection = fetch("/api/host-paths/browse?type=" + type, {method: "POST"})
-      .then(function(res){
-        if(res.status === 403 || res.status === 404){ return {unavailable: true}; }
-        if(!res.ok){ throw new Error("failed"); }
-        return res.json();
-      });
-    }
-    selection.then(function(data){
-        hostFilesSay("");
-        if(data.unavailable){
-          hostFilesNoPicker = true;
-          hostFilesShowChoices(true);
-          hostFilesSay("No file chooser can be opened from here. Type the path instead.");
-          return;
-        }
-        if(data.busy){
-          hostFilesSay("A chooser is already open on this computer.", true);
-          return;
-        }
-        addHostFiles(data.paths);
-        hostFilesShowChoices(false);
-      })
-      .catch(function(err){
-        hostFilesSay(err.message || "Could not open the file chooser.", true);
-      })
-      .then(function(){
-        hostFilesPick.disabled = false;
-      });
-  }
-
-  function addTypedHostFile(){
-    var typed = hostFilesTyped.value.trim();
-    if(!typed){ return; }
-
-    fetch("/api/host-paths/validate?path=" + encodeURIComponent(typed))
-      .then(function(res){ return res.json(); })
-      .then(function(data){
-        if(!data || !data.exists){
-          hostFilesSay("Nothing is at that path on the host.", true);
-          return;
-        }
-        addHostFiles([{path: data.path, is_dir: data.is_dir, dest: data.default_dest}]);
-        hostFilesTyped.value = "";
-        hostFilesSay("");
-      })
-      .catch(function(){
-        hostFilesSay("Could not check that path.", true);
-      });
-  }
-
-  function resetHostFilesSection(){
-    hostFilesChosen = [];
-    renderHostFiles();
-    hostFilesShowChoices(false);
-    hostFilesTyped.value = "";
-    hostFilesSay("");
-  }
-
-  hostFilesPick.addEventListener("click", function(){ pickHostFiles("folder"); });
-  hostFilesTypedAdd.addEventListener("click", addTypedHostFile);
-  hostFilesTyped.addEventListener("keydown", function(e){
-    if(e.key === "Enter"){ e.preventDefault(); addTypedHostFile(); }
-  });
-
   function insertProvisioningCard(info){
     var grid = document.querySelector(".grid");
     if(!grid){ return null; }
@@ -2332,7 +2134,7 @@
     card.dataset.desktopId = info.id;
 
     var profileLabel = info.profile === "ai" ? "AI Developer" : (info.profile === "developer" ? "Developer" : "Basic");
-    var harnessLabel = "TheBot · " + ({claude: "Claude", azure: "Azure"}[info.brain] || "Ollama");
+    var harnessLabel = "TheBot · " + ({claude: "Claude", azure: "Azure", openai: "OpenAI"}[info.brain] || "Ollama");
     var cpusLabel = info.cpus == 1 ? "1 core" : (info.cpus + " cores");
     var url = "/desktop/" + encodeURIComponent(info.id) + "/";
 
@@ -2460,10 +2262,6 @@
       });
     }
 
-    /* No destination is sent: the control plane maps each path itself. */
-    var hostCopyPaths = hostFilesChosen.map(function(item){ return {src: item.path, dest: ""}; });
-    var copyHostFiles = hostCopyPaths.length > 0;
-
     // Immediately insert spinning VM card into the dashboard grid
     var card = insertProvisioningCard({
       id: sanitizedID,
@@ -2499,9 +2297,7 @@
         parent_id: parentId,
         shared_folder: sharedFolder,
         copy_host_apps: copyHostApps ? "1" : "0",
-        host_apps: selectedApps.join(","),
-        copy_host_files: copyHostFiles ? "1" : "0",
-        host_paths: JSON.stringify(hostCopyPaths)
+        host_apps: selectedApps.join(",")
       });
 
       busy(false);
@@ -2534,7 +2330,7 @@
        desktop is created only once that worked - never one that would fail
        its first request. */
     var brain = chosenBrain();
-    if((brain === "claude" || brain === "azure") && (!providerInfo(brain).configured || brainEditing)){
+    if(isHosted(brain) && (!providerInfo(brain).configured || brainEditing)){
       var filled = document.getElementById("brainKey").value.trim() || providerInfo(brain).configured;
       if(!filled){
         document.getElementById("brainError").textContent = "Add the API key first.";
@@ -2902,8 +2698,7 @@
     finally{ memoryPolling = false; }
   }
 
-  setInterval(pollMemory, 4000);
-  document.addEventListener("visibilitychange", pollMemory);
+  Decurix.poll(pollMemory, 4000);
 
   /* ---------------- task trace picker ----------------
      Each card's dropdown lists the desktop's tasks newest first; the Trace
@@ -3001,10 +2796,7 @@
 
   document.querySelectorAll("[data-task-pick]").forEach(traceHref);
   pollTaskPicks();
-  setInterval(pollTaskPicks, 4000);
-  document.addEventListener("visibilitychange", function(){
-    if(document.visibilityState === "visible"){ pollTaskPicks(); }
-  });
+  Decurix.poll(pollTaskPicks, 4000);
 
   memoryForm("[data-link-memory-form]", "/api/desktops/memory/link", "Sharing…", "Share memory");
 
@@ -3304,9 +3096,9 @@
   }
 
   pollActivity();
-  setInterval(pollActivity, 2500);
+  Decurix.poll(pollActivity, 2500);
   document.addEventListener("visibilitychange", function(){
-    if(document.visibilityState === "visible"){ pollActivity(); paintCreated(); }
+    if(document.visibilityState === "visible"){ paintCreated(); }
   });
   setInterval(paintActivity, 1000);
 
@@ -3331,8 +3123,10 @@
     }
   }
 
+  /* The rail also feeds the notifications of a tab in the background (data-query-poll="own"), so it keeps a slow
+     pace while hidden. */
   loadNotes();
-  setInterval(loadNotes, 2500);
+  Decurix.poll(loadNotes, 2500, {hidden: 30000});
 
   /* ---------------- resource autoscaling alerts ---------------- */
   var activeAlerts = new Map();
@@ -3439,18 +3233,36 @@
   });
 
   pollResourceAlerts();
-  setInterval(pollResourceAlerts, 4000);
+  Decurix.poll(pollResourceAlerts, 4000);
 
   /* ---------------- provisioning desktop poller ---------------- */
+
+  /* A desktop that finished provisioning is shown by reloading the page - but not under a dialog the person is filling
+     in: a reload there threw away a half-typed API key or a request (review 2026-11-02). It waits for the dialog to
+     close. */
+  var reloadPending = false;
+  function reloadWhenFree(){
+    if(reloadPending){ return; }
+    var open = Array.prototype.find.call(document.querySelectorAll("dialog"), function(d){ return d.open; });
+    if(!open){ location.reload(); return; }
+    reloadPending = true;
+    open.addEventListener("close", function(){ reloadPending = false; reloadWhenFree(); }, {once: true});
+  }
+  /* One status request per card at a time, and none for a card whose creation failed: a failed card stays as it is
+     (its reason shown) instead of being asked about every 1.5 s for good (W-20). */
+  var provAsking = {};
   function checkProvisioningDesktops(){
     var provCards = document.querySelectorAll(".status.provisioning");
     if(!provCards || provCards.length === 0){ return; }
 
     provCards.forEach(function(pill){
       var card = pill.closest(".dcard");
-      if(!card || !card.dataset.desktopId){ return; }
+      if(!card || !card.dataset.desktopId || card.dataset.provFailed){ return; }
       var id = card.dataset.desktopId;
+      if(provAsking[id]){ return; }
+      provAsking[id] = true;
       fetch("/api/desktops/status?id=" + encodeURIComponent(id))
+        .finally(function(){ provAsking[id] = false; })
         .then(function(res){
           if(!res.ok){ return null; }
           return res.json();
@@ -3458,10 +3270,11 @@
         .then(function(data){
           if(!data){ return; }
           if(data.ready || (data.status === "running" && data.stage === "ready")){
-            location.reload();
+            reloadWhenFree();
             return;
           }
           if(data.status === "failed"){
+            card.dataset.provFailed = "1";
             var txt = card.querySelector("[data-prov-text]");
             if(txt){
               txt.textContent = "Failed: " + (data.error || data.message || "Unknown error");
@@ -3485,7 +3298,7 @@
     });
   }
   checkProvisioningDesktops();
-  setInterval(checkProvisioningDesktops, 1500);
+  Decurix.poll(checkProvisioningDesktops, 1500);
 
   /* ---------------- shortcuts ---------------- */
 

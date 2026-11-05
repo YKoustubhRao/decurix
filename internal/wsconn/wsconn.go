@@ -61,6 +61,12 @@ func Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error) {
 			return nil, errors.New("cross-origin websocket")
 		}
 	}
+	return handshake(w, r, "")
+}
+
+// handshake answers a WebSocket upgrade request (its Upgrade header checked) with the 101, choosing protocol when the
+// client offered it, and hijacks the connection.
+func handshake(w http.ResponseWriter, r *http.Request, protocol string) (*Conn, error) {
 	key := r.Header.Get("Sec-WebSocket-Key")
 	if key == "" || r.Header.Get("Sec-WebSocket-Version") != "13" {
 		http.Error(w, "bad WebSocket handshake", http.StatusBadRequest)
@@ -76,8 +82,12 @@ func Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error) {
 		return nil, err
 	}
 	conn.SetWriteDeadline(time.Now().Add(writeWait))
+	chosen := ""
+	if protocol != "" && headerHasToken(r.Header, "Sec-WebSocket-Protocol", protocol) {
+		chosen = "Sec-WebSocket-Protocol: " + protocol + "\r\n"
+	}
 	_, err = io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "+
-		acceptKey(key)+"\r\n\r\n")
+		acceptKey(key)+"\r\n"+chosen+"\r\n")
 	if err != nil {
 		conn.Close()
 		return nil, err

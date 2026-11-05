@@ -125,6 +125,10 @@ type Options struct {
 	KeepAlive string
 	// Stop sequence list to truncate generation early when model finishes structured output
 	Stop []string
+	// Purpose says what the call is for: one of the Purpose constants (purpose.go). It travels beside the request,
+	// in a header (X-Decurix-Purpose) and in soul's trace, never in the request body. Required at every call site
+	// (purpose_test.go); a call without one goes out as PurposeUntagged and is logged once per call site.
+	Purpose string
 }
 
 type Provider interface {

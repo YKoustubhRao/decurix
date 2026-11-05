@@ -100,6 +100,7 @@ def parts(paths, heading):
                 break
             out.append(llm_client.image_part(path=image))
             pictures += 1
+        office.drop_pages(doc.get("images"))  # (read into the parts above: the pictures are used up)
 
     if out:
         out.insert(0, {"type": "text", "text": heading})
@@ -230,12 +231,13 @@ def unpack_archive(archive, into=None):
     if not zipfile.is_zipfile(archive):
         raise ArchiveError("it is not a readable .zip file")
     stem = _UNSAFE_NAME.sub("_", os.path.splitext(os.path.basename(archive))[0]).strip("_.") or "archive"
-    folder = into or os.path.join(os.path.dirname(archive), stem)
+    wanted = into or os.path.join(os.path.dirname(archive), stem)
     try:
         z = zipfile.ZipFile(archive)
     except (zipfile.BadZipFile, OSError) as exc:
         raise ArchiveError(f"it could not be opened ({exc})") from exc
     with z:
+        folder = None
         members = [i for i in z.infolist() if not i.is_dir() and not _JUNK.search(i.filename.replace("\\", "/"))]
         if not members:
             raise ArchiveError("it holds no files")
@@ -259,13 +261,31 @@ def unpack_archive(archive, into=None):
                 rel = f"{base}_{n}{ext}"
             planned.append((info, rel))
         try:
+            folder = _fresh_folder(wanted)
             return _extract(z, planned, folder)
         except (ArchiveError, zipfile.BadZipFile, zlib.error, OSError, RuntimeError, NotImplementedError, EOFError) as exc:
-            # Whatever went wrong part way, nothing of the archive is left behind: all of it or none.
-            shutil.rmtree(folder, ignore_errors=True)
+            # Whatever went wrong part way, nothing of the archive is left behind: all of it or none. Only the folder
+            # this call made is removed (review 2026-11-03, N-F1: a folder of the same name the person already had,
+            # and their files in it, were deleted with it).
+            if folder is not None:
+                shutil.rmtree(folder, ignore_errors=True)
             if isinstance(exc, ArchiveError):
                 raise
             raise ArchiveError(f"it is damaged or cannot be read here ({exc})") from exc
+
+
+def _fresh_folder(wanted):
+    """A folder that did not exist, made now: `wanted`, else wanted_2, wanted_3 ... - never one already there."""
+
+    for n in range(1, 1000):
+        folder = wanted if n == 1 else f"{wanted}_{n}"
+        try:
+            os.makedirs(os.path.dirname(folder) or ".", exist_ok=True)
+            os.mkdir(folder)
+            return folder
+        except FileExistsError:
+            continue
+    raise ArchiveError("there is no free folder name beside it to unpack into")
 
 
 def _extract(z, planned, folder):

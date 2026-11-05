@@ -1,5 +1,5 @@
 """
-DE (round 5 P4 on pc3, 2026-10-21, series 13, reported "Done"): the four welcome drafts named managers no source has
+DE (round 5 P4, 2026-10-21, series 13, reported "Done"): the four welcome drafts named managers no source has
 (Rakesh Menon, Meera Sethi, Arjun Rao) or another joiner's (Jenny Wu), and joining dates of 04 and 11 Nov for joiners
 starting 02 Nov - the tracker and the portal were right. Since the harness audit (2026-10-21) two checks: provenance
 (blocking) - a fact a draft states that no source and no recorded work holds; and the draft's facts against its
@@ -30,7 +30,7 @@ def draft_fact_problems(drafts, tables, source_text=""):
     return out
 
 
-@unittest.skipUnless(TRACKER.is_file(), "round 5 P4's tracker is not on this machine")
+@fixture_paths.skip_unless(TRACKER.is_file(), "round 5 P4's tracker is not on this machine")
 class TheLiveDrafts(unittest.TestCase):
     def setUp(self):
         self.tables = [(h, r) for _, h, r in stage_facts.tables_of([str(TRACKER)])]

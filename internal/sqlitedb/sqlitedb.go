@@ -8,10 +8,12 @@
 package sqlitedb
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -79,7 +81,9 @@ func Open(path string) (*sql.DB, error) {
 	query.Add("_pragma", "foreign_keys(ON)")
 	query.Add("_pragma", "auto_vacuum(INCREMENTAL)")
 	query.Add("_pragma", "temp_store(MEMORY)")
-	query.Add("_pragma", "cache_size(-16000)")
+	// 4 MB of page cache a connection, eight connections: 32 MB at most, where 16 MB each held up to 128 MB for a
+	// database the OS file cache and the mmap below already serve (resource plan P1 #6).
+	query.Add("_pragma", "cache_size(-4000)")
 	query.Add("_pragma", "mmap_size(67108864)")
 	// Every transaction takes the write lock when it begins (BEGIN IMMEDIATE),
 	// waiting under busy_timeout. A deferred one that read first and wrote
@@ -100,7 +104,104 @@ func Open(path string) (*sql.DB, error) {
 		uriPath = "/" + uriPath // Windows drive letter in a file URI.
 	}
 	dsn := url.URL{Scheme: "file", Path: uriPath, RawQuery: query.Encode()}
-	return open(dsn.String(), maxOpenConns)
+	db, err := open(dsn.String(), maxOpenConns)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := ensureIncrementalVacuum(db, absPath); err != nil {
+		log.Printf("sqlitedb: %s: could not turn on incremental vacuum: %v", absPath, err)
+	}
+	return db, nil
+}
+
+// ensureIncrementalVacuum turns on incremental vacuum for a database made before it was asked for: the
+// auto_vacuum(INCREMENTAL) above takes effect only on a database that has no tables yet, so on an existing one it
+// did nothing and freed pages were never given back (resource plan B2). Only when the setting differs: it is set, and
+// one VACUUM rebuilds the file so it holds. It reports whether it did.
+//
+// The VACUUM runs on a connection of its own with temp_store = FILE: with the pool's temp_store = MEMORY its copy of
+// the database was built in RAM (measured on a 58 MB database: 231 MB at the peak, against 122 MB in a file; a 1 GB
+// database would have spiked 3-4 GB at start). WAL mode writes the rebuilt file through the WAL, so a TRUNCATE
+// checkpoint after it gives that back (it stayed the database's size for the life of the process). It is skipped,
+// and said why, when the data folder or the temp folder has less than twice the database free; it is tried again at
+// the next start. Size before and after, and the time it took, are logged.
+func ensureIncrementalVacuum(db *sql.DB, path string) (bool, error) {
+	var mode int
+	if err := db.QueryRow(`PRAGMA auto_vacuum`).Scan(&mode); err != nil {
+		return false, err
+	}
+	if mode == 2 { // INCREMENTAL
+		return false, nil
+	}
+	size, err := databaseSize(db)
+	if err != nil {
+		return false, err
+	}
+	need := 2 * size
+	for _, dir := range []string{filepath.Dir(path), os.TempDir()} {
+		if free, err := diskFree(dir); err == nil && free < uint64(need) {
+			log.Printf("sqlitedb: %s: not turning on incremental vacuum yet: it needs %d MB free in %s for one VACUUM, and %d MB is; it is tried again at the next start",
+				path, need>>20, dir, free>>20)
+			return false, nil
+		}
+	}
+	log.Printf("sqlitedb: %s: turning on incremental vacuum (auto_vacuum was %d); one VACUUM of %d MB", path, mode, size>>20)
+	started := time.Now()
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `PRAGMA temp_store = FILE`); err != nil {
+		return false, err
+	}
+	// The pool's own setting, on this connection too, whatever happens below.
+	defer func() { _, _ = conn.ExecContext(ctx, `PRAGMA temp_store = MEMORY`) }()
+	if _, err := conn.ExecContext(ctx, `PRAGMA auto_vacuum = INCREMENTAL`); err != nil {
+		return false, err
+	}
+	if _, err := conn.ExecContext(ctx, `VACUUM`); err != nil {
+		return false, err
+	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		log.Printf("sqlitedb: %s: checkpoint after the VACUUM: %v", path, err)
+	}
+	after, _ := databaseSize(db)
+	log.Printf("sqlitedb: %s: incremental vacuum on; %d MB -> %d MB in %s", path, size>>20, after>>20, time.Since(started).Round(time.Millisecond))
+	return true, nil
+}
+
+// diskFree is freeDisk; a variable only so a test can say the disk is full.
+var diskFree = freeDisk
+
+// databaseSize is the database's size in bytes: its pages times their size.
+func databaseSize(db *sql.DB) (int64, error) {
+	var pages, pageSize int64
+	if err := db.QueryRow(`PRAGMA page_count`).Scan(&pages); err != nil {
+		return 0, err
+	}
+	if err := db.QueryRow(`PRAGMA page_size`).Scan(&pageSize); err != nil {
+		return 0, err
+	}
+	return pages * pageSize, nil
+}
+
+// KeepVacuumed gives freed pages back to the filesystem every interval, a batch at a time (IncrementalVacuum), until
+// ctx ends. A database whose rows come and go (calls, steps, chat) otherwise only grows.
+func KeepVacuumed(ctx context.Context, db *sql.DB, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := IncrementalVacuum(db, 2000); err != nil {
+				log.Printf("sqlitedb: incremental vacuum: %v", err)
+			}
+		}
+	}
 }
 
 // IncrementalVacuum frees up to pages unused database pages back to the host filesystem.

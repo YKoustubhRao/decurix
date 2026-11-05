@@ -38,7 +38,9 @@ class Values(unittest.TestCase):
         self.assertTrue(records.same_value("76,700.00", "76700"))
         self.assertTrue(records.same_value("Rs. 5,850.00", "5850"))
         self.assertFalse(records.same_value("1", "1188"))
-        self.assertTrue(records.same_value("01-10-2026", "1/10/2026"))
+        self.assertTrue(records.same_value("01-10-2026", "1/10/2026", order="day"))
+        # (With no order known for either side, a date that reads two ways is never decided by its layout: W0.2.)
+        self.assertIsNone(records.same_value("01-10-2026", "1/10/2026"))
         self.assertTrue(records.same_value("1-Oct-26", "2026-10-01"))
         self.assertFalse(records.same_value("01-10-2026", "10-01-2026"))
         self.assertTrue(records.same_value("Coastal  Infra Projects", "coastal infra projects"))
@@ -48,8 +50,15 @@ class Values(unittest.TestCase):
         self.assertTrue(records.stands_in("76700", BILL))
         self.assertTrue(records.stands_in("5850.00", BILL))
         self.assertTrue(records.stands_in("1188", BILL))
-        self.assertTrue(records.stands_in("1-10-2026", BILL))
-        self.assertTrue(records.stands_in("2026-10-01", BILL))
+        with mock.patch("decurix_agent.task_context.source_date_order", lambda task_id=None: "day"), \
+                mock.patch("decurix_agent.task_context.app_date_order", lambda task_id=None: "day"):
+            self.assertTrue(records.stands_in("1-10-2026", BILL))
+            self.assertTrue(records.stands_in("2026-10-01", BILL))
+        # With no order known, the bill's 01/10/2026 may be 10 January: an ISO date is not taken as standing in it
+        # (W0.2 - it was read day first by default).
+        with mock.patch("decurix_agent.task_context.source_date_order", lambda task_id=None: None), \
+                mock.patch("decurix_agent.task_context.app_date_order", lambda task_id=None: None):
+            self.assertFalse(records.stands_in("2026-10-01", BILL))
         self.assertTrue(records.stands_in("Coastal Infra Projects", BILL))
         self.assertTrue(records.stands_in("29AAGFC5512K1ZC", BILL))
         self.assertFalse(records.stands_in("76800", BILL))
@@ -57,6 +66,16 @@ class Values(unittest.TestCase):
         self.assertFalse(records.stands_in("Hebri Agro", BILL))
         # (A number inside a longer number is not that number: 850 is not in 5,850.00.)
         self.assertFalse(records.stands_in("850", BILL))
+
+    def test_an_identifier_stands_in_only_as_a_whole_token(self):
+        # Recheck (2026-11-02): another document's longer number counted as this one's read back.
+        self.assertFalse(records.stands_in("INV-1234", "Invoice INV-12345"))
+        self.assertFalse(records.stands_in("INV-1234", "Invoice XINV-1234 saved"))
+        self.assertFalse(records.stands_in("B9", "Qty 9 | B91"))
+        self.assertTrue(records.stands_in("INV-1234", "Invoice INV-1234 saved"))
+        self.assertTrue(records.stands_in("INV-1234", "Invoice No: inv 1234, dated"))
+        self.assertTrue(records.stands_in("INV-1234", "INV-1234/A"))
+        self.assertTrue(records.stands_in("B9", "Voucher B9 | Alpha Farms"))
 
 
 class Labels(unittest.TestCase):
@@ -86,7 +105,11 @@ class Declaring(unittest.TestCase):
                   mock.patch("decurix_agent.task_context.current", lambda: "t0123456789abcdef"),
                   mock.patch("decurix_agent.task_context.current_request", lambda: "Enter the bills in the books of Karkala Steel Fabricators 2026-27"),
                   mock.patch("decurix_agent.computer.evidence.read", lambda task_id=None: "a look at the screen then. combobox \"Particulars 1\" holds: Sales@18% | CGST@9% | SGST@9% | Karnataka"),
-                  mock.patch("decurix_agent.computer.evidence.looks", lambda task_id=None: [])):
+                  mock.patch("decurix_agent.computer.evidence.looks", lambda task_id=None: []),
+                  # The books of an org whose dates are written day first (the control plane's date_order, W0.2): the
+                  # bill's 01/10/2026 could be read either way, and only the order decides it is 1 October.
+                  mock.patch("decurix_agent.task_context.source_date_order", lambda task_id=None: "day"),
+                  mock.patch("decurix_agent.task_context.app_date_order", lambda task_id=None: "day")):
             p.start()
             self.addCleanup(p.stop)
 
@@ -194,7 +217,10 @@ class Declaring(unittest.TestCase):
     def test_a_party_chosen_from_the_applications_list_is_a_source_and_never_blocks(self):
         # Found live (2026-10-26): the ledger found by its tax number was named otherwise than the bill wrote it.
         chosen = [{"kind": "select", "outcome": "done", "option": "Malnad Agro Foods Pvt Ltd",
-                   "summary": 'select combobox "Party A/c name" - took the entry "Malnad Agro Foods Pvt Ltd" for "Malnad Agro Foods & Beverages"'}]
+                   "summary": 'select combobox "Party A/c name" - took the entry "Malnad Agro Foods Pvt Ltd" for "Malnad Agro Foods & Beverages"',
+                   # (Who chose the entry is the action's structured fact since review round 10, R9-B1 - never its
+                   # summary's words: found by its tax number, an identifier chose it.)
+                   "taken": "Malnad Agro Foods Pvt Ltd", "resolved_by": "identifier"}]
         with mock.patch("decurix_agent.computer.evidence._task_events", lambda task_id=None: chosen):
             rec, lines = records.declare("1188", str(self.bill), dict(FIELDS, **{"Party A/c name": "Malnad Agro Foods Pvt Ltd"}))
             self.assertEqual(rec["fields"]["Party A/c name"]["from"], "chosen")
@@ -263,6 +289,51 @@ class WholeCodeTests(Declaring):
         self.assertEqual(rec["fields"]["No."]["from"], "source")
 
 
+class AUnitTheFieldStates(Declaring):
+    """Review round 3, R5: a unit on one side only made every GST rate wait ("18%" against the form's "18"); the form's
+    label decides it, and without a label that states the unit it still waits."""
+
+    def _rec(self, fields):
+        doc = Path(self.tmp.name) / "line.txt"
+        doc.write_text("Rate: 18%\nWeight: 15 kg\nQuantity: 2 Nos\n", encoding="utf-8")
+        rec, _ = records.declare("line", str(doc), fields)
+        return rec
+
+    def test_the_label_states_the_unit(self):
+        rec = self._rec({"Rate": "18%", "Weight": "15 kg", "Quantity": "2 Nos"})
+        blocking, _, _ = records.presave(rec, [("Rate (%)", "18.000"), ("Weight (kg)", "15"), ("Quantity (Nos.)", "2")])
+        self.assertEqual(blocking, [])
+        blocking, _, _ = records.presave(rec, [("Rate (%)", "12"), ("Weight (kg)", "15"), ("Quantity (Nos.)", "2")])
+        self.assertEqual(blocking, ["Rate (%) holds '12' where the record says '18%'"])
+
+    def test_no_label_or_another_unit_still_waits_and_says_how(self):
+        rec = self._rec({"Rate": "18%", "Weight": "15 kg"})
+        blocking, _, _ = records.presave(rec, [("Rate", "18"), ("Weight (lb)", "15")])
+        self.assertEqual(len(blocking), 2, blocking)
+        self.assertTrue(all("declare the record's figure without the unit" in b for b in blocking), blocking)
+        blocking, _, _ = records.presave(rec, [("Rate (%)", "18"), ("Weight kg/lb", "15")])  # alternatives state none
+        self.assertEqual(len(blocking), 1, blocking)
+        self.assertIn("Weight kg/lb", blocking[0])
+
+
+class TheApplicationsOwnEntryWhenUndecided(Declaring):
+    """Review round 3, nit 4: the application's own entry was tried only on "differs", so an undecided pair - a figure
+    against an identifier - blocked without trying it."""
+
+    def test_an_undecided_pair_is_rescued_by_the_applications_entry(self):
+        rec, _ = records.declare("1188", str(self.bill), FIELDS)
+        form = [(k, v) for k, v in FIELDS.items()]
+        form[0] = ("No.", "INV-1188")
+        self.assertIsNone(records.compare_shown("INV-1188", "1188").same)
+        blocking, _, _ = records.presave(rec, form)
+        self.assertEqual(len(blocking), 1, blocking)
+        chosen = [{"kind": "select", "outcome": "done", "option": "INV-1188"}]
+        with mock.patch("decurix_agent.computer.evidence._task_events", lambda task_id=None: chosen):
+            blocking, advisory, _ = records.presave(rec, form)
+        self.assertEqual(blocking, [])
+        self.assertTrue(any("application's own entry 'INV-1188'" in a for a in advisory), advisory)
+
+
 class IdentifierOnTheForm(Declaring):
     """Found live (2026-10-27): a customer ledger saved with its identifier left empty; nothing could resolve it after."""
 
@@ -306,4 +377,21 @@ class TheRecordForTheForm(unittest.TestCase):
         voucher_form = [("Voucher type", "Sales"), ("No.", "1"), ("Date", ""), ("Party A/c name", ""),
                         ("Amount 1", ""), ("Amount 2", ""), ("Amount 3", "")]
         self.assertIs(records.open_record([bill], "Sales | 1", form=voucher_form), bill)
-        self.assertIs(records.open_record([bill], "9 | Alpha Farms", form=party_form), bill)  # its key on the form
+        # Its key's number in its own number field binds it (the form shows the voucher's number, not the key).
+        numbered = [("Voucher type", "Sales"), ("No.", "9"), ("Party A/c name", "Alpha Farms")]
+        self.assertIs(records.open_record([bill], "Sales | 9 | Alpha Farms", form=numbered), bill)
+
+    def test_a_key_number_in_another_field_binds_nothing(self):
+        # Recheck (2026-11-02): record B9 was bound to a form whose Qty was 9.
+        bill = {"key": "B9", "saved_at": None, "fields": {
+            "No.": {"intent": "9"}, "Date": {"intent": "2026-11-28"}, "Party A/c name": {"intent": "Alpha Farms"},
+            "Amount 1": {"intent": "1000"}, "Amount 2": {"intent": "90"}, "Amount 3": {"intent": "90"}}}
+        other = [("Item", "Widget"), ("Qty", "9")]
+        self.assertIsNone(records.open_record([bill], "Widget | 9", form=other))
+        # Two records open: the form numbered 1 with a quantity of 9 is B1's, not B9's.
+        b1 = {"key": "B1", "saved_at": None, "fields": {"No.": {"intent": "1"}, "Party A/c name": {"intent": "Beta"}}}
+        form = [("No.", "1"), ("Party A/c name", ""), ("Qty", "9")]
+        self.assertIs(records.open_record([b1, bill], "1 | 9", form=form), b1)
+        # No field (or more than one) holds the key's number on the record: which field it is cannot be told.
+        vague = {"key": "B9", "saved_at": None, "fields": {"Qty": {"intent": "9"}, "No.": {"intent": "9"}}}
+        self.assertIsNone(records.open_record([vague], "9", form=[("No.", "9"), ("Item", "Widget")]))

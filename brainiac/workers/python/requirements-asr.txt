@@ -3,3 +3,8 @@
 # so a 3.11 interpreter gets the newest numpy that still supports it.
 sherpa-onnx==2.0.0
 numpy>=1.24,<3
+# TODO(supply chain): this file and requirements-ocr.txt should be fully
+# pinned, transitive dependencies included, with hashes (pip-compile
+# --generate-hashes on a networked machine, for Python 3.11-3.14 on each OS);
+# pip then checks every download. Until then only the packages above are
+# pinned. pip runs with no API keys or tokens in its environment.

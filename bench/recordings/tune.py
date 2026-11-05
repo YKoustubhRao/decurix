@@ -79,7 +79,9 @@ def main():
             if r["status"] not in allowed:
                 # Halting where it could have gone on is safe; going on where it must not is not.
                 kind_of_wrong = "cautious" if r["status"] in ("missing", "ambiguous") and "found" in allowed else "unsafe"
-            elif r["status"] == "found" and "missing" not in allowed:
+            elif r["status"] == "found":
+                # Also where "found|missing" is allowed (another theme, a decoy that differs beyond the window): either
+                # answer is safe, a wrong place is not. The check used to be skipped there (review 2026-11-02).
                 want = (entry["click"][0] + v["dx"], entry["click"][1] + v["dy"])
                 if abs(r["point"][0] - want[0]) > 2 or abs(r["point"][1] - want[1]) > 2:
                     kind_of_wrong = "unsafe"

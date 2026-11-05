@@ -8,6 +8,34 @@ import (
 	"testing"
 )
 
+// allowLocal lets this test's fetches reach its own httptest server on
+// loopback, which the guarded client refuses.
+func allowLocal(t *testing.T) {
+	t.Helper()
+	old := httpClient
+	httpClient = http.DefaultClient
+	t.Cleanup(func() { httpClient = old })
+}
+
+// A page on loopback (soul, the agent API, the control plane through a
+// published port) or the metadata address is never fetched.
+func TestFetchPageTextRefusesNonPublicAddresses(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Write([]byte("<html>internal</html>"))
+	}))
+	defer srv.Close()
+	for _, u := range []string{srv.URL, "http://169.254.169.254/latest/meta-data/", "http://localhost:4900/api/health"} {
+		if _, err := FetchPageText(context.Background(), u, 1000); err == nil {
+			t.Errorf("FetchPageText(%s) succeeded, want refused", u)
+		}
+	}
+	if hits != 0 {
+		t.Errorf("the loopback server was reached %d time(s)", hits)
+	}
+}
+
 // The real bug this pins: sec.gov 403s EVERY request carrying a
 // browser-style User-Agent with "Your Request Originates from an
 // Undeclared Automated Tool", and only serves a client that declares
@@ -16,6 +44,7 @@ import (
 // and not more than once.
 func TestFetchPageTextRetriesWithDeclaredUAOn403(t *testing.T) {
 	var uas []string
+	allowLocal(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ua := r.Header.Get("User-Agent")
 		uas = append(uas, ua)
@@ -52,6 +81,7 @@ func TestFetchPageTextRetriesWithDeclaredUAOn403(t *testing.T) {
 // missing or broken.
 func TestFetchPageTextDoesNotRetryOnNon403(t *testing.T) {
 	var requests int
+	allowLocal(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		w.WriteHeader(http.StatusNotFound)
@@ -70,6 +100,7 @@ func TestFetchPageTextDoesNotRetryOnNon403(t *testing.T) {
 // A page that 403s both attempts must report a real, honest failure -
 // never silently succeed with empty content.
 func TestFetchPageTextFailsHonestlyWhenBothUAsAreBlocked(t *testing.T) {
+	allowLocal(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))

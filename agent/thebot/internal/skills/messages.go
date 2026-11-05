@@ -2,18 +2,19 @@ package skills
 
 import (
 	"regexp"
+	"slices"
 	"strings"
+	"unicode"
 )
 
 // A message the task listed and never opened. Found live (2026-10-26, twice): a client's bills came in one mail, and
 // "Revised invoice 0201" from the same sender stood in the same inbox listing, two rows down; the worker entered the
-// first mail's bill and the report never named the second. A rule in the task rules did not hold; this does.
+// first mail's bill and the report never named the second. What is decided here is mechanical - a row never opened,
+// from a sender the task did open, or whose subject names a declared record - never what the row's words mean
+// (review T-18: a list of "revised/cancel/updated" words decided which rows counted).
 
 // listRowRe is a row of a list on the screen as the agent prints it: e12 row "Sender - Subject | preview | date".
 var listRowRe = regexp.MustCompile(`(?m)\b(e\d+) row "([^"\n]{8,400})"`)
-
-// revisionWordRe is a word that says a message changes an earlier document.
-var revisionWordRe = regexp.MustCompile(`(?i)\b(revis\w*|correct\w*|amend\w*|updat\w*|cancel\w*|replac\w*|supersed\w*|rectif\w*|resend\w*|resent)\b`)
 
 // clickedRefRe is a click on a ref in a command.
 var clickedRefRe = regexp.MustCompile(`\bgui (?:click|double_click|open) (e\d+)\b`)
@@ -83,15 +84,57 @@ func (st *operatorState) opened(row *listedMessage) bool {
 	return strings.Contains(seen, `heading "`+subject) || strings.Contains(seen, `text "`+subject)
 }
 
-// aboutThisTask reports whether a message row's words say it revises or cancels a document, and a number in it is
-// one this task entered or read.
+// aboutThisTask reports whether a message row's subject names a record this task declared (RecordLedger): the
+// subject holds the key's own tokens, in order, as whole tokens ("INV/2026/0201"), or the key's last part that holds
+// digits - its running number ("0201") - as a whole token. Only the subject is read, never the row's preview or date,
+// and never any number a command held (review round 2, R-2). A part of the key before its running number (a year, a
+// series) never counts alone (round 3, N-W3-5): "2026" names no record.
 func (st *operatorState) aboutThisTask(row *listedMessage) bool {
-	if !revisionWordRe.MatchString(row.text) {
+	subject := identifierTokens(row.subject)
+	if len(subject) == 0 {
 		return false
 	}
-	worked := strings.Join(st.Worked, "\n") + "\n" + st.RecordLedger
-	for _, run := range digitRunRe.FindAllString(row.text, -1) {
-		if strings.Contains(worked, run) {
+	for _, m := range ledgerRecordRe.FindAllStringSubmatch(st.RecordLedger, -1) {
+		key := identifierTokens(strings.TrimSpace(m[1]))
+		if len(key) == 0 {
+			continue
+		}
+		if holdsSequence(subject, key) {
+			return true
+		}
+		if last := runningNumber(key); last != "" && holdsSequence(subject, []string{last}) {
+			return true
+		}
+	}
+	return false
+}
+
+// identifierTokenRe is a run of letters and digits.
+var identifierTokenRe = regexp.MustCompile(`[\p{L}\p{N}]+`)
+
+// identifierTokens are the lower-cased letter-and-digit runs of s.
+func identifierTokens(s string) []string {
+	return identifierTokenRe.FindAllString(strings.ToLower(s), -1)
+}
+
+// runningNumber is a key's last token when it holds a digit and has three or more characters, or "": a short last part
+// ("INV/2026/01") gives no running number - an earlier part would be a year or a series, never the record - and only
+// the whole key then names it (review round 4).
+func runningNumber(key []string) string {
+	if len(key) == 0 {
+		return ""
+	}
+	last := key[len(key)-1]
+	if len(last) >= 3 && strings.IndexFunc(last, unicode.IsDigit) >= 0 {
+		return last
+	}
+	return ""
+}
+
+// holdsSequence reports whether tokens holds want, in order and next to each other.
+func holdsSequence(tokens, want []string) bool {
+	for i := 0; i+len(want) <= len(tokens); i++ {
+		if slices.Equal(tokens[i:i+len(want)], want) {
 			return true
 		}
 	}
@@ -99,8 +142,7 @@ func (st *operatorState) aboutThisTask(row *listedMessage) bool {
 }
 
 // unopenedMessageIssues are the points for messages the task listed and never opened: one from a sender whose other
-// message the task opened, or one whose words say it revises or cancels a document of this task - unless the report
-// names it. Each is the worker's to do (reviewIssue.Work): open it, or say why it is not this task's.
+// message the task opened, or one whose subject names a record this task declared - unless the report names it. Each is the worker's to do (reviewIssue.Work): open it, or say why it is not this task's.
 func (st *operatorState) unopenedMessageIssues(report string) []reviewIssue {
 	rows := st.listedMessages()
 	if len(rows) == 0 {
@@ -130,9 +172,8 @@ func (st *operatorState) unopenedMessageIssues(report string) []reviewIssue {
 			What: "A listed message was never opened: \"" + r.sender + " - " + r.subject + "\"",
 			Why: "a later message from the same sender can revise, cancel or add to an earlier document; nothing of " +
 				"this task has read it",
-			Settle: "open it and take in what it says (a revised document replaces the earlier one), or name it in the " +
-				"report with why it is not this task's",
-			Work: true,
+			Settle: "open it and take in what it says, or name it in the report with why it is not this task's",
+			Work:   true,
 		})
 		if len(out) == maxUnopenedMessages {
 			break

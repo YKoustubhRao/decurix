@@ -10,7 +10,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import openpyxl
+from needs import needs, optional
+
+openpyxl = optional("openpyxl")
 
 from decurix_agent import stage_facts
 
@@ -24,7 +26,8 @@ AMENDMENT = [{"n": 1, "text": "Exclude bill NS-0457 from everything - Nova Stati
               "removed": ["NS-0457"]}]
 
 
-@unittest.skipUnless(WORKBOOK.is_file() and BILL.is_file(), "round 5 P1's files are not on this machine")
+@fixture_paths.skip_unless(WORKBOOK.is_file() and BILL.is_file(), "round 5 P1's files are not on this machine")
+@needs("openpyxl")
 class TheRoundsOwnFiles(TempDirCase):
 
     def setUp(self):
@@ -64,7 +67,7 @@ FIRST_PASS = ["Purchase GST issue held out of ITC: SP-2291, PK-BOX billed at 18%
 CHANGE = [{"n": 1, "text": "Exclude bill NS-0457 from Nova Stationers from all outputs because it was cancelled."}]
 
 
-@unittest.skipUnless(RUN2.is_file() and WORKBOOK.is_file(), "round 5 P1's files are not on this machine")
+@fixture_paths.skip_unless(RUN2.is_file() and WORKBOOK.is_file(), "round 5 P1's files are not on this machine")
 class AReCheckKeepsEarlierFindings(TempDirCase):
     """Finding BG: re-run for the cancelled bill, the register lost the wrong-rate bill's flag."""
 
@@ -86,6 +89,7 @@ class AReCheckKeepsEarlierFindings(TempDirCase):
         self.assertEqual(stage_facts.earlier_findings(["NS-0457 held: cancelled by vendor"], CHANGE), [])
 
 
+@needs("openpyxl")
 class AStatusEveryOutputAgreesOn(TempDirCase):
     """Round 5 P6 (2026-10-20), Finding BZ1: the tracker said "assess" for refunds the drafts approved."""
 
@@ -150,6 +154,7 @@ class AStatusEveryOutputAgreesOn(TempDirCase):
 P6_INBOX = Path(r"C:\Users\Administrator\decurix-tests\wide\process\out\P6\20261020-154917\host\inbox")
 
 
+@needs("openpyxl")
 class WorkLeftUndoneInATable(TempDirCase):
     """Round 5 P6 (2026-10-20), Finding CC: an Action left as "calculate ... and process per policy", and an automatic
     reply given another email's order number."""
@@ -173,7 +178,7 @@ class WorkLeftUndoneInATable(TempDirCase):
         self.assertEqual(len(found), 1)
         self.assertIn("SO-5103 - Action says \"Refund requested; calculate affected units", found[0])
 
-    @unittest.skipUnless((P6_INBOX / "1018_E10.eml").is_file(), "round 5 P6's inbox is not on this machine")
+    @fixture_paths.skip_unless((P6_INBOX / "1018_E10.eml").is_file(), "round 5 P6's inbox is not on this machine")
     def test_an_automatic_reply_given_another_emails_order_is_found(self):
         inbox = self.dir / "inbox"
         shutil.copytree(P6_INBOX, inbox)
@@ -194,6 +199,7 @@ class WorkLeftUndoneInATable(TempDirCase):
         self.assertEqual(stage_facts.unsupported_references(made, messages), [])
 
 
+@needs("openpyxl")
 class ComputedAmountsHold(TempDirCase):
     """Round 5 P6 (2026-10-20), Finding CF: "Approve refund Rs 1,800.00" for 60 lanyards at Rs 35 (Rs 2,100), with no
     working; and E07 filed as Refund while its own Action says "no refund requested"."""
@@ -224,7 +230,7 @@ class ComputedAmountsHold(TempDirCase):
         path.write_text("Order No,Customer,SKU,Qty,Unit price\nSO-5103,Lotus Yoga Centre,LAN-S,200,35\n", encoding="utf-8")
         return str(path)
 
-    @unittest.skipUnless((P6_INBOX / "1016_E03.eml").is_file(), "round 5 P6's inbox is not on this machine")
+    @fixture_paths.skip_unless((P6_INBOX / "1016_E03.eml").is_file(), "round 5 P6's inbox is not on this machine")
     def test_a_computed_refund_with_no_working_is_found(self):
         made = self.book([self.LIVE_E03])
         found = stage_facts.unworked_amounts(made, [str(P6_INBOX / "1016_E03.eml")])
@@ -277,17 +283,18 @@ class RemovedRecordsAreTheModelsReading(unittest.TestCase):
         self.assertEqual(stage_facts.removed_records(changes), [])
 
 
+@needs("openpyxl")
 class ARemovedRecordStillInTheOutputs(unittest.TestCase):
-    # Round 5 P1 on pc3 (2026-10-21, series 13): "Bill NS-0457 from Nova Stationers was cancelled - leave it out of
+    # Round 5 P1 (2026-10-21, series 13): "Bill NS-0457 from Nova Stationers was cancelled - leave it out of
     # everything" - and the Purchase Register still had "08/10/2026 | Nova Stationers | NS-0457 | 66700 | 4533 | ...".
 
-    @unittest.skipUnless(LIVE_P1_S13.is_file(), f"fixture not here: {LIVE_P1_S13}")
+    @fixture_paths.skip_unless(LIVE_P1_S13.is_file(), f"fixture not here: {LIVE_P1_S13}")
     def test_the_live_register_is_found(self):
         found = stage_facts.removed_still_present(NS_0457, [str(LIVE_P1_S13)])
-        self.assertTrue(any(f.startswith("p1_series13_month_end_close.xlsx (Purchase Register): NS-0457 is still a row")
-                            for f in found), found)
+        self.assertTrue(any(f.startswith("p1_series13_month_end_close.xlsx (Purchase Register): NS-0457 has a row of "
+                                         "its own") for f in found), found)
 
-    def test_a_row_that_shows_it_cancelled_or_only_mentions_it_is_right(self):
+    def test_a_row_that_only_mentions_it_is_not_its_row_and_its_own_row_is_shown_to_the_judge(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "register.xlsx"
             book = openpyxl.Workbook()
@@ -298,8 +305,38 @@ class ARemovedRecordStillInTheOutputs(unittest.TestCase):
                         ["Note", "NS-0457 left out (cancelled by the vendor)", None, None, None]):
                 book.active.append(row)
             book.save(path)
-            self.assertEqual(stage_facts.removed_still_present(NS_0457, [str(path)]), [])
+            # Its own row is quoted, words and all, for the judge to read whether it is shown taken out (E-07: no word
+            # list decides that); the note that only mentions it is not its row.
+            found = stage_facts.removed_still_present(NS_0457, [str(path)])
+            self.assertEqual(len(found), 1, found)
+            self.assertIn("Cancelled - excluded from all totals", found[0])
             self.assertEqual(stage_facts.removed_still_present([{"text": "Use the 18 Oct cash figure."}], [str(path)]), [])
+
+    def test_a_csv_is_checked_like_a_workbook(self):
+        # Review 2026-11-02: a CSV's cells are all text, and only stored numbers counted as figures - both checks of a
+        # removed record found nothing in any CSV.
+        with tempfile.TemporaryDirectory() as tmp:
+            register = Path(tmp) / "purchase_register.csv"
+            register.write_text("Invoice No,Vendor,Taxable Value,CGST,Note\n"
+                                "NS-0452,Nova Stationers,41800,2880,As billed\n"
+                                "NS-0457,Nova Stationers,\"66,700.00\",4533,As billed\n", encoding="utf-8")
+            found = stage_facts.removed_still_present(NS_0457, [str(register)])
+            self.assertTrue(found and found[0].startswith("purchase_register.csv: NS-0457 has a row of its own"), found)
+            shown_out = Path(tmp) / "shown_out.csv"
+            shown_out.write_text("Invoice No,Vendor,Taxable Value,Note\nNS-0457,Nova Stationers,66700,Cancelled\n"
+                                 "NS-0457,see the vendor's mail,,\n", encoding="utf-8")
+            self.assertEqual(len(stage_facts.removed_still_present(NS_0457, [str(shown_out)])), 1)  # evidence
+
+            bill = Path(tmp) / "NS-0457.txt"
+            bill.write_text("Nova Stationers\nTax invoice NS-0457\nTaxable 66,700.00\nCGST 4,533.00\n", encoding="utf-8")
+            summary = Path(tmp) / "itc.csv"
+            summary.write_text("Invoice No,Vendor,CGST,Claimed\nNS-0452,Nova Stationers,2880,\n"
+                               "NS-0453,Nova Stationers,1000,\nTotal ITC claimed,,,8413\n", encoding="utf-8")
+            residue = stage_facts.removed_residue(NS_0457, [str(summary)], [str(bill)])
+            self.assertTrue(residue and "plus 4,533.00 of NS-0457, which was removed" in residue[0], residue)
+            summary.write_text("Invoice No,Vendor,CGST,Claimed\nNS-0452,Nova Stationers,2880,\n"
+                               "NS-0453,Nova Stationers,1000,\nTotal ITC claimed,,,3880\n", encoding="utf-8")
+            self.assertEqual(stage_facts.removed_residue(NS_0457, [str(summary)], [str(bill)]), [])
 
 
 if __name__ == "__main__":

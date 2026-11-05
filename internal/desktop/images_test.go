@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -192,7 +193,8 @@ func TestEveryAgentFileIsEmbedded(t *testing.T) {
 
 		if d.IsDir() {
 			// TheBot is embedded as an archive; caches and dot folders are not sources.
-			if rel == decurix.TheBotDir || name == "__pycache__" || strings.HasPrefix(name, ".") || name == "node_modules" {
+			if rel == decurix.TheBotDir || name == "__pycache__" ||
+				strings.HasPrefix(name, ".") || name == "node_modules" {
 				return filepath.SkipDir
 			}
 
@@ -223,7 +225,7 @@ func TestAnImageIsOutOfDateExactlyWhenWhatItIsBuiltFromChanges(t *testing.T) {
 
 	base := fstest.MapFS{
 		"docker/desktop.basic.Dockerfile":          {Data: []byte("FROM x\nCOPY agent /opt\n")},
-		"docker/desktop.developer.Dockerfile":      {Data: []byte("FROM x\n")},
+		"docker/unused.Dockerfile":                 {Data: []byte("FROM x\n")},
 		"docker/tools.Dockerfile":                  {Data: []byte("FROM alpine\n")},
 		"agent/decurix_agent/computer/__main__.py": {Data: []byte("main()\n")},
 	}
@@ -266,7 +268,35 @@ func TestAnImageIsOutOfDateExactlyWhenWhatItIsBuiltFromChanges(t *testing.T) {
 		t.Errorf("a tools Dockerfile change: desktop changed %v (want false), tools changed %v (want true)", d != d0, tl != t0)
 	}
 
-	if d, _ := hashes(with("docker/desktop.developer.Dockerfile", "FROM y\n")); d != d0 {
+	if d, _ := hashes(with("docker/unused.Dockerfile", "FROM y\n")); d != d0 {
 		t.Error("a Dockerfile the desktop image is not built from changed its hash")
+	}
+}
+
+// TestPruningTakesOnlyDecurixImages: on a Docker engine Decurix shares, another project's dangling images are not its
+// to remove (L-02).
+func TestPruningTakesOnlyDecurixImages(t *testing.T) {
+	f := pruneFilter()
+	if !f.ExactMatch("dangling", "true") || !f.Contains("label") || f.Get("label")[0] != contextLabel {
+		t.Fatalf("prune filter %v must name dangling images with Decurix's label", f)
+	}
+}
+
+// TestTheImageKeepsNoSetuidFiles: every setuid and setgid bit is stripped at build time, not a list (B-21); the
+// Dockerfile must say so, and the owner's image check (TestImageHasNoSetuidFilesLive) proves it on a built image.
+func TestTheImageKeepsNoSetuidFiles(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docker", "desktop.basic.Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `find / -xdev \( -perm -4000 -o -perm -2000 \) -type f -exec chmod ug-s {} +`) {
+		t.Fatal("the desktop image must strip every setuid and setgid bit")
+	}
+	tools, err := os.ReadFile(filepath.Join("..", "..", "docker", "tools.Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(tools), "|| true") || strings.Contains(string(tools), ":latest") {
+		t.Fatal("a tool that fails to install must fail the tools build, and its base must be pinned")
 	}
 }

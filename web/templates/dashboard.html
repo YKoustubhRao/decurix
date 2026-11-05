@@ -89,6 +89,7 @@
 
 .reply-foot{display:flex;align-items:center;gap:10px}
 .reply-foot .hint{flex:1}
+.reply-secret{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text-2);white-space:nowrap;cursor:pointer}
 .reply-foot kbd{
   font-family:var(--mono);
   font-size:10.5px;
@@ -101,6 +102,12 @@
 }
 
 .sent{display:flex;align-items:center;gap:6px;color:var(--live);font-size:12.5px;font-weight:550}
+
+/* A card answered elsewhere while the person was typing under it: kept so the
+   draft is not lost, but it takes no reply. */
+.req.is-stale{opacity:.6}
+.req-stale-note{margin:0 14px 10px;font-size:12.5px;color:var(--text-2)}
+.req.flash{box-shadow:0 0 0 2px var(--accent);transition:box-shadow .2s ease}
 
 /* ---------- resolved history ---------- */
 
@@ -183,7 +190,7 @@
   <div class="feed" id="feed">
 {{if .Notes}}
 {{range .Notes}}
-    <article class="req" id="req-{{.ID}}">
+    <article class="req" id="req-{{.ID}}" data-id="{{.ID}}" data-kind="{{.Kind}}" data-desktop="{{.DesktopID}}" data-at="{{.CreatedAt.Format "2006-01-02T15:04:05.999999999Z07:00"}}">
 
       <div class="req-head">
         <span class="req-mark"><svg width="15" height="15"><use href="#i-inbox"/></svg></span>
@@ -195,7 +202,6 @@
             {{if eq .Kind "query"}}<span class="req-kind req-kind--wait">Needs your answer</span><span class="sep"></span>
             {{else if eq .Kind "approval"}}<span class="req-kind req-kind--wait">Needs approval</span><span class="sep"></span>
             {{else if eq .Kind "error"}}<span class="req-kind req-kind--error">Failed</span><span class="sep"></span>
-            {{else if eq .Kind "done"}}<span class="req-kind">Done</span><span class="sep"></span>
             {{end}}
             <time data-created="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{.CreatedAt.Format "02 Jan, 15:04"}}</time>
           </div>
@@ -215,6 +221,7 @@
         <textarea class="textarea" placeholder="Reply to this desktop…" rows="1" required></textarea>
 
         <div class="reply-foot">
+          <label class="reply-secret" title="It reaches the desktop as typed, and is kept nowhere as typed: the chat and the records show [secret withheld]"><input type="checkbox" data-secret> This is a secret</label>
           <div class="hint"><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line</div>
           <button type="submit" class="btn btn-primary btn-sm">
             <svg width="14" height="14"><use href="#i-send"/></svg>
@@ -252,11 +259,37 @@
 (function(){
   "use strict";
 
-  var toast = Decurix.toast, post = Decurix.post, el = Decurix.node;
+  var toast = Decurix.toast, post = Decurix.post, el = Decurix.node, icon = Decurix.icon;
+  var feed = document.getElementById("feed");
+
+  // The kinds of note a reply answers: the desktop is waiting on a person.
+  var WAITING = {query: true, approval: true};
+
+  var KIND_LABEL = {
+    query: ["Needs your answer", "req-kind req-kind--wait"],
+    approval: ["Needs approval", "req-kind req-kind--wait"],
+    error: ["Failed", "req-kind req-kind--error"],
+    done: ["Done", "req-kind"]
+  };
 
   /* ---------------- relative timestamps ---------------- */
 
   Decurix.relativeTimes();
+
+  // Go writes nanoseconds; a Date reads milliseconds.
+  function when(text){
+    var t = Date.parse(String(text || "").replace(/(\.\d{3})\d+/, "$1"));
+    return isNaN(t) ? 0 : t;
+  }
+
+  // Newest first, the order the page was rendered in. Equal times fall back
+  // to the ID, a nanosecond count for every note made since IDs were.
+  function newer(a, b){
+    var d = when(a.at) - when(b.at);
+    if(d !== 0){ return d > 0; }
+    var x = String(a.id), y = String(b.id);
+    return x.length !== y.length ? x.length > y.length : x > y;
+  }
 
   /* ---------------- auto-growing reply boxes ---------------- */
 
@@ -265,88 +298,329 @@
     textarea.style.height = Math.min(textarea.scrollHeight, 220) + "px";
   }
 
-  document.querySelectorAll(".reply textarea").forEach(function(textarea){
-    grow(textarea);
+  document.querySelectorAll(".reply textarea").forEach(grow);
 
-    textarea.addEventListener("input", function(){ grow(textarea); });
-
-    textarea.addEventListener("keydown", function(event){
-      if(event.key === "Enter" && !event.shiftKey){
-        event.preventDefault();
-        textarea.form.requestSubmit();
-      }
-    });
+  feed.addEventListener("input", function(event){
+    if(event.target.matches(".reply textarea")){ grow(event.target); }
   });
 
-  /* ---------------- send a reply ---------------- */
-
-  document.querySelectorAll("[data-reply]").forEach(function(form){
-    form.addEventListener("submit", async function(event){
+  feed.addEventListener("keydown", function(event){
+    var textarea = event.target;
+    if(!textarea.matches(".reply textarea")){ return; }
+    if(event.key === "Enter" && !event.shiftKey){
       event.preventDefault();
+      textarea.form.requestSubmit();
+    }
+  });
 
-      var textarea = form.querySelector("textarea");
-      var submit = form.querySelector("button[type=submit]");
-      var content = textarea.value.trim();
+  /* ---------------- one card ----------------
+     The same card the template renders, for a note that arrives after the
+     page loaded. Text nodes only: a note is whatever an agent wrote. */
 
-      if(!form.dataset.desktop){
-        return toast("This request isn't linked to a desktop.", "error");
+  function kbd(text){ return el("kbd", "", text); }
+
+  function buildCard(note){
+    var card = el("article", "req");
+    card.id = "req-" + note.id;
+    card.dataset.id = String(note.id);
+    card.dataset.kind = note.kind || "";
+    card.dataset.desktop = note.desktop_id || "";
+    card.dataset.at = note.created_at || "";
+
+    var head = el("div", "req-head");
+    var mark = el("span", "req-mark");
+    mark.appendChild(icon("inbox", 15));
+
+    var who = el("div");
+    who.style.minWidth = "0";
+    who.appendChild(el("div", "req-vm trunc", note.vm_name || ""));
+
+    var meta = el("div", "req-meta");
+    var kind = KIND_LABEL[note.kind];
+    if(kind){ meta.append(el("span", kind[1], kind[0]), el("span", "sep")); }
+
+    var time = el("time");
+    time.dataset.created = note.created_at || "";
+    var at = new Date(when(note.created_at));
+    time.textContent = at.getTime() ? at.toLocaleString([], {day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit"}) : "";
+    meta.appendChild(time);
+    who.appendChild(meta);
+
+    var resolve = el("button", "btn btn-quiet btn-sm");
+    resolve.type = "button";
+    resolve.dataset.resolve = String(note.id);
+    resolve.append(icon("check", 14), document.createTextNode(" Resolve"));
+
+    head.append(mark, who, resolve);
+    card.appendChild(head);
+
+    if(note.task){
+      var task = el("div", "req-task trunc");
+      task.title = note.task;
+      task.append(el("span", "", "Task"), document.createTextNode(" " + note.task));
+      card.appendChild(task);
+    }
+
+    card.appendChild(el("div", "req-body", note.message || note.content || ""));
+
+    var form = el("form", "reply");
+    form.dataset.reply = "";
+    form.dataset.note = String(note.id);
+    form.dataset.desktop = note.desktop_id || "";
+
+    var textarea = el("textarea", "textarea");
+    textarea.placeholder = "Reply to this desktop…";
+    textarea.rows = 1;
+    textarea.required = true;
+
+    var foot = el("div", "reply-foot");
+    var hint = el("div", "hint");
+    hint.append(kbd("Enter"), document.createTextNode(" to send · "), kbd("Shift"),
+      document.createTextNode("+"), kbd("Enter"), document.createTextNode(" for a new line"));
+
+    var send = el("button", "btn btn-primary btn-sm");
+    send.type = "submit";
+    send.append(icon("send", 14), document.createTextNode(" Send reply"));
+
+    /* Marked a secret: delivered as typed, kept nowhere as typed (the server stores "[secret withheld]"). */
+    var secret = el("label", "reply-secret");
+    secret.title = "It reaches the desktop as typed, and is kept nowhere as typed: the chat and the records show [secret withheld]";
+    var box = document.createElement("input");
+    box.type = "checkbox";
+    box.dataset.secret = "";
+    secret.append(box, document.createTextNode(" This is a secret"));
+
+    foot.append(secret, hint, send);
+    form.append(textarea, foot);
+    card.appendChild(form);
+
+    return card;
+  }
+
+  function cardKey(card){
+    return {id: card.dataset.id, at: card.dataset.at};
+  }
+
+  // Puts a new card where it belongs among the open ones, newest first.
+  function insertCard(card){
+    var me = cardKey(card);
+    var cards = feed.querySelectorAll(".req");
+    for(var i = 0; i < cards.length; i++){
+      if(newer(me, cardKey(cards[i]))){
+        feed.insertBefore(card, cards[i]);
+        return;
       }
+    }
+    feed.appendChild(card);
+  }
 
-      if(!content){
-        return toast("Write a reply first.", "error");
+  /* A card whose note was answered or resolved somewhere else while the
+     person was typing under it. Removing it would throw the draft away, so
+     it stays, says so, and takes no reply; it goes once its box is empty. */
+  function markStale(card){
+    if(card.classList.contains("is-stale")){ return; }
+    card.classList.add("is-stale");
+
+    var submit = card.querySelector("button[type=submit]");
+    if(submit){ submit.disabled = true; }
+
+    var form = card.querySelector("[data-reply]");
+    var note = el("div", "req-stale-note",
+      "This was answered or resolved somewhere else, so it takes no reply. Your draft is kept until you clear it.");
+    card.insertBefore(note, form);
+  }
+
+  function flash(card){
+    card.classList.add("flash");
+    card.scrollIntoView({block: "nearest", behavior: "smooth"});
+    setTimeout(function(){ card.classList.remove("flash"); }, 1600);
+  }
+
+  function showEmpty(){
+    var empty = el("div", "empty");
+    var mark = el("div", "empty-mark");
+    mark.style.background = "var(--live-soft)";
+    mark.style.color = "var(--live)";
+    mark.appendChild(icon("check", 19));
+    empty.append(mark, el("h2", "", "Nothing waiting on you"),
+      el("p", "", "When an agent needs approval or gets stuck, the request lands here."));
+    feed.appendChild(empty);
+  }
+
+  function syncEmpty(){
+    var empty = feed.querySelector(".empty");
+    if(feed.querySelector(".req")){
+      if(empty){ empty.remove(); }
+    }else if(!empty){
+      showEmpty();
+    }
+  }
+
+  /* ---------------- staying in step ----------------
+     Notes arrive and are answered elsewhere - the desktop's chat, the
+     Requests page, another tab. Each poll adds the new ones and drops the
+     closed ones; a card already showing is never rebuilt, so what someone
+     is typing in it stays where it is. */
+
+  function render(notes){
+    var open = new Map();
+    notes.forEach(function(n){ open.set(String(n.id), n); });
+
+    feed.querySelectorAll(".req").forEach(function(card){
+      if(open.has(card.dataset.id) || card.classList.contains("resolving")){ return; }
+
+      var textarea = card.querySelector("textarea");
+      if(textarea && textarea.value.trim()){
+        markStale(card);
+        return;
       }
+      card.remove();
+    });
 
-      submit.disabled = true;
-      Decurix.busy(true);
+    notes.forEach(function(note){
+      if(document.getElementById("req-" + note.id)){ return; }
+      insertCard(buildCard(note));
+    });
 
-      try{
-        await post("/api/desktops/send", {id: form.dataset.desktop, content: content});
+    syncEmpty();
+    Decurix.relativeTimes();
+  }
 
-        textarea.value = "";
-        grow(textarea);
-        Decurix.markSent(form.querySelector(".hint"), "Delivered to the desktop");
-        setTimeout(syncOpen, 600);
-      }catch(e){
-        toast(e.message, "error");
-      }finally{
-        Decurix.busy(false);
-        submit.disabled = false;
+  // The open notes, or a thrown error: a reply is never sent on a guess.
+  async function fetchOpen(){
+    var response = await fetch("/api/querynotes", {cache: "no-store"});
+    if(!response.ok){ throw new Error("Could not check the open questions (" + response.status + "). Try again."); }
+    var notes = await response.json();
+    return Array.isArray(notes) ? notes : [];
+  }
+
+  var syncing = false;
+  async function syncOpen(){
+    if(!syncing){
+      syncing = true;
+      try{ render(await fetchOpen()); }
+      catch(e){ /* try again next time */ }
+      finally{ syncing = false; }
+    }
+    loadResolved();
+  }
+
+  /* ---------------- send a reply ----------------
+     A reply reaches the desktop, and the desktop takes it as the answer to
+     whatever it is waiting on now - its newest open query or approval, not
+     necessarily the card it was typed under. So before sending, the page
+     checks that this card is that one: a "yes" typed under an old card must
+     never approve a newer action. The note's id goes with the reply too, for
+     a control plane that checks the same thing itself. */
+
+  function replyTarget(notes, id, desktopID){
+    var mine = null, waiting = null;
+
+    notes.forEach(function(n){
+      if(String(n.id) === id){ mine = n; }
+      if(n.desktop_id === desktopID && WAITING[n.kind]){
+        if(!waiting || newer({id: n.id, at: n.created_at}, {id: waiting.id, at: waiting.created_at})){ waiting = n; }
       }
     });
+
+    if(!mine){ return {gone: true}; }
+    if(waiting && String(waiting.id) !== id){ return {other: waiting}; }
+    return {};
+  }
+
+  feed.addEventListener("submit", async function(event){
+    var form = event.target.closest("[data-reply]");
+    if(!form){ return; }
+    event.preventDefault();
+
+    var card = form.closest(".req");
+    var textarea = form.querySelector("textarea");
+    var submit = form.querySelector("button[type=submit]");
+    var content = textarea.value.trim();
+
+    if(card.classList.contains("is-stale")){
+      return toast("This was answered or resolved already, so it takes no reply.", "error");
+    }
+    if(!form.dataset.desktop){
+      return toast("This request isn't linked to a desktop.", "error");
+    }
+    if(!content){
+      return toast("Write a reply first.", "error");
+    }
+    if(submit.disabled){ return; }
+
+    submit.disabled = true;
+    Decurix.busy(true);
+
+    try{
+      var notes = await fetchOpen();
+      var target = replyTarget(notes, card.dataset.id, form.dataset.desktop);
+
+      if(target.gone){
+        render(notes);
+        markStale(card);
+        return toast("This was answered or resolved already. Your reply was not sent.", "error");
+      }
+      if(target.other){
+        render(notes);
+        var other = document.getElementById("req-" + target.other.id);
+        if(other){ flash(other); }
+        return toast("This desktop is waiting on a newer question, and a reply here would answer that one instead. " +
+          "Not sent - answer it on its own card.", "error");
+      }
+
+      var secretBox = form.querySelector("[data-secret]");
+      var fields = {id: form.dataset.desktop, content: content, note_id: card.dataset.id};
+      if(secretBox && secretBox.checked){ fields.secret = "1"; }
+      await post("/api/desktops/send", fields);
+
+      textarea.value = "";
+      if(secretBox){ secretBox.checked = false; }
+      grow(textarea);
+      Decurix.markSent(form.querySelector(".hint"), "Delivered to the desktop");
+      setTimeout(syncOpen, 600);
+    }catch(e){
+      toast(e.message, "error");
+    }finally{
+      Decurix.busy(false);
+      if(!card.classList.contains("is-stale")){ submit.disabled = false; }
+    }
   });
 
   /* ---------------- resolve ---------------- */
 
-  document.querySelectorAll("[data-resolve]").forEach(function(button){
-    button.addEventListener("click", async function(){
-      var id = button.dataset.resolve;
-      var card = document.getElementById("req-" + id);
+  feed.addEventListener("click", async function(event){
+    var button = event.target.closest("[data-resolve]");
+    if(!button){ return; }
 
-      button.disabled = true;
+    var card = button.closest(".req");
 
-      try{
-        await post("/api/querynotes/close", {id: id});
+    // Closed elsewhere already: this only clears the kept draft away.
+    if(card.classList.contains("is-stale")){
+      card.remove();
+      syncEmpty();
+      return;
+    }
 
-        card.classList.add("resolving");
+    button.disabled = true;
 
-        setTimeout(function(){
-          card.remove();
-          showEmptyIfNoneLeft();
-          loadResolved();
-        }, 180);
-      }catch(e){
-        button.disabled = false;
-        toast(e.message, "error");
-      }
-    });
+    try{
+      await post("/api/querynotes/close", {id: button.dataset.resolve});
+
+      card.classList.add("resolving");
+
+      setTimeout(function(){
+        card.remove();
+        syncEmpty();
+        loadResolved();
+      }, 180);
+    }catch(e){
+      button.disabled = false;
+      toast(e.message, "error");
+    }
   });
 
-  /* ---------------- resolved history, and staying in step ----------------
-     A note is resolved by the Resolve button here, or by answering it - in
-     this page, in the desktop's chat, from the Requests page. The last of
-     those happens somewhere else, so the page asks now and then which notes
-     are still open and moves the rest into the history. Text nodes only: a
-     note is whatever an agent wrote. */
+  /* ---------------- resolved history ---------------- */
 
   var resolvedWrap = document.getElementById("resolved");
   var resolvedList = document.getElementById("resolvedList");
@@ -354,11 +628,14 @@
   var resolvedShown = "";
 
   function renderResolved(notes){
-    // Nothing to redraw when the history has not changed, so an entry the
-    // person has opened to read does not snap shut on every poll.
+    // Nothing to redraw when the history has not changed, and an entry the
+    // person has open stays open when it has.
     var key = notes.map(function(n){ return n.id + ":" + n.resolved_at; }).join("|");
     if(key === resolvedShown){ return; }
     resolvedShown = key;
+
+    var opened = new Set();
+    resolvedList.querySelectorAll("details[open]").forEach(function(d){ opened.add(d.dataset.id); });
 
     resolvedWrap.hidden = notes.length === 0;
     resolvedCount.textContent = notes.length ? "· " + notes.length : "";
@@ -366,14 +643,16 @@
 
     notes.forEach(function(note){
       var item = el("details", "done-req");
+      item.dataset.id = String(note.id);
+      if(opened.has(item.dataset.id)){ item.open = true; }
       var head = el("summary");
 
-      var when = new Date(note.resolved_at);
+      var at = new Date(note.resolved_at);
 
       head.append(
         el("span", "vm trunc", note.vm_name || note.filename || "Desktop"),
         el("span", "how", note.resolution === "answered" ? "Answered" : note.resolution === "desktop_deleted" ? "Desktop deleted" : "Resolved"),
-        el("span", "when", isNaN(when.getTime()) ? "" : when.toLocaleString([], {dateStyle: "medium", timeStyle: "short"}))
+        el("span", "when", isNaN(at.getTime()) ? "" : at.toLocaleString([], {dateStyle: "medium", timeStyle: "short"}))
       );
 
       if(note.task){
@@ -399,45 +678,8 @@
     }catch(e){ /* keep what is showing */ }
   }
 
-  function showEmptyIfNoneLeft(){
-    if(document.querySelector(".req")){ return; }
-
-    var feed = document.getElementById("feed");
-    feed.textContent = "";
-
-    var empty = el("div", "empty");
-    var mark = el("div", "empty-mark");
-    mark.style.background = "var(--live-soft)";
-    mark.style.color = "var(--live)";
-    mark.innerHTML = '<svg width="19" height="19"><use href="#i-check"/></svg>';
-    empty.append(mark, el("h2", "", "Nothing waiting on you"),
-      el("p", "", "When an agent needs approval or gets stuck, the request lands here."));
-    feed.appendChild(empty);
-  }
-
-  async function syncOpen(){
-    try{
-      var response = await fetch("/api/querynotes", {cache: "no-store"});
-      if(!response.ok){ return; }
-
-      var notes = await response.json();
-      var open = new Set((Array.isArray(notes) ? notes : []).map(function(n){ return String(n.id); }));
-      var gone = false;
-
-      document.querySelectorAll(".req").forEach(function(card){
-        if(open.has(card.id.replace(/^req-/, ""))){ return; }
-        card.remove();
-        gone = true;
-      });
-
-      if(gone){ showEmptyIfNoneLeft(); }
-    }catch(e){ /* try again next time */ }
-
-    loadResolved();
-  }
-
-  loadResolved();
-  setInterval(syncOpen, 4000);
+  syncOpen();
+  Decurix.poll(syncOpen, 3000);
 })();
 </script>
 

@@ -99,7 +99,7 @@ func (s *Server) personaDesktop(w http.ResponseWriter, spec *personaDesktopSpec)
 
 	brain, err := s.desktopBrain(spec.Harness, spec.Brain)
 	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		jsonStatusError(w, http.StatusBadRequest, refusal(err))
 		return brain, false
 	}
 
@@ -132,8 +132,9 @@ func (s *Server) createPersonaDesktopHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	var req createPersonaDesktopReq
+	limitJSON(w, r)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonStatusError(w, http.StatusBadRequest, "invalid json payload")
+		badJSON(w, err)
 		return
 	}
 
@@ -192,8 +193,9 @@ func (s *Server) deployTeamHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req deployTeamReq
+	limitJSON(w, r)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonStatusError(w, http.StatusBadRequest, "invalid json payload")
+		badJSON(w, err)
 		return
 	}
 
@@ -265,88 +267,9 @@ func (s *Server) deployTeamHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-type inboundChannelReq struct {
-	Channel string `json:"channel"`
-	Sender  string `json:"sender"`
-	Text    string `json:"text"`
-	Subject string `json:"subject"`
-}
-
-// inboundChannelHandler handles incoming communications from Slack, email, webhooks, and forms
-// and routes them to the right departmental employee persona.
-func (s *Server) inboundChannelHandler(w http.ResponseWriter, r *http.Request) {
-	if !allowMethod(w, r, http.MethodPost) {
-		return
-	}
-
-	var req inboundChannelReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonStatusError(w, http.StatusBadRequest, "invalid json payload")
-		return
-	}
-
-	fullText := req.Text
-	if req.Subject != "" {
-		fullText = req.Subject + ": " + req.Text
-	}
-
-	matchedPersona, ok := desktop.MatchPersonaForInbound(req.Channel, req.Sender, fullText)
-	if !ok {
-		jsonStatusError(w, http.StatusBadRequest, "unable to determine target persona")
-		return
-	}
-
-	// Find an active running desktop matching this persona's specialization
-	var targetDesktop *desktop.Desktop
-	if s.Desktops != nil {
-		existing, err := s.Desktops.List(r.Context())
-		if err == nil {
-			for i := range existing {
-				d := &existing[i]
-				if strings.EqualFold(d.Status, "running") &&
-					(strings.Contains(strings.ToLower(d.Specialization), strings.ToLower(matchedPersona.ID)) ||
-						strings.Contains(strings.ToLower(d.Name), strings.ToLower(matchedPersona.ID))) {
-					targetDesktop = d
-					break
-				}
-			}
-			// Fallback to any running desktop if no specialization match
-			if targetDesktop == nil {
-				for i := range existing {
-					d := &existing[i]
-					if strings.EqualFold(d.Status, "running") {
-						targetDesktop = d
-						break
-					}
-				}
-			}
-		}
-	}
-
-	var taskID, targetID string
-	var dispatched bool
-	if targetDesktop != nil {
-		targetID = targetDesktop.ID
-		taskGoal := fmt.Sprintf("[%s via %s from %s] %s", matchedPersona.Name, req.Channel, req.Sender, fullText)
-		tID, err := s.SubmitTracked(r.Context(), targetID, taskGoal)
-		if err == nil {
-			taskID = tID
-			dispatched = true
-		}
-	}
-
-	jsonResponse(w, map[string]any{
-		"status":          "received",
-		"matched_persona": matchedPersona,
-		"channel":         req.Channel,
-		"sender":          req.Sender,
-		"dispatched":      dispatched,
-		"desktop_id":      targetID,
-		"task_id":         taskID,
-	})
-}
-
-// skillsCatalogHandler returns the built-in catalog of 22 ready skills.
+// skillsCatalogHandler returns a desktop's skill catalog (with ?id=), or what
+// the built-in catalog holds: nothing, since a skill nobody demonstrated here
+// is not one a worker knows (agent/decurix_agent/computer/catalog.py).
 func (s *Server) skillsCatalogHandler(w http.ResponseWriter, r *http.Request) {
 	if !allowMethod(w, r, http.MethodGet) {
 		return
@@ -361,11 +284,9 @@ func (s *Server) skillsCatalogHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Return catalog info
 	jsonResponse(w, map[string]any{
-		"catalog_count": 22,
-		"departments": []string{
-			"finance", "support", "sales", "executive_assistant", "operations", "data", "devops", "recruiting", "legal", "marketing",
-		},
-		"description": "Standard business skill catalog inspired by IrisGo AI and Cura Labs.",
+		"catalog_count": 0,
+		"departments":   []string{},
+		"description":   "The built-in catalog is empty: a worker's skills are the ones a person here taught it.",
 	})
 }
 
@@ -382,8 +303,9 @@ func (s *Server) installCatalogSkillHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req installCatalogSkillReq
+	limitJSON(w, r)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonStatusError(w, http.StatusBadRequest, "invalid json payload")
+		badJSON(w, err)
 		return
 	}
 
@@ -422,8 +344,9 @@ func (s *Server) workerModeHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		var req map[string]any
+		limitJSON(w, r)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			jsonStatusError(w, http.StatusBadRequest, "invalid json payload")
+			badJSON(w, err)
 			return
 		}
 		s.callAgent(w, r, desktopID, http.MethodPost, "/mode", req, true)
@@ -431,24 +354,4 @@ func (s *Server) workerModeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-}
-
-// shadowingHandler proxies shadowing observations and metrics for a desktop.
-func (s *Server) shadowingHandler(w http.ResponseWriter, r *http.Request) {
-	if !allowMethod(w, r, http.MethodGet) {
-		return
-	}
-
-	desktopID := strings.TrimSpace(r.URL.Query().Get("id"))
-	if desktopID == "" {
-		jsonStatusError(w, http.StatusBadRequest, "id is required")
-		return
-	}
-
-	endpoint := "/shadowing/observations"
-	if r.URL.Query().Get("view") == "metrics" {
-		endpoint = "/shadowing/metrics"
-	}
-
-	s.callAgent(w, r, desktopID, http.MethodGet, endpoint, nil, true)
 }

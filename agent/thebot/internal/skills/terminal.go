@@ -76,9 +76,10 @@ func looksLikeCommand(s string) bool {
 
 // TerminalSkill runs a real shell command in the workspace directory -
 // real stdout/stderr/exit code, never a claimed success without checking
-// the real exit code. Safety boundary is structural (non-root container
-// user, cwd confinement to the workspace) rather than command filtering,
-// which would be both bypassable and block legitimate use.
+// the real exit code. A command goes through the same guard rail the
+// operator's do (safety.AssessCommand: a person's yes for what it flags),
+// which is a rail, not a boundary - the boundary is the OS (the gate user,
+// docs/gate-boundary.md). Review T-26: this said the opposite.
 type TerminalSkill struct{}
 
 func NewTerminal() *TerminalSkill { return &TerminalSkill{} }
@@ -210,12 +211,17 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	// The same gate the operator's loop goes through: a command written
 	// into the request (or by a planner) is exactly as consequential as
 	// one a model chose mid-loop.
+	// Everything this skill emits about the command goes through the operator's one filter (withholdFor).
+	clean := withholdIn(rc, subtask.Step, command)
 	if concern := safety.AssessCommand(command); concern != nil && !rc.IsApproved(command) {
-		rc.Logf("terminal", "approval needed before `%s` - %s", command, concern.Reason)
-		return NeedsApproval(subtask, t.Name(), command, concern.Reason, nil), nil
+		rc.Logf("terminal", "approval needed before `%s` - %s", clean(command), concern.Reason)
+		res := NeedsApproval(subtask, t.Name(), command, concern.Reason, nil)
+		res.Meta["actionShown"] = clean(command)
+		res.Output = fmt.Sprintf("Paused before `%s` - %s. Waiting for approval.", clean(command), concern.Reason)
+		return res, nil
 	}
 
-	rc.Logf("terminal", "command (%s): %s", source, command)
+	rc.Logf("terminal", "command (%s): %s", source, clean(command))
 	cwd := rc.Dir()
 	rc.Logf("terminal", "cwd: %s", cwd)
 
@@ -224,43 +230,35 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 
 	cmd := hostshell.CommandContext(ctx, command)
 	cmd.Dir = cwd
+	// Soul's own secrets are not the command's (review T-16), and what it prints is held to a bound (T-14).
+	cmd.Env = hostshell.ChildEnv()
+	var outBuf, errBuf hostshell.CappedBuffer
+	cmd.Stdout, cmd.Stderr = &outBuf, &errBuf
 	start := time.Now()
-	stdout, err := cmd.Output()
+	err := cmd.Run()
+	stdout := outBuf.Bytes()
 	duration := time.Since(start).Milliseconds()
+	// The command itself finished with 0; a background child it started is
+	// what still held the pipe (and was cut off). Its own exit is the result.
+	err = hostshell.Exited(cmd, err)
 
 	if err != nil {
 		stderr := ""
 		exitCode := -1
 		exitErr, isExitErr := err.(*exec.ExitError)
 		if isExitErr {
-			stderr = string(exitErr.Stderr)
+			stderr = errBuf.String()
 			exitCode = exitErr.ExitCode()
 		}
 
-		// Every command here runs via `bash -c "<command>"`, so bash ITSELF
-		// always starts and exits with a real code - "command not found"
-		// and "grep found nothing" both come back as *exec.ExitError, just
-		// with different codes. Found via a 100+ case terminal battery:
-		// `grep zzz_no_match file1.txt` and plain `false` - both correct,
-		// honest, complete results - were reported as Verified:false,
-		// which triggered a full LLM failure-reasoning-and-retry cycle
-		// that then quietly substituted an UNRELATED command that happened
-		// to exit 0 ("false" became "ls -l"), discarding what was
-		// actually asked.
-		//
-		// Exit code alone can't distinguish "ran fine, told us something"
-		// from "genuinely failed" - both grep's no-match AND pip failing
-		// on an externally-managed environment exit with the same code 1.
-		// STDERR is the real signal: a well-behaved tool that completes
-		// normally and merely reports a negative result (no match, false,
-		// a false test) writes NOTHING to stderr - verified live (grep
-		// no-match, false, test -f on a missing file: all empty stderr).
-		// A tool that genuinely couldn't do what was asked writes a real
-		// message there - bash's own "command not found"/"permission
-		// denied", pip's multi-line externally-managed-environment block,
-		// cat's "No such file or directory". Empty stderr on a nonzero
-		// exit is the command's own complete, honest, self-describing
-		// result; real stderr is a real problem worth reasoning about.
+		// Every command here runs via `bash -c "<command>"`, so bash itself
+		// always starts and exits with a real code. A nonzero exit is not a
+		// success, whatever stderr says: `grep` finding nothing and `false`
+		// exit nonzero with empty stderr, and so do a failed test and a tool
+		// that reports its errors on stdout. The exit code is reported as
+		// it is; the result is not verified (see the empty-stderr case
+		// below, which also stops the scheduler from swapping in another
+		// command that happens to exit 0).
 		// A command that was killed - the timeout, or the job being
 		// cancelled - also exits with empty stderr, but it did not "run
 		// fine and report a negative result". It did not finish. Exit code
@@ -271,7 +269,7 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		// live: run from here it was reported as the command's ordinary
 		// result, the task ended, and the yes had nothing to resume. The
 		// approved command is run again, and the gate lets that one through.
-		if reason := screenApprovalReason(shellResult{ExitCode: exitCode, Output: string(stdout)}); reason != "" {
+		if reason := screenApprovalReason(command, shellResult{ExitCode: exitCode, Output: string(stdout)}); reason != "" {
 			rc.Logf("terminal", "approval needed on screen - %s", reason)
 			return NeedsApproval(subtask, t.Name(), command, reason, nil), nil
 		}
@@ -298,15 +296,43 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 			}, nil
 		}
 
-		if isExitErr && strings.TrimSpace(stderr) == "" {
-			rc.Logf("terminal", "exit code: %d (real result, not a failure)", exitCode)
-			out := fmt.Sprintf("Command: %s\nWorking directory: %s\nExit code: %d", command, cwd, exitCode)
+		if answer := negativeAnswer(command, exitCode); isExitErr && answer != "" {
+			// grep finding nothing, diff finding a difference, a false test:
+			// exit 1 is that program's answer, decided by the program that
+			// ran last, not by what it printed. The step's question is
+			// answered - "no match" - which is neither the work done nor a
+			// failure to retry with another command.
+			rc.Logf("terminal", "exit code: 1 - answered: %s", clean(answer))
+			out := fmt.Sprintf("Command: %s\nWorking directory: %s\nExit code: 1 - answered: %s", command, cwd, answer)
+			if len(stdout) > 0 {
+				out += "\n\nStdout:\n" + string(stdout)
+			}
+			if strings.TrimSpace(stderr) != "" {
+				out += "\n\nStderr:\n" + stderr
+			}
+			return Result{
+				Subtask: subtask, SkillName: t.Name(), Output: out, Verified: true,
+				Meta:       map[string]any{"command": command, "source": source, "exitCode": exitCode, "cwd": cwd, "answered": answer},
+				DurationMs: duration,
+			}, nil
+		}
+
+		if isExitErr && strings.TrimSpace(stderr) == "" && exitCode != commandNotFound {
+			// Nonzero with nothing on stderr: the command ran to its end and
+			// said "no" (no match, a false test) - or failed quietly. Either
+			// way it is not a success. It is reported as it is, not verified,
+			// and marked fatal so the scheduler's recovery does not swap in
+			// an unrelated command that exits 0 (found live: `false` became
+			// `ls -l`, and the request was lost).
+			rc.Logf("terminal", "exit code: %d (nonzero - not a success)", exitCode)
+			out := fmt.Sprintf("Command: %s\nWorking directory: %s\nExit code: %d (nonzero: not a success; it printed no error)", command, cwd, exitCode)
 			if len(stdout) > 0 {
 				out += "\n\nStdout:\n" + string(stdout)
 			}
 			return Result{
-				Subtask: subtask, SkillName: t.Name(), Output: out, Verified: true,
-				Meta:       map[string]any{"command": command, "source": source, "exitCode": exitCode, "cwd": cwd},
+				Subtask: subtask, SkillName: t.Name(), Output: out, Verified: false,
+				Meta: map[string]any{"command": command, "source": source, "exitCode": exitCode, "cwd": cwd, "fatal": true,
+					"failureReasoning": fmt.Sprintf("`%s` exited with code %d and printed no error: a negative answer or a quiet failure, not a success", command, exitCode)},
 				DurationMs: duration,
 			}, nil
 		}
@@ -356,4 +382,47 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		Meta:       map[string]any{"command": command, "source": source, "exitCode": 0, "cwd": cwd},
 		DurationMs: duration,
 	}, nil
+}
+
+// negativeAnswers are the programs whose exit 1 is, by convention, an answer
+// rather than an error (an error is 2 or more): what that answer says.
+var negativeAnswers = map[string]string{
+	"grep": "no match", "egrep": "no match", "fgrep": "no match", "zgrep": "no match", "rg": "no match",
+	"diff": "the inputs differ", "cmp": "the inputs differ",
+	"test": "the test is false", "[": "the test is false", "[[": "the test is false",
+}
+
+// negativeAnswer is the answer exit code 1 gives for command, judged by the
+// program the shell ran last (the first word of the command line's last
+// stage, past variable assignments and wrappers like env or time), or ""
+// when exit 1 from that program is not an answer and stays a failure.
+func negativeAnswer(command string, exitCode int) string {
+	if exitCode != 1 {
+		return ""
+	}
+	segs := shellSegments(command)
+	if len(segs) == 0 {
+		return ""
+	}
+	words := strings.Fields(segs[len(segs)-1].Text)
+	for len(words) > 0 {
+		w := words[0]
+		switch {
+		case strings.Contains(w, "=") && !strings.HasPrefix(w, "="):
+			words = words[1:] // FOO=bar grep ...
+			continue
+		case w == "env" || w == "command" || w == "builtin" || w == "time" || w == "nice" || w == "exec":
+			words = words[1:]
+			continue
+		}
+		break
+	}
+	if len(words) == 0 {
+		return ""
+	}
+	w := words[0]
+	if i := strings.LastIndexByte(w, '/'); i >= 0 && w != "/" {
+		w = w[i+1:]
+	}
+	return negativeAnswers[w]
 }

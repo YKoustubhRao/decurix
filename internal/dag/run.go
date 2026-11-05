@@ -171,7 +171,7 @@ func (s *Store) StartRun(dagID, trigger string, now time.Time) (Run, error) {
 	}
 
 	if headNodeID == "" {
-		return Run{}, fmt.Errorf("dag: this DAG has no head node set")
+		return Run{}, refuse("this DAG has no head node set")
 	}
 
 	edges, err := edgeEnds(tx, dagID)
@@ -253,20 +253,15 @@ func (s *Store) ClaimRunNode(id string, now time.Time) (bool, error) {
 }
 
 // SetRunNodeTaskID records the task ID a claimed run-node's ticket landed
-// under. Not a compare-and-swap against a race with another dispatcher -
-// only the goroutine that won ClaimRunNode ever calls this for a given
-// run-node - but still scoped to a claimed-and-not-yet-submitted row (status
-// running, task_id empty) as a defensive guard against calling it twice.
-func (s *Store) SetRunNodeTaskID(id, taskID string) error {
-	_, err := s.db.Exec(
+// under, and reports whether it did. Only the goroutine that won ClaimRunNode
+// calls this for a given run-node, and it is scoped to a claimed row with no
+// task ID yet (status running, task_id empty): false means the claim was given
+// up meanwhile (its lease ran out, or a person cancelled the run).
+func (s *Store) SetRunNodeTaskID(id, taskID string) (bool, error) {
+	return s.compareAndSwap("set run node task id "+id,
 		`UPDATE dag_run_nodes SET task_id = ? WHERE id = ? AND status = ? AND task_id = ''`,
 		taskID, id, NodeRunning,
 	)
-	if err != nil {
-		return fmt.Errorf("dag: set run node task id %s: %w", id, err)
-	}
-
-	return nil
 }
 
 // ReleaseRunNode reverts a claimed-but-not-yet-submitted run-node back to

@@ -3,10 +3,12 @@ package dag
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/schedule"
@@ -23,7 +25,7 @@ import (
 // returns no task ID), and Go match interfaces by method name - reusing
 // "Submit" here would collide with that existing, differently-shaped method.
 type Submitter interface {
-	SubmitTracked(ctx context.Context, desktopID, content string) (taskID string, err error)
+	SubmitTracked(ctx context.Context, desktopID, content string, origin tasks.Origin) (taskID string, err error)
 }
 
 // TaskResults is what this package needs from internal/tasks.Store: a
@@ -32,7 +34,9 @@ type Submitter interface {
 // desktop is currently busy, checked immediately before a node dispatches to
 // it. Satisfied by *tasks.Store.
 type TaskResults interface {
-	TaskResult(taskID string) (status, finalReply string, ok bool)
+	// TaskResult also says whether the task's final check judged its result (nil: the desktop did not say): only a
+	// checked "done" lets a node succeed and feed its reply to the next one.
+	TaskResult(taskID string) (status string, checked *bool, finalReply string, ok bool)
 
 	// Busy reports why a desktop cannot take on a new ticket right now, or
 	// "" when it can - see tasks.Store.Busy. dispatch checks this itself
@@ -55,6 +59,19 @@ const defaultInterval = 20 * time.Second
 // dispatchConcurrency^2 dispatch() calls in flight across all active runs,
 // not just dispatchConcurrency.
 const dispatchConcurrency = 8
+
+// claimLease is how long a node may stay claimed with no task ID before the run gives up on it: the claim is made
+// before the ticket is sent, and a control plane stopped (or a send stuck) in between leaves it so for good. Longer
+// than any desktop takes to wake (minutes), so a send still in flight is not cut off.
+const claimLease = 15 * time.Minute
+
+// Why a node failed without its task failing, in words a person can act on.
+const (
+	reasonUnchecked   = "Finished without a checked final report, so nothing was built on it. The worker said: "
+	reasonStuckClaim  = "The control plane stopped (or the send stalled) while sending this node's request, so whether it reached the desktop is unknown: check the desktop before running again."
+	reasonUnrecorded  = "The request was sent, but the run could not record its task, so it cannot follow it: check the desktop (task %s)."
+	reasonCancelledBy = "Cancelled by a person."
+)
 
 // Runner drives every DAG's runs forward: fires a due cron trigger, and
 // advances each active run by resolving any node whose ticket has finished
@@ -80,6 +97,10 @@ type Runner struct {
 
 	// now is the test seam - defaults to time.Now().UTC.
 	now func() time.Time
+
+	// startedNS is when this process's Runner began (UnixNano; 0 until Run): a claim older than that can have no send
+	// in flight here, so it is given up at once, without waiting out claimLease.
+	startedNS atomic.Int64
 
 	// desktopLocksMu guards desktopLocks, lazily populated with one mutex
 	// per desktop ID ever dispatched to. dispatch holds a desktop's mutex
@@ -127,6 +148,7 @@ func (r *Runner) Run(ctx context.Context) {
 	if interval <= 0 {
 		interval = defaultInterval
 	}
+	r.markStarted(r.clock())
 
 	schedule.Every(ctx, interval, r.tick)
 }
@@ -241,18 +263,31 @@ func (r *Runner) advance(ctx context.Context, run Run) {
 // failed (anything else terminal), propagating Skip downstream on failure.
 func (r *Runner) resolveRunning(runID string, runNodes []RunNode, edges []Edge, now time.Time) {
 	for _, rn := range runNodes {
-		if rn.Status != NodeRunning || rn.TaskID == "" {
+		if rn.Status != NodeRunning {
 			continue
 		}
 
-		status, reply, ok := r.Tasks.TaskResult(rn.TaskID)
+		if rn.TaskID == "" {
+			// Claimed and never given its task (C-02): failed with a reason, never silently sent again - the
+			// request may have reached the desktop (the work queue's HoldInterrupted rule).
+			if started := r.startedNS.Load(); started != 0 && rn.StartedAt.UnixNano() < started ||
+				now.Sub(rn.StartedAt) > claimLease {
+				r.fail(runID, rn, reasonStuckClaim, edges, now)
+			}
+			continue
+		}
+
+		status, checked, reply, ok := r.Tasks.TaskResult(rn.TaskID)
 		if !ok || tasks.Live(status) {
 			continue
 		}
 
 		toStatus := NodeFailed
-		if status == tasks.StatusDone {
+		if outcome := tasks.DisplayOutcome(status, checked); outcome.Done() {
 			toStatus = NodeSucceeded
+		} else if outcome.Finished() {
+			// The worker's word alone: never fed to {{parent.reply}} downstream (C-13).
+			reply = reasonUnchecked + reply
 		}
 
 		applied, err := r.Store.MarkRunNodeTerminal(rn.ID, NodeRunning, toStatus, reply, now)
@@ -353,7 +388,8 @@ func (r *Runner) dispatch(ctx context.Context, runID string, rn RunNode, node No
 
 	content := substitute(node.Content, node.ID, edges, nodes, runNodes)
 
-	taskID, err := r.Submitter.SubmitTracked(ctx, node.DesktopID, content)
+	taskID, err := r.Submitter.SubmitTracked(ctx, node.DesktopID, content,
+		tasks.Origin{Kind: tasks.OriginDAG, Ref: runID + "/" + node.ID})
 
 	// The desktop became busy after the check above (a person sent it
 	// something): the same "back off and retry next tick", not a failure.
@@ -380,9 +416,69 @@ func (r *Runner) dispatch(ctx context.Context, runID string, rn RunNode, node No
 		return
 	}
 
-	if err := r.Store.SetRunNodeTaskID(rn.ID, taskID); err != nil {
-		log.Printf("dag: recording dispatch of node %s in run %s: %v", node.ID, runID, err)
+	recorded, err := r.Store.SetRunNodeTaskID(rn.ID, taskID)
+	if err != nil || !recorded {
+		// The ticket is out but this run cannot follow it: failed with the task named, never left claimed.
+		log.Printf("dag: recording dispatch of node %s in run %s (task %s): recorded=%v err=%v", node.ID, runID, taskID, recorded, err)
+		r.fail(runID, rn, fmt.Sprintf(reasonUnrecorded, taskID), edges, now)
 	}
+}
+
+// MarkStarted records that this process's Runner begins now, before anything can trigger a run: called by main
+// before the Runner is handed to the HTTP routes, so a claim a Trigger makes before Run's goroutine starts is not
+// taken for one a stopped control plane left (RW1-F-03). Run calls it too; only the first call counts.
+func (r *Runner) MarkStarted() { r.markStarted(r.clock()) }
+
+// markStarted records when this process's Runner began, once.
+func (r *Runner) markStarted(at time.Time) {
+	r.startedNS.CompareAndSwap(0, at.UnixNano())
+}
+
+// fail ends a running node as failed with reason, and skips what only it could reach.
+func (r *Runner) fail(runID string, rn RunNode, reason string, edges []Edge, now time.Time) {
+	applied, err := r.Store.MarkRunNodeTerminal(rn.ID, NodeRunning, NodeFailed, reason, now)
+	if err != nil {
+		log.Printf("dag: failing node %s in run %s: %v", rn.NodeID, runID, err)
+		return
+	}
+	if applied {
+		r.skipDescendants(runID, rn.NodeID, edges, now)
+	}
+}
+
+// Cancel ends a run a person gave up on: every node not yet sent is skipped, every node in flight is failed as
+// cancelled (its task, if one reached a desktop, is that desktop's to stop), and the run is closed as failed. It
+// reports false when the run was not running.
+func (r *Runner) Cancel(runID string) (bool, error) {
+	now := r.clock()
+
+	runNodes, err := r.Store.RunNodes(runID)
+	if err != nil {
+		return false, err
+	}
+
+	for _, rn := range runNodes {
+		switch rn.Status {
+		case NodePending:
+			skipped, err := r.Store.SkipRunNode(rn.ID, now)
+			if err != nil {
+				return false, err
+			}
+			if !skipped {
+				// A dispatch claimed it meanwhile: it is running now, so it is failed as cancelled like the others
+				// (RW1-F-03), never left running in a closed run.
+				if _, err := r.Store.MarkRunNodeTerminal(rn.ID, NodeRunning, NodeFailed, reasonCancelledBy, now); err != nil {
+					return false, err
+				}
+			}
+		case NodeRunning:
+			if _, err := r.Store.MarkRunNodeTerminal(rn.ID, NodeRunning, NodeFailed, reasonCancelledBy, now); err != nil {
+				return false, err
+			}
+		}
+	}
+
+	return r.Store.FinishRun(runID, RunFailed, now)
 }
 
 // skipDescendants marks Skipped every pending run-node reachable from a

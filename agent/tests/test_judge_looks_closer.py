@@ -17,7 +17,7 @@ class JudgeLooksCloser(unittest.TestCase):
     def setUp(self):
         self.sent, self.replies = [], []
 
-        def chat(messages, max_tokens=None):
+        def chat(messages, max_tokens=None, purpose=None):
             self.sent.append(messages)
             return {"content": self.replies.pop(0)}, {}
 

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -84,7 +85,7 @@ func (s *Server) createScheduleHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		scheduleInputError(w, err)
 		return
 	}
 
@@ -117,9 +118,21 @@ func (s *Server) toggleScheduleHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Schedules.SetEnabled(id, enabled); err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		scheduleInputError(w, err)
 		return
 	}
 
 	jsonResponse(w, map[string]string{"status": "ok"})
+}
+
+// scheduleInputError answers a mistake in what the person gave with its own
+// words, and any other error as internal (review 2026-11-03, B-37).
+func scheduleInputError(w http.ResponseWriter, err error) {
+	var input schedule.InputError
+	if errors.As(err, &input) {
+		jsonStatusError(w, http.StatusBadRequest, refusal(input))
+		return
+	}
+
+	jsonError(w, err)
 }

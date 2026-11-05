@@ -83,7 +83,7 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 
 	desktops, err := s.Desktops.List(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, "dashboard: listing desktops", err)
 		return
 	}
 
@@ -124,7 +124,7 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Web.RenderIndex(w, data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, "dashboard page", err)
 	}
 }
 
@@ -175,7 +175,7 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if brainErr != nil {
-		jsonStatusError(w, http.StatusBadRequest, brainErr.Error())
+		jsonStatusError(w, http.StatusBadRequest, refusal(brainErr))
 		return
 	}
 
@@ -225,42 +225,24 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	var selectedApps []string
 	copyHostApps := r.FormValue("copy_host_apps") == "1" ||
 		strings.EqualFold(r.FormValue("copy_host_apps"), "true")
+	if (copyHostApps || strings.TrimSpace(r.FormValue("host_apps")) != "") && isGated(r) {
+		// The host's programs and signed-in sessions are the person's to give, at their own screen - the same rule as
+		// a shared folder below (review 2026-11-03, W-05): a worker made through the phone or tunnel gets none.
+		jsonStatusError(w, http.StatusForbidden, "apps from this computer can only be given to a desktop on this computer, not through the phone or tunnel address")
+		return
+	}
 	if copyHostApps {
 		selectedApps = splitList(r.FormValue("host_apps"))
 	}
 
+	// Copying any file the control plane can see into a desktop was removed (review 2026-11-02): it reached the
+	// control plane's own data (/data: keys, the database) and every file of the person's computer, from whoever could
+	// create a desktop. The one way to give a worker files of this computer is a shared folder, chosen at its screen.
 	var hostCopyPaths []desktop.HostCopyPath
-	rawHostPaths := strings.TrimSpace(r.FormValue("host_paths"))
-	if rawHostPaths == "" {
-		rawHostPaths = strings.TrimSpace(r.FormValue("copy_host_paths"))
-	}
-	if rawHostPaths == "" {
-		rawHostPaths = strings.TrimSpace(r.FormValue("copy_paths"))
-	}
-	if rawHostPaths == "" && len(r.Form["host_paths"]) > 0 {
-		rawHostPaths = strings.Join(r.Form["host_paths"], "\n")
-	}
-
-	if rawHostPaths != "" {
-		parsed, err := desktop.ParseHostCopyPaths(rawHostPaths)
-		if err != nil {
-			jsonStatusError(w, http.StatusBadRequest, fmt.Sprintf("invalid host copy paths: %v", err))
+	for _, field := range []string{"host_paths", "copy_host_paths", "copy_paths"} {
+		if strings.TrimSpace(r.FormValue(field)) != "" && strings.TrimSpace(r.FormValue(field)) != "[]" {
+			jsonStatusError(w, http.StatusBadRequest, "copying files from this computer into a desktop is no longer offered: choose a shared folder instead")
 			return
-		}
-		for _, p := range parsed {
-			if strings.TrimSpace(p.Src) == "" {
-				continue
-			}
-			fi, err := os.Stat(p.Src)
-			if err != nil {
-				jsonStatusError(w, http.StatusBadRequest, fmt.Sprintf("host path does not exist: %s", p.Src))
-				return
-			}
-			if _, err := desktop.ResolveVMDestPath(p.Src, p.Dest, fi.IsDir()); err != nil {
-				jsonStatusError(w, http.StatusBadRequest, fmt.Sprintf("invalid destination path for %s: %v", p.Src, err))
-				return
-			}
-			hostCopyPaths = append(hostCopyPaths, p)
 		}
 	}
 
@@ -274,7 +256,7 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	sharedFolder, sharedErr := desktop.ParseSharedFolder(r.FormValue("shared_folder"))
 	if sharedErr != nil {
-		jsonStatusError(w, http.StatusBadRequest, sharedErr.Error())
+		jsonStatusError(w, http.StatusBadRequest, refusal(sharedErr))
 		return
 	}
 
@@ -404,12 +386,47 @@ func (s *Server) desktopAction(w http.ResponseWriter, r *http.Request, warm bool
 		return "", false
 	}
 
-	if err := act(r.Context(), id); err != nil {
+	// One lifecycle change at a time per desktop, and never in the middle of a request being delivered and recorded
+	// (submitStored holds the same lock): a stop then closes what was just recorded instead of racing it (B-23).
+	unlock := s.Desktops.LockDesktop(id)
+	err := act(r.Context(), id)
+	unlock()
+	if err != nil {
 		jsonError(w, err)
 		return "", false
 	}
 
 	return id, true
+}
+
+// thenClose is act followed by closing the desktop's open tasks with why, both under the lifecycle lock desktopAction
+// holds: a delivery waiting on that lock records its task after the close, never before it to be closed by mistake
+// (RW1-E-01).
+func (s *Server) thenClose(act func(context.Context, string) error, why string) func(context.Context, string) error {
+	return func(ctx context.Context, id string) error {
+		if err := act(ctx, id); err != nil {
+			return err
+		}
+		s.closeOpenTasks(id, why)
+		return nil
+	}
+}
+
+// dockerStatusHandler answers GET /api/docker/status: whether the control plane has asked Docker yet, and whether it
+// answered - what the "Docker is not running" banner reads (W-08) - whether a tools update waits for running
+// desktops to stop (tools_waiting), and, on the Windows app's WSL host, whether the fence between desktops holds
+// (fence; fence_missing is the one bit a banner needs). Never a round trip to Docker itself.
+func (s *Server) dockerStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if !allowMethod(w, r, http.MethodGet) {
+		return
+	}
+	checked, reachable, toolsWaiting := false, false, false
+	if s.Desktops != nil {
+		checked, reachable, toolsWaiting = s.Desktops.DockerChecked(), s.Desktops.DockerReachable(), s.Desktops.ToolsRefreshWaiting(r.Context())
+	}
+	fence := desktop.HostFence()
+	jsonResponse(w, map[string]any{"checked": checked, "reachable": reachable, "tools_waiting": toolsWaiting,
+		"fence": fence, "fence_missing": fence.Required && !fence.Holds})
 }
 
 // startDesktopHandler starts an existing desktop by ID.
@@ -427,12 +444,11 @@ func (s *Server) startDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 // stopDesktopHandler stops a running desktop by ID.
 func (s *Server) stopDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.desktopAction(w, r, false, s.Desktops.Stop)
+	id, ok := s.desktopAction(w, r, false, s.thenClose(s.Desktops.Stop, "The desktop was stopped before this task finished."))
 	if !ok {
 		return
 	}
 
-	s.closeOpenTasks(id, "The desktop was stopped before this task finished.")
 	// Its host apps go too: kept ready for nobody, each with its bridge. Remembered for its next start (hostgui.go).
 	s.releaseHostApps(desktop.SanitizeID(id))
 
@@ -461,12 +477,9 @@ func (s *Server) unpauseDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 // restartDesktopHandler restarts a desktop by ID.
 func (s *Server) restartDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.desktopAction(w, r, true, s.Desktops.Restart)
-	if !ok {
+	if _, ok := s.desktopAction(w, r, true, s.thenClose(s.Desktops.Restart, "The desktop was restarted before this task finished.")); !ok {
 		return
 	}
-
-	s.closeOpenTasks(id, "The desktop was restarted before this task finished.")
 
 	jsonResponse(w, map[string]string{
 		"status": "restarted",
@@ -475,12 +488,29 @@ func (s *Server) restartDesktopHandler(w http.ResponseWriter, r *http.Request) {
 
 // deleteDesktopHandler deletes a desktop and its persistent storage by ID.
 func (s *Server) deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
-	id, ok := s.desktopAction(w, r, false, s.Desktops.Delete)
+	// Every run not yet pulled leaves the desktop first (R9): deleting it would lose what labels those runs. Under the
+	// one lifecycle lock desktopAction holds: every run with no bundle, the open ones included, is pulled, then the
+	// desktop goes, and only once it has gone are its open runs closed (a delete that fails leaves them as they are,
+	// still running). Neither the flush nor the delete is cut short by the browser going away (review CP-A B3, N9,
+	// N10).
+	closeFlushDelete := func(ctx context.Context, id string) error {
+		ctx = context.WithoutCancel(ctx)
+		s.flushRuns(ctx, desktop.SanitizeID(id))
+		del := s.Desktops.Delete
+		if s.deleteDesktop != nil {
+			del = s.deleteDesktop
+		}
+		if err := del(ctx, id); err != nil {
+			log.Printf("deleteDesktop: %s was not deleted, and its open tasks stay open: %v", id, err)
+			return err
+		}
+		s.closeOpenTasks(id, "The desktop was deleted before this task finished.")
+		return nil
+	}
+	id, ok := s.desktopAction(w, r, false, closeFlushDelete)
 	if !ok {
 		return
 	}
-
-	s.closeOpenTasks(id, "The desktop was deleted before this task finished.")
 
 	// Its open notes can never be answered now.
 	s.QueryNotes.ResolveDesktop(desktop.SanitizeID(id))
@@ -539,41 +569,9 @@ func (s *Server) closeOpenTasks(id, why string) {
 	if err := s.Tasks.CloseOpen(desktop.SanitizeID(id), why); err != nil {
 		log.Printf("closing tasks for %s: %v", id, err)
 	}
+	// Its tasks open at start are over too: its calls keep their text again (secretslost.go).
+	s.desktopTasksEnded(desktop.SanitizeID(id))
 
 	// And the chat's turn for it, which nothing else would close now.
 	s.Chat.EndTurn(desktop.SanitizeID(id), why)
-}
-
-// validateHostPathHandler checks whether a path on the host filesystem exists
-// and returns whether it is a file or directory, its size, name, and default VM destination.
-// GET or POST /api/host-paths/validate?path=...
-func (s *Server) validateHostPathHandler(w http.ResponseWriter, r *http.Request) {
-	hostPath := strings.TrimSpace(r.FormValue("path"))
-	if hostPath == "" {
-		jsonStatusError(w, http.StatusBadRequest, "path parameter is required")
-		return
-	}
-
-	defaultDest := desktop.ComputeDefaultVMDest(hostPath)
-	fi, err := os.Stat(hostPath)
-	if err != nil {
-		jsonResponse(w, map[string]any{
-			"valid":        false,
-			"exists":       false,
-			"path":         hostPath,
-			"default_dest": defaultDest,
-			"error":        "Path not found on host",
-		})
-		return
-	}
-
-	jsonResponse(w, map[string]any{
-		"valid":        true,
-		"exists":       true,
-		"is_dir":       fi.IsDir(),
-		"name":         fi.Name(),
-		"size":         fi.Size(),
-		"path":         hostPath,
-		"default_dest": defaultDest,
-	})
 }

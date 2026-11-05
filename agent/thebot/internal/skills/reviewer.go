@@ -2,6 +2,7 @@ package skills
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode"
@@ -99,13 +100,13 @@ Every instruction the person gave in this goal - check this, look there, fix tha
 
 A standing or taught rule about how to go about the work (check the list before entering, look in the folder before copying, match by one field before another) is there for an outcome: nothing entered twice, nothing overwritten, the right record used. When that outcome can be read in what you are shown, judge the outcome - raise the rule only when its outcome is wrong, or when nothing shows the outcome either way.
 
-Work added to a record that already holds earlier entries of the same kind (a register or sheet with earlier periods' blocks, a list of earlier records) follows them: they are the person's own precedent for its layout. Each new row keeps to the precedent's columns: a column that holds one value per row in the earlier entries (one code, one rate, one date) holds one value in every new row - two values joined in one cell ("A/B"), or a blank where every earlier row has a value, is a point: the document is recorded over several rows, one per value, as earlier entries with several parts are. New entries belong to the period or group they are added under: a row dated in another period, or a heading or total label of another period, inside the new block is a point. Name the rows, what they hold, and the earlier entry they should look like.
+Work added to a record that already holds earlier entries of the same kind follows them: they are the person's own precedent for its layout. A new entry that departs from that precedent - its columns, how one document is spread over rows, where it sits - is a point: name the rows, what they hold, and the earlier entry they should look like.
 
 What the person has already answered is settled: a point they decided, or left to the worker ("as you did", "use your judgement"), is never raised again unless the work since goes against their answer.
 
 Do not raise what the evidence plainly settles, wording or style, or how the work was carried out when the result is right. Be specific: name the record, document, field or figure, and what you saw.
 
-For each issue, say how it is settled: "recheck" - the worker can settle it from what it already has or can open; "lookup" - general knowledge that a reliable page on the web can give; "person" - only the person can say (their choice, their rule, their data).
+For each issue, say how it is settled: "recheck" - the worker can settle it from what it already has or can open, or do it (a part of the work not done yet); "lookup" - general knowledge that a reliable page on the web can give; "person" - only the person can say (their choice, their rule, their data).
 
 Reply with JSON only: {"issues": [{"what": "...", "why": "...", "settle": "recheck"}]} - an empty list when nothing is wrong.`
 
@@ -120,6 +121,30 @@ type reviewIssue struct {
 	// Advisory marks a point the worker is told once and that never goes to the person or the result: a verifier
 	// disagreement on a screen the work did not type into (evidence.go verifyReport).
 	Advisory bool `json:"-"`
+	// Unchecked marks a check that could not be made (notChecked): never advisory, so it reaches the person.
+	Unchecked bool `json:"-"`
+}
+
+// errCutOff is a model's answer that stopped for want of room (llm.Result.Truncated): what came is not the whole
+// answer, and is never taken for one.
+var errCutOff = errors.New("the model's answer was cut off before it was finished")
+
+// cutOffNote is said after a reply shown although it was cut off.
+const cutOffNote = "\n\n(This reply was cut off before it was finished: it is incomplete.)"
+
+// notChecked is the point that stands for an independent check that could not be made (the model call failed - a
+// timeout, a 429 - or its answer could not be read): what was not checked, never a pass. It goes back to the worker
+// like any recheck point, and on to the person with the approval or the result.
+func notChecked(what string, err error) reviewIssue {
+	why := "the check's answer could not be read"
+	if err != nil {
+		why = "the check could not be made (" + truncateText(err.Error(), 160) + ")"
+	}
+	return reviewIssue{
+		What:   "Not checked: " + what + " - " + why,
+		Why:    "check them against the documents before going on, or say plainly that they are not checked",
+		Settle: "recheck", Unchecked: true,
+	}
 }
 
 // text is the issue as one line.
@@ -155,6 +180,10 @@ func (st *operatorState) reviewFacts(report string, items []string, action strin
 		b.WriteString("\nVALUES TYPED THAT NO TEXT HOLDS, OCR OF THE PICTURES INCLUDED (read off a picture, or not read " +
 			"at all): " + strings.Join(st.PictureOnly, ", ") + "\n")
 	}
+	if len(st.ComputedTyped) > 0 {
+		b.WriteString("\nVALUES TYPED THAT ONLY CODE THE WORK WROTE ITSELF PRINTED (its own arithmetic or text - a fact, no " +
+			"verdict: check each against the sources it was worked from): " + strings.Join(st.ComputedTyped, ", ") + "\n")
+	}
 	if len(st.UntracedWrites) > 0 {
 		b.WriteString("\nVALUES WRITTEN INTO FILES THAT NO TEXT THE WORK WAS SHOWN HOLDS (read off a picture, worked out in " +
 			"the head, or not read at all - check each against its source): " + strings.Join(st.UntracedWrites, ", ") + "\n")
@@ -176,6 +205,21 @@ func (st *operatorState) reviewFacts(report string, items []string, action strin
 			"it meant to enter, and whether the page showed each after the save - 'seen' is a fact, 'ABSENT' is not " +
 			"yet shown; a record entered without a declaration is not listed here - judge it from the other facts):\n" +
 			truncateText(st.RecordLedger, maxReviewLedgerChars) + "\n")
+	}
+	if facts := rateLineFacts(st.RecordLedger); len(facts) > 0 {
+		b.WriteString("\nRATE LINES OF THE LEDGER WHOSE SHARE MATCHES NO AMOUNT OF THEIR RECORD (arithmetic, no verdict: a " +
+			"figure may be misread, or the line charged on something the record does not hold - judge it with the " +
+			"document):\n- " + strings.Join(facts, "\n- ") + "\n")
+	}
+	if strings.Contains(st.Seen, "=== HANDOFF ") {
+		if facts := handoffFacts(st.Seen); len(facts) > 0 {
+			b.WriteString("\nPARTS HANDED TO OTHER WORKERS THAT CAME BACK NOT VERIFIED (a report that rests on one as done " +
+				"claims what nobody saw):\n- " + strings.Join(facts, "\n- ") + "\n")
+		}
+	}
+	if len(st.folderFacts) > 0 {
+		b.WriteString("\nFOLDERS THIS TASK NAMED WHOSE NAME DIFFERS FROM THE SHAPE THE FOLDERS BESIDE THEM SHARE (a fact, " +
+			"no verdict: whether it should follow them is yours to judge):\n- " + strings.Join(st.folderFacts, "\n- ") + "\n")
 	}
 	if gaps := st.coverageGaps(); len(gaps) > 0 {
 		b.WriteString("\nDOCUMENTS OF THE WORK THAT NOTHING ENTERED OR WRITTEN REFLECTS (right only when the report says " +
@@ -238,10 +282,26 @@ func (st *operatorState) reviewFacts(report string, items []string, action strin
 			b.WriteString("- " + l.Command + " " + strings.Join(l.Links, " ") + "\n")
 		}
 	}
-	if unfound := unbackedCalls(items, st.judgementSources()); len(unfound) > 0 {
+	var unfound, notBacked []string
+	for _, item := range unbackedCalls(items, st.judgementSources()) {
+		if notBackedRe.MatchString(item) {
+			notBacked = append(notBacked, item)
+		} else {
+			unfound = append(unfound, item)
+		}
+	}
+	if len(unfound) > 0 {
 		b.WriteString("\nDECISIONS WHOSE CITED WORDS APPEAR IN NO TEXT THE WORKER WAS SHOWN (pictures it looked at are not " +
-			"searched), or that say they rest on nothing:\n- " +
-			strings.Join(unfound, "\n- ") + "\n")
+			"searched):\n- " + strings.Join(unfound, "\n- ") + "\n")
+	}
+	if len(notBacked) > 0 && action == "" {
+		// Points already open, decided in code (notBackedIssues): the review is told so, not shown them as facts it
+		// may let stand.
+		b.WriteString("\nALREADY OPEN, DECIDED IN CODE - the worker itself says these rest on nothing given; each goes to " +
+			"the person, whatever this review finds, and the work is not done while one stands:\n- " +
+			strings.Join(notBacked, "\n- ") + "\n")
+	} else if len(notBacked) > 0 {
+		b.WriteString("\nDECISIONS THE WORKER SAYS REST ON NOTHING GIVEN:\n- " + strings.Join(notBacked, "\n- ") + "\n")
 	}
 	if passages := quotedPassages(items, st.judgementSources()); len(passages) > 0 {
 		b.WriteString("\nWHERE THE WORDS ITS DECISIONS CITE APPEAR IN WHAT IT WAS SHOWN (the passage around each, from the full outputs):\n- " +
@@ -352,9 +412,14 @@ func (o *OperatorSkill) review(rc RunContext, st *operatorState, said string, it
 	}
 	for try := 1; try <= 2; try++ {
 		resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{{Role: "system", Content: reviewSystem}, facts},
-			llm.Options{TimeoutMs: reviewTimeoutMs, Temperature: reviewTemperature})
+			llm.Options{TimeoutMs: reviewTimeoutMs, Temperature: reviewTemperature, Purpose: llm.PurposeReview})
 		if err != nil {
 			rc.Logf("operator", "could not review the work (try %d): %v", try, err)
+			continue
+		}
+		if resp.Truncated {
+			// A cut-off answer is not the review: the points past the cut are missing.
+			rc.Logf("operator", "the review's answer was cut off (try %d)", try)
 			continue
 		}
 		text := resp.Text

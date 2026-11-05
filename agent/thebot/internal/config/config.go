@@ -5,8 +5,12 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"path"
+	"strings"
 )
 
 type Config struct {
@@ -68,14 +72,21 @@ type Config struct {
 	// OpenAI-compatible proxy need not offer embeddings at all.
 	EmbedProvider string
 
-	// Port is loopback-only - "embedded, not an external API" means this
-	// is how the VM's own local UI talks to the soul process, never a
-	// network-facing contract for third parties.
+	// Port is soul's HTTP API and UI. "Embedded, not an external API": it is
+	// how the control plane (through its /agent/<id>/ proxy) and the desktop's
+	// own agent talk to soul, never a contract for third parties. Inside a
+	// desktop container it listens on every interface (Host), so other
+	// containers on the Docker network can reach it: AgentToken is what keeps
+	// them out (cmd/soul/guard.go).
 	Port string
 	// Host is the address it listens on: every interface inside a desktop
 	// container (the control plane reaches it from outside the container),
 	// loopback for a native Windows worker.
 	Host string
+	// AgentToken is the desktop's agent token (DECURIX_AGENT_TOKEN): every API
+	// route but the health check needs "Authorization: Bearer <it>", and
+	// without one those routes are refused (fail closed). Never logged.
+	AgentToken string
 	// DoclingScript is the path to scripts/docling_convert.py - a Python
 	// subprocess the Data RAG shells out to for real PDF/DOCX/HTML/image
 	// parsing (docling is Python-only, so this dependency doesn't go away
@@ -83,7 +94,24 @@ type Config struct {
 	// runs from the repo root (true for local `go run ./cmd/soul` and will
 	// be true in the Docker image too); override for other layouts.
 	DoclingScript string
+	// Standalone is soul run as a product of its own (THEBOT_STANDALONE=1), not embedded in a Decurix desktop.
+	// Embedded, a hosted model is reached only through the control plane's recording proxy (LLM_PROVIDER=openai), so
+	// LLM_PROVIDER=anthropic is refused there (plan R4: one path for hosted calls).
+	Standalone bool
+	// ControlPlaneURL is the control plane this desktop answers to (CONTROL_PLANE_URL, set on every desktop). Embedded,
+	// a hosted brain's base URL must be its model proxy (<ControlPlaneURL>/api/llm/...), the one path R2 records.
+	ControlPlaneURL string
 }
+
+// ErrHostedNotProxied is an embedded soul whose hosted brain is not reached through the control plane's proxy.
+var ErrHostedNotProxied = errors.New("OPENAI_BASE_URL is not the control plane's model proxy: inside Decurix a hosted " +
+	"model is reached only through <CONTROL_PLANE_URL>/api/llm/<provider>; THEBOT_STANDALONE=1 allows any endpoint " +
+	"for soul run on its own")
+
+// ErrAnthropicEmbedded is LLM_PROVIDER=anthropic in a soul embedded in Decurix.
+var ErrAnthropicEmbedded = errors.New("LLM_PROVIDER=anthropic is not allowed inside Decurix: inside Decurix a hosted " +
+	"model is reached through the control plane's proxy (LLM_PROVIDER=openai); THEBOT_STANDALONE=1 keeps it for soul " +
+	"run on its own")
 
 func Load() Config {
 	return Config{
@@ -115,9 +143,12 @@ func Load() Config {
 		Brain:         getenv("DECURIX_BRAIN", "ollama"),
 		BrainVision:   getenv("DECURIX_BRAIN_VISION", ""),
 
-		Host:          getenv("SOUL_HOST", "0.0.0.0"),
-		Port:          getenv("SOUL_PORT", "4900"),
-		DoclingScript: getenv("DOCLING_SCRIPT", "scripts/docling_convert.py"),
+		Host:            getenv("SOUL_HOST", "0.0.0.0"),
+		Port:            getenv("SOUL_PORT", "4900"),
+		AgentToken:      getenv("DECURIX_AGENT_TOKEN", ""),
+		DoclingScript:   getenv("DOCLING_SCRIPT", "scripts/docling_convert.py"),
+		Standalone:      os.Getenv("THEBOT_STANDALONE") == "1",
+		ControlPlaneURL: getenv("CONTROL_PLANE_URL", ""),
 	}
 }
 
@@ -131,6 +162,10 @@ func (c Config) Validate() error {
 			return fmt.Errorf("LLM_PROVIDER=ollama requires OLLAMA_HOST to be set")
 		}
 	case "anthropic":
+		if !c.Standalone {
+			// The control plane never sets it (internal/desktop/docker.go); this holds for a hand edit too.
+			return ErrAnthropicEmbedded
+		}
 		if c.AnthropicAPIKey == "" {
 			return fmt.Errorf("LLM_PROVIDER=anthropic requires ANTHROPIC_API_KEY to be set")
 		}
@@ -138,10 +173,28 @@ func (c Config) Validate() error {
 		if c.OpenAIAPIKey == "" {
 			return fmt.Errorf("LLM_PROVIDER=openai requires OPENAI_API_KEY to be set")
 		}
+		if !c.Standalone && !proxiedBy(c.OpenAIBaseURL, c.ControlPlaneURL) {
+			return ErrHostedNotProxied
+		}
 	default:
 		return fmt.Errorf("unknown LLM_PROVIDER %q - must be one of: ollama, anthropic, openai", c.Provider)
 	}
 	return nil
+}
+
+// proxiedBy reports whether base is controlPlane's model proxy: the same scheme and host, under /api/llm/. Parsed,
+// never compared as a string prefix, so a host that only starts with the control plane's name is not it.
+func proxiedBy(base, controlPlane string) bool {
+	b, err1 := url.Parse(strings.TrimSpace(base))
+	cp, err2 := url.Parse(strings.TrimSpace(controlPlane))
+	if err1 != nil || err2 != nil || controlPlane == "" || b.Host == "" || b.User != nil {
+		return false
+	}
+	if !strings.EqualFold(b.Scheme, cp.Scheme) || !strings.EqualFold(b.Host, cp.Host) {
+		return false
+	}
+	prefix := strings.TrimRight(cp.Path, "/") + "/api/llm/"
+	return strings.HasPrefix(path.Clean(b.Path)+"/", prefix) && !strings.Contains(b.Path, "..")
 }
 
 func getenv(key, fallback string) string {

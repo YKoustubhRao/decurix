@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
@@ -94,6 +95,31 @@ func (s *Service) Running() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.active) > 0
+}
+
+// reservedSlot is the key another kind of practice run (an eval) holds the slot under.
+const reservedSlot = "reserved"
+
+// Reserve takes the control plane's one practice slot for another kind of run, an eval, so neither a Simulate run
+// nor a second eval starts while it holds it; ErrBusy when the slot is taken. release gives it back, once.
+func (s *Service) Reserve() (release func(), err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.active) > 0 {
+		return nil, ErrBusy
+	}
+	if s.active == nil {
+		s.active = map[string]context.CancelFunc{}
+	}
+	s.active[reservedSlot] = func() {}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			delete(s.active, reservedSlot)
+			s.mu.Unlock()
+		})
+	}, nil
 }
 
 // StartRun starts a practice run of an approved suite. sourceSHA is the source
@@ -279,6 +305,11 @@ func (s *Service) execute(ctx context.Context, run qualification.PracticeRun, su
 	d, err = s.Sandbox.CreatePractice(ctx, spec)
 	if err != nil {
 		log.Printf("practice: create desktop: %v", err)
+		if errors.Is(err, desktop.ErrNoSecret) {
+			// Said, not swallowed: a run that cannot be made safely is the control plane's fault, not the worker's.
+			finish("error", "The practice desktop was not made: "+desktop.ErrNoSecret.Error()+".")
+			return
+		}
 		finish("error", "The practice desktop could not be created.")
 		return
 	}
@@ -416,7 +447,8 @@ func (s *Service) calibrate(ctx context.Context, run qualification.PracticeRun, 
 	}()
 	route := tasks.NewRoute()
 	if s.Tasks != nil {
-		_, _ = s.Tasks.CommitTyped(route, tasks.Worker{ID: desktop.PracticeDesktopID(run.ID), Name: su.Source.Title, Engine: "practice", Profile: "practice"}, "Practice calibration: "+su.Source.Title, tasks.TypePractice)
+		_, _ = s.Tasks.CommitTyped(route, tasks.Worker{ID: desktop.PracticeDesktopID(run.ID), Name: su.Source.Title, Engine: "practice", Profile: "practice"}, "Practice calibration: "+su.Source.Title, tasks.TypePractice,
+			tasks.Origin{Kind: tasks.OriginPractice, Ref: run.ID + "/calibration"})
 	}
 	obs := s.Broker.StartCase(route.TaskID)
 	defer s.Broker.EndCase()
@@ -498,7 +530,8 @@ func (s *Service) runCase(ctx context.Context, run qualification.PracticeRun, su
 	var problems []string
 	route := tasks.NewRoute()
 	if s.Tasks != nil {
-		if _, err := s.Tasks.CommitTyped(route, tasks.Worker{ID: workerID, Name: su.Source.Title, Engine: "practice", Profile: "practice"}, "Practice ("+c.Category+"): "+clip(c.Request, 200), tasks.TypePractice); err != nil {
+		if _, err := s.Tasks.CommitTyped(route, tasks.Worker{ID: workerID, Name: su.Source.Title, Engine: "practice", Profile: "practice"}, "Practice ("+c.Category+"): "+clip(c.Request, 200), tasks.TypePractice,
+			tasks.Origin{Kind: tasks.OriginPractice, Ref: run.ID + "/" + c.ID}); err != nil {
 			problems = append(problems, "The case's task record could not be opened.")
 		}
 	}
@@ -520,7 +553,7 @@ func (s *Service) runCase(ctx context.Context, run qualification.PracticeRun, su
 			mockID = id
 		}
 		obs = s.Broker.StartCase(route.TaskID)
-		if err := s.post(ctx, d, "/request", map[string]string{"content": c.Request, "task_id": route.TaskID}); err != nil {
+		if err := s.post(desktop.WithGateNotice(ctx, RequestGateNotice(route.TaskID, c.Request)), d, "/request", map[string]string{"content": c.Request, "task_id": route.TaskID}); err != nil {
 			ev.RunErr = err
 			return
 		}
@@ -532,12 +565,17 @@ func (s *Service) runCase(ctx context.Context, run qualification.PracticeRun, su
 	}()
 	// Freeze the desktop and the mock before reading anything, so the worker
 	// cannot change what the checker sees.
+	// graded is false when the evidence could not be read: the checker then decided nothing, and the case's record
+	// says its check was not made (unchecked), never that it was checked.
+	graded := ev.RunErr == nil
 	if err := s.Sandbox.PausePractice(ctx, d.ContainerID, mockID); err != nil {
 		problems = append(problems, "The practice desktop could not be paused before collection.")
+		graded = false
 	} else {
 		outputs, changed, collect, err := s.Sandbox.CollectPractice(ctx, d.ContainerID, c.ID, c.Files)
 		if err != nil {
 			problems = append(problems, "The case's files could not be collected.")
+			graded = false
 		}
 		ev.Outputs, ev.ChangedInputs = outputs, changed
 		problems = append(problems, collect...)
@@ -579,10 +617,30 @@ func (s *Service) runCase(ctx context.Context, run qualification.PracticeRun, su
 		if f.Passed {
 			verdict = "passed its independent checks"
 		}
-		checked := f.Passed
-		_, _ = s.Tasks.RecordOutcome(workerID, route.TaskID, tasks.Outcome{Kind: kind, Reply: "Practice case " + c.ID + " " + verdict + ". The worker said: " + clip(ev.Text, 2000), Engine: "practice", Checked: &checked})
+		// The grade is the practice checker's verdict, and checked is derived from it (H-CP-2), never set bare.
+		_, _ = s.Tasks.RecordOutcome(workerID, route.TaskID, tasks.Outcome{Kind: kind, Reply: "Practice case " + c.ID + " " + verdict + ". The worker said: " + clip(ev.Text, 2000), Engine: "practice",
+			Verdict: graderVerdict(tasks.ByPractice, f.Passed, graded, "practice.checks", "Practice case "+c.ID+" "+verdict+".", "case:"+c.ID)})
 	}
 	return f, files
+}
+
+// graderVerdict is a practice or eval grade as a verdict: pass, fail, or not made when the evidence could not be
+// graded. Its basis is code: the checker decided in Go from state read back.
+func graderVerdict(by string, passed, graded bool, id, detail, ref string) *tasks.GateVerdict {
+	result := "fail"
+	switch {
+	case !graded:
+		result = "not_made"
+	case passed:
+		result = "pass"
+	}
+	return tasks.GraderVerdict(by, result, "code", id, detail, []string{ref})
+}
+
+// GraderVerdict is a practice or eval grade as a decurix.verdict/v1 (exported for the eval runner, which records its
+// rows' grades the same way).
+func GraderVerdict(by string, passed, graded bool, id, detail, ref string) *tasks.GateVerdict {
+	return graderVerdict(by, passed, graded, id, detail, ref)
 }
 
 // evidenceFiles lists what is kept of a case: inputs, outputs, the mock's state

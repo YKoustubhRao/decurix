@@ -82,7 +82,7 @@ if ($crlf.Count -gt 0) {
 }
 
 Write-Host 'Checking Electron launcher...'
-& node --test (Join-Path $electron 'main.test.js') (Join-Path $electron 'mobile-access.test.js') (Join-Path $electron 'windows-runtime.test.js') (Join-Path $electron 'local-models.test.js') (Join-Path $electron 'native-ollama.test.js') (Join-Path $electron 'preload.test.js') (Join-Path $electron 'wsl.test.js')
+& node --test (Join-Path $electron 'main.test.js') (Join-Path $electron 'mobile-access.test.js') (Join-Path $electron 'windows-runtime.test.js') (Join-Path $electron 'local-models.test.js') (Join-Path $electron 'native-ollama.test.js') (Join-Path $electron 'preload.test.js') (Join-Path $electron 'wsl.test.js') (Join-Path $electron 'windows-lan.test.js') (Join-Path $electron 'gated-port.test.js')
 if ($LASTEXITCODE -ne 0) { throw 'Electron launcher tests failed.' }
 
 $version = 'dev'
@@ -115,7 +115,7 @@ foreach ($download in $downloads) {
 if (Test-Path $wsl) { Remove-Item $wsl -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $wsl | Out-Null
 Copy-Item (Join-Path $stage 'alpine-minirootfs.tar.gz') $wsl
-Copy-Item (Join-Path $electron 'wsl/setup.sh'), (Join-Path $electron 'wsl/dockerd.sh'), (Join-Path $electron 'wsl/stage-existing.sh'), (Join-Path $electron 'wsl/maintain-existing.sh'), (Join-Path $electron 'wsl/cleanup-existing.ps1'), (Join-Path $electron 'wsl/native-ollama.ps1') $wsl
+Copy-Item (Join-Path $electron 'wsl/setup.sh'), (Join-Path $electron 'wsl/apk-safe.sh'), (Join-Path $electron 'wsl/dockerd.sh'), (Join-Path $electron 'wsl/stage-existing.sh'), (Join-Path $electron 'wsl/maintain-existing.sh'), (Join-Path $electron 'wsl/cleanup-existing.ps1'), (Join-Path $electron 'wsl/native-ollama.ps1') $wsl
 
 if (Test-Path $stack) { Remove-Item $stack -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stack | Out-Null

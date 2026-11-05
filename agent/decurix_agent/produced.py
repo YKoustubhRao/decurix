@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -88,8 +89,10 @@ def files(report="", started=None, root=None, request=""):
     candidates = set(_walk(root or config.WORK_DIR))
     if root is None:
         candidates.update(shared.walk())  # what the task made in the shared folder counts like the work folder
-    for named in NAMED_PATH.findall(report or ""):
-        candidates.add(Path(os.path.expanduser(named)))
+    # (`raw`, not `named`: reusing that name here left it holding the last path's text, and every file the report
+    # named but the request did not was then dropped from what is read back - review 2026-11-02.)
+    for raw in NAMED_PATH.findall(report or ""):
+        candidates.add(Path(os.path.expanduser(raw)))
 
     made = []
     for path in candidates:
@@ -182,18 +185,19 @@ VALUES_ASKED = re.compile(r"\b(?:as|in|only)\s+(?:plain\s+)?values\b|\bvalues\s+
                           r"\bplain\s+numbers\b|\bpaste[ds]?\s+(?:as\s+)?values\b|\bhard-?coded?\b", re.I)
 
 
-def formula_errors(paths):
+def formula_errors(paths, failed=None):
     """A sentence for each workbook among `paths` with formula cells showing an error (office.formula_errors) - certain,
-    blocking: anyone who opens the file sees #REF!."""
+    blocking: anyone who opens the file sees #REF!. `failed`: see _per_file."""
 
     from decurix_agent.tools import office
 
-    return _per_file(paths, office.formula_errors, "check the formula results of")
+    return _per_file(paths, office.formula_errors, "check the formula results of", failed=failed)
 
 
-def _per_file(paths, check, what):
+def _per_file(paths, check, what, failed=None):
     """check(path)'s sentences for each of `paths`, each headed by the file's name; a file it cannot be made for is
-    logged ("could not <what> <path>") and decides nothing."""
+    logged ("could not <what> <path>") and decides nothing - and, given a `failed` list, is added to it, so a blocking
+    check that could not be made leaves the work NOT checked rather than passed (FileFacts.could_not)."""
 
     out = []
     for path in paths:
@@ -201,6 +205,7 @@ def _per_file(paths, check, what):
             found = check(path)
         except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
             log(f"produced: could not {what} {path}: {exc}")
+            _not_made(failed, f"could not {what} {Path(path).name}", exc)
             continue
         out.extend(f"{Path(path).name}: {sentence}" for sentence in found)
     return out
@@ -365,25 +370,46 @@ def missing_requested(request, made, root=None, only=None):
     sentences in its instruction name (found live, round 5 P1: the memo stage was refused for the deck).
     """
 
+    missing = missing_names(request, made, root=root, only=only)
+    if not missing:
+        return ""
+    return (", ".join(missing) + (" was" if len(missing) == 1 else " were") + " not made: no such file was written "
+            "during this task")
+
+
+def missing_names(request, made, root=None, only=None):
+    """The names missing_requested reports, as a list ([] when none)."""
+
     text = attachments.text(request or "")
     if _host_paths(text):
-        return ""
+        return []
     names = [n for n in requested_names(request) if Path(n).suffix.lower() in READABLE]
     if only is not None:
         own = {Path(str(o).replace("\\", "/")).name.lower() for o in only}
         names = [n for n in names if Path(n.replace("\\", "/")).name.lower() in own]
     if not names:
-        return ""
+        return []
     have = {Path(p).name.lower() for p in made}
     root = Path(root or config.WORK_DIR)
     there = {p.name.lower() for p in _walk(root)}
     # A name that is there at all - made now, or an input the request mentions in the same sentence ("an email with
     # invoice.pdf attached") - is not called missing; only a file nowhere to be found is.
-    missing = [name for name in names if name.lower() not in have and name.lower() not in there]
+    return [name for name in names if name.lower() not in have and name.lower() not in there]
+
+
+def named_not_written(request, made, root=None):
+    """
+    Evidence, never a block: the file names the request's words seem to ask for that no file of the task carries.
+    Found (review 2026-11-03, E-10): read from the words alone, "Do not create report.pdf" asked for report.pdf, and a
+    file "on the GST portal" was taken for one to make - each refused at certainty. Only a planned stage's own outputs
+    (structure) can make a missing file blocking (file_facts' own_outputs).
+    """
+
+    missing = missing_names(request, made, root=root)
     if not missing:
-        return ""
-    return (", ".join(missing) + (" was" if len(missing) == 1 else " were") + " not made: no such file was written "
-            "during this task")
+        return []
+    return [f"The request's words name {', '.join(missing)}, and no file of that name was written during this task "
+            "(read from the words alone: judge whether the request asks for it to be made)"]
 
 
 def source_images(request, made, root=None, fetch=None):
@@ -482,15 +508,147 @@ def page_break_findings(request, made):
     return out
 
 
-def document_findings(request, made):
+# What `office update` filled, noted by the tool itself (review round 2, 2026-11-03): {output (real path): {"source":
+# the document it was filled from, "placeholders": what that source held when it was filled, "at"}}. A template
+# filled into a separately named output, or a document filled in place with no shared-folder snapshot, is then still a
+# filled source: its placeholder left unfilled is a mechanical fact, as the tool's own "Placeholders still in it" says.
+FILLED_MAX = 500
+
+
+def _filled_file():
+    return config.DECURIX_DIR / "filled-documents.json"
+
+
+def note_filled(output, source, placeholders):
+    """Note that `output` was filled from `source`, which then held `placeholders` (office update). Never raises: a
+    note that cannot be kept must not fail the tool (the check then reads the request's sources only)."""
+
+    try:
+        path = _filled_file()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+        data[os.path.realpath(str(output))] = {"source": os.path.realpath(str(source)),
+                                               "placeholders": [str(x) for x in placeholders or ()][:200],
+                                               "at": time.time()}
+        if len(data) > FILLED_MAX:
+            data = dict(sorted(data.items(), key=lambda kv: kv[1].get("at") or 0)[-FILLED_MAX:])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(path, data, atomic=True, shapes=False)
+    except Exception as exc:  # noqa: BLE001
+        log(f"produced: could not note what {output} was filled from: {exc}")
+
+
+def filled_from(output):
+    """The note office update kept for `output` ({"source", "placeholders"}), or None."""
+
+    try:
+        data = json.loads(_filled_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    found = data.get(os.path.realpath(str(output))) if isinstance(data, dict) else None
+    return found if isinstance(found, dict) else None
+
+
+def _filled_sources(request, made, root=None):
+    """The Word documents the task worked from: the request's attached or named .docx/.dotx files that it did not
+    make, and the copy kept from before the task of a made document that was there already (filled in place)."""
+
+    from decurix_agent import source_guard
+
+    made_set = {os.path.realpath(str(m)) for m in made}
+    text = attachments.text(request or "")
+    found = [str(p) for p in attachments.files(request or "") if Path(str(p)).suffix.lower() in (".docx", ".dotx")]
+    names = {n.lower() for n in REQUESTED_FILE.findall(text) if Path(n).suffix.lower() in (".docx", ".dotx")}
+    names |= {n.lower() for n in re.findall(r"\b[\w-][\w.-]*\.dotx\b", text, re.I)}
+    if names:
+        found += [str(p) for p in _walk(Path(root or config.WORK_DIR)) if p.name.lower() in names]
+    for m in made:
+        if Path(str(m)).suffix.lower() == ".docx":
+            try:
+                before = source_guard.before_copy(m)
+            except Exception:  # noqa: BLE001 - no copy known: nothing to compare with
+                before = None
+            if before:
+                found.append(str(before))
+    return [p for p in dict.fromkeys(found) if os.path.realpath(p) not in made_set and Path(p).is_file()]
+
+
+def _source_placeholders(request, made, root=None, failed=None):
+    """Every placeholder the documents the task filled hold (a set), read with no model: the request's sources, and
+    what office update noted each made document's source held when it filled it (filled_from). A source that cannot
+    be read is a check not made, put in `failed` (FileFacts.could_not) - never quietly a pass (review round 2)."""
+
+    from decurix_agent.tools import office
+
+    held = set()
+    for m in made:
+        note = filled_from(m)
+        if note:
+            held.update(str(x) for x in note.get("placeholders") or ())
+    for path in _filled_sources(request, made, root=root):
+        try:
+            held.update(office.docx_placeholders(path))
+        except Exception as exc:  # noqa: BLE001
+            log(f"produced: could not look for placeholders in {path}: {exc}")
+            if failed is not None:
+                failed.append(f"the placeholders of {Path(path).name}, a document the work was filled from, could not "
+                              f"be read ({type(exc).__name__})")
+    return held
+
+
+def _left_placeholders(made):
+    """{path: [placeholder]} of the Word documents among `made` that still hold one."""
+
+    from decurix_agent.tools import office
+
+    out = {}
+    for path in made:
+        if Path(path).suffix.lower() != ".docx":
+            continue
+        try:
+            left = office.docx_placeholders(path)
+        except Exception as exc:  # noqa: BLE001
+            log(f"produced: could not look for placeholders in {path}: {exc}")
+            continue
+        if left:
+            out[path] = left
+    return out
+
+
+def template_placeholder_notes(request, made, root=None):
+    """Evidence: a placeholder left in a made document that no document the task filled held - a template or a guide
+    may well be meant to keep it (review 2026-11-03, E-11: a requested mail-merge template was refused)."""
+
+    left = _left_placeholders(made)
+    if not left:
+        return []
+    held = _source_placeholders(request, made, root=root)
+    out = []
+    for path, found in left.items():
+        own = [p for p in found if p not in held]
+        if own:
+            out.append(f"{Path(path).name} holds the placeholder(s) {', '.join(own[:6])}, which no document it was "
+                       "filled from held (judge whether the request asks for them to be filled)")
+    return out
+
+
+def document_findings(request, made, root=None, failed=None):
     """
     What is wrong with the Word documents a task saved, decided without reading the request: a "\\f" typed as text where
-    a break was meant, and a template's placeholder left. (Page breaks the request asks for: page_break_findings.)
+    a break was meant, and a placeholder left that a document the task filled held (the template's own placeholder
+    was not filled: mechanical). A placeholder no source held is evidence (template_placeholder_notes; review
+    2026-11-03, E-11). (Page breaks the request asks for: page_break_findings.)
     """
 
     from decurix_agent.tools import office
 
     out = []
+    held = None
     for path in made:
         if Path(path).suffix.lower() != ".docx":
             continue
@@ -508,8 +666,11 @@ def document_findings(request, made):
             log(f"produced: could not look for placeholders in {path}: {exc}")
             left = []
         if left:
-            out.append(f"{Path(path).name} still holds the template's placeholder(s) {', '.join(left[:6])} - fill "
-                       "them (office update DOC.docx with a \"replace\" spec)")
+            held = _source_placeholders(request, made, root=root, failed=failed) if held is None else held
+            unfilled = [p for p in left if p in held]
+            if unfilled:
+                out.append(f"{Path(path).name} still holds the template's placeholder(s) {', '.join(unfilled[:6])} - "
+                           "fill them (office update DOC.docx with a \"replace\" spec)")
     return out
 
 
@@ -520,7 +681,10 @@ class FileFacts:
       unstored      workbooks whose formulas still have no stored result
       typed_totals  a Total row of typed numbers where the request asked for formulas (evidence: a reading of it)
       totals_note   the same, where it did not ask (a correct answer, only noted)
-      missing_files a file the request names that was not made
+      missing_files a file a planned stage's own outputs name that was not made (structure: blocking)
+      missing_named a file name the request's words seem to ask for that no file carries (evidence)
+      placeholder_notes a template placeholder left in a made document that no document it was filled from held
+                    (evidence)
       file_faults   hygiene: an Office file a strict reader cannot open, a template placeholder left, "\\f" as text
       request_faults a picture's size or a document's page breaks against what the request asks (evidence)
       gaps          formula cells whose stored result is an error (#REF!, #VALUE!, #DIV/0! ...): certain, blocking
@@ -528,7 +692,8 @@ class FileFacts:
                     (evidence: an intentional blank looks the same - independent review, 2026-10-21)
       unchecked     Office files not opened: password-protected, Strict Open XML, a kind not checked (evidence)
       layout        typed numbers among a column's formulas, a Total split over two rows, as asked (evidence)
-      source_mismatch a figure given as a source's own ("closing balance per bank statement") that the source contradicts
+      source_mismatch a figure given as a source's own ("closing balance per bank statement") that the source does not
+                    hold (evidence: which line states a balance, and its sign, are the book's conventions)
       disclosures   an email draft to one party of the inputs that names another party with figures (evidence)
       payee_mismatch a payment to a bank account / IFSC / IBAN / UPI id that is not on record for its payee (payees.py)
       unknown_recipients an email draft addressed to an address that is in no input (payees.unknown_recipients)
@@ -540,6 +705,8 @@ class FileFacts:
                     in this task while their references stayed behind (office.moved_formula_breaks)
       code_notes    a long reference code a file holds that differs in a few characters from one the task was shown
                     (evidence: sequential references and sibling ids look the same - independent review, 2026-10-22)
+      could_not     the blocking checks above that could not be made (they raised): the work is NOT checked on that
+                    point - never passed for it (verify.outcome's not_made; review 2026-11-02)
     notes() is the evidence: what reads the request or needs judgement. The judge weighs it and the person sees it under
     "Please check"; it never fails the work by itself (harness audit, 2026-10-21).
     """
@@ -547,7 +714,10 @@ class FileFacts:
     def __init__(self, unstored=(), typed_totals=(), totals_note=(), missing_files="", file_faults=(), gaps=(), layout=(),
                  source_mismatch=(), disclosures=(), payee_mismatch=(), unknown_recipients=(), draft_facts=(),
                  request_faults=(), draft_fields=(), gap_notes=(), unchecked=(), duplicates=(), pattern_breaks=(),
-                 code_notes=()):
+                 code_notes=(), could_not=(), missing_named=(), placeholder_notes=()):
+        self.could_not = list(could_not)
+        self.missing_named = list(missing_named)
+        self.placeholder_notes = list(placeholder_notes)
         self.code_notes = list(code_notes)
         self.duplicates = list(duplicates)
         self.pattern_breaks = list(pattern_breaks)
@@ -567,11 +737,63 @@ class FileFacts:
         self.totals_note = list(totals_note)
         self.missing_files = missing_files
         self.file_faults = list(file_faults)
+        # How many facts the request states were looked for in the files made, and how many of them the files hold
+        # (compared_facts). Evidence only: the worker read the request, so a file that restates it holds them all
+        # (review round 3, R2).
+        self.compared = 0
+        self.held = 0
+        self.not_held = []
+        # How many figures the files made present as a source's own were compared with what that source states
+        # (sources.mismatches): the comparison that could have failed, which the `code` basis rests on.
+        self.source_compared = 0
+        # Figures given as one input's own, of a kind that input does not state: compared with nothing (review round 5,
+        # N1). Any holds the `code` basis back.
+        self.source_unbacked = 0
+
+    def compared_clean(self):
+        """
+        Whether code checked the files against what the worker did not write, by a comparison that could have failed,
+        and they held: at least one figure a file presents as a source's own compared with what that source states
+        (sources.mismatches) and none of them different, every fact the request states held, nothing blocking and
+        nothing left unchecked. What the `code` basis of trust rests on. Only that: the request's own figures (a file
+        that restates the request holds them all, review round 3) and an input's facts merely found in the output (a
+        copy of the input, a failure note quoting one figure, a file with one figure wrong all hold some - review
+        round 4, R2) are evidence, never the basis.
+        """
+
+        return (self.source_compared > 0 and not self.source_unbacked and not self.source_mismatch
+                and self.held == self.compared
+                and not self.blocking() and not self.not_made())
+
+    # The facts that fail the work by themselves, in one place for every route (the final gate, a taught run's
+    # read-back, a desktop tool's run, a long request's stage). Found (review 2026-11-03, E-27): four routes each listed
+    # their own, and the lists had drifted.
+    # source_mismatch is evidence (review 2026-11-03, E-13): which line of a source states a balance, and its sign,
+    # are a book's conventions.
+    BLOCKING = ("unstored", "gaps", "missing_files", "file_faults", "payee_mismatch", "unknown_recipients",
+                "draft_facts")
+
+    def blocking(self):
+        """Every blocking fact, in BLOCKING's order: the work is not done while any is there."""
+
+        out = []
+        for name in self.BLOCKING:
+            value = getattr(self, name)
+            out.extend([value] if isinstance(value, str) else value)
+        return [p for p in out if p]
+
+    def not_made(self):
+        """What the code could not check: a blocking check that raised, and an Office file it could not open
+        (password-protected, Strict Open XML, a kind it does not read). The work is then not checked on that point -
+        never passed for it (verify.outcome's not_made)."""
+
+        return [p for p in list(self.could_not) + list(self.unchecked) if p]
 
     def notes(self):
         """The evidence among these facts (never a verdict): what reads the request, or needs judgement."""
 
         return (list(self.gap_notes) + list(self.unchecked) + list(self.layout) + list(self.typed_totals) + list(self.request_faults)
+                + list(self.source_mismatch) + list(self.missing_named) + list(self.placeholder_notes)
                 + list(self.disclosures) + list(self.draft_fields) + list(self.duplicates)
                 + list(self.pattern_breaks) + list(self.code_notes))
 
@@ -664,7 +886,8 @@ def _note_opened(paths):
         known[str(Path(path).resolve())] = time.time()
     try:
         _opened_file().parent.mkdir(parents=True, exist_ok=True)
-        _opened_file().write_text(json.dumps(dict(list(known.items())[-2000:])), encoding="utf-8")
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(_opened_file(), dict(list(known.items())[-2000:]), shapes=False)
     except OSError as exc:
         log(f"produced: could not note the files that opened: {exc}")
 
@@ -700,6 +923,63 @@ def notes_text(notes):
             "wrong)\n" + "\n".join(f"- {n}" for n in notes[:12]))
 
 
+# A figure a request states (an amount, a count, a reference number): three or more digits, or written with a decimal.
+_STATED_FIGURE = re.compile(r"(?<![\w.,/-])\d[\d,]*(?:\.\d+)?(?![\w/-])")
+_FIGURE_IN_FILE = re.compile(r"(?<![\w.])\(?[-\u2212]?\d[\d,]*(?:\.\d+)?\)?-?(?![\w])")
+_STATED_CODE = re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-]*\d)(?=[A-Za-z0-9-]*[A-Za-z])[A-Za-z0-9][A-Za-z0-9-]{5,}"
+                          r"(?![A-Za-z0-9])")
+
+
+def stated_facts(request):
+    """The facts a request states that a file it asks for can be checked against, in code: figures of three or more
+    digits or with decimals (dates aside), and reference codes of letters and digits."""
+
+    from decurix_agent import values
+    text = attachments.text(request or "")
+    figures = []
+    for m in _STATED_FIGURE.finditer(text):
+        token = m.group(0)
+        digits = re.sub(r"\D", "", token)
+        if len(digits) < 3 and "." not in token:
+            continue
+        if values.parse_number(token) is None:
+            continue
+        figures.append(token)
+    codes = [c for c in _STATED_CODE.findall(text) if not values.parse_date(c)]
+    return list(dict.fromkeys(figures)), list(dict.fromkeys(codes))
+
+
+def compared_facts(request, made):
+    """
+    (compared, held, not_held): the facts the request states (stated_facts) looked for in the text of the files made -
+    a figure by value (values.compare, every digit and its sign), a code as a whole token. What a read-back compared,
+    never only that the files opened.
+    """
+
+    from decurix_agent import values
+    from decurix_agent.tools import office
+    figures, codes = stated_facts(request)
+    if not (figures or codes) or not made:
+        return 0, 0, []
+    texts = []
+    for path in dict.fromkeys(str(p) for p in made):
+        try:
+            texts.append(office.read_document(path).get("text") or "")
+        except Exception as exc:  # noqa: BLE001 - a file not read holds nothing compared
+            log(f"produced: could not read {path} to compare it: {exc}")
+    whole = "\n".join(texts)
+    tokens = _FIGURE_IN_FILE.findall(whole)
+    not_held = []
+    for figure in figures:
+        if not any(values.same_value(figure, t) is True for t in tokens):
+            not_held.append(figure)
+    for code in codes:
+        if not re.search(r"(?<![A-Za-z0-9])" + re.escape(code) + r"(?![A-Za-z0-9])", whole, re.I):
+            not_held.append(code)
+    compared = len(figures) + len(codes)
+    return compared, compared - len(not_held), not_held
+
+
 def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_made=None, own_outputs=None):
     """
     The code-decided checks of the files made for `request`, shared by every route that reports work: the final gate
@@ -714,35 +994,51 @@ def file_facts(request, made, host_copies=(), root=None, named_in=None, drafts_m
     request = request or ""
     named = request if named_in is None else named_in
     unstored = store_results(made)
+    source_compared = []  # the figures given as a source's own that were compared with it (_source_mismatch)
+    source_unbacked = []  # ... and those its source states nothing of that kind for
     found_totals = typed_totals(made, request) if not unstored else []
     wrong_totals = found_totals if formulas_asked(request) else []
     every = list(dict.fromkeys(list(made) + [str(c) for c in host_copies]))
     opened = open_statuses(every)
-    return FileFacts(
+    failed = []  # the blocking checks that could not be made: FileFacts.could_not
+    facts = FileFacts(
         # Needs the formula results stored (above): they say which empty cells a text result explains.
-        gaps=formula_errors(every) if not unstored else [],
+        gaps=formula_errors(every, failed=failed) if not unstored else [],
         gap_notes=coverage_gaps(every) if not unstored else [],
         layout=layout_faults(every, request),
         unstored=unstored,
         typed_totals=wrong_totals,
         totals_note=[] if wrong_totals else found_totals,
-        missing_files=missing_requested(named, every, root=root,
-                                        **({"only": own_outputs} if own_outputs is not None else {})),
-        file_faults=[s for st, s in opened.values() if st == "broken"] + document_findings(named, every)
+        # Blocking only for names from structure (a planned stage's outputs); otherwise evidence (E-10).
+        missing_files=missing_requested(named, every, root=root, only=own_outputs) if own_outputs is not None else "",
+        missing_named=named_not_written(named, every, root=root) if own_outputs is None else [],
+        file_faults=[s for st, s in opened.values() if st == "broken"] + document_findings(named, every, root=root,
+                                                                                            failed=failed)
         + named_kind_faults(every),
+        placeholder_notes=template_placeholder_notes(named, every, root=root),
         unchecked=[s for st, s in opened.values() if st in ("protected", "unchecked") and s],
         request_faults=image_findings(named, every, source_images(named, every, **({"root": root} if root else {})))
         + page_break_findings(named, every),
         # Needs the formula results stored too: the figure checked is the value the file holds (sources.py).
-        source_mismatch=_source_mismatch(request, every) if not unstored else [],
+        source_mismatch=_source_mismatch(request, every, failed, source_compared, source_unbacked)
+        if not unstored else [],
         code_notes=miscopied_codes(every, request),
         disclosures=draft_disclosures(drafts_made, request) if drafts_made else [],
-        payee_mismatch=_payee_mismatch(request, every),
+        payee_mismatch=_payee_mismatch(request, every, failed),
         duplicates=identical_files(every),
         pattern_breaks=reference_breaks(every) + moved_breaks(every) + layout_breaks(every),
-        unknown_recipients=(_unknown_recipients(request, every, drafts_made) if drafts_made else [])
-        + _unknown_in_files(request, every),
-        **(_draft_facts(request, every, drafts_made) if drafts_made else {}))
+        unknown_recipients=(_unknown_recipients(request, every, drafts_made, failed) if drafts_made else [])
+        + _unknown_in_files(request, every, failed),
+        **(_draft_facts(request, every, drafts_made, failed) if drafts_made else {}),
+        # (Evaluated last: every check above has run, so `failed` holds each one that could not be made.)
+        could_not=failed)
+    try:
+        facts.compared, facts.held, facts.not_held = compared_facts(request, every)
+    except Exception as exc:  # noqa: BLE001 - nothing compared is no read-back: it counts for nothing
+        log(f"produced: could not compare the files with the request: {exc}")
+    facts.source_compared = len(source_compared)
+    facts.source_unbacked = len(source_unbacked)
+    return facts
 
 
 def reference_breaks(paths):
@@ -855,16 +1151,24 @@ def identical_files(paths):
     return out
 
 
-def _unknown_in_files(request, every):
+def _not_made(failed, what, exc):
+    """Note in `failed` (when given) that a blocking check could not be made, and why."""
+
+    if failed is not None:
+        failed.append(f"{what} ({' '.join(str(exc).split())[:160] or type(exc).__name__})")
+
+
+def _unknown_in_files(request, every, failed=None):
     from decurix_agent import payees
     try:
         return payees.unknown_addresses_in_files(request, every)
-    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
+    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing (and is said: `failed`)
         log(f"produced: could not check the addresses in the files: {exc}")
+        _not_made(failed, "could not check the addresses in the files", exc)
         return []
 
 
-def _draft_facts(request, every, drafts_made):
+def _draft_facts(request, every, drafts_made, failed=None):
     """{"draft_facts": provenance findings, "draft_fields": evidence} for a task's drafts (long_task.draft_checks; the
     final gate and the tool route)."""
 
@@ -872,34 +1176,44 @@ def _draft_facts(request, every, drafts_made):
         from decurix_agent import long_task
         unsourced, fields = long_task.draft_checks(drafts_made, request, every)
         return {"draft_facts": unsourced, "draft_fields": fields}
-    except Exception:  # noqa: BLE001 - a check that cannot be made decides nothing
+    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing (and is said: `failed`)
+        log(f"produced: could not check the drafts' facts against their sources: {exc}")
+        _not_made(failed, "could not check the drafts' facts against their sources", exc)
         return {}
 
 
-def _unknown_recipients(request, every, drafts_made):
+def _unknown_recipients(request, every, drafts_made, failed=None):
     from decurix_agent import payees
     try:
         return payees.unknown_recipients(request, drafts_made, made=every)
-    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
+    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing (and is said: `failed`)
         log(f"produced: could not check where the drafts go: {exc}")
+        _not_made(failed, "could not check where the drafts go", exc)
         return []
 
 
-def _payee_mismatch(request, every):
+def _payee_mismatch(request, every, failed=None):
     from decurix_agent import payees
     try:
-        return payees.mismatches(request, every)
-    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
+        found = payees.mismatches(request, every)
+        # Payments with no record of the payees' accounts to check them against: the check is not made, so the work
+        # is not checked - never passed (payees.unchecked; review 2026-11-02).
+        if failed is not None:
+            failed.extend(payees.unchecked(request, every))
+        return found
+    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing (and is said: `failed`)
         log(f"produced: could not check where payments go: {exc}")
+        _not_made(failed, "could not check where payments go", exc)
         return []
 
 
-def _source_mismatch(request, every):
+def _source_mismatch(request, every, failed=None, compared=None, unbacked=None):
     from decurix_agent import sources
     try:
-        return sources.mismatches(request, every)
-    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
+        return sources.mismatches(request, every, compared=compared, unbacked=unbacked)
+    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing (and is said: `failed`)
         log(f"produced: could not compare figures with their sources: {exc}")
+        _not_made(failed, "could not compare figures with their sources", exc)
         return []
 
 
@@ -956,15 +1270,12 @@ def _written_since(path, began):
 
 
 def drafts():
-    """The emails this task drafted into the Outbox (tools/outbox.py keeps a note of each)."""
+    """The emails this task drafted into the Outbox (tools/outbox.py keeps a note of each). A log that cannot be read
+    raises (outbox.Unreadable): the caller makes it a check not made, never "no drafts" (N-1, review round 4)."""
 
     from decurix_agent.tools import outbox
 
-    try:
-        return outbox.drafted()
-    except Exception as exc:
-        log(f"produced: could not read this task's drafts: {exc}")
-        return []
+    return outbox.drafted()
 
 
 # ============================================================
@@ -1137,7 +1448,7 @@ HEAD_LINES = 12
 
 
 def focus_tokens(findings):
-    """The references and figures that findings name ("SO-5103", "1,800.00", "Orders!D25"), to find their rows by."""
+    """The references and figures that findings name ("ORD-0003", "1,800.00", "Orders!D25"), to find their rows by."""
 
     out = []
     for finding in findings or ():
@@ -1605,25 +1916,61 @@ def saved_on_host(request, ask=None):
     return _host_findings(request, ask)[1]
 
 
-def copy_from_host(paths, fetch=None):
+HOST_COPY_TASKS = 5  # the check copies of the last few tasks are kept; older ones are removed
+
+
+def _host_copy_root():
+    return config.DECURIX_DIR / "computer" / "host-copies"
+
+
+def _prune_host_copies(keep):
+    """Remove the check copies of all but the newest HOST_COPY_TASKS tasks (never `keep`'s), and any copy left loose in
+    the folder by an older version of this code (review 2026-11-03, E-43: nothing was ever removed)."""
+
+    root = _host_copy_root()
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.is_file():
+            try:
+                entry.unlink()
+            except OSError:
+                pass
+    folders = sorted((e for e in entries if e.is_dir()), key=lambda d: d.stat().st_mtime, reverse=True)
+    for old in folders[HOST_COPY_TASKS:]:
+        if old.name != keep:
+            shutil.rmtree(old, ignore_errors=True)
+
+
+def host_copies(paths, fetch=None):
     """
-    Local copies of files of the person's computer, for the final check to read
-    (the control plane hands over only files the task's own request names).
-    Copies keep the file's own name, under ~/.decurix/computer/host-copies/.
-    A file that cannot be fetched is left out.
+    {host path: local copy} of files of the person's computer, for the final check to read (the control plane hands
+    over only files the task's own request names). A file in the shared folder is read where it is. A fetched copy
+    keeps the file's own name, in a folder of its own per full path, under a folder per task
+    (~/.decurix/computer/host-copies/<task>/<hash of the path>/<name>): found (review 2026-11-03, E-31), copies kept by
+    name alone made two report.xlsx files of two client folders one file, so one was checked twice and the other
+    never. A file
+    that cannot be fetched is left out.
     """
 
+    import hashlib
     import urllib.parse
     import urllib.request
 
-    folder = config.DECURIX_DIR / "computer" / "host-copies"
-    out = []
-    for path in paths:
+    from decurix_agent import task_context
+
+    task = re.sub(r"[^\w-]", "_", task_context.current() or "current")
+    folder = _host_copy_root() / task
+    out = {}
+    fetched = False
+    for path in dict.fromkeys(paths or ()):
         if Path(_leaf(path)).suffix.lower() not in READABLE:
             continue
         local = shared.to_local(path)
         if local is not None and Path(local).is_file():
-            out.append(Path(local))  # in the shared folder: read where it is, not fetched
+            out[path] = Path(local)  # in the shared folder: read where it is, not fetched
             continue
         try:
             if fetch is not None:
@@ -1633,13 +1980,24 @@ def copy_from_host(paths, fetch=None):
                        + urllib.parse.urlencode({"desktop": config.DESKTOP_ID, "path": path}))
                 with urllib.request.urlopen(url, timeout=60) as answer:
                     data = answer.read()
-            folder.mkdir(parents=True, exist_ok=True)
-            local = folder / _leaf(path)
+            place = folder / hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
+            place.mkdir(parents=True, exist_ok=True)
+            local = place / _leaf(path)
             local.write_bytes(data)
-            out.append(local)
+            out[path] = local
+            fetched = True
         except Exception as exc:  # noqa: BLE001 - a copy that cannot be made leaves the check to the rest
             log(f"produced: could not copy {path} from the person's computer: {exc}")
+    if fetched:
+        _prune_host_copies(task)
     return out
+
+
+def copy_from_host(paths, fetch=None):
+    """The local copies host_copies makes, as a list in the order of `paths` (callers that need to know which copy is
+    which host file use host_copies)."""
+
+    return list(host_copies(paths, fetch=fetch).values())
 
 
 # What a file's name says its first bytes must be (the control plane reads eight of them, never more).

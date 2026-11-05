@@ -10,6 +10,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from needs import require
+
+require("openpyxl")  # every test here reads or writes workbooks
 import openpyxl
 
 import test_long_requests as base  # noqa: F401 - stubs config first
@@ -17,7 +20,7 @@ import fixture_paths  # noqa: E402 - live-run fixtures live outside the repo
 
 from decurix_agent import stage_facts
 
-LIVE = fixture_paths.fixture("p3_AP_register_live.xlsx")  # the run's own AP_register.xlsx (pc3)
+LIVE = fixture_paths.fixture("p3_AP_register_live.xlsx")  # the run's own AP_register.xlsx
 
 
 class TheLiveRegister(unittest.TestCase):
@@ -45,7 +48,7 @@ class TheLiveRegister(unittest.TestCase):
 
 
 class TheLiveExceptions(unittest.TestCase):
-    """CQ (round 5 P3 on pc3, 2026-10-20): the AP exceptions' Working sheet, its derived cells as formulas, refused twice
+    """CQ (round 5 P3, 2026-10-20): the AP exceptions' Working sheet, its derived cells as formulas, refused twice
     ("44,100.00, which no combination of its own factors gives"; "the price for APX-5521 ... APX-5521.pdf:line 1").
     Must pass - and the P6 1,800 for 60 @ 35 must still be caught (Combinations)."""
 

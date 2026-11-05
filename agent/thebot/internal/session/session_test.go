@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"testing"
 
 	"thebot/internal/llm"
@@ -73,5 +74,19 @@ func TestHistoryCapsAtMaxMessages(t *testing.T) {
 	h := s.History("sess1")
 	if len(h) != maxHistoryMessages {
 		t.Errorf("History() length = %d, want capped at %d", len(h), maxHistoryMessages)
+	}
+}
+
+// The store keeps at most maxSessions sessions, dropping the one used longest ago (review T-24).
+func TestTheStoreDropsTheOldestSessionPastItsBound(t *testing.T) {
+	s := NewStore()
+	for i := 0; i <= maxSessions; i++ {
+		s.Append(fmt.Sprintf("s%d", i), llm.Message{Role: "user", Content: "hi"})
+	}
+	if len(s.History("s0")) != 0 || len(s.History(fmt.Sprintf("s%d", maxSessions))) != 1 {
+		t.Fatalf("kept %d sessions; s0 still there: %v", len(s.sessions), len(s.History("s0")) != 0)
+	}
+	if len(s.sessions) != maxSessions {
+		t.Errorf("kept %d sessions, want %d", len(s.sessions), maxSessions)
 	}
 }

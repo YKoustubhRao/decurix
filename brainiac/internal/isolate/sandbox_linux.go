@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -75,11 +77,21 @@ func CanBlockTCP() bool { return abi() >= 4 }
 
 // Wrap makes cmd start through this program's own helper, which confines
 // itself to the policy and then becomes the real program. The kernel keeps
-// the confinement across that exec, and no child can ever shed it.
+// the confinement across that exec, and no child can ever shed it. When cmd
+// already gets its own user namespace (NoNetwork), the helper also builds a
+// mount view of the policy's paths alone: for that it holds CAP_SYS_ADMIN in
+// that namespace, and gives it up before it becomes the program.
 func Wrap(cmd *exec.Cmd, p Policy) error {
 	self, err := os.Executable()
 	if err != nil {
 		return err
+	}
+	if a := cmd.SysProcAttr; a != nil && a.Cloneflags&syscall.CLONE_NEWUSER != 0 {
+		a.Cloneflags |= syscall.CLONE_NEWNS
+		a.AmbientCaps = []uintptr{capSysAdmin}
+		p.Mount = true
+	} else if !CanSandbox() {
+		return errors.New("this kernel offers no Landlock")
 	}
 	policy, err := json.Marshal(p)
 	if err != nil {
@@ -91,6 +103,9 @@ func Wrap(cmd *exec.Cmd, p Policy) error {
 }
 
 func init() {
+	if len(os.Args) == 2 && os.Args[1] == probeArg {
+		os.Exit(0) // CanConfine's helper got this far: confinement works here
+	}
 	if len(os.Args) < 4 || os.Args[1] != helperArg {
 		return
 	}
@@ -98,22 +113,40 @@ func init() {
 	runtime.LockOSThread()
 	var p Policy
 	err := json.Unmarshal([]byte(os.Args[2]), &p)
+	if err == nil && p.Mount {
+		err = enterView(planView(p))
+	}
 	if err == nil {
 		err = apply(p)
 	}
 	if err == nil {
-		err = syscall.Exec(os.Args[3], append([]string{os.Args[3]}, os.Args[4:]...), os.Environ())
+		err = dropHelperPowers()
+	}
+	if err == nil {
+		env := os.Environ()
+		if p.Mount {
+			env = withLibraryPath(env, p.LibraryPath)
+		}
+		err = syscall.Exec(os.Args[3], append([]string{os.Args[3]}, os.Args[4:]...), env)
 	}
 	// Failing here must never become running unconfined.
 	fmt.Fprintf(os.Stderr, "brainiac sandbox: %v\n", err)
 	os.Exit(126)
 }
 
-// apply confines the calling thread, and everything it starts, to the policy.
+// apply confines the calling thread, and everything it starts, to the
+// policy with Landlock, and forbids gaining privileges. With no Landlock
+// only a mount view (p.Mount) confines the files; without either it fails.
 func apply(p Policy) error {
 	version := abi()
 	if version == 0 {
-		return errors.New("this kernel offers no Landlock")
+		if !p.Mount {
+			return errors.New("this kernel offers no Landlock")
+		}
+		if _, _, errno := syscall.RawSyscall6(syscall.SYS_PRCTL, prNoNewPrivs, 1, 0, 0, 0, 0); errno != 0 {
+			return fmt.Errorf("no_new_privs: %w", errno)
+		}
+		return nil
 	}
 	handled := uint64(fsExecute | fsWriteFile | fsReadFile | fsReadDir | fsRemoveDir | fsRemoveFile | fsMakeChar |
 		fsMakeDir | fsMakeReg | fsMakeSock | fsMakeFifo | fsMakeBlock | fsMakeSym)
@@ -152,6 +185,11 @@ func apply(p Policy) error {
 			return err
 		}
 	}
+	for _, path := range p.List {
+		if err := allowPath(int(fd), path, fsReadDir); err != nil {
+			return err
+		}
+	}
 	if attr[1] != 0 {
 		for _, port := range p.BindTCP {
 			rule := [2]uint64{netBindTCP, uint64(port)}
@@ -187,6 +225,9 @@ func allowPath(ruleset int, path string, rights uint64) error {
 	if st.Mode&syscall.S_IFMT != syscall.S_IFDIR {
 		rights &= fileRights
 	}
+	if rights == 0 {
+		return nil // listing a file grants nothing
+	}
 	// struct landlock_path_beneath_attr is packed: u64 rights, then s32 fd.
 	var rule [12]byte
 	*(*uint64)(unsafe.Pointer(&rule[0])) = rights
@@ -197,12 +238,75 @@ func allowPath(ruleset int, path string, rights uint64) error {
 	return nil
 }
 
-// resolved is a program's directory, and the real one behind a symlink (a
-// venv's python points at the system's or a managed install's).
-func resolved(program string) []string {
-	out := []string{filepath.Dir(program)}
-	if real, err := filepath.EvalSymlinks(program); err == nil && filepath.Dir(real) != out[0] {
-		out = append(out, filepath.Dir(real))
+var (
+	probeOnce sync.Once
+	probeOK   bool
+	probeErr  error
+)
+
+// CanConfine reports whether a model process can be started with no network
+// and a view of only its own files, by starting this program that way once.
+// A host that refuses unprivileged user namespaces, or the capabilities in
+// them (an AppArmor rule, a container), says no here, before any model.
+func CanConfine() (bool, error) {
+	probeOnce.Do(func() {
+		self, err := os.Executable()
+		if err != nil {
+			probeErr = err
+			return
+		}
+		cmd := exec.Command(self, probeArg)
+		cmd.Env = Env()
+		NoNetwork(cmd)
+		if probeErr = Wrap(cmd, ForProgram(self, nil, nil)); probeErr != nil {
+			return
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			probeErr = fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+			return
+		}
+		probeOK = true
+	})
+	return probeOK, probeErr
+}
+
+// resolved is what running a program needs from where it lives: the program
+// file, the real one behind a symlink (a venv's python points at the
+// system's or a managed install's), and the shared libraries it and its
+// plugins load from its own build, read from the ELF (llama.cpp ships
+// libllama*.so and libggml*.so next to llama-server, found through
+// $ORIGIN). Not the whole directory: a program in a shared directory (a
+// download folder, /tmp) must not be handed everything else in it. Only
+// when the program's ELF cannot be read is the directory granted,
+// read-only, and only where directoryFallback allows (elsewhere the
+// program alone); either way it is logged. libPath is the program's own
+// $ORIGIN search path, which a mount view leaves the loader unable to
+// expand.
+func resolved(program string, plugins []string) (files, libPath []string) {
+	files = []string{program}
+	real, err := filepath.EvalSymlinks(program)
+	if err == nil && real != program {
+		files = append(files, real)
 	}
-	return out
+	libs, err := ownLibrariesSafe(program, plugins)
+	if err != nil {
+		dir := filepath.Dir(program)
+		if real != "" {
+			dir = filepath.Dir(real)
+		}
+		if ok, why := directoryFallback(dir); !ok {
+			logf("isolate: cannot read the libraries %s links (%v), and its directory %s is %s: granting the program alone, so it may not start", program, err, dir, why)
+			return files, nil
+		}
+		logf("isolate: cannot read the libraries %s links (%v); granting its directory %s read-only", program, err, dir)
+		return append(files, dir), nil
+	}
+	if len(libs.outside) > 0 {
+		logf("isolate: %s loads %s from outside its build; not granted", program, strings.Join(libs.outside, ", "))
+	}
+	if len(libs.skipped) > 0 {
+		logf("isolate: %s: %s not ELF shared objects (ET_DYN); not granted", program, strings.Join(libs.skipped, ", "))
+	}
+	return append(files, libs.files...), libs.origin
 }

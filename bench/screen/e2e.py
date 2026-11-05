@@ -73,7 +73,10 @@ with sync_playwright() as p:
         total = time.time() - t0
         pg.wait_for_timeout(600)
         pg.screenshot(path=f"{OUT}/open.png")
-        check("opens straight onto the desktop (no password prompt)", True, f"{total:.2f}s to first picture")
+        # Reaching a live picture with no input at all means nothing asked for a
+        # password; the page is also checked for a password field.
+        check("reaches a live picture with no input, and shows no password field",
+              pg.locator("input[type=password]").count() == 0, f"{total:.2f}s to first picture")
         assets = [r for r in reqs if "/api/" not in r]
         check("the page loads in two requests", len(assets) == 2, f"{[r.rsplit('/', 1)[-1][:30] for r in assets]}")
         check("no script errors", not errors, "; ".join(errors)[:300])
@@ -140,7 +143,8 @@ with sync_playwright() as p:
         seen = veil_text(pg)
         pg.screenshot(path=f"{OUT}/reconnecting.png")
         took = wait_live(pg, 180)
-        check("a restarted desktop reconnects by itself", True, f"said {seen!r}; back {time.time() - t0:.1f}s after the restart")
+        check("after a restart the same page is live again with no input, on a running desktop", status() == "running",
+              f"said {seen!r}; back {time.time() - t0:.1f}s after the restart")
         pg.close()
 
     if run("paused"):
@@ -163,7 +167,8 @@ with sync_playwright() as p:
         said = veil_text(pg)
         pg.screenshot(path=f"{OUT}/starting.png")
         wait_live(pg, 180)
-        check("opening a stopped desktop starts it and connects", True, f"said {said!r}; live after {time.time() - t0:.1f}s")
+        check("opening a stopped desktop starts it and the page is live", status() == "running",
+              f"said {said!r}; live after {time.time() - t0:.1f}s")
         pg.close()
 
     if run("touch"):

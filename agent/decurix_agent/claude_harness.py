@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import subprocess
 import threading
 from pathlib import Path
@@ -9,7 +10,7 @@ from decurix_agent.computer import approval
 from decurix_agent.logging_utils import log, log_banner
 from decurix_agent.identity import get_identity_context
 from decurix_agent.memory_context import get_memory_context
-from decurix_agent.messaging import ask_for_query, write_final_reply
+from decurix_agent.messaging import ask_for_query, withheld, write_final_reply
 
 
 # ============================================================
@@ -102,6 +103,10 @@ this desktop the task, mcp__computer__skills finds it and
 mcp__computer__run_skill does it with no model: prefer that to working the
 task out yourself.
 
+Never drive the screen or the browser from the shell (xdotool, the DevTools
+port, this desktop's own agent ports) and never write into ~/.decurix: such
+commands are refused, and the computer tools are the way.
+
 You do not need to ask before clicking an on-screen control: the act tool
 itself stops before anything that sends, pays, buys or publishes. When it
 returns NEEDS_APPROVAL, stop and reply beginning with {APPROVAL_MARKER}
@@ -121,6 +126,34 @@ MCP_CONFIG = json.dumps({
         }
     }
 })
+
+# How Claude Code is let use its tools: every tool without a prompt (a headless run has nobody to answer one), behind a
+# PreToolUse hook (claude_guard.py) that refuses a Bash command or a file write that drives the screen or the browser
+# around the approval gate, reaches this desktop's own agent and DevTools ports, or touches the gate's state and the
+# person's reply channel - and deny rules for the plainest of them, which hold in every permission mode. Review
+# 2026-11-02: under --dangerously-skip-permissions alone, Bash could `xdotool` a click on Pay or write a yes into the
+# reply channel. The hook sees the computer tools' calls too (mcp__computer__*: review 2026-11-03, D-05 - their `open`
+# could start a program the hook refused in Bash). A GUARD RAIL, NOT A BOUNDARY: the approval gate runs as a separate
+# Linux user (decurix-entrypoint.sh), so no yes is made from here, but the shell runs as the worker's user and a
+# determined command gets past words to the screen and the worker's files.
+GUARD_SCRIPT = Path(__file__).resolve().parent / "claude_guard.py"
+# Claude Code blocks a call only on exit 2; any other failure lets it run. So the guard failing to start (a crash on
+# import, no python3) is turned into exit 2 here. The interpreter is named by its full path (the worker's ~/.local/bin
+# is first on PATH, so a planted python3 there could answer "allow"), and -I keeps a planted module in the work folder
+# out of its imports (round-5 recheck: the guard failed open if it crashed on import).
+_GUARD_HOOK = [{"type": "command", "command": f"/usr/bin/python3 -I {shlex.quote(GUARD_SCRIPT.as_posix())} || exit 2"}]
+GUARD_SETTINGS = json.dumps({
+    "hooks": {"PreToolUse": [{"matcher": tool, "hooks": _GUARD_HOOK}
+                             for tool in ("Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch",
+                                          "mcp__computer__.*")]},
+})
+PERMISSION_FLAGS = [
+    # Every tool allowed without a prompt, as before - the mode named rather than "dangerously" skipped, so the hook
+    # and the deny rules below apply in it.
+    "--permission-mode", "bypassPermissions",
+    "--settings", GUARD_SETTINGS,
+    "--disallowedTools", "Bash(xdotool:*),Bash(xte:*),Bash(ydotool:*),Bash(wmctrl:*)",
+]
 
 # Tool inputs are arbitrary JSON; these are the keys worth showing in a
 # one-line step, in the order that best identifies what the tool is doing
@@ -198,6 +231,13 @@ def _emit_event(event):
             # other engines produce. A second line here would only repeat them.
             if (block.get("name") or "").startswith("mcp__computer__"):
                 continue
+            if block.get("name") == "Bash":
+                # The final check reads what shell work could have changed (playbooks.changed_things).
+                try:
+                    from decurix_agent import playbooks
+                    playbooks.note_command((block.get("input") or {}).get("command") or "")
+                except Exception:  # noqa: BLE001 - noting it is for the final check only
+                    pass
             progress.emit(_describe_tool(block))
 
 
@@ -229,7 +269,7 @@ def _run_claude(prompt, resume_session_id=None):
         # stream in print mode and the loop below would see nothing.
         "--output-format", "stream-json",
         "--verbose",
-        "--dangerously-skip-permissions",
+        *PERMISSION_FLAGS,
         "--max-budget-usd", MAX_BUDGET_USD,
         "--append-system-prompt", SAFETY_SYSTEM_PROMPT,
         # Which desktop this is. Claude Code can of course run `hostname`
@@ -336,13 +376,16 @@ def _run_claude(prompt, resume_session_id=None):
     return result, None
 
 
-def ask_once(system, prompt):
+def ask_once(system, prompt, *, purpose):
     """
     One question to Claude with every tool switched off: what the computer
     layer's grounder and judge (computer/escalation.py) use. Answers with the
     reply text, or raises RuntimeError - a caller treats "could not ask" as
-    "not sure", never as a yes.
+    "not sure", never as a yes. `purpose` (what the question is for) is logged:
+    the claude CLI's calls do not pass the control plane's proxy.
     """
+
+    log(f"claude: one question ({purpose})")
 
     cmd = ["claude", "-p", prompt, "--output-format", "json", "--tools", "",
            "--max-budget-usd", "0.25", "--append-system-prompt", system]
@@ -415,7 +458,13 @@ def _handle_result(result):
     result_text = (result.get("result") or "").strip()
 
     if result_text.startswith(APPROVAL_MARKER):
-        ask_for_query(result_text[len(APPROVAL_MARKER):].strip(), kind="approval")
+        said = result_text[len(APPROVAL_MARKER):].strip()
+        blocked = approval.pending()
+        if blocked is not None:
+            # The gate's own words for the action it holds lead: a yes settles only the action it was asked for
+            # (approval.asked_about), and Claude's paraphrase may name another.
+            said = approval.request_text(blocked) + (f"\n\nThe agent's own words:\n{said}" if said else "")
+        ask_for_query(said, kind="approval")
         return
 
     # The act tool stopped an on-screen action for approval, and the turn
@@ -436,7 +485,7 @@ def _handle_result(result):
 def perform_task(task, task_file):
     state.begin(task, task_file)
 
-    log_banner("STARTING TASK (Claude Code harness)", task)
+    log_banner("STARTING TASK (Claude Code harness)", withheld(task))
 
     result, error = _run_claude(task)
 
@@ -462,7 +511,7 @@ def continue_after_query(query_response):
 
     state.waiting_for_query = False
 
-    log_banner("RECEIVED HUMAN REPLY TO QUERY (Claude Code harness)", query_response)
+    log_banner("RECEIVED HUMAN REPLY TO QUERY (Claude Code harness)", withheld(query_response))
 
     result, error = _run_claude(
         query_response,

@@ -184,11 +184,15 @@ func (s *Server) agentEventHandler(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxAgentEventBytes)
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		badJSON(w, err)
 		return
 	}
 
-	desktopID := desktop.SanitizeID(strings.TrimSpace(req.DesktopID))
+	claimed, ok := actingAs(w, r, strings.TrimSpace(req.DesktopID))
+	if !ok {
+		return
+	}
+	desktopID := desktop.SanitizeID(claimed)
 	if strings.HasPrefix(desktopID, "readiness-") || strings.HasPrefix(desktopID, "practice-") {
 		jsonStatusError(w, http.StatusForbidden, "Readiness evidence is recorded by the independent runner.")
 		return
@@ -344,8 +348,12 @@ func chatKindFor(reported string) string {
 		return conversation.KindError
 	case "final", "message":
 		return conversation.KindEntry
-	default:
+	case "":
 		return ""
+	default:
+		// A kind this control plane does not know is a question for a person, as the task records count it
+		// (outcomeKindFor) - never a plain answer the chat would show as done (W-06).
+		return conversation.KindQuery
 	}
 }
 

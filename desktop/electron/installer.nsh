@@ -27,7 +27,7 @@
     ${ifNot} ${FileExists} $R6
       StrCpy $R6 "$SYSDIR\wsl.exe"
     ${endIf}
-    nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "$INSTDIR\resources\wsl\cleanup-existing.ps1" -Action stop`
+    nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\wsl\cleanup-existing.ps1" -Action stop`
     Pop $R8
     nsExec::Exec `"$R6" --terminate Decurix`
     Pop $R8
@@ -44,15 +44,25 @@
     ClearErrors
 
     ${if} $R9 == "1"
-      ; A shared WSL distro is kept: delete only Decurix-owned resources.
-      nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "$INSTDIR\resources\wsl\cleanup-existing.ps1" -Action delete`
+      ; A shared WSL distro is kept: delete only what Decurix created there
+      ; (cleanup-existing.ps1 keeps what the runtime held before Decurix).
+      nsExec::Exec `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\wsl\cleanup-existing.ps1" -Action delete`
       Pop $R8
-      ${if} $R8 != "0"
-        ; That runtime's Docker did not answer: Decurix's workers there stay,
-        ; and the person is told. Everything Decurix owns outright still goes.
-        MessageBox MB_OK|MB_ICONEXCLAMATION "Decurix's workers in your own WSL runtime could not be removed (its Docker Engine did not answer). Everything else was deleted. To remove those too, start that Docker Engine and delete its desktop_* containers and volumes." /SD IDOK
+      ${if} $R8 == "3"
+        ; An install from before Decurix kept a complete record of what that
+        ; runtime already held: its own resources cannot be told from the
+        ; person's, so none were removed.
+        MessageBox MB_OK|MB_ICONINFORMATION "Nothing was removed from your own WSL runtime: Decurix has no complete record of what was already there when it began using it, so it cannot tell its resources from yours. If its desktop_* containers and volumes and the decurix-data volume are Decurix's, delete them there yourself." /SD IDOK
+      ${elseIf} $R8 != "0"
+        ; That runtime's Docker did not answer, or a removal failed: Decurix's
+        ; workers there may stay, and the person is told. Everything Decurix
+        ; owns outright still goes.
+        MessageBox MB_OK|MB_ICONEXCLAMATION "Some of Decurix's resources in your own WSL runtime could not be removed (its Docker Engine did not answer, or a removal failed). Everything else was deleted. To remove those too, start that Docker Engine and delete Decurix's desktop_* containers and volumes there." /SD IDOK
       ${endIf}
       ; Unregistering the app-owned distro deletes its disk.
+      ; Its forwarding rule (dockerd.sh fence) lives in the network stack WSL2 distros share, so it would outlive the
+      ; distro: taken out first.
+      nsExec::Exec `"$R6" -d Decurix -u root -e /opt/decurix/dockerd.sh unfence`
       nsExec::Exec `"$R6" --unregister Decurix`
       Pop $R8
       Sleep 1500

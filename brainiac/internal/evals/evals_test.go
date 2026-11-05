@@ -25,6 +25,14 @@ func TestChecks(t *testing.T) {
 		{Check{Kind: "choice", Value: "C"}, "Looking at each option... The answer is (C).", true},
 		{Check{Kind: "choice", Value: "C"}, "B", false},
 		{Check{Kind: "choice", Value: "B"}, "Reasoning...\nB", true},
+		// A value stated next to another one is not stated.
+		{Check{Kind: "number", Value: "12"}, "The answer is 13, not 12.", false},
+		{Check{Kind: "number", Value: "156"}, "<think>12*13 = 156 ... wait, maybe 157", false},
+		{Check{Kind: "number", Value: "12"}, "3 * 4 = 12\nThe answer is 12 (twelve).", true},
+		{Check{Kind: "choice", Value: "C"}, "The answer is B. Option C is wrong.", false},
+		{Check{Kind: "choice", Value: "C"}, "The answer is (C).\nI hope that helps.", true},
+		{Check{Kind: "choice", Value: "A"}, "The answer is a matter of reading option A closely.\nAnswer: A", true},
+		{Check{Kind: "exact", Value: "Paris"}, "Answer: Paris? No - the answer is Lyon.\nAnswer: Paris", true},
 	}
 	for _, c := range cases {
 		if got := c.check.Correct(c.answer); got != c.want {
@@ -77,12 +85,18 @@ func TestProvenNeedsMoreThanAnEqualSmallScore(t *testing.T) {
 		{"too few cases", Score{N: 10, Correct: 10}, Score{N: 10, Correct: 5}, false},
 		{"20/20 against a perfect score could be chance", Score{N: 20, Correct: 20}, Score{N: 20, Correct: 20}, false},
 		{"20/20 against 80% is clear", Score{N: 20, Correct: 20}, Score{N: 20, Correct: 16}, true},
-		{"60/60 against a perfect score", Score{N: 60, Correct: 60}, Score{N: 60, Correct: 60}, true},
+		{"nothing proves itself as good as a perfect score", Score{N: 200, Correct: 200}, Score{N: 60, Correct: 60}, false},
+		{"30/30 against 80%", Score{N: 30, Correct: 30}, Score{N: 30, Correct: 24}, true},
 		{"one point ahead on 40 is not enough", Score{N: 40, Correct: 36}, Score{N: 40, Correct: 35}, false},
 		{"worse on many cases", Score{N: 200, Correct: 160}, Score{N: 200, Correct: 190}, false},
-		{"close on many cases", Score{N: 400, Correct: 376}, Score{N: 400, Correct: 380}, true},
+		// No margin: a path a point worse on many cases is worse.
+		{"94% does not earn over 95%", Score{N: 400, Correct: 376}, Score{N: 400, Correct: 380}, false},
+		{"93% does not earn over 96%", Score{N: 1000, Correct: 930}, Score{N: 1000, Correct: 960}, false},
+		{"99% on many cases earns over 95%", Score{N: 400, Correct: 396}, Score{N: 400, Correct: 380}, true},
 	}
 	for _, c := range cases {
+		c.a.Decided, c.a.DecidedCorrect = c.a.N, c.a.Correct
+		c.b.Decided, c.b.DecidedCorrect = c.b.N, c.b.Correct
 		set(c.a, c.b)
 		if got := r.Proven("cheap", "remote", "math"); got != c.want {
 			t.Errorf("%s: %v (claims %.3f)", c.name, got, c.a.LowerBound())
@@ -137,5 +151,30 @@ func TestReadCasesChecksShape(t *testing.T) {
 	r2, err := Load(p)
 	if err != nil || r2.Scores["m"]["math"].Correct != 1 {
 		t.Fatalf("round trip %v %v", r2, err)
+	}
+}
+
+// Cases that find words anywhere ("contains", "regex") are scored but never
+// prove a path: only one stated value can.
+func TestOnlyDecidedCasesProve(t *testing.T) {
+	if (Check{Kind: "contains"}).Decides() || (Check{Kind: "regex"}).Decides() || !(Check{Kind: "number"}).Decides() ||
+		!(Check{Kind: "choice"}).Decides() || !(Check{Kind: "exact"}).Decides() {
+		t.Fatal("Decides")
+	}
+	// A contains check passes on a sentence that says the opposite: why it
+	// cannot prove anything.
+	if !(Check{Kind: "contains", Value: "not binding"}).Correct("This clause is binding; it is not binding only if signed under duress.") {
+		t.Fatal("the example no longer shows the weakness")
+	}
+	r := &Results{}
+	r.Set("cheap", "law", Score{N: 100, Correct: 100})
+	r.Set("remote", "law", Score{N: 100, Correct: 80})
+	if r.Proven("cheap", "remote", "law") {
+		t.Fatal("cases that decide nothing proved a path")
+	}
+	r.Set("cheap", "law", Score{N: 100, Correct: 100, Decided: 100, DecidedCorrect: 100})
+	r.Set("remote", "law", Score{N: 100, Correct: 80, Decided: 100, DecidedCorrect: 80})
+	if !r.Proven("cheap", "remote", "law") {
+		t.Fatal("decided cases did not prove a clear win")
 	}
 }

@@ -20,6 +20,7 @@ answered as a person in the chat would.
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -30,6 +31,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import brain  # noqa: E402
+from agent_token import docker_env as token_env  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import teach_answers  # noqa: E402
+
+# The checks here are assert statements. Under python -O they all vanish, and this would report a pass it never
+# checked (review 2026-11-02): it refuses to run that way.
+if not __debug__:
+    raise SystemExit("run this without -O: its checks are assert statements, which -O removes")
 
 REPO = str(Path(__file__).resolve().parents[2])
 NAME = "decurix-skill-test-" + uuid.uuid4().hex[:10]
@@ -85,9 +94,12 @@ def wait_reply(count, timeout=150):
                      + "\n".join(str(r.get("kind")) + ": " + str(r.get("reply"))[:200] for r in replies()))
 
 
-HTTP = ("import sys,json,urllib.request as u;"
+# A write to :8081 must say it is JSON, and a desktop with an agent token needs it (http_api.refusal).
+HTTP = ("import sys,os,json,urllib.request as u;"
         "d=sys.argv[2] if len(sys.argv)>2 else None;"
-        "r=u.Request('http://localhost:8081'+sys.argv[1],data=d.encode() if d else None,method='POST' if d else 'GET');"
+        "t=os.environ.get('DECURIX_AGENT_TOKEN','');"
+        "h=dict({'Content-Type':'application/json'} if d else {},**({'Authorization':'Bearer '+t} if t else {}));"
+        "r=u.Request('http://localhost:8081'+sys.argv[1],data=d.encode() if d else None,headers=h,method='POST' if d else 'GET');"
         "print(u.urlopen(r,timeout=20).read().decode())")
 
 
@@ -124,6 +136,7 @@ def main():
         "--security-opt", f"seccomp={REPO}/internal/desktop/seccomp-desktop.json", "--ulimit", "core=0",
         "-e", "VNC_PW=admin", "-e", "VNC_RESOLUTION=1280x720", "-e", "DESKTOP_ID=e2e", "-e", "DESKTOP_NAME=e2e",
         "-e", f"CONTROL_PLANE_URL=http://host.docker.internal:{PORT}",
+        *token_env(),
         *brain.docker_env(brain.chosen(), f"http://host.docker.internal:{PORT}"),
         "-e", "OLLAMA_URL=" + ("http://host.docker.internal:11434" if brain.chosen() == "ollama" else "http://127.0.0.1:11434"),
         "-e", "DECURIX_REPLAY_FIND_SECONDS=6",
@@ -188,7 +201,6 @@ def run():
     first = wait_reply(seen)
     show("question 1", first)
 
-    answers = ["the page shows a line beginning Saved", ]
     reply_text = lambda r: (r.get("reply") or "")
     conversation = []
     while True:
@@ -196,26 +208,13 @@ def run():
         text = reply_text(last)
         if last.get("kind") == "final" or last.get("kind") == "error":
             break
-        # The last question asks for the name ("What should I call it? ... `yes` keeps ...");
-        # it also says when the task is finished, so it is matched before "finished" is.
-        if "Save it as" in text or "What should I call it" in text:
-            answer = "yes"
-        elif "ask first" in text and "go ahead" in text:
-            # The fixture only saves a local synthetic form; this explicitly
-            # answers the teaching contract's start-autonomy question.
-            answer = "go ahead"
-        elif "Which of them change" in text:
-            answer = "all change"
-        elif "same every time" in text:
-            answer = "changes"
-        elif "only sometimes happen" in text or "sometimes" in text and "always part" in text:
-            answer = "always"
-        elif "finished" in text:
-            answer = answers[0]
-        elif "check that before I start" in text:
-            answer = "yes"
-        else:
-            raise SystemExit(f"a question this script does not know how to answer:\n{text}")
+        # Answered by the question's structure (its kind, a study question's topic), read from the lesson's draft on
+        # the desktop: bench/skills/teach_answers.py. A kind it does not know stops the bench.
+        probe = subprocess.run(["docker", "exec", "-u", "headless", "-e", "PYTHONPATH=/opt", NAME, "python3", "-c",
+                                teach_answers.PROBE], capture_output=True, text=True, timeout=60)
+        if probe.returncode:
+            raise SystemExit(f"could not read the lesson's question on the desktop:\n{probe.stderr[-600:]}")
+        answer = teach_answers.answer(json.loads(probe.stdout), text)
         conversation.append((text[:90].replace("\n", " "), answer))
         seen += 1
         send(answer, "t00000000000000b1")
@@ -228,6 +227,24 @@ def run():
     print("skill status:", skill["status"], "| steps:", [s["summary"] for s in skill["steps"]],
           "| params:", [(p["name"], p["varies"]) for p in skill["params"]])
     assert skill["status"] == "ready"
+
+    # A worker whose brain plans puts its plan of the work to the person before its first change; the person agrees
+    # it, with what they know (teach_answers.PLAN_ANSWER). The plan is known by the agent's own marker, read from the
+    # desktop, so a reply is never matched by its words. Model-free runs make no plan, and none is answered.
+    marker = subprocess.run(["docker", "exec", "-u", "headless", "-e", "PYTHONPATH=/opt", NAME, "python3", "-c",
+                             teach_answers.PLAN_MARKER_PROBE], capture_output=True, text=True, timeout=60)
+    if marker.returncode or not marker.stdout.strip():
+        raise SystemExit(f"could not read the plan question's marker on the desktop:\n{marker.stderr[-600:]}")
+    plan_marker = marker.stdout.strip()
+
+    def past_plan(reply, index, task_id):
+        """The reply after any plan question was agreed, and its index among the replies."""
+        while teach_answers.is_plan(reply, plan_marker):
+            send(teach_answers.PLAN_ANSWER, task_id)
+            index += 1
+            reply = wait_reply(index, timeout=180)
+            show("plan agreed; next", reply)
+        return reply, index
 
     def confirmed(reply, index, task_id, shown):
         """
@@ -250,12 +267,14 @@ def run():
     send("/skill add a customer", "t00000000000000c1")
     q = wait_reply(before + 1)
     show("it asks", q)
+    q, n = past_plan(q, before + 1, "t00000000000000c1")
     assert "customer_name" in q["reply"] and q["kind"] == "query"
 
     send("Initech", "t00000000000000c1")
-    done = wait_reply(before + 2, timeout=180)
+    done = wait_reply(n + 1, timeout=180)
     show("result", done)
-    done = confirmed(done, before + 2, "t00000000000000c1", "Saved Initech")
+    done, n = past_plan(done, n + 1, "t00000000000000c1")
+    done = confirmed(done, n, "t00000000000000c1", "Saved Initech")
     assert done["kind"] == "final", "the skill run did not complete"
 
     v = bash("gui verify --text 'Saved Initech'", check=False)
@@ -263,17 +282,25 @@ def run():
     assert v.returncode == 0, "the real page does not show what the skill typed"
 
     # ---- the form changed ----
-    # A rename the healing ladder is sure of ("Save" -> "Save changes": same words, same
-    # place, same neighbours) is repaired without a question, and says so.
-    print("\n== the Save button is renamed to something plainly the same; the skill heals it and says so")
+    # A heal onto another name is the person's call (D-09, healing.keeps_identity): even "Save" -> "Save changes"
+    # is put to the person, with the closest controls numbered. The person answers with the number offered for the
+    # renamed button, and the run finishes with the result on the screen.
+    print("\n== the Save button is renamed; replay asks which control to use, and the person picks the renamed one")
     bash("sed -i 's/>Save</>Save changes</' ~/work/form.html")
     before = len(replies())
     send('/skill add-a-customer customer_name="Umbrella"', "t00000000000000d1")
-    healed = wait_reply(before + 1, timeout=180)
+    asked = wait_reply(before + 1, timeout=180)
+    show("it asks", asked)
+    asked, n = past_plan(asked, before + 1, "t00000000000000d1")
+    assert asked["kind"] == "query", "a heal onto another name was not put to the person (D-09)"
+    offered = re.search(r'(\d+)\) button "Save changes"', asked["reply"])
+    assert offered, "the question does not offer the renamed button by number"
+    send(offered.group(1), "t00000000000000d1")
+    healed = wait_reply(n + 1, timeout=180)
     show("result", healed)
-    repaired = "repaired step 3" in healed["reply"]
-    healed = confirmed(healed, before + 1, "t00000000000000d1", "Saved Umbrella")
-    assert healed["kind"] == "final" and (repaired or "repaired step 3" in healed["reply"]), "the rename was not healed"
+    healed, n = past_plan(healed, n + 1, "t00000000000000d1")
+    healed = confirmed(healed, n, "t00000000000000d1", "Saved Umbrella")
+    assert healed["kind"] == "final", "the run did not finish after the person chose the renamed button"
 
     v = bash("gui verify --text 'Saved Umbrella'", check=False)
     print("$ gui verify --text 'Saved Umbrella' ->", v.returncode)
@@ -287,12 +314,14 @@ def run():
     send('/skill add-a-customer customer_name="Wayne"', "t00000000000000e1")
     stuck = wait_reply(before + 1, timeout=180)
     show("it asks", stuck)
+    stuck, n = past_plan(stuck, before + 1, "t00000000000000e1")
     assert stuck["kind"] == "query" and "is not on the screen" in stuck["reply"]
 
     send('use "Go"', "t00000000000000e1")
-    fixed = wait_reply(before + 2, timeout=180)
+    fixed = wait_reply(n + 1, timeout=180)
     show("result", fixed)
-    fixed = confirmed(fixed, before + 2, "t00000000000000e1", "Saved Wayne")
+    fixed, n = past_plan(fixed, n + 1, "t00000000000000e1")
+    fixed = confirmed(fixed, n, "t00000000000000e1", "Saved Wayne")
     assert fixed["kind"] == "final" and "remembered" in fixed["reply"]
 
     v = bash("gui verify --text 'Saved Wayne'", check=False)

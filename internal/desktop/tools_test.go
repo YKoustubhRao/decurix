@@ -23,14 +23,16 @@ func TestChosenMemoryIsACeilingNotAReservation(t *testing.T) {
 func TestBuildContainerConfigsMountsSharedToolsAndCacheVolume(t *testing.T) {
 	_, host, _ := buildContainerConfigs("img", "desktop_test", "developer", "ollama", 2, 4096, nil, "vol_test", nil)
 
-	toolsMounted := false
-	cacheMounted := false
+	toolsMounted, cacheMounted, modelsMounted := false, false, false
 	for _, b := range host.Binds {
 		if b == ToolsVolumeName+":/opt/tools:ro" {
 			toolsMounted = true
 		}
-		if b == CacheVolumeName+":/var/cache/decurix:rw" {
+		if b == "desktop_test_cache:/var/cache/decurix:rw" {
 			cacheMounted = true
+		}
+		if b == HFVolumeName+":"+HFMountPoint+":ro" {
+			modelsMounted = true
 		}
 	}
 
@@ -38,13 +40,18 @@ func TestBuildContainerConfigsMountsSharedToolsAndCacheVolume(t *testing.T) {
 		t.Fatalf("expected host binds to contain %s:/opt/tools:ro, got: %v", ToolsVolumeName, host.Binds)
 	}
 	if !cacheMounted {
-		t.Fatalf("expected host binds to contain %s:/var/cache/decurix:rw, got: %v", CacheVolumeName, host.Binds)
+		t.Fatalf("expected the desktop's own cache at /var/cache/decurix, got: %v", host.Binds)
+	}
+	if !modelsMounted {
+		t.Fatalf("expected the shared model cache read-only, got: %v", host.Binds)
 	}
 	if host.Resources.CPUShares != 2*1024 {
 		t.Errorf("expected CPUShares to be 2048, got: %d", host.Resources.CPUShares)
 	}
-	if host.Resources.MemorySwappiness == nil || *host.Resources.MemorySwappiness != 0 {
-		t.Errorf("expected MemorySwappiness to be 0, got: %v", host.Resources.MemorySwappiness)
+	// A desktop may swap (owner decision, B3 reversed): no swap limit of its own and no swappiness, so Docker's
+	// default (memory plus swap up to twice the memory) holds on cgroup v1 and v2 alike.
+	if host.Resources.MemorySwappiness != nil || host.Resources.MemorySwap != 0 || host.Resources.Memory == 0 {
+		t.Errorf("swappiness %v, MemorySwap %d (memory %d): want swap allowed", host.Resources.MemorySwappiness, host.Resources.MemorySwap, host.Resources.Memory)
 	}
 	if host.Tmpfs == nil || host.Tmpfs["/tmp"] == "" || host.Tmpfs["/run"] == "" {
 		t.Errorf("expected Tmpfs to contain /tmp and /run, got: %v", host.Tmpfs)
@@ -173,6 +180,50 @@ func TestAHostedBrainIsGivenTheProxyNeverAKey(t *testing.T) {
 	for _, kv := range env {
 		if strings.Contains(kv, "sk-") || strings.HasPrefix(kv, "ANTHROPIC_API_KEY=") || strings.HasPrefix(kv, "AZURE_KEY=") {
 			t.Errorf("a key reached the desktop: %s", kv)
+		}
+	}
+}
+
+// TestNoTwoDesktopsShareAWritableVolume: desktops distrust each other, all run as uid 1001, and a cache one writes and
+// another trusts on read is a way from one into the other (B-02). Whatever two desktops share is read-only.
+func TestNoTwoDesktopsShareAWritableVolume(t *testing.T) {
+	writable := func(name string) map[string]bool {
+		_, host, _ := buildContainerConfigs("img", "desktop_"+name, "basic", "thebot", 1, 2048, nil, "desktop_"+name+"_home", nil)
+		out := map[string]bool{}
+		for _, b := range host.Binds {
+			parts := strings.Split(b, ":")
+			if len(parts) < 3 || parts[2] != "ro" {
+				out[parts[0]] = true
+			}
+		}
+		for _, m := range host.Mounts {
+			if !m.ReadOnly {
+				out[m.Source] = true
+			}
+		}
+		return out
+	}
+	a, b := writable("a"), writable("b")
+	for v := range a {
+		if b[v] {
+			t.Errorf("desktops a and b both write volume %s", v)
+		}
+	}
+	if !a["desktop_a_cache"] || !a["desktop_a_home"] {
+		t.Errorf("a desktop writes its own home and cache: %v", a)
+	}
+}
+
+// TestEveryDesktopRunsWithNoNewPrivileges: also the processes the control plane starts with docker exec (B-21).
+func TestEveryDesktopRunsWithNoNewPrivileges(t *testing.T) {
+	for _, opt := range [][]string{nil, {"seccomp=x"}} {
+		_, host, _ := buildContainerConfigs("img", "desktop_a", "basic", "thebot", 1, 2048, nil, "v", opt)
+		found := false
+		for _, o := range host.SecurityOpt {
+			found = found || o == "no-new-privileges:true"
+		}
+		if !found {
+			t.Errorf("SecurityOpt %v lacks no-new-privileges", host.SecurityOpt)
 		}
 	}
 }

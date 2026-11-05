@@ -254,3 +254,23 @@ func judgementsForApproval(items []string) string {
 	}
 	return b.String()
 }
+
+// notBackedIssues are the points decided in code at a report for the calls the worker's own list marks "| not backed"
+// (review A, false-done investigation): a value the work rests on that no source, request or answer gave is an open
+// point for the person, never a fact the review may let stand. The marker is the list's own protocol (notBackedRe),
+// not words of the call.
+func notBackedIssues(items []string) []reviewIssue {
+	var out []reviewIssue
+	for _, item := range items {
+		if !notBackedRe.MatchString(item) {
+			continue
+		}
+		out = append(out, reviewIssue{
+			What: "the work rests on a call it says nothing given backs: " + truncateText(strings.TrimSpace(item), 400),
+			Why: "a value no source, request or answer of the person gave is not done until it is backed: find it in a " +
+				"source, or ask the person",
+			Settle: "person",
+		})
+	}
+	return out
+}

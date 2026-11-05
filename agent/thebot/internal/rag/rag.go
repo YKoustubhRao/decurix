@@ -29,6 +29,8 @@ import (
 	_ "modernc.org/sqlite"
 
 	"thebot/internal/llm"
+	"thebot/internal/migrate"
+	"thebot/internal/withheld"
 )
 
 const (
@@ -69,6 +71,19 @@ type RAG struct {
 	doclingScript string
 }
 
+// Migrate is the Data RAG's schema, step by step: appended only, never edited (internal/migrate).
+var Migrate = []string{
+	`CREATE TABLE IF NOT EXISTS chunks (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	rel_path TEXT NOT NULL,
+	chunk_index INTEGER NOT NULL,
+	text TEXT NOT NULL,
+	embedding TEXT NOT NULL,
+	created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_relpath ON chunks(rel_path);`,
+}
+
 // New opens (creating if needed) the real SQLite-backed Data RAG at
 // <workspaceRoot>/.rag/data.db.
 func New(workspaceRoot string, embedder llm.Embedder, doclingScript string) (*RAG, error) {
@@ -86,19 +101,9 @@ func New(workspaceRoot string, embedder llm.Embedder, doclingScript string) (*RA
 	// separate ingestor process exists.
 	db.SetMaxOpenConns(1)
 
-	schema := `
-CREATE TABLE IF NOT EXISTS chunks (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	rel_path TEXT NOT NULL,
-	chunk_index INTEGER NOT NULL,
-	text TEXT NOT NULL,
-	embedding TEXT NOT NULL,
-	created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_chunks_relpath ON chunks(rel_path);
-`
-	if _, err := db.Exec(schema); err != nil {
-		return nil, fmt.Errorf("rag: create schema: %w", err)
+	if err := migrate.Migrate(db, Migrate); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("rag: %w", err)
 	}
 
 	return &RAG{db: db, workspaceRoot: workspaceRoot, embedder: embedder, doclingScript: doclingScript}, nil
@@ -148,13 +153,21 @@ func extractText(ctx context.Context, absPath, doclingScript string) (text, meth
 	if looksBinary(peek[:n]) {
 		return "", "", fmt.Errorf("skip: looks like binary content, not text")
 	}
+	if st, err := f.Stat(); err == nil && st.Size() > maxIngestBytes {
+		return "", "", fmt.Errorf("skip: %d bytes is more than the %d a file is indexed up to", st.Size(), maxIngestBytes)
+	}
 
-	raw, err := os.ReadFile(absPath)
+	raw, err := io.ReadAll(io.LimitReader(f, maxIngestBytes+1))
 	if err != nil {
 		return "", "", fmt.Errorf("read file: %w", err)
 	}
-	return string(raw), "text", nil
+	// The peek above already read the first bytes: the reader goes on from there.
+	return string(peek[:n]) + string(raw), "text", nil
 }
+
+// maxIngestBytes bounds a plain-text file indexed whole (review T-17): read into memory and embedded chunk by chunk, a
+// huge log would hold memory and the embedder for an hour on the target host.
+const maxIngestBytes = 4 << 20
 
 // binarySniffBytes is how much of a file gets checked for binary content -
 // enough to reliably catch real binaries (their signature bytes are always
@@ -206,12 +219,25 @@ func (r *RAG) IngestFile(ctx context.Context, relPath string) (chunks int, metho
 		return 0, "", err
 	}
 
-	pieces := chunkText(text)
+	// The job's secret values never reach the index, the embedder or a later recall (C14): withheld before chunking.
+	pieces := chunkText(withheld.From(ctx).Text(text))
 	if len(pieces) == 0 {
 		return 0, method, nil
 	}
 
-	tx, err := r.db.Begin()
+	// Every chunk is embedded first, then written in one short transaction: on the one-connection pool a transaction
+	// held across the embedding calls blocked every other use of the index (Stats, a query) for the whole ingest
+	// (review T-17).
+	vectors := make([]string, len(pieces))
+	for i, piece := range pieces {
+		vec, embErr := r.embedder.Embed(ctx, embedModel, piece)
+		if embErr != nil {
+			return 0, "", fmt.Errorf("rag: embed chunk %d of %s: %w", i, relPath, embErr)
+		}
+		vectors[i] = llm.EncodeVector(vec)
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, "", fmt.Errorf("rag: begin tx: %w", err)
 	}
@@ -223,13 +249,9 @@ func (r *RAG) IngestFile(ctx context.Context, relPath string) (chunks int, metho
 
 	now := time.Now().Unix()
 	for i, piece := range pieces {
-		vec, embErr := r.embedder.Embed(ctx, embedModel, piece)
-		if embErr != nil {
-			return 0, "", fmt.Errorf("rag: embed chunk %d of %s: %w", i, relPath, embErr)
-		}
 		if _, err := tx.Exec(
 			`INSERT INTO chunks (rel_path, chunk_index, text, embedding, created_at) VALUES (?, ?, ?, ?, ?)`,
-			relPath, i, piece, llm.EncodeVector(vec), now,
+			relPath, i, piece, vectors[i], now,
 		); err != nil {
 			return 0, "", fmt.Errorf("rag: insert chunk %d of %s: %w", i, relPath, err)
 		}
@@ -244,6 +266,15 @@ func (r *RAG) IngestFile(ctx context.Context, relPath string) (chunks int, metho
 // Query performs real brute-force cosine similarity over every stored
 // chunk - grounded results only, never an invented file or excerpt.
 func (r *RAG) Query(ctx context.Context, query string, topK int) ([]Result, error) {
+	// An empty index answers nothing, and asks nothing of the embedder: the embedding model is loaded on the first use
+	// that needs it, never for an index with nothing in it (resource plan P1 #7).
+	var chunks int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chunks`).Scan(&chunks); err != nil {
+		return nil, fmt.Errorf("rag: count chunks: %w", err)
+	}
+	if chunks == 0 {
+		return nil, nil
+	}
 	queryVec, err := r.embedder.Embed(ctx, embedModel, query)
 	if err != nil {
 		return nil, fmt.Errorf("rag: embed query: %w", err)

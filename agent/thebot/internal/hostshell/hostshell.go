@@ -4,8 +4,16 @@ package hostshell
 
 import (
 	"context"
+	"errors"
 	"os/exec"
+	"time"
 )
+
+// waitDelay bounds how long Wait keeps waiting for output pipes after the
+// command itself has ended or been killed: a backgrounded child that still
+// holds stdout open (`python3 -m http.server &`) must not keep a caller
+// waiting until its own timeout, or forever.
+const waitDelay = 2 * time.Second
 
 // Command is line as a not-yet-started command in this machine's shell.
 func Command(line string) *exec.Cmd {
@@ -15,10 +23,34 @@ func Command(line string) *exec.Cmd {
 	return cmd
 }
 
-// CommandContext is Command, killed when ctx ends.
+// CommandContext is Command in a process group of its own, and when ctx ends
+// the whole group is killed - not only the shell. Killing the shell alone
+// left its children running (a build's compiler, `npm start`'s node), still
+// holding the output pipes, and Wait blocked on them past every timeout.
 func CommandContext(ctx context.Context, line string) *exec.Cmd {
 	name, args := argv(line)
 	cmd := exec.CommandContext(ctx, name, args...)
 	prepare(cmd)
+	OwnGroup(cmd)
+	cmd.Cancel = func() error {
+		KillTree(cmd)
+		return nil
+	}
+	cmd.WaitDelay = waitDelay
 	return cmd
+}
+
+// Exited is Wait's (or Run's, Output's) error with one case taken out: the
+// command itself exited 0 and only its output pipes were still held, by a
+// child it left running in the background, when WaitDelay cut them off
+// (exec.ErrWaitDelay). That command succeeded - its own exit is its result.
+// Every caller of CommandContext reads the outcome through this, so a
+// backgrounded child means the same thing in the terminal skill, the
+// operator's shell and the coding harness. Wait returns ErrWaitDelay only
+// after a successful exit; the ProcessState check keeps that explicit.
+func Exited(cmd *exec.Cmd, err error) error {
+	if errors.Is(err, exec.ErrWaitDelay) && cmd != nil && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		return nil
+	}
+	return err
 }

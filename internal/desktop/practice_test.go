@@ -6,10 +6,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -26,12 +30,15 @@ type practiceDaemon struct {
 	calls           []string
 	created         []map[string]any
 	copiedTo        map[string][]map[string]string // "<container>:<path>" -> tars' files
+	copiedRaw       map[string][][]byte            // "<container>:<path>" -> the tars as sent
+	copiedUIDGID    map[string][]string            // "<container>:<path>" -> each copy's copyUIDGID
 	paused          map[string]bool
 	readWhilePaused bool
 	netExists       bool
 	caseTar         map[string]string
 	image           string
 	execs           map[string][]string // exec id -> container, kind ("tarin"/"tarout"/"run"), path
+	noGateUser      bool                // the image is one from before the approval gate
 }
 
 func tarFiles(b []byte) map[string]string {
@@ -113,6 +120,11 @@ func (d *practiceDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			d.copiedTo = map[string][]map[string]string{}
 		}
 		d.copiedTo[key] = append(d.copiedTo[key], tarFiles(b))
+		if d.copiedRaw == nil {
+			d.copiedRaw, d.copiedUIDGID = map[string][][]byte{}, map[string][]string{}
+		}
+		d.copiedRaw[key] = append(d.copiedRaw[key], b)
+		d.copiedUIDGID[key] = append(d.copiedUIDGID[key], r.URL.Query().Get("copyUIDGID"))
 		w.WriteHeader(200)
 	case strings.HasSuffix(p, "/archive") && r.Method == "GET":
 		id, at := strings.Split(p, "/")[2], r.URL.Query().Get("path")
@@ -123,6 +135,12 @@ func (d *practiceDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case at == "/opt/decurix-chromium.init":
 			body = tarBody(map[string]string{"decurix-chromium.init": "CHROMIUM_FLAGS=\"--x\"\n"})
+		case at == "/etc/passwd":
+			users := "root:x:0:0::/root:/bin/bash\nheadless:x:1001:1001::/home/headless:/bin/bash\n"
+			if !d.noGateUser {
+				users += "decurixgate:x:999:999::/nonexistent:/usr/sbin/nologin\n"
+			}
+			body = tarBody(map[string]string{"passwd": users})
 		case strings.HasPrefix(at, PracticeWorkDir+"/"):
 			c := strings.TrimPrefix(at, PracticeWorkDir+"/")
 			body = tarBody(map[string]string{c + "/in.csv": d.caseTar["in.csv"], c + "/out.txt": d.caseTar["out.txt"]}, c+"/")
@@ -138,7 +156,15 @@ func (d *practiceDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(p, "/stop"):
 		w.WriteHeader(204)
 	case strings.HasSuffix(p, "/json") && strings.HasPrefix(p, "/containers/") && p != "/containers/json":
-		_ = json.NewEncoder(w).Encode(map[string]any{"Id": "desk", "State": map[string]any{"Running": true, "Paused": d.paused[strings.Split(p, "/")[2]]}, "NetworkSettings": map[string]any{"Networks": map[string]any{PracticeNetworkName: map[string]string{"IPAddress": "172.30.0.5"}}}})
+		ctr := strings.Split(p, "/")[2]
+		labels := map[string]string{PracticeLabel: "true"}
+		switch ctr {
+		case "worker":
+			labels = map[string]string{}
+		case "mock":
+			labels["decurix-practice-mock"] = "true"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"Id": ctr, "Config": map[string]any{"Labels": labels}, "State": map[string]any{"Running": true, "Paused": d.paused[ctr]}, "NetworkSettings": map[string]any{"Networks": map[string]any{PracticeNetworkName: map[string]string{"IPAddress": "172.30.0.5"}}}})
 	case p == "/containers/json":
 		_ = json.NewEncoder(w).Encode([]map[string]string{{"Id": "left-behind"}})
 	case strings.HasSuffix(p, "/exec") && strings.HasPrefix(p, "/containers/"):
@@ -149,15 +175,21 @@ func (d *practiceDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		ctr := strings.Split(p, "/")[2]
 		joined := strings.Join(body.Cmd, " ")
-		info := []string{ctr, "run", ""}
+		info := []string{ctr, "run", strings.Join(body.Cmd, "\x00")}
 		switch {
 		case strings.Contains(joined, "tar -x -C "):
-			info = []string{ctr, "tarin", body.Cmd[len(body.Cmd)-3]}
+			dir := ""
+			for i, a := range body.Cmd {
+				if a == "-C" && i+1 < len(body.Cmd) {
+					dir = body.Cmd[i+1]
+				}
+			}
+			info = []string{ctr, "tarin", dir}
 		case strings.Contains(joined, "kill -s STOP"):
 			info = []string{ctr, "tarout", body.Cmd[len(body.Cmd)-3]}
 		}
-		if info[1] == "run" && body.User != "headless" {
-			d.t.Errorf("reset ran as %v", body.User)
+		if info[1] == "run" && body.User != "headless" && !(body.User == "root" && strings.Contains(joined, "/var/lib/decurix-gate/computer")) {
+			d.t.Errorf("reset ran as %v: %s", body.User, joined)
 		}
 		if info[1] != "run" && body.User != "1001:1001" {
 			d.t.Errorf("tar ran as %v", body.User)
@@ -229,7 +261,35 @@ func practiceManager(t *testing.T) (*Manager, *practiceDaemon) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cli.Close() })
-	return NewManager(cli), d
+	m := NewManager(cli)
+	m.HostGUISecret = []byte("practice-secret")
+	return m, d
+}
+
+// A practice desktop gets its agent token like any desktop, and without the control plane's secret it is not made at
+// all - it used to be made with no token, and every request the run sent it was refused with no reason given.
+func TestCreatePracticeNeedsTheSecret(t *testing.T) {
+	m, d := practiceManager(t)
+	spec := PracticeSpec{RunID: "x1", Image: d.image, Harness: "thebot", Brain: BrainAzure, Model: "m", BrokerURL: "http://172.30.0.1:8091"}
+	if _, err := m.CreatePractice(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	var env []string
+	hasToken := false
+	for _, e := range d.created[0]["Env"].([]any) {
+		env = append(env, e.(string))
+		hasToken = hasToken || e.(string) == AgentTokenEnv+"="+m.AgentToken("practice-x1")
+	}
+	if !hasToken || m.AgentToken("practice-x1") == "" {
+		t.Fatalf("the practice desktop has no agent token of its own: %v", env)
+	}
+	m.HostGUISecret = nil
+	if _, err := m.CreatePractice(context.Background(), PracticeSpec{RunID: "x2", Image: d.image, BrokerURL: "http://172.30.0.1:8091"}); !errors.Is(err, ErrNoSecret) {
+		t.Fatalf("a practice desktop without the secret: %v, want ErrNoSecret", err)
+	}
+	if len(d.created) != 1 {
+		t.Fatal("a practice desktop was made without the secret")
+	}
 }
 
 func TestCreatePracticeIsIsolated(t *testing.T) {
@@ -256,7 +316,7 @@ func TestCreatePracticeIsIsolated(t *testing.T) {
 		t.Fatal("resources not capped")
 	}
 	opts, _ := json.Marshal(host["SecurityOpt"])
-	if !strings.Contains(string(opts), "seccomp=") {
+	if !strings.Contains(string(opts), "seccomp=") || !strings.Contains(string(opts), "no-new-privileges:true") {
 		t.Fatalf("security options lost: %s", opts)
 	}
 	if body["Labels"].(map[string]any)[PracticeLabel] != "true" {
@@ -291,6 +351,33 @@ func TestCreatePracticeIsIsolated(t *testing.T) {
 	}
 }
 
+// TestPracticeDesktopsHaveTheGate checks a practice desktop is told it must have an approval gate, gets its own key
+// before its first start, and is not made from an image without the gate (round-4 recheck).
+func TestPracticeDesktopsHaveTheGate(t *testing.T) {
+	m, d := practiceManager(t)
+	spec := PracticeSpec{RunID: "x1", Image: d.image, Harness: "thebot", Brain: BrainAzure, Model: "m", BrokerURL: "http://172.30.0.1:8091"}
+	if _, err := m.CreatePractice(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range d.created[0]["Env"].([]any) {
+		found = found || e.(string) == GateRequiredEnv+"=1"
+	}
+	if !found {
+		t.Fatal("a practice desktop is not told it must have a gate")
+	}
+	keys := d.copiedTo["desk:/"]
+	if len(keys) != 1 || keys[0]["etc/decurix-gate/key"] != m.GateKey("practice-x1") || m.GateKey("practice-x1") == "" {
+		t.Fatalf("the practice desktop's key was not put in place: %v", keys)
+	}
+
+	m2, d2 := practiceManager(t)
+	d2.noGateUser = true
+	if _, err := m2.CreatePractice(context.Background(), spec); !errors.Is(err, ErrNoGate) {
+		t.Fatalf("an image without the gate: %v, want ErrNoGate", err)
+	}
+}
+
 func TestCreatePracticeRefusesBadHostsAndIDs(t *testing.T) {
 	m, d := practiceManager(t)
 	for _, spec := range []PracticeSpec{
@@ -310,6 +397,17 @@ func TestPracticeMockAndCollection(t *testing.T) {
 	mock, err := m.StartPracticeMock(ctx, d.image, "x1", []byte("print(1)"), []byte(`{"rows":[]}`))
 	if err != nil || mock != "mock" {
 		t.Fatal(err)
+	}
+	// It is handed over only after it answered on its port: the wait runs in the mock, after its files are in
+	// (F-R3-1).
+	waited := false
+	for _, info := range d.execs {
+		if info[0] == "mock" && info[1] == "run" && strings.Contains(info[2], "http.client") && strings.Contains(info[2], PracticeMockPort) {
+			waited = true
+		}
+	}
+	if !waited {
+		t.Fatalf("the mock was handed over without waiting for it to answer: %v", d.execs)
 	}
 	cfg := d.created[0]
 	host := cfg["HostConfig"].(map[string]any)
@@ -362,10 +460,43 @@ func TestResetAndCleanupPractice(t *testing.T) {
 	if err := m.ResetPractice(ctx, "desk", tarBody(map[string]string{"skills/a.json": "{}"})); err != nil {
 		t.Fatal(err)
 	}
+	// What the reset does to a real desktop is TestPracticeResetLive's to prove; here, what it is given to clear.
+	var reset []string
+	for _, info := range d.execs {
+		if info[1] == "run" && !strings.Contains(info[2], "decurix-gate") {
+			reset = strings.Split(info[2], "\x00")
+		}
+	}
+	cleared := map[string]bool{}
+	for _, p := range reset {
+		cleared[p] = true
+	}
+	// All of the agent's and soul's state goes, whatever folders they keep in it (review EVAL-1, B1).
+	for _, p := range []string{"/home/headless/.decurix", "/home/headless/work", "/home/headless/.config/chromium"} {
+		if !cleared[p] {
+			t.Fatalf("the reset does not clear %s: %q", p, reset)
+		}
+	}
 	joined := strings.Join(d.calls, "\n")
 	stop, restore, start := strings.Index(joined, "/containers/desk/stop"), strings.Index(joined, "PUT /containers/desk/archive"), strings.LastIndex(joined, "/containers/desk/start")
 	if stop < 0 || restore < stop || start < restore {
 		t.Fatalf("snapshot not restored while stopped: %s", joined)
+	}
+	// The restored state is the worker's: every entry owned by its uid, and copied without copyUIDGID, which would
+	// chown it all to the container's configured user, root (LIVE-2 round 3, F-R3-2).
+	key := "desk:/home/headless"
+	if len(d.copiedRaw[key]) != 1 || d.copiedUIDGID[key][0] == "true" || d.copiedUIDGID[key][0] == "1" {
+		t.Fatalf("snapshot copies %d, copyUIDGID %q", len(d.copiedRaw[key]), d.copiedUIDGID[key])
+	}
+	tr := tar.NewReader(bytes.NewReader(d.copiedRaw[key][0]))
+	for {
+		h, err := tr.Next()
+		if err != nil {
+			break
+		}
+		if h.Uid != 1001 || h.Gid != 1001 {
+			t.Fatalf("%s is owned by %d:%d, not the worker", h.Name, h.Uid, h.Gid)
+		}
 	}
 	d.calls = nil
 	if err := m.CleanupPractice(ctx); err != nil {
@@ -374,6 +505,49 @@ func TestResetAndCleanupPractice(t *testing.T) {
 	joined = strings.Join(d.calls, "\n")
 	if !strings.Contains(joined, "DELETE /containers/left-behind") || !strings.Contains(joined, "DELETE /networks/net1") {
 		t.Fatalf("cleanup incomplete: %s", joined)
+	}
+}
+
+// Every place the agent and soul keep state is under the folder the reset clears whole: the agent's DECURIX_DIR
+// default (config.py) and soul's WORKSPACE_ROOT (the start script).
+// ResetPractice deletes a worker's whole state, so it refuses any container the control plane did not label as a
+// practice desktop: a worker's own desktop, or a mock (review EVAL-2, N1).
+func TestResetPracticeRefusesWhatIsNotAPracticeDesktop(t *testing.T) {
+	m, d := practiceManager(t)
+	for _, id := range []string{"worker", "mock"} {
+		d.calls = nil
+		if err := m.ResetPractice(context.Background(), id, nil); !errors.Is(err, ErrNotPractice) {
+			t.Fatalf("%s: %v", id, err)
+		}
+		for _, c := range d.calls {
+			if strings.Contains(c, "/exec") || strings.Contains(c, "/stop") {
+				t.Fatalf("%s: the reset touched it: %v", id, d.calls)
+			}
+		}
+	}
+}
+
+func TestThePracticeResetCoversEveryStateRoot(t *testing.T) {
+	read := func(p string) string {
+		b, err := os.ReadFile(filepath.Join("..", "..", p))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	if !strings.Contains(read("agent/decurix_agent/config.py"), `DECURIX_DIR = Path(os.environ.get("DECURIX_DIR", _default_base / ".decurix"))`) {
+		t.Fatal("the agent's state folder moved; the practice reset must follow it")
+	}
+	m := regexp.MustCompile(`export WORKSPACE_ROOT="([^"]+)"`).FindStringSubmatch(read("agent/start_agent_terminal.sh"))
+	if m == nil || !strings.HasPrefix(m[1], practiceDecurixDir+"/") {
+		t.Fatalf("soul's workspace is not under %s: %v", practiceDecurixDir, m)
+	}
+	found := false
+	for _, p := range practiceResetPaths {
+		found = found || p == practiceDecurixDir
+	}
+	if !found {
+		t.Fatal("the reset does not clear the agent's whole state folder")
 	}
 }
 

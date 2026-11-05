@@ -5,7 +5,8 @@ import time
 import urllib.error
 import urllib.request
 
-from decurix_agent import app_skills, attachments, config, guidance, methods, playbooks, progress, state, usage
+from decurix_agent import (app_skills, attachments, config, guidance, methods, playbooks, progress, state, task_context,
+                           usage)
 from decurix_agent.computer import approval
 from decurix_agent.identity import get_identity_context
 from decurix_agent.logging_utils import log, log_banner
@@ -13,7 +14,9 @@ from decurix_agent.memory_context import get_memory_context
 from decurix_agent.messaging import (
     ask_for_query,
     backend_failure_note,
+    withheld,
     write_final_reply,
+    write_stopped,
 )
 from decurix_agent.ollama_client import ensure_model_resident
 from decurix_agent.readiness import wait_for_http_ok
@@ -164,6 +167,9 @@ def readable_step(line):
         if match:
             text = rewrite(match).strip()
             break
+    # The text a `gui type` command types is never quoted in a step line (review round 4, R3-B1).
+    from decurix_agent.computer import privacy
+    text = privacy.step_command(text)
 
     return text[:1].upper() + text[1:] if text else None
 
@@ -175,12 +181,14 @@ def _emit_step(line):
         progress.emit(text)
 
 
+# Every call to soul carries this desktop's agent token (config.agent_auth_headers), the same one the control plane
+# sends through its /agent/<id>/ proxy: soul refuses a job, reply or cancel without it.
 def _post_json(url, payload):
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **config.agent_auth_headers()},
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=15) as response:
@@ -188,7 +196,7 @@ def _post_json(url, payload):
 
 
 def _get_json(url):
-    request = urllib.request.Request(url, method="GET")
+    request = urllib.request.Request(url, headers=config.agent_auth_headers(), method="GET")
     with urllib.request.urlopen(request, timeout=15) as response:
         return json.loads(response.read().decode("utf-8"))
 
@@ -206,7 +214,7 @@ def _stream_job(base, job_id):
 
     url = base + f"/api/jobs/{job_id}/stream"
 
-    request = urllib.request.Request(url, method="GET")
+    request = urllib.request.Request(url, headers=config.agent_auth_headers(), method="GET")
 
     deadline = time.monotonic() + TASK_TIMEOUT_SECONDS
 
@@ -272,6 +280,51 @@ ENGINE_STOPPED = (
     "TheBot's engine stopped in the middle of this task, so the task was not finished. Nothing more was done "
     "after the last step shown above. The engine is started again by itself; send the request again."
 )
+
+
+# What soul takes as a job's secret values (its /api/chat refuses more): at most this many, each at most this long.
+JOB_SECRETS = 1000
+JOB_SECRET_BYTES = 64 * 1024
+
+
+def _job_secrets():
+    """The task's secret values for soul's job (soul takes at most JOB_SECRETS, each at most JOB_SECRET_BYTES)."""
+
+    from decurix_agent.computer import privacy
+    return privacy.plain_values(task_context.secret_values())[-JOB_SECRETS:]
+
+
+def _secrets_too_big():
+    """Why the task's secret values cannot be handed to soul whole, or "": a value soul cannot take would go into its
+    records unredacted, so the job is not sent at all (fails closed; review round 2)."""
+
+    from decurix_agent.computer import privacy
+    values = privacy.plain_values(task_context.secret_values())
+    if any(len(v.encode("utf-8")) > JOB_SECRET_BYTES for v in values):
+        return (f"a secret value of this task is longer than {JOB_SECRET_BYTES // 1024} KB, too long to keep out of the "
+                "engine's records, so the task was not started. Send the secret as a file instead, or shorter.")
+    if len(values) > JOB_SECRETS:
+        return (f"this task has more than {JOB_SECRETS} secret values, more than the engine can keep out of its "
+                "records, so it was not started.")
+    return ""
+
+
+class SoulRefused(str):
+    """soul's own 400 for a job it will not take (its words): a refusal of this job, never an outage to retry."""
+
+
+def _refusal(exc):
+    """soul's message in a 400's body (its JSON "error", else the body), withheld and cut."""
+
+    try:
+        raw = exc.read().decode("utf-8", errors="replace")[:2000]
+    except Exception:  # noqa: BLE001
+        raw = ""
+    try:
+        said = json.loads(raw).get("error") or raw
+    except (ValueError, AttributeError):
+        said = raw
+    return SoulRefused(withheld(" ".join(str(said or "it gave no reason").split()))[:600])  # (withheld, then cut)
 
 
 def _cancel_job(base, job_id):
@@ -411,6 +464,24 @@ def plan_context():
             "changes the plan where it says so - and do not put the plan to them again.")
 
 
+def _plan_agreed():
+    """Whether the job about to start is under a plan the person agreed: this process put the plan to them and they
+    answered it (plan_context), or the job is a stage of a planned long request (workflow_task points at a stage of a
+    run whose spec is planned). Anything that cannot be read is False: soul then asks about its plan, which is safe."""
+
+    if plan_context():
+        return True
+    try:
+        from decurix_agent import workflow_task
+        active = workflow_task._active
+        if not active:
+            return False
+        return bool(workflow_task.runner().status(active[0])["spec"].get("planned"))
+    except Exception as exc:  # noqa: BLE001 - not knowing means soul asks; never fails the task
+        log(f"TheBot: could not tell whether the plan is agreed: {exc}")
+        return False
+
+
 # How many taught skills the standing context lists. In name order, never
 # ranked by the request: the context is part of soul's system frame, and a
 # frame that changed with every request would cost a local brain its prompt
@@ -469,10 +540,14 @@ def _answer_context(asked, reply):
 
     said = approval.reading(reply, asked)
     if said["decision"] == "yes":
+        # A yes is one action's: what was asked, once - never a waiver for the rest of the task. Every other action
+        # that needs a yes (and this one, if it is stopped by the gate on the screen) is still asked for (review
+        # 2026-11-02: "do not ask for approval for it again" turned one yes into the whole task's).
         return (
             "Earlier in this task you asked the human for approval: "
-            f"\"{asked}\". They replied \"{reply}\" - that is approval. "
-            "Do the task now, and do not ask for approval for it again."
+            f"\"{asked}\". They replied \"{reply}\" - that is approval for that one action, once. "
+            "Do it now. Any other action that sends, pays, files, deletes or commits something still needs its own "
+            "approval: ask for it as before (the screen's gate stops it and asks by itself)."
         )
     if said["decision"] == "if":
         return (
@@ -522,6 +597,10 @@ def _run_thebot(request, reply, extra_context="", approval_reading=None):
 
     base = config.THEBOT_URL.rstrip("/")
 
+    too_big = _secrets_too_big()
+    if too_big:
+        return None, SoulRefused(too_big)
+
     try:
         submitted = _post_json(
             base + "/api/chat",
@@ -535,12 +614,27 @@ def _run_thebot(request, reply, extra_context="", approval_reading=None):
                 # gets one of its own (_session_id).
                 "sessionId": _session_id(),
                 "reply": reply,
-                # Said yes already, as a kind of task: soul does not ask about the request's own words again.
-                "approved": bool(state.request_preapproved) and not reply,
+                # No "approved": a yes is one action's (CLAUDE.md), so soul takes none from a request body and asks
+                # about each consequential action itself (review 2026-11-02).
                 # What the reply to an approval decides ({"decision": yes|if|no|unclear, "condition"}), or None.
                 "approvalReading": approval_reading,
+                # The plan of this request is the person's (soul's PlanAgreed): a stage of a planned run, or a later
+                # job of a request whose plan the person already answered. Decided from structure here, never from
+                # the request's words (soul stopped reading the marker in the text: a pasted message could hold it).
+                "planAgreed": _plan_agreed(),
+                # The control plane's task this job works for (C2): soul tags every model call it makes for the job
+                # with it, so the proxy's record joins each call to its task.
+                "taskId": task_context.current(),
+                # The values this task's requests and replies made secret (C14): data for soul to keep out of
+                # everything it stores and shows - never in the prompt, whose bytes stay as they are.
+                **({"secrets": _job_secrets()} if _job_secrets() else {}),
             },
         )
+    except urllib.error.HTTPError as exc:
+        if exc.code == 400:
+            # soul refused the job itself (one it will not take, e.g. too many secret values): said as a refusal.
+            return None, _refusal(exc)
+        return None, f"could not submit task to TheBot: {exc}"
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return None, f"could not submit task to TheBot: {exc}"
 
@@ -670,10 +764,11 @@ def _backend_note(reason):
     )
 
 
-def _escalate(reason):
+def _escalate(reason, secret=False):
     """
     Send one reason to the human, rewritten if it is really about the
-    backend rather than about the task.
+    backend rather than about the task. `secret`: soul's job says the question is for a secret field (F-1), so the
+    person's reply is withheld whole wherever it is kept.
     """
 
     if _looks_like_backend_failure(reason):
@@ -683,7 +778,7 @@ def _escalate(reason):
     # A question is a question: an approval is only what a gate stopped (the "needs_approval" outcome), which names
     # the one action a yes allows. A word list over the model's question labelled "I need your rule or documentation
     # for ... approval" an approval, and it was answered "yes" (2026-10-23).
-    ask_for_query(reason, kind="query")
+    ask_for_query(reason, kind="query", secret=bool(secret))
 
 
 def _fail_on_backend(reason):
@@ -732,6 +827,10 @@ def _handle_job(job, error, resuming=False):
             # Not the model's doing and not a setup to fix: said as it is.
             write_final_reply(error, kind="error")
             return
+        if isinstance(error, SoulRefused):
+            # soul's own no to this job: not an outage, not retried, said in soul's words.
+            write_final_reply(f"TheBot refused this job and did not start it: {error}", kind="error", gated=True)
+            return
         if resuming:
             # The documented exception: a failure while resuming after a
             # human's reply keeps the task paused, so a resend of that
@@ -750,6 +849,9 @@ def _handle_job(job, error, resuming=False):
     outcome = job.get("outcome") or ""
     answer = (job.get("finalAnswer") or "").strip()
     question = (job.get("question") or "").strip() or answer
+    # soul marks a question for a value it was about to type into a password field (its job's "secret", F-1): a
+    # structural fact of the job, never read from the question's words. Absent on an older soul: not secret.
+    secret = job.get("secret", False) is True
 
     if outcome in ("needs_approval", "needs_input"):
         note_question(question)
@@ -759,7 +861,7 @@ def _handle_job(job, error, resuming=False):
         # the job paused. The human's reply comes back through
         # continue_after_query and resumes it.
         _approval_asked = question
-        ask_for_query(question, kind="approval")
+        ask_for_query(question, kind="approval", secret=secret)
         return
 
     if outcome == "needs_input":
@@ -768,9 +870,10 @@ def _handle_job(job, error, resuming=False):
         # and then asked whether its stopping counted as the task done.
         called_off = guidance.refused()
         if called_off:
-            write_final_reply(f"Stopped, as you said (\"{called_off}\"). {answer or ''}".strip())
+            # A stop is not a finished task (review 2026-11-03, N-F3): not done, never "final", and not judged.
+            write_stopped(f"Stopped, as you said (\"{called_off}\"). {answer or ''}".strip(), send=write_final_reply)
             return
-        _escalate(question)
+        _escalate(question, secret=secret)
         return
 
     if outcome == "failed":
@@ -847,9 +950,21 @@ def warm_after_ready():
     """
     Load the embedding model too, in the background: soul embeds every
     memory read and write, and its first embed otherwise pays a cold load
-    inside the first job.
+    inside the first job. Only when soul embeds through Ollama (its
+    /api/health says "embeddings": "ollama") and the brain is local: a hosted
+    brain's soul does not embed through this Ollama, and the warm load cost
+    about 300 MB of host RAM for nothing (resource plan, H-SOUL-9).
     """
 
+    if config.HOSTED_BRAIN:
+        return
+    try:
+        health = _get_json(config.THEBOT_URL.rstrip("/") + "/api/health")
+    except Exception as exc:  # noqa: BLE001 - not known to embed through Ollama: nothing is warmed
+        log(f"Not warming the embedding model: soul's health could not be read ({exc})")
+        return
+    if not isinstance(health, dict) or health.get("embeddings") != "ollama":
+        return
     try:
         body = json.dumps(
             {"model": EMBED_MODEL, "input": "warm", "keep_alive": "60m"}
@@ -872,7 +987,7 @@ def perform_task(task, task_file):
 
     state.begin(task, task_file)
 
-    log_banner("STARTING TASK (TheBot harness)", task)
+    log_banner("STARTING TASK (TheBot harness)", withheld(task))
 
     # soul reports each job's token counts with the job (_count). The local
     # model costs nothing per call; a hosted one's spend is on the provider's
@@ -902,7 +1017,7 @@ def continue_after_query(query_response):
     if getattr(state, "last_query_kind", "") != "approval":
         playbooks.answered()
 
-    log_banner("RECEIVED HUMAN REPLY TO QUERY (TheBot harness)", query_response)
+    log_banner("RECEIVED HUMAN REPLY TO QUERY (TheBot harness)", withheld(query_response))
 
     global _written_pause
     written, _written_pause = _written_pause, None

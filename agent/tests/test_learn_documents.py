@@ -161,7 +161,10 @@ class RunFilledFromTheDocument(TeachingBase):
         from decurix_agent.computer import replay
         elements = [field("link", "Sales"), field("textbox", "Customer"), field("textbox", "Customer Reference"),
                     field("textbox", "Warehouse"), field("button", "Save")]
-        fake = FakeScreen(elements, after={"adds": [field("heading", "Quotations"), field("alert", "Saved")]})
+        # The saved record's page shows what was saved - what a VERIFIED replay reads back after its last save (D-25).
+        fake = FakeScreen(elements, after={"adds": [field("heading", "Quotations"), field("alert", "Saved"),
+                                                    field("cell", "Wood Corner"), field("cell", "WC-PO-118"),
+                                                    field("cell", "Main")]})
         replay.core = skill_task.core = fake
 
         names = {p["label"]: p["name"] for p in skill["params"]}

@@ -15,5 +15,6 @@
   "PasswordLeakDetectionEnabled": false,
   "InsecureContentAllowedForUrls": [
     "http://*"
-  ]
+  ],
+  "GenAILocalFoundationalModelSettings": 1
 }

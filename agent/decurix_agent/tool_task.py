@@ -33,12 +33,14 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import traceback
 from pathlib import Path
 
-from decurix_agent import attachments, config, guidance, llm_client, playbooks, produced, progress, state, verify
+from decurix_agent import (attachments, config, guidance, llm_client, playbooks, produced, progress, script_sandbox, state,
+                           verify)
 from decurix_agent.logging_utils import log
 from decurix_agent.messaging import write_final_reply
 
@@ -127,7 +129,7 @@ def read_args(book, content):
     )
     try:
         message, _ = llm_client.chat([{"role": "system", "content": ARGS_SYSTEM}, {"role": "user", "content": prompt}],
-                                     max_tokens=400, response_format={"type": "json_object"})
+                                     max_tokens=400, response_format={"type": "json_object"}, purpose="py.tool.args")
         found = re.search(r"\{.*\}", message.get("content") or "", re.DOTALL)
         answer = json.loads(found.group(0)) if found else {}
     except (llm_client.LLMError, ValueError) as exc:
@@ -153,18 +155,133 @@ def read_args(book, content):
     return args, ""
 
 
-def _run(tool, args):
-    """Run the tool in the work folder. (exit code, what it printed)."""
+class NoSandbox(Exception):
+    """The tool cannot run unattended here (script_sandbox): nothing was run."""
+
+
+def _run(tool, args, drafts=None):
+    """
+    Run the tool, shut off (script_sandbox): in a scratch copy of the work folder with no network, no display and an
+    environment of its own; what it wrote there is copied back into the work folder, and what it drafted is drafted
+    for real by the agent. (exit code, what it printed). Raises NoSandbox when this desktop cannot shut it off - it
+    is then not run at all, and the engine does the request. `drafts`: a list this fills with the emails the script
+    drafted (attachments resolved to the files copied back); they are NOT drafted for real here - the caller checks
+    them as a dry draft and makes them once, after the check passes (_draft_once).
+    """
 
     interpreter = "bash" if tool["path"].endswith(".sh") else sys.executable
+    # Read again as it is on disk now, before it runs with no engine and no approval: a script that names the screen,
+    # the network or the gate's state is refused at once - an early refusal; the sandbox below is the boundary.
     try:
-        done = subprocess.run([interpreter, tool["path"]] + args, cwd=str(config.WORK_DIR), capture_output=True,
-                              text=True, timeout=RUN_SECONDS)
-    except subprocess.TimeoutExpired:
-        return 124, f"it did not finish in {RUN_SECONDS} seconds"
+        script = Path(tool["path"]).read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
-        return 126, f"it could not be run ({exc})"
-    return done.returncode, ((done.stdout or "") + (("\n" + done.stderr) if done.returncode and done.stderr else "")).strip()
+        return 126, f"it could not be read ({exc})"
+    wrong = playbooks._sound(script, "bash" if tool["path"].endswith(".sh") else "python")
+    if wrong:
+        return 126, f"it is not run without the engine: {wrong}"
+    if not script_sandbox.available():
+        raise NoSandbox(script_sandbox.why_not())
+
+    work = Path(config.WORK_DIR)
+    scratch = script_sandbox.new_scratch()
+    try:
+        if not script_sandbox.copy_work(work, scratch):
+            return 126, "the work folder is too large to run it in a copy of"
+        copy = scratch / "work"
+        # The script runs as read now, from the scratch copy: it cannot change under the run.
+        own = scratch / ("tool" + Path(tool["path"]).suffix)
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(own, script, newline="\n")
+        args = [a.replace(str(work), str(copy)).replace("~/work", str(copy)) for a in args]
+        before = script_sandbox.snapshot(copy)
+        try:
+            done = script_sandbox.run([interpreter, str(own)] + args, scratch, RUN_SECONDS)
+        except subprocess.TimeoutExpired:
+            return 124, f"it did not finish in {RUN_SECONDS} seconds"
+        except RuntimeError as exc:
+            raise NoSandbox(str(exc)) from None
+        except OSError as exc:
+            return 126, f"it could not be run ({exc})"
+        printed = ((done.stdout or "") + (("\n" + done.stderr) if done.returncode and done.stderr else "")).strip()
+        printed = printed.replace(str(copy), str(work))
+        if done.returncode != 0:
+            # (What a failed run wrote stays in the scratch copy: the engine starts from the work folder as it was.)
+            return done.returncode, printed
+        copied, refused = script_sandbox.copy_back(copy, work, script_sandbox.written(copy, before))
+        if refused:
+            return 126, (printed + f"\n\nNot copied into the work folder (a link, or a place outside it): "
+                         + ", ".join(refused[:10])).strip()
+        if drafts is not None:
+            wrong = _dry_drafts(scratch / "drafts.jsonl", work, drafts)
+            if wrong:
+                return 126, (printed + "\n\n" + wrong).strip()
+        return 0, printed
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _dry_drafts(log_path, work, out):
+    """
+    Read what the script drafted in its scratch copy (office email there is kept, not sent to the control plane, which
+    it cannot reach) into `out`, each with its attachments as the files of that name in the work folder (copied back).
+    "" when all were read, else what went wrong. Nothing is put in the Outbox here: a check runs on this dry draft
+    first (review 2026-11-03: drafting before the check made a redo draft every email twice).
+    """
+
+    from decurix_agent.tools import outbox
+
+    try:
+        records = outbox.read_log(log_path)
+    except Exception as exc:  # noqa: BLE001 - what the script drafted is unknown: nothing is drafted (N-1)
+        return f"What it drafted could not be read ({type(exc).__name__}): nothing was drafted."
+    for record in records:
+        attached = []
+        for name in record.get("attachments") or []:
+            found = [p for p in work.rglob("*") if p.name == name and p.is_file() and not p.is_symlink()]
+            if len(found) != 1:
+                return f"An email it drafted attaches {name}, which is not one file in the work folder: nothing was drafted."
+            attached.append(str(found[0]))
+        out.append(dict(record, paths=attached))
+    return ""
+
+
+def _same_draft(made, record):
+    """Whether a draft already made (outbox.drafted) is this one: the same people, subject, body and files."""
+
+    def low(items):
+        return sorted(a.lower() for a in items or [])
+
+    def words(text):
+        return " ".join(str(text or "").split())
+
+    return (low(made.get("to")) == low(record.get("to")) and low(made.get("cc")) == low(record.get("cc"))
+            and words(made.get("subject")) == words(record.get("subject"))
+            and words(made.get("body")) == words(record.get("body"))
+            and sorted(made.get("attachments") or []) == sorted(record.get("attachments") or []))
+
+
+def _draft_once(records):
+    """
+    Draft into the Outbox the emails a script drafted dry, once each: one this task already drafted with the same
+    people, subject, body and files is not drafted again (a redo or a second pass makes no duplicate). "" when every
+    draft is made, else what went wrong.
+    """
+
+    from decurix_agent.tools import outbox
+
+    try:
+        already = produced.drafts()
+    except Exception as exc:  # noqa: BLE001 - which are made is unknown: nothing is drafted twice on a guess (N-1)
+        return f"the task's drafts could not be read ({type(exc).__name__}), so nothing was drafted"
+    for record in records:
+        if any(_same_draft(made, record) for made in already):
+            continue
+        try:
+            outbox.draft(record.get("to") or [], record.get("subject") or "", record.get("body") or "",
+                         cc=record.get("cc") or None, attachments=record.get("paths") or [])
+        except Exception as exc:  # noqa: BLE001 - a draft that could not be made is said, never dropped
+            return f"An email it drafted could not be put in the Outbox ({exc})."
+    return ""
 
 
 def _note(book, ok, failed=False, wrong=""):
@@ -209,6 +326,12 @@ def perform(content, task_file=None):
         if book is None:
             return _to_engine(content, task_file, "Working this one out.")
         tool = book["tool"]
+        if not script_sandbox.available():
+            # Before any model call: a tool that cannot be shut off here is not run unattended at all.
+            log(f"Tool {book['name']}: not run with no engine: {script_sandbox.why_not()}")
+            return _to_engine(content, task_file, "I have a script of my own for this kind of request, but it does "
+                                                  f"not run unattended here: {script_sandbox.why_not()}. So I am "
+                                                  "working it out myself.")
 
         args, why = read_args(book, content)
         if args is None:
@@ -217,7 +340,13 @@ def perform(content, task_file=None):
 
         line = " ".join(shlex.quote(a) for a in args)
         progress.emit(f"Running the tool I wrote for this kind of request: {Path(tool['path']).name} {line}")
-        code, printed = _run(tool, args)
+        try:
+            dry = []
+            code, printed = _run(tool, args, dry)
+        except NoSandbox as exc:
+            log(f"Tool {book['name']}: not run with no engine: {exc}")
+            return _to_engine(content, task_file, f"My script for this does not run unattended here ({exc}), so I am "
+                                                  "working it out myself.")
         log(f"Tool {book['name']} {line}: exit {code}\n{printed[:2000]}")
 
         if code != 0:
@@ -231,21 +360,31 @@ def perform(content, task_file=None):
                  f"{printed[:MAX_OUTPUT_CHARS]}")
         made = produced.files(reply, request=content)
         # The same code-decided facts about the files as the final gate's (produced.file_facts), with no model.
-        facts = produced.file_facts(content, made, drafts_made=produced.drafts())
-        from decurix_agent import source_guard, task_context
+        # The task's drafts, read once: a log that cannot be read is a check not made (N-1).
+        drafts_unread = ""
         try:
-            changed_source = source_guard.check_and_restore(task_context.current(), content)
+            task_drafts = dry or produced.drafts()
         except Exception as exc:  # noqa: BLE001
+            task_drafts, drafts_unread = [], f"this task's email drafts could not be read ({type(exc).__name__})"
+        facts = produced.file_facts(content, made, drafts_made=task_drafts)
+        if drafts_unread:
+            facts.could_not.append(drafts_unread)
+        from decurix_agent import source_guard, task_context
+        # The person's given files that changed: facts for the judge and lines for the person, never put back while
+        # checking (E-12); a check that cannot be made leaves the result not checked (E-01).
+        changed_for_judge, changed_for_person = [], []
+        try:
+            changes = source_guard.changed_sources(task_context.current(), content)
+            changed_for_judge, changed_for_person = source_guard.judge_lines(changes), source_guard.report_lines(changes)
+        except Exception as exc:  # noqa: BLE001 - not made, never passed
             log(f"tool_task: could not check the shared folder's files: {exc}")
-            changed_source = ""
+            facts.could_not.append(f"whether your own files were changed could not be checked ({type(exc).__name__})")
         source_guard.tidy_own_backups(content)
-        if changed_source:
-            progress.emit(changed_source)
-            facts.file_faults.append(changed_source)
-        # Only the invariants decide here (harness audit, 2026-10-21); what reads the request is evidence for the judge.
-        wrong = (facts.unstored + facts.gaps
-                 + ([facts.missing_files] if facts.missing_files else []) + facts.file_faults
-                 + facts.payee_mismatch + facts.source_mismatch + facts.unknown_recipients + facts.draft_facts)
+        for line in changed_for_person:
+            progress.emit(line)
+        # Only the invariants decide here (harness audit, 2026-10-21; FileFacts.blocking - E-27); what reads the request
+        # is evidence for the judge.
+        wrong = facts.blocking()
         progress.emit("Reading back what it wrote to check it against the request.")
         if wrong:
             verdict = {"verdict": verify.NOT_DONE, "confidence": 1.0, "seen": "; ".join(wrong)[:600],
@@ -254,16 +393,30 @@ def perform(content, task_file=None):
                               "left, or a value is on no record"}
         else:
             verdict = verify.judge(content, claim=reply, screen=False,
-                                   produced="\n".join(x for x in (produced.text(made), produced.drafts_text(),
-                                                                  produced.notes_text(facts.notes())) if x),
+                                   produced="\n".join(x for x in (produced.text(made), produced.drafts_text(task_drafts),
+                                                                  produced.notes_text(facts.notes() + changed_for_judge
+                                                                                      + changed_for_person)) if x),
                                    look_up=lambda terms: produced.lines_with(made, terms))
 
-        if verdict["verdict"] == verify.DONE:
+        # The one decision (verify.outcome): a done the judge is not sure of, or with a check that could not be made,
+        # is not done here either - it goes to the engine below like any unsettled check.
+        settled = verify.outcome(verdict, not_made=facts.not_made())
+        if settled["status"] == verify.DONE:
+            # The check passed on the dry draft: the real draft is made now, once.
+            failed = _draft_once(dry)
+            if failed:
+                _note(book, False, failed=True)
+                return _to_engine(content, task_file, "My tool's result is right but its email could not be drafted, so "
+                                  "I am doing that myself.", note=f"A script of this desktop's own made the files and "
+                                  f"{failed} Draft the email yourself (office email), and do not make a second copy of "
+                                  "anything already made.")
             _note(book, True)
             seen = f"\n\nChecked against the files it wrote: {verdict['seen']}" if verdict.get("seen") else ""
-            return write_final_reply(reply + seen, kind="final", engine=ENGINE, checked=True)
+            told = ("\n\nPlease check:\n" + "\n".join(f"- {line}" for line in changed_for_person)
+                    if changed_for_person else "")
+            return write_final_reply(reply + seen + told, kind="final", engine=ENGINE, checked=True)
 
-        if verdict["verdict"] == verify.NOT_DONE:
+        if settled["status"] == verify.NOT_DONE:
             wrong = " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x)
             _note(book, False, failed=True, wrong=wrong or "its result was not what the request asked")
             return _to_engine(content, task_file, f"My tool's result is not right ({wrong[:200]}), so I am correcting it.",

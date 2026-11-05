@@ -165,6 +165,13 @@ class AWorkersOwnRunIsReplayedNextTime(_Worker):
                     [c.replace("Deccan Pharma", "Harbor Distribution") for c in WAY])
         self.assertEqual(self.recordings_offered(), [newer])
 
+        # (Both runs are labelled - their reports went out - and a labelled run is kept until the control plane has
+        # exported it, W0.8: here both were.)
+        from decurix_agent import task_context
+        for task in (TASK, self.task):
+            folder = task_context.run_dir(task)
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "EXPORTED").write_text("e_1\nsha\n", encoding="utf-8")
         with patch.object(recording, "MAX_BYTES", 1):
             recording.prune()
         self.assertIsNotNone(recording.meta(newer))                 # kept like a demonstration

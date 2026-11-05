@@ -24,7 +24,8 @@ type L2Entry struct {
 
 // L2 is append-only JSONL at <workspaceRoot>/.memory/l2.jsonl - mirrors
 // the Node prototype's L2 exactly: the ground truth of everything that
-// ever happened, never filtered or summarized.
+// ever happened, never summarized. A job's secret values are withheld from
+// what it keeps (scheduler's l2Entry, PLAN-P2 C14).
 type L2 struct {
 	path string
 	mu   sync.Mutex

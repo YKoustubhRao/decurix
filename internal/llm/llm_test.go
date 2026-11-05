@@ -131,3 +131,35 @@ func TestARateLimitSaysWhenToTryAgain(t *testing.T) {
 		t.Fatalf("retry headers = %v", retry)
 	}
 }
+
+func TestASavedKeyGoesOnlyToTheEndpointItWasSavedFor(t *testing.T) {
+	hub, _ := NewHub(nil, nil)
+	if err := hub.Save(ProviderOpenAI, Settings{Endpoint: "https://openrouter.ai/api", Key: "sk-saved"}); err != nil {
+		t.Fatal(err)
+	}
+	// The same endpoint (as typed, or as the status shows it) keeps the saved key.
+	for _, endpoint := range []string{"https://openrouter.ai/api", "https://openrouter.ai/api/v1/"} {
+		s, err := hub.Complete(ProviderOpenAI, Settings{Endpoint: endpoint})
+		if err != nil || s.Key != "sk-saved" {
+			t.Fatalf("%q: key %q, err %v", endpoint, s.Key, err)
+		}
+	}
+	// A new endpoint with the key left empty would hand the saved key to that server.
+	if s, err := hub.Complete(ProviderOpenAI, Settings{Endpoint: "https://collector.example/v1"}); err == nil {
+		t.Fatalf("the saved key went to a new endpoint: %+v", s)
+	}
+	// Typing the key again is a new save, to any endpoint.
+	if _, err := hub.Complete(ProviderOpenAI, Settings{Endpoint: "https://collector.example/v1", Key: "sk-new"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := hub.Save(ProviderAzure, Settings{Endpoint: "https://mine.services.ai.azure.com/models", Key: "az-saved"}); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := hub.Complete(ProviderAzure, Settings{}); err != nil || s.Key != "az-saved" {
+		t.Fatalf("an empty Azure form lost the saved settings: %+v %v", s, err)
+	}
+	if _, err := hub.Complete(ProviderAzure, Settings{Endpoint: "https://other.example/models"}); err == nil {
+		t.Fatal("the saved Azure key went to a new endpoint")
+	}
+}

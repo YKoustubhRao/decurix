@@ -22,6 +22,27 @@ type Handler struct {
 	// AskWaitCeiling caps how long POST /api/handoffs/ask holds the request
 	// open waiting for the answer (default 60 s); the caller polls after that.
 	AskWaitCeiling time.Duration
+	// Caller says which worker sent r, from something the caller cannot choose (its address), and false for a
+	// request that is not a worker's (a person's, on this machine). A worker then acts only as itself: a name in the
+	// body is not proof (review 2026-11-02). Nil trusts the body, as tests and a single-desktop setup may.
+	Caller func(r *http.Request) (string, bool)
+}
+
+// worker is who r acts for: the caller when it is a worker (refusing a claim of another, ok=false with the answer
+// written), else the claim.
+func (h *Handler) worker(w http.ResponseWriter, r *http.Request, claimed string) (string, bool) {
+	if h.Caller == nil {
+		return claimed, true
+	}
+	caller, isWorker := h.Caller(r)
+	if !isWorker {
+		return claimed, true
+	}
+	if c := strings.TrimSpace(claimed); c != "" && !strings.EqualFold(c, caller) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "a worker can only act as itself"})
+		return "", false
+	}
+	return caller, true
 }
 
 // Register adds the handoff routes to mux.
@@ -77,7 +98,11 @@ func firstOf(a ...string) string {
 func (h *Handler) handoffs(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		list, err := h.Service.Store.List(strings.TrimSpace(r.URL.Query().Get("worker")), atoi(r.URL.Query().Get("limit")))
+		who, ok := h.worker(w, r, strings.TrimSpace(r.URL.Query().Get("worker")))
+		if !ok {
+			return
+		}
+		list, err := h.Service.Store.List(who, atoi(r.URL.Query().Get("limit")))
 		if err != nil {
 			writeError(w, err)
 			return
@@ -99,8 +124,12 @@ func (h *Handler) handoffs(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &req) {
 			return
 		}
+		from, ok := h.worker(w, r, firstOf(req.DesktopID, req.FromWorker))
+		if !ok {
+			return
+		}
 		out, err := h.Service.Delegate(r.Context(), DelegateRequest{
-			FromWorker: firstOf(req.DesktopID, req.FromWorker), FromTask: req.FromTask,
+			FromWorker: from, FromTask: req.FromTask,
 			ToWorker: req.ToWorker, ToRole: req.ToRole, ToSkill: req.ToSkill,
 			Request: req.Request, Inputs: req.Inputs, Files: req.Files, Expected: req.Expected,
 		})
@@ -125,6 +154,20 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
 		return
+	}
+	if h.Caller != nil {
+		if caller, isWorker := h.Caller(r); isWorker {
+			// A worker sees the handoffs it sent or was sent, no one else's.
+			found, err := h.Service.Store.Get(id)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			if !strings.EqualFold(found.FromWorker, caller) && !strings.EqualFold(found.ToWorker, caller) {
+				writeError(w, ErrNotFound)
+				return
+			}
+		}
 	}
 	out, err := h.Service.Get(r.Context(), id)
 	if err != nil {
@@ -152,7 +195,11 @@ func (h *Handler) cancel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
 		return
 	}
-	out, err := h.Service.Cancel(r.Context(), strings.TrimSpace(req.ID), firstOf(req.DesktopID, req.FromWorker))
+	who, ok := h.worker(w, r, firstOf(req.DesktopID, req.FromWorker))
+	if !ok {
+		return
+	}
+	out, err := h.Service.Cancel(r.Context(), strings.TrimSpace(req.ID), who)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -180,8 +227,12 @@ func (h *Handler) ask(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	asker, ok := h.worker(w, r, firstOf(req.DesktopID, req.FromWorker))
+	if !ok {
+		return
+	}
 	out, err := h.Service.Ask(r.Context(), AskRequest{
-		FromWorker: firstOf(req.DesktopID, req.FromWorker), FromTask: req.FromTask,
+		FromWorker: asker, FromTask: req.FromTask,
 		Skill: req.Skill, Question: req.Question,
 	})
 	if err != nil {

@@ -380,9 +380,9 @@ class TestANoAtAnApprovalEndsTheTask(unittest.TestCase):
 
         self.assertTrue(took_over)
         self.assertEqual(len(sent), 1)
-        self.assertIn("Stopped there, as you said", sent[0][0])
+        self.assertTrue(sent[0][0].startswith("Stopped, as you said, there"))
         self.assertIn("I did not send the message.", sent[0][0])
-        self.assertEqual(sent[0][1]["kind"], "final")
+        self.assertEqual(sent[0][1]["kind"], "error")  # a stop is never a finished task (E-36)
         self.assertIsNone(guidance.get())
 
 

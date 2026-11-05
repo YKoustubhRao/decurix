@@ -139,6 +139,8 @@ def setup(work):
     for name in ("key.pem", "cert.pem", "ca.pem"):
         os.chmod(Path(work, name), 0o644)
 
+    # Dovecot is on decurix-network only: the control plane reads the mailbox (internal/mailtrigger), and no desktop
+    # ever connects to it, so it never joins a desktop's own network (decurix-vm-<id>; least privilege, S7).
     sh("docker", "network", "create", "decurix-network", check_rc=False)
     sh("docker", "rm", "-f", DOVECOT, check_rc=False)
     sh("docker", "run", "-d", "--name", DOVECOT, "--network", "decurix-network", "--network-alias", "dovecot",
@@ -209,7 +211,7 @@ def run(runs):
 
     print("== 2. The password at rest", flush=True)
     stored = sh("docker", "run", "--rm", "-v", "decurix-e2e-data:/data", "alpine", "sh", "-c",
-                "apk add -q sqlite >/dev/null 2>&1; stat -c %a /data/mail.key; "
+                "timeout 180 apk add -q sqlite >/dev/null 2>&1; stat -c %a /data/mail.key; "
                 "echo 'SELECT password FROM mail_accounts;' | sqlite3 /data/decurix.db").stdout.split()
     check(stored[:1] == ["600"], "mail.key is 0600")
     check(len(stored) > 1 and stored[1].startswith("enc1:") and "pass" not in stored[1], "the password is encrypted")

@@ -404,11 +404,19 @@ class Replay(unittest.TestCase):
     def test_a_run_with_every_result_seen_is_verified(self):
         program = replay.compile_program(META, EVENTS[:2])
         fake = FakeScreen([field("link", "Invoices"), field("textbox", "Customer name")],
-                          after={"url": "http://shop.test/invoices/1044", "adds": [field("dialog", "Invoice")]})
+                          after={"url": "http://shop.test/invoices/1044",
+                                 "adds": [field("dialog", "Invoice"), field("heading", "Invoice for Globex")]})
 
         result = self.run_with(fake, program, params={"customer_name": "Globex"})
 
         self.assertEqual(result["outcome"], replay.VERIFIED, result["text"])
+
+    def test_a_run_whose_value_is_only_in_the_field_it_was_typed_into_is_not_verified(self):
+        program = replay.compile_program(META, EVENTS[:2])
+        fake = FakeScreen([field("link", "Invoices"), field("textbox", "Customer name")],
+                          after={"url": "http://shop.test/invoices/1044", "adds": [field("dialog", "Invoice")]})
+        result = self.run_with(fake, program, params={"customer_name": "Globex"})
+        self.assertEqual(result["outcome"], replay.COMPLETED_UNVERIFIED, result["text"])
         self.assertEqual(fake.acted[1][1]["text"], "Globex")
         self.assertEqual(program["steps"][1]["expect"],
                          [{"type": "value", "role": "textbox", "name": "Customer name", "param": "customer_name"}])

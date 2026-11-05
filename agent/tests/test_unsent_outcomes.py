@@ -17,6 +17,24 @@ import test_recordings  # noqa: F401  (stubs decurix_agent.config on a machine w
 from decurix_agent import config, messaging
 
 
+class TheControlPlanesAnswer(unittest.TestCase):
+    """How _post_querytext reads the control plane's answer (W1, 2026-11-03: a 409 is its no for an outcome naming a
+    task that is not open on this desktop - it ended, or is not its)."""
+
+    def answered(self, code):
+        import urllib.error
+
+        def urlopen(request, timeout=None):
+            raise urllib.error.HTTPError(request.full_url, code, "no", {}, None)
+        with mock.patch("urllib.request.urlopen", urlopen):
+            return messaging._post_querytext({"kind": "final", "reply": "x"})[0]
+
+    def test_a_409_is_refused_and_so_let_go_and_a_5xx_is_tried_again(self):
+        self.assertEqual(self.answered(409), "refused")
+        self.assertEqual(self.answered(400), "refused")
+        self.assertEqual(self.answered(503), "unreachable")
+
+
 class UnsentOutcomes(unittest.TestCase):
 
     def setUp(self):
@@ -51,6 +69,25 @@ class UnsentOutcomes(unittest.TestCase):
             self.assertEqual(messaging.resend_unsent(), 1)
         self.assertEqual(self.kept(), [])
         self.assertEqual(self.posted[-1]["task_id"], "t0123456789abcdef")
+
+    def test_a_kept_outcome_the_control_plane_refuses_is_dropped_not_retried(self):
+        # Lead review 2026-11-03 (L-03): once the control plane refuses an outcome for a task that is closed (or not
+        # this execution's), sending it again forever would only be refused forever. It is let go, and the next one
+        # behind it is still sent.
+        with self.post(("unreachable", "x"), ("unreachable", "x")):
+            messaging.send_query("a.txt", "stale", kind="final", reply="stale", task_id="t0123456789abcdef")
+            messaging.send_query("b.txt", "fresh", kind="final", reply="fresh", task_id="tfedcba9876543210")
+        self.assertEqual(len(self.kept()), 2)
+        with self.post(("refused", "HTTP 409 the task is closed"), ("sent", "")):
+            self.assertEqual(messaging.resend_unsent(), 1)
+        # (Review round 2, B7: a refused outcome is kept once more in its least form, then let go if refused again.)
+        self.assertEqual([p.name.endswith(".min.json") for p in self.kept()], [True])
+        with self.post(("refused", "HTTP 409 the task is closed")):
+            self.assertEqual(messaging.resend_unsent(), 0)
+        self.assertEqual(self.kept(), [])
+        with self.post():
+            self.assertEqual(messaging.resend_unsent(), 0)
+        self.assertEqual([p["reply"] for p in self.posted], ["stale", "fresh", "stale", "fresh", "stale"])
 
     def test_still_unreachable_keeps_them_all_in_order(self):
         with self.post(("unreachable", "x"), ("unreachable", "x")):

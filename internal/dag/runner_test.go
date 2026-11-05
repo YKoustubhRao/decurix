@@ -19,7 +19,7 @@ type fakeSubmitter struct {
 	errFor map[string]error // desktopID -> error to return instead of dispatching
 }
 
-func (f *fakeSubmitter) SubmitTracked(_ context.Context, desktopID, content string) (string, error) {
+func (f *fakeSubmitter) SubmitTracked(_ context.Context, desktopID, content string, _ tasks.Origin) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -49,33 +49,47 @@ func (f *fakeSubmitter) callsFor(desktopID string) []string {
 }
 
 // fakeTaskResults is a TaskResults a test can script: set a task's result
-// once its node should be treated as finished, or mark a desktop busy.
+// once its node should be treated as finished, or mark a desktop busy. A
+// "done" set with set is one whose final check judged it; setUnchecked is the
+// worker's word alone.
 type fakeTaskResults struct {
 	mu      sync.Mutex
-	results map[string]struct{ status, reply string }
+	results map[string]fakeResult
 	busy    map[string]string
 }
 
-func newFakeTaskResults() *fakeTaskResults {
-	return &fakeTaskResults{results: map[string]struct{ status, reply string }{}}
+type fakeResult struct {
+	status, reply string
+	checked       *bool
 }
 
-func (f *fakeTaskResults) TaskResult(taskID string) (string, string, bool) {
+func newFakeTaskResults() *fakeTaskResults {
+	return &fakeTaskResults{results: map[string]fakeResult{}}
+}
+
+func (f *fakeTaskResults) TaskResult(taskID string) (string, *bool, string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	r, ok := f.results[taskID]
 	if !ok {
-		return "", "", false
+		return "", nil, "", false
 	}
 
-	return r.status, r.reply, true
+	return r.status, r.checked, r.reply, true
 }
 
 func (f *fakeTaskResults) set(taskID, status, reply string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.results[taskID] = struct{ status, reply string }{status, reply}
+	yes := true
+	f.results[taskID] = fakeResult{status: status, reply: reply, checked: &yes}
+}
+
+func (f *fakeTaskResults) setUnchecked(taskID, status, reply string, checked *bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.results[taskID] = fakeResult{status: status, reply: reply, checked: checked}
 }
 
 func (f *fakeTaskResults) Busy(desktopID string) (string, error) {

@@ -2,10 +2,13 @@
 The in-desktop half of the GUI benchmark: puts the screen into a task's
 starting state, and decides afterwards whether the task was really done.
 
-Copied into a desktop (with tasks.json, odf.py and adminpanel.py) by
-bench/gui/run.py and run there as the headless user:
+Copied into a desktop by bench/gui/run.py twice: into the agent's home with
+odf.py and adminpanel.py, where `reset` runs as the headless user and is
+handed the task's starting state; and with tasks.json, the answer key, into a
+root-only directory, where `check` runs as root. The agent under test can
+read neither the answer key nor the checker's copy.
 
-    python3 bench.py reset <task-id>
+    python3 bench.py reset <task-id> --start '{"calc": "budget.ods"}'
     python3 bench.py check <task-id> [--answer-file PATH]
 
 `check` prints one JSON object, {"pass": bool, "detail": "..."}. It judges
@@ -33,8 +36,14 @@ import odf  # noqa: E402
 ROOT = Path("/home/headless/bench")
 FILES = ROOT / "files"
 OUT = ROOT / "out"
-STATE = ROOT / "state" / "admin.json"
+# The panel's state: its own user's, mode 0700 (bench/gui/run.py); only the
+# root check reads it.
+STATE = Path("/var/lib/decurix-bench-panel/admin.json")
 PANEL = "http://127.0.0.1:8765"
+# The browser reaches the panel by a host name, as a person's browser reaches an app: a request can name a site by
+# its name, never by an address (approval.site_known reads host names), so a sign-in there is to a named site.
+PANEL_HOST = "admin.bench.test"
+BROWSER_PANEL = f"http://{PANEL_HOST}:8765"
 
 # The desktop's own session - `docker exec` starts with none of it.
 SESSION = {
@@ -154,7 +163,7 @@ def kill_apps():
             cmdline = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
         except OSError:
             continue
-        if comm in APP_PROCESSES or "adminpanel.py --state" in cmdline:
+        if comm in APP_PROCESSES:
             try:
                 os.kill(int(proc.name), 15)
             except OSError:
@@ -211,9 +220,8 @@ def reset_files():
     (FILES / "draft.txt").write_text("Quarterly plan draft.\n", encoding="utf-8")
 
 
-def start_panel():
-    launch([sys.executable, str(HERE / "adminpanel.py"), "--state", str(STATE), "--reset"])
-
+def wait_for_panel():
+    """The panel runs as its own user, restarted by run.py before each reset."""
     deadline = time.time() + 20
     while time.time() < deadline:
         try:
@@ -222,7 +230,7 @@ def start_panel():
         except OSError:
             time.sleep(0.3)
 
-    raise SystemExit("admin panel did not start")
+    raise SystemExit("admin panel is not answering (run.py starts it as its own user)")
 
 
 def start_app(start):
@@ -231,20 +239,15 @@ def start_app(start):
 
     if "browser" in start:
         path = start["browser"]
-        url = PANEL + path if path == "/login" else (
-            f"{PANEL}/autologin?token=bench-autologin&next={path}"
-        )
-        profile = "/tmp/bench-chromium"
-        shutil.rmtree(profile, ignore_errors=True)
-        launch([
-            "chromium-browser", f"--user-data-dir={profile}",
-            "--remote-debugging-port=9222", "--no-first-run",
-            "--no-default-browser-check", "--disable-gpu", "--start-maximized",
-            "--password-store=basic", url,
-        ])
-        wait_for_window(r"Chromium|Google Chrome")
-        wait_for_page(path)
-        return
+        # A start page that did not load (found live: web-settings began on about:blank) is tried once more from a
+        # fresh browser, then stops the reset: a task must never run on a page it was not given.
+        for _ in range(2):
+            kill_apps()
+            launch(browser_command(path))
+            wait_for_window(r"Chromium|Google Chrome")
+            if wait_for_page(path):
+                return
+        raise SystemExit(f"the start page {path} did not load in the browser")
 
     office = ["soffice", "--norestore", "--nologo"]
 
@@ -275,10 +278,25 @@ def start_app(start):
         return
 
 
+def browser_command(path):
+    """The browser a web task starts in: a fresh profile, the panel reached by its name, on `path` (signed in, except
+    on the sign-in page itself)."""
+
+    url = BROWSER_PANEL + path if path == "/login" else f"{BROWSER_PANEL}/autologin?token=bench-autologin&next={path}"
+    profile = "/tmp/bench-chromium"
+    shutil.rmtree(profile, ignore_errors=True)
+    return [
+        "chromium-browser", f"--user-data-dir={profile}",
+        "--remote-debugging-port=9222", "--no-first-run",
+        "--no-default-browser-check", "--disable-gpu", "--start-maximized",
+        "--password-store=basic", f"--host-resolver-rules=MAP {PANEL_HOST} 127.0.0.1", url,
+    ]
+
+
 def reset(task):
     kill_apps()
     reset_files()
-    start_panel()
+    wait_for_panel()
     start_app(task.get("start"))
 
     # Whatever the last task left in the agent's own screen state (element
@@ -430,7 +448,13 @@ def main():
     parser.add_argument("command", choices=["reset", "check", "list"])
     parser.add_argument("task", nargs="?")
     parser.add_argument("--answer-file")
+    parser.add_argument("--start", help="reset: the task's starting state, as JSON (no answer key needed)")
     args = parser.parse_args()
+
+    if args.command == "reset" and args.start is not None:
+        reset({"id": args.task, "start": json.loads(args.start) or None})
+        print(json.dumps({"reset": args.task}))
+        return
 
     tasks = load_tasks()
 

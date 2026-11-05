@@ -16,7 +16,7 @@ class CheckSeesTheDocument(unittest.TestCase):
         self.po = os.path.join(self.dir.name, "GF-5522.xlsx")  # any readable document kind
         self.sent = []
 
-        def chat(messages, max_tokens=None):
+        def chat(messages, max_tokens=None, purpose=None):
             self.sent.append(messages)
             return {"content": '{"verdict": "not_done", "confidence": 0.9, "seen": "", "why": "values differ"}'}, {}
 

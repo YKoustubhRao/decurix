@@ -28,8 +28,11 @@ import (
 )
 
 const (
-	containerName  = "decurix-ollama"
-	containerImage = "ollama/ollama:latest"
+	containerName = ContainerName
+	// containerImage is pinned to the release the Windows app installs natively (desktop/electron/wsl/
+	// native-ollama.ps1), so every setup runs one reviewed Ollama, not whatever :latest is on the day (C-29). Its
+	// digest is the owner's to add once pulled: `docker image inspect --format '{{index .RepoDigests 0}}'`.
+	containerImage = "ollama/ollama:0.40.1"
 	volumeName     = "decurix_ollama"
 
 	// Model is the Ollama model every desktop agent is configured to use.
@@ -45,14 +48,12 @@ const (
 	// requires) to an ambiguous "delete the project", where llama3.2
 	// hallucinated a destructive `rm -rf` on a guessed path instead.
 	//
-	// Temporarily devstral-small-2:24b instead, for every harness, while the
-	// browser-agent extension integration (agent/BROWSER_INTEGRATION.md) is
-	// being worked on - it's the one model already verified end to end
-	// against that pipeline, and every desktop should reason with the same
-	// model the extension itself is grounded on rather than mixing two.
-	// Heavier than the 3B default (needs a GPU that can hold ~15GB), so this
-	// is deliberately a stopgap, not a final choice - qwen2.5-coder:3b's own
-	// case above still holds for a CPU-only or memory-constrained host.
+	// It is devstral-small-2:24b today, for every harness. That was chosen
+	// for the browser-agent extension, which has since been removed; nothing
+	// in the code needs this model now, and whether to go back to the 3B
+	// default is the owner's call (docs/follow-ups.md). It is heavier than
+	// the 3B (it needs a GPU that can hold ~15GB); qwen2.5-coder:3b's case
+	// above still holds for a CPU-only or memory-constrained host.
 	Model = "devstral-small-2:24b"
 
 	// EmbedModel is the embedding model the thebot harness needs, and it
@@ -182,8 +183,13 @@ func NewManager(cli *client.Client, networkName string) *Manager {
 	return &Manager{client: cli, networkName: networkName}
 }
 
-// EnsureReady warms the Ollama the desktops actually use. When that is the
-// bundled container, it also provisions and starts it and pulls its models.
+// EnsureReady readies the Ollama the desktops actually use: it chooses the model, and when that Ollama is the bundled
+// container it also provisions and starts it and pulls its models. It loads no model (resource plan P1 #7): at boot
+// the chat model's weights (1.8 GB on the 8 GB host) were held from the moment the control plane started, whether or
+// not anybody opened a desktop that day. WarmAsync loads it the first time something is about to need it - a desktop
+// created, viewed or sent a request - so the load still overlaps with what the person is waiting for (a desktop's
+// ~20 s boot, the chat opening), which is what kept "hello" to a fresh desktop from timing out. Those triggers, and
+// the reload after an eviction, are unchanged.
 func (m *Manager) EnsureReady(ctx context.Context) error {
 	// The bundled container is only a fallback, and desktops reach
 	// whatever OLLAMA_URL names. This used to start the bundled container
@@ -213,7 +219,7 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 				log.Printf("Could not prepare embedding model: %v", err)
 			}
 		}
-		preloadModel(ctx, base, DesktopModel())
+		// No load here: WarmAsync, on first use (see above).
 
 		return nil
 	}
@@ -432,14 +438,7 @@ func (m *Manager) EnsureReady(ctx context.Context) error {
 		)
 	}
 
-	// Load the chat model before anyone asks a question with it. On a
-	// CPU-only host this is tens of seconds of weight loading that would
-	// otherwise land on the first request a human sends, inside whatever
-	// timeout that harness happens to use - which is exactly how "hello"
-	// to a freshly built desktop came back as a query about a deadline
-	// being exceeded.
-	preloadModel(ctx, BundledURL, DesktopModel())
-
+	// No load here: WarmAsync, on first use (see EnsureReady).
 	log.Println("Ollama ready.")
 
 	return nil
@@ -679,6 +678,10 @@ func (m *Manager) execWait(ctx context.Context, what string, poll time.Duration,
 		}
 	}
 }
+
+// ContainerName is the bundled model server's container, on decurix-network with the control plane. Desktops reach it
+// only through the control plane's allow-listed proxy (/api/native-ollama), never on a network of theirs.
+const ContainerName = "decurix-ollama"
 
 // warmState guards WarmAsync: at most one warm-up in flight, and at most one
 // attempt per warmMinGap however many requests arrive.

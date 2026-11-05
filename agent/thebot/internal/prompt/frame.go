@@ -92,7 +92,8 @@ func (f Frame) Message() llm.Message {
 	}
 
 	if len(f.Facts) > 0 {
-		b.WriteString("\n\nThings you already know about the user, recalled from long-term memory. Treat them as true:\n- ")
+		b.WriteString("\n\nThings noted about the user earlier, recalled from long-term memory. They may be relevant; " +
+			"what this task shows or the person says now comes first:\n- ")
 		b.WriteString(strings.Join(f.Facts, "\n- "))
 	}
 

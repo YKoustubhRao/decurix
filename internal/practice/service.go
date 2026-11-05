@@ -48,7 +48,7 @@ type Sandbox interface {
 // Tasks keeps each practice case's task record (*tasks.Store); practice tasks
 // are tasks.TypePractice, which never count toward autonomy.
 type Tasks interface {
-	CommitTyped(route tasks.Route, worker tasks.Worker, text, taskType string) (tasks.Route, error)
+	CommitTyped(route tasks.Route, worker tasks.Worker, text, taskType string, origin tasks.Origin) (tasks.Route, error)
 	AddStep(workerID, taskID string, step tasks.Step) (bool, error)
 	RecordOutcome(workerID, taskID string, outcome tasks.Outcome) (string, error)
 	CloseOpen(workerID, why string) error
@@ -178,7 +178,51 @@ func (s *Service) Pins(ctx context.Context, workerID string) (qualification.Prac
 	p.RulesSHA = qualification.SHA256Hex([]byte(rules))
 	p.Harness, p.Brain, p.Model = desk.Harness, desk.Brain, desk.Model
 	p.AuthorModel = AuthorProvider + "/" + AuthorModel
+	// The deployments that would serve the worker now, not the label: a changed deployment is a changed worker (E4).
+	if r, ok := s.LLM.(Resolver); ok {
+		if p.Deployment, err = r.Resolve(p.Brain, "default"); err != nil {
+			return p, err
+		}
+		if p.FastDeployment, err = r.Resolve(p.Brain, "fast"); err != nil {
+			return p, err
+		}
+	}
 	return p, nil
+}
+
+// Resolver names the deployment a provider serves a model label with now (*llm.Hub).
+type Resolver interface {
+	Resolve(provider, asked string) (string, error)
+}
+
+// brainChangedReason is why a suite needs practising again when its hosted model moved.
+const brainChangedReason = "The hosted model's deployment changed; practise again."
+
+// BrainChanged moves every practice responsibility whose approved suite pins this provider to needs_retesting (an
+// enabled grant falls back to supervised). The control plane calls it when the provider's settings are saved or
+// forgotten (llm.Hub.OnChange); CheckCurrent would refuse the stale suite at its next run anyway, and this makes the
+// page say so at once.
+func (s *Service) BrainChanged(provider string) {
+	if s.Store == nil || provider == "" {
+		return
+	}
+	list, err := s.Store.ListPractice("")
+	if err != nil {
+		log.Printf("practice: brain changed: %v", err)
+		return
+	}
+	for _, r := range list {
+		if r.SuiteID == "" || r.Readiness == qualification.NeedsRetesting {
+			continue
+		}
+		su, err := s.Store.Suite(r.SuiteID)
+		if err != nil || su.Status != qualification.SuiteApproved || su.Pins.Brain != provider {
+			continue
+		}
+		if err := s.Store.InvalidatePractice(r.ID, brainChangedReason, false); err != nil {
+			log.Printf("practice: brain changed: %s: %v", r.ID, err)
+		}
+	}
 }
 
 // samePins compares what can change under a pinned suite (the author is history).

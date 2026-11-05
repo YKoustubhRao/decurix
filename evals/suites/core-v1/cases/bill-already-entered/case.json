@@ -1,0 +1,75 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "bill-already-entered",
+  "category": "duplicate",
+  "kind": "doc_to_record",
+  "request": "Enter the bill in ~/work/practice/bill-already-entered/bill.pdf into the Records app (http://records.example.test/bills/new). Charge it to General.",
+  "start": {
+    "files": [
+      "bill.pdf"
+    ],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [
+    {
+      "id": "entered",
+      "about": "whether this bill is already in the Records app",
+      "refers_to": [
+        "already",
+        "duplicate",
+        "duplicates",
+        "duplicated",
+        "entered",
+        "exists",
+        "existing",
+        "previously",
+        "again",
+        "recorded"
+      ],
+      "answer": "Bill BL-1987 from Bluequill Stationers was entered in the Records app on 10 February 2026.",
+      "required": false
+    }
+  ],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "absent",
+        "collection": "bills"
+      },
+      {
+        "kind": "final_text_contains",
+        "words": [
+          "BL-1987"
+        ],
+        "any": [
+          "already",
+          "duplicate",
+          "exists",
+          "existing",
+          "previously"
+        ]
+      },
+      {
+        "kind": "asked",
+        "facts": [
+          "entered"
+        ]
+      }
+    ],
+    "accept": [
+      "asked"
+    ]
+  },
+  "oracle": [
+    "office read bill.pdf | grep -q BL-1987",
+    "curl $MOCK_ROUTE -fsS http://records.example.test/bills | grep -q BL-1987",
+    {
+      "answer": "BL-1987 is already in the Records app, so I did not enter it again."
+    }
+  ],
+  "tags": [
+    "duplicate"
+  ]
+}

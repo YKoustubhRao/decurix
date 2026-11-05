@@ -307,9 +307,17 @@ def ocr_tesseract(data):
     return parse_tesseract_tsv(done.stdout.decode("utf-8", "replace")), width, height
 
 
+# MAX_PIXELS is the largest picture decoded: a small file can declare a huge
+# size and take gigabytes to decode. Brainiac sets the same limit for OpenCV.
+MAX_PIXELS = 50_000_000
+
+
 def op_ocr(req):
     """The text lines of one image, in reading order."""
     data = _b64(req, "image_b64")
+    width, height = image_size(data)
+    if width * height > MAX_PIXELS:
+        raise WorkerError(f"the picture is {width}x{height}, more than {MAX_PIXELS // 1_000_000} million pixels; not decoded")
     engine = (req.get("engine") or "auto").lower()
     caps = have()
     if engine == "auto":

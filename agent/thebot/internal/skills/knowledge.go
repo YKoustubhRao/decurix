@@ -120,6 +120,8 @@ const maxReviewQuestions = 2
 type weighing struct {
 	nudge, question string
 	open            []string
+	// reviewed is whether an independent review weighed this report (it ran, and its answer was read).
+	reviewed bool
 }
 
 // unreviewed is what stands for a review that could not be made.
@@ -146,28 +148,29 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 	// before the review looks, and what they do not is a point like the review's.
 	pictured := o.secondRead(rc, st)
 	o.readRecordLedger(rc, st) // the records declared and what their saves showed, for the reviewer (record_ledger.go)
+	// Folders this task named unlike the folders beside them: a fact for the reviewer (folder_names.go).
+	st.folderFacts = o.folderNameFacts(rc, st)
 	issues, reviewed := o.review(rc, st, said, items, action)
 	issues = append(issues, pictured...)
 	if action == "" {
 		// A record declared and never saved, or saved and not read back whole, is a point decided in code.
 		issues = append(issues, recordLedgerIssues(st.RecordLedger)...)
-		// ... and a rate line of a record that holds that rate of none of its amounts: a misread figure (advisory).
-		issues = append(issues, rateMismatchIssues(st.RecordLedger)...)
+		// (A rate line that holds its rate of none of its record's amounts is a fact the reviewer is shown, not a verdict:
+		// reviewFacts, rateLineFacts.)
 		// Before a report: a document of the work nothing written reflects, and the report never names, is a point -
 		// decided in code, not left to the review to notice (evidence.go).
 		issues = append(issues, st.coverageIssues(said)...)
 		// ... and a message the task listed and never opened, from a sender it did open, or one that revises a
 		// document of this task (messages.go).
 		issues = append(issues, st.unopenedMessageIssues(said)...)
-		// ... and a record saved that a line the task read calls cancelled or returned (cancelled.go).
-		issues = append(issues, st.cancelledSavedIssues(said)...)
+		// (Whether a line the task read calls a saved record off is the reviewer's to judge: it sees the ledger and what
+		// was read. A code verdict on "return"/"cancel" words sent correct work back - review T-03.)
 		// ... and a part handed to another worker whose result was not verified done (handoff_result.go).
 		issues = append(issues, st.handoffIssues(said)...)
 		// ... and a plan with steps for the person's OK of which none went through (plan.go).
 		issues = append(issues, st.commitsIssue()...)
-		// ... and a month folder this task named unlike the month folders beside it, however it was made
-		// (folder_names.go).
-		issues = append(issues, o.folderNameIssues(rc, st)...)
+		// ... and every call the worker itself marks as resting on nothing given (judgements.go notBackedIssues).
+		issues = append(issues, notBackedIssues(items)...)
 		// ... and a one-word value written into a file that no source holds (evidence.go noteInventedCodes).
 		issues = append(issues, st.inventedCodeIssues(said)...)
 		// The figures the work leaves on a screen it typed into are worked out again from the sources, as before a
@@ -256,7 +259,7 @@ func (o *OperatorSkill) weighJudgements(rc RunContext, st *operatorState, items 
 	if len(open) > 0 {
 		rc.Logf("operator", "%d point(s) still open - carried with the result", len(open))
 	}
-	return weighing{open: open}
+	return weighing{open: open, reviewed: reviewed}
 }
 
 // maxExtraSendBacks bounds the send-backs a goal makes for points found in work done since the last one (knowledge.go).
@@ -438,7 +441,7 @@ func (st *operatorState) workPoints(issues []reviewIssue) []reviewIssue {
 		// while send-backs remain: found live (2026-10-27), three such points went to the person, who answered each
 		// "open it and look". Past the bound it goes to the person like any other.
 		recheck := strings.EqualFold(strings.TrimSpace(i.Settle), "recheck") && st.WorkSendBacks < maxWorkSendBacks
-		if i.Work || saysNotDone(i.What) || recheck {
+		if i.Work || recheck {
 			i.Work = true
 			out = append(out, i)
 			continue
@@ -457,7 +460,7 @@ func (st *operatorState) workPoints(issues []reviewIssue) []reviewIssue {
 func (st *operatorState) notWorkPoints(issues []reviewIssue) []reviewIssue {
 	var out []reviewIssue
 	for _, i := range issues {
-		if i.Work || saysNotDone(i.What) || st.AnsweredKeys[pointKey(i.text())] != "" {
+		if i.Work || st.AnsweredKeys[pointKey(i.text())] != "" {
 			continue
 		}
 		out = append(out, i)
@@ -465,16 +468,9 @@ func (st *operatorState) notWorkPoints(issues []reviewIssue) []reviewIssue {
 	return out
 }
 
-// notDoneRe is a review point that says a part of the work was not done: not entered, never saved, left out, not
-// completed. Found live (2026-10-26, F3): "The requested task was not completed: bill 431 was not entered as a
-// Sales voucher" went to the person as a point to judge; they answered "not done - enter it".
-var notDoneRe = regexp.MustCompile(`(?i)\b(was|were|is|are|remains?|still)\s+(not|never)\s+(completed|entered|saved|done|filed|made|put|recorded|posted|written|copied|sent|created|finished)\b|\b(not|never)\s+(entered|saved|completed|recorded|posted)\b|\bleft\s+(out|unentered|undone|incomplete)\b|\bwas\s+not\s+completed\b`)
-
-// saysNotDone reports whether a review point says a part of the work is not done - the worker's to do, never the
-// person's to judge.
-func saysNotDone(what string) bool {
-	return notDoneRe.MatchString(what)
-}
+// (Whose a review point is - the worker's to do or the person's to judge - is the reviewer's "settle", not words in
+// the point: a pattern of "not entered"/"left out" sent points to the worker by their wording (review T-18). A part of
+// the work not done is "recheck" in the reviewer's brief.)
 
 // workNudge sends the points that are the worker's to do back to it: do each, or report the task as not done with the
 // reason - never ask the person about it.

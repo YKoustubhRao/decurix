@@ -14,7 +14,6 @@ package coding
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -22,10 +21,10 @@ import (
 	"thebot/internal/hostshell"
 )
 
-// inheritedEnv is the real process environment every command starts from.
-// Extra vars are appended after it, so a later duplicate key wins - which
+// inheritedEnv is the process environment every command starts from, without soul's own secrets (hostshell.ChildEnv,
+// review T-16). Extra vars are appended after it, so a later duplicate key wins - which
 // is how a project-scoped PATH or VIRTUAL_ENV overrides the host's.
-func inheritedEnv() []string { return os.Environ() }
+func inheritedEnv() []string { return hostshell.ChildEnv() }
 
 // Command timeouts by class of work. A dependency install genuinely takes
 // minutes (uv resolving a fresh environment, cargo building a dependency
@@ -117,15 +116,16 @@ func (r *Runner) Run(ctx context.Context, command string, timeout time.Duration)
 
 	cmd := hostshell.CommandContext(runCtx, command)
 	cmd.Dir = r.Dir
-	if len(r.Env) > 0 {
-		cmd.Env = append(inheritedEnv(), r.Env...)
-	}
+	cmd.Env = append(inheritedEnv(), r.Env...)
 
-	var stdout, stderr strings.Builder
+	// Bounded, however much a build or a test prints (review T-14).
+	var stdout, stderr hostshell.CappedBuffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	// A background child still holding the pipes after a clean exit is the
+	// command's success, as everywhere else that runs a shell (hostshell.Exited).
+	err := hostshell.Exited(cmd, cmd.Run())
 	duration := time.Since(start)
 
 	res := CmdResult{

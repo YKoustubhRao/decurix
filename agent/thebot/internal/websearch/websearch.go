@@ -20,7 +20,17 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"thebot/internal/netguard"
 )
+
+// httpClient dials only public internet addresses (netguard): a result's
+// link or a model-named page can never reach the control plane, the
+// desktop's own services or a metadata endpoint. Tests swap it.
+var httpClient = netguard.Client(0)
+
+// maxHTMLBytes bounds one fetched page.
+const maxHTMLBytes = 20 << 20
 
 const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
@@ -91,7 +101,7 @@ func fetchHTML(ctx context.Context, target, label, ua string) (string, error) {
 	}
 	req.Header.Set("User-Agent", ua)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", label, err)
 	}
@@ -100,9 +110,12 @@ func fetchHTML(ctx context.Context, target, label, ua string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", &httpStatusError{label: label, status: resp.StatusCode}
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTMLBytes+1))
 	if err != nil {
 		return "", err
+	}
+	if len(body) > maxHTMLBytes {
+		return "", fmt.Errorf("%s: larger than %d MB", label, maxHTMLBytes>>20)
 	}
 	return string(body), nil
 }

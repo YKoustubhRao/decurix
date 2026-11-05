@@ -104,7 +104,7 @@ def fact_value(text, day_first=None, unit=1):
                 r"(?i)[\d.]\s*(?:lakhs?|lacs?|l|crores?|cr|thousands?|k|mn|bn|millions?|billions?)\.?$", bare):
             # A bare figure in a document that declares its unit ("Figures in Rs lakh"): read in that unit - unless it
             # is written in full (five or more whole digits: "Rs 593,180.00" is rupees, never 593,180 lakh). Found live
-            # (round 5 P5 on pc3, 2026-10-21): three customer contributions written alike in the memo and the deck were
+            # (round 5 P5, 2026-10-21): three customer contributions written alike in the memo and the deck were
             # reported as not agreeing, because the deck's "Figures in Rs lakh" scaled them.
             value, step, applied = value * unit, step * unit, unit
         # The value, and how finely it is written: a rounded figure equals the precise one within its own rounding.
@@ -168,8 +168,8 @@ def same_fact(a, b, percent=False):
     return a[1] == b[1]
 
 
-# A file name at the end of a value ("1015_E02.eml"), or one token joining letters and digits with _ - / (SO-5102,
-# 1015_E02, HH/PO/7745, INV-2026-001): a name or a code, never a figure.
+# A file name at the end of a value ("0015_E02.eml"), or one token joining letters and digits with _ - / (ORD-0002,
+# 0015_E02, AB/PO/0045, INV-0001): a name or a code, never a figure.
 _FILE_END = re.compile(r"[^\s/\\]\.[A-Za-z][A-Za-z0-9]{1,4}$")
 
 
@@ -206,7 +206,7 @@ _DATE_IN_TEXT = re.compile(
     r"(?i)\b\d{1,2}(?:st|nd|rd|th)?[\s\-./]+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?[\s\-./,]+\d{4}\b"
     r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b"
     r"|\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}[/.\-]\d{1,2}[/.\-]\d{4}\b")
-# A token of letters and digits, maybe joined by - / _ ("SO-5101", "HH/PO/7781", "FY27", "EMP2041").
+# A token of letters and digits, maybe joined by - / _ ("ORD-0001", "AB/PO/0081", "FY27", "EMP0041").
 _CODE = re.compile(r"\b[A-Za-z0-9]+(?:[-/_][A-Za-z0-9]+){0,4}\b")
 # A long number written as an identifier: a phone, an account ("+91 98765 43210", "022-2345-6789", "9876543210").
 _IDENT = re.compile(r"(?<![\w.,])(?:\+\d{1,3}[ \-]?(?:\(?\d+\)?[ \-]?){1,5}\d|\d{2,6}(?:-\d{2,8}){1,4}|"
@@ -354,6 +354,26 @@ def derived(value, operands, pool):
     return False
 
 
+_DIGIT_RUN = re.compile(r"\+?\d(?:[-. ()]{1,2}\d|\d)*")
+
+
+def _id_forms(written):
+    """The digit strings an identifier as written may stand for: all its digits, and - only where the writing marks a
+    prefix - without a country code after "+" (1 to 3 digits) or a trunk "0". Never a cut that the writing does not
+    show (review 2026-11-03, E-28: up to three leading digits were stripped from any number)."""
+
+    text = str(written or "").strip()
+    digits = re.sub(r"\D", "", text)
+    if len(digits) < 7:
+        return {digits} if digits else set()
+    forms = {digits}
+    if text.startswith("+"):
+        forms |= {digits[k:] for k in range(1, 4) if len(digits) - k >= 7}
+    elif digits.startswith("0") and len(digits) >= 8:
+        forms.add(digits[1:])
+    return forms
+
+
 class Sources:
     """
     What the sources of a piece of work hold, put in one form: the request, its input files and messages, the system's
@@ -368,7 +388,12 @@ class Sources:
         joined = "\n".join(texts)
         self.flat = " ".join(joined.lower().split())
         self.squashed = _squash(joined)
-        self.digits = "|".join(re.sub(r"\D", "", t) for t in texts)
+        # Each identifier a source writes, as its digits: one run of digits with at most two of " -.()" between them,
+        # never digits joined across cells or words (review 2026-11-03, E-28: "Qty 12 Rate 3456 Total 789" held
+        # "2345678"), in every form its prefix allows (_id_forms).
+        self.idents = set()
+        for m in _DIGIT_RUN.finditer(joined):
+            self.idents |= _id_forms(m.group(0))
         self.emails = {e.lower() for e in _EMAIL.findall(joined)}
         self.dates = _dates(joined)
         self.numbers = []
@@ -383,10 +408,11 @@ class Sources:
 
         self.dates.add(tuple(date.timetuple()[:3]))
 
-    def _held_digits(self, digits):
-        # The same identifier with or without a country or trunk prefix: +91 98765 43210 is 9876543210.
-        tries = [digits] + [digits[k:] for k in range(1, 4) if len(digits) - k >= 7]
-        return any(t and t in self.digits for t in tries)
+    def _held_digits(self, written):
+        """Whether a source writes this identifier: the same digits, a whole run of them, with or without a prefix
+        that is written as one (a "+" country code, a trunk "0") - never a part of a longer number."""
+
+        return bool(_id_forms(written) & self.idents)
 
     def holds(self, kind, written):
         """Whether a source states this fact (kind and text as facts_in gives them)."""
@@ -398,7 +424,7 @@ class Sources:
         if kind == "code":
             return bool(_squash(written)) and _squash(written) in self.squashed
         if kind == "ident":
-            return self._held_digits(re.sub(r"\D", "", written)) or self.holds("number", written)
+            return self._held_digits(written) or self.holds("number", written)
         if kind == "number":
             found = parse_number(written)
             if not found:
@@ -407,7 +433,7 @@ class Sources:
             if any(same_figure((abs(found[0]), found[1]), (abs(n[0]), n[1])) for n in self.numbers):
                 return True
             digits = re.sub(r"\D", "", written)
-            return len(digits) >= 7 and self._held_digits(digits)
+            return len(digits) >= 7 and self._held_digits(written)
         return True
 
     def _missing(self, text, operands=()):

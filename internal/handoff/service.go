@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"path"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -27,7 +26,7 @@ type File struct {
 // method (httpapi's *DesktopBusyError): that keeps the handoff queued, not
 // failed. Backed by *httpapi.Server's SubmitTracked / SubmitTrackedWithFiles.
 type Submitter interface {
-	SubmitHandoff(ctx context.Context, workerID, content, dir string, files []File) (taskID string, err error)
+	SubmitHandoff(ctx context.Context, workerID, content, dir string, files []File, origin tasks.Origin) (taskID string, err error)
 }
 
 // FileReader reads files (absolute paths under the worker's home) out of a
@@ -51,8 +50,11 @@ type TaskOutcome struct {
 	Status string
 	// Report is the final reply of the task's latest attempt.
 	Report string
-	// Checked is the latest attempt's "final check judged it" flag (nil: not said).
+	// Checked is whether the latest attempt is the work done and checked (nil: not said): false for a stop at a
+	// person's no, whatever its own check said.
 	Checked *bool
+	// Evidence is what the receiver's final check said it saw (its verdict's evidence and passing checks).
+	Evidence []string
 	// OpenQuestions are the receiver's questions to a person not answered yet.
 	OpenQuestions []string
 }
@@ -95,6 +97,12 @@ const (
 const (
 	defaultQueueTimeout   = 30 * time.Minute
 	defaultAskTimeout     = 15 * time.Minute
+	// defaultDelegateTimeout bounds a handed-on piece of work: a receiver that never reports (its desktop gone, a
+	// question nobody answers) must not keep the sender waiting for good (C-07).
+	defaultDelegateTimeout = 24 * time.Hour
+	// sendingLease is how long a handoff may stay "sending" before it is taken as a send the control plane never
+	// finished (it stopped mid-send): failed with a reason, never sent a second time.
+	sendingLease = 15 * time.Minute
 	defaultRecordGrace    = 10 * time.Minute
 	defaultTickInterval   = 15 * time.Second
 	defaultAskWaitCeiling = 60 * time.Second
@@ -108,6 +116,10 @@ func InboxDir(id string) string { return home + "/handoffs/" + id }
 
 // ReturnDir is where a result's files land back on the sending worker.
 func ReturnDir(id string) string { return home + "/handoffs/" + id + "/returned" }
+
+// OutDir is where the receiving worker is told to save the files its result hands back. Only files there go back to
+// the sender, and only with a verified result: never a file a report merely names (review 2026-11-03, C-06).
+func OutDir(id string) string { return InboxDir(id) + "/out" }
 
 // InputError is a request refused for what it asked; its message is chosen
 // by this package and safe to show the caller.
@@ -128,13 +140,16 @@ type Service struct {
 	Reader  FileReader   // nil: handoffs that carry files are refused
 	Writer  FileWriter   // nil: result files are named where they are
 
-	QueueTimeout time.Duration // a handoff no worker took in this long fails
-	AskTimeout   time.Duration // a question not answered in this long fails
+	QueueTimeout    time.Duration // a handoff no worker took in this long fails
+	AskTimeout      time.Duration // a question not answered in this long fails
+	DelegateTimeout time.Duration // handed-on work not finished in this long fails
 	RecordGrace  time.Duration // a sent task with no record after this long fails
 	Interval     time.Duration // how often Run advances open handoffs
 
 	// mu makes each read-then-write of a handoff one step: the runner, a
-	// status read and a cancel never advance the same row at once.
+	// status read and a cancel never advance the same row at once. It is let go
+	// while a request is submitted (the row is claimed as sending first), since
+	// waking a stopped desktop can take minutes.
 	mu  sync.Mutex
 	now func() time.Time
 }
@@ -475,6 +490,14 @@ func (s *Service) advance(ctx context.Context, h Handoff) Handoff {
 		return s.dispatch(ctx, h)
 	case StatusRunning:
 		return s.collect(ctx, h)
+	case StatusSending:
+		// Another dispatch is submitting it - or the control plane stopped mid-send, which only the lease can tell.
+		if s.clock().Sub(h.UpdatedAt) > sendingLease {
+			h.Status = StatusFailed
+			h.Reason = "the control plane stopped while sending this request, so whether it reached the receiving worker is unknown - check it before handing it on again"
+			return s.save(h)
+		}
+		return h
 	default:
 		return h
 	}
@@ -531,7 +554,28 @@ func (s *Service) dispatch(ctx context.Context, h Handoff) Handoff {
 		dir = InboxDir(h.ID)
 	}
 
-	taskID, err := s.Submit.SubmitHandoff(ctx, to, content, dir, files)
+	// Claimed as sending, then submitted without the service's lock: a stopped desktop can take minutes to wake, and
+	// every other handoff's status read and the runner would wait behind it (C-16).
+	claimed, err := s.Store.Claim(h.ID)
+	if err != nil || !claimed {
+		if err != nil {
+			log.Printf("handoff %s: %v", h.ID, err)
+		}
+		if fresh, gerr := s.Store.Get(h.ID); gerr == nil {
+			return fresh
+		}
+		return h
+	}
+	h.Status = StatusSending
+	var taskID string
+	func() {
+		// Re-locked by a defer, so a panicking submit still leaves the lock as the caller's deferred unlock expects
+		// (an unlock of an unlocked mutex is fatal, past any recover: RW1-F-09).
+		s.mu.Unlock()
+		defer s.mu.Lock()
+		taskID, err = s.Submit.SubmitHandoff(ctx, to, content, dir, files, tasks.Origin{Kind: tasks.OriginHandoff, Ref: h.ID})
+	}()
+	h.Status = StatusQueued
 	var busy busyError
 	if errors.As(err, &busy) {
 		h.Reason = "waiting for worker " + to + " to be free: " + busy.DesktopBusy()
@@ -572,10 +616,11 @@ func (s *Service) collect(ctx context.Context, h Handoff) Handoff {
 
 	switch out.Status {
 	case tasks.StatusDone:
-		r.Evidence = EvidenceIn(out.Report)
-		r.Files = s.returnFiles(ctx, h, FilesIn(out.Report))
+		r.Evidence = out.Evidence
 		if out.Checked != nil && *out.Checked {
 			r.Verified = true
+			// Only a verified result hands files back, and only those saved in the handoff's out folder.
+			r.Files = s.returnFiles(ctx, h)
 			h.Status, h.Reason = StatusDone, "worker "+h.ToWorker+"'s final check confirmed it"
 		} else {
 			h.Status = StatusNotDone
@@ -586,6 +631,9 @@ func (s *Service) collect(ctx context.Context, h Handoff) Handoff {
 	case tasks.StatusAbandoned:
 		h.Status, h.Reason = StatusFailed, "worker "+h.ToWorker+"'s task was abandoned"
 	case tasks.StatusQuery:
+		// "query" is an end: the receiver's desktop stopped while it waited on a person (tasks.CloseOpen).
+		h.Status, h.Reason = StatusFailed, "worker "+h.ToWorker+"'s task ended while waiting on a person"
+	case tasks.StatusWaiting:
 		h.Reason = "worker " + h.ToWorker + " asked a person and is waiting for the answer"
 	default:
 		h.Reason = "worker " + h.ToWorker + " is working on it"
@@ -594,38 +642,43 @@ func (s *Service) collect(ctx context.Context, h Handoff) Handoff {
 	if h.Open() && h.Kind == KindAsk && now.Sub(h.DispatchedAt) > orDefault(s.AskTimeout, defaultAskTimeout) {
 		h.Status, h.Reason = StatusFailed, "worker "+h.ToWorker+" did not answer in time - ask a person instead"
 	}
+	if limit := orDefault(s.DelegateTimeout, defaultDelegateTimeout); h.Open() && h.Kind == KindDelegate && now.Sub(h.DispatchedAt) > limit {
+		h.Status, h.Reason = StatusFailed, "worker "+h.ToWorker+" did not finish within "+limit.String()+" - do it here or ask a person"
+	}
 
 	h.Result = r
 	return s.save(h)
 }
 
-// returnFiles copies the files a result names back to the sending worker and
-// returns their paths there; without a FileWriter, or when copying fails,
-// the paths on the receiving worker are returned with a note.
-func (s *Service) returnFiles(ctx context.Context, h Handoff, paths []string) []string {
-	if len(paths) == 0 {
+// returnFiles copies the files the receiver saved in the handoff's out folder (OutDir) back to the sending worker and
+// returns their paths there. Nothing else on the receiver is read, whatever its report names. With no out folder there
+// is nothing to return; without a FileWriter, or when copying fails, the folder on the receiving worker is named.
+func (s *Service) returnFiles(ctx context.Context, h Handoff) []string {
+	if s.Reader == nil {
 		return []string{}
 	}
-	if s.Reader == nil || s.Writer == nil {
-		return onWorker(h.ToWorker, paths)
-	}
-
-	files, err := s.Reader.ReadFiles(ctx, h.ToWorker, paths)
-	if err == nil && len(files) > 0 {
-		err = s.Writer.WriteFiles(ctx, h.FromWorker, ReturnDir(h.ID), files)
-	}
+	out := []string{OutDir(h.ID)}
+	files, err := s.Reader.ReadFiles(ctx, h.ToWorker, out)
 	if err != nil || len(files) == 0 {
+		// Most often the receiver made no files: an out folder that is not there.
 		if err != nil {
-			log.Printf("handoff %s: returning files: %v", h.ID, err)
+			log.Printf("handoff %s: no files returned from %s: %v", h.ID, OutDir(h.ID), err)
 		}
-		return onWorker(h.ToWorker, paths)
+		return []string{}
+	}
+	if s.Writer == nil {
+		return onWorker(h.ToWorker, out)
+	}
+	if err := s.Writer.WriteFiles(ctx, h.FromWorker, ReturnDir(h.ID), files); err != nil {
+		log.Printf("handoff %s: returning files: %v", h.ID, err)
+		return onWorker(h.ToWorker, out)
 	}
 
-	out := make([]string, 0, len(files))
+	returned := make([]string, 0, len(files))
 	for _, f := range files {
-		out = append(out, ReturnDir(h.ID)+"/"+path.Base(f.Name))
+		returned = append(returned, ReturnDir(h.ID)+"/"+path.Base(f.Name))
 	}
-	return out
+	return returned
 }
 
 func onWorker(worker string, paths []string) []string {
@@ -645,6 +698,14 @@ func homePath(p string) (string, bool) {
 	clean := path.Clean(p)
 	if !strings.HasPrefix(clean, home+"/") || strings.Contains(p, "/../") || strings.HasSuffix(p, "/..") {
 		return "", false
+	}
+	// A program's own data - the agent's state, Claude's credentials, keys, a browser profile - lives in a dot-folder
+	// of the home; no work does. A report naming one must not have it copied to another worker (review 2026-11-02:
+	// ~/.claude/.credentials.json could be handed back).
+	for _, part := range strings.Split(strings.TrimPrefix(clean, home+"/"), "/") {
+		if strings.HasPrefix(part, ".") {
+			return "", false
+		}
 	}
 	return clean, true
 }
@@ -688,59 +749,9 @@ func composeRequest(h Handoff, files []File) string {
 		fmt.Fprintf(&b, "\n\nWhen it is done, this must show: %s", h.Expected)
 	}
 
+	fmt.Fprintf(&b, "\n\nSave every file you make for this request in %s: only files there are handed back, and only "+
+		"once your final check confirms the work.", OutDir(h.ID))
 	b.WriteString("\n\nIn your report, say what you did, what you saw that shows it is done, the full paths of any " +
 		"files you made, and plainly any part you could not do.")
 	return b.String()
-}
-
-// evidenceLineRe is a line in which a final check says what it saw ("Checked
-// on the screen: ...", "Checked against the files I wrote: ...").
-var evidenceLineRe = regexp.MustCompile(`(?m)^\s*(Checked [^:\n]{1,60}:.+)$`)
-
-// EvidenceIn returns what the receiver's final check said it saw: its
-// "Checked ...:" lines and the values block that follows a "Values read from"
-// heading.
-func EvidenceIn(report string) []string {
-	out := []string{}
-	for _, m := range evidenceLineRe.FindAllStringSubmatch(report, -1) {
-		out = append(out, strings.TrimSpace(m[1]))
-	}
-
-	lines := strings.Split(report, "\n")
-	for i := 0; i < len(lines); i++ {
-		if !strings.HasPrefix(strings.TrimSpace(lines[i]), "Values read from") {
-			continue
-		}
-		for j := i + 1; j < len(lines) && strings.TrimSpace(lines[j]) != ""; j++ {
-			out = append(out, strings.TrimSpace(lines[j]))
-		}
-	}
-
-	if len(out) > 40 {
-		out = out[:40]
-	}
-	return out
-}
-
-// filePathRe is an absolute path under the worker's home, or a ~/ path.
-var filePathRe = regexp.MustCompile(`(?:/home/headless|~)/[^\s"'<>|*?(){}\[\]` + "`" + `]+`)
-
-// FilesIn returns the distinct file paths under the home folder a report
-// names (at most MaxFiles), as absolute paths.
-func FilesIn(report string) []string {
-	out := []string{}
-	seen := map[string]bool{}
-	for _, raw := range filePathRe.FindAllString(report, -1) {
-		raw = strings.TrimRight(raw, ".,;:!")
-		p, ok := homePath(raw)
-		if !ok || seen[p] || path.Ext(p) == "" {
-			continue
-		}
-		seen[p] = true
-		out = append(out, p)
-		if len(out) == MaxFiles {
-			break
-		}
-	}
-	return out
 }

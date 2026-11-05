@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"thebot/internal/atomizer"
@@ -14,6 +15,7 @@ import (
 	"thebot/internal/prompt"
 	"thebot/internal/safety"
 	"thebot/internal/skills"
+	"thebot/internal/withheld"
 	"thebot/internal/workspace"
 )
 
@@ -38,7 +40,11 @@ type node struct {
 	resume     any
 	reply      string
 	// reading is the host's reading of reply when it answers an approval (skills.Reading), or nil.
-	reading  *skills.Reading
+	reading *skills.Reading
+	// grant is the one action the person just said yes to for this step, good for one run of it: handed to the
+	// step's next run (runContext) and gone from here at once, so it is never in a checkpoint and never outlives
+	// that run.
+	grant    string
 	started  time.Time
 	duration time.Duration
 	// seq is the order the step finished in; later steps see earlier
@@ -58,19 +64,40 @@ type Checkpoint struct {
 	Action    string // what the approval is for
 	Question  string
 	PausedID  int // 0 when the job, not a step, is waiting
-	Approved  []string
 	Replans   int
 	UsedSkill string
 	CreatedAt time.Time
+	// Secrets are the paused job's own secret values (C14), so the job that resumes it withholds them too. Kept in
+	// memory with the checkpoint, never written.
+	Secrets []string
+	// GateRequest and GateFingerprint are the approval gate's request for this paused approval, when the desktop has
+	// a gate (soul's gate.go): the reply that resumes it is the gate's settlement of that one request.
+	GateRequest     string
+	GateFingerprint string
+	// PlanAgreed is the paused request's own (Request.PlanAgreed): the reply that resumes it does not carry it.
+	PlanAgreed bool
 
 	nodes []node
 	seq   int
+}
+
+// Approval reports what a paused approval is for: the command a step stopped on, or the whole request (command
+// empty). ok is false when the job is not waiting on an approval.
+func (c *Checkpoint) Approval() (command, request string, ok bool) {
+	if c == nil || c.Kind != pauseApproval {
+		return "", "", false
+	}
+	if c.Action == requestAction {
+		return "", c.Prompt, true
+	}
+	return c.Action, "", true
 }
 
 type pause struct {
 	node     *node
 	kind     string
 	action   string
+	shown    string // the action as the person may be shown it (its skill's Meta "actionShown"); "" for action
 	reason   string
 	question string
 }
@@ -86,8 +113,9 @@ type execution struct {
 	stats    string
 	route    atomizer.Route
 
-	nodes    []*node
-	approved map[string]bool
+	nodes []*node
+	// requestApproved is the person's yes, given just now, to a request that was itself the consequential act.
+	requestApproved bool
 
 	replans       int
 	usedSkill     string
@@ -105,7 +133,7 @@ type execution struct {
 }
 
 func newExecution(s *Scheduler, ctx context.Context, req Request, onLog func(string)) *execution {
-	return &execution{s: s, ctx: ctx, req: req, log: onLog, approved: map[string]bool{}}
+	return &execution{s: s, ctx: ctx, req: req, log: onLog}
 }
 
 func (e *execution) setSystem(system llm.Message) {
@@ -178,7 +206,7 @@ func (e *execution) fresh() {
 
 	// The request is itself the consequential act. Stop before any of it
 	// runs; the plan is already made, so approving costs nothing extra.
-	if concern := safety.AssessRequest(p); concern != nil && !e.req.Approved {
+	if concern := safety.AssessRequest(p); concern != nil {
 		e.log("safety: " + concern.Reason + " - asking before doing anything")
 		e.pause = &pause{kind: pauseApproval, action: requestAction, reason: concern.Reason}
 	}
@@ -201,17 +229,15 @@ func (e *execution) restore(cp *Checkpoint) bool {
 	if e.req.WorkDir == "" {
 		e.req.WorkDir = cp.WorkDir
 	}
+	e.req.PlanAgreed = e.req.PlanAgreed || cp.PlanAgreed
 	e.route, e.usedSkill, e.replans, e.seq = cp.Route, cp.UsedSkill, cp.Replans, cp.seq
 	e.setSystem(cp.System)
-	for _, a := range cp.Approved {
-		e.approved[a] = true
-	}
 	for i := range cp.nodes {
 		n := cp.nodes[i]
 		e.nodes = append(e.nodes, &n)
 	}
 
-	e.log(fmt.Sprintf("scheduler: resuming the paused job %q with your reply", truncate(cp.Prompt, 70)))
+	e.log(fmt.Sprintf("scheduler: resuming the paused job %q with your reply", e.cut(cp.Prompt, 70)))
 
 	switch {
 	case cp.Kind == pauseApproval && cp.Action == requestAction:
@@ -223,7 +249,7 @@ func (e *execution) restore(cp *Checkpoint) bool {
 			e.handoff = job
 			return false
 		}
-		e.approved[requestAction] = true
+		e.requestApproved = true
 		e.log("scheduler: approved - starting")
 
 	case cp.Kind == pauseApproval:
@@ -232,7 +258,8 @@ func (e *execution) restore(cp *Checkpoint) bool {
 			break
 		}
 		if approvedNow {
-			e.approved[cp.Action] = true
+			// A yes is this one action's, for the step that asked, once.
+			n.grant = strings.TrimSpace(cp.Action)
 			e.log(fmt.Sprintf("scheduler: approved `%s`", cp.Action))
 		}
 		n.state, n.reply, n.reading = StepPending, reply, e.req.Reading
@@ -293,12 +320,36 @@ func (e *execution) maxID() int {
 	return max
 }
 
-func (e *execution) isApproved(action string) bool {
-	return e.approved[strings.TrimSpace(action)]
+// singleUse is one approval: the action the person said yes to, good for one run of exactly that action. Taken, it is
+// gone - a retry, a second identical command or a resumed checkpoint is asked again.
+type singleUse struct {
+	mu     sync.Mutex
+	action string
+}
+
+// take reports whether action is the approved one, and uses the approval up when it is.
+func (g *singleUse) take(action string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.action == "" || strings.TrimSpace(action) != g.action {
+		return false
+	}
+	g.action = ""
+	return true
+}
+
+// approvalFor hands n's grant (if any) to its next run, as a single-use approval, and clears it from n.
+func approvalFor(n *node) func(string) bool {
+	if n.grant == "" {
+		return nil
+	}
+	g := &singleUse{action: n.grant}
+	n.grant = ""
+	return g.take
 }
 
 func (e *execution) run() {
-	if e.pause != nil && !e.approved[requestAction] {
+	if e.pause != nil && !e.requestApproved {
 		return
 	}
 	e.pause = nil
@@ -319,6 +370,10 @@ func (e *execution) run() {
 		if !e.replan() {
 			break
 		}
+	}
+	// A step that paused while another was with the person is asked now (review T-13).
+	if e.stopReason == "" && e.ctx.Err() == nil {
+		e.nextWaiting()
 	}
 
 	if e.pause == nil {
@@ -389,7 +444,7 @@ func (e *execution) runGraph() {
 				n.state, n.started = StepRunning, time.Now()
 				running++
 				if len(e.nodes) > 1 {
-					e.log(fmt.Sprintf("scheduler: step %d/%d [%s] %s", n.step.ID, len(e.nodes), n.step.Type, truncate(n.step.Text, 80)))
+					e.log(fmt.Sprintf("scheduler: step %d/%d [%s] %s", n.step.ID, len(e.nodes), n.step.Type, e.cut(n.step.Text, 80)))
 				}
 				rc := e.runContext(n)
 				subtask := skills.Subtask{Step: n.step.Text, Type: n.step.Type}
@@ -438,8 +493,8 @@ func (e *execution) runContext(n *node) skills.RunContext {
 		// Live memory handles: the coding harness queries L1 mid-build with
 		// a real error message, and writes back what it had to research.
 		L1: s.L1, SkillLib: s.SkillLib,
-		System: e.system, WorkDir: e.req.WorkDir, Approved: e.isApproved,
-		Resume: n.resume, HumanReply: n.reply, HumanReading: n.reading,
+		System: e.system, WorkDir: e.req.WorkDir, Approved: approvalFor(n),
+		Resume: n.resume, HumanReply: n.reply, HumanReading: n.reading, PlanAgreed: e.req.PlanAgreed,
 	}
 }
 
@@ -451,7 +506,7 @@ func (e *execution) complete(n *node, res skills.Result) {
 	e.seq++
 	n.result, n.hasResult, n.seq = res, true, e.seq
 	n.duration = time.Since(n.started)
-	n.resume, n.reply, n.reading = nil, "", nil
+	n.resume, n.reply, n.reading, n.grant = nil, "", nil, ""
 	if slug, ok := res.Meta["proposedSkill"].(string); ok && slug != "" {
 		e.proposedSkill = slug
 	}
@@ -462,9 +517,7 @@ func (e *execution) complete(n *node, res skills.Result) {
 	switch {
 	case flag("needsApproval"):
 		n.state = StepPaused
-		action, _ := res.Meta["action"].(string)
-		reason, _ := res.Meta["approvalReason"].(string)
-		e.pause = &pause{node: n, kind: pauseApproval, action: action, reason: reason}
+		e.setPause(pauseFor(n, withheld.From(e.ctx)))
 
 	case res.Verified:
 		n.state = StepDone
@@ -477,17 +530,59 @@ func (e *execution) complete(n *node, res skills.Result) {
 		case flag("fatal"):
 			e.stopReason = "a step failed in a way retrying cannot fix"
 		case flag("needsUserInput"):
-			question, _ := res.Meta["question"].(string)
-			if question == "" {
-				question, _ = res.Meta["failureReasoning"].(string)
+			if e.pause != nil {
+				// Another step is already with the person: this one waits its turn, paused, and is asked next.
+				n.state = StepPaused
 			}
-			if question == "" {
-				question = truncate(res.Output, 1500)
-			}
-			e.pause = &pause{node: n, kind: pauseInput, question: question}
+			e.setPause(pauseFor(n, withheld.From(e.ctx)))
 		case len(e.nodes) > 1 && e.replans < e.s.maxReplans() && e.wantReplan == nil:
 			e.wantReplan = n
 		}
+	}
+}
+
+// pauseFor is the pause n's result asks for: its approval, or its question.
+func pauseFor(n *node, secrets withheld.Values) *pause {
+	res := n.result
+	if v, _ := res.Meta["needsApproval"].(bool); v {
+		action, _ := res.Meta["action"].(string)
+		shown, _ := res.Meta["actionShown"].(string)
+		reason, _ := res.Meta["approvalReason"].(string)
+		return &pause{node: n, kind: pauseApproval, action: action, shown: shown, reason: reason}
+	}
+	question, _ := res.Meta["question"].(string)
+	if question == "" {
+		question, _ = res.Meta["failureReasoning"].(string)
+	}
+	if question == "" {
+		question = truncate(secrets.Shown(res.Output), 1500)
+	}
+	return &pause{node: n, kind: pauseInput, question: question}
+}
+
+// setPause makes p the job's pause unless one is already with the person: a second pause never overwrites the first
+// (review T-13). Its step stays StepPaused and is asked after the first is answered (nextWaiting).
+func (e *execution) setPause(p *pause) {
+	if e.pause == nil {
+		e.pause = p
+		return
+	}
+	e.log(fmt.Sprintf("scheduler: step %d also needs you - it is asked after the question already with you", p.node.step.ID))
+}
+
+// nextWaiting makes the earliest-finished step still waiting to be asked the job's pause, when nothing else is.
+func (e *execution) nextWaiting() {
+	if e.pause != nil {
+		return
+	}
+	var first *node
+	for _, n := range e.nodes {
+		if n.state == StepPaused && n.hasResult && (first == nil || n.seq < first.seq) {
+			first = n
+		}
+	}
+	if first != nil {
+		e.pause = pauseFor(first, withheld.From(e.ctx))
 	}
 }
 
@@ -595,16 +690,16 @@ func (e *execution) checkpoint() *Checkpoint {
 		Prompt: e.req.Prompt, Context: e.req.Context, WorkDir: e.req.WorkDir,
 		Route: e.route, System: e.system,
 		Kind: e.pause.kind, Action: e.pause.action, Question: e.pause.question,
-		Replans: e.replans, UsedSkill: e.usedSkill, CreatedAt: time.Now(), seq: e.seq,
+		Replans: e.replans, UsedSkill: e.usedSkill, CreatedAt: time.Now(), seq: e.seq, PlanAgreed: e.req.PlanAgreed,
 	}
 	if e.pause.node != nil {
 		cp.PausedID = e.pause.node.step.ID
 	}
-	for a := range e.approved {
-		cp.Approved = append(cp.Approved, a)
-	}
+	// No approval is carried: a yes was for one run of one action, and a resumed job asks again.
 	for _, n := range e.nodes {
-		cp.nodes = append(cp.nodes, *n)
+		c := *n
+		c.grant = ""
+		cp.nodes = append(cp.nodes, c)
 	}
 	return cp
 }
@@ -630,10 +725,13 @@ func (e *execution) finish() *Job {
 		job.Checkpoint = e.checkpoint()
 		if e.pause.kind == pauseApproval {
 			job.Outcome = OutcomeNeedsApproval
-			job.Question = approvalQuestion(e.pause, e.req.Prompt)
+			job.Question = approvalQuestion(e.pause, e.req.Prompt, withheld.From(e.ctx))
 		} else {
 			job.Outcome = OutcomeNeedsInput
 			job.Question = e.pause.question
+			if e.pause.node != nil {
+				job.Secret, _ = e.pause.node.result.Meta["secret"].(bool)
+			}
 		}
 		job.FinalAnswer = job.Question
 	} else {
@@ -641,17 +739,39 @@ func (e *execution) finish() *Job {
 	}
 
 	if e.s.L2 != nil {
-		_ = e.s.L2.Append(memory.L2Entry{Prompt: job.Prompt, Status: string(job.Outcome), Plan: stepStrings(job.Plan)})
+		_ = e.s.L2.Append(l2Entry(withheld.From(e.ctx), job))
 	}
 	return job
 }
 
-func approvalQuestion(p *pause, request string) string {
-	if p.action == requestAction {
-		return fmt.Sprintf("Before I do anything: %s.\n\n> %s\n\nReply **yes** and I'll go ahead, or tell me what you'd like instead.", p.reason, truncate(request, 400))
+// l2Entry is the job as L2 keeps it: its prompt and plan with the job's secret values withheld (C14), and none of its
+// text when the whole request was secret.
+func l2Entry(secrets withheld.Values, job *Job) memory.L2Entry {
+	if secrets.Whole(job.Prompt) {
+		return memory.L2Entry{Prompt: withheld.Mark, Status: string(job.Outcome)}
 	}
-	return fmt.Sprintf("I need your OK before I run this, because %s:\n\n```\n%s\n```\n\nReply **yes** to run it, or tell me what to do instead.", p.reason, p.action)
+	plan := stepStrings(job.Plan)
+	for i := range plan {
+		plan[i] = secrets.Text(plan[i])
+	}
+	return memory.L2Entry{Prompt: secrets.Text(job.Prompt), Status: string(job.Outcome), Plan: plan}
 }
+
+// approvalQuestion is what the person is asked to approve. What it quotes is withheld first, then shortened (C14): the
+// job's secret values, and for a command the form its skill says may be shown (Meta "actionShown").
+func approvalQuestion(p *pause, request string, secrets withheld.Values) string {
+	if p.action == requestAction {
+		return fmt.Sprintf("Before I do anything: %s.\n\n> %s\n\nReply **yes** and I'll go ahead, or tell me what you'd like instead.", p.reason, truncate(secrets.Shown(request), 400))
+	}
+	action := p.action
+	if p.shown != "" {
+		action = p.shown
+	}
+	return fmt.Sprintf("I need your OK before I run this, because %s:\n\n```\n%s\n```\n\nReply **yes** to run it, or tell me what to do instead.", p.reason, secrets.Shown(action))
+}
+
+// cut is s as a line of the job may carry it: the job's secret values withheld first, then shortened to n (C14).
+func (e *execution) cut(s string, n int) string { return truncate(withheld.From(e.ctx).Shown(s), n) }
 
 func stepStrings(plan []skills.Subtask) []string {
 	out := make([]string, len(plan))

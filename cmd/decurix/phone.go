@@ -47,10 +47,11 @@ func runPhone(link, name, serial string) int {
 			return 1
 		}
 
-		if loadErr == nil && saved.Token != "" && phoneagent.Accepted(ctx, base, saved.Token) {
-			// Paired already; only the address changed (a restarted tunnel).
-			saved.Base = base
-			logf("already paired as %q; now linking through %s", saved.Name, base)
+		if loadErr == nil && phoneagent.SameControlPlane(saved, base) && phoneagent.Accepted(ctx, base, saved.Token) {
+			// Paired already with this same address. A link naming another
+			// address pairs again with its code: the saved token is never sent
+			// to a host it was not made for (B-18).
+			logf("already paired as %q with %s", saved.Name, base)
 		} else {
 			if name == "" {
 				name = phoneModel(ctx, serial)

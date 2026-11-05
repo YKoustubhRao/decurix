@@ -36,6 +36,20 @@ def main():
 
     log_banner("Decurix VM Agent")
 
+    # What was kept from a reply and not yet copied to the control plane, tried once more (messaging.post_learned).
+    try:
+        from decurix_agent import messaging
+        threading.Thread(target=messaging.resend_learned, daemon=True, name="resend-learned").start()
+    except Exception as exc:  # noqa: BLE001
+        log(f"Could not resend what was kept from replies: {exc}")
+
+    # The code this agent runs, named once at start for every run's manifest (retention.agent_sha).
+    try:
+        from decurix_agent import retention
+        log(f"Agent code: {retention.agent_sha()}")
+    except Exception as exc:  # noqa: BLE001 - the manifest says it is unknown; the agent still starts
+        log(f"Could not hash the agent's code: {exc}")
+
     log(
         f"Desktop ID: {config.DESKTOP_ID}"
     )

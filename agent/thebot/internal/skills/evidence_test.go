@@ -1,10 +1,14 @@
 package skills
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"thebot/internal/llm"
 )
 
 // docs/harness-v2.md, Phase 1: what the goal was shown kept as units with their source.
@@ -639,5 +643,64 @@ func TestAWindowTypedOnlyProseIntoCarriesNoFigureOfTheWork(t *testing.T) {
 	st.noteWindow(`gui type e9 "26,500.00"`, shellResult{Output: `Typed "26,500.00" into textbox "Amount" (e9)`})
 	if !st.typedFigureIn("Voucher - Chromium") {
 		t.Fatalf("a typed amount not counted")
+	}
+}
+
+// A bare "no", "not" or "never" beside a document's name gives no reason for it to be out of the work: the month went
+// out a bill short. Only a stated reason accounts for it.
+func TestLeavingADocumentOutNeedsAStatedReason(t *testing.T) {
+	base, stem := "img_0932.jpg", "img_0932"
+	for _, report := range []string{
+		"img_0932.jpg was not entered.",
+		"img_0932.jpg: no.",
+		"img_0932.jpg is not in the sales block.",
+		"Never got to img_0932.jpg.",
+		"img_0932.jpg was skipped.",
+	} {
+		if saysWhyLeftOut(strings.ToLower(report), base, stem) {
+			t.Errorf("settled without a reason by: %s", report)
+		}
+	}
+	for _, report := range []string{
+		"img_0932.jpg is a duplicate of bill 14, so it is not entered.",
+		"img_0932.jpg belongs to another client.",
+		"Left img_0932.jpg out because it is a quotation, not a bill.",
+		"img_0932.jpg was cancelled by the supplier.",
+		"img_0932.jpg is not for this month: it is dated in May.",
+	} {
+		if !saysWhyLeftOut(strings.ToLower(report), base, stem) {
+			t.Errorf("a stated reason was not taken: %s", report)
+		}
+	}
+}
+
+// erringChat is a model that cannot answer (a 429, a timeout).
+type erringChat struct{}
+
+func (erringChat) Name() string                         { return "erring" }
+func (erringChat) IsReachable(ctx context.Context) bool { return true }
+func (erringChat) Chat(ctx context.Context, model string, messages []llm.Message, opts llm.Options) (llm.Result, error) {
+	return llm.Result{}, errors.New("HTTP 429: rate limited")
+}
+
+// A check before a commit that could not be made is "not checked", never a pass: an error or an unreadable answer from
+// the verifier or the case matrix is a point that reaches the approval.
+func TestAChecksErrorIsNotAPass(t *testing.T) {
+	portal := "Screen 1280x720. Active window: \"File Return | Portal - Chromium\"\n" +
+		`row "Documents issued | 451 | 458 | 8 | 0" (e13)`
+	action := `click button "FILE" (e1523) in "File Return | Portal - Chromium": it files something on your behalf`
+	for name, rc := range map[string]RunContext{
+		"error":      {Ctx: context.Background(), Provider: erringChat{}, Model: "m", OnLog: func(string) {}},
+		"unreadable": weighRC(&scriptedChat{replies: []string{"sorry, I cannot", "sorry, I cannot"}}),
+	} {
+		st := &operatorState{Hosted: true, Request: "file the return", Listings: []string{portal}}
+		verified := (&OperatorSkill{}).verifyCommit(rc, st, action)
+		if len(verified) != 1 || !verified[0].Unchecked || !strings.Contains(verified[0].What, "Not checked") {
+			t.Errorf("%s: verifier points = %+v, want one not-checked point", name, verified)
+		}
+		matrix := (&OperatorSkill{}).caseMatrix(rc, st, action)
+		if len(matrix) != 1 || !matrix[0].Unchecked {
+			t.Errorf("%s: case matrix points = %+v, want one not-checked point", name, matrix)
+		}
 	}
 }

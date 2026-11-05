@@ -77,7 +77,7 @@ export_host_mounts
 
 # No --build: existing desktop_* containers and volumes, and the decurix-data
 # volume (task history, chats, worker memory), are untouched.
-docker compose up -d
+docker compose -f docker-compose.yaml ${DECURIX_COMPOSE_OVERRIDE:+-f "$DECURIX_COMPOSE_OVERRIDE"} up -d
 
 echo ""
 echo "=== Waiting for dashboard ==="
@@ -138,7 +138,8 @@ fi
 echo ""
 echo "=== Starting Cloudflare Tunnel ==="
 
-if ! command -v cloudflared >/dev/null 2>&1; then
+# cloudflared is needed only for the public link, which is off unless DECURIX_PUBLIC_LINK=1 (lib/lan-tunnel.sh).
+if public_link_enabled && ! command -v cloudflared >/dev/null 2>&1; then
     echo "cloudflared is not installed (optional quick tunnel skipped)."
     echo "Decurix is still running locally at http://127.0.0.1:8080."
     echo "Install via: brew install cloudflared"

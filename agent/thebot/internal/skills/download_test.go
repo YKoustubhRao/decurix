@@ -11,7 +11,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"thebot/internal/netguard"
 	"thebot/internal/workspace"
 )
 
@@ -21,17 +23,24 @@ func newDownloadRC(t *testing.T) RunContext {
 	if err != nil {
 		t.Fatalf("workspace.New() error = %v", err)
 	}
+	// These tests' pages are httptest servers on loopback, which the guarded
+	// client refuses (TestDownloadRefusesNonPublicAddresses).
+	old := fetchClient
+	fetchClient = http.DefaultClient
+	t.Cleanup(func() { fetchClient = old })
 	return RunContext{Ctx: context.Background(), Workspace: ws, OnLog: func(string) {}}
 }
 
-// The real bug this pins: "download the PDF files from the URL found"
-// (the exact phrasing a 2-step search-then-download plan produces) has
-// no URL in its own text. Without falling back to what the earlier
-// search step actually found, this failed on every single compound
-// download request.
-func TestDownloadFallsBackToURLFromPriorFindings(t *testing.T) {
+// "download the PDF files from the URL found" (the phrasing a 2-step
+// search-then-download plan produces) names no URL. The URL an earlier step's
+// prose mentions is NOT taken: that prose may be a model's summary of a page
+// (or a page's injected text), not a page anything fetched. Only what a
+// verified step recorded fetching (Meta, TestDownloadRecoversURLWhenSearchSynthesisWasWrong) is.
+func TestDownloadDoesNotTakeAURLFromPriorProse(t *testing.T) {
+	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`report.pdf`))
+		hits++
+		w.Write([]byte("%PDF-1.4 report"))
 	}))
 	defer srv.Close()
 	fileURL := srv.URL + "/report.pdf"
@@ -41,17 +50,69 @@ func TestDownloadFallsBackToURLFromPriorFindings(t *testing.T) {
 		Subtask:  Subtask{Step: "search the web for the filing"},
 		Output:   "Found the filing at " + fileURL + " according to the source.",
 		Verified: true,
+		Meta:     map[string]any{MetaModelReply: true},
 	}}
 
 	res, err := NewDownload().Run(rc, Subtask{Step: "download the PDF files from the URL found", Type: "download"})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if !res.Verified {
-		t.Fatalf("Run() not verified: %s", res.Output)
+	if res.Verified || hits != 0 {
+		t.Fatalf("downloaded a URL only a model's summary named (verified=%v, hits=%d): %s", res.Verified, hits, res.Output)
 	}
-	if !strings.Contains(res.Output, "report.pdf") {
-		t.Errorf("Output = %q, want it to reflect the downloaded file", res.Output)
+}
+
+// A plan step naming a URL neither the request nor a fetched page gave is not
+// followed - a planner (a model) may have copied it from a summary.
+func TestDownloadIgnoresAStepURLTheRequestDidNotGive(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Write([]byte("%PDF-1.4 x"))
+	}))
+	defer srv.Close()
+
+	rc := newDownloadRC(t)
+	rc.OriginalPrompt = "find the annual report and download it"
+	res, _ := NewDownload().Run(rc, Subtask{Step: "download " + srv.URL + "/annual.pdf", Type: "download"})
+	if res.Verified || hits != 0 {
+		t.Fatalf("followed a URL the request never gave (verified=%v, hits=%d): %s", res.Verified, hits, res.Output)
+	}
+
+	rc.OriginalPrompt = "download " + srv.URL + "/annual.pdf please"
+	res, _ = NewDownload().Run(rc, Subtask{Step: "download " + srv.URL + "/annual.pdf", Type: "download"})
+	if !res.Verified {
+		t.Fatalf("a URL the request gave was not downloaded: %s", res.Output)
+	}
+}
+
+// The guarded client never reaches loopback (the control plane's published
+// port, soul, the agent API, Chrome's debugging port), private or link-local
+// addresses (the metadata service) - including through a redirect.
+func TestDownloadRefusesNonPublicAddresses(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Write([]byte("%PDF-1.4 internal"))
+	}))
+	defer srv.Close()
+
+	rc := newDownloadRC(t)
+	fetchClient = netguard.Client(0) // the production client, not the test's
+	for _, u := range []string{
+		srv.URL + "/x.pdf",
+		"http://169.254.169.254/latest/meta-data/iam.json",
+		"http://10.0.0.1:8080/api/desktops.json",
+		"http://[::1]:4900/report.pdf",
+		"http://localhost:9222/json",
+	} {
+		res, _ := NewDownload().Run(rc, Subtask{Step: "download " + u, Type: "download"})
+		if res.Verified {
+			t.Errorf("downloaded %s: %s", u, res.Output)
+		}
+	}
+	if hits != 0 {
+		t.Errorf("the loopback server was reached %d time(s)", hits)
 	}
 }
 
@@ -285,5 +346,114 @@ func TestDownloadRecoversFromUABlock(t *testing.T) {
 	}
 	if string(data) != "%PDF-1.4 real bytes" {
 		t.Errorf("saved file content = %q, want the real fetched bytes", data)
+	}
+}
+
+// A login page served under invoice.pdf is not an invoice: it is not saved
+// and the step is not verified.
+func TestDownloadRefusesAPageServedUnderAFileName(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte("<!DOCTYPE html><html><body><form>Sign in</form></body></html>"))
+	}))
+	defer srv.Close()
+
+	rc := newDownloadRC(t)
+	res, _ := NewDownload().Run(rc, Subtask{Step: "download " + srv.URL + "/invoice.pdf", Type: "download"})
+	if res.Verified {
+		t.Fatalf("an HTML page saved as invoice.pdf was verified: %s", res.Output)
+	}
+	if _, err := os.Stat(filepath.Join(rc.Workspace.Root(), "downloads", "invoice.pdf")); err == nil {
+		t.Error("the HTML page was saved as invoice.pdf")
+	}
+	if !strings.Contains(res.Output, "not a PDF") {
+		t.Errorf("Output = %q, want it to say what came back", res.Output)
+	}
+}
+
+// Every file asked for must be saved: 1 of 2 is not the download asked for.
+func TestDownloadVerifiesOnlyWhenEveryFileIsSaved(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/list":
+			w.Write([]byte(`<a href="/a.pdf">a</a><a href="/b.pdf">b</a>`))
+		case "/a.pdf":
+			w.Write([]byte("%PDF-1.4 a"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	rc := newDownloadRC(t)
+	res, _ := NewDownload().Run(rc, Subtask{Step: "download the pdf files from " + srv.URL + "/list", Type: "download"})
+	if res.Verified {
+		t.Fatalf("1 of 2 files was verified: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "1 of 2") {
+		t.Errorf("Output = %q, want it to say how much was saved", res.Output)
+	}
+}
+
+// One fetch never reads without bound.
+func TestFetchBytesIsBounded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(bytes.Repeat([]byte("x"), 4096))
+	}))
+	defer srv.Close()
+	newDownloadRC(t) // lets this test reach its loopback server
+	if _, err := fetchBytes(context.Background(), srv.URL, 5*time.Second, 1024); err == nil {
+		t.Fatal("a 4 KB body was read whole under a 1 KB bound")
+	}
+	if data, err := fetchBytes(context.Background(), srv.URL, 5*time.Second, 8192); err != nil || len(data) != 4096 {
+		t.Fatalf("within the bound: %d bytes, %v", len(data), err)
+	}
+}
+
+func TestContentMismatch(t *testing.T) {
+	for _, c := range []struct {
+		ext, data string
+		ok        bool
+	}{
+		{"pdf", "%PDF-1.7\n...", true},
+		{"pdf", "<html>login</html>", false},
+		{"xlsx", "PK\x03\x04rest", true},
+		{"xlsx", "<!doctype html>", false},
+		{"csv", "a,b\n1,2\n", true},
+		{"csv", "<html><body>error</body></html>", false},
+		{"json", `{"a": 1}`, true},
+		{"json", "<html></html>", false},
+		{"html", "<html></html>", true},
+		{"html", "\x1f\x8b\x08\x00gz", false},
+	} {
+		if got := contentMismatch(c.ext, []byte(c.data)) == ""; got != c.ok {
+			t.Errorf("contentMismatch(%s, %q) ok = %v, want %v", c.ext, c.data, got, c.ok)
+		}
+	}
+}
+
+// A later job's download never overwrites an earlier job's file of the same name (review T-30).
+func TestADownloadKeepsAnEarlierJobsFile(t *testing.T) {
+	body := "a,b\n1,first\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/csv")
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	rc := newDownloadRC(t)
+	if res, _ := NewDownload().Run(rc, Subtask{Step: "download " + srv.URL + "/report.csv", Type: "download"}); !res.Verified {
+		t.Fatalf("first download: %+v", res)
+	}
+	body = "a,b\n2,second\n"
+	res, _ := NewDownload().Run(rc, Subtask{Step: "download " + srv.URL + "/report.csv", Type: "download"})
+	if !res.Verified || !strings.Contains(res.Output, "already there") {
+		t.Fatalf("second download: %+v", res)
+	}
+	first, err := os.ReadFile(filepath.Join(rc.Workspace.Root(), "downloads", "report.csv"))
+	if err != nil || string(first) != "a,b\n1,first\n" {
+		t.Fatalf("the earlier file was overwritten: %q %v", first, err)
+	}
+	if second, err := os.ReadFile(filepath.Join(rc.Workspace.Root(), "downloads", "report_2.csv")); err != nil || string(second) != "a,b\n2,second\n" {
+		t.Fatalf("the new file: %q %v", second, err)
 	}
 }

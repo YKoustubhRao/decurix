@@ -54,6 +54,11 @@ func (s *Server) outboxCreateHandler(w http.ResponseWriter, r *http.Request) {
 		jsonStatusError(w, http.StatusBadRequest, "the draft is not valid JSON")
 		return
 	}
+	acting, ok := actingAs(w, r, in.DesktopID)
+	if !ok {
+		return
+	}
+	in.DesktopID = acting
 
 	d := outbox.Draft{
 		DesktopID: desktop.SanitizeID(in.DesktopID),
@@ -100,7 +105,7 @@ func (s *Server) outboxCreateHandler(w http.ResponseWriter, r *http.Request) {
 
 	saved, err := s.Outbox.Add(d)
 	if errors.Is(err, outbox.ErrInvalid) {
-		jsonStatusError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "outbox: "))
+		jsonStatusError(w, http.StatusBadRequest, strings.TrimPrefix(refusal(err), "outbox: "))
 		return
 	}
 	if err != nil {
@@ -250,7 +255,7 @@ func (s *Server) outboxSendHandler(w http.ResponseWriter, r *http.Request) {
 		// The person pressed Send and needs to know why it did not go; the
 		// reason is ours (mailtrigger wraps every failure) and this route is
 		// humansOnly.
-		jsonResponse(w, map[string]any{"status": outbox.StatusFailed, "note": sendErr.Error()})
+		jsonResponse(w, map[string]any{"status": outbox.StatusFailed, "note": refusal(sendErr)})
 		return
 	}
 

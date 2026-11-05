@@ -1,6 +1,8 @@
 import hashlib
+import math
 import os
 import re
+import unicodedata
 import urllib.parse
 from pathlib import Path
 
@@ -10,18 +12,90 @@ from decurix_agent.computer import elements as el
 # ============================================================
 # Secrets a request gives in plain words
 #
-# Found live (2026-10-20, round 5 P2): a request said "user clerk, password Northwind#2026"; a refused typing asked
-# the person 'I was about to type "clerk", "Northwind#2026", ...' - the password in the chat. And every command the
+# Found live (2026-10-20, round 5 P2): a request gave a user name and its password; a refused typing asked the
+# person 'I was about to type "<the user>", "<the password>", ...' - the password in the chat. And every command the
 # worker runs is shown as a step ("Running: gui type e5 ..."). So the secrets a request spells out are remembered at
 # the start of its task - as SHA-256 hashes only, never the text - and every line that reaches the chat, a step, a task
 # record or a recording has any word that is one of them replaced by [withheld].
 # ============================================================
 
-# A secret after its name in a request: "password Northwind#2026", "PIN: 4821", "api key=abc", "token is xyz".
+# "PIN" names a secret - a card's, an ATM's, a UPI or a login PIN - and an Indian address's postal code (six digits,
+# the first 1-9). Only a label that says it is a postal code is surely one: "PIN code", "Pincode", "Pin-code" (found in
+# review 2026-11-02, a GST or address form's "PIN code" field was taken for a secret and the worker stopped for a
+# person). A PIN named for a card, an ATM, UPI, a login or a bank stays a secret even when "code" follows it.
+_QUALIFIED_PIN = (r"(?:card|atm|upi|login|debit|credit|bank(?:ing)?|transaction|security|account)[\s_-]*pin"
+                  r"|m-?pin|t-?pin")
+PIN_WORD = r"(?:" + _QUALIFIED_PIN + r"|pin(?![\s_-]{0,3}code\b))"
+# A label that names a postal code in other words ("Postal code (PIN)", "ZIP / PIN").
+_POSTAL_LABEL = re.compile(r"(?i)\b(?:postal|post|zip)[\s_-]*code\b|\bzip\b")
+
+# A PIN and its value: "UPI PIN 4821", "ATM PIN code: 1234", "PIN: 576104", "PIN-560001", "pin '4821'". A PIN is
+# digits only (never "Mumbai" in "Pin: Mumbai 400001"), four to eight of them.
+PIN_VALUE = re.compile(
+    r"(?i)(?<![A-Za-z])(?P<label>" + _QUALIFIED_PIN + r"|pin)(?P<suffix>(?:[\s_-]*(?:code|number|no)\b\.?)?)"
+    r"(?:\s*(?:is|was)\s+|\s*[:=#-]?\s*)(?P<q>[\"'\u201c\u2018]?)(?P<value>\d{4,8})(?!\d)(?![A-Za-z])")
+# Words that make the PIN beside them a sign-in's or a payment's (recheck 2026-11-03).
+_PIN_SECRET_CUE = re.compile(
+    r"(?i)\b(?:log\s?in|sign\s?in|user(?:name|\s?id)?|password|passcode|otp|portal|net\s?banking|bank|card|atm|upi"
+    r"|secret|credential|enter|type|my|your|his|her|their|our)\b")
+# Words that make the PIN beside them an address's postal code.
+_PIN_ADDRESS_CUE = re.compile(
+    r"(?i)\b(?:address|addr|road|rd|street|st|lane|marg|nagar|colony|sector|layout|city|town|village|district|dist"
+    r"|taluk|tehsil|state|india|ship(?:ping)?\s+to|deliver(?:y|ed)?|billing|bill\s+to|postal|post|zip|floor"
+    r"|building|bldg|near|opp(?:osite)?|landmark|cross|main|east|west|north|south)\b")
+# A place's name right before the label ("Bengaluru PIN 560001", "Udupi, PIN: 576104", "Mumbai - PIN 400001"), as
+# against an English word that starts a sentence ("Your PIN", "The PIN", "Enter PIN").
+_PLACE_BEFORE = re.compile(r"\b([A-Z][a-z]{2,})\s*[,-]?\s*$")
+_NOT_A_PLACE = {"the", "your", "my", "his", "her", "their", "our", "its", "this", "that", "new", "old", "current",
+                "default", "temporary", "temp", "enter", "use", "with", "and", "same", "secret", "login", "user",
+                "type", "send", "share", "give", "also", "then", "please", "kindly", "card", "bank", "otp",
+                "password", "portal", "account", "transaction", "security", "debit", "credit", "upi", "atm", "here",
+                "set", "change", "reset", "valid", "wrong", "correct", "only", "is", "was"}
+
+
+def pin_kind(text, match):
+    """What a PIN_VALUE match in text is: "secret" (a card's, a bank's or a sign-in's), "postal" (an address's code)
+    or "unsure". Six digits after a bare "PIN" may be either; the words beside it decide, and with none that do it is
+    "unsure" - withheld where it is written, never remembered as a secret for everywhere (recheck 2026-11-03: a
+    remembered postal code hid every matching invoice total)."""
+
+    label, suffix, value = match.group("label"), match.group("suffix"), match.group("value")
+    if label.lower() != "pin":
+        return "secret"
+    if suffix.strip(" _-.").lower() == "code":
+        return "postal"
+    if len(value) != 6 or value[0] == "0":
+        return "secret"  # an Indian postal code is exactly six digits, the first 1-9
+    line_start = max(text.rfind("\n", 0, match.start()) + 1, match.start() - 60)
+    line_end = text.find("\n", match.end())
+    line_end = len(text) if line_end < 0 else line_end
+    line_end = min(line_end, match.end() + 30)
+    before, after = text[line_start:match.start()], text[match.end():line_end]
+    place = _PLACE_BEFORE.search(before)
+    place = place is not None and place.group(1).lower() not in _NOT_A_PLACE
+    address = place or _PIN_ADDRESS_CUE.search(before) is not None or _PIN_ADDRESS_CUE.search(after) is not None
+    secret = _PIN_SECRET_CUE.search(before) is not None or _PIN_SECRET_CUE.search(after) is not None
+    if place or (address and not secret):
+        return "postal"
+    return "secret" if secret else "unsure"
+
+
+def request_pins(text):
+    """The PINs a request gives that are surely secrets: [value]."""
+
+    return [m.group("value") for m in PIN_VALUE.finditer(text or "") if pin_kind(text, m) == "secret"]
+
+
+# A secret after its name in a request: "password Northwind#2026", "api key=abc", "token is xyz". (A PIN is
+# PIN_VALUE's.) The value runs to a space or a quote: "password: Abc;123xyz" is all secret (review 2026-11-03: the
+# part after ";" got through); the punctuation that ends it ("x9y8z7);") is left out.
 REQUEST_SECRET = re.compile(
-    r"(?i)\b(?:pass(?:word|code|phrase)|pwd|pin|otp|one[- ]time (?:code|password)|token|api[ _-]?key|secret(?: key)?)"
-    r"\b\s*(is\s+|[:=]\s*)?([\"'\u201c\u2018]?)([^\s\"'\u201d\u2019,;)\]]{3,200})")
+    r"(?i)\b(?P<label>pass(?:word|code|phrase)|pwd|otp|one[- ]time (?:code|password)|token|api[ _-]?key|secret(?: key)?)"
+    r"\b\s*(is\s+|[:=]\s*)?([\"'\u201c\u2018]?)([^\s\"'\u201d\u2019]{2,199}?[^\s\"'\u201d\u2019.,;:!?)\]])(?=[.,;:!?)\]]*(?:[\s\"'\u201d\u2019]|$))")
 _WORD = re.compile(r"[^\s\"'\u201c\u201d\u2018\u2019(),;<>\[\]{}=]+")
+# A whole word between spaces or quotes, checked as well as its parts: a password with a ";" or "," in it is one
+# word here and two for _WORD.
+_SPACED_WORD = re.compile(r"[^\s\"'\u201c\u201d\u2018\u2019<>]+")
 _MAX_KEPT = 200
 
 
@@ -35,15 +109,37 @@ def _hash(text):
 
 
 def request_secrets(text):
-    """The secrets a request's own words give after their names (a password, a PIN, a key): [text]."""
+    """The secrets a request's own words give after their names (a password, a PIN, a key) and the card numbers it
+    spells out: [text]."""
 
     # Said as one ("password is x", "pin: x", quoted), any word; written straight after the name, only what has a
     # digit or a mark in it. Found live (2026-10-22): "No OTP has come to the client's phone yet" kept "has"
     # as a secret, and every "has" of every later reply and step read "[withheld]".
-    found = [m.group(3).rstrip(".!?") for m in REQUEST_SECRET.finditer(text or "")
-             if m.group(1) or m.group(2) or not m.group(3).rstrip(".!?").isalpha()]
-    found += [m.group(1) for m in SPOKEN_SECRET.finditer(text or "")]
+    text = text or ""
+    found = [m.group(4).rstrip(".!?") for m in REQUEST_SECRET.finditer(text) if _request_value(m)]
+    found += [m.group(1) for m in SPOKEN_SECRET.finditer(text)]
+    found += request_pins(text)
+    found += [re.sub(r"\D", "", text[a:b]) for a, b in _card_spans(text)]
     return [s for s in dict.fromkeys(found) if len(s) >= 3 and s.lower() not in {"for", "the", "and", "from", "field"}]
+
+
+def _request_value(m):
+    """Whether a REQUEST_SECRET match holds a secret's value. Said as one ("is", ":", quoted), any word but a label;
+    written straight after a password's or a code's name, only what has a digit or a mark in it; straight after
+    "token", "secret" or "key", only a machine's token (long, letters and digits) - "token number: 7781" and "Ack
+    token 112233445566" are a queue's and a reference's numbers (recheck 2026-11-03: "number:" was remembered and
+    withheld everywhere). A folder is never one ("pwd /home/user/work")."""
+
+    value = m.group(4).rstrip(".!?:")
+    if not value or value.startswith(("/", "~")):
+        return False
+    if value.isalpha() and value.lower() in {"number", "no", "code", "id", "field", "box", "reset"}:
+        return False
+    if m.group(2) or m.group(3):
+        return True
+    if m.group("label").lower().startswith(("token", "api", "secret")):
+        return len(value) >= 16 and re.search(r"[A-Za-z]", value) is not None and re.search(r"\d", value) is not None
+    return not value.isalpha()
 
 
 def remember_secrets(text):
@@ -51,12 +147,22 @@ def remember_secrets(text):
 
     try:
         hashes = [_hash(s) for s in request_secrets(text)]
-        if not hashes:
-            return
+    except Exception:  # noqa: BLE001 - remembering is a safety net, never a failure of the task
+        return
+    _keep_hashes(hashes)
+
+
+def _keep_hashes(hashes):
+    """Add hashes to the secrets file. When it cannot be written they are still withheld in this process (_unsaved):
+    a secret not remembered must not be a secret let through. Never raises."""
+
+    if not hashes:
+        return
+    try:
         path = _secrets_file()
         path.parent.mkdir(parents=True, exist_ok=True)
         kept = [h for h in path.read_text(encoding="utf-8").split() if h] if path.exists() else []
-        kept = list(dict.fromkeys(kept + hashes))[-_MAX_KEPT:]
+        kept = list(dict.fromkeys(kept + list(hashes)))[-_MAX_KEPT:]
         path.write_text("\n".join(kept) + "\n", encoding="utf-8")
         try:
             os.chmod(path, 0o600)
@@ -64,54 +170,504 @@ def remember_secrets(text):
             pass
         _known_cache.clear()
     except Exception:  # noqa: BLE001 - remembering is a safety net, never a failure of the task
-        pass
+        _unsaved.update(hashes)
 
 
 _known_cache = {}
+# Hashes this process could not write to the secrets file (_keep_hashes): still withheld here.
+_unsaved = set()
+
+
+class _Unreadable(Exception):
+    """The secrets file is there but cannot be read: what it holds cannot be withheld, so nothing is let through."""
 
 
 def _known():
     path = _secrets_file()
     try:
         stamp = path.stat().st_mtime_ns
-    except OSError:
-        return set()
+    except FileNotFoundError:
+        return set(_unsaved)
+    except OSError as exc:
+        raise _Unreadable(str(exc)) from exc
     if _known_cache.get("stamp") != stamp:
         try:
             _known_cache.update(stamp=stamp, hashes=set(path.read_text(encoding="utf-8").split()))
-        except OSError:
-            return set()
-    return _known_cache.get("hashes", set())
+        except OSError as exc:
+            # Found in review (2026-11-02): an unreadable file read as "no secrets", and every one passed through.
+            raise _Unreadable(str(exc)) from exc
+    return _known_cache.get("hashes", set()) | _unsaved
 
 
 def known_secret_in(text):
-    """Whether text holds a word that is one of the request secrets remembered."""
+    """Whether text holds a word that is one of the request secrets remembered. True when it cannot be told (fail
+    closed: a text that cannot be checked is treated as holding one)."""
 
-    known = _known()
-    if not known or not text:
+    if not text:
         return False
-    return any(_hash(w) in known or _hash(w.rstrip(".:!?")) in known for w in _WORD.findall(str(text)))
+    try:
+        known = _known()
+        if not known:
+            return False
+        return any(_hash(w) in known or _hash(w.rstrip(".:!?")) in known for w in _WORD.findall(str(text)))
+    except Exception:  # noqa: BLE001 - fail closed
+        return True
+
+
+# What is shown in place of a text that could not be checked for secrets. Withholding fails closed: an error in it
+# never lets the text through (review 2026-11-02: every caller caught the error and sent the text as it was).
+HELD_BACK = "[held back: this text could not be checked for secrets]"
 
 
 def withhold_known(text):
-    """text with every word that is a remembered request secret replaced by [withheld] (and spoken secrets too)."""
+    """text with every word that is a remembered request secret replaced by [withheld], and every secret it spells
+    out (withhold_spoken_secrets). Never raises: a text that cannot be checked is replaced whole by HELD_BACK."""
 
-    if not text:
+    if text is None or text == "":
         return text
-    text = withhold_spoken_secrets(str(text))
+    try:
+        return _withhold_known(str(text))
+    except Exception:  # noqa: BLE001 - fail closed
+        return HELD_BACK
+
+
+# ============================================================
+# The task's secret values themselves (review round 2, B1)
+#
+# A hash per word cannot hold most secrets: a long message the person marked, a passphrase, a value with a quote mark
+# in it. So the values the task's requests and replies made secret are also kept as they are, for this task only, in a
+# file only the worker's processes share (the task file's ".secrets", in /tmp: memory, mode 0600), cleared when the
+# task ends. Every writer withholds them first: a value of 4 or more characters wherever it stands (whitespace aside),
+# a shorter one only where it stands as a whole token.
+# ============================================================
+
+MIN_SUBSTRING = 4
+_literal_cache = {}
+
+
+def _literal_file():
+    from decurix_agent import task_context
+    return Path(task_context.CURRENT_FILE + ".secrets")
+
+
+def _read_literals():
+    """{task id: [values]} of the tasks whose secret values are kept now."""
+
+    import json
+    path = _literal_file()
+    try:
+        stamp = path.stat().st_mtime_ns
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise _Unreadable(str(exc)) from exc
+    if _literal_cache.get("stamp") != stamp or _literal_cache.get("path") != str(path):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8") or "{}")
+        except (OSError, ValueError) as exc:
+            raise _Unreadable(str(exc)) from exc
+        tasks = {str(t): [" ".join(str(v).split()) for v in vs if str(v or "").strip()]
+                 for t, vs in (data.get("tasks") or {}).items() if isinstance(vs, list)}
+        _literal_cache.update(stamp=stamp, path=str(path), data=tasks)
+    return _literal_cache["data"]
+
+
+def _write_literals(tasks):
+    import json
+    import tempfile
+    path = _literal_file()
+    if not tasks:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"tasks": tasks}, ensure_ascii=False))
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, path)
+
+
+def _with_literals(change):
+    """Read, change and write the literal file under its lock (several processes keep values at once)."""
+
+    from decurix_agent import filelock
+    path = _literal_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(path) + ".lock", "a+") as lock:
+        filelock.exclusive(lock)
+        # A file that is there and cannot be read is never written over: that would drop every other task's values.
+        # The change fails (the caller keeps the values in this process, _unsaved_literals), and it is said (review
+        # round 3).
+        try:
+            tasks = dict(_read_literals())
+        except _Unreadable as exc:
+            from decurix_agent.logging_utils import log
+            log(f"privacy: the task's secret values file cannot be read, so it is kept as it is: {exc}")
+            raise
+        _write_literals(change(tasks))
+    _literal_cache.clear()
+
+
+def clean_values(values):
+    """Values as kept: whitespace collapsed, empties dropped, and never a withheld mark ("[withheld]" read back from a
+    withheld text, or one of its words) - withholding those would withhold the marks themselves."""
+
+    out = [" ".join(str(v).split()) for v in values or () if str(v or "").strip()]
+    return [v for v in out if "[withheld" not in v.lower() and "[held back" not in v.lower()]
+
+
+def remember_literals(values, task_id=""):
+    """Keep `values` as the task's secret values, as they are. Never raises; a value that cannot be kept is still
+    withheld in this process (_unsaved_literals)."""
+
+    values = clean_values(values)
+    if not values:
+        return
+
+    def add(tasks):
+        tasks[task_id or ""] = list(dict.fromkeys(tasks.get(task_id or "", []) + values))
+        return tasks
+    try:
+        _with_literals(add)
+    except Exception:  # noqa: BLE001 - kept in this process all the same
+        _unsaved_literals.update(values)
+
+
+def literals(task_id=None):
+    """The secret values kept for the task (every kept task's when None): as noted, whitespace collapsed."""
+
+    try:
+        tasks = _read_literals()
+    except _Unreadable:
+        return sorted(_unsaved_literals)
+    if task_id is not None:
+        return list(tasks.get(task_id, []))
+    return list(dict.fromkeys(v for vs in tasks.values() for v in vs))
+
+
+def clear_literals(task_id):
+    """The task is over: its secret values are let go, with the values of a request that named no task (an old control
+    plane's: nothing else ever ends them - review round 4) and the task's resume copies (keep_resume_copy)."""
+
+    def drop(tasks):
+        tasks.pop(task_id or "", None)
+        tasks.pop("", None)
+        return tasks
+    try:
+        _with_literals(drop)
+        _unsaved_literals.clear()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        _with_resume(lambda kept: {k: v for k, v in kept.items() if v.get("task") != (task_id or "")})
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        # The person's questions and answers of the task (guidance.note_exchange): read by the task's own checks only,
+        # and in no bundle - let go with its other secret stores (review round 9).
+        from decurix_agent import guidance
+        if task_id:
+            guidance.forget_exchanges(task_id)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ============================================================
+# A planned run's resume copy of its request (review round 4)
+#
+# A planned run keeps its request to resume by, and every store on disk keeps it withheld - so a run resumed after an
+# agent restart had "[withheld]" where a password was. The request as it was is kept here instead: beside the task's
+# secret values, in tmpfs (the task file's ".secrets.resume"), 0600, let go at the task's final report. Only a container
+# restart loses it, and that already reports the task as interrupted. The task's own request, as it is, is kept here
+# too when its kept copy is withheld: what its checks read (task_context.current_request, review round 6).
+# ============================================================
+
+def _resume_file():
+    from decurix_agent import task_context
+    return Path(task_context.CURRENT_FILE + ".secrets.resume")  # (beside the task's secret values: one store)
+
+
+def _read_resume():
+    import json
+    try:
+        data = json.loads(_resume_file().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise _Unreadable(str(exc)) from exc
+    return {str(k): v for k, v in data.items() if isinstance(v, dict) and isinstance(v.get("text"), str)} \
+        if isinstance(data, dict) else {}
+
+
+def _with_resume(change):
+    """Read, change and write the resume copies under the literal store's lock. An unreadable file is kept."""
+
+    import json
+    import tempfile
+    from decurix_agent import filelock
+    path = _resume_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(_literal_file()) + ".lock", "a+") as lock:
+        filelock.exclusive(lock)
+        kept = change(dict(_read_resume()))
+        if not kept:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            return
+        fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(kept, ensure_ascii=False))
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+
+
+def keep_resume_copy(key, task_id, text):
+    """Keep `text` (a request with its secrets) to resume the run `key` by, for the task. Never raises."""
+
+    try:
+        _with_resume(lambda kept: dict(kept, **{str(key): {"task": task_id or "", "text": str(text or "")}}))
+    except Exception:  # noqa: BLE001 - the withheld copy on disk is still there; the resume then asks
+        pass
+
+
+def resume_copy(key):
+    """The request kept to resume the run `key` by, or None (a container restarted, or the task ended)."""
+
+    try:
+        found = _read_resume().get(str(key))
+    except Exception:  # noqa: BLE001
+        return None
+    return found["text"] if found else None
+
+
+_unsaved_literals = set()
+
+
+_MARKER = "[withheld]"
+
+
+def _letter_or_digit(ch):
+    """Unicode general category L* or Nd - nothing else (str.isalnum is also true for No and Nl: "\u00b2", "\u2165")."""
+
+    import unicodedata
+    category = unicodedata.category(ch)
+    return category[0] == "L" or category == "Nd"
+
+
+def withhold_values(text, values):
+    """
+    `text` with each held value withheld, by the rule the control plane applies too (llmrec.ReplaceHeld; shared vectors
+    in internal/llmrec/testdata/held-values.json, H-CP-9): a value of MIN_SUBSTRING or more code points wherever it
+    occurs, as a substring; a shorter one only as a whole token (the code point before and after it each not a letter
+    or digit - _letter_or_digit - or the text's start or end). Values longest first by code points, ties in the order
+    given, in one pass over the original text: an occurrence overlapping one already chosen, or a [withheld] marker
+    already there, is skipped. Each occurrence becomes [withheld].
+    """
+
+    if not text or not values:
+        return text
+    taken = []  # (start, end) spans chosen, and the markers already in the text
+    at = text.find(_MARKER)
+    while at != -1:
+        taken.append((at, at + len(_MARKER)))
+        at = text.find(_MARKER, at + 1)
+
+    def free(a, b):
+        return all(b <= x or a >= y for x, y in taken)
+
+    order = sorted(dict.fromkeys(v for v in values if v), key=len, reverse=True)  # (stable: ties as given)
+    chosen = []
+    for value in order:
+        at = text.find(value)
+        while at != -1:
+            end = at + len(value)
+            whole = (len(value) >= MIN_SUBSTRING
+                     or ((at == 0 or not _letter_or_digit(text[at - 1]))
+                         and (end == len(text) or not _letter_or_digit(text[end]))))
+            if whole and free(at, end):
+                taken.append((at, end))
+                chosen.append((at, end))
+            at = text.find(value, at + 1)
+    if not chosen:
+        return text
+    out, last = [], 0
+    for a, b in sorted(chosen):
+        out.append(text[last:a])
+        out.append(_MARKER)
+        last = b
+    out.append(text[last:])
+    return "".join(out)
+
+
+def withhold_spaced(text, values):
+    """withhold_values, and before it each value of several words wherever it stands with other spacing between them
+    (a line break where the value had a space): values are kept with their whitespace collapsed, so a marked message
+    copied into a longer text with its line breaks is still withheld whole (review round 3). Only ever more is withheld
+    than the shared rule withholds."""
+
+    if not text or not values:
+        return text
+    for value in sorted({v for v in values if v and " " in v}, key=len, reverse=True):
+        pattern = r"\s+".join(re.escape(w) for w in value.split(" "))
+        text = re.sub(pattern, lambda m: m.group(0) if m.group(0) == value else _MARKER, text)
+    return withhold_values(text, values)
+
+
+def _withhold_literals(text):
+    tasks = _read_literals()  # raises _Unreadable: the callers fail closed
+    values = [v for vs in tasks.values() for v in vs] + sorted(_unsaved_literals)
+    return withhold_held(text, values)
+
+
+def _withhold_known(text, shapes=True):
+    text = _withhold_literals(text)
+    if shapes:
+        text = _withhold_shapes(text)
     known = _known()
     if not known:
         return text
 
+    def is_known(word):
+        return _hash(word) in known
+
     def hide(match):
         word = match.group(0)
-        if _hash(word) in known:
+        if is_known(word):
             return "[withheld]"
-        bare = word.rstrip(".:!?")
-        if bare != word and _hash(bare) in known:
+        bare = word.rstrip(".:!?,;")
+        if bare != word and is_known(bare):
             return "[withheld]" + word[len(bare):]
         return word
-    return _WORD.sub(hide, text)
+
+    # A remembered card number written with spaces or dashes ("4111 1111 1111 1111") is one number.
+    def hide_card(match):
+        return "[withheld]" if is_known(re.sub(r"\D", "", match.group(0))) else match.group(0)
+    text = CARD_NUMBER.sub(hide_card, text)
+    return _WORD.sub(hide, _SPACED_WORD.sub(hide, text))
+
+
+class WithholdError(OSError):
+    """What was to be written could not be checked for secrets, so nothing was written (write_scrubbed)."""
+
+
+def _withhold_tree(obj, shapes, exempt=frozenset()):
+    """`obj` (what JSON holds) with every string in it - keys too - through _withhold_known: string by string, so the
+    JSON written stays JSON (a text pass over the dumped JSON could take a quote with a "password": "..." value). The
+    value of a key named in `exempt`, wherever it stands, is withheld without shapes (literal secrets only)."""
+
+    if isinstance(obj, str):
+        return _withhold_known(obj, shapes=shapes) if obj else obj
+    if isinstance(obj, dict):
+        return {(_withhold_tree(k, shapes) if isinstance(k, str) else k):
+                _withhold_tree(v, shapes and k not in exempt, exempt) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_withhold_tree(v, shapes, exempt) for v in obj]
+    return obj
+
+
+def _mkstemp_once_more(path):
+    """A temporary file beside `path`, tried once more on an error Windows gives under load and then not again
+    (EINVAL, or WinError 1450 "insufficient system resources"): a checkpoint write that failed once failed a run's
+    creation (review round 5). Any other error, or the second, is raised."""
+
+    import errno
+    import tempfile
+    for attempt in (1, 2):
+        try:
+            return tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=str(path.parent))
+        except OSError as exc:
+            transient = exc.errno == errno.EINVAL or getattr(exc, "winerror", None) == 1450
+            if attempt == 2 or not transient:
+                raise
+            import time
+            time.sleep(0.05)
+
+
+def write_scrubbed(path, content, append=False, atomic=False, private=False, shapes=True, newline=None, json_kw=None,
+                   end="", exempt=()):
+    """
+    The one way the agent's code writes desktop state (~/.decurix, /tmp/decurix-*): `content` with every secret known
+    withheld first - the tasks' values as they are (remember_literals), the hashed words, and, with `shapes` (the
+    default), every credential its shape or its name spells out - then written. A string is written as it comes out;
+    anything else (a dict, a list) is withheld string by string and written as JSON (`json_kw`: json.dumps' options),
+    then `end` ("\\n" for a line of a .jsonl). `append` adds it to the file; `atomic` writes a temporary file of this
+    writer's own, flushed to disk, and puts it in place (a reader never sees half of it); `private` makes the file
+    0600. `shapes=False` is for stores whose values the agent compares later (a record's 16-digit account is no card
+    to withhold there): their literal secrets are still withheld. `exempt` names the keys of a dict or list whose
+    values are compared later (a field's value, a run's claim token): only those are withheld without shapes (review
+    round 4).
+
+    Raises WithholdError (an OSError: every writer's existing "could not write" path) when the content cannot be
+    checked: what cannot be checked is never written (fail closed). agent/tests/test_writers_withhold.py fails for any
+    other way of writing a file in the agent's code that is not on its short list, each with its reason (review
+    round 3).
+    """
+
+    import json
+    if isinstance(content, (bytes, bytearray)):
+        raise TypeError("write_scrubbed writes text; bytes are written only by the listed writers")
+    try:
+        if isinstance(content, str):
+            safe = _withhold_known(content, shapes=shapes) if content else content
+        else:
+            safe = json.dumps(_withhold_tree(content, shapes, frozenset(exempt)), **(json_kw or {}))
+        safe += end
+    except Exception as exc:  # noqa: BLE001 - fail closed: nothing is written
+        raise WithholdError(f"{getattr(path, 'name', path)} was not written: its content could not be checked for "
+                            f"secrets ({exc})")
+    if not isinstance(path, (str, Path)):
+        # A stand-in a test put where a folder is (a mock): written through as it would have been.
+        return path.write_text(safe, encoding="utf-8")
+    path = Path(path)
+    if append:
+        with open(path, "a", encoding="utf-8", newline=newline) as f:
+            f.write(safe)
+    elif atomic:
+        fd, tmp = _mkstemp_once_more(path)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as f:
+                f.write(safe)
+                f.flush()
+                os.fsync(f.fileno())
+            if private:
+                try:
+                    os.chmod(tmp, 0o600)
+                except OSError:
+                    pass
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return path
+    else:
+        with open(path, "w", encoding="utf-8", newline=newline) as f:
+            f.write(safe)
+    if private:
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    return path
+
+
+def safe_text(text):
+    """withhold_known for anything a caller is about to send off the desktop: a str (or None) always comes back, and
+    an error means HELD_BACK, never the text."""
+
+    return withhold_known(text)
 
 
 # ============================================================
@@ -154,7 +710,7 @@ SECRET_AUTOCOMPLETE = {
 
 # A field labelled for a secret, when the toolkit does not say so itself.
 SECRET_LABEL = re.compile(
-    r"\b(pass(word|code|phrase)|pin|otp|one[- ]time (code|password|pin)|verification code"
+    r"\b(pass(word|code|phrase)|" + PIN_WORD + r"|otp|one[- ]time (code|password|pin)|verification code"
     r"|security code|2fa|mfa|totp|cvv2?|cvc2?|csc|card number|credit card"
     r"|api[ _-]?key|secret( key)?|access token|auth(entication)? token|private key)\b",
     re.IGNORECASE,
@@ -177,6 +733,37 @@ CREDENTIALS = [
 # holds 13 digits that may pass the checksum). Found live (2026-10-25): a message to a client quoting two such numbers was
 # withheld whole as "a card number", and the person asked to approve sending it was shown nothing of it.
 CARD_NUMBER = re.compile(r"(?<![\w-])\d(?:[ -]?\d){12,18}(?![\w-])")
+# What a card number is written as: groups of four (Amex 4-6-5) split by spaces or dashes.
+_CARD_GROUPED = re.compile(r"^\d{4}([ -])\d{4}\1\d{4}\1\d{1,7}$|^\d{4}([ -])\d{6}\2\d{4,5}$")
+# The word that last names the number before it: a card's, or another identifier's (an account, an order, a
+# reference), which a long number that passes the card checksum often is (one in ten does).
+_CARD_WORD = re.compile(r"(?i)\b(?:card|credit|debit|visa|master\s?card|rupay|amex|maestro|cc)\b")
+_NOT_CARD_WORD = re.compile(
+    r"(?i)\b(?:a/c|account|acct|order|invoice|inv|ref(?:erence)?|utr|awb|tracking|total|amount|phone|mobile"
+    r"|aadhaa?r|uan|policy|folio|ack(?:nowledge?ment)?|irn|txn|transaction|po|bill|voucher|serial|imei)\b")
+
+
+def _card_spans(text):
+    """The (start, end) of every card number text spells out: a number that passes the card checksum and is written
+    as one (grouped in fours) or named as one ("card no 4111111111111111"), unless the word before names another
+    identifier ("A/c 50100123456789" is an account)."""
+
+    spans = []
+    for match in CARD_NUMBER.finditer(text or ""):
+        raw = match.group(0)
+        digits = re.sub(r"\D", "", raw)
+        if not (13 <= len(digits) <= 19 and _luhn(digits)):
+            continue
+        before = text[max(0, match.start() - 30):match.start()]
+        card = list(_CARD_WORD.finditer(before))
+        other = list(_NOT_CARD_WORD.finditer(before))
+        last_card = card[-1].end() if card else -1
+        last_other = other[-1].end() if other else -1
+        if last_other > last_card:
+            continue
+        if last_card >= 0 or _CARD_GROUPED.match(raw):
+            spans.append((match.start(), match.end()))
+    return spans
 
 # Query parameters whose values are credentials more often than not.
 SECRET_PARAM = re.compile(r"pass|pwd|secret|token|key|auth|session|sig|otp|code|credential", re.IGNORECASE)
@@ -209,8 +796,16 @@ def secret_field(element):
     if set((handle.get("autocomplete") or "").lower().split()) & SECRET_AUTOCOMPLETE:
         return "field for a password, code or card number"
 
-    if element.get("role") in TEXT_ENTRY_ROLES and SECRET_LABEL.search(element.get("name") or ""):
-        return "field labelled for a secret"
+    name = element.get("name") or ""
+    if element.get("role") in TEXT_ENTRY_ROLES and SECRET_LABEL.search(name):
+        # A field the page marks as a postal code (autocomplete=postal-code), or whose label names one ("Postal code
+        # (PIN)"), is an address's PIN code - when a bare "PIN" is the label's only secret word. Anything else stays
+        # a secret field.
+        postal = ("postal-code" in (handle.get("autocomplete") or "").lower().split()) or _POSTAL_LABEL.search(name)
+        only_bare_pin = (not re.search(r"(?i)\b(?:" + _QUALIFIED_PIN + r")\b", name)
+                         and not SECRET_LABEL.search(re.sub(r"(?i)\bpin\b", " ", name)))
+        if not (postal and only_bare_pin):
+            return "field labelled for a secret"
 
     return None
 
@@ -226,17 +821,33 @@ def _luhn(digits):
 
 
 def credential_in(text):
-    """The kind of credential a piece of text looks like, or None."""
+    """The kind of credential a piece of text looks like, or None. Fails closed: a text that cannot be checked is
+    "text that could not be checked for secrets", never None."""
 
     if not text:
         return None
+    try:
+        return _credential_in(str(text))
+    except Exception:  # noqa: BLE001 - fail closed
+        return "text that could not be checked for secrets"
 
+
+def _credential_in(text):
     if known_secret_in(text):
         return "password the request gave"
 
     for label, pattern in CREDENTIALS:
         if pattern.search(text):
             return label
+
+    for label, pattern, group in GENERIC_SECRETS:
+        for match in pattern.finditer(text):
+            if _is_secret_value(label, match.group(group) if group else match.group(0)):
+                return label
+
+    for match in PIN_VALUE.finditer(text):
+        if pin_kind(text, match) != "postal":
+            return "PIN"
 
     for match in CARD_NUMBER.finditer(text):
         digits = re.sub(r"\D", "", match.group(0))
@@ -246,31 +857,316 @@ def credential_in(text):
     return None
 
 
-# A credential written out in a sentence: `the password "Ttlh"`, `pin: '1234'`. A task's
+# A credential written out in a sentence: `the password "Ttlh"`, `otp: '1234'`. A task's
 # own words often carry one, and a recording's title and description are shown to
-# anyone who opens the page and exported with it.
+# anyone who opens the page and exported with it. (A PIN is PIN_VALUE's: digits only, so "pin 'Mumbai'" is none.)
 SPOKEN_SECRET = re.compile(
-    r"(?i)\b(?:pass(?:word|code|phrase)|secret|token|api[ _-]?key|pin|otp|cvv2?)\b[^\"'\u201c\u2018\n]{0,20}?"
-    r"[\"'\u201c\u2018]([^\"'\u201d\u2019\n]{1,200})[\"'\u201d\u2019]"
+    r"(?i)\b(?:pass(?:word|code|phrase)|secret|token|api[ _-]?key|otp|cvv2?)\b[\"'\u201d\u2019]?[^\"'\u201c\u2018\n]{0,20}?"
+    r"[\"'\u201c\u2018]((?=[^\s\"'\u201d\u2019])[^\"'\u201d\u2019\n]{1,200})[\"'\u201d\u2019]"
 )
 
 
-# A credential written after its name and a colon or equals sign, unquoted: "- password: Lift$2026", "pwd=x". Found
-# live (2026-10-21): a worker's report listed the client's portal password read from the person's client
-# list. (Not "PIN": in an Indian address "PIN: 576104" is the postal code.)
+# A credential written after its name and a colon or equals sign, unquoted: "- password: Lift$2026", "pwd=x",
+# "DB_PASSWORD=x", "client_secret: x". Found live (2026-10-21): a worker's report listed the client's portal password
+# read from the person's client list. (Not "PIN": that is the PIN rule's, above. Not "tokens": a usage line's count.)
+_SECRET_NAME = (r"pass(?:word|code|phrase)|passwd|pwd|api[ _-]?(?:key|secret)|secret(?:[ _-]?key)?|client[ _-]?secret"
+                r"|access[ _-]?(?:key|token)|refresh[ _-]?token|auth(?:entication)?[ _-]?token|private[ _-]?key|token")
+# The value runs to a space or a quote ("password: Abc;123xyz" is all secret; review 2026-11-03 found the part after
+# ";" let through); the punctuation that ends it is left out.
 LABELLED_SECRET = re.compile(
-    r"(?i)\b(?:pass(?:word|code|phrase)|pwd|api[ _-]?key|secret(?: key)?|token)\b\s*[:=]\s*[`\"'“‘]?"
-    r"([^\s`\"'”’,;)\]]{3,200})")
+    r"(?i)(?<![A-Za-z])(?:" + _SECRET_NAME + r")(?![A-Za-z])\s*[:=]\s*[`\"'“‘]?([^\s`\"'”’]{2,199}?[^\s`\"'”’.,;:!?)\]])(?=[.,;:!?)\]]*(?:[\s`\"'”’]|$))")
+
+# Generic shapes of a secret written out, beyond the named credentials above (review 2026-11-02: only named secrets
+# were withheld). Each is unambiguous on its own or by the word next to it, so a figure, a date, a GSTIN, an invoice
+# number or a postal code is never one: (label, pattern, the group that is the secret - 0 for the whole match).
+GENERIC_SECRETS = [
+    ("private key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?"
+                               r"(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|\Z)"), 0),
+    # "Authorization: Bearer x", "Basic dXNlcjpwYXNz" (not "bearer cheque": the value must look like a token).
+    ("bearer token", re.compile(r"(?i)\b(?:bearer|basic)\s+([A-Za-z0-9._~+/-]{16,}=*)"), 1),
+    # https://user:password@host
+    ("password in a web address", re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s:/@]+:([^\s@/]+)@"), 1),
+    # ?access_token=x, &api_key=x, &sig=x
+    ("secret in a web address", re.compile(
+        r"(?i)[?&#;](?:[\w.-]*[_-])?(?:token|secret|password|passwd|pwd|apikey|api[_-]?key|key|access[_-]?key|signature"
+        r"|sig|otp|session(?:[_-]?id)?|auth)=([^&\s#\"'<>]+)"), 1),
+    ("password", LABELLED_SECRET, 1),
+    # "the password is Lift$2026", "Password Northwind2026" (a value with a digit or a mark: "the password is
+    # incorrect" and "password reset" are a screen's words; review 2026-11-03 found the form with no "is" let through).
+    ("password said", re.compile(r"(?i)(?<![A-Za-z])(?:pass(?:word|code|phrase)|passwd|pwd|api[ _-]?key|secret[ _-]?key"
+                            r"|client[ _-]?secret|access[ _-]?token)\s+(?:(?:is|was)\s+)?[`\"'“‘]?"
+                            r"([^\s`\"'”’]{2,199}?[^\s`\"'”’.,;:!?)\]])(?=[.,;:!?)\]]*(?:[\s`\"'”’]|$))"), 1),
+    # "OTP 529749", "verification code: 4821", "CVV 123".
+    ("one-time code", re.compile(r"(?i)(?<![A-Za-z])(?:otp|one[- ]time (?:code|password|passcode)|verification code"
+                                 r"|security code|auth(?:entication)? code|2fa code|mfa code|totp"
+                                 r"|log[- ]?in code|sign[- ]?in code|access code)(?![A-Za-z])"
+                                 r"[^\d\n]{0,12}?(?<!\d)(\d{4,8})(?!\d)"), 1),
+    ("card security code", re.compile(r"(?i)(?<![A-Za-z])(?:cvv2?|cvc2?)(?![A-Za-z])[^\d\n]{0,6}?(?<!\d)(\d{3,4})(?!\d)"),
+     1),
+    # A long random token next to a word that says what it is: "client key 9f8a7b...", "secret: a1B2...".
+    # (Not "key" alone: "the key figures" in a letter is no secret's name. Not past another identifier's name: in
+    # "e-invoice token generated, IRN 6f2b..." the hash is the IRN's - review 2026-11-03.)
+    ("key or token", re.compile(r"(?i)(?<![A-Za-z])(?:(?:api|access|secret|client|private|licen[cs]e)[ _-]?key|apikey"
+                                r"|secret|token|password|passwd|credentials?|signature)"
+                                r"(?![A-Za-z])(?:(?!\b(?:irn|hash|ack|utr|gstin|ref|reference|id|no|number|txn)\b)[^\n])"
+                                r"{0,30}?(?<![A-Za-z0-9+/_=.-])([A-Za-z0-9+/_=.-]{20,})"), 1),
+]
+
+def _tokenish(value):
+    """Whether a value reads as a machine's token rather than a word: a digit, a mark, or a capital after a small
+    letter."""
+
+    return bool(re.search(r"[\d+/=_~.-]", value) or re.search(r"[a-z][A-Z]", value))
+
+
+def _entropy(value):
+    counts = {}
+    for ch in value:
+        counts[ch] = counts.get(ch, 0) + 1
+    return -sum(n / len(value) * math.log2(n / len(value)) for n in counts.values())
+
+
+def _is_secret_value(label, value):
+    """Whether what a GENERIC_SECRETS pattern caught is a secret's value (and not already withheld)."""
+
+    value = value or ""
+    if not value or value.startswith("[withheld") or value.startswith("[held back"):
+        return False
+    if label in ("private key", "password in a web address", "one-time code", "card security code"):
+        return True
+    if label == "password said":
+        bare = value.rstrip(".!?:")
+        if bare.startswith(("/", "~", "./", "../")):
+            return False  # "pwd /home/user/work" is the shell's command and a folder
+        return re.search(r"[\d!@#$%^&*+=~|\\/<>]", bare) is not None or re.search(r"[a-z][A-Z]", bare) is not None
+    if label == "bearer token":
+        return len(value) >= 16 and _tokenish(value)
+    if label == "secret in a web address":
+        return len(value) >= 8 and _tokenish(value)
+    if label == "key or token":
+        return (re.search(r"[A-Za-z]", value) is not None and re.search(r"\d", value) is not None
+                and "@" not in value and _entropy(value) >= 3.5)
+    return True  # a password after its name
+
+
+def _withhold_pins(text):
+    """text with every PIN it gives withheld where it is written - a card's, a bank's, a sign-in's, and six digits after
+    a bare "PIN" that nothing marks as an address's - and every postal code kept ("Bengaluru PIN 560001")."""
+
+    def hide(m):
+        if pin_kind(text, m) == "postal":
+            return m.group(0)
+        start = m.start("value") - m.start(0)
+        return m.group(0)[:start] + "[withheld]"
+    return PIN_VALUE.sub(hide, text)
+
+
+def _withhold_cards(text):
+    """text with every card number it spells out (_card_spans) withheld."""
+
+    for start, end in reversed(_card_spans(text)):
+        text = text[:start] + "[withheld]" + text[end:]
+    return text
+
+
+def _withhold_shapes(text):
+    """text with every credential it spells out, by name or by shape, replaced by [withheld]. Raises on an error (the
+    callers fail closed)."""
+
+    text = _withhold_cards(_withhold_pins(text))
+    for label, pattern in CREDENTIALS:
+        if label != "private key":  # (the whole block goes, below - not its first line only)
+            text = pattern.sub("[withheld]", text)
+    for label, pattern, group in GENERIC_SECRETS:
+        def hide(m, label=label, group=group):
+            value = m.group(group) if group else m.group(0)
+            if not _is_secret_value(label, value):
+                return m.group(0)
+            if not group:
+                return "[withheld: " + label + "]"
+            start, end = m.start(group) - m.start(0), m.end(group) - m.start(0)
+            return m.group(0)[:start] + "[withheld]" + m.group(0)[end:]
+        text = pattern.sub(hide, text)
+    return SPOKEN_SECRET.sub(lambda m: m.group(0).replace(m.group(1), "[withheld]"), text)
 
 
 def withhold_spoken_secrets(text):
-    """`text` with any credential it spells out replaced by [withheld]."""
+    """`text` with any credential it spells out - after its name, quoted, or in a secret's own shape - replaced by
+    [withheld]. Fails closed: an error gives HELD_BACK, never the text."""
 
     if not text:
         return text
+    try:
+        return _withhold_shapes(str(text))
+    except Exception:  # noqa: BLE001 - fail closed
+        return HELD_BACK
 
-    text = SPOKEN_SECRET.sub(lambda m: m.group(0).replace(m.group(1), "[withheld]"), text)
-    return LABELLED_SECRET.sub(lambda m: m.group(0).replace(m.group(1), "[withheld]"), text)
+
+# A word of a marked message that has a value's shape: 4 or more characters with a digit or a mark (punctuation or a
+# symbol) in it - the shape _request_value takes for a value written straight after a password's name (review round 4,
+# R3-B1).
+_EDGE_PUNCTUATION = ".,;:!?\"'()[]{}"
+
+
+# A value kept to be withheld only where it stands as a whole token (the code point before and after it no letter or
+# digit), never as a substring: a word of a marked message (review round 5, R4-B1 - "2024" must not withhold
+# "INV-2024-0042"). Marked so in the task's store; plain_values takes the mark off for soul.
+WHOLE_TOKEN = "\x00token:"
+
+_EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+_URL = re.compile(r"(?i)(?:[a-z][a-z0-9+.-]*://|www\.)\S+")
+_HOST = re.compile(r"(?i)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+")
+_TIME_WORD = re.compile(r"(?i)\d{1,2}[:.]\d{2}(?::\d{2})?(?:[ap]\.?m\.?)?")
+_CONTRACTION = re.compile(r"[^\W\d_]+['\u2019][^\W\d_]+")
+
+
+def _is_data(word, data_words):
+    """Whether a value-shaped word of a marked message is data by its structure, not a secret: a number, an amount, a
+    date or a time (values.py reads it so), an e-mail address, a URL or a host name, a word of letters with only an
+    apostrophe (a contraction), or a word the task's input files hold too (their data, not the person's secret) -
+    review round 5, R4-B1: a marked message's own figures and dates were withheld from the task's record ledger, so its
+    saves could never pass."""
+
+    from decurix_agent import values
+    if values.parse_amount(word) is not None or values.parse_number(word) is not None or values.parse_date(word):
+        return True
+    if _TIME_WORD.fullmatch(word) or _EMAIL.fullmatch(word) or _URL.match(word) or _HOST.fullmatch(word):
+        return True
+    if _CONTRACTION.fullmatch(word):
+        return True
+    return word.casefold() in data_words
+
+
+def _input_words(text):
+    """The words of the files a message brings (their names too), case folded: what is the documents' data."""
+
+    from decurix_agent import attachments
+    words = set()
+    try:
+        paths = attachments.files(str(text or ""))
+    except Exception:  # noqa: BLE001
+        return words
+    for path in paths[:20]:
+        words.add(Path(str(path)).name.casefold())
+        try:
+            from decurix_agent.tools import office
+            read = str(office.read_document(str(path)).get("text") or "")[:2_000_000]
+        except Exception:  # noqa: BLE001 - a file not read gives no words: its words stay values (the safe side)
+            continue
+        words.update(w.strip(_EDGE_PUNCTUATION).casefold() for w in read.split())
+    return words
+
+
+def marked_values(text):
+    """
+    The values a message the person marked secret makes secret: the secrets its structure spells out
+    (request_secrets: after a name, quoted, a card's or a PIN's shape) and the message whole, withheld wherever they
+    stand; and,
+    as whole tokens only (WHOLE_TOKEN), each of its words that has a value's shape - 4 or more characters with a digit
+    or a mark in it, a sentence's own punctuation at its ends aside - and is not data by its structure (_is_data: a
+    number, an amount, a date, a time, an e-mail address, a URL, a host name, a contraction, a word the files it brings
+    hold). A person marks a message because they did not label the value in it: "sign in as staff with
+    Quartz58lantern" marked secret leaked the unlabelled word through a step line (review round 4, R3-B1, the live
+    F-S3). Never its every word (review round 3, R2-B1), and never its data: its own dates and amounts withheld from the
+    record ledger stopped every save of them (review round 5, R4-B1). Kept for the message's own task only
+    (remember_marked). What the job to soul names as secret (C14, plain_values). Never raises.
+    """
+
+    try:
+        data_words = _input_words(text)
+        text = " ".join(attachments_text(text).split())
+        if not text:
+            return []
+        shaped = []
+        for word in text.split():
+            word = word.strip(_EDGE_PUNCTUATION)
+            if len(word) >= 4 and any(ch.isdigit() or unicodedata.category(ch)[0] in "PS" for ch in word) \
+                    and not _is_data(word, data_words):
+                shaped.append(WHOLE_TOKEN + word)
+        # The message whole is always a value: every kept and emitted copy of it is withheld, whatever its length or
+        # content (review round 6, R5-B1: dropping it for a long message carrying data put the message back in the
+        # handled command file, the request copy, the active-task record and soul's memory - F-S1, F-S2). The task's
+        # own checks read its data from a raw copy in the task's secret store instead (task_context.current_request).
+        return list(dict.fromkeys(v for v in list(request_secrets(text)) + [text] + shaped if v))
+    except Exception:  # noqa: BLE001
+        return [str(text or "")] if text else []
+
+
+def attachments_text(text):
+    """A message without the block of files it brought."""
+
+    try:
+        from decurix_agent import attachments
+        return attachments.text(str(text or ""))
+    except Exception:  # noqa: BLE001
+        return str(text or "")
+
+
+def plain_values(values):
+    """Values as they are said (soul's job "secrets"): the whole-token mark taken off."""
+
+    return list(dict.fromkeys(v[len(WHOLE_TOKEN):] if v.startswith(WHOLE_TOKEN) else v for v in values or ()))
+
+
+def withhold_held(text, values):
+    """`text` with a task's held values withheld: those kept as whole tokens where they stand as one (withhold_whole),
+    the rest by the shared rule, whatever their spacing (withhold_spaced)."""
+
+    whole = [v[len(WHOLE_TOKEN):] for v in values or () if v.startswith(WHOLE_TOKEN)]
+    rest = [v for v in values or () if not v.startswith(WHOLE_TOKEN)]
+    return withhold_spaced(withhold_whole(text, whole), rest)
+
+
+def withhold_whole(text, values):
+    """`text` with each value withheld where it stands as a whole token: the code point before it and after it (or
+    the text's edge) no letter or digit (_letter_or_digit). Longest first; a [withheld] mark is never cut into."""
+
+    if not text or not values:
+        return text
+    for value in sorted({v for v in values if v}, key=len, reverse=True):
+        out, at, start = [], text.find(value), 0
+        while at != -1:
+            end = at + len(value)
+            before_ok = at == 0 or not _letter_or_digit(text[at - 1])
+            if before_ok and (end == len(text) or not _letter_or_digit(text[end])):
+                out.append(text[start:at])
+                out.append(_MARKER)
+                start = end
+            at = text.find(value, end if start == end else at + 1)
+        out.append(text[start:])
+        text = "".join(out)
+    return text
+
+
+# `gui type REF TEXT` in a command shown as a step: the text is never quoted (review round 4, R3-B1) - the whole rest
+# of the line after the target, as soul shows it: a separator inside a quoted value is part of the value (review round
+# 5: `gui type e3 "ab;cd9xyz"` showed what followed the ";").
+_GUI_TYPE = re.compile(r"(\bgui\s+type\s+(?:--?\w[\w-]*\s+)*\S+)(\s+)(.+)$", re.S | re.I)
+
+
+def step_command(command):
+    """A command as a step line shows it: the text a `gui type` types is "[text]", whatever it is - the step line goes
+    to the chat, the task page and the control plane's record, and a value typed by command was quoted there before
+    anything knew it was secret (F-S3). Everything else as it is (still withheld by every writer)."""
+
+    return _GUI_TYPE.sub(lambda m: m.group(1) + m.group(2) + "[text]", str(command or ""))
+
+
+def remember_marked(text, task_id):
+    """
+    A message the person marked secret (the control plane's "secret" on /request, F-2), for the task the message
+    itself names (`task_id`, never the task in hand: on an idle desktop that is the one that ended before it, and its
+    values outlived their own task - review round 3, R2-B1): marked_values as they are, cleared at that task's end, and
+    the hashes of the secrets it spells out. Never raises.
+    """
+
+    try:
+        said = attachments_text(text)
+        remember_secrets(said)
+        remember_value(" ".join(said.split()))
+        remember_literals(marked_values(text), task_id or "")  # (given whole: the files it brings are its data)
+    except Exception:  # noqa: BLE001 - remembering is a safety net; the control plane withholds the message too
+        pass
 
 
 def remember_value(value):
@@ -280,19 +1176,7 @@ def remember_value(value):
     value = (value or "").strip()
     if len(value) < 3:
         return
-    try:
-        path = _secrets_file()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        kept = [h for h in path.read_text(encoding="utf-8").split() if h] if path.exists() else []
-        kept = list(dict.fromkeys(kept + [_hash(value)]))[-_MAX_KEPT:]
-        path.write_text("\n".join(kept) + "\n", encoding="utf-8")
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
-        _known_cache.clear()
-    except Exception:  # noqa: BLE001 - remembering is a safety net, never a failure of the task
-        pass
+    _keep_hashes([_hash(value)])
 
 
 def withhold_text(element, text):
@@ -348,10 +1232,91 @@ def public_element(element):
             public[key] = None
             withheld[key] = f"longer than {MAX_TEXT} characters"
 
+    # A credential in an ordinary field's value, a control's name or a window's title is kept by no recording (review
+    # 2026-11-03: only a secret *field* was withheld, so a token pasted into a plain text box was stored).
+    for key in ("value", "name", "window_title"):
+        value = public.get(key)
+        if isinstance(value, str) and value:
+            credential = credential_in(value)
+            if credential:
+                public[key] = None
+                withheld[key] = f"looks like a {credential}"
+
     if withheld:
         public["withheld"] = withheld
 
     return public
+
+
+# ============================================================
+# The last pass inside every writer
+#
+# Found in review (2026-11-03): privacy was applied by hand at each place that wrote, and every place that forgot leaked
+# - a task's recording titled with the raw request, a demonstration step's summary, a playbook's stored request. So each
+# writer (recording's events and meta, evidence notes, progress lines, the playbook store) ends with scrub(): one pass
+# over every string it is about to write. The helpers above stay as the first pass, for the better wording ("withheld:
+# password field"); scrub only makes forgetting one impossible.
+# ============================================================
+
+# How deep scrub follows nested dicts and lists. Nothing a writer stores is near this; past it a value is held back.
+_SCRUB_DEPTH = 40
+
+
+def _scrub_text(text):
+    out = withhold_known(text)
+    if out == HELD_BACK:
+        return out
+    kind = credential_in(out)
+    # A long number that passes the card checksum is withheld by withhold_known only where it reads as a card (by the
+    # words before it): credential_in's context-free card test is for a value typed into a field (withhold_text), and
+    # here it would wipe whole notes for an account or invoice number. Every other kind it finds is withheld whole.
+    if kind and kind != "card number":
+        return HELD_BACK if kind == "text that could not be checked for secrets" else f"[withheld: looks like a {kind}]"
+    return out
+
+
+def _element_shaped(value):
+    return "role" in value and ("value" in value or "handle" in value)
+
+
+def _scrub(value, depth):
+    if depth > _SCRUB_DEPTH:
+        return HELD_BACK
+    if isinstance(value, str):
+        return _scrub_text(value)
+    if isinstance(value, dict):
+        element = _element_shaped(value)
+        # An element's backend handle is never stored: it is what the screen layer acts through, and it holds the raw
+        # value of a secret field (core keeps it there to type with). Review 2026-11-03 (round 2): scrub blanked
+        # `value` but kept `handle.value`.
+        out = {key: _scrub(item, depth + 1) for key, item in value.items() if not (element and key == "handle")}
+        if element:
+            reason = secret_field(value)
+            if reason:
+                if out.get("value"):
+                    out["value"] = None
+                out.setdefault("secret", reason)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_scrub(item, depth + 1) for item in value]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return _scrub_text(str(value))
+
+
+def scrub(obj):
+    """`obj` (a string, or dicts and lists of them) with every string through withhold_known and credential_in, and the
+    value of every element-shaped dict that is a secret field blanked. Returns a new object; never raises. On an error
+    the result is a placeholder - HELD_BACK, or {"held_back": HELD_BACK} for a dict, [] for a list - never `obj`."""
+
+    try:
+        return _scrub(obj, 0)
+    except Exception:  # noqa: BLE001 - fail closed
+        if isinstance(obj, dict):
+            return {"held_back": HELD_BACK}
+        if isinstance(obj, (list, tuple)):
+            return []
+        return HELD_BACK
 
 
 def secret_boxes(elements):
@@ -394,3 +1359,63 @@ def reduce_url(url):
     return kept_text(urllib.parse.urlunsplit(
         (parts.scheme, netloc, parts.path, urllib.parse.urlencode(query), fragment)
     ))
+
+
+# ============================================================
+# What file may leave the desktop
+#
+# An email's attachment (tools/outbox.py) and a handoff's file (tools/handoff.py) are copied off this desktop. Found in
+# review (2026-11-02): either took any path, so ~/.ssh/id_rsa or ~/.claude/.credentials.json could be attached to a
+# draft or carried to another worker. A file leaves only from the work folder (the request's attachments are in its
+# inbox), the shared folder, or the browser's Downloads - never from a hidden (dot) folder, and never the worker's own
+# state (~/.decurix). Fails closed: a path that cannot be checked does not leave.
+# ============================================================
+
+def _send_roots():
+    from decurix_agent import config, shared
+
+    home = Path(os.path.expanduser("~"))
+    # (~/work as well as WORK_DIR: a script proven in a sandbox has its HOME there, and its work folder is the copy.)
+    roots = [config.WORK_DIR, home / "work", home / "Downloads"]
+    if shared.folder():
+        roots += [shared.mount_path(), shared.link_path()]
+    return [Path(os.path.realpath(str(r))) for r in roots if r]
+
+
+def _under(path, root):
+    try:
+        return Path(path).relative_to(root)
+    except ValueError:
+        return None
+
+
+def file_may_leave(path, base=None):
+    """(the file's absolute path, None) when it may be sent off this desktop, or (None, why not) - see above. A
+    relative path is taken in `base` (default: the work folder)."""
+
+    try:
+        from decurix_agent import config
+
+        raw = os.path.expanduser(str(path or "").strip())
+        if not raw:
+            return None, "no file was named"
+        given = Path(raw)
+        if not given.is_absolute():
+            given = Path(base or config.WORK_DIR) / given
+        given = Path(os.path.abspath(str(given)))
+        real = Path(os.path.realpath(str(given)))
+        state = Path(os.path.realpath(str(config.DECURIX_DIR)))
+        if real == state or _under(real, state) is not None:
+            return None, "it is the worker's own state, which never leaves the desktop"
+        roots = _send_roots()
+        for candidate in (given, real):
+            for root in roots:
+                inside = _under(candidate, root)
+                if inside is not None and any(part.startswith(".") for part in inside.parts):
+                    return None, "it is in a hidden (dot) folder, which never leaves the desktop"
+        if not any(_under(real, root) is not None for root in roots):
+            return None, ("it is outside the work folder - only a file of the work (under ~/work, the shared folder "
+                          "or ~/Downloads) can be sent")
+        return given, None
+    except Exception:  # noqa: BLE001 - fail closed
+        return None, "it could not be checked, so it is not sent"

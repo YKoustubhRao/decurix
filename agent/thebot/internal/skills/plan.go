@@ -53,18 +53,17 @@ func changesSomething(command string) bool {
 // put to the person again.
 const methodMarker = "A METHOD FOR THIS KIND OF TASK"
 
-// planAgreedMarker opens the note a planned run puts in each stage's request (the agent's long_task.stage_prompt): the
-// run's plan is shown to the person with every question it asks, so a stage does not put one of its own.
-const planAgreedMarker = "THE PLAN OF THIS REQUEST IS AGREED"
-
-// hasMethod reports whether the goal's fixed context holds a learned method for its kind of task, or the request says
-// its plan was agreed already (a stage of a planned run).
+// hasMethod reports whether the host said the request's plan was agreed already (a stage of a planned run:
+// RunContext.PlanAgreed, a flag in the job request), or the frame soul built from the host's context holds a learned
+// method for its kind of task. Never from the request's own text: a pasted email holding a marker must not skip the
+// plan question (review T-32). The method marker counts only in a system message - the frame - never in the user
+// message that carries the request.
 func (st *operatorState) hasMethod() bool {
-	if strings.Contains(st.Request, planAgreedMarker) {
+	if st.PlanAgreed {
 		return true
 	}
 	for _, m := range st.Messages[:st.prefixEnd()] {
-		if strings.Contains(m.Content, methodMarker) || strings.Contains(m.Content, planAgreedMarker) {
+		if m.Role == "system" && strings.Contains(m.Content, methodMarker) {
 			return true
 		}
 	}
@@ -86,7 +85,7 @@ func (o *OperatorSkill) planBeforeChange(rc RunContext, st *operatorState, comma
 	facts := llm.Message{Role: "user", Content: st.commitSources() + "\nWHAT THE WORKER HAS RUN SO FAR:\n" +
 		tailText(strings.Join(st.Ledger, "\n"), 6000) + "\n\nTHE COMMAND IT IS ABOUT TO RUN:\n" + truncateText(command, 600) + "\n"}
 	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{{Role: "system", Content: planSystem}, facts},
-		llm.Options{TimeoutMs: verifyTimeoutMs, Temperature: reviewTemperature})
+		llm.Options{TimeoutMs: verifyTimeoutMs, Temperature: reviewTemperature, Purpose: llm.PurposeOperatorPlan})
 	if err != nil {
 		rc.Logf("operator", "could not write the plan of the work: %v", err)
 		return ""
@@ -113,7 +112,8 @@ func (o *OperatorSkill) planBeforeChange(rc RunContext, st *operatorState, comma
 }
 
 // commitsIssue is a point decided in code at a report: the plan of the work has steps that need the person's OK (it
-// files, sends or pays something) and none of them went through in this goal. Raised once a goal - after it, what the
+// files, sends or pays something) and none of them went through in this goal - neither on the person's OK nor, where
+// the application asked for none, as a save that went through (noteUngatedCommit). Raised once a goal - after it, what the
 // worker says decides. Found live (2026-10-24): twice in one request and again in the next, the worker reported the
 // work done with the returns prepared and nothing filed; the review raised other points, and the person had to ask
 // "are both actually filed?".
@@ -167,4 +167,35 @@ func (st *operatorState) planText() string {
 		text += "\nThe person's answer to the plan: " + p.PersonSaid
 	}
 	return text
+}
+
+// ledgerSavedRe is the record ledger's own line for a save it read back ("Record INV-0001: saved; the page now shows
+// ..."), which the gui command prints after the save (the agent's records.readback): a save that went through,
+// decided in code.
+var ledgerSavedRe = regexp.MustCompile(`(?m)^\s*Record (.{1,200}?): saved\b`)
+
+// noteUngatedCommit counts a commit of the plan that went through with no approval asked (review E, false-done
+// investigation): an application that needs no OK for its Save still saved the record. It counts, for commitsIssue
+// and the review's list, a gui command that worked and whose output is the ledger's read-back of a save, or that
+// saved from the app in front (savedInApp). The person's OK, when there was one, is counted where it was given.
+func (st *operatorState) noteUngatedCommit(command string, res shellResult) {
+	if res.ExitCode != 0 || st.Plan == nil || len(st.Plan.Commits) == 0 || command == st.approvedRun {
+		return
+	}
+	if !guiCommandRe.MatchString(command) {
+		return // the ledger's line and a save are the gui command's own output
+	}
+	var what []string
+	for _, m := range ledgerSavedRe.FindAllStringSubmatch(res.Output, -1) {
+		what = append(what, "record "+strings.TrimSpace(m[1])+" saved (the application asked for no approval)")
+	}
+	if len(what) == 0 && savedInApp(command, res.Output) {
+		what = append(what, "saved from the application (it asked for no approval)")
+	}
+	for _, w := range what {
+		st.CommitsRun++
+		if len(st.CommitsDone) < 20 {
+			st.CommitsDone = append(st.CommitsDone, truncateText(w, 240))
+		}
+	}
 }

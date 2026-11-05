@@ -13,7 +13,7 @@
 #
 # Requires: cloudflared already confirmed installed by the caller - this
 # file has no error message of its own for a missing binary, since the
-# caller's own primary-tunnel section already has one and exits before this
+# caller's own tunnel section already has one and exits before this
 # would ever be reached without it.
 
 # start_lan_tunnel opens a Cloudflare tunnel to 127.0.0.1:$1 in the
@@ -38,8 +38,34 @@ named_tunnel_url() {
 # The pattern below insists on that shape: cloudflared's own errors mention
 # https://api.trycloudflare.com, which is Cloudflare's API, not a tunnel -
 # it was once reported as the link, and opening it says "method not allowed".
+# public_link_enabled says whether the person turned the public link on: DECURIX_PUBLIC_LINK=1 in the environment or
+# in .env. It is off by default (owner decision O-5), as in the app.
+public_link_enabled() {
+    [ "${DECURIX_PUBLIC_LINK:-}" = "1" ] && return 0
+    [ -f .env ] && grep -Eq '^[[:space:]]*DECURIX_PUBLIC_LINK[[:space:]]*=[[:space:]]*"?1"?[[:space:]]*$' .env
+}
+
+# gated_port_ok says whether port is the gated listener's: never the primary one (8080), and serving the access-code
+# page right now (the same check the app makes before it exposes anything, B-07).
+gated_port_ok() {
+    local port="$1"
+    [ "$port" != "8080" ] || return 1
+    curl -fsS --max-time 5 "http://127.0.0.1:$port/" 2>/dev/null | grep -q "Enter the access code"
+}
+
 start_lan_tunnel() {
     local lan_port="$1"
+
+    if ! public_link_enabled; then
+        echo ""
+        echo "Public link: off. Phones reach Decurix on this network only. For a link that works from anywhere (it still needs the access code), set DECURIX_PUBLIC_LINK=1 in .env and run this again."
+        return 0
+    fi
+    if ! gated_port_ok "$lan_port"; then
+        echo ""
+        echo "Public link: not started - 127.0.0.1:$lan_port is not serving the access-code page, and only that listener is ever tunnelled."
+        return 0
+    fi
 
     local named_url
     named_url="$(named_tunnel_url)"

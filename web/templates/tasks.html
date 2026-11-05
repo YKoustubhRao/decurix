@@ -99,9 +99,11 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
   font-size:11.5px;font-weight:600;white-space:nowrap;
   background:var(--idle-soft);color:var(--text-2)
 }
-.tstatus.done{background:var(--live-soft);color:var(--live)}
-.tstatus.waiting,.tstatus.query{background:var(--accent-soft);color:var(--accent)}
-.tstatus.error,.tstatus.abandoned{background:var(--danger-soft);color:var(--danger)}
+/* Keyed by the derived outcome (tasks.DisplayOutcome): a done nobody's check judged is amber, never green. */
+.tstatus.done_checked{background:var(--live-soft);color:var(--live)}
+.tstatus.done_unchecked{background:var(--busy-soft);color:var(--busy)}
+.tstatus.needs_you{background:var(--accent-soft);color:var(--accent)}
+.tstatus.failed,.tstatus.stopped{background:var(--danger-soft);color:var(--danger)}
 
 .verdict{font-size:12px;font-weight:600;white-space:nowrap;text-transform:capitalize}
 .verdict.correct{color:var(--live)}
@@ -287,7 +289,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
       {{range $report.Reasons}}
       <div class="reason">
         <div class="reason-head">
-          <div class="reason-label"><i class="reason-kind{{if .Approval}} is-approval{{end}}"></i><span>{{.Label}}</span></div>
+          <div class="reason-label"><i class="reason-kind{{if .Approval}} is-approval{{end}}"></i><span>{{.Label}}</span>{{if .Guessed}}<span class="muted" title="Read from the words of the question or error, not from what happened"> · guessed from the words</span>{{end}}</div>
           <div class="share-bar"><i style="width:{{.SharePercent}}%"></i></div>
           <div class="reason-count">{{.Count}}<span>{{.SharePercent}}%</span></div>
         </div>
@@ -399,7 +401,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
             </td>
             <td>{{.WorkerName}}<div class="row-sub">{{engineLabel .Engine}}</div></td>
             <td>{{typeLabel .Type}}</td>
-            <td><span class="tstatus {{.Status}}">{{statusLabel .Status}}</span></td>
+            <td><span class="tstatus {{(outcome .Status .Checked).State}}">{{(outcome .Status .Checked).Label}}</span></td>
             <td class="num">{{len .SteppedIn}}</td>
             <td>{{if .Verdict}}<span class="verdict {{.Verdict}}">{{.Verdict}}</span>{{else if eq .Status "done"}}<span class="muted">unchecked</span>{{else}}<span class="muted">—</span>{{end}}</td>
             <td class="num">{{duration .Duration}}</td>

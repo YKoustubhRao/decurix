@@ -17,7 +17,10 @@ type Expr struct {
 
 // Parse parses a standard 5-field cron expression (minute hour day-of-month
 // month day-of-week). Each field is a comma-separated list of "*", "N",
-// "A-B", "*/N" or "A-B/N".
+// "A-B", "*/N", "A-B/N" or "N/S" (from N to the field's end, every S: vixie
+// cron's reading, so "5/15" in the minute field is 5, 20, 35 and 50). A
+// weekday is 0-7, with both 0 and 7 meaning Sunday. Names (MON, JAN) are not
+// accepted.
 func Parse(spec string) (Expr, error) {
 	fields := strings.Fields(spec)
 	if len(fields) != 5 {
@@ -44,9 +47,14 @@ func Parse(spec string) (Expr, error) {
 		return Expr{}, fmt.Errorf("month field: %w", err)
 	}
 
-	dow, dowAny, err := parseField(fields[4], 0, 6)
+	dow, dowAny, err := parseField(fields[4], 0, 7)
 	if err != nil {
 		return Expr{}, fmt.Errorf("day-of-week field: %w", err)
+	}
+
+	if dow[7] {
+		delete(dow, 7)
+		dow[0] = true
 	}
 
 	return Expr{
@@ -61,11 +69,13 @@ func Parse(spec string) (Expr, error) {
 }
 
 // parseField parses one comma-separated cron field into the set of values in
-// [min, max] it allows, and whether the field was the bare wildcard "*" -
-// which Expr.matches needs to apply cron's day-of-month/day-of-week OR rule.
+// [min, max] it allows, and whether the field starts with "*" - which
+// Expr.matches needs for cron's day-of-month/day-of-week rule. As in vixie
+// cron, "*/2" counts as unrestricted there, so "0 9 */2 * 1" is odd days that
+// are Mondays, not odd days or Mondays (review 2026-11-03, B-37).
 func parseField(spec string, min, max int) (map[int]bool, bool, error) {
 	set := map[int]bool{}
-	isWildcard := spec == "*"
+	isWildcard := strings.HasPrefix(spec, "*")
 
 	for _, part := range strings.Split(spec, ",") {
 		rangePart, step := part, 1
@@ -103,6 +113,10 @@ func parseField(spec string, min, max int) (map[int]bool, bool, error) {
 			}
 
 			lo, hi = v, v
+			if step > 1 || strings.Contains(part, "/") {
+				// "N/S" runs from N to the field's end, every S.
+				hi = max
+			}
 		}
 
 		if lo < min || hi > max || lo > hi {

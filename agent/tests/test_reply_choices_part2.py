@@ -171,7 +171,7 @@ class AStepDoneByHandInAReplay(unittest.TestCase):
             self.assertEqual(len(self.runs), 1)
             self.pause()
             replay_task.resume("stop")
-        self.assertIn("Stopped the replay before step 3", self.finals[-1])
+        self.assertIn("the replay stopped before step 3", self.finals[-1])
 
 
 class ATeachingAnswerThatSaysMore(unittest.TestCase):

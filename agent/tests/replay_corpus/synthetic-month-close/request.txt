@@ -1,0 +1,5 @@
+Close October's purchases: build a purchase register register.csv from the bills (one row per bill: Bill, Vendor, Date, Amount), write a short memo memo.md with the register's total, and draft an email to Northgate Paper confirming the bill we recorded for them. Take the vendor's address from vendors.csv.
+
+Files attached to this request, saved on this desktop:
+  /home/headless/work/bills.csv
+  /home/headless/work/vendors.csv

@@ -17,7 +17,9 @@ import test_long_requests as base
 from decurix_agent import long_task, payees, verify
 from test_payees import EMAIL, proposal
 
-import openpyxl
+from needs import needs, optional
+
+openpyxl = optional("openpyxl")
 
 FINDING = "A figure given as a source's own is not what that source states (register.csv: 1,000.00 against 1,250.00)."
 KEPT = ("\nKept register.csv total as it is: the bank statement's closing balance on page 2 is 1,000.00 - the check "
@@ -66,7 +68,8 @@ class AWrongBlockingFindingIsThePersonsToOverrule(base.LongRun):
             self.assertEqual(self.runner.status(run_id)["steps"]["s1-register"]["status"], "parked")
             self.assertEqual(len([p for p in self.engine.prompts if p.startswith("Stage 1 of 3")]), 2)  # no third try
             self.message_verdict = {"kind": "answer", "answers": [{"question": "q1", "answer": "Keep it.", "keep": True}]}
-            self.message("Keep it.")
+            # (The reply to the question: only that can keep it - E-15. No approval gate on this machine.)
+            self.message("Keep it.", reply=True)
         overrides = long_task.ledger(run_id)["overrides"]
         self.assertEqual([(o["stage"], o["check"]) for o in overrides], [("s1-register", "file_facts")])
         self.assertEqual(self.runner.status(run_id)["steps"]["s1-register"]["status"], "completed")
@@ -167,6 +170,7 @@ class APartialAnswerIsAskedAboutOnce(base.LongRun):
         self.assertIn("Rs 840 withheld", report)
 
 
+@needs("openpyxl")
 class PaymentDetailsTheRequestGivesInMessages(unittest.TestCase):
     """#7: a request that names messages as the source of payment details - the person approves; a message that would
     change an account on record is still a change request."""
@@ -356,9 +360,13 @@ class FiguresOfEqualSizeAgree(unittest.TestCase):
 
 
 class ACrossCheckDisagreementIsAdvisory(base.LongRun):
-    """H2: a disagreement the cross-check could not settle is under "Please check" - never the headline."""
+    """
+    H2: a disagreement the cross-check could not settle fails no stage, and its figures are under "Please check". But
+    the run is not "made and checked" (review 2026-11-02: this test required that headline while two totals
+    disagreed): it is reported not checked, first, and recorded so.
+    """
 
-    def test_the_run_is_done_and_the_figures_are_under_please_check(self):
+    def test_the_run_is_made_not_checked_and_the_figures_are_under_please_check(self):
         disagreement = {"figure": "total shortages", "values": [
             {"stage": "s1-register", "file": "register.csv", "text": "Total: 1,000.00"},
             {"stage": "s2-bank", "file": "bank.csv", "text": "Total: 1,100.00"}]}
@@ -367,28 +375,14 @@ class ACrossCheckDisagreementIsAdvisory(base.LongRun):
             long_task.perform(base.LONG, None)
         final = self.finals()[-1]
         self.assertEqual(final["kind"], "final")
-        self.assertTrue(final["reply"].startswith("Done - every stage was made and checked."), final["reply"][:200])
+        self.assertIs(final.get("checked"), False)
+        self.assertTrue(final["reply"].startswith("Made, but not everything is checked: 1 figure that the outputs give "
+                                                  "differently and the cross-check could not settle"), final["reply"][:200])
+        self.assertNotIn("every stage was made and checked", final["reply"])
         please = final["reply"].split(long_task.PLEASE_CHECK, 1)[1]
         self.assertIn("Figures that may not agree - total shortages", please)
         self.assertNotIn("Figures that may not agree", final["reply"].split("Needs you:", 1)[-1].split(
             long_task.PLEASE_CHECK)[0] if "Needs you:" in final["reply"] else "")
-
-
-def load_tests(loader, tests, pattern):
-    """Only this module's own tests: two classes here build on test_long_requests.LongRun, whose tests are run there."""
-
-    suite = unittest.TestSuite()
-    for cls in (AWrongBlockingFindingIsThePersonsToOverrule, APartialAnswerIsAskedAboutOnce,
-                PaymentDetailsTheRequestGivesInMessages, TheEntryStageIsThePlannersWord, ClassifiedRemovalsAndExclusions,
-                FiguresOfEqualSizeAgree, ACrossCheckDisagreementIsAdvisory):
-        for name in loader.getTestCaseNames(cls):
-            if name in cls.__dict__:
-                suite.addTest(cls(name))
-    return suite
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class AnItemDecidedEarlierIsNotAskedAgain(unittest.TestCase):
@@ -411,3 +405,22 @@ class AnItemDecidedEarlierIsNotAskedAgain(unittest.TestCase):
             left = long_task._rest_to_ask("run", "s1", {"id": "q2", "kind": "query", "text": "1. ... 2. ... 3. ..."},
                                           answer)
         self.assertEqual(left, ["CL-4122 Kavya Raghavan", "CL-4145 Neha Joshi flight"])
+
+
+def load_tests(loader, tests, pattern):
+    """Only this module's own tests: classes here that build on test_long_requests.LongRun inherit its tests, which
+    are run there. Every TestCase class defined in this module is taken, by looking, not from a hand-kept list: a list
+    left AnItemDecidedEarlierIsNotAskedAgain out, so it never ran (review 2026-11-02)."""
+
+    suite = unittest.TestSuite()
+    for cls in list(globals().values()):
+        if not (isinstance(cls, type) and issubclass(cls, unittest.TestCase) and cls.__module__ == __name__):
+            continue
+        for name in loader.getTestCaseNames(cls):
+            if name in cls.__dict__:
+                suite.addTest(cls(name))
+    return suite
+
+
+if __name__ == "__main__":
+    unittest.main()

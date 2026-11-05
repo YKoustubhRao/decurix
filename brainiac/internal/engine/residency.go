@@ -31,6 +31,9 @@ type loadable interface {
 	memGB() float64
 	load(ctx context.Context) error
 	unload()
+	// alive reports whether what was loaded is still there: a model server
+	// can die after loading (an OOM kill), and then it must load again.
+	alive() bool
 }
 
 type resident struct {
@@ -63,7 +66,15 @@ func NewResidency(budgets map[string]float64, live func(ctx context.Context, poo
 // Acquire makes u resident and holds it until release is called. loadMs is
 // the time spent loading (0 when it was already in memory).
 func (r *Residency) Acquire(ctx context.Context, u loadable) (release func(), loadMs int64, err error) {
+	// A model already in memory needs no load lock: it never waits behind
+	// another model's load in the same pool.
 	r.mu.Lock()
+	if e, ok := r.loaded[u.key()]; ok && e.u.alive() {
+		e.refs++
+		e.lastUsed = time.Now()
+		r.mu.Unlock()
+		return r.releaser(u.key(), e), 0, nil
+	}
 	lm := r.loadMu[u.pool()]
 	if lm == nil {
 		lm = &sync.Mutex{}
@@ -76,10 +87,16 @@ func (r *Residency) Acquire(ctx context.Context, u loadable) (release func(), lo
 
 	r.mu.Lock()
 	if e, ok := r.loaded[u.key()]; ok {
-		e.refs++
-		e.lastUsed = time.Now()
-		r.mu.Unlock()
-		return r.releaser(u.key()), 0, nil
+		if e.u.alive() {
+			e.refs++
+			e.lastUsed = time.Now()
+			r.mu.Unlock()
+			return r.releaser(u.key(), e), 0, nil
+		}
+		// It died after loading: its memory is back already. Forget it, and
+		// load it again below. Requests still holding the dead one release
+		// their own entry, not the new one.
+		r.forgetLocked(u.key())
 	}
 	evicted, err := r.makeRoomLocked(ctx, u)
 	r.mu.Unlock()
@@ -93,18 +110,21 @@ func (r *Residency) Acquire(ctx context.Context, u loadable) (release func(), lo
 	if err := u.load(ctx); err != nil {
 		return nil, 0, err
 	}
+	e := &resident{u: u, refs: 1, lastUsed: time.Now()}
 	r.mu.Lock()
-	r.loaded[u.key()] = &resident{u: u, refs: 1, lastUsed: time.Now()}
+	r.loaded[u.key()] = e
 	r.mu.Unlock()
-	return r.releaser(u.key()), time.Since(start).Milliseconds(), nil
+	return r.releaser(u.key(), e), time.Since(start).Milliseconds(), nil
 }
 
-func (r *Residency) releaser(key string) func() {
+// releaser gives back one hold on e. It touches e only while e is still the
+// resident for key: one that was forgotten and loaded again is a new entry.
+func (r *Residency) releaser(key string, e *resident) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			r.mu.Lock()
-			if e, ok := r.loaded[key]; ok && e.refs > 0 {
+			if cur, ok := r.loaded[key]; ok && cur == e && e.refs > 0 {
 				e.refs--
 				e.lastUsed = time.Now()
 			}
@@ -186,8 +206,51 @@ func (r *Residency) Loaded() []string {
 // Forget drops a resident without unloading it (it already went away).
 func (r *Residency) Forget(key string) {
 	r.mu.Lock()
-	delete(r.loaded, key)
+	r.forgetLocked(key)
 	r.mu.Unlock()
+}
+
+func (r *Residency) forgetLocked(key string) { delete(r.loaded, key) }
+
+// UnloadIdle unloads every resident no one holds now; held ones stay. Each
+// pool is done under its load lock, the one eviction and loading hold, so a
+// request that acquires the same model meanwhile waits for the unload and
+// then loads it again, instead of having it stopped under it.
+func (r *Residency) UnloadIdle() {
+	r.mu.Lock()
+	pools := map[string]bool{}
+	for _, e := range r.loaded {
+		pools[e.u.pool()] = true
+	}
+	r.mu.Unlock()
+	names := make([]string, 0, len(pools))
+	for p := range pools {
+		names = append(names, p)
+	}
+	sort.Strings(names) // one pool at a time, in a fixed order
+	for _, pool := range names {
+		r.mu.Lock()
+		lm := r.loadMu[pool]
+		if lm == nil {
+			lm = &sync.Mutex{}
+			r.loadMu[pool] = lm
+		}
+		r.mu.Unlock()
+		lm.Lock()
+		r.mu.Lock()
+		var idle []loadable
+		for k, e := range r.loaded {
+			if e.refs == 0 && e.u.pool() == pool {
+				idle = append(idle, e.u)
+				delete(r.loaded, k)
+			}
+		}
+		r.mu.Unlock()
+		for _, u := range idle {
+			u.unload()
+		}
+		lm.Unlock()
+	}
 }
 
 // UnloadAll unloads every resident (shutdown).

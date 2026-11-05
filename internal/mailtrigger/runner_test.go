@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -134,7 +136,7 @@ type fakeSubmitter struct {
 	stickBusy bool
 }
 
-func (f *fakeSubmitter) SubmitTracked(ctx context.Context, desktopID, content string) (string, error) {
+func (f *fakeSubmitter) SubmitTracked(ctx context.Context, desktopID, content string, _ tasks.Origin) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -186,6 +188,25 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return harnessOn(t, db)
+}
+
+// newFileHarness is newHarness on a database file opened as the control
+// plane opens it (sqlitedb.Open: a pool of connections, WAL, BEGIN
+// IMMEDIATE), for a test of callers at once: OpenMemory's one connection
+// serialises them, so a race cannot happen there (review 2026-11-02).
+func newFileHarness(t *testing.T) *harness {
+	t.Helper()
+
+	db, err := sqlitedb.Open(filepath.Join(t.TempDir(), "mail.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return harnessOn(t, db)
+}
+
+func harnessOn(t *testing.T, db *sql.DB) *harness {
+	t.Helper()
 	t.Cleanup(func() { db.Close() })
 
 	key, err := LoadKey(t.TempDir())
@@ -322,13 +343,13 @@ func TestSlashCommandRequestsKeepTheirCommandLine(t *testing.T) {
 
 	// /skill keeps its command, placeholders filled, as the first line; the
 	// email follows it as the run's context (TestASkillRuleCarries...).
-	got := RenderWithFiles(Rule{Content: `/skill ship-order order="{subject}"`, IncludeBody: true}, msg, "body", "", nil)
+	got := mustRender(Rule{Content: `/skill ship-order order="{subject}"`, IncludeBody: true}, msg, "body", "", nil)
 	if first, _, _ := strings.Cut(got, "\n"); first != `/skill ship-order order="Order 7"` {
 		t.Errorf("got %q", got)
 	}
 
 	// Every other slash command is sent exactly as written.
-	if got := RenderWithFiles(Rule{Content: `/replay demo-1 from=2`, IncludeBody: true}, msg, "body", "", nil); got != `/replay demo-1 from=2` {
+	if got := mustRender(Rule{Content: `/replay demo-1 from=2`, IncludeBody: true}, msg, "body", "", nil); got != `/replay demo-1 from=2` {
 		t.Errorf("got %q", got)
 	}
 }

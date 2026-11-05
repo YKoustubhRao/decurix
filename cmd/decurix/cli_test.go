@@ -88,7 +88,7 @@ func TestCLICreatePostsFormFields(t *testing.T) {
 		cliCreate(context.Background(), client, []string{
 			"box",
 			"--profile", "developer",
-			"--harness", "claude",
+			"--brain", "claude",
 			"--cpus", "4",
 			"--memory-mb", "8192",
 		})
@@ -97,7 +97,7 @@ func TestCLICreatePostsFormFields(t *testing.T) {
 	want := map[string]string{
 		"name":      "box",
 		"profile":   "developer",
-		"harness":   "claude",
+		"brain":     "claude",
 		"cpus":      "4",
 		"memory_mb": "8192",
 	}
@@ -210,5 +210,31 @@ func TestCLIPauseAndUnpauseAction(t *testing.T) {
 
 	if len(calledPaths) != 2 || calledPaths[0] != "/api/desktops/pause" || calledPaths[1] != "/api/desktops/unpause" {
 		t.Errorf("unexpected called paths: %v", calledPaths)
+	}
+}
+
+// The CLI offers no flag the server refuses (W-09): no --harness, no host paths.
+func TestCLICreateRefusesFlagsTheServerWouldRefuse(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+	defer srv.Close()
+	client := newAPIClient(srv.URL)
+	for _, flag := range []string{"--harness", "--path", "--host-paths"} {
+		out := captureStdout(t, func() { cliCreate(context.Background(), client, []string{"box", flag, "x"}) })
+		if !strings.Contains(out, "unknown flag") || called {
+			t.Errorf("%s: printed %q, called the server %v", flag, out, called)
+		}
+	}
+}
+
+// Started against an address where nothing answers, the CLI says so and ends, never "connected".
+func TestCLISaysWhenNoControlPlaneAnswers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+	var code int
+	out := captureStdout(t, func() { code = runCLI(url) })
+	if code == 0 || strings.Contains(out, "connected to") {
+		t.Fatalf("exit %d, printed %q", code, out)
 	}
 }

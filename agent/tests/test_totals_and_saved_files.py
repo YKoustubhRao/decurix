@@ -5,6 +5,7 @@ correct, cleanly saved file was refused because the screen and the action log sh
 cleared.
 """
 
+from needs import needs
 import os
 import sys
 import unittest
@@ -80,6 +81,7 @@ class TypedTotalsAtTheGate(FileWorkIsChecked):
                 mock.patch.object(skill_task.produced, "typed_totals", lambda paths, request="": list(self.TYPED)):
             return skill_task._gate(report, "final", "thebot")
 
+    @needs("openpyxl")
     def test_asked_for_formulas_a_typed_total_is_evidence_for_the_judge(self):
         # Harness audit (2026-10-21): "formulas asked" is a reading of the request - the judge weighs it.
         self.verdicts = [verdict(verify.NOT_DONE, seen="the Total row is typed")]
@@ -87,6 +89,7 @@ class TypedTotalsAtTheGate(FileWorkIsChecked):
                   "formulas, and a Total row. Save it as gst.xlsx in my work folder.", "Saved gst.xlsx.")
         self.assertIn("the Total row holds typed numbers", self.judged[0]["produced"])
 
+    @needs("openpyxl")
     def test_not_asked_a_correct_typed_total_passes_with_a_note(self):
         self.verdicts = [{"verdict": verify.DONE, "confidence": 0.95, "seen": "5 rows, total 14,150", "why": ""}]
         self.assertTrue(self.gate("Make his order sheet in Excel, wa_orders.xlsx in my work folder: one row per item "
@@ -102,6 +105,7 @@ class TypedTotalsAtTheGate(FileWorkIsChecked):
         for plain in ("Make his order sheet with a Total row.", "Summarise sales_oct.csv into summary.xlsx"):
             self.assertFalse(produced.formulas_asked(plain), plain)
 
+    @needs("openpyxl")
     def test_the_judge_is_told_which_saved_files_decide(self):
         self.verdicts = [{"verdict": verify.DONE, "confidence": 0.95, "seen": "ok", "why": ""}]
         with mock.patch.object(skill_task.produced, "store_results", lambda paths: []), \
@@ -114,7 +118,7 @@ class TheSavedFileDecides(unittest.TestCase):
     def setUp(self):
         self.sent = []
 
-        def chat(messages, max_tokens=None):
+        def chat(messages, max_tokens=None, purpose=None):
             self.sent.append(messages)
             return {"content": '{"verdict": "done", "confidence": 0.9, "seen": "", "why": ""}'}, {}
 

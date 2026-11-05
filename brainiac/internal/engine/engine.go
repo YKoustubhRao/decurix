@@ -78,9 +78,12 @@ type Request struct {
 	// Domain names the field (math, law...) when the client knows it; empty
 	// lets the router decide.
 	Domain string
-	// Web forces reading the web on (true) or off (false); nil follows the
-	// configured policy.
-	Web         *bool
+	// Web asks to read the web (true) or forbids it (false); nil follows the
+	// configured policy. A lookup also needs WebQuery.
+	Web *bool
+	// WebQuery is the search query the client wrote. It is the only text a
+	// web lookup sends out: the conversation itself never becomes a query.
+	WebQuery    string
 	Messages    []InMessage
 	MaxTokens   int
 	Temperature *float64
@@ -96,7 +99,10 @@ type Request struct {
 
 // Response is the answer and what it took.
 type Response struct {
-	Text             string
+	Text string
+	// Complete is the brain saying its answer ended. A response without it
+	// is never returned without an error; the API checks it again.
+	Complete         bool
 	Truncated        bool
 	Brain            string
 	Mode             string
@@ -136,24 +142,90 @@ type Engine struct {
 	evals    *evalCache
 	outcomes *evals.Outcomes
 	web      *web.Client
-	// inflight counts requests being answered, so an engine replaced by a
-	// newer one is closed only after they finish.
-	inflight sync.WaitGroup
+	// refs counts the holds callers took with Enter; once retired, no new
+	// hold is given and drained closes when the last one is let go.
+	refMu   sync.Mutex
+	refs    int
+	retired bool
+	drained chan struct{}
 }
 
-// Drain waits up to timeout for requests in progress, then closes the engine.
-func (e *Engine) Drain(timeout time.Duration) {
-	done := make(chan struct{})
-	go func() { e.inflight.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(timeout):
+// ErrRetired is an engine that was replaced or closed: ask the current one.
+var ErrRetired = errors.New("engine: this engine was replaced; use the current one")
+
+// Enter takes a hold on the engine for one request, so it is not closed
+// under the request. It is false once the engine is retired or closed; the
+// caller then asks for the current engine again. Every true is paired with
+// one Leave.
+func (e *Engine) Enter() bool {
+	e.refMu.Lock()
+	defer e.refMu.Unlock()
+	if e.retired {
+		return false
+	}
+	e.refs++
+	return true
+}
+
+// Leave lets go of a hold taken with Enter.
+func (e *Engine) Leave() {
+	e.refMu.Lock()
+	defer e.refMu.Unlock()
+	e.refs--
+	if e.refs == 0 && e.retired && e.drained != nil {
+		close(e.drained)
+		e.drained = nil
+	}
+}
+
+// Retire stops new holds, unloads the models no request is using, waits for
+// every request holding the engine to finish, however long a CPU answer
+// takes, and then closes it. A request is never cut short to make way for a
+// new engine. logf, when set, is told
+// every few minutes what it still waits for.
+func (e *Engine) Retire(logf func(string, ...any)) {
+	e.refMu.Lock()
+	e.retired = true
+	e.refMu.Unlock()
+	// What no request holds now is freed at once, so the engine that
+	// replaced this one has the memory while a long answer finishes here.
+	e.res.UnloadIdle()
+	e.refMu.Lock()
+	var wait chan struct{}
+	if e.refs > 0 {
+		if e.drained == nil {
+			e.drained = make(chan struct{})
+		}
+		wait = e.drained
+	}
+	e.refMu.Unlock()
+	if wait != nil {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+	loop:
+		for {
+			select {
+			case <-wait:
+				break loop
+			case <-t.C:
+				if logf != nil {
+					e.refMu.Lock()
+					n := e.refs
+					e.refMu.Unlock()
+					logf("the replaced engine waits for %d request(s) to finish before it closes", n)
+				}
+			}
+		}
 	}
 	e.Close()
 }
 
 // Web is the engine's browser (nil when the web is off).
 func (e *Engine) Web() *web.Client { return e.web }
+
+// RenderAllowed reports whether a client may ask for a page to be read
+// with the headless browser (web_render).
+func (e *Engine) RenderAllowed() bool { return e.cfg.Render() }
 
 // Store is where the engine keeps its files.
 func (e *Engine) Store() *store.Store { return e.st }
@@ -173,17 +245,23 @@ func New(opt Options) (*Engine, error) {
 	}
 	e := &Engine{cfg: opt.Config, st: opt.Store, lock: opt.Lock, threads: threads, log: lg,
 		cache: cache.New(opt.Store.Path("cache")), traces: trace.NewStore(opt.Store.Path("traces"))}
+	// A program Brainiac installed may fall back to its directory in the
+	// sandbox when its ELF cannot be read; nothing else may.
+	isolate.SetInstallRoots(opt.Store.Path("bin"), opt.Store.Venv())
 	if opt.Lock.Python != "" && opt.Lock.WorkerScript != "" {
 		// The worker's own venv is writable because its OCR package may fetch
 		// its default models there on first use; its temp files stay in the store.
 		tmp := opt.Store.Path("tmp")
 		_ = os.MkdirAll(tmp, 0o700)
-		e.wk = worker.New(opt.Lock.Python, opt.Lock.WorkerScript, []string{"OMP_NUM_THREADS=" + fmt.Sprint(threads), "TMPDIR=" + tmp})
+		e.wk = worker.New(opt.Lock.Python, opt.Lock.WorkerScript, []string{"OMP_NUM_THREADS=" + fmt.Sprint(threads), "TMPDIR=" + tmp,
+			// OpenCV refuses to decode a picture larger than Brainiac would.
+			"OPENCV_IO_MAX_IMAGE_PIXELS=" + fmt.Sprint(MaxPixels)})
 		e.wk.Logf = func(f string, a ...any) { lg.Printf("worker: "+f, a...) }
 		if opt.Config.Sandbox != config.SandboxOff {
 			pol := isolate.ForProgram(opt.Lock.Python, []string{filepath.Dir(opt.Lock.WorkerScript), opt.Store.Path("models")}, []string{opt.Store.Venv(), tmp})
 			e.wk.Sandbox = &pol
 		}
+		e.wk.Required = opt.Config.Sandbox == config.SandboxRequired
 	}
 	e.cat = opt.Catalog
 	if e.cat == nil {
@@ -201,6 +279,7 @@ func New(opt Options) (*Engine, error) {
 		if u.llama != nil {
 			u.llama.Logf = lg.Printf
 			u.llama.NoSandbox = opt.Config.Sandbox == config.SandboxOff
+			u.llama.Required = opt.Config.Sandbox == config.SandboxRequired
 		}
 	}
 	e.rt = buildRouter(e.cat, opt.Store.Path(RouterExamplesFile))
@@ -252,8 +331,12 @@ func reasoningModel(m string) bool {
 // to make room for checking new models.
 func (e *Engine) Unload() { e.res.UnloadAll() }
 
-// Close unloads everything Brainiac loaded.
+// Close unloads everything Brainiac loaded. A closed engine gives no new
+// holds (Enter is false), so nothing starts a model server on it again.
 func (e *Engine) Close() {
+	e.refMu.Lock()
+	e.retired = true
+	e.refMu.Unlock()
 	e.res.UnloadAll()
 	if e.wk != nil {
 		_ = e.wk.Stop()
@@ -353,8 +436,6 @@ func hasRole(u *unit, r string) bool {
 
 // Chat answers one request.
 func (e *Engine) Chat(ctx context.Context, req Request) (*Response, error) {
-	e.inflight.Add(1)
-	defer e.inflight.Done()
 	start := time.Now()
 	id := req.ID
 	if id == "" {
@@ -375,6 +456,10 @@ func (e *Engine) Chat(ctx context.Context, req Request) (*Response, error) {
 		return fail(err)
 	}
 	rec.Mode, rec.Brain, rec.Domain, rec.DomainP = bc.mode, bc.name, bc.domain, bc.domainP
+	if bc.domain != "" {
+		shape := shapeOf(req)
+		rec.Shape = &shape
+	}
 	if bc.why != "" {
 		rec.Notes = append(rec.Notes, bc.why)
 	}
@@ -392,9 +477,11 @@ func (e *Engine) Chat(ctx context.Context, req Request) (*Response, error) {
 		return fail(err)
 	}
 	var webEv []string
-	if ok, why := e.wantsWeb(req); ok {
+	if ok, why := e.wantsWeb(req, bc.mode); ok {
 		rec.Notes = append(rec.Notes, "read the web: "+why)
 		webEv = e.webEvidence(ctx, req, rec)
+	} else if why != "" {
+		rec.Notes = append(rec.Notes, why)
 	}
 
 	msgs, sources := e.brainMessages(req.Messages, evidence, webEv, bc)
@@ -429,12 +516,24 @@ func (e *Engine) Chat(ctx context.Context, req Request) (*Response, error) {
 	if req.OnProgress != nil {
 		req.OnProgress("answering with " + bc.name)
 	}
-	res, atom, err := e.callBrain(ctx, bc, breq)
-	if err != nil && bc.remote != nil && e.cfg.LocalFallback && bc.local != nil {
+	// When the local brain may take over from a failing remote one, the
+	// remote's words are held until it finishes: a client must never get the
+	// start of one answer followed by another whole answer.
+	fallback := bc.remote != nil && e.cfg.LocalFallback && bc.local != nil
+	first := breq
+	if fallback && req.OnDelta != nil {
+		first.OnDelta = func(string) {}
+	}
+	res, atom, err := e.callBrain(ctx, bc, first)
+	if err == nil && fallback && req.OnDelta != nil && res.Text != "" {
+		req.OnDelta(res.Text)
+	}
+	if err != nil && fallback {
 		rec.Notes = append(rec.Notes, "the remote brain failed ("+err.Error()+"); the local brain answered instead")
 		rec.Atoms = append(rec.Atoms, atom)
 		bc = brainChoice{mode: config.ModeLocal, local: bc.local, name: bc.local.model, sees: bc.local.vision}
 		rec.Brain = bc.name + " (fallback)"
+		rec.Mode = bc.mode
 		msgs, sources = e.brainMessages(req.Messages, evidence, webEv, bc)
 		breq.Messages = msgs
 		res, atom, err = e.callBrain(ctx, bc, breq)
@@ -464,7 +563,7 @@ func (e *Engine) Chat(ctx context.Context, req Request) (*Response, error) {
 		rec.Checks = append(rec.Checks, trace.Check{Kind: "unsupported_figures",
 			Detail: "figures in the answer that appear in no message or evidence (computed ones are expected here; read ones are not)", Items: figs})
 	}
-	return &Response{Text: res.Text, Truncated: res.Truncated, Brain: rec.Brain, Mode: bc.mode,
+	return &Response{Text: res.Text, Complete: true, Truncated: res.Truncated, Brain: rec.Brain, Mode: bc.mode,
 		PromptTokens: res.PromptTokens, CompletionTokens: res.CompletionTokens, Trace: rec}, nil
 }
 
@@ -498,6 +597,10 @@ func (e *Engine) callBrain(ctx context.Context, bc brainChoice, req backend.Chat
 		release()
 	}
 	atom.Ms = time.Since(t0).Milliseconds()
+	if err == nil && !res.Complete {
+		// No backend may pass a cut answer off as a whole one.
+		err = fmt.Errorf("%s: %w", bc.name, backend.ErrCutShort)
+	}
 	if err != nil {
 		atom.Error = err.Error()
 		return res, atom, err
@@ -526,12 +629,14 @@ func (e *Engine) runAtoms(ctx context.Context, req Request, atoms []Atom, rec *t
 		var ev string
 		var ta trace.Atom
 		var err error
-		switch a.Op {
-		case "ocr":
+		switch {
+		case part.Kind == "image" && tooManyPixels(part.Data):
+			ta, err = trace.Atom{ID: a.ID, Op: a.Op, Error: errTooManyPixels.Error()}, errTooManyPixels
+		case a.Op == "ocr":
 			ev, ta, err = e.ocrAtom(ctx, a.ID, part.Data)
-		case "asr":
+		case a.Op == "asr":
 			ev, ta, err = e.asrAtom(ctx, a.ID, part)
-		case "describe":
+		case a.Op == "describe":
 			ev, ta, err = e.describeAtom(ctx, a.ID, part.Data)
 		}
 		rec.Atoms = append(rec.Atoms, ta)
@@ -707,7 +812,8 @@ func (e *Engine) brainMessages(in []InMessage, evidence map[string][]string, web
 			case "image", "audio":
 				id := ids[[2]int{mi, pi}]
 				evs := evidence[id]
-				if p.Kind == "image" && bc.sees {
+				big := p.Kind == "image" && tooManyPixels(p.Data)
+				if p.Kind == "image" && bc.sees && !big {
 					data := p.Data
 					if bc.remote == nil {
 						data = shrink(data, e.imageMaxSide())
@@ -718,8 +824,11 @@ func (e *Engine) brainMessages(in []InMessage, evidence map[string][]string, web
 					}
 					imgs = append(imgs, backend.Image{Data: data, Mime: backend.ImageMime(data), Label: label})
 				}
-				if len(evs) == 0 && !(p.Kind == "image" && bc.sees) {
+				if len(evs) == 0 && !(p.Kind == "image" && bc.sees && !big) {
 					why := "no model here can read it"
+					if big {
+						why = errTooManyPixels.Error()
+					}
 					evs = []string{missingEvidence(id, p.Kind, why)}
 				}
 				for _, ev := range evs {
@@ -761,8 +870,6 @@ func (e *Engine) brainMessages(in []InMessage, evidence map[string][]string, web
 
 // Transcribe is speech to text alone (the /v1/audio/transcriptions route).
 func (e *Engine) Transcribe(ctx context.Context, audio []byte, format, lang string) (worker.Transcript, *trace.Record, error) {
-	e.inflight.Add(1)
-	defer e.inflight.Done()
 	start := time.Now()
 	rec := &trace.Record{ID: trace.NewID(), At: start.UTC(), Model: "asr", Mode: config.ModeLocal}
 	defer func() { rec.Ms = time.Since(start).Milliseconds(); e.traces.Add(rec) }()
@@ -780,8 +887,6 @@ func (e *Engine) Transcribe(ctx context.Context, audio []byte, format, lang stri
 
 // OCR reads a picture's text alone (the /v1/brainiac/ocr route).
 func (e *Engine) OCR(ctx context.Context, img []byte) (worker.OCRResult, *trace.Record, error) {
-	e.inflight.Add(1)
-	defer e.inflight.Done()
 	start := time.Now()
 	rec := &trace.Record{ID: trace.NewID(), At: start.UTC(), Model: "ocr", Mode: config.ModeLocal}
 	defer func() { rec.Ms = time.Since(start).Milliseconds(); e.traces.Add(rec) }()
@@ -789,6 +894,10 @@ func (e *Engine) OCR(ctx context.Context, img []byte) (worker.OCRResult, *trace.
 	if u == nil || e.wk == nil {
 		rec.Error = ErrNoOCR.Error()
 		return worker.OCRResult{}, rec, ErrNoOCR
+	}
+	if tooManyPixels(img) {
+		rec.Error = errTooManyPixels.Error()
+		return worker.OCRResult{}, rec, errTooManyPixels
 	}
 	r, cached, loadMs, ms, err := e.ocr(ctx, u, img)
 	ta := trace.Atom{ID: "image-1", Op: "ocr", Model: u.model, Runtime: u.runtime, Cached: cached, LoadMs: loadMs, Ms: ms}
@@ -801,8 +910,6 @@ func (e *Engine) OCR(ctx context.Context, img []byte) (worker.OCRResult, *trace.
 
 // Embed turns texts into vectors with the embedding model.
 func (e *Engine) Embed(ctx context.Context, inputs []string) ([][]float32, string, error) {
-	e.inflight.Add(1)
-	defer e.inflight.Done()
 	u := e.byRole[catalog.RoleEmbed]
 	if u == nil {
 		return nil, "", ErrNoEmbed
@@ -869,8 +976,9 @@ type Status struct {
 	Loaded  []string          `json:"loaded"`
 	Catalog string            `json:"catalog"`
 	Machine string            `json:"machine"`
-	// Unconfined are the running model servers that can reach more than their
-	// own files: what each can still reach ("files", "network", "udp").
+	// Unconfined are the running model processes that can reach more than
+	// their own files: what each can still reach ("files", "network", "udp",
+	// "sockets" for other programs' Unix sockets).
 	Unconfined map[string][]string `json:"unconfined,omitempty"`
 }
 
@@ -882,10 +990,14 @@ func (e *Engine) Status() Status {
 		s.Roles[r] = u.model + " (" + u.runtime + ")"
 	}
 	for _, u := range e.units {
-		if u.llama == nil {
-			continue
+		var open []string
+		switch {
+		case u.llama != nil:
+			open = u.llama.Open()
+		case u.wk != nil:
+			open = u.wk.Open()
 		}
-		if open := u.llama.Open(); len(open) > 0 {
+		if len(open) > 0 {
 			if s.Unconfined == nil {
 				s.Unconfined = map[string][]string{}
 			}

@@ -48,12 +48,39 @@ type Harness struct {
 	// AllowWebSearch gates the research layer of diagnosis. Off in unit
 	// tests (no network), on in real runs.
 	AllowWebSearch bool
+	// NoProvenFixes keeps no record of a fix the person approved and reads none back (inside Decurix, review T-08).
+	NoProvenFixes bool
 
 	MaxFileAttempts  int
 	MaxTotalAttempts int
 	Timeout          time.Duration
 
+	// Approve reports whether the person approved this exact command - the
+	// operator's single-use grant (RunContext.IsApproved). A fix command a
+	// web page or a model's reply proposed (Diagnosis.IsProposal) runs only
+	// when it says yes; nil approves nothing, so such a fix pauses the build
+	// (BuildReport.NeedsApproval) instead of running.
+	Approve func(command string) bool
+	// Proposed are the proposals the person was already asked about (the
+	// paused step's checkpoint), reused for the same failure when the build
+	// re-runs, so the yes is for the command they saw.
+	Proposed []Diagnosis
+	// Declined are proposed commands the person did not approve: never run,
+	// and not asked about again in this run.
+	Declined []string
+
 	// ---- run state ----
+	// pending is the first proposal still waiting for approval; once set the
+	// build stops (budgetLeft) and the report carries it.
+	pending *Diagnosis
+	// unconfirmed is a researched fix that ran but whose failing check has
+	// not been re-run yet: remembered only if that check then passes.
+	unconfirmed *Diagnosis
+	// approvedAction is the proposal the person's yes ran in this build, so
+	// settleLearning can keep it as a proven fix once its check passes.
+	approvedAction string
+	// project is this build's own folder: the scope a proven fix stands in.
+	project  string
 	attempts int
 	deadline time.Time
 	// fixesApplied records every real environment fix that worked, so the
@@ -72,10 +99,15 @@ type BuildReport struct {
 	FilesWritten []BuiltFile
 	// TestsPassed is the real result of the real full test suite - false
 	// means the suite genuinely did not pass, never "we didn't check".
-	TestsPassed  bool
-	TestOutput   string
-	BuildPassed  bool
+	TestsPassed bool
+	TestOutput  string
+	// BuildPassed is the real result of the project's build step (true when
+	// the toolchain has none).
+	BuildPassed bool
+	// SmokeRan and SmokePassed are whether something meant to run was
+	// started, and whether it really started (or ran and exited cleanly).
 	SmokeRan     bool
+	SmokePassed  bool
 	SmokeOutput  string
 	Attempts     int
 	FixesApplied []string
@@ -83,6 +115,9 @@ type BuildReport struct {
 	// Incomplete marks a build that ran out of budget rather than finishing.
 	Incomplete bool
 	Failures   []string
+	// NeedsApproval is the proposed fix the build stopped at: a command a
+	// web page or a model put forward, not run because nobody approved it.
+	NeedsApproval *Diagnosis
 }
 
 // BuiltFile is one real file that really exists on disk.
@@ -105,6 +140,10 @@ func (h *Harness) logf(format string, args ...any) {
 // single place both limits are enforced so no loop can accidentally skip
 // one of them.
 func (h *Harness) budgetLeft() bool {
+	if h.pending != nil {
+		// A fix waits for the person's yes: nothing more is spent until they answer.
+		return false
+	}
 	if h.attempts >= h.MaxTotalAttempts {
 		return false
 	}
@@ -161,6 +200,7 @@ func (h *Harness) Run(ctx context.Context, request, knownContext string) (*Build
 		return nil, fmt.Errorf("could not create the project directory: %w", err)
 	}
 
+	h.project = projectDir
 	runner := &Runner{Dir: projectDir, OnLog: h.OnLog}
 	env := h.probeEnvironment(runCtx, runner)
 	report := &BuildReport{Design: design, Dir: projectDir}
@@ -224,9 +264,16 @@ func (h *Harness) Run(ctx context.Context, request, knownContext string) (*Build
 	// --------------------------------------------------------- integration
 	h.runIntegrationPhase(runCtx, runner, design, tc, env, built, report)
 
+	// A researched fix whose check never re-ran is not known to work.
+	h.settleLearning(runCtx, false)
 	report.Attempts = h.attempts
 	report.FixesApplied = h.fixesApplied
 	report.LearnedFixes = h.learnedFixes
+	if h.pending != nil {
+		p := *h.pending
+		report.NeedsApproval = &p
+		report.Incomplete = true
+	}
 
 	h.announceResult(report)
 	h.rememberBuild(runCtx, request, design, report)
@@ -402,16 +449,31 @@ func fileNames(files []FileSpec) []string {
 	return out
 }
 
+// Succeeded reports whether the build is a success: the full test suite
+// passed, the project builds, a smoke start (when one ran) really started,
+// and the build finished within its budget. Anything less is not done.
+func (r *BuildReport) Succeeded() bool {
+	return r.TestsPassed && r.BuildPassed && (!r.SmokeRan || r.SmokePassed) && !r.Incomplete
+}
+
 // Summary renders the report as the answer the user actually sees.
 func (r *BuildReport) Summary() string {
 	var b strings.Builder
 
 	status := "✓ Built and tested"
-	if !r.TestsPassed {
+	switch {
+	case !r.TestsPassed:
 		status = "⚠ Built, but the tests do not pass"
+	case !r.BuildPassed:
+		status = "⚠ The tests pass, but the project does not build"
+	case r.SmokeRan && !r.SmokePassed:
+		status = "⚠ Built and tested, but it does not start"
 	}
 	if r.Incomplete {
 		status = "⚠ Incomplete (ran out of build budget)"
+	}
+	if r.NeedsApproval != nil {
+		status = "⏸ Paused: a proposed fix needs your approval (`" + r.NeedsApproval.Action() + "`)"
 	}
 
 	fmt.Fprintf(&b, "%s: %s (%s %s)\n\n", status, r.Design.ProjectName, r.Design.Language, r.Design.Kind)

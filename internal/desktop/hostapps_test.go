@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -222,7 +223,7 @@ func TestPackDynamicApp(t *testing.T) {
 	if !strings.Contains(desktopContent, "Exec=/home/headless/.local/bin/spotify-music-host %U") {
 		t.Errorf("unexpected desktop content: %s", desktopContent)
 	}
-	if !strings.Contains(wrapperContent, "/host-gui/view?") || !strings.Contains(wrapperContent, "id=work-vm-spotify-music") ||
+	if !strings.Contains(wrapperContent, "/host-gui/view?") || !strings.Contains(wrapperContent, "id="+hostSessionID("work-vm", "spotify-music")) ||
 		!strings.Contains(wrapperContent, "token=") ||
 		!strings.Contains(wrapperContent, "target=shell%3AAppsFolder%5CSpotify.exe") {
 		t.Errorf("a Windows app must open the host-gui viewer with its target, got: %s", wrapperContent)
@@ -274,8 +275,6 @@ func TestPackHostBridgeLaunchers(t *testing.T) {
 
 	expected := []string{
 		".local/bin/host-run",
-		".local/bin/host-open",
-		".local/bin/host-clip",
 	}
 
 	for _, exp := range expected {
@@ -285,6 +284,9 @@ func TestPackHostBridgeLaunchers(t *testing.T) {
 	}
 
 	unexpected := []string{
+		// a link opened in the person's browser is signed into a launcher too, and nothing sets their clipboard
+		".local/bin/host-open",
+		".local/bin/host-clip",
 		// generic "run anything on the host" wrappers: host commands are signed into launchers now
 		".local/bin/win-run",
 		".local/bin/mac-run",
@@ -333,7 +335,7 @@ func TestSelectedAppsPackaging(t *testing.T) {
 			if !ok {
 				t.Fatalf("missing def for %s", tc.id)
 			}
-			files := pack(t, func(tw *tar.Writer) error { return def.packFn(tw, []string{}) })
+			files := pack(t, func(tw *tar.Writer) error { return def.packFn(tw, []string{}, packContext{}) })
 			if _, found := files[tc.expectedFile]; !found {
 				t.Errorf("expected %s to be packed when %s is selected", tc.expectedFile, tc.id)
 			}
@@ -373,14 +375,11 @@ func TestGetWebAppURLForApp(t *testing.T) {
 		cmdOrId  string
 		expected string
 	}{
-		{"Claude", "Claude_pzs8sxrjxfjjc!Claude", "https://claude.ai"},
-		{"ChatGPT", "OpenAI.Codex_2p2nqsd0c76g0!App", "https://chatgpt.com"},
-		{"Chat GPT", "chatgpt.exe", "https://chatgpt.com"},
-		{"Microsoft Copilot", "Microsoft.Copilot_8wekyb3d8bbwe!App", "https://copilot.microsoft.com"},
-		{"YouTube", "Chrome._crx_agimnkijcaiengbajagbfclojfljnakf", "https://www.youtube.com"},
-		{"WhatsApp", "5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App", "https://web.whatsapp.com"},
-		{"Discord", "com.squirrel.Discord.Discord", "https://discord.com/app"},
-		{"Slack", "slack.exe", "https://app.slack.com"},
+		// A local app is a local app whatever its name says: no product's web address is guessed from words (B-20).
+		{"Claude", "Claude_pzs8sxrjxfjjc!Claude", ""},
+		{"Chat GPT", "chatgpt.exe", ""},
+		{"Discord", "com.squirrel.Discord.Discord", ""},
+		{"Invoice Notes (Slack export)", "notes.exe", ""},
 		{"Custom Web App", "https://example.com/myapp", "https://example.com/myapp"},
 		{"Start URL", "cmd.exe /c start https://linear.app", "https://linear.app"},
 		{"Regular Windows App", "notepad.exe", ""},
@@ -396,21 +395,58 @@ func TestGetWebAppURLForApp(t *testing.T) {
 }
 
 func TestPackDynamicAppWebAppMode(t *testing.T) {
+	// An app is a web app only when its command is a web address: then it opens in the VM's browser.
 	app := HostAppItem{
-		ID:          "win_claude",
-		Name:        "Claude",
-		Category:    "Productivity",
-		Description: "AI assistant",
-		HostCmd:     `cmd.exe /c start explorer.exe shell:AppsFolder\Claude_pzs8sxrjxfjjc!Claude`,
+		ID:          "win_tracker",
+		Name:        "Tracker",
+		Category:    "Desktop Apps",
+		Description: "web app",
+		HostCmd:     `cmd.exe /c start https://tracker.example.com/app`,
 	}
 
-	wrapper, foundWrapper := packApp(t, app)[".local/bin/claude-host"]
+	wrapper, foundWrapper := packApp(t, app)[".local/bin/tracker-host"]
 	wrapperContent := wrapper.data
 	if !foundWrapper {
-		t.Fatal("expected .local/bin/claude-host to be packed")
+		t.Fatal("expected .local/bin/tracker-host to be packed")
 	}
-	if !strings.Contains(wrapperContent, `APP='https://claude.ai'`) || !strings.Contains(wrapperContent, `--app="$APP"`) {
-		t.Errorf("expected wrapper to use chromium-browser --app mode for Claude, got:\n%s", wrapperContent)
+	if !strings.Contains(wrapperContent, `APP='https://tracker.example.com/app'`) || !strings.Contains(wrapperContent, `--app="$APP"`) {
+		t.Errorf("expected the wrapper to open the app's own address in --app mode, got:\n%s", wrapperContent)
+	}
+}
+
+// TestADesktopEntryValueStaysOnItsLine: a name or description from a host or a phone cannot add keys (B-22).
+func TestADesktopEntryValueStaysOnItsLine(t *testing.T) {
+	app := HostAppItem{ID: "win_x", Name: "Notes\nExec=/bin/false", Description: "a\rb", HostCmd: `cmd.exe /c start notes.exe`}
+	entry := packApp(t, app)["Desktop/notes-exec-bin-false-host.desktop"].data
+	for _, f := range packApp(t, app) {
+		if strings.Contains(f.data, "[Desktop Entry]") {
+			entry = f.data
+		}
+	}
+	if strings.Count(entry, "\nExec=") != 1 {
+		t.Fatalf("a value broke its line:\n%s", entry)
+	}
+	if got := desktopValue("a\nb\x00c\u2028d"); strings.ContainsAny(got, "\n\x00\u2028") {
+		t.Fatalf("desktopValue left a control character: %q", got)
+	}
+}
+
+// TestHostSessionIDsNeverCollide: ids from (desktop, app) pairs are distinct even where joined names were not (B-19).
+func TestHostSessionIDsNeverCollide(t *testing.T) {
+	pairs := [][2]string{{"a-b", "c"}, {"a", "b-c"}, {strings.Repeat("x", 70), "one"}, {strings.Repeat("x", 70), "two"},
+		{"box", strings.Repeat("y", 40) + "1"}, {"box", strings.Repeat("y", 40) + "2"}}
+	seen := map[string]bool{}
+	for _, p := range pairs {
+		id := hostSessionID(p[0], p[1])
+		// The host's desktop name is "decurix_" and the id, cut at 48: all of the id, hash included, must fit (RW1-D-04).
+		if seen[id] || len("decurix_"+id) > 48 || !regexp.MustCompile(`^[A-Za-z0-9_-]+$`).MatchString(id) {
+			t.Errorf("hostSessionID(%q, %q) = %q: collides, too long or unsafe", p[0], p[1], id)
+		}
+		seen[id] = true
+	}
+	// The slug reads back whole from the id, for the app's name on its card (RW1-D-05).
+	if got := HostSessionSlug(hostSessionID("pc2", "microsoft-paint")); got != "microsoft-paint" {
+		t.Errorf("HostSessionSlug = %q", got)
 	}
 }
 
@@ -685,31 +721,38 @@ func TestAWebServiceOpensInTheVMWithoutAskingTheHost(t *testing.T) {
 		asked = true
 		return nil, nil
 	})
-	got := vetHostApps([]HostAppItem{windowsApp("Claude", `cmd.exe /c start explorer.exe shell:AppsFolder\Anthropic.Claude_x!Claude`)})
+	got := vetHostApps([]HostAppItem{windowsApp("Tracker", `cmd.exe /c start https://tracker.example.com/app`)})
 	if len(got) != 1 || got[0].Mode != ModeWeb {
-		t.Fatalf("offered %+v, want Claude opened as its web version", got)
+		t.Fatalf("offered %+v, want an app whose command is a web address opened in the VM", got)
 	}
 	if asked {
 		t.Error("the host was asked about an app that never runs there")
 	}
 }
 
-func TestAppsThatNeedSoundAreShownButDisabled(t *testing.T) {
+// TestAnAppIsNotJudgedByTheWordsInItsName: a local app named like a web service, or like a media player, is a local
+// app the host is asked about - never rerouted to a vendor's site or refused for its name (B-20).
+func TestAnAppIsNotJudgedByTheWordsInItsName(t *testing.T) {
 	useHostChecker(t, allowEverything)
 	got := vetHostApps([]HostAppItem{
-		windowsApp("Spotify", `cmd.exe /c start "" "C:\Users\a\AppData\Roaming\Spotify\Spotify.exe"`),
+		windowsApp("Claude", `cmd.exe /c start explorer.exe shell:AppsFolder\Anthropic.Claude_x!Claude`),
 		windowsApp("VLC media player", `cmd.exe /c start "" "C:\Program Files\VideoLAN\VLC\vlc.exe"`),
 	})
-	if len(got) != 2 || got[0].Mode != ModeUnavailable || got[1].Mode != ModeUnavailable {
-		t.Errorf("audio-only apps should remain visible but disabled: %+v", got)
+	if len(got) != 2 {
+		t.Fatalf("got %+v", got)
+	}
+	for _, app := range got {
+		if app.Mode == ModeWeb || app.Mode == ModeUnavailable {
+			t.Errorf("%s was judged by its name: mode %s (%s)", app.Name, app.Mode, app.UnavailableReason)
+		}
 	}
 }
 
-func TestBrowserDescriptionPromisesTheSeededSignedInProfile(t *testing.T) {
+func TestABrowserIsNotPromisedThePersonsProfile(t *testing.T) {
 	useHostChecker(t, allowEverything)
 	got := vetHostApps([]HostAppItem{windowsApp("Google Chrome", `cmd.exe /c start "" "C:\Program Files\Google\Chrome\chrome.exe"`)})
-	if len(got) != 1 || got[0].Mode != ModeHostGUI || !strings.Contains(got[0].Description, "signed-in browser profile") {
-		t.Fatalf("Chrome discovery did not describe its profile import: %+v", got)
+	if len(got) != 1 || got[0].Mode != ModeHostGUI || strings.Contains(got[0].Description, "signed-in browser profile") {
+		t.Fatalf("Chrome must be described with a profile of its own, not the person's: %+v", got)
 	}
 }
 
@@ -745,7 +788,7 @@ func TestTheHostIsOnlyAskedAboutAnAppOnce(t *testing.T) {
 	}
 }
 
-// host-run can only open links, set the clipboard and run a signed launcher command. The old generic form
+// host-run can only open a signed link and run a signed launcher command. The old generic form
 // ("host-run rm -rf ...", and win-run/mac-run which wrapped it) is what let a desktop's agent run anything on the host.
 func TestHostRunRefusesToRunAnUnsignedCommand(t *testing.T) {
 	requireBash(t)
@@ -773,13 +816,28 @@ func TestStaticLaunchersOpenALinkInsteadOfRunningCmd(t *testing.T) {
 		}
 		buf := new(bytes.Buffer)
 		tw := tar.NewWriter(buf)
-		if err := def.packFn(tw, nil); err != nil {
+		if err := def.packFn(tw, nil, packContext{}); err != nil {
 			t.Fatal(err)
 		}
 		tw.Close()
 		if strings.Contains(buf.String(), "host-run cmd.exe") {
 			t.Errorf("%s launcher still asks the host to run cmd.exe", def.id)
 		}
+		if strings.Contains(buf.String(), "host-run open") {
+			t.Errorf("%s launcher opens a link on the host with no signature", def.id)
+		}
+	}
+}
+
+// A web app's launcher opens its own site in the person's browser only with a token for that site and that desktop:
+// the control plane opens nothing else (winhost.OpenToken).
+func TestWebAppLauncherSignsItsOwnSite(t *testing.T) {
+	pc := packContext{DesktopID: "box-a", Secret: []byte("secret")}
+	files := pack(t, func(tw *tar.Writer) error { return packWebAppHost(tw, pc, "claude", "Claude", "https://claude.ai") })
+	script := files[".local/bin/claude-host"].data
+	want := "exec /home/headless/.local/bin/host-run open " + winhost.OpenToken(pc.Secret, "box-a", "https://claude.ai") + " 'https://claude.ai'"
+	if !strings.Contains(script, want) {
+		t.Fatalf("launcher does not open its site signed: %s", script)
 	}
 }
 
@@ -806,45 +864,24 @@ func TestHasWindowsInstallNeedsWindowsInsideTheDrive(t *testing.T) {
 	}
 }
 
-func TestChromeDiscoveredAndPackaged(t *testing.T) {
-	tempHome := t.TempDir()
-	chromeDir := filepath.Join(tempHome, ".config", "google-chrome")
-	if err := os.MkdirAll(filepath.Join(chromeDir, "Default"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(chromeDir, "Local State"), []byte(`{"profile":{"info_cache":{"Default":{"user_name":"test@example.com"}}}}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Setenv("HOME", tempHome)
-	t.Setenv("USERPROFILE", tempHome)
-
-	defs := getKnownAppDefs()
-	var chromeDef *knownAppDef
-	for i := range defs {
-		if defs[i].id == "chrome" {
-			chromeDef = &defs[i]
-			break
+// No app copies the person's own accounts into a worker: a browser profile (cookies, saved passwords), keys, tokens,
+// keyrings or dotfiles. Only launchers are packed (review 2026-11-02).
+func TestNoAppCopiesTheHostsCredentials(t *testing.T) {
+	for _, def := range getKnownAppDefs() {
+		switch def.id {
+		case "claude", "chatgpt", "host_bridge":
+		default:
+			t.Errorf("unexpected host app definition %q: only launchers may be copied into a desktop", def.id)
 		}
-	}
-	if chromeDef == nil {
-		t.Fatal("chrome definition not found in getKnownAppDefs")
-	}
-
-	paths := chromeDef.probeFn()
-	if len(paths) == 0 {
-		t.Fatal("expected chrome probeFn to discover profile directory")
-	}
-
-	files := pack(t, func(tw *tar.Writer) error { return chromeDef.packFn(tw, paths) })
-	_, foundLocalState := files[".config/google-chrome/Local State"]
-	link, foundSymlink := files[".config/chromium"]
-	foundSymlink = foundSymlink && link.hdr.Typeflag == tar.TypeSymlink && link.hdr.Linkname == "google-chrome"
-	if !foundLocalState {
-		t.Error("expected .config/google-chrome/Local State to be packed")
-	}
-	if !foundSymlink {
-		t.Error("expected .config/chromium symlink to google-chrome to be created")
+		files := pack(t, func(tw *tar.Writer) error { return def.packFn(tw, nil, packContext{}) })
+		for name := range files {
+			lower := strings.ToLower(name)
+			for _, secret := range []string{".ssh", ".config/google-chrome", ".mozilla", ".config/gh", ".docker", ".config/gcloud", ".azure", "keyrings", "cookies", "login data"} {
+				if strings.Contains(lower, secret) {
+					t.Errorf("%s packs %s", def.id, name)
+				}
+			}
+		}
 	}
 }
 

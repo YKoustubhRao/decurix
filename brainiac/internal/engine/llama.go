@@ -34,14 +34,21 @@ type LlamaProc struct {
 	// that no longer carries it is not served. Empty for an older lock.
 	TemplateSHA string
 	NoSandbox   bool // the operator turned the file sandbox off
-	Logf        func(format string, a ...any)
+	// Required refuses to start a server that could reach anything beyond
+	// its own files and socket (sandbox: required).
+	Required bool
+	Logf     func(format string, a ...any)
 
 	mu     sync.Mutex
 	cmd    *exec.Cmd
 	done   chan struct{}
-	client *backend.OpenAI
+	client *backend.OpenAI // set once the server answers its health check
 	open   []string
 	sock   string // the Unix socket's private directory, when one is used
+	// loading is closed when a start in progress ends; nil when none is.
+	// The lock is not held while a model loads (minutes on a CPU), so
+	// status and the other accessors never wait for it.
+	loading chan struct{}
 }
 
 var (
@@ -75,7 +82,11 @@ func has(help, flag string) bool {
 // is what makes the next turn cheap), and loopback or a Unix socket only.
 func (p *LlamaProc) args(host string, port int) []string {
 	help := serverHelp(p.Bin)
-	a := []string{"-m", p.Model, "--host", host, "--port", strconv.Itoa(port), "-c", strconv.Itoa(p.Ctx)}
+	a := []string{"-m", p.Model, "--host", host}
+	if port > 0 { // a Unix socket needs no port
+		a = append(a, "--port", strconv.Itoa(port))
+	}
+	a = append(a, "-c", strconv.Itoa(p.Ctx))
 	if p.Threads > 0 {
 		a = append(a, "-t", strconv.Itoa(p.Threads))
 	}
@@ -108,26 +119,63 @@ func (p *LlamaProc) args(host string, port int) []string {
 	return a
 }
 
-// Start runs the server and waits until it has loaded the model.
+// Start runs the server and waits until it has loaded the model. A second
+// caller during a load waits for that load instead of starting another.
 func (p *LlamaProc) Start(ctx context.Context) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	for p.loading != nil {
+		wait := p.loading
+		p.mu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		p.mu.Lock()
+	}
 	if p.running() {
+		p.mu.Unlock()
 		return nil
 	}
+	cmd, client, done, err := p.launchLocked()
+	if err != nil {
+		p.mu.Unlock()
+		return err
+	}
+	loading := make(chan struct{})
+	p.loading = loading
+	p.mu.Unlock()
+
+	err = p.waitHealthy(ctx, client, done)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch {
+	case p.cmd != cmd:
+		if err == nil {
+			err = errors.New("llama-server was stopped while it loaded")
+		}
+	case err != nil:
+		p.stopLocked()
+	default:
+		p.client = client
+	}
+	p.loading = nil
+	close(loading)
+	return err
+}
+
+// launchLocked starts the server process; p.mu is held.
+func (p *LlamaProc) launchLocked() (*exec.Cmd, *backend.OpenAI, chan struct{}, error) {
 	if p.TemplateSHA != "" {
 		got, err := gguf.FileSHA(p.Model)
 		if err != nil {
-			return fmt.Errorf("llama-server: %w", err)
+			return nil, nil, nil, fmt.Errorf("llama-server: %w", err)
 		}
 		if got != p.TemplateSHA {
-			return fmt.Errorf("llama-server: %s no longer carries the chat template it was installed with; not serving it. "+
+			return nil, nil, nil, fmt.Errorf("llama-server: %s no longer carries the chat template it was installed with; not serving it. "+
 				"After `brainiac update approve-template`, `brainiac pull --latest` installs it again", filepath.Base(p.Model))
 		}
-	}
-	port, err := freePort()
-	if err != nil {
-		return err
 	}
 	var logf *os.File
 	if p.LogPath != "" {
@@ -135,14 +183,26 @@ func (p *LlamaProc) Start(ctx context.Context) error {
 		logf, _ = os.Create(p.LogPath)
 	}
 	p.removeSock()
-	cmd, client, err := p.launchNoNetwork(port, logf)
-	if err != nil {
+	l, err := p.launchNoNetwork(logf)
+	if err == nil {
+		err = p.startLaunch(l)
+	}
+	if err != nil && !errors.Is(err, errUnconfined) {
 		p.logf("llama-server: %s cannot run without a network: %v", filepath.Base(p.Model), err)
 		p.removeSock()
-		if cmd, client, err = p.launchOnLoopback(port, logf); err != nil {
-			return fmt.Errorf("llama-server: %w", err)
+		if l, err = p.launchOnLoopback(logf); err == nil {
+			err = p.startLaunch(l)
 		}
 	}
+	if err != nil {
+		p.removeSock()
+		if logf != nil {
+			logf.Close()
+		}
+		return nil, nil, nil, fmt.Errorf("llama-server: %w", err)
+	}
+	cmd, client := l.cmd, l.client
+	p.open = l.open
 	if len(p.open) > 0 {
 		p.logf("llama-server: %s runs with access to: %s", filepath.Base(p.Model), strings.Join(p.open, ", "))
 	}
@@ -154,29 +214,30 @@ func (p *LlamaProc) Start(ctx context.Context) error {
 		}
 		close(done)
 	}()
-	p.cmd, p.done, p.client = cmd, done, client
+	p.cmd, p.done, p.client = cmd, done, nil
+	return cmd, client, done, nil
+}
 
-	// Loading reads the whole file; on a slow disk under memory pressure that
-	// is minutes, so the wait is long, but a crash is noticed at once.
+// waitHealthy waits, without the lock, until the server answers. Loading
+// reads the whole file; on a slow disk under memory pressure that is
+// minutes, so the wait is long, but a crash is noticed at once.
+func (p *LlamaProc) waitHealthy(ctx context.Context, client *backend.OpenAI, done chan struct{}) error {
 	deadline := time.Now().Add(15 * time.Minute)
 	for {
 		select {
 		case <-done:
-			p.cmd = nil
 			return fmt.Errorf("llama-server exited while loading %s: %s", filepath.Base(p.Model), tailOf(p.LogPath))
 		case <-ctx.Done():
-			p.stopLocked()
 			return ctx.Err()
 		case <-time.After(500 * time.Millisecond):
 		}
 		hctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		ok := p.client.Healthy(hctx)
+		ok := client.Healthy(hctx)
 		cancel()
 		if ok {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			p.stopLocked()
 			return errors.New("llama-server did not finish loading in 15 minutes")
 		}
 	}
@@ -185,7 +246,7 @@ func (p *LlamaProc) Start(ctx context.Context) error {
 // command is the server process: none of Brainiac's secrets in its environment.
 func (p *LlamaProc) command(host string, port int, logf *os.File) *exec.Cmd {
 	cmd := exec.Command(p.Bin, p.args(host, port)...)
-	cmd.Dir = filepath.Dir(p.Bin) // shared libraries sit beside the binary
+	cmd.Dir = buildDir(p.Bin) // where ggml looks for its backends when it cannot read /proc/self/exe
 	cmd.Env = isolate.Env()
 	if logf != nil {
 		cmd.Stdout, cmd.Stderr = logf, logf
@@ -193,24 +254,84 @@ func (p *LlamaProc) command(host string, port int, logf *os.File) *exec.Cmd {
 	return cmd
 }
 
-// policy is the files the server may touch: its build and its model files,
-// and the socket's directory when it has one.
+// policy is the files the server may touch: its program, the libraries it
+// loads from its build (ggml's backends among them), its model files, and
+// the socket's directory when it has one. ggml finds its backends by
+// listing a directory (the working directory, where it cannot read
+// /proc/self/exe), so the build may be listed: in a view it holds only
+// what is granted.
 func (p *LlamaProc) policy(write ...string) isolate.Policy {
 	read := []string{p.Model}
 	if p.MMProj != "" {
 		read = append(read, p.MMProj)
 	}
-	return isolate.ForProgram(p.Bin, read, write)
+	build := buildDir(p.Bin)
+	pol := isolate.ForProgram(p.Bin, read, write, ggmlBackends(build)...)
+	pol.List = append(pol.List, build)
+	return pol
+}
+
+// buildDir is the directory of the real server program, behind any
+// symlink: where its build's libraries and backends are.
+func buildDir(bin string) string {
+	if real, err := filepath.EvalSymlinks(bin); err == nil {
+		return filepath.Dir(real)
+	}
+	return filepath.Dir(bin)
+}
+
+// ggmlBackends are the backend modules in a llama.cpp build
+// (libggml-cpu-haswell.so, libggml-cuda.so...): ggml opens them itself at
+// run time, so no DT_NEEDED names them.
+func ggmlBackends(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if n := e.Name(); !e.IsDir() && strings.HasPrefix(n, "libggml-") && strings.HasSuffix(n, ".so") {
+			out = append(out, filepath.Join(dir, n))
+		}
+	}
+	return out
 }
 
 func (p *LlamaProc) sandboxes() bool { return !p.NoSandbox && isolate.CanSandbox() }
 
-// launchOnLoopback starts the server on a TCP port, the way that works
+// errUnconfined is a start refused because the sandbox is required and the
+// process would not be fully confined.
+var errUnconfined = errors.New("the sandbox is required here")
+
+// launch is a server process ready to start, and what it could still reach.
+type launch struct {
+	cmd    *exec.Cmd
+	client *backend.OpenAI
+	open   []string
+}
+
+// startLaunch starts a prepared server, unless the sandbox is required and
+// it would reach more than its own files. It dies with Brainiac.
+func (p *LlamaProc) startLaunch(l launch) error {
+	if p.Required && len(l.open) > 0 {
+		return fmt.Errorf("%w, and %s would still reach: %s; not starting it", errUnconfined, filepath.Base(p.Model), strings.Join(l.open, ", "))
+	}
+	isolate.DieWithParent(l.cmd)
+	return isolate.StartLocked(l.cmd)
+}
+
+// launchOnLoopback prepares the server on a TCP port, the way that works
 // everywhere. Where the kernel can, it still may not connect anywhere, and
-// may listen on that one port only. What stays open is named in p.open.
-func (p *LlamaProc) launchOnLoopback(port int, logf *os.File) (*exec.Cmd, *backend.OpenAI, error) {
+// may listen on that one port only. What stays open is named in open:
+// "sockets" always, since only a mount view hides other programs' Unix
+// sockets.
+func (p *LlamaProc) launchOnLoopback(logf *os.File) (launch, error) {
+	port, err := freePort()
+	if err != nil {
+		return launch{}, err
+	}
 	cmd := p.command("127.0.0.1", port, logf)
-	p.open = []string{"network", "files"}
+	open := []string{"network", "files", "sockets"}
 	if p.sandboxes() {
 		pol := p.policy()
 		pol.BlockTCP, pol.BindTCP = isolate.CanBlockTCP(), []int{port}
@@ -218,48 +339,49 @@ func (p *LlamaProc) launchOnLoopback(port int, logf *os.File) (*exec.Cmd, *backe
 			p.logf("llama-server: no file sandbox: %v", err)
 			cmd = p.command("127.0.0.1", port, logf)
 		} else if pol.BlockTCP {
-			p.open = []string{"udp"}
+			open = []string{"udp", "sockets"}
 		} else {
-			p.open = []string{"network"}
+			open = []string{"network", "sockets"}
 		}
 	}
-	if err := cmd.Start(); err != nil {
-		return nil, nil, err
-	}
-	return cmd, &backend.OpenAI{Name: "llama-server", BaseURL: fmt.Sprintf("http://127.0.0.1:%d", port), TemplateThinking: true}, nil
+	return launch{cmd: cmd, open: open,
+		client: &backend.OpenAI{Name: "llama-server", BaseURL: fmt.Sprintf("http://127.0.0.1:%d", port), TemplateThinking: true}}, nil
 }
 
-// launchNoNetwork starts the server with no network at all, reached through a
-// Unix socket in a directory only this user can open. It returns an error,
-// with nothing started, when this system or build cannot do that.
-func (p *LlamaProc) launchNoNetwork(port int, logf *os.File) (*exec.Cmd, *backend.OpenAI, error) {
+// launchNoNetwork prepares the server with no network at all and, unless
+// the operator turned the sandbox off, a view of nothing but its build, its
+// model and its socket's directory (a mount namespace). It is reached
+// through that Unix socket. It returns an error, with nothing started, when
+// this system or build cannot do that.
+func (p *LlamaProc) launchNoNetwork(logf *os.File) (launch, error) {
 	if !isolate.CanCutNetwork {
-		return nil, nil, errors.New("this system cannot start a process without a network")
+		return launch{}, errors.New("this system cannot start a process without a network")
 	}
 	if !strings.Contains(serverHelp(p.Bin), ".sock") {
-		return nil, nil, errors.New("this llama-server build has no Unix socket to be reached through")
+		return launch{}, errors.New("this llama-server build has no Unix socket to be reached through")
+	}
+	if !p.NoSandbox {
+		if ok, err := isolate.CanConfine(); !ok {
+			return launch{}, fmt.Errorf("this system refuses a process its own namespaces: %v", err)
+		}
 	}
 	dir, err := os.MkdirTemp("", "brainiac-llama-")
 	if err != nil {
-		return nil, nil, err
+		return launch{}, err
 	}
 	p.sock = dir
 	path := filepath.Join(dir, "s.sock")
 	if len(path) > 100 { // sun_path holds about 108 bytes
-		return nil, nil, fmt.Errorf("the socket path %s is too long", path)
+		return launch{}, fmt.Errorf("the socket path %s is too long", path)
 	}
-	cmd := p.command(path, port, logf)
+	cmd := p.command(path, 0, logf)
 	isolate.NoNetwork(cmd)
-	p.open = []string{"files"}
-	if p.sandboxes() {
+	open := []string{"files", "sockets"}
+	if !p.NoSandbox {
 		if err := isolate.Wrap(cmd, p.policy(dir)); err != nil {
-			p.logf("llama-server: no file sandbox: %v", err)
-		} else {
-			p.open = nil
+			return launch{}, err
 		}
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, nil, err
+		open = nil
 	}
 	client := &backend.OpenAI{Name: "llama-server", BaseURL: "http://llama-server", TemplateThinking: true, HTTP: &http.Client{
 		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -267,7 +389,7 @@ func (p *LlamaProc) launchNoNetwork(port int, logf *os.File) (*exec.Cmd, *backen
 			return d.DialContext(ctx, "unix", path)
 		}},
 	}}
-	return cmd, client, nil
+	return launch{cmd: cmd, client: client, open: open}, nil
 }
 
 func (p *LlamaProc) removeSock() {
@@ -283,8 +405,9 @@ func (p *LlamaProc) logf(f string, a ...any) {
 	}
 }
 
-// Open names what a running server can still reach: "files", "network", or
-// "udp" when only TCP could be blocked. Nothing for a fully confined one.
+// Open names what a running server can still reach: "files", "network",
+// "udp" when only TCP could be blocked, "sockets" for other programs' Unix
+// sockets. Nothing for a fully confined one.
 func (p *LlamaProc) Open() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -294,10 +417,15 @@ func (p *LlamaProc) Open() []string {
 	return p.open
 }
 
-// Client is the server's API, valid while it runs.
+// Client is the server's API while it runs, and nil once it has exited (a
+// crash or an OOM kill), so a caller starts it again instead of dialing a
+// server that is gone.
 func (p *LlamaProc) Client() *backend.OpenAI {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !p.running() {
+		return nil
+	}
 	return p.client
 }
 
@@ -335,7 +463,7 @@ func (p *LlamaProc) stopLocked() {
 		case <-time.After(10 * time.Second):
 		}
 	}
-	p.cmd = nil
+	p.cmd, p.client = nil, nil
 	p.removeSock()
 }
 

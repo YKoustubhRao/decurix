@@ -8,9 +8,11 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { setupMobileAccess } = require('./mobile-access');
+const { lanPort } = require('./gated-port');
 const { ensureLanForward } = require('./windows-lan');
 const windowsRuntime = require('./windows-runtime');
 const { createLocalModels } = require('./local-models');
+const { watchBuild, stalledMessage } = require('./build-watchdog');
 
 // The app is a window on the control plane's dashboard, and what starts it.
 //
@@ -122,8 +124,46 @@ function tunnelCommand(port, provider = 'cloudflare') {
   return { file: cloudflared(), args: ['tunnel', '--protocol', 'http2', '--url', `http://127.0.0.1:${port}`] };
 }
 
+// The public link is a tunnel from the internet to the gated listener. It is
+// off until the person turns it on in the Mobile menu (preload.js): a firm
+// that never asked for phone access should not have an internet-reachable
+// sign-in page. The choice is the app's own setting, kept beside its others.
+function publicLinkFile() {
+  return path.join(dataDir(), 'public-link.json');
+}
+
+function publicLinkEnabled() {
+  try { return JSON.parse(fs.readFileSync(publicLinkFile(), 'utf8')).enabled === true; }
+  catch (error) { if (error.code !== 'ENOENT') console.warn('Could not read the public link setting:', error.message); return false; }
+}
+
+function publicLinkStatus() {
+  return { available: Boolean(cloudflared()), enabled: publicLinkEnabled() };
+}
+
+async function setPublicLink(enabled) {
+  if (typeof enabled !== 'boolean') throw new Error('The public link is turned on or off, nothing else.');
+  fs.mkdirSync(dataDir(), { recursive: true });
+  fs.writeFileSync(publicLinkFile(), JSON.stringify({ enabled }) + '\n', 'utf8');
+  logLine(`Public link turned ${enabled ? 'on' : 'off'} from the dashboard`);
+  if (enabled) { if (showingDashboard) startMobileAccess(); } else await stopMobileAccess();
+  return publicLinkStatus();
+}
+
+for (const [channel, action] of [
+  ['public-link-status', () => publicLinkStatus()],
+  ['public-link-set', value => setPublicLink(value)],
+]) {
+  ipcMain.handle(channel, (event, value) => {
+    if (!fromDashboard(event)) throw new Error('The public link is only set from the desktop dashboard.');
+    return action(value);
+  });
+}
+
 function startMobileAccess() {
   if (mobileAccessPromise || closing) return;
+  // Off unless the person turned it on (publicLinkEnabled).
+  if (!publicLinkEnabled()) return;
   // No cloudflared, no tunnel: the dashboard works without one.
   if (!cloudflared()) return;
   mobileAccessPromise = setupMobileAccess(dataDir(), tunnelCommand, { log: logLine }).then(async (access) => {
@@ -150,10 +190,62 @@ function startupPalette() {
     : { color: '#f6f5f2', symbolColor: '#1a1917' };
 }
 
+// The start screen's latest status, numbered. It is sent again whenever the screen is loaded again, and the screen
+// says which one it has shown (preload.js, startup-status-shown). A start that failed with the screen frozen on a
+// line from the middle of a build, and no error (2026-11-04), is why: a failure the screen has not shown within
+// SHOWN_WITHIN_MS loads the screen again and is put in front of the person in a dialog of the app's own, with Retry.
+let lastStatus = null;
+let statusSeq = 0;
+let shownSeq = 0;
+let reloadedAt = 0;
+const SHOWN_WITHIN_MS = 10000;
+
+// update tells the start screen where the start is. It never throws: a screen that cannot take it is loaded again.
 function update(message, failed = false, detail = '') {
-  if (window && !window.isDestroyed()) {
-    window.webContents.send('startup-status', { message, failed, detail });
+  statusSeq += 1;
+  lastStatus = { message, failed, detail, seq: statusSeq };
+  if (failed) logLine(`Start failed: ${message}${detail ? ` | ${detail}` : ''}`);
+  sendStatus();
+  if (failed) {
+    const seq = statusSeq;
+    setTimeout(() => {
+      if (shownSeq < seq && lastStatus && lastStatus.seq === seq) failureNotShown(lastStatus);
+    }, SHOWN_WITHIN_MS);
   }
+}
+
+// sendStatus sends the latest status to the start screen, loading the screen again when it cannot take it.
+function sendStatus() {
+  if (!lastStatus || showingDashboard || !window || window.isDestroyed()) return;
+  try {
+    window.webContents.send('startup-status', lastStatus);
+  } catch (error) {
+    logLine(`The start screen did not take a status (${error.message}); loading it again`);
+    reloadStartScreen();
+  }
+}
+
+// reloadStartScreen loads the start screen again (a renderer that died or stopped answering) and sends it the latest
+// status. At most once in five seconds, so a screen that keeps failing is not loaded in a loop.
+function reloadStartScreen() {
+  if (showingDashboard || !window || window.isDestroyed() || Date.now() - reloadedAt < 5000) return;
+  reloadedAt = Date.now();
+  Promise.resolve()
+    .then(() => window.loadFile(path.join(__dirname, 'loading.html')))
+    .then(() => sendStatus())
+    .catch((error) => logLine(`The start screen could not be loaded again: ${error.message}`));
+}
+
+// failureNotShown puts a failure the start screen did not show in front of the person, in a dialog with Retry.
+function failureNotShown(status) {
+  logLine(`The start screen did not show the failure; asking in a dialog: ${status.message}`);
+  reloadStartScreen();
+  if (!window || window.isDestroyed()) return;
+  Promise.resolve()
+    .then(() => dialog.showMessageBox(window, { type: 'error', title: 'Decurix could not start', message: status.message,
+      detail: status.detail || '', buttons: ['Retry', 'Close'], defaultId: 0, cancelId: 1 }))
+    .then((answer) => { if (answer && answer.response === 0 && !starting && window) start(); })
+    .catch((error) => logLine(`The failure dialog could not be shown: ${error.message}`));
 }
 
 function logFile() {
@@ -265,17 +357,19 @@ function stackDir() {
 // What docker is run with: a PATH it and its helpers are found on, and the
 // two host folders the compose file mounts (scripts/mac/lib/host-mounts.sh,
 // scripts/linux/build.sh: a Mac shares its home folder and has no Windows
-// drive; Linux gives its root where WSL would give C:).
+// drive; Linux under WSL gives the Windows drive, and Linux without one an
+// empty folder - never the host's root, which would put /etc and every home
+// folder in reach of the control plane's host-file checks).
 function stackEnv() {
   // The project name a checkout's own `docker compose up` uses, so the app
   // takes over a control plane started that way instead of colliding with
   // its container's name - and keeps its records (the decurix-data volume).
   const env = { ...process.env, PATH: searchPath().join(path.delimiter), COMPOSE_PROJECT_NAME: 'decurix', DECURIX_HOST_HOME: os.homedir() };
-  if (process.platform === 'darwin') {
+  if (process.platform !== 'darwin' && fs.existsSync('/mnt/c')) {
+    env.DECURIX_HOST_MNT_C = '/mnt/c';
+  } else {
     env.DECURIX_HOST_MNT_C = path.join(dataDir(), 'no-windows-drive');
     fs.mkdirSync(env.DECURIX_HOST_MNT_C, { recursive: true });
-  } else {
-    env.DECURIX_HOST_MNT_C = fs.existsSync('/mnt/c') ? '/mnt/c' : '/';
   }
   return env;
 }
@@ -292,16 +386,30 @@ function run(file, args, onLine, options = {}) {
     // replaced by an update or removed by the uninstaller.
     const child = spawn(file, args, { windowsHide: true, cwd: os.tmpdir(), ...options, stdio: ['ignore', 'pipe', 'pipe'] });
     let rest = '';
+    let warned = false;
+    // A callback that throws (a start screen that cannot take a line) must not stop the output being read and logged,
+    // nor the program's end being seen.
+    const give = (line) => {
+      try { onLine(line); } catch (error) {
+        if (!warned) { warned = true; logLine(`${path.basename(file)}: a line of its output could not be shown: ${error.message}`); }
+      }
+    };
     const take = (chunk) => {
       if (log !== null) { try { fs.writeSync(log, chunk); } catch { /* decoration */ } }
       if (!onLine) return;
       const lines = (rest + chunk.toString()).split(/[\r\n]+/);
       rest = lines.pop();
-      for (const line of lines) if (line.trim()) onLine(line.trim().slice(0, 4096));
+      for (const line of lines) if (line.trim()) give(line.trim().slice(0, 4096));
     };
     child.stdout.on('data', take);
     child.stderr.on('data', take);
+    let settled = false;
     const done = (result) => {
+      if (settled) return;
+      settled = true;
+      // The last line, printed without a newline, is often the error.
+      if (onLine && rest.trim()) give(rest.trim().slice(0, 4096));
+      rest = '';
       if (log !== null) { try { fs.closeSync(log); } catch { /* already closed */ } log = null; }
       resolve(result);
     };
@@ -316,17 +424,31 @@ function wsl(args, onLine, options = {}) {
 }
 
 // inDistro runs a program as root inside the selected WSL distro.
-function inDistro(args, onLine, cwd = '/') {
-  return wsl(['-d', runtimeDistro, '-u', 'root', '--cd', cwd, '-e', ...args], onLine);
+function inDistro(args, onLine, cwd = '/', options = {}) {
+  return wsl(['-d', runtimeDistro, '-u', 'root', '--cd', cwd, '-e', ...args], onLine, options);
 }
+
+// QUICK is the spawn option for a call that only asks something (a version,
+// a list, a file, a route): a wsl.exe or docker that hangs - WSL starting up,
+// a daemon that stopped answering - is ended after it, and counts as a
+// failure, instead of holding the start (and its Retry) for good. Calls that
+// install, build or pull legitimately take long and get none.
+const QUICK = { timeout: 30000 };
 
 // docker runs one docker command in the stack's folder - on Windows inside
 // the app's distro, given what stackEnv gives elsewhere as plain variables.
-function docker(args, onLine) {
+// On Windows the gated port is published on the distro's 127.0.0.1 only
+// (DECURIX_LAN_BIND): the LAN link and the tunnel reach it through Windows'
+// own 127.0.0.1 (windows-lan.js), and published on every address it let a
+// desktop come back in through Docker's proxy looking like this computer.
+// DECURIX_HOST_KIND=wsl tells the control plane it runs on the app's WSL host,
+// whose desktops are kept apart by dockerd.sh's fence: it then refuses to
+// make or start a desktop while that fence is not in place (desktop.HostFence).
+function docker(args, onLine, options = {}) {
   if (windows) {
-    return inDistro(['env', 'COMPOSE_PROJECT_NAME=decurix', 'DECURIX_HOST_HOME=/home', 'DECURIX_HOST_MNT_C=/mnt/c', 'docker', ...(runtimeDistro !== DISTRO ? ['--host', 'unix:///var/run/docker.sock'] : []), ...args], onLine, DISTRO_STACK);
+    return inDistro(['env', 'COMPOSE_PROJECT_NAME=decurix', 'DECURIX_HOST_HOME=/home', 'DECURIX_HOST_MNT_C=/mnt/c', 'DECURIX_LAN_BIND=127.0.0.1', 'DECURIX_HOST_KIND=wsl', 'docker', ...(runtimeDistro !== DISTRO ? ['--host', 'unix:///var/run/docker.sock'] : []), ...args], onLine, DISTRO_STACK, options);
   }
-  return run(findProgram('docker') || 'docker', args, onLine, { cwd: stackDir(), env: stackEnv() });
+  return run(findProgram('docker') || 'docker', args, onLine, { ...options, cwd: stackDir(), env: stackEnv() });
 }
 
 // ensureSettings makes the person's .env, the one file of settings they edit
@@ -375,7 +497,7 @@ async function stackIsStale() {
   try { shipped = fs.readFileSync(path.join(resource('stack'), 'VERSION'), 'utf8').trim(); } catch { return false; }
   if (windows) {
     let staged = '';
-    const code = await inDistro(['cat', `${DISTRO_STACK}/VERSION`], (line) => { staged = line; });
+    const code = await inDistro(['cat', `${DISTRO_STACK}/VERSION`], (line) => { staged = line; }, '/', QUICK);
     return code !== 0 || staged.trim() !== shipped;
   }
   try { return fs.readFileSync(path.join(stackDir(), 'VERSION'), 'utf8').trim() !== shipped; } catch { return false; }
@@ -399,6 +521,7 @@ async function selectWindowsRuntime() {
   }
 
   const names = [];
+  let candidate = '';
   const listed = await wsl(['--list', '--quiet'], (line) => names.push(line.replace(/\0/g, '').trim()), { timeout: 15000 });
   if (listed === 0 && !names.includes(DISTRO)) {
     update('Checking existing WSL runtimes…');
@@ -412,14 +535,58 @@ async function selectWindowsRuntime() {
         'os=$(docker --host unix:///var/run/docker.sock info --format "{{.OperatingSystem}}") && ' +
         'case "$os" in *[Dd]ocker" "[Dd]esktop*) exit 1;; *) exit 0;; esac';
       if (await wsl(['-d', name, '-u', 'root', '--cd', '/', '-e', 'sh', '-c', probe], undefined, { timeout: 15000 }) === 0) {
-        runtimeDistro = name;
+        candidate = name;
         break;
       }
     }
   }
+  const record = { distro: DISTRO };
+  if (candidate && await askToAdopt(candidate)) {
+    record.distro = candidate;
+    record.adopted = true;
+    record.preexisting = await inventoryOf(candidate);
+    // inventoryOf throws unless every listing answered; an uninstall keeps
+    // everything when a record lacks this (wsl/cleanup-existing.ps1, A-04).
+    record.preexistingComplete = true;
+  }
+  runtimeDistro = record.distro;
   fs.mkdirSync(dataDir(), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ distro: runtimeDistro }) + '\n', 'utf8');
+  fs.writeFileSync(file, JSON.stringify(record) + '\n', 'utf8');
   runtimeSelected = true;
+}
+
+// askToAdopt asks the person whether Decurix may use the Docker Engine an
+// existing WSL distro already runs - its containers, volumes and compose
+// project live beside theirs - or should set up a Linux of its own. The
+// default is its own: sharing is a choice, never a silent takeover.
+async function askToAdopt(name) {
+  const options = {
+    type: 'question',
+    title: 'Decurix',
+    message: `Use the Docker Engine in your WSL distro "${name}"?`,
+    detail: `Decurix can run its control plane and workers in "${name}"'s Docker Engine, beside what you run there, `
+      + 'or set up a Linux of its own. If it uses yours, uninstalling Decurix later removes only what Decurix created there; '
+      + 'what is there now stays.',
+    buttons: [`Use "${name}"`, 'Set up Decurix\'s own Linux'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  };
+  const { response } = window && !window.isDestroyed() ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
+  return response === 0;
+}
+
+// inventoryOf lists the Decurix-looking resources (containers, volumes,
+// images) an engine already holds before Decurix first uses it, so an
+// uninstall keeps them (wsl/maintain-existing.sh). A runtime whose inventory
+// cannot be read in full is not adopted: the script fails when any one listing
+// does.
+async function inventoryOf(name) {
+  const found = [];
+  const code = await wsl(['-d', name, '-u', 'root', '--cd', '/', '-e', 'sh', linuxPath(resource(path.join('wsl', 'maintain-existing.sh'))), 'inventory'],
+    (line) => { const match = /^decurix-resource ([A-Za-z0-9_.:/-]+)$/.exec(line.trim()); if (match) found.push(match[1]); }, { timeout: 60000 });
+  if (code !== 0) throw new Error(`Could not list what "${name}"'s Docker Engine already holds, so Decurix did not start using it. Start its Docker Engine, then retry.`);
+  return found;
 }
 
 // dockerReady waits for a Docker that answers. On a Mac, Docker Desktop is
@@ -439,7 +606,7 @@ async function dockerReady() {
   }
   const mac = process.platform === 'darwin';
   const needs = mac ? 'Docker Desktop' : 'Docker';
-  const ask = () => docker(['version', '--format', '{{.Server.Version}}']);
+  const ask = () => docker(['version', '--format', '{{.Server.Version}}'], undefined, QUICK);
   let answer = await ask();
   if (answer === 'missing') {
     throw new Error(`Decurix needs ${needs}: its workers are Linux desktops that run in it. Install ${needs}, start it, then retry.`);
@@ -462,7 +629,7 @@ async function dockerReady() {
 // wslInstalled: whether this Windows has WSL 2 - the Store version, which
 // answers --version (the older in-box one does not).
 async function wslInstalled() {
-  return await wsl(['--version']) === 0;
+  return await wsl(['--version'], undefined, QUICK) === 0;
 }
 
 // A restart is asked for at most once per reason. Found on a second PC: WSL
@@ -492,7 +659,7 @@ function askForRestart(reason, message) {
 // wslSays is the first thing WSL prints for these arguments, for a message.
 async function wslSays(args) {
   const lines = [];
-  await wsl(args, (line) => { const text = line.replace(/\0/g, '').trim(); if (text) lines.push(text); });
+  await wsl(args, (line) => { const text = line.replace(/\0/g, '').trim(); if (text) lines.push(text); }, QUICK);
   return lines.slice(0, 2).join(' ').slice(0, 300);
 }
 
@@ -582,6 +749,7 @@ async function importDistro() {
 
   const asking = 'Turning on Windows\' Virtual Machine Platform. Windows will ask you to allow it.';
   update(asking);
+  // Its exit is not the answer (a declined prompt and a done one both end it): the import tried again is.
   await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ENABLE_WSL], (line) => update(asking, false, line));
   if ((await attempt()).code === 0) return;
   askForRestart('platform', 'Windows cannot run Linux on this computer yet. Restart Windows, then open Decurix again. '
@@ -591,7 +759,7 @@ async function importDistro() {
 
 async function distroExists() {
   const names = [];
-  const code = await wsl(['--list', '--quiet'], (line) => names.push(line.replace(/\0/g, '').trim()));
+  const code = await wsl(['--list', '--quiet'], (line) => names.push(line.replace(/\0/g, '').trim()), QUICK);
   // With no distro at all WSL answers with an error.
   return code === 0 && names.includes(DISTRO);
 }
@@ -605,7 +773,8 @@ async function stopEarlierWindowsApp() {
   const script = `$cp = ${folder}; Get-CimInstance Win32_Process | `
     + "? { $_.ExecutablePath -and $_.ExecutablePath -ieq $cp } | "
     + '% { Stop-Process -Id $_.ProcessId -Force }';
-  await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
+  // Best effort: an earlier app still holding 8080 is found by the next check (checkDashboard, 'occupied').
+  await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], undefined, QUICK);
 }
 
 // The wsl.exe that runs the daemon (dockerd.sh) is what keeps the distro, the
@@ -638,10 +807,25 @@ async function linuxReady() {
 
   const message = 'Preparing Linux. The first time, this installs Docker.';
   update(message);
-  const setup = await inDistro(['sh', linuxPath(resource(path.join('wsl', 'setup.sh'))), linuxPath(resource('stack')), linuxPath(ensureSettings())], (line) => update(message, false, line));
-  if (setup !== 0) throw new Error(`Could not prepare Linux for Decurix. Check ${logFile()}`);
+  // setup.sh downloads Docker Engine on a first start, so it runs under the stall watchdog like a build: every apk
+  // call in it is bounded and falls back to another mirror (apk-safe.sh), and says it is still running every 30 s, so
+  // silence for SETUP_STALL_MS means something else hung. Then it is ended in the distro and run again (it is safe
+  // to run again), and a second stall is an error with its last line and the start's Retry.
+  const setup = await watchBuild({
+    stallMs: SETUP_STALL_MS,
+    attempt: (line, signal) => inDistro(['sh', linuxPath(resource(path.join('wsl', 'setup.sh'))), linuxPath(resource('stack')), linuxPath(ensureSettings())],
+      line, '/', { signal }),
+    onLine: (line) => update(message, false, line),
+    onStall: async (n, last) => {
+      console.warn(`setup.sh: no output for ${Math.round(SETUP_STALL_MS / 60000)} minutes; ended (try ${n}). Last line: ${last}`);
+      await stopSetup();
+      if (n === 1) update(`${message} It stopped making progress, so it is being tried again.`, false, last);
+    },
+  });
+  if (setup.stalled) throw new Error(`${stalledMessage('Could not prepare Linux for Decurix.', SETUP_STALL_MS, setup.lastLine)} Check ${logFile()}`);
+  if (setup.code !== 0) throw new Error(`Could not prepare Linux for Decurix. Check ${logFile()}`);
 
-  const ask = () => inDistro(['docker', 'version', '--format', '{{.Server.Version}}']);
+  const ask = () => inDistro(['docker', 'version', '--format', '{{.Server.Version}}'], undefined, '/', QUICK);
   if (await ask() === 0) return;
   update('Starting Docker…');
   if (await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', startHiddenScript(DAEMON_COMMAND)]) !== 0) {
@@ -652,6 +836,19 @@ async function linuxReady() {
     await sleep(1000);
   }
   throw new Error(`Docker did not start in Decurix's Linux. Its log is /var/log/dockerd.log there (wsl -d ${DISTRO}).`);
+}
+
+// SETUP_STALL_MS is the silence that counts as a stalled setup.sh: its apk calls print at least every 30 s while
+// they run (apk-safe.sh), and nothing else in it waits on the network.
+const SETUP_STALL_MS = 5 * 60 * 1000;
+
+// stopSetup ends a setup.sh the watchdog cancelled, in the distro (ending wsl.exe does not end it there), and the apk
+// it was waiting on, so the next run takes apk's lock cleanly.
+async function stopSetup() {
+  try {
+    await inDistro(['pkill', '-f', 'wsl/setup.sh'], undefined, '/', QUICK);
+    await inDistro(['pkill', '-x', 'apk'], undefined, '/', QUICK);
+  } catch { /* the next run, or its error, says what is wrong */ }
 }
 
 // Windows gets a native model server; only the control plane and desktops use
@@ -721,13 +918,13 @@ async function prepareWindowsModels() {
     throw new Error('Less than ' + minGB + ' GB is free on the Windows disk. Free space before starting more workers or downloading models.');
   }
   let freeKB = 0;
-  const checked = await inDistro(['sh', '-c', "docker_root=$(docker --host unix:///var/run/docker.sock info --format '{{.DockerRootDir}}') && df -Pk \"$docker_root\" | awk 'NR==2 {print $4}'"], line => { freeKB = Number(line); });
+  const checked = await inDistro(['sh', '-c', "docker_root=$(docker --host unix:///var/run/docker.sock info --format '{{.DockerRootDir}}') && df -Pk \"$docker_root\" | awk 'NR==2 {print $4}'"], line => { freeKB = Number(line); }, '/', QUICK);
   if (checked !== 0 || !freeKB) throw new Error('Could not check the worker disk capacity in WSL.');
   if (freeKB < minGB * 1024 ** 2) throw new Error('Less than ' + minGB + ' GB is free on the WSL worker disk. Free space or expand its VHD before starting more workers.');
   let host = '';
   if (windowsRuntime.usesWindowsOllama(settings)) {
     let route = '';
-    if (await inDistro(['sh', '-c', 'ip -4 route show default'], line => { route += line + '\n'; }) !== 0) {
+    if (await inDistro(['sh', '-c', 'ip -4 route show default'], line => { route += line + '\n'; }, '/', QUICK) !== 0) {
       throw new Error('Could not discover the Windows model server address from WSL.');
     }
     host = windowsRuntime.windowsHost(route, undefined, settings.DECURIX_WINDOWS_OLLAMA_HOST);
@@ -735,7 +932,8 @@ async function prepareWindowsModels() {
   }
   const derived = path.join(dataDir(), 'windows-stack.env');
   fs.writeFileSync(derived, windowsRuntime.stackSettings(original, settings, plan, host), 'utf8');
-  const copied = await inDistro(['sh', '-c', 'tr -d "\\r" < "$1" > "$2"', 'decurix-settings', linuxPath(derived), DISTRO_STACK + '/.env']);
+  // The settings hold the person's keys: root-only from the moment they exist.
+  const copied = await inDistro(['sh', '-c', 'umask 077 && tr -d "\\r" < "$1" > "$2" && chmod 600 "$2"', 'decurix-settings', linuxPath(derived), DISTRO_STACK + '/.env'], undefined, '/', QUICK);
   if (copied !== 0) throw new Error('Could not stage the Windows model settings in WSL.');
   return host ? 'http://' + host + ':11435' : '';
 
@@ -755,10 +953,19 @@ async function startStack() {
     const code = await docker(args, (line) => update(message, false, line));
     if (code !== 0) throw new Error(`${failure} Check ${logFile()}`);
   };
-  await step('Preparing Decurix…', ['compose', 'build'], 'Could not build Decurix in Docker.');
+  // A build step that downloads runs under the stall watchdog (build-watchdog.js): no new line for its bound and it
+  // is cancelled and tried once more; a second stall is an error with the last line, and the start's Retry.
+  const buildStep = async (message, args, failure, stallMs, stop) => {
+    update(message);
+    const result = await watchedDocker(args, (line) => update(message, false, line), stallMs, stop,
+      (last, why) => update(`${message} It ${why === 'failed' ? 'failed' : 'stopped making progress'}, so it is being tried once more.`, false, last));
+    if (result.stalled) throw new Error(`${stalledMessage(failure, stallMs, result.lastLine)} Check ${logFile()}`);
+    if (result.code !== 0) throw new Error(`${failure} Check ${logFile()}`);
+  };
+  await buildStep('Preparing Decurix…', ['compose', 'build'], 'Could not build Decurix in Docker.', COMPOSE_STALL_MS, stopComposeBuild);
   // The compose file declares the network external (compose will not adopt one the control plane made), so it must
   // exist before compose runs anything. On a fresh install, or after a `compose down`, it does not.
-  if (await docker(['network', 'inspect', 'decurix-network']) !== 0) {
+  if (await docker(['network', 'inspect', 'decurix-network'], undefined, QUICK) !== 0) {
     await step('Preparing Decurix…', ['network', 'create', 'decurix-network'], 'Could not create the Docker network.');
   }
   // The desktop images are built by the control plane itself, from the build
@@ -766,8 +973,9 @@ async function startStack() {
   // waited for: the tools image (Go, Node, Rust, the coding CLIs) is a long
   // run of downloads a desktop does not need to start, and is built after the
   // dashboard is up (buildToolsLater).
-  await step('Checking the worker desktop image. A missing or outdated image is built once; existing images and cached layers are reused.',
-    ['compose', 'run', '--rm', '--no-deps', '-T', 'desktop-manager', './decurix', '--build-images', '-images', 'desktop'], 'Could not build the worker desktop.');
+  await buildStep('Checking the worker desktop image. A missing or outdated image is built once; existing images and cached layers are reused.',
+    ['compose', 'run', '--rm', '--no-deps', '-T', 'desktop-manager', './decurix', '--build-images', '-images', 'desktop'], 'Could not build the worker desktop.',
+    IMAGES_STALL_MS, stopImagesRun);
   await step('Starting Decurix…', ['compose', 'up', '-d', '--no-build'], 'Could not start Decurix in Docker.');
   await waitForDashboard(() => closing);
   buildToolsLater();
@@ -778,9 +986,65 @@ async function startStack() {
 // anything up; its output goes to desktop.log. A desktop made before it is
 // done starts without the tools, which the shared tools volume gets once the
 // image exists.
+// It runs under the stall watchdog too, so a stalled download never holds it (and its
+// container) for good: cancelled and tried once more, then given up with its last line.
 function buildToolsLater() {
-  docker(['compose', 'run', '--rm', '--no-deps', '-T', 'desktop-manager', './decurix', '--build-images', '-images', 'tools'])
-    .then((code) => { if (code !== 0) console.warn('Building the tools image failed; see', logFile()); });
+  watchedDocker(['compose', 'run', '--rm', '--no-deps', '-T', 'desktop-manager', './decurix', '--build-images', '-images', 'tools'],
+    undefined, IMAGES_STALL_MS, stopImagesRun, (last, why) => console.warn(`Building the tools image ${why === 'failed' ? 'failed' : 'stopped making progress'}; trying once more. Last line:`, last))
+    .then((result) => {
+      if (result.stalled) console.warn(stalledMessage('Building the tools image failed.', IMAGES_STALL_MS, result.lastLine), 'See', logFile());
+      else if (result.code !== 0) console.warn('Building the tools image failed; see', logFile());
+    });
+}
+
+// The silence that counts as a stalled build. compose build prints BuildKit's progress (a layer's bytes as they
+// come, a RUN's own output) as it goes, so five minutes of nothing is a stall. The desktop and tools images are built
+// by the control plane through the daemon's classic builder, which prints a RUN's output but nothing while a quiet
+// step works (a Go build of the soul with -p 1 on two cores takes minutes and prints nothing), so they get fifteen;
+// every download inside them has its own timeout in the Dockerfile as well.
+const COMPOSE_STALL_MS = 5 * 60 * 1000;
+const IMAGES_STALL_MS = 15 * 60 * 1000;
+
+// watchedDocker runs one docker build command under the stall watchdog: cancelled (its process ended, then stop()
+// cleans up what it left) when it prints nothing for stallMs, and tried once more. onRetry is told the last line
+// when a stalled try is to be tried again.
+// A build that fails (exits non-zero, not a stall) is tried once more on its own: its cached layers make that cheap,
+// and a moment's failure of a CDN (a ReadTimeout from PyPI, 2026-11-04) is the common cause. onRetry is told why
+// ('stalled' or 'failed') and the last line.
+async function watchedDocker(args, onLine, stallMs, stop, onRetry = () => {}) {
+  const once = () => watchBuild({
+    stallMs,
+    attempt: (line, signal) => docker(args, line, { signal }),
+    onLine: onLine || (() => {}),
+    onStall: async (n, last) => {
+      console.warn(`docker ${args.join(' ')}: no output for ${Math.round(stallMs / 60000)} minutes; cancelled (try ${n}). Last line: ${last}`);
+      try { await stop(); } catch { /* the next try or the error says what is wrong */ }
+      if (n === 1) onRetry(last, 'stalled');
+    },
+  });
+  const result = await once();
+  if (result.stalled || result.code === 0 || closing) return result;
+  logLine(`docker ${args.join(' ')} exited ${result.code}: build failed, trying once more. Last line: ${result.lastLine}`);
+  onRetry(result.lastLine, 'failed');
+  try { await stop(); } catch { /* the second try or its error says what is wrong */ }
+  return once();
+}
+
+// stopComposeBuild ends a cancelled compose build. Outside Windows the docker client the app started is the build's
+// own process, and ending it (the watchdog's signal) cancels the build. On Windows that process is wsl.exe, and the
+// client runs on inside the distro, so it is ended there too.
+async function stopComposeBuild() {
+  if (windows) await inDistro(['pkill', '-TERM', '-f', 'docker compose build'], undefined, '/', QUICK);
+}
+
+// stopImagesRun ends a cancelled image build run by `compose run` (the control plane's --build-images): its one-off
+// container is removed, which ends the build it asked the daemon for. A container left by an earlier run is too.
+async function stopImagesRun() {
+  const ids = [];
+  await docker(['ps', '-q', '--filter', 'label=com.docker.compose.project=decurix', '--filter', 'label=com.docker.compose.oneoff=True'],
+    (line) => ids.push(line), QUICK);
+  if (ids.length > 0) await docker(['rm', '-f', ...ids], undefined, QUICK);
+  await stopComposeBuild();
 }
 
 // The gated listener is published on the network by compose, so a phone on
@@ -794,9 +1058,16 @@ function buildToolsLater() {
 // It is reported at every start - an earlier version reported it only when it
 // started the stack itself, so a PC whose stack was already running never got
 // the link - and again every LAN_REPORT_EVERY_MS. Whether the forward is in
-// place is asked once per address (lanForward), not every minute.
+// place is asked once per address (lanForward), not every minute: Windows is
+// asked to forward an address and port at most once while the app runs (a
+// failed or declined forward is tried again at the next start, as its log
+// line says), and never while an earlier ask is still open - a prompt that
+// came back every minute, and stacked behind one not yet answered, was the
+// fault (review 2026-11-03).
 const LAN_REPORT_EVERY_MS = 60000;
 let lanForward = { address: '', port: 0, ok: false };
+let lanAsking = null;
+const lanAsked = new Set();
 
 function publishLanURL(url) {
   const body = JSON.stringify({ lan_url: url });
@@ -819,16 +1090,23 @@ function reportLanAddress() {
       publishLanURL('');
       return;
     }
-    let port = '8090';
+    // The same reading of .env as the tunnel's (gated-port.js); whether it
+    // really is the gated listener is checked before Windows forwards it.
+    const port = String(lanPort(dataDir(), {}));
     let settings = '';
     try { settings = fs.readFileSync(path.join(dataDir(), '.env'), 'utf8'); } catch { /* the defaults */ }
-    port = settings.match(/^\s*DECURIX_LAN_PORT\s*=\s*['"]?(\d+)/m)?.[1] || port;
     if (windows) {
       if (/^\s*DECURIX_WSL_LAN_FORWARD\s*=\s*['"]?0/m.test(settings)) { publishLanURL(''); return; }
+      const key = `${address}:${port}`;
       if (lanForward.address !== address || lanForward.port !== Number(port) || !lanForward.ok) {
+        if (lanAsking) { publishLanURL(''); return; }
         lanForward = { address, port: Number(port), ok: false };
-        try { lanForward.ok = await ensureLanForward(dataDir(), address, Number(port), logLine); }
-        catch (error) { logLine(`LAN link: could not forward ${address}: ${error.message}`); }
+        if (!lanAsked.has(key)) {
+          lanAsked.add(key);
+          lanAsking = ensureLanForward(dataDir(), address, Number(port), logLine)
+            .catch((error) => { logLine(`LAN link: could not forward ${address}: ${error.message}`); return false; });
+          try { lanForward.ok = await lanAsking; } finally { lanAsking = null; }
+        }
       }
       if (!lanForward.ok) { publishLanURL(''); return; }
     }
@@ -867,6 +1145,7 @@ function watchKeepAwake() {
 async function start() {
   if (starting || !window || window.isDestroyed()) return;
   starting = true;
+  let refreshModels = false;
   try {
     const state = await checkDashboard();
     if (state === 'occupied') throw new Error('Port 8080 is in use. Close the other server, then retry.');
@@ -876,13 +1155,23 @@ async function start() {
     if (state === 'absent' || await stackIsStale()) {
       if (!await startStack()) return;
     } else if (windows) {
-      // Refresh routing without installing or waiting for the model server.
-      await prepareWindowsModels();
+      refreshModels = true;
     }
     if (window && !window.isDestroyed()) {
       await window.loadURL(dashboard);
       showingDashboard = true;
-      if (windows) localModels.resume().catch(error => console.warn(error.message));
+      // A dashboard that is already running is shown first: the disk check
+      // and the model routing refresh (prepareWindowsModels) then run beside
+      // it, and what they find goes to the log, never in front of the
+      // workers the person came to see.
+      const ready = refreshModels
+        ? prepareWindowsModels().catch((error) => {
+          logLine(`Model routing not refreshed: ${error.message}`);
+          // Said, not hidden: a full disk matters before the next worker starts.
+          if (window && !window.isDestroyed()) dialog.showMessageBox(window, { type: 'warning', title: 'Decurix', message: error.message }).catch(() => {});
+        })
+        : Promise.resolve();
+      if (windows) ready.then(() => localModels.resume()).catch(error => console.warn(error.message));
       misses = 0;
       startMobileAccess();
       reportLanAddress();
@@ -993,6 +1282,16 @@ function openWindow() {
   });
 
   configureNavigation(window.webContents);
+  // A start screen whose renderer died or stopped answering is loaded again and given the latest status, so a start
+  // never sits behind a frozen screen.
+  window.webContents.on('render-process-gone', (_event, details) => {
+    logLine(`The window's renderer ended (${(details && details.reason) || 'unknown'})`);
+    reloadStartScreen();
+  });
+  window.on('unresponsive', () => {
+    logLine('The window stopped answering');
+    reloadStartScreen();
+  });
   window.loadFile(path.join(__dirname, 'loading.html')).then(start);
   window.on('closed', () => { window = null; });
 }
@@ -1021,4 +1320,13 @@ if (!app.requestSingleInstanceLock()) {
     app.quit();
   });
   ipcMain.on('retry-startup', () => { if (!starting && window) start(); });
+  // The start screen says which status it has shown (update, failureNotShown).
+  ipcMain.on('startup-status-shown', (event, seq) => {
+    if (window && event && event.sender === window.webContents) shownSeq = Math.max(shownSeq, Number(seq) || 0);
+  });
+  // What would otherwise vanish goes to desktop.log, where a failed start is looked for.
+  if (typeof process.on === 'function') {
+    process.on('uncaughtException', (error) => { logLine(`Uncaught: ${error && error.stack ? error.stack : error}`); });
+    process.on('unhandledRejection', (error) => { logLine(`Unhandled: ${error && error.stack ? error.stack : error}`); });
+  }
 }

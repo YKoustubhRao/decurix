@@ -237,6 +237,12 @@ def find_window(title, matches):
     return None
 
 
+def matching_windows(title, matches):
+    """Every window on screen whose title `matches` the recorded one."""
+
+    return [w for w in screen.windows() if w.get("title") and matches(title, w["title"])]
+
+
 def bring_forward(title, matches, places=None, wait=None):
     """
     Put the window recorded as `title` in front: raise it when it is open,
@@ -245,7 +251,12 @@ def bring_forward(title, matches, places=None, wait=None):
     launcher that opens it, or it never appeared).
     """
 
-    window = find_window(title, matches)
+    found = matching_windows(title, matches)
+    if len(found) > 1:
+        # Two windows of the same kind ("... - Sales Invoice") are two documents: which one the step meant is not
+        # guessed (review 2026-11-03, D-17 - another invoice's window was brought forward and acted in).
+        return None
+    window = found[0] if found else None
     if window is not None:
         xinput.activate(window["id"])
         time.sleep(0.5)

@@ -85,13 +85,17 @@ type PracticeSource struct {
 
 // PracticePins are every input besides the suite that decides the worker's behaviour.
 type PracticePins struct {
-	Image       string `json:"image"`
-	AgentSHA    string `json:"agent_sha"`
-	RulesSHA    string `json:"rules_sha"`
-	Harness     string `json:"harness"`
-	Brain       string `json:"brain"`
-	Model       string `json:"model"`
-	AuthorModel string `json:"author_model"`
+	Image    string `json:"image"`
+	AgentSHA string `json:"agent_sha"`
+	RulesSHA string `json:"rules_sha"`
+	Harness  string `json:"harness"`
+	Brain    string `json:"brain"`
+	Model    string `json:"model"`
+	// Deployment and FastDeployment are what the provider served "default" and "fast" with when the suite was
+	// pinned: a label resolves to another model when the settings change, and that is another worker (E4).
+	Deployment     string `json:"deployment"`
+	FastDeployment string `json:"fast_deployment"`
+	AuthorModel    string `json:"author_model"`
 }
 
 // PracticeCheck is one independent check of a case's evidence.

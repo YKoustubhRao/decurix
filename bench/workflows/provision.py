@@ -12,6 +12,9 @@ import time
 import uuid
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from agent_token import PY_AGENT, docker_env as token_env  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -42,7 +45,7 @@ def main():
             "-e", "VNC_PW=local-test-only", "-e", "VNC_RESOLUTION=1280x720", "-e", "DESKTOP_ID=" + name,
             "-e", "DESKTOP_NAME=Workflow qualification", "-e", "AGENT_HARNESS=ollama",
             "-e", "CONTROL_PLANE_URL=http://127.0.0.1:18080", "-e", "OLLAMA_URL=http://127.0.0.1:11434",
-            "-e", "DECURIX_ESCALATION_MODEL_CALLS=0", "-e", "DECURIX_SKILL_TRUST_RUNS=0",
+            "-e", "DECURIX_ESCALATION_MODEL_CALLS=0", "-e", "DECURIX_SKILL_TRUST_RUNS=0", *token_env(),
             "-v", f"{REPO / 'agent/decurix_agent'}:/opt/decurix_agent:ro",
             "-v", f"{REPO / 'bench/workflows'}:/home/headless/bench-workflows:ro",
             "-v", f"{REPO / 'bench/gui/fixtures'}:/home/headless/gui/fixtures:ro", args.image])
@@ -53,7 +56,7 @@ def main():
         while time.monotonic() < deadline:
             try:
                 ready = subprocess.run(["docker", "exec", name, "python3", "-c",
-                    "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8081/skills',timeout=2).status)"],
+                    PY_AGENT + "agent('/skills', timeout=2)"],
                     capture_output=True, text=True, timeout=10)
             except (subprocess.TimeoutExpired, OSError) as exc:
                 readiness_error = str(exc)

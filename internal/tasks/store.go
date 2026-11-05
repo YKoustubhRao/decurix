@@ -15,12 +15,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
+	"github.com/YKoustubhRao/decurix/internal/withhold"
 )
 
 // Execution statuses. queued, running and waiting are live; the rest are how
@@ -96,6 +99,10 @@ type Task struct {
 	VerdictAt   time.Time `json:"verdict_at"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	// Checked is what the latest attempt's final check said (nil: it said nothing), and Outcome what a person is
+	// shown from Status and Checked together (DisplayOutcome): a "done" nobody checked is never shown as Done.
+	Checked *bool   `json:"checked"`
+	Outcome Display `json:"outcome"`
 }
 
 // Execution is one attempt at a task by one engine.
@@ -118,7 +125,17 @@ type Execution struct {
 	CachedInputTokens *int64 `json:"cached_input_tokens"`
 	// Checked says whether the desktop's final check judged the result
 	// before it was reported; nil when the desktop did not say.
-	Checked       *bool          `json:"checked"`
+	Checked *bool `json:"checked"`
+	// Outcome is what a person is shown from Status and Checked (DisplayOutcome).
+	Outcome Display `json:"outcome"`
+	// Verdict is the final check as the desktop reported it (decurix.verdict/v1); nil for an older image's, which
+	// said only Checked. Checked is derived from it.
+	Verdict *GateVerdict `json:"verdict"`
+	// Origin is what started this execution (unknown before R7); Skill the taught skill and version that drove it
+	// (empty: none said); ResolvedModel the deployment that served its model calls (R7).
+	Origin        Origin         `json:"origin"`
+	Skill         Skill          `json:"skill"`
+	ResolvedModel string         `json:"resolved_model"`
 	Steps         []Step         `json:"steps"`
 	Interventions []Intervention `json:"interventions"`
 }
@@ -156,6 +173,11 @@ type Intervention struct {
 	Reply       string    `json:"reply"`
 	RequestedAt time.Time `json:"requested_at"`
 	RepliedAt   time.Time `json:"replied_at"`
+	// Secret says the desktop asked this for a secret (a password or code field): its reply is kept withheld whole.
+	Secret bool `json:"secret"`
+	// ReplierID is who answered it, and JudgementID the judgement that answer is ("" before plan R5).
+	ReplierID   string `json:"replier_id"`
+	JudgementID string `json:"judgement_id"`
 }
 
 // Event is one entry of an execution's timeline: a step or an intervention.
@@ -217,6 +239,14 @@ type Outcome struct {
 	CachedInputTokens *int64
 	// Checked: whether the final check judged a finished result (nil: not said).
 	Checked *bool
+	// Verdict: the final check, structured (nil: an older image). When given, the stored checked flag is derived
+	// from it (done), and is false whenever Checked says otherwise.
+	Verdict *GateVerdict
+	// Skill: the taught skill that drove the turn, and its version (nil: none said).
+	Skill *Skill
+	// Secret: a query raised for a secret (the agent knows where its question came from); the person's reply to it
+	// is kept as withhold.Secret in every record, and reaches the desktop as typed.
+	Secret bool
 }
 
 // Route is where a human request goes: a new task, the reply to a task's open
@@ -226,6 +256,11 @@ type Route struct {
 	TaskID         string `json:"task_id"`
 	ExecutionID    string `json:"execution_id"`
 	InterventionID string `json:"intervention_id,omitempty"`
+	// JudgementID is the judgement a reply is: chosen before delivery (NewJudgementID), so the desktop is told it
+	// with the reply, and after CommitReply the one actually made ("" for none).
+	JudgementID string `json:"judgement_id,omitempty"`
+	// Origin is what started the execution this route opens or continues (C12); written on a new execution.
+	Origin Origin `json:"origin"`
 }
 
 // Route kinds.
@@ -307,6 +342,40 @@ var schema = []string{
 	// at a fraction): what a task really cost, beside the raw count. NULL when
 	// the desktop did not say.
 	`ALTER TABLE executions ADD COLUMN cached_input_tokens INTEGER`,
+	// Whether the desktop asked this question for a secret (review 2026-11-03, X-6): its reply is withheld whole.
+	`ALTER TABLE interventions ADD COLUMN secret INTEGER NOT NULL DEFAULT 0`,
+	// Every human input with its author (plan R5), append-only: answers, approvals, verdicts, and what a desktop kept
+	// from a person's reply (citing it in derived_from). Written by insertJudgement only; never updated or deleted,
+	// and kept when its worker is deleted (judgements.go).
+	`CREATE TABLE judgements (
+		id TEXT PRIMARY KEY, at_ns INTEGER NOT NULL,
+		actor_id TEXT NOT NULL, actor_name TEXT NOT NULL DEFAULT '', actor_roles TEXT NOT NULL DEFAULT '[]',
+		actor_kind TEXT NOT NULL,
+		door TEXT NOT NULL DEFAULT '',
+		kind TEXT NOT NULL,
+		worker_id TEXT NOT NULL DEFAULT '', task_id TEXT NOT NULL DEFAULT '', execution_id TEXT NOT NULL DEFAULT '',
+		intervention_id TEXT NOT NULL DEFAULT '', skill_name TEXT NOT NULL DEFAULT '', skill_version INTEGER NOT NULL DEFAULT 0,
+		text TEXT NOT NULL DEFAULT '',
+		secret INTEGER NOT NULL DEFAULT 0,
+		payload TEXT NOT NULL DEFAULT '{}',
+		changed TEXT NOT NULL DEFAULT '{}',
+		derived_from TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX judgements_task ON judgements (task_id, at_ns)`,
+	`CREATE INDEX judgements_worker ON judgements (worker_id, at_ns)`,
+	// Who answered an intervention, and the judgement that answer is.
+	`ALTER TABLE interventions ADD COLUMN replier_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE interventions ADD COLUMN judgement_id TEXT NOT NULL DEFAULT ''`,
+	// The run's final check, structured (plan R6, decurix.verdict/v1): '' for an older image, which sent only checked.
+	`ALTER TABLE executions ADD COLUMN verdict TEXT NOT NULL DEFAULT ''`,
+	// What each execution ran (plan R7): what started it (a person, a schedule, a DAG node, ...), the taught skill
+	// and its version that drove it, and the model deployment that served it. '' / 0 before R7, read as unknown.
+	`ALTER TABLE executions ADD COLUMN origin TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE executions ADD COLUMN origin_ref TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE executions ADD COLUMN origin_actor TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE executions ADD COLUMN skill_name TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE executions ADD COLUMN skill_version INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE executions ADD COLUMN resolved_model TEXT NOT NULL DEFAULT ''`,
 }
 
 // Store is the SQLite-backed record of every worker's tasks.
@@ -319,6 +388,29 @@ type Store struct {
 	mu sync.Mutex
 
 	now func() time.Time
+
+	// onEnded is told of every task that closed (OnTaskEnded), after the close is committed and the store unlocked.
+	onEnded atomic.Pointer[func(workerID, taskID string)]
+}
+
+// OnTaskEnded sets f to be called with the worker and the task each time a task closes: done, error, or ended by
+// CloseOpen (stopped, restarted, deleted, abandoned). f runs after the close is committed, outside the store's lock,
+// on the closing caller's goroutine, so it must not block; nothing it does can undo or fail the close.
+func (s *Store) OnTaskEnded(f func(workerID, taskID string)) {
+	s.onEnded.Store(&f)
+}
+
+// tellEnded calls the OnTaskEnded hook, if any, for each task.
+func (s *Store) tellEnded(workerID string, taskIDs ...string) {
+	f := s.onEnded.Load()
+	if f == nil || *f == nil {
+		return
+	}
+	for _, id := range taskIDs {
+		if id != "" {
+			(*f)(workerID, id)
+		}
+	}
 }
 
 // NewStore opens the task Store on db, creating its tables if needed.
@@ -336,10 +428,12 @@ func newID(prefix string) string {
 	return sqlitedb.NewID(prefix, 8)
 }
 
-// ValidID reports whether id has the shape of an ID this store issues, which
-// is how a value reported back by a desktop is checked before it is used.
+// ValidID reports whether id has the shape of a task ID this store issues
+// ("t" and 16 hex digits), which is how a value reported back by a desktop is
+// checked before it is used - it travels into a file name (C-23: the prefix
+// was not checked).
 func ValidID(id string) bool {
-	if len(id) != 17 {
+	if len(id) != 17 || id[0] != 't' {
 		return false
 	}
 
@@ -425,6 +519,8 @@ func (s *Store) MarkWorkerDeleted(id string) error {
 // The decision mirrors the desktop's own: its command watcher treats any
 // request that arrives while the agent waits on a human as the reply.
 func (s *Store) Plan(workerID, text string) (Route, error) {
+	// Compared with what Commit stored, so withheld the same way (withhold.Text).
+	text = withhold.Text(text)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -536,6 +632,36 @@ func (s *Store) Working() bool {
 	return n > 0
 }
 
+// OpenQuestion returns the question a task is waiting on a person for - its live execution's newest unanswered
+// intervention - and whether the desktop asked it for a secret. ok is false when the task waits on nothing. It is how
+// another door (the concierge) keeps a reply to it the way Commit does.
+func (s *Store) OpenQuestion(taskID string) (question string, secret, ok bool) {
+	err := s.db.QueryRow(
+		`SELECT i.request, i.secret FROM interventions i JOIN executions e ON e.id = i.execution_id
+		 WHERE e.task_id = ? AND e.status = ? AND i.replied_ns = 0 ORDER BY i.requested_ns DESC LIMIT 1`,
+		taskID, StatusWaiting,
+	).Scan(&question, &secret)
+	if err != nil {
+		return "", false, false
+	}
+	return question, secret, true
+}
+
+// LiveWorkers returns every worker that has a live execution - queued, running or waiting on a human - so the
+// control plane can close those whose desktop is gone (internal/idlepause, C-17).
+func (s *Store) LiveWorkers() ([]string, error) {
+	workers, err := sqlitedb.QueryAll(s.db, func(r sqlitedb.Scanner) (string, error) {
+		var id string
+		err := r.Scan(&id)
+		return id, err
+	}, `SELECT DISTINCT worker_id FROM executions WHERE status IN (?, ?, ?) ORDER BY worker_id`,
+		StatusQueued, StatusRunning, StatusWaiting)
+	if err != nil {
+		return nil, fmt.Errorf("tasks: listing workers with live tasks: %w", err)
+	}
+	return workers, nil
+}
+
 // IsOpen reports whether a task still has a live execution on a worker -
 // queued, running or waiting on a human. A desktop that restarted on its own
 // reports the task it lost; one restarted through the API had that task
@@ -592,7 +718,101 @@ func NewRoute() Route {
 // Commit records a delivered human request along the route Plan chose, and
 // returns the route actually taken - which differs when the situation moved in
 // between (the intervention it replied to was closed, say).
-func (s *Store) Commit(route Route, worker Worker, text string) (Route, error) {
+//
+// origin is what started the request: a required argument, so no producer can open an execution without saying
+// (plan R7); one stored unknown is logged.
+func (s *Store) Commit(route Route, worker Worker, text string, origin Origin) (Route, error) {
+	route, _, err := s.CommitReply(route, worker, text, false, ReplyBy{}, origin)
+	return route, err
+}
+
+// ReplyBy is who sent a human request and through which door: a reply's judgement is made from it. Approval is the
+// access log's decision on an approval reply ({"approval_id": ..., "outcome": ...}), merged into its payload.
+type ReplyBy struct {
+	Actor    Actor
+	Door     string
+	Approval map[string]any
+}
+
+// CommitReply is Commit that also returns the text it stored - what the chat, the send response and every other copy
+// must keep, so there is one rule for what a person typed (review 2026-11-03, C-05). secret is the person's own mark
+// ("this is a secret"): the whole text is kept as withhold.Secret, as is a reply to a question the desktop asked for
+// a secret. Otherwise the text is withheld by withhold.Text, and a reply by withhold.Reply against its question.
+//
+// A reply to an open intervention is also a judgement (kind answer, or approval when it answers an approval) by
+// by.Actor, written in the same transaction under route.JudgementID when the caller chose one (it went to the desktop
+// with the reply); the intervention keeps the replier and the judgement id. The route returned carries the
+// judgement's id, "" when none was made (a new task, or a reply with no actor, which no door sends).
+func (s *Store) CommitReply(route Route, worker Worker, text string, secret bool, by ReplyBy, origin Origin) (Route, string, error) {
+	route.Origin = origin
+	// A secret the person typed (a password, an OTP) reaches the desktop as written, never these records: they are
+	// shown in traces, reports and exports (review 2026-11-02).
+	stored := requestForm(text, secret)
+	route, err := s.commit(route, worker, &stored, by, secret, text)
+	return route, stored, err
+}
+
+// requestForm is how the records keep a request as sent: whole as withhold.Secret when the person marked it secret,
+// otherwise with what withhold.Text finds withheld.
+func requestForm(text string, marked bool) string {
+	if marked {
+		return withhold.Secret
+	}
+	return withhold.Text(text)
+}
+
+// replyForm is how the records keep a reply already in its request form (requestForm), against the question it
+// answers: whole as withhold.Secret when the question was asked for a secret, otherwise with the bare values a
+// question for a secret asks for withheld too (withhold.Reply).
+func replyForm(stored, question string, askedSecret bool) string {
+	if askedSecret {
+		return withhold.Secret
+	}
+	return withhold.Reply(question, stored)
+}
+
+// RequestForm is the C14 decision on a new request where no route is kept (a practice or eval case): how the records
+// keep it, as StoredForm decides it for a request, and whether anything of it is withheld.
+func RequestForm(text string, marked bool) (string, bool) {
+	stored := requestForm(text, marked)
+	return stored, stored != text
+}
+
+// ReplyForm is the C14 decision on a reply to question where no route is kept (an eval expert's reply): as
+// StoredForm decides it for a reply against the question open now, and whether anything of it is withheld.
+func ReplyForm(text string, marked bool, question string, askedSecret bool) (string, bool) {
+	stored := replyForm(requestForm(text, marked), question, askedSecret)
+	return stored, stored != text
+}
+
+// StoredForm is how the records will keep text sent along route, decided before it is sent by the same rules
+// CommitReply keeps it by (requestForm, then replyForm against the question open now), and whether anything of it
+// is withheld. The control plane tells the desktop "secret" exactly when this says withheld (contract C14), so the
+// two sides never disagree on what is a secret.
+func (s *Store) StoredForm(route Route, text string, marked bool) (string, bool) {
+	stored := requestForm(text, marked)
+	if route.Kind == RouteReply {
+		var question string
+		var askedSecret bool
+		err := s.db.QueryRow(`SELECT request, secret FROM interventions WHERE execution_id = ? AND replied_ns = 0
+			ORDER BY requested_ns DESC LIMIT 1`, route.ExecutionID).Scan(&question, &askedSecret)
+		if err != nil && route.InterventionID != "" {
+			err = s.db.QueryRow(`SELECT request, secret FROM interventions WHERE id = ?`, route.InterventionID).
+				Scan(&question, &askedSecret)
+		}
+		if err == nil {
+			stored = replyForm(stored, question, askedSecret)
+		}
+	}
+	return stored, stored != text
+}
+
+// commit is Commit's body. It may withhold *stored further (a reply to a question asked for a secret), and leaves in
+// it what it recorded.
+func (s *Store) commit(route Route, worker Worker, stored *string, by ReplyBy, secret bool, raw string) (Route, error) {
+	judgementID := route.JudgementID
+	route.JudgementID = ""
+	text := *stored
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -641,6 +861,44 @@ func (s *Store) Commit(route Route, worker Worker, text string) (Route, error) {
 				interventionID = currentID
 				route.InterventionID = currentID
 			}
+		}
+
+		// An answer to a question the desktop asked for a secret is kept withheld whole; one whose words ask for a
+		// secret (an OTP, a password, a PIN) is kept withheld even when it is a bare value (withhold.Reply). text is
+		// already withheld as any request is.
+		var question, interventionKind string
+		var askedSecret bool
+		if err := tx.QueryRow(`SELECT request, secret, kind FROM interventions WHERE id = ?`, interventionID).Scan(&question, &askedSecret, &interventionKind); err == nil {
+			*stored = replyForm(*stored, question, askedSecret)
+			text = *stored
+		}
+
+		// The reply is a judgement by whoever sent it (plan R5). A reply with no actor is still recorded (it has
+		// been delivered), without one: every door that sends a reply carries its actor (httpapi refuses otherwise).
+		if by.Actor.ID != "" && interventionID != "" {
+			kind, payload := JudgementAnswer, map[string]any{}
+			if interventionKind == InterventionApproval {
+				kind = JudgementApproval
+				for k, v := range by.Approval {
+					payload[k] = v
+				}
+			}
+			var workerID string
+			_ = tx.QueryRow(`SELECT worker_id FROM executions WHERE id = ?`, route.ExecutionID).Scan(&workerID)
+			// Secret is the one decision C14 tells the desktop by: the records withhold any of it (StoredForm).
+			payloadJSON, _ := json.Marshal(payload)
+			id, err := insertJudgement(tx, Judgement{ID: judgementID, At: now, Actor: by.Actor, Door: by.Door,
+				Kind: kind, WorkerID: workerID, TaskID: route.TaskID, ExecutionID: route.ExecutionID,
+				InterventionID: interventionID, Text: text, Secret: secret || askedSecret || text != raw, Payload: payloadJSON})
+			if err != nil {
+				return route, err
+			}
+			if _, err := tx.Exec(`UPDATE interventions SET replier_id = CASE WHEN replier_id = '' THEN ? ELSE replier_id END,
+				judgement_id = CASE WHEN judgement_id = '' THEN ? ELSE judgement_id END WHERE id = ?`,
+				by.Actor.ID, id, interventionID); err != nil {
+				return route, fmt.Errorf("tasks: recording who replied: %w", err)
+			}
+			route.JudgementID = id
 		}
 
 		// A second reply landing before the agent resumed joins the first.
@@ -702,6 +960,14 @@ func (s *Store) insertTask(tx *sql.Tx, route Route, worker Worker, text string, 
 // worker is already busy: its desktop runs one task at a time and holds the
 // request until the current one ends.
 func (s *Store) insertExecution(tx *sql.Tx, route Route, attempt int, worker Worker, now time.Time) error {
+	// Every producer names what started its work (plan R7): an origin with no kind is refused, loudly, and one named
+	// unknown on purpose is stored and logged.
+	if route.Origin.Kind == "" {
+		return fmt.Errorf("%w: execution %s of %s on %s", ErrNoOrigin, route.ExecutionID, route.TaskID, worker.ID)
+	}
+	if originKind(route.Origin) == OriginUnknown {
+		log.Printf("tasks: execution %s of %s on %s has no known origin (%q): stored as unknown", route.ExecutionID, route.TaskID, worker.ID, route.Origin.Kind)
+	}
 	status := StatusRunning
 
 	var busy int
@@ -717,9 +983,10 @@ func (s *Store) insertExecution(tx *sql.Tx, route Route, attempt int, worker Wor
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO executions (id, task_id, attempt, worker_id, engine, model, status, started_ns)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO executions (id, task_id, attempt, worker_id, engine, model, status, started_ns, origin, origin_ref,
+			origin_actor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		route.ExecutionID, route.TaskID, attempt, worker.ID, worker.Engine, worker.Model, status, sqlitedb.ToNS(now),
+		originKind(route.Origin), route.Origin.Ref, route.Origin.ActorID,
 	); err != nil {
 		return fmt.Errorf("tasks: recording execution: %w", err)
 	}
@@ -746,10 +1013,14 @@ func Live(status string) bool {
 	return status == StatusQueued || status == StatusRunning || status == StatusWaiting
 }
 
-// resolve finds the execution a desktop's report belongs to: the one named by
-// the task ID it echoed back, or - for a desktop built before task IDs, or a
-// report that has none - the worker's oldest live execution, or the one that
-// ended moments ago.
+// resolve finds the execution a desktop's report belongs to. A report that
+// names a task belongs to that task's latest attempt on this worker, live or
+// not - never to whatever else is live: a stale or resent outcome for a task
+// that ended must not close another one (review 2026-11-03, C-01; the agent
+// resends a kept outcome for a day). A named task this worker never had
+// matches nothing. Only a report with no task ID (a desktop built before task
+// IDs) falls back to the worker's oldest live execution, or the one that ended
+// moments ago.
 func resolve(tx *sql.Tx, workerID, taskID string, now time.Time) (executionRef, bool, error) {
 	scan := func(row *sql.Row) (executionRef, bool, error) {
 		var ref executionRef
@@ -777,12 +1048,10 @@ func resolve(tx *sql.Tx, workerID, taskID string, now time.Time) (executionRef, 
 		if err != nil {
 			return executionRef{}, false, err
 		}
-
-		// A task that ended long ago is not what a desktop is working on now,
-		// whatever ID it last wrote down; fall through to what is live.
-		if ok && (Live(ref.status) || now.Sub(ref.endedAt) < lateWindow) {
-			return ref, true, nil
+		if !ok {
+			log.Printf("tasks: %s reported on task %s, which it never had: not recorded", workerID, taskID)
 		}
+		return ref, ok, nil
 	}
 
 	ref, ok, err := scan(tx.QueryRow(
@@ -839,6 +1108,13 @@ func promote(tx *sql.Tx, ref *executionRef, now time.Time) error {
 // belongs to no task - work a desktop did with nobody having asked, such as a
 // `gui` command typed by hand - which the records leave out.
 func (s *Store) AddStep(workerID, taskID string, step Step) (bool, error) {
+	// A value held for its owner's life (a desktop's screen password) is withheld as the desktop may have written it.
+	step.Text = withhold.Known(step.Text)
+	if step.Action != nil {
+		a := *step.Action
+		a.Target, a.Change, a.Reason = withhold.Known(a.Target), withhold.Known(a.Change), withhold.Known(a.Reason)
+		step.Action = &a
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -855,7 +1131,10 @@ func (s *Store) AddStep(workerID, taskID string, step Step) (bool, error) {
 		return false, fmt.Errorf("tasks: recording step: %w", err)
 	}
 
-	if !ok {
+	// A step for a task that ended is that task's only in the moments after (its last line can trail the reply);
+	// later it is work nobody asked for, such as a `gui` command typed by hand while the desktop still names its
+	// last task. It is left out - never moved onto whatever task is live now.
+	if !ok || !Live(ref.status) && now.Sub(ref.endedAt) >= lateWindow {
 		return false, nil
 	}
 
@@ -910,14 +1189,24 @@ func (s *Store) AddStep(workerID, taskID string, step Step) (bool, error) {
 }
 
 // RecordOutcome records how a desktop's turn ended, and returns the ID of the
-// task it belonged to ("" when it matched none).
+// task it belonged to: "" when it matched none, or named a task that has
+// already ended (a closed execution takes no second end).
 func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string, error) {
+	task, _, err := s.RecordOutcomeExec(workerID, taskID, outcome)
+	return task, err
+}
+
+// RecordOutcomeExec is RecordOutcome, also returning the execution the outcome closed or paused ("" with the task).
+func (s *Store) RecordOutcomeExec(workerID, taskID string, outcome Outcome) (string, string, error) {
+	outcome.Reply = withhold.Known(outcome.Reply) // as AddStep
+	ended := ""
+	defer func() { s.tellEnded(workerID, ended) }() // runs after the unlock below
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return "", fmt.Errorf("tasks: recording outcome: %w", err)
+		return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -925,16 +1214,33 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 
 	ref, ok, err := resolve(tx, workerID, taskID, now)
 	if err != nil {
-		return "", fmt.Errorf("tasks: recording outcome: %w", err)
+		return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
 	}
 
 	// A closed execution only takes steps after the fact, never a second end.
 	if !ok || !Live(ref.status) {
-		return "", nil
+		return "", "", nil
 	}
 
 	if err := promote(tx, &ref, now); err != nil {
-		return "", fmt.Errorf("tasks: recording outcome: %w", err)
+		return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
+	}
+
+	// The structured verdict decides checked; a callback whose own flag disagrees is stored not checked (fail closed).
+	checked, disagree := checkedFrom(outcome.Verdict, outcome.Checked)
+	if disagree {
+		log.Printf("tasks: verdict and checked disagree for %s (verdict %s, checked %v): stored as not checked",
+			ref.id, outcome.Verdict.Verdict, *outcome.Checked)
+	}
+	skillName, skillVersion := "", 0
+	if outcome.Skill != nil && strings.TrimSpace(outcome.Skill.Name) != "" {
+		skillName, skillVersion = clipText(strings.TrimSpace(outcome.Skill.Name), 128), max(outcome.Skill.Version, 0)
+	}
+	verdictJSON := ""
+	if outcome.Verdict != nil {
+		if b, err := json.Marshal(outcome.Verdict); err == nil {
+			verdictJSON = string(b)
+		}
 	}
 
 	if _, err := tx.Exec(
@@ -945,13 +1251,17 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 			input_tokens = COALESCE(?, input_tokens),
 			output_tokens = COALESCE(?, output_tokens),
 			cached_input_tokens = COALESCE(?, cached_input_tokens),
-			checked = COALESCE(?, checked)
+			checked = COALESCE(?, checked),
+			verdict = CASE WHEN ? != '' THEN ? ELSE verdict END,
+			skill_name = CASE WHEN ? != '' THEN ? ELSE skill_name END,
+			skill_version = CASE WHEN ? != '' THEN ? ELSE skill_version END
 		 WHERE id = ?`,
 		outcome.Engine, outcome.Engine, outcome.Model, outcome.Model,
 		nullable(outcome.CostUSD), nullable(outcome.InputTokens), nullable(outcome.OutputTokens),
-		nullable(outcome.CachedInputTokens), nullBool(outcome.Checked), ref.id,
+		nullable(outcome.CachedInputTokens), nullBool(checked), verdictJSON, verdictJSON,
+		skillName, skillName, skillName, skillVersion, ref.id,
 	); err != nil {
-		return "", fmt.Errorf("tasks: recording outcome: %w", err)
+		return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
 	}
 
 	switch outcome.Kind {
@@ -962,14 +1272,14 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 		}
 
 		if _, err := tx.Exec(
-			`INSERT INTO interventions (id, execution_id, kind, reason, request, requested_ns) VALUES (?, ?, ?, ?, ?, ?)`,
-			newID("i"), ref.id, kind, InterventionReason(kind, outcome.Reply), outcome.Reply, sqlitedb.ToNS(now),
+			`INSERT INTO interventions (id, execution_id, kind, reason, request, requested_ns, secret) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			newID("i"), ref.id, kind, InterventionReason(kind, outcome.Reply), outcome.Reply, sqlitedb.ToNS(now), outcome.Secret,
 		); err != nil {
-			return "", fmt.Errorf("tasks: recording intervention: %w", err)
+			return "", "", fmt.Errorf("tasks: recording intervention: %w", err)
 		}
 
 		if err := setExecutionStatus(tx, ref.id, ref.taskID, StatusWaiting, now); err != nil {
-			return "", err
+			return "", "", err
 		}
 
 	default:
@@ -982,25 +1292,28 @@ func (s *Store) RecordOutcome(workerID, taskID string, outcome Outcome) (string,
 			`UPDATE executions SET status = ?, final_reply = ?, ended_ns = ? WHERE id = ?`,
 			status, outcome.Reply, sqlitedb.ToNS(now), ref.id,
 		); err != nil {
-			return "", fmt.Errorf("tasks: recording outcome: %w", err)
+			return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
 		}
 
 		if _, err := tx.Exec(
 			`UPDATE tasks SET status = ?, updated_ns = ? WHERE id = ?`, status, sqlitedb.ToNS(now), ref.taskID,
 		); err != nil {
-			return "", fmt.Errorf("tasks: recording outcome: %w", err)
+			return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
 		}
 
 		if err := promoteNext(tx, workerID, now); err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return "", fmt.Errorf("tasks: recording outcome: %w", err)
+		return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
+	}
+	if outcome.Kind != OutcomeQuery && outcome.Kind != OutcomeApproval {
+		ended = ref.taskID
 	}
 
-	return ref.taskID, nil
+	return ref.taskID, ref.id, nil
 }
 
 // promoteNext starts the worker's oldest queued execution, if it has one and
@@ -1048,6 +1361,8 @@ func setExecutionStatus(tx *sql.Tx, executionID, taskID, status string, now time
 // stopped, restarted or deleted: its agent loses what it was doing, so a
 // running task is abandoned and one waiting on a human ended waiting.
 func (s *Store) CloseOpen(workerID, why string) error {
+	var ended []string
+	defer func() { s.tellEnded(workerID, ended...) }() // runs after the unlock below
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1087,40 +1402,13 @@ func (s *Store) CloseOpen(workerID, why string) error {
 		}
 	}
 
-	return tx.Commit()
-}
-
-// SetVerdict records a human's verdict on a task: "correct", "wrong", or "" to
-// withdraw one. The note is optional, and kept only with a verdict.
-func (s *Store) SetVerdict(taskID, verdict, note string) (Task, error) {
-	switch verdict {
-	case VerdictCorrect, VerdictWrong, "":
-	default:
-		return Task{}, fmt.Errorf("tasks: unknown verdict %q", verdict)
+	if err := tx.Commit(); err != nil {
+		return err
 	}
-
-	verdictAt := int64(0)
-	if verdict != "" {
-		verdictAt = sqlitedb.ToNS(s.now())
-	} else {
-		note = ""
+	for _, ref := range open {
+		ended = append(ended, ref.taskID)
 	}
-
-	result, err := s.db.Exec(
-		`UPDATE tasks SET verdict = ?, verdict_note = ?, verdict_ns = ? WHERE id = ?`,
-		verdict, strings.TrimSpace(note), verdictAt, taskID,
-	)
-	if err != nil {
-		return Task{}, fmt.Errorf("tasks: recording verdict: %w", err)
-	}
-
-	if changed, _ := result.RowsAffected(); changed == 0 {
-		return Task{}, ErrNotFound
-	}
-
-	detail, err := s.Get(taskID)
-
-	return detail.Task, err
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1128,16 +1416,24 @@ func (s *Store) SetVerdict(taskID, verdict, note string) (Task, error) {
 // ---------------------------------------------------------------------------
 
 const taskColumns = `t.id, t.worker_id, COALESCE(w.name, t.worker_id), t.engine, t.request, t.task_type,
-	t.status, t.verdict, t.verdict_note, t.verdict_ns, t.created_ns, t.updated_ns`
+	t.status, t.verdict, t.verdict_note, t.verdict_ns, t.created_ns, t.updated_ns,
+	(SELECT lx.checked FROM executions lx WHERE lx.task_id = t.id ORDER BY lx.attempt DESC LIMIT 1)`
 
 func scanTask(scanner sqlitedb.Scanner) (Task, error) {
 	var task Task
 	var verdictAt, created, updated int64
+	var checked sql.NullInt64
 
 	if err := scanner.Scan(&task.ID, &task.WorkerID, &task.WorkerName, &task.Engine, &task.Request, &task.Type,
-		&task.Status, &task.Verdict, &task.VerdictNote, &verdictAt, &created, &updated); err != nil {
+		&task.Status, &task.Verdict, &task.VerdictNote, &verdictAt, &created, &updated, &checked); err != nil {
 		return Task{}, err
 	}
+
+	if checked.Valid {
+		c := checked.Int64 != 0
+		task.Checked = &c
+	}
+	task.Outcome = DisplayOutcome(task.Status, task.Checked)
 
 	task.VerdictAt = sqlitedb.FromNS(verdictAt)
 	task.CreatedAt = sqlitedb.FromNS(created)
@@ -1178,19 +1474,25 @@ func ShortTitle(request string, limit int) string {
 	return clipText(request, limit)
 }
 
-// TaskResult returns a task's current status and, once an execution has
-// ended, the reply it ended with - what internal/dag polls to learn a
-// dispatched node's ticket has finished, and what a later node's output
-// placeholder pulls from. ok is false when taskID does not exist.
-func (s *Store) TaskResult(taskID string) (status, finalReply string, ok bool) {
+// TaskResult returns a task's current status, whether its final check judged
+// the result (nil: the desktop did not say) and, once an execution has ended,
+// the reply it ended with - what internal/dag polls to learn a dispatched
+// node's ticket has finished, and what a later node's output placeholder pulls
+// from. ok is false when taskID does not exist.
+func (s *Store) TaskResult(taskID string) (status string, checked *bool, finalReply string, ok bool) {
+	var c sql.NullInt64
 	err := s.db.QueryRow(
-		`SELECT status, final_reply FROM executions WHERE task_id = ? ORDER BY attempt DESC LIMIT 1`, taskID,
-	).Scan(&status, &finalReply)
+		`SELECT status, checked, final_reply FROM executions WHERE task_id = ? ORDER BY attempt DESC LIMIT 1`, taskID,
+	).Scan(&status, &c, &finalReply)
 	if err != nil {
-		return "", "", false
+		return "", nil, "", false
+	}
+	if c.Valid {
+		v := c.Int64 != 0
+		checked = &v
 	}
 
-	return status, finalReply, true
+	return status, checked, finalReply, true
 }
 
 // Get returns one task with its worker, executions, steps and interventions.
@@ -1276,11 +1578,23 @@ func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 		var started, ended int64
 		var cost sql.NullFloat64
 		var input, output, cached, checked sql.NullInt64
+		var verdict string
 
 		if err := r.Scan(&execution.ID, &execution.TaskID, &execution.Attempt, &execution.WorkerID,
 			&execution.Engine, &execution.Model, &execution.Status, &execution.FinalReply,
-			&started, &ended, &cost, &input, &output, &cached, &checked); err != nil {
+			&started, &ended, &cost, &input, &output, &cached, &checked, &verdict,
+			&execution.Origin.Kind, &execution.Origin.Ref, &execution.Origin.ActorID,
+			&execution.Skill.Name, &execution.Skill.Version, &execution.ResolvedModel); err != nil {
 			return Execution{}, err
+		}
+		if execution.Origin.Kind == "" {
+			execution.Origin.Kind = OriginUnknown
+		}
+		if verdict != "" {
+			var v GateVerdict
+			if json.Unmarshal([]byte(verdict), &v) == nil {
+				execution.Verdict = &v
+			}
 		}
 
 		execution.StartedAt = sqlitedb.FromNS(started)
@@ -1304,10 +1618,12 @@ func (s *Store) loadExecutions(where string, args ...any) ([]Execution, error) {
 			c := checked.Int64 != 0
 			execution.Checked = &c
 		}
+		execution.Outcome = DisplayOutcome(execution.Status, execution.Checked)
 
 		return execution, nil
 	}, `SELECT e.id, e.task_id, e.attempt, e.worker_id, e.engine, e.model, e.status, e.final_reply,
-			e.started_ns, e.ended_ns, e.cost_usd, e.input_tokens, e.output_tokens, e.cached_input_tokens, e.checked
+			e.started_ns, e.ended_ns, e.cost_usd, e.input_tokens, e.output_tokens, e.cached_input_tokens, e.checked,
+			e.verdict, e.origin, e.origin_ref, e.origin_actor, e.skill_name, e.skill_version, e.resolved_model
 		 FROM executions e JOIN tasks t ON t.id = e.task_id `+where+` ORDER BY e.task_id, e.attempt`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("tasks: reading executions: %w", err)
@@ -1322,13 +1638,15 @@ func (s *Store) loadInterventions(where string, args ...any) ([]Intervention, er
 		var requested, replied int64
 
 		err := r.Scan(&intervention.ID, &intervention.ExecutionID, &intervention.Kind, &intervention.Reason,
-			&intervention.Request, &intervention.Reply, &requested, &replied)
+			&intervention.Request, &intervention.Reply, &requested, &replied, &intervention.Secret,
+			&intervention.ReplierID, &intervention.JudgementID)
 
 		intervention.RequestedAt = sqlitedb.FromNS(requested)
 		intervention.RepliedAt = sqlitedb.FromNS(replied)
 
 		return intervention, err
-	}, `SELECT i.id, i.execution_id, i.kind, i.reason, i.request, i.reply, i.requested_ns, i.replied_ns
+	}, `SELECT i.id, i.execution_id, i.kind, i.reason, i.request, i.reply, i.requested_ns, i.replied_ns, i.secret,
+		i.replier_id, i.judgement_id
 		 FROM interventions i JOIN executions e ON e.id = i.execution_id JOIN tasks t ON t.id = e.task_id `+
 		where+` ORDER BY i.requested_ns`, args...)
 	if err != nil {

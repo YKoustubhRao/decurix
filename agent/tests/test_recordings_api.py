@@ -6,10 +6,12 @@ made elsewhere, and the readiness (lint) that comes with every recording.
 """
 
 import json
+import os
 import http.client
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 from unittest.mock import patch
 import urllib.error
@@ -32,6 +34,10 @@ class RecordingsAPI(unittest.TestCase):
         self.saved = recording.ROOT
         recording.ROOT = Path(self.tmp.name)
 
+        # A desktop's agent serves only with its token (http_api.refusal); the control plane sends it.
+        token = mock.patch.dict(os.environ, {"DECURIX_AGENT_TOKEN": "test-agent-token"})
+        token.start()
+        self.addCleanup(token.stop)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), http_api.Handler)
         threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
@@ -44,7 +50,10 @@ class RecordingsAPI(unittest.TestCase):
 
     def call(self, path, body=None):
         data = json.dumps(body).encode() if body is not None else None
-        request = urllib.request.Request(self.base + path, data=data, method="POST" if body is not None else "GET")
+        # JSON, as the control plane sends it: :8081 refuses a write that is not (http_api.refusal).
+        request = urllib.request.Request(self.base + path, data=data, method="POST" if body is not None else "GET",
+                                         headers={"Content-Type": "application/json",
+                                                  "Authorization": "Bearer test-agent-token"})
         try:
             with urllib.request.urlopen(request, timeout=5) as response:
                 return response.status, json.loads(response.read())

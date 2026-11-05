@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 from decurix_agent import playbooks, tool_task, usage, verify
 
+import sandbox_standin
+
 REQUEST = "Total the figures in figures_jan.txt into total_jan.txt for the weekly sheet"
 SCRIPT = '''import sys
 total = sum(float(x) for x in open(sys.argv[1]).read().split())
@@ -57,6 +59,7 @@ class _Worker(unittest.TestCase):
                   patch.object(tool_task, "DIRECT_AFTER", 1)):
             p.start()
             self.addCleanup(p.stop)
+        sandbox_standin.start(self, root / "scratch")
 
         path = root / "tools" / "total-figures.py"
         path.write_text(SCRIPT, encoding="utf-8")

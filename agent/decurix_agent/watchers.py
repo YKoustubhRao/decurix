@@ -8,7 +8,7 @@ from decurix_agent import (ask_task, attachments, config, guidance, lessons, lon
 from decurix_agent.computer import approval, browser
 from decurix_agent.harness import continue_after_query, perform_task
 from decurix_agent.logging_utils import log
-from decurix_agent.messaging import REPLY_MARK, resend_unsent_loop, write_final_reply
+from decurix_agent.messaging import REPLY_MARK, resend_unsent_loop, write_final_reply, write_stopped
 
 
 def _run_handler(target, args):
@@ -27,8 +27,10 @@ def _called_off(reply):
     state.paused_skill = None
     state.paused_replay = None
     progress.emit("Stopping, as you said. Nothing more is done.")
-    write_final_reply(f"I did nothing more after your \"{' '.join(str(reply).split())[:100]}\". "
-                      f"Anything done before the question is still as it was left.")
+    # A stop is not a finished task (review 2026-11-03, E-36): not done, never "final", and not judged.
+    write_stopped(f"Stopped, as you said: I did nothing more after your "
+                  f"\"{' '.join(str(reply).split())[:100]}\". "
+                  f"Anything done before the question is still as it was left.", send=write_final_reply)
 
 
 # ============================================================
@@ -167,7 +169,15 @@ def _orphaned_question(name):
 
 
 def is_reply_file(name):
-    """Whether a command file was saved while the agent was waiting on a question (messaging.save_request)."""
+    """
+    Whether a command file was saved while the agent was waiting on a question (messaging.save_request).
+
+    It says which way a message came, not who wrote it: the command folder is the worker's own, so its shell can name a
+    file this way. A reply that decides something only a person may (an approval, keeping a parked finding, starting a
+    workflow stage) therefore needs this AND, on a desktop with an approval gate, the gate's own reading or grant of the
+    person's signed reply (approval.gate_reading, gated_command.granted) - never this mark alone (review 2026-11-03,
+    E-15, F-09).
+    """
 
     return REPLY_MARK in (name or "")
 
@@ -276,6 +286,35 @@ def watchdog():
             pass
 
 
+# A handled command file (".done", withheld) is read by nothing: the watcher globs *.txt, the control plane pulls no
+# command folder. Kept this long for a person looking at the desktop, then deleted (resource plan B5: never were).
+DONE_KEEP_SECONDS = 3600
+_last_sweep = {"at": 0.0}
+
+
+def sweep_handled(now=None, every=600):
+    """Delete handled command files older than DONE_KEEP_SECONDS, at most once every `every` seconds. Returns how many
+    went. Never raises."""
+
+    now = time.time() if now is None else now
+    if now - _last_sweep["at"] < every:
+        return 0
+    _last_sweep["at"] = now
+    gone = 0
+    try:
+        handled = list(config.COMMAND_DIR.glob("*" + HANDLED_SUFFIX))
+    except OSError:
+        return 0
+    for path in handled:
+        try:
+            if now - path.stat().st_mtime > DONE_KEEP_SECONDS:
+                path.unlink()
+                gone += 1
+        except OSError:
+            continue
+    return gone
+
+
 def _mark_handled(path):
     """
     Rename a dispatched request file so no later pass - and no later life of
@@ -290,8 +329,36 @@ def _mark_handled(path):
     the desktop was asked stays on disk.
     """
 
+    sweep_handled()  # (handled copies older than DONE_KEEP_SECONDS go; nothing reads them)
+    # The copy kept is withheld (C14): the request's secrets, remembered when it arrived, never stay on the desktop's
+    # disk in the clear. The file was the transport; what it said has been read by now.
+    done = path.with_name(path.name + HANDLED_SUFFIX)
     try:
-        path.rename(path.with_name(path.name + HANDLED_SUFFIX))
+        text = path.read_text(encoding="utf-8")
+        kept = task_context.withhold(text, task_context.task_id_from_filename(path.name))
+        if kept != text:
+            from decurix_agent.computer import privacy
+            privacy.write_scrubbed(done, kept, atomic=True)
+            path.unlink()
+            return
+    except (OSError, UnicodeDecodeError) as exc:
+        # What could not be read cannot be shown to hold no secret: the copy is held back, never kept as it was
+        # (review round 2: this fell back to keeping the file verbatim).
+        log(f"Could not withhold the handled copy of {path.name}: {exc}; it is held back.")
+        try:
+            from decurix_agent.computer import privacy
+            privacy.write_scrubbed(done, "[held back: this request could not be checked for secrets]", shapes=False)
+            path.unlink()
+            return
+        except OSError as exc2:
+            log(f"Could not hold back {path.name}: {exc2}")
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return
+    try:
+        path.rename(done)
     except OSError as exc:
         log(f"Could not mark {path.name} as handled: {exc}")
 
@@ -430,7 +497,50 @@ def _pass():
 
             state.current_task = content
 
-        _start_request(path, content)
+        # The slot claimed above is given back if the request never reached its handler: an exception on the way
+        # (a file that would not unpack, a record that would not start) otherwise left current_task set for the life
+        # of the agent, and every later request waited behind "Task already running" (review 2026-11-02).
+        started = False
+        try:
+            started = _start_request(path, content)
+        finally:
+            if not started:
+                _release_slot(content)
+
+
+NOT_THE_REPLY = ("Your message \"{said}\" did not come as the reply to my question, so I have not taken it as the "
+                 "answer{granted}. The question is still open - please answer it by replying to it:\n\n{asked}")
+
+
+def _not_the_reply(content):
+    """
+    Tell the person a message of theirs was not taken as the answer to the open question (it did not come as its
+    reply), and put that question to them again, unchanged, so the answer they send comes as its reply. Called off the
+    command watcher's thread (a long request's message thread). Never raises.
+    """
+
+    # Withheld whole, then cut (review round 2, B4): a secret across the cut leaves nothing of itself.
+    try:
+        from decurix_agent.computer import privacy
+        said = privacy.withhold_known(" ".join(str(content or "").split()))
+    except Exception:  # noqa: BLE001 - the quote is withheld whole rather than risked
+        said = "[withheld]"
+    said = said[:120] + ("..." if len(said) > 120 else "")
+    asked, kind = state.last_query_text or "", state.last_query_kind or "query"
+    try:
+        if state.waiting_for_query and asked:
+            long_task._ask_again(NOT_THE_REPLY.format(said=said, asked=asked,
+                                                      granted=" - nothing was approved" if kind == "approval" else ""),
+                                 kind)
+            # What reads the reply (the approval gate, lessons) reads the question itself, not this note around it.
+            state.last_query_text, state.last_query_kind = asked, kind
+        else:
+            progress.emit(f"Your message \"{said}\" did not come as the reply to a question, so it was not taken as "
+                          "an answer.")
+    except Exception as exc:  # noqa: BLE001
+        log(f"Could not tell the person their message was not taken as the answer: {exc}")
+        progress.emit(f"Your message \"{said}\" was not taken as the answer to my question - it is still open; "
+                      "please answer it by replying to it.")
 
 
 def answer_waiting(path, content, already_marked=False):
@@ -441,11 +551,31 @@ def answer_waiting(path, content, already_marked=False):
     `already_marked` when it has renamed the file itself.
     """
 
+    # A reply must name the question it answers: only a message saved as the
+    # reply - naming the task whose question is open (messaging.save_request) -
+    # answers it. Anything else that reached this desktop (another desktop, a
+    # web page, a message a long request read as an answer without that name)
+    # answers nothing and grants nothing; the question stays open (review
+    # 2026-11-02). It is never dropped in silence either: the person is told it
+    # was not taken as the answer, and the open question is put to them again
+    # so their reply comes as its reply (recheck 2026-11-02: dropped, a long
+    # run waited on an answer the person thought they had given).
+    if not is_reply_file(path.name):
+        log(f"{path.name} does not name the open question's task - it is not taken as the answer.")
+        if not already_marked:
+            _mark_handled(path)
+        _not_the_reply(content)
+        return
+
     # A reply belongs to the paused task. A desktop whose
     # task started before the control plane sent IDs takes
     # the one its reply carries.
     if not state.current_task_id:
         task_context.start(task_context.task_id_from_filename(path.name))
+
+    # A person replied on the run: it carries their input, and its evidence is kept until exported (W0.8).
+    from decurix_agent import retention
+    retention.mark_labelled(task_context.current(), "reply")
 
     if workflow_task.query_control(content):
         if not already_marked:
@@ -453,12 +583,53 @@ def answer_waiting(path, content, already_marked=False):
         threading.Thread(target=workflow_task.perform_control, args=(content,), daemon=True).start()
         return
 
+    # A save waiting on a date's order (task_context.ask_date_order) is settled only by the reply to the date's own
+    # query (it went out alone, messaging.ask_for_query) that picks one of its numbered options, kept with the reply's
+    # judgement. A reply to any other question answers nothing here (review round 3, R3). The engine, whose question
+    # was not put to the person, is told what was asked and answered - never handed the bare number as its answer.
+    # (A reply that calls the task off is left as it is, so it still does.)
+    date_answer = False
+    try:
+        task_id = task_context.current()
+        if task_context.date_query_answered(task_id, state.asked_query_id):
+            question = task_context.date_question(task_id)
+            said = attachments.text(content or "")
+            judged = state.message_facts.get(path.name.removesuffix(HANDLED_SUFFIX), {}).get("judgement") or ""
+            taken = task_context.take_date_answer(task_id, said, judged, state.asked_query_id)
+            if taken:
+                date_answer = True
+                log(f"The person said the dates are written {taken} first; the save that waited on it can go on.")
+                content = (f"(Not your question - the agent asked the person which way {question['value']} is "
+                           f"written, since a save waited on it. They answered: {taken} first. Your own question "
+                           "was not put to them: ask it again if you still need it, and save again.)")
+            else:
+                task_context.unmark_date_asked(task_id)
+                if not guidance.calls_off(said, ""):
+                    date_answer = True
+                    content = (f"(Not your question - the agent asked the person which way {question['value']} is "
+                               "written, since a save waited on it, and their reply picked neither reading, so the "
+                               "save still waits on it. Your own question was not put to them. Their reply: "
+                               + " ".join(said.split())[:300] + ")")
+    except Exception as exc:  # noqa: BLE001
+        log(f"Could not take the reply as the date order: {exc}")
+
     # If what it is waiting on is an on-screen action the
     # approval gate stopped, this reply is what settles it:
     # a yes becomes a one-shot grant for exactly that action,
     # anything else withdraws it. Done here, before the
     # harness sees the reply, so whichever engine repeats
     # the action finds the grant already in place.
+    # The reply to a question raised for a secret may be the secret itself: it is remembered as one first - before
+    # anything here notes, logs or keeps it - and never kept as a lesson (review 2026-11-03, X-6 and its rework).
+    # One fact, whoever knew it (review round 2, B3): soul marked the question it answers, or the control plane withheld
+    # this message (its "secret" on /request, kept by the message's own file).
+    facts = state.message_facts.pop(path.name.removesuffix(HANDLED_SUFFIX), {})
+    secret = bool(getattr(state, "last_query_secret", False) or facts.get("secret"))
+    # The judgement this very reply is on the control plane: what is kept from it cites this one, never a later one.
+    state.reply_judgement = facts.get("judgement") or ""
+    state.reply_secret = secret
+    if secret:
+        _remember_reply_secret(content)
     outcome = None
     try:
         approval.note_reply(content, asked=state.last_query_text)  # (the latest reply: the next gated action's yes when it says so)
@@ -486,8 +657,13 @@ def answer_waiting(path, content, already_marked=False):
     # What the person just told the worker is kept for later
     # tasks (lessons.py) - except the answers of a lesson being
     # taught, which the skill itself keeps, question by question.
-    teaching = (state.paused_skill or {}).get("mode") == "learn"
-    if not teaching:
+    teaching =(state.paused_skill or {}).get("mode") == "learn"
+    # A reply to "the check could not be made - is it done?" is the final check's to read: it keeps what is a lesson
+    # in it itself, once it has read it; a reply that settles nothing ("I don't know that") is never one (review round
+    # 9, R9-B4).
+    unmade_check = ((state.paused_skill or {}).get("mode") == "confirm"
+                    and skill_task._check_not_made((state.paused_skill or {}).get("verdict")))
+    if not teaching and not secret and not date_answer and not unmade_check:  # (a date answer is kept with its judgement, not as a lesson)
         # A replay's or a skill run's own question (a value, a
         # stuck step); "is it done?" is not one of those.
         mechanical = (state.paused_replay is not None
@@ -495,11 +671,16 @@ def answer_waiting(path, content, already_marked=False):
         try:
             lessons.note(state.last_query_text, content, kind=state.last_query_kind, outcome=outcome,
                          task=state.current_task or "", skill=skill_task.guided_skill_title(),
-                         mechanical=mechanical)
+                         mechanical=mechanical, judgement_id=state.reply_judgement)
         except Exception as exc:
             log(f"Could not keep what the person said: {exc}")
 
     if state.paused_replay is not None or state.paused_skill is not None:
+        if state.paused_replay is not None or (state.paused_skill or {}).get("mode") == "run":
+            # A replay's or a skill run's own question (a value it needs) and its answer: a source a record's value may
+            # come from, like any other answer of the task (records.given_text; review round 9).
+            guidance.note_exchange(guidance.open_question() or getattr(state, "last_query_text", ""), content,
+                                   judgement_id=state.reply_judgement, secret=secret)
         # A paused replay or taught skill reads "stop" itself: a lesson
         # keeps its draft and says how to carry on, a run records that
         # it was stopped and where. Inside a /workflow stage the stop
@@ -512,14 +693,19 @@ def answer_waiting(path, content, already_marked=False):
             target, args = replay_task.resume, (content, outcome)
         else:
             target, args = skill_task.resume, (content, outcome)
+    elif workflow_task.awaiting_start():
+        # A workflow stage's "may I start it?": only this reply (a reply file, above) - and with an approval gate, the
+        # gate's grant - starts it (review 2026-11-03, F-09).
+        target, args = workflow_task.answer_start, (content, outcome)
     else:
-        guidance.note_exchange(guidance.open_question() or getattr(state, "last_query_text", ""), content)
+        guidance.note_exchange(guidance.open_question() or getattr(state, "last_query_text", ""), content,
+                               judgement_id=state.reply_judgement, secret=secret)
         guidance.note_reply(content, outcome)
         # An answer to a question a taught task's engine asked
         # (not a yes or no to an approval) is kept on the skill.
-        if outcome is None:
+        if outcome is None and not date_answer:
             try:
-                skill_task.learn_answer(content)
+                skill_task.learn_answer(content, secret=secret, judgement_id=state.reply_judgement)
             except Exception as exc:
                 log(f"Could not keep the answer on the skill: {exc}")
         target, args = continue_after_query, (content,)
@@ -537,6 +723,22 @@ def answer_waiting(path, content, already_marked=False):
         target, args = _run_handler, (target, args)
 
     threading.Thread(target=target, args=args, daemon=True).start()
+
+
+def _remember_reply_secret(content):
+    """A reply to a question raised for a secret: the secrets it spells out, and a one-word reply whole, are remembered
+    so privacy.withhold_known hides them from here on. Never raises."""
+
+    try:
+        from decurix_agent.computer import privacy
+        text = attachments.text(content or "").strip()
+        privacy.remember_secrets(text)
+        privacy.remember_value(text)
+        # The whole reply is the secret (a passphrase, a value with a quote mark, two characters): kept as it is, for
+        # this task (review round 2, B1).
+        task_context.note_secret_values(task_context.current(), privacy.marked_values(text) + [text])
+    except Exception as exc:  # noqa: BLE001 - the control plane withholds the reply too ("secret" on the question)
+        log(f"Could not remember the reply's secret: {exc}")
 
 
 def _perform_long(content, task_file):
@@ -564,6 +766,10 @@ def _start_request(path, content):
         _answer_stale_reply(path, content)
         return
 
+    # The slot was free, so a workflow stage still pointed at is not being worked on: it is closed as unfinished, or it
+    # would take this request's report as its own (review 2026-11-03, E-05).
+    workflow_task.drop_stale()
+
     # A bare "stop" with nothing running or waiting has nothing to stop. Found live (2026-10-15): sent after the
     # desktop restarted under an open question, it went to TheBot as a task, the engine answered "Stopped.", and
     # the final check asked the person what to do about a task that could not be finished.
@@ -572,6 +778,16 @@ def _start_request(path, content):
         task_context.start(task_id, request=content)
         _mark_handled(path)
         write_final_reply("Nothing is running or waiting on you, so there is nothing to stop.")
+        return
+
+    # A desktop full of runs the control plane has not taken yet starts no new work, and says so (retention: it never
+    # deletes a label to make room).
+    from decurix_agent import retention
+    full = retention.over_ceiling()
+    if full:
+        task_context.start(task_context.task_id_from_filename(path.name), request=content)
+        _mark_handled(path)
+        write_final_reply(full, kind="error", gated=True)
         return
 
     # Reports from here on belong to this request's task record,
@@ -668,12 +884,59 @@ def _start_request(path, content):
         target = _follow_up_or(target)
 
     thread = threading.Thread(
-        target=target,
+        target=_guarded(target, task_id),
         args=(content, path),
         daemon=True,
     )
 
     thread.start()
+    return True
+
+
+def _release_slot(content):
+    """Give the task slot back when it is still held for `content` (claimed in _pass)."""
+
+    with state.state_lock:
+        if state.current_task is content or state.current_task == content:
+            state.current_task = None
+
+
+def _guarded(target, task_id):
+    """
+    `target` on the request's own thread, with the slot given back if it raises: the request is reported as stopped
+    on an internal error - not done, and not checked - and the next one can run (review 2026-11-02: an exception in a
+    handler left "Task already running" for the life of the agent).
+    """
+
+    # (Exception only: KeyboardInterrupt and SystemExit end the agent and are never swallowed here - the slot is given
+    # back and they go on.)
+    def release():
+        if task_context.current() in ("", task_id):
+            with state.state_lock:
+                state.current_task = None
+
+    def run(content, path):
+        try:
+            target(content, path)
+        except Exception as exc:  # noqa: BLE001 - a handler's error is reported, never the end of the agent
+            try:
+                log(f"The request's handler stopped on an error: {exc!r}\n{traceback.format_exc()}")
+                if state.current_task is not None and task_context.current() in ("", task_id):
+                    write_final_reply(f"That stopped on an internal error ({type(exc).__name__}) - it is NOT done. "
+                                      "Look at what it left before sending it again.", kind="error", gated=True,
+                                      task_id=task_id or None)
+            except Exception as again:  # noqa: BLE001
+                try:
+                    log(f"Could not report the handler's error: {again!r}")
+                except Exception:  # noqa: BLE001
+                    pass
+            finally:
+                release()
+        except BaseException:
+            release()
+            raise
+    run.__wrapped__ = target  # (inspect.unwrap(thread target) is the handler chosen for the request)
+    return run
 
 
 def _follow_up_or(target):

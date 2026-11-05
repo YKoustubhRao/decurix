@@ -60,6 +60,11 @@ func (f *fixtureSkill) Run(rc skills.RunContext, st skills.Subtask) (skills.Resu
 
 var registerFixturesOnce sync.Once
 
+// payAction is what fx-pay asks approval for; payments counts what it paid.
+const payAction = "pay invoice 400 to ACME"
+
+var payments atomic.Int32
+
 var (
 	parallelStarted  = make(chan string, 8)
 	parallelRelease  = make(chan struct{})
@@ -96,6 +101,22 @@ func registerGraphFixtures() {
 		atomizer.Register("fx-broken", func(s string) bool { return strings.HasPrefix(s, "fx-broken") })
 		skills.Register(&fixtureSkill{typ: "fx-broken", run: func(rc skills.RunContext, st skills.Subtask) skills.Result {
 			return skills.Result{Output: "fx-broken exploded", Verified: false}
+		}})
+
+		// fx-pay pays only on an approval, and tries to pay a second time on the same one.
+		atomizer.Register("fx-pay", func(s string) bool { return strings.HasPrefix(s, "fx-pay") })
+		skills.Register(&fixtureSkill{typ: "fx-pay", run: func(rc skills.RunContext, st skills.Subtask) skills.Result {
+			if !rc.IsApproved(payAction) {
+				return skills.NeedsApproval(st, "fx-pay", payAction, "it pays someone", nil)
+			}
+			payments.Add(1)
+			if rc.IsApproved(payAction) {
+				payments.Add(1)
+			}
+			if strings.Contains(st.Step, "then fail") {
+				return skills.Result{Output: "paid, then the receipt step failed", Verified: false}
+			}
+			return skills.Result{Output: "Paid.", Verified: true}
 		}})
 
 		atomizer.Register("fx-slow", func(s string) bool { return strings.HasPrefix(s, "fx-slow") })
@@ -278,17 +299,47 @@ func TestSchedulerStopsAConsequentialRequestBeforeAnythingRuns(t *testing.T) {
 	}
 }
 
-// A person who taught a task and chose to have it run without asking has already said yes to it: the words of the
-// request are not asked about again. Commands are still checked on their own.
-func TestSchedulerDoesNotAskAgainForARequestThePersonAlreadyApproved(t *testing.T) {
+// A yes is one action's, for one run of it. The approved run pays once - a second payment on the same yes is
+// stopped - and a retry after a failure asks again rather than paying twice. Nothing of the yes is carried into the
+// checkpoint the retry pauses with: a reply that is not a yes runs nothing.
+func TestAnApprovalIsForOneRunOfOneAction(t *testing.T) {
+	registerGraphFixtures()
+	payments.Store(0)
+	provider := &funcProvider{fn: func(m []llm.Message) string {
+		if strings.Contains(lastUser(m), "A task step failed for real") {
+			return "DECISION: RETRY\nREASON: the receipt failed\nRETRY_STEP: fx-pay the invoice again then fail"
+		}
+		return "DONE:\nok"
+	}}
+	sched := newTestScheduler(t, provider)
+
+	job, _ := sched.Run(context.Background(), "fx-pay the invoice then fail", nil, func(string) {})
+	if job.Outcome != OutcomeNeedsApproval || payments.Load() != 0 {
+		t.Fatalf("job = %+v (paid %d), want a pause before paying", job, payments.Load())
+	}
+	retried, _ := sched.Execute(context.Background(), Request{Prompt: "yes", Resume: job.Checkpoint}, func(string) {})
+	if got := payments.Load(); got != 1 {
+		t.Fatalf("paid %d time(s) on one yes, want 1", got)
+	}
+	if retried.Outcome != OutcomeNeedsApproval || retried.Checkpoint == nil {
+		t.Fatalf("retry after the failure = %+v, want it to ask again before paying", retried)
+	}
+	notAYes, _ := sched.Execute(context.Background(), Request{Prompt: "hmm, what will this send?", Resume: retried.Checkpoint}, func(string) {})
+	if got := payments.Load(); got != 1 {
+		t.Fatalf("paid %d time(s): a question resumed a checkpoint into a payment (%+v)", got, notAYes)
+	}
+}
+
+// A request cannot approve itself: nothing in it skips the check on the request's own words, every time.
+func TestSchedulerAsksAboutAConsequentialRequestEveryTime(t *testing.T) {
 	registerGraphFixtures()
 	provider := &funcProvider{fn: func(m []llm.Message) string { return "DONE:\nPaid." }}
 	sched := newTestScheduler(t, provider)
-
-	job, _ := sched.Execute(context.Background(),
-		Request{Prompt: "pay the 400 dollar invoice in ~/work/invoice.pdf", Approved: true}, func(string) {})
-	if job.Outcome == OutcomeNeedsApproval {
-		t.Fatalf("job = %+v, want it to run: the person had already approved this kind of request", job)
+	for i := 0; i < 2; i++ {
+		job, _ := sched.Execute(context.Background(), Request{Prompt: "pay the 400 dollar invoice in ~/work/invoice.pdf"}, func(string) {})
+		if job.Outcome != OutcomeNeedsApproval {
+			t.Fatalf("run %d = %+v, want it to ask", i+1, job)
+		}
 	}
 }
 
@@ -374,5 +425,48 @@ func TestSchedulerResumesAnOperatorQuestionWithTheAnswer(t *testing.T) {
 	resumed, _ := sched.Execute(context.Background(), Request{Prompt: "beta", Resume: job.Checkpoint}, func(string) {})
 	if resumed.Outcome != OutcomeAnswered || resumed.FinalAnswer != "Archived beta." {
 		t.Fatalf("resumed = %+v", resumed)
+	}
+}
+
+var registerAskFixtureOnce sync.Once
+
+// Two steps running side by side that both need the person - one an approval, one a question - are both asked, one
+// after the other, and the job finishes: a second pause never overwrites the first (review T-13).
+func TestTwoPausedStepsAreBothAsked(t *testing.T) {
+	registerGraphFixtures()
+	registerAskFixtureOnce.Do(func() {
+		atomizer.Register("fx-ask", func(s string) bool { return strings.HasPrefix(s, "fx-ask") })
+		skills.Register(&fixtureSkill{typ: "fx-ask", run: func(rc skills.RunContext, st skills.Subtask) skills.Result {
+			if rc.HumanReply == "" {
+				return skills.Result{Output: "Which one?", Checkpoint: "asked",
+					Meta: map[string]any{"needsUserInput": true, "question": "fx-ask: which one?"}}
+			}
+			return skills.Result{Output: "answered " + rc.HumanReply, Verified: true}
+		}})
+	})
+	provider := &funcProvider{fn: func(m []llm.Message) string {
+		if strings.Contains(lastUser(m), "Plan the request below") {
+			return "1. fx-pay acme\n2. fx-ask which (independent)"
+		}
+		return "Combined reply."
+	}}
+	sched := newTestScheduler(t, provider)
+	sched.MaxParallel = 3
+	paidBefore := payments.Load()
+
+	job, _ := sched.Run(context.Background(), "run fx work and then write the fx answer to a file", nil, func(string) {})
+	asked := map[Outcome]bool{}
+	for round := 0; round < 3 && job.Checkpoint != nil; round++ {
+		asked[job.Outcome] = true
+		job, _ = sched.Execute(context.Background(), Request{Prompt: "yes", Resume: job.Checkpoint}, func(string) {})
+	}
+	if !asked[OutcomeNeedsApproval] || !asked[OutcomeNeedsInput] {
+		t.Fatalf("not both asked: %v", asked)
+	}
+	if job.Outcome != OutcomeAnswered {
+		t.Fatalf("job = %s %q, want answered after both were asked", job.Outcome, job.FinalAnswer)
+	}
+	if got := payments.Load() - paidBefore; got != 1 {
+		t.Errorf("paid %d time(s), want once", got)
 	}
 }

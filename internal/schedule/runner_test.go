@@ -3,6 +3,7 @@ package schedule
 import (
 	"context"
 	"errors"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"strings"
 	"sync"
 	"testing"
@@ -16,7 +17,7 @@ type fakeSubmitter struct {
 	err   error
 }
 
-func (f *fakeSubmitter) Submit(_ context.Context, desktopID, content string) error {
+func (f *fakeSubmitter) Submit(_ context.Context, desktopID, content string, _ tasks.Origin) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 

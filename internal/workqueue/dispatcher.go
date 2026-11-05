@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/YKoustubhRao/decurix/internal/tasks"
 	"log"
 	"sort"
 	"strings"
@@ -33,7 +34,7 @@ type WorkerSource interface {
 // landed under. A refusal because the worker is busy is an error with a
 // DesktopBusy() string method: "try again later", not a failure.
 type TaskSubmitter interface {
-	Submit(ctx context.Context, worker, request, dir string, files []File) (taskID string, err error)
+	Submit(ctx context.Context, worker, request, dir string, files []File, origin tasks.Origin) (taskID string, err error)
 }
 
 // TaskState is what the task records say about a submitted task.
@@ -82,9 +83,11 @@ type Dispatcher struct {
 	// Backoff is how long an item waits after a failed send; 0 means a minute.
 	Backoff time.Duration
 
-	mu   sync.Mutex // one Tick at a time
-	wake chan struct{}
-	once sync.Once
+	mu sync.Mutex // one Tick at a time
+	// lastPrune is when done items' files were last pruned (pruneFiles).
+	lastPrune time.Time
+	wake      chan struct{}
+	once      sync.Once
 }
 
 // now is the dispatcher's clock.
@@ -161,6 +164,7 @@ func (d *Dispatcher) Tick(ctx context.Context) error {
 	if err := d.follow(); err != nil {
 		return err
 	}
+	d.pruneFiles()
 
 	workers, err := d.Workers.Workers(ctx)
 	if err != nil {
@@ -190,6 +194,24 @@ func (d *Dispatcher) Tick(ctx context.Context) error {
 		return err
 	}
 	return d.assign(ctx, st)
+}
+
+// doneFilesKept is how long a done item keeps the files it was sent with (up to 25 MiB each, in the database): long
+// enough to look at, not for good (C-28). An item that may still be retried keeps its files.
+const doneFilesKept = 7 * 24 * time.Hour
+
+// pruneFiles drops the files of items done more than doneFilesKept ago, at most once an hour.
+func (d *Dispatcher) pruneFiles() {
+	now := d.now()
+	if !d.lastPrune.IsZero() && now.Sub(d.lastPrune) < time.Hour {
+		return
+	}
+	d.lastPrune = now
+	if n, err := d.Store.PruneFiles(now.Add(-doneFilesKept)); err != nil {
+		log.Printf("workqueue: %v", err)
+	} else if n > 0 {
+		log.Printf("workqueue: dropped %d file(s) of items done more than %s ago", n, doneFilesKept)
+	}
 }
 
 // follow moves running items forward as their tasks end, and holds any item
@@ -327,12 +349,28 @@ func contains(list []string, v string) bool {
 	return false
 }
 
-// overBudget says why a worker is at or over a spend limit for the current
-// day or month, "" when it is under every limit that applies.
-func (d *Dispatcher) overBudget(st *tickState, worker string) (string, error) {
-	if why, ok := st.spend[worker]; ok {
-		return why, nil
+// LimitEnforcement says, for the API and the page, what each kind of limit is checked against (review RW1-F-02): the
+// token limit against what the model proxy itself counted, the dollar limit only against the cost each desktop reports
+// when a turn ends - no price is known to the control plane, so it cannot meter dollars.
+const LimitEnforcement = "Token limits are enforced at the model proxy, which counts every hosted call as it is made. " +
+	"Dollar limits are compared with the cost each desktop reports about itself when a task ends: not metered, so set a token limit to cap spend."
+
+// OverBudget says why worker is at or over a spend limit for the current day or month, "" when it is under every
+// limit that applies, read now - what the model proxy asks before it forwards a call (C-08).
+func (d *Dispatcher) OverBudget(worker string) (string, error) {
+	limits, err := d.Store.Limits()
+	if err != nil {
+		return "", err
 	}
+	return d.overBudget(&tickState{limits: limits}, worker)
+}
+
+// overBudget says why a worker is at or over a spend limit for the current
+// day or month, "" when it is under every limit that applies. It is read
+// afresh for every item, never from a reading taken earlier in the tick: with
+// spend metered as it happens, a second item must see what the first one's
+// worker has used by then (C-08).
+func (d *Dispatcher) overBudget(st *tickState, worker string) (string, error) {
 	why := ""
 	now := d.now()
 	for _, period := range []string{PeriodDay, PeriodMonth} {
@@ -349,7 +387,7 @@ func (d *Dispatcher) overBudget(st *tickState, worker string) (string, error) {
 			return "", fmt.Errorf("reading spend of %s: %w", worker, err)
 		}
 		if l.MaxUSD > 0 && spent.USD >= l.MaxUSD {
-			why = fmt.Sprintf("%s has spent $%.2f of its $%.2f %s limit", worker, spent.USD, l.MaxUSD, period)
+			why = fmt.Sprintf("%s has spent $%.2f of its $%.2f %s limit (the cost its desktop reported)", worker, spent.USD, l.MaxUSD, period)
 			break
 		}
 		if l.MaxTokens > 0 && spent.Tokens >= l.MaxTokens {
@@ -357,7 +395,6 @@ func (d *Dispatcher) overBudget(st *tickState, worker string) (string, error) {
 			break
 		}
 	}
-	st.spend[worker] = why
 	return why, nil
 }
 
@@ -520,7 +557,7 @@ func (d *Dispatcher) send(ctx context.Context, st *tickState, it Item, worker st
 		request += "\n\nFiles for this request are in " + dir + ": " + strings.Join(names, ", ")
 	}
 
-	taskID, err := d.Submitter.Submit(ctx, worker, request, dir, files)
+	taskID, err := d.Submitter.Submit(ctx, worker, request, dir, files, tasks.Origin{Kind: tasks.OriginQueue, Ref: it.ID})
 	if err == nil && taskID == "" {
 		err = errors.New("no task id came back")
 	}

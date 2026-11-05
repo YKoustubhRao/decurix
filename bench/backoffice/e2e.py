@@ -34,6 +34,7 @@ HOME = "/home/headless"
 TODAY = dt.date.today()
 
 results = []
+advisories = []
 
 
 # ------------------------------------------------------------------ plumbing
@@ -42,6 +43,67 @@ def check(name, ok, detail=""):
     results.append((CURRENT, name, bool(ok)))
     print(f"  {'ok ' if ok else 'BAD'} {name}" + (f"  ({str(detail)[:400]})" if detail and not ok else ""), flush=True)
     return ok
+
+
+def advisory(name, ok, detail=""):
+    """A check about what a report means, which words alone cannot decide:
+    shown for a person (or a judge) to read, never counted as a pass or a fail."""
+    advisories.append((CURRENT, name, bool(ok)))
+    print(f"  {'adv' if ok else 'ADV?'} {name} (advisory: a person reads the report)" + (f"  ({str(detail)[:400]})" if detail else ""), flush=True)
+    return ok
+
+
+# ------------------------------------------------------------------ structured checks
+
+def _cell_text(c):
+    return "" if c is None else str(c).strip()
+
+
+def _number(c):
+    """A cell's number: commas, a percent sign and a currency mark aside."""
+    t = re.sub(r"(?i)^(?:rs\.?|inr|₹)\s*|%$", "", str(c).replace(",", "").strip()).strip()
+    try:
+        return float(t)
+    except (TypeError, ValueError):
+        return None
+
+
+DATE_RE = re.compile(r"^\d{1,4}[-/. ](?:\d{1,2}|[A-Za-z]{3,9})[-/. ]\d{2,4}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?$")
+
+
+def rows_for(sheets, *names):
+    """Every row, in any sheet, that has a cell naming the item by any of its
+    names (the whole cell, or the name as a whole token in it)."""
+    patterns = [re.compile(r"(?<![\w-])" + re.escape(n) + r"(?![\w-])", re.I) for n in names]
+    return [row for rows in sheets.values() for row in rows
+            if any(p.search(_cell_text(c)) for c in row or [] for p in patterns)]
+
+
+def row_has_number(row, value):
+    return any(_number(c) is not None and abs(_number(c) - float(value)) < 0.005 for c in row or [])
+
+
+def row_has_note(row, known):
+    """A row says something about its item beyond the item itself: a text cell
+    that is not a number, not a formula, and none of the item's known words
+    (its code, description). That is a flag, a note or a status."""
+    known = {k.lower() for k in known}
+    for c in row or []:
+        t = _cell_text(c)
+        if (t and _number(t) is None and not t.startswith("=") and not DATE_RE.match(t)
+                and t.lower() not in known and t not in ("-", "—")):
+            return True
+    return False
+
+
+def chart_series_end_rows(chart_xml):
+    """The last row of every data reference a chart's series read ($B$2:$B$6 -> 6)."""
+    ends = []
+    for ref in re.findall(r"<(?:\w+:)?f>([^<]+)</(?:\w+:)?f>", chart_xml):
+        m = re.search(r":\$?[A-Z]+\$?(\d+)$", ref.strip())
+        if m:
+            ends.append(int(m.group(1)))
+    return ends
 
 
 def sh(cmd, timeout=180, user="headless"):
@@ -218,8 +280,8 @@ print(json.dumps("ok"))
         names = [a.get("filename") for a in att or []]
         check("her offer letter is attached", any(nm and nm.startswith("Offer_") for nm in names), names)
         check("someone else's ID was not filed on her record", not any(nm and nm.startswith("ID_scan") for nm in names), names)
-    check("the report says the ID scan is someone else's", re.search(r"(rajesh|someone else|not (hers|her)|does not (match|belong))",
-                                                                     content, re.I), content[:300])
+    advisory("the report says the ID scan is someone else's", re.search(r"(rajesh|someone else|not (hers|her)|does not (match|belong))",
+                                                                        content, re.I), content[:300])
 
 
 def wf4_price_update(work):
@@ -255,11 +317,16 @@ wb.save('{HOME}/work/wf4/current_catalogue.xlsx'); print(json.dumps('ok'))
     files = made_since(t0, ".xlsx", exclude=("current_catalogue.xlsx",))
     check("a review workbook was written", files, files)
     if files:
-        text = json.dumps(xlsx_rows(files[0]))
-        for code, price in (("BRG-6204", "151"), ("BRG-6205", "179"), ("BRG-6306", "348"), ("GRS-EP2-1", "398")):
-            check(f"{code} at its new price {price}", code in text and price in text)
-        check("the other supplier's item is left out", "VB-A42" not in text)
-        check("the new item and the unlisted one are flagged", "6010" in text and "BRG-6008" in text)
+        sheets = xlsx_rows(files[0])
+        for code, old, price in (("BRG-6204", 142, 151), ("BRG-6205", 168.5, 179), ("BRG-6306", 310, 348), ("GRS-EP2-1", 420, 398)):
+            rows = rows_for(sheets, code)
+            check(f"{code}'s own row has its old price {old} and new price {price}",
+                  any(row_has_number(r, old) and row_has_number(r, price) for r in rows), rows)
+        check("the other supplier's item is left out", not rows_for(sheets, "VB-A42"))
+        for names, words in ((("6010-ZZ", "6010 ZZ"), ("6010-ZZ", "6010 ZZ", "Ball Bearing 6010 ZZ (new)", "Ball Bearing 6010 ZZ", "Nos")),
+                             (("BRG-6008",), ("BRG-6008", "Ball bearing 6008", "Mehta Bearings", "Nos"))):
+            rows = rows_for(sheets, *names)
+            check(f"{names[0]} has a row that flags it (a note beside it, not just its name)", any(row_has_note(r, words) for r in rows), rows)
     drafts = [d for d in outbox_since(t0) if "purchase@ourco.example" in d["to"]]
     check("a draft email to purchasing, with the workbook attached", drafts and any(f["name"].endswith(".xlsx") for f in drafts[0]["files"]), drafts)
 
@@ -300,7 +367,9 @@ print(json.dumps('ok'))
     if files:
         local = get(files[0], work)
         chart = subprocess.run(["unzip", "-p", local, "xl/charts/chart1.xml"], capture_output=True, text=True).stdout
-        check("the chart reads through August's row", "$6" in chart, re.findall(r"<(?:\w+:)?f>([^<]+)<", chart))
+        aug_row = 1 + rows.index(aug) if aug in rows else None
+        ends = chart_series_end_rows(chart)
+        check("every chart series reads through August's row", aug_row and ends and all(e >= aug_row for e in ends), (aug_row, ends))
         subprocess.run(["soffice", "--headless", "--convert-to", "csv", "--outdir", work, local], capture_output=True, timeout=180)
         csv = open(os.path.splitext(local)[0] + ".csv").read()
         check("it recalculates to the right year-to-date sales", "9824150" in csv, csv[:300])
@@ -341,7 +410,7 @@ def wf6_onboarding_file(work):
                 for i in range(1, pages + 1)]
         check("in the order asked (form first, GST certificate third)", "Account Opening" in text[0] and "GST" in (text[2] if pages > 2 else ""),
               [t[:40] for t in text])
-    check("the cheque's account name mismatch is reported", re.search(r"TOOL LLP|singular|account name", content, re.I), content[:300])
+    advisory("the cheque's account name mismatch is reported", re.search(r"TOOL LLP|singular|account name", content, re.I), content[:300])
 
 
 def wf7_export_report(work):
@@ -383,19 +452,28 @@ wb.save('{HOME}/work/wf7/SalesRegister_Aug2026.xlsx'); print(json.dumps('ok'))
     check("a draft to accounts with the cleaned file", drafts and any(f["name"].endswith(".xlsx") for f in drafts[0]["files"]), drafts)
 
 
+def _due(days):
+    """(posting date, due date) of an invoice due `days` from today (negative: overdue), on 30-day terms. Fixed
+    dates rotted: an invoice due "in the future" on the day this was written fell overdue weeks later, and correct
+    work - chasing it - was scored wrong (review 2026-11-02)."""
+    due = TODAY + dt.timedelta(days=days)
+    return (due - dt.timedelta(days=30)).isoformat(), due.isoformat()
+
+
 def wf8_9_receivables(work):
+    rows = [('SI-0701', *_due(-92), 'Rao Engineering', 'accounts@raoeng.example', 250000, 250000, 'No'),
+            ('SI-0744', *_due(-77), 'Rao Engineering', 'accounts@raoeng.example', 118000, 43000, 'No'),
+            ('SI-0761', *_due(-70), 'Sai Motors', 'finance@saimotors.example', 96500, 96500, 'Yes'),
+            ('SI-0812', *_due(-62), 'Rao Engineering', 'accounts@raoeng.example', 486160, 486160, 'No'),
+            ('SI-0813', *_due(-58), 'Sai Motors', 'finance@saimotors.example', 352230, 352230, 'No'),
+            ('SI-0819', *_due(30), 'Kiran Pumps', 'ap@kiranpumps.example', 772900, 772900, 'No'),
+            ('SI-0831', *_due(0), 'Deccan Agro', 'pay@deccanagro.example', 376302, 376302, 'No')]
     py(f"""
 import json, os, openpyxl
 os.makedirs('{HOME}/work/wf8', exist_ok=True)
 wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Accounts Receivable'
 ws.append(['Invoice', 'Posting Date', 'Due Date', 'Customer', 'Customer Email', 'Invoice Amount', 'Outstanding', 'Disputed'])
-for r in [('SI-0701','2026-07-03','2026-08-02','Rao Engineering','accounts@raoeng.example',250000,250000,'No'),
-          ('SI-0744','2026-07-18','2026-08-17','Rao Engineering','accounts@raoeng.example',118000,43000,'No'),
-          ('SI-0761','2026-07-25','2026-08-24','Sai Motors','finance@saimotors.example',96500,96500,'Yes'),
-          ('SI-0812','2026-08-02','2026-09-01','Rao Engineering','accounts@raoeng.example',486160,486160,'No'),
-          ('SI-0813','2026-08-06','2026-09-05','Sai Motors','finance@saimotors.example',352230,352230,'No'),
-          ('SI-0819','2026-08-14','2026-10-13','Kiran Pumps','ap@kiranpumps.example',772900,772900,'No'),
-          ('SI-0831','2026-08-29','{TODAY.isoformat()}','Deccan Agro','pay@deccanagro.example',376302,376302,'No')]:
+for r in {rows!r}:
     ws.append(list(r))
 wb.save('{HOME}/work/wf8/open_invoices_export.xlsx'); print(json.dumps('ok'))
 """)
@@ -493,6 +571,10 @@ def main():
         if mine:
             print(f"  {key}: {sum(r[2] for r in mine)}/{len(mine)}" + ("" if all(r[2] for r in mine) else
                   "  - " + "; ".join(r[1] for r in mine if not r[2])))
+    if advisories:
+        print("\n== advisory (about what a report means; for a person to read, not counted)")
+        for key, name, ok in advisories:
+            print(f"  {key}: {'seen' if ok else 'NOT seen'} - {name}")
     failed = [r for r in results if not r[2]]
     print("\nBACK OFFICE:", "OK" if not failed else f"{len(failed)} check(s) failed")
     return 1 if failed else 0

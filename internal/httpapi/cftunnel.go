@@ -47,6 +47,10 @@ func (s *Server) cfTunnelConfigureHandler(w http.ResponseWriter, r *http.Request
 	defer cancel()
 
 	status, err := s.CFTunnel.Configure(ctx, r.FormValue("api_token"), r.FormValue("domain"), r.FormValue("subdomain"))
+	if errors.Is(err, cftunnel.ErrUnsealed) {
+		jsonStatusError(w, http.StatusServiceUnavailable, "Not set up - Decurix could not create the key file it seals the tunnel's tokens with ("+cftunnel.KeyFile+" in its data folder), and it does not store them unencrypted. Make sure that folder is writable, then restart Decurix.")
+		return
+	}
 
 	var apiErr *cftunnel.APIError
 

@@ -88,7 +88,14 @@ def start(task_id, request=None, continues=""):
             # When the task began (kept across a resume of the same task): what was there before it is the person's.
             writes.append((CURRENT_FILE + ".since", f"{task_id} {time.time():.3f}"))
         if request is not None:
-            writes.append((CURRENT_FILE + ".request", str(request)[:REQUEST_CHARS]))
+            # Withheld (C14): the copy outlives the task in /tmp, and every process reads it.
+            kept = _withheld(str(request), task_id)
+            writes.append((CURRENT_FILE + ".request", kept[:REQUEST_CHARS]))
+            if task_id and kept != str(request):
+                # The request as it is, for the task's own checks in every process (current_request): in the task's
+                # secret store (tmpfs, 0600, let go at its final report), never in a kept copy (review round 6).
+                from decurix_agent.computer import privacy
+                privacy.keep_resume_copy("request:" + task_id, task_id, str(request))  # (uncut: current_request(full))
             # The files the request brought, whole: the request above is cut at 500 characters, and its paths come
             # last. What the screen layer checks a chosen record against (core._in_documents).
             from decurix_agent import attachments
@@ -98,14 +105,73 @@ def start(task_id, request=None, continues=""):
             _write(path, value)
 
 
+def _withheld(text, task_id=None):
+    """withhold(text) for the current task (the copies this module keeps)."""
+
+    return withhold(text, task_id)
+
+
+def withhold(text, task_id=None):
+    """
+    text with the task's noted secret values withheld wherever they stand (a message the person marked secret is one
+    whole value: a long one is withheld whole, not word by word), then every secret remembered so far
+    (privacy.withhold_known). Never the text when it cannot be checked.
+    """
+
+    from decurix_agent.computer import privacy
+    try:
+        text = str(text if text is not None else "")
+        held = held_values(task_id)
+        if " ".join(text.split()) in held:
+            return "[withheld]"  # a marked message, whatever its line breaks
+        return privacy.withhold_known(privacy.withhold_held(text, held))
+    except Exception:  # noqa: BLE001 - fail closed
+        return privacy.HELD_BACK
+
+
+# The secret values each task's requests and replies gave (C14), in this process's memory only - never on disk: the
+# job to soul names them (thebot_harness), so soul keeps none of them in what it stores and shows.
+_secret_values = {}
+
+
+def note_secret_values(task_id, values):
+    """Keep `values` as the task's secret values: in this process (the job to soul names them) and as they are for
+    every process of the desktop (privacy.remember_literals: withheld wherever they stand, cleared at the task's end)."""
+
+    if not valid(task_id):
+        return
+    from decurix_agent.computer import privacy
+    values = privacy.clean_values(values)
+    with _lock:
+        kept = _secret_values.setdefault(task_id, [])
+        for value in values:
+            if value not in kept:
+                kept.append(value)
+    privacy.remember_literals(values, task_id)
+
+
+def secret_values(task_id=None):
+    """The secret values the task's requests and replies gave: as noted in this process, and as kept for the desktop
+    (which outlives an agent restart within the task)."""
+
+    from decurix_agent.computer import privacy
+    return privacy.plain_values(held_values(task_id))
+
+
+def held_values(task_id=None):
+    """secret_values as they are kept: a value withheld only as a whole token keeps its mark (privacy.WHOLE_TOKEN)."""
+
+    from decurix_agent.computer import privacy
+    task_id = task_id or current()
+    return list(dict.fromkeys(list(_secret_values.get(task_id, ())) + privacy.literals(task_id)))
+
+
 def _write(path, value):
     """Replace a file the out-of-process reporters read, whole."""
 
     try:
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(value)
-        os.replace(tmp, path)
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(path, value, atomic=True, shapes=False)
     except OSError:
         # Only the out-of-process reporters lose it, and the control
         # plane still attributes their steps to the live task.
@@ -160,10 +226,10 @@ def mark_active(task_id, request=None):
     try:
         path = _active_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"task_id": task_id, "request": str(request or "")[:500], "since": time.time()}),
-                       encoding="utf-8")
-        tmp.replace(path)
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(path, {"task_id": task_id, "request": _withheld(str(request or ""),
+                                                                                        task_id)[:500],
+                                                 "since": time.time()}, atomic=True)
     except OSError:
         pass
 
@@ -199,12 +265,23 @@ def take_interrupted():
     return record
 
 
-def current_request():
-    """What the current task asked for, as far as this process can tell, or ""."""
+def current_request(full=False):
+    """What the current task asked for, as far as this process can tell, or "". Cut at REQUEST_CHARS unless `full`: a
+    writer withholds the request whole before it cuts it, or a cut prefix of a marked message no longer matches the
+    message held whole (review round 7)."""
 
+    cut = (lambda text: text) if full else (lambda text: text[:REQUEST_CHARS])
     if state.current_task_id and state.current_task:
-        return str(state.current_task)[:REQUEST_CHARS]
+        return cut(str(state.current_task))
 
+    # Another process (the `gui` command, a check): the request as it is from the task's secret store when its kept copy
+    # is withheld - the checks read the data a marked request carries (review round 6, R5-B1).
+    task_id = current()
+    if task_id:
+        from decurix_agent.computer import privacy
+        raw = privacy.resume_copy("request:" + task_id)
+        if raw:
+            return cut(raw)
     return _read(".request")
 
 
@@ -258,3 +335,336 @@ def current_stage():
         return str(data.get("scope") or ""), int(data.get("attempt") or 0)
     except (OSError, ValueError, TypeError):
         return "", 0
+
+
+# ============================================================
+# What the control plane said about a task, beside its request
+#
+# The control plane's /request body carries more than the words (PLAN-P2 C6): the org's date order and, for a person's
+# reply, the judgement that reply is on the control plane. Both are kept in the task's run folder
+# (~/.decurix/runs/<task>/context.json, PLAN-P2 C8), on the persistent volume, so every process of the desktop reads
+# them - the `gui` command compares a form's dates on the save path, in a process of its own.
+# ============================================================
+
+DATE_ORDERS = ("day", "month")
+# The control plane's judgement ids (C6). Anything else is ignored, never kept.
+_JUDGEMENT_ID = re.compile(r"^j_[A-Za-z0-9]{6,32}$")
+
+
+def run_dir(task_id):
+    """The task's run folder (~/.decurix/runs/<task>), whether or not it exists; None for an invalid id."""
+
+    return config.DECURIX_DIR / "runs" / task_id if valid(task_id) else None
+
+
+def _context(task_id):
+    folder = run_dir(task_id)
+    if folder is None:
+        return {}
+    try:
+        data = json.loads((folder / "context.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _keep_context(task_id, **fields):
+    """Merge fields into the task's context.json. Never raises: what cannot be kept is only not known later."""
+
+    folder = run_dir(task_id)
+    if folder is None:
+        return
+    with _lock:
+        data = _context(task_id)
+        data.update(fields)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            from decurix_agent.computer import privacy
+            privacy.write_scrubbed(folder / "context.json", data, atomic=True,
+                                   shapes=False, json_kw={"sort_keys": True})
+        except OSError:
+            pass
+
+
+def set_date_order(task_id, order):
+    """Keep the org's date order the control plane sent with a request (C6); anything but "day"/"month" is ignored."""
+
+    if order in DATE_ORDERS:
+        _keep_context(task_id, date_order=order)
+
+
+_EXECUTION_ID = re.compile(r"^[A-Za-z0-9_-]{4,64}$")
+
+
+def set_execution(task_id, execution_id):
+    """Keep the control plane's id of the attempt this task is on (sent on /request), for its run's label (C8)."""
+
+    if isinstance(execution_id, str) and _EXECUTION_ID.match(execution_id):
+        _keep_context(task_id, execution_id=execution_id)
+
+
+def execution_id(task_id=None):
+    """The control plane's id of the task's current attempt, or "" when it sent none."""
+
+    value = _context(task_id or current()).get("execution_id") if (task_id or current()) else ""
+    return value if isinstance(value, str) and _EXECUTION_ID.match(value) else ""
+
+
+def valid_judgement(judgement_id):
+    return isinstance(judgement_id, str) and bool(_JUDGEMENT_ID.match(judgement_id))
+
+
+def set_reply_judgement(task_id, judgement_id):
+    """Keep the control plane's judgement id of the latest message to the task (C6). A message that carries none (or a
+    malformed one) clears it: no later answer may cite an earlier reply's judgement (review round 2, B7)."""
+
+    _keep_context(task_id, reply_judgement=judgement_id if valid_judgement(judgement_id) else "")
+
+
+def reply_judgement(task_id=None):
+    """The judgement id of the latest person's reply to the task (the current one by default), or ""."""
+
+    value = _context(task_id or current()).get("reply_judgement")
+    return value if isinstance(value, str) and _JUDGEMENT_ID.match(value) else ""
+
+
+def set_skill(name, version, task_id=None):
+    """The taught skill driving the task (R7): its name and version, sent on the task's outcome (C5). "" clears it."""
+
+    task_id = task_id or current()
+    if not task_id:
+        return
+    try:
+        version = int(version or 0)
+    except (TypeError, ValueError):
+        version = 0
+    _keep_context(task_id, skill={"name": str(name), "version": version} if name else None)
+
+
+def skill(task_id=None):
+    """{"name", "version"} of the taught skill that drove the task, or None."""
+
+    found = _context(task_id or current()).get("skill") if (task_id or current()) else None
+    if isinstance(found, dict) and isinstance(found.get("name"), str) and found["name"]:
+        return {"name": found["name"], "version": int(found.get("version") or 0)}
+    return None
+
+
+def sent_date_order(task_id=None):
+    """The date order the control plane sent for the task, or None."""
+
+    value = _context(task_id or current()).get("date_order")
+    return value if value in DATE_ORDERS else None
+
+
+def request_date_marker(request):
+    """"day" when the request writes dates DD/MM, "month" when MM/DD, None when it does not say."""
+
+    from decurix_agent import attachments
+    text = attachments.text(request or "")
+    if re.search(r"(?i)\bDD[/.\-]MM\b", text):
+        return "day"
+    if re.search(r"(?i)\bMM[/.\-]DD\b", text):
+        return "month"
+    return None
+
+
+# How many of the request's files are read for their dates, and how much of each (the text layer only: no OCR, which
+# is too slow on the save path).
+_ORDER_FILES = 6
+_ORDER_CHARS = 200000
+_derived = {}
+
+
+def _files_text(paths):
+    from decurix_agent.tools import office
+    texts = []
+    for path in list(paths)[:_ORDER_FILES]:
+        try:
+            if os.path.splitext(str(path))[1].lower() in office.IMAGE_TYPES:
+                continue
+            texts.append(office.read_document(path)["text"][:_ORDER_CHARS])
+        except Exception:  # noqa: BLE001 - a file that cannot be read says nothing about dates
+            continue
+    return texts
+
+
+# Two date orders, kept apart (review round 2, B4): the order the task's SOURCE documents write their digit dates in,
+# and the order the APPLICATION shows them in. A US vendor's bill (month first) entered in a day-first org's books is
+# both at once. Either may be unknown; values.compare reads each side under its own.
+SIDES = ("source", "app")
+
+
+def answered_order(task_id, side):
+    """The order a person's answer set for this side of the task ({"order", "judgement"}), or None."""
+
+    kept = (_context(task_id).get("answered_date_order") or {}).get(side) if task_id else None
+    if isinstance(kept, dict) and kept.get("order") in DATE_ORDERS and _JUDGEMENT_ID.match(str(kept.get("judgement"))):
+        return kept
+    return None
+
+
+def set_answered_order(task_id, side, order, judgement_id):
+    """Keep a person's answer to "which order" for one side, with the judgement it rests on (C6). False when the
+    answer cannot be kept as theirs (no judgement id: a reply the control plane did not record)."""
+
+    if side not in SIDES or order not in DATE_ORDERS or not valid(task_id):
+        return False
+    if not (isinstance(judgement_id, str) and _JUDGEMENT_ID.match(judgement_id)):
+        return False
+    answers = dict(_context(task_id).get("answered_date_order") or {})
+    answers[side] = {"order": order, "judgement": judgement_id}
+    _keep_context(task_id, answered_date_order=answers)
+    return True
+
+
+def app_date_order(task_id=None):
+    """The order the application shows digit dates in: a person's answer for this task, else what the control plane
+    sent on /request (the org's, C6), else None."""
+
+    task_id = task_id or current()
+    answered = answered_order(task_id, "app")
+    if answered:
+        return answered["order"]
+    return sent_date_order(task_id) if task_id else None
+
+
+def source_date_order(task_id=None):
+    """The order the task's source documents write digit dates in: a person's answer for this task, else the
+    request's own DD/MM or MM/DD marker, else unambiguous dates in the request and its files (_derived_order)."""
+
+    task_id = task_id or current()
+    answered = answered_order(task_id, "source")
+    if answered:
+        return answered["order"]
+    return _derived_order(task_id)
+
+
+def date_order(task_id=None):
+    """The source documents' order (source_date_order): what the ledger and the checks read a document's date by."""
+
+    return source_date_order(task_id)
+
+
+def _derived_order(task_id):
+    """
+    "day" or "month" from the request's own marker, then from the dates in the request and the text of its files that
+    cannot be read the other way (28/09/2026 is day first: binding.date_order), when they all agree; None otherwise.
+    Kept for the task, so the `gui` process that checks a save does not read the files again.
+    """
+
+    import hashlib
+
+    request = current_request() if not task_id or task_id == current() else ""
+    if not request:
+        return None
+    # Kept by the request it was read from, so a task id used again (a test's, a resumed task's) never reads another
+    # request's order.
+    key = (task_id, hashlib.sha256(request.encode("utf-8", "replace")).hexdigest()[:16])
+    if key in _derived:
+        return _derived[key]
+    kept = _context(task_id).get("derived_date_order") if task_id else None
+    if isinstance(kept, dict) and kept.get("request") == key[1] and kept.get("order") in DATE_ORDERS + ("none",):
+        _derived[key] = None if kept["order"] == "none" else kept["order"]
+        return _derived[key]
+    order = request_date_marker(request)
+    if order is None:
+        from decurix_agent import attachments, binding
+        files = current_files() if task_id and task_id == current() else []
+        order = binding.date_order([attachments.text(request)] + _files_text(files or attachments.files(request)))
+    _derived[key] = order
+    if task_id:
+        _keep_context(task_id, derived_date_order={"request": key[1], "order": order or "none"})
+    return order
+
+
+# ============================================================
+# The date order a save waits on (review round 2, B3)
+#
+# When a save cannot compare a date - a digit date whose day and month could be either way, and no order known for its
+# side - the save waits and the person is asked, with both readings. The question is kept for the task here. It goes
+# out as a question of its own, never added to another (messaging.ask_for_query sends it in place of the engine's next
+# question), and only the reply to that very query - its id is kept with the question - may answer it, by one option's
+# number, backed by the reply's judgement (watchers). A reply to any other question, numbered choices or not, answers
+# nothing here (review round 3, R3). A task that ends with it unanswered is not checked (messaging.write_final_reply).
+# Typing the source's own digits into the application and letting it choose is not an answer: the application's side
+# is then the one asked about.
+# ============================================================
+
+def ask_date_order(task_id, side, value):
+    """Keep the question "which order is <value> in" for one side of the task (a save waits on it). Its readings come
+    from the value. None when there is nothing to ask (the value is not ambiguous)."""
+
+    from decurix_agent import values
+    found = values.readings(value)
+    if side not in SIDES or len(found) != 2 or not valid(task_id):
+        return None
+    question = {"side": side, "value": " ".join(str(value).split())[:40],
+                "options": {"1": "day", "2": "month"},
+                "readings": {order: values.spoken(day) for order, day in found.items()}}
+    current_q = _context(task_id).get("date_question")
+    if isinstance(current_q, dict) and current_q.get("side") == side and current_q.get("value") == question["value"]:
+        return current_q
+    _keep_context(task_id, date_question=question)
+    return question
+
+
+def date_question(task_id=None):
+    """The date-order question a save of the task waits on, or None."""
+
+    found = _context(task_id or current()).get("date_question") if (task_id or current()) else None
+    return found if isinstance(found, dict) and found.get("side") in SIDES else None
+
+
+def date_question_text(question):
+    """The question as the person reads it: both readings, each with the number that picks it."""
+
+    where = "the document" if question["side"] == "source" else "the application"
+    r = question["readings"]
+    return (f"Before I save: {where} writes the date {question['value']}, which can be read two ways. Reply 1 if it is "
+            f"{r['day']} (day first), or 2 if it is {r['month']} (month first).")
+
+
+def mark_date_asked(task_id, query_id):
+    """The date question went out as the query `query_id` (messaging.ask_for_query): only its reply answers it."""
+
+    question = date_question(task_id)
+    if question and isinstance(query_id, str) and query_id:
+        _keep_context(task_id, date_question=dict(question, query_id=query_id))
+
+
+def unmark_date_asked(task_id):
+    """The reply to the date question picked neither reading: it is still open, and goes out again when next asked."""
+
+    question = date_question(task_id)
+    if question:
+        _keep_context(task_id, date_question={k: v for k, v in question.items() if k != "query_id"})
+
+
+def date_query_answered(task_id, query_id):
+    """Whether `query_id` - the query a reply answers - is the one the date question went out as."""
+
+    question = date_question(task_id)
+    return bool(question and question.get("query_id") and query_id and question["query_id"] == query_id)
+
+
+def take_date_answer(task_id, reply, judgement_id=None, query_id=None):
+    """
+    The person's reply to the date-order question, taken when it is the reply to that question's own query (`query_id`,
+    the query the reply answers) and its whole text is one option's number: that side's order is kept with the reply's
+    judgement, and the question is settled. Anything else is not taken (the question stays). Returns the order taken,
+    or None.
+    """
+
+    question = date_question(task_id)
+    if not question or not date_query_answered(task_id, query_id):
+        return None
+    choice = " ".join(str(reply or "").split()).strip(" .")
+    order = question["options"].get(choice)
+    if not order:
+        return None
+    if not set_answered_order(task_id, question["side"], order,
+                              judgement_id if judgement_id is not None else reply_judgement(task_id)):
+        return None
+    _keep_context(task_id, date_question=None)
+    return order

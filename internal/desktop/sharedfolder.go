@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 	"github.com/docker/docker/api/types/mount"
 )
 
@@ -16,8 +17,8 @@ import (
 // at a time; with it the worker computes with its own tools and the person's apps open the same files.
 //
 // It is a bind mount of that folder - nothing else on the computer is reachable, no new HTTP route is added - and it is
-// read-write. The mount is at SharedMountPoint, outside $HOME: the base image's startup runs `chown -R $UID $HOME` on
-// every start, which would walk into a folder of the person's own files. The agent links ~/PC to the mount.
+// read-write. The mount is at SharedMountPoint, outside $HOME, so nothing that ever walks the home folder (a recursive
+// chown, a backup of the home) walks into the person's own files. The agent links ~/PC to the mount.
 
 const (
 	// SharedMountPoint is where the shared folder is mounted in the desktop.
@@ -52,7 +53,11 @@ var sharedFS = struct {
 	EvalSymlinks func(string) (string, error)
 	CDrives      func() []string
 	Home         func() (string, error)
-}{os.Stat, filepath.EvalSymlinks, getWindowsCDriveCandidates, os.UserHomeDir}
+	DataDir      func() string
+}{os.Stat, filepath.EvalSymlinks, getWindowsCDriveCandidates, os.UserHomeDir, sqlitedb.DataDir}
+
+// sharedShortName is a Windows 8.3 short name ("PROGRA~1"): it stands for a folder whose real name was never checked.
+var sharedShortName = regexp.MustCompile(`~[0-9]`)
 
 var (
 	sharedWindowsPath = regexp.MustCompile(`^([A-Za-z]):(?:[\\/]|$)`)
@@ -77,6 +82,9 @@ var (
 		"appdata": true, "application data": true, "local settings": true, ".ssh": true, ".aws": true, ".azure": true,
 		".gnupg": true, ".kube": true, ".docker": true, ".config": true, ".claude": true, ".gcloud": true,
 		".mozilla": true, ".password-store": true,
+		// Where an operating system keeps a user's application data, keyrings and sessions (B-04): macOS's Library,
+		// the XDG data and cache folders, NSS's certificate store, and snap's per-app homes.
+		"library": true, ".local": true, ".cache": true, ".pki": true, "snap": true,
 	}
 )
 
@@ -95,6 +103,10 @@ func ParseSharedFolder(raw string) (*SharedFolder, error) {
 	}
 	if strings.HasPrefix(raw, `\\`) || (strings.HasPrefix(raw, "//") && !strings.HasPrefix(raw, "///")) {
 		return nil, fmt.Errorf("a network folder cannot be shared: choose a folder on this computer")
+	}
+	// A short name hides the real one from every check below (B-04); the person writes the folder's full name.
+	if sharedShortName.MatchString(raw) {
+		return nil, fmt.Errorf("write the shared folder's full name, not a short name with ~ in it")
 	}
 
 	switch {
@@ -176,6 +188,9 @@ func parseSharedWindows(raw, drive, rest string) (*SharedFolder, error) {
 	if err := sharedNotALink(found, host); err != nil {
 		return nil, err
 	}
+	if err := sharedNotDataDir(found, host); err != nil {
+		return nil, err
+	}
 	return &SharedFolder{Host: host, Source: source}, nil
 }
 
@@ -212,6 +227,9 @@ func parseSharedPosix(raw string) (*SharedFolder, error) {
 	if err := sharedNotALink(filepath.FromSlash(clean), clean); err != nil {
 		return nil, err
 	}
+	if err := sharedNotDataDir(filepath.FromSlash(clean), clean); err != nil {
+		return nil, err
+	}
 	return &SharedFolder{Host: clean, Source: clean}, nil
 }
 
@@ -228,6 +246,35 @@ func sharedNotALink(path, shown string) error {
 	}
 	if !same {
 		return fmt.Errorf("%s is a link to another folder: share the real folder", shown)
+	}
+	return nil
+}
+
+// sharedNotDataDir refuses a folder that is, holds, or is inside the control plane's own data folder: it holds the key
+// every desktop's tokens and gate key are made from (B-04). Both are compared resolved, without regard to case where
+// the file system ignores it (Windows, and C: seen through WSL).
+func sharedNotDataDir(path, shown string) error {
+	data := sharedFS.DataDir()
+	if data == "" {
+		return nil
+	}
+	resolve := func(p string) string {
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		if real, err := sharedFS.EvalSymlinks(p); err == nil {
+			p = real
+		}
+		p = filepath.ToSlash(filepath.Clean(p))
+		// Windows and macOS (APFS by default) do not tell names apart by case, nor does a WSL /mnt/ path (RW1-D).
+		if runtime.GOOS == "windows" || runtime.GOOS == "darwin" || strings.HasPrefix(strings.ToLower(p), "/mnt/") {
+			p = strings.ToLower(p)
+		}
+		return strings.TrimRight(p, "/") + "/"
+	}
+	folder, dataDir := resolve(path), resolve(data)
+	if strings.HasPrefix(folder, dataDir) || strings.HasPrefix(dataDir, folder) {
+		return fmt.Errorf("%s holds Decurix's own data folder (or is inside it), which no worker may see: choose another folder", shown)
 	}
 	return nil
 }

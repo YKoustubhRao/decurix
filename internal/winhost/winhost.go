@@ -150,9 +150,10 @@ func (r resolvedProgram) line() string {
 
 // startCall is a Start in progress, so a second request for the same app waits for it instead of launching another.
 type startCall struct {
-	done chan struct{}
-	s    *Session
-	err  error
+	done   chan struct{}
+	target Target
+	s      *Session
+	err    error
 }
 
 // NewManager returns a Manager that runs its helper processes through start.
@@ -308,8 +309,11 @@ func (m *Manager) Warm() {
 	}()
 }
 
+// errSessionTaken is Start's answer for a session id already running a different app.
+var errSessionTaken = errors.New("another app is already running under this session; open it again from its own icon")
+
 // Start launches an app on its own private desktop under session id and returns once its window has shown, or joins the
-// session already running under that id.
+// session already running that same app under that id (never one running another: errSessionTaken).
 func (m *Manager) Start(ctx context.Context, id, target, args string) (*Session, error) {
 	if !carriable(Target{target, args}) {
 		return nil, errors.New("invalid application to start")
@@ -321,6 +325,12 @@ func (m *Manager) Start(ctx context.Context, id, target, args string) (*Session,
 		// gone, since both would be on the same private desktop.
 		old, ok := m.sessions[id]
 		if ok && old.Alive() && !old.ending() {
+			// A session id names one app: one under the same id running something else is never joined - two VMs, or
+			// two apps, would share one private desktop and one profile, and stopping one would close the other (B-19).
+			if old.target != (Target{target, args}) {
+				m.mu.Unlock()
+				return nil, errSessionTaken
+			}
 			old.Touch()
 			m.mu.Unlock()
 			return old, nil
@@ -342,6 +352,9 @@ func (m *Manager) Start(ctx context.Context, id, target, args string) (*Session,
 	// A viewer that loads twice, or two windows opened at once, must not launch the app twice on one desktop.
 	if c, ok := m.starting[id]; ok {
 		m.mu.Unlock()
+		if c.target != (Target{target, args}) {
+			return nil, errSessionTaken
+		}
 		select {
 		case <-c.done:
 			return c.s, c.err
@@ -349,7 +362,7 @@ func (m *Manager) Start(ctx context.Context, id, target, args string) (*Session,
 			return nil, ctx.Err()
 		}
 	}
-	c := &startCall{done: make(chan struct{})}
+	c := &startCall{done: make(chan struct{}), target: Target{target, args}}
 	m.starting[id] = c
 	m.mu.Unlock()
 
@@ -375,6 +388,7 @@ func (m *Manager) launch(ctx context.Context, id, target, args string) (*Session
 		return nil, err
 	}
 	s.id = id
+	s.target = Target{target, args}
 	name := desktopName(id)
 	for _, line := range []string{"desktop " + name, "viewers 1"} {
 		if resp, err := s.Do(line); err != nil || !strings.HasPrefix(resp, "OK") {
@@ -769,6 +783,9 @@ type Session struct {
 
 	// The last small picture the helper made (see Picture).
 	thumbSent []byte
+
+	// target is the app this session was started for (Start never joins it for another).
+	target Target
 
 	// hostPID is the helper's own process on the host and appPID the app it launched (0 when not known); reap is the
 	// manager's Reap (as reaper), called by Stop with them.

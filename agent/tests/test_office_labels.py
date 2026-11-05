@@ -4,6 +4,9 @@ import os
 import tempfile
 import unittest
 
+from needs import require
+
+require("openpyxl")  # every test here reads or writes workbooks
 import openpyxl
 
 from decurix_agent.tools import office

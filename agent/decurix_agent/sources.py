@@ -31,7 +31,6 @@ BALANCE_WORK = re.compile(r"\breconcil\w*|\b(?:closing|opening)\s+balance|\bbala
 INPUT_KINDS = {".csv", ".tsv", ".xlsx", ".xlsm", ".txt"}
 NAMED_FILE = re.compile(r"\b[\w][\w.-]*\.(?:csv|tsv|xlsx|xlsm|txt)\b", re.I)
 _STOP = {"the", "our", "a", "an", "of", "as", "per", "my", "their", "its", "and", "file", "sheet"}
-TOLERANCE = Decimal("0.01")
 MAX_ROWS = 20000
 
 
@@ -88,9 +87,11 @@ def _rows(path):
 def stated(path):
     """
     What an input file plainly states: {"opening": (value, where), "closing": (value, where), "totals": [(value,
-    where)]}, each absent when the file does not state it. A Balance column's last value is its closing balance (its
-    first is not an opening balance: that comes before the first line); a row labelled Opening/Closing balance or Total
-    states that figure.
+    where)], "balances": [(value, row) of every line of its Balance column]}, each absent when the file does not state it. A Balance
+    column's last value is shown as its closing balance (its first is not an opening balance: that comes before the
+    first line); a row labelled Opening/Closing balance or Total states that figure. These are readings for the judge:
+    an export listed newest first ends on its oldest line, and a "Dr" balance is a positive debit in a cash book, so
+    neither convention may fail work on its own (review 2026-11-03, E-13).
     """
 
     out = {"totals": []}
@@ -118,6 +119,7 @@ def stated(path):
             value = _number(cells[balance_col])
             if value is not None:
                 last = (value, f"the last line of its {rows_header(rows, balance_col, n)} column, row {n}")
+                out.setdefault("balances", []).append((value, n))
         label = next((t for t in texts if re.search(r"[a-z]", t)), "")
         numbers = [v for v in (_number(c) for c in cells) if v is not None]
         if not numbers:
@@ -223,11 +225,33 @@ def _per_source_lines(path):
     return out
 
 
-def mismatches(request, made, found_inputs=None):
+def _equal(value, expected):
+    """The same figure, exactly: every digit counts (W0.3) - a one-paisa tolerance let a miscopy of the last digit pass
+    as the source's own figure (review round 5, N2)."""
+
+    return value == expected
+
+
+def _same_figure(value, expected):
+    """The same figure whatever sign either side writes it with, exactly."""
+
+    return abs(value) == abs(expected)
+
+
+def mismatches(request, made, found_inputs=None, compared=None, unbacked=None):
     """
-    Sentences for each figure a made workbook presents as a source's own that the source contradicts: the label names
-    exactly one input file, that file states the figure, and the two differ. [] otherwise (decided only where it is
-    precise; the judge sees the rest as evidence).
+    Sentences for each figure a made workbook presents as a source's own that is not exactly what the source states
+    for it (the label names exactly one input file, and that file states figures of that kind). Each says the exact
+    fact: the figure equals the source's with the opposite sign; or it equals another line of the source's Balance
+    column, not its last one; or the source holds it nowhere. [] when it is exact. EVIDENCE for the judge and the
+    person, never a verdict by itself: a sign is a book's convention (a cash book's "15,000.00 Dr" is a positive
+    debit), and an export listed newest first ends on its oldest line - both refused right work while this blocked
+    (review 2026-11-03, E-13). The difference itself is still shown, whichever way it falls (review round 2).
+    `compared`, a list, gets one entry for each figure actually compared with its source - the comparison that could
+    have failed, which the `code` basis of trust rests on (review round 4, R2). `unbacked`, a list, gets one for each
+    figure given as one input's own of a kind that input does not state (a "Closing balance as per bills" where the
+    bills state none): not compared, and it holds the `code` basis back - still evidence, never a failure of the work
+    (review round 5, N1).
     """
 
     books = [p for p in made if Path(str(p)).suffix.lower() in (".xlsx", ".xlsm")]
@@ -247,19 +271,47 @@ def mismatches(request, made, found_inputs=None):
         candidates = [i for i in known if _matches(source, i["about"])]
         if len(candidates) != 1:
             continue
+        name = candidates[0]["name"]
         facts = stated(candidates[0]["path"])
+        head = f"{book}: {where} \"{label}\" is {_money(value)}"
         if what == "total":
-            if not facts["totals"] or any(abs(value - t) <= TOLERANCE for t, _ in facts["totals"]):
+            if not facts["totals"]:
+                if unbacked is not None:
+                    unbacked.append(f"{book}: {where}")
+                continue
+            if compared is not None:
+                compared.append(f"{book}: {where}")
+            if any(_equal(value, t) for t, _ in facts["totals"]):
                 continue
             expected, said = facts["totals"][-1]
+            flipped = next(((t, w) for t, w in facts["totals"] if _same_figure(value, t)), None)
+            if flipped:
+                out.append(f"{head}, which is {name}'s figure {_money(flipped[0])} ({flipped[1]}) with the opposite "
+                           "sign - check which sign the result should carry")
+                continue
         else:
             if kind not in facts:
+                if unbacked is not None:
+                    unbacked.append(f"{book}: {where}")
                 continue
+            if compared is not None:
+                compared.append(f"{book}: {where}")
             expected, said = facts[kind]
-            if abs(value - expected) <= TOLERANCE:
+            if _equal(value, expected):
                 continue
-        out.append(f"{book}: {where} \"{label}\" is {_money(value)}, but {candidates[0]['name']} itself states "
-                   f"{_money(expected)} ({said})")
+            if _same_figure(value, expected):
+                out.append(f"{head}, which is {name}'s {_money(expected)} ({said}) with the opposite sign - check "
+                           "which sign the result should carry (a Dr or Cr balance, an overdraft)")
+                continue
+            other = next(((b, n) for b, n in facts.get("balances", ()) if _equal(value, b) or _same_figure(value, b)),
+                         None)
+            if other:
+                sign = "" if _equal(value, other[0]) else " with the opposite sign"
+                out.append(f"{head}, which equals row {other[1]}'s balance in {name}{sign}, not its {said} "
+                           f"({_money(expected)}) - check which line is the {kind} balance (an export listed newest "
+                           "first ends on its oldest line)")
+                continue
+        out.append(f"{head}, but {name} itself states {_money(expected)} ({said})")
     return out
 
 

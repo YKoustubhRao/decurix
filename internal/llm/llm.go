@@ -136,27 +136,58 @@ func (c *Client) chatURL() string {
 // rate limit (429): passed through to the desktop, which waits that long.
 var RetryHeaders = []string{"Retry-After", "Retry-After-Ms", "X-Ratelimit-Reset-Tokens", "X-Ratelimit-Reset-Requests"}
 
+// What one proxied call may ask of a provider, and read back (C-20): one answer, sent whole (not streamed), without
+// log-probabilities, within a token budget well above what any harness asks for; an answer longer than
+// maxAnswerBytes is an error, never handed on cut.
+const (
+	maxAnswerTokens = 32768
+	maxAnswerBytes  = 32 << 20
+)
+
+// ErrAnswerTooLong is an upstream answer longer than maxAnswerBytes.
+var ErrAnswerTooLong = errors.New("llm: the provider's answer was too long to pass on whole")
+
+// bounded is req with the fields that multiply or stream an answer taken out, and its token budget capped.
+func bounded(req map[string]any) {
+	for _, field := range []string{"stream", "stream_options", "n", "logprobs", "top_logprobs"} {
+		delete(req, field)
+	}
+	for _, field := range []string{"max_tokens", "max_completion_tokens"} {
+		if v, ok := req[field].(float64); ok && v > maxAnswerTokens {
+			req[field] = maxAnswerTokens
+		}
+	}
+}
+
 // Chat forwards one OpenAI-shaped chat request body, with its "model" field
-// resolved (resolve), and returns the upstream status, body and the headers
-// in RetryHeaders it sent, unchanged.
+// resolved (resolve) and its size bounded (bounded), and returns the upstream
+// status, body and the headers in RetryHeaders it sent, unchanged.
 func (c *Client) Chat(ctx context.Context, body []byte) (int, []byte, http.Header, error) {
+	r, err := c.chat(ctx, body)
+	return r.Status, r.Body, r.Retry, err
+}
+
+// chat is Chat, also saying which deployment the request was resolved to ("" when it was not resolved).
+func (c *Client) chat(ctx context.Context, body []byte) (ChatResult, error) {
 	if !c.Configured() {
-		return 0, nil, nil, ErrNotConfigured
+		return ChatResult{}, ErrNotConfigured
 	}
 
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
-		return 0, nil, nil, fmt.Errorf("llm: request is not a JSON object: %w", err)
+		return ChatResult{}, fmt.Errorf("llm: request is not a JSON object: %w", err)
 	}
 
 	asked, _ := req["model"].(string)
 
 	model, err := resolve(asked, c.Model, c.FastModel)
 	if err != nil {
-		return 0, nil, nil, err
+		return ChatResult{}, err
 	}
+	res := ChatResult{Deployment: model}
 
 	req["model"] = model
+	bounded(req)
 
 	// Reasoning deployments reject the legacy token budget and sampling knobs.
 	// Normalize at the provider boundary for every harness using this proxy.
@@ -174,12 +205,12 @@ func (c *Client) Chat(ctx context.Context, body []byte) (int, []byte, http.Heade
 
 	out, err := json.Marshal(req)
 	if err != nil {
-		return 0, nil, nil, err
+		return res, err
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.chatURL(), bytes.NewReader(out))
 	if err != nil {
-		return 0, nil, nil, err
+		return res, err
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -191,16 +222,20 @@ func (c *Client) Chat(ctx context.Context, body []byte) (int, []byte, http.Heade
 
 	resp, err := c.HTTP.Do(httpReq)
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("llm: %w", err)
+		return res, fmt.Errorf("llm: %w", err)
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswerBytes+1))
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("llm: reading the answer: %w", err)
+		return res, fmt.Errorf("llm: reading the answer: %w", err)
+	}
+	if len(data) > maxAnswerBytes {
+		return res, ErrAnswerTooLong
 	}
 
-	return resp.StatusCode, data, copyHeaders(resp.Header, RetryHeaders), nil
+	res.Status, res.Body, res.Retry = resp.StatusCode, data, copyHeaders(resp.Header, RetryHeaders)
+	return res, nil
 }
 
 // copyHeaders is the headers of from named in names that are set.

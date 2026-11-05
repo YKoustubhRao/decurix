@@ -97,44 +97,85 @@ func (m *Manager) BuildImages(ctx context.Context, out io.Writer, onlyMissing bo
 	_ = m.client.ImageTag(ctx, desktopImageBasic, desktopImageDeveloper)
 	_ = m.client.ImageTag(ctx, desktopImageBasic, desktopImageAI)
 
+	// Prune what the builds superseded - only after every build asked for succeeded (a failed one keeps all it had),
+	// and after the desktop build too, the one the app's every start runs (resource plan P1 #10, review RES-CP-1).
+	// The current builder stages are tagged (buildImage), so their cache is kept; only older copies go.
+	if reclaimed, err := m.PruneDanglingResources(ctx); err == nil && reclaimed > 0 {
+		fmt.Fprintf(out, "==> Pruned superseded build layers (reclaimed %d MB)\n", reclaimed/(1024*1024))
+	}
+
 	if which == "desktop" {
 		return nil
 	}
 
-	// Ensure the shared tools volume is populated from the tools image.
-	if err := m.PopulateToolsVolume(ctx); err != nil {
+	// Ensure the shared tools volume is populated from the tools image, under the tools lock so it never overlaps a
+	// desktop creation's populate (RW1-G-04).
+	if err := m.populateToolsLocked(ctx); err != nil {
 		fmt.Fprintf(out, "==> warning: populate tools volume: %v\n", err)
-	}
-
-	// Prune dangling build layers left behind by image rebuilds to reclaim disk space.
-	if reclaimed, err := m.PruneDanglingResources(ctx); err == nil && reclaimed > 0 {
-		fmt.Fprintf(out, "==> Pruned dangling build layers (reclaimed %d MB)\n", reclaimed/(1024*1024))
 	}
 
 	return nil
 }
 
-// PruneDanglingResources prunes untagged/dangling Docker image layers left behind
-// by builds, reclaiming disk space without affecting any active desktop images.
+// PruneDanglingResources prunes the untagged image layers Decurix's own builds left behind, reclaiming disk space
+// without affecting any active desktop image - and never another project's dangling images on a Docker engine Decurix
+// shares (L-02): only images carrying contextLabel, which every desktop and tools image Decurix builds has.
 func (m *Manager) PruneDanglingResources(ctx context.Context) (uint64, error) {
 
-	pruneFilters := filters.NewArgs()
-	pruneFilters.Add("dangling", "true")
-
-	report, err := m.client.ImagesPrune(ctx, pruneFilters)
-	if err != nil {
-		return 0, fmt.Errorf("prune dangling images: %w", err)
+	var reclaimed uint64
+	// The dangling images of Decurix's own builds, and of their builder stages (a Go toolchain, a compiler suite:
+	// gigabytes the final images do not carry), each by its own label. The current stages are tagged
+	// (stageTag), so only superseded copies are dangling: the next build still has its cache.
+	for _, f := range []filters.Args{pruneFilter(), stagePruneFilter()} {
+		report, err := m.client.ImagesPrune(ctx, f)
+		if err != nil {
+			return reclaimed, fmt.Errorf("prune dangling images: %w", err)
+		}
+		reclaimed += report.SpaceReclaimed
 	}
-
-	return report.SpaceReclaimed, nil
+	return reclaimed, nil
 }
 
-// buildImage streams the embedded build context to the daemon and reports the
-// resulting build output.
+// buildStageLabel marks the images a builder stage of Decurix's Dockerfiles leaves (LABEL in the stage).
+const buildStageLabel = "decurix.build-stage"
+
+// stagePruneFilter selects the dangling images Decurix's builder stages left behind.
+func stagePruneFilter() filters.Args {
+	f := filters.NewArgs()
+	f.Add("dangling", "true")
+	f.Add("label", buildStageLabel)
+	return f
+}
+
+// buildImage builds one image from the embedded build context: first each builder stage of its Dockerfile, tagged
+// (stageTag) so the stage's cache is a tagged image and never pruned as dangling, then the image itself.
 func (m *Manager) buildImage(ctx context.Context, out io.Writer, img desktopImage, hash string) error {
 	if _, err := fs.Stat(decurix.DesktopBuildContext, decurix.TheBotSource); err != nil {
 		return errNoTheBotSource
 	}
+	dockerfile, err := contextDockerfile(decurix.DesktopBuildContext, img.Dockerfile)
+	if err != nil {
+		return err
+	}
+	for _, stage := range builderStages(dockerfile) {
+		fmt.Fprintf(out, "==> Building stage %s of %s\n", stage, img.Tag)
+		if err := m.buildContext(ctx, out, img.Dockerfile, build.ImageBuildOptions{
+			Target: stage,
+			Tags:   []string{stageTag(img.Tag, stage)},
+			Labels: map[string]string{buildStageLabel: "1"},
+		}); err != nil {
+			return fmt.Errorf("stage %s: %w", stage, err)
+		}
+	}
+	return m.buildContext(ctx, out, img.Dockerfile, build.ImageBuildOptions{
+		Tags:   []string{img.Tag},
+		Labels: map[string]string{contextLabel: hash},
+	})
+}
+
+// buildContext streams the embedded build context to the daemon for one build (opts' target, tags and labels) and
+// reports its output.
+func (m *Manager) buildContext(ctx context.Context, out io.Writer, dockerfile string, opts build.ImageBuildOptions) error {
 
 	// The daemon consumes the context as it builds, so produce the tar on a
 	// pipe rather than buffering the whole agent tree in memory.
@@ -146,13 +187,11 @@ func (m *Manager) buildImage(ctx context.Context, out io.Writer, img desktopImag
 
 	defer reader.Close()
 
-	resp, err := m.client.ImageBuild(ctx, reader, build.ImageBuildOptions{
-		Platform:   "linux/amd64",
-		Tags:       []string{img.Tag},
-		Dockerfile: img.Dockerfile,
-		Remove:     true,
-		Labels:     map[string]string{contextLabel: hash},
-	})
+	// Every intermediate container goes, a failed step's too: the daemon's legacy builder (what an API build without
+	// BuildKit is) keeps a failed step's container with Remove alone, and a PyPI timeout left one behind (live,
+	// 2026-11-05). ForceRemove is the builder's --force-rm.
+	opts.Platform, opts.Dockerfile, opts.Remove, opts.ForceRemove = "linux/amd64", dockerfile, true, true
+	resp, err := m.client.ImageBuild(ctx, reader, opts)
 	if err != nil {
 		return err
 	}
@@ -219,6 +258,49 @@ var errNoTheBotSource = errors.New("this decurix was built without TheBot's sour
 // tarBuildContext tars every file of fsys into w under its own path, except
 // decurix.TheBotSource, whose files are written under decurix.TheBotDir -
 // where they are in the repository, and where the Dockerfiles COPY them from.
+// contextDockerfile is a Dockerfile as the build context carries it (tarBuildContext): with the prebuilt soul in
+// place of its TheBot build stage when there is one.
+func contextDockerfile(fsys fs.FS, path string) (string, error) {
+	data, err := fs.ReadFile(fsys, path)
+	if err != nil {
+		return "", err
+	}
+	if _, statErr := fs.Stat(fsys, decurix.TheBotSoul); statErr == nil {
+		return prebuiltSoul(string(data)), nil
+	}
+	return string(data), nil
+}
+
+// builderStages is the names of a Dockerfile's named stages but its last (the image): the ones built and tagged on
+// their own (buildImage).
+func builderStages(dockerfile string) []string {
+	var stages []string
+	var last string
+	for _, line := range strings.Split(dockerfile, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || !strings.EqualFold(fields[0], "FROM") {
+			continue
+		}
+		if last != "" {
+			stages = append(stages, last)
+		}
+		last = ""
+		if len(fields) == 4 && strings.EqualFold(fields[2], "AS") {
+			last = fields[3]
+		}
+	}
+	return stages
+}
+
+// stageTag is the tag a builder stage of image is kept under: decurix-build-stage:<image>-<stage>.
+func stageTag(image, stage string) string {
+	name := strings.NewReplacer(":", "-", "/", "-").Replace(image) + "-" + stage
+	if len(name) > 120 {
+		name = name[:120]
+	}
+	return "decurix-build-stage:" + name
+}
+
 func tarBuildContext(w io.Writer, fsys fs.FS) error {
 	tw := tar.NewWriter(w)
 
@@ -347,13 +429,27 @@ func unpackInto(tw *tar.Writer, archive []byte, dir string) error {
 }
 
 // streamBuildOutput decodes the daemon's JSON build stream, echoing progress
-// to out and surfacing any build error as a Go error.
+// to out and surfacing any build error as a Go error. A base image the build
+// pulls is shown too: each layer's own events (a download or pull complete),
+// and, at most every pullProgressEvery while bytes keep coming, how much has
+// come. Without them a large pull printed nothing for many minutes, which the
+// app's stall watchdog (desktop/electron/build-watchdog.js) must tell from a
+// download that stopped.
 func streamBuildOutput(out io.Writer, body io.Reader) error {
 	decoder := json.NewDecoder(body)
+	layers := map[string][2]int64{} // layer id -> bytes come, bytes in all
+	var shown int64 = -1
+	lastShown := buildClock()
 
 	for {
 		var msg struct {
-			Stream      string `json:"stream"`
+			Stream         string `json:"stream"`
+			Status         string `json:"status"`
+			ID             string `json:"id"`
+			ProgressDetail struct {
+				Current int64 `json:"current"`
+				Total   int64 `json:"total"`
+			} `json:"progressDetail"`
 			Error       string `json:"error"`
 			ErrorDetail struct {
 				Message string `json:"message"`
@@ -378,5 +474,41 @@ func streamBuildOutput(out io.Writer, body io.Reader) error {
 		if msg.Stream != "" {
 			fmt.Fprint(out, msg.Stream)
 		}
+
+		if msg.Status == "" {
+			continue
+		}
+		if msg.ProgressDetail.Total > 0 && msg.ID != "" {
+			layers[msg.ID] = [2]int64{msg.ProgressDetail.Current, msg.ProgressDetail.Total}
+			var come, all int64
+			for _, l := range layers {
+				come, all = come+l[0], all+l[1]
+			}
+			if now := buildClock(); come != shown && now.Sub(lastShown) >= pullProgressEvery {
+				fmt.Fprintf(out, "Pulling the base image: %d of %d MB\n", come>>20, all>>20)
+				shown, lastShown = come, now
+			}
+			continue
+		}
+		// A layer's or the pull's own event, without a progress bar: one line each.
+		if msg.ID != "" {
+			fmt.Fprintf(out, "%s: %s\n", msg.ID, msg.Status)
+		} else {
+			fmt.Fprintln(out, msg.Status)
+		}
 	}
+}
+
+// pullProgressEvery is how often, at most, a pull's bytes are reported while they keep coming.
+var pullProgressEvery = 30 * time.Second
+
+// buildClock is the clock streamBuildOutput reports a pull's progress by (a test stands one in).
+var buildClock = time.Now
+
+// pruneFilter selects what PruneDanglingResources removes: dangling images Decurix built.
+func pruneFilter() filters.Args {
+	f := filters.NewArgs()
+	f.Add("dangling", "true")
+	f.Add("label", contextLabel)
+	return f
 }

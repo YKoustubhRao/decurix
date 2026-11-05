@@ -1,8 +1,22 @@
-"""Independent PM audit of exported live-browser report/recording/skill lineage."""
+"""Consistency check of the live-browser runner's exported report against the
+scenario table and the files on disk (recordings, skills, PNG frames).
+
+It is not an independent audit of the results: "passed", "ui_verified",
+"outcome" and "actual" are the runner's own claims, read back here and
+checked to agree with each other and with the scenarios. Only the
+recordings' and skills' structure and the screenshots' existence (PNG
+headers) are checked from evidence the runner did not summarise.
+Re-deriving each result from the artifacts (opening the saved file, reading
+the screenshot) is the follow-up that would make it independent."""
 import argparse
 import json
 from pathlib import Path
 from transfer import SCENARIOS
+
+# The checks here are assert statements. Under python -O they all vanish, and this would report a pass it never
+# checked (review 2026-11-02): it refuses to run that way.
+if not __debug__:
+    raise SystemExit("run this without -O: its checks are assert statements, which -O removes")
 
 
 def audit(root):
@@ -53,7 +67,8 @@ def audit(root):
             assert path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"), path
             variants_checked += 1
     assert variants_checked == 75 and report["passed"] is True
-    return {"mode":"independent_exported_live_browser_audit", "passed":True, "families":25,
+    return {"mode":"consistency_check_of_runner_report", "passed":True, "families":25,
+            "results_rederived": False,
             "variants":variants_checked, "recordings":25, "matched_ready_skills":25,
             "recording_frames_checked":len(frames_checked), "screenshots_checked":75,
             "elapsed_live_seconds":report["elapsed_seconds"],

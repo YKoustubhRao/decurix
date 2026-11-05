@@ -484,6 +484,8 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
   color:var(--text-2)
 }
 .composer-hint .offline{margin-left:auto;color:var(--danger);font-weight:550;display:none}
+.composer-secret{display:inline-flex;align-items:center;gap:5px;margin-right:12px;cursor:pointer;white-space:nowrap}
+.approval-actions{display:flex;gap:8px;margin:-4px 0 12px 44px}
 .composer-hint .offline.on{display:block}
 
 @media (max-width:720px){
@@ -567,6 +569,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
           </button>
         </div>
         <div class="composer-hint">
+          <label class="composer-secret" title="It reaches the desktop as typed, and is kept nowhere as typed: the chat and the records show [secret withheld]"><input type="checkbox" id="chatSecret"> This is a secret</label>
           <span><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line · drop or paste files to attach</span>
           <span class="offline" id="chatOffline">Reconnecting…</span>
         </div>
@@ -864,6 +867,9 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
   var verdictOverrides = {};
 
   function setVerdict(entry, verdict){
+    /* The button may belong to an element kept from an earlier snapshot: act
+       on this entry as the latest snapshot holds it. */
+    entry = lastThread.entries.filter(function(e){ return e.id === entry.id; })[0] || entry;
     var previous = entry.verdict || "";
 
     verdictOverrides[entry.task_id] = verdict;
@@ -1036,6 +1042,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
 
       button.addEventListener("click", function(){
         input.value = text;
+        draftSeenAt = draftSeen(draftSeenAt, text, lastThread && lastThread.entries);
         grow();
         input.focus();
       });
@@ -1050,15 +1057,137 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
 
   /* ---------------- render ---------------- */
 
+  /* The log is redrawn on every step, but an entry that has not changed keeps
+     its element: a steps list someone opened stays open, its screenshots are
+     not loaded again, and the log does not collapse and jump to the top while
+     someone reads further up. The live turn takes its new steps on the end. */
+  var entryEls = new Map();
+  var working = null;
+
+  function entrySig(entry, withVerdict){
+    return JSON.stringify([entry.role, entry.kind, entry.content, entry.steps, entry.files, entry.verdict, entry.task_id, withVerdict]);
+  }
+
+  function keepOpen(from, to){
+    var was = from && from.querySelector("details.steps");
+    var now = to.querySelector("details.steps");
+    if(was && now){ now.open = was.open; }
+  }
+
+  function entryNode(entry, withVerdict){
+    var sig = entrySig(entry, withVerdict);
+    var had = entry.id ? entryEls.get(entry.id) : null;
+
+    if(had && had.sig === sig){
+      var time = had.el.querySelector(".entry-time");
+      if(time){ time.textContent = relativeTime(entry.created_at); }
+      return had.el;
+    }
+
+    var el = entryElement(entry, withVerdict);
+    if(had){ keepOpen(had.el, el); }
+    if(entry.id){ entryEls.set(entry.id, {sig: sig, el: el}); }
+    return el;
+  }
+
+  function workingNode(thread){
+    var keys = thread.steps.map(function(step){ return JSON.stringify(step); });
+    var startedAt = thread.started_at || "";
+
+    var grows = working && working.startedAt === startedAt &&
+      keys.length >= working.keys.length && (working.keys.length > 0 || keys.length === 0) &&
+      working.keys.every(function(key, i){ return key === keys[i]; });
+
+    if(grows){
+      if(keys.length > working.keys.length){
+        var list = working.el.querySelector(".steps-list");
+        var label = working.el.querySelector(".steps > summary span");
+        var follow = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+
+        thread.steps.slice(working.keys.length).forEach(function(step){ list.appendChild(stepElement(step)); });
+        if(label){ label.textContent = keys.length === 1 ? "1 step" : keys.length + " steps"; }
+        if(follow){ list.scrollTop = list.scrollHeight; }
+
+        working.keys = keys;
+      }
+      return working.el;
+    }
+
+    var el = workingElement(thread);
+    if(working){ keepOpen(working.el, el); }
+    working = {el: el, startedAt: startedAt, keys: keys};
+    return el;
+  }
+
+  /* Approve/Deny under the worker's newest approval, bound to its card (note_id) as the dashboard's are: shown only when
+     that approval is the desktop's newest open question and its approval gate worded it. A typed yes is still taken,
+     under draftSeen's rule. */
+  var approvalNote = {id: "", entry: ""};
+  var approvalEl = null;
+
+  function lastAgentEntry(thread){
+    for(var i = thread.entries.length - 1; i >= 0; i--){
+      if(thread.entries[i].role === "agent"){ return thread.entries[i]; }
+    }
+    return null;
+  }
+
+  async function refreshApprovalNote(thread){
+    var last = lastAgentEntry(thread);
+    if(!last || last.kind !== "approval" || thread.running){ approvalNote = {id: "", entry: ""}; return; }
+    if(approvalNote.entry === last.id){ return; }
+    try{
+      var response = await fetch("/api/querynotes", {cache: "no-store"});
+      if(!response.ok){ return; }
+      var notes = await response.json();
+      var mine = (notes || []).filter(function(n){
+        return n.desktop_id === desktopId && (n.kind === "approval" || n.kind === "query");
+      }).sort(function(a, b){ return Date.parse(b.created_at) - Date.parse(a.created_at); });
+      var newest = mine[0];
+      approvalNote = {id: newest && newest.kind === "approval" && newest.gated ? newest.id : "", entry: last.id};
+      render(lastThread);
+    }catch(e){ /* the buttons wait for the next update */ }
+  }
+
+  function approvalActions(thread){
+    var last = lastAgentEntry(thread);
+    if(!last || last.kind !== "approval" || thread.running || !approvalNote.id || approvalNote.entry !== last.id ||
+       pending.length){
+      approvalEl = null;
+      return null;
+    }
+    if(approvalEl && approvalEl.dataset.note === approvalNote.id){ return approvalEl; }
+    var row = node("div", "approval-actions");
+    row.dataset.note = approvalNote.id;
+    [["Approve", "yes"], ["Deny", "no"]].forEach(function(pair){
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn btn-default btn-sm";
+      button.textContent = pair[0];
+      button.addEventListener("click", function(){
+        var note = approvalNote.id;
+        approvalNote = {id: "", entry: approvalNote.entry};
+        send(pair[1], [], null, {noteID: note});
+      });
+      row.appendChild(button);
+    });
+    approvalEl = row;
+    return row;
+  }
+
   function render(thread){
     var stick = atBottom();
-
-    inner.innerHTML = "";
+    var top = log.scrollTop;
 
     if(!thread.entries.length && !thread.running && !pending.length){
-      inner.appendChild(emptyElement());
+      entryEls.clear();
+      working = null;
+      if(!inner.querySelector(".chat-empty")){ inner.replaceChildren(emptyElement()); }
       return;
     }
+
+    var nodes = [];
+    var seen = new Set();
 
     /* One verdict per task, on its latest answer: a retried task answers
        more than once, and a query is not an answer at all. */
@@ -1074,18 +1203,33 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
         entry.verdict = verdictOverrides[entry.task_id];
       }
 
-      inner.appendChild(entryElement(entry, answerFor[entry.task_id] === entry.id));
+      if(entry.id){ seen.add(entry.id); }
+      nodes.push(entryNode(entry, answerFor[entry.task_id] === entry.id));
     });
+
+    entryEls.forEach(function(_, id){ if(!seen.has(id)){ entryEls.delete(id); } });
 
     if(thread.running){
-      inner.appendChild(workingElement(thread));
+      nodes.push(workingNode(thread));
+    }else{
+      working = null;
     }
 
+    var actions = approvalActions(thread);
+    if(actions){ nodes.push(actions); }
+
     pending.forEach(function(item){
-      inner.appendChild(pendingElement(item));
+      nodes.push(pendingElement(item));
     });
 
-    if(stick){ scrollToBottom(); }
+    /* Only what moved is moved: a kept element taken out and put back would
+       lose the focus of a button in it. */
+    nodes.forEach(function(el, i){
+      if(inner.childNodes[i] !== el){ inner.insertBefore(el, inner.childNodes[i] || null); }
+    });
+    while(inner.childNodes.length > nodes.length){ inner.removeChild(inner.lastChild); }
+
+    if(stick){ scrollToBottom(); }else{ log.scrollTop = top; }
   }
 
   /* ---------------- sending ----------------
@@ -1117,6 +1261,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
       edit.addEventListener("click", function(){
         pending.splice(pending.indexOf(item), 1);
         input.value = item.content;
+        draftSeenAt = draftSeen("", item.content, lastThread && lastThread.entries);
         attached.set(item.files);
         grow();
         render(lastThread);
@@ -1163,8 +1308,30 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     });
   }
 
-  function send(text, files, retrying){
-    var item = retrying || {key: ++pendingSeq, content: text, files: files || [], createdAt: new Date().toISOString()};
+  /* seen_at says what was on screen when the person began this reply (W-07): it is frozen at the first keystroke of a
+     draft and cleared when the draft is emptied or sent - never the moment of sending, when an approval posted while
+     they typed could be on screen unread. The control plane binds a typed yes to an approval only when the approval
+     came before it (httpapi replyBinding). A draft begun with nothing on screen counts as having seen nothing. */
+  var NOTHING_SEEN = "1970-01-01T00:00:00Z";
+
+  function newestPosted(entries){
+    return (entries || []).reduce(function(latest, e){
+      return e.created_at && (!latest || Date.parse(e.created_at) > Date.parse(latest)) ? e.created_at : latest;
+    }, "");
+  }
+
+  function draftSeen(current, text, entries){
+    if(!text){ return ""; }
+    return current || newestPosted(entries) || NOTHING_SEEN;
+  }
+
+  var draftSeenAt = "";
+
+  function send(text, files, retrying, options){
+    options = options || {};
+    var item = retrying || {key: ++pendingSeq, content: text, files: files || [], createdAt: new Date().toISOString(),
+                            seenAt: options.noteID ? "" : (draftSeenAt || NOTHING_SEEN), noteID: options.noteID || "",
+                            secret: !!options.secret};
 
     item.state = "sending";
     item.error = "";
@@ -1175,7 +1342,12 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     render(lastThread);
     scrollToBottom();
 
-    Decurix.postFiles("/api/desktops/send", {id: desktopId, content: text}, item.files).then(function(data){
+    /* A button under an approval names its card (note_id); typed words carry when the draft began (draftSeen). */
+    var fields = {id: desktopId, content: text};
+    if(item.noteID){ fields.note_id = item.noteID; }else{ fields.seen_at = item.seenAt; }
+    if(item.secret){ fields.secret = "1"; }
+
+    Decurix.postFiles("/api/desktops/send", fields, item.files).then(function(data){
       if(pending.indexOf(item) === -1){ return; }
 
       item.state = "delivered";
@@ -1216,6 +1388,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     lastThread = thread;
     reconcile(thread);
     render(thread);
+    refreshApprovalNote(thread);
 
     if(thread.running && !elapsedTimer){
       elapsedTimer = setInterval(tickElapsed, 1000);
@@ -1253,13 +1426,13 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     if(pollTimer){ return; }
 
     pollOnce();
-    pollTimer = setInterval(pollOnce, 2000);
+    pollTimer = Decurix.poll(pollOnce, 2000);
   }
 
   function stopPolling(){
     if(!pollTimer){ return; }
 
-    clearInterval(pollTimer);
+    pollTimer.stop();
     pollTimer = null;
   }
 
@@ -1323,6 +1496,10 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
   }
 
   input.addEventListener("input", grow);
+  input.addEventListener("input", function(){
+    draftSeenAt = draftSeen(draftSeenAt, input.value, lastThread && lastThread.entries);
+  });
+  var secretBox = document.getElementById("chatSecret");
 
   input.addEventListener("keydown", function(event){
     if(event.key === "Enter" && !event.shiftKey){
@@ -1338,11 +1515,14 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     var files = attached.files();
     if(!text && !files.length){ return; }
 
+    var secret = secretBox && secretBox.checked;
     input.value = "";
     attached.clear();
     grow();
 
-    send(text, files);
+    send(text, files, null, {secret: secret});
+    draftSeenAt = "";
+    if(secretBox){ secretBox.checked = false; }
 
     input.focus();
   });

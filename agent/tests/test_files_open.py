@@ -1,5 +1,5 @@
 """
-Series 14 P3 on pc3 (2026-10-21): all three workbooks the run handed in were corrupt - the worker's own python script
+Series 14 P3 (2026-10-21): all three workbooks the run handed in were corrupt - the worker's own python script
 rewrote their XML (Decision / Reason columns as shared-string cells) and never registered xl/sharedStrings.xml in the
 workbook's relationships, so openpyxl ("IndexError: list index out of range") and Excel could not open them. The stages
 were reported checked; the stage that broke them handed in another file. Hygiene, certain, blocking: every Office file
@@ -7,6 +7,7 @@ the work hands in opens with a strict reader - the stage's own and every file th
 broken file is broken.
 """
 
+from needs import needs
 import json
 import re
 import tempfile
@@ -18,6 +19,7 @@ import test_long_requests as base  # noqa: F401 - stubs config first
 
 from decurix_agent import produced
 from decurix_agent.tools import office
+import fixture_paths  # noqa: E402 - what may not be on this machine is counted
 
 LIVE_SPEC = Path(r"C:\Users\Administrator\decurix-tests\wide\process\out\P3\20261021-102912\worker\P3_payment_run"
                  r"\outputs\ap_register_spec.json")
@@ -46,6 +48,7 @@ def break_shared_strings(path):
             z.writestr(name, data)
 
 
+@needs("openpyxl")
 class OfficeFilesOpen(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)  # (other file checks of a broken file may leave it open on Windows)
@@ -88,7 +91,7 @@ class OfficeFilesOpen(unittest.TestCase):
         self.assertEqual(unopenable([str(book)]), [])
         self.assertIn("never edit an Office file's XML", office.USAGE)
 
-    @unittest.skipUnless(LIVE_SPEC.is_file(), f"the live spec is not here: {LIVE_SPEC}")
+    @fixture_paths.skip_unless(LIVE_SPEC.is_file(), f"the live spec is not here: {LIVE_SPEC}")
     def test_the_live_spec_round_trips_to_a_workbook_that_opens(self):
         spec = json.loads(LIVE_SPEC.read_text(encoding="utf-8"))
         out = self.dir / "AP_register.xlsx"
@@ -98,6 +101,7 @@ class OfficeFilesOpen(unittest.TestCase):
         self.assertEqual(openpyxl.load_workbook(out).sheetnames, [s["name"] for s in spec["sheets"]])
 
 
+@needs("openpyxl")
 class TheRunsFiles(unittest.TestCase):
     """long_task.files_open: an earlier stage's file a later stage broke fails the later stage (blocking)."""
 

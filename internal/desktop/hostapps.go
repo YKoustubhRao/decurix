@@ -5,6 +5,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,7 +24,6 @@ import (
 	"time"
 
 	"github.com/YKoustubhRao/decurix/internal/winhost"
-	"github.com/docker/docker/api/types/container"
 )
 
 // HostAppItem describes an application, session profile, or toolchain on the host system.
@@ -57,7 +58,7 @@ type knownAppDef struct {
 	description     string
 	defaultSelected bool
 	probeFn         func() []string
-	packFn          func(tw *tar.Writer, paths []string) error
+	packFn          func(tw *tar.Writer, paths []string, pc packContext) error
 }
 
 var (
@@ -401,11 +402,6 @@ func checkHostTargets(targets []winhost.Target) map[winhost.Target]string {
 	return out
 }
 
-// needsSound reports whether an app is mainly for playing audio or video. The desktop VMs have no sound device, so such
-// an app would open, look right and say nothing.
-func needsSound(name string) bool {
-	return categorizeAppName(name) == "Media & Entertainment"
-}
 
 // vetHostApps says how each discovered Windows app can be used. A service with a web version opens in the VM's browser;
 // anything else must be a program the host confirms it can run on a private desktop. Apps that cannot be launched remain
@@ -415,13 +411,6 @@ func vetHostApps(apps []HostAppItem) []HostAppItem {
 	var pending []HostAppItem
 	var targets []winhost.Target
 	for _, app := range apps {
-		if needsSound(app.Name) {
-			app.Mode = ModeUnavailable
-			app.UnavailableReason = "This desktop has no audio device, so this app cannot be used here."
-			app.Description = app.UnavailableReason
-			kept = append(kept, app)
-			continue
-		}
 		if getWebAppURLForApp(app.Name, app.HostCmd) != "" {
 			app.Mode = ModeWeb
 			app.Description = "Opens the web version in the VM's browser; you sign in there"
@@ -475,7 +464,7 @@ func vetHostApps(apps []HostAppItem) []HostAppItem {
 		if localPageFor(targets[i].Target, targets[i].Args) != "" {
 			app.Description = "A web app: opens in the VM's browser, its server runs on this computer"
 		} else if isBrowserApp(app.Name) {
-			app.Description = "Runs privately on this computer; your signed-in browser profile is copied the first time it opens"
+			app.Description = "Runs privately on this computer with a profile of its own; nothing of your own browser is copied"
 		} else {
 			app.Description = "Runs on this computer on a hidden desktop; you see and use it in the VM"
 		}
@@ -552,17 +541,14 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 		appMap[strings.ToLower(app.ID)] = app
 	}
 
-	// Stream archive directly into container at /home/headless via pipe (zero RAM duplication)
+	// Stream the archive into the home through a pipe (no copy of it in memory), extracted as the worker: the home
+	// is the worker's and may be one a desktop of the same name left, so nothing here runs as root (homefs.go).
 	pr, pw := io.Pipe()
-	copyOpts := container.CopyToContainerOptions{
-		AllowOverwriteDirWithFile: false,
-		CopyUIDGID:                false,
-	}
-
 	copyErrCh := make(chan error, 1)
 	go func() {
-		defer pr.Close()
-		copyErrCh <- m.client.CopyToContainer(ctx, inspect.ID, "/home/headless", pr, copyOpts)
+		err := m.WriteTar(ctx, sanitizedID, homeDir, pr)
+		_ = pr.CloseWithError(err)
+		copyErrCh <- err
 	}()
 
 	tw := tar.NewWriter(pw)
@@ -587,7 +573,7 @@ func (m *Manager) MigrateHostApps(ctx context.Context, desktopID string, selecte
 				miss(id, def.name, "Decurix found nothing of it on this computer to copy.", false)
 				continue
 			}
-			if err := def.packFn(tw, paths); err != nil {
+			if err := def.packFn(tw, paths, packContext{DesktopID: sanitizedID, Secret: m.HostGUISecret}); err != nil {
 				log.Printf("hostapps: packing %s for %s: %v", def.id, desktopID, err)
 				miss(id, def.name, "Copying it into the desktop failed.", false)
 				continue
@@ -702,101 +688,15 @@ func getWindowsCDriveCandidates() []string {
 	return drives
 }
 
+// getKnownAppDefs is the apps a desktop can be given launchers for.
 func getKnownAppDefs() []knownAppDef {
 	homes := getHostHomeCandidates()
 	cDrives := getWindowsCDriveCandidates()
 
-	// probeConfigDir finds a tool's config directory: homeRel under each host home, winRel under every Windows user.
-	probeConfigDir := func(homeRel, winRel string) []string {
-		var candidates []string
-		for _, h := range homes {
-			candidates = append(candidates, filepath.Join(h, homeRel))
-		}
-		found := existingDirs(candidates)
-		for _, cDrive := range cDrives {
-			found = append(found, usersGlob(cDrive, winRel)...)
-		}
-		return found
-	}
-
+	// Only launchers are copied in: never a browser profile, keys, tokens, keyrings or dotfiles of the person's own
+	// accounts. A worker that held them could act as the person anywhere, and anything that can steer the worker (a
+	// web page, an email) could take them (review 2026-11-02). A worker signs in to what it needs on its own screen.
 	return []knownAppDef{
-		{
-			id:              "chrome",
-			name:            "Google Chrome / Chromium",
-			category:        "Browsers & Web",
-			description:     "Profile, active cookies, sessions, login data (Cache stripped to save RAM)",
-			defaultSelected: false,
-			probeFn: func() []string {
-				var candidates []string
-				for _, h := range homes {
-					candidates = append(candidates,
-						filepath.Join(h, ".config", "google-chrome-for-testing"),
-						filepath.Join(h, ".config", "google-chrome"),
-						filepath.Join(h, ".config", "chromium"),
-						filepath.Join(h, "Library", "Application Support", "Google", "Chrome"),
-					)
-				}
-				// Windows WSL candidate paths
-				for _, cDrive := range cDrives {
-					candidates = append(candidates, usersGlob(cDrive, "AppData", "Local", "Google", "Chrome", "User Data")...)
-					chromeExe := filepath.Join(cDrive, "Program Files", "Google", "Chrome", "Application", "chrome.exe")
-					if fi, err := os.Stat(chromeExe); err == nil && !fi.IsDir() {
-						candidates = append(candidates, chromeExe)
-					}
-				}
-				var found []string
-				for _, p := range candidates {
-					if _, err := os.Stat(p); err == nil {
-						found = append(found, p)
-					}
-				}
-				return found
-			},
-			packFn: func(tw *tar.Writer, paths []string) error {
-				for _, p := range paths {
-					if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-						_ = writeDirToTar(tw, p, ".config/google-chrome", isCacheOrTransient)
-						break
-					}
-				}
-				header := &tar.Header{
-					Name:     ".config/chromium",
-					Linkname: "google-chrome",
-					Typeflag: tar.TypeSymlink,
-					Mode:     0755,
-					ModTime:  time.Now(),
-					Uid:      1000,
-					Gid:      1000,
-				}
-				return tw.WriteHeader(header)
-			},
-		},
-		{
-			id:              "firefox",
-			name:            "Mozilla Firefox",
-			category:        "Browsers & Web",
-			description:     "Profiles, saved logins, cookies, tabs (Cache stripped)",
-			defaultSelected: false,
-			probeFn: func() []string {
-				var candidates []string
-				for _, h := range homes {
-					candidates = append(candidates,
-						filepath.Join(h, ".mozilla", "firefox"),
-						filepath.Join(h, "Library", "Application Support", "Firefox"),
-					)
-				}
-				for _, cDrive := range cDrives {
-					candidates = append(candidates, usersGlob(cDrive, "AppData", "Roaming", "Mozilla", "Firefox", "Profiles")...)
-				}
-				return existingDirs(candidates)
-			},
-			packFn: func(tw *tar.Writer, paths []string) error {
-				if len(paths) == 0 {
-					return nil
-				}
-				return writeDirToTar(tw, paths[0], ".mozilla/firefox", isCacheOrTransient)
-			},
-		},
 		{
 			id:              "claude",
 			name:            "Claude",
@@ -827,8 +727,8 @@ func getKnownAppDefs() []knownAppDef {
 				}
 				return found
 			},
-			packFn: func(tw *tar.Writer, paths []string) error {
-				return packWebAppHost(tw, "claude", "Claude", "https://claude.ai")
+			packFn: func(tw *tar.Writer, paths []string, pc packContext) error {
+				return packWebAppHost(tw, pc, "claude", "Claude", "https://claude.ai")
 			},
 		},
 		{
@@ -851,179 +751,8 @@ func getKnownAppDefs() []knownAppDef {
 				}
 				return found
 			},
-			packFn: func(tw *tar.Writer, paths []string) error {
-				return packWebAppHost(tw, "chatgpt", "ChatGPT", "https://chatgpt.com")
-			},
-		},
-		{
-			id:              "gh",
-			name:            "GitHub CLI & Git Config",
-			category:        "Development",
-			description:     "Logged-in GitHub token, credentials, and ~/.gitconfig",
-			defaultSelected: false,
-			probeFn: func() []string {
-				var found []string
-				for _, h := range homes {
-					ghConfig := filepath.Join(h, ".config", "gh")
-					if fi, err := os.Stat(ghConfig); err == nil && fi.IsDir() {
-						found = append(found, ghConfig)
-					}
-					gitConfig := filepath.Join(h, ".gitconfig")
-					if fi, err := os.Stat(gitConfig); err == nil && !fi.IsDir() {
-						found = append(found, gitConfig)
-					}
-				}
-				for _, cDrive := range cDrives {
-					found = append(found, usersGlob(cDrive, "AppData", "Roaming", "GitHub CLI")...)
-					found = append(found, usersGlob(cDrive, ".gitconfig")...)
-				}
-				return found
-			},
-			packFn: func(tw *tar.Writer, paths []string) error {
-				for _, p := range paths {
-					if strings.HasSuffix(p, ".gitconfig") {
-						if err := writeFileToTar(tw, p, ".gitconfig", 0644); err != nil {
-							return err
-						}
-					} else {
-						if err := writeDirToTar(tw, p, ".config/gh", nil); err != nil {
-							return err
-						}
-					}
-				}
-				return nil
-			},
-		},
-		{
-			id:              "docker",
-			name:            "Docker Hub & Engine Config",
-			category:        "Development",
-			description:     "Docker credentials, contexts, and client config",
-			defaultSelected: false,
-			probeFn:         func() []string { return probeConfigDir(".docker", ".docker") },
-			packFn:          packFirstDir(".docker", isCacheOrTransient),
-		},
-		{
-			id:              "vscode",
-			name:            "VS Code / OpenCode Settings",
-			category:        "Development",
-			description:     "Extensions, keybindings, settings, workspace storage",
-			defaultSelected: false,
-			probeFn: func() []string {
-				var candidates []string
-				for _, h := range homes {
-					candidates = append(candidates,
-						filepath.Join(h, ".config", "Code", "User"),
-						filepath.Join(h, ".vscode", "extensions"),
-						filepath.Join(h, ".opencode"),
-						filepath.Join(h, "Library", "Application Support", "Code", "User"),
-					)
-				}
-				for _, cDrive := range cDrives {
-					candidates = append(candidates, usersGlob(cDrive, "AppData", "Roaming", "Code", "User")...)
-					candidates = append(candidates, usersGlob(cDrive, ".vscode", "extensions")...)
-				}
-				return existingDirs(candidates)
-			},
-			packFn: func(tw *tar.Writer, paths []string) error {
-				for _, p := range paths {
-					dest := ".config/Code/User"
-					if strings.Contains(p, ".vscode") {
-						dest = ".vscode/extensions"
-					} else if strings.Contains(p, ".opencode") {
-						dest = ".opencode"
-					}
-					if err := writeDirToTar(tw, p, dest, isCacheOrTransient); err != nil {
-						return err
-					}
-				}
-				return nil
-			},
-		},
-		{
-			id:              "ssh",
-			name:            "SSH Keys & Known Hosts",
-			category:        "Development",
-			description:     "Private keys, public keys, config (strictly chmod 0600)",
-			defaultSelected: false,
-			probeFn:         func() []string { return probeConfigDir(".ssh", ".ssh") },
-			packFn: packFirstDir(".ssh", func(name, fullPath string, isDir bool) bool {
-				lower := strings.ToLower(name)
-				return strings.HasSuffix(lower, ".old") || strings.HasSuffix(lower, ".bak")
-			}),
-		},
-		{
-			id:              "gcloud",
-			name:            "Google Cloud CLI (gcloud)",
-			category:        "Development",
-			description:     "Active GCP credentials, default project, configurations",
-			defaultSelected: false,
-			probeFn: func() []string {
-				return probeConfigDir(filepath.Join(".config", "gcloud"), filepath.Join("AppData", "Roaming", "gcloud"))
-			},
-			packFn: packFirstDir(".config/gcloud", isCacheOrTransient),
-		},
-		{
-			id:              "azure",
-			name:            "Azure CLI (az)",
-			category:        "Development",
-			description:     "Active Azure login tokens, subscriptions, profile",
-			defaultSelected: false,
-			probeFn:         func() []string { return probeConfigDir(".azure", ".azure") },
-			packFn:          packFirstDir(".azure", isCacheOrTransient),
-		},
-		{
-			id:              "keyrings",
-			name:            "System Keyrings & PKI",
-			category:        "Development",
-			description:     "Secret Service keyrings and local certificates",
-			defaultSelected: false,
-			probeFn: func() []string {
-				var candidates []string
-				for _, h := range homes {
-					candidates = append(candidates, filepath.Join(h, ".local", "share", "keyrings"), filepath.Join(h, ".pki"))
-				}
-				return existingDirs(candidates)
-			},
-			packFn: func(tw *tar.Writer, paths []string) error {
-				for _, p := range paths {
-					dest := ".local/share/keyrings"
-					if strings.Contains(p, ".pki") {
-						dest = ".pki"
-					}
-					if err := writeDirToTar(tw, p, dest, nil); err != nil {
-						return err
-					}
-				}
-				return nil
-			},
-		},
-		{
-			id:              "dotfiles",
-			name:            "Shell Profiles & Dotfiles",
-			category:        "Development",
-			description:     "~/.bashrc, ~/.profile, ~/.zshrc shell environment",
-			defaultSelected: false,
-			probeFn: func() []string {
-				var found []string
-				for _, h := range homes {
-					for _, f := range []string{".bashrc", ".profile", ".zshrc", ".bash_aliases"} {
-						p := filepath.Join(h, f)
-						if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
-							found = append(found, p)
-						}
-					}
-				}
-				return found
-			},
-			packFn: func(tw *tar.Writer, paths []string) error {
-				for _, p := range paths {
-					name := filepath.Base(p)
-					if err := writeFileToTar(tw, p, name, 0644); err != nil {
-						return err
-					}
-				}
-				return nil
+			packFn: func(tw *tar.Writer, paths []string, pc packContext) error {
+				return packWebAppHost(tw, pc, "chatgpt", "ChatGPT", "https://chatgpt.com")
 			},
 		},
 		{
@@ -1035,7 +764,7 @@ func getKnownAppDefs() []knownAppDef {
 			probeFn: func() []string {
 				return []string{"host_bridge"}
 			},
-			packFn: func(tw *tar.Writer, paths []string) error {
+			packFn: func(tw *tar.Writer, paths []string, pc packContext) error {
 				return packHostBridgeLaunchers(tw)
 			},
 		},
@@ -1069,8 +798,13 @@ func packFirstDir(dest string, exclude func(name, fullPath string, isDir bool) b
 	}
 }
 
-// packWebAppHost packs a host AI app (slug, shown as name) as a launcher that opens site in an app window.
-func packWebAppHost(tw *tar.Writer, slug, name, site string) error {
+// packWebAppHost packs a host AI app (slug, shown as name) as a launcher that opens site in an app window, or with no
+// browser in the desktop, in the person's own browser: only site, signed for this desktop (winhost.OpenToken).
+func packWebAppHost(tw *tar.Writer, pc packContext, slug, name, site string) error {
+	fallback := "echo \"No browser is installed in this desktop to open " + site + " in.\" >&2\nexit 1\n"
+	if len(pc.Secret) > 0 {
+		fallback = fmt.Sprintf("exec /home/headless/.local/bin/host-run open %s %s\n", winhost.OpenToken(pc.Secret, pc.DesktopID, site), shellQuote(site))
+	}
 	wrapper := fmt.Sprintf(`#!/usr/bin/env bash
 if command -v chromium-browser >/dev/null 2>&1; then
     exec chromium-browser --app="%[1]s" "$@"
@@ -1079,8 +813,7 @@ elif command -v google-chrome >/dev/null 2>&1; then
 elif command -v chromium >/dev/null 2>&1; then
     exec chromium --app="%[1]s" "$@"
 fi
-exec /home/headless/.local/bin/host-run open %[1]s
-`, site)
+%[2]s`, site, fallback)
 	if err := writeStringToTar(tw, ".local/bin/"+slug+"-host", wrapper, 0755); err != nil {
 		return err
 	}
@@ -1096,7 +829,7 @@ Exec=/home/headless/.local/bin/%[1]s-host %%U
 Icon=/home/headless/.local/share/icons/hicolor/scalable/apps/%[1]s.svg
 Terminal=false
 Categories=Office;Utility;Network;
-`, slug, name)
+`, slug, desktopValue(name))
 	return writeHostLauncher(tw, slug, desktop)
 }
 
@@ -1314,105 +1047,25 @@ func isIgnoredWindowsApp(name string) bool {
 	return false
 }
 
-func categorizeAppName(name string) string {
-	lower := strings.ToLower(name)
-	switch {
-	case strings.Contains(lower, "chrome") || strings.Contains(lower, "edge") ||
-		strings.Contains(lower, "firefox") || strings.Contains(lower, "brave") ||
-		strings.Contains(lower, "opera") || strings.Contains(lower, "browser") ||
-		strings.Contains(lower, "vivaldi") || strings.Contains(lower, "arc"):
-		return "Browsers & Web"
-	case strings.Contains(lower, "youtube") || strings.Contains(lower, "spotify") ||
-		strings.Contains(lower, "music") || strings.Contains(lower, "video") ||
-		strings.Contains(lower, "vlc") || strings.Contains(lower, "media") ||
-		strings.Contains(lower, "netflix") || strings.Contains(lower, "twitch"):
-		return "Media & Entertainment"
-	case strings.Contains(lower, "code") || strings.Contains(lower, "visual studio") ||
-		strings.Contains(lower, "git") || strings.Contains(lower, "terminal") ||
-		strings.Contains(lower, "powershell") || strings.Contains(lower, "bash") ||
-		strings.Contains(lower, "sublime") || strings.Contains(lower, "intellij") ||
-		strings.Contains(lower, "pycharm") || strings.Contains(lower, "docker"):
-		return "Development"
-	case strings.Contains(lower, "discord") || strings.Contains(lower, "slack") ||
-		strings.Contains(lower, "teams") || strings.Contains(lower, "telegram") ||
-		strings.Contains(lower, "whatsapp") || strings.Contains(lower, "zoom"):
-		return "Communication"
-	case strings.Contains(lower, "word") || strings.Contains(lower, "excel") ||
-		strings.Contains(lower, "powerpoint") || strings.Contains(lower, "office") ||
-		strings.Contains(lower, "notion") || strings.Contains(lower, "obsidian") ||
-		strings.Contains(lower, "notes") || strings.Contains(lower, "calc"):
-		return "Productivity"
-	default:
-		return "Desktop Apps"
-	}
-}
+// categorizeAppName is the group an app is listed under. It is the same for every app: guessing a product's kind, or
+// its web address, from words in its name rerouted a local app whose name held a vendor's word to that vendor's site
+// (B-20). The name is kept as a parameter for the callers' shape; nothing is read from it.
+func categorizeAppName(string) string { return "Desktop Apps" }
 
-// getWebAppURLForApp detects if an application name or host command/AppID represents
-// an AI service, PWA, or cloud application that should render directly in the VM
-// desktop using Chromium standalone app mode instead of popping up on the host physical monitor.
-func getWebAppURLForApp(name, cmdOrId string) string {
-	lowerCmd := strings.ToLower(cmdOrId)
-	lowerName := strings.ToLower(name)
-
-	// Direct URL shortcuts
+// getWebAppURLForApp is the web address an app opens, when it is one: its resolved command or AppID is itself an
+// http(s) target (a URL, or a command that starts one). Never a guess from its name - that is data, not a rule.
+func getWebAppURLForApp(_ string, cmdOrId string) string {
 	for _, prefix := range []string{"https://", "http://"} {
 		if strings.HasPrefix(cmdOrId, prefix) {
-			return cmdOrId
+			return strings.Fields(cmdOrId)[0]
 		}
-		if idx := strings.Index(cmdOrId, prefix); idx != -1 {
-			fields := strings.Fields(cmdOrId[idx:])
-			if len(fields) > 0 {
+		if idx := strings.Index(cmdOrId, " "+prefix); idx != -1 {
+			if fields := strings.Fields(cmdOrId[idx:]); len(fields) > 0 {
 				return fields[0]
 			}
 		}
 	}
-
-	// Known AI, cloud, and productivity applications
-	switch {
-	case strings.Contains(lowerName, "claude") || strings.Contains(lowerCmd, "claude"):
-		return "https://claude.ai"
-	case strings.Contains(lowerName, "chatgpt") || strings.Contains(lowerName, "chat gpt") ||
-		strings.Contains(lowerCmd, "openai.codex") || strings.Contains(lowerCmd, "chatgpt"):
-		return "https://chatgpt.com"
-	case strings.Contains(lowerName, "copilot"):
-		return "https://copilot.microsoft.com"
-	case strings.Contains(lowerName, "perplexity"):
-		return "https://www.perplexity.ai"
-	case strings.Contains(lowerName, "youtube") || strings.Contains(lowerCmd, "youtube"):
-		return "https://www.youtube.com"
-	case strings.Contains(lowerName, "whatsapp") || strings.Contains(lowerCmd, "whatsapp"):
-		return "https://web.whatsapp.com"
-	case strings.Contains(lowerName, "discord"):
-		return "https://discord.com/app"
-	case strings.Contains(lowerName, "slack"):
-		return "https://app.slack.com"
-	case strings.Contains(lowerName, "spotify"):
-		return "https://open.spotify.com"
-	case strings.Contains(lowerName, "notion"):
-		return "https://www.notion.so"
-	case strings.Contains(lowerName, "figma"):
-		return "https://www.figma.com"
-	case strings.Contains(lowerName, "linear"):
-		return "https://linear.app"
-	case strings.Contains(lowerName, "github"):
-		return "https://github.com"
-	case strings.Contains(lowerName, "telegram"):
-		return "https://web.telegram.org"
-	case strings.Contains(lowerName, "reddit"):
-		return "https://www.reddit.com"
-	case strings.Contains(lowerName, "gmail") || strings.Contains(lowerName, "google mail"):
-		return "https://mail.google.com"
-	case strings.Contains(lowerName, "google drive"):
-		return "https://drive.google.com"
-	case strings.Contains(lowerName, "google docs"):
-		return "https://docs.google.com"
-	case strings.Contains(lowerName, "google sheets"):
-		return "https://sheets.google.com"
-	case strings.Contains(lowerName, "google meet"):
-		return "https://meet.google.com"
-	default:
-		return ""
-	}
+	return ""
 }
 
 func pickAppIcon(name string) string {
@@ -1794,7 +1447,7 @@ func exploreDynamicApps(seen map[string]bool) []HostAppItem {
 			hostCmd := fmt.Sprintf(`cmd.exe /c start explorer.exe shell:AppsFolder\%s`, app.AppID)
 			desc := "Windows application (runs on host desktop)"
 			if getWebAppURLForApp(app.Name, app.AppID) != "" {
-				desc = "AI & cloud application (renders directly in VM desktop)"
+				desc = "Web application (opens in the VM's browser)"
 			}
 			items = append(items, HostAppItem{
 				ID:              id,
@@ -1896,19 +1549,40 @@ type packContext struct {
 	Secret []byte
 }
 
-// sessionID names the host session for an app on this desktop, so two desktops never share one app.
-func (pc packContext) sessionID(slug string) string {
-	id := pc.DesktopID
-	if id == "" {
-		id = "vm"
-	}
-	if len(slug) > 24 {
-		slug = slug[:24]
-	}
-	if id = id + "-" + slug; len(id) > 64 {
-		id = id[:64]
+// hostSessionSlug is how much of an app's slug its host session id keeps.
+const hostSessionSlug = 24
+
+// HostSessionSlug is the app slug a host session id (hostSessionID) starts with: the id less its hash.
+func HostSessionSlug(id string) string {
+	if i := strings.LastIndex(id, "-"); i > 0 && len(id)-i == 13 {
+		return id[:i]
 	}
 	return id
+}
+
+// sessionID names the host session for an app on this desktop, so two desktops never share one app.
+func (pc packContext) sessionID(slug string) string {
+	return hostSessionID(pc.DesktopID, slug)
+}
+
+// hostSessionID is the host session of app slug on desktop: a readable prefix plus a hash of the pair, so no two
+// (desktop, app) pairs share one - "a-b" with "c" and "a" with "b-c" did, and long names cut to the same prefix did
+// (B-19). It is the slug (at most 24 characters, for the app's name) and twelve hex digits of the hash of the
+// (desktop, slug) pair, which is what tells pairs apart: at most 37 characters, so the host's 48-character desktop
+// name ("decurix_" and the id) keeps every one of them (RW1-D-04), and the slug can be read back whole for the app's
+// name (RW1-D-05).
+func hostSessionID(desktop, slug string) string {
+	if desktop == "" {
+		desktop = "vm"
+	}
+	sum := sha256.Sum256([]byte(desktop + "\x00" + slug))
+	short := func(s string, n int) string {
+		if len(s) > n {
+			return s[:n]
+		}
+		return s
+	}
+	return short(slug, hostSessionSlug) + "-" + hex.EncodeToString(sum[:6])
 }
 
 // hostGUILauncher is the shell that shows a Windows app which runs on the host with no window there: it opens the
@@ -2220,6 +1894,8 @@ func packDynamicApp(tw *tar.Writer, app HostAppItem, pc packContext) error {
 			return err
 		}
 
+		// Every value is one line of plain text: a name or description from a host or a phone (untrusted) could
+		// otherwise end its line and add keys of its own, an Exec among them (B-22).
 		launcherContent := fmt.Sprintf(`[Desktop Entry]
 Version=1.0
 Type=Application
@@ -2229,7 +1905,7 @@ Exec=/home/headless/.local/bin/%s-host %%U
 Icon=%s
 Terminal=false
 Categories=%s
-%s`, app.Name, suffix, app.Description, slug, icon, cat, startup)
+%s`, desktopValue(app.Name), suffix, desktopValue(app.Description), slug, desktopValue(icon), cat, startup)
 
 		if err := writeHostLauncher(tw, slug, launcherContent); err != nil {
 			return err
@@ -2245,8 +1921,8 @@ Categories=%s
 
 func packHostBridgeLaunchers(tw *tar.Writer) error {
 	hostRunScript := `#!/usr/bin/env bash
-# host-run: asks the control plane to open a link, set the clipboard, or run one command a launcher was written for on
-# the host. It cannot run anything else: the control plane only runs a command it signed into a launcher.
+# host-run: asks the control plane to open one link or run one command a launcher was written for on the host. It
+# cannot do anything else: the control plane only opens a link and runs a command it signed into a launcher.
 set -e
 
 CP_URL="${CONTROL_PLANE_URL:-${DECURIX_CONTROL_PLANE:-http://host.docker.internal:8080}}"
@@ -2254,17 +1930,15 @@ CP_URL="${CONTROL_PLANE_URL:-${DECURIX_CONTROL_PLANE:-http://host.docker.interna
 # bridge_post <path> <key> <value> [args-json]: POSTs a small JSON object to the control plane and
 # prints the response body. python3 rather than curl: the desktop images do not all ship curl, and
 # a missing curl made every launcher fail as "host bridge not reachable" without ever sending a request.
-# DECURIX_BRIDGE_TOKEN, when set, is the launcher's signature for the command being run.
+# DECURIX_BRIDGE_TOKEN is the launcher's signature for the link or the command.
 bridge_post() {
     python3 - "${CP_URL}$1" "$2" "$3" "${4:-}" <<'PY'
 import json, os, sys, urllib.request
 url, key, value, args = sys.argv[1:5]
-body = {key: value}
+body = {key: value, "desktop": os.environ.get("DESKTOP_ID", ""), "token": os.environ.get("DECURIX_BRIDGE_TOKEN", "")}
 if args:
     body["args"] = json.loads(args)
     body["display"] = os.environ.get("DISPLAY", ":1")
-    body["desktop"] = os.environ.get("DESKTOP_ID", "")
-    body["token"] = os.environ.get("DECURIX_BRIDGE_TOKEN", "")
 req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"})
 sys.stdout.write(urllib.request.urlopen(req, timeout=60).read().decode())
 PY
@@ -2272,11 +1946,11 @@ PY
 
 usage() {
     cat << EOF
-Usage: host-run open <http(s)-link>
-       host-run clip <text or pipe from stdin>
+Usage: host-run open <token> <https-link>            (what a copied web app's launcher runs)
        host-run signed <token> <command> [args...]   (what a copied app's launcher runs)
 
-Opens links and sets the clipboard on the host. Running other programs on the host is not possible from here.
+Opens the links and runs the commands Decurix's launchers were written for. Nothing else can be opened or run on the
+host from here.
 EOF
     exit 0
 }
@@ -2287,27 +1961,15 @@ subcmd="$1"
 
 case "$subcmd" in
     open)
-        shift
-        target="${1:-}"
+        [ $# -ge 3 ] || usage
+        DECURIX_BRIDGE_TOKEN="$2"
+        export DECURIX_BRIDGE_TOKEN
+        target="$3"
         if bridge_post /api/host-bridge/open target "${target}" >/dev/null 2>&1; then
             echo "Opened on host desktop: ${target}"
             exit 0
         fi
-        echo "Error: could not open ${target} on the host (only plain http(s) links can be opened; is ${CP_URL} reachable?)."
-        exit 1
-        ;;
-    clip)
-        shift
-        if [ $# -gt 0 ]; then
-            text="$*"
-        else
-            text=$(cat)
-        fi
-        if bridge_post /api/host-bridge/clip text "${text}" >/dev/null 2>&1; then
-            echo "Copied to host clipboard!"
-            exit 0
-        fi
-        echo "Error: could not reach the host bridge at ${CP_URL} (or the text is over 64 KB)."
+        echo "Error: could not open ${target} on the host (only the link a launcher was written for; is ${CP_URL} reachable?)."
         exit 1
         ;;
     signed)
@@ -2329,19 +1991,15 @@ case "$subcmd" in
         usage
         ;;
     *)
-        echo "Error: host-run cannot run '${subcmd}' on the host. It only opens http(s) links, sets the clipboard, and runs commands from the launchers Decurix wrote." >&2
+        echo "Error: host-run cannot run '${subcmd}' on the host. It only opens the links and runs the commands of the launchers Decurix wrote." >&2
         exit 1
         ;;
 esac
 `
 
-	if err := writeStringToTar(tw, ".local/bin/host-run", hostRunScript, 0755); err != nil {
-		return err
-	}
-	if err := writeStringToTar(tw, ".local/bin/host-open", "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run open \"$@\"\n", 0755); err != nil {
-		return err
-	}
-	return writeStringToTar(tw, ".local/bin/host-clip", "#!/usr/bin/env bash\nexec /home/headless/.local/bin/host-run clip \"$@\"\n", 0755)
+	// No host-open or host-clip any more: a link is opened only for a launcher that was signed for it, and nothing sets
+	// the person's clipboard from a desktop (review 2026-11-02).
+	return writeStringToTar(tw, ".local/bin/host-run", hostRunScript, 0755)
 }
 
 // -----------------------------------------------------------------------------
@@ -2553,4 +2211,15 @@ func writeStringToTar(tw *tar.Writer, tarPath, content string, mode int64) error
 // WindowsCDrives returns where this process can read the host's C: drive (a WSL or container mount, or C:\ itself).
 func WindowsCDrives() []string {
 	return getWindowsCDriveCandidates()
+}
+
+// desktopValue makes s safe as one value of a .desktop entry: control characters (line breaks included) become spaces,
+// so a value can never end its line and start a key of its own.
+func desktopValue(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == 0x2028 || r == 0x2029 {
+			return ' '
+		}
+		return r
+	}, s)
 }

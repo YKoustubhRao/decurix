@@ -9,7 +9,10 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // A hop is how a control plane running in a container runs something on the host it sits on: a short-lived, privileged
@@ -24,6 +27,9 @@ const (
 	HopLabel = "decurix.hop"
 	// hopPurposeLabel says what a hop was for, for a person reading `docker ps`.
 	hopPurposeLabel = "decurix.hop.purpose"
+	// hopInstanceLabel names the control plane that started a hop (sqlitedb.InstanceID): a sweep removes only its own
+	// (review RW1-C-02). A hop holds a host-app helper's stdin, so removing another instance's hop ends its helper.
+	hopInstanceLabel = "decurix.hop.instance"
 	// hopNamePrefix starts every hop container's name.
 	hopNamePrefix = "decurix-hop-"
 )
@@ -58,7 +64,7 @@ func hopArgs(name, purpose string, interactive bool, script string) []string {
 		args = append(args, "-i")
 	}
 	args = append(args, "--rm", "--name", name, "--label", HopLabel+"=1", "--label", hopPurposeLabel+"="+purpose,
-		"--privileged", "--pid=host", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", script)
+		"--label", hopInstanceLabel+"="+hopInstance(), "--privileged", "--pid=host", "alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i", "bash", "-c", script)
 	return args
 }
 
@@ -72,6 +78,7 @@ func HopCommand(ctx context.Context, dockerBin, purpose string, interactive bool
 		ctx = context.Background()
 	}
 	name := HopName(purpose)
+	startedHops.add(name)
 	cmd := exec.CommandContext(ctx, dockerBin, hopArgs(name, purpose, interactive, script)...)
 	cmd.Cancel = func() error {
 		RemoveHop(dockerBin, name)
@@ -94,23 +101,58 @@ func RemoveHop(dockerBin, name string) {
 	}
 }
 
-// SweepHops removes the hop containers a previous run of the control plane left (running or not), and nothing else:
-// only containers labelled HopLabel=1 whose names start with the hop prefix. Returns how many it removed.
+// hopInstance is the tag a hop is labelled with: this control plane's instance ID (a test seam).
+var hopInstance = sqlitedb.InstanceID
+
+// startedHops are the hops this run started: a sweep that runs after the listeners are up (Docker came late) must not
+// remove one a page already warmed.
+var startedHops = &nameSet{names: map[string]bool{}}
+
+type nameSet struct {
+	mu    sync.Mutex
+	names map[string]bool
+}
+
+func (s *nameSet) add(name string) { s.mu.Lock(); s.names[name] = true; s.mu.Unlock() }
+
+func (s *nameSet) has(name string) bool { s.mu.Lock(); defer s.mu.Unlock(); return s.names[name] }
+
+// SweepHops removes the hop containers an earlier run of this control plane left (running or not), and nothing else:
+// only containers labelled HopLabel=1, named with the hop prefix, carrying this instance's tag, and not started by
+// this run. Another instance's hops are left to it; a hop with no instance tag (an older build's) is left and logged,
+// since it may be another instance's live one. Returns how many it removed.
 func SweepHops(ctx context.Context, dockerBin string) int {
 	if dockerBin == "" {
 		return 0
 	}
-	out, err := hopExec(ctx, dockerBin, "ps", "-a", "--filter", "label="+HopLabel+"=1", "--format", "{{.Names}}")
+	out, err := hopExec(ctx, dockerBin, "ps", "-a", "--filter", "label="+HopLabel+"=1",
+		"--format", "{{.Names}}\t{{.Label \""+hopInstanceLabel+"\"}}")
 	if err != nil {
 		log.Printf("hop: could not list hop containers: %v", err)
 		return 0
 	}
+	mine := hopInstance()
 	var names []string
+	untagged := 0
 	for _, line := range strings.Split(string(out), "\n") {
-		name := strings.TrimSpace(line)
-		if strings.HasPrefix(name, hopNamePrefix) {
-			names = append(names, name)
+		fields := strings.SplitN(strings.TrimSpace(line), "\t", 2)
+		name := strings.TrimSpace(fields[0])
+		if !strings.HasPrefix(name, hopNamePrefix) || startedHops.has(name) {
+			continue
 		}
+		tag := ""
+		if len(fields) == 2 {
+			tag = strings.TrimSpace(fields[1])
+		}
+		switch tag {
+		case mine:
+			names = append(names, name)
+		case "":
+			untagged++
+		}
+	}
+	if untagged > 0 {
+		log.Printf("hop: left %d hop container(s) with no instance tag alone (an older build's, maybe another control plane's live ones)", untagged)
 	}
 	if len(names) == 0 {
 		return 0
@@ -123,9 +165,10 @@ func SweepHops(ctx context.Context, dockerBin string) int {
 	return len(names)
 }
 
-// SweepUnnamedHops removes the hop containers older control planes left before hops were named: an alpine container
-// running `nsenter -t 1 ...` in the host's PID namespace, with no hop label. Nothing else matches all of that. Returns
-// how many it removed.
+// SweepUnnamedHops reports the hop containers older control planes left before hops were named: an alpine container
+// running `nsenter -t 1 ...` in the host's PID namespace, with no hop label. It no longer removes them: nothing says
+// which control plane's they are, and one may be another instance's live helper (review RW1-C-02). Returns how many
+// it found.
 func SweepUnnamedHops(ctx context.Context, dockerBin string) int {
 	if dockerBin == "" {
 		return 0
@@ -146,19 +189,15 @@ func SweepUnnamedHops(ctx context.Context, dockerBin string) int {
 			ids = append(ids, fields[0])
 		}
 	}
-	if len(ids) == 0 {
-		return 0
+	if len(ids) > 0 {
+		log.Printf("hop: left %d unnamed hop container(s) of an earlier version alone; remove them by hand once no other control plane uses them: docker rm -f %s",
+			len(ids), strings.Join(ids, " "))
 	}
-	if _, err := hopExec(ctx, dockerBin, append([]string{"rm", "-f"}, ids...)...); err != nil {
-		return 0
-	}
-	log.Printf("hop: removed %d unnamed hop container(s) left by an earlier version", len(ids))
 	return len(ids)
 }
 
-// SweepHopsAtStart removes every hop container an earlier run of the control plane left, named or (from before hops
-// were named) unnamed. Called once at start, before anything can start a hop of its own: a hop belongs to the process
-// that started it, and that process is gone. Returns how many were removed.
+// SweepHopsAtStart removes the hop containers an earlier run of this control plane left (SweepHops), and reports the
+// unnamed ones older versions left (SweepUnnamedHops). Returns how many it removed.
 func SweepHopsAtStart() int {
 	dockerBin := findDockerBinary()
 	if dockerBin == "" {
@@ -166,5 +205,6 @@ func SweepHopsAtStart() int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	return SweepHops(ctx, dockerBin) + SweepUnnamedHops(ctx, dockerBin)
+	SweepUnnamedHops(ctx, dockerBin)
+	return SweepHops(ctx, dockerBin)
 }

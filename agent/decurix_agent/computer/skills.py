@@ -8,6 +8,13 @@ from decurix_agent import config
 from decurix_agent.computer import experience, recording, replay
 
 
+def _rename_file(text, old, new):
+    """`text` with the file name `old` replaced by `new` where it stands whole - never inside a longer name
+    ("bill.xlsx" is not in "prebill.xlsx"; D-36, review round 3: a substring replace rewrote other files' titles)."""
+
+    return re.sub(r"(?<![\w.-])" + re.escape(old) + r"(?![\w-]|\.\w)", lambda m: new, text)
+
+
 def bind_sources(skill, bindings):
     """Explicitly bind recorded local input opens to new files, on a run copy.
 
@@ -27,16 +34,16 @@ def bind_sources(skill, bindings):
         if not old.suffix or old.suffix.lower() != new.suffix.lower():
             raise ValueError("source-file binding must preserve file type")
         if isinstance((bound.get("starts") or {}).get("window"), str):
-            bound["starts"]["window"] = bound["starts"]["window"].replace(old.name, new.name)
+            bound["starts"]["window"] = _rename_file(bound["starts"]["window"], old.name, new.name)
         for step in bound["steps"]:
             if step.get("kind") == "open" and step.get("open") == source:
                 step["open"] = str(new)
             for key in ("window", "phase_label"):
                 if isinstance(step.get(key), str):
-                    step[key] = step[key].replace(old.name, new.name)
+                    step[key] = _rename_file(step[key], old.name, new.name)
             for check in step.get("expect", []):
                 if check.get("type") in {"window", "active_window"}:
-                    check["value"] = check["value"].replace(old.name, new.name)
+                    check["value"] = _rename_file(check["value"], old.name, new.name)
     return bound
 
 
@@ -93,7 +100,7 @@ def save(skill):
     path = _path(skill["name"])
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    recording.write_whole(path, json.dumps(skill, ensure_ascii=False, indent=1))
+    recording.write_whole(path, skill, json_kw={"ensure_ascii": False, "indent": 1})
 
     return skill
 
@@ -162,17 +169,19 @@ def draft_for(sources):
 
 def find(query):
     """
-    The ready skill a person means by `query`: (skill, candidates). An exact
-    name wins; otherwise the one skill sharing the most words with it. When
-    two share the same most, `skill` is None and `candidates` lists them -
-    which skill to run is not something to guess.
+    The ready skill a person means by `query`: (skill, candidates). Only an exact name runs: the skill's name, the
+    slug of the query, or its title word for word (identity.same). Otherwise `skill` is None and `candidates` are the
+    skills sharing the most words with the query, best first - suggestions, never run. Found in review (2026-11-03,
+    D-16): the one skill sharing the most words ran, so a query to remove a customer ran the skill that adds one.
     """
+
+    from decurix_agent.computer import identity
 
     ready = [s for s in all_skills() if s.get("status") == READY]
     text = (query or "").strip().lower()
 
     for skill in ready:
-        if skill["name"] == text or skill["name"] == slug(text):
+        if skill["name"] == text or skill["name"] == slug(text) or identity.same(skill.get("title"), query):
             return skill, [skill]
 
     ranked = search(query, limit=len(ready))
@@ -180,9 +189,7 @@ def find(query):
         return None, []
 
     top = _score(ranked[0], query)
-    best = [skill for skill in ranked if _score(skill, query) == top]
-
-    return (best[0] if len(best) == 1 else None), best
+    return None, [skill for skill in ranked if _score(skill, query) == top]
 
 
 def _score(skill, query):
@@ -637,6 +644,16 @@ def run_rows(skill, values):
     return len(names), names
 
 
+def _per_row(step, twin):
+    """Whether a row's step acts on a control of its own row: its twin in the row before is the same kind of control
+    (role and name) at another path. Unknown (no twin, or no path) is not."""
+
+    a, b = (step or {}).get("target") or {}, (twin or {}).get("target") or {}
+    if not a or not b or not a.get("path") or not b.get("path"):
+        return False
+    return a.get("role") == b.get("role") and a.get("name") == b.get("name") and a["path"] != b["path"]
+
+
 def fit(skill, program, values):
     """This run's program: `program` with this run's number of rows and this run's choices from lists (see above)."""
 
@@ -664,10 +681,17 @@ def fit(skill, program, values):
                     params.pop(name, None)
             else:
                 template = steps[last[demo - 2] + 1:last[demo - 1] + 1]
+                # Each template step's twin in the row before it (aligned from the row's end): a control that is
+                # another one in each row (another path) is that row's, and is found by its place among its name.
+                floor = last[demo - 3] if demo >= 3 else -1
+                twin = {}
+                for o in range(len(template)):
+                    i = last[demo - 2] - (len(template) - 1 - o)
+                    twin[o] = steps[i] if i > floor else None
                 extra = []
                 for r in range(demo, count):
                     rename = dict(zip(group["rows"][demo - 1], names[r]))
-                    for original in template:
+                    for o, original in enumerate(template):
                         each = copy.deepcopy(original)
                         old = each.get("param")
                         if old in rename:
@@ -675,9 +699,15 @@ def fit(skill, program, values):
                             base_of[rename[old]] = old
                             params[rename[old]] = dict(params.get(old) or {"label": old, "example": None},
                                                        name=rename[old], default=None)
-                        # Which row a control is in was the demonstration's row: it is found by what it is.
+                        # Which row a control is in was the demonstration's row. A control that is another one in
+                        # each demonstrated row (_per_row) is row r + 1's: the (r + 1)th of its name, never the first
+                        # one found by name alone, an earlier row's (review 2026-11-03, D-30). One the rows share (an
+                        # add-row press, an editor drawn only in the active row) is found by what it is.
                         if each.get("target"):
+                            per_row = _per_row(original, twin.get(o))
                             each["target"] = {k: v for k, v in each["target"].items() if k not in ("path", "row", "nth")}
+                            if per_row:
+                                each["target"]["nth"] = r + 1
                         each["expect"] = []
                         each["summary"] = f"{replay._summary(each)} (row {r + 1})"
                         extra.append(each)

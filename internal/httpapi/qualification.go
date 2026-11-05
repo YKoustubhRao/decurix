@@ -406,7 +406,8 @@ func (s *Server) qualificationRunHandler(w http.ResponseWriter, r *http.Request)
 	if body.Mode == "practice" {
 		taskType = tasks.TypePractice
 	}
-	_, err = s.Tasks.CommitTyped(route, worker, "Readiness "+body.Mode+": "+resp.Definition.Name, taskType)
+	route.Origin = tasks.Origin{Kind: tasks.OriginPractice, Ref: "readiness/" + run.ID}
+	_, err = s.Tasks.CommitTyped(route, worker, "Readiness "+body.Mode+": "+resp.Definition.Name, taskType, route.Origin)
 	if err != nil {
 		_, _ = s.Qualification.FinishRun(run.ID, nil, nil)
 		jsonError(w, err)
@@ -463,16 +464,16 @@ func (s *Server) executeQualification(ctx context.Context, run qualification.Run
 	if err == nil && finished.Status == "passed" {
 		kind, reply = tasks.OutcomeDone, "Independent readiness check passed. Evidence: "+run.ID
 	}
-	checked := err == nil
+	verdict := readinessVerdict(err, finished.Status, run.ID)
 	if err == nil && finished.Status == "passed" && run.ProductionCase != nil && run.ProductionCase.Expected != "complete" {
 		stopKind := tasks.OutcomeQuery
 		if run.ProductionCase.Expected == "approval" {
 			stopKind = tasks.OutcomeApproval
 		}
 		reply = "The tool stopped without producing artifacts, as independently expected. No approval was granted and no external action was taken. Evidence: " + run.ID
-		_, _ = s.Tasks.RecordOutcome(workerID, run.TaskID, tasks.Outcome{Kind: stopKind, Reply: reply, Engine: "qualified-tool", Checked: &checked})
+		_, _ = s.Tasks.RecordOutcome(workerID, run.TaskID, tasks.Outcome{Kind: stopKind, Reply: reply, Engine: "qualified-tool"})
 	}
-	_, _ = s.Tasks.RecordOutcome(workerID, run.TaskID, tasks.Outcome{Kind: kind, Reply: reply, Engine: "qualified-tool", Checked: &checked})
+	_, _ = s.Tasks.RecordOutcome(workerID, run.TaskID, tasks.Outcome{Kind: kind, Reply: reply, Engine: "qualified-tool", Verdict: verdict})
 }
 
 func (s *Server) qualificationCancelHandler(w http.ResponseWriter, r *http.Request) {
@@ -514,6 +515,12 @@ func (s *Server) qualificationEvidenceHandler(w http.ResponseWriter, r *http.Req
 		qualificationError(w, err)
 		return
 	}
+	// The page lists each case's files by name and fetches one when asked (qualificationArtifactHandler).
+	if run.CaseFiles, err = s.Qualification.CaseFiles(run.ID); err != nil {
+		qualificationError(w, err)
+		return
+	}
+	run.CaseArtifacts = nil
 	jsonResponse(w, run)
 }
 
@@ -552,7 +559,10 @@ func (s *Server) qualificationArtifactHandler(w http.ResponseWriter, r *http.Req
 	}
 	b, ok := run.Artifacts[name]
 	if caseID := r.URL.Query().Get("case"); caseID != "" {
-		b, ok = run.CaseArtifacts[caseID][name]
+		if b, ok, err = s.Qualification.CaseArtifact(run.ID, caseID, name); err != nil {
+			qualificationError(w, err)
+			return
+		}
 	}
 	if !ok {
 		jsonStatusError(w, 404, "No such saved artifact.")
@@ -562,4 +572,18 @@ func (s *Server) qualificationArtifactHandler(w http.ResponseWriter, r *http.Req
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Disposition", "attachment; filename=\""+strings.ReplaceAll(name, "\"", "")+"\"")
 	_, _ = w.Write(b)
+}
+
+// readinessVerdict is a readiness run's grade as a verdict like any gate's (R6), never a bare checked: passed is
+// done, a failed run not done, and a run that could not be finished (finishErr) unchecked. It used to be stored
+// checked whenever the run finished, a failed one included: an unseen success.
+func readinessVerdict(finishErr error, status, runID string) *tasks.GateVerdict {
+	result, detail := "fail", "the readiness verifier failed this run"
+	switch {
+	case finishErr != nil:
+		result, detail = "not_made", "the readiness run could not be finished"
+	case status == "passed":
+		result, detail = "pass", "the readiness verifier passed this run"
+	}
+	return tasks.GraderVerdict(tasks.ByReadiness, result, "code", "readiness.verify", detail, []string{"readiness:" + runID})
 }

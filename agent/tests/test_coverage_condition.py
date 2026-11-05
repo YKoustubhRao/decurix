@@ -1,5 +1,5 @@
 """
-CW (round 5 P6 on pc3, 2026-10-21): the blocking coverage check refused "List refunds over Rs 5,000 for approval" twice
+CW (round 5 P6, 2026-10-21): the blocking coverage check refused "List refunds over Rs 5,000 for approval" twice
 - "its log has 3 of 12: no row for Cafe Bloom, Lotus Yoga Centre ..." - taking the tracker's 12 customers for "every
 record". A stage that selects by a condition is checked only against the records meeting it, where code can decide
 the condition; otherwise nothing is decided. A file-making stage is told to add the missing rows.
@@ -12,6 +12,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from needs import require
+
+require("openpyxl")  # every test here reads or writes workbooks
 import openpyxl
 
 import test_long_requests as base  # noqa: F401 - stubs config first

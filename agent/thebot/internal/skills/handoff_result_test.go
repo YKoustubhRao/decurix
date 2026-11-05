@@ -1,6 +1,8 @@
 package skills
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -44,13 +46,16 @@ func TestUnverifiedHandoffIsAWorkPoint(t *testing.T) {
 		!strings.Contains(issues[0].What, "worker w2") || !strings.Contains(issues[0].Settle, "handoff status ho_2") {
 		t.Fatalf("issues: %+v", issues)
 	}
-	// Naming the handoff without saying it is not done does not settle it.
-	if got := handoffResultIssues(seen, "The review (handoff ho_2) is complete."); len(got) != 1 {
-		t.Fatalf("a report calling it complete settled it: %+v", got)
-	}
-	// Saying so does.
-	if got := handoffResultIssues(seen, "The review (handoff ho_2) is not done: the reviewer could not confirm it."); len(got) != 0 {
-		t.Fatalf("a report saying it is not done still raised: %+v", got)
+	// A report that names the handoff accounts for it: whether it says rightly what became of it is the reviewer's to
+	// judge from the fact it is shown - never decided by the report's wording (review T-18).
+	for _, report := range []string{"The review (handoff ho_2) is complete.", "The review (handoff ho_2) is not done."} {
+		if got := handoffResultIssues(seen, report); len(got) != 0 {
+			t.Fatalf("%q: a named handoff was decided by its wording: %+v", report, got)
+		}
+		st := &operatorState{Seen: seen}
+		if brief := st.reviewFacts(report, nil, ""); !strings.Contains(brief, "handoff ho_2 came back NOT verified") {
+			t.Fatalf("%q: the reviewer is not shown the unverified handoff:\n%s", report, brief)
+		}
 	}
 	if got := handoffResultIssues(printedHandoff("ho_5", "DONE (verified)", "done", "yes"), "Done."); len(got) != 0 {
 		t.Fatalf("a verified result raised: %+v", got)
@@ -70,5 +75,25 @@ func TestHandoffIssuesReadWhatTheOperatorSaw(t *testing.T) {
 	st.Seen = "=== ANSWER ho_7: NOT DONE (not verified) ===\nverified: no\n=== END ANSWER ho_7 ===\n"
 	if got := st.handoffIssues("Done."); got != nil {
 		t.Fatalf("an answer raised: %+v", got)
+	}
+}
+
+// With no review weighing the report (a local brain), a DONE over an unverified handoff is not checked, whatever the
+// report says of it (review round 2, R-1).
+func TestAnUnverifiedHandoffWithNoReviewIsNotChecked(t *testing.T) {
+	for _, done := range []string{"DONE:\nThe check (handoff ho_2) is done.", "DONE:\nThe check (handoff ho_2) is not done."} {
+		chat := &scriptedChat{replies: []string{"COMMAND:\ncat ho.txt", done}}
+		rc := operatorContext(t, chat)
+		if err := os.WriteFile(filepath.Join(rc.WorkDir, "ho.txt"),
+			[]byte(printedHandoff("ho_2", "NOT DONE (not verified)", "not_done", "no")), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		res, err := NewOperator().Run(rc, Subtask{Step: "check the part handed on", Type: "operator"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Verified || res.Meta["needsUserInput"] != true || !strings.Contains(res.Output, "handoff ho_2") {
+			t.Errorf("%q: %+v", done, res)
+		}
 	}
 }

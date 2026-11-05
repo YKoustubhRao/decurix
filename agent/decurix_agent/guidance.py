@@ -101,8 +101,14 @@ _exchanges = {"task": None, "said": []}
 MAX_EXCHANGES = 12
 
 
-def note_exchange(asked, reply):
-    """Keep one question of this task with the person's reply, for the final check (said_this_task)."""
+def note_exchange(asked, reply, judgement_id="", secret=False):
+    """
+    Keep one question of this task with the person's reply, for the final check (said_this_task), and on disk for the
+    task's other processes: the question, the reply (withheld like every store), the reply's judgement on the control
+    plane (`judgement_id`, captured with this very reply) and its text's hash. What is on disk is the worker's own
+    user's file: it backs nothing by itself - person_record.answers confirms each row from the control plane, and the
+    text it then uses is the control plane's (review round 10, R10-B1). A secret reply carries no hash.
+    """
 
     tid = task_context.current()
     if _exchanges["task"] != tid:
@@ -111,6 +117,77 @@ def note_exchange(asked, reply):
     if reply:
         _exchanges["said"].append((" ".join(str(asked or "").split())[:400], reply[:800]))
         del _exchanges["said"][:-MAX_EXCHANGES]
+        try:
+            from decurix_agent import person_record
+            from decurix_agent.computer import evidence, privacy
+            if tid:
+                evidence.NOTES_DIR.mkdir(parents=True, exist_ok=True)
+                row = {"asked": " ".join(str(asked or "").split())[:400], "reply": reply[:800],
+                       "judgement": str(judgement_id or "") if task_context.valid_judgement(judgement_id) else ""}
+                if row["judgement"] and not secret:
+                    row["sha256"] = person_record.text_hash(reply)
+                privacy.write_scrubbed(evidence.NOTES_DIR / f"{tid}.said", row, append=True, end="\n",
+                                       exempt=("sha256", "judgement"))
+        except Exception as exc:  # noqa: BLE001 - the in-process copy stays
+            log(f"guidance: could not keep the person's answer for the task's other processes: {exc}")
+
+
+def kept_replies(task_id=None):
+    """The task's kept replies as rows {asked, reply, judgement, sha256}, from every process ([] when none). Rows of
+    the worker's own file: person_record.answers confirms them; nothing here backs anything."""
+
+    tid = task_id or task_context.current()
+    out = []
+    try:
+        from decurix_agent.computer import evidence
+        for line in (evidence.NOTES_DIR / f"{tid}.said").read_text(encoding="utf-8").splitlines():
+            try:
+                data = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(data, dict) and data.get("reply"):
+                out.append({k: str(data.get(k) or "") for k in ("asked", "reply", "judgement", "sha256")})
+    except (OSError, TypeError):
+        pass
+    return out
+
+
+def exchanges(task_id=None):
+    """[(question, reply)] of the task, as kept on disk by every process ([] when none)."""
+
+    return list(dict.fromkeys((r["asked"], r["reply"]) for r in kept_replies(task_id)))
+
+
+def answers(task_id=None):
+    """The person's answers during the task, as one text, as kept on disk ("" when none). Not a source a pick may
+    rest on: that is person_record.answers, confirmed from the control plane."""
+
+    return "\n".join(dict.fromkeys(reply for _, reply in exchanges(task_id)))
+
+
+def forget_exchanges(task_id):
+    """The task is over: its kept questions and answers go with its other secret stores (privacy.clear_literals)."""
+
+    try:
+        from decurix_agent.computer import evidence
+        (evidence.NOTES_DIR / f"{task_id}.said").unlink()
+    except (OSError, TypeError):
+        pass
+    if _exchanges["task"] == task_id:
+        _exchanges.update(task=None, said=[])
+
+
+def current_skill():
+    """The skill the task being worked on runs: this process's guided run's, else the guided-run file's (a `gui`
+    command's process has no guided run of its own; the final gate, in the agent's process, reads its own). None."""
+
+    if _current and _current.get("skill"):
+        return _current["skill"]
+    try:
+        kept = json.loads(RUN_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return kept.get("skill") if isinstance(kept, dict) and kept.get("task_id") == task_context.current() else None
 
 
 def said_this_task():
@@ -137,7 +214,10 @@ _NOT_YET = re.compile(r"(?i)\b(first\b|before (you|that|filing|sending|pressing|
 
 def not_yet(reply):
     """Whether a refusal asks for something first and the action again after: the gate's own reading says so (an
-    "if" with a condition, or something the person wants to see), or the words do."""
+    "if" with a condition, or something the person wants to see). A reading that is a plain no (or yes) decides: the
+    words never turn it into "not yet" (review 2026-11-03, E-28: "No, not yet - I will do it myself first" read as a
+    no by the model was overridden by a word, and the gate could send the worker back to do what the person stopped).
+    Only with no reading at all, or an unclear one, do the words decide."""
 
     from decurix_agent.computer import approval
 
@@ -148,6 +228,8 @@ def not_yet(reply):
         said = {}
     if said.get("decision") == "if" or said.get("wants"):
         return True
+    if said.get("decision") in ("no", "yes"):
+        return False
     return bool(_NOT_YET.search(text))
 
 
@@ -238,7 +320,8 @@ def end():
 def _keep(record):
     try:
         RUN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        RUN_FILE.write_text(json.dumps(record), encoding="utf-8")
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(RUN_FILE, record, exempt=("values",))  # (the taught values are compared later)
     except (OSError, TypeError, ValueError):
         pass
 
@@ -331,7 +414,8 @@ def taught_values_check(skill, given):
         return ""
     try:
         told_path.parent.mkdir(parents=True, exist_ok=True)
-        told_path.write_text(json.dumps(sorted(told | keys)), encoding="utf-8")
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(told_path, sorted(told | keys))
     except OSError:
         pass
 

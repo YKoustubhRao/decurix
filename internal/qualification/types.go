@@ -129,13 +129,16 @@ type Run struct {
 	Revision         string     `json:"revision"`
 	Definition       Definition `json:"definition"`
 	// ProductionCase freezes the real inputs and independent check contract.
-	ProductionCase *Case                        `json:"production_case,omitempty"`
-	Status         string                       `json:"status"`
-	Findings       []Finding                    `json:"findings"`
-	Artifacts      map[string][]byte            `json:"artifacts,omitempty"`
-	CaseArtifacts  map[string]map[string][]byte `json:"case_artifacts,omitempty"`
-	StartedAt      time.Time                    `json:"started_at"`
-	EndedAt        time.Time                    `json:"ended_at,omitempty"`
+	ProductionCase *Case             `json:"production_case,omitempty"`
+	Status         string            `json:"status"`
+	Findings       []Finding         `json:"findings"`
+	Artifacts      map[string][]byte `json:"artifacts,omitempty"`
+	// CaseArtifacts is only what a run begun before qualification_files kept in its JSON; a case's files are stored
+	// in rows now (Store.CaseArtifact). CaseFiles names them by case, filled on read for the evidence page.
+	CaseArtifacts map[string]map[string][]byte `json:"case_artifacts,omitempty"`
+	CaseFiles     map[string][]string          `json:"case_files,omitempty"`
+	StartedAt     time.Time                    `json:"started_at"`
+	EndedAt       time.Time                    `json:"ended_at,omitempty"`
 }
 
 // Fingerprint includes every executable, environment, scope and suite input.

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/YKoustubhRao/decurix/internal/llm"
 	"github.com/YKoustubhRao/decurix/internal/qualification"
 )
 
@@ -162,7 +163,7 @@ func Author(ctx context.Context, chat Chatter, in AuthorInput) (AuthorOutput, er
 	if err != nil {
 		return AuthorOutput{}, err
 	}
-	out := AuthorOutput{Tokens: usageTokens(answer)}
+	out := AuthorOutput{Tokens: llm.ParseUsage(answer).Tokens()}
 	if status != 200 {
 		return out, Sentence(fmt.Sprintf("The hosted model answered %d.", status))
 	}

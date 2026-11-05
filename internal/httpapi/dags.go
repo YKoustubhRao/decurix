@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -28,7 +29,7 @@ func (s *Server) dagsPageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Web.RenderDags(w, webui.DagsPageData{Dags: list}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, "DAGs page", err)
 	}
 }
 
@@ -53,12 +54,14 @@ func (s *Server) dagPageHandler(w http.ResponseWriter, r *http.Request) {
 
 	desktops, err := s.Desktops.List(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("dag page: listing desktops: %v", err)
+		http.Error(w, "could not list the desktops", http.StatusInternalServerError)
 		return
 	}
 
-	if err := s.Web.RenderDag(w, webui.DagPageData{DAG: d, Desktops: desktops}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.Web.RenderDag(w, webui.DagPageData{DAG: d, Desktops: desktops, Gated: isGated(r)}); err != nil {
+		log.Printf("dag page: render: %v", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
 }
 
@@ -85,7 +88,7 @@ func (s *Server) createDagHandler(w http.ResponseWriter, r *http.Request) {
 
 	d, err := s.Dags.Create(r.FormValue("name"))
 	if err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		dagReply(w, nil, err, "no such DAG")
 		return
 	}
 
@@ -171,7 +174,7 @@ func (s *Server) deleteDagNodeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Dags.DeleteNode(r.FormValue("id")); err != nil {
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		dagReply(w, nil, err, "no such node")
 		return
 	}
 
@@ -238,6 +241,29 @@ func (s *Server) runDagHandler(w http.ResponseWriter, r *http.Request) {
 	dagReply(w, run, err, "no such DAG")
 }
 
+// cancelDagRunHandler ends a run a person gave up on (POST id=<run>): nothing more of it is sent, and what was in
+// flight is marked cancelled. A person's, on the primary listener only (RegisterLocalRoutes).
+func (s *Server) cancelDagRunHandler(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
+	if s.DagRunner == nil {
+		jsonStatusError(w, http.StatusServiceUnavailable, "DAG runs are not available")
+		return
+	}
+
+	cancelled, err := s.DagRunner.Cancel(strings.TrimSpace(r.FormValue("id")))
+	if err != nil {
+		jsonError(w, err)
+		return
+	}
+	if !cancelled {
+		jsonStatusError(w, http.StatusConflict, "That run is not running.")
+		return
+	}
+	jsonResponse(w, map[string]string{"status": "cancelled"})
+}
+
 // dagRunsHandler lists a DAG's run history, most recent first.
 func (s *Server) dagRunsHandler(w http.ResponseWriter, r *http.Request) {
 	if !requireGet(w, r) {
@@ -283,14 +309,18 @@ func (s *Server) dagNodeDesktop(w http.ResponseWriter, r *http.Request) (string,
 }
 
 // dagReply answers a DAG edit with v, or with what err calls for:
-// dag.ErrNotFound is a 404 saying missing, any other error a 400 with the
-// store's reason.
+// dag.ErrNotFound is a 404 saying missing, an edit the store refused
+// (dag.InputError) a 400 with its reason, anything else an internal error
+// that is logged and never echoed.
 func dagReply(w http.ResponseWriter, v any, err error, missing string) {
+	var refused *dag.InputError
 	switch {
 	case errors.Is(err, dag.ErrNotFound):
 		jsonStatusError(w, http.StatusNotFound, missing)
+	case errors.As(err, &refused):
+		jsonStatusError(w, http.StatusBadRequest, refused.Msg)
 	case err != nil:
-		jsonStatusError(w, http.StatusBadRequest, err.Error())
+		jsonError(w, err)
 	default:
 		jsonResponse(w, v)
 	}

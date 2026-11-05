@@ -2,9 +2,8 @@
 Facts about a long request's stage result that code decides where it is precise (long_task.stage_finished).
 
 - removed_residue: a record the person removed mid-run (an amendment the model read as removing it: "exclude bill
-  NS-0457") whose figures are still inside a total. Found live (round 5 P1, 2026-10-20): the bill's row left the
-  purchase register, but the return sheet's eligible credit stayed the register's eligible tax plus that bill's 4,533.00
-  - a wrong tax return.
+  <ref>") whose figures may still be inside a total. Found live (2026-10-20): the bill's row left the register, but a
+  summary sheet's total stayed the register's total plus that bill's figure.
 
 Nothing here knows an application, a tax or a customer: tables, figures and names. Which of these facts may fail a
 stage is long_task.CHECK_MATURITY's (docs/harness-audit.md): only domain-free invariants block; the rest is evidence.
@@ -19,7 +18,7 @@ from decurix_agent.sources import _money as _fmt
 
 TABLE_KINDS = {".xlsx", ".xlsm", ".csv", ".tsv"}
 
-# A record's reference in words: letters, then digits (NS-0457, INV/2026/12, PO 7781).
+# A record's reference in words: letters, then digits (AB-0101, INV/2026/12, PO 7781).
 RECORD_ID = re.compile(r"\b[A-Z][A-Z0-9]{1,9}(?:[-/][A-Z0-9]{1,10}){1,3}\b")
 MONEY = re.compile(r"(?<![\d.])\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?(?![\d])|(?<![\d.,])\d{3,}\.\d{2}(?![\d])")
 
@@ -65,7 +64,7 @@ def removed_records(amendments):
     removing ("removed", whole records - a line of a record is "removed_lines" and never here) less what a later change
     put back ("restored"). long_task.classify keeps only references the person's own message writes. An amendment with
     no such field removes nothing: no word list reads the person's words (harness review, 2026-10-21 - "Don't remove
-    INV-2026-001 after all" and "Exclude the freight line from PO-7781's total" were both read as removals).
+    INV-0001 after all" and "Exclude the freight line from PO-0001's total" were both read as removals).
     """
 
     out = []
@@ -78,16 +77,26 @@ def removed_records(amendments):
     return out
 
 
+def names_in(name, text):
+    """Whether `text` names `name` as a whole token, separators aside ("PO-1" in "po1_bill", "PO 1.pdf"), never as part
+    of a longer one: "po1" is not in "po12.pdf". Found in review (2026-11-02): a substring match took another record's
+    file."""
+
+    chars = [c for c in str(name or "").lower() if c.isalnum()]
+    if not chars:
+        return False
+    pattern = r"(?<![a-z0-9])" + r"[^a-z0-9]*".join(re.escape(c) for c in chars) + r"(?![a-z0-9])"
+    return bool(re.search(pattern, str(text or "").lower()))
+
+
 def record_figures(reference, documents):
     """The money figures of a removed record, from the input document that is that record (its name or its text)."""
 
     from decurix_agent import payees
-    key = re.sub(r"[^a-z0-9]", "", reference.lower())
     figures = set()
     for doc in documents:
-        name_key = re.sub(r"[^a-z0-9]", "", Path(doc).stem.lower())
         text = ""
-        if key and key in name_key:
+        if names_in(reference, Path(doc).stem):
             text = payees._doc_text(doc)
         if not text:
             continue
@@ -144,17 +153,39 @@ def _column_sums(rows):
     return sums
 
 
-# A row that shows a record as taken out, not counted: what a removed record may still appear as.
-_SHOWN_OUT = re.compile(r"(?i)\b(?:cancel\w*|exclud\w*|removed|left out|void\w*|withdrawn|not (?:counted|included|claimed)|"
-                        r"reversed|struck|deleted|omitted)\b")
+# A cell that is a figure written as text: a CSV's every cell is text ("66700", "4,533.00", "(1,200)").
+_FIGURE_TEXT = re.compile(r"^\s*[-+]?\(?\s*(?:₹|rs\.?|inr)?\s*\d[\d,]*(?:\.\d+)?\s*\)?\s*$", re.I)
+
+
+def _figure(cell):
+    """A cell's figure: a number as stored, or a text that is only a number (as every cell of a CSV is); else None.
+    Found in review (2026-11-02): only stored numbers counted, so in a CSV no removed record ever had figures and the
+    checks of removed records found nothing."""
+
+    if isinstance(cell, bool):
+        return None
+    if isinstance(cell, (int, float)):
+        return float(cell)
+    if isinstance(cell, str) and _FIGURE_TEXT.match(cell):
+        value = _number(re.sub(r"(?i)₹|rs\.?|inr|[()\s]", "", cell))
+        return -value if value is not None and "(" in cell else value
+    return None
+
+
+def _as_figures(rows):
+    """A CSV's rows with each cell that is only a number read as that number (a workbook stores them so already)."""
+
+    return [[(_figure(c) if isinstance(c, str) and _FIGURE_TEXT.match(c) else c) for c in row] for row in rows]
 
 
 def removed_still_present(amendments, made):
     """
-    Sentences for each record the person removed that a made table still holds as a full row - a row naming it with
-    figures and no word that it was taken out (cancelled, excluded ...). Certain: the record's reference is in the
-    person's own change. Found live (round 5 P1 on pc3, 2026-10-21): "Bill NS-0457 ... was cancelled - leave it out of
-    everything", and the Purchase Register still had NS-0457 as a full row with its 66,700 and its tax.
+    Sentences for each record the person removed that a made table still has as a row of its own: a cell that IS the
+    record's reference (the whole cell, not a word inside a note), on a row with figures. Mechanical, and evidence for
+    the judge: whether that row shows the record taken out ("cancelled", "taken out at your request", in any wording) is
+    a reading, which the judge makes from the row's text quoted here. A row that only mentions the reference inside
+    other text (a credit note "against" it) is not the record's own row. Found (review 2026-11-03, E-07): a word list
+    decided "shown as taken out", and a correct row worded differently was refused.
     """
 
     removed = removed_records(amendments)
@@ -164,21 +195,25 @@ def removed_still_present(amendments, made):
     for label, header, rows in sheet_tables(made):
         for row in rows:
             cells = [c for c in row if c not in (None, "")]
-            text = " | ".join(str(c) for c in cells)
+            own = {str(c).strip().lower() for c in cells}
             for reference in removed:
-                if not re.search(r"(?<![\w/-])" + re.escape(reference) + r"(?![\w/-])", text, re.I):
+                if reference.strip().lower() not in own:
                     continue
-                if _SHOWN_OUT.search(text) or not any(_number(c) not in (None, 0) for c in cells if not isinstance(c, str)):
-                    continue  # shown as taken out, or a mention with no figures
-                out.append(f"{label}: {reference} is still a row (\"{text[:120]}\") though the person removed it")
+                if not any(_figure(c) not in (None, 0) for c in cells if str(c).strip().lower() != reference.lower()):
+                    continue  # (its row carries no figures: nothing of it can be counted)
+                text = " | ".join(str(c) for c in cells)
+                out.append(f"{label}: {reference} has a row of its own with figures (\"{text[:120]}\") though the "
+                           "person removed it - check that the row shows it taken out and that no total counts it")
     return list(dict.fromkeys(out))[:8]
 
 
 def removed_residue(amendments, made, documents):
     """
     Sentences for each figure in a made workbook that is a column's total (or its total over the rows of one kind)
-    plus exactly one money figure of a record the person removed: the record left the table, its figures stayed in the
-    total. [] when nothing was removed or nothing adds up so.
+    plus exactly one money figure of a record the person removed: the record may have left the table while its figures
+    stayed in the total. [] when nothing was removed or nothing adds up so. EVIDENCE only: with many sums and many
+    figures an unrelated total can add up the same way (review 2026-11-03, E-08: a courier charge equal to the removed
+    bill's freight line refused a correct total).
     """
 
     removed = removed_records(amendments)
@@ -192,6 +227,8 @@ def removed_residue(amendments, made, documents):
         return []
     out = []
     for path, sheets in _table_files(made):
+        if Path(str(path)).suffix.lower() in {".csv", ".tsv"}:
+            sheets = [(name, _as_figures(rows)) for name, rows in sheets]
         totals = {}
         for name, rows in sheets:
             for (column, kind), value in _column_sums(rows).items():
@@ -216,7 +253,7 @@ def removed_residue(amendments, made, documents):
                             out.append(f"{Path(str(path)).name}: {name} \"{label}\" {column} {_fmt(value)} is "
                                        f"{where[0]}'s {where[1]}{' (' + where[2] + ')' if where[2] else ''} "
                                        f"{_fmt(base)} plus {_fmt(figure)} of {reference}, which was removed - the "
-                                       "total still includes it")
+                                       "total may still include it (an arithmetic match only: check how it is made)")
                             break
     return list(dict.fromkeys(out))[:8]
 
@@ -225,7 +262,7 @@ def sheet_tables(paths):
     """
     [(label, header, rows)] of every table in these files: a sheet may hold several, one under another (a per-customer
     ageing, the receipts applied, a ranking), each after a blank row and its own header - read as one, a later table's
-    dates and ranks were taken for the first one's parties. Found live (round 5 P1, 2026-10-20, CP1).
+    dates and ranks were taken for the first one's parties. Found live (2026-10-20).
     """
 
     out = []
@@ -275,9 +312,8 @@ def tables_of(paths):
 # ============================================================
 # An earlier finding a re-check dropped
 # ============================================================
-# Found live (round 5 P1, 2026-10-20): re-run for "leave the cancelled bill out", the stage rebuilt the purchase
-# register and lost an unrelated finding - the wrong-rate bill flagged with its credit held showed "Included, Eligible",
-# while the return's note still held it out.
+# Found live (2026-10-20): re-run for "leave the cancelled bill out", the stage rebuilt its register and lost an
+# unrelated finding - a row flagged and held showed "Included" again, while another output still held it out.
 
 FLAG_WORDS = re.compile(r"\b(?:flag\w*|held|hold|duplicat\w*|mismatch\w*|exception\w*|ineligible|not eligible|excluded|"
                         r"disput\w*|wrong|short\w*|over-?billed|blocked|reject\w*|discrepan\w*|kept out|not claimed)\b",
@@ -335,9 +371,9 @@ def lost_findings(findings, made):
 # ============================================================
 # A status recorded for an item that another output contradicts
 # ============================================================
-# Found live (round 5 P6, 2026-10-20): the tracker's Action said "Assess against policy and process refund" for the
-# refunds up to Rs 5,000, while the next stage's reply drafts approved them as the request says - the record and the
-# drafts disagreed, and the cross-check (figures only) did not see it.
+# Found live (2026-10-20): a tracker's Action said an item was still to be assessed, while the next stage's reply
+# drafts approved it as the request says - the record and the drafts disagreed, and the cross-check (figures only) did
+# not see it.
 
 ITEM_ID = re.compile(r"\b[A-Z]{1,6}[-/]?\d{2,8}(?:[-/]\d{1,6})?\b")
 STATUS_COLUMN = re.compile(r"\b(?:status|action|decision|outcome|resolution|next step)\b", re.I)
@@ -345,16 +381,15 @@ STATUS_COLUMN = re.compile(r"\b(?:status|action|decision|outcome|resolution|next
 _KINDS = [
     ("open", re.compile(r"\b(?:assess\w*|review\w*|to (?:check|decide|confirm)|investigat\w*|tbd|to be decided|"
                         r"check against)\b", re.I)),
-    ("approved", re.compile(r"\b(?:approv(?:e|ed|al granted)|accept\w*|refund (?:issued|processed|initiated)|"
-                            r"process(?:ed)? (?:the )?refund|releas\w*)\b", re.I)),
+    ("approved", re.compile(r"\b(?:approv(?:e|ed|al granted)|accept\w*|releas\w*)\b", re.I)),
     ("for approval", re.compile(r"\b(?:for (?:your |my |the person's )?approval|pending approval|awaiting approval|"
                                 r"on hold|held|hold)\b", re.I)),
     ("rejected", re.compile(r"\b(?:reject\w*|declin\w*|not approved|refus\w*)\b", re.I)),
 ]
 # What a draft tells its recipient, in words that commit to a status.
 _DRAFT_KINDS = [
-    ("approved", re.compile(r"\b(?:(?:has|have) been approved|(?:is|are) approved|we (?:have )?approved|approved your|"
-                            r"refund (?:has been|will be|is being) (?:processed|issued|initiated|credited))\b", re.I)),
+    ("approved", re.compile(r"\b(?:(?:has|have) been approved|(?:is|are) approved|we (?:have )?approved|approved "
+                            r"your)\b", re.I)),
     ("for approval", re.compile(r"\b(?:under review|being reviewed|for approval|pending approval|we will (?:review|"
                                 r"get back))\b", re.I)),
     ("rejected", re.compile(r"\b(?:cannot approve|can ?not be approved|has been declined|is declined|rejected)\b", re.I)),
@@ -371,8 +406,8 @@ def _kind(text, kinds):
 
 
 # The column whose value identifies a row's item: an order / invoice / reference number, the source message's file, a
-# record id - never a product, SKU, line or category code that many rows share. Found live (round 5 P2, 2026-10-20):
-# WB-500 on Harbour Hotels' held line and on Cafe Bloom's released line was taken for one item in two states.
+# record id - never a product, SKU, line or category code that many rows share. Found live (2026-10-20): one product
+# code on one customer's held line and on another's released line was taken for one item in two states.
 KEY_COLUMN = re.compile(r"\b(?:order|invoice|so|po|reference|ref|ticket|case|record|file|message|e-?mail id)\b", re.I)
 NOT_KEY_COLUMN = re.compile(r"\b(?:sku|product|item code|item|line|category|code|description|qty|quantity)\b", re.I)
 
@@ -383,7 +418,7 @@ _REF_FIRST = re.compile(r"\b(?:order|invoice|so|po|reference|ref|ticket|case|rec
 def _key_columns(header, rows):
     """
     The table's key columns (KEY_COLUMN, not NOT_KEY_COLUMN) whose every value names one item only: a value shared by
-    rows that differ in another key column ("WA-1810" for two customers' chats) identifies nothing. An order or
+    rows that differ in another key column ("REF-0001" for two customers' chats) identifies nothing. An order or
     reference column first, the source file after.
     """
 
@@ -462,13 +497,11 @@ def status_conflicts(made, drafts=()):
 # ============================================================
 # Work left as an instruction; a reference with no evidence
 # ============================================================
-# Found live (round 5 P6, 2026-10-20): the tracker's Action for a refund up to Rs 5,000 read "calculate affected units x
-# unit price from order and process per policy" - work the stage could do itself, left for someone else - and an
-# automatic reply ("Automatic reply: Your October statement") was given another email's order number.
+# Found live (2026-10-20): a tracker's Action read "calculate affected units x unit price from order" - work the stage
+# could do itself, left for someone else - and an automatic reply was given another email's order number.
 
 DEFERRED = re.compile(r"\b(?:calculate|compute|work out|to be (?:calculated|computed|checked|confirmed|decided)|"
-                      r"check (?:it )?against (?:the )?policy|process (?:it )?(?:as |per |according to )(?:the )?policy|"
-                      r"verify (?:the )?amount|determine (?:the )?(?:amount|refund))\b", re.I)
+                      r"verify (?:the )?amount|determine (?:the )?amount)\b", re.I)
 REFERENCE_COLUMN = re.compile(r"\b(?:order|invoice|so|po|reference|ref)\b\.?\s*(?:no|number|#|id)?\b", re.I)
 _AUTO_HEADERS = re.compile(r"^(?:auto-submitted:\s*auto-|x-autoreply:|x-autorespond:|precedence:\s*auto_reply)", re.I | re.M)
 _AUTO_SUBJECT = re.compile(r"^subject:\s*(?:automatic reply|auto(?:matic)?[- ]?reply|out of (?:the )?office)", re.I | re.M)
@@ -525,21 +558,24 @@ def unsupported_references(made, messages):
 # ============================================================
 # Computed amounts that cannot be reproduced; a row that contradicts itself
 # ============================================================
-# Found live (round 5 P6, 2026-10-20): "Approve refund Rs 1,800.00" for 60 lanyards the order lists at Rs 35 (Rs 2,100) -
-# no working anywhere to show where 1,800 came from; and an email that says "we do not want a refund" was filed in the
-# category Refund while its own Action said "no refund requested".
+# Found live (2026-10-20): an Action stated an amount for an item that its order's quantity and price do not give -
+# no working anywhere to show where it came from; and a message saying it wanted no X was filed in the category X while
+# its own Action said "no X requested".
 
 QTY_COLUMN = re.compile(r"\b(?:qty|quantity|units?|count|no\.? of)\b", re.I)
 PRICE_COLUMN = re.compile(r"\b(?:unit price|price|rate|unit cost|cost per|per unit)\b", re.I)
-RESULT_COLUMN = re.compile(r"\b(?:result|amount|refund|total|value|line total|computed)\b", re.I)
+RESULT_COLUMN = re.compile(r"\b(?:result|amount|total|value|line total|computed)\b", re.I)
 SOURCE_COLUMN = re.compile(r"\b(?:source|from|where|taken from)\b", re.I)
 MONEY_IN_TEXT = re.compile(r"(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d{1,2})?)", re.I)
-DERIVED_AMOUNT = re.compile(r"\b(?:refund|credit(?: note)?|discount|charge|fee|penalty|interest|compensation)\b", re.I)
+# Which amounts a status cell states need a working is not told by the kind of amount (review 2026-11-03, E-28: a
+# list of business words decided it): any money amount a status cell states is one. Evidence only, never a block.
 # The factors a working may record besides quantity and price, and the columns that are no factor at all.
-TAX_COLUMN = re.compile(r"\b(?:gst|vat|tax|cgst|sgst|igst)\b.*(?:%|pct|percent|rate)|(?:%|pct|percent|rate).*\b(?:gst|vat|"
-                        r"tax)\b|^\s*(?:gst|vat|tax)\s*$", re.I)
+# A percentage factor: a column whose header says it is a percentage - whatever the percentage is of (review
+# 2026-11-03, E-28: a list of tax names decided it). A working applies it on top of quantity x price, as it does a
+# discount below it (reproduces); a discount column is told first (_working_columns).
+PERCENT_COLUMN = re.compile(r"%|\bpct\b|\bper ?cent\b", re.I)
 DISCOUNT_COLUMN = re.compile(r"\b(?:discount|disc\.?|rebate)\b", re.I)
-SUBTOTAL_COLUMN = re.compile(r"\b(?:taxable|subtotal|sub-total|net|gross|base|before tax|ex[- ]gst|excl\w*)\b", re.I)
+SUBTOTAL_COLUMN = re.compile(r"\b(?:taxable|subtotal|sub-total|net|gross|base|before tax|excl\w*)\b", re.I)
 IDENT_COLUMN = re.compile(r"\b(?:line|no\.?|number|row|id|code|#|days?|terms|year|month|page|sl|sr|s\.no)\b", re.I)
 
 
@@ -552,10 +588,10 @@ def _working_columns(header):
         h = str(h or "")
         if re.search(r"(?i)\bsource\b|\btaken from\b|\bread from\b", h):
             kinds["source"].append(i)  # (before the rest: "Unit Price Source" says where, it is no price)
-        elif TAX_COLUMN.search(h):
-            kinds["tax"].append(i)
-        elif DISCOUNT_COLUMN.search(h):
+        elif DISCOUNT_COLUMN.search(h):  # (before a percentage: "Discount %" is a discount)
             kinds["discount"].append(i)
+        elif PERCENT_COLUMN.search(h):
+            kinds["tax"].append(i)
         elif PRICE_COLUMN.search(h):  # (before quantity: "Unit price" is a price)
             kinds["price"].append(i)
         elif QTY_COLUMN.search(h):
@@ -606,6 +642,22 @@ def _column_index(letters):
     return n - 1
 
 
+def _commas_only_in_round(expr):
+    """Whether every comma of an expression is the one separating ROUND's two arguments, at that call's own depth."""
+
+    stack = []
+    for i, ch in enumerate(expr):
+        if ch == "(":
+            stack.append(expr[max(0, i - 6):i] == "_round")
+        elif ch == ")":
+            if not stack:
+                return False
+            stack.pop()
+        elif ch == "," and not (stack and stack[-1]):
+            return False
+    return not stack
+
+
 def evaluate(formula, excel_row, row, formulas=None, depth=0):
     """
     The value of a simple formula from its own row's cells: + - * / ( ), ROUND, numbers and references to cells of the
@@ -636,6 +688,10 @@ def evaluate(formula, excel_row, row, formulas=None, depth=0):
     expr = re.sub(r"(?i)\bROUND\s*\(", "_round(", expr)
     if failed or not re.fullmatch(r"[\d.\s+\-*/(),e]*", expr.replace("_round", "")):
         return None
+    if not _commas_only_in_round(expr):
+        return None  # a comma outside ROUND( makes a tuple, and (1,)*N would allocate without bound (E-39)
+    if "**" in re.sub(r"\s", "", expr):
+        return None  # a power is no formula of a row, and 9**9**9 would never finish
     try:
         return float(eval(expr, {"__builtins__": {}}, {"_round": lambda x, n=0: round(x + 0.0, int(n))}))  # noqa: S307
     except Exception:  # noqa: BLE001 - a formula it cannot work out is not decided
@@ -727,8 +783,10 @@ def reproduces(work, target):
         for _, p in work["price"]:
             for t in taxes:
                 for d in discounts:
-                    rate_t = t / 100 if t > 1 else t
-                    rate_d = d / 100 if d > 1 else d
+                    # A rate of 1 or more is a percent (1 is 1%, never 100%); under 1 it is the fraction a
+                    # percent-formatted cell holds (0.18 for 18%).
+                    rate_t = t / 100 if t >= 1 else t
+                    rate_d = d / 100 if d >= 1 else d
                     if _matches(q * p * (1 + rate_t) * (1 - rate_d), target):
                         return True
     return False
@@ -811,8 +869,8 @@ def _stated_against_working(amount, row, refs, work):
     cannot be decided. It holds when it is any result of the one working row the row's full key ties it to, or a sum
     of one order's working rows (any column: pre-tax, tax, with tax). A reference several working rows share (an
     order's PO, a chat's id, a product code) never ties a row on its own: tied to no single row, nothing is decided.
-    Found live (round 5 P2, 2026-10-20): a line's "Decision reason" states its ORDER's total incl tax (50,123.60, for
-    the credit check), and was compared with one line's working (17,980.00).
+    Found live (2026-10-20): a line's "Decision reason" states its ORDER's total with tax, and was compared with one
+    line's working.
     """
 
     refset = set(refs)
@@ -848,8 +906,8 @@ def working_problems(made, sources=(), messages=()):
     factor combinations (quantity x price, with its tax % and discount %) gives its result; a price no source table it
     names has for its references; an amount a status or action states for an item that its working does not give. A
     working whose numbers cannot be told apart (columns of no known kind) is not decided. [] when nothing is computed.
-    Found live (round 5 P3, 2026-10-20): "194,880.00, but 120 x 1,450.00 is 174,000.00" - right, with 12% tax - and
-    "35,280.00, but 100 x 420.00" - right, for the 84 received - refused a correct AP register twice.
+    Found live (2026-10-20): a result right with its tax rate, and one right for the quantity received rather than
+    ordered, were each refused as "no combination of its factors" - a correct register, twice.
     """
 
     out = []
@@ -871,9 +929,9 @@ def working_problems(made, sources=(), messages=()):
             by_ref.setdefault(ref, (set(), label))[0].update(v for _, v in w["results"])
         if refs and w["source"]:
             prices = [v for _, v in w["price"]]
-            named = [t for t in source_tables if Path(t[0].split(" (")[0]).stem.lower() in w["source"].lower()]
+            named = [t for t in source_tables if names_in(Path(t[0].split(" (")[0]).stem, w["source"])]
             for t_label, header, rows in named:
-                pcols = [i for i, h in enumerate(header) if PRICE_COLUMN.search(h or "") and not TAX_COLUMN.search(h or "")]
+                pcols = [i for i, h in enumerate(header) if PRICE_COLUMN.search(h or "") and not PERCENT_COLUMN.search(h or "")]
                 if not pcols:
                     continue
                 for row in rows:
@@ -886,7 +944,7 @@ def working_problems(made, sources=(), messages=()):
                                    f"has {_fmt(theirs[0])}")
     for label, header, row, i, cell in _status_cells(made):
         m = MONEY_IN_TEXT.search(cell)
-        if not m or not DERIVED_AMOUNT.search(cell):
+        if not m:
             continue
         amount = _number(m.group(1))
         refs = _refs(row)
@@ -898,8 +956,8 @@ def working_problems(made, sources=(), messages=()):
                            f"{tied[0]} gives {_fmt(tied[1])}")
         elif not worked and work and refs and amount is not None:
             # Only a derived amount needs a working: one the row's own message states was read, and a row tied
-            # to no message is not decided (round 5 P6, 2026-10-20: five refunds the customers' own emails
-            # state were refused for "no working").
+            # to no message is not decided (2026-10-20: five amounts the customers' own emails state were
+            # refused for "no working").
             if stated_by_message(amount, row, read) is not False:
                 continue
             out.append(f"{label}: {', '.join(refs)} - {header[i]} states {_fmt(amount)} with no working "
@@ -941,12 +999,12 @@ def formula_contradictions(made):
     return list(dict.fromkeys(out))[:10]
 
 
-# A short product code in a cell of its own ("LAN-S", "PK-BOX", "WB-500").
+# A short product code in a cell of its own ("AB-S", "PK-BOX", "XY-500").
 _ITEM_CODE = re.compile(r"[A-Z][A-Z0-9]{1,7}(?:-[A-Z0-9]{1,6}){1,2}")
 
 
 def unworked_amounts(made, messages=()):
-    """Sentences for amounts a status/action cell states for an item (a refund, a credit ...) that the row's own source
+    """Sentences for amounts a status/action cell states for an item (any money amount) that the row's own source
     message does not state (so the stage computed it) when no table of the made files records any working (quantity,
     price, result) at all."""
 
@@ -956,7 +1014,7 @@ def unworked_amounts(made, messages=()):
     out = []
     for label, header, row, i, cell in _status_cells(made):
         m = MONEY_IN_TEXT.search(cell)
-        if m and DERIVED_AMOUNT.search(cell):
+        if m:
             # An amount the item's own message states was read, not computed; a row tied to no message is
             # not decided.
             amount = _number(m.group(1).rstrip("."))
@@ -996,9 +1054,8 @@ def self_contradictions(made):
 # ============================================================
 # A summary figure against the rows its own workbook counts
 # ============================================================
-# Found live (round 5 P1 on pc3, 2026-10-21, series 12): the return sheet gave its three eligible tax credits as 0 while
-# the same workbook's Purchase Register counted 38,534.40 / 38,534.40 / 14,339.00 over its eligible rows (the duplicate
-# BCP-7781 once, NS-0457 cancelled, SP-2291's credit held) - and the net payable followed the 0.
+# Found live (2026-10-21): a summary sheet gave three totals as 0 while the same workbook's register counted them
+# over its rows (a duplicate counted once, a cancelled bill and a held one left out) - and the net figure followed the 0.
 
 _LEFT_OUT_ROW = re.compile(r"(?i)\b(?:duplicat\w*|cancel\w*|held|hold|kept out|keep\b[^;|]{0,20}\bout|blocked|excluded?|"
                            r"not eligible|ineligible|reversed|void)\b")
@@ -1065,9 +1122,8 @@ def summary_vs_detail(made):
 # ============================================================
 # What a draft states about its recipient's own record
 # ============================================================
-# Found live (round 5 P4 on pc3, 2026-10-21, series 13): the four welcome drafts named managers no source has (Rakesh
-# Menon, Meera Sethi, Arjun Rao) or another joiner's (Jenny Wu), and joining dates of 04 and 11 Nov for joiners starting
-# on 02 Nov - while the tracker and the portal were right. Nothing checked what a draft says.
+# Found live (2026-10-21): four drafts named people no source has, or another recipient's, and dates other than each
+# recipient's own - while the tracker and the portal were right. Nothing checked what a draft says.
 
 # Header words too general to say which value a draft means: "date", "name", "amount" are anything's.
 _GENERIC_HEADER_WORDS = {"date", "name", "amount", "number", "value", "total", "type", "status", "code", "email", "mail",

@@ -128,7 +128,7 @@ def _read_active():
 
 def _write_active(data):
     ACTIVE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    recording.write_whole(ACTIVE_FILE, json.dumps(data))
+    recording.write_whole(ACTIVE_FILE, data)
 
 
 def _clear_active():
@@ -215,8 +215,10 @@ def start(title="", description="", task_id=""):
     env["PYTHONPATH"] = package_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
 
     with open(LOG_FILE, "a", encoding="utf-8") as output:
+        # (Isolated, like the agent: nothing from the worker's home or environment is imported - the package's own
+        # folder is put on sys.path by the command itself, as PYTHONPATH is not read under -I.)
         _process = subprocess.Popen(
-            [sys.executable, "-m", "decurix_agent.computer.demonstration", session_id],
+            [sys.executable, "-I", "-c", ISOLATED_RUN, package_root, "decurix_agent.computer.demonstration", session_id],
             env=env,
             cwd=package_root,
             stdin=subprocess.DEVNULL,
@@ -935,6 +937,18 @@ class Recorder:
         point = action.get("point")
         text, withheld = privacy.withhold_text(element, action.get("text")) if kind == "type" else (None, None)
 
+        # Fail closed: text whose field cannot be told, typed while a secret
+        # field is on the screen, may have gone into that field. "On the
+        # screen" is any look from the one before the typing on: found live
+        # (2026-10-14), a password typed into a field that could not be told
+        # was kept in plain text because the look this run was judged by had
+        # been taken after Sign in had already taken the page away. Decided
+        # before the summary is worded: built first, the summary kept the
+        # text this withholds (review 2026-11-03, D-02).
+        if kind == "type" and text is not None and element is None \
+                and (privacy.secret_boxes((observation or {}).get("elements")) or self._secret_around(action["t"])):
+            text, withheld = None, "typed while a password field was on screen, into a field that could not be told"
+
         # Where it happened: what the screen said at the moment, else the last look.
         if located is not None:
             window, url = located.get("window") or "", located.get("url") or ""
@@ -977,17 +991,6 @@ class Recorder:
         # has no step that opened it).
         if located is not None and located.get("app"):
             entry["app"] = located["app"]
-
-        # Fail closed: text whose field cannot be told, typed while a secret
-        # field is on the screen, may have gone into that field. "On the
-        # screen" is any look from the one before the typing on: found live
-        # (2026-10-14), a password typed into a field that could not be told
-        # was kept in plain text because the look this run was judged by had
-        # been taken after Sign in had already taken the page away.
-        if kind == "type" and text is not None and element is None \
-                and (privacy.secret_boxes((observation or {}).get("elements")) or self._secret_around(action["t"])):
-            text, withheld = None, "typed while a password field was on screen, into a field that could not be told"
-            entry["text"] = None
 
         if kind == "type":
             # What a person types goes in at the caret. Replayed, it replaces
@@ -1229,8 +1232,8 @@ class Recorder:
             "window": (before or {}).get("active_title"),
         }
         self.latest = None
-        self._input_while_paused = False
-        self._typed_while_paused = False
+        # (The flags of input while paused are cleared when the pause begins, in _on_pause - not here: this runs on the
+        # processing thread a moment later, and clearing them here erased what the person typed in that moment.)
         log(f"Paused: {self._pause['reason']}")
 
     def _resumed(self):
@@ -1339,6 +1342,10 @@ class Recorder:
                 self._look()
 
     def _on_pause(self, *_):
+        # Cleared before the reader starts counting input as the pause's: found in review (2026-11-03, D-30), they were
+        # cleared later, on the processing thread, so a password typed just after Pause left no private step.
+        self._input_while_paused = False
+        self._typed_while_paused = False
         self.paused = True
         self.pause_requested = True
 
@@ -1368,7 +1375,7 @@ class Recorder:
         # Input is being captured now. The first full screen/accessibility
         # observation can take longer than start()'s deadline on a busy
         # desktop, so it must not hold up the ready handshake.
-        READY_FILE.write_text(str(os.getpid()), encoding="utf-8")
+        privacy.write_scrubbed(READY_FILE, str(os.getpid()))
         log(f"Recording demonstration {self.session_id}; ignoring input from devices {sorted(self.agent_devices)}")
 
         return self._record(reader)
@@ -1593,6 +1600,11 @@ def _keyboard_choices(ready, after):
             continue  # the Enter that closed the list is part of the choice
         out.append(item)
     return out
+
+
+# Runs a module of the package isolated (python3 -I -c ISOLATED_RUN ROOT MODULE ARGS...): ROOT alone on sys.path.
+ISOLATED_RUN = ("import runpy, sys; root, module = sys.argv[1], sys.argv[2]; sys.path.insert(0, root); "
+                "sys.argv = [module] + sys.argv[3:]; runpy.run_module(module, run_name='__main__', alter_sys=True)")
 
 
 def main(argv=None):

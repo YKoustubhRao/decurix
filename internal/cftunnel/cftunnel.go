@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"sync"
@@ -47,6 +48,10 @@ var (
 
 // ErrInvalid is a domain or subdomain that is not a hostname, or a missing token.
 var ErrInvalid = errors.New("cftunnel: invalid settings")
+
+// ErrUnsealed is Configure's refusal when the key file that seals the saved tokens could not be loaded or written:
+// they are never stored in plain text (RW1-F-06, as for the model keys, C-19).
+var ErrUnsealed = errors.New("cftunnel: no key file to seal the tokens with")
 
 var schema = []string{
 	`CREATE TABLE cftunnel_config (
@@ -124,6 +129,13 @@ func NewManager(db *sql.DB, key []byte, localPort int) (*Manager, error) {
 	m := &Manager{db: db, key: key, localPort: localPort, conn: newConnector()}
 
 	cfg, err := m.load()
+	if errors.Is(err, sealed.ErrUnreadable) {
+		// A restored backup carries no key files (internal/httpapi/backup.go):
+		// on another install the saved tokens no longer open. That is "set the
+		// tunnel up again", not a control plane that will not start.
+		log.Printf("warning: %v", err)
+		cfg, err = nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -150,10 +162,10 @@ func (m *Manager) load() (*config, error) {
 	}
 
 	if c.apiToken, err = sealed.Open(m.key, apiToken); err != nil {
-		return nil, fmt.Errorf("cftunnel: the saved API token cannot be read (%v); set the tunnel up again", err)
+		return nil, fmt.Errorf("cftunnel: the saved API token cannot be read (%w); set the tunnel up again", err)
 	}
 	if c.connectorToken, err = sealed.Open(m.key, connectorToken); err != nil {
-		return nil, fmt.Errorf("cftunnel: the saved connector token cannot be read (%v); set the tunnel up again", err)
+		return nil, fmt.Errorf("cftunnel: the saved connector token cannot be read (%w); set the tunnel up again", err)
 	}
 
 	c.updated = sqlitedb.FromNS(updated)
@@ -228,6 +240,9 @@ func (m *Manager) Configure(ctx context.Context, apiToken, domain, subdomain str
 		m.mu.Unlock()
 	}
 
+	if m.db != nil && m.key == nil {
+		return Status{}, ErrUnsealed
+	}
 	if apiToken == "" || !domainRe.MatchString(domain) || !subdomainRe.MatchString(subdomain) {
 		return Status{}, ErrInvalid
 	}

@@ -8,6 +8,18 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+const gatedSource = fs.readFileSync(path.join(__dirname, 'gated-port.js'), 'utf8');
+
+// loadGatedPort runs gated-port.js against the harness's fake fs and http, as
+// main.js would see it.
+function loadGatedPort(fileSystem, http) {
+  const module = { exports: {} };
+  vm.runInNewContext(gatedSource, {
+    require: (name) => ({ 'node:fs': fileSystem, 'node:http': http, 'node:path': path })[name],
+    module, exports: module.exports, process: { env: {} },
+  }, { filename: 'gated-port.js' });
+  return module.exports;
+}
 const favicon = fs.readFileSync(path.join(__dirname, '..', '..', 'web', 'favicon.svg'), 'utf8');
 const log = Buffer.from('2026/10/01 18:05:17 Decurix dev starting\r\n2026/10/01 18:05:17 listen tcp 127.0.0.1:8080: bind: address in use\r\n\r\n');
 
@@ -34,14 +46,17 @@ test('native folder chooser only accepts the dashboard main frame', async () => 
   assert.equal(result.pickerCalls.length, 0);
 });
 
-test('native folder chooser maps home folders on Mac and Linux, and Linux root mount', async () => {
+test('native folder chooser maps home folders on Mac and Linux, and never mounts the Linux root', async () => {
   const homeFolder = path.join('/Users/ana', 'Documents', 'demo');
   for (const platform of ['darwin', 'linux']) {
     const result = await boot('ready', { platform, pickedFolders: [homeFolder] });
     assert.equal((await result.pickFolders()).paths[0].path, '/host-home/Documents/demo');
   }
   const linux = await boot('ready', { platform: 'linux', pickedFolders: [path.resolve('/opt/demo')] });
-  assert.equal((await linux.pickFolders()).paths[0].path, '/mnt/c/opt/demo');
+  await assert.rejects(linux.pickFolders(), /inside your home folder/);
+  // Linux under WSL gives the Windows drive, as scripts/linux/build.sh does.
+  const wslLinux = await boot('ready', { platform: 'linux', files: ['/mnt/c'], pickedFolders: [path.resolve('/mnt/c/Users/ana/demo')] });
+  assert.equal((await wslLinux.pickFolders()).paths[0].path, '/mnt/c/Users/ana/demo');
   const mac = await boot('ready', { platform: 'darwin', pickedFolders: [path.resolve('/Users/another/demo')] });
   await assert.rejects(mac.pickFolders(), /inside your home folder/);
 });
@@ -66,7 +81,10 @@ async function boot(initialState, {
   backendStarts = true, stopFails = false, platform = 'win32', dockerRun = () => 0, files = [], staged = platform === 'win32' ? 'build-2' : null,
   wsl = {}, pickedFolders = [], canceledPicker = false, savedRuntime, hosting = false, holdOllama = false, ollamaFails = false,
   release = '10.0.26200', arch = 'x64', freeGB = 100, restartAsked = null, restartedSince = true,
-  lanAddress = null, lanForwards = true, settings = '',
+  lanAddress = null, lanForwards = true, settings = '', publicLink = null, adopt = true, watchdogMs = 0,
+  // screen: 'ok' (the start screen shows every status and says so), 'silent' (it shows nothing: a frozen renderer)
+  // or 'throws' (sending to it throws: a renderer that is gone).
+  screen = 'ok',
 } = {}) {
   const machine = { installed: true, installedAfterAsking: false, distro: true, daemon: true, setupFails: false, existing: {}, ...wsl };
   const intervals = [];
@@ -78,6 +96,7 @@ async function boot(initialState, {
   const external = [];
   const mobileCalls = [];
   const pickerCalls = [];
+  const questions = [];
   const ipcMain = new EventEmitter();
   const ipcHandlers = new Map();
   ipcMain.handle = (name, handler) => ipcHandlers.set(name, handler);
@@ -95,7 +114,14 @@ async function boot(initialState, {
       this.options = options;
       this.webContents = new EventEmitter();
       this.webContents.setWindowOpenHandler = (handler) => { this.popup = handler; };
-      this.webContents.send = (channel, value) => { this.lastStatus = { channel, value }; };
+      this.webContents.send = (channel, value) => {
+        if (screen === 'throws') throw new Error('Render frame was disposed before WebFrameMain could be accessed');
+        if (screen === 'silent') return;
+        this.lastStatus = { channel, value };
+        this.statuses = (this.statuses || []).concat([value]);
+        // The screen says it has shown it (preload.js).
+        if (channel === 'startup-status') ipcMain.emit('startup-status-shown', { sender: this.webContents }, value.seq);
+      };
       this.loadFile = async () => { this.loadFileCount = (this.loadFileCount || 0) + 1; };
       this.loadURL = async (url) => { this.url = url; };
       this.isDestroyed = () => false;
@@ -179,12 +205,22 @@ async function boot(initialState, {
     if (program[0] === 'sh' && program[1] === '-c') {
       if (program[2] === 'ip -4 route show default') { say('default via 172.28.0.1 dev eth0', 0); return; }
       if (program[2].startsWith('docker_root=')) { say('104857600', 0); return; }
-      if (program[2].startsWith('tr ')) { say('', 0); return; }
+      if (program[2].startsWith('umask 077 && tr ')) { say('', 0); return; }
       say('runtime probe', machine.existing[distro] ? 0 : 1); return;
     }
     if (distro !== 'Decurix' && !machine.existing[distro]) { say('Docker is not running', 1); return; }
     if (program[0] === 'cat') { say(staged, staged === null ? 1 : 0); return; }
-    if (program[0] === 'sh') { say('decurix-setup: ready', machine.setupFails ? 1 : 0); return; }
+    if (program[0] === 'sh' && /maintain-existing\.sh$/.test(program[1] || '')) {
+      say((machine.inventory || []).map((name) => `decurix-resource ${name}`).join('\n'), machine.inventoryFails ? 1 : 0); return;
+    }
+    // setup.sh that hangs: it says one line and then nothing, ending only when the app ends it.
+    if (program[0] === 'sh' && /setup\.sh$/.test(program[1] || '') && machine.setupHangs > 0) {
+      machine.setupHangs -= 1;
+      machine.setupRuns = (machine.setupRuns || 0) + 1;
+      setImmediate(() => child.stdout.emit('data', Buffer.from('decurix-setup: installing Docker Engine\n')));
+      return;
+    }
+    if (program[0] === 'sh') { machine.setupRuns = (machine.setupRuns || 0) + 1; say('decurix-setup: ready', machine.setupFails ? 1 : 0); return; }
     if (program[0] === '/opt/decurix/dockerd.sh') { machine.daemon = true; return; }
     let docker = program[0] === 'env' ? program.slice(program.indexOf('docker') + 1) : program.slice(1);
     if (docker[0] === '--host') docker = docker.slice(2);
@@ -197,6 +233,8 @@ async function boot(initialState, {
       spawns.push({ file, args, options });
       const child = new EventEmitter();
       children.push(child);
+      // A child the app cancels (the stall watchdog's signal) ends, as a real one is killed.
+      if (options && options.signal) options.signal.addEventListener('abort', () => setImmediate(() => child.emit('exit', null)), { once: true });
       child.unref = () => {};
       child.stdout = new EventEmitter();
       child.stderr = new EventEmitter();
@@ -220,7 +258,10 @@ async function boot(initialState, {
     },
   };
 
+  const appended = [];
+  const logText = () => appended.join('');
   const fileSystem = {
+    appendFileSync(_file, text) { appended.push(String(text)); },
     mkdirSync() {},
     existsSync(file) { return present.has(file); },
     copyFileSync(from, to) { copied.push({ from, to }); },
@@ -231,6 +272,7 @@ async function boot(initialState, {
       const saved = written.findLast(entry => entry.file === file);
       if (saved) return saved.content;
       if (file === path.join(data, 'local-hosting.json')) return JSON.stringify({ enabled: hosting });
+      if (file === path.join(data, 'public-link.json') && publicLink !== null) return JSON.stringify({ enabled: publicLink });
       // An earlier start asked for a restart (restartedSince: and Windows has booted since).
       if (file === path.join(data, 'restart-asked.json') && restartAsked) return JSON.stringify({ reason: restartAsked, at: restartedSince ? 0 : Date.now() });
       if (file === path.join(data, 'windows-runtime.json') && savedRuntime !== undefined) return savedRuntime;
@@ -248,7 +290,10 @@ async function boot(initialState, {
   const modules = {
     electron: {
       app, BrowserWindow: FakeWindow, ipcMain, shell: { openExternal: (url) => external.push(url) },
-      dialog: { showOpenDialog: async (owner, options) => {
+      dialog: { showMessageBox: async (owner, options) => {
+        questions.push(options || owner);
+        return { response: adopt ? 0 : 1 };
+      }, showOpenDialog: async (owner, options) => {
         pickerCalls.push({ owner, options });
         return { canceled: canceledPicker, filePaths: pickedFolders };
       } },
@@ -262,6 +307,10 @@ async function boot(initialState, {
     'node:http': http,
     'node:path': path,
     './local-models': require('./local-models'),
+    // watchdogMs: the stall watchdog with a bound of that many (real) milliseconds, so a test of a stall is quick.
+    './build-watchdog': watchdogMs ? { ...require('./build-watchdog'),
+      watchBuild: (options) => require('./build-watchdog').watchBuild({ ...options, stallMs: watchdogMs, graceMs: watchdogMs }) }
+      : require('./build-watchdog'),
     './windows-runtime': {
       readSettings: () => ({ DECURIX_WINDOWS_NATIVE_OLLAMA: '1' }),
       configureResources: () => ({ memoryMB: 8192, workerCPUs: 2, workerMB: 2048, cpus: 8, modelMB: 6144 }),
@@ -269,6 +318,7 @@ async function boot(initialState, {
       windowsHost: () => '172.28.0.1',
       stackSettings: () => 'OLLAMA_URL=http://172.28.0.1:11435\n',
     },
+    './gated-port': loadGatedPort(fileSystem, http),
     './windows-lan': { ensureLanForward: async (dir, address, port) => { lanCalls.push({ dir, address, port }); return lanForwards; } },
     './mobile-access': { setupMobileAccess: async (_dir, tunnelCommand) => {
       mobileCalls.push('start');
@@ -292,7 +342,7 @@ async function boot(initialState, {
   await settle(40);
   const wslWords = (s) => Array.from(s.args).join(' ');
   return {
-    window: windows[0], app, spawns, children, copied, written, external, mobileCalls, posts, lanCalls, intervals, settle, blockers, stack, home, machine, pickerCalls,
+    window: windows[0], app, spawns, questions, logged: () => logText(), children, copied, written, external, mobileCalls, posts, lanCalls, intervals, settle, blockers, stack, home, machine, pickerCalls,
     titleBarTheme: (palette, url = 'http://127.0.0.1:8080/', { childFrame = false, otherWindow = false } = {}) => {
       const sender = windows[0].webContents;
       sender.mainFrame = { url };
@@ -382,6 +432,11 @@ test('a first launch imports the distro, prepares it, starts Docker and the stac
   // Compose runs in the staged stack, with the project a checkout's stack has.
   const up = result.spawns.find((s) => Array.from(s.args).includes('up'));
   assert.deepEqual(Array.from(up.args).slice(0, 10), ['-d', 'Decurix', '-u', 'root', '--cd', '/var/lib/decurix/stack', '-e', 'env', 'COMPOSE_PROJECT_NAME=decurix', 'DECURIX_HOST_HOME=/home']);
+  // The gated port is published on the distro's loopback only: a desktop must not come back in through Docker's
+  // proxy on another address of the distro, where it looks like this computer (review 2026-11-02).
+  assert.ok(Array.from(up.args).includes('DECURIX_LAN_BIND=127.0.0.1'));
+  // The control plane is told it is on the app's WSL host, where desktops need dockerd.sh's fence.
+  assert.ok(Array.from(up.args).includes('DECURIX_HOST_KIND=wsl'));
   assert.equal(up.options.windowsHide, true);
 
   // The person's settings name the control plane's own model server.
@@ -510,6 +565,36 @@ test('a distro that cannot be prepared stops the start, with the log', async () 
   assert.deepEqual(result.docker, []);
 });
 
+// waitFor polls cond on real time, up to a bound that only turns a hang into a failure.
+async function waitFor(cond) {
+  for (let i = 0; i < 400 && !cond(); i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  return cond();
+}
+
+test('a setup.sh that stops printing is ended in the distro and run again, and goes on when the second run works', async () => {
+  const result = await boot('absent', { wsl: { setupHangs: 1 }, watchdogMs: 40 });
+  assert.ok(await waitFor(() => result.window.url === 'http://127.0.0.1:8080'), `status ${JSON.stringify(result.window.lastStatus)}`);
+  assert.equal(result.machine.setupRuns, 2);
+  assert.ok(result.wsl.some((w) => w.endsWith('-e pkill -f wsl/setup.sh')));
+  assert.ok(result.wsl.some((w) => w.endsWith('-e pkill -x apk')));
+});
+
+test('a setup.sh that stalls twice stops the start with its last line, for Retry', async () => {
+  const result = await boot('absent', { wsl: { setupHangs: 2 }, watchdogMs: 40 });
+  assert.ok(await waitFor(() => result.window.lastStatus && result.window.lastStatus.value.failed === true));
+  assert.match(result.window.lastStatus.value.message, /Could not prepare Linux for Decurix\. It stopped making progress twice/);
+  assert.match(result.window.lastStatus.value.message, /installing Docker Engine/);
+  assert.equal(result.machine.setupRuns, 2);
+  assert.deepEqual(result.docker, []);
+});
+
+test('a setup.sh that keeps printing is never ended', async () => {
+  const result = await boot('absent', { watchdogMs: 40 });
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.equal(result.machine.setupRuns, 1);
+  assert.ok(!result.wsl.some((w) => w.includes('pkill')));
+});
+
 test('Windows gets the plain IP link once the address is forwarded to WSL', async () => {
   const result = await boot('absent', { lanAddress: '192.168.1.40' });
   await result.settle(20);
@@ -572,7 +657,7 @@ test('shows a retry screen with the last log line when the stack never comes up'
 // by an earlier run of the app, so nothing told this one, and the window went on
 // showing a dashboard that no longer answered.
 test('starts the stack again when it dies under an open window', async () => {
-  const result = await boot('ready');
+  const result = await boot('ready', { publicLink: true });
   assert.equal(result.ups, 0);
 
   // One missed answer is a busy moment, not a death.
@@ -595,7 +680,7 @@ test('starts the stack again when it dies under an open window', async () => {
 // Found on the installed app: stopping the phone link reports to the control
 // plane, which is exactly what is gone - and that error stopped the restart.
 test('starts it again even though the phone link cannot be cleared', async () => {
-  const result = await boot('ready', { stopFails: true });
+  const result = await boot('ready', { stopFails: true, publicLink: true });
   result.setState('absent');
   await result.tick(3);
   assert.equal(result.ups, 1, 'the stack was not started again');
@@ -628,8 +713,34 @@ test('does not start it again while the app is closing', async () => {
   assert.equal(result.ups, 0);
 });
 
-test('runs the shipped cloudflared for the phone link and stops it when the app closes', async () => {
+test('the public link is off until the person turns it on: no tunnel by default', async () => {
   const result = await boot('ready');
+  assert.deepEqual(result.mobileCalls, []);
+  assert.equal(result.tunnel, null);
+  assert.deepEqual({ ...(await result.modelAction('public-link-status')) }, { available: true, enabled: false });
+});
+
+test('turning the public link on from the dashboard starts the tunnel, saves the choice, and off stops it', async () => {
+  const result = await boot('ready');
+  assert.deepEqual({ ...(await result.modelAction('public-link-set', true)) }, { available: true, enabled: true });
+  await result.settle(3);
+  assert.deepEqual(result.mobileCalls, ['start']);
+  const saved = result.written.findLast((w) => w.file === path.join(data, 'public-link.json'));
+  assert.deepEqual(JSON.parse(saved.content), { enabled: true });
+  assert.deepEqual({ ...(await result.modelAction('public-link-set', false)) }, { available: true, enabled: false });
+  assert.deepEqual(result.mobileCalls, ['start', 'stop']);
+});
+
+test('only the dashboard may turn the public link on, and only with a yes or no', async () => {
+  const result = await boot('ready');
+  await assert.rejects(async () => result.modelAction('public-link-set', true, 'https://example.com/'), /only set from the desktop dashboard/);
+  await assert.rejects(async () => result.modelAction('public-link-set', true, 'http://127.0.0.1:8080/', true), /only set from the desktop dashboard/);
+  await assert.rejects(async () => result.modelAction('public-link-set', 'yes'), /on or off/);
+  assert.deepEqual(result.mobileCalls, []);
+});
+
+test('runs the shipped cloudflared for the phone link and stops it when the app closes', async () => {
+  const result = await boot('ready', { publicLink: true });
   assert.deepEqual(result.mobileCalls, ['start']);
   assert.equal(result.tunnel.file, path.join('/installed/resources', 'cloudflared.exe'));
   assert.equal(result.tunnel.args.at(-1), 'http://127.0.0.1:8090');
@@ -720,6 +831,51 @@ test('a worker image that cannot be built stops the start, with the log', async 
   assert.ok(!result.docker.includes('compose up -d --no-build'));
 });
 
+test('a worker image build that fails once is tried once more on its own, and the start goes on', async () => {
+  let builds = 0;
+  const dockerRun = (args) => (args.includes('desktop') && args.includes('--build-images') && (builds += 1) === 1 ? 1 : 0);
+  const result = await boot('absent', { platform: 'darwin', files: [dockerOnPath], dockerRun });
+  await result.settle(20);
+  assert.equal(builds, 2);
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.match(result.logged(), /build failed, trying once more/);
+  assert.ok(result.window.statuses.some((s) => /It failed, so it is being tried once more/.test(s.message)));
+});
+
+test('a worker image build that fails twice stops the start on the error screen, with its last line and Retry', async () => {
+  let builds = 0;
+  const dockerRun = (args) => (args.includes('desktop') && args.includes('--build-images') ? ((builds += 1), 1) : 0);
+  const result = await boot('absent', { platform: 'darwin', files: [dockerOnPath], dockerRun });
+  assert.equal(builds, 2);
+  assert.equal(result.window.lastStatus.value.failed, true);
+  assert.match(result.window.lastStatus.value.message, /Could not build the worker desktop/);
+  assert.ok(!result.docker.includes('compose up -d --no-build'));
+  assert.match(result.logged(), /Start failed: Could not build the worker desktop/);
+  assert.equal(result.questions.length, 0, 'the screen showed it, so no dialog');
+});
+
+test('the control plane image build is tried once more too, and a second failure is shown', async () => {
+  let builds = 0;
+  const dockerRun = (args) => (args[0] === 'compose' && args[1] === 'build' ? ((builds += 1), 1) : 0);
+  const result = await boot('absent', { platform: 'darwin', files: [dockerOnPath], dockerRun });
+  assert.equal(builds, 2);
+  assert.match(result.window.lastStatus.value.message, /Could not build Decurix in Docker/);
+});
+
+test('a failure the start screen never shows is put in a dialog of the app, and the screen is loaded again', async () => {
+  const dockerRun = (args) => (args.includes('desktop') && args.includes('--build-images') ? 1 : 0);
+  for (const screen of ['silent', 'throws']) {
+    const result = await boot('absent', { platform: 'darwin', files: [dockerOnPath], dockerRun, screen, adopt: false });
+    await result.settle(40);
+    const asked = result.questions.find((q) => q && q.type === 'error');
+    assert.ok(asked, `${screen}: no dialog`);
+    assert.match(asked.message, /Could not build the worker desktop/);
+    assert.deepEqual(Array.from(asked.buttons), ['Retry', 'Close']);
+    assert.ok(result.window.loadFileCount >= 2, `${screen}: the screen was not loaded again`);
+    assert.match(result.logged(), /did not show the failure/);
+  }
+});
+
 test('a stack an older build of the app left running is replaced by this one', async () => {
   const result = await boot('ready', { platform: 'darwin', files: [dockerOnPath], staged: 'build-1' });
   assert.ok(result.docker.includes('compose up -d --no-build'));
@@ -733,10 +889,13 @@ test('a stack this build started is used as it is', async () => {
 });
 
 test('the phone link there uses the cloudflared the computer has, and is left out without one', async () => {
-  const without = await boot('ready', { platform: 'darwin' });
+  const without = await boot('ready', { platform: 'darwin', publicLink: true });
   assert.deepEqual(without.mobileCalls, []);
 
-  const withOne = await boot('ready', { platform: 'darwin', files: [cloudflaredOnPath] });
+  const off = await boot('ready', { platform: 'darwin', files: [cloudflaredOnPath] });
+  assert.deepEqual(off.mobileCalls, []);
+
+  const withOne = await boot('ready', { platform: 'darwin', files: [cloudflaredOnPath], publicLink: true });
   assert.deepEqual(withOne.mobileCalls, ['start']);
   assert.equal(withOne.tunnel.file, cloudflaredOnPath);
 });
@@ -770,8 +929,11 @@ test('caption colors follow the dashboard theme and reject untrusted frames or i
   assert.equal(result.window.captionPalette.color, light.color);
 });
 
-test('new Windows installs reuse a compatible existing WSL runtime without importing or installing Linux', async () => {
-  const result = await boot('absent', { wsl: { distro: false, existing: { Ubuntu: true } } });
+test('new Windows installs reuse a compatible existing WSL runtime, once the person agrees, without importing or installing Linux', async () => {
+  const result = await boot('absent', { wsl: { distro: false, existing: { Ubuntu: true }, inventory: ['decurix-data', 'desktop_old'] } });
+  assert.equal(result.questions.length, 1);
+  assert.match(result.questions[0].message, /Use the Docker Engine in your WSL distro "Ubuntu"/);
+  assert.equal(result.questions[0].defaultId, 1);
   assert.equal(result.window.url, 'http://127.0.0.1:8080');
   assert.ok(!result.wsl.some((w) => w.startsWith('--import')));
   assert.ok(!result.spawns.some((s) => Array.from(s.args).join(' ').includes('--install')));
@@ -782,7 +944,25 @@ test('new Windows installs reuse a compatible existing WSL runtime without impor
   assert.equal(up.args[1], 'Ubuntu');
   assert.ok(Array.from(up.args).includes('unix:///var/run/docker.sock'));
   const saved = result.written.find((w) => w.file === path.join(data, 'windows-runtime.json'));
-  assert.deepEqual(JSON.parse(saved.content), { distro: 'Ubuntu' });
+  // What the engine held before Decurix used it is kept by an uninstall.
+  assert.deepEqual(JSON.parse(saved.content), { distro: 'Ubuntu', adopted: true, preexisting: ['decurix-data', 'desktop_old'], preexistingComplete: true });
+});
+
+test("a person who declines sharing their WSL runtime gets Decurix's own Linux", async () => {
+  const result = await boot('absent', { adopt: false, wsl: { distro: false, existing: { Ubuntu: true } } });
+  assert.equal(result.questions.length, 1);
+  assert.ok(result.wsl.some((w) => w.startsWith('--import Decurix')));
+  assert.ok(!result.wsl.some((w) => w.includes('maintain-existing.sh')));
+  const saved = result.written.find((w) => w.file === path.join(data, 'windows-runtime.json'));
+  assert.deepEqual(JSON.parse(saved.content), { distro: 'Decurix' });
+});
+
+test('a runtime whose existing resources cannot be listed is not adopted, and nothing is saved', async () => {
+  const result = await boot('absent', { wsl: { distro: false, existing: { Ubuntu: true }, inventoryFails: true } });
+  assert.equal(result.window.url, undefined);
+  assert.match(result.window.lastStatus.value.message, /Could not list what "Ubuntu"/);
+  assert.ok(!result.written.some((w) => w.file === path.join(data, 'windows-runtime.json')));
+  assert.equal(result.ups, 0);
 });
 
 test('existing app-owned workers stay in Decurix even when another WSL runtime is available', async () => {
@@ -857,4 +1037,45 @@ test('native connectivity errors affect hosting status after the dashboard opens
   const state = await result.modelAction('local-model-status');
   assert.equal(state.phase, 'error');
   assert.match(state.detail, /Linux cannot reach/);
+});
+
+test('Linux without a Windows drive mounts an empty folder as the control plane\'s C:, never the host root', async () => {
+  const result = await boot('absent', { platform: 'linux', files: [dockerOnPath] });
+  const run = result.spawns.find((s) => path.basename(s.file) === 'docker');
+  assert.equal(run.options.env.DECURIX_HOST_MNT_C, path.join(data, 'no-windows-drive'));
+  const wsl = await boot('absent', { platform: 'linux', files: [dockerOnPath, '/mnt/c'] });
+  assert.equal(wsl.spawns.find((s) => path.basename(s.file) === 'docker').options.env.DECURIX_HOST_MNT_C, '/mnt/c');
+});
+
+test('calls that only ask something are ended if they hang, so a start can always fail and be retried', async () => {
+  const result = await boot('absent');
+  const quick = (words) => result.spawns.filter((s) => Array.from(s.args).join(' ').includes(words));
+  for (const words of ['--version', '--list --quiet', 'ip -4 route show default', 'version --format']) {
+    const calls = quick(words);
+    assert.ok(calls.length > 0, `no call with ${words}`);
+    for (const call of calls) assert.ok(call.options.timeout > 0 && call.options.timeout <= 60000, words);
+  }
+  // A build is not a quick call.
+  for (const call of quick('compose build')) assert.equal(call.options.timeout, undefined);
+});
+
+test('Windows is asked to forward the LAN address once while the app runs, not every minute', async () => {
+  const result = await boot('ready', { lanAddress: '192.168.1.40', lanForwards: false });
+  await result.settle(20);
+  for (let minute = 0; minute < 3; minute += 1) { for (const tick of result.intervals) tick(); await result.settle(20); }
+  assert.equal(result.lanCalls.length, 1);
+});
+
+test('a full disk does not hide a dashboard that is already running; it is said beside it', async () => {
+  const result = await boot('ready', { freeGB: 1 });
+  await result.settle(20);
+  assert.equal(result.window.url, 'http://127.0.0.1:8080');
+  assert.ok(result.questions.some((q) => q.type === 'warning' && /GB is free/.test(q.message)));
+});
+
+test('the settings staged in WSL (they hold keys) are written root-only', async () => {
+  const result = await boot('ready');
+  const copy = result.spawns.find((s) => Array.from(s.args).some((a) => /tr -d/.test(a)));
+  const script = Array.from(copy.args).find((a) => /tr -d/.test(a));
+  assert.match(script, /^umask 077 && tr -d .* && chmod 600 "\$2"$/);
 });

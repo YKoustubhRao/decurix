@@ -211,7 +211,7 @@ func (m *Manager) StartClaudeLogin(ctx context.Context) (loginID string, signInU
 		return "", "", fmt.Errorf("create claude login container: %w", err)
 	}
 
-	if err := m.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if err := m.startDesktopContainer(ctx, resp.ID); err != nil {
 		m.destroyClaudeLoginContainer(context.Background(), resp.ID)
 		return "", "", fmt.Errorf("start claude login container: %w", err)
 	}
@@ -439,6 +439,7 @@ func (m *Manager) destroyClaudeLoginContainer(ctx context.Context, containerID s
 
 // readFileFromContainer reads one file out of a container via the same
 // mechanism `docker cp` uses (a tar stream of the path), returning its raw content.
+// Root-side: it reads the login container's fixed credentials path; that container runs only `claude auth login`.
 func (m *Manager) readFileFromContainer(ctx context.Context, containerID, path string) ([]byte, error) {
 	rc, _, err := m.client.CopyFromContainer(ctx, containerID, path)
 	if err != nil {
@@ -471,7 +472,8 @@ func (m *Manager) readFileFromContainer(ctx context.Context, containerID, path s
 // counterpart, reading instead of writing.
 func (m *Manager) execCaptured(ctx context.Context, containerID string, cmd []string) (output string, exitCode int, err error) {
 	execID, err := m.client.ContainerExecCreate(ctx, containerID, container.ExecOptions{
-		Cmd:          cmd,
+		User:         "1001:1001", // the desktop starts as root (agent/decurix-entrypoint.sh); a read is the worker's, not root's
+		Cmd:          workerCmd(cmd...),
 		AttachStdout: true,
 		AttachStderr: true,
 	})

@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-# host-open: Open any URL or file on the local host machine screen (Mac, Windows, Linux)
-exec host-run open "$@"
-

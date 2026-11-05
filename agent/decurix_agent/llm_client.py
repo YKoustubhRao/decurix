@@ -82,9 +82,31 @@ def _reasoning_effort():
     return effort if effort in ("low", "medium", "high") else None
 
 
-def chat(messages, tools=None, model="default", max_tokens=4000, temperature=None, response_format=None):
+# What a call is for travels in headers (PLAN-P2 C1), never in the body: the prompt bytes - and with them the
+# provider's cache - stay the same. The control plane's proxy stores every call with them (R2, R3).
+PURPOSE_HEADER = "X-Decurix-Purpose"
+TASK_HEADER = "X-Decurix-Task"
+CALLER_HEADER = "X-Decurix-Caller"
+
+
+def tag_headers(purpose):
+    """The headers that say what a call is for, which task it works on and which process makes it (C1)."""
+
+    from decurix_agent import task_context
+
+    headers = {PURPOSE_HEADER: str(purpose), CALLER_HEADER: os.environ.get("DECURIX_CALLER", "").strip() or "agent"}
+    task = task_context.current()
+    if task:
+        headers[TASK_HEADER] = task
+    return headers
+
+
+def chat(messages, tools=None, model="default", max_tokens=4000, temperature=None, response_format=None, *, purpose):
     """
     One chat completion. Returns (message dict, usage dict). Raises LLMError.
+
+    `purpose` names what the call is for ("py.judge", ...): keyword-only and required, so a call site that says
+    nothing fails in its tests instead of reaching the proxy untagged (agent/tests/test_purpose_tags.py).
     """
 
     body = {
@@ -113,7 +135,7 @@ def chat(messages, tools=None, model="default", max_tokens=4000, temperature=Non
         wait = None
         request = urllib.request.Request(
             CHAT_URL, data=data, method="POST",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **tag_headers(purpose)},
         )
 
         try:
@@ -153,24 +175,45 @@ def chat(messages, tools=None, model="default", max_tokens=4000, temperature=Non
     # values, the final check and a kept lesson are model calls like the
     # engine's own, and a task's record used to show only some of them.
     spent = answer.get("usage") or {}
-    usage.add(input_tokens=spent.get("prompt_tokens"), output_tokens=spent.get("completion_tokens"))
+    usage.add(input_tokens=spent.get("prompt_tokens"), output_tokens=spent.get("completion_tokens"),
+              cached_input_tokens=cached_tokens(spent))
 
     message = choices[0].get("message") or {}
-    if (choices[0].get("finish_reason") == "length" and not (message.get("content") or "").strip()
-            and not message.get("tool_calls") and max_tokens < EMPTY_RETRY_TOKENS):
-        # A reasoning model can spend the whole budget thinking and answer nothing. Found live (2026-11-01): reading a
-        # request against the taught tasks got an empty answer at 800 tokens, and a taught task went to the engine
-        # as a request it had never seen. Once more, with room to answer.
-        log(f"llm: the model used all {max_tokens} tokens and answered nothing - asking again with {EMPTY_RETRY_TOKENS}")
+    if (choices[0].get("finish_reason") == "length" and not message.get("tool_calls")
+            and max_tokens < EMPTY_RETRY_TOKENS):
+        # A reasoning model can spend the whole budget thinking and answer nothing - or answer half. Found live
+        # (2026-11-01): reading a request against the taught tasks got an empty answer at 800 tokens, and a taught task
+        # went to the engine as a request it had never seen. Found in an eval (2026-11-04, review round 9): the final
+        # check's answer was cut off mid-JSON, so the check was not made, and the task was run again and saved a
+        # second bill. An answer cut off at the limit is no answer: once more, with room to answer.
+        cut = "answered nothing" if not (message.get("content") or "").strip() else "was cut off"
+        log(f"llm: the model used all {max_tokens} tokens and {cut} - asking again with {EMPTY_RETRY_TOKENS}")
         return chat(messages, tools=tools, model=model, max_tokens=EMPTY_RETRY_TOKENS, temperature=temperature,
-                    response_format=response_format)
+                    response_format=response_format, purpose=purpose)
     return message, spent
 
 
-def ask_once(system, prompt):
+def cached_tokens(spent):
+    """The part of an answer's prompt tokens the provider read from its prompt cache, as the proxy passes the answer
+    on: OpenAI's prompt_tokens_details.cached_tokens, or an Anthropic-shaped cache_read_input_tokens. None when the
+    answer says nothing of it (unknown, not 0). Counted so the tokens-per-task measure shows the cached share
+    (resource plan B6: it was dropped)."""
+
+    details = (spent or {}).get("prompt_tokens_details")
+    found = details.get("cached_tokens") if isinstance(details, dict) else None
+    if found is None:
+        found = (spent or {}).get("cache_read_input_tokens")
+    try:
+        return max(0, int(found)) if found is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def ask_once(system, prompt, *, purpose):
     """One question, no tools, no history - harness.ask_model's shape."""
 
-    message, _ = chat([{"role": "system", "content": system}, {"role": "user", "content": prompt}], max_tokens=1500)
+    message, _ = chat([{"role": "system", "content": system}, {"role": "user", "content": prompt}], max_tokens=1500,
+                      purpose=purpose)
 
     return (message.get("content") or "").strip()
 

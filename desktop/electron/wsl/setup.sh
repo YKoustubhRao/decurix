@@ -17,17 +17,24 @@ here=$(cd "$(dirname "$0")" && pwd)
 stack=/var/lib/decurix/stack
 
 say() { echo "decurix-setup: $*"; }
+# apk_safe: every apk call bounded and tried against each official mirror in turn (apk-safe.sh).
+. "$here/apk-safe.sh"
 
 # Docker Engine from Alpine's own packages. Only the first start downloads
-# anything (about 70 MB).
+# anything (about 70 MB). Each step is bounded and falls back to another
+# mirror (apk_safe): the index in two minutes, the packages in twenty. A run
+# killed half-way (the app's watchdog, a closed app) is safe to run again: the
+# check below finds Docker missing and apk completes what it began.
 if ! command -v dockerd >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
     say "installing Docker Engine"
-    apk update
-    apk add --no-progress docker docker-cli-compose iptables ip6tables bash
+    say "reading the package index"
+    apk_safe 120 update
+    say "downloading and installing Docker Engine (about 70 MB)"
+    apk_safe 1200 add --no-progress docker docker-cli-compose iptables ip6tables bash
 fi
 # A Windows app shown in a desktop is started from here through the control
 # plane's nsenter hop, which runs `bash -c` in this distro.
-command -v bash >/dev/null 2>&1 || apk add --no-progress bash
+command -v bash >/dev/null 2>&1 || apk_safe 300 add --no-progress bash
 
 mkdir -p /opt/decurix /etc/docker "$stack"
 install -m 755 "$here/dockerd.sh" /opt/decurix/dockerd.sh
@@ -78,6 +85,8 @@ if [ "$(cat "$stack/VERSION" 2>/dev/null || true)" != "$(cat "$stack_src/VERSION
     done
     cp -f "$stack_src/VERSION" "$stack/VERSION"
 fi
-# The person's settings, every start (compose and the image both read them).
-tr -d '\r' < "$env_file" > "$stack/.env"
+# The person's settings, every start (compose gives them to the control plane).
+# They hold the person's keys: readable by root only, from the moment they exist.
+(umask 077 && tr -d '\r' < "$env_file" > "$stack/.env")
+chmod 600 "$stack/.env"
 say "ready"

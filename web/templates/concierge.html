@@ -67,6 +67,7 @@
 .dot.running{background:var(--busy);animation:pulse 1.4s ease-in-out infinite}
 .dot.needs_you{background:var(--busy)}
 .dot.done{background:var(--live)}
+.dot.unchecked{background:var(--busy)}
 .dot.failed,.dot.stopped{background:var(--danger)}
 @keyframes pulse{50%{opacity:.35}}
 .job-links{display:flex;gap:10px;font-size:12px}
@@ -140,7 +141,8 @@
   function nearBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
   function toBottom() { log.scrollTop = log.scrollHeight; }
 
-  const kindTag = { query: ["needs you", "needs"], approval: ["approval", "needs"], error: ["failed", "err"], entry: ["done", "ok"] };
+  /* "done" only for a reply whose final check judged it (the server's outcome); "unchecked" is a finished reply nobody's check did. */
+  const kindTag = { query: ["needs you", "needs"], approval: ["approval", "needs"], error: ["failed", "err"], entry: ["done", "ok"], unchecked: ["finished, not confirmed", "needs"] };
 
   function render(m) {
     const row = document.createElement("div");
@@ -168,20 +170,26 @@
     }
     row.appendChild(body(m.text));
 
-    // A job that asked for approval gets its answers as buttons - they send
-    // exactly what typing "#N yes" would.
+    // A job that asked for approval gets Approve/Deny only when the server can bind them to the approval shown (its
+    // note id): those buttons answer exactly that action. Otherwise it is answered on its card, never by a button
+    // that would only send a word.
     if (m.role === "agent" && (m.kind === "approval" || m.kind === "query") && m.session_id) {
       const s = sessions.get(m.session_id);
       if (!s || s.status === "needs_you") {
         const actions = document.createElement("div");
         actions.className = "m-actions";
-        const opts = m.kind === "approval" ? [["Approve", "yes"], ["Deny", "no"]] : [];
-        opts.forEach(([label, word]) => {
-          const b = document.createElement("button");
-          b.type = "button"; b.textContent = label;
-          b.onclick = () => { actions.remove(); send("#" + m.session_id + " " + word); };
-          actions.appendChild(b);
-        });
+        if (m.kind === "approval" && s && s.approval_note) {
+          [["Approve", "yes"], ["Deny", "no"]].forEach(([label, word]) => {
+            const b = document.createElement("button");
+            b.type = "button"; b.textContent = label;
+            b.onclick = () => { actions.remove(); answer(s.id, word, s.approval_note); };
+            actions.appendChild(b);
+          });
+        } else if (m.kind === "approval") {
+          const card = document.createElement("a");
+          card.href = "/dashboard"; card.textContent = "Answer on its card";
+          actions.appendChild(card);
+        }
         const r = document.createElement("button");
         r.type = "button"; r.textContent = "Reply…";
         r.onclick = () => { input.value = "#" + m.session_id + " "; input.focus(); autosize(); };
@@ -256,6 +264,17 @@
     } catch (_) { /* next poll */ }
   }
 
+  async function answer(session, word, noteID) {
+    try {
+      const body = new URLSearchParams({ session: String(session), answer: word, note_id: noteID });
+      const r = await fetch("/api/concierge/answer", { method: "POST", body });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    } catch (e) {
+      if (window.Decurix && window.Decurix.toast) window.Decurix.toast(e.message, "error");
+    }
+    poll();
+  }
+
   async function send(text) {
     text = text.trim();
     if (!text) return;
@@ -293,7 +312,7 @@
   document.querySelectorAll("[data-try]").forEach(b => b.onclick = () => send(b.dataset.try));
 
   poll();
-  setInterval(poll, 1500);
+  Decurix.poll(poll, 1500);
   input.focus();
 })();
 </script>

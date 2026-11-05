@@ -1,3 +1,4 @@
+from needs import needs
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from decurix_agent.computer import evidence
 # request) were refused as invented when the portal form was saved.
 # ============================================================
 
+@needs("openpyxl")
 class TestAFileTheWorkReadIsASource(unittest.TestCase):
 
     def setUp(self):

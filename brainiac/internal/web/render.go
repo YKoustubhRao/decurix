@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,8 +46,10 @@ func FindBrowser() string {
 // Render reads a page with a real headless browser, so pages that build
 // their text with JavaScript (dashboards, leaderboards, single-page apps) are
 // read as a person sees them. The browser gets a throwaway profile and a
-// time budget; the address is checked before it is opened (the browser
-// itself then loads what the page asks for, so Render is for public pages).
+// time budget, and reaches the web only through a proxy in this process
+// that applies Fetch's address guard to every connection it makes, loopback
+// included: the page, its redirects and everything it loads. It is used
+// only when a client asks for it (/v1/brainiac/fetch with "render": true).
 func (c *Client) Render(ctx context.Context, raw string) (Page, error) {
 	u, err := checkURL(raw)
 	if err != nil {
@@ -56,6 +59,14 @@ func (c *Client) Render(ctx context.Context, raw string) (Page, error) {
 		if err := c.resolvesPublic(ctx, u.Hostname()); err != nil {
 			return Page{}, err
 		}
+	}
+	return c.renderNoPrecheck(ctx, raw)
+}
+
+func (c *Client) renderNoPrecheck(ctx context.Context, raw string) (Page, error) {
+	u, err := checkURL(raw)
+	if err != nil {
+		return Page{}, err
 	}
 	bin := c.Browser
 	if bin == "" {
@@ -71,15 +82,38 @@ func (c *Client) Render(ctx context.Context, raw string) (Page, error) {
 	defer os.RemoveAll(profile)
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
+	proxy, stop, err := c.startProxy()
+	if err != nil {
+		return Page{}, err
+	}
+	defer stop()
 	cmd := exec.CommandContext(ctx, bin, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
 		"--disable-extensions", "--disable-sync", "--mute-audio", "--hide-scrollbars",
+		// Every connection through the guard proxy; "<-loopback>" sends
+		// loopback there too instead of letting the browser reach it.
+		"--proxy-server=http://"+proxy, "--proxy-bypass-list=<-loopback>",
+		"--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--disable-background-networking",
 		"--user-data-dir="+profile, "--virtual-time-budget=8000", "--user-agent="+browserUA, "--dump-dom", u.String())
-	out, err := cmd.Output()
-	if err != nil && len(out) == 0 {
-		return Page{}, fmt.Errorf("web: the headless browser could not read the page: %w", err)
+	// The page is read through a bounded pipe: a page that builds more than
+	// MaxBytes of DOM is refused, and never held in memory whole.
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return Page{}, err
 	}
-	if int64(len(out)) > c.maxBytes() {
-		out = out[:c.maxBytes()]
+	if err := cmd.Start(); err != nil {
+		return Page{}, fmt.Errorf("web: the headless browser did not start: %w", err)
+	}
+	out, rerr := io.ReadAll(io.LimitReader(stdout, c.maxBytes()+1))
+	tooBig := int64(len(out)) > c.maxBytes()
+	if tooBig || rerr != nil {
+		cancel() // ends the browser; Wait below reaps it
+	}
+	werr := cmd.Wait()
+	if tooBig {
+		return Page{}, fmt.Errorf("web: the rendered page is larger than %d bytes", c.maxBytes())
+	}
+	if len(out) == 0 {
+		return Page{}, fmt.Errorf("web: the headless browser could not read the page: %v", errors.Join(rerr, werr))
 	}
 	p := pageFrom(u.String(), "text/html", out)
 	p.Rendered = true

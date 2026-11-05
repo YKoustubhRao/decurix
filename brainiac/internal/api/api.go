@@ -29,6 +29,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"brainiac/internal/backend"
 	"brainiac/internal/engine"
@@ -42,10 +43,19 @@ type Server struct {
 	Eng    *engine.Engine
 	APIKey string
 	Log    *log.Logger
+	// WorkSlots is how many work requests run at once (0 means 4); the rest
+	// wait their turn, so parallel large requests cannot exhaust memory.
+	WorkSlots int
 
 	cur    atomic.Pointer[engine.Engine]
+	hold   sync.RWMutex // work requests share it; Hold takes it alone
+	slots  chan struct{}
+	once   sync.Once
 	active atomic.Int64 // work requests being answered
 	last   atomic.Int64 // when the last one ended (unix nanoseconds)
+
+	// beforeEnter, in tests, runs between reading the engine and holding it.
+	beforeEnter func(*engine.Engine)
 }
 
 // engine is the engine requests go to now.
@@ -60,11 +70,36 @@ func (s *Server) engine() *engine.Engine {
 func (s *Server) Current() *engine.Engine { return s.engine() }
 
 // SetEngine sends new requests to e and returns the engine it replaces,
-// which the caller drains and closes.
+// which the caller retires (Engine.Retire): requests already holding it
+// finish there, and nothing new reaches it.
 func (s *Server) SetEngine(e *engine.Engine) *engine.Engine {
 	old := s.engine()
 	s.cur.Store(e)
 	return old
+}
+
+// errNoEngine is no engine taking requests (Brainiac is shutting down).
+var errNoEngine = errors.New("Brainiac is shutting down; try again in a moment")
+
+// use takes a hold on the current engine for one work request; done lets it
+// go. An engine retired between being read and being held refuses the hold,
+// and the engine that replaced it is used instead, so no request runs on an
+// engine that is closing.
+func (s *Server) use() (*engine.Engine, func(), error) {
+	var last *engine.Engine
+	for {
+		e := s.engine()
+		if e == last {
+			return nil, nil, errNoEngine
+		}
+		if s.beforeEnter != nil {
+			s.beforeEnter(e)
+		}
+		if e.Enter() {
+			return e, e.Leave, nil
+		}
+		last = e
+	}
 }
 
 // IdleFor is how long no work request has run (0 while one runs). Reading
@@ -80,13 +115,37 @@ func (s *Server) IdleFor() time.Duration {
 	return time.Since(time.Unix(0, last))
 }
 
-// track counts work requests for IdleFor.
+// Hold makes new work requests wait, once the ones running have finished,
+// until release is called: for a short job that must have the machine to
+// itself (the updater's canary).
+func (s *Server) Hold() (release func()) {
+	s.hold.Lock()
+	var once sync.Once
+	return func() { once.Do(s.hold.Unlock) }
+}
+
+// track counts work requests for IdleFor, and makes them wait while held.
 func (s *Server) track(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			next.ServeHTTP(w, r)
 			return
 		}
+		s.once.Do(func() {
+			n := s.WorkSlots
+			if n <= 0 {
+				n = 4
+			}
+			s.slots = make(chan struct{}, n)
+		})
+		select {
+		case s.slots <- struct{}{}:
+			defer func() { <-s.slots }()
+		case <-r.Context().Done():
+			return
+		}
+		s.hold.RLock()
+		defer s.hold.RUnlock()
 		s.active.Add(1)
 		defer func() {
 			s.last.Store(time.Now().UnixNano())
@@ -108,6 +167,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.models)
 	mux.HandleFunc("GET /v1/brainiac/status", s.status)
 	mux.HandleFunc("GET /v1/brainiac/paths", s.paths)
+	mux.HandleFunc("POST /v1/brainiac/route", s.route)
 	mux.HandleFunc("POST /v1/brainiac/outcomes", s.outcome)
 	mux.HandleFunc("GET /v1/brainiac/traces", s.traces)
 	mux.HandleFunc("GET /v1/brainiac/scout", s.scoutReport)
@@ -164,6 +224,10 @@ type chatRequest struct {
 	// Web is Brainiac's own field: true reads the web for this answer, false
 	// never does; absent follows the configured policy.
 	Web *bool `json:"web"`
+	// WebQuery is Brainiac's own field: the search query, in the client's
+	// words. It is the only text a lookup sends out; with none, nothing is
+	// looked up.
+	WebQuery string `json:"web_query"`
 }
 
 type contentPart struct {
@@ -311,7 +375,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	req := engine.Request{Model: cr.Model, Domain: cr.Domain, Web: cr.Web, Messages: msgs, Temperature: cr.Temperature, MaxTokens: cr.MaxTokens}
+	req := engine.Request{Model: cr.Model, Domain: cr.Domain, Web: cr.Web, WebQuery: cr.WebQuery, Messages: msgs, Temperature: cr.Temperature, MaxTokens: cr.MaxTokens}
 	if cr.MaxCompletionTokens > 0 {
 		req.MaxTokens = cr.MaxCompletionTokens
 	}
@@ -328,8 +392,14 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	if model == "" {
 		model = engine.ModelAuto
 	}
+	eng, done, err := s.use()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "server_error", err.Error())
+		return
+	}
+	defer done()
 	if !cr.Stream {
-		res, err := s.engine().Chat(r.Context(), req)
+		res, err := answered(eng.Chat(r.Context(), req))
 		if err != nil {
 			s.chatError(w, err, res)
 			return
@@ -352,7 +422,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		}
 		sse.data(chunk(id, model, map[string]any{"content": d}, nil))
 	}
-	res, err := s.engine().Chat(r.Context(), req)
+	res, err := answered(eng.Chat(r.Context(), req))
 	if err != nil {
 		if !sse.started() {
 			stopKeepAlive()
@@ -380,6 +450,15 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		sse.data(u)
 	}
 	sse.done()
+}
+
+// answered passes an engine's answer on only when the brain said it ended:
+// a cut answer is an error, never a finish_reason of "stop".
+func answered(res *engine.Response, err error) (*engine.Response, error) {
+	if err == nil && (res == nil || !res.Complete) {
+		err = backend.ErrCutShort
+	}
+	return res, err
 }
 
 func parseStop(raw json.RawMessage) []string {
@@ -500,7 +579,13 @@ func (s *Server) transcribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	format := formatOf(hdr.Filename, data)
-	t, rec, err := s.engine().Transcribe(r.Context(), data, format, r.FormValue("language"))
+	eng, done, err := s.use()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "server_error", err.Error())
+		return
+	}
+	defer done()
+	t, rec, err := eng.Transcribe(r.Context(), data, format, r.FormValue("language"))
 	if err != nil {
 		s.chatError(w, err, &engine.Response{Trace: rec})
 		return
@@ -531,7 +616,13 @@ func (s *Server) ocr(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	res, rec, err := s.engine().OCR(r.Context(), data)
+	eng, done, err := s.use()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "server_error", err.Error())
+		return
+	}
+	defer done()
+	res, rec, err := eng.OCR(r.Context(), data)
 	if err != nil {
 		s.chatError(w, err, &engine.Response{Trace: rec})
 		return
@@ -555,7 +646,13 @@ func (s *Server) embed(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "input is empty")
 		return
 	}
-	vecs, model, err := s.engine().Embed(r.Context(), inputs)
+	eng, done, err := s.use()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "server_error", err.Error())
+		return
+	}
+	defer done()
+	vecs, model, err := eng.Embed(r.Context(), inputs)
 	if err != nil {
 		s.chatError(w, err, nil)
 		return
@@ -623,6 +720,10 @@ func (s *Server) fetch(w http.ResponseWriter, r *http.Request) {
 	}
 	var p web.Page
 	var err error
+	if in.Render && !s.engine().RenderAllowed() {
+		writeError(w, http.StatusForbidden, "render_off", "the headless browser is off in this Brainiac's settings (web_render: false)")
+		return
+	}
 	if in.Render {
 		p, err = b.Render(r.Context(), in.URL)
 	} else {
@@ -644,7 +745,11 @@ func (s *Server) fetch(w http.ResponseWriter, r *http.Request) {
 	if in.Query != "" {
 		p.Text = web.Passages(p.Text, in.Query, in.Max)
 	} else if len(p.Text) > in.Max {
-		p.Text = p.Text[:in.Max]
+		cut := in.Max
+		for cut > 0 && !utf8.RuneStart(p.Text[cut]) {
+			cut-- // never half a character
+		}
+		p.Text = p.Text[:cut]
 	}
 	writeJSON(w, 200, p)
 }
@@ -663,6 +768,21 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.engine().Status())
 }
 
+// route says which field the router would send a text to: {"text": "..."}.
+// No model runs; `brainiac eval` uses it to score the routed path.
+func (s *Server) route(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var in struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", `send {"text": "..."}`)
+		return
+	}
+	d, p, ok := s.engine().Route(in.Text)
+	writeJSON(w, 200, map[string]any{"domain": d, "p": p, "routes": ok})
+}
+
 // paths says, per field, what could answer here and why each does or does not.
 func (s *Server) paths(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.engine().Paths())
@@ -671,6 +791,7 @@ func (s *Server) paths(w http.ResponseWriter, r *http.Request) {
 // outcome files a client's final verdict on real answers: {"ok": false} with
 // "trace" for one answer, or "since" (RFC 3339) for every answer since then.
 func (s *Server) outcome(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var body struct {
 		Trace string    `json:"trace"`
 		Since time.Time `json:"since"`

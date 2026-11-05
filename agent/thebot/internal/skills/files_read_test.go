@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -11,6 +12,9 @@ import (
 // Found live (2026-10-21): Word invoices read by a python script were not known as read, and their figures were
 // refused as invented at the portal's Save.
 func TestTheFilesACommandNamesAreNotedAsRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs Linux absolute paths: a command's paths are read as /-rooted (namedPathRe), and the test's temp dir has a drive letter")
+	}
 	root := t.TempDir()
 	folder := filepath.Join(root, "GST Returns", "6. SEPTEMBER")
 	if err := os.MkdirAll(folder, 0o755); err != nil {
@@ -68,6 +72,9 @@ func TestATypedTextWithADollarIsTypedAsWritten(t *testing.T) {
 
 // Found live (2026-10-21): values printed on Word invoices a script had read were refused as never read.
 func TestValuesInAFileTheWorkNamedAreTraced(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs sh (its office stand-in) and Linux absolute paths: a command's paths are read as /-rooted (namedPathRe), and the test's temp dir has a drive letter")
+	}
 	root := t.TempDir()
 	invoice := filepath.Join(root, "786 Kamath Jewellers.docx")
 	if err := os.WriteFile(invoice, []byte("Annual maintenance | 9987 | 1 nos | 26,500.00"), 0o644); err != nil {
@@ -114,9 +121,11 @@ func TestThePersonsAnswerSettlesTheValuesTheyWereAskedAbout(t *testing.T) {
 	o := &OperatorSkill{}
 	st := groundingState("Prepare the GSTR-1 from the invoices.")
 	st.AskedUntraced, st.UntracedNudges = []string{"900", "9346.27"}, 2
-	o.resume(RunContext{Ctx: context.Background(), OnLog: func(string) {}, HumanReply: "Use your judgement and carry on."}, Subtask{}, st)
+	// A plain yes settles them with no reading; any other reply on a local brain is not known, and not known is not
+	// vouched (review T-11) - the question tells the person to reply yes (plainYesNote).
+	o.resume(RunContext{Ctx: context.Background(), OnLog: func(string) {}, HumanReply: "use your judgement"}, Subtask{}, st)
 	if groundingNudge(st, `gui type e5 "900"`) != "" || st.UntracedNudges != 0 || st.AskedUntraced != nil {
-		t.Fatalf("a reply that did not say no left the values untraced (nudges %d)", st.UntracedNudges)
+		t.Fatalf("a plain yes left the values untraced (nudges %d)", st.UntracedNudges)
 	}
 	st2 := groundingState("Prepare the GSTR-1 from the invoices.")
 	st2.AskedUntraced = []string{"900"}
@@ -151,8 +160,8 @@ func TestWhatACommandPrintedIsKept(t *testing.T) {
 	}
 	t.Setenv("DECURIX_TASK_FILE", taskFile)
 	t.Setenv("DECURIX_DIR", filepath.Join(root, "state"))
-	noteCommandOutput(`python3 -c 'print(4350+25423.72+25423.72+12711.86)'`, "67909.3\n")
-	noteCommandOutput(`gui observe`, "Screen 1280x720 ...")
+	noteCommandOutput(`python3 -c 'print(4350+25423.72+25423.72+12711.86)'`, "67909.3\n", nil)
+	noteCommandOutput(`gui observe`, "Screen 1280x720 ...", nil)
 	data, err := os.ReadFile(filepath.Join(root, "state", "computer", "evidence", "t7out.outputs"))
 	if err != nil {
 		t.Fatal(err)

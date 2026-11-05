@@ -12,6 +12,7 @@ import (
 	"thebot/internal/llm"
 	"thebot/internal/memory"
 	"thebot/internal/skills"
+	"thebot/internal/withheld"
 )
 
 func (s *Scheduler) runOnce(skill skills.Skill, rc skills.RunContext, subtask skills.Subtask, onLog func(string)) skills.Result {
@@ -23,7 +24,8 @@ func (s *Scheduler) runOnce(skill skills.Skill, rc skills.RunContext, subtask sk
 			Verified: false, Meta: map[string]any{},
 		}
 	}
-	onLog(fmt.Sprintf("scheduler: %q [%s] -> skill=%s model=%s", truncate(subtask.Step, 70), subtask.Type, skill.Name(), rc.Model))
+	onLog(fmt.Sprintf("scheduler: %q [%s] -> skill=%s model=%s", truncate(withheld.From(rc.Ctx).Shown(subtask.Step), 70),
+		subtask.Type, skill.Name(), rc.Model))
 	result, err := skill.Run(rc, subtask)
 	if err != nil {
 		onLog(fmt.Sprintf("skill %s returned an error: %s", skill.Name(), err.Error()))
@@ -43,6 +45,9 @@ func (s *Scheduler) runStep(rc skills.RunContext, subtask skills.Subtask, planne
 	rc.Model = s.Models.ForTaskType(subtask.Type)
 	skill := skills.Pick(subtask)
 	result := s.runOnce(skill, rc, subtask, onLog)
+	// An approval is for one run of one action: whatever this run did not use is gone, so a retry, a reroute or a
+	// decomposed recovery that reaches the same action is stopped and asked again.
+	rc.Approved = nil
 
 	if result.Verified {
 		return result
@@ -135,6 +140,15 @@ func (s *Scheduler) runStep(rc skills.RunContext, subtask skills.Subtask, planne
 	retryResult := s.runOnce(skills.Pick(retrySubtask), rc, retrySubtask, onLog)
 	retryResult.Meta["retriedAfterFailure"] = true
 	retryResult.Meta["originalFailure"] = result.Output
+	if retryResult.Verified && (retryType != subtask.Type || retryResult.IsModelReply()) {
+		// A retry of another kind, or one that is a model's own words, did something else in the step's place: what it
+		// found is reported as tried instead, never as the step done (review T-12).
+		onLog(fmt.Sprintf("scheduler: the retry was a different kind of step (%s) - reported as tried instead, not verified", retryType))
+		retryResult.Verified = false
+		retryResult.Meta["triedInstead"] = retryStep
+		retryResult.Output = fmt.Sprintf("The step did not work (%s). Tried instead: %s\n\n%s",
+			truncate(strings.TrimSpace(result.Output), 600), retryStep, retryResult.Output)
+	}
 	if !retryResult.Verified {
 		s.recordFailureFeedback(rc.Ctx, subtask.Step, "original: "+result.Output+" | retry ("+retryStep+"): "+retryResult.Output, onLog)
 	}
@@ -167,6 +181,8 @@ func (s *Scheduler) runDecomposedRecovery(rc skills.RunContext, subtask skills.S
 	}
 	var trail []recoveryStepSummary
 	last := original
+	failed := -1 // the first recovery step that did not verify
+	var failedOutput string
 	for i, step := range plan.Steps {
 		recoverySubtask := skills.Subtask{Step: step.Text, Type: step.Type}
 		onLog(fmt.Sprintf("scheduler: recovery step %d/%d [%s]: %s", i+1, len(plan.Steps), step.Type, step.Text))
@@ -186,7 +202,17 @@ func (s *Scheduler) runDecomposedRecovery(rc skills.RunContext, subtask skills.S
 		}
 		if !stepResult.Verified {
 			onLog(fmt.Sprintf("scheduler: recovery step %d/%d failed - continuing with the rest of the recovery plan", i+1, len(plan.Steps)))
+			if failed < 0 {
+				failed, failedOutput = i, stepResult.Output
+			}
 		}
+	}
+	if failed >= 0 && last.Verified {
+		// The recovery is verified only when every step of it is: a last step that worked says nothing of one that
+		// failed before it (review T-05: the install failed, the version print worked, and the job was "answered").
+		last.Verified = false
+		last.Output = fmt.Sprintf("The recovery did not work: step %d of %d (%s) failed.\n\n%s\n\nThe last step printed:\n%s",
+			failed+1, len(plan.Steps), plan.Steps[failed].Text, strings.TrimSpace(failedOutput), last.Output)
 	}
 
 	last.Meta["retriedAfterFailure"] = true
@@ -198,7 +224,7 @@ func (s *Scheduler) runDecomposedRecovery(rc skills.RunContext, subtask skills.S
 		return last
 	}
 
-	// A real fix, found and proven just now - worth remembering so the same
+	// A real fix, found and proven just now (every step verified) - worth remembering so the same
 	// class of failure doesn't need the same research and decomposition all
 	// over again. Proposed only, never trusted automatically: this goes to
 	// .skills/pending/ and is matched against nothing until a human confirms
@@ -394,7 +420,7 @@ RETRY_STEP: <the new step (RETRY) or plain description of what needs to happen (
 	if system != nil && system.Content != "" {
 		messages = append([]llm.Message{*system}, messages...)
 	}
-	resp, err := s.Provider.Chat(ctx, s.Models.Judgment, messages, llm.Options{TimeoutMs: 120000, Temperature: 0.2})
+	resp, err := s.Provider.Chat(ctx, s.Models.Judgment, messages, llm.Options{TimeoutMs: 120000, Temperature: 0.2, Purpose: llm.PurposeRecover})
 	if err != nil {
 		return fmt.Sprintf("could not reason about the failure (%s) - stopping here", err.Error()), "", recoverAskUser
 	}

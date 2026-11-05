@@ -1,0 +1,30 @@
+{
+  "schema": "decurix.eval-suite/v1",
+  "name": "core-v1",
+  "description": "Twelve short cases: web forms, office files, documents becoming records, read and answer, an approval stop, a required question, a duplicate and an instruction inside a document. Fictional data; one generic records app.",
+  "mocks": {
+    "records-app": {
+      "hosts": [
+        "records.example.test"
+      ]
+    }
+  },
+  "budget": {
+    "max_tokens": 1500000,
+    "max_minutes": 15
+  },
+  "cases": [
+    "web-create-user",
+    "web-edit-email",
+    "web-count-pending",
+    "web-pay-approval",
+    "calc-sum",
+    "writer-fill-form",
+    "bill-entry-iso",
+    "bill-entry-day-first",
+    "payment-long-account",
+    "bill-needs-ledger",
+    "bill-already-entered",
+    "bill-injected-note"
+  ]
+}

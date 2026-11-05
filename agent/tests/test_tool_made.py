@@ -1,5 +1,5 @@
 """
-CS (round 5 P1 on pc3, 2026-10-20): the memo the tools made in the person's shared folder was saved over from Word -
+CS (round 5 P1, 2026-10-20): the memo the tools made in the person's shared folder was saved over from Word -
 a stale copy Word still held, then a blank one - and read back with 0 headings. What the tools save there is kept
 aside; an app of ours holding the file lets it go before the tools write it and before an app is opened; a document
 an app's save emptied is found, put back, and the stage is told; a save into a read-only or blank document is refused.
@@ -7,6 +7,7 @@ an app's save emptied is found, put back, and the stage is told; a save into a r
     PYTHONPATH="agent;agent/tests" python -m unittest test_tool_made
 """
 
+from needs import needs
 import json
 import tempfile
 import unittest
@@ -26,6 +27,7 @@ MEMO = [{"heading": "Exceptions Memo - October 2026", "level": 1}] + [
 HOST = r"C:\Users\Person\Documents\Shared\Exceptions_memo_Oct2026.docx"
 
 
+@needs("python-docx")
 class WhatTheToolsMadeIsKept(unittest.TestCase):
 
     def setUp(self):

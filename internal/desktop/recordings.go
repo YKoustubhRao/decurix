@@ -32,9 +32,10 @@ func (m *Manager) AgentRequest(ctx context.Context, rawID, method, path string, 
 		return nil, fmt.Errorf("build agent request: %w", err)
 	}
 
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
+	// Always JSON, a body or not: the agent refuses a write that is not (a browser's form post is how a web page in the
+	// desktop would reach it).
+	req.Header.Set("Content-Type", "application/json")
+	m.AuthorizeAgentRequest(req, rawID)
 
 	resp, err := agentClient.Do(req)
 	if err != nil {

@@ -32,27 +32,47 @@ class StandingProceduresAreKept(unittest.TestCase):
         self.assertFalse(procedures.sets_procedure("August 2026 bank rec please - files attached."))
         self.assertFalse(procedures.sets_procedure("Reconcile the attached statement against the cash book and tell me the difference."))
 
+    def keep(self):
+        # Whether a request sets a standing procedure is the model's reading (review 2026-11-03, E-28).
+        said = {"keep": True, "name": "Month-end bank reconciliation", "applies_when": "a month's bank reconciliation",
+                "procedure": TAUGHT.rsplit("Do July", 1)[0]}
+        with mock.patch.object(procedures.llm_client, "available", return_value=True), \
+                mock.patch.object(procedures.study, "_call", return_value=said):
+            return procedures.note(TAUGHT, task_id="t1")
+
+    def test_with_no_reading_nothing_is_kept_from_the_words_alone(self):
+        self.assertIsNone(procedures.note(TAUGHT, task_id="t1"))
+        self.assertIsNone(procedures.note("Whenever an entry has no match, flag it - " + "x " * 100))
+        self.assertEqual(procedures.kept(), [])
+
+    def test_with_no_model_a_request_must_name_the_procedure_whole(self):
+        self.keep()
+        self.assertTrue(procedures.in_request(procedures.apply("Month-end bank reconciliation for August, please.")))
+        for other in ("August bank statement summary please.", "Reconcile the month-end cash count."):
+            with self.subTest(other=other):
+                self.assertFalse(procedures.in_request(procedures.apply(other)))
+
     def test_it_is_kept_and_a_later_request_for_the_same_work_gets_it_back(self):
-        record = procedures.note(TAUGHT, task_id="t1")
+        record = self.keep()
         self.assertIsNotNone(record)
         self.assertIn("bank_rec_<YYYY-MM>.xlsx", record["procedure"])
         self.assertTrue(self.remembered.called)
-        request = "August 2026 bank reconciliation please.\n\n" + attachments.block(["/home/headless/work/inbox/up-1/stmt.csv"])
+        request = "August 2026 month-end bank reconciliation please.\n\n" + attachments.block(["/home/headless/work/inbox/up-1/stmt.csv"])
         applied = procedures.apply(request)
         self.assertTrue(procedures.in_request(applied))
         self.assertIn("bank_rec_<YYYY-MM>.xlsx", applied)
         # The files stay last, where every reader of a request's attachments looks for them.
         self.assertEqual(attachments.files(applied), ["/home/headless/work/inbox/up-1/stmt.csv"])
-        self.assertTrue(attachments.text(applied).startswith("August 2026 bank reconciliation please."))
+        self.assertTrue(attachments.text(applied).startswith("August 2026 month-end bank reconciliation please."))
 
     def test_other_work_and_a_request_that_gives_its_own_procedure_get_nothing(self):
-        procedures.note(TAUGHT)
+        self.keep()
         self.assertEqual(procedures.apply("Draft a thank-you email to the auditors."), "Draft a thank-you email to the auditors.")
         own = TAUGHT.replace("July", "August")
         self.assertEqual(procedures.apply(own), own)
 
     def test_the_model_decides_which_procedure_and_a_low_confidence_answer_is_none(self):
-        procedures.note(TAUGHT)
+        self.keep()
         with mock.patch.object(procedures.llm_client, "available", return_value=True), \
                 mock.patch.object(procedures.study, "_call", return_value={"procedure": 1, "confidence": 0.95}):
             self.assertTrue(procedures.in_request(procedures.apply("usual drill for August please")))

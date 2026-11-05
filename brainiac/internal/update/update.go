@@ -1,5 +1,6 @@
-// Package update keeps Brainiac on the best open models this machine can
-// run, with no person in the loop. One cycle:
+// Package update finds better open models for this machine and stages them;
+// a person promotes a staged plan (`brainiac update promote`). It never
+// changes what Brainiac serves on its own. One cycle:
 //
 //  1. scout the Hugging Face Hub for new models this machine could run;
 //  2. read public evaluations of them: independent leaderboards, and the
@@ -10,17 +11,24 @@
 //  4. plan again; when the plan changes for the better, install it beside
 //     the running one (lock.next.json) while Brainiac is idle;
 //  5. check every changed role with answers code can verify (a canary) and
-//     switch, keeping the old lock as lock.prev.json. A model that fails is
-//     set aside for 30 days and the next best is tried.
+//     stage the plan that passed (update-staged.json beside lock.next.json).
+//     A model that fails is set aside for 30 days and the next best is tried.
+//  6. Promote, a person's command, switches to the staged plan, keeping the
+//     old lock as lock.prev.json; a newer llama.cpp the plan needs moves with
+//     it. A running serve follows lock.json.
 //
 // Ratings rest on independent leaderboards, never on a person's opinion or
 // a maker's own card alone (a card only says what the maker calls its model). The canary does not
 // judge quality - it catches a model that does not load, cannot see, or
-// answers in the wrong template.
+// answers in the wrong template - which is why a person, or in future a
+// signed release, decides whether the box's judgement model changes.
 package update
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -49,8 +57,9 @@ const (
 	OverlayFile = "catalog.local.json" // the catalog additions
 	StateFile   = "update-state.json"  // set-aside models and history
 	ReportFile  = "update.json"        // the last cycle's report
-	NextLock    = "lock.next.json"     // a plan installed, not yet checked
+	NextLock    = "lock.next.json"     // a plan installed, not yet promoted
 	PrevLock    = "lock.prev.json"     // the lock before the last switch
+	StagedFile  = "update-staged.json" // the checked plan in lock.next.json, waiting for a person
 )
 
 const (
@@ -83,8 +92,9 @@ type Options struct {
 	Census func(ctx context.Context) (census.Census, error)
 	// Policy is the operator's selector policy (licences, reserve...).
 	Policy selector.Policy
-	// Apply installs, checks and switches. Without it the cycle only
-	// reports what it would do and writes nothing but its report.
+	// Apply installs, checks and stages. Without it the cycle only reports
+	// what it would do and writes nothing but its report. Nothing here
+	// switches what is served: Promote, a person's command, does.
 	Apply bool
 	// Idle says whether heavy work (downloads, loading models) may start
 	// now; nil means always.
@@ -142,7 +152,8 @@ const (
 	OutcomeCurrent  = "current"      // nothing better fits here
 	OutcomeWould    = "would-switch" // a dry run found a better plan
 	OutcomeDeferred = "deferred"     // a better plan waits for an idle moment
-	OutcomeSwitched = "switched"     // the better plan passed its check and runs now
+	OutcomeStaged   = "staged"       // the better plan passed its check and waits for a person to promote it
+	OutcomePromoted = "promoted"     // a person switched to the staged plan
 	OutcomeRejected = "rejected"     // every better plan tried failed its check
 	OutcomeFailed   = "failed"       // something went wrong; nothing changed
 )
@@ -159,9 +170,17 @@ type Result struct {
 	SetAside       []string     `json:"set_aside,omitempty"`
 	LlamaCpp       string       `json:"llamacpp,omitempty"` // a new llama.cpp pin the plan needs
 	Notes          []string     `json:"notes,omitempty"`
-	// Lock and Catalog are what to serve after a switch.
-	Lock    *install.Lock    `json:"-"`
-	Catalog *catalog.Catalog `json:"-"`
+}
+
+// Staged is a plan installed in lock.next.json that passed its check, for a
+// person to promote. LockSHA ties it to those exact bytes: a lock changed
+// after the check is not promoted.
+type Staged struct {
+	At      time.Time        `json:"at"`
+	Why     string           `json:"why"`
+	Changes []Change         `json:"changes"`
+	LockSHA string           `json:"lock_sha256"`
+	Runtime *catalog.Runtime `json:"runtime,omitempty"` // the llama.cpp build it needs, when newer than the pin
 }
 
 // Adoption is a model added to (or refreshed in) the catalog overlay.
@@ -331,10 +350,16 @@ func (c *cycle) decide(ctx context.Context, overlay catalog.Overlay, pin string)
 			c.set(OutcomeWould, "a better plan is available: %s", describe(changes))
 			return
 		}
-		if !c.idle() {
-			c.set(OutcomeDeferred, "a better plan is available (%s); switching when Brainiac has been idle", describe(changes))
+		if c.alreadyStaged(changes) {
+			c.set(OutcomeStaged, "a better plan passed its check and is staged (%s); `brainiac update promote` switches to it", describe(changes))
 			return
 		}
+		if !c.idle() {
+			c.set(OutcomeDeferred, "a better plan is available (%s); installing and checking it when Brainiac has been idle", describe(changes))
+			return
+		}
+		// A new install replaces lock.next.json, so an older staged plan is gone.
+		_ = os.Remove(c.st.Path(StagedFile))
 		c.logf("installing beside the running models: %s", describe(changes))
 		next, err := c.opt.Install(ctx, plan, install.Options{Store: c.st, Census: cs, WorkerDir: c.opt.WorkerDir, Log: c.opt.Log, LockName: NextLock})
 		var changed *install.TemplateChanged
@@ -352,7 +377,7 @@ func (c *cycle) decide(ctx context.Context, overlay catalog.Overlay, pin string)
 			return
 		}
 		if !c.idle() {
-			c.set(OutcomeDeferred, "installed %s; checking and switching when Brainiac is idle again", describe(changes))
+			c.set(OutcomeDeferred, "installed %s; checking it when Brainiac is idle again", describe(changes))
 			return
 		}
 		if c.opt.MakeRoom != nil {
@@ -364,17 +389,18 @@ func (c *cycle) decide(ctx context.Context, overlay catalog.Overlay, pin string)
 		var failed *CheckFailed
 		switch {
 		case err == nil:
-			if err := c.promote(next, plan); err != nil {
-				c.set(OutcomeFailed, "the check passed but switching failed: %v", err)
+			staged := Staged{At: c.now.UTC(), Changes: changes, Why: describe(changes)}
+			if pin != "" && plan.LlamaCpp != nil && plan.LlamaCpp.Tag == pin {
+				staged.Runtime = planned.Runtime
+			}
+			if staged.LockSHA, err = fileSHA(c.st.Path(NextLock)); err == nil {
+				err = c.st.WriteJSON(StagedFile, staged)
+			}
+			if err != nil {
+				c.set(OutcomeFailed, "the check passed but the plan could not be staged: %v", err)
 				return
 			}
-			if pin != "" && plan.LlamaCpp != nil && plan.LlamaCpp.Tag == pin {
-				overlay.Runtime = planned.Runtime
-				overlay.Updated = c.now.Format("2006-01-02")
-				_ = catalog.SaveOverlay(c.st.Path(OverlayFile), overlay)
-			}
-			c.res.Lock, c.res.Catalog = next, merged
-			c.set(OutcomeSwitched, "switched after the check passed: %s", describe(changes))
+			c.set(OutcomeStaged, "a better plan passed its check and is staged (%s); `brainiac update promote` switches to it", describe(changes))
 			return
 		case errors.Is(err, ErrNotNow):
 			c.set(OutcomeDeferred, "installed %s; the check waits for free memory (%v)", describe(changes), err)
@@ -647,6 +673,70 @@ func (c *cycle) withoutRejected(cat *catalog.Catalog) *catalog.Catalog {
 
 // promote makes the checked lock the running one, keeping the old as
 // lock.prev.json, and deletes the downloads neither of them uses.
+// alreadyStaged reports whether the plan with these changes is the one
+// staged now, still in lock.next.json as it was checked.
+func (c *cycle) alreadyStaged(changes []Change) bool {
+	var s Staged
+	if c.st.ReadJSON(StagedFile, &s) != nil {
+		return false
+	}
+	got, err := fileSHA(c.st.Path(NextLock))
+	if err != nil || got != s.LockSHA {
+		return false
+	}
+	a, _ := json.Marshal(s.Changes)
+	b, _ := json.Marshal(changes)
+	return string(a) == string(b)
+}
+
+// ErrNothingStaged is a promote with no checked plan waiting.
+var ErrNothingStaged = errors.New("no checked plan is staged: run `brainiac update --apply` first")
+
+// Promote is a person switching to the staged plan: lock.next.json becomes
+// lock.json (the old one is kept as lock.prev.json), a newer llama.cpp the
+// plan needs becomes the pin, and downloads no kept lock uses are deleted.
+// It refuses a lock.next.json that is not the one that passed its check.
+func Promote(st *store.Store, now time.Time) (*install.Lock, Staged, error) {
+	var s Staged
+	if err := st.ReadJSON(StagedFile, &s); err != nil {
+		return nil, s, ErrNothingStaged
+	}
+	got, err := fileSHA(st.Path(NextLock))
+	if err != nil || got != s.LockSHA {
+		return nil, s, fmt.Errorf("%s is not the plan that passed its check; run `brainiac update --apply` again", NextLock)
+	}
+	var next install.Lock
+	if err := st.ReadJSON(NextLock, &next); err != nil {
+		return nil, s, err
+	}
+	cur, err := install.ReadLock(st)
+	if err != nil {
+		return nil, s, err
+	}
+	c := &cycle{st: st, now: now, lock: cur, logf: func(string, ...any) {}}
+	if err := c.promote(&next, next.Plan); err != nil {
+		return nil, s, err
+	}
+	if s.Runtime != nil {
+		o, err := catalog.ReadOverlay(st.Path(OverlayFile))
+		if err == nil {
+			o.Runtime, o.Updated = s.Runtime, now.Format("2006-01-02")
+			err = catalog.SaveOverlay(st.Path(OverlayFile), o)
+		}
+		if err != nil {
+			return &next, s, fmt.Errorf("switched, but the llama.cpp pin could not be saved: %w", err)
+		}
+	}
+	_ = os.Remove(st.Path(StagedFile))
+	state := ReadState(st)
+	state.History = append(state.History, Event{At: now.UTC(), Outcome: OutcomePromoted, Why: s.Why, Changes: s.Changes})
+	if n := len(state.History); n > 50 {
+		state.History = state.History[n-50:]
+	}
+	_ = st.WriteJSON(StateFile, state)
+	return &next, s, nil
+}
+
 func (c *cycle) promote(next *install.Lock, plan *selector.Plan) error {
 	var oldPrev install.Lock
 	hadPrev := c.st.ReadJSON(PrevLock, &oldPrev) == nil
@@ -662,6 +752,16 @@ func (c *cycle) promote(next *install.Lock, plan *selector.Plan) error {
 		c.prune(&oldPrev, next, c.lock)
 	}
 	return nil
+}
+
+// fileSHA is a file's sha256, in hex.
+func fileSHA(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // prune deletes the Hugging Face files of an old lock that the kept locks

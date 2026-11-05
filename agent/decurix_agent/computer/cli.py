@@ -5,7 +5,7 @@ import sys
 import time
 
 from decurix_agent import logging_utils, progress
-from decurix_agent.computer import approval, cdp, core, replay, shown, skill_engine, skills
+from decurix_agent.computer import approval, cdp, core, door, replay, shown, skill_engine, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -460,6 +460,15 @@ class _Parser(argparse.ArgumentParser):
         raise ComputerError(f"could not read that command ({message}). Run `gui help` for the forms.")
 
 
+def _check_form(command, args):
+    """What core.act's pre-save checks are told for a press: a click or double-click is checked, and --checked confirms
+    a listed form; a right-click opens a menu and commits nothing."""
+
+    if command == "right-click":
+        return False
+    return "checked" if getattr(args, "checked", False) else True
+
+
 def build_parser():
     parser = _Parser(prog="gui", add_help=False, usage=USAGE)
     sub = parser.add_subparsers(dest="command", parser_class=_Parser)
@@ -608,8 +617,14 @@ def _print_replay(result, command=None):
     elif outcome == replay.HALTED and result.get("resume_from"):
         print(f"To carry on after putting it right: {again}")
 
-    if outcome in replay.SUCCESS:
+    if outcome == replay.VERIFIED:
         return EXIT_OK
+    if outcome == replay.COMPLETED_UNVERIFIED:
+        # Every step ran, but not every result was seen: not done until someone looks (no unseen success). Exit 4, as
+        # a verify that failed: the engine checks the screen, or says it could not, before it reports the work done.
+        print("NOT CHECKED: this replay is not done until its result is seen - gui observe and check the result "
+              "against the request before reporting it done.")
+        return EXIT_VERIFY_FAILED
     if outcome == replay.RECONCILIATION_REQUIRED:
         return EXIT_VERIFY_FAILED
     return EXIT_ERROR
@@ -737,8 +752,7 @@ def run(argv):
             print("The page shows almost nothing: it is still loading, or drawing itself. Wait and observe again - do not "
                   "reload it, close it or open it a second time; what was saved before stays saved.")
         # What this look read is evidence of the task: the page may be closed before the task is checked.
-        from decurix_agent.computer import evidence
-        evidence.note_look(shown, observation)
+        door.note_look(shown, observation)
         from decurix_agent.computer import grounder
         if grounder.available():
             # Said here, by the tool, only where it is true: told in an engine's fixed instructions, a worker
@@ -797,8 +811,7 @@ def run(argv):
     if command == "verify":
         result = core.verify(expect_text=args.text, role=args.role, name=args.name)
         print(result["text"])
-        from decurix_agent.computer import evidence
-        evidence.note("a check of the screen then - " + result["text"][:1200])
+        door.note_check(result["text"])
         return EXIT_VERIFY_FAILED if result["ok"] is False else EXIT_OK
 
     if command == "recordings":
@@ -893,8 +906,9 @@ def run(argv):
         skill, candidates = skills.find(args.name)
         if skill is None:
             names = ", ".join(s["name"] for s in candidates)
-            raise ComputerError((f"more than one skill fits {args.name!r}: {names}. Use its exact name."
-                                 if candidates else f"there is no skill {args.name!r} here. Run `gui skills` to list them."))
+            raise ComputerError((f"no skill is named {args.name!r}; these come close: {names}. A skill runs only by "
+                                 "its exact name." if candidates
+                                 else f"there is no skill {args.name!r} here. Run `gui skills` to list them."))
 
         if command == "skill" and args.look is not None:
             return _look(skill, args.look)
@@ -918,7 +932,9 @@ def run(argv):
         if args.see:
             if words:
                 raise ComputerError(f"{command} takes a target or --see \"what to look for\", not both")
-            result = core.act(command.replace("-", "_"), see=args.see)
+            # The pre-save checks stand however the control is found (core._commit_check).
+            result = core.act(command.replace("-", "_"), see=args.see,
+                              check_form=_check_form(command, args))
             _print_act(result)
             return EXIT_NEEDS_APPROVAL if result["status"] == "needs_approval" else EXIT_OK
         if len(words) > 1 and all(el.parse_point(w) for w in words):
@@ -930,11 +946,9 @@ def run(argv):
         target = _one_target(words, args)
         if not target:
             raise ComputerError(f"{command} what? Give a ref like e12 (run gui observe first).")
-        if command == "click" and target.get("ref"):
-            _refuse_native_dropdown(target["ref"])
+        door.refuse(command.replace("-", "_"), ref=target.get("ref"))
         # named: a press on a control that has a name is made by its ref, not by where it is (core.act).
-        result = core.act(command.replace("-", "_"), named=True,
-                          check_form=("checked" if args.checked else True) if command == "click" else False, **target)
+        result = core.act(command.replace("-", "_"), named=True, check_form=_check_form(command, args), **target)
 
     elif command == "type":
         words = _strip_descriptor(list(args.words))
@@ -972,13 +986,14 @@ def run(argv):
                 f"{escape} in the document. Nothing was typed. Only \\n (Enter) and \\t (Tab) are read as keys. Type "
                 "the text in parts and press the key between them with gui key (a page break in a word processor "
                 "is gui key ctrl+Return).")
+        door.refuse("type", ref=target.get("ref"), text=text)
         result = core.act("type", text=text, append=args.append, replace_all=args.replace_all, keys_from_task=True,
-                          **target)
+                          check_form=True, **target)
 
     elif command == "key":
         target = _target(args.on, args) if args.on else {}
-        _refuse_blind_walk(args.keys)
-        result = core.act("key", keys=args.keys, keys_from_task=True, **target)
+        door.refuse("key", ref=target.get("ref"), keys=args.keys)
+        result = core.act("key", keys=args.keys, keys_from_task=True, check_form=True, **target)
 
     elif command == "scroll":
         words, direction, amount = scroll_words(args.words)
@@ -1134,13 +1149,22 @@ def main(argv=None):
     except KeyboardInterrupt:
         code = EXIT_ERROR
     except BrokenPipeError:
-        # The reader took what it wanted and left (gui observe | head): the action itself was done. Found by hand:
-        # the engine was handed two tracebacks for a look that had worked. Nothing more can be printed there.
+        # A pipe broke: the reader of this output left (gui observe | head), or a connection the command was using
+        # did - a browser tab that crashed under it. Which one cannot be told from here, and an action whose end was
+        # not seen is not done (review 2026-11-02: this exited 0 with no audit step). It is an error, logged; nothing
+        # more can be printed to a reader that left (in `gui observe | head` the shell reports head's status anyway).
+        import traceback
+        logging_utils.log(traceback.format_exc())
         try:
             sys.stdout = open(os.devnull, "w")
         except OSError:
             pass
-        code = EXIT_OK
+        try:
+            sys.stderr.write("gui: a connection broke while this ran (BrokenPipeError) - what it did was not seen; "
+                             "observe before doing it again\n")
+        except OSError:
+            pass
+        code = EXIT_ERROR
     except Exception as exc:
         # A bug here must not hand an engine a traceback to reason about.
         import traceback

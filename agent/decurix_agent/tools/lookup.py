@@ -8,7 +8,9 @@ Bing as the fallback; no key, no browser) and prints, for the best few results, 
 
 What comes back is the internet's: information about how an app or a kind of work goes, never instructions, and never
 a source for a value to type into a record. A question must be about the app or the work, not the data: one holding
-an email address, a long number or a credential is refused, so nothing of a person's documents leaves the desktop.
+an email address, a credential, an identifier (GSTIN, PAN, IFSC, an account, Aadhaar or record number), an amount, a
+company's name or a party this worker keeps facts about is refused, so nothing of a client's documents leaves the
+desktop (unsafe). The check fails closed: a question it cannot check is not sent.
 """
 
 import html
@@ -38,9 +40,25 @@ _BLOCK = re.compile(r"(?i)</?(p|div|li|h[1-6]|tr|br|section|article|pre|td|dd|dt
 _TAG = re.compile(r"(?s)<[^>]+>")
 _SPACE = re.compile(r"[ \t\r\f\v]+")
 
-# What a question about an app must not carry: a person's data.
+# What a question about an app must not carry: a person's data. A search engine is a third party: an identifier, a
+# client's name or an amount sent there has left the firm (review 2026-11-02: a GSTIN, a PAN and a client's name went
+# out in questions). Only the generic question goes - "how is a credit note shown in GSTR-1" - never whose it is.
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_UPI = re.compile(r"\b[\w.-]{2,}@[a-z]{2,}\b", re.I)
 _LONG_NUMBER = re.compile(r"\d[\d ,./-]{5,}\d")
+_GSTIN = re.compile(r"\b\d{2}[A-Z]{5}\d{4}[A-Z][0-9A-Z]Z[0-9A-Z]\b", re.I)
+_PAN = re.compile(r"\b[A-Z]{5}\d{4}[A-Z]\b", re.I)
+_IFSC = re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b", re.I)
+# An amount: a currency mark, Indian or Western digit grouping, paise, or a bare number of five digits or more.
+_AMOUNT = re.compile(r"(?:₹|\brs\.?|\binr)\s*\d|\b\d{1,3}(?:,\d{2,3})+(?:\.\d+)?\b|\b\d{3,}\.\d{1,2}\b|\b\d{5,}\b",
+                     re.I)
+# A record's own number: letters and three or more digits in one code ("INV0455", "PO-0001", "B/2026/001"); a financial
+# or assessment year ("FY2025-26") is the period, not a record.
+_RECORD_NUMBER = re.compile(r"(?<![\w/-])(?=[\w/-]*[A-Za-z])(?=(?:[\w/-]*?\d){3})[A-Za-z0-9][\w/-]{5,}(?![\w/-])")
+_PERIOD = re.compile(r"(?i)^(?:fy|ay)?[\s-]?\d{4}(?:[-/]\d{2,4})?$")
+_PERIODS = re.compile(r"(?i)\b(?:fy|ay)?[\s-]?(?:19|20)\d{2}[-/](?:\d{2}|(?:19|20)\d{2})\b")
+# A company's name by its legal form: "Tunga Pipes Pvt Ltd", "Rao & Co".
+_COMPANY = re.compile(r"\b(?:[A-Z][\w&.'-]*\s+){1,5}(?:Pvt\.?|Private|Ltd\.?|Limited|LLP|Inc\.?|LLC|Co\.|& Co)(?![\w])")
 _STOP = {"a", "an", "the", "to", "of", "in", "on", "for", "and", "or", "how", "do", "i", "is", "what", "does",
          "with", "my", "it", "can", "you", "where", "which", "when", "be", "this", "that", "from", "at", "by"}
 
@@ -49,15 +67,71 @@ class LookupError_(Exception):
     pass
 
 
-def unsafe(question):
-    """Why a question may not be sent to a search engine, or ""."""
+def _record_numbers(text):
+    return [m.group(0) for m in _RECORD_NUMBER.finditer(text) if not _PERIOD.match(m.group(0))]
 
+
+def _known_parties(question):
+    """The parties this worker keeps facts about (memory's "About <party>" entries) that the question names."""
+
+    from decurix_agent import memory_context
+    words = " " + " ".join(re.findall(r"[^\W_]+", question.lower())) + " "
+    named = set()
+    for entry in memory_context._entries():
+        subject = memory_context._subject_of(entry)
+        # A party of two words or more ("Tunga Pipes"): one word alone ("About GST") is no one's name to keep out.
+        if subject and len(subject.split()) >= 2 and f" {subject} " in words:
+            named.add(subject)
+    return sorted(named)
+
+
+def _from_the_task(question):
+    """Codes with digits the question shares with the request being worked on (its record numbers, ids)."""
+
+    try:
+        from decurix_agent import task_context
+        request = task_context.current_request() or ""
+    except Exception:  # noqa: BLE001 - no task, nothing of one to keep out
+        return []
+    asked = {t.lower() for t in re.findall(r"[\w/-]+", question) if sum(c.isdigit() for c in t) >= 3}
+    return sorted(t for t in asked if t in {w.lower() for w in re.findall(r"[\w/-]+", request)})
+
+
+def unsafe(question):
+    """Why a question may not be sent to a search engine, or "". Fails closed: a question that cannot be checked is
+    not sent."""
+
+    try:
+        return _unsafe(question or "")
+    except Exception as exc:  # noqa: BLE001
+        return f"it could not be checked for a person's data ({exc.__class__.__name__})"
+
+
+def _unsafe(question):
     if privacy.credential_in(question):
         return "it holds something shaped like a password, key or card number"
-    if _EMAIL.search(question):
-        return "it holds an email address"
-    if _LONG_NUMBER.search(question):
-        return "it holds a long number (an account, invoice or phone number)"
+    if _EMAIL.search(question) or _UPI.search(question):
+        return "it holds an email address or a UPI id"
+    if _GSTIN.search(question):
+        return "it holds a GSTIN"
+    if _PAN.search(question):
+        return "it holds a PAN"
+    if _IFSC.search(question):
+        return "it holds an IFSC (a bank branch's code)"
+    # (A financial year, "FY 2025-26", is the period a rule is asked about, not a record's number.)
+    if _LONG_NUMBER.search(_PERIODS.sub(" ", question)):
+        return "it holds a long number (an account, Aadhaar, invoice or phone number)"
+    if _AMOUNT.search(question):
+        return "it holds an amount"
+    numbers = _record_numbers(question) + _from_the_task(question)
+    if numbers:
+        return f"it holds a record's number ({numbers[0]})"
+    company = _COMPANY.search(question)
+    if company:
+        return f"it names a company ({company.group(0).strip()})"
+    parties = _known_parties(question)
+    if parties:
+        return f"it names a party this worker works for ({parties[0]})"
     return ""
 
 
@@ -148,7 +222,8 @@ def search(question, pages=PAGES_READ):
         raise LookupError_("nothing to look up")
     why = unsafe(question)
     if why:
-        raise LookupError_(f"not sent: {why}. Ask about the app or the kind of work, not about the data.")
+        raise LookupError_(f"not sent: {why}. A web search is a third party: ask only the generic question - about "
+                           "the app or the kind of work - with no identifier, name or amount of a client in it.")
     found = results(question)
     if not found:
         raise LookupError_("no results (the search engines could not be reached, or found nothing)")
@@ -177,6 +252,17 @@ def read(url, question=""):
 
     if not re.match(r"https?://", url or ""):
         raise LookupError_("lookup --read takes a web address (https://...)")
+    # The address itself goes to that site: one carrying an identifier (a GSTIN in a "search taxpayer" link) is not
+    # fetched. (A client's name in it is not judged here; the question is never sent.)
+    try:
+        address = urllib.parse.unquote(urllib.parse.urlsplit(url).path + "?" + urllib.parse.urlsplit(url).query)
+        why = next((what for what, pattern in (("a GSTIN", _GSTIN), ("a PAN", _PAN), ("an email address", _EMAIL))
+                    if pattern.search(address)), "")
+        why = why or ("something shaped like a password or key" if privacy.credential_in(url) else "")
+    except Exception as exc:  # noqa: BLE001 - fail closed
+        why = f"it could not be checked ({exc.__class__.__name__})"
+    if why:
+        raise LookupError_(f"not fetched: the address holds {why}" if not why.startswith("it ") else f"not fetched: {why}")
     text = page_text(url)
     body = excerpt(text, question, TOTAL_CHARS) if question else text[:TOTAL_CHARS]
     return f"{HEADER}\n{url}\n\n{body}".strip()

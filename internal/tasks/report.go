@@ -18,7 +18,7 @@ import (
 // the answer wrong. An approval counts as stepping in: it is the agent doing
 // the right thing, but it is still a person being paged, and the reasons table
 // keeps approvals apart from being stuck.
-const AutonomyDefinition = "A task is autonomous when its only attempt ended done, it never had a query or asked a human for approval, and nobody marked the answer wrong. Tasks still running with no human involvement yet are not counted."
+const AutonomyDefinition = "A task is autonomous when its only attempt ended done and its final check confirmed the result, it never had a query or asked a human for approval, and nobody marked the answer wrong. Tasks still running with no human involvement yet are not counted."
 
 var engineLabels = map[string]string{
 	"ollama": "Ollama",
@@ -267,7 +267,9 @@ func (s *Store) summaries(since time.Time) ([]Summary, error) {
 		}
 
 		summary.Settled = !Live(summary.Status) || len(summary.SteppedIn) > 0
-		summary.Autonomous = summary.Status == StatusDone && summary.Executions == 1 &&
+		// Done on the worker's word is not autonomous work: only a result its final check confirmed is
+		// (review 2026-11-02: unchecked "done" counted, so the rate rewarded what nobody had seen).
+		summary.Autonomous = summary.Outcome.Done() && summary.Executions == 1 &&
 			summary.Interventions == 0 && summary.Verdict != VerdictWrong
 	}
 
@@ -341,9 +343,12 @@ func (g Group) TokensPerTask() string {
 
 // Reason is one row of "why humans stepped in".
 type Reason struct {
-	Key      string          `json:"key"`
-	Label    string          `json:"label"`
-	Approval bool            `json:"approval"`
+	Key      string `json:"key"`
+	Label    string `json:"label"`
+	Approval bool   `json:"approval"`
+	// Guessed says the reason was read from the words of a question or an error (classify.go), not from what
+	// happened: a person reads it as a guess (C-22). A stop and a wrong verdict are facts.
+	Guessed  bool            `json:"guessed"`
 	Count    int             `json:"count"`
 	Share    float64         `json:"share"`
 	ByEngine []EngineCount   `json:"by_engine"`
@@ -446,7 +451,7 @@ func reportFromSummaries(since time.Time, summaries []Summary) Report {
 
 			reason, ok := reasons[key]
 			if !ok {
-				reason = &Reason{Key: key, Label: ReasonLabel(key), Approval: IsApprovalReason(key)}
+				reason = &Reason{Key: key, Label: ReasonLabel(key), Approval: IsApprovalReason(key), Guessed: GuessedReason(key)}
 				reasons[key] = reason
 				reasonEngines[key] = map[string]int{}
 			}

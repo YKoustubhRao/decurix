@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -38,8 +37,10 @@ const (
 	// into desktop containers at /opt/tools.
 	ToolsVolumeName = "decurix-tools"
 
-	// CacheVolumeName is the shared writable volume mounted into desktop containers
-	// at /var/cache/decurix to deduplicate Go modules, npm downloads, and cargo registries.
+	// CacheVolumeName was the one writable cache volume every desktop shared at /var/cache/decurix. A desktop
+	// created before 2026-11-03 still mounts it (recreate it to stop); a new one gets a cache of its own
+	// (cacheVolumeFor) and the read-only model cache (HFVolumeName): a cache one worker writes and another trusts on
+	// read is a way from one worker into the other (B-02). Delete never removes it.
 	CacheVolumeName = "decurix-cache"
 
 	// NetworkName is the shared Docker bridge network desktop containers
@@ -134,6 +135,8 @@ func (m *Manager) GatewayIPs(ctx context.Context) []string {
 
 	var ips []string
 	seen := map[string]bool{}
+	// Never the practice network: a practice desktop reaches only its broker, so the control plane listens nowhere on
+	// it (review 2026-11-02 - an edit put it here by mistake and bound the no-login listener there).
 	for _, name := range []string{NetworkName, "bridge"} {
 		info, err := m.client.NetworkInspect(ctx, name, network.InspectOptions{})
 		if err != nil {
@@ -149,36 +152,6 @@ func (m *Manager) GatewayIPs(ctx context.Context) []string {
 		}
 	}
 	return ips
-}
-
-// ContainerNetworks returns the address ranges of the Docker networks
-// desktops live on (decurix-network, and the default bridge), and each one's
-// gateway. A request from inside one of those ranges that is not its
-// gateway comes from a container - a desktop, or the bundled Ollama - never
-// from a person's browser, which reaches the control plane from the host
-// (loopback, or through a published port, which Docker hands over from the
-// gateway). httpapi uses it to keep what only a person should see away from
-// the agents.
-func (m *Manager) ContainerNetworks(ctx context.Context) (subnets []netip.Prefix, gateways []netip.Addr) {
-
-	for _, name := range []string{NetworkName, "bridge"} {
-		info, err := m.client.NetworkInspect(ctx, name, network.InspectOptions{})
-		if err != nil {
-			continue
-		}
-
-		for _, cfg := range info.IPAM.Config {
-			if prefix, err := netip.ParsePrefix(cfg.Subnet); err == nil {
-				subnets = append(subnets, prefix.Masked())
-			}
-
-			if gw, err := netip.ParseAddr(cfg.Gateway); err == nil {
-				gateways = append(gateways, gw)
-			}
-		}
-	}
-
-	return subnets, gateways
 }
 
 // EnsureNetwork creates the shared Docker network used by desktops if it does not already exist.
@@ -247,9 +220,18 @@ func controlPlaneURL() string {
 	return "http://host.docker.internal:8080"
 }
 
+// DesktopModelURL is the OLLAMA_URL every desktop is given: the control plane's model proxy, with /v1 when the model
+// server is an OpenAI-compatible one (ollama.DesktopURL ends in /v1).
+func DesktopModelURL() string {
+	u := strings.TrimRight(controlPlaneURL(), "/") + "/api/native-ollama"
+	if os.Getenv("DECURIX_WINDOWS_OLLAMA_URL") == "" && strings.HasSuffix(strings.TrimRight(ollama.DesktopURL(), "/"), "/v1") {
+		u += "/v1"
+	}
+	return u
+}
+
 // buildDesktopEnv builds the container environment variables (VNC, desktop identity, control-plane/Ollama URLs, agent harness, brain) for a desktop by name.
 func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain, shared ...*SharedFolder) []string {
-	defaultPassword := envOr("DEFAULT_PASSWORD", "admin")
 
 	// OLLAMA_URL/OLLAMA_MODEL follow the same pattern as DEFAULT_PASSWORD:
 	// the control plane's own environment wins, with a default that has to
@@ -273,14 +255,18 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 	//
 	// Both come from package ollama, which preloads the model on this same
 	// server at startup - the two must never disagree about which one it is.
-	ollamaURL := ollama.DesktopURL()
-	if os.Getenv("DECURIX_WINDOWS_OLLAMA_URL") != "" {
-		ollamaURL = strings.TrimRight(controlPlaneURL(), "/") + "/api/native-ollama"
-	}
+	//
+	// Every desktop reaches the local model server only through the control plane's allow-listed proxy, whatever that
+	// server is - the host's own Ollama (Linux's usual setup), the bundled container, the Windows app's native one -
+	// never by its own API (review NET-R3 B3, R2-B1): that API lets any desktop pull, change or delete the models every
+	// other desktop uses, and unload or reload the shared one. The proxy forwards to ollama.DesktopURL(), the server the
+	// control plane itself warms (httpapi.modelProxyTarget). The agent's chat, its warm-up and soul's embedder all read
+	// OLLAMA_URL (start_agent_terminal.sh hands it to soul as OLLAMA_HOST), and every route they use is on the proxy's
+	// list. An OpenAI-compatible server (a URL ending in /v1) keeps its /v1, so the agent still speaks that format.
+	ollamaURL := DesktopModelURL()
 	ollamaModel := ollama.DesktopModel()
 
 	env := []string{
-		"VNC_PW=" + defaultPassword,
 		"VNC_RESOLUTION=1280x720",
 		// sanitizeName, not an ad-hoc lowercase/space swap: this is the ID
 		// the agent reports itself as on every callback, and Desktop.ID is
@@ -310,6 +296,10 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 	env = append(env, "OLLAMA_NUM_PARALLEL="+envOr("OLLAMA_NUM_PARALLEL", "1"))
 
 	env = append(env, "DECURIX_BRAIN="+brain.kind())
+
+	// Every desktop the control plane makes must have an approval gate: its agent and TheBot allow nothing gated
+	// rather than fall back to a store the worker can write (agenttoken.go's GateRequiredEnv).
+	env = append(env, GateRequiredEnv+"=1")
 
 	// The one folder of the person's computer this desktop may use, when they chose one (sharedfolder.go).
 	if len(shared) > 0 && shared[0] != nil {
@@ -354,7 +344,7 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 	}
 
 	env = append(env,
-		"PATH=/opt/tools/bin:/opt/tools/go/bin:/opt/tools/node/bin:/opt/tools/rust/bin:/home/headless/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"PATH="+desktopPath,
 		"GOROOT=/opt/tools/go",
 		"RUSTUP_HOME=/opt/tools/rust",
 		"CARGO_HOME=/home/headless/.cargo",
@@ -363,12 +353,19 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 		"GOMODCACHE=/var/cache/decurix/go",
 		"PIP_CACHE_DIR=/var/cache/decurix/pip",
 		"HF_HOME=/var/cache/decurix/huggingface",
+		// The models the control plane put in the shared, read-only model cache (HFVolumeName).
+		"DECURIX_SHARED_MODELS="+HFMountPoint,
 		"PYTHONDONTWRITEBYTECODE=1",
 		"PYTHONUNBUFFERED=1",
 	)
 
 	return env
 }
+
+// desktopPath is the PATH every desktop gets, real and practice alike: the shared tools first, the worker's own
+// installs, then the system's. Its python3 is /usr/bin/python3, the one Python the image installs the worker
+// libraries into (docker/desktop.basic.Dockerfile, resource plan B1).
+const desktopPath = "/opt/tools/bin:/opt/tools/go/bin:/opt/tools/node/bin:/opt/tools/rust/bin:/home/headless/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 // envOr is the control plane's own value of the environment variable name, or def when it is unset or empty.
 func envOr(name, def string) string {
@@ -390,6 +387,9 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 		"desktop-model":          desktopModel(env),
 		"desktop-specialization": envValue(env, "DESKTOP_SPECIALIZATION"),
 		"desktop-parent-id":      envValue(env, "DESKTOP_PARENT_ID"),
+		// The control plane's own record that this desktop runs an approval gate (prepareGate refuses an image
+		// without one): what HasGate reads, never a file inside the desktop.
+		GateLabel: "1",
 	}
 	if len(shared) > 0 && shared[0] != nil {
 		labels[sharedLabel] = shared[0].Host
@@ -410,18 +410,27 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 			shmBytes = parsed * 1024 * 1024
 		}
 	}
+	// No process in a desktop gains privileges by exec - not the worker's (the entrypoint's setpriv already sets it),
+	// and not one the control plane starts with docker exec, which the entrypoint never sees (B-21).
+	securityOpt = append(append([]string{}, securityOpt...), "no-new-privileges:true")
 	hostConfig := &container.HostConfig{
 		ShmSize:     shmBytes,
 		SecurityOpt: securityOpt,
 		Resources:   resources,
+		// No raw sockets: with them a desktop could forge ARP and take another's address, which the control plane's
+		// identity-by-address checks rely on (docs/gate-boundary.md).
+		CapDrop: []string{"NET_RAW"},
 		Tmpfs: map[string]string{
 			"/tmp": "rw,nosuid,size=256m,mode=1777",
 			"/run": "rw,nosuid,size=64m,mode=755",
 		},
+		// Every writable volume is this desktop's alone (B-02): its home and its package caches. What desktops share
+		// is read-only: the tools, and the models the control plane put in the model cache.
 		Binds: []string{
 			volumeName + ":/home/headless",
 			ToolsVolumeName + ":/opt/tools:ro",
-			CacheVolumeName + ":/var/cache/decurix:rw",
+			cacheVolumeFor(containerName) + ":/var/cache/decurix:rw",
+			HFVolumeName + ":" + HFMountPoint + ":ro",
 		},
 		LogConfig: container.LogConfig{
 			Type: "json-file",
@@ -444,13 +453,16 @@ func buildContainerConfigs(imageName, containerName, profile, harness string, cp
 		hostConfig.Mounts = append(hostConfig.Mounts, shared[0].Mount())
 	}
 
-	networkingConfig := &network.NetworkingConfig{
+	return config, hostConfig, desktopNetworking(strings.TrimPrefix(containerName, "desktop_"))
+}
+
+// desktopNetworking puts a desktop container on its own network only (desknet.go).
+func desktopNetworking(id string) *network.NetworkingConfig {
+	return &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{
-			NetworkName: {},
+			DesktopNetworkName(id): {},
 		},
 	}
-
-	return config, hostConfig, networkingConfig
 }
 
 // desktopIdleMB is the memory a desktop is guaranteed whatever size was chosen: what an idle one uses (measured
@@ -464,15 +476,18 @@ func desktopReservation(memoryMB int64) int64 {
 }
 
 // desktopResources is the CPU and memory a desktop is given: cpus whole CPUs and up to memoryMB of memory, only the
-// idle floor of it reserved, never swapped.
+// idle floor of it reserved. A desktop may swap (owner decision, resource plan B3 reversed): one short of memory slows
+// down rather than having its largest process (the browser, LibreOffice, soul) OOM-killed mid-task, and a paused
+// desktop's memory can go to swap. MemorySwap is left unset, which Docker reads as memory plus swap up to twice the
+// memory limit, on cgroup v1 (memory.memsw.limit_in_bytes) and v2 (memory.swap.max = the memory limit) alike, where
+// the host has swap and swap accounting. No swappiness is set: v2 has none per cgroup, and on v1 the host's applies -
+// MemorySwappiness 0, set before, made a v1 cgroup reclaim cache only and OOM at its limit, and did nothing on v2.
 func desktopResources(cpus, memoryMB int64) container.Resources {
-	swappinessZero := int64(0)
 	return container.Resources{
 		NanoCPUs:          cpus * 1_000_000_000,
 		CPUShares:         cpus * 1024,
 		Memory:            memoryMB * 1024 * 1024,
 		MemoryReservation: desktopReservation(memoryMB),
-		MemorySwappiness:  &swappinessZero,
 	}
 }
 

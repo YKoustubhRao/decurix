@@ -1,0 +1,73 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "bill-entry-month-first",
+  "category": "varied",
+  "kind": "doc_to_record",
+  "request": "Enter the bill in ~/work/practice/bill-entry-month-first/bill.pdf into the Records app (http://records.example.test/bills/new). Charge it to General.",
+  "start": {
+    "files": [
+      "bill.pdf"
+    ],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "mock_records",
+        "collection": "bills",
+        "exact_count": true,
+        "records": [
+          {
+            "number": {
+              "id": "HS-0318"
+            },
+            "vendor": {
+              "text": "Harrowgate Signworks"
+            },
+            "date": {
+              "date": "2026-03-04"
+            },
+            "due": {
+              "date": "2026-05-03"
+            },
+            "total": {
+              "number": "1770.00"
+            },
+            "cost_centre": "General"
+          }
+        ]
+      },
+      {
+        "kind": "ledger_readback",
+        "records": 1
+      }
+    ]
+  },
+  "oracle": [
+    "office read bill.pdf | grep -q HS-0318",
+    "python3 -I -c 'import sys; sys.path.insert(0, \"/opt\"); from decurix_agent import task_context; task_context.start(sys.argv[1], sys.argv[2])' \"$DECURIX_TASK_ID\" \"Enter the bill in ~/work/practice/bill-entry-month-first/bill.pdf into the Records app (http://records.example.test/bills/new). Charge it to General.\"",
+    "printf '%s' '{\"Bill number\": \"HS-0318\", \"Vendor\": \"Harrowgate Signworks\", \"Bill date\": \"03/04/2026\", \"Due date\": \"05/03/2026\", \"Total\": \"1,770.00\", \"Cost centre\": \"General\"}' | gui record HS-0318 --from /home/headless/work/practice/bill-entry-month-first/bill.pdf --fields -",
+    "gui open http://records.example.test/bills/new",
+    {
+      "sleep": 3
+    },
+    "gui type 'textbox \"Bill number\"' HS-0318",
+    "gui type 'textbox \"Vendor\"' 'Harrowgate Signworks'",
+    "gui type 'textbox \"Bill date\"' 2026-03-04",
+    "gui type 'textbox \"Due date\"' 2026-05-03",
+    "gui type 'textbox \"Total\"' 1,770.00",
+    "gui select 'combobox \"Cost centre\"' General",
+    "gui click 'button \"Save bill\"' --checked || gui click 'button \"Save bill\"' --checked",
+    {
+      "sleep": 2
+    },
+    "gui verify --text Saved"
+  ],
+  "tags": [
+    "date-order",
+    "mechanism"
+  ]
+}

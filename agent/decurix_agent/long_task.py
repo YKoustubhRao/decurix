@@ -180,19 +180,23 @@ _FORMATS = {".xlsx": "xlsx", ".xlsm": "xlsx", ".docx": "docx", ".pptx": "pptx", 
             ".ods": "ods", ".odt": "odt", ".odp": "odp", ".txt": "text", ".md": "text"}
 
 
-def _ask_json(system, prompt, max_tokens=4000):
+def _ask_json(system, prompt, max_tokens=4000, purpose="py.stage"):
     """One model call answered in JSON (the hosted model when there is one), parsed; ValueError when it is not JSON."""
 
     from decurix_agent import llm_client
     if llm_client.available():
         message, spent = llm_client.chat([{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-                                         max_tokens=max_tokens)
+                                         max_tokens=max_tokens, purpose=purpose)
         with _lock:
             _asked_tokens[0] += int((spent or {}).get("prompt_tokens") or 0) + int((spent or {}).get("completion_tokens") or 0)
         text = message.get("content") or ""
     else:
+        # The engine's own model: what it spent is what the usage meter counted meanwhile (E-41: it was charged nothing).
         from decurix_agent import harness
-        text = harness.ask_model(system, prompt)
+        spent_before = usage.spent()
+        text = harness.ask_model(system, prompt, purpose=purpose)
+        with _lock:
+            _asked_tokens[0] += max(0, usage.spent() - spent_before)
     match = re.search(r"\{.*\}", text or "", re.DOTALL)
     if not match:
         raise ValueError(f"no JSON in the answer: {(text or '')[:200]!r}")
@@ -232,16 +236,6 @@ def _relative(path):
 _PLACEHOLDER = re.compile(r"x{3,}|X{3,}|<[^>/]*>|\{[^}/]*\}|\[[^\]/]*\]")
 # Words the request puts in quotes: the only literals a code check may require of a file.
 _QUOTED = re.compile("[\"“]([^\"”\\n]{1,40})[\"”]|(?<![\\w])'([^'\\n]{1,40})'(?![\\w])")
-
-
-# A request that asks for emails to be prepared (to be drafted into the Outbox): "draft an email", "email the
-# customers", "dispute email drafts", "the Outbox". A request that only mentions email ("POs that came by email") or
-# says it will send replies itself does not: then no stage drafts anything (round 5 P2, 2026-10-20: the planner
-# invented "1 email draft(s)" for a decision stage, and the stage met it by writing to a customer).
-_ASKS_DRAFTS = re.compile(
-    r"\boutbox\b|\be-?mail\s+drafts?\b|\bdrafts?\s+(?:an?\s+|the\s+)?(?:e-?mails?|repl(?:y|ies)|messages?|letters?)\b|"
-    r"\b(?:draft|prepare|write|compose|send)\s+(?:\w+\s+){0,4}?(?:e-?mails?)\b|"
-    r"\be-?mail\s+(?:the|them|each|every|all|our|him|her|it|to)\b", re.I)
 
 
 # Drafts the request asks for only where needed: "a reply for every email that needs one", "drafts where needed".
@@ -300,15 +294,9 @@ def reply_coverage(emails, drafts, report):
     return left
 
 
-def asks_for_drafts(request):
-    """Whether the request asks for emails to be prepared as drafts (never decided by the planner alone)."""
-
-    return bool(_ASKS_DRAFTS.search(attachments.text(request or "")))
-
-
 # Work that enters records in an application (a portal, a back office, an ERP, a form): what was saved is read back
 # from the application itself. Found live (round 5 P2, 2026-10-20): the entry stage checked an order by the portal's
-# "Order SO-5103 was saved." and its own CSV; the saved order had a quantity of 60 for 24 and a line missing.
+# "Order ORD-3 was saved." and its own CSV; the saved order had a quantity of 60 for 24 and a line missing.
 APP_ENTRY = re.compile(r"\b(?:enter|key|post|book|create|record|register|submit|file)\w*\b[^.\n]{0,160}?\b(?:portal|"
                        r"application|app|system|erp|website|web site|software|form|back office)\b|https?://", re.I)
 
@@ -425,8 +413,11 @@ def spec_from_plan(plan, files=(), request=""):
         for_approval = decision and stage.get("for_approval") is True
         if for_approval:
             decision = False
-        if decision or not asks_for_drafts(request):
-            # A decision is the person's, asked in the chat; and drafts are made only when the request asks for emails.
+        if decision:
+            # A decision is the person's, asked in the chat: it drafts nothing (round 5 P2, 2026-10-20: the planner
+            # gave a decision stage "1 email draft(s)" and the stage met it by writing to a customer). Otherwise the
+            # count is the planner's reading of the request, never a word list's: E-21 (review 2026-11-03), a regex
+            # zeroed the count for "Draft reminders for each overdue customer" and the count check was never made.
             drafts = 0
         as_needed = bool(drafts) and drafts_as_needed(request)
         if as_needed:
@@ -611,12 +602,48 @@ def _ledger_path(run_id):
     return _runner().root / run_id / "ledger.json"
 
 
+class LedgerError(OSError):
+    """A run's ledger exists and cannot be read: never taken for an empty one (E-23)."""
+
+
+def _unreadable_copies(run_id):
+    return sorted(_ledger_path(run_id).parent.glob("ledger.json.unreadable-*"))
+
+
 def ledger(run_id):
+    """
+    The run's ledger. A run with none yet has the empty shape. One that exists and cannot be read is moved aside (kept,
+    never overwritten) and LedgerError is raised - then and on every later read, so no save can write an empty ledger
+    over the person's facts, decisions and amendments (E-23, review 2026-11-03: any read error gave {}, and the next
+    update wrote the defaults over the real file).
+    """
+
     with _lock:
+        path = _ledger_path(run_id)
         try:
-            data = json.loads(_ledger_path(run_id).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("the ledger is not an object")
+        except FileNotFoundError:
+            if _unreadable_copies(run_id):
+                raise LedgerError(f"the ledger of run {run_id} could not be read; it is kept as "
+                                  f"{_unreadable_copies(run_id)[-1].name}")
             data = {}
+        except (OSError, ValueError) as exc:
+            aside = path.with_name(f"ledger.json.unreadable-{int(time.time())}")
+            try:
+                path.replace(aside)
+            except OSError as move:
+                log(f"long_task: could not move the unreadable ledger aside: {move}")
+            raise LedgerError(f"the ledger of run {run_id} could not be read ({type(exc).__name__}); it is kept as "
+                              f"{aside.name}") from exc
+    # The ledger on disk holds the request withheld: the run goes on with the request as it was, while its task's
+    # secret store still has it (review round 4).
+    if "[withheld" in str(data.get("request") or ""):
+        from decurix_agent.computer import privacy
+        kept = privacy.resume_copy(run_id)
+        if kept:
+            data["request"] = kept
     data.setdefault("facts", [])
     data.setdefault("decisions", [])
     data.setdefault("amendments", [])
@@ -627,13 +654,47 @@ def ledger(run_id):
     return data
 
 
+def _withhold_request(run_id, task_id):
+    """
+    The run is reported: the request it kept to resume by (the ledger's, and the checkpoint's inputs) is replaced by
+    its withheld form, then scrubbed - nothing resumes a reported run, and the request's secrets must not outlive it
+    (review round 2, B2). Never raises.
+    """
+
+    from decurix_agent.computer import privacy
+
+    def hide(text):
+        return privacy.scrub(task_context.withhold(str(text or ""), task_id))
+    try:
+        _update(run_id, lambda d: d.__setitem__("request", hide(d.get("request"))))
+    except Exception as exc:  # noqa: BLE001
+        log(f"long_task: could not withhold the reported run's request in its ledger: {exc}")
+    try:
+        _runner().withhold_inputs(run_id, hide)
+    except Exception as exc:  # noqa: BLE001
+        log(f"long_task: could not withhold the reported run's request in its checkpoint: {exc}")
+
+
 def _save_ledger(run_id, data):
-    _withhold_derived(data)
+    """
+    Write the run's ledger whole: its derived records withheld first (a failure there skips the save - the file on disk
+    keeps what it had, never "[held back]" over every record), flushed to the disk before it replaces the old file (a
+    power cut leaves the old ledger or the new one, never an empty one - E-23).
+    """
+
+    import copy
+
+    withheld = _withhold_derived(copy.deepcopy(data))
+    data.clear()
+    data.update(withheld)
     with _lock:
         path = _ledger_path(run_id)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Every secret known withheld, shapes too; the request comes back from the task's resume copy (ledger), and
+        # the host documents' snapshot, compared later, is withheld without shapes (review round 4).
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(path, data, atomic=True, exempt=("host_docs_start",),
+                               json_kw={"indent": 1, "ensure_ascii": False})
 
 
 def _update(run_id, change):
@@ -735,12 +796,18 @@ def perform(content, task_file):
         return False
 
     task_id = task_context.current()
-    run_state = _runner().create(spec, {"request": request}, work_dir=str(config.WORK_DIR))
-    run_id = run_state["run_id"]
-    if task_id:
-        _runner().bind_task(run_id, task_id)
+    # The ledger first, then the run: a crash between the two leaves a ledger with no run (nothing resumes it), never
+    # a run with no request to resume (E-23).
+    run_id = uuid.uuid4().hex
+    # The request as it is, to resume by after an agent restart, in the task's secret store (tmpfs, let go at the
+    # final report); every copy on disk is withheld (review round 4).
+    from decurix_agent.computer import privacy
+    privacy.keep_resume_copy(run_id, task_id, request)
     _save_ledger(run_id, {"request": request, "task_id": task_id, "started": time.time(),
                           "task_file": str(task_file or ""), "host_docs_start": _host_snapshot()})
+    run_state = _runner().create(spec, {"request": request}, run_id=run_id, work_dir=str(config.WORK_DIR))
+    if task_id:
+        _runner().bind_task(run_id, task_id)
     _charge(run_id, before)
     with state.state_lock:
         state.current_task = request
@@ -768,7 +835,7 @@ def drive(run_id, task_file):
         _end()
         write_final_reply(f"The request stopped on an error in its stage machinery ({exc}). Every stage checked "
                           f"so far is saved; `/workflow status {run_id}` shows them and `/workflow resume {run_id}` "
-                          "carries on.", kind="error", checked=True)
+                          "carries on.", kind="error", checked=False, gated=True)
 
 
 # ============================================================
@@ -822,7 +889,7 @@ def _ledger_text(state, data, step):
             made = ", ".join(i["path"] for i in state["steps"][s["id"]]["evidence"] if not i.get("drafts"))
             lines.append(f"- {s.get('title', s['id'])}" + (f": {made} (in the work folder)" if made else ""))
         parts.append("Stages already done and checked:\n" + "\n".join(lines))
-    # Found live (series 15 H3, 2026-10-21): "leave Ishaan out" came after the fee demand stage had recorded the Rao
+    # Found live (series 15 H3, 2026-10-21): "leave <one child> out" came after the fee demand stage had recorded the
     # family's total with him in it; "use it; do not work it out again" outranked the change and three attempts at the
     # fee letters kept billing him. A finding made before a change the person made since is marked as such.
     known = len(data["amendments"])
@@ -863,7 +930,7 @@ def stage_prompt(state, step):
     _stage_start[(run_id, step["id"])] = {"t": time.time(), "tokens": usage.spent(), "output": _output(), "asked": _asked(),
                                           "drafts": _draft_base(run_id, step["id"]),
                                           "amendments": len(data["amendments"]), "attempt": record["attempts"],
-                                          "viewers": _stage_viewers(run_id, step["id"]), "entered": len(_entered())}
+                                          "viewers": _stage_viewers(run_id, step["id"]), "entered": _typed_count()}
     _show(state)
 
     made = []
@@ -1121,13 +1188,15 @@ def stage_prompt(state, step):
                       "earlier stages' outputs:"]
         lines += [f"  {p}" for p in others]
     # The run's plan is the person's to see with every question it asks (plan_text): a stage does not put a plan of
-    # its own to them (soul's plan.go reads this marker). Found live (2026-10-24): every attempt of a stage was a new
+    # its own to them (the model reads this line; soul itself goes by the job's planAgreed field, which
+    # thebot_harness._plan_agreed sets from the run's structure, never from this text). Found live (2026-10-24): every attempt of a stage was a new
     # goal, and each put its plan to the person again - ten times for one stage.
     lines += ["", f"{PLAN_AGREED_MARKER}: the run's plan above is the person's; carry it out."]
     return "\n".join(lines)
 
 
-# soul's planAgreedMarker (plan.go): with it in the request, a stage does not put a plan of its own to the person.
+# The line that tells the model a stage's plan is the person's. soul no longer reads it from the text (a pasted message
+# could hold it): it takes the job body's planAgreed flag (thebot_harness._plan_agreed).
 PLAN_AGREED_MARKER = "THE PLAN OF THIS REQUEST IS AGREED"
 
 
@@ -1214,6 +1283,8 @@ def run_inputs(request):
 _GENERIC_HEADERS = {"name", "date", "no", "id", "type", "status", "amount", "total", "description", "notes", "note",
                     "remarks", "value", "item", "items", "code", "s.no", "sr", "sl", "#"}
 _input_headers_cache = {}
+# How many requests' headers are kept (E-40: the cache grew without bound over a desktop's life).
+_INPUT_HEADERS_KEPT = 8
 
 
 def _input_headers(request):
@@ -1249,26 +1320,19 @@ def _input_headers(request):
                     if path.name not in headers[text]:
                         headers[text].append(path.name)
     _input_headers_cache[key] = headers
+    while len(_input_headers_cache) > _INPUT_HEADERS_KEPT:
+        _input_headers_cache.pop(next(iter(_input_headers_cache)))
     return headers
 
 
-def fields_in_inputs(question, request):
-    """The columns of the request's input tables a question asks for, as "Mobile is a column of x.xlsx"; [] for none."""
-
-    found = []
-    for header, files in _input_headers(request).items():
-        if re.search(r"(?<![\w-])" + re.escape(header) + r"(?![\w-])", question or "", re.I):
-            found.append(f"{header} is a column of {', '.join(files)}")
-    return found
-
-
-def _send_back_found_in_inputs(run_id, step_id, question, found=None):
+def _send_back_found_in_inputs(run_id, step_id, question, found):
     """
     A stage that asks the person for a value that is a column of one of the request's own input tables is sent back,
     once, told where it is - never the person asked for what the request gave (round 5 P4, 2026-10-20).
     """
 
-    found = found if found is not None else fields_in_inputs(question, ledger(run_id).get("request") or "")
+    # (`found` is the routing reading's pointer to where the inputs hold it - E-40: a word match over the input headers
+    # was dead in production and is gone.)
     if not found:
         return False
     places = "; ".join(found[:6])
@@ -1351,11 +1415,14 @@ def _masters(request, made=()):
 
 
 def _draft_ids():
+    """The Outbox's draft ids now, or None when it cannot be read (unknown - never "no drafts", R-1)."""
+
     try:
         from decurix_agent.tools import outbox
         return [d.get("id") or json.dumps([d.get("to"), d.get("subject")]) for d in outbox.drafted()]
-    except Exception:
-        return []
+    except Exception as exc:  # noqa: BLE001 - unknown, said as such
+        log(f"long_task: could not read the Outbox: {exc}")
+        return None
 
 
 def _draft_base(run_id, step_id):
@@ -1366,9 +1433,9 @@ def _draft_base(run_id, step_id):
 
     def keep(data):
         bases = data.setdefault("draft_base", {})
-        if step_id not in bases:
+        if bases.get(step_id) is None:
             bases[step_id] = _draft_ids()
-        return list(bases[step_id])
+        return None if bases[step_id] is None else list(bases[step_id])
 
     try:
         return _update(run_id, keep)
@@ -1379,22 +1446,23 @@ def _draft_base(run_id, step_id):
 def _stage_drafts(began, stage=""):
     """
     The drafts a stage made over all its attempts: those tagged to it (outbox records carry "run:stage"), and untagged
-    ones not in the Outbox when it began. A replaced draft is already left out (outbox.drafted).
+    ones not in the Outbox when it began. A replaced draft is already left out (outbox.drafted). An Outbox that cannot
+    be read raises, and so does an untagged draft when the Outbox was not read as the stage began (`began` None): which
+    drafts are the stage's is then unknown, never "none" (R-1, review round 3).
     """
 
-    try:
-        from decurix_agent.tools import outbox
-        drafts = outbox.drafted()
-    except Exception:
-        return []
-    before = set(began or [])
+    from decurix_agent.tools import outbox
+    drafts = outbox.drafted()
     out = []
     for d in drafts:
         tag = d.get("stage") or ""
         if tag and stage:
             if tag == stage:
                 out.append(d)
-        elif (d.get("id") or json.dumps([d.get("to"), d.get("subject")])) not in before:
+            continue
+        if began is None:
+            raise LookupError("the Outbox was not read when the stage began, so its own drafts cannot be told apart")
+        if (d.get("id") or json.dumps([d.get("to"), d.get("subject")])) not in set(began):
             out.append(d)
     return out
 
@@ -1412,7 +1480,7 @@ def _stage_files(state, step):
     return found
 
 
-def code_problems(made, reply, drafts, request, instruction=None, root=None, outputs=None, notes=None):
+def code_problems(made, reply, drafts, request, instruction=None, root=None, outputs=None, notes=None, not_made=None):
     """
     What the final check decides about a stage's result without a model: the file facts are produced.file_facts, the
     very function skill_task._gate calls (results stored, a Total row short of its column, a file the stage names not
@@ -1420,6 +1488,8 @@ def code_problems(made, reply, drafts, request, instruction=None, root=None, out
     the files. `instruction` is the stage's own text (the files it is asked for); `request` the whole one. [] when
     nothing is wrong. What reads the request or needs judgement (typed totals, layout, a picture's size, page breaks,
     fills, a draft naming another party) is appended to `notes` - evidence, never a verdict (harness audit, 2026-10-21).
+    A blocking check that could not be made (produced.FileFacts.could_not) is appended to `not_made`: the stage is then
+    not checked, never passed on that point (verify.outcome).
     """
 
     from decurix_agent import produced, verify
@@ -1427,6 +1497,9 @@ def code_problems(made, reply, drafts, request, instruction=None, root=None, out
     problems = []
     facts = produced.file_facts(request, made, named_in=instruction, root=root, drafts_made=drafts, own_outputs=outputs)
     notes = notes if notes is not None else []
+    if not_made is not None:
+        # (FileFacts.not_made: a check that raised, an Office file that could not be opened - E-27.)
+        not_made.extend(facts.not_made())
     if facts.disclosures:
         progress.emit("An email draft may name another party's business to its recipient - check it before sending: "
                       + "; ".join(facts.disclosures)[:400])
@@ -1456,9 +1529,6 @@ def code_problems(made, reply, drafts, request, instruction=None, root=None, out
         problems.append("An email draft goes to an address that is in no file the request gave ("
                         + "; ".join(facts.unknown_recipients)[:700] + "). Look each recipient up in the records by the "
                         "party's name, in a script, and replace the draft (office email --replaces <its id>).")
-    if facts.source_mismatch:
-        problems.append("A figure given as a source's own is not what that source states ("
-                        + "; ".join(facts.source_mismatch)[:500] + "). Find the difference and correct the file, or ask.")
     unhighlighted = produced.missing_highlight(made, request)
     if unhighlighted:
         notes.append("The request mentions filled or highlighted rows and the saved workbook has none ("
@@ -1480,22 +1550,23 @@ def code_problems(made, reply, drafts, request, instruction=None, root=None, out
 
 def source_guard_problems(request):
     """
-    A source file of the request that the task changed (source_guard.check_and_restore): the original is put back and
-    the worker's version kept beside it under one fixed name. Its own check, BLOCKING; the same finding on a retry the
-    worker kept on purpose goes to the person (the override path).
+    The request's given files that changed during the task (source_guard.changed_sources), as evidence (ADVISORY,
+    E-12): the judge gets the fact checked in code, with its diff, and the person always sees the change and where the
+    original is kept, under "Please check". Nothing is put back while checking - whether the request asked for the
+    change is the judge's to weigh, never a verb list's (review 2026-11-03: an in-place ledger update the request asked
+    for was reverted as "you changed my file"). Raises source_guard.NotChecked when it cannot be made (_checked:
+    MADE_OR_UNCHECKED).
     """
 
-    try:
-        from decurix_agent import source_guard
-        changed_source = source_guard.check_and_restore(task_context.current(), request)
-    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
-        log(f"long_task: could not check the shared folder's files: {exc}")
+    from decurix_agent import source_guard
+
+    facts = source_guard.changed_sources(task_context.current(), request)
+    if not facts:
         return []
-    if not changed_source:
-        return []
-    progress.emit(changed_source)
-    return [changed_source + " Open a source file, never save it: make results under the names the request gives (Save "
-            "As before changing anything), and close an app holding a source without saving."]
+    told = source_guard.report_lines(facts)
+    for line in told:
+        progress.emit(line)
+    return [f"{judged} {person}" for judged, person in zip(source_guard.judge_lines(facts), told)]
 
 
 def decision_problem(step, record, data, drafts):
@@ -1544,28 +1615,22 @@ def _payee_approvals(run_state, request, made):
     """payees.message_payments: payments to details from a message the request gives as their source - the person
     approves each (ASK_PERSON), shown with the account and the message it came from."""
 
-    try:
-        from decurix_agent import payees
-        _declare_payment_sources(run_state, request)
-        return payees.message_payments(request, made)
-    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
-        log(f"long_task: could not read payments from messages: {exc}")
-        return []
+    from decurix_agent import payees
+    _declare_payment_sources(run_state, request)
+    return payees.message_payments(request, made)
 
 
 def _payment_warnings(run_state, request):
     """Warnings for the top of the final report: payments to accounts not on record, messages that are suspicious."""
 
+    # (A failure raises: final_report makes it "not checked" - never a pass.)
     _declare_payment_sources(run_state, request)
-    try:
-        from decurix_agent import payees
-        work = Path(_runner().context(run_state)["work_dir"])
-        made = [str(work / e["path"]) for s in _steps(run_state) for e in run_state["steps"][s["id"]]["evidence"]
-                if not e.get("drafts")]
-        return list(dict.fromkeys(payees.mismatches(request, made) + payees.suspicious_messages(request, made)))
-    except Exception as exc:  # noqa: BLE001
-        log(f"long_task: could not check where payments go: {exc}")
-        return []
+    from decurix_agent import payees
+    work = Path(_runner().context(run_state)["work_dir"])
+    made = [str(work / e["path"]) for s in _steps(run_state) for e in run_state["steps"][s["id"]]["evidence"]
+            if not e.get("drafts")]
+    return list(dict.fromkeys(payees.mismatches(request, made) + payees.unchecked(request, made)
+                              + payees.suspicious_messages(request, made)))
 
 
 # "every"/"each"/"all" in a stage's instruction: the records it covers are all of the earlier stage's.
@@ -1577,7 +1642,7 @@ LEFT_OUT = re.compile(r"\b(?:hold|held|cancel\w*|reject\w*|declin\w*|not approve
                       r"skip\w*)\b", re.I)
 # A column of what goes now (allocated, shipped), and one of what does not (backorder).
 NOW_COLUMN = re.compile(r"\b(?:alloc\w*|ship\w*|dispatch\w*|deliver\w*)\b", re.I)
-LATER_COLUMN = re.compile(r"back\s*-?\s*order|pending|short|value|amount|gst|tax|rate|price|total", re.I)
+LATER_COLUMN = re.compile(r"back\s*-?\s*order|pending|short|value|amount|total", re.I)
 TABLE_KINDS = {".csv", ".tsv", ".xlsx", ".xlsm"}
 
 
@@ -1617,13 +1682,14 @@ def covers_every(step):
 # A stage that takes only the records meeting a condition: "a Refund over Rs 5,000", "with anything over 30 days",
 # "whose papers are complete", "approved", "that need one".
 _THRESHOLD = re.compile(r"(?i)(?:\b(?P<noun>[A-Za-z]+)\s+)?\b(?P<op>over|above|more than|exceeding|greater than|at least|"
-                        r"under|below|less than|up to|not more than)\s+(?:rs\.?\s*|inr\s*|₹\s*)?(?P<n>\d[\d,]*(?:\.\d+)?)"
+                        r"under|below|less than|up to|not more than)\s+(?:(?:rs\.?|inr|₹|\$|€|£|usd|eur|gbp)\s*)?(?P<n>\d[\d,]*(?:\.\d+)?)"
                         r"(?!\s*(?:days?|%|percent|units?|pcs|items?))\b")
 _CONDITION = re.compile(r"(?i)\b(?:whose|which|that|who)\s+(?:is|are|has|have|need|needs|meet|meets|qualif\w*)\b|"
                         r"\bwith\s+(?:anything|any|an?\s+\w+)\s+(?:over|above|older|more)\b|\b(?:eligible|"
                         r"complete|overdue|flagged|unpaid)\b|\bover\s+\d+\s*days?\b")
 # ("approved" and "held" are a decision's, which the check already reads row by row: LEFT_OUT.)
-_MONEY = re.compile(r"(?i)(?:rs\.?|inr|₹)\s*(\d[\d,]*(?:\.\d+)?)")
+# (Any currency's sign or code is notation, not a business word: "over $5,000" decided nothing - E-28.)
+_MONEY = re.compile(r"(?i)(?:rs\.?|inr|₹|\$|€|£|usd|eur|gbp)\s*(\d[\d,]*(?:\.\d+)?)")
 _STAGE_NOUNS = {"every", "each", "all", "the", "a", "an", "any", "is", "are", "of", "to", "for", "from", "with"}
 
 
@@ -1701,8 +1767,8 @@ def coverage_problems(run_state, step, made):
                 continue
             gathered += [(path, header, rows) for header, rows in tables]
     # A party a table of these files leaves out (held, cancelled ...) is left out, whatever another sheet of them lists
-    # without a status (found in the replay gate, series 10's P2: "Orders" had Harbour HELD, its "Working" sheet listed
-    # the same lines with no status, and the portal stage was refused for not entering Harbour).
+    # without a status (found in the replay gate, series 10's P2: "Orders" had one customer HELD, its "Working" sheet listed
+    # the same lines with no status, and the portal stage was refused for not entering it).
     left_out = set()
     for path, header, rows in gathered:
         column = next((i for i, h in enumerate(header) if _header_key(h) in keys), None)
@@ -1747,34 +1813,6 @@ def coverage_problems(run_state, step, made):
     return [head + " Add the missing rows to the file."]
 
 
-# A stage saying it saved a record only to try the application out: "the wrong extra test order ... I created it while
-# checking how the site saves orders".
-PROBE_RECORD = re.compile(r"(?i)\b(?:test|trial|probe|dummy|sample)\b[^\n]{0,80}?\b(?:order|record|entry|invoice|bill|"
-                          r"voucher|customer|item|line)s?\b[^\n]{0,160}?\b(?:I|we)\s+(?:created|saved|made|entered|posted|"
-                          r"submitted)\b")
-
-
-def _note_probe_record(run_id, step, text):
-    """
-    A record a stage says it saved to try the application out is wrong in the application, said at the top of the
-    report with what the person must remove - whatever happens to the question (found live 2026-10-20, P2: a test order
-    SO-5102 saved "while checking how the site saves orders", in a portal that cannot delete orders).
-    """
-
-    if not PROBE_RECORD.search(text or ""):
-        return
-    said = " ".join(str(text).split())[:300]
-    title = step.get("title", step.get("id", "a stage"))
-
-    def keep(data):
-        kept = data.setdefault("wrong_in_app", [])
-        entry = (f"{title}: a test record was saved in the application, which the request did not ask for - remove it "
-                 f"there if it is still there (the worker said: \"{said}\")")
-        if entry not in kept:
-            kept.append(entry)
-    _update(run_id, keep)
-
-
 # How a stage reopened for the person's change of the request says so (amend).
 CHANGED_REQUEST = "the person changed the request"
 
@@ -1809,35 +1847,27 @@ def _lost_findings(run_id, step, record, made):
 def removed_still_there(run_id, made):
     """A record the person removed that an output still holds as a full row (stage_facts.removed_still_present)."""
 
-    try:
-        found = stage_facts.removed_still_present(ledger(run_id)["amendments"], made)
-    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
-        log(f"long_task: could not look for a removed record still in the outputs: {exc}")
-        return []
+    found = stage_facts.removed_still_present(ledger(run_id)["amendments"], made)
     if not found:
         return []
-    return ["A record the person removed is still in the outputs (" + "; ".join(found)[:900] + "). Take it out of "
-            "every table that holds it (or mark the row cancelled and leave its figures out), and recompute every "
-            "total, summary, sheet, deck and memo figure built on it."]
+    # Evidence (ADVISORY): the row is quoted so the judge and the person can see whether it shows the record taken out.
+    return ["A record the person removed may still be counted (" + "; ".join(found)[:900] + "). Check that the row "
+            "shows it taken out and that no total, summary, sheet, deck or memo figure counts it."]
 
 
 def _removed_residue(run_id, made, request):
     """A record the person removed whose figures a total still holds (stage_facts.removed_residue), as problems."""
 
-    try:
-        from decurix_agent import payees
-        amendments = ledger(run_id)["amendments"]
-        if not stage_facts.removed_records(amendments):
-            return []
-        found = stage_facts.removed_residue(amendments, made, payees.bill_documents(request, made))
-    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
-        log(f"long_task: could not look for a removed record's figures: {exc}")
+    from decurix_agent import payees
+    amendments = ledger(run_id)["amendments"]
+    if not stage_facts.removed_records(amendments):
         return []
+    found = stage_facts.removed_residue(amendments, made, payees.bill_documents(request, made))
     if not found:
         return []
-    return ["A record you were told to remove is gone from its table but not from the totals built on it ("
-            + "; ".join(found)[:900] + "). Recompute every figure derived from it in every output - totals, summaries, "
-            "other sheets, the deck and the memo - and search each output for its figures."]
+    # Evidence (ADVISORY): an arithmetic match, not a proof - a total may equal "sum + a removed figure" by chance.
+    return ["A total may still include a record the person removed (" + "; ".join(found)[:900] + "). Check how each "
+            "such figure is made."]
 
 
 def _status_conflicts(run_state, step, made, drafts):
@@ -1860,31 +1890,23 @@ def _status_conflicts(run_state, step, made, drafts):
             "output too, so every output says the same."]
 
 
-def _left_undone_found(made, request):
+def _left_undone_found(made, request, not_made=None):
     """Work a table leaves as an instruction, references given without evidence, amounts whose working does not hold or
     is missing, rows that contradict themselves (stage_facts), as (check, finding), each named by its check
-    (CHECK_MATURITY)."""
+    (CHECK_MATURITY). Each sub-check runs on its own (_checked): one that raises - an unreadable input file - never
+    turns off another, the blocking formula check included (E-01: one raise used to return [] before it ran)."""
 
-    try:
-        from decurix_agent import payees
-        deferred = stage_facts.deferred_actions(made)
-        unsupported = stage_facts.unsupported_references(made, payees.inputs(request)[1])
-    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
-        log(f"long_task: could not look for work left undone in the tables: {exc}")
-        return []
-    try:
-        records, messages = payees.inputs(request)
-        worked = stage_facts.working_problems(made, records, messages)
-        unworked = stage_facts.unworked_amounts(made, messages)
-        contradicts = stage_facts.self_contradictions(made)
-    except Exception as exc:  # noqa: BLE001
-        log(f"long_task: could not check the computed amounts: {exc}")
-        worked, unworked, contradicts = [], [], []
-    try:
-        own = stage_facts.formula_contradictions(made)
-    except Exception as exc:  # noqa: BLE001
-        log(f"long_task: could not check the formulas against their figures: {exc}")
-        own = []
+    from decurix_agent import payees
+
+    not_made = not_made if not_made is not None else []
+    inputs = _checked("working_factors", not_made, lambda: [payees.inputs(request)])
+    records, messages = inputs[0] if inputs else ([], [])
+    own = _checked("working", not_made, stage_facts.formula_contradictions, made)
+    deferred = _checked("deferred_actions", not_made, stage_facts.deferred_actions, made)
+    unsupported = _checked("unsupported_references", not_made, stage_facts.unsupported_references, made, messages)
+    worked = _checked("working_factors", not_made, stage_facts.working_problems, made, records, messages)
+    unworked = _checked("unworked_amounts", not_made, stage_facts.unworked_amounts, made, messages)
+    contradicts = _checked("self_contradictions", not_made, stage_facts.self_contradictions, made)
     problems = []
     if own:
         problems.append(("working", "A figure is not what its own formula gives (" + "; ".join(own)[:800] + "). Store "
@@ -2100,11 +2122,13 @@ def _snapshot_sheets(run_id, step_id, made):
                     if path in kept and name in kept[path] and kept[path][name] != sheets[name]:
                         sheets[name] = kept[path][name]
                         moved = True
+            from decurix_agent.computer import privacy
             if moved:
-                other.write_text(json.dumps(theirs, default=str), encoding="utf-8")
+                privacy.write_scrubbed(other, theirs, shapes=False, json_kw={"default": str})
         if kept:
+            from decurix_agent.computer import privacy
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps(kept, default=str), encoding="utf-8")
+            privacy.write_scrubbed(target, kept, shapes=False, json_kw={"default": str})
         elif target.exists():
             target.unlink()
     except (OSError, ValueError) as exc:
@@ -2309,10 +2333,11 @@ def excluded_names(data):
 
 
 def _names(name, text):
-    """Whether `text` names `name` (its first word is enough: "Priya" in "Priya Nair")."""
+    """Whether `text` names `name`: every word of the name, in any order (_name_seen). Never its first word alone: found
+    (review 2026-11-03, E-19), the person excluded one person and the check's "the letter for <the same first name,
+    another surname> is missing" was taken for that person, so a refusal about someone else was softened."""
 
-    first = name.split()[0]
-    return bool(re.search(rf"\b{re.escape(first)}\b", text or ""))
+    return _name_seen(name, text)
 
 
 def refused_for_excluded(verdict, data):
@@ -2361,7 +2386,7 @@ def restatement_adds(restated, old, stated):
     """
     The words a restated stage text adds that are neither in the stage's own text nor in the question and the person's
     answer (nor a few words for saying who is in or out): [] when it adds none. A restatement says who or what is in or
-    out, in the person's words; it never brings in a rule of its own (round 5 P2 on pc3, 2026-10-21, CN: a restatement
+    out, in the person's words; it never brings in a rule of its own (round 5 P2, 2026-10-21, CN: a restatement
     added "full ordered quantity as backorder", which nobody had said).
     """
 
@@ -2387,7 +2412,7 @@ def _stem(word):
 def rescope_after_answer(run_id, question, answer):
     """
     Restate the stages whose scope the person's answer changes (one call to the main brain), keep the change in the
-    ledger and show it with the plan. Found live (round 5 P4, 2026-10-20): the answer "skip Priya" was given as binding
+    ledger and show it with the plan. Found live (round 5 P4, 2026-10-20): the answer "skip <a joiner>" was given as binding
     to the check, which still judged the stage by its title "for everyone whose papers are complete" and refused it twice.
     Returns the ids restated.
     """
@@ -2427,7 +2452,7 @@ def rescope_after_answer(run_id, question, answer):
         if (enters_records(dict(old, instruction=before)) and not APP_ENTRY.search(does)) \
                 or len(kept) < 0.4 * max(1, len(_words(before))):
             # A restatement that drops the stage's own work is a note on it, never its new text. Found live (round 5
-            # P2, 2026-10-20, CR): the portal stage was restated as only "Include Cafe Bloom ... Exclude Harbour ..." -
+            # P2, 2026-10-20, CR): the portal stage was restated as only "Include <customer A> ... Exclude <customer B> ..." -
             # the worker wrote a log and never entered an order.
             does = before.rstrip() + " After the person's answer: " + does
         try:
@@ -2458,16 +2483,18 @@ def binding_text(data):
         question = " ".join(str(d.get("question") or "").split())
         answer = " ".join(str(d.get("answer") or "").split())[:1200]
         if is_stuck_question(question):
-            # A reply that settles what the work and its check disagreed on binds the check like any answer; one that
-            # only says how to go on ("try again") does not (series 16, 2026-10-21: the person's "the work is right"
-            # reached only the worker, and the check refused the same figure again).
-            if settles_something(answer):
+            # Every reply binds the check like any answer, except one that only says how to go on: a bare "try again",
+            # "skip it" or "stop" - stuck_choice's reading, kept with the decision (series 16, 2026-10-21: the person's
+            # "the work is right" reached only the worker, and the check refused the same figure again). E-20 (review
+            # 2026-11-03): a word count decided it, and "use 18%" or "no, it is 5%" never reached the check.
+            choice = d.get("choice") or _plain_stuck_choice(answer)
+            if not (choice in ("skip", "stop") or (choice == "retry" and not str(d.get("instruction") or "").strip())):
                 lines.append(f"- About a check the stage did not pass (\"{question[:1500]}\") - the person settled it: "
                              f"\"{answer}\"")
             continue
         # What the answer addresses first, as the model read it (classify): an item the question lists that the
         # answer does not address is not decided (series 15 H1, 2026-10-21: the question cut at 300 characters showed
-        # only its first item, and the judge took "Approve Neha's airport taxi ..." for a decision about Kavya's cab).
+        # only its first item, and the judge took "Approve <person A>'s airport taxi ..." for a decision about <person B>'s cab).
         reading = []
         if d.get("names"):
             reading.append("The answer addresses: " + ", ".join(d["names"]) + ".")
@@ -2588,11 +2615,9 @@ def _judge(state, step, reply, made, drafts, note="", start=None, evidence=()):
     data = ledger(state["run_id"])
     binding = binding_text(data)
     if binding:
-        # Found live (round 5 P4, 2026-10-20): the person said to skip Priya until her ID arrives; the stage left her
+        # Found live (round 5 P4, 2026-10-20): the person said to skip one joiner until her ID arrives; the stage left her
         # out, and the check - shown the answer only as context - failed it twice against the tracker.
         task += "\n" + binding
-    if note:
-        task += "\n" + note
     overridden = [o for o in data.get("overrides") or [] if o.get("stage") == step["id"]]
     if overridden:
         task += ("\nThe person kept the work as it is against these findings of a code check - BINDING: do not refuse "
@@ -2641,6 +2666,10 @@ def _judge(state, step, reply, made, drafts, note="", start=None, evidence=()):
         task += ("\nA record entered in an application counts only where the report shows it read back from the "
                  "application and compared with what was meant to go in; a 'saved' message or the worker's own log is "
                  "not that. Every record the stage asks for must be there.")
+    if note:
+        # Last, never inside: a re-check's prompt then starts with the first check's whole, so the provider's prompt
+        # cache serves it (resource plan P1 #8; ships after an eval rerun, since it moves the line in the prompt).
+        task += "\n" + note
     return verify.judge(task, claim=reply, live_png=live, observed=observed, screen_text=screen_text,
                         screen=on_screen,
                         produced="\n".join(x for x in (produced.text(made), produced.drafts_text(drafts),
@@ -2669,11 +2698,21 @@ CHECK_MATURITY = {
     # sums, program-printed numbers, a person's file altered.
     "file_facts": MUST_PASS,
     "file_notes": ADVISORY,  # file facts that read the request or need judgement (FileFacts.notes)
-    "source_guard": MUST_PASS,  # the person's own source file changed by the task: put back, the worker's copy beside it
-    "removed_residue": MUST_PASS,  # BB: a record the person removed, gone from the totals built on it too
-    "removed_still_there": MUST_PASS,  # its reference is in the person's own change (P1, 2026-10-21)
+    # The person's own given file changed during the task: the fact and its diff go to the judge, and the person is
+    # always told. ADVISORY (E-12, review 2026-11-03): whether the request asked for the change is judgement - a verb
+    # list reverted correct in-place updates. Its failure to be made still leaves the stage not checked.
+    "source_guard": ADVISORY,
+    # A record the person removed: a row of its own with figures, or a total equal to a sum plus one of its figures.
+    # ADVISORY (E-07, E-08, review 2026-11-03): a correctly cancelled row and an arithmetic coincidence look the same
+    # to code, so the quoted row goes to the judge. No mechanical form of these blocks today.
+    "removed_residue": ADVISORY,
+    "removed_still_there": ADVISORY,
     "filler_values": MUST_PASS,  # provenance: an address, identifier or amount typed into a form that no source and
     # no recorded work holds (provenance.Sources.unsourced: the blocking kinds only)
+    # An entry picked from an application's own list into a form the stage saved that nothing given backs, a field it
+    # set with no declaration, a record no declaration covers (ledger_checks.findings). ADVISORY at the stage until it
+    # passes the replay gate (CLAUDE.md); the run's final report holds these against the run now (review round 9).
+    "ledger_findings": ADVISORY,
     "typed_doubtful": ADVISORY,  # dates and codes typed that no source holds, or only the work's own files explain
     "draft_facts": MUST_PASS,  # provenance: a fact a draft states that no source and no recorded work holds
     "draft_fields": ADVISORY,  # DE: a draft's fact against its recipient's own row (which column is meant is judgement)
@@ -2702,7 +2741,14 @@ CHECK_MATURITY = {
     "status_conflicts": ADVISORY,  # BZ1: outputs disagreeing on an item's status
     "lost_sheets": ADVISORY,  # CO/CP2: an earlier stage's sheet changed
     "summary_totals": ADVISORY,  # DC: a summary row against the detail rows it seems to count
+    # A blocking check that could not be made (it raised): fails nothing by itself, but the stage it saw is not checked
+    # - never "done" (stage_finished hands these to verify.outcome as not made; review 2026-11-02).
+    "checks_not_made": ADVISORY,
 }
+NOT_MADE = "checks_not_made"
+# Advisory checks that must still be MADE: their finding is evidence, but a stage they could not look at is not checked
+# (source_guard: whether the person's own files were changed is something they must be told, either way).
+MADE_OR_UNCHECKED = {"source_guard"}
 # Advisories the person must not miss: first in "Needs you", and named in the report's first line.
 LOUD = {"repeated_rows": ("includes rows the input repeats", "include rows the input repeats")}
 
@@ -2713,6 +2759,24 @@ def is_blocking(check):
     return CHECK_MATURITY.get(check) == MUST_PASS
 
 
+def _checked(check, unmade, fn, *args, **kwargs):
+    """
+    One code check, run so that its failure is never a pass (E-01): an exception in a check whose findings block or
+    ask the person (CHECK_MATURITY) is a check not made - a line in `unmade`, and the stage is not checked on that
+    point; an advisory check that raises only loses its evidence. Returns the check's findings, [] when it raised.
+    Found (review 2026-11-03): each check had its own `except Exception: return []`, so a blocking check that raised
+    counted as passed and the run said "Done - every stage was made and checked".
+    """
+
+    try:
+        return fn(*args, **kwargs) or []
+    except Exception as exc:  # noqa: BLE001 - said below; never a pass
+        log(f"long_task: the {check} check could not be made: {exc}")
+        if is_blocking(check) or asks_person(check) or check in MADE_OR_UNCHECKED:
+            unmade.append(f"the {check} check could not be made ({type(exc).__name__})")
+        return []
+
+
 def asks_person(check):
     """Whether a finding of this check is put to the person as an approval before the stage counts (ASK_PERSON)."""
 
@@ -2721,7 +2785,7 @@ def asks_person(check):
 
 # ------------------------------------------------------------ records entered in a system: seen in that system
 #
-# CR (round 5 P2 on pc3, 2026-10-20): "Enter every approved order in the portal and log entries" was reported done,
+# CR (round 5 P2, 2026-10-20): "Enter every approved order in the portal and log entries" was reported done,
 # "checked by reading the files back" - the portal had no order and the run no screen action; the worker had written a
 # log claiming the entries. A record entered in a system is done only with what the tools saw there.
 
@@ -2833,7 +2897,7 @@ def _stage_tool_record(run_id, step, start):
         pass
     read = [text for at, text in notes if at >= last_entry]
     read += [str(e.get("change") or "") for e in actions if when(e) >= last_entry]
-    # The whole stage's reading too: the system's own page for each record as it was saved ("Order SO-5102 was saved").
+    # The whole stage's reading too: the system's own page for each record as it was saved ("Order ORD-2 was saved").
     everything = [text for at, text in notes if at >= began]
     everything += [str(e.get("change") or "") for e in actions]
 
@@ -2852,7 +2916,7 @@ _ENTERED_CELL = re.compile(r"(?i)^\W*(?:entered|created|saved|submitted|onboarde
                            r"\s+\S*\d{3,}|\s*$)")
 # A column that holds the record's number in the system ("Portal ref", "SO number", "Employee ID").
 _REFERENCE_HEADER = re.compile(r"(?i)\b(?:ref\w*|number|id|portal|system)\b")
-# A record's number in a system, whatever its shape (SO-5101, EMP2044, INV/2026/0012, 100234): a token with three
+# A record's number in a system, whatever its shape (ORD-0001, EMP0044, INV/2026/0012, 100234): a token with three
 # digits in a row - not a date, not a figure.
 _SYSTEM_NUMBER = re.compile(r"(?<![\w/.,-])(?=[A-Za-z0-9/_-]*\d{3})[A-Za-z0-9]+(?:[-/_][A-Za-z0-9]+)*(?![\w/-])")
 _DATE_SHAPE = re.compile(r"^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}$")
@@ -2911,7 +2975,7 @@ def _claimed_records(made):
                 continue
             keys = [c for c in cells if re.search(r"\d{3,}", c) and len(c) <= 40 and not re.fullmatch(r"[\d.,/ -]+", c)]
             names = [c for c in cells[:3] if re.fullmatch(r"[A-Za-z][A-Za-z&.',/ -]{2,60}", c) and c not in said]
-            # The record's number in the system, when the status gives it (EMP-2044, SO-5101, 100234), is what its
+            # The record's number in the system, when the status gives it (EMP-0044, ORD-0001, 100234), is what its
             # pages show; else its own reference and name - never other details (a bank code, an amount) a form held.
             system_ids = list(dict.fromkeys([m for c in verbs for m in _system_numbers(c)]
                                             + [m for c in numbered for m in _system_numbers(c)]))
@@ -3012,15 +3076,20 @@ def system_entry_findings(run_id, step, made, request, start, record=None):
         if len(numbered) < 2:
             continue
         numbers = sorted(numbered)
+        # The party's own logged records: as many numbers as records is one number each, never a duplicate - two
+        # genuine identical orders the request asked for are two records (E-09, review 2026-11-03).
+        party = [c for c in claimed if any(_name_seen(n, " ".join(c[2])) for n in row_names)]
+        if len(numbers) <= len(party):
+            continue
         same = set.intersection(*numbered.values())
         # (Made here: shown by the stage's own pages more often than by the list read after the last entry alone.)
-        made_here = all(stage_read.count(n) > read.count(n) for n in numbers) and sum(
-            1 for c in claimed if any(_name_seen(n, " ".join(c[2])) for n in row_names)) == 1
+        made_here = all(stage_read.count(n) > read.count(n) for n in numbers) and len(party) == 1
         (twice if same or made_here else maybe).append(f"{row_names[0]} ({', '.join(numbers)})")
     if twice:
-        return [(check, f"The system now holds the same record twice: {'; '.join(twice[:6])}. Not done: tell the person "
-                 "which one is the extra and that they must delete it (never delete a record yourself - it needs their "
-                 "approval), and enter nothing again.")]
+        # The person is asked, with what the list shows - never told to delete: which one is extra is theirs to say.
+        return [(check, f"The system's list may hold the same record twice: {'; '.join(twice[:6])} - more numbers than "
+                 "records the log entered for them. Not done: ask the person, showing both numbers, whether one is an "
+                 "extra entry (never delete a record yourself - it needs their approval), and enter nothing again.")]
     if maybe:
         out.append(("system_entry_text", f"The system's list shows more than one record for: {'; '.join(maybe[:6])}. "
                     "They differ in some field, so each may be its own record - check that none is entered twice."))
@@ -3032,7 +3101,7 @@ def system_entry_findings(run_id, step, made, request, start, record=None):
     listed = shown >= 2 or any(len(set(shape.findall(read))) >= 2 for shape in shapes)
     if not listed:
         # The system's list was not read after the last entry: asked for, never taken for records missing (round 5 P2
-        # on pc3, 2026-10-21, series 12: five orders the portal held were "not shown" - the only page read after the
+        #, 2026-10-21, series 12: five orders the portal held were "not shown" - the only page read after the
         # last entry was that order's "Saved" page).
         return out + [(check, f"The system's list of records was not read after the last entry, and its pages during "
                        f"the stage did not show: {', '.join(missing[:8])}. Open {name}'s list of records once, read it, "
@@ -3044,7 +3113,7 @@ def system_entry_findings(run_id, step, made, request, start, record=None):
 
 def _shown(values, names, claimed, text, ids=()):
     """
-    Whether the system's pages show one claimed record: by the system's own number when the log gives one (SO-5102,
+    Whether the system's pages show one claimed record: by the system's own number when the log gives one (ORD-0002,
     EMP2044, 100234); else by its name (in any order, case or punctuation) and its reference on one line; a reference
     several claimed records share (one PO for three chat orders) never identifies one by itself.
     """
@@ -3183,22 +3252,19 @@ def draft_checks(drafts, request, made=()):
     (unsourced, fields) for a stage's or task's drafts. `unsourced` - provenance, blocking: a fact a draft states (an
     address, a date, a code, a figure of 100 or more) that no source and no recorded work holds. `fields` - evidence: a
     draft's fact against its recipient's own row of the request's table (stage_facts.draft_field_facts), and a name it
-    gives as a field of its recipient's record that no source holds. Found live (round 5 P4 on pc3, 2026-10-21, DE):
+    gives as a field of its recipient's record that no source holds. Found live (round 5 P4, 2026-10-21, DE):
     welcome drafts named managers no source has. Which capitalised words are a name is a guess at meaning ("report to
-    our Engineering Lead, Priya Nair, at the Head Office" gave "Engineering Lead" and "Head Office"), so a name is
+    our Engineering Lead, <a name>, at the Head Office" gave "Engineering Lead" and "Head Office"), so a name is
     evidence for the judge and the person, never a verdict (harness review, 2026-10-21).
     """
 
     if not drafts:
         return [], []
-    try:
-        sources = work_sources(request, made)
-        inputs = request_input_files(request, made)
-        tables = [(h, r) for _, h, r in stage_facts.tables_of(inputs)]
-        facts = stage_facts.draft_field_facts(drafts, tables)
-    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
-        log(f"long_task: could not check what the drafts state: {exc}")
-        return [], []
+    # (A failure raises: the caller makes it a check not made - never a pass.)
+    sources = work_sources(request, made)
+    inputs = request_input_files(request, made)
+    tables = [(h, r) for _, h, r in stage_facts.tables_of(inputs)]
+    facts = stage_facts.draft_field_facts(drafts, tables)
     unsourced, fields = [], []
     for draft in drafts:
         who = ", ".join(draft.get("to") or []) or "no one"
@@ -3246,85 +3312,95 @@ def _summary_totals(made):
 def stage_code_findings(run_id, run_state, step, made, drafts, request, reply, start):
     """
     Every code-decided check a finished stage's work goes through, in order, as (check, finding) - what a program can
-    decide, before any model. CHECK_MATURITY says which fail the stage. The replay gate (tests/test_replay_gate.py)
-    runs them all on saved right runs, so a check that flags correct work shows there before it ships.
+    decide, before any model. CHECK_MATURITY says which fail the stage. Each check runs through _checked: one that
+    raises is NOT_MADE (the stage is then not checked), never a pass, and the checks after it still run. The replay
+    gate (tests/test_replay_gate.py) runs them all on saved right runs, so a check that flags correct work shows there
+    before it ships.
     """
 
     found = []
+    notes, not_made = [], []
 
-    def add(check, problems):
-        found.extend((check, p) for p in problems or [])
+    def add(check, fn, *args, **kwargs):
+        found.extend((check, p) for p in _checked(check, not_made, fn, *args, **kwargs))
 
-    notes = []
-    add("file_facts", code_problems(made, reply, drafts, request, instruction=step.get("instruction"),
-                                    root=_runner().context(run_state)["work_dir"],
-                                    outputs=list(step.get("outputs") or []) + [c["path"] for c in step.get("checks", [])
-                                                                                if c.get("format") != "drafts"],
-                                    notes=notes))
-    add("file_notes", notes)
-    add("source_guard", source_guard_problems(request))
-    add("repeated_rows", repeated_rows(made, reply, request))
-    add("repeated_rows_quiet", quiet_repeated_rows(made, reply, request))
-    add("coverage", coverage_problems(run_state, step, made))
-    add("removed_residue", _removed_residue(run_id, made, request))
-    add("removed_still_there", removed_still_there(run_id, made))
-    add("status_conflicts", _status_conflicts(run_state, step, made, drafts))
-    found.extend(_left_undone_found(made, request))
-    add("filler_values", invented_typing(_entered()[start.get("entered", 0):], request))
-    add("typed_doubtful", doubtful_typing(_entered()[start.get("entered", 0):], request, made))
+    def typed():
+        # What this stage typed: read inside each check, so a record that cannot be read is a check not made (R-1).
+        began = start.get("entered", 0)
+        if began is None:
+            raise LookupError("what was typed before the stage began could not be read")
+        return _entered()[began:]
+    add("file_facts", code_problems, made, reply, drafts, request, instruction=step.get("instruction"),
+        root=_runner().context(run_state)["work_dir"],
+        outputs=list(step.get("outputs") or []) + [c["path"] for c in step.get("checks", [])
+                                                    if c.get("format") != "drafts"],
+        notes=notes, not_made=not_made)
+    found.extend(("file_notes", n) for n in notes)
+    add("source_guard", source_guard_problems, request)
+    add("repeated_rows", repeated_rows, made, reply, request)
+    add("repeated_rows_quiet", quiet_repeated_rows, made, reply, request)
+    add("coverage", coverage_problems, run_state, step, made)
+    add("removed_residue", _removed_residue, run_id, made, request)
+    add("removed_still_there", removed_still_there, run_id, made)
+    add("status_conflicts", _status_conflicts, run_state, step, made, drafts)
+    found.extend(_left_undone_found(made, request, not_made))
+    add("filler_values", lambda: invented_typing(typed(), request))
+    add("ledger_findings", _stage_ledger_findings, reply)
+    add("typed_doubtful", lambda: doubtful_typing(typed(), request, made))
     if CHANGED_REQUEST in (run_state["steps"][step["id"]].get("reopened") or ""):
         # (Only for a change the person made: a decision may well undo a hold - AW's redo.)
-        add("lost_findings", _lost_findings(run_id, step, run_state["steps"][step["id"]], made))
+        add("lost_findings", _lost_findings, run_id, step, run_state["steps"][step["id"]], made)
     if step.get("drafts_as_needed"):
-        left = reply_coverage(input_emails(request), drafts, reply)
-        if left:
-            add("reply_coverage", [
-                "Neither a reply draft nor a reason in the report for: " + ", ".join(left[:12])
-                + (f" (+{len(left) - 12} more)" if len(left) > 12 else "") + "."])
-    found.extend(system_entry_findings(run_id, step, made, request, start))
-    add("app_emptied", app_emptied(made))
-    add("payee_approval", _payee_approvals(run_state, request, made))
-    add("files_open", files_open(run_state, made))
-    add("lost_sheets", lost_sheets(run_id, run_state, step, made))
-    add("summary_totals", _summary_totals(made))
-    unsourced, fields = draft_checks(drafts, request, made)
-    add("draft_facts", unsourced)
-    add("draft_fields", fields)
+        add("reply_coverage", _reply_coverage, request, drafts, reply)
+    # (A producer of (check, finding) pairs; "system_entry" names it for a failure.)
+    found.extend(_checked("system_entry", not_made, system_entry_findings, run_id, step, made, request, start))
+    add("app_emptied", app_emptied, made)
+    add("payee_approval", _payee_approvals, run_state, request, made)
+    add("files_open", files_open, run_state, made)
+    add("lost_sheets", lost_sheets, run_id, run_state, step, made)
+    add("summary_totals", _summary_totals, made)
+    checked_drafts = _checked("draft_facts", not_made, lambda: [draft_checks(drafts, request, made)])
+    unsourced, fields = checked_drafts[0] if checked_drafts else ([], [])
+    found.extend(("draft_facts", p) for p in unsourced)
+    found.extend(("draft_fields", p) for p in fields)
+    found.extend((NOT_MADE, n) for n in dict.fromkeys(not_made))
     return found
+
+
+def _reply_coverage(request, drafts, reply):
+    """The input emails with neither a reply draft nor a reason in the report (reply_coverage), as one finding."""
+
+    left = reply_coverage(input_emails(request), drafts, reply)
+    if not left:
+        return []
+    return ["Neither a reply draft nor a reason in the report for: " + ", ".join(left[:12])
+            + (f" (+{len(left) - 12} more)" if len(left) > 12 else "") + "."]
 
 
 def files_open(run_state, made):
     """
     Every Office file the run hands in - this stage's and every completed stage's - that opened when it was handed in
-    still opens with a strict reader (produced.no_longer_open). Run-wide on purpose: found live (series 14 P3 on pc3, 2026-10-21), the approval stage's own
+    still opens with a strict reader (produced.no_longer_open). Run-wide on purpose: found live (series 14 P3, 2026-10-21), the approval stage's own
     script rewrote the three workbooks earlier stages had handed in, and none of them opened any more; that stage handed
     in only its log, so no check of its own files could see it.
     """
 
-    try:
-        from decurix_agent import produced
-        # (This stage's own files are file_facts' - said once, there.)
-        own = {str(Path(m).resolve()) for m in made}
-        broken = produced.no_longer_open([p for _, p in _outputs(run_state) if str(Path(p).resolve()) not in own])
-    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
-        log(f"long_task: could not open the run's files to check them: {exc}")
-        return []
+    from decurix_agent import produced
+    # (This stage's own files are file_facts' - said once, there.)
+    own = {str(Path(m).resolve()) for m in made}
+    broken = produced.no_longer_open([p for _, p in _outputs(run_state) if str(Path(p).resolve()) not in own])
     return [f"A file this run hands in no longer opens: {b}" for b in broken]
 
 
 def app_emptied(made):
     """
     A document of this stage that an app of the person's computer saved with most of what the tools wrote gone: the
-    tools' version is put back, and the stage is told (tool_made.py). Found live (round 5 P1 on pc3, 2026-10-20, CS):
+    tools' version is put back, and the stage is told (tool_made.py). Found live (round 5 P1, 2026-10-20, CS):
     the memo, saved from Word, read back with 0 headings.
     """
 
-    try:
-        from decurix_agent import tool_made
-        lost = tool_made.emptied(made)
-    except Exception as exc:  # noqa: BLE001 - a check that cannot be made decides nothing
-        log(f"long_task: could not compare the documents with what the tools made: {exc}")
-        return []
+    from decurix_agent import tool_made
+    lost = tool_made.emptied(made)
     out = []
     for local, had, kept in lost:
         back = tool_made.restore(local)
@@ -3364,8 +3440,18 @@ def please_check(data):
     """The final report's "Please check" lines: each advisory finding, with the stage it was seen in (the LOUD ones are
     under "Needs you": loud_advisories)."""
 
-    return [f"({a.get('title') or a.get('stage')}) {' '.join(str(a.get('text') or '').split())[:400]}"
-            for a in data.get("advisories") or [] if a.get("check") not in LOUD]
+    out, seen = [], set()
+    for a in data.get("advisories") or []:
+        if a.get("check") in LOUD:
+            continue
+        text = " ".join(str(a.get("text") or "").split())[:400]
+        if a.get("check") == "ledger_findings":
+            # (The task's saved records, seen again after every later stage: said once, with the first stage.)
+            if text in seen:
+                continue
+            seen.add(text)
+        out.append(f"({a.get('title') or a.get('stage')}) {text}")
+    return out
 
 
 def loud_advisories(data):
@@ -3381,7 +3467,7 @@ def loud_advisories(data):
 
 DECISION_RECHECK = "it was made while your question was open"
 
-# A retry after a refusal: the sources decide, not the check. Found live (round 5 P6 on pc3, 2026-10-21, CU): E18 asked
+# A retry after a refusal: the sources decide, not the check. Found live (round 5 P6, 2026-10-21, CU): E18 asked
 # for an invoice to be corrected and reissued - no money back - and was rightly filed Complaint; the check, reading the
 # worker's own "refund amount 329" working note, refused it as a Refund, and the retry obeyed and filed it wrong.
 KEEP_AGAINST_CHECK = (
@@ -3489,6 +3575,84 @@ def _ask_about_findings(run_id, run_state, step, findings, reply, made, request,
     progress.emit(f"Asking you about a check's finding: {title}")
 
 
+# A "keep it" on a parked finding waiting for the approval gate's yes, by run id (E-15).
+_keep_waiting = {}
+
+
+def _keep_request(question):
+    """What a yes to keeping a stage's work against its findings allows, in plain words (the gate words it from this)."""
+
+    texts = "; ".join(" ".join(str(f.get("text") or "").split())[:300] for f in question.get("findings") or [])
+    return f"keep the work of stage {question.get('stage')} as it is, against what the check found: {texts}"[:1500]
+
+
+def _keep_allowed(run_id, path, question, answer):
+    """
+    Whether a "keep it" may clear a parked finding now (E-15, review 2026-11-03). A finding the code made - a payment to
+    account details from a message, a blocking check the worker overruled - is cleared only by the person, like an
+    approval: never from a file dropped into the command folder (the worker's own), only from the reply to the open
+    question (watchers.is_reply_file), and on a desktop with an approval gate only with the gate's one-shot yes for
+    exactly this keep (gated_command): the person is asked to confirm it in the gate's words, and it is kept when that
+    yes comes (take_message). False leaves the question open.
+    """
+
+    from decurix_agent import gated_command, watchers
+
+    if not watchers.is_reply_file(path.name):
+        log(f"long_task: a \"keep it\" for stage {question.get('stage')} did not come as a reply; nothing is kept")
+        return False
+    if not gated_command.gated():
+        return True
+    held = gated_command.material("", request=_keep_request(question))
+    decided = gated_command.check(held)
+    if decided == "allowed":
+        return True
+    if decided == "no gate":
+        progress.emit(f"Not kept: your \"keep it\" for stage {question.get('stage')} needs the approval gate's yes. "
+            + gated_command.NOT_RUN)
+        return False
+    text = (f"To keep the work of stage {question.get('stage')} as it is, against what the check found, confirm it "
+            f"here:\n" + "\n".join(f"- {' '.join(str(f.get('text') or '').split())[:500]}"
+                                    for f in question.get("findings") or [])
+            + "\n\nReply yes to keep it as it is, or say what to correct.")
+    _keep_waiting[run_id] = {"question": question, "answer": answer, "held": held, "text": text}
+    # (Asked as an approval of its own - the gate's signed question - never parked among the run's open questions.)
+    _ask_again(text, "approval")
+    return False
+
+
+def _keep_confirmed(run_id, path, content):
+    """
+    The reply to a keep's confirmation (_keep_allowed): with the gate's yes for exactly that keep, the findings are
+    cleared and the stage goes on; anything else keeps nothing and the question stands. True when it was that reply.
+    """
+
+    from decurix_agent import gated_command, watchers
+
+    waiting = _keep_waiting.get(run_id)
+    if not (waiting and state.waiting_for_query and state.last_query_kind == "approval"
+            and watchers.is_reply_file(path.name)):
+        return False
+    _keep_waiting.pop(run_id, None)
+    state.waiting_for_query = False
+    _mark(path)
+    question, answer = waiting["question"], waiting["answer"]
+    if not gated_command.granted(waiting["held"], content, waiting["text"]):
+        progress.emit(f"Not kept: that was not a yes to keeping stage {question.get('stage')} as it is. The question about it "
+            "stands.")
+        _resume(run_id)
+        return True
+    _decide(run_id, question, answer["answer"], reading=_answer_reading(answer))
+    _keep_findings(run_id, question, answer["answer"])
+    try:
+        _runner().unpark(run_id, question["stage"], answer["answer"])
+    except ValueError as exc:
+        log(f"long_task: {exc}")
+    progress.emit(f"Kept stage {question.get('stage')} as it is, as you confirmed.")
+    _resume(run_id)
+    return True
+
+
 def _keep_findings(run_id, question, answer):
     """The person kept the work against the findings a "finding" question asked about: each is cleared for that stage."""
 
@@ -3511,8 +3675,8 @@ def _recheck_refusal(run_id, step, record, verdict):
     """
     A refusal of a stage re-checked only because the person decided after it was made: it stands only when it is about
     what the decision names (its customers, orders, records); anything else is kept as advisory ("Please check") and the
-    stage stands, since it had passed its check before the decision. Found live (round 5 P2 on pc3, 2026-10-20): the
-    extraction stage, re-checked after "Release Cafe Bloom, hold Harbour", was refused for its WA-1810 references.
+    stage stands, since it had passed its check before the decision. Found live (round 5 P2, 2026-10-20): the
+    extraction stage, re-checked after "Release <customer A>, hold <customer B>", was refused for its order references.
     """
 
     from decurix_agent import verify
@@ -3560,7 +3724,11 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
     start = _stage_start.pop((run_id, step_id), {"t": time.time(), "tokens": usage.spent(), "output": _output(), "asked": _asked(), "drafts": [],
                                                  "amendments": len(ledger(run_id)["amendments"]), "attempt": 0})
     base = ledger(run_id).get("draft_base", {}).get(step_id)
-    drafts = _stage_drafts(base if base is not None else start["drafts"], f"{run_id}:{step_id}")
+    try:
+        drafts, drafts_unread = _stage_drafts(base if base is not None else start["drafts"], f"{run_id}:{step_id}"), ""
+    except Exception as exc:  # noqa: BLE001 - the draft checks are then not made, never passed (R-1)
+        log(f"long_task: could not read the stage's drafts: {exc}")
+        drafts, drafts_unread = [], f"the stage's email drafts could not be read ({type(exc).__name__})"
     made = _stage_files(run_state, step)
     request = ledger(run_id).get("request") or ""
 
@@ -3574,6 +3742,8 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
         _declare_payment_sources(run_state, request)
         findings = without_overrides(run_id, step_id,
                                      stage_code_findings(run_id, run_state, step, made, drafts, request, reply, start))
+        if drafts_unread:
+            findings.append((NOT_MADE, drafts_unread))
         _keep_advisories(run_id, step, findings)
         blocking = [(check, text) for check, text in findings if is_blocking(check)]
         problems = [text for _, text in blocking]
@@ -3614,7 +3784,7 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
             verdict = _judge(run_state, step, reply, made, drafts, start=start, evidence=advice)
             if verdict["verdict"] == verify.NOT_DONE:
                 # A refusal on a record the person's answer left out is the check ranking the files above the person:
-                # judged once more with that said outright (round 5 P4, 2026-10-20: refused twice for Priya Nair).
+                # judged once more with that said outright (round 5 P4, 2026-10-20: refused twice for the excluded joiner).
                 gone = refused_for_excluded(verdict, ledger(run_id))
                 if gone:
                     log(f"long_task: the check counted {', '.join(gone)} as missing, whom the person excluded; judged again")
@@ -3630,7 +3800,7 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
                 error = "The check found: " + " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x)
             if verdict["verdict"] == verify.CANNOT and claims_done(reply):
                 # The stage says it is done: that is judged like any finished attempt, never parked as "could not be
-                # finished" (round 5 P1 on pc3, 2026-10-21, DB). Judged once more, told so; still "cannot" - the code
+                # finished" (round 5 P1, 2026-10-21, DB). Judged once more, told so; still "cannot" - the code
                 # checks passed and the report claims it: checked in code only.
                 verdict = _judge(run_state, step, reply, made, drafts, evidence=advice, note=(
                     "The worker's report says this stage is DONE and names no obstacle: answer done, not_done or unsure - "
@@ -3646,7 +3816,14 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
                 _record_cost(run_id, step_id, start, "asked")
                 _park(run_id, step_id, question, run_state, kind="stuck")
                 return r.status(run_id)
-            checked_by = "model" if verdict["verdict"] == verify.DONE else "code only"
+            # The one decision (verify.outcome): only the judge's confident done, with every blocking check made, is
+            # a checked stage. Anything else that got here - unsure, an outage, no model, a check that raised - is
+            # completed NOT checked, and the run's report says so first; it is never "made and checked" (review
+            # 2026-11-02: a judge's unsure completed the stage and the report said every stage was checked).
+            decided = verify.outcome(verdict, not_made=[text for check, text in findings if check == NOT_MADE])
+            checked_by = "model" if decided["status"] == verify.DONE else "code only"
+            if decided["status"] != verify.DONE:
+                verdict = dict(verdict, why=decided["why"])
 
     if error is None:
         # The runner refuses a file handed in unchanged; said here, in plain words, so it is asked like any other
@@ -3654,11 +3831,12 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
         # runner failed the stage and the run ended with an error report instead of asking again.
         error = _unchanged_after_retry(run_state, step, drafts)
     if declined:
-        # The person said no to a command of this stage. Whatever it did instead is judged above like any stage;
-        # a stage that did not get there is theirs to have declined - reported, not asked again.
+        # The person said no to a command of this stage, and nothing was done after it (guidance.refused keeps a plain
+        # no only - a no with a condition or something they want instead is not one - and only while no work followed).
+        # The stage ends declined, not done: never "done another way", which would teach the worker to route around a
+        # no (NEW-T1, review 2026-11-03; the Python twin of TheBot's T-02). Reported, not asked again.
         r.annotate(run_id, step_id, declined=str(declined)[:300])
-        if error:
-            error = f"you said no at its approval (\"{declined}\"), and it did not finish another way: {error}"
+        error = f"you said no at its approval (\"{declined}\"), so it is not done" + (f": {error}" if error else "")
     elif error and _last_attempt(run_state, step) and _stuck_asks(run_id, step_id) < MAX_STUCK_ASKS:
         # Out of attempts: a person at a desk would not abandon the whole job over one sheet. The stage waits on them
         # with what the check found, and every stage that does not need it goes on (round 5, Finding P).
@@ -3700,8 +3878,9 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
             if step_id in amendment.get("affects", []) or not amendment.get("affects"):
                 _reopen(run_id, step_id, f"while it ran, the person changed the request: \"{amendment['text']}\"",
                         amendment)
-        progress.emit(f"Stage done and checked: {step.get('title', step_id)}"
-                      + ("" if checked_by == "model" else " (checked in code; the model check could not confirm it)"))
+        progress.emit(f"Stage done and checked: {step.get('title', step_id)}" if checked_by == "model" else
+                      f"Stage made but NOT checked: {step.get('title', step_id)} - the code checks passed, the model "
+                      "check could not confirm it; the report will say so.")
     elif record["status"] == "failed":
         progress.emit(f"Stage could not be done: {step.get('title', step_id)} - {str(record.get('error'))[:300]}")
     else:
@@ -3710,17 +3889,42 @@ def stage_finished(run_id, step_id, reply, kind, declined=None):
 
 
 def _entered():
-    """What this task's tools have typed into fields so far (computer/evidence.py), oldest first."""
+    """What this task's tools have typed into fields so far (computer/evidence.py), oldest first. A record that cannot
+    be read raises: "nothing typed" would pass the typed-values checks on input they never saw (R-1, review round 3).
+    The checks call it inside _checked, which makes the failure a check not made."""
+
+    from decurix_agent.computer import evidence
+    return evidence.entered()
+
+
+def _typed_count():
+    """How many values were typed so far, or None when the record cannot be read (a stage's start: unknown, never 0)."""
 
     try:
-        from decurix_agent.computer import evidence
-        return evidence.entered()
-    except Exception as exc:  # noqa: BLE001
+        return len(_entered())
+    except Exception as exc:  # noqa: BLE001 - unknown; the stage's typed-values checks are then not made
         log(f"long_task: could not read what was typed: {exc}")
-        return []
+        return None
 
 
-def invented_typing(typed, request):
+# How invented_typing's finding on options picked with no backing begins (the final gate puts it to the person).
+CHOSEN_UNBACKED = "Chosen in a form from the application's own list, and backed by nothing given"
+
+
+def _stage_ledger_findings(reply):
+    """What the shared ledger check holds against the task's saved records after a stage (ledger_checks.findings,
+    with the stage's report): its faults; a check of them that could not be made raises, so the stage is not
+    checked on it (never passed)."""
+
+    from decurix_agent import ledger_checks
+    found = ledger_checks.findings(task_context.current(), reply)
+    unmade = ledger_checks.not_made(found)
+    if unmade:
+        raise LookupError("; ".join(unmade))
+    return [str(f) for f in ledger_checks.faults(found)]
+
+
+def invented_typing(typed, request, chosen=()):
     """
     Values typed into forms that no source holds: a placeholder (9999999999, test, n/a, x@example.com), or a fact - an
     address, a date, a code, a figure of 100 or more - that neither the request, its files, the person's messages, the
@@ -3728,34 +3932,38 @@ def invented_typing(typed, request):
     Found live (2026-10-20, P4): a joiner onboarded with phone 9999999999 - the tracker had her number.
     """
 
+    # Options picked from an application's own list that nothing given backs (`chosen`: records.unbacked_picks): the
+    # list offering one never says which this record takes (review round 9, A).
+    picked = [str(v) for v in dict.fromkeys(chosen or ()) if str(v).strip()]
+    picked_line = ([CHOSEN_UNBACKED + " (the request, its "
+                    "files, the person's answers): " + ", ".join(repr(v) for v in picked[:6]) + ". Ask the person "
+                    "(HELP) which entry it takes, then correct the record in the application."] if picked else [])
     typed = [v for v in dict.fromkeys(typed) if str(v).strip()]
     if not typed:
-        return []
-    try:
-        from decurix_agent import filler
-        texts = filler.source_texts(request, [i.split(" (= ")[0] for i in run_inputs(request)])
-        # Hygiene: a placeholder (test, n/a, 9999999999) that no source holds.
-        made_up = [repr(v) for v in typed if filler.looks_filler(v) and not filler.in_sources(v, texts)]
-        # Provenance: a fact typed (an address, a date, a code, a figure of 100 or more) that no source holds.
-        sources = work_sources(request)
-        # A figure worked out in one step from another value typed in this work and a source figure is held: the tax of
-        # a line typed beside its amount and rate (found live, 2026-10-24: 260 and 6,480 - 5,200 at 5% and 36,000 at
-        # 18%, a bill printing only their total - were "held by no source" and a finished task was refused).
-        from decurix_agent.provenance import _figures
-        typed_figures = _figures(" ".join(typed))
-        for value in typed:
-            made_up += [repr(s) for s in sources.unsourced(value, operands=typed_figures)]
-        made_up = list(dict.fromkeys(made_up))
-    except Exception as exc:  # noqa: BLE001
-        log(f"long_task: could not check typed values: {exc}")
-        return []
+        return picked_line
+    # (A failure raises: the caller makes it a check not made - never a pass.)
+    from decurix_agent import filler
+    texts = filler.source_texts(request, [i.split(" (= ")[0] for i in run_inputs(request)])
+    # Hygiene: a placeholder (test, n/a, 9999999999) that no source holds.
+    made_up = [repr(v) for v in typed if filler.looks_filler(v) and not filler.in_sources(v, texts)]
+    # Provenance: a fact typed (an address, a date, a code, a figure of 100 or more) that no source holds.
+    sources = work_sources(request)
+    # A figure worked out in one step from another value typed in this work and a source figure is held: the tax of
+    # a line typed beside its amount and rate (found live, 2026-10-24: 260 and 6,480 - 5,200 at 5% and 36,000 at
+    # 18%, a bill printing only their total - were "held by no source" and a finished task was refused).
+    from decurix_agent.provenance import _figures
+    typed_figures = _figures(" ".join(typed))
+    for value in typed:
+        made_up += [repr(s) for s in sources.unsourced(value, operands=typed_figures)]
+    made_up = list(dict.fromkeys(made_up))
     if not made_up:
-        return []
-    return ["Typed into a form, and held by no source (the request, its files, the person's messages, the system's "
-            "pages, your recorded working): " + ", ".join(made_up[:6]) + ". Find the real value in the sources "
-            "(format it to what the field accepts) - a value you worked out goes into a working file first - correct "
-            "the record in the application, and say what was entered; if it cannot be corrected there, write the "
-            "WRONG IN THE APPLICATION line for it."]
+        return picked_line
+    return picked_line + [
+        "Typed into a form, and held by no source (the request, its files, the person's messages, the system's "
+        "pages, your recorded working): " + ", ".join(made_up[:6]) + ". Find the real value in the sources "
+        "(format it to what the field accepts) - a value you worked out goes into a working file first - correct "
+        "the record in the application, and say what was entered; if it cannot be corrected there, write the "
+        "WRONG IN THE APPLICATION line for it."]
 
 
 def doubtful_typing(typed, request, made=()):
@@ -3985,6 +4193,14 @@ STUCK_PLAIN = {
 }
 
 
+def _plain_stuck_choice(answer):
+    """The choice a whole reply makes when it is one of STUCK_PLAIN's fixed phrases ("try again", "skip it", "stop"),
+    else None: for a decision kept before its reading was (binding_text). Never a word search."""
+
+    said = " ".join(re.sub(r"[^\w\s']", " ", str(answer or "")).lower().split())
+    return next((choice for choice, phrases in STUCK_PLAIN.items() if said in phrases), None)
+
+
 def stuck_choice(answer, question=""):
     """What a person's answer to a stuck stage decides: {"choice": retry|skip|stop|answer|unclear, "instruction"}."""
 
@@ -4058,17 +4274,6 @@ def dispute_points(run_id, step, finding, reply):
     return points[:6]
 
 
-# A reply to a stuck stage that says only how to go on - not what is right.
-_GO_ON_WORDS = re.compile(r"(?i)\b(?:please|ok(?:ay)?|yes|no|just|try|again|skip|it|stop|use|your|judg(?:e)?ment|"
-                          r"carry|on|and|go|ahead|the|that|with|thanks?)\b|[^\w\s]")
-
-
-def settles_something(answer):
-    """Whether a reply to a stuck stage says what is right (binding for the check), not only how to go on."""
-
-    return len(_GO_ON_WORDS.sub(" ", str(answer or "")).split()) >= 3
-
-
 def _record_cost(run_id, step_id, start, outcome):
     entry = {"attempt": start.get("attempt"), "seconds": round(time.time() - start["t"], 1),
              # The stage's engine and its check; not what reading a message meanwhile cost (that is overhead).
@@ -4124,8 +4329,10 @@ def _new_question(run_id, step_id, text, kind, parked, extra=None):
 def _park(run_id, step_id, question, run_state, report=None, kind="query", extra=None):
     from decurix_agent.messaging import post_question
 
-    _runner().park(run_id, step_id, question, report=report)
+    # (The question first: a restart between the two finds an open question and asks it, never a parked stage with
+    # nothing asked - E-23.)
     _new_question(run_id, step_id, question, kind, True, extra=extra)
+    _runner().park(run_id, step_id, question, report=report)
     _dispatch_next(run_id)
     if _runnable_besides(_runner().status(run_id), step_id):
         post_question(f"{question}\n\n(Meanwhile I am carrying on with the parts that do not depend on this.)")
@@ -4195,7 +4402,8 @@ def take_question(problem, kind):
             return _bounced(run_id, step_id)
         elif route == "DECIDED" and _send_back_once(run_id, step_id, problem, decided_by=pointer):
             return _bounced(run_id, step_id)
-    _note_probe_record(run_id, step_now, problem)
+    # (A record saved only to try the application out is the worker's to say, on its own WRONG IN THE APPLICATION
+    # line - APP_ENTRY_RULE; a regex over its words no longer decides it: E-22, review 2026-11-03.)
     if step_now.get("decision") and kind != "query" and not _decided(run_state, step_id):
         # A decision stage asks the person a question, whatever its words: "Please approve this payment run" is the
         # person's decision, not an action the worker is about to take (round 5 P3, 2026-10-20: asked as an approval,
@@ -4304,7 +4512,7 @@ def _send_back_unchecked(run_id, step_id, question):
     """
     A question that says the worker has not yet checked what it can check itself is sent back once: check it first
     and use the source's value if it is there; ask only if it truly is not (saying what was seen). A question that
-    says it looked and what it saw is never sent back. Found live (round 5 P4 on pc3, 2026-10-21, DD): "I have not yet
+    says it looked and what it saw is never sent back. Found live (round 5 P4, 2026-10-21, DD): "I have not yet
     confirmed whether that exact manager exists as a selectable option in the portal. Please tell me which manager to
     choose ... if "Pete Sandoval" is not available."
     """
@@ -4321,7 +4529,7 @@ def _send_back_unchecked(run_id, step_id, question):
 def _send_back_false_figures(run_id, step_id, question):
     """
     A stage about to tell the person something is wrong, with figures that do not add up (verify.false_sums): sent back
-    once to recheck, never shown to the person as fact. Found live (2026-10-20, P2): "SO-5101 ... should total 13129.00
+    once to recheck, never shown to the person as fact. Found live (2026-10-20, P2): "ORD-1 ... should total 1,000.00
     ex tax from 40 @ 175.75, 24 @ 149, 30 @ 95 - the person must correct the saved lines" - those come to 13,456.00,
     the record's own total; a person would have "corrected" a correct order.
     """
@@ -4457,7 +4665,7 @@ def _send_back_once(run_id, step_id, question, settled_by="", decided_by=""):
     """
 
     if decided_by:
-        # Series 16 H1 (2026-10-21): CL-4142 approved at Rs 1,200, then asked about again as "approve at Rs 1,850 or
+        # Series 16 H1 (2026-10-21): a claim approved at Rs 1,200, then asked about again as "approve at Rs 1,850 or
         # decline" - four questions in 80 seconds.
         return _send_back(run_id, step_id, "decided_back", question,
                           f"You asked the person: \"{' '.join(str(question or '').split())[:500]}\" They already "
@@ -4638,7 +4846,9 @@ def code_disagreements(outputs, read=None):
             if not _TOTALISH.search(label):
                 continue
             key = _label_key(label)
-            if not key:
+            # Only a label with a word of its own is one figure across files: "Total" or "Net amount" alone is every
+            # table's, and a register's total against an ageing report's is no disagreement (E-17, review 2026-11-03).
+            if not key or not [w for w in key.split() if not _TOTALISH.fullmatch(w)]:
                 continue
             seen.setdefault(key, {}).setdefault(path, (stage, label, figures))
     disagreements, agreed = [], 0
@@ -4675,14 +4885,12 @@ List at most 15 figures; never list a figure that appears in only one file."""
 # and figures are compared as the same kind of thing: a date as a date, an amount as a number.
 
 def _day_first(request):
-    """True when the request writes dates day first (DD/MM), False month first (MM/DD), None when it does not say."""
+    """True when the request writes dates day first (DD/MM), False month first (MM/DD), None when it does not say
+    (task_context.request_date_marker: one reading of the marker for every check)."""
 
-    text = attachments.text(request or "")
-    if re.search(r"(?i)\bDD[/.\-]MM\b", text):
-        return True
-    if re.search(r"(?i)\bMM[/.\-]DD\b", text):
-        return False
-    return None
+    from decurix_agent import task_context
+    marker = task_context.request_date_marker(request)
+    return None if marker is None else marker == "day"
 
 
 def _place_value(snippet, value):
@@ -4854,6 +5062,7 @@ def _cross_check(run_state):
     run_id = run_state["run_id"]
     data = ledger(run_id)
     if data["crosscheck"]["rounds"] >= MAX_CROSSCHECK_ROUNDS:
+        _settle_crosscheck(run_state, data)
         return False
     outputs = _outputs(run_state)
     if len(outputs) < 2:
@@ -4888,37 +5097,81 @@ def _cross_check(run_state):
     return bool(reopened)
 
 
+def _settle_crosscheck(run_state, data):
+    """
+    After the last round that sent a stage back, the figures are compared once more, sending nothing back: a
+    disagreement no longer found is resolved, one still there stays for the person (E-17, review 2026-11-03: "resolved"
+    was set nowhere, so a corrected stage still read "not everything is checked").
+    """
+
+    cross = data["crosscheck"]
+    if cross.get("settled") or not any(d.get("sent_back_to") for d in cross.get("disagreements") or []):
+        return
+    outputs = _outputs(run_state)
+    run_id = run_state["run_id"]
+    before = _asked()
+    try:
+        found, agreed = code_disagreements(outputs)
+        more, agreed_more = model_disagreements(outputs, request=data.get("request") or "")
+    except Exception as exc:  # noqa: BLE001 - not compared again: they stay unresolved, never passed
+        log(f"long_task: could not compare the figures again: {exc}")
+        return
+    _charge(run_id, before)
+    still = {d["figure"] for d in found + more}
+
+    def keep(d):
+        for disagreement in d["crosscheck"]["disagreements"]:
+            if disagreement["figure"] not in still:
+                disagreement["resolved"] = True
+        d["crosscheck"]["agreed"] = agreed + agreed_more
+        d["crosscheck"]["settled"] = True
+    _update(run_id, keep)
+
+
 # ---------- the report ----------
 
 def final_report(run_state):
     """What was done, what was not, what was assumed and what needs the person - plainly, checked."""
 
-    from decurix_agent import workflow_task
+    from decurix_agent import verify, workflow_task
     from decurix_agent.messaging import write_final_reply
 
     run_id = run_state["run_id"]
-    if run_id in _reported:
+    if not _claim_report(run_id):
         # Already reported (a stop's report went out while the stage's engine was still ending): never twice.
         workflow_task._active = workflow_task._pending = None
         _release_hold(run_id)
         return None
-    _reported.add(run_id)
     data = ledger(run_id)
     from decurix_agent import source_guard
     # (A "<name>.orig" copy kept of a file the run made is a stale version beside its output: removed, round 5 P5.)
     source_guard.tidy_own_backups(data.get("request") or "")
     work = Path(_runner().context(run_state)["work_dir"])
-    done, done_short, not_done, needs = [], [], [], []
+    from decurix_agent import verdict as verdicts
+    done, done_short, not_done, needs, unchecked = [], [], [], [], []
+    # Each stage's checks, rolled up into the run's verdict (R6): a completed stage passed its code checks, and its
+    # model check passed or was not made; a failed stage failed; one waiting or never started was not checked.
+    stage_checks = []
     for n, step in enumerate(_steps(run_state), 1):
         record = run_state["steps"][step["id"]]
         title = step.get("title", step["id"])
+        if record["status"] == "completed":
+            stage_checks.append(verdicts.check(f"stage.{step['id']}.code", verdicts.PASS, "code", title))
+            stage_checks.append(verdicts.check(f"stage.{step['id']}.judge",
+                                               verdicts.PASS if record.get("checked_by") == "model" else
+                                               verdicts.NOT_MADE, "model", record.get("check_note") or title))
+        else:
+            stage_checks.append(verdicts.check(f"stage.{step['id']}", verdicts.FAIL if record["status"] == "failed"
+                                               else verdicts.NOT_MADE, "code", f"{title}: {record['status']}"))
         if record["status"] == "completed":
             files = [str(work / i["path"]) for i in record["evidence"] if not i.get("drafts")]
             drafts = sum(i["bytes"] for i in record["evidence"] if i.get("drafts"))
             made = ", ".join(files) + (f"{', ' if files else ''}{drafts} email draft(s) in the Outbox" if drafts else "")
             how = ("checked by reading the files back against the stage" if record.get("checked_by") == "model"
-                   else "checked in code only - the model check could not confirm it"
+                   else "NOT checked - the code checks passed, the model check could not confirm it"
                    + (f" ({record['check_note']})" if record.get("check_note") else ""))
+            if record.get("checked_by") != "model":
+                unchecked.append((title, record.get("check_note") or "the model check could not confirm it"))
             said = " ".join((record.get("report") or "").split())[:3000]  # in the full report only
             line = f"{n}. {title}: {made or 'done'} ({how})."
             if record.get("declined"):
@@ -4957,12 +5210,14 @@ def final_report(run_state):
         needs.append(f"Kept for your approval (you left it to me, but the request keeps it for you): {text}")
     for left in data.get("assumed_for_person") or []:
         record = run_state["steps"].get(left.get("stage"), {})
-        assumed = [line for line in re.split(r"\n+", str(record.get("report") or "").split("Assumed:", 1)[-1])
-                   if "Assumed:" in str(record.get("report") or "") and line.strip()
-                   and any(_name_seen(i, line) for i in left.get("items") or [])]
+        # (Its own name: this stage's lines must not replace the run's assumed facts below - E-06.)
+        assumed_here = [line for line in re.split(r"\n+", str(record.get("report") or "").split("Assumed:", 1)[-1])
+                        if "Assumed:" in str(record.get("report") or "") and line.strip()
+                        and any(_name_seen(i, line) for i in left.get("items") or [])]
         needs.append(f"You left {', '.join(left.get('items') or [])} to my judgement ({_title(run_state, left.get('stage'))}"
-                     "): check what I assumed" + (" - " + " ".join(" ".join(a.split()) for a in assumed[:6])[:800]
-                                                  if assumed else " (the stage's report says it under 'Assumed:')") + ".")
+                     "): check what I assumed" + (" - " + " ".join(" ".join(a.split()) for a in assumed_here[:6])[:800]
+                                                  if assumed_here else " (the stage's report says it under 'Assumed:')")
+                     + ".")
     # Figures the cross-check could not reconcile: evidence for the person, under "Please check" - never the headline
     # (series 15 H2, 2026-10-21: equal figures split by sign words turned a finished run into "Not everything is done").
     crossed_lines = []
@@ -4974,12 +5229,27 @@ def final_report(run_state):
 
     # Every Office file the run hands in opens - checked once more at the end: a broken one is not done, whatever the
     # stage that made it was told (series 14 P3, 2026-10-21).
+    end_not_made = []
     try:
         from decurix_agent import produced
         for broken in produced.no_longer_open([p for _, p in _outputs(run_state)]):
             not_done.append(f"A file handed in is broken: {broken}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - not checked, never passed (E-01)
         log(f"long_task: could not open the run's files at the end: {exc}")
+        end_not_made.append("the files handed in could not all be opened again at the end")
+    # What code holds against the run's saved records (ledger_checks.findings, with every stage's report): the one check
+    # every route that can say done makes. A planned run that saved a value no source gives, or a record twice, is not
+    # done (review round 9, R9-B3: only the general gate made it, and a planned run said done over it).
+    try:
+        from decurix_agent import ledger_checks
+        found = ledger_checks.findings(task_context.current(),
+                                       [str(run_state["steps"][s["id"]].get("report") or "") for s in _steps(run_state)])
+        not_done += [f"A record saved in the application: {f}" for f in ledger_checks.faults(found)]
+        ledger_checks.keep_answers(task_context.current())
+        end_not_made += [str(f) for f in ledger_checks.not_made(found)]
+    except Exception as exc:  # noqa: BLE001 - not checked, never passed (E-01)
+        log(f"long_task: could not check the saved records at the end: {exc}")
+        end_not_made.append("the saved records could not be checked against the declared ones")
     finished = run_state["status"] == "completed" and not not_done
     unresolved = [d for d in cross["disagreements"] if not d.get("resolved")]
     loud = loud_advisories(data)
@@ -4987,13 +5257,32 @@ def final_report(run_state):
         needs[:0] = [f"Please check this figure: {line}" for line in loud.get(check, [])]
     said_loud = "; ".join(f"{len(lines)} figure{'s' if len(lines) != 1 else ''} {LOUD[check][len(lines) != 1]}"
                           for check, lines in loud.items())
+    # What was made but not checked: a stage the model check could not confirm, figures the outputs give differently
+    # that the cross-check could not settle. Each is the person's to look at - never "made and checked" (verify.outcome).
+    for title, why in unchecked:
+        needs.append(f"Check \"{title}\" yourself before relying on it: it was NOT checked ({' '.join(str(why).split())[:300]}).")
+    not_checked = [f"{len(unchecked)} stage{'s' if len(unchecked) != 1 else ''} the model check could not confirm"] \
+        if unchecked else []
+    if unresolved:
+        not_checked.append(f"{len(unresolved)} figure{'s' if len(unresolved) != 1 else ''} that the outputs give "
+                           "differently and the cross-check could not settle (under Please check)")
+    try:
+        warnings = _payment_warnings(run_state, data.get("request") or "")
+    except Exception as exc:  # noqa: BLE001 - not checked, never passed (E-01)
+        log(f"long_task: could not check where payments go: {exc}")
+        warnings = []
+        end_not_made.append("where the payments go could not be checked")
+    not_checked += end_not_made
     if run_state["status"] == "cancelled":
         head = "Stopped, as you said. Here is where it stands."
+    elif finished and not_checked:
+        head = ("Made, but not everything is checked: " + "; ".join(not_checked) + " - look at "
+                + ("them" if len(not_checked) > 1 or len(unchecked) > 1 else "it") + " before relying on it."
+                + (f" And {said_loud} (see Needs you)." if said_loud else ""))
     elif finished:
         head = ("Done - but " + said_loud + " (see Needs you).") if said_loud else "Done - every stage was made and checked."
     else:
         head = "Not everything is done." + (f" And {said_loud} (see Needs you)." if said_loud else "")
-    warnings = _payment_warnings(run_state, data.get("request") or "")
     # A wrong record already saved in an application the worker could not correct: the person fixes it by hand.
     warnings += [f"WRONG IN THE APPLICATION - {wrong}" for wrong in data.get("wrong_in_app") or []]
     # Where money goes, said first: one approval of a payment to the wrong account cannot be taken back. A payment
@@ -5004,7 +5293,11 @@ def final_report(run_state):
             head = "Not everything is done."
     if warnings:
         head = "WARNING - " + " ".join(warnings) + "\n\n" + head
-    if finished:
+    # The one decision (verify.outcome): a run with a stage not done is not done; one with something made but not
+    # checked is "not checked" - recorded so (checked=False), never reported as a checked success.
+    decided = verify.outcome({"verdict": verify.DONE} if finished else {"verdict": verify.NOT_DONE},
+                             not_made=not_checked if finished else ())
+    if decided["status"] == verify.DONE:
         # A guide a stage wrote to an app it had none for is kept only now every stage is checked done.
         try:
             from decurix_agent import app_skills
@@ -5047,8 +5340,15 @@ def final_report(run_state):
         agent_state.current_task = data.get("request") or agent_state.current_task
     if run_state["status"] != "cancelled":
         _remember_reported(data, text, [p for _, p in _outputs(run_state)])
-    write_final_reply(text, kind="final" if finished else "error", checked=True, fallback=fallback,
-                      task_id=data.get("task_id") or None)
+    # The run's verdict: the stages' own checks, and the run-level checks not made (verify.outcome's "judge" here only
+    # stands for "every stage done", which the stage checks already say).
+    run_checks = stage_checks + [c for c in decided.get("checks") or [] if c.get("id") != "judge"]
+    verdict = verdicts.from_outcome(dict(decided, checks=run_checks, basis=()), "long_task")
+    # (Before the report: the report ends the task, and the task's secret values are let go with it.)
+    _withhold_request(run_id, data.get("task_id") or "")
+    write_final_reply(text, kind=decided["kind"], checked=decided["checked"], gated=True, fallback=fallback,
+                      task_id=data.get("task_id") or None, verdict=verdict,
+                      stopped=run_state["status"] == "cancelled")
     _release_hold(run_id)
     return None
 
@@ -5084,9 +5384,12 @@ def _remember_reported(data, report, outputs):
     """Keep the planned run just reported, for a change the person sends about it afterwards (follow_up)."""
 
     try:
-        _follow_up_path().write_text(json.dumps({
-            "task_id": data.get("task_id") or "", "request": str(data.get("request") or "")[:20000],
-            "report": str(report or "")[:4000], "outputs": list(outputs)[:40], "at": time.time()}), encoding="utf-8")
+        from decurix_agent.computer import privacy
+        task_id = data.get("task_id") or ""
+        kept = {"task_id": task_id, "request": task_context.withhold(str(data.get("request") or ""), task_id)[:20000],
+                "report": task_context.withhold(str(report or ""), task_id)[:4000], "outputs": list(outputs)[:40],
+                "at": time.time()}
+        privacy.write_scrubbed(_follow_up_path(), privacy.scrub(kept))
     except OSError as exc:
         log(f"long_task: could not keep the reported run for a follow-up: {exc}")
 
@@ -5176,7 +5479,8 @@ def _report_message(run_id, work, parts, head, done, not_done, needs, changes, d
         folder = Path(work) / messaging.REPORTS_DIR
         folder.mkdir(parents=True, exist_ok=True)
         saved = folder / f"run-report-{time.strftime('%Y%m%d-%H%M%S')}-{run_id[:8]}.txt"
-        saved.write_text(whole, encoding="utf-8")
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(saved, messaging._withheld(whole))  # no secret in a saved report either
     except OSError as exc:
         log(f"long_task: could not save the full report: {exc}")
         saved = None
@@ -5204,7 +5508,9 @@ def _report_message(run_id, work, parts, head, done, not_done, needs, changes, d
         body = messaging.cut_text(body, room - 60) + "\n... (the rest is in the full report)"
     text = body + "\n\n" + end
     finished = stages - len(not_done)
-    fallback = (f"Finished: {finished} of {stages} stages done"
+    # (The plain line says what the head says about checking: a short line that only said "Finished" read as checked,
+    # review 2026-11-03.)
+    fallback = (f"{' '.join(str(head).split())[:200]} " if head else "") + (f"{finished} of {stages} stages done"
                 + (f"; WARNING - {' '.join(warnings)}" if warnings else "")
                 + (f"; the full report is in {saved}." if saved else "."))
     return text, fallback
@@ -5253,7 +5559,7 @@ person sent a message. Decide what the message is.
   things as they are); false when they ask for any change to what is done.
 - For an amendment, which records it takes out or puts back, each by its reference exactly as the person writes it (a
   record's own number or code): "removed" - whole records it takes out of the work; "removed_lines" - a line or part
-  of a record it takes out ("the freight line of PO-7781": that record itself stays); "restored" - records it puts
+  of a record it takes out ("the freight line of PO-0001": that record itself stays); "restored" - records it puts
   back ("don't remove INV-1 after all"). A message that says NOT to remove something removes nothing. Empty lists
   when none.
 - An answer to a question about a check's finding (it asks whether to keep the work as it is): "keep": true when the
@@ -5349,12 +5655,11 @@ def classify(message, run_state, data, ask=None, said_answer=False):
         found = None
     if not isinstance(found, dict) or found.get("kind") not in {"answer", "amendment", "both", "status", "stop",
                                                                  "unrelated", "new_request", "unclear"}:
-        if questions:
-            # No model to tell an answer from a change: never guess - ask.
-            return {"kind": "unclear", "answers": [], "amendment": "", "affects": [],
-                    "ask": "Is this your answer to my question, or a change to the task?"}
-        return {"kind": "amendment", "answers": [], "amendment": " ".join((message or "").split())[:600],
-                "affects": [], "ask": ""}
+        # No model to tell an answer from a change: never guess - ask. (E-42, review 2026-11-03: with no question open
+        # any message was taken for a change, and a change naming no stage re-checks every finished one.)
+        return {"kind": "unclear", "answers": [], "amendment": "", "affects": [],
+                "ask": ("Is this your answer to my question, or a change to the task?" if questions else
+                        "Is this a change to the task? If it is, say what it changes.")}
     ids = {q["id"] for q in questions} | {f"d:{s['id']}" for s in pending}
     answers = [a for a in found.get("answers") or [] if isinstance(a, dict) and a.get("question") in ids
                and str(a.get("answer") or "").strip()]
@@ -5395,8 +5700,8 @@ def _reading(answer, message, confirming=None, question=""):
     The model's structured reading of one answer that code keeps: "hands_back", "keep" (only when true), and
     "excluded" / "restored" / "names" / "undecided" - only names the person's own message or the question writes (in
     any order or case; never one the model made up). Who or what is in or out comes from this reading, never from a word list over the person's
-    words (series 15 H1, 2026-10-21: "Approve Neha's airport taxi without the receipt, but pay only Rs 1,200" was read
-    as leaving Neha out, and her correct draft was refused).
+    words (series 15 H1, 2026-10-21: "Approve <person A>'s airport taxi without the receipt, but pay only Rs 1,200" was read
+    as leaving them out, and their correct draft was refused).
     """
 
     said = f"{message or ''} {(confirming or {}).get('message') or ''} {question or ''}"
@@ -5432,7 +5737,7 @@ def undecided_stages(run_state, data):
 def _about(answer, message, questions, pending):
     """
     An answer the model gave to an open question, moved to the decision it is really about when its words are that
-    decision's and not the question's (round 5 P2, 2026-10-20: "Release Cafe Bloom this once, hold Harbour..." was
+    decision's and not the question's (round 5 P2, 2026-10-20: "Release <customer A> this once, hold <customer B>..." was
     taken as the answer to "which document should I take it from?").
     """
 
@@ -5704,13 +6009,14 @@ def no_internal_ids(text, run_state=None, data=None):
 
 
 def privacy_withheld(text):
-    """text with the secrets a request gave replaced by [withheld] (computer/privacy.py)."""
+    """text with the secrets a request gave replaced by [withheld] (computer/privacy.py). Never raises, and fails
+    closed: a text that cannot be checked is held back, never kept as it was."""
 
     try:
         from decurix_agent.computer import privacy
         return privacy.withhold_known(text)
-    except Exception:  # noqa: BLE001 - never a reason to fail
-        return text
+    except Exception:  # noqa: BLE001 - never a reason to fail, nor to let a secret through
+        return "[held back: this text could not be checked for secrets]" if text else text
 
 
 # Ledger fields that are records made from the person's words (never the request itself, which stays as written).
@@ -5718,21 +6024,31 @@ _DERIVED = {"facts": ("text",), "decisions": ("question", "answer"), "amendments
 
 
 def _withhold_derived(data):
-    """A ledger with every derived record's text passed through the secret withholding before it is written."""
+    """A ledger with every derived record's text passed through the secret withholding before it is written. A text
+    that could not be checked raises LedgerError: the save is skipped, so one passing failure never replaces every
+    record with "[held back]" for good (E-23). (Withholding a text already withheld changes nothing.)"""
+
+    from decurix_agent.computer import privacy
+
+    def withheld(text):
+        out = privacy.withhold_known(text)
+        if out == privacy.HELD_BACK and text != privacy.HELD_BACK:
+            raise LedgerError("a record could not be checked for secrets; the ledger was not saved")
+        return out
 
     for key, fields in _DERIVED.items():
         for item in data.get(key) or []:
             for field in fields:
                 if isinstance(item.get(field), str):
-                    item[field] = privacy_withheld(item[field])
+                    item[field] = withheld(item[field])
     for key in ("wrong_in_app", "needs_you", "kept_for_person"):
         if isinstance(data.get(key), list):
-            data[key] = [privacy_withheld(t) if isinstance(t, str) else t for t in data[key]]
+            data[key] = [withheld(t) if isinstance(t, str) else t for t in data[key]]
     confirming = data.get("confirming")
     if isinstance(confirming, dict):
         for field in ("message", "ask"):
             if isinstance(confirming.get(field), str):
-                confirming[field] = privacy_withheld(confirming[field])
+                confirming[field] = withheld(confirming[field])
     return data
 
 
@@ -5751,14 +6067,26 @@ def _take_message(content, path, about_this=False):
     waiting = state.waiting_for_query
     waiting_kind = state.last_query_kind if waiting else ""
 
+    # The confirmation of a "keep it" the gate holds (E-15): read by the gate, never as a screen approval.
+    if _keep_confirmed(run_id, path, content):
+        return
+
     # A reply that decides the approval (yes, yes once something holds, no) goes to the gate, read once
     # (approval.reading): "haan fine" is as much a yes as "yes". One that decides nothing - a question back, something
     # else - is read below as any message is.
-    decides = (waiting and waiting_kind == "approval"
+    # Only a message saved as the reply to the open question can be it (watchers.is_reply_file): a file dropped into the
+    # command folder is not, and must not be kept as "You approved" in the run's record.
+    decides = (waiting and waiting_kind == "approval" and watchers.is_reply_file(path.name)
                and approval.read_reply(content, (approval.pending() or {}).get("action") or state.last_query_text) != "unclear")
     if decides:
+        # With an approval gate, "You approved" is kept only from the gate's own reading of the person's signed reply:
+        # a file named like a reply is the worker's to write (round-3 recheck). Without a gate, as before.
+        said = approval.gate_reading(content) if approval.remote() else None
         try:
-            _approval_as_decision(run_id, content)
+            if not approval.remote() or (said and said.get("decision") in ("yes", "if", "no")):
+                _approval_as_decision(run_id, content, said=said)
+            else:
+                log("long_task: the approval gate did not read this reply; it is not kept as a decision")
         except Exception as exc:  # noqa: BLE001 - keeping it as a decision is extra; the gate's answer goes on
             log(f"long_task: could not keep the approval as a decision: {exc}")
         _answered_whole(run_id)
@@ -5945,9 +6273,23 @@ def _take_message(content, path, about_this=False):
                                     answer["answer"], names=answer.get("names"))
     for answer in answered:
         question = next(q for q in data["questions"] if q["id"] == answer["question"])
-        _decide(run_id, question, answer["answer"], reading=_answer_reading(answer))
+        stuck_reading, stuck_answer = {}, answer["answer"]
         if question.get("kind") == "finding" and answer.get("keep") is True:
+            # The person's alone: the reply to the question, and the gate's yes where there is a gate (E-15). Until
+            # then the question stays open.
+            if not _keep_allowed(run_id, path, question, answer):
+                continue
+            _decide(run_id, question, answer["answer"], reading=_answer_reading(answer))
             _keep_findings(run_id, question, answer["answer"])
+        else:
+            # A stuck stage's answer is read once for how to go on (stuck_choice), and the reading is kept with the
+            # decision: binding_text binds every answer but a bare retry, skip or stop (E-20).
+            stuck_reading = (stuck_choice(answer["answer"], question.get("text"))
+                             if question.get("parked") and question.get("kind") == "stuck" else {})
+            reading = dict(_answer_reading(answer) or {})
+            if stuck_reading:
+                reading.update(choice=stuck_reading.get("choice"), instruction=stuck_reading.get("instruction") or "")
+            _decide(run_id, question, answer["answer"], reading=reading)
         if answer.get("assumed"):
             _update(run_id, lambda d, q=question, a=answer: d.setdefault("assumed_for_person", []).append(
                 {"stage": q["stage"], "items": list(a["assumed"]), "at": time.time()}))
@@ -5962,7 +6304,9 @@ def _take_message(content, path, about_this=False):
             try:
                 # A person's own words for "stop" or "skip", answering a stuck stage (round 5 P6, 2026-10-20) - read
                 # once: anything else, however it starts, is what the stage goes on with.
-                said = stuck_choice(answer["answer"], question.get("text")) if question.get("kind") == "stuck" else {}
+                said = (stuck_reading if stuck_reading and answer["answer"] == stuck_answer
+                        else stuck_choice(answer["answer"], question.get("text")) if question.get("kind") == "stuck"
+                        else {})
                 if said.get("choice") == "stop":
                     _mark(path)
                     return stop(answer["answer"])
@@ -6045,8 +6389,8 @@ _ITEM_REF = re.compile(r"[a-z]*\d[a-z0-9]*(?:[-/][a-z0-9]+)*")
 
 
 def _same_item(decided, item):
-    """Whether an item an answer decided ("CL-4142", "Neha") is this listed item. An item with a reference is that
-    reference only - "Neha" decides one of her claims, not her flight CL-4145; without one, the same name exactly."""
+    """Whether an item an answer decided ("C-1", "<a name>") is this listed item. An item with a reference is that
+    reference only - "<a name>" decides one of their claims, not their claim C-2; without one, the same name exactly."""
 
     refs = lambda s: set(_ITEM_REF.findall(str(s or "").lower()))  # noqa: E731
     if refs(item):
@@ -6062,7 +6406,7 @@ def _rest_to_ask(run_id, step_id, question, answer):
     """
 
     items = [str(i) for i in answer.get("undecided") or []]
-    # An item an earlier answer already decided is not open (series 16 H1, 2026-10-21: CL-4142 was approved at Rs
+    # An item an earlier answer already decided is not open (series 16 H1, 2026-10-21: a claim was approved at Rs
     # 1,200, the stage's next question listed it again, and the follow-up asked the person about it twice more).
     decided = [n for d in ledger(run_id)["decisions"] if not is_stuck_question(d.get("question"))
                and d.get("answer") != answer.get("answer") for n in d.get("names") or []]
@@ -6115,7 +6459,7 @@ def _decided(run_state, step_id):
     return any(d.get("stage") == step_id for d in ledger(run_state["run_id"])["decisions"])
 
 
-def _approval_as_decision(run_id, reply):
+def _approval_as_decision(run_id, reply, said=None):
     """
     An approval asked during a decision stage that the person answered yes or no: kept as that stage's decision, so
     the stage's check finds it (belt and braces - such a stage asks a question, take_question). The approval itself is
@@ -6133,9 +6477,9 @@ def _approval_as_decision(run_id, reply):
         step = steps.get(q["stage"])
         if not step or not step.get("decision") or _decided(run_state, q["stage"]):
             continue
-        said = {"yes": "approved", "if": "approved only once a condition holds"}.get(
-            approval.read_reply(reply, q.get("text") or ""), "declined")
-        answer = f"You {said}: \"{' '.join(str(reply).split())[:300]}\""
+        decision = (said or {}).get("decision") or approval.read_reply(reply, q.get("text") or "")
+        verdict = {"yes": "approved", "if": "approved only once a condition holds"}.get(decision, "declined")
+        answer = f"You {verdict}: \"{' '.join(str(reply).split())[:300]}\""
 
         def add(d, q=q, answer=answer):
             d["decisions"].append({"stage": q["stage"], "question": q["text"], "answer": answer, "at": time.time()})
@@ -6172,7 +6516,7 @@ def _resume(run_id):
                      daemon=True).start()
 
 
-# What a question says the worker will do unless told otherwise: "I would record WB-500 as 70 ... unless you ...".
+# What a question says the worker will do unless told otherwise: "I would record <a reference> as 70 ... unless you ...".
 STATED_DEFAULT = re.compile(r"[^.?!\n]*\b(?:I would|I'd|I will|I'll|I plan to|I propose to|unless you)\b[^.?!\n]*[.?!]?",
                             re.I)
 
@@ -6200,7 +6544,7 @@ def stuck_replies(message, data):
     """
     A short "try again" / "skip it" / "stop" while the open questions are all stages that did not get done (refused by
     their check, or stopped): each is answered with the person's words - a new attempt, a skip or a stop follows - and
-    never asked back. Found live (round 5 P1 on pc3, 2026-10-21, DB): "try again" to "Stage ... could not be finished"
+    never asked back. Found live (round 5 P1, 2026-10-21, DB): "try again" to "Stage ... could not be finished"
     was met with "Do you want me to retry the bank reconciliation stage, or were you referring to a different part ...?"
     """
 
@@ -6328,6 +6672,30 @@ def _dependents(run_state, step_ids):
     return out
 
 
+def _stages_holding(run_state, step_ids, references):
+    """The stages among `step_ids` whose output files hold one of `references` as a whole token. A stage whose files
+    cannot be read counts as holding it (re-checked, never passed over)."""
+
+    from decurix_agent import produced
+    from decurix_agent.computer import identity
+
+    if not references:
+        return []
+    work = Path(_runner().context(run_state)["work_dir"])
+    out = []
+    for step_id in step_ids:
+        paths = [str(work / e["path"]) for e in run_state["steps"][step_id].get("evidence") or [] if not e.get("drafts")]
+        try:
+            text = produced.lines_with(paths, references) if paths else ""
+        except Exception as exc:  # noqa: BLE001 - unreadable: re-checked
+            log(f"long_task: could not read stage {step_id}'s outputs for the change: {exc}")
+            out.append(step_id)
+            continue
+        if any(identity.holds_identifier(text, r) or identity.holds(text, r) for r in references):
+            out.append(step_id)
+    return out
+
+
 def amend(run_id, text, affects, said=None, to_decision=False, keeps=None, records=None):
     """
     Fold a change the person made into the run: every stage still to run
@@ -6344,7 +6712,7 @@ def amend(run_id, text, affects, said=None, to_decision=False, keeps=None, recor
 
     run_state = _runner().status(run_id)
 
-    # Found live (round 5 P3 on pc3, 2026-10-21, CD): "Approved as proposed ... No, don't change anything ... keep the
+    # Found live (round 5 P3, 2026-10-21, CD): "Approved as proposed ... No, don't change anything ... keep the
     # account in our vendor master" - a paraphrase no keep-clause word list matched - reopened a finished stage, which
     # lost two of its findings. Whether words change what is done is a reading: the model's, of the person's own words.
     keeps = bool(keeps)
@@ -6360,7 +6728,14 @@ def amend(run_id, text, affects, said=None, to_decision=False, keeps=None, recor
         # It keeps what is done: every stage still to run reads it; nothing finished is opened again.
         _show(_runner().status(run_id))
         return f"Noted: {text} - nothing already done changes; it applies to every stage still to do."
-    targets = _dependents(run_state, affects) if affects else set()
+    # Which finished stages it touches. The model's "affects" names them; none named is not "none touched" - every
+    # finished stage is re-checked - and a finished stage whose outputs hold a reference the change takes out or puts
+    # back is re-checked whatever "affects" says (E-18, review 2026-11-03: "leave X out of everything" with an empty
+    # "affects" reopened nothing, and the run could end done with X in it). Fails safe: more re-checks, never fewer.
+    done = [s["id"] for s in _steps(run_state) if run_state["steps"][s["id"]]["status"] in {"completed", "failed"}]
+    named = list(affects) if affects else done
+    named += _stages_holding(run_state, done, [r for k in ("removed", "restored") for r in (records or {}).get(k) or []])
+    targets = _dependents(run_state, named)
     reopened = []
     for step in _steps(run_state):
         if step["id"] in targets and run_state["steps"][step["id"]]["status"] in {"completed", "failed"}:
@@ -6446,13 +6821,25 @@ _Timer = threading.Timer
 _Thread = threading.Thread
 # Runs whose final report has gone out: a stage that ends after a stop's report adds nothing.
 _reported = set()
+_reported_lock = threading.Lock()
+
+
+def _claim_report(run_id):
+    """True for the one caller that reports this run; False for any other (the stop's timer and a stage ending raced
+    on a check-then-add - E-42)."""
+
+    with _reported_lock:
+        if run_id in _reported:
+            return False
+        _reported.add(run_id)
+        return True
 
 
 def _report_stopped(run_id):
     """A stopped run's report, whatever stands in its way: a report that cannot be put together is said plainly."""
 
     from decurix_agent import workflow_task
-    from decurix_agent.messaging import write_final_reply
+    from decurix_agent.messaging import write_stopped
 
     global _stopping
     if run_id in _reported:
@@ -6475,10 +6862,9 @@ def _report_stopped(run_id):
             done = [s.get("title", s["id"]) for s in _steps(run_state) if run_state["steps"][s["id"]]["status"] == "completed"]
         except Exception:  # noqa: BLE001
             done = []
-        write_final_reply("Stopped, as you said. Nothing more is started. "
-                          + ("Done before the stop: " + "; ".join(done) + "." if done else "No stage was finished.")
-                          + f" (The full report could not be put together: {str(exc)[:200]}.)", kind="error", checked=True,
-                          task_id=task_id)
+        write_stopped("Stopped, as you said. Nothing more is started. "
+                      + ("Done before the stop: " + "; ".join(done) + "." if done else "No stage was finished.")
+                      + f" (The full report could not be put together: {str(exc)[:200]}.)", task_id=task_id)
     finally:
         if _stopping == run_id:
             _stopping = None

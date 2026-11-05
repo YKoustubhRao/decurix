@@ -5,7 +5,7 @@ import sys
 import traceback
 
 from decurix_agent import logging_utils, progress
-from decurix_agent.computer import core, replay, skill_engine, skills
+from decurix_agent.computer import core, door, replay, skill_engine, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -83,6 +83,8 @@ TOOLS = [
                 "end_x": {"type": "integer", "description": "For drag: where to drop."},
                 "end_y": {"type": "integer"},
                 "files": {"type": "array", "items": {"type": "string"}, "description": "For upload: file paths on this desktop."},
+                "checked": {"type": "boolean", "description": "For click/double_click on a control that saves or "
+                            "submits a form: the form was listed by the click before and every value is right - send it."},
             },
             "required": ["action"],
         },
@@ -222,7 +224,11 @@ def _run_answer(result, what, tool):
     if result.get("resume_from") and result["outcome"] in (replay.HALTED, replay.NEEDS_HUMAN):
         text += f"\n\nTo carry on from there later, call {tool} with from={result['resume_from']}."
 
-    return [_text(text)], result["outcome"] not in replay.SUCCESS
+    if result["outcome"] == replay.COMPLETED_UNVERIFIED:
+        # Ran to its end without seeing every result: not done until it is seen (no unseen success).
+        text += ("\n\nNOT CHECKED: this is not done until its result is seen - observe the screen and check the "
+                 "result against the request before reporting it done.")
+    return [_text(text)], result["outcome"] != replay.VERIFIED
 
 
 def call_tool(name, arguments):
@@ -234,6 +240,7 @@ def call_tool(name, arguments):
         observation = core.observe()
         core.report_observation(observation)
         tree = el.render(observation, budget=TREE_BUDGET, coords=True, only_group=arguments.get("window"))
+        door.note_look(tree, observation)  # what this look read is evidence of the task, as for `gui observe`
         return [_text(tree), _image(observation["frame"])], False
 
     if name == "act":
@@ -249,7 +256,8 @@ def call_tool(name, arguments):
         if arguments.get("end_x") is not None and arguments.get("end_y") is not None:
             end = (int(arguments["end_x"]), int(arguments["end_y"]))
 
-        result = core.act(
+        # The same guards and the same way of acting as the gui command's (door.py, D-23).
+        result = door.act(
             arguments.get("action"),
             ref=arguments.get("ref"),
             role=arguments.get("role"),
@@ -265,6 +273,9 @@ def call_tool(name, arguments):
             replace_all=bool(arguments.get("replace_all")),
             end=end,
             files=_absolute(arguments.get("files")),
+            # The same pre-save checks as the gui command's (core._commit_check): a right-click commits nothing.
+            check_form=(False if arguments.get("action") == "right_click"
+                        else "checked" if arguments.get("checked") else True),
         )
 
         if result["status"] == "needs_approval":
@@ -285,6 +296,7 @@ def call_tool(name, arguments):
             role=arguments.get("role"),
             name=arguments.get("name"),
         )
+        door.note_check(result["text"])
         return [_text(result["text"]), _image(result["observation"]["frame"])], result["ok"] is False
 
     if name == "open":
@@ -320,8 +332,8 @@ def call_tool(name, arguments):
         skill, candidates = skills.find(wanted or "")
         if skill is None:
             names = ", ".join(s["name"] for s in candidates)
-            return [_text(f"more than one skill fits {wanted!r}: {names}. Use its exact name." if candidates
-                          else f"there is no skill {wanted!r} on this desktop")], True
+            return [_text(f"no skill is named {wanted!r}; these come close: {names}. A skill runs only by its "
+                          "exact name." if candidates else f"there is no skill {wanted!r} on this desktop")], True
 
         if name == "skills":
             return [_text(skill_engine.render_text(skill, budget=TREE_BUDGET))], False

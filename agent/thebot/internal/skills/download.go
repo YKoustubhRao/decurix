@@ -1,9 +1,13 @@
 package skills
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,6 +17,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"thebot/internal/netguard"
 )
 
 // DownloadSkill finds REAL downloadable links in a page's actual HTML and
@@ -26,6 +32,22 @@ type DownloadSkill struct{}
 func NewDownload() *DownloadSkill { return &DownloadSkill{} }
 
 func (d *DownloadSkill) Name() string { return "download" }
+
+// maxNameTries bounds how many numbered names a download tries before an existing file's name is given up on.
+const maxNameTries = 100
+
+// writeNew writes data to a file that must not exist yet (fs.ErrExist when it does).
+func writeNew(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
 func (d *DownloadSkill) Description() string {
 	return "Downloads real files linked from a real page (or a direct file URL) into the workspace - never a guessed link."
 }
@@ -142,7 +164,21 @@ const (
 	declaredUA = "TheBot-Research/1.0 (automated research agent; contact: research@thebot.local)"
 )
 
-func fetchBytesAs(ctx context.Context, target, ua string, timeout time.Duration) ([]byte, int, error) {
+// maxPageBytes and maxFileBytes bound what one fetch may hold in memory: a
+// page scanned for links, and one downloaded file. Past the bound the fetch
+// fails rather than reading on without end.
+const (
+	maxPageBytes = 20 << 20
+	maxFileBytes = 200 << 20
+)
+
+// fetchClient dials only public internet addresses and re-checks every
+// redirect (netguard): a link a model or a page named never reaches the
+// control plane, this desktop's own services or a metadata endpoint. Tests swap it.
+var fetchClient = netguard.Client(0)
+
+// fetchBytesAs fetches target as ua, reading at most limit bytes.
+func fetchBytesAs(ctx context.Context, target, ua string, timeout time.Duration, limit int64) ([]byte, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -161,7 +197,7 @@ func fetchBytesAs(ctx context.Context, target, ua string, timeout time.Duration)
 	// .html extension. Every download this skill had ever done was at
 	// real risk of the same silent corruption whenever the server
 	// happened to compress its response; PDFs/binaries just rarely are.
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := fetchClient.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -169,14 +205,18 @@ func fetchBytesAs(ctx context.Context, target, ua string, timeout time.Duration)
 	if resp.StatusCode != http.StatusOK {
 		return nil, resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err == nil && int64(len(body)) > limit {
+		return nil, resp.StatusCode, fmt.Errorf("larger than %d MB - not downloaded", limit>>20)
+	}
 	return body, resp.StatusCode, err
 }
 
-func fetchBytes(ctx context.Context, target string, timeout time.Duration) ([]byte, error) {
-	data, status, err := fetchBytesAs(ctx, target, browserUA, timeout)
+// fetchBytes fetches target, at most limit bytes, retrying a 403 once as the declared client.
+func fetchBytes(ctx context.Context, target string, timeout time.Duration, limit int64) ([]byte, error) {
+	data, status, err := fetchBytesAs(ctx, target, browserUA, timeout, limit)
 	if err != nil && status == http.StatusForbidden {
-		data, _, err = fetchBytesAs(ctx, target, declaredUA, timeout)
+		data, _, err = fetchBytesAs(ctx, target, declaredUA, timeout, limit)
 	}
 	return data, err
 }
@@ -187,7 +227,7 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	}
 
 	exts := wantedExts(subtask.Step)
-	target := findURL(subtask.Step)
+	target := givenURL(rc, subtask.Step)
 
 	var fileURLs []string
 	// Bulk mode: "download the raw html of these N pages" (typically the
@@ -220,17 +260,10 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 			// the page and wrote "no information found", citing no URL in
 			// its answer text at all. The real link was still sitting in
 			// that step's Meta the whole time.
+			// Never a URL an earlier step's prose mentions: that text may be
+			// a model's summary (or a page's injected words), not a page
+			// anything fetched.
 			candidates := rc.PriorSourceURLs()
-			if len(candidates) == 0 {
-				// Nothing recorded structurally - fall back to whatever
-				// URL an earlier step's own text happened to mention.
-				// Weaker ground truth than Meta, but still real, and
-				// better than nothing when a skill didn't populate
-				// Meta["sources"]/"url".
-				if found := findURL(rc.PriorFindings()); found != "" {
-					candidates = []string{found}
-				}
-			}
 			if len(candidates) > 0 {
 				// Prefer a candidate that's already a direct file of the
 				// wanted type over one that's just a page to go scan.
@@ -261,7 +294,7 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 			// list of other pages to download).
 			fileURLs = []string{target}
 		} else {
-			body, err := fetchBytes(rc.Ctx, target, 25*time.Second)
+			body, err := fetchBytes(rc.Ctx, target, 25*time.Second, maxPageBytes)
 			if err != nil {
 				return Result{
 					Subtask: subtask, SkillName: d.Name(),
@@ -282,8 +315,10 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		}
 	}
 
+	leftOut := 0
 	if len(fileURLs) > maxDownloads {
 		rc.Logf("download", "capping at %d of %d found links", maxDownloads, len(fileURLs))
+		leftOut = len(fileURLs) - maxDownloads
 		fileURLs = fileURLs[:maxDownloads]
 	}
 
@@ -292,10 +327,18 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	usedNames := map[string]bool{}
 	for i, fileURL := range fileURLs {
 		rc.Logf("download", "downloading %d/%d: %s", i+1, len(fileURLs), fileURL)
-		data, err := fetchBytes(rc.Ctx, fileURL, 60*time.Second)
+		data, err := fetchBytes(rc.Ctx, fileURL, 60*time.Second, maxFileBytes)
 		if err != nil {
 			failed = append(failed, fmt.Sprintf("%s: %s", fileURL, err.Error()))
 			continue
+		}
+		// What came back must be the kind of file asked for: a login page
+		// served under invoice.pdf is not an invoice.
+		if ext := fileExt(fileURL); ext != "" {
+			if why := contentMismatch(ext, data); why != "" {
+				failed = append(failed, fmt.Sprintf("%s: not saved - %s", fileURL, why))
+				continue
+			}
 		}
 
 		parsed, _ := url.Parse(fileURL)
@@ -337,20 +380,35 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		}
 		usedNames[name] = true
 
-		rel := filepath.ToSlash(filepath.Join(downloadDir, name))
-		abs, err := rc.Workspace.ResolveSafe(rel)
-		if err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %s", fileURL, err.Error()))
+		// A file an earlier job saved under the same name is never overwritten (review T-30): the new one takes the
+		// next free name, and the result says which name it came under.
+		asked := name
+		var abs string
+		var werr error
+		for n := 1; n <= maxNameTries; n++ {
+			if n > 1 {
+				ext := extRe.FindString(asked)
+				name = fmt.Sprintf("%s_%d%s", strings.TrimSuffix(asked, ext), n, ext)
+				if usedNames[name] {
+					continue
+				}
+			}
+			rel := filepath.ToSlash(filepath.Join(downloadDir, name))
+			if abs, werr = rc.Workspace.ResolveSafe(rel); werr != nil {
+				break
+			}
+			if werr = os.MkdirAll(filepath.Dir(abs), 0o755); werr != nil {
+				break
+			}
+			if werr = writeNew(abs, data); !errors.Is(werr, fs.ErrExist) {
+				break
+			}
+		}
+		if werr != nil {
+			failed = append(failed, fmt.Sprintf("%s: %s", fileURL, werr.Error()))
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %s", fileURL, err.Error()))
-			continue
-		}
-		if err := os.WriteFile(abs, data, 0o644); err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %s", fileURL, err.Error()))
-			continue
-		}
+		usedNames[name] = true
 		// Verified against the real file on disk, byte count included -
 		// never assumed from a write call that returned no error.
 		info, err := os.Stat(abs)
@@ -359,7 +417,11 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 			continue
 		}
 		rc.Logf("download", "saved %s (%d bytes) - verified on disk", abs, info.Size())
-		saved = append(saved, fmt.Sprintf("%s (%d bytes)", abs, info.Size()))
+		entry := fmt.Sprintf("%s (%d bytes)", abs, info.Size())
+		if name != asked {
+			entry += fmt.Sprintf(" - saved as %s, since %s was already there", name, asked)
+		}
+		saved = append(saved, entry)
 	}
 
 	var b strings.Builder
@@ -375,13 +437,94 @@ func (d *DownloadSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 			fmt.Fprintf(&b, "  - %s\n", f)
 		}
 	}
+	if leftOut > 0 {
+		fmt.Fprintf(&b, "Not downloaded: %d more matching link(s) past the limit of %d per step.\n", leftOut, maxDownloads)
+	}
 	if b.Len() == 0 {
 		b.WriteString("Nothing downloaded.")
 	}
 
+	// Verified only when every file asked for was saved and checked: 1 of 20
+	// is not the download that was asked for.
+	complete := len(saved) > 0 && len(failed) == 0 && leftOut == 0
+	if !complete && len(saved) > 0 {
+		fmt.Fprintf(&b, "Not complete: %d of %d file(s) saved.\n", len(saved), len(saved)+len(failed)+leftOut)
+	}
 	return Result{
 		Subtask: subtask, SkillName: d.Name(),
-		Output: b.String(), Verified: len(saved) > 0,
-		Meta: map[string]any{"downloaded": len(saved), "failed": len(failed), "paths": saved},
+		Output: b.String(), Verified: complete,
+		Meta: map[string]any{"downloaded": len(saved), "failed": len(failed), "leftOut": leftOut, "paths": saved},
 	}, nil
+}
+
+// givenURL is the URL step names, when it is one the work was given: the
+// person's request or reply names it, or a verified earlier step actually
+// fetched it. A URL only a plan's (a model's) wording carries is not taken -
+// it may come from a model's summary or a page's injected text - and "" sends
+// the skill to what earlier steps fetched instead. Outside a scheduler (no
+// request recorded) the step is the request.
+func givenURL(rc RunContext, step string) string {
+	u := findURL(step)
+	if u == "" || strings.TrimSpace(rc.OriginalPrompt) == "" {
+		return u
+	}
+	if strings.Contains(rc.OriginalPrompt, u) || strings.Contains(rc.HumanReply, u) || slices.Contains(rc.PriorSourceURLs(), u) {
+		return u
+	}
+	rc.Logf("url", "not using %s: neither the request nor a page fetched earlier gave it", u)
+	return ""
+}
+
+// fileExt is the lower-case extension a URL's path names ("pdf"), or "".
+func fileExt(fileURL string) string {
+	if em := extRe.FindStringSubmatch(fileURL); em != nil {
+		return strings.ToLower(em[1])
+	}
+	return ""
+}
+
+var (
+	zipMagic = []byte("PK\x03\x04")
+	oleMagic = []byte("\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1")
+)
+
+// contentMismatch says why data is not a file of kind ext - an HTML page (a
+// login, an error) served under a .pdf name, a binary under a .csv - or ""
+// when it is, or when ext is a kind this does not know.
+func contentMismatch(ext string, data []byte) string {
+	if len(data) == 0 {
+		return "the server sent an empty file"
+	}
+	sniffed := http.DetectContentType(data)
+	isHTML := strings.HasPrefix(sniffed, "text/html")
+	isText := strings.HasPrefix(sniffed, "text/") || strings.HasPrefix(sniffed, "application/json")
+	switch ext {
+	case "pdf":
+		// Readers accept the header anywhere in the first 1024 bytes.
+		if !bytes.Contains(data[:min(len(data), 1024)], []byte("%PDF")) || isHTML {
+			return "it is not a PDF (the server sent " + sniffed + ")"
+		}
+	case "xlsx", "docx", "pptx", "zip":
+		if !bytes.HasPrefix(data, zipMagic) {
+			return "it is not a ." + ext + " file (the server sent " + sniffed + ")"
+		}
+	case "xls", "doc", "ppt":
+		// An old Office binary, or a newer zip saved under the old name.
+		if !bytes.HasPrefix(data, oleMagic) && !bytes.HasPrefix(data, zipMagic) {
+			return "it is not a ." + ext + " file (the server sent " + sniffed + ")"
+		}
+	case "json":
+		if !json.Valid(data) {
+			return "it is not valid JSON (the server sent " + sniffed + ")"
+		}
+	case "html", "htm":
+		if !isText {
+			return "it is not a web page (the server sent " + sniffed + ")"
+		}
+	case "csv", "cpp", "hpp", "h", "cc", "cxx", "py", "go", "rs", "java", "js", "ts":
+		if isHTML || !isText {
+			return "it is not a ." + ext + " text file (the server sent " + sniffed + ")"
+		}
+	}
+	return ""
 }

@@ -3,6 +3,7 @@ A task that ends in a file is checked against the file: what the worker wrote
 is read back and judged beside its report, before anyone is told it is done.
 """
 
+from needs import needs
 import os
 import sys
 import tempfile
@@ -118,6 +119,7 @@ class FileWorkIsChecked(ts.TeachingBase):
             self.addCleanup(patch.stop)
         state.current_task = "compare the two lists into result.xlsx"
 
+    @needs("openpyxl")
     def test_the_file_is_what_the_check_is_shown_and_no_screen(self):
         self.verdicts = [verdict(verify.DONE, seen="result.xlsx lists 8 entries")]
         self.assertTrue(skill_task._gate("Made result.xlsx.", "final", "thebot"))
@@ -126,6 +128,7 @@ class FileWorkIsChecked(ts.TeachingBase):
         self.assertIsNone(self.judged[0]["live_png"])
         self.assertIn("Checked against the files I wrote: result.xlsx lists 8 entries", self.finals[-1][0])
 
+    @needs("openpyxl")
     def test_a_report_its_own_file_contradicts_is_not_sent_as_done(self):
         self.verdicts = [verdict(verify.NOT_DONE, seen="the file lists REF-077 as only in the first list")]
         self.assertTrue(skill_task._gate("Matched REF-077 with REF-77.", "final", "thebot"))
@@ -133,6 +136,7 @@ class FileWorkIsChecked(ts.TeachingBase):
         self.assertIn("What I wrote shows: the file lists REF-077 as only in the first list", self.asked[-1][0])
         self.assertIn("Look at the files", self.asked[-1][0])
 
+    @needs("openpyxl")
     def test_it_is_sent_back_once_when_the_engine_can_correct_it(self):
         self.verdicts = [verdict(verify.NOT_DONE, seen="the summary sheet has no difference row")]
         sent = []
@@ -143,6 +147,7 @@ class FileWorkIsChecked(ts.TeachingBase):
         self.assertIn("the summary sheet has no difference row", sent[0])
         self.assertIn("correct what is wrong where it is", sent[0])
 
+    @needs("openpyxl")
     def test_a_wrong_sum_in_the_report_is_not_done_without_asking_a_model(self):
         self.verdicts = []
         self.assertTrue(skill_task._gate("Atlas total matches: 750.00 + 300.00 + 84.00 = 1143.00, so it is OK.",
@@ -151,6 +156,7 @@ class FileWorkIsChecked(ts.TeachingBase):
         self.assertEqual(self.finals, [])
         self.assertIn("it comes to 1,134.00", self.asked[-1][0])
 
+    @needs("openpyxl")
     def test_a_number_written_as_a_program_prints_it_is_not_done_without_asking_a_model(self):
         self.verdicts = []
         with mock.patch.object(skill_task.produced, "text", lambda paths, focus=(): "Hours: 3E+1  Net: 1,672.74"):
@@ -159,6 +165,7 @@ class FileWorkIsChecked(ts.TeachingBase):
         self.assertEqual(self.finals, [])
         self.assertIn("3E+1", self.asked[-1][0])
 
+    @needs("openpyxl")
     def test_a_report_that_says_it_could_not_be_done_goes_to_the_person(self):
         self.verdicts = [verdict(verify.CANNOT, seen="the workbook has no November targets")]
         self.assertTrue(skill_task._gate("The workbook has no November targets, so the deck cannot be completed.",
@@ -167,16 +174,31 @@ class FileWorkIsChecked(ts.TeachingBase):
         self.assertIn("I could not finish this", self.asked[-1][0])
         self.assertIn("no November targets", self.asked[-1][0])
 
-    def test_what_the_check_cannot_settle_goes_out_as_reported_not_as_a_question(self):
+    def test_what_the_check_cannot_settle_goes_out_said_not_checked_not_as_a_question(self):
+        # Review 2026-11-02: it went out through the ordinary path and was recorded COMPLETED. It still goes out as
+        # reported, not as a question - said first to be not checked, and recorded so (verify.outcome).
         self.verdicts = [verdict(verify.UNSURE)]
-        self.assertFalse(skill_task._gate("Made result.xlsx.", "final", "thebot"))
+        said = []
+        with mock.patch.object(skill_task, "write_final_reply", lambda text, **kw: said.append((text, kw))):
+            self.assertTrue(skill_task._gate("Made result.xlsx.", "final", "thebot"))
         self.assertEqual(self.asked, [])
         self.assertIsNone(guidance.get())
+        text, kw = said[-1]
+        self.assertTrue(text.startswith("Not checked - "), text)
+        self.assertIn("Made result.xlsx.", text)
+        self.assertIs(kw.get("checked"), False)
+        self.assertTrue(kw.get("gated"))
 
-    def test_a_task_that_wrote_nothing_is_not_checked(self):
+    def test_a_task_that_wrote_nothing_and_read_nothing_goes_out_said_not_checked(self):
+        # Not judged (there is nothing to judge it against), and never sent as a checked result: it is labelled
+        # (E-02 / T-01, review 2026-11-03 - it used to skip the gate and go out as written).
         self.made = []
-        self.assertFalse(skill_task._gate("The kernel is 6.6.", "final", "thebot"))
+        with mock.patch.object(skill_task.evidence, "observed", lambda *a, **k: []), \
+                mock.patch.object(skill_task.evidence, "files_read", lambda *a, **k: []), \
+                mock.patch.object(skill_task, "_commands_text", lambda: ""):
+            self.assertTrue(skill_task._gate("The kernel is 6.6.", "final", "thebot"))
         self.assertEqual(self.judged, [])
+        self.assertTrue(self.finals[-1][0].startswith(skill_task.UNCHECKED_ANSWER))
 
     def test_a_tickets_or_a_replays_own_report_is_not_an_engines(self):
         for engine in ("human", "replay", "web", skill_task.SKILL_ENGINE, skill_task.LEARN_ENGINE):
@@ -190,6 +212,130 @@ class FileWorkIsChecked(ts.TeachingBase):
                 mock.patch.object(skill_task, "_engine", lambda *a, **k: self.fail("handed to the engine")):
             self.assertFalse(skill_task._gate("Recorded 20 steps of \"Enter this order\".", "final", "human"))
         self.assertEqual(self.judged, [])
+
+
+class NoModelAtTheGate(ts.TeachingBase):
+    """
+    The final gate with NO hosted model (verify.available() False - every test above forces it True). Review
+    2026-11-02: the gate returned before even the checks a program decides, and before the person's changed files
+    were put back; the report went out unchecked. Code-decided checks always run; what needs a judgement nobody can
+    make is "not checked", never passed.
+    """
+
+    def setUp(self):
+        super().setUp()
+        guidance.end()
+        self.addCleanup(guidance.end)
+        self.said = []
+        for patch in (mock.patch.object(skill_task.verify, "available", lambda: False),
+                      mock.patch.object(skill_task, "_did_screen_work", lambda: False),
+                      mock.patch.object(skill_task.produced, "files", lambda report="", **kw: ["/work/result.xlsx"]),
+                      mock.patch.object(skill_task.produced, "text", lambda paths, focus=(): "A7='Total 1,134.00'"),
+                      mock.patch.object(skill_task, "_engine_can_drive", lambda: False),
+                      mock.patch.object(skill_task, "write_final_reply",
+                                        lambda text, **kw: self.said.append((text, kw)))):
+            patch.start()
+            self.addCleanup(patch.stop)
+        state.current_task = "compare the two lists into result.xlsx"
+
+    @needs("openpyxl")
+    def test_a_wrong_sum_is_still_not_done(self):
+        self.assertTrue(skill_task._gate("Atlas total: 750.00 + 300.00 + 84.00 = 1143.00, so it is OK.",
+                                         "final", "thebot"))
+        self.assertEqual(self.said, [])
+        self.assertIn("it comes to 1,134.00", self.asked[-1][0])
+
+    def test_the_persons_changed_file_is_told_and_never_put_back_while_checking(self):
+        # E-12 (review 2026-11-03): nothing is put back before a verdict, and the request's verbs decide nothing; the
+        # change reaches the person, with where the original is kept. (It used to be restored here, by a verb list.)
+        restored = []
+        change = {"rel": "list_a.xlsx", "name": "list_a.xlsx", "path": "/shared/list_a.xlsx", "diff": "A2: x -> y",
+                  "gone": False, "kept": True, "asked": False, "copy": "/kept/list_a.xlsx"}
+        with mock.patch.object(skill_task.source_guard, "changed_sources", lambda task_id, request: [change]), \
+                mock.patch.object(skill_task.source_guard, "restore", lambda *a, **k: restored.append(a) or ([], [])):
+            self.assertTrue(skill_task._gate("Made result.xlsx.", "final", "thebot"))
+        self.assertEqual(restored, [])
+        text, kw = self.said[-1]
+        self.assertIn("Changed your file /shared/list_a.xlsx", text)
+        self.assertIs(kw.get("checked"), False)
+
+    @needs("openpyxl")
+    def test_file_work_no_one_could_judge_is_said_not_checked_never_done(self):
+        self.assertTrue(skill_task._gate("Made result.xlsx.", "final", "thebot"))
+        text, kw = self.said[-1]
+        self.assertTrue(text.startswith("Not checked - there is no model here to check the screen with"), text)
+        self.assertIs(kw.get("checked"), False)
+        self.assertTrue(kw.get("gated"))
+
+    def test_a_blocking_check_that_raised_is_not_a_pass(self):
+        # produced.py: a check that crashed was treated as passed (review 2026-11-02).
+        with mock.patch.object(skill_task.verify, "available", lambda: True), \
+                mock.patch.object(skill_task.verify, "judge", lambda *a, **k: self.fail("judged past a check not made")), \
+                mock.patch("decurix_agent.payees.mismatches", side_effect=RuntimeError("bad account table")):
+            self.assertTrue(skill_task._gate("Made result.xlsx.", "final", "thebot"))
+        text, kw = self.said[-1]
+        self.assertIn("could not check where payments go (bad account table)", text)
+        self.assertIs(kw.get("checked"), False)
+
+    def test_a_refusal_is_never_reported_checked(self):
+        guidance.begin(skill=None, task=state.current_task, text="", mode="engine", run=None)
+        with mock.patch.object(skill_task.guidance, "refused", lambda: "no, do not send it"):
+            self.assertTrue(skill_task._gate("Stopped before sending.", "final", "thebot"))
+        text, kw = self.said[-1]
+        # A stop is never a finished task (E-36): kind "error", not checked.
+        self.assertTrue(text.startswith("Stopped, as you said"))
+        self.assertEqual(kw.get("kind"), "error")
+        self.assertIs(kw.get("checked"), False)
+        self.assertTrue(kw.get("gated"))
+
+
+class OneDecision(unittest.TestCase):
+    """verify.outcome: the one place a check's result becomes what a report may say - failing closed."""
+
+    def test_only_a_confident_done_is_done(self):
+        decided = verify.outcome({"verdict": "done", "confidence": 0.9})
+        self.assertEqual({k: decided[k] for k in ("status", "checked", "kind", "why")},
+                         {"status": "done", "checked": True, "kind": "final", "why": ""})
+        self.assertEqual(decided["basis"], ["model"])  # (and its checks, for the structured verdict: R6)
+        for unsure in ({"verdict": "done", "confidence": 0.5}, {"verdict": "unsure"}, {"verdict": "maybe"}, None, {}):
+            decided = verify.outcome(unsure)
+            self.assertEqual((decided["status"], decided["checked"]), (verify.UNCHECKED, False), unsure)
+
+    def test_a_problem_or_a_refusal_by_the_judge_is_not_done_and_checked(self):
+        self.assertEqual(verify.outcome({"verdict": "done", "confidence": 1.0}, problems=["a sum is wrong"])["status"],
+                         verify.NOT_DONE)
+        for kind in (verify.NOT_DONE, verify.CANNOT):
+            decided = verify.outcome({"verdict": kind, "why": "no record saved"})
+            self.assertEqual((decided["status"], decided["checked"], decided["kind"]), (verify.NOT_DONE, True, "error"))
+
+    def test_an_error_or_a_check_not_made_is_never_done(self):
+        sure = {"verdict": "done", "confidence": 1.0}
+        self.assertEqual(verify.outcome(sure, error=RuntimeError("429"))["status"], verify.UNCHECKED)
+        decided = verify.outcome(sure, not_made=["could not check where payments go"])
+        self.assertEqual((decided["status"], decided["checked"]), (verify.UNCHECKED, False))
+        self.assertIn("could not check where payments go", decided["why"])
+
+    def test_nothing_left_is_the_whole_item_not_its_first_word(self):
+        # Review 2026-11-02: "None of 3 bills saved" read as nothing left undone.
+        self.assertEqual(verify.left_undone("Done.\nLeft undone: None of 3 bills saved"), "None of 3 bills saved")
+        for nothing in ("None", "None.", "**None**", "Nothing left undone.", "N/A", "none - all done"):
+            self.assertEqual(verify.left_undone(f"Done.\nLeft undone: {nothing}"), "", nothing)
+
+
+class ReportNamedFilesAreReadBack(unittest.TestCase):
+    def test_a_file_the_report_names_and_the_request_does_not_is_kept(self):
+        # Review 2026-11-02: `named` was reused as the loop variable, and a report-named file was dropped.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            asked = write(root / "summary.xlsx")
+            named = write(root / "elsewhere" / "notes.csv")
+            other = write(root / "elsewhere" / "other.csv")
+            with mock.patch.object(produced.shared, "walk", lambda: []):
+                found = produced.files(f"Made summary.xlsx, {named} and {other}.", started=time.time() - 60,
+                                       root=root / "w", request="Make summary.xlsx")
+        self.assertIn(named, found)
+        self.assertIn(other, found)
+        self.assertNotIn(asked, found)  # (not in the work folder given, nor named by path)
 
 
 try:
@@ -275,6 +421,7 @@ class FormulaResultsAtTheGate(FileWorkIsChecked):
         self.assertEqual(self.finals, [])
         self.assertIn("50 formula cell(s) with no stored result", self.asked[-1][0])
 
+    @needs("openpyxl")
     def test_the_results_are_stored_before_the_file_is_judged(self):
         stored = []
         self.verdicts = [verdict(verify.DONE, seen="priced.xlsx prices every line")]

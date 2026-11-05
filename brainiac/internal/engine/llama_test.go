@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"brainiac/internal/backend"
+	"brainiac/internal/isolate"
 )
 
 func writeGGUF(t *testing.T, template string) string {
@@ -130,7 +131,9 @@ func TestLiveServerWithoutASocketFallsBackAndSaysSo(t *testing.T) {
 	if bin == "" || model == "" || runtime.GOOS != "linux" {
 		t.Skip("set BRAINIAC_LIVE_LLAMA and BRAINIAC_LIVE_GGUF to run a real server on Linux")
 	}
-	// Beside the real one: the sandbox allows a server's own directory.
+	// A wrapper that hides the socket from --help. The sandbox grants a
+	// server's own file and libraries, not the wrapper's target, so this
+	// runs with the file sandbox off: what is checked is the fallback.
 	old := filepath.Join(filepath.Dir(bin), "old-server")
 	script := "#!/bin/sh\n[ \"$1\" = --help ] && exit 0\nexec \"" + bin + "\" \"$@\"\n"
 	if err := os.WriteFile(old, []byte(script), 0o755); err != nil {
@@ -139,7 +142,7 @@ func TestLiveServerWithoutASocketFallsBackAndSaysSo(t *testing.T) {
 	t.Cleanup(func() { os.Remove(old) })
 	t.Setenv("AZURE_KEY", "secret-that-must-not-leak")
 	var logged []string
-	p := &LlamaProc{Bin: old, Model: model, Ctx: 256, Threads: 1, LogPath: filepath.Join(t.TempDir(), "llama.log"),
+	p := &LlamaProc{Bin: old, Model: model, Ctx: 256, Threads: 1, LogPath: filepath.Join(t.TempDir(), "llama.log"), NoSandbox: true,
 		Logf: func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -163,4 +166,132 @@ func TestLiveServerWithoutASocketFallsBackAndSaysSo(t *testing.T) {
 	}
 }
 
+// The fallback where the host refuses namespaces: llama-server on a TCP
+// port under Landlock alone. Its libraries and ggml's backends are granted
+// by file there too, so it must still load and answer, with its file
+// sandbox on ("files" not open), no secret and no new privileges.
+func TestLiveServerOnLoopbackUnderLandlockAlone(t *testing.T) {
+	bin, model := os.Getenv("BRAINIAC_LIVE_LLAMA"), os.Getenv("BRAINIAC_LIVE_GGUF")
+	if bin == "" || model == "" || runtime.GOOS != "linux" {
+		t.Skip("set BRAINIAC_LIVE_LLAMA and BRAINIAC_LIVE_GGUF to run a real server on Linux")
+	}
+	if !isolate.CanSandbox() {
+		t.Skip("no Landlock on this kernel")
+	}
+	t.Setenv("AZURE_KEY", "secret-that-must-not-leak")
+	p := &LlamaProc{Bin: bin, Model: model, Ctx: 256, Threads: 1, LogPath: filepath.Join(t.TempDir(), "llama.log")}
+	logf, err := os.Create(p.LogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logf.Close()
+	l, err := p.launchOnLoopback(logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(l.open, " "), "files") {
+		t.Fatalf("no file sandbox: still open %v", l.open)
+	}
+	if err := p.startLaunch(l); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { _ = l.cmd.Wait(); close(done) }()
+	defer func() { _ = l.cmd.Process.Kill(); <-done }()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := p.waitHealthy(ctx, l.client, done); err != nil {
+		t.Fatal(err)
+	}
+	res, err := l.client.Chat(ctx, backend.ChatRequest{MaxTokens: 4, Messages: []backend.Message{{Role: "user", Text: "Once"}}})
+	if err != nil {
+		t.Fatalf("no answer on loopback: %v", err)
+	}
+	pid := l.cmd.Process.Pid
+	env, err := os.ReadFile(filepathProc(pid, "environ"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(env, []byte("secret-that-must-not-leak")) {
+		t.Fatal("the secret is in the server's environment")
+	}
+	if status, err := os.ReadFile(filepathProc(pid, "status")); err != nil || !strings.Contains(string(status), "NoNewPrivs:\t1") {
+		t.Fatalf("no sandbox on the running server: %v\n%s", err, status)
+	}
+	t.Logf("answered %q; still open: %v", res.Text, l.open)
+}
+
 func filepathProc(pid int, name string) string { return "/proc/" + strconv.Itoa(pid) + "/" + name }
+
+// A shared object every Linux has, standing in for a ggml backend.
+func aSharedObject(t *testing.T) []byte {
+	t.Helper()
+	for _, c := range []string{"/lib/x86_64-linux-gnu/libc.so.6", "/lib64/libc.so.6", "/lib/aarch64-linux-gnu/libc.so.6", "/usr/lib/libc.so.6"} {
+		if b, err := os.ReadFile(c); err == nil {
+			return b
+		}
+	}
+	t.Skip("no libc.so.6 found to stand in for a backend")
+	return nil
+}
+
+// The server's policy grants each ggml backend, which ggml opens itself and
+// no DT_NEEDED names, by its own path, and lets the server list its build to
+// find them; not the build's directory, not another program's library, and
+// on Linux not a "backend" that is no shared object. The build is the real
+// program's, behind a symlinked Bin.
+func TestThePolicyGrantsEachGGMLBackendAndListsTheBuild(t *testing.T) {
+	top := t.TempDir()
+	if real, err := filepath.EvalSymlinks(top); err == nil {
+		top = real
+	}
+	dir := filepath.Join(top, "build")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	program, backend := []byte("x"), []byte("x")
+	if runtime.GOOS == "linux" {
+		self, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if program, err = os.ReadFile(self); err != nil { // an ELF program with nothing of its own
+			t.Fatal(err)
+		}
+		backend = aSharedObject(t)
+	}
+	files := map[string][]byte{"llama-server": program, "libggml-cpu-haswell.so": backend, "libggml-cuda.so": backend,
+		"libggml-bad.so": []byte("x"), "libllama-cli-impl.so": backend, "libggml-base.so.0": backend, "notes.txt": []byte("x")}
+	for n, b := range files {
+		if err := os.WriteFile(filepath.Join(dir, n), b, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	good := []string{filepath.Join(dir, "libggml-cpu-haswell.so"), filepath.Join(dir, "libggml-cuda.so")}
+	bad := filepath.Join(dir, "libggml-bad.so")
+	if got := ggmlBackends(dir); strings.Join(got, "|") != strings.Join([]string{bad, good[0], good[1]}, "|") {
+		t.Fatalf("backends %v", got)
+	}
+	bin := filepath.Join(dir, "llama-server")
+	if link := filepath.Join(top, "elsewhere", "llama-server"); os.MkdirAll(filepath.Dir(link), 0o755) == nil && os.Symlink(bin, link) == nil {
+		bin = link
+	}
+	pol := (&LlamaProc{Bin: bin, Model: filepath.Join(top, "m.gguf")}).policy()
+	if strings.Join(pol.List, "|") != dir {
+		t.Fatalf("list %v, want the real build %s", pol.List, dir)
+	}
+	read := "|" + strings.Join(pol.Read, "|") + "|"
+	for _, w := range good {
+		if !strings.Contains(read, "|"+w+"|") {
+			t.Fatalf("%s not granted: %v", w, pol.Read)
+		}
+	}
+	for _, n := range []string{dir, filepath.Join(dir, "libllama-cli-impl.so"), filepath.Join(dir, "notes.txt")} {
+		if strings.Contains(read, "|"+n+"|") {
+			t.Fatalf("%s granted: %v", n, pol.Read)
+		}
+	}
+	if runtime.GOOS == "linux" && strings.Contains(read, "|"+bad+"|") {
+		t.Fatalf("a backend that is no shared object was granted: %v", pol.Read)
+	}
+}

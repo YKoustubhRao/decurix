@@ -1,4 +1,15 @@
-/* Decurix teaser site: scroll reveals, the hero demo, and the waitlist. */
+/* Decurix site: scroll reveals, the hero demo, the learning loop, downloads and the early-access list. */
+
+// ---------------------------------------------------------------------------
+// Downloads. Leave a url empty and that button says "Coming soon" and points at
+// the early-access form. Fill it in when a build is published, e.g.
+// "https://github.com/YKoustubhRao/decurix-site/releases/latest/download/Decurix-Setup-x64.exe"
+// ---------------------------------------------------------------------------
+const DOWNLOADS = {
+  version: "",
+  windows: { url: "", file: "", size: "", sha256: "" },
+  linux: { url: "", file: "", size: "", sha256: "" },
+};
 
 // ---------------------------------------------------------------------------
 // Waitlist. Signups are delivered by Web3Forms (https://web3forms.com) to the
@@ -50,9 +61,9 @@ if (mail) {
 // --- The app replica's "Working on" card: its latest step, as the app polls it ---
 const STEPS = [
   "Reading 214 invoices from the shared folder",
-  "Sorting B2B from B2C supplies by customer GSTIN",
-  "Filling the B2B sheet, one row per invoice",
-  "Grouping B2C sales by place of supply and rate",
+  "Sorting business from retail sales by customer",
+  "Filling the return, one row per invoice",
+  "Grouping retail sales by region and tax rate",
   "Checking totals against the sales register",
 ];
 const actStep = $("#actStep");
@@ -69,6 +80,66 @@ if (actStep && !reduceMotion) {
     actStep.style.opacity = 0;
     setTimeout(() => { actStep.textContent = STEPS[i]; actStep.style.opacity = 1; }, 300);
   }, 3200);
+}
+
+// --- Downloads: the visitor's own system first ------------------------------
+function detectOS() {
+  const ua = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || "";
+  if (/win/i.test(ua)) return "windows";
+  if (/android|iphone|ipad|cros/i.test(navigator.userAgent)) return "";
+  if (/linux|x11/i.test(ua)) return "linux";
+  return "";
+}
+const OS_NAME = { windows: "Windows", linux: "Linux" };
+const myOS = detectOS();
+const anyLive = ["windows", "linux"].some((k) => DOWNLOADS[k].url);
+
+["windows", "linux"].forEach((os) => {
+  const d = DOWNLOADS[os];
+  const btn = document.querySelector(`[data-dl="${os}"]`);
+  const meta = document.querySelector(`[data-dl-meta="${os}"]`);
+  const card = document.querySelector(`.dl[data-os="${os}"]`);
+  if (!btn) return;
+  if (os === myOS && card) {
+    card.classList.add("is-mine");
+    card.querySelector(".dl-badge").hidden = false;
+  }
+  if (d.url) {
+    btn.href = d.url;
+    btn.querySelector("span").textContent = `Download for ${OS_NAME[os]}`;
+    if (meta) meta.textContent = [d.file, d.size, DOWNLOADS.version].filter(Boolean).join(" · ") + (d.sha256 ? `
+SHA-256 ${d.sha256}` : "");
+  } else {
+    btn.classList.add("is-soon");
+  }
+});
+
+const heroDl = document.querySelector("[data-dl-hero]");
+const heroNote = document.querySelector("[data-dl-note]");
+if (heroDl && myOS && DOWNLOADS[myOS].url) {
+  heroDl.href = DOWNLOADS[myOS].url;
+  heroDl.querySelector("span").textContent = `Download for ${OS_NAME[myOS]}`;
+  if (heroNote) heroNote.innerHTML = `Also for ${OS_NAME[myOS === "windows" ? "linux" : "windows"]} · <a href="#download">all downloads</a>`;
+} else if (heroDl && !anyLive) {
+  heroDl.querySelector("span").textContent = "Download";
+  if (heroNote) heroNote.textContent = "Windows and Linux · first public builds coming soon";
+}
+const dlFoot = document.querySelector("[data-dl-foot]");
+if (dlFoot && anyLive) dlFoot.innerHTML = "Free while in early access. Windows may warn about a new app: choose <b>More info → Run anyway</b>.";
+
+// --- The learning loop: the arc walks the five steps ------------------------
+const loopArc = $("#loopArc");
+const loopNodes = [...document.querySelectorAll(".loop-node")];
+if (loopArc && loopNodes.length) {
+  let k = 0;
+  const show = () => {
+    const i = k % loopNodes.length;
+    loopNodes.forEach((n, j) => n.classList.toggle("on", j === i));
+    // The arc is 61 degrees long; its head lands on node i (nodes sit 72 degrees apart from the top).
+    loopArc.style.transform = `rotate(${-151 + 72 * k}deg)`;
+  };
+  show();
+  if (!reduceMotion) setInterval(() => { k += 1; show(); }, 2200);
 }
 
 // --- Reveal on scroll -------------------------------------------------------
@@ -319,7 +390,7 @@ document.querySelectorAll("[data-waitlist]").forEach((form) => {
   const defaultNote = note.textContent;
   const defaultLabel = label.textContent;
 
-  if (alreadyJoined()) markDone(form, "<b>You're on the list.</b> We'll email you when your seat opens.");
+  if (alreadyJoined()) markDone(form, "<b>You're on the list.</b> We'll email you about access and releases.");
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -332,10 +403,12 @@ document.querySelectorAll("[data-waitlist]").forEach((form) => {
       form.email.focus();
       return;
     }
-    if (form.botcheck.checked) return; // a bot filled the hidden field
+    // A bot ticked the hidden honeypot. Read it defensively: a form without the field must still submit.
+    const trap = form.elements.namedItem("botcheck");
+    if (trap && trap.checked) return;
 
     if (!WAITLIST.accessKey) {
-      console.warn("Decurix waitlist: set WAITLIST.accessKey in main.js (see website/README.md).");
+      console.warn("Decurix early access: set WAITLIST.accessKey in main.js (see website/README.md).");
       form.classList.add("is-error");
       note.textContent = "The waitlist opens in a moment. Please try again shortly.";
       return;
@@ -349,10 +422,10 @@ document.querySelectorAll("[data-waitlist]").forEach((form) => {
       // Plain form data, not JSON: a "simple" request needs no CORS preflight.
       const body = new FormData();
       body.append("access_key", WAITLIST.accessKey);
-      body.append("subject", "New Decurix waitlist signup");
+      body.append("subject", "New Decurix early-access signup");
       body.append("from_name", "Decurix website");
       body.append("email", email);
-      body.append("message", `${email} joined the Decurix waitlist.`);
+      body.append("message", `${email} asked for Decurix early access.`);
       body.append("page", location.href);
       const res = await fetch(WAITLIST.endpoint, { method: "POST", headers: { Accept: "application/json" }, body });
       const data = await res.json().catch(() => ({}));
@@ -362,7 +435,7 @@ document.querySelectorAll("[data-waitlist]").forEach((form) => {
         localStorage.setItem(JOINED_KEY, "1");
       } catch {}
       document.querySelectorAll("[data-waitlist]").forEach((f) =>
-        markDone(f, "<b>You're on the list.</b> We'll email you when your seat opens.")
+        markDone(f, "<b>You're on the list.</b> We'll email you about access and releases.")
       );
     } catch (err) {
       console.error("Decurix waitlist:", err);

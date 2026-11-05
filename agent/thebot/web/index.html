@@ -854,7 +854,9 @@
     const action = btn.classList.contains('skill-confirm') ? 'confirm' : 'reject';
     btn.disabled = true;
     try {
-      await fetch(`/api/skills/${encodeURIComponent(slug)}/${action}`, { method: 'POST' });
+      await fetch(`/api/skills/${encodeURIComponent(slug)}/${action}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+      });
     } finally {
       loadSkills();
     }

@@ -189,11 +189,17 @@ func encodeInput(in phonehost.Input) ([][]byte, error) {
 		return [][]byte{b}, nil
 
 	case "key":
+		// The control plane refuses system keys already (phonehost.OrdinaryKey);
+		// the phone refuses them too, whoever sent them.
+		if !phonehost.OrdinaryKey(in.Key) {
+			return nil, fmt.Errorf("key %d is not a typing or navigation key", in.Key)
+		}
 		b := make([]byte, 14)
 		b[0] = msgInjectKeycode
 		b[1] = byte(in.Action)
 		binary.BigEndian.PutUint32(b[2:], uint32(in.Key))
-		binary.BigEndian.PutUint32(b[10:], uint32(in.Meta))
+		// Only the typing modifiers go with a key, whoever sent it (phonehost.OrdinaryMeta).
+		binary.BigEndian.PutUint32(b[10:], uint32(phonehost.OrdinaryMeta(in.Meta)))
 		return [][]byte{b}, nil
 
 	case "text":
@@ -241,6 +247,11 @@ func splitText(s string, max int) []string {
 		cut := max
 		for cut > 0 && !utf8Start(s[cut]) {
 			cut--
+		}
+		if cut == 0 {
+			// No character starts in the first max bytes (bytes that are not
+			// UTF-8): cut at max, or this would never end.
+			cut = max
 		}
 		out = append(out, s[:cut])
 		s = s[cut:]
@@ -313,6 +324,16 @@ func dialForwarded(ctx context.Context, port int, wantDummy bool) (net.Conn, *bu
 	}
 }
 
+// maxVideoPacket is the largest video payload one link message can carry:
+// the control plane's WebSocket reader (internal/wsconn) takes at most 4 MiB
+// in one message, and a frame goes out with a 4-byte session prefix and its
+// header. A larger frame would have closed the whole link; now it ends only
+// its session, saying why (review 2026-11-03, B-37).
+const maxVideoPacket = 4<<20 - 4 - frameHeaderLength
+
+// errFrameTooLarge is a video frame too large for the link.
+var errFrameTooLarge = errors.New("a video frame was too large to send; open the app again at a smaller size")
+
 // readFrame reads one scrcpy video message: a 12-byte header, and for a
 // media packet its payload. It returns both together, as they are sent on.
 func readFrame(r io.Reader) ([]byte, error) {
@@ -327,8 +348,8 @@ func readFrame(r io.Reader) ([]byte, error) {
 	}
 
 	size := binary.BigEndian.Uint32(head[8:])
-	if size > 16<<20 {
-		return nil, fmt.Errorf("a %d-byte video packet is not believable", size)
+	if size > maxVideoPacket {
+		return nil, errFrameTooLarge
 	}
 
 	msg := make([]byte, frameHeaderLength+int(size))

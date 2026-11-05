@@ -7,6 +7,8 @@ from unittest.mock import patch
 from decurix_agent import llm_client, playbooks, usage
 from decurix_agent.computer import experience
 
+import sandbox_standin
+
 
 def job(worked, turns=10, resumed=False, prompt_tokens=0, response_tokens=0):
     """A finished soul job, as its snapshot reports it."""
@@ -44,6 +46,7 @@ class _Store(unittest.TestCase):
                   patch("decurix_agent.progress.emit", lambda line, *a, **k: self.said.append(line))):
             p.start()
             self.addCleanup(p.stop)
+        sandbox_standin.start(self, Path(self.tmp.name) / "scratch")
 
         usage.reset()
         playbooks.begin()
@@ -391,6 +394,38 @@ class AToolIsProvenBeforeItIsKept(_Store):
         self.untouched()
 
 
+class AToolNeverKeepsASecret(AToolIsProvenBeforeItIsKept):
+    """Review 2026-11-03 (round 2): the distilled script was written with no secret check, and the model was shown the
+    raw commands. A script holding a request's secret or a credential is never kept; the commands it is shown are
+    scrubbed."""
+
+    SECRET = "Quill#4471"
+
+    def setUp(self):
+        super().setUp()
+        from decurix_agent.computer import privacy
+        privacy._known_cache.clear()
+        self.addCleanup(privacy._known_cache.clear)
+        privacy.remember_secrets(f"the portal password is {self.SECRET}")
+
+    def test_a_script_holding_a_secret_is_not_kept(self):
+        self.scripts = [GOOD.replace("import sys", f"import sys\nPASSWORD = '{self.SECRET}'", 1)]
+        book = self.made()
+        self.assertFalse(book.get("tool"))
+        self.assertEqual(list(self.tools.glob("*.py")), [])
+
+    def test_the_commands_the_model_is_shown_hold_no_secret(self):
+        book = {"name": "x-tool", "request": "Total the figures", "commands": [f"echo {self.SECRET} > pin.txt",
+                                                                               "python3 total.py"]}
+        self.scripts = [GOOD]
+        with patch.object(playbooks, "_prove", lambda tool: ""), \
+                patch.object(playbooks, "_stated", lambda *a: ""):
+            playbooks._distil(book)
+        shown = "\n".join(m["content"] for m in self.asked[0])
+        self.assertNotIn(self.SECRET, shown)
+        self.assertIn("python3 total.py", shown)
+
+
 class ATaughtSkillsOwnPlaybook(_Store):
     def test_it_is_found_by_the_skill_not_by_the_words(self):
         usage.reset()
@@ -420,8 +455,8 @@ class EveryModelCallIsCounted(unittest.TestCase):
                         b'"usage":{"prompt_tokens":1200,"completion_tokens":30}}')
 
         with patch.object(llm_client.urllib.request, "urlopen", lambda *a, **k: Answer()):
-            llm_client.chat([{"role": "user", "content": "one"}])
-            llm_client.ask_once("system", "two")
+            llm_client.chat([{"role": "user", "content": "one"}], purpose="py.playbook")
+            llm_client.ask_once("system", "two", purpose="py.playbook")
 
         self.assertEqual(usage.snapshot(), {"input_tokens": 2400, "output_tokens": 60})
         usage.reset()

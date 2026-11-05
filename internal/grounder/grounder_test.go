@@ -139,7 +139,8 @@ func TestAShrunkPictureGivesScreenPixels(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := &Client{API: "ollama", URL: srv.URL, Model: "m", Coords: CoordsPixels, MaxSide: 640, Timeout: 5e9}
+	// A generous budget: the shrink and the local round trip are quick, but a loaded 8 GB host once took over 10 s (W-21).
+	c := &Client{API: "ollama", URL: srv.URL, Model: "m", Coords: CoordsPixels, MaxSide: 640, Timeout: 60e9}
 	p, err := c.Locate(context.Background(), buf.Bytes(), 1280, 720, "x")
 	if err != nil {
 		t.Fatal(err)

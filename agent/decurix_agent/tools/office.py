@@ -28,21 +28,6 @@ from email import policy
 from email.parser import BytesParser
 from pathlib import Path
 
-# Libraries the desktop image keeps in a venv of its own (python-pptx: Ubuntu has no package for it). The image's
-# ENV PATH names the venv, but the agent and soul are started by the desktop session, whose PATH is its own: found
-# live (2026-10-14), every deck failed with "No module named 'pptx'" in a desktop that had it. The venv's packages
-# are added after the system's, so a package both have is still the system's.
-OFFICE_VENV = os.environ.get("DECURIX_OFFICE_VENV", "/opt/office-venv")
-
-
-def _use_office_venv(root=OFFICE_VENV):
-    import glob
-    for site in sorted(glob.glob(os.path.join(root, "lib", "python3*", "site-packages"))):
-        if site not in sys.path:
-            sys.path.append(site)
-
-
-_use_office_venv()
 
 # How much of one document is handed to the model as text.
 MAX_TEXT_CHARS = int(os.environ.get("DECURIX_DOC_TEXT_CHARS", "30000"))
@@ -337,8 +322,45 @@ def _read_pdf(p, pages, as_images):
     return {"text": header + body, "images": images}
 
 
+# A PDF's pages drawn as pictures go into a temporary folder of this prefix. Each is let go when its pictures are
+# used up (drop_pages), and a folder older than PAGES_KEEP_SECONDS is swept when the next one is made: an engine
+# reads a "[page image: ...]" after the `office read` that drew it has ended, so that one cannot go at once (resource
+# plan B5: they were never deleted).
+PAGES_PREFIX = "decurix-pages-"
+PAGES_KEEP_SECONDS = 3600
+
+
+def sweep_page_folders(now=None, root=None):
+    """Delete the page-picture folders older than PAGES_KEEP_SECONDS. Returns how many went. Never raises."""
+
+    import time
+    now = time.time() if now is None else now
+    gone = 0
+    try:
+        folders = list(Path(root or tempfile.gettempdir()).glob(PAGES_PREFIX + "*"))
+    except OSError:
+        return 0
+    for folder in folders:
+        try:
+            if folder.is_dir() and now - folder.stat().st_mtime > PAGES_KEEP_SECONDS:
+                shutil.rmtree(folder, ignore_errors=True)
+                gone += 1
+        except OSError:
+            continue
+    return gone
+
+
+def drop_pages(images):
+    """Let go of the page pictures a caller has used up: each one's folder, when it is a page-picture folder."""
+
+    for folder in {Path(str(i)).parent for i in images or ()}:
+        if folder.name.startswith(PAGES_PREFIX):
+            shutil.rmtree(folder, ignore_errors=True)
+
+
 def _pdf_pages_as_png(p, first, last):
-    out_dir = Path(tempfile.mkdtemp(prefix="decurix-pages-"))
+    sweep_page_folders()
+    out_dir = Path(tempfile.mkdtemp(prefix=PAGES_PREFIX))
     subprocess.run(
         ["pdftoppm", "-r", "110", "-png", "-f", str(first), "-l", str(last), str(p), str(out_dir / "page")],
         capture_output=True, timeout=180, check=False,
@@ -1433,13 +1455,19 @@ def create_workbook(path, sheets):
 
     for spec in sheets:
         ws = wb.create_sheet(str(spec.get("name") or f"Sheet{len(wb.sheetnames) + 1}")[:31])
-        for row in spec.get("rows") or []:
+        rows = spec.get("rows") or []
+        # Text or number is decided by the value alone (_cell_value); a long whole number shows whole (format "0").
+        for row in rows:
             ws.append([_cell_value(v) for v in row])
         for ref, v in (spec.get("cells") or {}).items():
             cell = _cell_address(ref)
             if isinstance(v, dict):
                 v = _given_value(v, f"cell {cell} has no value: give a value, \"=FORMULA\" or {{\"formula\": ...}}")
             ws[cell] = _cell_value(v)
+        for line in ws.iter_rows():
+            for c in line:
+                if _shown_whole(c.value) and c.number_format == "General":
+                    c.number_format = "0"
 
         if spec.get("header", True) and ws.max_row >= 1:
             for c in ws[1]:
@@ -1477,7 +1505,7 @@ def create_workbook(path, sheets):
 
 
 # A float as a program prints its rounding error: a run of 0s or 9s, then a digit or two, at the end of its digits
-# ("7640.220000000001", "40123.60000000001", "1.9999999999999998"). Found live (round 5 P2 on pc3, 2026-10-21, series
+# ("7640.220000000001", "40123.60000000001", "1.9999999999999998"). Found live (round 5 P2, 2026-10-21, series
 # 12): such figures went into a workbook through office, and the stage was refused twice for them.
 _FLOAT_ARTIFACT = re.compile(r"(?<![\d.])(-?\d+\.\d*?)(0{6,}|9{6,})\d{1,2}(?![\d.])")
 
@@ -1551,15 +1579,83 @@ def _given_value(spec, missing):
     raise OfficeError(missing)
 
 
+# Whether a value in digits is written as a number or as text is decided by what a number would lose, never by the
+# words of its label. Found in review (2026-11-03, F-08): label vocabularies (account, ref, no, code ...) wrote an
+# amount beside "Amount credited to account" as text, so SUM left it out; and each round added words. A spreadsheet
+# keeps 15 significant digits: a whole number of more is text (a 16-digit account or card number would be changed).
+# A leading zero or a leading "+" is lost by a number, so such digits are text. Everything else is a number.
+_EXACT_DIGITS = 15
+# From this many digits a whole number shows as 1.23457E+11 in a General cell: it is given the number format "0"
+# (built-in format 1), so it shows whole and still adds up.
+_SHOWN_WHOLE_DIGITS = 12
+# The built-in number format "0".
+_WHOLE_FORMAT_ID = 1
+
+
+class _Text(str):
+    """A value to write as text whatever it looks like: digits a number would change (_cell_value)."""
+
+
 def _cell_value(v):
+    """A value as written into a cell: a text that is a plain number becomes the number, unless a number would lose
+    something of it - a leading zero, a leading "+", or more digits than a spreadsheet keeps - when it stays text. A
+    whole number given as a number with more digits than a spreadsheet keeps is text too."""
+
+    if isinstance(v, _Text):
+        return clean_text(str(v))
     if isinstance(v, float):
         return clean_number(v)
+    if isinstance(v, int) and not isinstance(v, bool) and len(str(abs(v))) > _EXACT_DIGITS:
+        return _Text(str(v))
     if isinstance(v, str):
         s = v.strip()
-        if re.fullmatch(r"-?\d+(\.\d+)?", s) and not (len(s) > 1 and s.startswith("0") and "." not in s):
+        m = re.fullmatch(r"-?(\d+)(\.\d+)?", s)
+        if m and not (len(m.group(1)) > 1 and m.group(1).startswith("0")) \
+                and len(m.group(1) + (m.group(2) or "")) <= _EXACT_DIGITS:
             return clean_number(float(s)) if "." in s else int(s)
         return clean_text(v)
     return v
+
+
+def _shown_whole(value):
+    """Whether a value written as a number needs the format "0" to show whole (a long whole number)."""
+
+    return isinstance(value, int) and not isinstance(value, bool) and len(str(abs(value))) >= _SHOWN_WHOLE_DIGITS
+
+
+def _whole_style(entries, base):
+    """The index of a cell format like `base` (an index, or None for the default) that shows numbers as "0": `base`
+    itself when its number format is not General, else one added to xl/styles.xml (reused when already there). None
+    when the workbook's styles cannot be read - the number is then written as it is."""
+
+    styles = entries.get("xl/styles.xml")
+    if styles is None:
+        return None
+    xml = styles.decode("utf-8")
+    m = re.search(r"<cellXfs\b[^>]*>(.*?)</cellXfs>", xml, re.S)
+    if not m:
+        return None
+    xfs = re.findall(r"<xf\b[^>]*?(?:/>|>.*?</xf>)", m.group(1), re.S)
+    index = int(base or 0)
+    if index >= len(xfs):
+        return None
+    xf = xfs[index]
+    fmt = re.search(r'\bnumFmtId="(\d+)"', xf)
+    if fmt and fmt.group(1) != "0":
+        return str(index)
+    if fmt:
+        wanted = xf.replace(fmt.group(0), f'numFmtId="{_WHOLE_FORMAT_ID}"', 1)
+    else:
+        wanted = xf.replace("<xf", f'<xf numFmtId="{_WHOLE_FORMAT_ID}"', 1)
+    if "applyNumberFormat=" not in wanted:
+        wanted = wanted.replace("<xf", '<xf applyNumberFormat="1"', 1)
+    if wanted in xfs:
+        return str(xfs.index(wanted))
+    body = m.group(1) + wanted
+    head = re.sub(r'\bcount="\d+"', f'count="{len(xfs) + 1}"', xml[m.start():m.start(1)], count=1)
+    xml = xml[:m.start()] + head + body + "</cellXfs>" + xml[m.end():]
+    entries["xl/styles.xml"] = xml.encode("utf-8")
+    return str(len(xfs))
 
 
 # ------------------------------------------------------------------
@@ -1651,6 +1747,43 @@ def _short_value(v):
     return repr(t[:30] + ("..." if len(t) > 30 else "")) if isinstance(v, str) else t[:30]
 
 
+def _whole_ref(old):
+    """A pattern that finds the reference `old` only as a whole reference: not inside a longer one ("Data!$B$2:$B$13"
+    in "Data!$B$2:$B$130"), nor as the end of another sheet's name. Found in review (2026-11-03, F-07): a substring
+    rewrite turned the longer range into $B$140 and counted it as a swap."""
+
+    return re.compile(r"(?<![\w$:.])" + re.escape(old) + r"(?![\w$:(!])")
+
+
+def _drop_saved_results(p):
+    """Remove the saved result of every formula cell of a workbook (its <v>, and the type that went with it), so no
+    reader takes an old result for the value. Returns whether the file was rewritten."""
+
+    entries, order = _zip_parts(p)
+    touched = False
+    for name in _sheet_files(entries).values():
+        if name not in entries:
+            continue
+        text = entries[name].decode("utf-8")
+
+        def drop(m):
+            attrs, inner = m.group(1), m.group(2)
+            if inner is None or not re.search(r"<f\b", inner) or re.search(r'<f\b[^>]*\bt="dataTable"', inner):
+                return m.group(0)
+            bare = re.sub(r"<v\s*/>|<v>.*?</v>", "", inner, flags=re.S)
+            if bare == inner:
+                return m.group(0)
+            return "<c" + re.sub(r'\st="[^"]*"', "", attrs) + ">" + bare + "</c>"
+
+        new = _CELL_XML.sub(drop, text)
+        if new != text:
+            entries[name] = new.encode("utf-8")
+            touched = True
+    if touched:
+        _write_zip(p, order, entries)
+    return touched
+
+
 def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_sheets=None, insert_rows=None,
                     copy_rows=None, clear_text=False):
     """
@@ -1707,6 +1840,46 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
                       + (("; typed figures left empty to fill: " + ", ".join(cleared[:12])
                           + (" ..." if len(cleared) > 12 else "")) if cleared else ""))
 
+    # The guards below read each cell as the edits will find it. After rows were put in, that is not the file as saved:
+    # found in review (2026-11-02), an edit emptying the TOTAL label that insert_rows had moved down read the saved
+    # file's (empty) cell at that address, and the label went without a word. So they read the workbook as it is now.
+    probe = src
+    if inserted and edits:
+        handle, name = tempfile.mkstemp(suffix=src.suffix or ".xlsx", prefix="office-probe-")
+        os.close(handle)
+        probe = Path(name)
+        _write_zip(probe, order, entries)
+    try:
+        by_sheet, labels, replaced = _guard_edits(probe, edits, sheet_files, copy_rows, clear_text)
+    finally:
+        if probe != src:
+            _HELD.clear()
+            try:
+                probe.unlink()
+            except OSError:
+                pass
+
+    for sheet, cell_edits in by_sheet.items():
+        name = sheet_files[sheet]
+        xml = entries[name].decode("utf-8")
+        for cell, value in cell_edits:
+            if not (isinstance(value, str) and value.startswith("=")):
+                value = _cell_value(value)
+            style = None
+            if _shown_whole(value):
+                style = _whole_style(entries, _style_of(xml, cell))
+            xml = _set_cell(xml, cell, value, style)
+            changed.append(f"{sheet}!{cell}")
+        entries[name] = _fix_dimension(xml).encode("utf-8")
+
+    return _finish_update(src, dst, entries, order, replace_refs, added, inserted, copied, changed, replaced)
+
+
+def _guard_edits(src, edits, sheet_files, copy_rows, clear_text):
+    """The edits by sheet [(cell, value)], after the guards that read `src` - the workbook as the edits will find it:
+    a date cell takes a date, text is not emptied unless clear_text, a filled cell written over is said. Returns
+    (by_sheet, labels, replaced); raises OfficeError when an edit is refused."""
+
     by_sheet = {}
     labels, replaced = [], []
     for e in edits or []:
@@ -1746,14 +1919,12 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
                           "would empty them: " + ", ".join(labels[:10]) + (" ..." if len(labels) > 10 else "")
                           + ". A block made like the earlier ones keeps their labels; empty only the figures. To clear "
                           "text on purpose, put \"clear_text\": true in the update.")
+    return by_sheet, labels, replaced
 
-    for sheet, cell_edits in by_sheet.items():
-        name = sheet_files[sheet]
-        xml = entries[name].decode("utf-8")
-        for cell, value in cell_edits:
-            xml = _set_cell(xml, cell, value)
-            changed.append(f"{sheet}!{cell}")
-        entries[name] = _fix_dimension(xml).encode("utf-8")
+
+def _finish_update(src, dst, entries, order, replace_refs, added, inserted, copied, changed, replaced):
+    """The rest of update_workbook once the cells are set: ranges rewritten, recalculation on open, the file written
+    and its results stored. Returns the update's sentence."""
 
     swaps = 0
     for r in replace_refs or []:
@@ -1764,20 +1935,18 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
         # depending on who saved the file; both mean the same range. Live, a
         # model wrote the bare form, the file had the quoted one, and nothing
         # matched. Try the other spelling when the given one is not there.
-        if not any(old in entries[n].decode("utf-8", "ignore") for n in entries
+        if not any(_whole_ref(old).search(entries[n].decode("utf-8", "ignore")) for n in entries
                    if re.match(r"xl/(charts/chart\d+|workbook|pivotCache/pivotCacheDefinition\d+)\.xml$", n)):
             old, new = _other_sheet_quoting(old), _other_sheet_quoting(new)
         for name in list(entries):
             if re.match(r"xl/(charts/chart\d+|tables/table\d+|workbook|pivotCache/pivotCacheDefinition\d+)\.xml$", name):
                 text = entries[name].decode("utf-8")
-                hits = text.count(old)
+                text2, hits = _whole_ref(old).subn(lambda m: new, text)
                 if not hits and name.startswith("xl/tables/"):
                     old_local, new_local = old.split("!")[-1].replace("$", ""), new.split("!")[-1].replace("$", "")
                     text2 = text.replace(f'ref="{old_local}"', f'ref="{new_local}"')
                     hits = int(text2 != text)
-                    text = text2
-                else:
-                    text = text.replace(old, new)
+                text = text2
                 if hits:
                     swaps += hits
                     entries[name] = text.encode("utf-8")
@@ -1806,6 +1975,11 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
     dst.parent.mkdir(parents=True, exist_ok=True)
     _write_zip(dst, order, entries)
     stored = _store_results(dst)
+    # The old results of formulas that depend on what changed are wrong now. Found in review (2026-11-03, F-06):
+    # when LibreOffice could not recalculate, they stayed in the file, and `office read` and the final checks showed
+    # the stale total as the value. Dropped, every formula holds no saved result: read_workbook says so and the
+    # checks know they cannot decide.
+    dropped = not stored and bool(changed or inserted or copied) and _drop_saved_results(dst)
 
     msg = (f"Updated {dst}: " + (f"added sheet(s) {', '.join(added)}; " if added else "")
            + "".join(f"{words}; " for words in inserted) + "".join(f"{words}; " for words in copied)
@@ -1820,7 +1994,13 @@ def update_workbook(path, edits=None, replace_refs=None, output_path=None, add_s
         msg += f"; {swaps} range reference(s) rewritten"
         if not swaps:
             msg += " - none matched: read the workbook to see the exact ranges its charts use"
-    msg += (". Formula results are recalculated and saved in it." if stored else ". Formulas recalculate when the file is opened.")
+    if stored:
+        msg += ". Formula results are recalculated and saved in it."
+    elif dropped:
+        msg += (". Formula results could not be recalculated here, so the old ones were removed: every formula holds "
+                "no saved result until the file is opened in a spreadsheet program - read its totals there, not here")
+    else:
+        msg += ". Formulas recalculate when the file is opened."
     return msg + _layout_note(dst, changed)
 
 
@@ -2390,6 +2570,8 @@ def _new_cell(ref, value, style):
         value = clean_number(value)
         return f'<c r="{ref}"{s}><v>{repr(float(value)) if isinstance(value, float) else value}</v></c>'
     text = clean_text(str(value))
+    if isinstance(value, _Text):
+        return f'<c r="{ref}"{s} t="inlineStr"><is><t xml:space="preserve">{_escape(text)}</t></is></c>'
     if text.startswith("="):
         return f'<c r="{ref}"{s}><f>{_escape(text[1:])}</f></c>'
     num = _cell_value(text)
@@ -2443,6 +2625,19 @@ def _set_cell(xml, ref, value, style=None):
         row_xml = row_xml[:pos] + new + row_xml[pos:]
 
     return xml[:m.start()] + row_xml + xml[m.end():]
+
+
+def _style_of(xml, ref):
+    """The format index a cell written at `ref` takes: its own, else the cell's above it (as _set_cell gives it)."""
+
+    col, row = _split(ref)
+    m = re.search(_ROW_RE.format(n=row), xml, re.S)
+    if m:
+        c = re.search(_CELL_RE.format(ref=ref), m.group(0), re.S)
+        if c:
+            own = re.search(r'\bs="(\d+)"', c.group(0))
+            return own.group(1) if own else None
+    return _style_above(xml, col, row)
 
 
 def _style_above(xml, col, row):
@@ -3740,11 +3935,17 @@ def _replace_in_paragraph(paragraph, replace, counts):
     if not any(key in whole for key in replace):
         return
     for key, value in replace.items():
+        if not key:
+            continue
+        # Left to right, never into what was just put in: a value that holds its key ("Q3" -> "Q3 FY26") is
+        # replaced once, not again and again until memory runs out.
+        at_from = 0
         while True:
             whole = "".join(t.text or "" for t in texts)
-            i = whole.find(key)
+            i = whole.find(key, at_from)
             if i < 0:
                 break
+            at_from = i + len(str(value))
             end = i + len(key)
             # Where each w:t starts in the paragraph's text.
             starts, at = [], 0
@@ -3825,6 +4026,7 @@ def update_document(path, replace, output_path=None):
             for paragraph in root.iter(_W + "p"):
                 _replace_in_paragraph(paragraph, replace, counts)
             parts[info.filename] = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+    held = docx_placeholders(p)  # what the source holds before it is filled (the final check's provenance)
     if out == p:
         _keep_original(p, ".docx")
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -3833,6 +4035,8 @@ def update_document(path, replace, output_path=None):
         for info, data in items:
             z.writestr(info, parts.get(info.filename, data))
     tmp.replace(out)
+    from decurix_agent import produced
+    produced.note_filled(out, p, held)
     left = docx_placeholders(out)
     lines = [f"Wrote {out}."]
     lines.append("Replaced: " + (", ".join(f"{k} x{n}" for k, n in counts.items()) or "nothing"))
@@ -4113,6 +4317,7 @@ def _main(argv=None):
                 for n, img in enumerate(r["images"], 1):
                     print(f"\n--- picture {n} of {len(r['images'])}, read by OCR (check figures against the context: OCR misreads) ---")
                     print(_ocr_file(img) or "(OCR read no text here)")
+                drop_pages(r["images"])  # (read here: nothing is left to look at them)
             else:
                 for img in r["images"]:
                     print(f"[page image: {img}]")

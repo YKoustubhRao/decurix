@@ -23,34 +23,48 @@ const (
 	webResults      = 6
 	webPagesRead    = 3
 	webPassageChars = 2500
-	webMinText      = 400 // a page with less text than this probably needs JavaScript
 )
 
-// wantsWeb decides whether a request reads the web, and why.
-func (e *Engine) wantsWeb(req Request) (bool, string) {
-	if e.web == nil || e.cfg.Web == config.WebOff {
+// wantsWeb decides whether a request reads the web. The second value says
+// why it does, or why a lookup the client asked for did not happen.
+//
+// Nothing here reads the conversation: whether data leaves the machine is
+// decided by what the client sent ("web" and "web_query") and the operator's
+// setting, never by guessing from the words of a message.
+func (e *Engine) wantsWeb(req Request, mode string) (bool, string) {
+	if req.Web != nil && !*req.Web {
 		return false, ""
 	}
-	if req.Web != nil {
-		if *req.Web {
-			return true, "the client asked for the web"
+	asked := req.Web != nil && *req.Web
+	query := strings.TrimSpace(req.WebQuery)
+	if e.web == nil || e.cfg.Web == config.WebOff {
+		if asked || query != "" {
+			return false, "the web is off in this Brainiac's settings, so nothing was looked up"
 		}
 		return false, ""
 	}
-	if e.cfg.Web != config.WebAuto {
+	// auto lets a web_query alone ask for a lookup, except for a local
+	// answer, where only an explicit "web": true does (Validate refuses auto
+	// in local mode).
+	auto := e.cfg.Web == config.WebAuto && e.cfg.Mode != config.ModeLocal && mode != config.ModeLocal
+	if !asked && !(auto && query != "") {
 		return false, ""
 	}
-	if ok, why := web.NeedsFresh(lastUserText(req.Messages), time.Now()); ok {
-		return true, "it " + why
+	if query == "" {
+		return false, "the client asked for the web but sent no web_query; Brainiac never searches with the conversation's own words, so nothing was looked up"
 	}
-	return false, ""
+	if asked {
+		return true, "the client asked for the web with its own query"
+	}
+	return true, "the client sent a web_query"
 }
 
-// webEvidence searches for the request, reads the best pages and returns
-// them as evidence blocks web-1..N.
+// webEvidence searches with the client's query, reads the best pages and
+// returns them as evidence blocks web-1..N.
 func (e *Engine) webEvidence(ctx context.Context, req Request, rec *trace.Record) []string {
-	query, scrubbed := web.QueryFrom(lastUserText(req.Messages))
+	query, scrubbed := web.QueryFrom(req.WebQuery)
 	if query == "" {
+		rec.Notes = append(rec.Notes, "the web_query held nothing that may leave this machine, so nothing was looked up")
 		return nil
 	}
 	if scrubbed {
@@ -112,18 +126,18 @@ func (e *Engine) webEvidence(ctx context.Context, req Request, rec *trace.Record
 				pub = fmt.Sprintf(" published=%q", p.Published)
 			}
 			out = append(out, fmt.Sprintf("<evidence id=%q kind=\"web\" url=%q title=%q retrieved=%q%s>\n%s\n</evidence>",
-				id, p.URL, title, retrieved, pub, web.Passages(p.Text, query, webPassageChars)))
+				id, inert(p.URL), inert(title), retrieved, inert(pub), inert(web.Passages(p.Text, query, webPassageChars))))
 			continue
 		}
 		// Not read: its search snippet is still a lead.
 		out = append(out, fmt.Sprintf("<evidence id=%q kind=\"web\" url=%q title=%q retrieved=%q snippet-only=\"true\">\n%s\n</evidence>",
-			id, r.URL, r.Title, retrieved, r.Snippet))
+			id, inert(r.URL), inert(r.Title), retrieved, inert(r.Snippet)))
 	}
 	return out
 }
 
-// readPage fetches one result, through the cache, with the headless browser
-// when the plain page has almost no text.
+// readPage fetches one result, through the cache. It never runs the headless
+// browser: that runs only when a client asks for one page by name.
 func (e *Engine) readPage(ctx context.Context, link, hour string) (*web.Page, trace.Atom) {
 	t0 := time.Now()
 	host := link
@@ -138,12 +152,6 @@ func (e *Engine) readPage(ctx context.Context, link, hour string) (*web.Page, tr
 		return &p, a
 	}
 	p, err := e.web.Fetch(ctx, link)
-	if (err != nil || len(p.Text) < webMinText) && e.cfg.Render() && web.FindBrowser() != "" {
-		if rp, rerr := e.web.Render(ctx, link); rerr == nil && len(rp.Text) > len(p.Text) {
-			p, err = rp, nil
-			a.Runtime = "headless-browser"
-		}
-	}
 	a.Ms = time.Since(t0).Milliseconds()
 	if err != nil {
 		a.Error = err.Error()

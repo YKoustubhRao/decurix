@@ -30,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import brain  # noqa: E402
+from agent_token import PY_AGENT, docker_env as token_env  # noqa: E402
 
 REPO = str(Path(__file__).resolve().parents[2])
 NAME = "decurix-e2e-rec"
@@ -137,16 +138,16 @@ def imported():
     print("\n== a recording made in Chrome's DevTools Recorder, imported and replayed here")
     bash("cat > ~/work/form.html <<'EOF'\n" + FORM + "EOF")
     body = json.dumps({"data": EXPORT})
-    r = bash(f"python3 - <<'EOF'\nimport json,urllib.request as u\n"
+    r = bash(f"python3 - <<'EOF'\n{PY_AGENT}"
              f"d={body!r}\n"
-             f"print(u.urlopen(u.Request('http://localhost:8081/recordings/import',data=d.encode(),method='POST'),timeout=20).read().decode())\nEOF")
+             f"print(agent('/recordings/import', d))\nEOF")
     result = json.loads(r.stdout)
     print("  imported:", {k: result[k] for k in ("session", "imported", "ignored")}, "skipped:", [(x["type"], x["why"][:40]) for x in result["skipped"]])
     session = result["session"]
     check("it became a recording", result["imported"] == 6, str(result))
     check("hover and scroll were left out, with a reason each", {x["type"] for x in result["skipped"]} == {"hover", "scroll"})
 
-    show = json.loads(bash(f"python3 -c \"import json,urllib.request as u;print(u.urlopen('http://localhost:8081/recordings/{session}').read().decode())\"").stdout)
+    show = json.loads(sh("python3", "-c", PY_AGENT + f"print(agent('/recordings/{session}'))").stdout)
     program = show["program"]
     typed = [st for st in program["steps"] if st["kind"] == "type"]
     check("it is graded", show["lint"]["grade"] in ("ready", "rehearse"), show["lint"]["summary"])
@@ -176,6 +177,7 @@ def main():
         "--security-opt", f"seccomp={REPO}/internal/desktop/seccomp-desktop.json", "--ulimit", "core=0",
         "-e", "VNC_PW=admin", "-e", "VNC_RESOLUTION=1280x720", "-e", "DESKTOP_ID=e2e", "-e", "DESKTOP_NAME=e2e",
         "-e", f"CONTROL_PLANE_URL={callback}",
+        *token_env(),
         *brain.docker_env(chosen, callback),
         "-e", "DECURIX_REPLAY_FIND_SECONDS=5", "-e", "DECURIX_REPLAY_EXPECT_SECONDS=3",
         "-v", f"{REPO}/agent/decurix_agent:/opt/decurix_agent:ro", IMAGE,
@@ -194,7 +196,7 @@ def main():
 def run():
     print("waiting for the desktop's agent...")
     for _ in range(80):
-        if sh("python3", "-c", "import urllib.request as u;u.urlopen('http://localhost:8081/recordings',timeout=3)", check=False).returncode == 0:
+        if sh("python3", "-c", PY_AGENT + "agent('/recordings', timeout=3)", check=False).returncode == 0:
             break
         time.sleep(3)
     else:

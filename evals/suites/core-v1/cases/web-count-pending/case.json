@@ -1,0 +1,35 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "web-count-pending",
+  "category": "ordinary",
+  "kind": "read_answer",
+  "request": "How many support tickets in the Records app (http://records.example.test/tickets) are pending? Reply with the number.",
+  "start": {
+    "files": [],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "final_text_number",
+        "number": "5"
+      },
+      {
+        "kind": "absent",
+        "collection": "tickets"
+      }
+    ]
+  },
+  "oracle": [
+    "test \"$(curl $MOCK_ROUTE -fsS http://records.example.test/tickets | grep -o '<td>Pending</td>' | wc -l)\" = 5",
+    {
+      "answer": "5"
+    }
+  ],
+  "tags": [
+    "read"
+  ]
+}

@@ -52,7 +52,7 @@ type fakeSubmitter struct {
 	busy  *fakeWorkers // marks a worker busy once sent to, like the real desktop
 }
 
-func (f *fakeSubmitter) Submit(_ context.Context, worker, request, dir string, files []File) (string, error) {
+func (f *fakeSubmitter) Submit(_ context.Context, worker, request, dir string, files []File, _ tasks.Origin) (string, error) {
 	if err := f.fail[worker]; err != nil {
 		return "", err
 	}
@@ -607,7 +607,7 @@ func TestTaskSpendReadsTaskRecords(t *testing.T) {
 	}
 	w := tasks.Worker{ID: "w1", Name: "w1"}
 	for _, cost := range []float64{0.5, 1.25} {
-		route, err := ts.Commit(tasks.NewRoute(), w, "x")
+		route, err := ts.Commit(tasks.NewRoute(), w, "x", tasks.Origin{Kind: tasks.OriginQueue})
 		if err != nil {
 			t.Fatal(err)
 		}

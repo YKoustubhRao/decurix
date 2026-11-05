@@ -81,7 +81,9 @@ class TestRead(_Reading):
                 read = request_reading.read("open linkedin and message akshit gupta")
                 self.assertNotIn(message, read["values"])
 
-    def test_a_value_the_person_gave_in_an_earlier_task_may_be_used(self):
+    def test_a_value_only_an_earlier_task_holds_is_shown_to_the_model_but_asked(self):
+        # Review 2026-11-03 (E-28): the lessons are the whole worker's - another client's included - so a value only
+        # they hold is not grounded for this request; the person is asked.
         session = self.record(TICKET, LINKEDIN)
         site, who, message = self.names(session)
         self.says = {"task": session, "confidence": 0.9, "values": {site: "linkedin", who: "akshit gupta", message: "On my way"}}
@@ -89,8 +91,17 @@ class TestRead(_Reading):
         with patch.object(request_reading.lessons, "known", lambda: '- When no message is given, send "On my way".'):
             read = request_reading.read("open linkedin and message akshit gupta")
 
-        self.assertEqual(read["values"][message], "On my way")
+        self.assertNotIn(message, read["values"])
+        self.assertIn(message, read["dropped"])
         self.assertIn("The person has said before:", self.shown[0])
+
+    def test_a_value_is_in_the_request_only_as_whole_words(self):
+        session = self.record(TICKET, LINKEDIN)
+        site, who, message = self.names(session)
+        self.says = {"task": session, "confidence": 0.9, "values": {site: "linkedin", who: "ram", message: "500"}}
+        read = request_reading.read("open linkedin and send ramesh a note about the 5000 due")
+        self.assertNotIn(who, read["values"])
+        self.assertNotIn(message, read["values"])
 
     def test_a_value_typed_in_another_form_may_be_adapted(self):
         session = self.record("set the due date to 5 March", [_event("type", text="05/03/2026")])

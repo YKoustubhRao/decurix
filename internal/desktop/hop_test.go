@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
 // fakeDocker records the housekeeping docker commands a hop runs and answers them.
@@ -146,8 +148,19 @@ func TestEndingASessionByCallingCancelRemovesTheHop(t *testing.T) {
 	}
 }
 
-func TestTheStartSweepRemovesOnlyHops(t *testing.T) {
-	docker := &fakeDocker{ps: "decurix-hop-bridge-1a2b3c4d5e\ndecurix-hop-exec-ffeeddccbb\nmy-own-container\n\ndesktop_pc\n"}
+func TestTheStartSweepRemovesOnlyThisInstancesHops(t *testing.T) {
+	hopInstance = func() string { return "0a1b2c3d4e5f" }
+	t.Cleanup(func() { hopInstance = sqlitedb.InstanceID })
+	startedHops.add("decurix-hop-bridge-started0000")
+	docker := &fakeDocker{ps: strings.Join([]string{
+		"decurix-hop-bridge-1a2b3c4d5e\t0a1b2c3d4e5f",  // ours, left by an earlier run
+		"decurix-hop-exec-ffeeddccbb\t0a1b2c3d4e5f",    // ours
+		"decurix-hop-bridge-9999999999\tf5e4d3c2b1a0",  // another instance's: left to it (RW1-C-02)
+		"decurix-hop-bridge-8888888888\t",              // an older build's, untagged: left, logged
+		"decurix-hop-bridge-started0000\t0a1b2c3d4e5f", // started by this run: kept
+		"my-own-container\t0a1b2c3d4e5f",
+		"",
+	}, "\n")}
 	docker.install(t)
 	if n := SweepHops(context.Background(), "/usr/bin/docker"); n != 2 {
 		t.Fatalf("swept %d", n)
@@ -156,11 +169,9 @@ func TestTheStartSweepRemovesOnlyHops(t *testing.T) {
 	if len(removed) != 1 || strings.Join(removed[0], " ") != "decurix-hop-bridge-1a2b3c4d5e decurix-hop-exec-ffeeddccbb" {
 		t.Fatalf("removed = %v", removed)
 	}
-	ps := docker.calls[0]
-	if strings.Join(ps[1:], " ") != "ps -a --filter label=decurix.hop=1 --format {{.Names}}" {
-		t.Errorf("listed with %v", ps)
+	if args := strings.Join(docker.calls[0][1:], " "); !strings.Contains(args, "label=decurix.hop=1") || !strings.Contains(args, hopInstanceLabel) {
+		t.Errorf("listed with %v", args)
 	}
-	// Nothing to sweep: nothing removed.
 	quiet := &fakeDocker{ps: "\n"}
 	quiet.install(t)
 	if SweepHops(context.Background(), "/usr/bin/docker") != 0 || len(quiet.removed()) != 0 {
@@ -171,22 +182,28 @@ func TestTheStartSweepRemovesOnlyHops(t *testing.T) {
 	}
 }
 
-func TestTheStartSweepRemovesUnnamedHopsFromBeforeAndNothingElse(t *testing.T) {
+// Unnamed hops from before hops were named are reported, never removed: nothing says whose they are.
+func TestUnnamedHopsAreReportedNotRemoved(t *testing.T) {
 	docker := &fakeDocker{ps: strings.Join([]string{
 		"aaa\t\"nsenter -t 1 -m -u -n -i bash -c 'PATH=... powershell.exe -File bridge.ps1'\"\t",
-		"bbb\t\"nsenter -t 1 -m -u -n -i bash -c 'echo named'\"\t1", // a named hop: the other sweep's
-		"ccc\t\"sh -c 'cp -a /opt/tools/. /target/'\"\t",            // the tools volume's own init
-		"ddd\t\"nsenter -t 2 -m bash\"\t",                           // not the hop's command
+		"bbb\t\"nsenter -t 1 -m -u -n -i bash -c 'echo named'\"\t1",
+		"ccc\t\"sh -c 'cp -a /opt/tools/. /target/'\"\t",
 		"",
 	}, "\n")}
 	docker.install(t)
 	if n := SweepUnnamedHops(context.Background(), "/usr/bin/docker"); n != 1 {
-		t.Fatalf("swept %d", n)
+		t.Fatalf("found %d", n)
 	}
-	if removed := docker.removed(); len(removed) != 1 || strings.Join(removed[0], " ") != "aaa" {
+	if removed := docker.removed(); len(removed) != 0 {
 		t.Fatalf("removed = %v", removed)
 	}
-	if args := strings.Join(docker.calls[0][1:], " "); !strings.Contains(args, "--filter ancestor=alpine") {
-		t.Errorf("listed with %s", args)
+}
+
+// A hop is labelled with the instance that started it.
+func TestAHopCarriesItsInstance(t *testing.T) {
+	hopInstance = func() string { return "0a1b2c3d4e5f" }
+	t.Cleanup(func() { hopInstance = sqlitedb.InstanceID })
+	if args := strings.Join(hopArgs("decurix-hop-x", "bridge", true, "true"), " "); !strings.Contains(args, hopInstanceLabel+"=0a1b2c3d4e5f") {
+		t.Fatalf("args %s", args)
 	}
 }

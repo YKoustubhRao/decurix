@@ -3,8 +3,11 @@ a result the receiving worker's check confirmed ever reads as done."""
 
 import io
 import json
+import os
+import tempfile
 import unittest
 import urllib.error
+from pathlib import Path
 from unittest import mock
 
 from decurix_agent import config, task_context
@@ -37,7 +40,16 @@ class HandoffToolTest(unittest.TestCase):
     def setUp(self):
         self.requests = []
         self.answers = []
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+        self.work = self.home / "work"
+        (self.work / "in").mkdir(parents=True)
+        (self.work / "in" / "a.csv").write_text("a,b\n1,2\n", encoding="utf-8")
         for p in (
+            mock.patch.object(config, "WORK_DIR", self.work),
+            mock.patch.object(config, "DECURIX_DIR", self.home / ".decurix"),
+            mock.patch.dict(os.environ, {"DECURIX_SHARED_FOLDER": ""}),
             mock.patch.object(handoff.urllib.request, "urlopen", self._urlopen),
             mock.patch.object(config, "DESKTOP_ID", "w1"),
             mock.patch.object(config, "CONTROL_PLANE_URL", "http://cp:8080/"),
@@ -70,7 +82,7 @@ class HandoffToolTest(unittest.TestCase):
         self.answers = [_record("running"), _record("running"), done]
         code, out = self.run_cli("delegate", "--role", "reviewer", "--request", "Review the sheet, password hunter2",
                                  "--input", "period=last month", "--input", "pin=hunter2",
-                                 "--file", "/home/headless/in/a.csv", "--expect", "a review note", "--wait", "60")
+                                 "--file", str(self.work / "in" / "a.csv"), "--expect", "a review note", "--wait", "60")
         self.assertEqual(code, handoff.EXIT_DONE)
         method, url, body = self.requests[0]
         self.assertEqual((method, url), ("POST", "http://cp:8080/api/handoffs"))
@@ -80,7 +92,7 @@ class HandoffToolTest(unittest.TestCase):
         self.assertNotIn("to_worker", body)
         self.assertEqual(body["inputs"], {"period": "last month", "pin": "[withheld]"})
         self.assertNotIn("hunter2", json.dumps(body))
-        self.assertEqual(body["files"], ["/home/headless/in/a.csv"])
+        self.assertEqual(body["files"], [os.path.abspath(str(self.work / "in" / "a.csv"))])
         self.assertEqual(body["expected"], "a review note")
         self.assertEqual(self.requests[1][1], "http://cp:8080/api/handoffs/get?id=ho_1")
         self.assertIn("=== HANDOFF ho_1: DONE (verified) ===", out)
@@ -88,6 +100,25 @@ class HandoffToolTest(unittest.TestCase):
         self.assertIn("  - Checked on the screen: the record is there.", out)
         self.assertIn("/returned/out.txt", out)
         self.assertIn("=== END HANDOFF ho_1 ===", out)
+
+    def test_a_file_under_a_dot_folder_or_outside_the_work_is_never_carried(self):
+        # Review 2026-11-02: a handoff could copy ~/.claude/.credentials.json to another worker.
+        claude = self.home / ".claude"
+        claude.mkdir()
+        (claude / ".credentials.json").write_text("{}", encoding="utf-8")
+        (self.work / ".ssh").mkdir()
+        (self.work / ".ssh" / "id_rsa").write_text("k", encoding="utf-8")
+        (self.home / ".decurix").mkdir()
+        (self.home / ".decurix" / "withheld-secrets").write_text("x", encoding="utf-8")
+        (self.home / "notes.txt").write_text("x", encoding="utf-8")
+        for path in (claude / ".credentials.json", self.work / ".ssh" / "id_rsa",
+                     self.home / ".decurix" / "withheld-secrets", self.home / "notes.txt",
+                     self.work / "in" / ".." / ".." / ".claude" / ".credentials.json"):
+            self.requests.clear()
+            code, out = self.run_cli("delegate", "--to", "w2", "--request", "do it", "--file", str(path))
+            self.assertEqual(code, handoff.EXIT_ERROR, path)
+            self.assertIn("is not sent", out)
+            self.assertEqual(self.requests, [], "nothing reached the control plane")
 
     def test_an_unverified_result_is_not_done(self):
         self.answers = [_record("not_done", verified=False, report="All done!",

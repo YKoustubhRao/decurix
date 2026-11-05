@@ -32,7 +32,11 @@ import (
 // messages of up to 16,000 characters and 90 ledger lines of up to 1,000, a long goal's "shortened" transcript came to
 // 197,000 of its 200,000, and it compacted again 37 seconds later, a whole-transcript model call each time.
 //
-// A local model is left as it was (its context and its prefix cache are its own).
+// A local model keeps its transcript as it is while it fits: its prefix cache is what makes a turn take seconds, not
+// minutes, on the CPU host. But it has a fixed window (num_ctx 8192), and past it Ollama silently drops the oldest
+// messages after the system one - the contract and the task first (review T-09). So before each local call the
+// transcript is measured: over the window, old command outputs are masked (the prefix, message 1 included, never is);
+// still over, the goal ends as not checked. Under the window nothing changes, and the prefix stays byte-identical.
 // ============================================================
 
 const (
@@ -57,6 +61,62 @@ const (
 	recordsShownChars = 20_000
 	maxNotesChars     = 8_000
 )
+
+// The local window (llm/ollama.go sends num_ctx 8192 on every call) and what is kept free for the answer. Tokens are
+// estimated from characters at localCharsPerToken - fewer characters per token than prose usually has, so the estimate
+// runs high: the margin that keeps a request under the window when its text tokenises densely (figures, code).
+const (
+	localContextTokens = 8192
+	localAnswerReserve = 1024
+	localCharsPerToken = 3
+	localMessageTokens = 8 // the chat template's own tokens around each message
+	localBudgetTokens  = localContextTokens - localAnswerReserve
+	// localMaskKeepNewest is how many newest messages a local masking keeps whole: the last command and its output.
+	// The hosted pass keeps maskKeepNewest; a local window holds about five full outputs beside the prefix.
+	localMaskKeepNewest = 2
+	outOfLocalRoomWhy   = "out of room for this task on the local model"
+	outOfLocalRoomWords = "I stopped: this task no longer fits in the local model's working memory, even with older " +
+		"command outputs shortened."
+)
+
+// localTokens is the estimated size of messages in tokens on the local model (a picture counted as pictureChars), at
+// the default rate - before the model has said what a call really cost.
+func localTokens(messages []llm.Message) int {
+	return estimateTokens(messages, 0)
+}
+
+// estimateTokens is the size of messages at perByte tokens a byte, never fewer than the default rate gives.
+func estimateTokens(messages []llm.Message, perByte float64) int {
+	bytes := messagesChars(messages)
+	n := (bytes + localCharsPerToken - 1) / localCharsPerToken
+	if measured := int(float64(bytes)*perByte + 0.999); measured > n {
+		n = measured
+	}
+	return n + localMessageTokens*len(messages)
+}
+
+// noteLocalCost keeps the highest tokens-a-byte rate a local call has really cost (Ollama's prompt_eval_count over the
+// bytes sent). Text in a non-Latin script costs far more tokens a byte than the default assumes (review N-W3-6); a
+// call answered partly from the prompt cache reports fewer tokens than it holds, so a rate only ever goes up.
+func (st *operatorState) noteLocalCost(sent []llm.Message, promptTokens int) {
+	bytes := messagesChars(sent)
+	if promptTokens <= 0 || bytes == 0 {
+		return
+	}
+	if rate := float64(promptTokens) / float64(bytes); rate > st.LocalTokensPerByte {
+		st.LocalTokensPerByte = rate
+	}
+}
+
+// localEstimate is the transcript's size in tokens on the local model, at the rate its calls have shown.
+func (st *operatorState) localEstimate() int {
+	return estimateTokens(st.Messages, st.LocalTokensPerByte)
+}
+
+// localOverBudget is whether the transcript would not fit the local window with room for the answer.
+func (st *operatorState) localOverBudget() bool {
+	return st.localEstimate() > localBudgetTokens
+}
 
 // compactNoteRequest asks the model for its notes before its older context is replaced by them.
 const compactNoteRequest = "\n\n(Before you go on: your working context is about to be shortened to save room. The older " +
@@ -273,8 +333,13 @@ func maskable(m llm.Message) bool {
 // than maskMinChars: its first maskHeadChars stay, the rest is in a file it names. An output whose file cannot be
 // written stays whole. The checks are unaffected (st.Seen keeps what every command showed). Returns how many it masked.
 func (st *operatorState) maskOldOutputs() int {
+	return st.maskOutputsBefore(maskKeepNewest)
+}
+
+// maskOutputsBefore is maskOldOutputs keeping the newest keep messages whole.
+func (st *operatorState) maskOutputsBefore(keep int) int {
 	masked := 0
-	for i := st.prefixEnd(); i < len(st.Messages)-maskKeepNewest; i++ {
+	for i := st.prefixEnd(); i < len(st.Messages)-keep; i++ {
 		m := &st.Messages[i]
 		if !maskable(*m) {
 			continue
@@ -360,7 +425,7 @@ func (o *OperatorSkill) compact(rc RunContext, st *operatorState, why string) {
 	} else {
 		ask = append(ask, llm.Message{Role: "user", Content: strings.TrimSpace(compactNoteRequest)})
 	}
-	if resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, ask, llm.Options{TimeoutMs: 180000, Temperature: 0.2}); err == nil {
+	if resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, ask, llm.Options{TimeoutMs: 180000, Temperature: 0.2, Purpose: llm.PurposeCompact}); err == nil {
 		notes = strings.TrimSpace(resp.Text)
 		if i := strings.Index(strings.ToUpper(notes), "NOTES:"); i >= 0 {
 			notes = strings.TrimSpace(notes[i+len("NOTES:"):])

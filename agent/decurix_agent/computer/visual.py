@@ -149,6 +149,10 @@ def png_of_rows(width, height, raw, level):
     )
 
 
+# The most pixels a picture decode_png reads may have: a large screen, several times over.
+MAX_PIXELS = 8192 * 8192
+
+
 def decode_png(data):
     """
     (width, height, packed RGB) of a non-interlaced 8-bit PNG (grey, RGB or
@@ -181,9 +185,13 @@ def decode_png(data):
 
     if depth != 8 or channels is None or interlace:
         raise ValueError("a PNG this reader does not handle")
+    if width * height > MAX_PIXELS:
+        raise ValueError("a PNG larger than any screen")
 
-    raw = zlib.decompress(b"".join(idat))
     stride = width * channels
+    # Never more than the picture can hold (review 2026-11-03, D-36: a small file could inflate without bound).
+    inflate = zlib.decompressobj()
+    raw = inflate.decompress(b"".join(idat), height * (stride + 1) + 1)
 
     if len(raw) < height * (stride + 1):
         raise ValueError("a PNG cut short")
@@ -452,6 +460,54 @@ def make_look(png, point, screen=None):
         "detail": cells,
         "partial": partial,
     }
+
+
+# What digits_hold found (replay.resolve acts on SAME only; NO_OCR leaves the run unverified).
+SAME, OTHER, UNREAD, NO_OCR = "same", "other", "unread", "no-ocr"
+
+
+def _read_line(width, height, rgb, at):
+    """(every line OCR read in a picture, the line at `at` or None). Raises when OCR fails."""
+
+    from decurix_agent.computer import ocr
+
+    lines = ocr.read(width, height, bytes(rgb))
+    return lines, ocr.line_at(lines, at)
+
+
+def digits_hold(look, frame, point):
+    """
+    Whether the place a look was found at reads the same numbers as the look itself, by OCR on both:
+    SAME - a line was read at both and their digit runs are equal (or neither picture holds any text: an icon);
+    OTHER - other digits: another record that only looks alike;
+    UNREAD - text is there but a line could not be read at one of them, so its numbers are not known;
+    NO_OCR - this desktop cannot read text at all.
+    Found in review (2026-11-03, D-15): a row one digit off ("Invoice 1041" for "Invoice 1042") scores under
+    MAX_MISMATCH, so a look alone took it; and (rework) a look whose line could not be read counted as one that shows
+    no numbers, and confirmed any place. No threshold is tuned.
+    """
+
+    from decurix_agent.computer import identity, ocr
+
+    if not ocr.available():
+        return NO_OCR
+    try:
+        width, height, rgb = decode_png(base64.b64decode(look["png"]))
+        recorded_lines, recorded = _read_line(width, height, rgb, look["at"])
+        x0, y0 = int(point[0]) - look["at"][0], int(point[1]) - look["at"][1]
+        if x0 < 0 or y0 < 0 or x0 + width > frame.width or y0 + height > frame.height:
+            return UNREAD
+        patch = bytearray()
+        for y in range(y0, y0 + height):
+            patch += bytes(frame.rgb[(y * frame.width + x0) * 3:(y * frame.width + x0 + width) * 3])
+        now_lines, now = _read_line(width, height, patch, look["at"])
+    except Exception:  # noqa: BLE001 - not read is not known
+        return UNREAD
+    if not recorded_lines and not now_lines:
+        return SAME  # no text in either picture: nothing to read
+    if recorded is None or now is None:
+        return UNREAD
+    return SAME if identity.digit_runs(recorded["text"]) == identity.digit_runs(now["text"]) else OTHER
 
 
 def _template(look):

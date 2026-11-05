@@ -114,6 +114,12 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual((reply["width"], reply["height"]), (640, 480))
         self.assertEqual([l["text"] for l in reply["lines"]], ["Invoice 4417", "Date", "Total 12,345.00"])
 
+    def test_a_picture_with_too_many_pixels_is_not_decoded(self):
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x0dIHDR" + struct.pack(">II", 60000, 60000) + b"\x08\x02\x00\x00\x00"
+        (reply,) = run_lines([{"id": 1, "op": "ocr", "image_b64": base64.b64encode(png).decode()}])
+        self.assertFalse(reply["ok"])
+        self.assertIn("million pixels", reply["error"])
+
     def test_ocr_without_any_engine_says_so(self):
         image = base64.b64encode(b"x").decode()
         with mock.patch.object(bw, "have", return_value={"rapidocr": False, "tesseract": False}):

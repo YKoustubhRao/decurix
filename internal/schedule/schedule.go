@@ -35,6 +35,10 @@ type Schedule struct {
 	// is busy), and WaitingSince since when; both clear once it runs.
 	Waiting      string    `json:"waiting"`
 	WaitingSince time.Time `json:"waiting_since"`
+	// LastError says why the last run did not reach its desktop; "" when it
+	// did. A failed run is consumed (the schedule moves on to its next
+	// occurrence) but never silently: this is its trace.
+	LastError string `json:"last_error"`
 }
 
 var schema = []string{
@@ -53,7 +57,20 @@ var schema = []string{
 	`ALTER TABLE schedules ADD COLUMN run_once INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE schedules ADD COLUMN waiting TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE schedules ADD COLUMN waiting_since_ns INTEGER NOT NULL DEFAULT 0`,
+	// Why the last run did not reach its desktop (review 2026-11-03, B-28).
+	`ALTER TABLE schedules ADD COLUMN last_error TEXT NOT NULL DEFAULT ''`,
 }
+
+// InputError is a mistake in what a person gave (a cron expression that does
+// not parse, a time in the past): its text is written for that person and may
+// be shown as it is. Every other error is internal and is not shown.
+type InputError struct{ msg string }
+
+// Error returns the message for the person.
+func (e InputError) Error() string { return e.msg }
+
+// invalid is an InputError.
+func invalid(format string, args ...any) error { return InputError{fmt.Sprintf(format, args...)} }
 
 // Store is a SQLite-backed collection of Schedules.
 type Store struct {
@@ -94,14 +111,14 @@ func (s *Store) Create(desktopID, content, cronExpr string) (Schedule, error) {
 
 	expr, err := Parse(cronExpr)
 	if err != nil {
-		return Schedule{}, err
+		return Schedule{}, invalid("%v", err)
 	}
 
 	now := s.clock()
 
 	next, ok := expr.Next(now)
 	if !ok {
-		return Schedule{}, fmt.Errorf("cron expression %q never matches", cronExpr)
+		return Schedule{}, invalid("cron expression %q never matches", cronExpr)
 	}
 
 	return s.insert("create", Schedule{
@@ -129,7 +146,7 @@ func (s *Store) CreateOnce(desktopID, content string, runAt time.Time) (Schedule
 	runAt = runAt.UTC()
 
 	if !runAt.After(now) {
-		return Schedule{}, fmt.Errorf("run time must be in the future")
+		return Schedule{}, invalid("run time must be in the future")
 	}
 
 	return s.insert("create once", Schedule{
@@ -148,11 +165,11 @@ func checkRequest(desktopID, content string) (string, error) {
 	desktopID = strings.TrimSpace(desktopID)
 
 	if desktopID == "" {
-		return "", fmt.Errorf("desktop id is required")
+		return "", invalid("desktop id is required")
 	}
 
 	if strings.TrimSpace(content) == "" {
-		return "", fmt.Errorf("request text is required")
+		return "", invalid("request text is required")
 	}
 
 	return desktopID, nil
@@ -231,6 +248,19 @@ func (s *Store) Due(now time.Time) ([]Schedule, error) {
 // once is the whole job - so it is simply disabled, the same terminal state a
 // cron schedule reaches when it runs out of matches.
 func (s *Store) MarkRun(id string, ranAt time.Time) error {
+	return s.markRun(id, ranAt, "")
+}
+
+// MarkRunFailed is MarkRun for a run that did not reach its desktop: the
+// schedule moves on all the same, and keeps why as LastError.
+func (s *Store) MarkRunFailed(id string, ranAt time.Time, why string) error {
+	if why == "" {
+		why = "the run did not reach its desktop"
+	}
+	return s.markRun(id, ranAt, why)
+}
+
+func (s *Store) markRun(id string, ranAt time.Time, failure string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -261,13 +291,13 @@ func (s *Store) MarkRun(id string, ranAt time.Time) error {
 
 	if !ok {
 		_, err = s.db.Exec(
-			`UPDATE schedules SET enabled = 0, last_run_ns = ?, next_run_ns = 0, waiting = '', waiting_since_ns = 0 WHERE id = ?`,
-			sqlitedb.ToNS(ranAt), id,
+			`UPDATE schedules SET enabled = 0, last_run_ns = ?, next_run_ns = 0, waiting = '', waiting_since_ns = 0, last_error = ? WHERE id = ?`,
+			sqlitedb.ToNS(ranAt), failure, id,
 		)
 	} else {
 		_, err = s.db.Exec(
-			`UPDATE schedules SET last_run_ns = ?, next_run_ns = ?, waiting = '', waiting_since_ns = 0 WHERE id = ?`,
-			sqlitedb.ToNS(ranAt), sqlitedb.ToNS(next), id,
+			`UPDATE schedules SET last_run_ns = ?, next_run_ns = ?, waiting = '', waiting_since_ns = 0, last_error = ? WHERE id = ?`,
+			sqlitedb.ToNS(ranAt), sqlitedb.ToNS(next), failure, id,
 		)
 	}
 
@@ -315,7 +345,7 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 
 	if err := s.db.QueryRow(`SELECT cron_expr, run_once, last_run_ns FROM schedules WHERE id = ?`, id).Scan(&cronExpr, &runOnce, &lastRunNS); err != nil {
 		if err == sql.ErrNoRows {
-			return fmt.Errorf("schedule not found")
+			return invalid("schedule not found")
 		}
 
 		return fmt.Errorf("schedule: enable %s: %w", id, err)
@@ -323,7 +353,7 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 
 	if runOnce != 0 {
 		if lastRunNS != 0 {
-			return fmt.Errorf("this one-time run has already fired")
+			return invalid("this one-time run has already fired")
 		}
 
 		if _, err := s.db.Exec(`UPDATE schedules SET enabled = 1 WHERE id = ?`, id); err != nil {
@@ -340,7 +370,7 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 
 	next, ok := expr.Next(s.clock())
 	if !ok {
-		return fmt.Errorf("cron expression %q never matches", cronExpr)
+		return invalid("cron expression %q never matches", cronExpr)
 	}
 
 	if _, err := s.db.Exec(
@@ -386,14 +416,14 @@ func (s *Store) DeleteForDesktop(desktopID string) {
 	}
 }
 
-const scheduleColumns = `id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once, waiting, waiting_since_ns`
+const scheduleColumns = `id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once, waiting, waiting_since_ns, last_error`
 
 func scanSchedule(rows sqlitedb.Scanner) (Schedule, error) {
 	var sch Schedule
 	var enabled, runOnce int
 	var created, lastRun, nextRun, waitingSince int64
 
-	if err := rows.Scan(&sch.ID, &sch.DesktopID, &sch.Content, &sch.CronExpr, &enabled, &created, &lastRun, &nextRun, &runOnce, &sch.Waiting, &waitingSince); err != nil {
+	if err := rows.Scan(&sch.ID, &sch.DesktopID, &sch.Content, &sch.CronExpr, &enabled, &created, &lastRun, &nextRun, &runOnce, &sch.Waiting, &waitingSince, &sch.LastError); err != nil {
 		return Schedule{}, err
 	}
 

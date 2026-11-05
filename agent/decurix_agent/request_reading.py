@@ -157,8 +157,19 @@ def _norm(text):
     return " ".join(text.split())
 
 
+def _tokens(text):
+    return re.findall(r"\w+", _norm(text))
+
+
 def _grounded(value, request):
-    return bool(_norm(value)) and _norm(value) in _norm(request)
+    """Whether the request holds the value as whole words, in order: "500" is not in "pay 5000", nor "Ram" in "Ramesh"
+    (review 2026-11-03, E-28: a substring passed both)."""
+
+    want, have = _tokens(value), _tokens(request)
+    if not want:
+        return False
+    n = len(want)
+    return any(have[i:i + n] == want for i in range(len(have) - n + 1))
 
 
 def _varies(candidate, param):
@@ -177,8 +188,7 @@ def _varies(candidate, param):
 def _check_values(candidate, given, request):
     """
     The model's values as a run may use them: (values, dropped). A value is
-    kept when the request holds it (`request` here is the request together
-    with what the person said in earlier tasks), when it is the demonstration's own (the
+    kept when the request holds it (as whole words, in order), when it is the demonstration's own (the
     input stays the same), or when the demonstration typed that input in
     another form than its ticket said (so this one may be adapted too).
     Anything else is a guess, and is dropped: the person is asked.
@@ -308,8 +318,10 @@ def read(request):
         log(f"request reading: {request!r} is not a taught task ({chosen!r}, confidence {confidence:.2f}): {why}")
         return {"plan": None, "why": why}
 
+    # Grounded in this request only: what the person said in earlier tasks is context for the model, never a source of
+    # this run's values - those lessons may be another client's (review 2026-11-03, E-28).
     values, dropped = _check_values(candidate, data.get("values") if isinstance(data.get("values"), dict) else {},
-                                    request + "\n" + said_before)
+                                    request)
     log(f"request reading: {request!r} is {candidate['plan']['kind']} {chosen} with {values}"
         + (f"; not taken from the model: {dropped}" if dropped else "") + f" ({why})")
 

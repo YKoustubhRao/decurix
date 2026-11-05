@@ -121,7 +121,7 @@ func (o *OperatorSkill) readReply(rc RunContext, st *operatorState, asked, reply
 	}
 	resp, err := rc.Provider.Chat(rc.Ctx, rc.Model, []llm.Message{{Role: "system", Content: replySystem},
 		{Role: "user", Content: "What they were asked: " + truncateText(asked, 3000) + "\n\nTheir reply: " + truncateText(reply, 3000)}},
-		llm.Options{TimeoutMs: 60000, Temperature: 0})
+		llm.Options{TimeoutMs: 60000, Temperature: 0, Purpose: llm.PurposeReplyRead})
 	if err != nil {
 		rc.Logf("operator", "could not read the person's reply: %v", err)
 		return "", "", false

@@ -288,8 +288,14 @@ func (s *Store) Supersede(oldID string, next Item) (Item, error) {
 	if err := insert(tx, next); err != nil {
 		return Item{}, err
 	}
-	if _, err := tx.Exec(`UPDATE knowledge_items SET superseded_by = ? WHERE id = ?`, next.ID, oldID); err != nil {
+	// Only a still-live item is replaced: a Retire (which does not take mu) landing between the read above and this
+	// write must not be undone, putting a retired line back into force (C-24).
+	res, err := tx.Exec(`UPDATE knowledge_items SET superseded_by = ? WHERE id = ? AND superseded_by = ''`, next.ID, oldID)
+	if err != nil {
 		return Item{}, fmt.Errorf("knowledge: supersede: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return Item{}, invalid("that item was replaced or retired meanwhile; read it again")
 	}
 	if err := tx.Commit(); err != nil {
 		return Item{}, fmt.Errorf("knowledge: supersede: %w", err)

@@ -2,7 +2,7 @@
 What this desktop's tools wrote into the person's shared folder, kept so an app of their computer cannot lose it.
 
 The named-app flow is: make the content with the tools, open the file in the person's app, check it, save it from the
-app. Found live (round 5 P1 on pc3, 2026-10-20, CS): Word still held the memo from the stage's first attempt; the tools
+app. Found live (round 5 P1, 2026-10-20, CS): Word still held the memo from the stage's first attempt; the tools
 rewrote the file, Word's stale copy was saved over it, the file was then locked ("Permission denied"), and a blank
 document typed over and saved left the memo with 0 headings. Three guards, all generic:
 
@@ -106,8 +106,8 @@ def remember(local):
         store.mkdir(parents=True, exist_ok=True)
         key = _key(p)
         shutil.copy2(p, store / (key + p.suffix.lower()))
-        (store / (key + ".json")).write_text(json.dumps({"path": str(p.resolve()), "words": sorted(words)}),
-                                              encoding="utf-8")
+        from decurix_agent.computer import privacy
+        privacy.write_scrubbed(store / (key + ".json"), {"path": str(p.resolve()), "words": sorted(words)})
     except OSError as exc:
         log(f"tool_made: could not keep {p}: {exc}")
 

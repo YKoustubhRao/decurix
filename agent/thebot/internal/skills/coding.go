@@ -48,6 +48,29 @@ func (c *CodingSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		// with this off so nothing in the suite touches the network.
 		AllowWebSearch: !rc.OfflineMode,
 	}
+	// A fix a web page or a model proposed runs only with the person's yes to
+	// that exact command, once (the scheduler's single-use grant). On resume
+	// the build re-runs with the proposals already asked about, so the same
+	// failure gets the command they saw; a proposal not approved is declined.
+	cp, _ := rc.Resume.(*codingCheckpoint)
+	if cp != nil {
+		h.Proposed = cp.Proposed
+		h.Declined = append([]string(nil), cp.Declined...)
+		if cp.Asked != "" {
+			if rc.IsApproved(cp.Asked) {
+				granted := cp.Asked
+				h.Approve = func(action string) bool {
+					if granted == "" || strings.TrimSpace(action) != granted {
+						return false
+					}
+					granted = ""
+					return true
+				}
+			} else {
+				h.Declined = append(h.Declined, cp.Asked)
+			}
+		}
+	}
 
 	// Everything already established in this job - recalled memory and
 	// verified findings from earlier steps - so the architecture and the
@@ -82,6 +105,19 @@ func (c *CodingSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 		}, nil
 	}
 
+	if p := report.NeedsApproval; p != nil {
+		next := &codingCheckpoint{Asked: p.Action()}
+		if cp != nil {
+			next.Proposed = append(next.Proposed, cp.Proposed...)
+			next.Declined = append(next.Declined, h.Declined...)
+		}
+		next.Proposed = append(next.Proposed, *p)
+		reason := fmt.Sprintf("this fix for a build failure was proposed by %s, not checked by anyone (%s)", proposalSource(p.Source), p.Cause)
+		res := NeedsApproval(subtask, c.Name(), p.Action(), reason, next)
+		res.Output += "\n\n" + report.Summary()
+		return res, nil
+	}
+
 	meta := map[string]any{
 		"dir":         report.Dir,
 		"language":    report.Design.Language,
@@ -98,16 +134,41 @@ func (c *CodingSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	}
 
 	// Verified means exactly one thing here: the real test suite really
-	// passed. A project whose files all got written but whose tests fail is
+	// passed, the project really builds, and what is meant to run really
+	// starts (BuildReport.Succeeded). A project whose files all got written but whose tests fail is
 	// NOT a success - reporting it as one is how "it's done!" ends up
 	// meaning "there is a folder with some code in it", which is the exact
 	// failure this whole harness exists to eliminate.
 	return Result{
 		Subtask: subtask, SkillName: c.Name(),
 		Output:   report.Summary(),
-		Verified: report.TestsPassed && !report.Incomplete,
+		Verified: report.Succeeded(),
 		Meta:     meta,
 	}, nil
+}
+
+// codingCheckpoint is a build paused at a proposed fix: the proposals asked
+// about so far (re-used for the same failure on the re-run), the command
+// this pause asks about, and those the person did not approve. It never
+// carries an approval: the yes arrives as the scheduler's single-use grant.
+type codingCheckpoint struct {
+	Proposed []coding.Diagnosis
+	Asked    string
+	Declined []string
+}
+
+// proposalSource names who put a proposed fix forward.
+func proposalSource(source string) string {
+	switch source {
+	case "web":
+		return "a web page (read by the model)"
+	case "model":
+		return "the model"
+	case "memory:approved":
+		return "a command you approved for this failure before (asked again: an earlier yes is not this one)"
+	default:
+		return source
+	}
 }
 
 // knownContext assembles what is already genuinely known: facts recalled

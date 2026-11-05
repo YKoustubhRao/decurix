@@ -469,7 +469,8 @@
         }
         if(kept.recording){
           var link = node("a", "", "See the run it replays");
-          link.href = "/recordings/" + encodeURIComponent(desktopID) + "#" + kept.recording;
+          /* The recordings page opens the one named by ?session= (a #fragment never reached it). */
+          link.href = "/recordings/" + encodeURIComponent(desktopID) + "?session=" + encodeURIComponent(kept.recording);
           body.appendChild(link);
         }
         body.hidden = false;
@@ -527,7 +528,7 @@
   }
 
   refresh();
-  var workflowBusy = false, workflowSending = false;
+  var workflowBusy = false, workflowSending = false, workflowShown = "";
   var workflowCards = document.getElementById("workflowCards");
   var workflowMessage = document.getElementById("workflowMessage");
   var workflowExample = document.getElementById("workflowExample");
@@ -540,13 +541,39 @@
     try{
       await post("/api/desktops/send", {id: desktopID, content: command});
       toast("Request sent. Follow its progress and questions in chat.");
-      workflowMessage.textContent = "Request sent. Refresh to see the saved state, or open chat for questions.";
+      workflowMessage.textContent = "Request sent. Open chat for its questions; the saved state below updates as it goes.";
+      setTimeout(refreshWorkflows, 3000);
     }catch(err){
       toast("Could not send request: " + err.message);
     }finally{
       workflowSending = false;
       control.disabled = false;
     }
+  }
+
+  /* What a run's buttons may send, built here from structured parts (W-11): the desktop says which actions apply, but
+     the words a click sends as the person are this page's - a verb from this list, this run's own ID and, for a retry,
+     one of its failed stages. Anything else the desktop lists is not shown. Every one asks first. */
+  function workflowActions(run){
+    var out = [];
+    (run.actions || []).forEach(function(action){
+      var m = /^\/workflow (retry|resume|cancel) (\S+)(?: (\S+))?$/.exec(String(action.command || ""));
+      if(!m || m[2] !== run.run_id){ return; }
+      var verb = m[1], stage = m[3] || "";
+      if(verb === "retry"){
+        var failed = (run.stages || []).some(function(s){ return s.id === stage && s.status === "failed"; });
+        if(!failed){ return; }
+        out.push({verb: verb, label: "Retry stage " + stage, command: "/workflow retry " + run.run_id + " " + stage,
+                  confirm: "Retry stage \"" + stage + "\" of " + run.title + "?"});
+      }else if(!stage && verb === "resume"){
+        out.push({verb: verb, label: "Continue workflow", command: "/workflow resume " + run.run_id,
+                  confirm: "Continue " + run.title + " from where it stopped?"});
+      }else if(!stage && verb === "cancel"){
+        out.push({verb: verb, label: "Cancel workflow", command: "/workflow cancel " + run.run_id,
+                  confirm: "Cancel remaining stages? Changes already made will be kept."});
+      }
+    });
+    return out;
   }
 
   function workflowCard(run){
@@ -562,20 +589,23 @@
     if(run.error){ head.appendChild(node("p", "workflow-error", run.error)); }
     if(run.approval){
       head.appendChild(node("div", "workflow-preview", "Proposed stage: " + run.approval.stage + "\n" + run.approval.instruction + "\nRequired files: " + run.approval.files.join(", ")));
+      // A stage's go-ahead is the approval question in chat, which goes through the gate; this page has no approve
+      // control (W2 handoff H-R3).
+      head.appendChild(node("div", "hint", "It asks in chat before it starts this stage. Reply there."));
     }
     var actions = node("div", "skill-actions");
-    run.actions.forEach(function(action){
+    workflowActions(run).forEach(function(action){
       var b = button(action.label, "btn-default");
-      var cancelling = action.command.indexOf("/workflow cancel ") === 0;
-      b.disabled = workflowBusy && !cancelling;
+      b.disabled = workflowBusy && action.verb !== "cancel";
       b.addEventListener("click", function(){
-        if(cancelling && !window.confirm("Cancel remaining stages? Changes already made will be kept.")){ return; }
+        if(!window.confirm(action.confirm)){ return; }
         sendWorkflow(action.command, b);
       });
       actions.appendChild(b);
     });
     head.appendChild(actions); card.appendChild(head);
     var detail = node("details", "workflow-detail");
+    detail.dataset.run = run.run_id;
     detail.appendChild(node("summary", "", "Stages and checked files"));
     detail.appendChild(node("p", "hint", "Files were checked when their stage completed. Continuing rechecks earlier outputs. Relative paths are inside this run's artifact folder."));
     var list = node("ol");
@@ -605,14 +635,23 @@
           workflowExample.appendChild(option);
         });
       }
-      workflowCards.replaceChildren.apply(workflowCards, data.runs.map(workflowCard));
+      /* Polled: redrawn only when something changed, and a run's stage list
+         left open stays open. */
+      var shown = JSON.stringify([data.busy, data.runs]);
+      if(shown !== workflowShown){
+        workflowShown = shown;
+        var opened = new Set();
+        workflowCards.querySelectorAll("details.workflow-detail[open]").forEach(function(d){ opened.add(d.dataset.run); });
+        workflowCards.replaceChildren.apply(workflowCards, data.runs.map(workflowCard));
+        workflowCards.querySelectorAll("details.workflow-detail").forEach(function(d){ d.open = opened.has(d.dataset.run); });
+      }
       workflowMessage.textContent = (data.runs.length ? "" : "No saved workflows yet. Start from an example below, or create one in chat.") +
         (workflowBusy ? " This desktop is busy. Open chat to follow its current task; starting or continuing work is disabled." : "") +
         (data.has_more ? " Showing the 100 most recently changed runs." : "") +
         (data.unreadable_runs.length ? " Some saved runs could not be read: " + data.unreadable_runs.join(", ") : "");
     }catch(err){
       workflowStartButton.disabled = true;
-      workflowMessage.textContent = "Could not read saved workflows: " + err.message + ". Refresh to retry. Older desktops may need updating.";
+      workflowMessage.textContent = "Could not read saved workflows: " + err.message + ". Trying again in a few seconds. Older desktops may need updating.";
     }finally{ refreshButton.disabled = false; }
   }
 
@@ -626,6 +665,9 @@
     sendWorkflow("/workflow start " + workflowExample.value + " " + JSON.stringify({source_files: files, instructions: instructions}), workflowStartButton);
   });
   refreshWorkflows();
+  Decurix.poll(function(){
+    if(!workflowSending){ refreshWorkflows(); }
+  }, 5000);
 })();
 </script>
 </body>

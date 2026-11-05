@@ -41,8 +41,13 @@ Requests reach a specialist three ways:
 - The router decides. It is a naive Bayes classifier in plain Go: no model, microseconds, no memory. It learns from the catalog's examples and from checked cases. It routes only when confident (0.35 or more); otherwise the brain answers. On held-out requests it sends none to the wrong field.
 - Measured results decide over published ones:
   - `brainiac eval` runs your checked cases against the brain, each specialist and the remote brain, and keeps scores per field in `evals.json`.
-  - With a remote brain set up, a specialist takes a field only after at least 20 cases there show it does at least as well as the remote brain.
+  - A local model takes a field only when the accuracy its checked cases let it claim (Wilson lower bound, at least 20 cases) is at least what the remote brain scored. There is no margin, and nothing can prove itself as good as a perfect score.
+  - Only cases that a stated number, letter or exact text decides count. `contains` and `regex` cases are scored but prove nothing.
+  - A routed request earns on its routed score. `brainiac eval` asks `POST /v1/brainiac/route` where each case goes (no model runs) and keeps `routed:<model>` scores; a case the router files under the wrong field is a miss there.
+  - An earned path serves only requests shaped like eval cases: one user turn, a system prompt of at most 600 characters, no pictures, recordings or web lookup.
+  - In local mode, a specialist takes routed requests only once it is proven at least as good as the brain. Naming the field (`"domain"`) always reaches it.
   - A specialist measured worse than the local brain loses its field back to the brain.
+  - Scores measured before 2026-11-03 have no decided counts and prove nothing until `brainiac eval` runs again.
 
 ```bash
 brainiac eval --cases ~/decurix-tests/brainiac/sample-cases.jsonl --learn
@@ -56,22 +61,21 @@ Reasoning specialists are given room to think (up to 6,144 tokens); on a CPU tha
 
 One web tool (`internal/web`) serves two jobs.
 
-**Fresh answers.** When a request asks about the world now, the brain gets live web pages as evidence:
-- What counts as "now": latest, today, news, a current price or rate, who holds an office, a new rule or version, or this year or last.
-- The client can force it on with `"web": true` or off with `"web": false`.
+**Fresh answers, only when the client asks.** A request reads live web pages only when it sends its own search query as `"web_query"`. The default setting `web: on-request` also needs `"web": true`; `web: auto` lets a `web_query` alone ask (refused in `mode: local`); `web: off` never reads. Brainiac never builds a query from the conversation: with no `web_query` nothing is looked up, and the trace says so. `"web": false` always forbids it.
 
 How it works:
-1. The question is searched: SearXNG or Brave if set, otherwise DuckDuckGo, then Bing.
-2. The three best pages are read in parallel. A real headless browser (Chrome, Chromium or Edge) is used when a page has no text without JavaScript.
-3. Only the passages about the question are kept.
+1. The client's query is scrubbed of PAN, GSTIN, Aadhaar-like and account numbers, emails, phone numbers and secrets, and cut to 200 characters.
+2. It is searched: SearXNG or Brave if set, otherwise DuckDuckGo, then Bing.
+3. Up to three result pages are read with the guarded fetcher (never a loopback, private, link-local or metadata address). Only the passages about the query are kept.
 4. The brain sees them as `<evidence kind="web" url=... retrieved=...>` and cites them as `[web-N]`.
 
 Safety:
-- Only a search query leaves the machine, never the conversation, and it is scrubbed of PAN, GSTIN, Aadhaar-like and account numbers, emails, phone numbers and secrets first.
-- The browser never connects to a private, loopback or link-local address. The check runs on the address actually dialed, so a DNS answer cannot send it inside the network.
+- What leaves the machine is that query and the page requests, nothing else of the conversation.
+- The fetcher's address check runs on the address actually dialed, so a DNS answer cannot send it inside the network.
 - Pages are size- and time-limited, and their text is evidence, never instructions.
+- The headless browser never runs on its own. `POST /v1/brainiac/fetch {"url", "render": true}` asks for it, and `web_render: false` refuses it (the default on an appliance). Chrome then reaches the web only through a proxy inside Brainiac that applies the same address guard to every connection, loopback included. The page it reads is size-bounded.
 
-The `web` setting is `auto` (default), `on-request` or `off`. Agents can use the same browser directly: `POST /v1/brainiac/search {"query"}` and `POST /v1/brainiac/fetch {"url", "render", "query"}`.
+Agents can use the same browser directly: `POST /v1/brainiac/search {"query"}` and `POST /v1/brainiac/fetch {"url", "render", "query"}`.
 
 **A current arsenal.** `brainiac scout` looks for open models newer than the catalog:
 - **Where it looks:** Hugging Face searches for trending and newest GGUF models, per field, plus speech, OCR and embeddings.
@@ -89,7 +93,7 @@ The `web` setting is `auto` (default), `on-request` or `off`. Agents can use the
 
 ## Staying on the best models
 
-`serve` updates itself every 24 hours (`update_every`), with no one in the loop:
+`serve` can look for better open models (`update_every: "24h"`; off by default, and off whenever `web` is `off`). A cycle reads public evaluations, installs a better plan beside the running one, checks it with a canary, and **stages** it. It never changes what is served; a person promotes. The steps:
 
 1. **Scout.** Find new open models this machine could run (above).
 2. **Read public evaluations.** Only independent leaderboards rate: LiveBench, ScreenSpot-Pro, BFCL and Epoch AI. A new model's own card is read only for the name its maker uses, so the leaderboards' rows can be matched to it.
@@ -99,16 +103,20 @@ The `web` setting is `auto` (default), `on-request` or `off`. Agents can use the
    - The catalog's own ratings are the only yardstick; ratings the updater made are never used to rate others.
 4. **Adopt.** A model rated at least 3 points above the current pick for a role goes into `catalog.local.json`, marked `auto`, with the comparisons as its basis.
    Only a repo owned by a lab or quantiser on the trusted list (`internal/scout`) is adopted on its own. A repo's name and tags are its uploader's own words, so a stranger's upload under a real model's name waits for a person (`brainiac scout adopt`).
-5. **Plan again** for the machine as it was planned (today's memory pressure is not a reason to downgrade). The plan is applied only if it is better overall and no core role is lost.
+5. **Plan again** for the machine as it was planned (today's memory pressure is not a reason to downgrade). The plan goes on only if it is better overall and no core role is lost.
 6. **Install beside the running models** (`lock.next.json`), only after 10 minutes with no requests and when the CPU is not busy.
 7. **Check every changed role** with questions code can verify: the brain must answer 17 + 25 and repeat a word, a vision model must read a number from a picture, OCR must read it too, a math model must get 12 × 13 right, a translator must write Hindi. This catches a model that does not load, cannot see, or answers in the wrong template.
-8. **Switch.** New requests go to the new models, and requests in progress finish on the old ones. The old lock stays as `lock.prev.json`; downloads neither lock uses are deleted from Brainiac's own store (never from a shared Ollama).
+8. **Stage.** The checked plan waits in `lock.next.json`, recorded in `update-staged.json` with the lock's sha256. Nothing served changes.
+
+`brainiac update promote` is a person switching to the staged plan. It refuses when `lock.next.json` is not the plan that passed its check. `lock.json` becomes the staged lock, the old one is kept as `lock.prev.json`, and a newer llama.cpp the plan needs becomes the pin. Downloads neither lock uses are deleted from Brainiac's own store (never from a shared Ollama). A running `serve` notices that `lock.json` changed (within 30 s) and moves to it; requests already running finish on the old models.
+
+A canary catches a model that does not load or uses the wrong template. It does not judge quality, so the box's judgement model changes only by a person's decision.
 
 A model that fails its check is set aside for 30 days and the next best is tried. A check that cannot load for lack of memory waits for later instead.
 
 The leaderboards cover the brain, code, math and pointing on a screen. No maintained independent leaderboard covers pictures, SQL, translation or medicine (OpenCompass's vision board stopped in September 2025, before the catalog's vision models), so new models for those wait for a person or for a new board.
 
-`brainiac update` shows what the next cycle would do, with every rating and its evidence. `GET /v1/brainiac/update` returns the last report. Set `update_every: "off"` to change models only by hand (`brainiac scout adopt`, `brainiac scout pin`).
+`brainiac update` shows what a cycle would do, with every rating and its evidence. `brainiac update --apply` installs, checks and stages it by hand (stop `serve` first). `GET /v1/brainiac/update` returns the last report. With `update_every: "off"` models change only by hand (`brainiac scout adopt`, `brainiac scout pin`, `brainiac pull`).
 
 ## What a downloaded model can reach
 
@@ -117,10 +125,13 @@ A model file is untrusted input to a large native parser, and it carries a chat 
 - **Where a model comes from.** Only trusted uploaders are adopted automatically (above). A sha256 only proves a file is what its uploader published.
 - **What is installed stays installed.** A model stays at the commit it was installed from; a push to its repo changes nothing here. `brainiac pull --latest` moves it on purpose.
 - **Chat templates.** The first template a model installs is recorded in `templates.json` and its text kept under `templates/`, to read. A different one later stops the install, and the updater sets that model aside, until a person reads it and runs `brainiac update approve-template <model>`. A file whose template no longer matches its lock is not served. This catches a change; code cannot judge whether a model's first template is honest.
-- **Secrets.** `llama-server` and the Python worker get a short list of environment variables, none of them Brainiac's keys.
-- **Network.** On Linux, `llama-server` runs in its own network namespace, reached through a Unix socket only this user can open. Where that cannot work (Windows, macOS, a system that refuses namespaces, a build with no socket support) it runs on loopback, the log says so, and `/v1/brainiac/status` lists it under `with_network`. The Python worker keeps its network, because its OCR package can fetch its default models on first use.
+- **Secrets.** `llama-server` and the Python worker get a short list of environment variables, none of them Brainiac's keys. `pip` installs for the worker run without any `*_KEY` or `*_TOKEN`.
+- **Downloads.** A GitHub asset with no digest from GitHub and no sha256 in the catalog is refused (fail closed). A llama.cpp build is reused only when its install record shows it intact.
+- **Network and files.** On Linux each model process (llama-server, the Python worker) runs with no network and in its own mount namespace, reached through a Unix socket only this user can open. Its root holds only its program and the libraries it loads from its build, its model files and its socket directory (read-only except the last), so other programs' Unix sockets, this user's home and `/run` are not in its view. Its `/dev` holds only the plain devices (`null`, `zero`, `full`, `random`, `urandom`), the GPU nodes this machine has (`/dev/dri`, `/dev/kfd`, `/dev/nvidia*`, and `/dev/dxg` on WSL2) and a private `/dev/shm`. `/proc/driver/nvidia` is read-only where it exists.
+- **Where that cannot work.** Where the host refuses unprivileged namespaces (an AppArmor rule, a container), Brainiac falls back to Landlock and lists what stays reachable in `/v1/brainiac/status` under `unconfined` (`sockets`, `udp`, `network`, `files`). Windows and macOS have neither, so `unconfined` lists more there. With `sandbox: required` (the default with `BRAINIAC_APPLIANCE`) Brainiac refuses to start a process it cannot fully confine. `sandbox: off` is for a GPU driver that needs a path the sandbox does not allow; it is refused on an appliance.
+- **Lifetime.** Model processes die with Brainiac (a parent-death signal, set from a locked OS thread). `serve` kills llama-servers a crashed Brainiac left behind.
 
-Not covered: a model process can still read and write what this user can, and a hostile model can give bad answers. Files are the next gap; answers are what Decurix's final gate and the approval gate are for.
+Not covered: a hostile model can still give bad answers; that is what Decurix's final gate and the approval gate are for. Where the fallback applies, a model process can reach what `unconfined` lists. The open items for an appliance (a dedicated model user, an AppArmor profile, a signed catalog) are in [docs/follow-ups.md](../docs/follow-ups.md), O-3.
 
 ## Commands
 
@@ -134,7 +145,8 @@ Not covered: a model process can still read and write what this user can, and a 
 | `brainiac ask "..." --image f --audio f` | Asks a running Brainiac, streaming the answer |
 | `brainiac status` | What a running Brainiac holds in memory |
 | `brainiac eval --cases f.jsonl [--learn]` | Measures models field by field on checked cases; the server uses the results to route |
-| `brainiac update [--apply]` | Rates new open models from public evaluations and says what would change; `--apply` switches now (a running `serve` does it on its own) |
+| `brainiac update [--apply]` | Rates new open models from public evaluations and says what would change; `--apply` installs, checks and stages it (never switches) |
+| `brainiac update promote` | A person switches to the staged plan; a running `serve` follows within 30 s |
 | `brainiac update approve-template <model>` | Accepts a model's changed chat template, after a person has read it |
 | `brainiac scout [--days 120]` | Finds and checks open models newer than the catalog |
 | `brainiac scout adopt <repo> --roles r=q` / `scout pin <tag>` | Adds a scouted model to the local catalog / moves llama.cpp |
@@ -151,7 +163,10 @@ Default address `http://127.0.0.1:8484`.
 - `POST /v1/brainiac/ocr` with `{"image": "data:image/png;base64,..."}`: text lines with boxes and confidence.
 - `GET /v1/models`, `/v1/brainiac/status`, `/v1/brainiac/traces[/{id}]`, `/v1/brainiac/scout`, `/v1/brainiac/update`, `/healthz`
 
-Model names: `brainiac` (the configured mode, with field routing), `brainiac-local`, `brainiac-hybrid`, `brainiac-remote`, `brainiac-<field>` (that field's specialist), `remote` (the remote brain alone), or an installed model id from `/v1/models` (that model alone). The extra request field `"domain"` names the field directly.
+- `POST /v1/brainiac/route` with a text: where the router would send it (no model runs). `brainiac eval` uses it.
+- `POST /v1/brainiac/search {"query"}`, `POST /v1/brainiac/fetch {"url", "render", "query"}`: the browser (above).
+
+Model names: `brainiac` (the configured mode, with field routing), `brainiac-local`, `brainiac-hybrid`, `brainiac-remote`, `brainiac-<field>` (that field's specialist), `remote` (the remote brain alone), or an installed model id from `/v1/models` (that model alone). Brainiac's extra request fields: `"domain"` names the field directly; `"web"` and `"web_query"` ask for a web lookup with the client's own query (above).
 
 Every answer carries a `brainiac` object: the trace id, the mode, the brain, every job that ran (model, time, cache hit, load time, tokens), and what the checks found. `usage` adds `local_tokens` and `remote_tokens`. A trace holds sizes and timings only, never content.
 
@@ -188,8 +203,11 @@ If the remote brain fails, the request fails with the status. Set `local_fallbac
 | `share_media` | `BRAINIAC_SHARE_MEDIA` | false |
 | `licenses` | | permissive only |
 | `image_max_side` | | 1280 for local vision models |
-| `web` | `BRAINIAC_WEB` | `auto` (`on-request`, `off`; off also stops updates) |
-| `update_every` | `BRAINIAC_UPDATE_EVERY` | `24h` (`off`: models change only by hand) |
+| `web` | `BRAINIAC_WEB` | `on-request` (`auto`, not in local mode; `off` also stops updates) |
+| `web_render` | | true (false on an appliance): whether `fetch` may use the headless browser |
+| `update_every` | `BRAINIAC_UPDATE_EVERY` | `off` (`24h`: install, check and stage a better plan daily; never switches) |
+| `sandbox` | `BRAINIAC_SANDBOX` | empty: confine as far as the system allows; `required`: start no model process that is not fully confined (the default with `BRAINIAC_APPLIANCE`); `off`: refused on an appliance |
+| (none) | `BRAINIAC_APPLIANCE` | set on an office box: sandbox required, `web_render` off, an API key required even on loopback |
 
 A key is never stored in the config, only the name of the variable that holds it. Brainiac refuses to listen beyond loopback without an API key, because it controls this machine's memory and disk.
 
@@ -212,10 +230,10 @@ internal/router/     the field router (naive Bayes over words and text shapes, n
 internal/web/        the browser: search, safe fetch, headless render, passages, query scrubbing
 internal/scout/      finds and checks new open models
 internal/bench/      public evaluations: leaderboards and model-card tables, ratings against the catalog
-internal/update/     the self-update cycle: rate, adopt, plan, install aside, check, switch
+internal/update/     the update cycle: rate, adopt, plan, install aside, check, stage; Promote is the one switch
 internal/evals/      checked cases, scoring, evals.json
 internal/gguf/       reads the chat templates in a GGUF header, with every length bounded
-internal/isolate/    what a model process can reach: its environment and, on Linux, its network
+internal/isolate/    what a model process can reach: its environment and, on Linux, its network and mount view
 internal/{config,store,cache,trace}/
 ```
 

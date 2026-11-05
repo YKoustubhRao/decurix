@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httputil"
+	"path"
 	"strconv"
 	"strings"
 
@@ -57,6 +58,16 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The screen's WebSocket: bridged to the desktop's Xvnc by the control plane (screenbridge.go).
+	if len(parts) == 2 && isScreenStream(parts[1], isWebSocket) && screenBridgeOn() {
+		answered, err := s.bridgeScreen(w, r, parts[0])
+		if answered || (err != nil && provisioning()) {
+			return
+		}
+		proxyTargetFailed(w, r, err)
+		return
+	}
+
 	proxyURL, desktopID, err := s.Desktops.ProxyTarget(r.Context(), parts[0])
 
 	if err != nil && provisioning() {
@@ -95,6 +106,7 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") && resp.StatusCode == http.StatusOK {
 			resp.Header.Set("Cache-Control", "public, max-age=86400, stale-while-revalidate=3600")
 		}
+		sandboxContainerContent(resp)
 		return rewriteDesktopHTML(resp, desktopID)
 	}
 	reverseProxy.ErrorHandler = func(
@@ -123,6 +135,24 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reverseProxy.ServeHTTP(w, r)
+}
+
+// containerContentPolicy is the policy on anything a desktop serves through the control plane's address: a sandbox
+// (an opaque origin, which the guard refuses and the browser keeps from reading the control plane), framed by nothing
+// but the control plane's own pages.
+const containerContentPolicy = "sandbox allow-scripts allow-forms allow-popups; frame-ancestors 'self'"
+
+// sandboxContainerContent marks what a desktop serves through the control plane's address as a sandbox. A page or
+// script from a desktop shown at /desktop/<id>/ or /agent/<id>/ would otherwise run as the control plane's own origin
+// and could call every route a person can (review 2026-11-02). Sandboxed, it has an opaque origin: GuardPrimary
+// refuses its writes and WebSockets, and the browser keeps it from reading the control plane's answers. The screen a
+// person uses is the control plane's own page (screen.go) with its own noVNC, so it is not affected.
+func sandboxContainerContent(resp *http.Response) {
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		return
+	}
+	resp.Header.Set("Content-Security-Policy", containerContentPolicy)
+	resp.Header.Set("X-Content-Type-Options", "nosniff")
 }
 
 // decurixBrandingRewrites are the literal noVNC markup fragments swapped for
@@ -702,11 +732,18 @@ window.addEventListener("resize", function(){
   placeAt(r.left, r.top);
 });
 
+// One ticket read at a time (resource plan P1 #9): a tick while one is in flight is skipped - unless it has been in
+// flight for max(30 s, 4 polls), when it is given up on and its late answer ignored (a fetch has no timeout, and one
+// answer that never came stopped the toolbar for good: review RES-CP-1).
+var refreshing = 0, refreshSince = 0, refreshCalls = 0;
 function refresh(){
+  if(refreshing && Date.now() - refreshSince < Math.max(30000, 4 * POLL_MS)){ return; }
+  var call = refreshing = ++refreshCalls;
+  refreshSince = Date.now();
   fetch("/api/desktops/ticket?id=" + encodeURIComponent(DESKTOP_ID), {cache: "no-store"})
     .then(function(r){ return r.ok ? r.json() : {ticket: null}; })
     .then(function(data){
-      if(busy){ return; }
+      if(busy || call !== refreshing){ return; }
 
       var next = data.ticket || null;
 
@@ -719,7 +756,8 @@ function refresh(){
 
       setTicket(next);
     })
-    .catch(function(){});
+    .catch(function(){})
+    .then(function(){ if(call === refreshing){ refreshing = 0; } });
 }
 
 function downloadUrl(session){
@@ -1151,7 +1189,9 @@ tab.addEventListener("click", function(){
 
 render();
 refresh();
-setInterval(refresh, POLL_MS);
+// Polled while the screen tab is seen, read at once when it is seen again (resource plan P1 #9).
+setInterval(function(){ if(document.visibilityState !== "hidden"){ refresh(); } }, POLL_MS);
+document.addEventListener("visibilitychange", function(){ if(document.visibilityState === "visible"){ refresh(); } });
 })();
 </script>
 `
@@ -1347,11 +1387,18 @@ const resourceAlertPopup = `
   var activeAlert = null;
   var dismissed = false;
 
+  // One alert read at a time, and none while the tab is hidden (resource plan P1 #9); one in flight past
+  // max(30 s, 4 polls) is given up on, so a lost answer never stops the alert (review RES-CP-1).
+  var alerting = 0, alertSince = 0, alertCalls = 0;
   function pollAlert() {
-    if (dismissed) return;
+    if (dismissed || document.visibilityState === "hidden") return;
+    if (alerting && Date.now() - alertSince < Math.max(30000, 4 * 4000)) return;
+    var call = alerting = ++alertCalls;
+    alertSince = Date.now();
     fetch("/api/desktops/resource-alerts?id=" + encodeURIComponent(desktopID))
       .then(function(r) { return r.json(); })
       .then(function(data) {
+        if (call !== alerting) return;
         if (data && data.alert) {
           activeAlert = data.alert;
           bodyText.textContent = data.alert.message || (
@@ -1363,7 +1410,8 @@ const resourceAlertPopup = `
           wrap.style.display = "none";
         }
       })
-      .catch(function() {});
+      .catch(function() {})
+      .then(function() { if (call === alerting) alerting = 0; });
   }
 
   function dismissAlert() {
@@ -1416,6 +1464,7 @@ const resourceAlertPopup = `
 
   setInterval(pollAlert, 4000);
   setTimeout(pollAlert, 1500);
+  document.addEventListener("visibilitychange", function() { if (document.visibilityState === "visible") pollAlert(); });
 })();
 </script>
 `
@@ -1634,7 +1683,25 @@ func (s *Server) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxyURL, desktopID, err := s.Desktops.AgentProxyTarget(r.Context(), parts[0])
+	// The gated listener (the tunnel, a phone) reaches soul only on gatedAgentRoutes: soul's memory, skills and stats
+	// read what soul keeps, and its chat would drive the worker with no task record and no author. They answer on the
+	// primary listener only (C14.4, F-S1).
+	if isGated(r) {
+		rest := "/"
+		if len(parts) == 2 {
+			rest = path.Clean("/" + parts[1])
+		}
+		if !gatedAgentRoute(r.Method, rest) {
+			http.NotFound(w, r)
+			return
+		}
+	}
+
+	target := s.Desktops.AgentProxyTarget
+	if s.agentTarget != nil {
+		target = s.agentTarget
+	}
+	proxyURL, desktopID, err := target(r.Context(), parts[0])
 
 	if proxyTargetFailed(w, r, err) {
 		return
@@ -1643,6 +1710,13 @@ func (s *Server) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 	reverseProxy := httputil.NewSingleHostReverseProxy(proxyURL)
 
 	prefix := "/agent/" + desktopID
+	// Soul takes the desktop's agent token; the person's browser never sees it.
+	director := reverseProxy.Director
+	reverseProxy.Director = func(req *http.Request) {
+		director(req)
+		req.Header.Del("Authorization")
+		s.Desktops.AuthorizeAgentRequest(req, desktopID)
+	}
 
 	r.URL.Path = strings.TrimPrefix(
 		r.URL.Path,
@@ -1654,6 +1728,7 @@ func (s *Server) agentProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reverseProxy.ModifyResponse = func(resp *http.Response) error {
+		sandboxContainerContent(resp)
 		return rewriteHTML(resp, func(body []byte) []byte {
 			rewritten := bytes.ReplaceAll(body, []byte("'/api/"), []byte("'"+prefix+"/api/"))
 			return bytes.ReplaceAll(rewritten, []byte("`/api/"), []byte("`"+prefix+"/api/"))
@@ -1886,8 +1961,16 @@ const launchScreenHTML = `<!DOCTYPE html>
       const data = await res.json();
       if (data.status === 'failed') {
         errorBox.style.display = 'block';
-        errorBox.innerHTML = '<strong>Creation Error:</strong><br>' + (data.error || data.message || 'Unknown error') +
-          '<br><a href="/" class="back-btn">&larr; Return to Dashboard</a>';
+        // The error text can carry what a desktop or a request named: text, never markup.
+        errorBox.replaceChildren();
+        const head = document.createElement('strong');
+        head.textContent = 'Creation Error:';
+        const back = document.createElement('a');
+        back.href = '/';
+        back.className = 'back-btn';
+        back.textContent = '← Return to Dashboard';
+        errorBox.append(head, document.createElement('br'), String(data.error || data.message || 'Unknown error'),
+          document.createElement('br'), back);
         statusMsg.textContent = 'Provisioning Failed';
         statusMsg.style.color = '#ef4444';
         pbar.style.background = '#ef4444';
@@ -1953,12 +2036,18 @@ func proxyTargetFailed(w http.ResponseWriter, r *http.Request, err error) bool {
 		)
 
 	default:
-		http.Error(
-			w,
-			err.Error(),
-			http.StatusInternalServerError,
-		)
+		internalError(w, "desktop proxy", err)
 	}
 
 	return true
+}
+
+// gatedAgentRoutes are the soul routes (under /agent/<id>) the gated listener forwards, each read-only: soul's health,
+// which reads nothing soul keeps. No page served on the gated listener needs more: the chat and the screen reach a
+// worker through /api/desktops/* (task records, authors, the approval gate), never soul directly.
+var gatedAgentRoutes = map[string]bool{"/api/health": true}
+
+// gatedAgentRoute reports whether the gated listener forwards method on soul's path p (already cleaned).
+func gatedAgentRoute(method, p string) bool {
+	return (method == http.MethodGet || method == http.MethodHead) && gatedAgentRoutes[p]
 }

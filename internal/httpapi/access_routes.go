@@ -51,15 +51,25 @@ func (s *Server) RegisterAccessLocalRoutes(mux *http.ServeMux) {
 
 // ActorContext returns r's context carrying who is acting: the local owner on
 // the primary listener, the signed-in user on the gated one, and nobody for
-// a desktop's own call (an agent must never approve its own action).
+// a desktop's own call (an agent must never approve its own action). With no
+// access store wired, the primary listener's person is still the local owner.
+// A person on the gated listener who has not signed in is marked as such: the
+// records name them as holding the access code (actorFrom), and no policy
+// lets them approve.
 func (s *Server) ActorContext(r *http.Request) context.Context {
 	ctx := r.Context()
-	h := s.access()
-	if h == nil || s.fromContainer(r) {
+	if s.fromContainer(r) {
 		return ctx
 	}
-	if u, ok := h.Middleware.Actor(r); ok {
-		return access.WithActor(ctx, u)
+	if h := s.access(); h != nil {
+		if u, ok := h.Middleware.Actor(r); ok {
+			return access.WithActor(ctx, u)
+		}
+	} else if !isGated(r) {
+		return access.WithActor(ctx, access.LocalOwner)
+	}
+	if isGated(r) {
+		return context.WithValue(ctx, personOnGatedKey{}, true)
 	}
 	return ctx
 }
@@ -105,9 +115,16 @@ func jsonResponseStatus(w http.ResponseWriter, status int, v any) {
 // desktop waits on is a question rather than an approval. A failure to read
 // the policies refuses (fails closed).
 func (s *Server) gateApprovalReply(ctx context.Context, desktopID string, route tasks.Route, content string) error {
+	_, err := s.decideApprovalReply(ctx, desktopID, route, content)
+	return err
+}
+
+// decideApprovalReply is gateApprovalReply, also returning what the approvals log recorded of an approval reply
+// (approval_id, outcome, decision) for its judgement; nil when no approval was decided.
+func (s *Server) decideApprovalReply(ctx context.Context, desktopID string, route tasks.Route, content string) (map[string]any, error) {
 	h := s.access()
 	if h == nil || route.Kind != tasks.RouteReply {
-		return nil
+		return nil, nil
 	}
 
 	// The task's own open intervention first: every approval the agent asks is recorded there, whether or not a note
@@ -117,24 +134,25 @@ func (s *Server) gateApprovalReply(ctx context.Context, desktopID string, route 
 		action, ok = s.pendingApproval(desktop.SanitizeID(desktopID))
 	}
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	actor, _ := access.ActorFrom(ctx) // an automated door carries none: it may not approve under a policy
 	decision, err := h.Store.Decide(actor, desktop.SanitizeID(desktopID), s.workerRoles(desktop.SanitizeID(desktopID)), route.TaskID, action, content)
 	if err != nil {
 		log.Printf("approval gate for %s: %v", desktopID, err)
-		return &ApprovalRefusedError{Status: http.StatusServiceUnavailable, Message: "The approval rules could not be read, so this reply was not sent. Try again."}
+		return nil, &ApprovalRefusedError{Status: http.StatusServiceUnavailable, Message: "The approval rules could not be read, so this reply was not sent. Try again."}
 	}
 	if decision.Allowed {
-		return nil
+		return map[string]any{"approval_id": decision.ApprovalID, "outcome": decision.Outcome,
+			"decision": decision.RecordedAs}, nil
 	}
 
 	status := http.StatusForbidden
 	if decision.Outcome == access.OutcomeHeld {
 		status = http.StatusConflict
 	}
-	return &ApprovalRefusedError{Status: status, Message: decision.Message}
+	return nil, &ApprovalRefusedError{Status: status, Message: decision.Message}
 }
 
 // pendingApproval returns the text of the approval desktopID is waiting on:
