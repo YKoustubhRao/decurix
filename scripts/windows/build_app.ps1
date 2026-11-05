@@ -65,7 +65,9 @@ function Test-LiveProcess($ProcessId) {
 # after the app was stopped) runs from System32, so its path says nothing - but
 # it works in the app's folder, and Windows will not delete a folder that is
 # somebody's working directory. Read from the process itself (64-bit layout);
-# '' for one that cannot be read.
+# '' for one that cannot be read. A type stays loaded for the life of the
+# PowerShell session, so a second run in the same window must not add it again.
+if (-not ('DecurixWorkingDirectory' -as [type])) {
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -96,6 +98,7 @@ public static class DecurixWorkingDirectory {
     }
 }
 '@
+}
 
 # Whether a process runs from, or works in, a folder.
 function Test-ProcessIn($ProcessInfo, $Folder) {
