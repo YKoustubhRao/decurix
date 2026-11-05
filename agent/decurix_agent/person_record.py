@@ -138,8 +138,10 @@ def taught(skill):
 
 
 def field_answers():
-    """[{"label", "host", "option", "source_text", "judgement"}]: the field answers the control plane keeps for this
-    desktop, each with the text of the person's judgement it was derived from ([] when none or unread)."""
+    """[{"label", "host", "option", "source_text", "source_asked", "judgement"}]: the field answers the control plane
+    keeps for this desktop, each with the text of the person's judgement it was derived from and the question that
+    judgement answered (H-PY-19; "" until the control plane sends it, and then nothing is backed) ([] when none or
+    unread)."""
 
     answer = _get(LEARNED_PATH, {"kind": FIELD_ANSWER})
     out = []
@@ -157,7 +159,8 @@ def field_answers():
         if not isinstance(said, dict) or not said.get("label") or not said.get("option"):
             continue
         out.append({"label": str(said["label"]), "host": str(said.get("host") or ""), "option": str(said["option"]),
-                    "source_text": source["text"], "judgement": str(row["derived_from"])})
+                    "source_text": source["text"], "source_asked": str(source.get("asked") or ""),
+                    "judgement": str(row["derived_from"])})
     return out
 
 

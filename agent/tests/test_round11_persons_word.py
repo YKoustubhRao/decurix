@@ -154,11 +154,12 @@ class B1_AKeptFieldAnswerIsTheControlPlanes(ThePersonsWord):
             ledger_checks.keep_answers(TASK)
         self.assertEqual(posted, [])
 
-    def learned(self, option="General", label="Cost centre", host="app", source="General, please.", actor="person"):
+    def learned(self, option="General", label="Cost centre", host="app", source="General, please.", actor="person",
+                asked="Which cost centre should the bill go to?"):
         self.control_plane(person_record.LEARNED_PATH, {"kind": person_record.FIELD_ANSWER}, {"learned": [{
             "kind": person_record.FIELD_ANSWER, "derived_from": JUDGEMENT,
             "text": json.dumps({"label": label, "host": host, "option": option}),
-            "source": {"actor": {"kind": actor}, "text": source}}]})
+            "source": {"actor": {"kind": actor}, "text": source, "asked": asked}}]})
 
     def test_the_next_task_reads_it_back_from_the_control_plane(self):
         self.learned()

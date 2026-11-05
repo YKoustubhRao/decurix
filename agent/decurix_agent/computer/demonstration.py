@@ -215,8 +215,10 @@ def start(title="", description="", task_id=""):
     env["PYTHONPATH"] = package_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
 
     with open(LOG_FILE, "a", encoding="utf-8") as output:
+        # (Isolated, like the agent: nothing from the worker's home or environment is imported - the package's own
+        # folder is put on sys.path by the command itself, as PYTHONPATH is not read under -I.)
         _process = subprocess.Popen(
-            [sys.executable, "-m", "decurix_agent.computer.demonstration", session_id],
+            [sys.executable, "-I", "-c", ISOLATED_RUN, package_root, "decurix_agent.computer.demonstration", session_id],
             env=env,
             cwd=package_root,
             stdin=subprocess.DEVNULL,
@@ -1598,6 +1600,11 @@ def _keyboard_choices(ready, after):
             continue  # the Enter that closed the list is part of the choice
         out.append(item)
     return out
+
+
+# Runs a module of the package isolated (python3 -I -c ISOLATED_RUN ROOT MODULE ARGS...): ROOT alone on sys.path.
+ISOLATED_RUN = ("import runpy, sys; root, module = sys.argv[1], sys.argv[2]; sys.path.insert(0, root); "
+                "sys.argv = [module] + sys.argv[3:]; runpy.run_module(module, run_name='__main__', alter_sys=True)")
 
 
 def main(argv=None):

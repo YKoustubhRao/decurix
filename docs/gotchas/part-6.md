@@ -160,3 +160,10 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
 - **"Some word of the option" is not "the words that pick it out".** "to" backed "Transfer to Reserve", and a bill's
   "General terms and conditions" backed a guessed "General" cost centre (R10-B2). Every word that tells the option
   apart from the other entries must be given, and a file counts only where it states that field.
+- **A daemon started as plain `python3` reads the worker's home.** Unlike the gate, the agent was not started with
+  `-I`, so a `usercustomize.py`, a `.pth` file in user site-packages, or a `PYTHON*` variable could load code into
+  it. The agent and the recorder it starts now run `python3 -I`, and they put their own folder on `sys.path`
+  themselves: from Python 3.11, `-I` puts no script folder there (review round 11).
+- **A label's value is its cell, not its line.** "Cost centre: to be decided. General terms apply." held "General"
+  on the label's line. A file now backs a pick only with the text after the label, up to the next sentence or column
+  break (`records._value_cell`).

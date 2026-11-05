@@ -1591,6 +1591,7 @@ def _succeed(run, result, checked_by, seen="", helped=False):
         # What code holds against the saved records (review round 9, R9-B3: a run's read-back passed over a value no
         # source gives, and done stood).
         found_in_ledger = _ledger_faults(text)
+        file_problems = list(problems)
         problems = list(problems) + ledger_checks.faults(found_in_ledger)
         not_made = list(not_made) + ledger_checks.not_made(found_in_ledger)
         # Code found the request's sources in at least one file the run made (FileFacts.compared_clean), and it
@@ -1606,9 +1607,19 @@ def _succeed(run, result, checked_by, seen="", helped=False):
             if decided["status"] == verify.NOT_DONE:
                 _own_run(run, False)
                 _record_verdict(run, False, why=decided["why"])
-            head = ("Not done - the files it wrote do not hold up: " if decided["status"] == verify.NOT_DONE
-                    else "Not checked - ")
-            write_final_reply(f"{head}{decided['why']}" + chr(10) * 2 + text, kind=decided["kind"], engine=SKILL_ENGINE,
+            # Said by what found it: the files the run wrote, or the records it saved in an application (a ledger
+            # finding is no file of the run's - review round 11), with what to do about each.
+            ledger_found = ledger_checks.faults(found_in_ledger)
+            if decided["status"] != verify.NOT_DONE:
+                head = "Not checked - "
+            elif ledger_found and not file_problems:
+                head = "Not done - a record it saved in the application does not hold up: "
+            elif ledger_found:
+                head = "Not done - the files it wrote and a record it saved in the application do not hold up: "
+            else:
+                head = "Not done - the files it wrote do not hold up: "
+            tail = (" " + _ledger_why(ledger_found)) if ledger_found and decided["status"] == verify.NOT_DONE else ""
+            write_final_reply(f"{head}{decided['why']}{tail}" + chr(10) * 2 + text, kind=decided["kind"], engine=SKILL_ENGINE,
                               checked=decided["checked"], gated=True,
                               verdict=verdicts.from_outcome(decided, "skill_gate"))
             return

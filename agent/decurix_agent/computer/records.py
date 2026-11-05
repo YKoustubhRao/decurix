@@ -697,15 +697,47 @@ def option_beside_label(option, label, text, offered=None):
             continue
         if not want <= set(label_words(line)):
             continue
-        own = set(_option_words(label))
-        rest = " ".join(w for w in _option_words(line) if w not in own)
-        if rest and option_backed(option, rest, offered):
+        end = _label_end(line, want)
+        if end is None:
+            continue
+        value = _value_cell(line[end:])
+        if value and option_backed(option, value, offered):
             return True
-        if not rest:
+        if not value and not line[end:].strip(" \t:-=|"):
+            # (The label alone on its line: its value is the next line's first cell.)
             after = next((l for l in lines[i + 1:] if l.strip()), "")
-            if after and option_backed(option, after, offered):
+            if after and option_backed(option, _value_cell(after), offered):
                 return True
     return False
+
+
+# Where a value cell ends: a sentence's end (a full stop, ! or ? before a space or the end), a ; or a column break (a
+# tab, a |, or two spaces or more).
+_CELL_END = re.compile(r"(?<!\d)[.!?](?=\s|$)|[;|\t]| {2,}")
+
+
+def _label_end(line, want):
+    """Where, in `line`, the label's words (label_words) end: the end of the shortest run of the line's tokens that
+    holds them all, or None."""
+
+    tokens = [(m.end(), label_words(m.group(0))) for m in re.finditer(r"[A-Za-z0-9/#]+", line)]
+    for i in range(len(tokens)):
+        got = set()
+        for j in range(i, len(tokens)):
+            got |= set(tokens[j][1])
+            if want <= got:
+                return tokens[j][0]
+    return None
+
+
+def _value_cell(text):
+    """The value cell that follows a label: its text up to the next sentence or column break, a leading ":", "-" or
+    "=" aside. A whole merged line is not one value: "Cost centre: to be decided. General terms apply." gives "to be
+    decided" (review round 11)."""
+
+    text = re.sub(r"^[\s:=\-]+", "", str(text or ""))
+    m = _CELL_END.search(text)
+    return (text[:m.start()] if m else text).strip()
 
 
 def resolved_names(task_id=None, events=None):
@@ -737,6 +769,11 @@ def _kept_answer(label, option, host, offered=None):
         if a.get("host") and host and a["host"] != host:
             continue
         if not (label_matches(a.get("label", ""), label) and same_value(a.get("option", ""), option, order="")):
+            continue
+        # The question the person answered (the control plane's, never the row's) names this field: a row cannot move
+        # an answer about one field onto another (review round 11). None given: nothing backed.
+        words = set(label_words(label))
+        if not words or not words <= set(label_words(a.get("source_asked", ""))):
             continue
         if option_backed(option, a.get("source_text", ""), offered):
             return True

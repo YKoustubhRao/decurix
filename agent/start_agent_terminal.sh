@@ -184,7 +184,10 @@ fi
 
 # Run background agent daemon with nice -n 10 so interactive GUI (Xvnc, Xorg,
 # xfce4, terminal) always has scheduling priority over background agent reasoning.
-setsid nice -n 10 python3 /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
+# python3 -I, as the gate is (decurix-entrypoint.sh): no PYTHON* variable, no user site-packages, no .pth or
+# usercustomize.py in the worker's home, and not the working directory, is read - only /opt, which vm_server.py
+# puts on sys.path itself (review round 11).
+setsid nice -n 10 python3 -I /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
 
 echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"
 
