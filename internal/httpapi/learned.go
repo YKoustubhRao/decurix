@@ -17,14 +17,20 @@ const maxLearnedBytes = 32 << 10
 //
 // The row is a derived judgement. Its author is the person who said it, taken from the judgement it cites
 // (derived_from), never from the desktop: that judgement must be a person's, on this task, of this desktop (409
-// otherwise). A desktop posts only for its own tasks (403), and only a desktop posts here (primary listener).
+// otherwise). A desktop posts only for its own tasks (403), and only a desktop posts here (primary listener). A
+// field_answer (H-PY-18) is kept only when its option stands in that judgement's text; GET ?kind=field_answer reads
+// the desktop's own such rows back (desktopLearnedList).
 func (s *Server) desktopLearnedHandler(w http.ResponseWriter, r *http.Request) {
-	if !allowMethod(w, r, http.MethodPost) {
+	if r.Method != http.MethodGet && !allowMethod(w, r, http.MethodPost) {
 		return
 	}
 	worker, fromDesktop := requestDesktop(r)
 	if !fromDesktop {
 		jsonStatusError(w, http.StatusForbidden, "only a desktop keeps what it learned here")
+		return
+	}
+	if r.Method == http.MethodGet {
+		s.desktopLearnedList(w, r, worker)
 		return
 	}
 	var body struct {
@@ -42,9 +48,9 @@ func (s *Server) desktopLearnedHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch body.Kind {
-	case tasks.JudgementCorrection, tasks.JudgementRunAnswer, tasks.JudgementLesson:
+	case tasks.JudgementCorrection, tasks.JudgementRunAnswer, tasks.JudgementLesson, tasks.JudgementFieldAnswer:
 	default:
-		jsonStatusError(w, http.StatusBadRequest, "kind must be correction, run_answer or lesson")
+		jsonStatusError(w, http.StatusBadRequest, "kind must be correction, run_answer, lesson or field_answer")
 		return
 	}
 	text := strings.TrimSpace(body.Text)
@@ -75,6 +81,16 @@ func (s *Server) desktopLearnedHandler(w http.ResponseWriter, r *http.Request) {
 	if source.DerivedFrom != "" {
 		jsonStatusError(w, http.StatusConflict, "cite the person's own judgement, not one derived from it")
 		return
+	}
+	if body.Kind == tasks.JudgementFieldAnswer {
+		if source.Secret {
+			jsonStatusError(w, http.StatusConflict, "nothing is kept from a secret answer")
+			return
+		}
+		if ok, why := checkFieldAnswer(text, source.Text); !ok {
+			jsonStatusError(w, http.StatusConflict, why)
+			return
+		}
 	}
 	// Withheld with what this desktop's records withheld (the values its person's replies held) before withhold.Text:
 	// the table is append-only, so a value that got in could never be taken out.

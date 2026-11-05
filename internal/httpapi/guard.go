@@ -49,6 +49,7 @@ var containerRoutes = []containerRoute{
 	{path: "/api/querytext"},
 	{path: "/api/desktops/memory"},
 	{path: "/api/desktops/learned"},
+	{path: "/api/desktops/judgements", readOnly: true},
 	{path: "/api/outbox"},
 	// The org's rules and skills, read only.
 	{path: "/api/knowledge", readOnly: true},

@@ -497,6 +497,9 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	// What a desktop keeps from a person's reply, kept here too when it is made (plan R8, learned.go): a desktop's
 	// callback, on this listener only.
 	mux.HandleFunc("/api/desktops/learned", s.desktopLearnedHandler)
+	// A person's judgements on the calling desktop's own tasks, for its agent to back a pick with (H-PY-18,
+	// desktop_judgements.go): this listener only.
+	mux.HandleFunc("/api/desktops/judgements", s.desktopJudgementsHandler)
 	// A run's record and bundle (plan R1, runs_routes.go): a person's, at this machine.
 	mux.HandleFunc("/api/runs/", s.humansOnly(s.runsHandler))
 	// Where something is on a screenshot, for a desktop's `gui` (grounder.go).

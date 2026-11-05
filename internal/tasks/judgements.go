@@ -33,7 +33,7 @@ func ValidJudgementID(id string) bool { return judgementIDPattern.MatchString(id
 func validJudgementKind(k string) bool {
 	switch k {
 	case JudgementAnswer, JudgementApproval, JudgementVerdict, JudgementCorrection, JudgementRunAnswer,
-		JudgementLesson, JudgementKnowledge:
+		JudgementLesson, JudgementKnowledge, JudgementFieldAnswer:
 		return true
 	}
 	return false
@@ -145,6 +145,33 @@ func (s *Store) JudgementsForTask(taskID string) ([]Judgement, error) {
 func (s *Store) JudgementsForWorker(workerID string) ([]Judgement, error) {
 	return sqlitedb.QueryAll(s.db, scanJudgement,
 		`SELECT `+judgementColumns+` FROM judgements WHERE worker_id = ? ORDER BY at_ns, rowid`, workerID)
+}
+
+// JudgementsForSkill is every judgement on each task of a worker that has a judgement naming skill (its taught
+// words, while teaching it and on its runs), oldest first.
+func (s *Store) JudgementsForSkill(workerID, skill string) ([]Judgement, error) {
+	return sqlitedb.QueryAll(s.db, scanJudgement,
+		`SELECT `+judgementColumns+` FROM judgements WHERE worker_id = ? AND task_id IN
+			(SELECT DISTINCT task_id FROM judgements WHERE worker_id = ? AND skill_name = ? AND task_id != '')
+		 ORDER BY at_ns, rowid`, workerID, workerID, skill)
+}
+
+// JudgementsOfKind is a worker's judgements of one kind (what its desktop kept, by kind), oldest first.
+func (s *Store) JudgementsOfKind(workerID, kind string) ([]Judgement, error) {
+	return sqlitedb.QueryAll(s.db, scanJudgement,
+		`SELECT `+judgementColumns+` FROM judgements WHERE worker_id = ? AND kind = ? ORDER BY at_ns, rowid`, workerID, kind)
+}
+
+// InterventionRequest is the question an intervention asked (its request), "" when there is none.
+func (s *Store) InterventionRequest(id string) string {
+	if id == "" {
+		return ""
+	}
+	var request string
+	if err := s.db.QueryRow(`SELECT request FROM interventions WHERE id = ?`, id).Scan(&request); err != nil {
+		return ""
+	}
+	return request
 }
 
 // SetVerdict records a person's verdict on a finished task (correct or wrong, or "" to clear it), and the verdict

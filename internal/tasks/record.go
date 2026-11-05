@@ -79,6 +79,9 @@ const (
 	JudgementRunAnswer  = "run_answer"
 	JudgementLesson     = "lesson"
 	JudgementKnowledge  = "knowledge"
+	// JudgementFieldAnswer is what a desktop kept of a person's answer for one field of an application's list: JSON
+	// {"label", "host", "option"}, derived from that person's judgement, whose text names the option (H-PY-18).
+	JudgementFieldAnswer = "field_answer"
 )
 
 // Judgement is one human input, stored append-only with its author: an answer to a question, an approval, a verdict
