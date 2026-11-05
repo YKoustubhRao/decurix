@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/YKoustubhRao/decurix/internal/tasks"
@@ -116,6 +117,9 @@ type desktopLearnedRow struct {
 			Kind string `json:"kind"`
 		} `json:"actor"`
 		Text string `json:"text"`
+		// Asked is the question the source judgement answered: the agent backs a pick with the row only when the
+		// row's label stands in it (H-PY-19). "" for a secret source.
+		Asked string `json:"asked"`
 	} `json:"source"`
 }
 
@@ -144,6 +148,7 @@ func (s *Server) desktopLearnedList(w http.ResponseWriter, r *http.Request, work
 			row.Source.Actor.Kind = source.Actor.Kind
 			if !source.Secret {
 				row.Source.Text = source.Text
+				row.Source.Asked = s.Tasks.InterventionRequest(source.InterventionID)
 			}
 		}
 		out = append(out, row)
@@ -158,9 +163,54 @@ type fieldAnswer struct {
 	Option string `json:"option"`
 }
 
+// The words of a field's label, as the agent reads them (agent/decurix_agent/computer/records.py label_words): runs of
+// lowercase letters, digits, "/" and "#", each synonym as its word, filler dropped. Kept the same on both sides, so
+// the control plane never keeps a row the agent's read would refuse, nor refuses one it would take.
+var (
+	labelWordPattern = regexp.MustCompile(`[a-z0-9/#]+`)
+	labelFiller      = map[string]bool{"of": true, "the": true, "a": true, "an": true, "in": true, "rs": true, "inr": true,
+		"usd": true, "per": true, "dd": true, "mm": true, "yyyy": true, "yy": true, "and": true}
+	labelSynonyms = map[string]string{"no": "number", "num": "number", "#": "number", "nbr": "number", "ref": "reference",
+		"amt": "amount", "qty": "quantity", "dt": "date", "a/c": "account", "ac": "account"}
+)
+
+// labelWords is s's label words (above).
+func labelWords(s string) []string {
+	var out []string
+	for _, w := range labelWordPattern.FindAllString(strings.ToLower(s), -1) {
+		if syn, ok := labelSynonyms[w]; ok {
+			w = syn
+		}
+		if !labelFiller[w] {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// labelInQuestion reports whether every word of label stands, as a whole word, in the question asked: an answer
+// about one field is never kept for another (H-PY-19).
+func labelInQuestion(label, asked string) bool {
+	words := labelWords(label)
+	if len(words) == 0 {
+		return false
+	}
+	have := map[string]bool{}
+	for _, w := range labelWords(asked) {
+		have[w] = true
+	}
+	for _, w := range words {
+		if !have[w] {
+			return false
+		}
+	}
+	return true
+}
+
 // checkFieldAnswer reports whether text is a field_answer whose option stands in source (the person's judgement it
-// is derived from), its spacing collapsed on both sides: a row that does not name what the person said is refused.
-func checkFieldAnswer(text, source string) (ok bool, why string) {
+// is derived from), its spacing collapsed on both sides, and whose label names a field the question it answered
+// (asked) names: a row that does not stand on what the person was asked and said is refused.
+func checkFieldAnswer(text, source, asked string) (ok bool, why string) {
 	var fa fieldAnswer
 	if err := json.Unmarshal([]byte(text), &fa); err != nil || strings.TrimSpace(fa.Label) == "" ||
 		strings.TrimSpace(fa.Option) == "" || len(fa.Label) > 500 || len(fa.Host) > 255 || len(fa.Option) > 500 {
@@ -169,6 +219,9 @@ func checkFieldAnswer(text, source string) (ok bool, why string) {
 	option := strings.Join(strings.Fields(fa.Option), " ")
 	if !strings.Contains(strings.Join(strings.Fields(source), " "), option) {
 		return false, "the option is not in what the person said"
+	}
+	if !labelInQuestion(fa.Label, asked) {
+		return false, "the field is not one the person was asked about"
 	}
 	return true, ""
 }

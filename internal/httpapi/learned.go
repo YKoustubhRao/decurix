@@ -87,7 +87,7 @@ func (s *Server) desktopLearnedHandler(w http.ResponseWriter, r *http.Request) {
 			jsonStatusError(w, http.StatusConflict, "nothing is kept from a secret answer")
 			return
 		}
-		if ok, why := checkFieldAnswer(text, source.Text); !ok {
+		if ok, why := checkFieldAnswer(text, source.Text, s.Tasks.InterventionRequest(source.InterventionID)); !ok {
 			jsonStatusError(w, http.StatusConflict, why)
 			return
 		}

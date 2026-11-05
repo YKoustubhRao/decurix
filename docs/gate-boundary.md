@@ -316,6 +316,84 @@ accessibility bus under the screen user; (5) the agent's own user; every row pas
 - **What `gui` describes.** `about` (what an action acts on) and the control's name come from the worker's side of
   the screen; the gate words its question from them. A misleading description gets a grant only for that description.
 - **A fixed `hostgui.key`** change (e.g. after a restore onto another machine) changes every derived key: recreate desktops.
+## What the control plane takes from a desktop, by input class (2026-11-05)
+
+- **A person's reply** comes from the control plane's own door, signed when it is an approval. Its boundary is
+  built: the gate.
+- **A request for a yes** (`check`) is the gate's to decide. It is never a grant.
+- **A task's outcome** (`POST /api/querytext`: the final reply, `checked`, the structured verdict, the skill and the
+  spend) is taken from **any process in the desktop**. The agent, the worker's shell and a learned script look the
+  same.
+- **What a desktop kept** (`POST /api/desktops/learned`) is held to a person's own judgement on that desktop's task
+  (`derived_from`).
+  - The judgement must be the person's own: with a role, not derived from another row, on that task.
+  - For a `field_answer`, two more checks:
+    - the option must stand in that judgement's text;
+    - the row's label must name a field the question it answered names (each label word as a whole word, by the
+      agent's own label rule).
+  - A worker can post one, but only of what the person said, to what they were asked.
+- **Reads** of its own judgements, learned rows and knowledge (`GET /api/desktops/judgements`,
+  `/api/desktops/learned`, `/api/knowledge`) are reads only, of its own rows. A secret judgement's text is never sent.
+- **Who the caller is.** The desktop doors (`containerRoutes`) are on the primary listener only, never the gated one.
+  - The caller is identified by its address on its own network (`requestDesktop`, `callerDesktop`). Each desktop is
+    on a network of its own, NET_RAW is dropped and the worker is not root, so one desktop cannot speak with
+    another's address.
+  - Every such route answers for the calling desktop only, whatever the request names (`desktopReads` says why for
+    each one).
+  - The address names the desktop, not the process in it. No token is asked of the agent on these calls: the agent
+    token is for the control plane's calls to desktops, and the worker can read it anyway (above).
+- **The gap.** The outcome class has no boundary. A worker can report its own task "done, checked", and the queue, the
+  DAG and the person's view take it as the final gate's verdict. The gate's yes cannot be forged; the gate's verdict
+  can.
+- **What closes it.** An agent-signed callback: an agent key the worker cannot read, bound to the task and a
+  control-plane nonce (proposed by PY, not built).
+- **Until then, a desktop's `checked` and `done` are a claim of that desktop, not proof.** Nothing downstream that
+  moves money or chains work should rest on them alone, without a person or an independent read (the ledger read
+  back, an independent basis).
+
+## Between desktops: the network, the fence, the screen password (2026-11-05)
+
+- **A network per desktop.** Each desktop is on a bridge network of its own (`decurix-vm-<id>`, a /28 of
+  `DECURIX_DESKTOP_SUBNETS`), so none reaches another's 5901, 6901 or 8081.
+  - The control plane joins each one with the lowest gateway priority, so its default route and published ports
+    stay on decurix-network.
+  - The model server is on no desktop network. Every desktop reaches the local model only through the control
+    plane's allow-listed proxy (`/api/native-ollama`): no pull, delete or create, and no unload or reload of the
+    shared model (keep_alive and num_ctx are the proxy's).
+  - A desktop made before this is on the shared decurix-network until it is recreated, and its card says so.
+- **The Windows app's WSL host runs Docker with iptables off**, so dockerd.sh keeps the desktops apart with two rules,
+  put first on every start (a kept daemon included) and checked after adding:
+  - **the fence**: `-s 10.213.0.0/16 -d 10.213.0.0/16 -m physdev ! --physdev-is-bridged -j DROP` drops traffic routed
+    between desktop networks. A network's own bridged frames pass, br_netfilter on or off;
+  - **the guard**: mangle `! -s 10.212.0.0/15 -d 10.212.0.0/15 -m conntrack --ctstate NEW -j DROP` drops new
+    connections forwarded into Decurix's range from outside it. A sibling distro's container would otherwise come in
+    masqueraded as decurix-network's gateway, the address the control plane takes for the person.
+- **On that host, a desktop runs only while both rules hold.**
+  - dockerd.sh writes what holds to `/tmp/decurix-wsl/fence`.
+  - While it says anything but ok, no desktop is made, started or woken: the two ways a desktop runs,
+    `startDesktopContainer` and `wakeDesktop`, both ask `requireFence`.
+  - `/api/docker/status` says `fence_missing`, and every page shows a banner.
+  - A `DECURIX_DESKTOP_SUBNETS` outside the fence's pool is refused.
+- **Elsewhere** (Linux, a Mac's Docker Desktop), Docker's own per-bridge rules keep desktop networks apart. That
+  holds unless another tool's FORWARD rule accepts the traffic first (libvirt, a second daemon).
+- **The person is decurix-network's gateway alone**, never another network's gateway or a default route Docker did
+  not name. An address is a weak signal on its own: the WSL guard is what keeps a routed container from wearing it.
+- **The screen password is readable by its own worker.** Xvnc, the XFCE session and noVNC run as the worker's uid
+  with VNC_PW in their environment, and the password file is the worker's (TigerVNC's obfuscation is a fixed key).
+  - It is unset for the agent and everything it starts, and the control plane holds it as a value to withhold for
+    the desktop's life.
+  - It is withheld from every record the control plane keeps (`withhold.Text`, and the stores where a desktop writes),
+    from recorded model calls, and in every task's values given to the gate.
+  - **Not covered:**
+    - handoffs, the outbox, runs and trajectory bundles, eval output, and log lines that echo desktop text;
+    - what the desktop keeps on its own side;
+    - images showing it;
+    - any transformed form of it (case, splitting, encoding);
+    - records written before start-up holds it again.
+  - With a network per desktop no other desktop can reach a screen, so the password matters on the worker's own
+    desktop only.
+  - Running Xvnc as a uid of its own is the fix (an owner decision).
+
 ## The deep review (2026-11-03)
 
 **One rule for an approval-class reply.** Keeping a parked finding, starting a workflow stage, and running a held

@@ -114,8 +114,14 @@ func TestAFieldAnswerStandsOnWhatThePersonSaid(t *testing.T) {
 		want int
 	}{
 		"an option the person did not say": {"box", field("Net 60"), http.StatusConflict},
-		"a text that is no field":          {"box", map[string]any{"task_id": task, "kind": "field_answer", "derived_from": answer, "text": "Net 30"}, http.StatusConflict},
-		"another desktop's posting":        {"eve", field("Net 30"), http.StatusForbidden},
+		"a field the person was not asked about": {"box", func() map[string]any {
+			b := field("Net 30")
+			text, _ := json.Marshal(fieldAnswer{Label: "Delivery terms", Host: "erp.example.test", Option: "Net 30"})
+			b["text"] = string(text)
+			return b
+		}(), http.StatusConflict},
+		"a text that is no field":   {"box", map[string]any{"task_id": task, "kind": "field_answer", "derived_from": answer, "text": "Net 30"}, http.StatusConflict},
+		"another desktop's posting": {"eve", field("Net 30"), http.StatusForbidden},
 	} {
 		if rec := postLearned(t, s, c.from, c.body); rec.Code != c.want {
 			t.Errorf("%s: %d %s, want %d", name, rec.Code, rec.Body, c.want)
@@ -133,6 +139,7 @@ func TestAFieldAnswerStandsOnWhatThePersonSaid(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &learned)
 	if rec.Code != http.StatusOK || len(learned.Learned) != 1 || learned.Learned[0].ID != created.ID || learned.Learned[0].DerivedFrom != answer ||
 		learned.Learned[0].Source.Actor.Kind != tasks.ActorPerson || learned.Learned[0].Source.Text != "Net 30, as always" ||
+		learned.Learned[0].Source.Asked != "Which payment terms?" ||
 		!strings.Contains(learned.Learned[0].Text, `"option":"Net  30"`) {
 		t.Fatalf("read back: %d %s", rec.Code, rec.Body)
 	}
@@ -175,6 +182,30 @@ func TestTheDesktopsJudgementDoorsArePrimaryOnly(t *testing.T) {
 		gated.ServeHTTP(rec, req)
 		if rec.Code == http.StatusOK || strings.Contains(rec.Body.String(), "judgements") || strings.Contains(rec.Body.String(), `"learned"`) {
 			t.Errorf("%s is served on the gated listener: %d %s", path, rec.Code, rec.Body)
+		}
+	}
+}
+
+// A label's words stand in the question as the agent reads them: case, punctuation, filler and synonyms aside, each a
+// whole word (H-PY-19).
+func TestAFieldAnswersLabelMustBeInTheQuestion(t *testing.T) {
+	for _, c := range []struct {
+		label, asked string
+		want         bool
+	}{
+		{"Payment terms", "Which payment terms?", true},
+		{"Payment Terms:", "What are the PAYMENT terms for this vendor?", true},
+		{"Invoice No.", "Which invoice number goes here?", true},
+		{"Amt", "What amount?", true},
+		{"Terms", "Which payment terms?", true},
+		{"Delivery terms", "Which payment terms?", false},
+		{"Term", "Which payment terms?", false},
+		{"Due date", "Which date?", false},
+		{"", "Which payment terms?", false},
+		{"Payment terms", "", false},
+	} {
+		if got := labelInQuestion(c.label, c.asked); got != c.want {
+			t.Errorf("labelInQuestion(%q, %q) = %v, want %v", c.label, c.asked, got, c.want)
 		}
 	}
 }
