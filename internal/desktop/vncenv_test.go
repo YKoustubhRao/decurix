@@ -3,6 +3,7 @@ package desktop
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -16,12 +17,16 @@ func TestTheAgentStartsWithoutTheScreenPassword(t *testing.T) {
 	}
 	script := string(raw)
 	unset := strings.Index(script, "unset VNC_PW")
-	agent := strings.Index(script, "python3 /opt/vm_server.py")
-	soul := strings.Index(script, "/opt/soul")
-	if unset < 0 || agent < 0 || soul < 0 {
-		t.Fatalf("unset at %d, agent at %d, soul at %d", unset, agent, soul)
+	// The agent's launch line, whatever flags python3 takes (round 12 added -I).
+	agent := regexp.MustCompile(`python3(\s+-\S+)*\s+/opt/vm_server\.py`).FindStringIndex(script)
+	if agent == nil {
+		t.Fatalf("no vm_server.py launch line in the start script")
 	}
-	if unset > agent || unset > soul {
+	soul := strings.Index(script, "/opt/soul")
+	if unset < 0 || soul < 0 {
+		t.Fatalf("unset at %d, agent at %d, soul at %d", unset, agent[0], soul)
+	}
+	if unset > agent[0] || unset > soul {
 		t.Fatal("VNC_PW is unset only after the agent or soul starts")
 	}
 }

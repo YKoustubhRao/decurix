@@ -17,6 +17,8 @@ CHECKS = {
     "file_facts", "file_notes", "repeated_rows", "coverage", "removed_residue", "removed_still_there", "status_conflicts",
     "filler_values", "lost_findings", "reply_coverage", "system_entry", "lost_sheets", "app_emptied", "files_open", "summary_totals",
     "draft_facts", "draft_fields", "source_guard", "repeated_rows_quiet", "typed_doubtful", "payee_approval",
+    # the shared ledger findings (round 10, R9-B3): advisory at a stage; the final report blocks on them
+    "ledger_findings",
     # system_entry_findings' (certain, and evidence)
     "system_entry_text",
     # _left_undone_found's

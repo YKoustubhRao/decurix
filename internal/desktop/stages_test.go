@@ -3,6 +3,7 @@ package desktop
 import (
 	"context"
 	"io"
+	"io/fs"
 	"slices"
 	"strings"
 	"testing"
@@ -42,6 +43,15 @@ func (b *builder) ImagesPrune(context.Context, filters.Args) (image.PruneReport,
 
 func (b *builder) ImageTag(context.Context, string, string) error { return nil }
 
+// needTheBotSource skips a build test in a checkout where `go generate .` has not packed TheBot's sources into the
+// embedded build context (a fresh clone): BuildImages refuses to build without them, so there is nothing to observe.
+func needTheBotSource(t *testing.T) {
+	t.Helper()
+	if _, err := fs.Stat(decurix.DesktopBuildContext, decurix.TheBotSource); err != nil {
+		t.Skip("TheBot's sources are not packed into the build context; run `go generate .` at the repository root")
+	}
+}
+
 // A Dockerfile's builder stages are built and tagged before the image, so the stage's cache is a tagged image the
 // prune never takes; the prune runs after a build that succeeded, never after one that failed (review RES-CP-1).
 func TestBuilderStagesAreTaggedAndPrunedOnlyAfterSuccess(t *testing.T) {
@@ -58,6 +68,7 @@ func TestBuilderStagesAreTaggedAndPrunedOnlyAfterSuccess(t *testing.T) {
 		t.Errorf("stage tag %q", got)
 	}
 
+	needTheBotSource(t)
 	b := &builder{fakeAPI: &fakeAPI{}}
 	m := newManagerWith(b)
 	if err := m.BuildImages(context.Background(), io.Discard, false, "desktop"); err != nil {
@@ -83,6 +94,7 @@ func TestBuilderStagesAreTaggedAndPrunedOnlyAfterSuccess(t *testing.T) {
 // Every build removes its intermediate containers, a failed step's too (ForceRemove: the legacy builder keeps a failed
 // step's container with Remove alone).
 func TestABuildLeavesNoIntermediateContainers(t *testing.T) {
+	needTheBotSource(t)
 	for _, fail := range []bool{false, true} {
 		b := &builder{fakeAPI: &fakeAPI{}, fail: fail}
 		_ = newManagerWith(b).BuildImages(context.Background(), io.Discard, false, "desktop")
