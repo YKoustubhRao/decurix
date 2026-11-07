@@ -171,6 +171,13 @@ class CommandTest(unittest.TestCase):
         rows = (self.out / "e1" / "rows.jsonl").read_text(encoding="utf-8").splitlines()
         self.assertEqual([json.loads(r)["case_id"] for r in rows], ["c1", "c2"])
         self.assertIn("3/4 rows", said)
+        self.assertNotIn("carry_state", sent)  # never the default
+
+    def test_carry_state_is_asked_for_only_with_its_flag(self):
+        code, said = self.main("run", "--suite", str(EVALS / "suites" / "core-v1"), "--arm", "default",
+                               "--repeats", "5", "--carry-state", "--detach")
+        self.assertEqual(code, 0, said)
+        self.assertEqual(FakeControlPlane.started[0]["carry_state"], b"1")
 
     def test_an_arm_at_a_rev_sends_its_tree(self):
         full = "eb15981" + "0" * 33

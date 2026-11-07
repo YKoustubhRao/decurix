@@ -421,6 +421,12 @@ class TeachingBase(unittest.TestCase):
             mock.patch.object(skill_task, "ask_for_query", self._ask_for_query),
             mock.patch.object(skill_task, "write_final_reply", lambda text, kind="final", engine=None, **kw: self.finals.append((text, kind))),
             mock.patch.object(skill_task.usage, "add"),
+            # The facts of the reply being handled now (watchers.answer_waiting) are no part of this test: an earlier
+            # module's secret reply left state.reply_secret set, and skill_task._correct then kept no correction (the
+            # module-order failure of test_apprentice, rounds 10 and 11). Each test starts with no reply handled.
+            mock.patch.object(state, "reply_secret", False),
+            mock.patch.object(state, "reply_judgement", ""),
+            mock.patch.object(state, "last_query_secret", False),
         ]
         for patch in patches:
             patch.start()

@@ -184,7 +184,7 @@ class ShellOnlyWork(unittest.TestCase):
                         "verdict": verify.UNSURE, "confidence": 0.0, "seen": "", "why": "no model"}), \
                     mock.patch.object(skill_task.guidance, "refused", lambda: None), \
                     mock.patch.object(skill_task.guidance, "end", lambda: None), \
-                    mock.patch.object(skill_task.source_guard, "check_and_restore", lambda *a: ""), \
+                    mock.patch.object(skill_task.source_guard, "changed_sources", lambda *a: []), \
                     mock.patch.object(skill_task.source_guard, "tidy_own_backups", lambda *a: None), \
                     mock.patch.object(skill_task.source_guard, "resaved", lambda *a: []):
                 self.assertTrue(skill_task._gate("Done.", "final", "thebot"))

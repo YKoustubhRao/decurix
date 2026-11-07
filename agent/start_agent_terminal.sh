@@ -210,6 +210,8 @@ if [ "$AGENT_HARNESS" = "thebot" ] && [ -x /opt/soul ]; then
     # one; it replaced a hardcoded Cloudflare quick-tunnel URL that stopped
     # resolving as soon as that tunnel was restarted.
     export OLLAMA_HOST="${OLLAMA_URL:-http://host.docker.internal:11434}"
+    # The control plane always passes OLLAMA_MODEL; the fallback is its own default (internal/ollama.Model), as
+    # soul's (CHAT_MODEL in agent/thebot/internal/config) and the Python agent's (config.py) are.
     export CHAT_MODEL="${OLLAMA_MODEL:-devstral-small-2:24b}"
     # Coding builds can run on their own model (see TheBot's internal/llm
     # Models.ForTaskType): a build sends the longest prompts the agent ever

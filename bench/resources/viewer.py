@@ -51,7 +51,8 @@ POLLS = (
 
 # Timers the page keeps that ask nothing while it sits open (see the module's docstring): named so the check against
 # the templates accounts for every one.
-SILENT = ("refreshTunnel", "refreshQueryBadge", "checkProvisioningDesktops")
+SILENT = ("refreshTunnel", "refreshQueryBadge", "checkProvisioningDesktops",
+          "pollOpenRecordings")  # only a card's Recordings drawer a person opened asks its desktop
 
 _CARD = re.compile(r'<article class="dcard" data-desktop-id="([^"]+)">(.*?)</article>', re.S)
 

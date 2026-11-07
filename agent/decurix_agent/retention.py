@@ -22,6 +22,10 @@ A labelled run that is not yet exported is held: neither prune deletes anything 
 left, nothing is deleted, and that is said (a log line, at most hourly) - the disk fills visibly instead of labels
 vanishing silently, and the export clears it. Exported runs are pruned as before.
 
+Soul's trace of a run (~/.decurix/ai/traces/<task>.jsonl, up to 32 MB a task, and <task>.rules beside it) is pruned
+here too (prune_traces), at the end of each run: only once the run was exported, no later label holds it again, and
+it is older than TRACE_KEEP_SECONDS. A trace whose run was never exported is never deleted.
+
 None of this ever raises into a task: what cannot be marked is logged, and what cannot be read is held.
 """
 
@@ -41,6 +45,8 @@ MANIFEST_SCHEMA = "decurix.run-manifest/v1"
 LABELS = ("final", "reply")
 # How often the "kept past the budget" line is said at most, across processes (the `gui` command is a process per run).
 WARN_EVERY_SECONDS = 3600
+# How long an exported run's soul trace stays on the desktop after it was last written.
+TRACE_KEEP_SECONDS = 3 * 24 * 3600
 
 
 def runs_root():
@@ -130,6 +136,57 @@ def soul_sha():
 _soul_sha = {}
 
 
+def traces_root():
+    """Where soul writes its traces (agent/thebot internal/trace: WORKSPACE_ROOT/traces, ~/.decurix/ai/traces)."""
+
+    return config.DECURIX_DIR / "ai" / "traces"
+
+
+def rules_sha(task_id):
+    """
+    "sha256:<hex>" of the operator's rules text soul's latest job of the task was given (trace.Rules writes it to
+    traces/<task>.rules), or "" when soul gave none (a local brain, another harness) or it cannot be read.
+    """
+
+    try:
+        text = (traces_root() / f"{task_id}.rules").read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return ""
+    if text.startswith("sha256:") and len(text) == 71 and all(c in "0123456789abcdef" for c in text[7:]):
+        return text
+    return ""
+
+
+def prune_traces(keep_seconds=None, now=None):
+    """
+    Delete soul's trace (and rules note) of each run that was exported, is not held again by a later label, and was
+    last written more than keep_seconds ago (TRACE_KEEP_SECONDS). Never a trace whose run was not exported. Returns
+    how many files went. Never raises.
+    """
+
+    keep = TRACE_KEEP_SECONDS if keep_seconds is None else keep_seconds
+    cutoff = (time.time() if now is None else now) - keep
+    gone = 0
+    try:
+        paths = list(traces_root().glob("*.jsonl")) + list(traces_root().glob("*.rules"))
+    except OSError:
+        return 0
+    for path in paths:
+        task_id = path.name.rsplit(".", 1)[0]
+        try:
+            if not task_context.valid(task_id) or path.stat().st_mtime >= cutoff:
+                continue
+            if not exported(task_id) or held(task_id):
+                continue
+            path.unlink()
+            gone += 1
+        except OSError:
+            continue
+        except Exception as exc:  # noqa: BLE001 - pruning is housekeeping; when in doubt, keep
+            log(f"retention: could not prune the trace {path.name}: {exc}")
+    return gone
+
+
 def _parts(task_id):
     """The run's parts that exist, as paths under ~/.decurix (C8)."""
 
@@ -159,11 +216,13 @@ def write_manifest(task_id):
             "schema": MANIFEST_SCHEMA, "task_id": task_id, "desktop_id": config.DESKTOP_ID,
             "agent_sha": agent_sha(), "soul_sha": soul_sha(), "harness": config.AGENT_HARNESS,
             "brain": getattr(config, "BRAIN", ""), "parts": _parts(task_id), "ended_at": int(time.time()),
-            "labelled_by": list(data.get("labelled_by") or []),
+            "labelled_by": list(data.get("labelled_by") or []), "rules_sha": rules_sha(task_id),
         })
         if started and "started_at" not in data:
             data["started_at"] = int(started)
         _write_manifest(task_id, data)
+        # Housekeeping at each run's end: the traces of runs exported days ago leave the desktop.
+        prune_traces()
         return data
     except Exception as exc:  # noqa: BLE001 - decoration for the task
         log(f"retention: could not write the run's manifest for {task_id}: {exc}")

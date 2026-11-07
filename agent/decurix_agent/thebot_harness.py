@@ -5,8 +5,8 @@ import time
 import urllib.error
 import urllib.request
 
-from decurix_agent import (app_skills, attachments, config, guidance, methods, playbooks, progress, state, task_context,
-                           usage)
+from decurix_agent import (app_skills, attachments, config, guidance, methods, org_knowledge, playbooks, progress, state,
+                           task_context, usage)
 from decurix_agent.computer import approval
 from decurix_agent.identity import get_identity_context
 from decurix_agent.logging_utils import log, log_banner
@@ -35,7 +35,8 @@ EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 # inside it. This harness only ever submits a request over HTTP and follows
 # the real job to completion - it does not reimplement any of TheBot's
 # reasoning. Exposes the same perform_task/continue_after_query signatures
-# so harness.py can dispatch to it interchangeably with the other two.
+# so harness.py can dispatch to it interchangeably with the other harnesses
+# (claude, azure, ollama; new desktops all run this one).
 #
 # The job is followed over soul's own SSE stream rather than polled, so
 # every reasoning step it emits reaches the Decurix chat live through
@@ -365,6 +366,11 @@ def _build_context(extra=""):
     if taught:
         parts.append(taught)
 
+    # What the organisation told this worker (org_knowledge.py): the org's, its roles', its own and this task's rules
+    # and facts, so a rule like "never pay without a purchase order" reaches a request no skill covers. Read once per
+    # task (org_context), so every job of the task sends the same lines.
+    org_index = len(parts)
+
     # Guides to the well-known apps this task names (app_skills.py): how they are worked on this desktop - the keys
     # that reach them, their dialogs, how to save. Matched on the task's words, so a task that names no app pays nothing.
     guides = app_skills.context(attachments.text(state.current_task or ""))
@@ -376,6 +382,11 @@ def _build_context(extra=""):
     guided = guidance.text()
     if guided:
         parts.append(guided)
+
+    # A taught task's procedure already carries the org lines (skill_task._taught): they are not said twice.
+    org = org_context(skip=guided)
+    if org:
+        parts.insert(org_index, org)
 
     # What worked the last time this desktop did a request like this one
     # (playbooks.py): the way through, so it is not found out again. Only for
@@ -413,6 +424,30 @@ def _build_context(extra=""):
         parts.append(extra)
 
     return "\n\n".join(parts)
+
+
+# The organisation's lines this task was given, read once per task: {"task": id, "lines": [...]}. A task's jobs (the
+# final check sending it back, a reply to its question) then carry the same standing context, byte for byte, however
+# long the task runs. A read that found nothing is not kept, so the next job tries again.
+_org_for_task = {"task": None, "lines": []}
+
+
+def org_context(skip=""):
+    """
+    The organisation's knowledge for this request's standing context (org_knowledge.standing_context): org, this
+    worker's roles, this worker and this task, secrets withheld, bounded. Never in the operator's fixed prompt, whose
+    bytes stay the same across every call. "" when there is none or it cannot be read; never raises.
+    """
+
+    try:
+        task = task_context.current() or ""
+        if not (task and _org_for_task["task"] == task and _org_for_task["lines"]):
+            lines = org_knowledge.cached(task_id=task or None)
+            _org_for_task.update(task=task, lines=list(lines))
+        return org_knowledge.standing_context(_org_for_task["lines"], skip=skip)
+    except Exception as exc:  # noqa: BLE001 - the org's lines are an addition; a task never fails for want of them
+        log(f"TheBot: could not read the organisation's knowledge: {exc}")
+        return ""
 
 
 # ------------------------------------------------------------
@@ -739,6 +774,8 @@ def _brain_name():
         return f"Claude ({config.BRAIN_MODEL or 'hosted'})"
     if config.BRAIN == "azure":
         return f"Azure OpenAI ({config.BRAIN_MODEL or 'hosted'})"
+    if config.BRAIN == "openai":
+        return f"an OpenAI-compatible model ({config.BRAIN_MODEL or 'hosted'})"
     return config.OLLAMA_MODEL
 
 

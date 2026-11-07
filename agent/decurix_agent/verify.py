@@ -29,6 +29,8 @@ DONE_CONFIDENCE = 0.8
 # code checks' evidence), and how many things it may ask to look up when a part it needs was not shown.
 MAX_TASK_CHARS = 20000
 MAX_LOOK = 6
+# How many changed files one verdict may name to put back (`put_back`).
+MAX_PUT_BACK = 20
 
 DONE, NOT_DONE, UNSURE, CANNOT = "done", "not_done", "unsure", "cannot"
 
@@ -108,9 +110,13 @@ JUDGE_SYSTEM = (
     "Answer \"unsure\" whenever you cannot tell from what you are shown. Never guess \"done\". When you are unsure only "
     "because a part of a file you need is not shown (a row, a person, a section), add \"look\": up to 6 exact words to "
     "find in the files (a row's reference, a name, a heading) - you will be shown the lines that hold them.\n"
+    "When the facts checked in code say that a file the request gives changed during the task, decide from the "
+    "request's words whether it asked for that file itself to change. When it did not, add \"put_back\": [that file's "
+    "name] - the original, kept before the task, is put back in its place; the rest of the work is judged as usual. "
+    "Never name a file whose change the request asks for, or one the facts do not say changed.\n"
     "Reply with JSON only: {\"verdict\": \"done\"|\"not_done\"|\"cannot\"|\"unsure\", \"confidence\": 0.0-1.0, "
     "\"seen\": \"what the screen now shows (or, with no screen, what the files show), one sentence\", "
-    "\"why\": \"one sentence\", \"look\": [optional]}"
+    "\"why\": \"one sentence\", \"look\": [optional], \"put_back\": [optional]}"
 )
 
 
@@ -367,9 +373,13 @@ def false_sums(text):
 
     from decimal import Decimal, InvalidOperation
 
+    from decurix_agent import values
+
     out = false_item_totals(text)
     for m in _SUM.finditer(text or ""):
         left, stated = m.group(1), m.group(2)
+        if values.range_count(text[:m.start()], left, stated):
+            continue  # "Rows 2 - 10 = 9": a range of numbered things and its count, not a subtraction
         parts = _sum_terms(left)
         if parts is None:
             continue  # not read with certainty: not decided
@@ -675,8 +685,15 @@ def _parse(text):
     except (TypeError, ValueError):
         confidence = 0.0
     look = data.get("look") if isinstance(data.get("look"), list) else []
-    return {"verdict": verdict, "confidence": confidence,
-            "seen": " ".join(str(data.get("seen") or "").split())[:400],
-            "why": " ".join(str(data.get("why") or "").split())[:400],
-            "look": [" ".join(str(t).split())[:80] for t in look if str(t).strip()][:MAX_LOOK]}
+    found = {"verdict": verdict, "confidence": confidence,
+             "seen": " ".join(str(data.get("seen") or "").split())[:400],
+             "why": " ".join(str(data.get("why") or "").split())[:400],
+             "look": [" ".join(str(t).split())[:80] for t in look if str(t).strip()][:MAX_LOOK]}
+    # The files whose change the request did not ask for (JUDGE_SYSTEM): a list of names, or nothing. Only the gate
+    # decides what it points at, and only among the files source_guard saw change (source_guard.named_in).
+    back = data.get("put_back") if isinstance(data.get("put_back"), list) else []
+    back = [" ".join(str(t).split())[:300] for t in back if isinstance(t, str) and t.strip()][:MAX_PUT_BACK]
+    if back:
+        found["put_back"] = back
+    return found
 

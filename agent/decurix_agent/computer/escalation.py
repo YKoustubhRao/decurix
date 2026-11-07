@@ -22,8 +22,10 @@ from decurix_agent.computer.errors import ComputerError
 #
 #   1. Heal    healing.py: score every candidate on name, container, neighbours,
 #              position and role; take one only if it clearly stands out. No model.
-#   2. Ground  ask the desktop's own engine (harness.ask_model - Ollama, Claude
-#              or TheBot, whichever this desktop runs) to choose among the
+#   2. Ground  ask a model (harness.ask_model: the hosted model answers first
+#              when the control plane has one; otherwise, or when it fails on a
+#              desktop whose brain is not the hosted one, the desktop's own
+#              engine - Ollama, Claude or TheBot) to choose among the
 #              candidates the screen actually has. It may pick from that list
 #              or say it is unsure; it cannot invent a control, and a strict
 #              step (see healing.strict) never reaches it.

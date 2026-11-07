@@ -123,6 +123,25 @@ class AnIbanIsOneByItsChecksum(_Dir):
         self.assertEqual(payees.mismatches("", [summary], found=([master], [])), [])
         self.assertEqual(payees.unchecked("", [summary], found=([master], [])), [])
 
+    def test_an_unknown_country_with_good_check_digits_is_not_checked_never_fine(self):
+        # Review round 2 leftover: a token of IBAN shape whose check digits hold, for a country whose IBAN length is
+        # not known here, was ignored. It is "not checked" now: said to the person, never passed, never refused.
+        code = self._good_check_digits("QQ", "WEST12345698765432")
+        self.assertIsNone(payees._is_iban(code))
+        self.assertFalse(payees._ibans(code))                          # never counted as a checked IBAN
+        self.assertIs(payees._is_iban(code[:-1] + ("3" if code[-1] != "3" else "4")), False)  # check digits fail
+        master = table(self.dir / "staff.csv", [["Employee", "Bank Account"], ["Party One", "50100000000011"]])
+        run = table(self.dir / "run.csv", [["Payee", "Reference", "Amount"], ["Party Two", code, "9"]])
+        self.assertEqual(payees.mismatches("", [run], found=([master], [])), [])
+        said = payees.unchecked("", [run], found=([master], []))
+        self.assertTrue(said and "IBAN NOT CHECKED" in said[0] and code in said[0] and "row 2" in said[0], said)
+
+    @staticmethod
+    def _good_check_digits(country, rest):
+        """`country` + the two check digits ISO 13616 gives `rest` + `rest`."""
+        digits = int("".join(str(int(ch, 36)) for ch in rest + country + "00"))
+        return f"{country}{98 - digits % 97:02d}{rest}"
+
     def test_an_iban_in_no_input_is_still_found(self):
         master = table(self.dir / "staff.csv", [["Employee", "IBAN"], ["Party One", "DE89370400440532013000"]])
         run = table(self.dir / "run.csv", [["Payee", "Reference", "Amount"], ["Party Two", "GB82WEST12345698765432", "9"]])

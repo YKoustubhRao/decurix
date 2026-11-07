@@ -606,22 +606,53 @@ class LedgerError(OSError):
     """A run's ledger exists and cannot be read: never taken for an empty one (E-23)."""
 
 
+# A ledger read or save that meets an OSError (a file another process holds for a moment - a virus scanner, a sync
+# client) is tried again this many times, LEDGER_IO_BACKOFF seconds apart and doubling; then it fails, saying so, and the
+# file stays where it is. Only a file that is not the ledger (not JSON, not an object) is moved aside: a passing error
+# moved a good ledger aside for good, and the run then could not go on (follow-ups, "The ledger").
+LEDGER_IO_TRIES = 4
+LEDGER_IO_BACKOFF = 0.05
+
+
+def _ledger_io(run_id, done, fn):
+    """fn() with an OSError tried again (LEDGER_IO_TRIES, LEDGER_IO_BACKOFF doubling); the last one raises LedgerError
+    ("could not be <done>"), the file left in place. A missing file, a content that could not be checked for secrets
+    (WithholdError) and a LedgerError are not passing errors: raised at once."""
+
+    from decurix_agent.computer.privacy import WithholdError
+    for attempt in range(LEDGER_IO_TRIES):
+        try:
+            return fn()
+        except (FileNotFoundError, WithholdError, LedgerError):
+            raise
+        except OSError as exc:
+            if attempt + 1 >= LEDGER_IO_TRIES:
+                log(f"long_task: the ledger of run {run_id} could not be {done} after {LEDGER_IO_TRIES} tries: {exc}")
+                raise LedgerError(f"the ledger of run {run_id} could not be {done} ({type(exc).__name__}); "
+                                  "it is left in place, unchanged") from exc
+            log(f"long_task: the ledger of run {run_id} could not be {done} ({exc}); trying again")
+            time.sleep(LEDGER_IO_BACKOFF * (2 ** attempt))
+    return None
+
+
 def _unreadable_copies(run_id):
     return sorted(_ledger_path(run_id).parent.glob("ledger.json.unreadable-*"))
 
 
 def ledger(run_id):
     """
-    The run's ledger. A run with none yet has the empty shape. One that exists and cannot be read is moved aside (kept,
-    never overwritten) and LedgerError is raised - then and on every later read, so no save can write an empty ledger
-    over the person's facts, decisions and amendments (E-23, review 2026-11-03: any read error gave {}, and the next
-    update wrote the defaults over the real file).
+    The run's ledger. A run with none yet has the empty shape. One that exists and is not a ledger (not JSON, not an
+    object) is moved aside (kept, never overwritten) and LedgerError is raised - then and on every later read, so no
+    save can write an empty ledger over the person's facts, decisions and amendments (E-23, review 2026-11-03: any read
+    error gave {}, and the next update wrote the defaults over the real file). One that cannot be read for a moment (an
+    OSError) is tried again (_ledger_io), then LedgerError with the file left where it is: a passing error never moves
+    a good ledger aside.
     """
 
     with _lock:
         path = _ledger_path(run_id)
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(_ledger_io(run_id, "read", lambda: path.read_text(encoding="utf-8")))
             if not isinstance(data, dict):
                 raise ValueError("the ledger is not an object")
         except FileNotFoundError:
@@ -629,7 +660,7 @@ def ledger(run_id):
                 raise LedgerError(f"the ledger of run {run_id} could not be read; it is kept as "
                                   f"{_unreadable_copies(run_id)[-1].name}")
             data = {}
-        except (OSError, ValueError) as exc:
+        except ValueError as exc:
             aside = path.with_name(f"ledger.json.unreadable-{int(time.time())}")
             try:
                 path.replace(aside)
@@ -679,7 +710,8 @@ def _save_ledger(run_id, data):
     """
     Write the run's ledger whole: its derived records withheld first (a failure there skips the save - the file on disk
     keeps what it had, never "[held back]" over every record), flushed to the disk before it replaces the old file (a
-    power cut leaves the old ledger or the new one, never an empty one - E-23).
+    power cut leaves the old ledger or the new one, never an empty one - E-23). A write that meets an OSError is tried
+    again (_ledger_io), then raises LedgerError with the old file in place.
     """
 
     import copy
@@ -689,12 +721,15 @@ def _save_ledger(run_id, data):
     data.update(withheld)
     with _lock:
         path = _ledger_path(run_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
         # Every secret known withheld, shapes too; the request comes back from the task's resume copy (ledger), and
         # the host documents' snapshot, compared later, is withheld without shapes (review round 4).
         from decurix_agent.computer import privacy
-        privacy.write_scrubbed(path, data, atomic=True, exempt=("host_docs_start",),
-                               json_kw={"indent": 1, "ensure_ascii": False})
+
+        def write():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            privacy.write_scrubbed(path, data, atomic=True, exempt=("host_docs_start",),
+                                   json_kw={"indent": 1, "ensure_ascii": False})
+        _ledger_io(run_id, "saved", write)
 
 
 def _update(run_id, change):
@@ -3913,8 +3948,10 @@ CHOSEN_UNBACKED = "Chosen in a form from the application's own list, and backed 
 
 def _stage_ledger_findings(reply):
     """What the shared ledger check holds against the task's saved records after a stage (ledger_checks.findings,
-    with the stage's report): its faults; a check of them that could not be made raises, so the stage is not
-    checked on it (never passed)."""
+    with the stage's report): its faults. A check of them that could not be made raises; ledger_findings is ADVISORY
+    and not in MADE_OR_UNCHECKED, so at the stage that only loses this evidence (_checked) - the stage is not held on
+    it. What catches it is the final report, which runs ledger_checks.findings again over every stage's report and
+    says a check not made there (never passed)."""
 
     from decurix_agent import ledger_checks
     found = ledger_checks.findings(task_context.current(), reply)
@@ -4360,7 +4397,8 @@ def take_question(problem, kind):
     if not run_state["spec"].get("planned") or run_state["steps"][step_id]["status"] != "running":
         return False
     # The order a stage's question goes through (docs/long-requests.md, "A stage's question"); the corpus in
-    # agent/tests/data/stage_questions.json runs every live wording through it.
+    # the tests' fixtures folder (stage_questions.json, fixture_paths.fixture; test_stage_question_corpus) runs every
+    # live wording through it.
     step_now = next((s for s in _steps(run_state) if s["id"] == step_id), {})
     request = ledger(run_id).get("request") or ""
     out_of_room = kind == "query" and bool(OUT_OF_ROOM.match(problem or ""))

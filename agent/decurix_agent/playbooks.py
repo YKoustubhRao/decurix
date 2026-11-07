@@ -748,11 +748,11 @@ UNGATED_IN_PYTHON = re.compile(
 
 
 # What only the gate, the agent or the screen use, named in a script in any language: the worker's own folder (the
-# approval store, the command channel), the display and its key, the agent's token, the browser's DevTools port and the
-# agent's and soul's ports. With `unshare` alone the sandbox still shows the filesystem (script_sandbox), so a script
-# that names these is refused before it runs - an early refusal, never the boundary.
+# approval store, the command channel), the display and its key, the agent's token, the browser's DevTools port, the
+# agent's and soul's ports and the gate's (8083). With `unshare` alone the sandbox still shows the filesystem
+# (script_sandbox), so a script that names these is refused before it runs - an early refusal, never the boundary.
 GATE_STATE = re.compile(r"\.decurix\b|X11-unix|\.Xauthority|\b(?:DISPLAY|XAUTHORITY|DBUS_SESSION_BUS_ADDRESS|"
-                        r"DECURIX_AGENT_TOKEN)\b|:(?:9222|8080|8081|4900|8092)\b|approval\.json|-reply\.txt")
+                        r"DECURIX_AGENT_TOKEN)\b|:(?:9222|8080|8081|4900|8083)\b|approval\.json|-reply\.txt")
 
 
 def ungated_effect(script, language="python"):

@@ -436,6 +436,28 @@ def compare(a, b, a_order=None, b_order=None, units=()):
     return Result(bool(ka) and ka == kb, "text")
 
 
+def range_count(before, left, stated):
+    """
+    Whether "<left> = <stated>", written right after `before`, is a range of numbered things and how many it holds,
+    not a subtraction: "Rows 2 - 10 = 9." `left` is two whole numbers joined by a dash, the first below the second;
+    `stated` is a whole number equal to how many the range holds, both ends counted (10 - 2 + 1); and the clause it
+    stands in names what is numbered - a word stands right before the first number, with no full stop, colon,
+    semicolon or line break between them. Decided by that structure alone, never by which word it is. A subtraction of
+    a larger figure from a smaller one is never claimed to come to that count, so a wrong sum is still a wrong sum: a
+    reversed difference ("Balance 200 - 350 = 150") is not the range's count (151), and stays a sum.
+    """
+
+    m = re.fullmatch(r"\s*(\d+)\s*[-–]\s*(\d+)\s*", str(left or ""))
+    count = re.fullmatch(r"\s*(\d+)\s*", str(stated or ""))
+    if not m or not count or re.match(r"0\d", m.group(1)) or re.match(r"0\d", m.group(2)):
+        return False
+    low, high = int(m.group(1)), int(m.group(2))
+    if low >= high or int(count.group(1)) != high - low + 1:
+        return False
+    clause = re.split(r"[.;:!?\n]", str(before or ""))[-1]
+    return bool(re.search(r"[^\W\d_]\s+$", clause))
+
+
 def same_value(a, b, order=None, a_order=None, b_order=None):
     """compare(...).same. `order` is both sides' when given (a value compared with one written the same way)."""
 

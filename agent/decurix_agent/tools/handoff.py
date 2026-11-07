@@ -6,6 +6,10 @@ Handing part of a task to another worker, or asking another worker a question: t
     handoff ask --skill SKILL [--wait SECONDS] QUESTION
     handoff status ID
     handoff cancel ID
+    handoff who
+
+`handoff who` lists the other workers the skill registry knows, with the roles they carry and the skills it records
+them holding (GET /api/skillhub): the names `--to`, `--role` and `--skill` take, so a worker need not guess them.
 
 The control plane (internal/handoff) sends the request to the receiving worker as an ordinary task, and that worker's
 own final check decides whether it is done. What comes back is printed as one block: only a result the receiving
@@ -147,6 +151,57 @@ def ask(skill, question, wait=DEFAULT_ASK_WAIT, sleep=None, clock=None):
     return wait_for(record, wait - (clock() - start), sleep=sleep, clock=clock)
 
 
+# Bounds on what `handoff who` prints, whatever the registry holds: it goes into the model's context.
+MAX_WORKERS = 60
+MAX_PER_WORKER = 40
+
+
+def who():
+    """The other workers the skill registry knows: [{"worker", "roles", "skills": [(name, version)]}], by worker id.
+    Raises HandoffError when the registry cannot be read."""
+
+    answer = _call("GET", "/api/skillhub")
+    if not isinstance(answer, dict):
+        raise HandoffError("the control plane's skill registry answered something unreadable")
+    me = config.DESKTOP_ID or ""
+    workers = {}
+    for worker, roles in (answer.get("workers") or {}).items():
+        if isinstance(worker, str) and isinstance(roles, list):
+            workers.setdefault(worker, {"roles": [], "skills": {}})["roles"] = [r for r in roles if isinstance(r, str)]
+    for skill in answer.get("skills") or []:
+        if not isinstance(skill, dict) or not isinstance(skill.get("name"), str):
+            continue
+        for install in skill.get("installs") or []:
+            worker = install.get("worker") if isinstance(install, dict) else None
+            if isinstance(worker, str):
+                held = workers.setdefault(worker, {"roles": [], "skills": {}})["skills"]
+                held[skill["name"]] = install.get("version") or 0
+    return [{"worker": w, "roles": sorted(v["roles"]), "skills": sorted(v["skills"].items())}
+            for w, v in sorted(workers.items()) if w and w != me]
+
+
+def render_who(workers):
+    """who()'s list as the block a worker reads before `handoff delegate` or `handoff ask`."""
+
+    lines = ["=== WORKERS ==="]
+    if not workers:
+        lines.append("No other worker is in the skill registry: no role is given to one and no skill is installed on "
+                     "one. There is no worker to hand work to or ask; ask the person.")
+    for entry in workers[:MAX_WORKERS]:
+        roles = ", ".join(entry["roles"][:MAX_PER_WORKER]) or "none"
+        skills = ", ".join(f"{name} (v{version})" if version else name
+                           for name, version in entry["skills"][:MAX_PER_WORKER]) or "none"
+        lines.append(f"worker {entry['worker']}: roles: {roles}; skills: {skills}")
+    if len(workers) > MAX_WORKERS:
+        lines.append(f"({len(workers) - MAX_WORKERS} more workers not shown)")
+    if workers:
+        lines.append("note: use these names as they are: handoff delegate --to WORKER, --role ROLE or --skill SKILL; "
+                     "handoff ask --skill SKILL. Whether a worker is free is found when the handoff is sent. A skill "
+                     "taught on a desktop and never published to the registry is not listed and cannot be asked for.")
+    lines.append("=== END WORKERS ===")
+    return "\n".join(lines)
+
+
 def _verdict(record):
     status = record.get("status", "")
     verified = bool((record.get("result") or {}).get("verified"))
@@ -231,11 +286,19 @@ def _parser():
     s.add_argument("id")
     c = sub.add_parser("cancel", help="stop waiting for a handoff")
     c.add_argument("id")
+    sub.add_parser("who", help="the other workers, their roles and the skills they hold")
     return parser
 
 
 def main(argv=None, out=sys.stdout):
     args = _parser().parse_args(argv)
+    if args.command == "who":
+        try:
+            print(render_who(who()), file=out)
+        except HandoffError as exc:
+            print(f"handoff: {exc}", file=out)
+            return EXIT_ERROR
+        return EXIT_DONE
     try:
         if args.command == "delegate":
             target = ({"to_worker": args.to} if args.to else {"to_role": args.role} if args.role

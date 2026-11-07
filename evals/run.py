@@ -4,7 +4,7 @@ Run an eval suite on the control plane's matrix runner, and read its results (do
 
     py -3 evals/run.py run    --suite evals/suites/core-v1 --arm default --arm fast+expert [--arm default@eb15981]
                               [--arm oracle] [--arm nothing] --repeats 5 [--cases a,b] [--cp http://127.0.0.1:8080]
-                              [--detach]
+                              [--detach] [--carry-state]
     py -3 evals/run.py run    --suite evals/suites/core-v1 --arm default+expert@eb15981 --arm default+expert --repeats 5
                               # old code against the image's, both answered by the expert (the L3 shape)
     py -3 evals/run.py status <run-id>
@@ -21,6 +21,10 @@ An arm is <model>[+expert][@<git-rev>], or oracle, nothing or ask:
     nothing and stops (calibration: oracle must pass every case, nothing and ask none);
   - oracle@<rev> runs the scripted solution with that revision's agent tree: a case whose solution meets a guard
     (a comparator deciding a save) shows the old code's decision against the image's, with no model.
+
+--carry-state keeps the practice desktop's state from case to case (a learning curve): it is reset before each
+repeat's first case only. It runs only a suite whose suite.json says "carry_state": true, and such a suite only with
+it; the table says which mode ran. Never the default.
 
 Standard library only, Python 3.11+, run from the repository root. The control plane's eval routes are on its primary
 listener only (127.0.0.1:8080), never the gated one.
@@ -185,9 +189,11 @@ class ControlPlane:
         return json.loads(self.request(path, **kw) or b"{}")
 
 
-def start(cp, suite_dir, arms, repeats, cases):
+def start(cp, suite_dir, arms, repeats, cases, carry_state=False):
     fields = {"arms": json.dumps([{k: v for k, v in a.items() if k != "tree"} for a in arms]), "repeats": repeats,
               "cases": ",".join(cases)}
+    if carry_state:
+        fields["carry_state"] = "1"
     files = {"suite": ("suite.tar.gz", packed(suite_tar(suite_dir)))}
     for a in arms:
         if a.get("tree"):
@@ -246,6 +252,8 @@ def main(argv=None):
     r.add_argument("--repeats", type=int, default=5)
     r.add_argument("--cases", default="", help="comma-separated case ids (default: every case)")
     r.add_argument("--detach", action="store_true", help="print the run id and return at once")
+    r.add_argument("--carry-state", action="store_true",
+                   help="keep the desktop's state between a repeat's cases (only for a suite that says carry_state)")
     r.add_argument("--cp", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     for name in ("status", "table", "rows"):
         p = sub.add_parser(name)
@@ -273,9 +281,10 @@ def main(argv=None):
             if len(set(names)) != len(names):
                 raise Usage("each --arm is named once (two revs name the same commit)")
             cases = [c.strip() for c in args.cases.split(",") if c.strip()]
-            run = start(cp, args.suite, arms, args.repeats, cases)
+            run = start(cp, args.suite, arms, args.repeats, cases, carry_state=args.carry_state)
+            mode = "; state carried from case to case" if run.get("carry_state") else ""
             print(f"started {run['id']}: suite {run.get('suite_name')} ({run.get('suite_sha', '')[:12]}), "
-                  f"{len(arms)} arm(s) x {args.repeats} repeat(s)", flush=True)
+                  f"{len(arms)} arm(s) x {args.repeats} repeat(s){mode}", flush=True)
             if args.detach:
                 print(run["id"])
                 return 0

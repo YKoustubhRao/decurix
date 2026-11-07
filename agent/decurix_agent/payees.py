@@ -49,16 +49,29 @@ _IBAN_LENGTH = {
 
 
 def _is_iban(code):
-    """Whether a token of IBAN shape is an IBAN: its country's length, and the ISO 13616 mod-97 check."""
+    """
+    Whether a token of IBAN shape is an IBAN: True when its country's length and the ISO 13616 mod-97 check hold, False
+    when either fails, and None - not checked - when its check digits hold but its country is not one this table knows
+    the length of (a country added to the registry later, or a typo of one). None is never an IBAN that is fine: it is
+    reported as not checked (_undecided_ibans), never passed and never ignored (review round 2 leftover).
+    """
 
-    if _IBAN_LENGTH.get(code[:2]) != len(code):
-        return False
     digits = "".join(str(int(ch, 36)) for ch in code[4:] + code[:4])
-    return int(digits) % 97 == 1
+    checks = int(digits) % 97 == 1
+    length = _IBAN_LENGTH.get(code[:2])
+    if length is None:
+        return None if checks else False
+    return length == len(code) and checks
 
 
 def _ibans(text):
     return {code for code in IBAN.findall(text) if _is_iban(code)}
+
+
+def _unchecked_ibans(text):
+    """The tokens of a text that may be IBANs and cannot be checked (_is_iban None)."""
+
+    return {code for code in IBAN.findall(str(text or "")) if _is_iban(code) is None}
 SWIFT = re.compile(r"\b[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b")
 UPI = re.compile(r"\b[\w.-]{2,}@[a-z]{2,}\b(?![.\w])")
 # Words of an account or a bank identifier (a cell that holds one is not a payee's name). Which columns hold where
@@ -429,8 +442,9 @@ def _payment_findings(request, made, found=None):
 
     files = [p for p in made if Path(str(p)).suffix.lower() in RECORD_KINDS]
     rows = [(payee, ident, where, str(path)) for path in files for payee, ident, where in _payment_rows(path)]
+    undecided = [line for path in files for line in _undecided_ibans(path)]
     if not rows:
-        return [], [], []
+        return [], [], undecided
     records, messages, documents = _split_found(found, request, made)
     on_record = {}
     for record in records:
@@ -537,7 +551,25 @@ def _payment_findings(request, made, found=None):
         unsure.append(f"PAYEES NOT CHECKED: {where} pays {', '.join(names[:6])}{' and others' if len(names) > 6 else ''} "
                       "to bank details, and no record the request gave (a vendor, employee or party master with their "
                       "accounts) holds an account to check them against - where this money goes is not confirmed.")
-    return out, approve, list(dict.fromkeys(unsure))
+    return out, approve, list(dict.fromkeys(unsure + undecided))
+
+
+def _undecided_ibans(path):
+    """
+    A sentence for each token of a produced table that has an IBAN's shape and check digits but a country whose IBAN
+    length is not known here (_is_iban None): it may be where money goes, and it is not checked - said to the person,
+    never passed as fine. Found in review (round 2): such a token was ignored, so a payment to it read as nothing to
+    check.
+    """
+
+    out = []
+    for _header, rows in _tables(path):
+        for n, row in enumerate(rows, 2):
+            for code in sorted({c for cell in row for c in _unchecked_ibans(cell)}):
+                out.append(f"IBAN NOT CHECKED: {Path(path).name} row {n} holds {code}, which has an IBAN's shape and "
+                           f"check digits, but its country code {code[:2]} is not one whose IBAN length is known here - "
+                           "whether it is an IBAN, and whose, is not checked. Confirm it before this is used.")
+    return out
 
 
 def suspicious_messages(request, made=(), found=None):

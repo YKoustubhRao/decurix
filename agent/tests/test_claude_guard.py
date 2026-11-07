@@ -38,7 +38,7 @@ class WhatTheGuardRefuses(unittest.TestCase):
     def test_writing_the_gates_files(self):
         call = {"tool_name": "Write", "tool_input": {"file_path": "/home/u/.decurix/computer/approval.json"}}
         self.assertTrue(claude_guard.verdict(call))
-        self.assertTrue(claude_guard.verdict({"tool_name": "WebFetch", "tool_input": {"url": "http://localhost:8092/x"}}))
+        self.assertTrue(claude_guard.verdict({"tool_name": "WebFetch", "tool_input": {"url": "http://localhost:8083/x"}}))
 
     def test_it_blocks_with_exit_2_and_fails_closed(self):
         for stdin, code in ((json.dumps(bash("xdotool key Return")), 2), ("not json", 2), (json.dumps(bash("ls")), 0)):
@@ -102,7 +102,7 @@ class TheComputerToolsAreSeenToo(unittest.TestCase):
 
     def test_open_never_names_a_program_a_local_port_or_the_gates_state(self):
         for target in ("xdotool click 1", "http://127.0.0.1:8081/api/approval", "localhost:9222",
-                       "/home/headless/.decurix/command/1-reply.txt", "", None):
+                       "http://127.0.0.1:8083/reply", "/home/headless/.decurix/command/1-reply.txt", "", None):
             with self.subTest(target=target):
                 self.assertTrue(claude_guard.verdict(computer("open", target=target)))
 

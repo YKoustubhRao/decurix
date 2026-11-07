@@ -24,9 +24,13 @@ OLLAMA_URL = os.environ.get(
     "http://decurix-ollama:11434"
 )
 
+# The local chat model. The control plane always passes OLLAMA_MODEL to a
+# desktop (internal/ollama's default, devstral-small-2:24b, unless .env names
+# another), so this fallback only matters for an agent started by hand; it
+# matches the control plane's default, as soul's and start_agent_terminal.sh's do.
 OLLAMA_MODEL = os.environ.get(
     "OLLAMA_MODEL",
-    "qwen2.5-coder:3b"
+    "devstral-small-2:24b"
 )
 
 AGENT_HARNESS = os.environ.get(
@@ -35,7 +39,8 @@ AGENT_HARNESS = os.environ.get(
 ).strip().lower()
 
 # The model TheBot reasons with (desktop.Brain on the control plane): "ollama"
-# (the shared local model), or a hosted one - "claude" or "azure" - reached
+# (the shared local model), or a hosted one - "claude", "azure" or "openai"
+# (any OpenAI-compatible server the control plane was given) - reached
 # through the control plane's /api/llm proxy, which holds the key. Desktops
 # created before brains existed have none, which is the local model.
 BRAIN = os.environ.get("DECURIX_BRAIN", "ollama").strip().lower() or "ollama"
@@ -48,7 +53,7 @@ HOSTED_BRAIN = BRAIN in ("claude", "azure", "openai")
 DESKTOP_SPECIALIZATION = os.environ.get("DESKTOP_SPECIALIZATION", "").strip()
 DESKTOP_PARENT_ID = os.environ.get("DESKTOP_PARENT_ID", "").strip()
 
-# TheBot harness only: the soul binary (agent/soul, started as a
+# TheBot harness only: the soul binary (/opt/soul, built from agent/thebot; started as a
 # background daemon by start_agent_terminal.sh when AGENT_HARNESS=thebot)
 # listens on this port inside the container - not exposed outside it, same
 # as vm_server.py's own :8081.

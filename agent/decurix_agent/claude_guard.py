@@ -8,7 +8,8 @@ Chrome over its DevTools port, call the agent's or soul's ports on localhost, or
 files the gate reads (review 2026-11-02). This hook refuses those calls:
 
   - programs that send input or drive windows: xdotool, xte, ydotool, wmctrl, xinput's test events;
-  - the browser's DevTools port (9222) and the agent's own ports (8080, 8081, 4900, 8092) on this machine;
+  - the browser's DevTools port (9222), the agent's own ports (8080, 8081, 4900) and the approval gate's reply port
+    (8083) on this machine;
   - the gate's state and channels: ~/.decurix/command (the human's replies), ~/.decurix/computer (approval.json, the
     form-check note, the screen's state), the task file, the agent's token.
 
@@ -36,8 +37,8 @@ USE_GUI = ("Use the computer tools (mcp__computer__observe / act / verify / open
 # Programs that send keys, clicks or window commands to the display directly.
 INPUT_PROGRAMS = re.compile(r"(?<![\w-])(?:xdotool|xte|ydotool|wmctrl|xinput\s+test|xautomation|pyautogui|pynput)"
                             r"(?![\w-])", re.IGNORECASE)
-# The browser's DevTools port and the agent's ports, on this machine (any spelling of it) or bare.
-LOCAL_PORTS = re.compile(r"(?:[:=\s/]|^)(?:9222|8080|8081|4900|8092)(?![\d])|remote-debugging|devtools/(?:page|browser)",
+# The browser's DevTools port, the agent's and soul's ports and the gate's, on this machine (any spelling of it) or bare.
+LOCAL_PORTS = re.compile(r"(?:[:=\s/]|^)(?:9222|8080|8081|4900|8083)(?![\d])|remote-debugging|devtools/(?:page|browser)",
                          re.IGNORECASE)
 # The gate's state and channels.
 GATE_STATE = re.compile(r"\.decurix/(?:command|computer)|approval\.(?:json|lock)|-reply\.txt|decurix-current-task|"

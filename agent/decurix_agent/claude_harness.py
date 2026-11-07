@@ -22,7 +22,8 @@ from decurix_agent.messaging import ask_for_query, withheld, write_final_reply
 # loop (including executing shell commands) to completion and returns
 # one final JSON result. Exposes the same perform_task/
 # continue_after_query signatures as task_runner.py so harness.py can
-# dispatch to either one interchangeably.
+# dispatch to any of its harnesses (thebot, claude, azure, ollama)
+# interchangeably. Legacy: new desktops all run TheBot.
 #
 # The CLI is run with --output-format stream-json rather than json, so
 # the turn is readable while it happens: Claude Code emits one JSON

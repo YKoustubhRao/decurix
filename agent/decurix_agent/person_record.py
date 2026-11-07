@@ -12,6 +12,9 @@ Three reads, each of what the control plane keeps as a human judgement (H-PY-18 
 - field_answers(): what a person answered about which entry a field takes, kept as the control plane's learned rows
   (kind "field_answer", derived from that answer's judgement), each with the judgement's own text - an option backs a
   later pick only when it is picked out by that text (records._kept_answer).
+- field_units(): what a person answered about whether a field takes its figures in a unit (kind "field_unit", derived
+  from their reply to the save's numbered unit question), each with that judgement's text and question - the answer
+  is used only when that question holds the question's sentence and the reply is the row's option (unit_answers).
 
 Fail closed: a control plane that cannot be read, or that has no such read yet, confirms nothing, and a pick that
 rested only on the person's word is then not backed - the person is asked. Never raises.
@@ -31,6 +34,7 @@ from decurix_agent.logging_utils import log
 JUDGEMENTS_PATH = "/api/desktops/judgements"
 LEARNED_PATH = "/api/desktops/learned"
 FIELD_ANSWER = "field_answer"
+FIELD_UNIT = "field_unit"
 TIMEOUT_SECONDS = 5
 # How long one read is reused: one task's checks read it many times; a failed read is kept as long, so a control plane
 # that does not answer costs one wait, not one per pick.
@@ -47,14 +51,15 @@ def text_hash(text):
     return hashlib.sha256(" ".join(str(text or "").split()).encode("utf-8")).hexdigest()
 
 
-def _get(path, query):
-    """The control plane's JSON answer to a GET, or None (unreachable, refused, not there, not JSON). Cached."""
+def _get(path, query, fresh=False):
+    """The control plane's JSON answer to a GET, or None (unreachable, refused, not there, not JSON). Cached; `fresh`
+    reads it again."""
 
     url = config.CONTROL_PLANE_URL.rstrip("/") + path + "?" + urllib.parse.urlencode(sorted(query.items()))
     now = time.monotonic()
     with _lock:
         kept = _cache.get(url)
-        if kept and now - kept[0] < CACHE_SECONDS:
+        if kept and now - kept[0] < CACHE_SECONDS and not fresh:
             return kept[1]
     answer = None
     try:
@@ -93,12 +98,13 @@ def _persons(rows, task_id=None):
     return out
 
 
-def judgements(task_id):
-    """The person's own judgements on this desktop's task, as the control plane keeps them ([] when none or unread)."""
+def judgements(task_id, fresh=False):
+    """The person's own judgements on this desktop's task, as the control plane keeps them ([] when none or unread).
+    `fresh`: read again rather than from the cache (a reply that came after the cached read)."""
 
     if not task_context.valid(task_id):
         return []
-    answer = _get(JUDGEMENTS_PATH, {"task": task_id})
+    answer = _get(JUDGEMENTS_PATH, {"task": task_id}, fresh=True) if fresh else _get(JUDGEMENTS_PATH, {"task": task_id})
     return _persons((answer or {}).get("judgements") if isinstance(answer, dict) else None, task_id)
 
 
@@ -171,3 +177,50 @@ def keep_field_answer(task_id, judgement_id, label, host, option, asked=""):
     from decurix_agent import messaging
     text = json.dumps({"label": label, "host": host, "option": option}, ensure_ascii=False, sort_keys=True)
     return messaging.post_learned(FIELD_ANSWER, "", 0, asked, text, task_id=task_id, derived_from=judgement_id)
+
+
+def _learned(kind):
+    """[(row, its text as JSON, its source)] of the control plane's learned rows of `kind` for this desktop that are
+    derived from a person's judgement whose text is sent ([] when none or unread)."""
+
+    answer = _get(LEARNED_PATH, {"kind": kind})
+    out = []
+    for row in (answer or {}).get("learned") or [] if isinstance(answer, dict) else []:
+        if not isinstance(row, dict) or row.get("kind") != kind or not row.get("derived_from"):
+            continue
+        source = row.get("source") if isinstance(row.get("source"), dict) else {}
+        actor = source.get("actor") if isinstance(source.get("actor"), dict) else {}
+        if actor.get("kind") != "person" or not isinstance(source.get("text"), str):
+            continue
+        try:
+            said = json.loads(row.get("text") or "")
+        except ValueError:
+            continue
+        if isinstance(said, dict):
+            out.append((row, said, source))
+    return out
+
+
+def field_units():
+    """[{"label", "host", "form", "unit", "takes", "source_text", "source_asked", "judgement"}]: the field units the
+    control plane keeps for this desktop, each with the text of the person's judgement it was derived from and the
+    question that judgement answered ([] when none or unread). unit_answers.answered checks both again."""
+
+    out = []
+    for row, said, source in _learned(FIELD_UNIT):
+        if not said.get("label") or not said.get("host") or not said.get("unit") or not isinstance(said.get("takes"), bool):
+            continue
+        out.append({"label": str(said["label"]), "host": str(said["host"]), "form": str(said.get("form") or ""),
+                    "unit": str(said["unit"]), "takes": said["takes"], "source_text": source["text"],
+                    "source_asked": str(source.get("asked") or ""), "judgement": str(row["derived_from"])})
+    return out
+
+
+def keep_field_unit(task_id, judgement_id, label, host, form, unit, takes, asked=""):
+    """Keep on the control plane that the person's judgement `judgement_id` answered whether `label` on the form `form`
+    of the application at `host` takes its figures in `unit`: a learned row derived from it (messaging.post_learned).
+    The thread, or None."""
+
+    from decurix_agent import messaging, unit_answers
+    return messaging.post_learned(FIELD_UNIT, "", 0, asked, unit_answers.kind_json(label, host, form, unit, takes),
+                                  task_id=task_id, derived_from=judgement_id)

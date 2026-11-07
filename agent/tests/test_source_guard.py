@@ -1,8 +1,8 @@
 """
 Finding AB (2026-10-20, xl_overdue on a shared-folder worker): the result was right, but the person's INPUT workbook
 receivables.xlsx was saved with a new column 50 s later. The person's files are noted and copied when a task starts;
-a source the task changed is put back and reported in plain words; and the checks of what was made never run on a
-source.
+a source the task changed is reported in plain words and put back only on a structured word (restore_sources, tested
+here directly; the gate's offer in test_restore_offer.py); and the checks of what was made never run on a source.
 """
 
 from needs import needs
@@ -45,22 +45,28 @@ class Guard(SharedBase):
         path.write_bytes(data)
         os.utime(path, (time.time(), time.time()))
 
+    def put_back(self, request, task=TASK):
+        # What the guard saw change, put back the way the gate's structured word does: (done, failed, kept).
+        return source_guard.restore_sources(task, source_guard.changed(task, request))
+
     def test_the_live_case_is_caught_put_back_and_said_plainly(self):
         self.put("receivables_review.xlsx", b"PK\x03\x04 the result")
         self.touch("receivables.xlsx", b"PK\x03\x04 with a Days Overdue column")
-        said = source_guard.check_and_restore(TASK, LIVE)
-        self.assertIn("The task changed your file " + HOST + "\\receivables.xlsx, which the request did not ask to change",
-                      said)
-        self.assertIn("the original is back", said)
+        self.assertEqual(source_guard.changed(TASK, LIVE), ["receivables.xlsx"])
+        done, failed, kept = self.put_back(LIVE)
+        self.assertEqual((done, failed), (["receivables.xlsx"], []))
+        said = " ".join(source_guard.put_back_lines(TASK, done, failed, kept))
+        self.assertIn("Put back your file " + HOST + "\\receivables.xlsx", said)
+        self.assertIn("its bytes match the copy kept before the task", said)
         self.assertEqual((self.mount / "receivables.xlsx").read_bytes(), ORIGINAL)
-        # The worker's version is never discarded: kept beside the original, named in the finding (one fixed name, so
-        # the finding reads the same on every attempt).
+        # The worker's version is never discarded: kept beside the original, named in the line (one fixed name, so
+        # the line reads the same on every attempt).
         beside = self.mount / "receivables (changed by worker).xlsx"
         self.assertEqual(beside.read_bytes(), b"PK\x03\x04 with a Days Overdue column")
-        self.assertIn("receivables (changed by worker).xlsx - if that change is what you wanted, use it", said)
+        self.assertIn("receivables (changed by worker).xlsx", said)
         # The result the request asked for is not a source and is left as it is.
         self.assertEqual((self.mount / "receivables_review.xlsx").read_bytes(), b"PK\x03\x04 the result")
-        self.assertEqual(source_guard.check_and_restore(TASK, LIVE), "")
+        self.assertEqual(source_guard.changed(TASK, LIVE), [])
 
     @needs("openpyxl")
     def test_an_app_saving_a_workbook_again_with_the_same_cells_is_a_note_not_a_change(self):
@@ -82,13 +88,12 @@ class Guard(SharedBase):
         os.utime(path, (time.time(), time.time()))
         self.assertEqual(source_guard.changed(TASK, request), [])
         self.assertEqual(source_guard.resaved(TASK, request), ["monthly_revenue.xlsx"])
-        self.assertEqual(source_guard.check_and_restore(TASK, request), "")
         # Changed data is a change: a column added, half filled (the live receivables case).
         book = openpyxl.load_workbook(path)
         book.active["C1"], book.active["C2"] = "Days Overdue", "=TODAY()-B2"
         book.save(path)
         self.assertEqual(source_guard.changed(TASK, request), ["monthly_revenue.xlsx"])
-        self.assertIn("which the request did not ask to change", source_guard.check_and_restore(TASK, request))
+        self.assertEqual(self.put_back(request, TASK)[0], ["monthly_revenue.xlsx"])
         self.assertIsNone(openpyxl.load_workbook(path).active["C1"].value)
 
     def test_a_file_saved_again_unchanged_is_not_a_change(self):
@@ -98,7 +103,7 @@ class Guard(SharedBase):
     def test_a_source_the_request_gives_counts_and_a_deleted_one_too(self):
         (self.mount / "receivables.xlsx").unlink()
         self.assertEqual(source_guard.changed(TASK, LIVE), ["receivables.xlsx"])
-        source_guard.check_and_restore(TASK, LIVE)
+        self.assertEqual(self.put_back(LIVE)[0], ["receivables.xlsx"])
         self.assertEqual((self.mount / "receivables.xlsx").read_bytes(), ORIGINAL)
 
     def test_another_file_of_the_shared_folder_is_never_judged_or_put_back(self):
@@ -108,11 +113,11 @@ class Guard(SharedBase):
         source_guard.take(request, TASK)
         self.touch("notes/other.docx", b"the person edited it meanwhile")
         self.assertEqual(source_guard.changed(TASK, request), [])
-        self.assertEqual(source_guard.check_and_restore(TASK, request), "")
+        self.assertEqual(self.put_back(request), ([], [], {}))
         self.assertEqual((self.mount / "notes" / "other.docx").read_bytes(), b"the person edited it meanwhile")
-        # The named input is still guarded: restored, and said.
+        # The named input is still guarded: seen, and put back on the word.
         self.touch("receivables.xlsx", b"PK\x03\x04 with a Days Overdue column")
-        self.assertIn("which the request did not ask to change", source_guard.check_and_restore(TASK, request))
+        self.assertEqual(self.put_back(request)[0], ["receivables.xlsx"])
         self.assertEqual((self.mount / "receivables.xlsx").read_bytes(), ORIGINAL)
 
     def test_a_file_the_request_asks_to_change_may_change(self):
@@ -158,13 +163,14 @@ class Guard(SharedBase):
             source_guard.take(LIVE, TASK, notify=notes.append)
         self.assertIn("receivables.xlsx", " ".join(notes))
         self.touch("receivables.xlsx", b"changed")
-        said = source_guard.check_and_restore(TASK, LIVE)
-        self.assertIn("could not be put back: no copy was kept (too large)", said)
+        done, failed, kept = self.put_back(LIVE)
+        self.assertEqual(done, [])
+        self.assertIn("no copy was kept (too large)", " ".join(source_guard.put_back_lines(TASK, done, failed, kept)))
 
     def test_nothing_without_a_shared_folder(self):
         with mock.patch.dict(os.environ, {"DECURIX_SHARED_FOLDER": ""}):
             self.assertIsNone(source_guard.take(LIVE, "t2"))
-            self.assertEqual(source_guard.check_and_restore("t2", LIVE), "")
+            self.assertEqual(source_guard.changed("t2", LIVE), [])
 
 
 from test_produced_files import FileWorkIsChecked  # noqa: E402  (the gate's harness)
@@ -185,7 +191,8 @@ class TheGateSaysYouChangedMyFile(FileWorkIsChecked):
         self.verdicts = [{"verdict": verify.DONE, "confidence": 0.9, "seen": "the review lists every open invoice",
                           "why": ""}]
         with mock.patch.object(skill_task.source_guard, "changed_sources", lambda task_id, request: [dict(self.CHANGE)]), \
-                mock.patch.object(skill_task.source_guard, "check_and_restore", lambda *a: self.fail("restored")), \
+                mock.patch.object(skill_task.source_guard, "restore_sources", lambda *a: self.fail("restored")), \
+                mock.patch.object(skill_task.source_guard, "offer", lambda task_id, facts: ""), \
                 mock.patch.object(skill_task.produced, "store_results", lambda paths: []):
             self.assertTrue(skill_task._gate("Done: receivables_review.xlsx saved and verified.", "final", "thebot"))
         self.assertIn("D4: open -> paid", self.judged[0]["produced"])
@@ -196,7 +203,7 @@ class TheGateSaysYouChangedMyFile(FileWorkIsChecked):
         import inspect
         source = inspect.getsource(skill_task._gate)
         self.assertIn("is_source(", source)
-        self.assertNotIn("check_and_restore", source)
+        self.assertFalse(hasattr(skill_task.source_guard, "check_and_restore"), "the old verb rule is gone")
 
 
 if __name__ == "__main__":

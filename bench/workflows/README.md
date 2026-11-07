@@ -10,8 +10,11 @@ Examples cover table reconciliation/deduplication/pivots/model updates, inbox tr
 /workflow status RUN_ID
 /workflow resume RUN_ID
 /workflow cancel RUN_ID
-/workflow approve RUN_ID STEP_ID
+/workflow retry RUN_ID STEP_ID
+/workflow recover RUN_ID
 ```
+
+A stage with `approval` starts only on the person's reply to its "may I start it?" question (on a gated desktop, the gate's grant for exactly that stage); every consequential action inside it still asks the gate on its own. `/workflow approve` starts nothing: a command file is the worker's own to write, so it only says to `/workflow resume` and be asked again. `/workflow retry` runs a failed `retry_safe` stage again.
 
 Use `/workflow start-json {"spec": {...}, "inputs": {...}}` for any other workflow. Stages name `id`, optional `app`, `instruction`, `depends_on`, `checks`, `retry_safe`, `max_attempts` and optional `approval`. A learned stage can provide `skill: {"name":"saved-skill","params":{"customer":{"input":"customer"}}}`; it runs the actual saved skill through the existing teaching/replay system, followed by the workflow's artifact checks.
 

@@ -21,8 +21,9 @@ makes its absence a failure (review 2026-11-03, E-16: the gate skipped on every 
 blocking checks out).
 
 Every new code check must pass this gate, and every blocking check must be evaluated by it (the coverage test below).
-A private run is added with decurix-tests/wide/process/build_replay.py (add the run to RUNS); a run belongs there when
-its checker scored it right or nearly right.
+The script that built the private corpus (decurix-tests/wide/process/build_replay.py) was lost with that folder: the
+corpus must be rebuilt from kept eval oracle runs (their R9 bundles, docs/trajectory.md), each laid out as above; a
+run belongs there when its grader scored it right or nearly right.
 
     PYTHONPATH="agent;agent/tests" python -m unittest test_replay_gate
 """

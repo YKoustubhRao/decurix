@@ -69,11 +69,15 @@ def wait_for_backend():
 
 def ask_model(system, prompt, *, purpose):
     """
-    One question to whichever engine this desktop runs - the reply text, or
-    RuntimeError. Not a task: no history, no tools, no query. It is how the
-    computer layer's grounder and judge (computer/escalation.py) get a second
-    opinion without knowing which engine is behind them. TheBot has no
-    single-question endpoint of its own, so it asks the Ollama it already uses.
+    One question, not a task - the reply text, or RuntimeError. No history,
+    no tools, no query. It is how the computer layer's grounder and judge
+    (computer/escalation.py) get a second opinion without knowing which
+    engine is behind them. The control plane's hosted model answers it when
+    one is set up for this desktop (llm_client.available); a desktop whose
+    brain is hosted raises when that fails, never loading a local model
+    nobody chose. Otherwise this engine's own one-off question answers it:
+    the claude CLI for claude, the hosted chat for azure, and Ollama for
+    thebot (soul has no single-question endpoint) and the Ollama loop.
     `purpose` names what the question is for (llm_client.chat): required, so no call goes untagged.
     """
 

@@ -90,6 +90,13 @@ class GateStateTests(unittest.TestCase):
             gate.settle(text, request["question"], "approval", request["id"])
         return reading
 
+    @unittest.skipIf(os.name == "nt", "file modes are POSIX")
+    def test_the_gates_approval_store_is_written_0600_and_whole(self):
+        self.ask()
+        path = approval.STATE_FILE
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(sorted(p.name for p in path.parent.iterdir() if p.name.endswith(".tmp")), [])
+
     def test_an_unapproved_action_is_stopped_and_stays_pending(self):
         first = self.ask()
         self.assertFalse(first["allowed"])

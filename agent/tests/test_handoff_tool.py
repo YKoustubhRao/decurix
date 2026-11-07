@@ -193,5 +193,48 @@ class HandoffToolTest(unittest.TestCase):
         self.assertIn("CANCELLED", out)
 
 
+    def test_who_lists_the_other_workers_with_their_roles_and_skills(self):
+        # Workers guessed role and skill names for --role/--skill and got "no other worker holds ...".
+        self.answers = [{
+            "skills": [
+                {"name": "gstr1-prepare", "latest": 3, "roles": ["filing"],
+                 "installs": [{"worker": "w2", "name": "gstr1-prepare", "version": 3},
+                              {"worker": "w1", "name": "gstr1-prepare", "version": 3}]},
+                {"name": "enter-bill", "latest": 1, "roles": [],
+                 "installs": [{"worker": "w3", "name": "enter-bill", "version": 1}]},
+            ],
+            "workers": {"w1": ["clerk"], "w2": ["filing", "Reviewer"], "w4": ["finance"]},
+        }]
+        code, out = self.run_cli("who")
+        self.assertEqual(code, handoff.EXIT_DONE)
+        self.assertEqual(self.requests, [("GET", "http://cp:8080/api/skillhub", None)])
+        self.assertIn("worker w2: roles: Reviewer, filing; skills: gstr1-prepare (v3)", out)
+        self.assertIn("worker w3: roles: none; skills: enter-bill (v1)", out)
+        self.assertIn("worker w4: roles: finance; skills: none", out)
+        self.assertNotIn("worker w1", out)  # this desktop itself is not someone to hand work to
+        self.assertTrue(out.strip().startswith("=== WORKERS ===") and out.strip().endswith("=== END WORKERS ==="))
+        self.assertNotIn("=== HANDOFF", out)  # never read as a handed-back result
+
+    def test_who_with_no_other_worker_says_to_ask_the_person(self):
+        self.answers = [{"skills": [], "workers": {"w1": ["clerk"]}}]
+        code, out = self.run_cli("who")
+        self.assertEqual(code, handoff.EXIT_DONE)
+        self.assertIn("No other worker", out)
+        self.assertIn("ask the person", out)
+
+    def test_who_when_the_registry_cannot_be_read(self):
+        self.answers = [urllib.error.URLError("refused")]
+        code, out = self.run_cli("who")
+        self.assertEqual(code, handoff.EXIT_ERROR)
+        self.assertIn("could not be reached", out)
+
+    def test_who_is_bounded(self):
+        many = {"skills": [], "workers": {f"w{n:03d}": ["r"] for n in range(handoff.MAX_WORKERS + 5)}}
+        self.answers = [many]
+        code, out = self.run_cli("who")
+        self.assertEqual(out.count("\nworker "), handoff.MAX_WORKERS)
+        self.assertIn("more workers not shown", out)
+
+
 if __name__ == "__main__":
     unittest.main()

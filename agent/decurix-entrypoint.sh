@@ -75,12 +75,29 @@ if [ -s "$GATE_DIR/key" ]; then
     # cd into its own directory and python3 -I: nothing on sys.path, and no file the gate opens by a relative name,
     # is in a folder the worker can write (its home was the image's working directory, and a planted ~/tempfile.py
     # would have run as the gate).
+    #
+    # A cleared environment (env -i): the gate gets only what it and the code it imports read, never the container's
+    # whole environment, which holds the worker's secrets (DECURIX_AGENT_TOKEN, VNC_PW) and settings the gate has no
+    # use for. Fixed: PATH, LANG, and HOME, DECURIX_DIR and DECURIX_WORK_DIR set to its own directory (privacy.py,
+    # config.py). Passed through from the container when set (GATE_ENV_PASS), each one read on the gate's code path
+    # (gate_server.py, computer/approval.py, privacy.py, modes.py, llm_client.py, task_context.py, logging_utils.py):
+    # CONTROL_PLANE_URL and DECURIX_LLM (where approval.read_choice asks the model; the control plane's proxy holds the
+    # key), the model call's two time limits, the worker stage (modes.get_stage: observation makes the gate stricter),
+    # and the task file and the log folder. Not DESKTOP_ID or DESKTOP_NAME: only progress reads them, and approval
+    # never emits progress in the gate (IN_GATE). Not DECURIX_GATE_REQUIRED: approval.remote() is False in the gate
+    # before it is read. A variable the gate starts reading goes on this list (agent/tests/test_gate_env.py).
+    GATE_ENV_PASS="CONTROL_PLANE_URL DECURIX_LLM DECURIX_LLM_TIMEOUT_SECONDS DECURIX_LLM_RETRY_SECONDS DECURIX_WORKER_STAGE DECURIX_TASK_FILE DECURIX_LOG_DIR"
     cd "$GATE_DIR" || exit 1
-    /usr/bin/setsid /usr/bin/setpriv --reuid="$GATE_UID" --regid="$GATE_GID" --clear-groups \
-        --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs \
-        /usr/bin/env PATH=/usr/bin:/bin HOME="$GATE_DIR" DECURIX_DIR="$GATE_DIR" DECURIX_WORK_DIR="$GATE_DIR/work" \
-        /usr/bin/python3 -I -c 'import sys, runpy; sys.path.insert(0, "/opt"); runpy.run_module("decurix_agent.gate_server", run_name="__main__", alter_sys=True)' \
-        >> "$GATE_DIR/gate.log" 2>&1 < /dev/null &
+    (
+        set -- PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$GATE_DIR" DECURIX_DIR="$GATE_DIR" DECURIX_WORK_DIR="$GATE_DIR/work"
+        for name in $GATE_ENV_PASS; do
+            value=$(/usr/bin/printenv "$name") && set -- "$@" "$name=$value"
+        done
+        exec /usr/bin/setsid /usr/bin/setpriv --reuid="$GATE_UID" --regid="$GATE_GID" --clear-groups \
+            --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs \
+            /usr/bin/env -i "$@" \
+            /usr/bin/python3 -I -c 'import sys, runpy; sys.path.insert(0, "/opt"); runpy.run_module("decurix_agent.gate_server", run_name="__main__", alter_sys=True)'
+    ) >> "$GATE_DIR/gate.log" 2>&1 < /dev/null &
     cd /
 fi
 

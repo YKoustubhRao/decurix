@@ -98,7 +98,7 @@ FORMS = {
     "computer/privacy.py:_with_resume": {"open", "os.fdopen", "os.replace"},
     "gate_server.py:__enter__": {"open"},
     "gate_server.py:_write_private": {"os.fdopen", "os.replace"},
-    "computer/approval.py:_locked": {"open", "path.replace", "write_text"},
+    "computer/approval.py:_locked": {"open", "os.fdopen", "os.replace"},
     "computer/core.py:_state_lock": {"open"},
     "computer/recording.py:_locked": {"open"},
     "computer/skill_engine.py:run": {"open"},
