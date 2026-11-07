@@ -70,6 +70,21 @@ func (e *RemoteError) Error() string {
 // Unwrap is the underlying error.
 func (e *RemoteError) Unwrap() error { return e.Err }
 
+// remoteFailureNote is a fixed phrase for a remote brain's failure, fit for a
+// client: the HTTP status when there is one, never the error's own text.
+func remoteFailureNote(err error) string {
+	var re *RemoteError
+	switch {
+	case errors.As(err, &re) && re.Status > 0:
+		return fmt.Sprintf("the remote brain failed (HTTP %d)", re.Status)
+	case errors.Is(err, backend.ErrCutShort):
+		return "the remote brain stopped before its answer was whole"
+	case errors.As(err, &re):
+		return "the remote brain could not be reached"
+	}
+	return "the remote brain failed"
+}
+
 // Request is one chat request.
 type Request struct {
 	// ID is the trace id to use; empty makes a new one.
@@ -529,7 +544,10 @@ func (e *Engine) Chat(ctx context.Context, req Request) (*Response, error) {
 		req.OnDelta(res.Text)
 	}
 	if err != nil && fallback {
-		rec.Notes = append(rec.Notes, "the remote brain failed ("+err.Error()+"); the local brain answered instead")
+		// The note reaches the client: a fixed phrase (with the HTTP status
+		// when there is one), never the error's text; the detail is logged.
+		e.log.Printf("remote brain failed, the local brain answers instead: %v", err)
+		rec.Notes = append(rec.Notes, remoteFailureNote(err)+"; the local brain answered instead")
 		rec.Atoms = append(rec.Atoms, atom)
 		bc = brainChoice{mode: config.ModeLocal, local: bc.local, name: bc.local.model, sees: bc.local.vision}
 		rec.Brain = bc.name + " (fallback)"

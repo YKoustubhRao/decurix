@@ -66,7 +66,9 @@ type Config struct {
 	ReserveGB float64 `json:"reserve_gb,omitempty"`
 	// PlannedLoadGB is memory other work will need later (desktops to come).
 	PlannedLoadGB float64 `json:"planned_load_gb,omitempty"`
-	// Threads for llama-server; 0 means the physical cores.
+	// Threads for llama-server; 0 means half the logical CPUs (NumCPU/2, at
+	// least 1), which is the physical cores on a machine with two threads
+	// per core.
 	Threads int `json:"threads,omitempty"`
 	// ImageMaxSide shrinks pictures shown to a local vision model; on a CPU
 	// every pixel is prompt to read. 0 means 1280; -1 means never shrink.

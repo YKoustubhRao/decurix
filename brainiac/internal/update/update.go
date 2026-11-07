@@ -671,8 +671,6 @@ func (c *cycle) withoutRejected(cat *catalog.Catalog) *catalog.Catalog {
 	return &out
 }
 
-// promote makes the checked lock the running one, keeping the old as
-// lock.prev.json, and deletes the downloads neither of them uses.
 // alreadyStaged reports whether the plan with these changes is the one
 // staged now, still in lock.next.json as it was checked.
 func (c *cycle) alreadyStaged(changes []Change) bool {
@@ -737,6 +735,8 @@ func Promote(st *store.Store, now time.Time) (*install.Lock, Staged, error) {
 	return &next, s, nil
 }
 
+// promote makes the checked lock the running one, keeping the old as
+// lock.prev.json, and deletes the downloads neither of them uses.
 func (c *cycle) promote(next *install.Lock, plan *selector.Plan) error {
 	var oldPrev install.Lock
 	hadPrev := c.st.ReadJSON(PrevLock, &oldPrev) == nil

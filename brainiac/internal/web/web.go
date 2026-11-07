@@ -10,9 +10,11 @@
 //   - it reads at most MaxBytes of a page and gives up after Timeout;
 //   - what it returns is page text for the brain to read as evidence, never
 //     instructions;
-//   - search queries are scrubbed of IDs and secrets before they leave (Scrub).
+//   - search queries are scrubbed of IDs and secrets before they leave (Scrub);
+//   - the headless browser gets the minimal environment of a model process
+//     (isolate.Env), never Brainiac's keys, and dies with Brainiac on Linux.
 //
-// Depends on nothing internal.
+// Depends on internal/isolate only.
 package web
 
 import (

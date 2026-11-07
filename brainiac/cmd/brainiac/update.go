@@ -93,7 +93,7 @@ func runPromote(args []string) error {
 		fmt.Printf("llama.cpp is now pinned to %s.\n", staged.Runtime.LlamaCppTag)
 	}
 	if b, ok := lock.Plan.Pick(catalog.RoleBrain); ok {
-		fmt.Printf("The brain is %s. A running serve moves to the new models within a minute; lock.prev.json is the plan before.\n", b.Model)
+		fmt.Printf("The brain is %s. A running serve checks every 30 seconds and moves to the new models once what it is answering finishes; lock.prev.json is the plan before.\n", b.Model)
 	}
 	return nil
 }
@@ -238,7 +238,7 @@ func (f *lockFollower) check() bool {
 	eng, err := f.build()
 	if err != nil {
 		f.logf("lock.json changed, but its plan does not load (%v); still serving the old one", err)
-		f.seen = got // say so once, not every minute
+		f.seen = got // say so once, not at every check
 		return false
 	}
 	f.seen = got
@@ -248,7 +248,7 @@ func (f *lockFollower) check() bool {
 	return true
 }
 
-// followLock runs check every interval until ctx ends.
+// run checks the lock every interval until ctx ends.
 func (f *lockFollower) run(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()

@@ -9,8 +9,14 @@
 //	brainiac up [--yes]          census + plan + pull + serve: what build.sh runs
 //	brainiac ask "..." [--image f] [--audio f]   ask a running Brainiac
 //	brainiac status              what a running Brainiac holds
+//	brainiac paths               per field: what could answer here, and why each does or does not
+//	brainiac eval --cases f      measure models field by field on checked cases
 //	brainiac update [--apply]    a better plan from public evaluations: shown, or installed, checked and staged
 //	brainiac update promote      switch to the staged plan (a person's decision)
+//	brainiac update approve-template <model>   accept a model's changed chat template, after reading it
+//	brainiac scout [--days n]    open models newer than the catalog, checked
+//	brainiac scout adopt|pin     add a scouted model to the local catalog; move to a newer llama.cpp build
+//	brainiac version             this build's version
 package main
 
 import (

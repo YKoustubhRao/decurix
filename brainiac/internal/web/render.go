@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"brainiac/internal/isolate"
 )
 
 // FindBrowser returns a Chrome, Chromium or Edge executable, or "".
@@ -87,20 +89,14 @@ func (c *Client) renderNoPrecheck(ctx context.Context, raw string) (Page, error)
 		return Page{}, err
 	}
 	defer stop()
-	cmd := exec.CommandContext(ctx, bin, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
-		"--disable-extensions", "--disable-sync", "--mute-audio", "--hide-scrollbars",
-		// Every connection through the guard proxy; "<-loopback>" sends
-		// loopback there too instead of letting the browser reach it.
-		"--proxy-server=http://"+proxy, "--proxy-bypass-list=<-loopback>",
-		"--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--disable-background-networking",
-		"--user-data-dir="+profile, "--virtual-time-budget=8000", "--user-agent="+browserUA, "--dump-dom", u.String())
+	cmd := browserCommand(ctx, bin, proxy, profile, u.String())
 	// The page is read through a bounded pipe: a page that builds more than
 	// MaxBytes of DOM is refused, and never held in memory whole.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return Page{}, err
 	}
-	if err := cmd.Start(); err != nil {
+	if err := isolate.StartLocked(cmd); err != nil {
 		return Page{}, fmt.Errorf("web: the headless browser did not start: %w", err)
 	}
 	out, rerr := io.ReadAll(io.LimitReader(stdout, c.maxBytes()+1))
@@ -118,6 +114,24 @@ func (c *Client) renderNoPrecheck(ctx context.Context, raw string) (Page, error)
 	p := pageFrom(u.String(), "text/html", out)
 	p.Rendered = true
 	return p, nil
+}
+
+// browserCommand is the headless browser's command line for one page. The
+// browser runs a stranger's JavaScript, so it gets the minimal environment
+// Brainiac's model processes get (isolate.Env: what the system needs to start
+// a program, none of Brainiac's keys, such as a remote brain's API key), and
+// on Linux it is killed when Brainiac exits, however it exits.
+func browserCommand(ctx context.Context, bin, proxy, profile, target string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, bin, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+		"--disable-extensions", "--disable-sync", "--mute-audio", "--hide-scrollbars",
+		// Every connection through the guard proxy; "<-loopback>" sends
+		// loopback there too instead of letting the browser reach it.
+		"--proxy-server=http://"+proxy, "--proxy-bypass-list=<-loopback>",
+		"--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--disable-background-networking",
+		"--user-data-dir="+profile, "--virtual-time-budget=8000", "--user-agent="+browserUA, "--dump-dom", target)
+	cmd.Env = isolate.Env()
+	isolate.DieWithParent(cmd)
+	return cmd
 }
 
 // resolvesPublic refuses a host whose addresses include a blocked one.
