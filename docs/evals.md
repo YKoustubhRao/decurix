@@ -16,11 +16,13 @@ Code: `internal/eval` (format, loader, graders, runner, store, report, expert), 
 - **Dev suites live in the repo; the sealed held-out set never does.** `evals/` holds fictional, generic data only.
   The sealed set (plan E8) is built by someone who does not tune the harness, kept outside the repo and backed up
   off-host, and reported separately; it is never used to pick a fix.
-- **Harness code never names a suite.** `internal/eval/boundary_test.go` walks `agent/` and `internal/` (all but
-  `internal/eval` and `internal/httpapi/eval_routes*`) and fails on the path `evals/`, and on any suite name, case id
-  or mock name found under `evals/suites`. The one test that reads a suite from the repo is
-  `TestCoreSuiteLoads`.
-- **Single runs are not results.** A table with one repeat says "n=1: not a result".
+- **Harness code never names a suite.** `internal/eval/boundary_test.go` (`TestHarnessNeverNamesSuites`) walks the
+  text files of `agent/`, `internal/`, `cmd/`, `desktop/` and `docker/` (all but `internal/eval` and
+  `internal/httpapi/eval_routes*`) and fails on the path `evals/`, and on any suite name, case id or mock name found
+  under `evals/suites`, every fact's answer, and every `id` or `text` value of 6 characters or more in a case's
+  expected records. The tests that read a suite from the repo are `TestCoreSuiteLoads` and `TestCoreV2SuiteLoads`.
+- **Single runs are not results.** A table with fewer than 5 repeats (`MinRepeats`) opens with "n=<repeats>: not a
+  result", and `evals/run.py` says so when `--repeats 1` is asked.
 
 ## Layout
 
@@ -41,10 +43,12 @@ change how the app is drawn, the way real apps differ, never what it stores: `cu
 dropdown the page makes itself: a role=combobox button, role=option entries and a hidden input), `filters` (list
 filters, read from the query string) and `page_size` (pages, a "Rows per page" choice, Previous/Next links).
 
-Suites: `core-v1` (twelve short cases, the regression yardstick) and `core-v2` (five cases that tell code apart by
-mechanism rather than by a model's luck: a month-first bill whose order only the document's other date decides, two
-accounts sharing their last 10 digits, a dropdown the page draws, a list filter before an edit, and a required choice
-no source gives).
+Suites (both on the one mock, `records-app`): `core-v1` (twelve short cases, the regression yardstick) and `core-v2`
+(six cases that tell code apart by mechanism rather than by a model's luck: a month-first bill whose order only the
+document's other date decides, two accounts sharing their last 10 digits (a payment to one, and a payee to add whose
+row sits beside the other), a dropdown the page draws, a list filter before an edit, and a required choice no source
+gives). Their inputs are made by `evals/tools/make_core_v1.py` and `make_core_v2.py`; `evals/tests/` tests the
+runner script and the mock.
 
 ### suite.json
 
@@ -52,10 +56,13 @@ no source gives).
 {"schema": "decurix.eval-suite/v1", "name": "<suite>", "description": "...",
  "mocks": {"<mock>": {"hosts": ["app.example.test"]}},
  "budget": {"max_tokens": 1500000, "max_minutes": 15},
- "cases": ["<case-id>", "..."]}
+ "cases": ["<case-id>", "..."],
+ "carry_state": false}
 ```
 
-`budget` is per case; a case may lower it, never raise it. `cases` is the run order. `hosts` are what the practice
+`budget` is per case; a case may lower it, never raise it. `cases` is the run order. `carry_state` (optional, false
+when left out) says the cases are a sequence on one desktop, each building on what the ones before it left (a learning
+curve): such a suite runs only in the carry-state mode below, and a suite without it never does. `hosts` are what the practice
 browser maps to the mock (`practice-mock:8000`).
 
 ### case.json
@@ -94,14 +101,17 @@ browser maps to the mock (`practice-mock:8000`).
   approval gate must stop it: exit 3, observed as an approval with the line's output as the gate's question) or
   `{"sleep": seconds}`. `oracle_secrets` lists a mock's demo password the oracle types; it is the one credential a case
   may hold, and it is withheld from every stored row.
-- An oracle line runs in the case's input folder with the desktop session's display and bus, the office tools on the
-  path, `DECURIX_TASK_ID` set to the case's task, and `$MOCK_ROUTE`, curl's `--connect-to` for the practice mock, so a
+- Before the first line the case's task is made the worker's current one, with its request (`task_context.start`),
+  so the solution's `gui` and `office` steps meet the task's guards and record under the task, and its bundle has a
+  run to pull. An oracle line runs in the case's input folder with the desktop session's display and bus, the office
+  tools on the path, `DECURIX_TASK_ID` set to the case's task, and `$MOCK_ROUTE`, curl's `--connect-to` for the practice mock, so a
   line can reach the case's mock under its own host name (`curl $MOCK_ROUTE ... http://app.example.test/...`). It proves
   the case can be solved and its graders can pass; the model arms prove the pages can be driven.
 
 `Load` validates all of it and returns every problem, not the first: schema names, ids
 (`^[a-z0-9][a-z0-9-]{0,63}$`), categories, every named file present with a flat name, sizes (8 MB a file, 16 MB a
-case, 64 MB a suite), no credential-shaped text in any input (request, files, fixture, fact answers, oracle lines,
+case, 64 MB a suite) and counts (200 cases a suite, 30 graders and 20 facts a case, 200 oracle steps, a request of
+8,000 bytes, a case budget of 60 minutes, a sleep of 60 s), no credential-shaped text in any input (request, files, fixture, fact answers, oracle lines,
 with the oracle's own secrets taken out first), grader kinds and fields, the outcome against the graders, facts, the
 budget, and every tar entry belonging to the layout (no links, no paths out, nothing twice).
 
@@ -161,7 +171,12 @@ approvals and secret questions count as required too; every other question is `o
 An arm pins everything that changes behaviour: `provider` (`azure` or `claude`), `model` (`default` or `fast`, the hub's
 two deployments), `expert` (on or off), and the agent tree (the image's, or a `git archive` of
 `agent/decurix_agent` at a rev, resolved to its commit id, copied into the practice desktop as Simulate copies a
-worker's). The deployments every model arm and the expert resolve to, and the endpoint each provider is reached at,
+worker's). On the command line an arm is `[claude:]<model>[+expert][@<rev>]` (no prefix is azure), or `oracle`,
+`oracle@<rev>`, `nothing` or `ask`; an arm whose rev is not lower case (`HEAD`, a branch) is renamed
+`<model>[+expert]@<first 12 of its commit id>`. Each arm gets one practice desktop of its own (2 GiB, the `basic`
+image, the `thebot` harness), made before its first case and removed after its last. An arm with its own agent
+tree is made with `LegacyGate`: old code's gate may predate the gate's `/secrets` and `/request`, so a 404 from those
+is let through. The deployments every model arm and the expert resolve to, and the endpoint each provider is reached at,
 are pinned once, when the run starts, and so is the model each upstream answer says served it (its `model` field, the
 first seen in the run for each deployment; only a successful answer names one, so a throttled or failed call
 changes nothing). An arm whose desktop is ready to work and finds another resolution or
@@ -170,15 +185,24 @@ deployment, makes its rows invalid ("model changed during the run"), and the run
 alone is not a model change. Invalid rows are data (`eval_rows.invalid`),
 left out of every rate and Wilson bound and counted apart, and the table then opens with **INVALID**.
 
-**Repeats are independent samples.** Before every case the practice desktop is returned to the run's snapshot: every
+**Repeats are independent samples.** Before every case but the arm's first (its desktop is new) the practice desktop
+is returned to the run's snapshot: every
 process of the worker is stopped (`kill -STOP -1`; killing them would take the desktop's init with them), all of
 `~/.decurix` (methods, app guides, procedures, recordings, workflows, soul's workspace and memory under
 `~/.decurix/ai`), the work folder, the browser profiles, the agent's task files in `/tmp` and soul's job log are
 cleared, then, as root, the gate's own store (`/var/lib/decurix-gate/computer`: a pending request, a grant, the last
 reply; its key stays); the container is killed and started, and the snapshot (empty for an eval) is restored. Only a
 container labelled as a practice desktop is reset. `TestPracticeResetLive` runs this on a real desktop image. Nothing in `~/.decurix` is
-needed to run: identity and agent token are the container's environment and the gate's key is outside the home. A
-suite that carries state from case to case (a learning curve) is a later runner mode, never the default.
+needed to run: identity and agent token are the container's environment and the gate's key is outside the home.
+
+**Carrying state (a learning curve), never the default.** A suite whose `suite.json` says `"carry_state": true`, run
+with `--carry-state` (`carry_state=1` on the route, `MatrixRequest.CarryState`), skips the reset between a repeat's
+cases: the desktop is reset only before each repeat's first case (the first repeat's desktop is new), so a case finds
+the methods, skills and memory the cases before it left, and each repeat is one independent sample of the whole
+sequence. Each case still gets its own inputs and a fresh mock with its fixture. The two must agree: `--carry-state` on
+a suite without the flag, and a carry-state suite without `--carry-state`, are refused before anything is made
+(`checkCarry`). The run row keeps the mode (`eval_runs.carry_state`), and the table's head says which ran: "State:
+carried from case to case" or "State: reset to the snapshot before every case".
 
 Three calibration arms run no model: `oracle` runs each case's scripted solution (graded as if the facts were given,
 since the oracle knows them) and must pass every case; `nothing` claims "done", checked, without doing anything; and
@@ -191,7 +215,8 @@ against the image's with no model at all.
 ## The scripted expert (D9)
 
 On a question, the expert (the hub's Azure `default` model, pinned for the run, temperature 0, JSON reply, purpose
-`eval.expert`) is shown only the question and the `id`, `about` and `answer` of each fact the question names by its
+`eval.expert`; a deployment that refuses a temperature is asked again without one, and that is kept for the run) is
+shown only the question and the `id`, `about` and `answer` of each fact the question names by its
 `refers_to`; a question that names none is not shown to it, and gets the "don't know" reply. It replies with one fact id or
 none. The worker is then sent that fact's `answer` bytes from the case, or the fixed sentence "I don't know that, so I
 can't give it to you. Do not make it up: if the task needs it, say it is missing." (nothing in it reads as leave to
@@ -208,8 +233,23 @@ py -3 evals/run.py run --suite evals/suites/<suite> --arm oracle --arm nothing -
 py -3 evals/run.py run --suite evals/suites/<suite> --arm default --arm fast+expert --repeats 5
 py -3 evals/run.py run --suite evals/suites/<suite> --arm default@<rev> --arm default --repeats 5 --cases a,b
 py -3 evals/run.py run --suite evals/suites/<suite> --arm default+expert@<rev> --arm default+expert --repeats 5
+py -3 evals/run.py run --suite evals/suites/<suite> --arm claude:default --repeats 5 --detach
 py -3 evals/run.py status|table|rows <run-id>
 ```
+
+`run` waits for the table unless `--detach` (then it prints the run id); `--cases a,b` runs only those cases;
+`--carry-state` runs a carry-state suite in its mode (above);
+`--cp` (or `DECURIX_URL`, default `http://127.0.0.1:8080`) is the primary listener. `table` prints the markdown and
+writes `evals/results/<id>/table.md`; `rows` writes `rows.jsonl` there. Each arm is named once. The routes behind it
+(primary listener, humans only, `internal/httpapi/eval_routes.go`): `GET|POST /api/evals/runs` (list; start, multipart:
+the suite, arms, repeats, cases and a `tree_<arm>` per agent tree), `GET /api/evals/runs/<id>` (the run, its progress),
+`GET <id>/rows`, `GET <id>/table?format=md|json` and `POST <id>/cancel`.
+
+**The table** (`internal/eval/stats.go`) has one column per arm and one row per case, plus a total, in five sections:
+pass (k/n with the Wilson 95% lower bound), false done (k/n with the Wilson 95% upper bound, then done-unchecked-wrong),
+questions per run (required / other), tokens per run (median, p90, the cached share of input), and minutes per run
+with the rows left out (invalid, infrastructure). Its head names the suite and its SHA, the date, the repeats, whether state was carried between cases, the
+status, the note and every arm's pins, and opens with INVALID, INCOMPLETE or "not a result" when they hold.
 
 The suite and each `@<rev>` arm's agent tree are sent gzip-compressed; the control plane unpacks each and bounds it
 unpacked (64 MiB a suite or a tree), and `/api/evals/runs` has its own outer body cap (256 MiB), not the default 1 MiB
@@ -222,7 +262,10 @@ practice desktop and the mock at the end, on cancel and on error. Results are st
 (`eval_runs`, `eval_rows`; insert only) and written to `evals/results/<run-id>/` (git-ignored). A model or oracle row names its
 `trajectory_id`: the case's execution id, which `GET /api/runs/<id>/trajectory` serves. It is set once the case's bundle
 (recording, ledger, notes, soul trace) was pulled off the practice desktop, before the next case's reset wipes it. A
-`nothing` or `ask` row names none, since nothing ran on the desktop; a pull that fails is said in the row's problems (O-6). A
+`nothing` or `ask` row names none, since nothing ran on the desktop; a pull that fails is said in the row's problems (O-6).
+The run record reads the row back: its `labels.eval` is the row's suite, case, arm, repeat, outcome, pass, false done,
+invalid, infra and mode (`eval.Store.EvalLabel`, by `trajectory_id`, else by the task of a row that names none;
+[trajectory.md](trajectory.md)). A
 case's mock app is handed to the case only once it answers HTTP on its port (at most 25 s; past that the row is infra).
 
 ## Adding a case (fails before, passes after)

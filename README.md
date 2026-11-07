@@ -74,22 +74,15 @@ A company where **AI workers execute the work and humans direct the organization
 
 ## 🛠️ What's Here Today
 
-Decurix currently provides the foundation for:
+Decurix currently provides:
 
-* Creating and managing AI workers
-* Giving each worker its own computer
-* Chatting with each worker — one conversation per worker, streamed live as it works
-* Teaching workers through real interaction
-* Assigning tasks to workers
-* Monitoring active workers
-* Human approval and assistance when workers get stuck
-* Computer use: every worker can see and operate its desktop's apps — web pages, LibreOffice, file manager — through one shared action layer, with Send/Pay-style buttons stopped for your approval and every action recorded with before/after screenshots
-* A GUI benchmark (`bench/gui/`) measuring each engine's success rate on real graphical tasks
-* Task records: every request becomes a stored task (what was asked, each attempt's steps and screenshots, every query or approval request with your reply, how it ended, how long it took and what it cost), kept in an embedded SQLite database so a restart loses nothing
-* A one-tap **Correct / Wrong** on every answer in the chat, since "done" is only the agent's own claim
-* An autonomy dashboard (**Tasks** in the top bar): autonomy rate by engine, worker and task type, and the most common reasons people had to step in
-* Persistent worker environments
-* A central dashboard for managing everything
+* Workers, each with its own Linux desktop, the apps a person uses, and the model you choose for it
+* One conversation per worker, streamed live as it works, plus one **Chat** box for the whole fleet
+* Teaching by demonstration: the worker studies what you did, asks about what it could not see, and does the next one itself
+* A check before anything is called done, and a question to you when it is unsure or about to send, pay or publish
+* A workforce: shared skills and knowledge, workers handing work to each other, and a work queue
+* A record of every run, autonomy reports, and evals that measure workers against fixed suites
+* A desktop app for Windows, macOS and Linux
 
 This is the beginning.
 
@@ -97,55 +90,70 @@ This is the beginning.
 
 ## ✅ Feature Overview
 
-A rundown of what's actually built and working, grouped by area. See [`docs/`](docs/architecture.md) for the full architecture behind each of these.
+What is built, grouped by area. Each line links the doc that explains it; [`docs/architecture.md`](docs/architecture.md) is the place to start, and [`docs/chat.md`](docs/chat.md) lists every page.
 
 **Workers & environments**
 * Create, start, stop, restart and delete disposable desktop VMs (Docker containers running a full XFCE desktop over VNC) from a single dashboard
 * One desktop image (`decurix-desktop:basic`) for every worker; the older `developer` and `ai` profile names are tags of the same image
 * Persistent per-worker environments and worker memory that survive a container being recreated
-* Idle workers stop themselves automatically after a configurable timeout, and a stopped worker auto-starts (and the request waits for it) the moment it's given something to do
-* Live desktop thumbnails on every dashboard card, driven by a direct RFB screenshot reader rather than an embedded VNC iframe, so the dashboard stays fast at any worker count
+* Idle workers stop themselves after a configurable timeout, and a stopped worker starts again (and the request waits for it) the moment it is given something to do
+* Live desktop thumbnails on every dashboard card, read straight from each desktop's VNC server rather than an embedded viewer, so the dashboard stays fast at any worker count
+* Beyond its own desktop, a worker can be shown Windows apps running on the host (`internal/winhost`) and apps on a linked Android phone ([architecture.md](docs/architecture.md))
 
-**Multiple AI engines, one contract**
-* Three interchangeable agent harnesses per worker — **Ollama** (local, hand-rolled command loop), **Claude Code** (real Claude Code CLI with a shared OAuth login, no API key needed) and **TheBot** (a purpose-built Go agent with its own planner/scheduler/skills loop)
-* Identical chat, task, query, approval and memory behavior across all three — the harness is invisible from the chat page
-* A GUI benchmark suite (`bench/gui/`) with an "oracle" mode (scripted, no model) to score each engine's real success rate on web, spreadsheet and desktop-app tasks
+**One engine, the model you choose**
+* Every new worker runs **TheBot** (`agent/thebot`, a Go agent with a planner, scheduler and operator loop). You choose its brain when you create the worker: Ollama (local), Claude, Azure OpenAI, or any OpenAI-compatible server. Hosted keys stay in the control plane; a desktop reaches the model only through the control plane's proxy ([harnesses.md](docs/harnesses.md))
+* TheBot adapts to the model: a model that reads images is shown the screen and scanned pages, a text-only one gets the screen's element list and OCR
+* Desktops created on the older Ollama and Claude Code harnesses keep running on them
+* Every hosted model call is recorded with its purpose, task and token use ([token-economy.md](docs/token-economy.md))
+* [Brainiac](brainiac/README.md), a separate Go module in this repo, serves many open models behind one OpenAI-compatible endpoint, chosen to fit the machine; a worker can use it as its OpenAI-compatible brain
 
-**One conversation per worker**
-* A single, persistent chat thread per worker — the same conversation on a laptop, a phone through the tunnel, or a second browser tab, live-streamed (SSE, with automatic polling fallback for tunnels that don't carry SSE)
-* Replying to a paused agent is just sending another message — the same chat box, the Requests page and a query reply are three doors onto the same conversation
-* Per-task token/model/cost accounting shown alongside every reply
-* One-tap **Correct / Wrong** verdicts, since "done" is only the agent's own claim
+**Conversation**
+* A single, persistent chat thread per worker: the same conversation on a laptop, a phone through the tunnel, or a second browser tab, live-streamed (SSE, with polling for tunnels that don't carry SSE) ([chat.md](docs/chat.md))
+* Replying to a paused worker is just sending another message: its chat, the **Queries** page and the fleet-wide **Chat** page are doors onto the same conversation
+* Per-task token, model and cost accounting, and a one-tap **Correct / Wrong** on every answer, since "done" is only the worker's own claim
 
 **Computer use**
-* One shared action layer (`observe` / `act` / `verify` / `open`) every engine drives — Claude via MCP tools, Ollama/TheBot via a `gui` shell command — so screen access, approval and auditing can't be bypassed by any engine
+* One shared action layer (`observe` / `act` / `verify` / `open`) that every engine drives (TheBot through the `gui` shell command), so screen access, approval and auditing cannot be bypassed ([computer-use.md](docs/computer-use.md))
 * Screen understanding via AT-SPI (GTK/XFCE/LibreOffice), the Chrome DevTools Protocol (Chromium) and `xdotool` input
-* Consequential actions (Send/Pay/Publish-style controls) are stopped for explicit human approval before anything happens
+* Consequential actions (Send/Pay/Publish-style controls) stop for a person's yes. A yes covers one action, and only the gate process can turn a signed reply into one ([gate-boundary.md](docs/gate-boundary.md))
 * Every action recorded with before/after screenshots, shown inline in the chat
 
-**Recordings, demonstrations & replay**
-* Every on-screen action a worker takes is recorded to a structured, replayable event log
-* Record a human demonstration directly from the desktop screen via a floating **ticket toolbar** — start/stop/continue capturing, annotate with a reason, and end to produce a downloadable, replayable recording
-* Replay any recording as a task — from the Recordings page, by typing `/replay <id>` in chat, or via an engine's own `gui replay` / MCP tools — with parameterized values and privacy-safe halting instead of guessing
-* Built-in privacy scrubbing: passwords and credential-shaped text are withheld at the source, never recorded
+**Recordings, teaching & replay**
+* Every on-screen action a worker takes is recorded to a replayable event log; a person can record a demonstration from the desktop's floating **ticket toolbar** ([recordings.md](docs/recordings.md))
+* Replay a recording as a task from the Recordings drawer or with `/replay <id>` in chat, with parameterized values and a halt instead of a guess
+* Teach a skill from one or more recordings (`/learn`): the worker generalises them, asks one question at a time, and runs the skill with `/skill`, by replay with no model once checked runs have earned it ([skills.md](docs/skills.md))
+* Passwords and credential-shaped text are withheld at the source and never recorded
 
-**Task tracking & autonomy**
-* Every request becomes a stored task: attempts, steps, screenshots, interventions and their outcome, kept in an embedded SQLite database that survives restarts
-* An autonomy dashboard (**Tasks**) breaking down autonomy rate by engine, worker and task type, and the most common reasons a human had to step in — with a single, precise definition of "autonomous"
+**Checking the work**
+* No unseen success: a final gate checks a report before it is called done, with facts a program can decide (sums, files, paths, recipients) checked in code before any model. A report nothing could check goes out marked "not checked" ([learning-and-verification.md](docs/learning-and-verification.md))
+* Long requests with several deliverables become planned runs, with stages, a ledger and parked questions (off by default: `DECURIX_LONG_REQUESTS=1`) ([long-requests.md](docs/long-requests.md))
+
+**Records, evals & readiness**
+* Every request becomes a stored task: attempts, steps, screenshots, interventions and their outcome, in an embedded SQLite database that survives restarts. Each task has a full **Trace** page
+* The **Tasks** page breaks down autonomy by engine, worker and task type, with the most common reasons a person had to step in
+* Each run has a run record (`decurix.trajectory/v1`) joining what the model saw and said, what the worker did, and what the checks and people decided ([trajectory.md](docs/trajectory.md))
+* Evals: `evals/run.py` runs a suite of cases against one or more arms, several repeats each, in isolated practice desktops, graded in Go from what the work saved ([evals.md](docs/evals.md))
+* **Readiness** (`/readiness/<worker>`): a saved script earns an owner-enabled scope by passing an owner-reviewed suite in an offline container; **Simulate** drafts practice cases from what a worker was taught ([readiness.md](docs/readiness.md), [simulation.md](docs/simulation.md))
+
+**Workforce**
+* The **Workforce** page (`/workforce`): an org skill registry (publish, install, give a skill to a role), scoped knowledge with provenance, people, roles and approval policies, and a work queue with capacity and spend limits ([skillhub.md](docs/skillhub.md), [access.md](docs/access.md), [workqueue.md](docs/workqueue.md))
+* Handoff: a worker hands typed work or a question to another worker and gets back the result with the receiver's final-gate verdict ([handoff.md](docs/handoff.md))
 
 **Scheduling & automation**
-* **Durable business workflows** (`/workflow`): 25 editable examples plus arbitrary custom workflow specifications and learned-skill stages; stage checkpoints, bounded retries, approval boundaries and independently checked output artifacts. See [usage and validation](bench/workflows/README.md) for Excel/Word/PowerPoint handoffs, recovery, offline soak tests and the live desktop runner.
-* Recurring requests on a standard 5-field cron expression, or a one-time request for a future moment — set up from the Requests page and fired automatically by a built-in scheduler (no external cron dependency)
-* **DAG workflows** (`/dags`): a drag-and-drop canvas for wiring multiple workers' requests into a directed graph, where a node's output can be referenced in a downstream node's request text, dispatch is gated on every upstream node succeeding, and a failed node skips everything only reachable through it — runnable on its own cron trigger or on demand
-* A worker-recommender that suggests the best desktop for a newly typed request, based on which worker is most recently active or whose past memory most closely matches the request (embedding similarity), with recency as the always-available fallback
+* **Durable workflows** (`/workflow` in chat): 25 editable examples plus custom stage specifications, with checkpoints, bounded retries, approval boundaries and independently checked outputs ([bench/workflows/README.md](bench/workflows/README.md))
+* Recurring requests on a 5-field cron expression, or a one-time request for later, fired by a built-in scheduler (Requests and Triggers pages)
+* **Triggers** (`/triggers`): email triggers that start a task when a matching email arrives, and an **Outbox** of emails a worker drafted, which only a person sends
+* **DAGs** (`/dags`): a canvas for wiring several workers' requests into a graph, where a node's output feeds its downstream nodes and a failed node skips everything only reachable through it, on a cron trigger or on demand
+* A worker recommender that suggests a desktop for a new request, by recent activity or by how closely its memory matches the request
 
 **Access & connectivity**
-* An always-on primary listener for local/dashboard use and desktop callbacks, plus a second, access-code-gated listener for exposing Decurix safely off-network — the code rotates on demand and automatically every 48 hours
-* An opt-in public link (one Cloudflare quick tunnel, to the access-code-gated listener only; the unauthenticated `:8080` is never tunnelled) plus a direct LAN URL, surfaced together in the dashboard's Mobile menu
+* The primary listener (`:8080`, no login) stays on this machine; a second, access-code-gated listener (`:8090`) is the only thing exposed off-machine. The code rotates on demand and every 48 hours
+* An opt-in public link (one Cloudflare quick tunnel, to the gated listener only) plus a direct LAN URL, both in the dashboard's Mobile menu
 * An interactive `--cli` terminal client for driving a running control plane without a browser
 
 **Distribution**
-* A single self-contained executable (Go, `CGO_ENABLED=0`) with the dashboard UI and desktop build context embedded — no separate assets, one file to run
+* A desktop app: a Windows installer that brings its own WSL distro and Docker, a macOS `.app` and a Linux AppImage
+* A single self-contained executable (Go, `CGO_ENABLED=0`) with the dashboard and desktop build context embedded
 * Cross-platform release builds (Linux/macOS/Windows, amd64/arm64) via `scripts/release/release.sh`
 
 ---
@@ -175,7 +183,7 @@ Decurix is being built toward a world where AI workers can:
 * [ ] Documentation understanding and search
 * [ ] Better worker observability
 * [ ] Significantly improved UI
-* [ ] Desktop application
+* [x] Desktop application
 * [ ] More powerful task orchestration
 * [ ] Production-ready multi-worker teams
 
@@ -197,9 +205,9 @@ Download `Decurix Setup <version>.exe`, double-click it, and open Decurix from t
 1. The installer is not code-signed yet, so Windows SmartScreen may say "Windows protected your PC": choose **More info**, then **Run anyway**.
 2. If Windows Subsystem for Linux is not on, Decurix turns it on. Windows asks for an administrator's yes once, and a PC that never had it needs one restart; open Decurix again afterwards.
 3. Decurix sets up its own small Linux, installs Docker in it and builds the worker desktop. This takes roughly 10 to 20 minutes once, with progress shown in the window. Later starts take seconds.
-4. The dashboard opens. Create a worker, and in the create dialog choose its brain: a hosted model (paste your Claude or Azure key there) or the local model.
+4. The dashboard opens. Create a worker, and in the create dialog choose its brain: a hosted model (paste your Claude, Azure OpenAI or OpenAI-compatible key there) or the local model.
 
-Your workers and settings live in `%LOCALAPPDATA%\Decurix` and `%APPDATA%\decurix`; updating by running a newer installer keeps them, and the uninstaller asks before deleting them. If a start fails, the window says why, and the details are in `%APPDATA%\decurix\desktop.log`.
+Your workers and settings live in `%LOCALAPPDATA%\Decurix` and `%APPDATA%\decurix`; updating by running a newer installer keeps them. The uninstaller deletes them without asking, unless you uninstall with `--keep-app-data` (see [below](#windows-desktop-app-electron)). If a start fails, the window says why, and the details are in `%APPDATA%\decurix\desktop.log`.
 
 To build the installer yourself: `scripts\windows\build_app.ps1` (needs Go and Node.js); it is written to `dist\electron\`.
 
@@ -263,29 +271,31 @@ cp .env.example .env        # Windows: copy .env.example .env
 
 (Skipping this is fine if you use `build.sh`/`build.ps1`, which create `.env` from `.env.example` when there isn't one.)
 
-Open `.env` and fill in what you need. See [Environment variables](#-environment-variables) below — every variable already has a working default. The two you're most likely to change are `OLLAMA_URL` and `OLLAMA_MODEL`, which pick the model server and model every worker uses. The Claude harness needs no `.env` entry at all — see [Setting up the Claude harness](#-setting-up-the-claude-harness) below.
+Open `.env` and fill in what you need. See [Environment variables](#-environment-variables) below — every variable already has a working default. The two you're most likely to change are `OLLAMA_URL` and `OLLAMA_MODEL`, which pick the local model server and model. A hosted brain needs no `.env` entry at all — see [Setting up a hosted brain](#-setting-up-a-hosted-brain) below.
 
 ### 🦙 Setting up Ollama
 
-Workers on the `ollama` and `thebot` harnesses reason with a model served by [Ollama](https://ollama.com). Two settings in `.env` pick which one:
+Workers on the Ollama brain (the default) reason with a model served by [Ollama](https://ollama.com). Two settings in `.env` pick which one:
 
 ```bash
-OLLAMA_URL=http://host.docker.internal:11434   # the machine running Decurix, as a desktop container sees it
-OLLAMA_MODEL=qwen2.5-coder:3b                  # the chat model every new desktop uses
+OLLAMA_URL=http://host.docker.internal:11434   # the machine running Decurix, as a container sees it
+OLLAMA_MODEL=auto                              # or a model name, to pin it
 ```
+
+With `auto` (or unset), the control plane chooses the best chat model that fits this machine from the models the server already has. Name a model to pin it.
 
 **1. Install Ollama and pull the models.**
 
 ```bash
-ollama pull qwen2.5-coder:3b     # the chat model (~2 GB), whatever OLLAMA_MODEL names
-ollama pull nomic-embed-text     # embeddings, needed only by the thebot harness (~270 MB)
+ollama pull qwen2.5-coder:3b     # a chat model (~2 GB) to start from
+ollama pull nomic-embed-text     # embeddings for TheBot's memory (~270 MB)
 ```
 
-`qwen2.5-coder:3b` is the default because it's the smallest model we tested that reliably follows the agent's `COMMAND:` / `DONE:` / `HELP:` contract, and it runs on a CPU-only laptop. `qwen3:0.6b` was too weak, and `llama3.2` guessed at destructive commands where it should have raised a query. If you have a GPU, a bigger model such as `qwen2.5-coder:14b` works better. Pull it and set `OLLAMA_MODEL` to its name.
+`qwen2.5-coder:3b` is the smallest model we tested that reliably follows the agent's `COMMAND:` / `DONE:` / `HELP:` contract, and it runs on a CPU-only laptop. `qwen3:0.6b` was too weak, and `llama3.2` guessed at destructive commands where it should have raised a query. If you have a GPU, pull a bigger model too; `auto` picks it when it fits.
 
-`nomic-embed-text` is a separate model, not an alternative to the chat model. Without it, the `thebot` harness still answers but can't remember anything it learns.
+`nomic-embed-text` is a separate model, not an alternative to the chat model. Embeddings stay local even for a worker on a hosted brain. Without it, TheBot still answers but can't remember anything it learns.
 
-**2. Make Ollama reachable from containers.** Desktops are Docker containers, so they reach Ollama over the network, not on `127.0.0.1`:
+**2. Make Ollama reachable from containers.** The control plane runs in a container, and every desktop reaches the model only through the control plane's proxy, so Ollama is reached over the network, not on `127.0.0.1`:
 
 * **macOS:** By default, Ollama on macOS binds strictly to `127.0.0.1`, which rejects connections from Docker containers arriving via `host.docker.internal`. Configure it to bind to `0.0.0.0` by running `launchctl setenv OLLAMA_HOST 0.0.0.0` (or `export OLLAMA_HOST=0.0.0.0 && ollama serve`). Running `./scripts/mac/setup.sh` configures this automatically.
 * **Linux (including Docker Engine inside WSL):** Ollama must listen on more than loopback. Set `OLLAMA_HOST=0.0.0.0` for its service (`sudo systemctl edit ollama`, add `Environment="OLLAMA_HOST=0.0.0.0"` under `[Service]`, then `sudo systemctl restart ollama`).
@@ -304,21 +314,21 @@ This should print JSON listing the models you pulled.
 1. Use `OLLAMA_URL` from `.env` if a container can reach it; otherwise try the host's Ollama.
 2. If Ollama is running on the host but only on loopback, make it listen on all interfaces. On Linux that means `OLLAMA_HOST=0.0.0.0` on its systemd service (with `sudo`). On Windows it means `OLLAMA_HOST` in your user environment, followed by a restart of the Ollama app.
 3. If no Ollama is reachable at all, point `OLLAMA_URL` at a bundled `decurix-ollama` container that the control plane starts and fills with models itself.
-4. Pull `OLLAMA_MODEL` and `nomic-embed-text` if they're missing, then write the result back into `.env` and print the URL and model the desktops will use.
+4. Pull a pinned `OLLAMA_MODEL` (or, with `auto`, a small one when the server has no chat model) and `nomic-embed-text` if they're missing, then write the result back into `.env` and print the URL and model the desktops will use.
 
 `OLLAMA_URL` can also point at an Ollama on another machine, e.g. `http://10.0.0.5:11434`. At startup the control plane loads `OLLAMA_MODEL` into memory on that server, so the first request doesn't wait for it.
 
-> **Changing the model only affects desktops created afterwards.** Each desktop gets `OLLAMA_URL`/`OLLAMA_MODEL` when it is created. After editing `.env`, restart the control plane (`docker compose up --build -d`, since `.env` is baked into its image) and create a new desktop.
+> **Changing the model only affects desktops created afterwards.** Each desktop gets `OLLAMA_URL`/`OLLAMA_MODEL` when it is created. After editing `.env`, restart the control plane (`docker compose up -d --force-recreate`; compose hands `.env` to the container when it starts, it is not baked into the image) and create a new desktop.
 
-### 🔐 Setting up the Claude harness
+### 🔐 Setting up a hosted brain
 
-The `claude` harness authenticates with a real Claude Code login instead of an API key — one shared sign-in used by every desktop created on the `claude` harness, not a separate login per desktop.
+Every new desktop runs TheBot; what you choose is its model.
 
 1. Open the dashboard and start creating a desktop (the **+** button).
-2. Pick **Claude Code** as the agent harness. If nobody has signed in yet, you'll see a **Log in to Claude** prompt there.
-3. Click it: a popup opens with a sign-in link and a box for a verification code — the same flow as running `claude auth login` yourself. Open the link, sign in, and paste the code it gives you back into the popup.
+2. Under **Model**, pick Claude, Azure OpenAI or OpenAI / compatible (OpenAI itself, OpenRouter, a model server on your own network). The first time, the dialog asks for its key (and, for Azure or a compatible server, its endpoint and model).
+3. The control plane tests the key and keeps it, encrypted, in `decurix.db`. It never enters a desktop: the desktop calls the control plane's proxy, which adds the key.
 
-That's it — the popup calls the control plane, which runs the login in a throwaway container and stores the resulting session in `decurix.db`. Every claude-harness desktop created from then on is seeded with it automatically; you only do this again if you want to switch which account desktops sign in as. `build.sh`/`rebuild.sh` treat it exactly like the rest of `decurix.db`: `build.sh` never touches it, `rebuild.sh` wipes it along with everything else in that database.
+You set a key up once; every desktop created on that brain afterwards uses it. `build.sh` never touches `decurix.db`, and `rebuild.sh` wipes it along with everything else in that database.
 
 ### 2. Build the desktop images
 
@@ -346,9 +356,9 @@ docker compose up --build -d
 
 The network is created outside compose (it is `external` in `docker-compose.yaml`) because the scripts and the control plane create it too, and compose refuses a network it did not create.
 
-Open **http://localhost:8080** — that's the dashboard. Create a desktop from there (pick a profile and a harness), and its live desktop screen is reachable at `http://localhost:8080/desktop/<id>/`.
+Open **http://localhost:8080** — that's the dashboard. Create a desktop from there (pick a profile and a model), and its live desktop screen is reachable at `http://localhost:8080/desktop/<id>/`.
 
-Hit **Chat** on a desktop to talk to its agent: one conversation per worker, with every step it takes streamed in as it works. The chat is the same whichever harness that worker runs, and it lives on the control plane rather than in one browser — so the same conversation is there after a refresh, and on your phone through the tunnel. The worker's screen is its own thing: open it in a new tab with the button next to **Chat**.
+Hit **Chat** on a desktop to talk to its agent: one conversation per worker, with every step it takes streamed in as it works. The chat is the same whichever model that worker runs on, and it lives on the control plane rather than in one browser — so the same conversation is there after a refresh, and on your phone through the tunnel. The worker's screen is its own thing: open it in a new tab with the button next to **Chat**.
 
 ### 4. Or: do steps 2+3 in one go
 
@@ -388,7 +398,7 @@ Iterating on `agent/` or a `docker/desktop.*.Dockerfile` doesn't need the whole 
 .\scripts\windows\test-vm.ps1 -DesktopProfile basic -Harness thebot -Task "say hi"   # Windows
 ```
 
-VNC comes up at `http://localhost:16901/vnc.html` and, for the `thebot` harness, TheBot's own built-in UI directly at `http://localhost:14900/` — both published straight to the host, bypassing the control plane's proxy entirely. That UI is a debugging surface here, not the normal way to use a worker: it talks to TheBot's engine directly, so it skips the Decurix agent and with it worker memory and the approval path. The dashboard's **Chat** is the real path. Watch the agent's progress and query/completion callbacks with `docker logs -f decurix-dummy-cp`. Tear down with `./scripts/linux/test-vm.sh --down` (or the Windows equivalent) once you're done; it only ever removes containers this script created.
+VNC comes up at `http://localhost:16901/vnc.html` and, for the `thebot` harness, TheBot's own built-in UI directly at `http://localhost:14900/` — both published straight to the host, bypassing the control plane's proxy entirely. That UI's API routes need the desktop's agent token (`DECURIX_AGENT_TOKEN`, which the script prints how to read). It is a debugging surface here, not the normal way to use a worker: it talks to TheBot's engine directly, so it skips the Decurix agent and with it worker memory and the approval path. The dashboard's **Chat** is the real path. Watch the agent's progress and query/completion callbacks with `docker logs -f decurix-dummy-cp`. Tear down with `./scripts/linux/test-vm.sh --down` (or the Windows equivalent) once you're done; it only ever removes containers this script created.
 
 ### 5. Or: run a prebuilt executable (no Go, no repo)
 
@@ -420,7 +430,7 @@ An archive is just the binary plus a `README.txt` written for that OS and an opt
 
 ```bash
 tar -xzf decurix_<version>_linux_amd64.tar.gz && cd decurix_<version>_linux_amd64
-./decurix --build-images     # build the three desktop images (one time, slow)
+./decurix --build-images     # build the desktop images (one time, slow)
 ./decurix                    # dashboard on http://localhost:8080
 ```
 
@@ -482,16 +492,15 @@ Set these in your own `.env` (copied from `.env.example`) — the control plane 
 
 | Variable | Required? | Default | Purpose |
 |---|---|---|---|
-| `DEFAULT_PASSWORD` | No | `admin` | VNC login password baked into every new desktop. |
 | `OLLAMA_URL` | No | `http://host.docker.internal:11434` | The Ollama server every new desktop reasons with. The default is the host running Decurix. See [Setting up Ollama](#-setting-up-ollama). |
-| `OLLAMA_MODEL` | No | `qwen2.5-coder:3b` | The chat model every new desktop uses. It must already be pulled on `OLLAMA_URL`'s server (`build.sh` pulls it for you). |
+| `OLLAMA_MODEL` | No | `auto` | The local chat model for new desktops. `auto` (or unset) chooses the best fit for this machine from what `OLLAMA_URL`'s server has; a name pins it (`build.sh` pulls a pinned model for you). |
 | `DESKTOP_STOP_TIMEOUT_SECONDS` | No | `10` | Seconds to wait for a desktop container to stop gracefully before force-killing it. |
-| `DECURIX_DATA_DIR` | No | your user config dir + `/decurix` (`/data` in the Docker image) | Where `decurix.db` lives: task records, chats, queries, worker memory, action screenshots, and the shared Claude session (see [Setting up the Claude harness](#-setting-up-the-claude-harness)). `docker compose` keeps it on the `decurix-data` volume. |
+| `DECURIX_DATA_DIR` | No | your user config dir + `/decurix` (`/data` in the Docker image) | Where `decurix.db` lives: task records, chats, queries, worker memory, action screenshots, and the hosted brains' keys, encrypted (see [Setting up a hosted brain](#-setting-up-a-hosted-brain)). `docker compose` keeps it on the `decurix-data` volume. |
 | `DECURIX_STEP_IMAGES_MB` | No | `1024` | Disk budget for the before/after screenshots of on-screen actions. The oldest are dropped first. A desktop keeps its full-size originals regardless. |
 | `DECURIX_LAN_PORT` | No | `8090` | Port of the second, access-code-gated listener — the **LAN access URL**, reachable directly on your own network. Changes which host port `docker compose` publishes it on too. With `DECURIX_PUBLIC_LINK=1`, `build.sh`/`rebuild.sh` open one tunnel, to this port only; nothing tunnels `:8080`. |
 | `DECURIX_IDLE_STOP_MINUTES` | No | `5` (on) | Stop a desktop automatically once it's sat idle — no task running, queued, or waiting on a reply, and no screen/thumbnail open — for this many minutes. Set to `0` to turn it off. It only ever does what the dashboard's own Stop button does. |
 
-Every other setting (the agent harness, the control-plane URL a desktop calls home to, etc.) is set up for each desktop when you create it. See [`docs/architecture.md`](docs/architecture.md) if you're changing that wiring.
+Every other setting (the worker's model, the control-plane URL a desktop calls home to, etc.) is set up for each desktop when you create it. See [`docs/architecture.md`](docs/architecture.md) if you're changing that wiring.
 
 ---
 
@@ -504,7 +513,7 @@ The infrastructure underneath Decurix is intentionally modular and designed to s
 For developers interested in the current implementation, see:
 
 * [`CLAUDE.md`](CLAUDE.md) and [`docs/`](docs/architecture.md) — architecture reference (packages, agent harnesses, conventions)
-* [`CODE_MAP.md`](CODE_MAP.md) — codebase reference
+* [`CODE_MAP.md`](CODE_MAP.md) — every tracked file with its own one-line summary (generated: `go run codemap_gen.go`)
 * [`scripts/`](scripts/) — `linux/`, `mac/`, and `windows/` hold the scripts per platform, `release/` builds the downloadable executables
 
 ---

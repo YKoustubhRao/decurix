@@ -167,3 +167,14 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
 - **A label's value is its cell, not its line.** "Cost centre: to be decided. General terms apply." held "General"
   on the label's line. A file now backs a pick only with the text after the label, up to the next sentence or column
   break (`records._value_cell`).
+- **A cron in UTC is a conversion the person does in their head** (B-37). An IST user set `0 9 * * *` and got 14:30.
+  A schedule and a DAG cron now keep an IANA zone (`zone`, `cron_zone`; old rows migrated to `UTC` so nothing moved),
+  matched on that zone's wall clock (`Expr.NextIn`); the binary embeds `time/tzdata`, since Windows and a minimal
+  image have no zoneinfo. Daylight saving goes the vixie way: a fixed-time job in the skipped hour runs at the jump, and
+  once in the repeated hour; a wildcard job follows the clock. TIME:{...} carries the zone's offset, so a 00:30 IST
+  run says that day's date, not yesterday's UTC one.
+- **A page that lists desktops must render when Docker is down** (2026-11-07). The dashboard, Requests, Triggers and
+  DAG pages answered "internal server error" while Docker was unreachable (the Windows app's distro still starting), so
+  the Docker banner that explains it never showed. They now render with no desktops (`httpapi.pageDesktops`,
+  `TestPagesRenderWhenDockerIsDown`); a JSON route may still fail, a page may not. Found only by running a freshly
+  built control plane with no Docker, which unit tests with a fake daemon never do.

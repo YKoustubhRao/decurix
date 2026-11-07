@@ -62,7 +62,7 @@ Live benches (Docker, minutes each) are listed in [docs/running.md](docs/running
 
 ## Conventions
 
-- `CODE_MAP.md` is generated; do not hand-edit.
+- `CODE_MAP.md` is generated (`go run codemap_gen.go`, also run by `go generate .`); never hand-edit it. Give every new file a header comment; `TestCodeMapIsCurrent` fails until the map is regenerated.
 - Every exported or significant Go func gets a one-line `// Name does X` comment.
 - `jsonError` never echoes `err.Error()` to a client.
 - Tests that need bash or a real browser skip on Windows or use a stand-in; never launch the real browser in a test.

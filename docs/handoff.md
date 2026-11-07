@@ -27,15 +27,19 @@ Stored in SQLite (`handoffs`, component `handoff`, append-only `Migrate` steps).
 
 ## How a handoff runs
 
-1. `POST /api/handoffs` from the sending desktop (`desktop_id` in the body, like every agent callback). Validated:
-   one target, a request, at most 40 inputs and 20 files, every file under `/home/headless` (the sending `handoff`
+1. `POST /api/handoffs` from the sending desktop. The sender is the desktop the request's address belongs to
+   (`Handler.Caller`); a `desktop_id` or `from_worker` in the body naming another worker is refused (403). Validated:
+   one target, a request (at most 12000 bytes; `expected` 2000), at most 40 inputs (4000 bytes each) and 20 files,
+   every file under `/home/headless` and in no dot-folder (the sending `handoff`
    command refuses, before anything is sent, a file outside the work folder, the shared folder and `~/Downloads`, any
    file under a hidden folder such as `~/.claude` or `~/.ssh`, and the worker's own `~/.decurix`:
    `privacy.file_may_leave`), a known sender and
    receiver, not the sender itself, and not a worker already waiting up the same chain (A -> B -> A would never finish,
-   since A is busy waiting on B).
+   since A is busy waiting on B). Practice and readiness desktops are never a sender or a receiver.
 2. Sending. A named worker is used as named; a role or skill is resolved through `WorkerFinder.Holders` to the first
-   holder that is not the sender, not up the chain, and free (`tasks.Store.Busy`). The files are read out of the
+   holder (by worker id) that is not the sender, not up the chain, and free (`tasks.Store.Busy`). Holders come from
+   the skill registry (docs/skillhub.md): the workers carrying the role, or the workers the registry records as
+   holding the skill, both matched ignoring case (as the queue and the approval policies match them). A queued role or skill handoff is resolved again on every try. The files are read out of the
    sender's desktop and written into `/home/headless/handoffs/<id>/` on the receiver, and the request goes through the
    same automated door every other sender uses (`SubmitTracked` / `SubmitTrackedWithFiles`: the per-desktop send lock
    and busy check). A busy receiver leaves the handoff `queued`; `Service.Run` tries again every 15 s, and one that no
@@ -70,14 +74,39 @@ that holds the skill, as a short task: answer from what it was taught, change no
 No free holder fails it at once, so the asker goes to a person without waiting. The route holds the request up to 60 s
 for the answer and returns `{handoff, answer, verified, answered_by}`; the command polls after that (default 300 s).
 An answer from what a worker was taught is not something anyone saw: it nearly always comes back `verified: false`,
-and the command prints it as advice. It can save a person a question; it never stands in for checking the work.
+and the command prints it as advice, in an `=== ANSWER <id>: ... ===` block that the soul's report review does not
+count as a result. It can save a person a question; it never stands in for checking the work.
+
+## The `handoff` command
+
+`handoff delegate --to WORKER|--role ROLE|--skill SKILL --request TEXT [--input k=v]... [--file PATH]... [--expect
+TEXT] [--wait SECONDS]` (default wait 1800 s), `handoff ask --skill SKILL [--wait SECONDS] QUESTION`, `handoff status
+ID`, `handoff cancel ID`, `handoff who`. Request, inputs, expectation and question are withheld of the task's secrets
+(`privacy.withhold_known`) before they leave the desktop. Exit codes: 0 verified done, 1 not done, 2 still running when
+the wait ran out, 3 not sent.
+
+`handoff who` reads `GET /api/skillhub` (the one registry route a desktop may call) and prints, between `=== WORKERS
+===` and `=== END WORKERS ===`, one line per other worker the registry knows: its id (what `--to` takes), the roles it
+carries and the skills recorded as installed on it, with versions (at most 60 workers and 40 of each per worker). This
+desktop is left out. With no other worker it says so and to ask the person. It does not say who is free (that is found
+when a handoff is sent) and cannot list a skill taught on a desktop and never published. Exit 0, or 3 when the registry
+cannot be read. Before it, workers guessed names for `--role`/`--skill` and got "no other worker holds ...".
+
+TheBot's operator prompt (`agent/thebot/internal/skills/operator.go`) tells the model
+when to delegate, to ask a taught worker before a person, and to take the names from `handoff who` (fixed text, so the
+prompt stays byte-identical across calls). The other harnesses do not mention it.
 
 ## Routes and listener
 
-`POST /api/handoffs`, `GET /api/handoffs?worker=`, `GET /api/handoffs/get?id=`, `POST /api/handoffs/cancel`,
-`POST /api/handoffs/ask`. They go on the primary listener only: the callers are desktop agents, a worker is
-identified by the `desktop_id` it sends (trusted only on the listener the desktops reach and nothing outside this
-machine does), and creating a handoff starts work on another desktop and moves files between desktops.
+`POST /api/handoffs`, `GET /api/handoffs?worker=&limit=` (newest first; default 100, at most 500),
+`GET /api/handoffs/get?id=`, `POST /api/handoffs/cancel`, `POST /api/handoffs/ask`. They go on the primary listener
+only (`RegisterLocalRoutes`): the callers are desktop agents, a worker is identified by the address its request comes
+from (only the listener the desktops reach can tell), and creating a handoff starts work on another desktop and moves
+files between desktops. A desktop lists only its own handoffs, reads only one it sent or received, and cancels only
+one it sent. A person at this computer sees and may cancel every handoff.
+
+The Workforce page's Handoffs tab (docs/skillhub.md) lists them, filtered by worker, with status, verified, open
+questions, a Details dialog (request, expected, report, evidence, files) and Cancel.
 
 ## Limits
 
@@ -85,12 +114,12 @@ machine does), and creating a handoff starts work on another desktop and moves f
 - A question times out after 15 minutes; a delegated task has no running time limit (the receiver may be waiting on a
   person), only the sender's own `--wait`.
 - Chains are at most 3 deep and never hand back to a worker waiting up the chain.
-- Files: at most 20 paths under `/home/headless`, 64 MB in all; folders and links are not carried.
+- Files: at most 20 paths under `/home/headless`, 64 MB in all; only regular files are carried (a folder's files
+  come flat by base name; links are skipped). Files a receiver was sent land in `~/handoffs/<id>/`, outside the
+  folders `file_may_leave` allows, so the receiver cannot hand them on in turn.
 - A stop ("Stopped, as you said") is reported `kind="error"`, not checked, since the review of 2026-11-03, so a
   receiver that stopped at a person's no fails the handoff instead of reading as verified.
 - A receiving task that ended `query` fails the handoff. Delegated work has a 24 h ceiling.
 - A queued handoff is claimed `sending` (shown as queued in JSON) and submitted without the service lock. A stale
   claim fails after 15 minutes.
-- Knowledge GETs from a desktop are bound to the caller: its own worker scope, its own tasks only. Org skill and
-  knowledge writes are host-operator only (owner decision O-7).
 - One control-plane process: the service's mutex serialises the read-then-write of a handoff row.

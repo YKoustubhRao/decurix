@@ -27,12 +27,18 @@ expert loop and training-set exports read (plan R1).
 | steps: command, guard, turn | soul's trace (bundle) | soul |
 | ledger | `<task>.records.json` (bundle) | the desktop's record ledger |
 | worker hashes, harness, brain | `run.json` (bundle) | the desktop |
-| labels.eval | `eval_rows` | the eval runner |
+| labels.eval | `eval_rows` (`eval.Store.EvalLabel`) | the eval runner |
+| worker.rules_sha | `run.json` (bundle), from soul's `traces/<task>.rules` | soul, then the desktop's manifest |
 
 ### The bundle (R9)
 
 What `runs.Puller` reads off the desktop, as the worker (`desktop.Manager.ReadTar`, never Docker as root), when an
-execution ends and before a desktop is deleted. Paths are under the worker's home:
+execution ends and before a desktop is deleted. When (`internal/httpapi/runpull.go`): the final or error callback
+queues a pull (128 deep; a full queue drops it, and says so), tried 5 s later and up to 3 times with a growing wait; a
+delete first pulls every run of that desktop not yet pulled, for at most 90 s, then goes on and logs each run it lost;
+a restart catches up on the last 7 days' runs. An eval case's bundle, and a Simulate case's, is pulled off its practice
+desktop before the next case's reset (`desktop.PracticeHome`, [evals.md](evals.md), [simulation.md](simulation.md)).
+Paths are under the worker's home:
 
 | Part | Path |
 |---|---|
@@ -95,18 +101,28 @@ execution ends and before a desktop is deleted. Paths are under the worker's hom
   "ledger": [{"key", "source", "status", "fields": [{"label", "intended", "at_save", "shown", "status"}]}],
   "labels": {"run": "done", "person_verdict": "", "eval": null},
              // run: the run's verdict (done | not_done | unchecked | stopped | "" before verdicts), never a step's;
-             // eval: {suite, case, arm, repeat, passed, false_done}
+             // eval: {run_id, suite, suite_sha, case, arm, repeat, observed, passed, false_done, invalid, infra,
+             //        carry_state} for a run an eval case made, else null
   "integrity": {"bundle_sha256", "parts": {"recording": "sha256:..", ...}, "missing": [...], "worker_written": [...]}
 }
 ```
 
-- **calls**: each proxy row (`source: "proxy"`) with its id, time, deployment, purpose, turn, caller, status, ms,
-  `prompt_sha256` and `prefix_sha256` (over the stored message hashes, so two calls that share a prefix share
+- **calls**: each proxy row (`source: "proxy"`) with its id, time, provider, deployment, purpose, turn, caller, status,
+  ms, the number of messages, `prompt_sha256` and `prefix_sha256` (over the stored message hashes, so two calls that share a prefix share
   `prefix_sha256`), `response_sha256`, usage and problems. Only rows whose desktop is the execution's worker, made
   between its start and a minute after its end, are joined: the task id in a header is the desktop's word.
   With no proxy rows (a local brain the proxy never sees), the calls are soul's trace's call lines
-  (`source: "soul_trace"`, no bodies, `deployment` = the model soul asked for).
+  (`source: "soul_trace"`, no bodies, `deployment` = the model soul asked for, `caller: "soul"`, a failed call's
+  problems `["failed"]`).
 - **models** and **usage** are summed from `calls`.
+- **labels.eval** is read back from the eval rows (`runs.Sources.Evals`, `eval.Store.EvalLabel`): the row whose
+  `trajectory_id` is this execution, else a row of this task that names no trajectory (its bundle could not be
+  pulled; the case's run is still the eval's). Invalid and infrastructure rows are labelled as such, never left out.
+  A read that fails leaves it `null` and says `labels.eval: the eval rows could not be read` in `integrity.missing`.
+- **worker.rules_sha** is the SHA-256 (`sha256:<hex>`) of the operator's rules text soul gave the task's latest job
+  (`rulesFor` in `skills/operator.go`, hosted brains only): soul writes it to `~/.decurix/ai/traces/<task>.rules`
+  (`trace.Rules`, the hash only), and the desktop's manifest copies it (`retention.rules_sha`). `""` when soul gave no
+  rules (a local brain, another harness) or ran before this was built.
 - **Only this execution's own part of the task's files.** The recording, soul's trace and the ledger are kept per
   task and grow over its attempts (a retry is a new execution of the same task). A trajectory keeps the events and
   trace lines from its execution's start (less 2 s) to a minute after its end, and the ledger records declared in
@@ -181,7 +197,8 @@ plane as `executions.verdict`).
 ```jsonc
 {"schema": "decurix.verdict/v1",
  "verdict": "done",               // done | not_done | unchecked | stopped
- "by": "verify",                  // verify | skill_gate | long_task | replay | workflow | worker | none
+ "by": "verify",                  // verify | skill_gate | long_task | replay | workflow | worker | none | legacy,
+                                  // or the control plane's own graders: readiness | practice | eval
  "why": "...",                    // at most 600 characters, withheld
  "basis": ["code", "model"],      // the kinds of check that passed: code | ledger | screen | model | person
  "checks": [{"id", "result": "pass | fail | not_made", "basis", "detail", "refs": []}],
@@ -189,7 +206,17 @@ plane as `executions.verdict`).
 ```
 
 `done` needs at least one check that passed and none that failed or was not made. `stopped` (the person said no and
-the work stopped) is never done. At most 64 checks, 16 refs a check, 600 characters a string.
+the work stopped) is never done. At most 64 checks, 16 refs a check, 64 evidence lines, 600 characters a string
+(counted in characters, never bytes), 64 KB in all; the desktop keeps its own under 12,000 bytes (`verdict.bound`),
+since a callback body is read up to 32 KB. A `legacy` done (a final path that sends only a checked flag,
+`tool_task` and `workflow_task`) carries no checks and no basis and never counts towards trust. The control plane
+stores `checked` as the verdict says (done); a callback whose own flag disagrees is stored not checked. A verdict
+that does not validate is stored as `unchecked` by `none`. A final with no verdict (an image from before R6) is still
+stored by its checked flag.
+
+The control plane's graders write the same document: a readiness run, a Simulate case and an eval case each record
+their grade on the case's task record (`by: readiness | practice | eval`, one check, basis `code`; `not_made` when the
+evidence could not be read).
 
 ## decurix.run-manifest/v1
 
@@ -198,6 +225,7 @@ the work stopped) is never done. At most 64 checks, 16 refs a check, 600 charact
 ```jsonc
 {"schema": "decurix.run-manifest/v1", "task_id", "desktop_id",
  "agent_sha": "sha256:<tree hash of the agent code>", "soul_sha": "sha256:<soul binary>",
+ "rules_sha": "sha256:<the operator's rules text soul gave the run>",   // "" when it gave none
  "harness": "thebot", "brain": "azure", "started_at": 1762240931, "ended_at": 1762241380,
  "parts": {"recording", "notes", "ledger", "soul_trace"}, "labelled_by": ["final"]}   // final | reply
 ```
@@ -207,12 +235,19 @@ the work stopped) is never done. At most 64 checks, 16 refs a check, 600 charact
 `~/.decurix/ai/traces/<task>.jsonl`, one line per model call and per command the operator ran (`agent/thebot/internal/trace`).
 Soul never reads it back. It goes through soul's secrets filter (the task's own secrets, then `memory.RedactSecrets`)
 before it is written; files are 0600 and capped at 32 MB, past which one last line `{"kind":"truncated"}` is written.
+A file that already ends with that line is stopped when soul restarts, so a restart never adds another. Beside it,
+`<task>.rules` holds `sha256:<hex>` of the rules text the task's latest operator job was given (above).
+
+**Pruned once exported.** At each run's end the desktop (`retention.prune_traces`, from `write_manifest`) deletes a
+task's trace and rules note when its run was exported (`EXPORTED` in its run folder), no later label holds it again
+(`retention.held`), and the file was last written more than 3 days ago (`TRACE_KEEP_SECONDS`). A trace whose run was
+never exported is never deleted.
 
 ```jsonc
 {"schema": "decurix.soul-turn/v1", "at", "task", "job": "j42", "turn": "j42:7", "kind": "call",
  "purpose": "operator.turn", "model": "default", "provider": "openai",
  "prompt_sha256": "<SHA-256 of the message list's JSON as soul holds it>", "messages": 14,
- "usage": {"in": 30122, "cached": 28800, "out": 211}, "ms": 2140, "command": null}
+ "usage": {"in": 30122, "cached": 28800, "out": 211}, "ms": 2140, "command": null}   // "failed": true on a call that failed
 {"schema": "decurix.soul-turn/v1", "at", "task", "job", "turn", "kind": "command",
  "command": {"text": "<redacted>", "guard": "allowed", "exit": 0, "ms": 830,
              "output_sha256": "<of the redacted output>", "output_head": "<first 2 KB, redacted>"}}
@@ -228,6 +263,38 @@ the paused job it resumes) and what soul knows by structure (a value given after
 into a password field) are withheld before anything is shortened or quoted, by one filter for the step line, the trace,
 the outputs file and an approval's quoted action. Another job's values never touch this job's text.
 
+## Purging a leaked secret
+
+Nothing that labels a run is deleted (plan rule 4), but a secret is not a label. When a value slipped past
+withholding into the records, the owner purges it by value (`internal/purge`): `POST /api/privacy/purge` on the
+primary listener (humansOnly, owner role; never on the gated listener, refused to a desktop), the "Purge a leaked
+secret" control at the foot of the Tasks page, or `decurix --purge-secret --reason "..."`, which reads the value from
+stdin and posts it to that route. It refuses a value shorter than 6 characters (too likely to match ordinary text) and
+a purge without a reason.
+
+It looks for the value as written, in each JSON-string escaping the recorder withholds (`llmrec.SecretForms`), and as
+base64 of the value alone, in: every blob (model-call messages, answers and tool lists, run-bundle files, eval suites),
+the `llm_calls` rows (`params`, `problems`), the judgements (`text`, `payload`, `changed`), the task records (request,
+verdict note, final reply, verdict, steps, interventions), the chat (entries and steps, in the database and in memory)
+and the concierge's messages, the query notes, and the run-bundle manifests (paths, missing reasons). Every copy is
+overwritten by `[purged]` in place; nothing is deleted. Tables are rewritten one `UPDATE` each (SQLite scans), the
+tables a purge must also read are paged, and blobs are streamed, so the work is bounded. One purge runs at a time.
+
+**Joins.** A blob keeps its name, the SHA-256 it was stored under, so every row still opens it: `llm_calls.messages`,
+`prefix_sha`, `prompt_sha` and `response_sha`, a bundle's `files`, a trajectory's `prompt_sha256`, `prefix_sha256` and
+`integrity.parts`. In a blob the mark is padded or cut to the value's length (`[purged]____`), so a bundle's `bytes`
+and a tar's entry sizes stay true. Beside the blob, `<sha>.purged` records the SHA-256 of its new bytes and the
+purge's judgement (`blobstore.Purged`), so a check that hashes blobs tells a purged one from a corrupted one. A
+bundle's `manifest_sha` stays the one computed at the pull. A later `Put` of the original bytes finds the name taken
+and keeps the purged ones.
+
+**The record of it.** The purge is a judgement of kind `purge` (rule 5): the person, the door `privacy`, the reason
+they typed (with the value purged from it too), and the counts per store in its payload; never the value or a hash of
+it. The answer is the same counts and the judgement's id. Afterwards the database is rebuilt (`VACUUM`, then a WAL
+checkpoint) so no free page keeps an old copy; `compacted: false` says it could not be (a busy database), and the rows
+are purged either way. **Not reached:** backups already downloaded, a gzip-compressed blob, an image's pixels, and
+anything still on a desktop's own disk.
+
 ## v1 limits
 
 - **`ledger_delta` is always `[]`.** The ledger does not name the event of its save, so no step can be said to have
@@ -239,5 +306,9 @@ the outputs file and an approval's quoted action. Another job's values never tou
 - **Every bundle part is `worker_written`** until the evidence store sits under the gate user (O-1): the worker's own
   user can write its recording, ledger, notes, trace and manifest.
 - **`request.files` is `[]`** and **`worker.image` is `""`**: neither is kept per execution yet.
-- **Bundles of practice and eval desktops are not pulled yet**: they have no home volume to read after a reset.
-- **The bundle limit is fixed at 64 MB a run**; past it frames are dropped, oldest first, and said.
+- **`worker.rules_sha` covers soul's operator rules only**: the worker's business rules (its memory entries, which
+  Simulate pins as `Pins.RulesSHA`) and the organisation's knowledge are not in it.
+- **The bundle limit is fixed at 64 MB a run** (`runs.DefaultLimit`; `Puller.Limit` exists but nothing sets it); past it
+  frames are dropped, oldest first, and said.
+- **A pruned trace's task that runs again** (a reply days after the export) starts a new trace file, but soul, if it
+  did not restart, still counts the old file's size against the 32 MB cap.

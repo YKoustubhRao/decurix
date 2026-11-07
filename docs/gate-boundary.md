@@ -1,8 +1,9 @@
 # The approval gate as a boundary (design, round 3)
 
-Status (2026-11-03, after the round-3 recheck): built, and checked live on a layered image of this checkout with
-`bench/security/boundary.sh`. Not done: a full image build and a real task end to end; existing desktops keep the old
-setup until recreated.
+Status (2026-11-07): the gate, its key, the image's root removal, the signed inputs of phase 2 and the network per
+desktop are built. Round 3 was checked live on a layered image of this checkout with `bench/security/boundary.sh`; the
+live checks owed on the next image are listed in [follow-ups.md](follow-ups.md). Existing desktops keep the old setup
+until recreated. The input broker ("Next" below) is not built.
 
 Found while checking step 1: the worker could already become root. `headless` had `sudo` for everything and the base image's
 default password (`headless`) works (`echo headless | sudo -S id -u` printed 0). Step 1 removes that: see
@@ -17,52 +18,51 @@ worker's shell. Filters on words cannot fix that; a separate identity can.
 A yes can only be created by something the worker cannot write to or read the secrets of. The worker may ask the
 gate (`check`), never grant.
 
-## Pieces
+## Pieces (as built)
 
-1. **Gate daemon**: a small process run as its own Linux user (`decurixgate`), not the worker's `headless`.
-   - Owns the approval state (today `~/.decurix/computer/approval.json`) in a directory only it can read or write
-     (mode 700, outside `$HOME`, e.g. `/var/lib/decurix-gate`).
-   - Listens for the control plane's person replies on its own port (not :8081, not soul's :4900), checked with an
-     **approval key** that only the gate and the control plane hold. The key is derived like the agent token
-     (`internal/desktop/agenttoken.go`) with a different label, and is never in the worker's, the agent's or soul's
+1. **Gate daemon** (`agent/decurix_agent/gate_server.py`): a small process run as its own Linux user (`decurixgate`),
+   not the worker's `headless`.
+   - Owns the approval state (`computer/approval.json`: the pending request, the one-shot grants, the last reading) in
+     its own directory, `/var/lib/decurix-gate` (mode 700, outside `$HOME`).
+   - Listens for the control plane on its own TCP port, :8083 (not :8081, not soul's :4900). Each body is checked with
+     the desktop's **gate key**, which only the gate and the control plane hold. The key is derived like the agent
+     token (`desktop.GateKey`, label `decurix-gate-key`), and is never in the worker's, the agent's or soul's
      environment.
-   - Offers the agent and `gui` one call over a unix socket: `check(fingerprint, action)` -> allow / ask. A grant is
-     consumed inside the daemon. There is no call that creates a grant.
-   - Reads a reply (yes / no / if) itself, through the control plane's LLM proxy with its own credential, so a
-     lying caller cannot decide what a reply meant.
-2. **Replies bypass the worker's files.** Today a reply travels control plane -> agent :8081 -> `command/*-reply.txt`
-   -> watcher. The control plane sends an approval reply to the gate daemon as well (signed with the approval key,
-   bound to the task id and the pending request id). A file in the command folder, or a POST to :8081 with the
-   worker-readable agent token, can no longer produce a grant.
-3. **The worker cannot become the gate user.** Precondition to verify in the image before any of this counts:
-   - `headless` must not have passwordless `sudo` once startup is done (the base image uses sudo once in
-     `user_generator.rc`); drop the sudoers entry after that step, or limit it to that one command.
-   - `/etc/passwd` and `/etc/group` stay 666 today only because that startup step tests `-w /etc/passwd`. Make them
-     644 after startup finishes (a root step at the end of the entrypoint), so the worker cannot add a uid-0 user.
-   - Drop `NET_RAW` (no ARP spoofing of the control plane's identity checks) and keep `no-new-privileges` where the
-     startup allows it.
-4. **soul and Ollama harnesses** go through the same `check` over the socket; soul's localhost exemption in its
-   safety check must not let the worker reach the gate's port.
+   - Offers the agent, `gui` and TheBot a unix socket (`/run/decurix-gate/gate.sock`, mode 666). Its calls are
+     `check` (with the action's `material`), `pending`, `has_grant`, `reset`, `outcome`, `settled`, `last_reading` and
+     `site_known`. A grant is consumed inside the daemon. No call creates a grant.
+   - Reads a reply (yes / if / no / unclear) itself, through the control plane's LLM proxy, so a lying caller cannot
+     decide what a reply meant. The proxy holds the model key; the gate's calls are tagged `gate` (`DECURIX_CALLER`),
+     which is a label for the records, not a credential.
+2. **Replies bypass the worker's files.** A reply still travels control plane -> agent :8081 -> `command/*-reply.txt`
+   -> watcher, as text. The control plane sends an approval reply to the gate as well, signed with the gate key and
+   bound to the task id and the gate's request id. A file in the command folder, or a POST to :8081 with the
+   worker-readable agent token, cannot produce a grant.
+3. **The worker cannot become the gate user or root.** The image has no sudo, no setuid or setgid bit, `/etc/passwd`
+   and `/etc/group` at 644, and every desktop runs without `NET_RAW` and with `no-new-privileges` (below).
+4. **soul and the legacy harnesses** go through the same socket: soul's `gateAsk` (`cmd/soul/gate.go`) and the Ollama
+   and Azure runners' `gated_command`. The gate's port takes only signed bodies, so reaching it from the worker grants
+   nothing.
 
 ## What stays a filter (and is said so)
 
 `claude_guard.py` stays as a guard rail for the Claude harness. It is not part of the boundary.
 
-## Open questions to settle before building
+## Questions settled while building
 
-- (answered) `headless` had sudo with the public default password; now removed.
-- Can the entrypoint run a root step after startup (tini -> startup.sh), or must the image set its own entrypoint?
-- Where does the gate daemon get LLM access without a key the worker can read? (control plane proxy, per-desktop
-  token held only by the gate)
+- `headless` had sudo with the public default password: removed.
+- The root step: the image sets its own entrypoint (`tini -> /opt/decurix-entrypoint.sh`), which does the root work
+  first and then runs the base image's `startup.sh` as the worker.
+- The gate's model access: the control plane's LLM proxy, which holds the key. No key is in the desktop.
 - Existing desktops keep the old gate until recreated (desktop state is fixed at creation).
 
-## Order of work
+## Order of work (done)
 
-1. Image: gate user, sudoers trimmed, `/etc/passwd` 644 after startup, drop NET_RAW. Verify with a live desktop.
-2. Gate daemon with the unix-socket `check`; move `approval.py`'s state behind it.
-3. Control plane: approval key, send approval replies to the gate port.
-4. Remove the reply-file and :8081 paths as grant routes; keep them for ordinary requests.
-5. Live attack run: every self-approval path from the round-2 report must fail.
+1. Image: gate user, no sudo, `/etc/passwd` 644, NET_RAW dropped.
+2. Gate daemon with the unix socket; `approval.py`'s state behind it.
+3. Control plane: the gate key, signed replies to the gate's port.
+4. The reply file and :8081 are no grant routes; they still carry ordinary requests and replies as text.
+5. Live attack run: `bench/security/boundary.sh` replays the self-approval paths of the reviews.
 
 
 ## What is built (2026-11-03, after the round-3 recheck)
@@ -83,6 +83,12 @@ layered image of this checkout).
   following links and without files that have a second link.
 - The gate starts as `decurixgate` from its own directory with `python3 -I` (no cwd and no user site on `sys.path`). Its
   code is root's (`/opt/decurix_agent`, not writable by the worker).
+- The gate starts from a cleared environment (`env -i` in `decurix-entrypoint.sh`), not the container's: it never holds
+  the worker's agent token, the VNC password or a brain's settings. It gets PATH, LANG, and HOME, `DECURIX_DIR` and
+  `DECURIX_WORK_DIR` set to its own directory, and, when the container sets them, only the variables its own code path
+  reads (`GATE_ENV_PASS`): `CONTROL_PLANE_URL` and `DECURIX_LLM` for reading replies through the proxy, the model
+  call's two time limits, the worker stage, the task file and the log folder. `agent/tests/test_gate_env.py` fails
+  when the gate's modules read a variable the list does not pass (2026-11-07).
 
 **The key** (`desktop.putGateKey`, `GateKeyFile`):
 - The key is never in an environment. Every `docker exec` inherits the container's environment, and a desktop could get
@@ -128,6 +134,7 @@ arrived, so a desktop without one kept approvals in the worker's own store.
   the control plane reads the created container's `/etc/passwd` before the first start.
 - Practice desktops get a key and a gate of their own, like any desktop. The practice broker never grants an approval.
 - `boundary.sh` has a row for it: a second desktop started with no key has the directory, and a gated click is refused.
+  It also has a network row: one desktop's worker cannot reach another desktop's 8081, 5901 or 6901.
 
 Existing desktops from before round 3 keep their old agent and image until recreated; the control plane does not
 refuse to start them.
@@ -139,8 +146,9 @@ only when it is bound to that approval:
   posted) and no other question open.
 A chat reply that would land on an approval posted after what the person saw, or on one of several open questions,
 is refused with a reason. Since the review of 2026-11-03 the chat's `seen_at` is frozen at the first keystroke of a
-draft, approval bubbles carry Approve and Deny bound to the note id, and the concierge binds a reply by `note_id` only
-when the newest open question is a gate-worded approval (a bare ok, sure, go or yes never answers one there). Every
+draft, and approval bubbles carry Approve and Deny bound to the note id. In the concierge, words typed to a job never
+answer its approval: they go as a message and approve nothing. Only the job's Approve and Deny buttons answer it, bound
+by `note_id` to the desktop's newest open question when that is a gate-worded approval (`boundApprovalNote`). Every
 other door (the requests page, an API call) delivers the reply as a message bound to no request: it grants nothing.
 
 **The gate's question is the gate's words only.** With no reason of its own the gate used the caller's reason in its
@@ -155,6 +163,13 @@ Guard rails, not the boundary, but each closed a hole the recheck found:
   each path rm is given. The Python side also steps over wrappers (sudo, env, nohup, timeout N, xargs...) to the program.
 - **A request is local only when every target is.** `safety.onlyLocalTargets` reads each curl and wget's targets, and a
   proxy, `--resolve`, `--connect-to`, `-K`, a proxy variable or a curl/wget rc file in the home means not local.
+  Each target is judged by the host `net/url` reads from it (`Hostname()`), not a pattern over its text (O-1.a.4,
+  2026-11-07).
+- **A command is read from the folder it runs in** (O-1.a.3, 2026-11-07): the operator and terminal skills pass their
+  working folder to `safety.AssessCommand`, and a relative path is resolved against it, not against an assumed
+  `~/work`. With no folder given, only a relative path that climbs out is read, as before.
+- **The local control ports** the Claude guard and a kept script may not name are DevTools (9222), the control plane's
+  and agent's (8080, 8081), soul's (4900) and the gate's (8083); the deleted extension's 8092 is no longer listed.
 - **The Claude guard fails closed when it cannot start**: `/usr/bin/python3 -I <guard> || exit 2`.
 - **The browser extension (:8092) took no approval on a gated desktop** (`guard.gate_required`). It has since been
   deleted with `agent/browser-agent` (review 2026-11-03); soul's browser skill remains, off by default.
@@ -169,14 +184,17 @@ carries the task id, the time and a fresh nonce, signed with the desktop's gate 
 (`request`, `secrets`, `reply`, `task-ended`), so no one of them can stand for another (`desktop.SignGate*`,
 `gate_server.sign_*`; vectors signed by the Python gate in `internal/desktop/testdata/gate-signatures.json`, which Go
 matches byte for byte). Text is signed as it is sent: a byte that is not valid UTF-8 becomes U+FFFD
-(`desktop.GateText`). Values are signed over the SHA-256 of each value's SHA-256 followed by a NUL.
+(`desktop.GateText`). Values are signed as one SHA-256 over the list of each value's SHA-256, each followed by a NUL,
+in order. A `/reply` is checked as it arrives (204) and settled just after, on a thread of its own; the agent's
+watcher waits up to 45 s for that settlement (`approval.resolve_reply`, the gate's `outcome` call).
 - **`/request`**: the gate's own copy of each new request, never of a reply. When anything of it was withheld the copy
   is the withheld form: a site's name is kept, a value never is, and a request marked secret is withheld whole, so it
   names no site. Whether a password may go to a site (`approval.site_known`) is read from this copy, never from the
   worker's task file, and only for the task the action belongs to: a copy of another task names nothing
   (`approval.gate_request_text`).
 - **`/secrets`**: the values the records withheld from a request or a reply (`httpapi.markWithheld`, the one C14
-  decision), and the secret parameters of a replay or a skill run. The gate withholds them from the questions it words.
+  decision), the secret parameters of a replay or a skill run, and the desktop's screen password (`desktop.ScreenHeld`,
+  added to every notice). The gate withholds them from the questions it words.
 - **`/reply`**: the person's reply, signed with the gate's request id when it is bound to that approval. It is the
   only way a yes is made (above).
 - **`/task-ended`**: sent on every task close (done, error, stop, restart, delete, abandon; `tasks.Store.OnTaskEnded`
@@ -187,13 +205,16 @@ matches byte for byte). Text is signed as it is sent: a byte that is not valid U
 - **A request** (`httpapi.deliverRequest`, once the desktop answers, on every try): `/secrets`, then `/request`, then
   the agent. If the gate cannot be told (no answer, or not 2xx), nothing reaches the agent and the sender gets 503. A
   desktop with no `decurix.gate` label whose gate does not answer gets "recreate this desktop" (`ErrGateMaybeMissing`).
+  One exception: when the only value is the screen password (the task has none of its own), a `/secrets` the gate
+  does not take is logged and the delivery goes on; the password is then a second wall only.
 - **Teach, replay and run-skill** (`httpapi.sendTaught`) do the same before calling their own agent endpoints. The copy
   is their request line, withheld. It names no site, so the gate asks about every password a taught skill types. A
   replay's parameters are held when its recording's program marks them secret or does not list them; when the
   program cannot be read, every value given is held.
 - **A reply** (`httpapi.deliverRequest` too, once the desktop answers): the reply's withheld values by `/secrets`,
   then `/reply`, then the agent, so the gate already holds the reply's values when it settles it. `/reply` is given
-  once, on the first try whose `/secrets` the gate took. A refused `/secrets` stops the reply (503) and nothing
+  once, on the first try whose `/secrets` the gate took. A refused `/secrets` (of the reply's own values) stops the
+  reply (503) and nothing
   reaches the gate's `/reply` or the agent. A `/reply` the gate refuses or does not answer is only logged, and **the
   reply is still delivered** to the agent: it grants nothing there (only the gate makes a yes, from a `/reply` it
   verified), so an approval fails closed, while an answer to a question still reaches the worker as the person's text.
@@ -226,8 +247,11 @@ matches byte for byte). Text is signed as it is sent: a byte that is not valid U
   to that gate, without failing that delivery. Kept notices are in memory: a control-plane restart loses the ones not
   yet taken, and the gate's own 24 h and 4 MB bounds cover them.
 
-**The gate's own state.** The request copy (`gate-request.json`, the latest request with its task) and the values
-(`gate-secrets.json`, per task) are 0600 files in the gate's directory. The nonces it has seen are kept in memory only,
+**The gate's own state.** The request copy (`gate-request.json`, the latest request with its task), the values
+(`gate-secrets.json`, per task) and `computer/approval.json` are 0600 files in the gate's directory, beside `key` and
+`gate.log`, each written whole (a temporary file of the writer's, flushed, then put in place; approval.json since
+2026-11-07, before which it was written with the process's umask). A grant there lasts at most 15 minutes. What a reply settled is kept in memory for 10
+minutes, for the agent or TheBot to take once. The nonces it has seen are kept in memory only,
 for twice the 120 s window a signed body is accepted in. So after a gate restart, a body signed less than 120 s before
 can be replayed once more. The worker cannot capture one: `NET_RAW` is dropped.
 
@@ -256,6 +280,15 @@ phone or the tunnel cannot drive the worker through soul.
   `{"allowed": false, "request": null, "refused": true, "reason": <fixed text>}`. `gui` raises that reason as an
   error, and soul takes it as a no to that one action and resumes (H-SOUL-8). Nothing waits on a question no reply
   could approve.
+
+- **A value that leaked anyway is purged by value.** Withholding decides at the source; when a value got past it into
+  the never-delete stores (blobs, `llm_calls`, judgements, task records, chat, query notes, run bundles), the owner
+  purges it at this machine: `POST /api/privacy/purge` (primary listener only, humansOnly, owner role), the Tasks
+  page's "Purge a leaked secret" control, or `decurix --purge-secret` reading the value from stdin. Every stored copy
+  becomes `[purged]` in place, names and ids kept so the records still join, and the purge is a judgement with the
+  person, their reason and the counts, never the value; the value is not logged or echoed, and one shorter than 6
+  characters is refused. A desktop cannot call it, so a worker cannot erase what it was seen doing.
+  (docs/trajectory.md, "Purging a leaked secret".)
 
 ## Next: the input broker (proposed, not built)
 
@@ -316,6 +349,7 @@ accessibility bus under the screen user; (5) the agent's own user; every row pas
 - **What `gui` describes.** `about` (what an action acts on) and the control's name come from the worker's side of
   the screen; the gate words its question from them. A misleading description gets a grant only for that description.
 - **A fixed `hostgui.key`** change (e.g. after a restore onto another machine) changes every derived key: recreate desktops.
+
 ## What the control plane takes from a desktop, by input class (2026-11-05)
 
 - **A person's reply** comes from the control plane's own door, signed when it is an approval. Its boundary is
@@ -338,8 +372,8 @@ accessibility bus under the screen user; (5) the agent's own user; every row pas
   - The caller is identified by its address on its own network (`requestDesktop`, `callerDesktop`). Each desktop is
     on a network of its own, NET_RAW is dropped and the worker is not root, so one desktop cannot speak with
     another's address.
-  - Every such route answers for the calling desktop only, whatever the request names (`desktopReads` says why for
-    each one).
+  - Every such route answers for the calling desktop only, whatever the request names (`desktopReads`, in
+    `internal/httpapi/desktop_reads_test.go`, says why for each one, and fails for a route that has no reason).
   - The address names the desktop, not the process in it. No token is asked of the agent on these calls: the agent
     token is for the control plane's calls to desktops, and the worker can read it anyway (above).
 - **The gap.** The outcome class has no boundary. A worker can report its own task "done, checked", and the queue, the

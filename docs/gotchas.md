@@ -971,3 +971,5 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): "Some word of the option" is not "the words that pick it out"
 - [part-6.md](gotchas/part-6.md): A daemon started as plain `python3` reads the worker's home
 - [part-6.md](gotchas/part-6.md): A label's value is its cell, not its line
+- [part-6.md](gotchas/part-6.md): A cron in UTC is a conversion the person does in their head
+- [part-6.md](gotchas/part-6.md): A page that lists desktops must render when Docker is down

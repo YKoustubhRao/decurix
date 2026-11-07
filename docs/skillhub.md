@@ -13,12 +13,14 @@ Both depend on `sqlitedb` only. Each has a `Store` (`NewStore(db)`, schema via `
 
 | Table | Row |
 |---|---|
-| `skillhub_versions` | name, version (1, 2, ...), sha, bundle (the JSON as the desktop exported it), published_from (worker id), note, published_at |
-| `skillhub_installs` | worker, name, version, installed_at (one row per worker and skill) |
+| `skillhub_versions` | name, version (1, 2, ...), sha, bundle (the JSON as the desktop exported it), published_from (worker id), note (at most 2000 bytes), published_ns |
+| `skillhub_installs` | worker, name, version, installed_ns (one row per worker and skill) |
 | `skillhub_role_skills` | role, name: the skill belongs to the role |
 | `skillhub_worker_roles` | worker, role: the worker carries the role |
 
 A role is a plain label (`^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$`, at most 32 per worker). Skill names use the desktop's own rule, `^[a-z0-9][a-z0-9-]{0,47}$`.
+
+The rest of the workforce goes by these roles and installs: scoped knowledge, the queue's `required_skill`/`required_role`, and a handoff's `--role`/`--skill`. A worker "holds" a skill when the registry records an install of it (publishing counts). A skill taught on a desktop and never published is invisible to them. The access store keeps a second set of worker roles for approval policies (docs/access.md); a policy matches the union of both.
 
 ### The bundle
 
@@ -39,6 +41,8 @@ Bundles are capped at 1000 KiB (`MaxBundleBytes`). The desktop agent refuses req
 
 POST routes take JSON, or a plain form (`roles` comma-separated). Errors are `{"error": ...}`. A 4xx from a desktop carries words the agent wrote for a person and is passed on. A 5xx or a transport error is logged and replaced, following the `jsonError` rule.
 
+**Listeners.** The routes are on both listeners (`RegisterRoutes`), wrapped by `readsForAll`: anyone the listener lets in may read; a write comes only from a person at this computer, never from a desktop and never through the gated listener (owner decision O-7). A desktop may call only `GET /api/skillhub` (`containerRoutes` in `internal/httpapi/guard.go`); the worker's `handoff who` reads it to list the other workers, their roles and the skills the registry records them holding (docs/handoff.md).
+
 ### What the desktop guarantees on install (`skill_bundle.install`)
 
 - The format, name, steps and version are checked. `ValueError` becomes a 400.
@@ -51,7 +55,7 @@ POST routes take JSON, or a plain form (`roles` comma-separated). Errors are `{"
 - An install does not check whether the worker is busy. The skill file is written atomically, but a run already in progress keeps the copy it loaded.
 - The registry never deletes a version. Unassigning a role does not uninstall the skill anywhere.
 - Publishing from a desktop that installed the skill and changed it locally creates a new version. Nothing merges two desktops' divergent corrections.
-- A deleted desktop's installs and roles stay until `Store.ForgetWorker` is called. The wiring should call it from desktop deletion.
+- Deleting a desktop calls `Store.ForgetWorker`: its installs and roles go; the versions it published stay.
 
 ## Scoped knowledge
 
@@ -73,17 +77,40 @@ An org item has no scope key. Every other scope's key is the role, worker or tas
 
 ### Routes
 
-- `GET /api/knowledge?worker=&task=` returns `{worker, roles, items, lines}`. Roles come from `Handler.Roles`, a `RoleSource` that `*skillhub.Store` satisfies. Without one, the worker still gets org items and its own.
+- `GET /api/knowledge?worker=&task=` returns `{worker, roles, items, lines}`. Roles come from `Handler.Roles`, a `RoleSource` that `*skillhub.Store` satisfies. Without one, the worker still gets org items and its own. With no worker, only org items (and the task's). A desktop is bound to itself: whatever worker it names, it gets its own scope, and a task's items only for one of its own tasks (403 otherwise; `Handler.Caller`, `Handler.TaskOf`).
 - `POST /api/knowledge {scope, scope_key, kind, text, source}`.
 - `POST /api/knowledge/supersede {id, text, kind?, source}` or `{id, retire: true}`.
 - `GET /api/knowledge/why?id=`.
 
+Bodies are JSON only; unknown fields are refused. The routes sit behind `readsForAll` like the registry's: a desktop may only `GET /api/knowledge`, and writes come only from a person at this computer (O-7).
+
 ### Agent side
 
-`org_knowledge.fetch(worker_id=None, task_id=None)` calls `GET CONTROL_PLANE_URL/api/knowledge?worker=<DESKTOP_ID>` with a 5-second timeout and returns the lines, cleaned and bounded (200 lines, 4000 characters each, 2 MiB answer). It is best-effort: on any failure it returns `[]` and never raises. `as_text()` joins the lines. `cached(worker_id=None, max_age=300)` reuses one answer for five minutes, but never keeps a failed fetch. Within that window every call returns the same lines, so a run's prompt prefix stays byte-identical and a check that runs many times makes one request. Prompt assembly should use `cached()`.
+`org_knowledge.fetch(worker_id=None, task_id=None)` calls `GET CONTROL_PLANE_URL/api/knowledge?worker=<DESKTOP_ID>` (and `&task=` when given) with a 5-second timeout and returns the lines, cleaned and bounded (200 lines, 4000 characters each, 2 MiB answer). It is best-effort: on any failure it returns `[]` and never raises. `as_text()` joins the lines. `cached(worker_id=None, max_age=300, task_id=None)` reuses one answer per worker and task for five minutes, but never keeps a failed fetch (entries past five minutes are dropped as new ones are kept). Within that window every call returns the same lines, so a run's prompt prefix stays byte-identical and a check that runs many times makes one request. With a task, the task's own items come after the org's, the roles' and the worker's.
+
+Three places read it, each for the task it works on (`task_context.current()`), so task-scoped items reach the worker:
+
+- a skill run's taught context (`skill_task._taught`: org lines first, the task's last among them, the skill's own after);
+- the record ledger's given sources (`computer/records.given_sources(task_id)`, which a `gui record` pick may rest on; `_org_text` keeps one task's text for five minutes);
+- every TheBot request's standing context (`thebot_harness.org_context`, `org_knowledge.standing_context`), so an org rule such as "never pay without a purchase order" reaches a request no skill covers. It goes in the job's `context` field with the other standing context, never in the operator's fixed prompt. The lines are read once per task and kept for its later jobs (a reply, the final check sending it back), so every job of a task sends the same bytes. Each line passes `privacy.withhold_known` first (a line that cannot be checked is left out), lines a taught task's procedure already carries are not repeated, and the block is bounded at 6000 characters (`MAX_CONTEXT_CHARS`) with a closing note naming how many lines were left out. The Claude and Ollama harnesses do not send it.
 
 ### Limits
 
 - Text is free prose from people and runs. It is a principle the model reads, never code the harness obeys. Like `taskRules`, it should state principles, not stories.
-- The routes cannot verify a source. A `person` source is whatever the caller says. Anything that can reach the listener can add org-wide items, and a desktop can reach the primary listener. Treat a `run` item written by a worker as a proposal for a person to confirm (supersede it with a `person` source) before it becomes an org rule.
+- The routes cannot verify a source. A `person` source and its `ref` are whatever the caller says. Only a person at this computer can write, so every item today is a person's. Nothing in the code writes a `demonstration`, `run` or `import` item, and a worker's own lessons stay on its desktop.
 - There is no deduplication or contradiction check between scopes. Precedence is order only.
+
+## The Workforce page
+
+`GET /workforce` (`web/templates/workforce.html`, `internal/httpapi/workforce_page.go`, `humansOnly`) puts these services and the next three docs on one page, in tabs:
+
+- **Workers & roles**: each desktop's registry roles, its installed skills, what Outdated reports, and a Sync button.
+- **Skills**: the registry, with Publish, Install and "Give a skill to a role" forms.
+- **Queue** (docs/workqueue.md), **Handoffs** (docs/handoff.md) and **Access** (docs/access.md).
+- **Knowledge**: items by scope with Why, Replace and Retire; an Add form; a lookup by task id.
+
+The open tab polls every 4 s while the page is visible. On the gated listener the page shows only Workers & roles, Skills and Knowledge, since the queue, handoff and access routes are on the primary listener only. Their forms still show there, but every write is refused (O-7).
+
+The Knowledge tab lists org items and, for each desktop, its role and worker items. An item scoped to a role no desktop carries, or to a deleted desktop, is not listed. Task items show only through the task lookup.
+
+The Skills tab's Publish form offers the chosen worker's confirmed (`ready`) skills, read from its desktop (`GET /api/desktops/skills?id=`) when the worker changes and at most every 30 s, instead of a typed name; a stopped desktop shows that its skills could not be read.
