@@ -165,7 +165,7 @@ func (c *Checker) MakeRoom(ctx context.Context, forID string, needMB int64) erro
 		}
 	}
 	log.Printf("idlepause: not starting %s: %d MB free, it needs %d MB, and none of the %d running or paused desktops may be stopped", forID, avail, needMB, busy)
-	return &desktop.NoRoomError{Busy: busy}
+	return &desktop.NoRoomError{Busy: busy, FreeMB: avail, NeedMB: needMB}
 }
 
 // restCandidates are the desktops in list that may rest, other than self, longest idle first.

@@ -191,20 +191,25 @@ setsid nice -n 10 python3 -I /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
 
 echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"
 
-# The gui daemon (decurix_agent/computer/daemon.py): the screen stack imported once, so a `gui` command - TheBot's,
-# the agent's, a person's - does not start Python and import it again. Started the way `gui` starts Python (the same
-# PYTHONPATH, not -I), so what it imported is what a `gui` process would have. Restarted when it ends (it ends by
-# itself when its code changed on disk); exit 3 means it cannot serve here, and `gui` runs in-process as before.
-# Niceness 0: each command's child takes on its caller's niceness (an engine's 10).
-setsid sh -c '
-    cd / || exit 0
-    while :; do
-        PYTHONPATH="/opt${PYTHONPATH:+:$PYTHONPATH}" python3 -m decurix_agent.computer.daemon
-        [ $? -eq 3 ] && break
-        sleep 1
-    done
-' < /dev/null >> "$LOG" 2>&1 &
-echo "[$(date)] gui daemon started (loop pid $!)" >> "$LOG"
+# The gui daemon (decurix_agent/computer/daemon.py) is not started here: the first `gui` command that finds none
+# starts it (gui_client.start_daemon, the way `gui` starts Python: the same PYTHONPATH, not -I, in /, its output to
+# this log) and runs in its own process meanwhile; the daemon exits after DECURIX_GUI_DAEMON_IDLE_MINUTES (10) with no
+# command, so an idle desktop carries none (docs/computer-use.md, "The gui daemon").
+
+# Broker mode (DECURIX_SCREEN_USER=1; docs/gate-boundary.md): the screen broker runs as the screen user and starts no
+# program but the browser; every other program a `gui` command opens is started here, as the worker, by the launch
+# helper (decurix_agent/computer/launch_helper.py), with this user's own environment. Exit 3: it cannot serve here.
+if [ "${DECURIX_SCREEN_USER:-}" = "1" ]; then
+    setsid sh -c '
+        cd / || exit 0
+        while :; do
+            PYTHONPATH="/opt${PYTHONPATH:+:$PYTHONPATH}" python3 -m decurix_agent.computer.launch_helper
+            [ $? -eq 3 ] && break
+            sleep 1
+        done
+    ' < /dev/null >> "$LOG" 2>&1 &
+    echo "[$(date)] launch helper started (loop pid $!)" >> "$LOG"
+fi
 
 # TheBot's soul is a persistent HTTP server thebot_harness.py talks to (see
 # decurix_agent/thebot_harness.py), so it must be running before any task

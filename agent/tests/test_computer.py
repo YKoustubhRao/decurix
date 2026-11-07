@@ -423,6 +423,7 @@ class BrowserAvailability(unittest.TestCase):
                 self.assertTrue(cdp.available())
         finally:
             server.shutdown()
+            server.server_close()
 
     @unittest.skipIf(sys.platform == "win32", "Windows retries a refused loopback connection for about 2 s; "
                                               "the desktops, where this matters, are Linux")

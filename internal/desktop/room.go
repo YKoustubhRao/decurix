@@ -27,14 +27,25 @@ type RoomMaker func(ctx context.Context, forID string, needMB int64) error
 // ErrNoRoom is a start refused because the host has not enough memory for one more desktop and none can be stopped.
 var ErrNoRoom = errors.New("not enough memory")
 
-// NoRoomError is ErrNoRoom with how many desktops are using the memory. Its text is the control plane's own, for the
-// person to read: "not enough memory: 3 desktops are busy".
+// NoRoomError is ErrNoRoom with what is using the memory: how many desktops are busy, and, when none is, the free and
+// needed megabytes, since then something other than Decurix holds the memory. Its text is the control plane's own, for
+// the person to read.
 type NoRoomError struct {
-	Busy int
+	Busy           int
+	FreeMB, NeedMB int64
 }
 
-// Error says that there is not enough memory and how many desktops are busy.
+// Error says that there is not enough memory and what holds it: busy desktops, or other programs on this computer.
 func (e *NoRoomError) Error() string {
+	if e.Busy == 0 {
+		// Found live (2026-11-07): "0 desktops are busy" read as if Decurix were the cause, when another program held
+		// the memory.
+		if e.NeedMB > 0 {
+			return fmt.Sprintf("Not enough memory to start this desktop: about %d MB is free and a desktop needs about %d MB, "+
+				"and no other desktop is using it. Close other programs on this computer and try again.", e.FreeMB, e.NeedMB)
+		}
+		return "Not enough memory to start this desktop, and no other desktop is using it. Close other programs on this computer and try again."
+	}
 	busy := fmt.Sprintf("%d desktops are", e.Busy)
 	if e.Busy == 1 {
 		busy = "1 desktop is"

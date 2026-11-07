@@ -96,6 +96,9 @@ class Base(unittest.TestCase):
             "DECURIX_TASK_FILE": os.path.join(cls.tmp, "task"), "TMPDIR": cls.tmp,
             "CONTROL_PLANE_URL": "http://127.0.0.1:9", "DECURIX_GATE_REQUIRED": "1",
             "STAND_IN_GATE": cls.gate.path, "DECURIX_LOG_DIR": cls.tmp,
+            # These tests start their own daemon (the stand-in screen's); a command never starts the real one here
+            # but in OnDemand, which says so.
+            "DECURIX_GUI_DAEMON_AUTOSTART": "0",
         })
         cls.env = env
 
@@ -106,10 +109,10 @@ class Base(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     @classmethod
-    def start_daemon(cls):
-        cls.daemon_log = open(os.path.join(cls.tmp, "daemon.log"), "ab")
-        cls.daemon = subprocess.Popen([sys.executable, STAND_IN, "daemon"], env=cls.env, cwd="/",
-                                      stdin=subprocess.DEVNULL, stdout=cls.daemon_log, stderr=cls.daemon_log)
+    def start_daemon(cls, env=None):
+        with open(os.path.join(cls.tmp, "daemon.log"), "ab") as daemon_log:     # the daemon keeps its own copy
+            cls.daemon = subprocess.Popen([sys.executable, STAND_IN, "daemon"], env=dict(cls.env, **(env or {})),
+                                          cwd="/", stdin=subprocess.DEVNULL, stdout=daemon_log, stderr=daemon_log)
         sock = os.path.join(cls.run_dir, "gui.sock")
         deadline = time.time() + 60
         while not os.path.exists(sock):
@@ -407,6 +410,255 @@ class WhatTheDaemonCompares(unittest.TestCase):
             self.assertTrue(daemon.secret_looking(name), name)
         for name in ("DISPLAY", "HOME", "DECURIX_DIR", "PYTHONPATH"):
             self.assertFalse(daemon.secret_looking(name), name)
+
+
+@unittest.skipUnless(POSIX, SKIP)
+class ItLivesWhileItIsUsed(Base):
+    """The daemon exits after DECURIX_GUI_DAEMON_IDLE_MINUTES with no command, never while one runs; one per folder."""
+
+    def wait_gone(self, seconds=20):
+        deadline = time.time() + seconds
+        while self.daemon.poll() is None and time.time() < deadline:
+            time.sleep(0.1)
+        return self.daemon.poll()
+
+    def test_it_exits_by_itself_when_no_command_comes(self):
+        self.start_daemon({"DECURIX_GUI_DAEMON_IDLE_MINUTES": "0.02"})        # 1.2 s
+        self.assertEqual(self.call(["--help"], "daemon")[0], 0)
+        self.assertEqual(self.wait_gone(), 0, self.log())
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "gui.sock")))
+        self.assertIn("no command for", self.log())
+        self.daemon = None
+        # Gone, it is simply absent: the next command runs in its own process.
+        code, out, _ = self.call(["--help"], "client")
+        self.assertEqual(code, 0)
+        self.assertIn(b"gui - see", out)
+
+    def test_a_command_running_longer_than_the_idle_time_keeps_it(self):
+        self.start_daemon({"DECURIX_GUI_DAEMON_IDLE_MINUTES": "0.02"})
+        code, out, err = self.call(["observe"], "daemon", env={"STAND_IN_SLOW": "3"})
+        self.assertEqual(code, 0, err)
+        self.assertIn(b'"Look 1"', out)
+        self.assertEqual(self.wait_gone(), 0, self.log())
+        self.daemon = None
+
+    def test_one_daemon_per_folder(self):
+        from decurix_agent.computer import daemon, gui_client
+
+        folder = os.path.join(self.tmp, "claimed")
+        with mock_env(DECURIX_GUI_DAEMON_DIR=folder):
+            first = daemon.claim(folder)
+            self.assertIsNotNone(first)
+            self.assertIsNone(daemon.claim(folder))
+            self.assertFalse(gui_client.may_start_daemon())
+            os.close(first)
+            self.assertTrue(gui_client.may_start_daemon())
+            again = daemon.claim(folder)
+            self.assertIsNotNone(again)
+            os.close(again)
+
+
+@unittest.skipUnless(POSIX, SKIP)
+class OnDemand(Base):
+    """A command that finds no daemon starts one - the real one, `python3 -m decurix_agent.computer.daemon` - and runs
+    in its own process meanwhile; the next command goes through it; it goes again when idle."""
+
+    def test_the_first_command_starts_it_and_runs_here(self):
+        self.stop_daemon()
+        shutil.rmtree(self.run_dir, ignore_errors=True)
+        log = os.path.join(self.tmp, "startup.log")
+        open(log, "wb").close()
+        env = {"DECURIX_GUI_DAEMON_AUTOSTART": "1", "DECURIX_GUI_DAEMON_IDLE_MINUTES": "0.05",
+               "DECURIX_GUI_DAEMON_LOG": log}
+        here = self.call(["--help"], "here")
+        started = time.time()
+        first = self.call(["--help"], "client", env=env)
+        self.assertEqual(first, here)
+        self.assertLess(time.time() - started, 30)
+        sock = os.path.join(self.run_dir, "gui.sock")
+        deadline = time.time() + 60
+        while not os.path.exists(sock) and time.time() < deadline:
+            time.sleep(0.1)
+        pid = None
+
+        def said_so_far():
+            with open(log) as f:
+                return f.read()
+
+        try:
+            self.assertTrue(os.path.exists(sock), said_so_far())
+            with open(log) as f:
+                said = f.read()
+            self.assertIn("serving (pid", said)
+            pid = int(said.split("serving (pid ", 1)[1].split(",", 1)[0])
+            # Its own session and group, not the command's caller's: a kill of the caller's group does not reach it.
+            self.assertNotEqual(os.getsid(pid), os.getsid(0))
+            self.assertNotEqual(os.getpgid(pid), os.getpgid(0))
+            self.assertEqual(self.call(["--help"], "daemon", env=env), here)
+            # Idle (3 s), it goes, and takes its socket with it.
+            deadline = time.time() + 30
+            while os.path.exists(sock) and time.time() < deadline:
+                time.sleep(0.1)
+            self.assertFalse(os.path.exists(sock), said_so_far())
+        finally:
+            if pid is not None:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+
+    def test_require_waits_for_the_one_it_started(self):
+        self.stop_daemon()
+        shutil.rmtree(self.run_dir, ignore_errors=True)
+        log = os.path.join(self.tmp, "startup.log")
+        open(log, "wb").close()
+        env = {"DECURIX_GUI_DAEMON_AUTOSTART": "1", "DECURIX_GUI_DAEMON_IDLE_MINUTES": "0.05",
+               "DECURIX_GUI_DAEMON_LOG": log}
+        try:
+            self.assertEqual(self.call(["--help"], "daemon", env=env), self.call(["--help"], "here"))
+        finally:
+            with open(log) as f:
+                said = f.read()
+            if "serving (pid " in said:
+                try:
+                    os.kill(int(said.split("serving (pid ", 1)[1].split(",", 1)[0]), signal.SIGKILL)
+                except OSError:
+                    pass
+
+
+class mock_env:
+    """os.environ with some variables set, for the length of a with block."""
+
+    def __init__(self, **values):
+        self.values, self.saved = values, {}
+
+    def __enter__(self):
+        for k, v in self.values.items():
+            self.saved[k] = os.environ.get(k)
+            os.environ[k] = v
+
+    def __exit__(self, *exc):
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _server(*args, **kwargs):
+    """A daemon.Server made here (not serving), also where os has no environb (Windows)."""
+
+    from decurix_agent.computer import daemon
+    from unittest import mock
+
+    with mock.patch.object(daemon.os, "environb", {b"HOME": b"/home/headless"}, create=True):
+        return daemon.Server(*args, **kwargs)
+
+
+class TheDaemonsLifetimeRules(unittest.TestCase):
+    """The rules of when the daemon goes and when a command starts one, without a process (these run anywhere)."""
+
+    def test_the_idle_time_is_read_from_the_environment(self):
+        from decurix_agent.computer import daemon
+
+        for raw, seconds in (("", 600.0), ("2", 120.0), ("0.5", 30.0), ("0", None), ("-1", None), ("x", 600.0)):
+            with mock_env(DECURIX_GUI_DAEMON_IDLE_MINUTES=raw):
+                self.assertEqual(daemon.idle_seconds(), seconds, raw)
+
+    def test_idle_counts_only_with_no_command_running_and_never_for_the_broker(self):
+        from decurix_agent.computer import daemon
+
+        server = _server("/nonexistent", idle=60.0)
+        server.last_call = 1000.0
+        self.assertEqual(server.idle_left(now=1030.0), 30.0)
+        self.assertLessEqual(server.idle_left(now=1061.0), 0)
+        server.calls[123] = object()
+        self.assertIsNone(server.idle_left(now=5000.0))
+        broker = _server("/nonexistent", broker=daemon.Broker(1001, set()), idle=60.0)
+        self.assertIsNone(broker.idle_left(now=10 ** 9))
+
+    def test_a_command_asking_a_higher_priority_than_the_daemons_runs_in_its_own_process(self):
+        from decurix_agent.computer import daemon
+        from unittest import mock
+
+        server = _server("/nonexistent")
+        req = daemon.Request(0o22, 0, 7, [b"observe"], dict(server.own_env), {}, 3)
+        with mock.patch.object(daemon.Server, "niceness", return_value=10), \
+                mock.patch.object(server, "code_changed", return_value=False):
+            self.assertEqual(server.refusal(req), daemon.REFUSE_NICE)
+            req.nice = 10
+            self.assertEqual(server.refusal(req), 0)
+            req.nice = 15
+            self.assertEqual(server.refusal(req), 0)
+
+    def run_client(self, statuses, env):
+        """gui_client.main with hand_over answering `statuses` in turn: (how it ended, start_daemon calls)."""
+
+        from decurix_agent.computer import gui_client
+        from unittest import mock
+
+        class Ended(Exception):
+            pass
+
+        def in_process(argv):
+            raise Ended("here")
+
+        def end(outcome):
+            raise Ended(("daemon", outcome))
+
+        def exit_(code):
+            raise Ended(("exit", code))
+
+        answers = list(statuses)
+        with mock_env(**env), \
+                mock.patch.object(gui_client, "hand_over", side_effect=lambda *a, **k: answers.pop(0)
+                                  if len(answers) > 1 else answers[0]), \
+                mock.patch.object(gui_client, "start_daemon", return_value=True) as start, \
+                mock.patch.object(gui_client, "in_process", side_effect=in_process), \
+                mock.patch.object(gui_client, "_end", side_effect=end), \
+                mock.patch.object(gui_client.os, "_exit", side_effect=exit_), \
+                mock.patch.object(gui_client.os, "write"), \
+                mock.patch("time.sleep"):
+            try:
+                gui_client.main(["observe"])
+            except Ended as how:
+                return how.args[0], start.call_count
+        raise AssertionError("main returned")
+
+    def test_a_command_that_finds_none_starts_one_and_runs_here(self):
+        base = {"DECURIX_SCREEN_USER": "", "DECURIX_GUI_DAEMON": ""}
+        self.assertEqual(self.run_client([("absent", None)], dict(base, DECURIX_GUI_DAEMON_AUTOSTART="")), ("here", 1))
+        self.assertEqual(self.run_client([("absent", None)], dict(base, DECURIX_GUI_DAEMON_AUTOSTART="0")),
+                         ("here", 0))
+        # One that serves, or refuses, is not started again.
+        self.assertEqual(self.run_client([("ran", ("exit", 0))], dict(base, DECURIX_GUI_DAEMON_AUTOSTART="")),
+                         (("daemon", ("exit", 0)), 0))
+        self.assertEqual(self.run_client([("refused", 2)], dict(base, DECURIX_GUI_DAEMON_AUTOSTART="")), ("here", 0))
+        # Off: nothing is asked and nothing started.
+        self.assertEqual(self.run_client([("absent", None)], dict(base, DECURIX_GUI_DAEMON="off")), ("here", 0))
+
+    def test_require_waits_for_the_daemon_it_started(self):
+        base = {"DECURIX_SCREEN_USER": "", "DECURIX_GUI_DAEMON": "require", "DECURIX_GUI_DAEMON_AUTOSTART": ""}
+        self.assertEqual(self.run_client([("absent", None), ("absent", None), ("ran", ("exit", 0))], base),
+                         (("daemon", ("exit", 0)), 1))
+        # A command that cannot be handed over at all (a terminal on stdin) is not waited for.
+        from decurix_agent.computer import gui_client
+        self.assertEqual(self.run_client([("absent", gui_client.NOT_HANDED)], base)[0], ("exit", 125))
+        self.assertEqual(self.run_client([("absent", None)], dict(base, DECURIX_GUI_DAEMON_AUTOSTART="0"))[0],
+                         ("exit", 125))
+
+    def test_broker_mode_never_starts_one(self):
+        from decurix_agent.computer import gui_client
+        from unittest import mock
+
+        with mock_env(DECURIX_SCREEN_USER="1"), \
+                mock.patch.object(gui_client, "hand_over", return_value=("absent", None)), \
+                mock.patch.object(gui_client, "start_daemon") as start, \
+                mock.patch.object(gui_client.os, "write"), \
+                mock.patch.object(gui_client.os, "_exit", side_effect=SystemExit):
+            with self.assertRaises(SystemExit):
+                gui_client.main(["observe"])
+        start.assert_not_called()
 
 
 if __name__ == "__main__":

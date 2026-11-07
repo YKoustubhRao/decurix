@@ -2,7 +2,12 @@
 The gui daemon: one long-lived process per desktop, in the worker's user, that keeps the screen stack imported so a
 `gui` command does not pay for starting Python and importing it again (docs/computer-use.md, "The gui daemon").
 
-    PYTHONPATH=/opt python3 -m decurix_agent.computer.daemon      (start_agent_terminal.sh, in a restart loop)
+    PYTHONPATH=/opt python3 -m decurix_agent.computer.daemon      (started by the first `gui` command that finds none)
+
+It lives while it is used: started on demand by the thin client (gui_client.start_daemon) when a command finds no
+daemon - that command runs in its own process as before - and gone after DECURIX_GUI_DAEMON_IDLE_MINUTES (10) with no
+command, so an idle desktop carries none. One per user: it holds its folder's lock (claim) from before it imports, so
+two commands that both found none start one daemon, not two.
 
 It is a fork server. It imports what `gui` imports (and the screen libraries `gui` imports later), then waits on a
 Unix socket in a folder of the worker's own (mode 700). For each command the thin client (gui_client.py) hands it the
@@ -29,9 +34,18 @@ What could tell a child from a new process, and how each is handled:
 - What the interpreter reads as it starts (PYTHON*, LANG, LC_*, HOME): a command whose values differ is refused and
   runs in its own process.
 - The code itself: a module file changed on disk since the daemon started (a dev loop's docker cp) refuses every
-  command from then on, and the daemon exits when its last command ends, to be restarted with the new code.
+  command from then on, and the daemon exits when its last command ends; the next command starts one on the new code.
 - Process-wide state a command sets (working folder, umask, signal handlers, sys.argv, stdio, atexit hooks): set by
   each child for itself, from the command's own, and gone with it.
+
+Broker mode (DECURIX_SCREEN_USER=1, and this daemon is not the worker's uid; broker.py, docs/gate-boundary.md): the
+daemon is the screen broker, running as the screen user. It listens in the shared folder (/run/decurix-screen, its
+own, 0711; the socket 0666) and takes a command only from the worker's uid, by SO_PEERCRED - every other caller is
+refused. Its child takes on the caller's descriptors, arguments, umask and niceness as before, but not the caller's
+environment: only the variables the agent's code reads (found in its sources, Broker.caller_keys), and of those none
+that change the interpreter, the loader, who and where the process is, where it reads, writes or connects, or what it
+tells the gate (Broker.caller_may_set). The caller's working folder is never put on sys.path. A file a command writes
+for its caller goes back over the connection (broker.deliver_to_caller).
 """
 
 import argparse
@@ -46,6 +60,7 @@ import sys
 import time
 import traceback
 
+from decurix_agent.computer import broker as screen_broker
 from decurix_agent.computer import gui_client
 
 PROTOCOL = gui_client.PROTOCOL
@@ -57,10 +72,15 @@ MAX_CALLS = 8
 # The largest request: argv and environment together are bounded by the kernel's ARG_MAX (2 MB on Linux).
 MAX_REQUEST = 8 * 1024 * 1024
 
-# Exit code of a daemon that cannot serve here and must not be restarted (the start loop stops on it).
+# Exit code of a daemon that cannot serve here (or another daemon serves or is starting).
 EXIT_DO_NOT_RESTART = 3
 
-REFUSE_STALE, REFUSE_STARTUP, REFUSE_BUSY, REFUSE_PROTOCOL, REFUSE_USER = 1, 2, 3, 4, 5
+REFUSE_STALE, REFUSE_STARTUP, REFUSE_BUSY, REFUSE_PROTOCOL, REFUSE_USER, REFUSE_NICE = 1, 2, 3, 4, 5, 6
+
+# How long the daemon waits with no command before it exits (minutes; 0 or less: never). Not in broker mode, where
+# nothing would start it again.
+IDLE_ENV = "DECURIX_GUI_DAEMON_IDLE_MINUTES"
+IDLE_MINUTES = 10.0
 
 # What the interpreter reads as it starts: a command that differs here would not be the same interpreter.
 STARTUP_EXACT = (b"HOME", b"LANG", b"LC_ALL", b"LC_CTYPE")
@@ -73,6 +93,55 @@ IMPORT_ALWAYS = (b"TMPDIR", b"TEMP", b"TMP")
 # imports on its first look; importing them is all - no connection is made.
 PRELOAD = ("decurix_agent.computer.cli",)
 PRELOAD_SCREEN = ("Xlib.display", "Xlib.X", "Xlib.XK", "Xlib.protocol.rq", "Xlib.ext.xinput", "Xlib.ext.ge")
+
+
+def idle_seconds():
+    """How long this daemon may go with no command (DECURIX_GUI_DAEMON_IDLE_MINUTES, 10), in seconds; None: never
+    exits for that."""
+
+    raw = os.environ.get(IDLE_ENV, "").strip()
+    try:
+        minutes = float(raw) if raw else IDLE_MINUTES
+    except ValueError:
+        minutes = IDLE_MINUTES
+    return minutes * 60.0 if minutes > 0 else None
+
+
+def claim(directory):
+    """
+    Make this user's daemon folder (mode 700) and hold its lock (gui_client.DAEMON_LOCK) for as long as this process
+    lives: a second daemon started at the same time - two commands that both found none started one each - ends here,
+    before it has imported anything. The lock's descriptor, or None when another daemon holds it or the folder is not
+    this user's alone.
+    """
+
+    try:
+        import fcntl
+    except ImportError:
+        return None
+    try:
+        os.mkdir(directory, 0o700)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        log(f"cannot make {directory}: {exc.strerror or exc}; not serving")
+        return None
+    if not gui_client.owned_dir(directory):
+        log(f"{directory} is not a folder of this user only; not serving")
+        return None
+    try:
+        fd = os.open(os.path.join(directory, gui_client.DAEMON_LOCK),
+                     os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0), 0o600)
+    except OSError as exc:
+        log(f"cannot open the daemon's lock: {exc.strerror or exc}; not serving")
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        log("another gui daemon serves this desktop or is starting")
+        return None
+    return fd
 
 
 def log(line):
@@ -211,6 +280,80 @@ def startup_differs(env, own):
 
     names = {k for k in set(env) | set(own) if startup_key(k)}
     return differing(env, own, names)
+
+
+# ------------------------------------------------------------
+# Broker mode: whose commands, and which of their variables
+# ------------------------------------------------------------
+
+# What the screen side keeps its own whatever the caller says (broker mode). By the variable's shape, not a list of
+# today's names: what starts or loads the interpreter, who and where the process is, its session, where it reads,
+# writes or connects, the broker's own settings, and what it tells the approval gate or a model about who is asking.
+SCREEN_SIDE_EXACT = {"HOME", "USER", "LOGNAME", "SHELL", "PATH", "PWD", "OLDPWD", "DISPLAY", "XAUTHORITY",
+                     "DBUS_SESSION_BUS_ADDRESS", "TMPDIR", "TEMP", "TMP", "LANG", "LANGUAGE", "TZDIR", "IFS", "ENV",
+                     "BASH_ENV", "PERL5LIB", "PERLLIB", "RUBYLIB", "NODE_OPTIONS"}
+SCREEN_SIDE_PREFIX = ("PYTHON", "LD_", "LC_", "XDG_", "GCONV", "GLIBC_", "MALLOC_", "GTK", "GDK", "GIO_", "GI_",
+                      "DECURIX_SCREEN_", "DECURIX_GUI_DAEMON", "DECURIX_CDP_", "DECURIX_LAUNCH_")
+SCREEN_SIDE_SUFFIX = ("_DIR", "_DIRS", "_FILE", "_FILES", "_PATH", "_SOCKET", "_ROOT", "_HOME", "_URL", "_HOST",
+                      "_PORT", "_ADDR", "_ADDRESS", "_BIND", "_BIN", "_PROGRAM", "_COMMAND", "_CMD")
+SCREEN_SIDE_WORDS = ("GATE", "APPROVAL", "STAGE", "CALLER")
+
+
+def caller_may_set(name):
+    """Whether a broker's child takes the caller's value of `name` (str), when the agent's code reads it at all."""
+
+    upper = name.upper()
+    return not (upper in SCREEN_SIDE_EXACT or upper.startswith(SCREEN_SIDE_PREFIX)
+                or upper.endswith(SCREEN_SIDE_SUFFIX) or any(w in upper for w in SCREEN_SIDE_WORDS)
+                or secret_looking(name))
+
+
+def env_reads(source):
+    """Every environment variable a module's source names a read of, at import or per call (_env_reads)."""
+
+    return _env_reads(ast.parse(source))
+
+
+def package_reads(package_dir):
+    """The variables any module of the agent's package reads, by name (the broker's allowlist before caller_may_set).
+    Every module, not only the imported ones: a command imports some on the way."""
+
+    names = set()
+    for folder, dirs, files in os.walk(package_dir):
+        dirs[:] = [d for d in dirs if d != "__pycache__" and not d.startswith(".")]
+        for file in files:
+            if not file.endswith(".py"):
+                continue
+            try:
+                with open(os.path.join(folder, file), "rb") as f:
+                    names |= env_reads(f.read())
+            except (OSError, SyntaxError, ValueError):
+                continue
+    return names
+
+
+class Broker:
+    """What a daemon serving as the screen broker knows: whose commands it takes, and which of their variables."""
+
+    def __init__(self, worker_uid, allowed):
+        self.worker_uid = worker_uid
+        self.allowed = frozenset(allowed)   # bytes
+
+    @classmethod
+    def for_package(cls, worker_uid, package_dir=None):
+        """The broker for the agent's own package: the variables its code reads that a caller may set."""
+
+        package_dir = package_dir or os.path.dirname(os.path.dirname(os.path.abspath(gui_client.__file__)))
+        allowed = {os.fsencode(n) for n in package_reads(package_dir) if caller_may_set(n)}
+        return cls(worker_uid, allowed)
+
+    def environment(self, caller, own):
+        """A command's environment: the screen side's own, with the caller's value (or its absence) of each allowed
+        variable. Nothing else of the caller's reaches the child."""
+
+        env = {k: v for k, v in own.items() if k not in self.allowed}
+        env.update((k, v) for k, v in caller.items() if k in self.allowed)
+        return env
 
 
 # ------------------------------------------------------------
@@ -421,7 +564,14 @@ class Child:
                 except OSError:
                     pass
         _close_all(list(req.fds.values()))
-        os.fchdir(req.cwd_fd)
+        broker = self.server.broker
+        try:
+            os.fchdir(req.cwd_fd)
+        except OSError:
+            if broker is None:
+                raise
+            # The screen user may not enter the caller's folder: a relative path then names nothing of the caller's.
+            os.chdir("/")
         os.close(req.cwd_fd)
         os.umask(req.umask)
         try:
@@ -430,13 +580,21 @@ class Child:
         except (AttributeError, OSError):
             pass
 
+        env = req.env if broker is None else broker.environment(req.env, self.server.own_env)
         os.environb.clear()
-        os.environb.update(req.env)
-        if differing(req.env, self.server.own_env, self.server.import_keys):
+        os.environb.update(env)
+        if differing(env, self.server.own_env, self.server.import_keys):
             forget_own_modules()
 
-        # `python3 -m` puts the working folder first on sys.path.
-        if self.server.path0_is_cwd and sys.path:
+        if broker is not None:
+            # Where deliver_to_caller sends a file the command writes for its caller (broker.py).
+            import types
+            holder = types.ModuleType(screen_broker.CALLER_MODULE)
+            holder.conn = self.conn
+            sys.modules[holder.__name__] = holder
+        elif self.server.path0_is_cwd and sys.path:
+            # `python3 -m` puts the working folder first on sys.path. Never in broker mode: a module the caller left
+            # in its folder would run as the screen user.
             sys.path[0] = os.getcwd()
 
         enc = self.server.stdio
@@ -507,8 +665,15 @@ class Child:
 class Server:
     """The listening daemon: accepts requests, forks a child for each, reports how each child ended."""
 
-    def __init__(self, directory):
+    def __init__(self, directory, broker=None, idle=None, lock_fd=None):
         self.directory = directory
+        self.broker = broker     # a Broker: this daemon is the screen broker (broker mode)
+        # Seconds with no command after which the daemon exits (None: never; always None in broker mode), and the
+        # folder's lock it holds (claim).
+        self.idle = None if broker is not None else idle
+        self.lock_fd = lock_fd
+        self.last_call = time.monotonic()
+        self.idled = False
         self.path = os.path.join(directory, "gui.sock")
         self.modules = own_modules()
         self.import_keys = import_keys(self.modules)
@@ -523,6 +688,7 @@ class Server:
         self.calls = {}          # pid -> conn
         self.stale = False
         self.listener = None
+        self.bound = None        # (st_dev, st_ino) of the socket file this daemon bound (unlink)
         self.selector = None
         self.wake = None
 
@@ -533,10 +699,18 @@ class Server:
         serves this folder or the folder is not safely ours."""
 
         try:
-            os.mkdir(self.directory, 0o700)
+            # The broker's folder is the entrypoint's to make (/run is root's); one made here is made the same.
+            os.mkdir(self.directory, 0o711 if self.broker else 0o700)
         except FileExistsError:
             pass
-        if not gui_client.owned_dir(self.directory):
+        except PermissionError:
+            if self.broker is None:
+                raise
+        if self.broker is not None:
+            if not gui_client.shared_dir(self.directory, os.getuid()):
+                log(f"{self.directory} is not this user's folder, or others may write in it; not serving")
+                return False
+        elif not gui_client.owned_dir(self.directory):
             log(f"{self.directory} is not a folder of this user only; not serving")
             return False
         probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -557,8 +731,14 @@ class Server:
             pass
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.listener.bind(temp)
-        os.chmod(temp, 0o600)
+        # The broker's socket is open to every user of the desktop: who may use it is decided per connection, by
+        # its peer's uid (accept).
+        os.chmod(temp, 0o666 if self.broker else 0o600)
         self.listener.listen(64)
+        # The file's own identity, kept to know the socket at self.path is still this one: fstat of the listener
+        # is the socket's inode in sockfs on Linux, never the file's.
+        bound = os.stat(temp)
+        self.bound = (bound.st_dev, bound.st_ino)
         os.rename(temp, self.path)
         return True
 
@@ -573,11 +753,27 @@ class Server:
                     sock.close()
                 except OSError:
                     pass
+        if self.lock_fd is not None:
+            # The folder's lock is the daemon's: a command still running when the daemon has gone does not hold it.
+            try:
+                os.close(self.lock_fd)
+            except OSError:
+                pass
+            self.lock_fd = None
 
     # -- serving --
 
+    def idle_left(self, now=None):
+        """Seconds until this daemon has gone `idle` with no command (<= 0: it has), or None while it may not exit
+        for that: no idle time set, or a command is running."""
+
+        if self.idle is None or self.calls:
+            return None
+        return self.last_call + self.idle - (time.monotonic() if now is None else now)
+
     def serve(self):
-        """The loop: never returns until the daemon's code went stale and its last command ended."""
+        """The loop: returns once the daemon's code went stale and its last command ended, or it went `idle` seconds
+        with no command (the next `gui` command starts a daemon again)."""
 
         self.selector = selectors.DefaultSelector()
         wake_r, wake_w = socket.socketpair()
@@ -588,9 +784,18 @@ class Server:
         signal.signal(signal.SIGCHLD, lambda *_: None)
         self.selector.register(self.listener, selectors.EVENT_READ, "accept")
         self.selector.register(wake_r, selectors.EVENT_READ, "wake")
+        # Idle time counts from when commands can first reach it, not from the imports before it listened.
+        self.last_call = time.monotonic()
         try:
             while not (self.stale and not self.calls):
-                for key, _ in self.selector.select(timeout=5.0):
+                timeout = 5.0
+                left = self.idle_left()
+                if left is not None:
+                    if left <= 0:
+                        self.idled = True
+                        break
+                    timeout = min(timeout, left)
+                for key, _ in self.selector.select(timeout=timeout):
                     if key.data == "accept":
                         self.accept()
                     elif key.data == "wake":
@@ -608,10 +813,11 @@ class Server:
     def unlink(self):
         """Take the socket away (only if it is still this daemon's)."""
 
-        if self.listener is None:
+        if self.listener is None or self.bound is None:
             return
         try:
-            if os.stat(self.path).st_ino == os.fstat(self.listener.fileno()).st_ino:
+            there = os.stat(self.path)
+            if (there.st_dev, there.st_ino) == self.bound:
                 os.unlink(self.path)
         except OSError:
             pass
@@ -630,14 +836,36 @@ class Server:
                 self.stale = True
                 self.unlink()
             return REFUSE_STALE
-        startup = startup_differs(req.env, self.own_env)
+        # The broker never takes the caller's interpreter settings (Broker.environment), so they cannot differ.
+        startup = startup_differs(req.env, self.own_env) if self.broker is None else []
         if startup:
             log("a command's interpreter settings differ (" + ", ".join(os.fsdecode(k) for k in startup)
                 + "); it runs in its own process")
             return REFUSE_STARTUP
         if len(self.calls) >= MAX_CALLS:
             return REFUSE_BUSY
+        if self.broker is None and req.nice < self.niceness():
+            # Started by an engine's command (niceness 10), this daemon cannot run a command asked at a higher
+            # priority (a process may raise its niceness, never lower it): that one runs in its own process.
+            return REFUSE_NICE
         return 0
+
+    @staticmethod
+    def niceness():
+        """This process's niceness (0 where the system cannot say)."""
+
+        try:
+            return os.getpriority(os.PRIO_PROCESS, 0)
+        except (AttributeError, OSError):
+            return 0
+
+    def peer_allowed(self, uid):
+        """Whether a caller of this uid may run commands: this daemon's own user; for the broker the worker's only,
+        and never a caller the system cannot name."""
+
+        if self.broker is not None:
+            return uid is not None and uid == self.broker.worker_uid
+        return uid is None or uid == os.getuid()
 
     def accept(self):
         """Take one request: check it, agree, wait for the client's go, fork."""
@@ -646,12 +874,12 @@ class Server:
             conn, _ = self.listener.accept()
         except OSError:
             return
+        self.last_call = time.monotonic()
         conn.settimeout(HANDSHAKE_SECONDS)
         fds = []
         forked = False
         try:
-            uid = peer_uid(conn)
-            if uid is not None and uid != os.getuid():
+            if not self.peer_allowed(peer_uid(conn)):
                 conn.sendall(b"R" + bytes([REFUSE_USER]))
                 return
             try:
@@ -728,6 +956,7 @@ class Server:
             conn = self.calls.pop(pid, None)
             if conn is None:
                 continue
+            self.last_call = time.monotonic()   # idle time counts from a command's end
             try:
                 if os.WIFSIGNALED(status):
                     conn.sendall(b"K" + bytes([os.WTERMSIG(status) & 0xFF]))
@@ -787,7 +1016,8 @@ def _reexec(args, env):
 
 
 def main(argv=None):
-    """Start the daemon. Exit 0 to be restarted (the code changed), EXIT_DO_NOT_RESTART when it cannot serve here."""
+    """Start the daemon. Exit 0 when it ended by itself (its code changed, or it went idle), EXIT_DO_NOT_RESTART when
+    it cannot serve here (or another daemon serves or is starting)."""
 
     parser = argparse.ArgumentParser(prog="decurix_agent.computer.daemon")
     parser.add_argument("--no-gi", action="store_true", help="do not import the accessibility library ahead")
@@ -803,6 +1033,15 @@ def main(argv=None):
     if len(kept) != len(os.environb):
         _reexec([], kept)
 
+    # One daemon per user, decided before the imports (they take a second): a daemon started beside one that serves
+    # or is starting ends here. Not in broker mode: the broker's folder is the entrypoint's, and the broker is not
+    # started on demand.
+    lock_fd = None
+    if not screen_broker.requested():
+        lock_fd = claim(gui_client.socket_dir())
+        if lock_fd is None:
+            return EXIT_DO_NOT_RESTART
+
     preload(screen=not args.no_gi)
     if native_threads() > 1:
         if not args.no_gi:
@@ -811,12 +1050,25 @@ def main(argv=None):
         log("a thread is running before the first fork; not serving")
         return EXIT_DO_NOT_RESTART
 
-    server = Server(gui_client.socket_dir())
+    if screen_broker.requested():
+        if not screen_broker.screen_side():
+            # The screen is the screen user's on this desktop: `gui` goes to its broker only, never to a daemon here.
+            log("this desktop drives its screen through the screen broker (DECURIX_SCREEN_USER=1); a daemon in the "
+                "worker's user does not serve it")
+            return EXIT_DO_NOT_RESTART
+        server = Server(screen_broker.screen_dir(), Broker.for_package(screen_broker.worker_uid()))
+    else:
+        server = Server(gui_client.socket_dir(), idle=idle_seconds(), lock_fd=lock_fd)
     if not server.bind():
         return EXIT_DO_NOT_RESTART
-    log(f"serving (pid {os.getpid()}, {len(server.modules)} modules, {len(server.import_keys)} import-time variables)")
+    mode = f", the screen broker for uid {server.broker.worker_uid}" if server.broker else ""
+    log(f"serving (pid {os.getpid()}, {len(server.modules)} modules, {len(server.import_keys)} import-time "
+        f"variables{mode})")
     server.serve()
-    log("exiting to be restarted with the changed code")
+    if server.idled:
+        log(f"no command for {server.idle / 60:g} minutes; exiting (the next gui command starts a daemon again)")
+    else:
+        log("exiting: its code changed on disk (the next gui command starts a daemon on the new code)")
     return 0
 
 

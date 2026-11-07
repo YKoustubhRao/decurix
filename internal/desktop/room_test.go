@@ -3,6 +3,7 @@ package desktop
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,4 +140,12 @@ func TestTryLockDesktopPassesOverAHeldLock(t *testing.T) {
 		t.Fatal("could not take a free lock")
 	}
 	u()
+}
+
+// With no busy desktop the refusal names other programs, not Decurix, as what holds the memory (found live 2026-11-07).
+func TestNoRoomWithNoBusyDesktopNamesOtherPrograms(t *testing.T) {
+	got := (&NoRoomError{FreeMB: 676, NeedMB: 700}).Error()
+	if !strings.Contains(got, "about 676 MB is free") || !strings.Contains(got, "Close other programs") || strings.Contains(got, "0 desktops") {
+		t.Fatalf("got %q", got)
+	}
 }

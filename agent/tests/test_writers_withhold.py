@@ -46,15 +46,25 @@ ALLOWED = {
     # Bytes, which no text withholding can read: pictures (secret fields painted over by their callers) and blobs.
     "computer/audit.py:keep_observation": "an observation blob, privacy.scrub'd in _observation_doc before it is "
                                           "encoded",
-    "computer/cli.py:_look": "a screenshot (pixels; password fields painted over)",
-    "computer/cli.py:save_screenshot": "a screenshot file the command was asked for",
-    "computer/cli.py:run": "a screenshot file the command was asked for",
+    "computer/broker.py:deliver_to_caller": "a screenshot file the command was asked for (pixels; password fields "
+                                            "painted over), written here or handed to the caller in broker mode",
+    "computer/gui_client.py:save_output": "a screenshot the screen broker handed back, written as the caller at a "
+                                          "path the caller named; and a fixed line to its own stderr",
     "computer/recording.py:write_bytes_whole": "a recording's frames (pixels; password fields painted over)",
     # Not a file this code writes content to.
     "computer/cli.py:main": "stdout pointed at os.devnull",
     "computer/demonstration.py:start": "the recorder subprocess's own output handle",
     # The gui daemon (computer/daemon.py, gui_client.py): transport, not a file this code writes content to.
     "computer/daemon.py:bind": "renames the daemon's own freshly bound socket into place (no content)",
+    "computer/daemon.py:claim": "the daemon's lock file in its own 0700 folder (no content)",
+    "computer/gui_client.py:may_start_daemon": "the daemon's lock file, opened to see whether a daemon holds it (no "
+                                               "content)",
+    "computer/gui_client.py:_daemon_log": "the startup log, opened for a started daemon's own event lines (it logs no "
+                                          "command's arguments, environment or output)",
+    "computer/gui_client.py:start_daemon": "/dev/null, a started daemon's stdin (writes nothing)",
+    "computer/cdp_relay.py:bind": "renames the DevTools relay's own freshly bound socket into place (no content)",
+    "computer/cdp_relay.py:send": "a DevTools command to the browser's pipe (a transport, not a file)",
+    "computer/launch_helper.py:bind": "renames the launch helper's own freshly bound socket into place (no content)",
     "computer/gui_client.py:_descriptors": "opens the working folder O_PATH, to hand it to the daemon (writes nothing)",
     "computer/gui_client.py:_end": "a fixed line to the command's own stderr (fd 2): 'what it did was not seen'",
     "computer/gui_client.py:main": "a fixed line to the command's own stderr (fd 2): why the daemon did not take it",
@@ -111,13 +121,19 @@ FORMS = {
     "retention.py:_write_label": {"open"},
     "workflow_runner.py:_lock": {"Path.open"},
     "computer/audit.py:keep_observation": {"os.replace", "write_bytes"},
-    "computer/cli.py:_look": {"open", "os.replace"},
-    "computer/cli.py:save_screenshot": {"open", "os.replace"},
-    "computer/cli.py:run": {"open"},
+    "computer/broker.py:deliver_to_caller": {"open", "os.replace"},
+    "computer/gui_client.py:save_output": {"os.open", "os.write", "os.replace"},
     "computer/recording.py:write_bytes_whole": {"path.replace", "write_bytes"},
     "computer/cli.py:main": {"open"},
     "computer/demonstration.py:start": {"open"},
     "computer/daemon.py:bind": {"os.rename"},
+    "computer/daemon.py:claim": {"os.open"},
+    "computer/gui_client.py:may_start_daemon": {"os.open"},
+    "computer/gui_client.py:_daemon_log": {"os.open"},
+    "computer/gui_client.py:start_daemon": {"os.open"},
+    "computer/cdp_relay.py:bind": {"os.rename"},
+    "computer/cdp_relay.py:send": {"os.write"},
+    "computer/launch_helper.py:bind": {"os.rename"},
     "computer/gui_client.py:_descriptors": {"os.open"},
     "computer/gui_client.py:_end": {"os.write"},
     "computer/gui_client.py:main": {"os.write"},
@@ -166,6 +182,7 @@ RAW_HELPERS = {
     "_with_resume": {"computer/privacy.py:clear_literals", "computer/privacy.py:keep_resume_copy"},
     "keep_observation": {"computer/audit.py:record"},
     "save_screenshot": {"computer/cli.py:main"},
+    "deliver_to_caller": {"computer/cli.py:_look", "computer/cli.py:run", "computer/cli.py:save_screenshot"},
     "_pending_request_reply": {"long_task.py:_take_message"},
     "_release": {"long_task.py:_pending_request_reply"},
 }

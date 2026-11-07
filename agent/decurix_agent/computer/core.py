@@ -1136,6 +1136,8 @@ def _shared_save_note(since, wait=SAVE_SETTLE_SECONDS):
 
 
 DOWNLOAD_WAIT_SECONDS = 6
+# Nothing new in the download folder this long after an action in the browser: it downloaded nothing (_downloads_note).
+DOWNLOAD_QUIET_SECONDS = 1.0
 PARTIAL_DOWNLOAD = (".crdownload", ".part", ".download")
 
 
@@ -1163,7 +1165,38 @@ def _same_bytes(a, b):
         return False
 
 
-def _downloads_note(before, wait=DOWNLOAD_WAIT_SECONDS):
+def _may_download(kind, element, point, before):
+    """
+    Whether this action can start a download: only the browser downloads, so only an action whose target is in the
+    browser can. Decided by structure: the element's own source and application, else the window the click lands in
+    or the keys go to. Unknown is in the browser (the folder is watched as before).
+    """
+
+    def in_browser(title):
+        return browser.is_browser_title(title or "")
+
+    if element is not None:
+        if element.get("source") == "cdp":
+            return True
+        app = str(element.get("app") or "").lower()
+        return app in browser.APP_NAMES or in_browser(element.get("window_title"))
+    windows = (before or {}).get("windows") or []
+    if kind in ("click", "double_click") and point is not None:
+        try:
+            under = [w for w in windows
+                     if w["box"][0] <= point[0] < w["box"][0] + w["box"][2]
+                     and w["box"][1] <= point[1] < w["box"][1] + w["box"][3]]
+        except (KeyError, IndexError, TypeError):
+            return True
+        if under:
+            return in_browser(under[-1].get("title"))   # topmost last (screen.windows)
+        return bool((before or {}).get("page_url")) or any(in_browser(w.get("title")) for w in windows)
+    # Keys with no target go to the window in front.
+    active = (before or {}).get("active_title")
+    return in_browser(active) if active else True
+
+
+def _downloads_note(before, wait=DOWNLOAD_WAIT_SECONDS, since=None):
     """
     What an action downloaded: the file that arrived in the download folder, its size, and - when the browser named it
     "x (1).pdf" because "x.pdf" was already there - whether it is the same file again. Found live
@@ -1172,17 +1205,20 @@ def _downloads_note(before, wait=DOWNLOAD_WAIT_SECONDS):
     knowing, and saved the second copy of invoice 197 under invoice 198's name.
     """
 
-    # The screen has already settled: nothing new within a second means nothing was downloaded; a file still being
-    # written is waited for up to `wait`.
+    # Nothing new within DOWNLOAD_QUIET_SECONDS of `since` (the action, when the caller gives it: the window then ran
+    # while the screen settled and was looked at, instead of after it) means nothing was downloaded; with no `since`
+    # the second starts now. A file still being written - the browser has begun the download - is waited for up to
+    # `wait` from now, however slow the server.
     start = time.time()
+    quiet_from = start if since is None else min(since, start)
     while True:
         now = _downloads_snapshot()
         new = [n for n, v in now.items() if before.get(n) != v]
         partial = [n for n in new if n.endswith(PARTIAL_DOWNLOAD)]
-        waited = time.time() - start
-        if (new and not partial) or (not new and waited >= 1) or waited >= wait:
+        clock = time.time()
+        if (new and not partial) or (not new and clock - quiet_from >= DOWNLOAD_QUIET_SECONDS) or clock - start >= wait:
             break
-        time.sleep(0.5)
+        time.sleep(0.25 if not new else 0.5)
     done = sorted(n for n in new if not n.endswith(PARTIAL_DOWNLOAD))
     if not done:
         # A download the browser holds for a yes ("Unconfirmed 123.crdownload": a file from a site without https) never
@@ -4176,7 +4212,9 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         files = _refuse_files_that_may_not_leave(files)
     except ComputerError as exc:
         refused("action_rules", exc)
-    downloads_before = _downloads_snapshot() if kind in ("click", "double_click", "key") else None
+    # Only an action in the browser can download (_may_download): any other is not followed by a wait for one.
+    downloads_before = _downloads_snapshot() if kind in ("click", "double_click", "key") \
+        and _may_download(kind, element, point, before) else None
     acted_at = time.time()
     require = None
     if check_form:
@@ -4324,6 +4362,7 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         audit.record(entry, before=before["frame"], masks=masks, observation=before)
         raise ActedError(reason) from exc
 
+    performed_at = time.time()
     settled = _wait_for_settle(before["frame"])
     # The settled frame is the after-look's picture: the screen stopped changing on it, and a second full grab at once
     # is the same screen again (resource plan P1 #5: one full grab an action fewer).
@@ -4549,7 +4588,11 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     if kind in ("click", "key") and _saved(change_text):
         note += _ledger_readback(after, change_text)
     if downloads_before is not None:
-        note += _downloads_note(downloads_before)
+        # The second in which a download must show starts at the action and runs while the screen settles and is looked
+        # at - except when the action showed no result at all: that is the click whose answer may still be on its way
+        # from a slow server, and it is given its second after the look, as before.
+        nothing_seen = change_text.startswith("nothing visible changed")
+        note += _downloads_note(downloads_before, since=None if nothing_seen else performed_at)
 
     return {
         "status": "done",

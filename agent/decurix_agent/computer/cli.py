@@ -5,7 +5,7 @@ import sys
 import time
 
 from decurix_agent import logging_utils, progress
-from decurix_agent.computer import approval, cdp, core, door, replay, shown, skill_engine, skills
+from decurix_agent.computer import approval, broker, cdp, core, door, replay, shown, skill_engine, skills
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 
@@ -58,6 +58,110 @@ SCREEN_COMMANDS = {
 EMPTY_PAGE_ELEMENTS = 6
 EMPTY_PAGE_LOOKS = 5
 EMPTY_PAGE_PAUSE = 3.0
+# With the browser able to say how the page is (cdp.drawing_state): looked at again every EMPTY_PAGE_POLL seconds,
+# within the same budget (EMPTY_PAGE_LOOKS x EMPTY_PAGE_PAUSE), and settled once it has held its shape this long while
+# the browser says it is quiet (settled_look).
+EMPTY_PAGE_POLL = 0.4
+EMPTY_PAGE_STEADY = 1.2
+# Roles a page shows while it waits for something (a spinner, a progress bar): such a page is not quiet.
+WAITING_ROLES = {"progressbar"}
+
+
+def _browser_part(observation):
+    """The page's own elements in a look, the shape they make (role and name of each), and whether the page is
+    almost empty."""
+
+    on_page = [e for e in observation.get("elements") or [] if e.get("source") == "cdp"]
+    shape = [(e.get("role"), e.get("name")) for e in on_page]
+    small = bool(observation.get("page_url")) and len(on_page) < EMPTY_PAGE_ELEMENTS
+    return on_page, shape, small
+
+
+def _settled_by_pause(observation):
+    """The look as it was before the browser could be asked (no DevTools answer): looked at again every
+    EMPTY_PAGE_PAUSE seconds, up to EMPTY_PAGE_LOOKS times; two looks with the same shape are settled."""
+
+    loading = False
+    before = None
+    for _ in range(EMPTY_PAGE_LOOKS):
+        on_page, shape, loading = _browser_part(observation)
+        # A small page that reads the same on two looks has settled: it is small, not loading. Found live:
+        # a sign-in page (a heading, two fields, a button) was called "almost nothing, still loading" after
+        # fifteen seconds of looks, and the engine was told not to touch it.
+        if not loading or (on_page and shape == before):
+            loading = False
+            break
+        before = shape
+        time.sleep(EMPTY_PAGE_PAUSE)
+        observation = core.observe()
+    return observation, loading
+
+
+def _quiet(drawn, on_page):
+    """Whether the browser says the page is done drawing: loaded, not marked busy, nothing fetched within the last
+    EMPTY_PAGE_STEADY seconds, and no spinner or progress bar among its elements."""
+
+    if not drawn or not drawn.get("complete") or drawn.get("busy"):
+        return False
+    ago = drawn.get("fetched_ago")
+    if ago is not None and ago < EMPTY_PAGE_STEADY:
+        return False
+    return not any(str(e.get("role") or "").lower() in WAITING_ROLES for e in on_page)
+
+
+def settled_look(observation):
+    """
+    (observation, loading): `observation` itself when the page is not almost empty, else the page looked at again
+    until it is decidedly drawn or the budget ran out (loading True then).
+
+    A page that draws itself after it has "loaded" shows next to nothing for a while. Found live on a slow host: an
+    engine looked at a record just saved, was shown an empty page, reloaded it, and then could not say whether its
+    work had been saved. So an almost empty page is looked at again before it is reported. It used to be looked at
+    again after a fixed 3 s, which every small page (a sign-in form, a dialog) paid on every look (measured 3.0 of
+    3.7 s, 2026-11-07). Now it is looked at every EMPTY_PAGE_POLL seconds and is settled as soon as it is decidedly
+    drawn: it grew past EMPTY_PAGE_ELEMENTS, or it held the same shape for EMPTY_PAGE_STEADY seconds while the browser
+    says it is quiet (_quiet), or it held the same shape for EMPTY_PAGE_PAUSE seconds (the old rule, whatever the
+    browser says). When the browser cannot be asked at all, the look is exactly the old one (_settled_by_pause).
+
+    Why 1.2 s is long enough: a page still drawing itself shows it in that window in a way the window watches - its
+    element list changes (every change starts the window again), data it fetched arrives (a resource finished
+    within the window: what was fetched is drawn next), it says it is busy (aria-busy, not yet complete), or it shows
+    a progress bar. The live sign-in page (a heading, two fields, a button) shows none of these and holds its four
+    elements: settled after 1.2 s, where it waited 3. A page that keeps drawing never holds still that long. What the
+    window cannot see is a request still on its way with nothing on the page saying so; past 1.2 s of such silence it
+    is taken as drawn, where the old rule took it as drawn past 3 s (docs/computer-use.md, "Waits").
+    """
+
+    on_page, shape, small = _browser_part(observation)
+    if not small:
+        return observation, False
+    drawn = cdp.drawing_state()
+    if drawn is None:
+        return _settled_by_pause(observation)
+    start = time.monotonic()
+    since = start                   # when the page was first seen with its current shape (the end of that look)
+    looked_at = start               # when the latest look began (the first one: before we were called)
+    budget = EMPTY_PAGE_PAUSE * EMPTY_PAGE_LOOKS
+    while True:
+        steady = looked_at - since
+        if on_page and (steady >= EMPTY_PAGE_PAUSE or (steady >= EMPTY_PAGE_STEADY and _quiet(drawn, on_page))):
+            return observation, False
+        now = time.monotonic()
+        if now - start >= budget:
+            return observation, True
+        # The next look as soon as the window can have been held, never later than one poll from now.
+        wait = since + EMPTY_PAGE_STEADY - now
+        time.sleep(max(0.05, wait) if 0 < wait < EMPTY_PAGE_POLL else EMPTY_PAGE_POLL)
+        looked_at = time.monotonic()
+        observation = core.observe()
+        previous = shape
+        on_page, shape, small = _browser_part(observation)
+        if not small:
+            return observation, False
+        if shape != previous:
+            since = time.monotonic()
+            looked_at = since
+        drawn = cdp.drawing_state()
 
 # Other spellings of a command's name.
 COMMAND_ALIASES = {
@@ -96,10 +200,7 @@ def _look(skill, n):
     path = os.environ.get("DECURIX_GUI_SCREENSHOT", "").strip()
     if path:
         try:
-            tmp = path + ".part"
-            with open(tmp, "wb") as f:
-                f.write(png)
-            os.replace(tmp, path)
+            broker.deliver_to_caller(path, png, atomic=True)
         except OSError as exc:
             print(f"(The picture could not be attached: {exc})")
     else:
@@ -135,10 +236,7 @@ def save_screenshot(argv):
 
             frame = pointing.ruled(frame)
         data = frame.png(scale=scale)
-        tmp = path + ".part"
-        with open(tmp, "wb") as f:
-            f.write(data)
-        os.replace(tmp, path)
+        broker.deliver_to_caller(path, data, atomic=True)
     except Exception as exc:
         logging_utils.log(f"gui: could not save the screenshot: {exc}")
 
@@ -733,25 +831,7 @@ def run(argv):
     command = args.command
 
     if command == "observe":
-        observation = core.observe()
-        # A page that draws itself after it has "loaded" shows next to nothing for a while. Found live on a slow
-        # host: an engine looked at a record just saved, was shown an empty page, reloaded it, and then could not
-        # say whether its work had been saved. An almost empty page is looked at again before it is reported.
-        loading = False
-        before = None
-        for _ in range(EMPTY_PAGE_LOOKS):
-            on_page = [e for e in observation.get("elements") or [] if e.get("source") == "cdp"]
-            loading = bool(observation.get("page_url")) and len(on_page) < EMPTY_PAGE_ELEMENTS
-            # A small page that reads the same on two looks has settled: it is small, not loading. Found live:
-            # a sign-in page (a heading, two fields, a button) was called "almost nothing, still loading" after
-            # fifteen seconds of looks, and the engine was told not to touch it.
-            shape = [(e.get("role"), e.get("name")) for e in on_page]
-            if not loading or (on_page and shape == before):
-                loading = False
-                break
-            before = shape
-            time.sleep(EMPTY_PAGE_PAUSE)
-            observation = core.observe()
+        observation, loading = settled_look(core.observe())
         core.report_observation(observation)
         budget = text_budget() * 3 if args.window else text_budget()
         shown = el.render(observation, budget=budget, coords=args.coords, only_group=args.window)
@@ -768,8 +848,7 @@ def run(argv):
             print('Something on the screen with no ref above (an icon, a picture, a drawn control): '
                   'gui click --see "what it looks like and where" finds it by looking.')
         if args.screenshot:
-            with open(args.screenshot, "wb") as f:
-                f.write(observation["frame"].png())
+            broker.deliver_to_caller(args.screenshot, observation["frame"].png(), required=True)
             print(f"Screenshot saved to {args.screenshot}")
         return EXIT_OK
 
