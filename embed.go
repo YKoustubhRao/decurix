@@ -43,6 +43,7 @@ import "embed"
 // step cannot build the desktop images, and says so.
 //
 //go:generate go run embed_gen.go
+//go:generate go run codemap_gen.go
 //go:embed docker/desktop.basic.Dockerfile
 //go:embed docker/tools.Dockerfile
 //go:embed agent/[^._]*.* agent/[^._]*-* agent/gui agent/office agent/lookup agent/handoff agent/decurix_agent
