@@ -320,11 +320,13 @@ ENV PATH="/opt/tools/bin:/opt/tools/go/bin:/opt/tools/node/bin:/opt/tools/rust/b
 # All of that goes - every setuid and setgid bit in the image, not a list of the ones known today (B-21): a desktop
 # runs with no-new-privileges, so none could work anyway, and Chromium uses its namespace sandbox (sandbox.go). The
 # entrypoint does the one-time setup as root and then drops to the desktop user with no
-# capabilities. The gate gets a user of its own.
+# capabilities. The gate gets a user of its own, and so does the screen (decurixscreen: the screen broker's, used only
+# on a desktop created with DECURIX_SCREEN_USER=1; no login shell, no password, no sudo).
 RUN rm -f /etc/sudoers.d/headless /dockerstartup/.initial_sudo_password \
     && passwd -l root && passwd -l headless \
     && find / -xdev \( -perm -4000 -o -perm -2000 \) -type f -exec chmod ug-s {} + \
     && useradd --system --no-create-home --shell /usr/sbin/nologin decurixgate \
+    && useradd --system --no-create-home --shell /usr/sbin/nologin decurixscreen \
     && chmod 644 /etc/passwd /etc/group \
     && chown root:root /etc && chmod 755 /etc \
     && chown -R 1001:1001 /dockerstartup

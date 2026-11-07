@@ -110,6 +110,14 @@ if [ -s "$GATE_DIR/key" ]; then
     cd /
 fi
 
+# Broker mode (DECURIX_SCREEN_USER=1, set at creation when the control plane runs with DECURIX_SCREEN_BROKER=1;
+# docs/gate-boundary.md, "Next: the input broker"): the screen broker's shared folder, the screen user's, which every
+# user may pass through and nobody else may write in. Its socket's callers are checked by uid. Which processes run as
+# the screen user is the next round's; nothing else changes here yet.
+if [ "${DECURIX_SCREEN_USER:-0}" = "1" ] && /usr/bin/getent passwd decurixscreen >/dev/null 2>&1; then
+    /usr/bin/install -d -m 711 -o decurixscreen -g decurixscreen /run/decurix-screen
+fi
+
 # From here on: the desktop user, no capabilities (in any set, and none can be gained), no setuid effect, and the
 # container's PATH back for its own tools.
 cd "$HOME_DIR" 2>/dev/null || cd /

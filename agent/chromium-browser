@@ -19,6 +19,20 @@ elif [ -f /opt/decurix-chromium.init ]; then
     . /opt/decurix-chromium.init
 fi
 
+# Started by the screen broker's DevTools relay (DECURIX_BROWSER_DEBUG=pipe, decurix_agent/computer/cdp_relay.py): no
+# DevTools port, which every user of the desktop could reach, but the pipe on fds 3 and 4 the relay holds.
+if [ "${DECURIX_BROWSER_DEBUG:-}" = "pipe" ]; then
+    pipe_flags=""
+    # shellcheck disable=SC2086 # CHROMIUM_FLAGS is a list of flags
+    for flag in $CHROMIUM_FLAGS; do
+        case "$flag" in
+            --remote-debugging-port=*|--remote-debugging-address=*) ;;
+            *) pipe_flags="$pipe_flags $flag" ;;
+        esac
+    done
+    CHROMIUM_FLAGS="$pipe_flags --remote-debugging-pipe"
+fi
+
 chrome=/opt/google/chrome/google-chrome
 if [ ! -x "$chrome" ]; then
     echo "chromium-browser: $chrome is missing - rebuild the desktop image" >&2

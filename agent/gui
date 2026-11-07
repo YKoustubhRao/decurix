@@ -10,6 +10,15 @@
 # DECURIX_GUI_DAEMON=off always runs it here.
 export PYTHONPATH="/opt${PYTHONPATH:+:$PYTHONPATH}"
 client=/opt/decurix_agent/computer/gui_client.py
+# A desktop whose screen is its own user's (DECURIX_SCREEN_USER=1, the screen broker; docs/gate-boundary.md): the
+# command goes to the broker only, never in-process here - DECURIX_GUI_DAEMON=off included.
+if [ "${DECURIX_SCREEN_USER:-}" = "1" ]; then
+    if [ ! -f "$client" ]; then
+        echo "gui: cannot reach the screen: $client is missing" >&2
+        exit 1
+    fi
+    exec python3 -I -S "$client" "$@"
+fi
 if [ -f "$client" ] && [ "${DECURIX_GUI_DAEMON:-}" != "off" ]; then
     exec python3 -I -S "$client" "$@"
 fi

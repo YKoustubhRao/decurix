@@ -9,7 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from decurix_agent.computer import browser
+from decurix_agent.computer import broker, browser
 from decurix_agent.logging_utils import log
 from decurix_agent.computer import elements as el
 from decurix_agent.computer import datefields
@@ -69,12 +69,59 @@ RELAYED_VIEWER_PATHS = ("/host-gui/view", "/phone-app/view")
 CONTAINERS = {"form", "dialog", "alertdialog", "navigation", "main", "region", "table", "row", "list", "group", "tabpanel", "menu", "toolbar", "search", "banner", "complementary"}
 
 
+def _relay_connect(path, timeout):
+    """A connection to the DevTools relay's Unix socket (broker mode, cdp_relay.py). No relay there is a refused
+    connection, as a browser with no port is."""
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect(path)
+    except (FileNotFoundError, ConnectionRefusedError) as exc:
+        sock.close()
+        raise ConnectionRefusedError(f"the browser's DevTools relay is not running ({path})") from exc
+    except BaseException:
+        sock.close()
+        raise
+    return sock
+
+
+def _relay_get(relay, path, method, timeout):
+    """_get through the relay: the same requests, on its Unix socket. A relay whose browser is gone answers 503,
+    which is a browser that is not running."""
+
+    import http.client
+
+    class _Connection(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = _relay_connect(relay, self.timeout)
+
+    conn = _Connection("localhost", timeout=timeout)
+    try:
+        conn.request(method, path)
+        response = conn.getresponse()
+        body = response.read()
+    finally:
+        conn.close()
+    if response.status == 503:
+        raise ConnectionRefusedError("the browser is not running")
+    if response.status != 200:
+        raise OSError(f"the DevTools relay answered {response.status} to {path}: "
+                      f"{body[:200].decode('utf-8', 'replace').strip()}")
+    return json.loads(body.decode("utf-8"))
+
+
 class _Socket:
     """A minimal RFC 6455 client: text frames out, whole messages in."""
 
     def __init__(self, url, timeout=CALL_TIMEOUT):
         parsed = urllib.parse.urlparse(url)
-        self.sock = socket.create_connection((parsed.hostname, parsed.port), timeout=timeout)
+        relay = broker.relay_socket()
+        if relay:
+            # Broker mode: the page's WebSocket is the relay's, by the same path (cdp_relay.Relay.page).
+            self.sock = _relay_connect(relay, timeout)
+        else:
+            self.sock = socket.create_connection((parsed.hostname, parsed.port), timeout=timeout)
         key = base64.b64encode(os.urandom(16)).decode()
         path = parsed.path + (("?" + parsed.query) if parsed.query else "")
 
@@ -114,7 +161,14 @@ class _Socket:
         for i in range(length):
             masked[i] ^= mask[i % 4]
 
-        self.sock.sendall(header + mask + bytes(masked))
+        try:
+            self.sock.sendall(header + mask + bytes(masked))
+        except socket.timeout:
+            raise
+        except OSError:
+            # A tab closed (or the browser gone) under this session: on Linux the send sees it first, as a broken
+            # pipe or reset; the same as the end of file a read would see.
+            raise ComputerError("Chromium closed the DevTools connection")
 
     def _need(self, n):
         while len(self.buffer) < n:
@@ -225,6 +279,10 @@ class Page:
 def _get(path, method="GET", timeout=None):
     # A busy browser answers late (BUSY_ANSWER_SECONDS); a missing one refuses at once.
     timeout = BUSY_ANSWER_SECONDS if timeout is None else timeout
+    relay = broker.relay_socket()
+    if relay:
+        # Broker mode: the browser has no port; its relay answers the same requests (cdp_relay.py).
+        return _relay_get(relay, path, method, timeout)
     request = urllib.request.Request(BASE + path, method=method)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -2614,3 +2672,40 @@ def wait_ready(timeout=15, default_title=""):
     finally:
         page.close()
 
+
+
+# What the active tab says about whether it is still drawing (drawing_state): its load state, whether it marks itself
+# busy (the relayed viewer's data-decurix-busy, or any element's aria-busy), and how long ago its last fetched resource
+# finished arriving (data a page fetched is drawn next).
+_DRAWING = """JSON.stringify((() => {
+  const d = document;
+  const busy = d.documentElement.hasAttribute('data-decurix-busy') || !!d.querySelector('[aria-busy="true"]');
+  let last = 0;
+  try { for (const e of performance.getEntriesByType('resource')) last = Math.max(last, e.responseEnd || 0); }
+  catch (e) {}
+  return {state: d.readyState, busy: busy, fetched_ms_ago: last ? performance.now() - last : null};
+})())"""
+
+
+def drawing_state():
+    """
+    What the active tab says about whether it is still drawing itself: {"complete": the document has loaded,
+    "busy": it marks itself busy, "fetched_ago": seconds since its last fetched resource arrived (None: none)}.
+    None when the browser cannot be asked (no DevTools, no tab, no answer): the caller then judges by looking alone.
+    """
+
+    try:
+        page = active_page()
+    except (ComputerError, OSError):
+        return None
+    try:
+        found = json.loads(page.evaluate(_DRAWING) or "null")
+    except (ComputerError, OSError, ValueError):
+        return None
+    finally:
+        page.close()
+    if not isinstance(found, dict):
+        return None
+    ago = found.get("fetched_ms_ago")
+    return {"complete": found.get("state") == "complete", "busy": bool(found.get("busy")),
+            "fetched_ago": ago / 1000.0 if isinstance(ago, (int, float)) else None}
