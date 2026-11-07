@@ -132,7 +132,10 @@ class WhereMoneyGoes(Fixture):
         self.assertTrue(said[0].startswith("PAYEES NOT CHECKED: p.xlsx pays Shree Ganesh Packaging"))
         self.assertEqual(payees.unchecked("", made, found=self.found), [], "a master decides (mismatches)")
         failed = []
-        with mock.patch.object(payees, "inputs", lambda request, made=(), roots=None: ([], [])):
+        # No inputs at all, and no bills found on this machine: on a CI runner ~/work is the checkout itself, whose
+        # spreadsheets read as bills (CI on main, 2026-11-05).
+        with mock.patch.object(payees, "inputs", lambda request, made=(), roots=None: ([], [])), \
+                mock.patch.object(payees, "bill_documents", lambda request, made=(), roots=None: []):
             self.assertEqual(produced._payee_mismatch("", made, failed), [])
         self.assertTrue(failed and "PAYEES NOT CHECKED" in failed[0], "the final check is left unmade: not checked")
 

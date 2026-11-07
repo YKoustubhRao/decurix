@@ -631,9 +631,11 @@ func TestHostGUIWrapperOpensTheViewerForThisDesktop(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := u.Query()
+	// The session id is the slug and a hash of the desktop and slug (hostSessionID), no longer "<desktop>-<slug>".
+	id := hostSessionID("work-vm", "vs-code")
 	if u.Host != "cp.test:8080" || u.Path != "/host-gui/view" ||
-		q.Get("id") != "work-vm-vs-code" || q.Get("desktop") != "work-vm" ||
-		q.Get("token") != winhost.Token(testPack.Secret, "work-vm-vs-code", `C:\Program Files\Code.exe`, `--folder "a b"`) || q.Get("title") != "Visual Studio Code" ||
+		q.Get("id") != id || q.Get("desktop") != "work-vm" ||
+		q.Get("token") != winhost.Token(testPack.Secret, id, `C:\Program Files\Code.exe`, `--folder "a b"`) || q.Get("title") != "Visual Studio Code" ||
 		q.Get("target") != `C:\Program Files\Code.exe` || q.Get("args") != `--folder "a b"` {
 		t.Fatalf("viewer URL %s carries the wrong values: %v", raw, q)
 	}

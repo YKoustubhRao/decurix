@@ -172,7 +172,17 @@ func TestASessionOpensStreamsTakesInputAndCloses(t *testing.T) {
 func TestTheAppsControlsReachItsSessionNewestOnly(t *testing.T) {
 	hub, phone := link(t)
 
+	// The phone's sends finish before the test ends: the test returns at the newest tree, and a send still running
+	// once the link is closed failed the test after it had completed (CI, 2026-11-07).
+	sent := make(chan struct{})
+	defer func() {
+		select {
+		case <-sent:
+		case <-time.After(5 * time.Second):
+		}
+	}()
 	go func() {
+		defer close(sent)
 		m := phone.recv()
 		phone.send(Message{Op: OpOpened, Session: m.Session, Codec: "h264"})
 		// Two trees before anyone reads: only the second is still of use.
