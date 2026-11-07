@@ -19,6 +19,11 @@
 // guard rail in front of the worker, not a boundary, and it is not grown any
 // more. The boundary is the OS: the gate user, read-only binds and the input
 // broker in docs/gate-boundary.md. A miss found here is fixed there.
+// Five structural fixes were allowed before the final freeze (follow-ups
+// O-1.a). Landed: O-1.a.3, a command is read from the folder its caller runs
+// it in (AssessCommand's dir), and O-1.a.4, the fetch tools' "local only"
+// exemption judges each target by net/url's Hostname (localTarget). Still
+// open: O-1.a.1, O-1.a.2 and O-1.a.5; after them, nothing more changes here.
 package safety
 
 import (
@@ -172,13 +177,16 @@ var programRules = []rule{
 }
 
 // AssessCommand reports whether a shell command needs approval before it
-// runs, or nil if it does not.
-func AssessCommand(command string) *Concern {
+// runs, or nil if it does not. dir is the folder the caller runs it in
+// (its working directory), against which relative paths are read; "" when
+// the caller does not know it, and then only a relative path that climbs
+// out of the folder is read, as climbing from one inside the home.
+func AssessCommand(command, dir string) *Concern {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return nil
 	}
-	if c := wipeConcern(command, 0); c != nil {
+	if c := wipeConcern(command, startDir(dir, homeDir()), 0); c != nil {
 		return c
 	}
 	unquoted := blankQuoted(blankHeredocs(command))

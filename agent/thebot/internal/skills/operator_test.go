@@ -322,7 +322,7 @@ func TestOperatorResumesWithoutTheCommandWhenNotApproved(t *testing.T) {
 // not run; continue without it; if the task needs it, say so in the report. A property of the advice text.
 func TestDeclinedAdviceNeverPointsAroundTheRefusal(t *testing.T) {
 	for _, pending := range []string{"git push origin main", "echo hi | mail -s report boss@example.com", "ls ~/work"} {
-		advice := strings.ToLower(declinedAdvice(pending))
+		advice := strings.ToLower(declinedAdvice(pending, ""))
 		for _, around := range []string{"another way", "script", "instead", "clarify"} {
 			if strings.Contains(advice, around) {
 				t.Errorf("advice for %q points around the refusal (%q): %s", pending, around, advice)
@@ -332,7 +332,7 @@ func TestDeclinedAdviceNeverPointsAroundTheRefusal(t *testing.T) {
 			t.Errorf("advice for %q lacks not-run / continue-without-it: %s", pending, advice)
 		}
 	}
-	if got := declinedAdvice("git push origin main"); !strings.Contains(got, "publishes commits") ||
+	if got := declinedAdvice("git push origin main", ""); !strings.Contains(got, "publishes commits") ||
 		!strings.Contains(got, "say so in your report") {
 		t.Errorf("a flagged command's advice does not say what was refused and to report it: %s", got)
 	}

@@ -7,8 +7,10 @@ package safety
 // where relative paths point. It is still a guard rail in front of the worker, not the approval gate.
 
 import (
+	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -112,8 +114,8 @@ func resolveWord(word, cwd, home string) string {
 		return ""
 	}
 	if cwd == "" && !strings.HasPrefix(p, "/") {
-		// Where a relative path starts is not known here: only one that climbs out of it ("..", "../..") is read,
-		// as climbing from a folder inside the home.
+		// The caller did not say where the command starts: only a relative path that climbs out of it ("..",
+		// "../..") is read, as climbing from a folder inside the home.
 		p = path.Join(home, "work", p)
 	} else if !strings.HasPrefix(p, "/") {
 		p = path.Join(cwd, p)
@@ -173,15 +175,32 @@ var shellNames = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": 
 var assignRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 var dashCRe = regexp.MustCompile(`^-[a-zA-Z]*c[a-zA-Z]*$`)
 
+// startDir is the folder a command starts in, as resolveWord reads it: dir (the caller's working folder) made
+// absolute, or "" when the caller did not say. A relative dir is where the caller's process runs it from.
+func startDir(dir, home string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return ""
+	}
+	if !strings.HasPrefix(dir, "/") && !homeWordRe.MatchString(dir) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return ""
+		}
+		dir = path.Join(filepath.ToSlash(wd), dir)
+	}
+	return resolveWord(dir, "/", home)
+}
+
 // wipeConcern reads a command word by word for a recursive delete of the root, a system folder or a home: rm named
-// by any path, behind any wrapper (env, nohup, timeout, sudo...), inside a "bash -c" script, or on a relative path
-// after a "cd". Here-documents fed to a program other than a shell are its data and are not read.
-func wipeConcern(command string, depth int) *Concern {
+// by any path, behind any wrapper (env, nohup, timeout, sudo...), inside a "bash -c" script, or on a relative path,
+// read from cwd (the folder the command starts in; "" when not known) and every "cd" after it. Here-documents fed to
+// a program other than a shell are its data and are not read.
+func wipeConcern(command, cwd string, depth int) *Concern {
 	if depth > 4 {
 		return &Concern{Reason: "it nests shells too deeply to be checked before it runs"}
 	}
 	home := homeDir()
-	cwd := ""
 	for _, words := range shellCommands(blankHeredocs(command)) {
 		for len(words) > 0 && assignRe.MatchString(words[0]) {
 			words = words[1:]
@@ -210,7 +229,7 @@ func wipeConcern(command string, depth int) *Concern {
 			if shellNames[name] {
 				for j := i + 1; j+1 < len(words); j++ {
 					if dashCRe.MatchString(words[j]) {
-						if c := wipeConcern(words[j+1], depth+1); c != nil {
+						if c := wipeConcern(words[j+1], cwd, depth+1); c != nil {
 							return c
 						}
 						break
@@ -252,8 +271,24 @@ var wgetValueShort = "OoaDPtTwlARU"
 var wgetRouteLong = map[string]bool{"input-file": true, "base": true, "execute": true, "config": true}
 var wgetRouteShort = "iBe"
 
-// localHostRe is a target that is this machine itself: the local name is the whole host.
-var localHostRe = regexp.MustCompile(`(?i)^([a-z][a-z0-9+.-]*://)?([^/@\s]*@)?(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?([/?#].*)?$`)
+// localHosts are the names of this machine itself that a target may give as its host.
+var localHosts = map[string]bool{"localhost": true, "127.0.0.1": true, "0.0.0.0": true, "::1": true}
+
+// localTarget reports whether a curl or wget target is this machine, judged by the host net/url reads from it
+// (Hostname: the authority without its user-info part or port), never by a pattern over the raw text (follow-up
+// O-1.a.4). A target with no scheme is read as http's, as curl and wget read it. A target net/url cannot read as a
+// URL with a host is not local.
+func localTarget(target string) bool {
+	raw := target
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Opaque != "" || u.Host == "" {
+		return false
+	}
+	return localHosts[strings.ToLower(u.Hostname())]
+}
 
 // proxyRe finds a proxy or a config file named in a command or the environment: either can send a request somewhere
 // other than the target it names.
@@ -290,7 +325,7 @@ func onlyLocalTargets(command string) bool {
 				return false
 			}
 			for _, t := range targets {
-				if !localHostRe.MatchString(t) {
+				if !localTarget(t) {
 					return false
 				}
 				seen = true

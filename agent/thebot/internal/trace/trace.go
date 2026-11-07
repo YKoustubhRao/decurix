@@ -5,6 +5,10 @@
 //
 // The trace is decoration: a write that fails is logged and swallowed, and never fails the call or the command.
 // Everything written goes through soul's secrets filter (memory.RedactSecrets) first.
+//
+// Beside it, <taskId>.rules holds "sha256:<hex>" of the operator's rules text the task's latest job was given
+// (Rules): the desktop's run manifest copies it as rules_sha (agent retention.py), so a run record names the rules
+// it ran under. The desktop's retention prunes both files once the run is exported and a few days old.
 package trace
 
 import (
@@ -201,6 +205,8 @@ func (w *Writer) write(tags llm.Tags, line Line) {
 		tf = &taskFile{}
 		if info, err := os.Stat(path); err == nil {
 			tf.size = info.Size() // soul restarted: the file goes on where it was
+			// A file that already ends with the truncated line is stopped for good: a restart never adds another.
+			tf.stopped = endsTruncated(path, tf.size)
 		}
 		w.tasks[tags.Task] = tf
 	}
@@ -219,6 +225,69 @@ func (w *Writer) write(tags llm.Tags, line Line) {
 		return
 	}
 	tf.size += int64(len(b))
+}
+
+// endsTruncated reports whether the file at path, size bytes long, ends with the truncated line.
+func endsTruncated(path string, size int64) bool {
+	n := int64(len(truncatedLine))
+	if size < n {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	tail := make([]byte, n)
+	if _, err := f.ReadAt(tail, size-n); err != nil {
+		return false
+	}
+	return string(tail) == string(truncatedLine)
+}
+
+// Rules notes the operator's rules text a job of ctx's task was given: "sha256:<hex>" of rules, in
+// <dir>/<taskId>.rules (0600), replaced whole. Only the hash is written, never the text. Decoration: a failure is
+// logged and swallowed.
+func (w *Writer) Rules(ctx context.Context, rules string) {
+	if w == nil {
+		return
+	}
+	tags := llm.TagsFrom(ctx)
+	if !llm.TaskIDShape.MatchString(tags.Task) {
+		return
+	}
+	sum := sha256.Sum256([]byte(rules))
+	body := []byte("sha256:" + hex.EncodeToString(sum[:]) + "\n")
+	path := filepath.Join(w.dir, tags.Task+".rules")
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.replaceFile(path, body); err != nil {
+		log.Printf("[soul] trace: could not note the rules of %s: %v (the task goes on without it)", tags.Task, err)
+	}
+}
+
+// replaceFile writes b to path whole: a temporary file in the folder (0600), then renamed over it.
+func (w *Writer) replaceFile(path string, b []byte) error {
+	if err := os.MkdirAll(w.dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(w.dir, ".rules-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, werr := f.Write(b)
+	cerr := f.Close()
+	if werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(tmp, path)
+	}
+	if werr != nil {
+		_ = os.Remove(tmp)
+	}
+	return werr
 }
 
 // appendFile appends b to path, creating the folder (0700) and the file (0600) when needed.
