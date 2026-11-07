@@ -392,8 +392,8 @@ func pathWithin(p, root string) bool {
 
 // hiddenTarget refuses a write into a hidden file or folder of the home (its dot-folders hold the agent's command
 // file, its token, its settings and lessons) - except inside soul's own workspace, which itself lives in one
-// (WORKSPACE_ROOT is ~/.decurix/ai), and there except its own hidden stores (.skills, .memory, .rag). The same rail
-// the Claude harness keeps (claude_guard.py), so the two harnesses agree (review T-15). A guard rail, not a boundary.
+// (WORKSPACE_ROOT is ~/.decurix/ai), and there except its own hidden stores (.skills, .memory, .rag). The Claude
+// harness kept the same rail (review T-15) until it was removed (2026-11-07). A guard rail, not a boundary.
 func hiddenTarget(rc RunContext, p, home string) error {
 	if rc.Workspace != nil {
 		if root := workspace.RealPath(filepath.Clean(rc.Workspace.Root())); pathWithin(p, root) {

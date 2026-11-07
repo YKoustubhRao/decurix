@@ -34,7 +34,7 @@ import (
 // observation cannot adapt to it. A loop can.
 //
 // The loop's rules are Decurix's own Ollama harness's rules, measured there
-// against the same model (decurix_agent/task_runner.py): one marker per
+// against the same model (decurix_agent/task_runner.py, removed 2026-11-07): one marker per
 // reply, one push back on a HELP before anything was tried, a repeated
 // command answered with its own output instead of being run again, and a
 // reply with no marker taken as the answer it almost always is. The

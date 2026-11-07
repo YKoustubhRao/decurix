@@ -20,13 +20,21 @@
 // more. The boundary is the OS: the gate user, read-only binds and the input
 // broker in docs/gate-boundary.md. A miss found here is fixed there.
 // Five structural fixes were allowed before the final freeze (follow-ups
-// O-1.a). Landed: O-1.a.3, a command is read from the folder its caller runs
-// it in (AssessCommand's dir), and O-1.a.4, the fetch tools' "local only"
-// exemption judges each target by net/url's Hostname (localTarget). Still
-// open: O-1.a.1, O-1.a.2 and O-1.a.5; after them, nothing more changes here.
+// O-1.a), and all five have landed (2026-11-07): O-1.a.1, every program rule
+// also reads the base name of each command word past the wrappers
+// (programLines, commandWords); O-1.a.2, the version-control and publish
+// rules read past folder and config options before the subcommand
+// (beforeSubcommand); O-1.a.3, a command is read from the folder its caller
+// runs it in (AssessCommand's dir); O-1.a.4, the "local only" exemption judges
+// each target by net/url's Hostname (localTarget); O-1.a.5, a recursive
+// delete's operand or a fetch target decided at run time waits (deleteConcern,
+// runTimeName, localTarget). The guard is now frozen: new verbs, new
+// power-management verbs, here-document body scanning and a shared Go/Python
+// corpus stay out.
 package safety
 
 import (
+	"path"
 	"regexp"
 	"strings"
 )
@@ -49,6 +57,12 @@ const progAt = `(?im)(^[ \t]*|[;&|][ \t]*|\bsudo[ \t]+|['"][ \t]*|\$\([ \t]*|\x6
 // both matches a command that holds a and b, in either order.
 func both(a, b string) *regexp.Regexp {
 	return regexp.MustCompile(`(?is)(?:` + a + `)[\s\S]*(?:` + b + `)|(?:` + b + `)[\s\S]*(?:` + a + `)`)
+}
+
+// beforeSubcommand matches the options a program may be given before its subcommand: one of valueOptions (folder and
+// config options) with its value, after "=" or as the next word, or any other option standing alone.
+func beforeSubcommand(valueOptions string) string {
+	return `(?:\s+(?:(?:` + valueOptions + `)(?:=|\s+)\S+|--?[A-Za-z][\w.-]*(?:=\S+)?))*`
 }
 
 // postsRe is a program making a request that changes something on a server.
@@ -88,9 +102,12 @@ var commandRules = []rule{
 	{both(`api\.stripe\.com/v1/(charges|payment_intents|payouts|transfers|refunds)|api(-m)?\.paypal\.com/v[12]/(payments|payouts|checkout/orders)|`+
 		`api\.razorpay\.com/v1/(payments|payouts|transfers|refunds|orders)`, postsRe),
 		"it moves money"},
-	{regexp.MustCompile(`(?i)\bgit\s+push\b`),
+	// The folder and config options a program takes before its subcommand ("git -C dir push", "npm --prefix dir
+	// publish", "docker --config dir push") are read past (follow-up O-1.a.2).
+	{regexp.MustCompile(`(?i)\bgit` + beforeSubcommand(`-C|-c|--git-dir|--work-tree|--config-env|--namespace|--exec-path`) + `\s+push\b`),
 		"it publishes commits to a remote repository"},
-	{regexp.MustCompile(`(?i)\b(npm|yarn|pnpm|cargo|twine|gem)\s+publish\b|\bdocker\s+push\b`),
+	{regexp.MustCompile(`(?i)\b(npm|yarn|pnpm|cargo|twine|gem)` + beforeSubcommand(`-C|--prefix|--cwd|--dir|--userconfig|--globalconfig|--config|-w|--workspace`) + `\s+publish\b|` +
+		`\bdocker` + beforeSubcommand(`--config|-c|--context|-H|--host`) + `\s+push\b`),
 		"it publishes a package or image"},
 	{regexp.MustCompile(`(?i)\bgh\s+(pr\s+(create|merge|close)|issue\s+(create|close|comment)|release\s+create|repo\s+(delete|create))\b`),
 		"it acts on GitHub as the user"},
@@ -190,12 +207,15 @@ func AssessCommand(command, dir string) *Concern {
 		return c
 	}
 	unquoted := blankQuoted(blankHeredocs(command))
+	// Each program the command runs, named by its command word's base name past any wrapper (follow-up O-1.a.1): every
+	// rule below is matched on these lines too, so "/usr/bin/x" and "nohup x" are read as x.
+	lines := programLines(command)
 	for _, r := range commandRules {
 		target := command
 		if atCommand[r.reason] {
 			target = unquoted
 		}
-		if !r.re.MatchString(target) {
+		if !r.re.MatchString(target) && !r.re.MatchString(lines) {
 			continue
 		}
 		// Sending to a server on this machine is development, but only when every target of every curl and wget is
@@ -206,18 +226,18 @@ func AssessCommand(command, dir string) *Concern {
 		return &Concern{Reason: r.reason}
 	}
 	for _, r := range programRules {
-		if r.re.MatchString(unquoted) {
+		if r.re.MatchString(unquoted) || r.re.MatchString(lines) {
 			return &Concern{Reason: r.reason}
 		}
 	}
 	// With the here-documents left in: `cat <<EOF | bash` feeds its body to the shell even though cat reads it.
 	for _, r := range indirectRules {
-		if r.re.MatchString(unquoted) || r.re.MatchString(blankQuoted(command)) {
+		if r.re.MatchString(unquoted) || r.re.MatchString(blankQuoted(command)) || r.re.MatchString(lines) {
 			return &Concern{Reason: r.reason}
 		}
 	}
 	for _, r := range failClosedRules {
-		if r.re.MatchString(unquoted) {
+		if r.re.MatchString(unquoted) || r.re.MatchString(lines) {
 			return &Concern{Reason: r.reason}
 		}
 	}
@@ -245,9 +265,17 @@ func blankHeredocs(command string) string {
 			b.WriteString(rest)
 			return b.String()
 		}
-		program := rest[m[2]:m[3]]
-		if i := strings.LastIndex(program, "/"); i >= 0 {
-			program = program[i+1:]
+		// The program the body is fed to: the last simple command before "<<", read by its command word past any
+		// wrapper (follow-up O-1.a.1: "nohup bash <<EOF" feeds bash).
+		shell := false
+		if before := splitCommands(rest[m[2] : m[4]-2]); len(before) > 0 {
+			words := before[len(before)-1].words
+			for len(words) > 0 && assignRe.MatchString(words[0]) {
+				words = words[1:]
+			}
+			for _, at := range commandWords(words) {
+				shell = shell || shellReaders[path.Base(words[at])]
+			}
 		}
 		dash, word := rest[m[4]:m[5]] == "-", rest[m[6]:m[7]]
 		b.WriteString(rest[:m[1]])
@@ -268,7 +296,7 @@ func blankHeredocs(command string) string {
 			}
 			offset += len(line) + 1
 		}
-		if end < 0 || shellReaders[program] {
+		if end < 0 || shell {
 			continue // no end found, or the body is shell: left as it is
 		}
 		rest = rest[end:]
