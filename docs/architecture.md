@@ -65,9 +65,6 @@ internal/desktop   — owns the Docker client; desktop image build
                       AgentRequest (recordings.go: one call to a desktop's :8081 API,
                       how recordings are read off the desktop rather than copied),
                       PersistMemoryFile (docker-exec write into a desktop),
-                      claudecreds.go: PersistClaudeCredentials (PersistMemoryFile's
-                      write-into-a-desktop pattern, for a Claude Code session given
-                      at creation; the login popup and its claudelogin.go are gone),
                       Screenshot (screenshot.go: a minimal RFB client that reads
                       a desktop's framebuffer straight off Xvnc:5901 and returns
                       a cached JPEG thumbnail — what the dashboard cards show),
@@ -156,6 +153,24 @@ internal/idlepause — Checker.Run: a ticker (every 2 min) that pauses a desktop
                       opts out, and it never does more than the Pause/Stop a human's
                       own button does; Busy is asked again under LockDesktop.
                       FastPauseAfter checks a desktop again soon after its task ends.
+                      room.go (lightweight L2): a desktop paused for StopAfter
+                      (DECURIX_IDLE_STOP_AFTER_MINUTES, 30) is stopped; and MakeRoom,
+                      desktop.Manager's RoomMaker, runs before every start (not a wake:
+                      a paused desktop still holds its memory) and stops the longest-idle
+                      paused desktops, only as many as needed, until the Docker host's
+                      MemAvailable covers the start (min(its limit, 700 MB)) plus a
+                      512 MB floor; with nothing to stop it starts one that fits without
+                      the floor and refuses the rest (desktop.NoRoomError, "not enough
+                      memory: N desktops are busy"). Starts let through count 90 s
+                      against free memory, so two at once do not share it. Never stopped:
+                      not paused, Busy (task, ticket, open question or approval), a
+                      practice/eval/readiness desktop, or started, woken, looked at before
+                      its pause or worked on in the last 10 min (a paused desktop's frozen
+                      thumbnail does not count: opening its screen wakes it). Each stop is
+                      under the lifecycle lock with Busy asked again; MakeRoom only
+                      TryLockDesktop's, so a request holding the lock wins. The stopped
+                      desktop's Desktop.rest_reason ("idle" | "memory"), rest_note and
+                      rested_at say why until it runs again (in memory only).
                       gone.go: the live tasks of a desktop whose container is gone are
                       closed at start and on each sweep (never the control plane's own
                       practice/readiness workers on a sweep)
@@ -164,7 +179,13 @@ internal/resourcemon — Monitor.Run: every 5 s, a running desktop's CPU and mem
                       DECURIX_RESOURCE_MEM_THRESHOLD (80%); above either, an alert with a
                       predicted size, shown on the screen page and the dashboard
                       (/api/desktops/resource-alerts|increase|dismiss|report); Increase
-                      applies it and cools that desktop down for 5 min
+                      applies it and cools that desktop down for 5 min.
+                      hostmem.go: HostMemory.AvailableMB, the Docker host's MemAvailable
+                      (what idlepause.MakeRoom measures), read from the control plane's own
+                      /proc/meminfo and trusted only when its MemTotal is within 5% of the
+                      daemon's (desktop.Manager.HostMemTotalMB): true in a container on the
+                      Docker host or a binary on Linux; elsewhere (a binary on macOS) it is
+                      "not known" and desktops start without making room
 internal/lanaccess — Store: the rotating access code gating the second,
                       LAN-facing listener main.go starts alongside the
                       primary one (see "Two listeners, one process, one set of
@@ -204,15 +225,15 @@ internal/llm       — the hosted models a desktop's brain can be: Claude (claud
                       /api/llm/settings{,/forget} humansOnly. Resolve allows only
                       "default"/"fast". /api/llm (both listeners) is the status, never a key.
                       Depends on sqlitedb and sealed
-internal/outbox    — emails agents drafted (the azure harness's draft_email, POST /api/outbox
+internal/outbox    — emails agents drafted (`office email`, POST /api/outbox
                       from a desktop), waiting for a person: the Triggers page's Outbox lists
                       them with their attachments, and only a person's Send (humansOnly)
                       hands one to mailtrigger.Store.SendMail. Claim (draft -> sending) makes
                       a double click send once; a send interrupted by a restart is marked
                       failed, never resent on its own. Depends on nothing internal but sqlitedb
 internal/sealed    — AES-256-GCM for the few secrets kept in SQLite, key in a file of its
-                      own in the data dir (mailtrigger's mail.key, cftunnel's cloudflare.key, llm's llm.key,
-                      claudeauth's claude-session.key)
+                      own in the data dir (mailtrigger's mail.key, cftunnel's cloudflare.key, llm's llm.key;
+                      an old claude-session.key is left unread since the Claude login went, 2026-11-07)
 internal/purge     — purges a leaked secret by value from the never-delete stores (blobs,
                       llm_calls, judgements, task records, chat, concierge, query notes, run
                       bundles): each copy becomes `[purged]` in place through a small
@@ -245,14 +266,6 @@ internal/phoneagent — the phone's end, run by `decurix --phone` in Termux on a
                       against the release's SHA-256): list_apps for the app list, and per opened
                       app one server with new_display=WxH/dpi plus a START_APP control message.
                       Depends on nothing internal but wsconn and phonehost (the protocol)
-internal/claudeauth — the one shared Claude Code login every claude-harness
-                      desktop is seeded from (in place of an ANTHROPIC_API_KEY):
-                      a single-row SQLite table holding the raw
-                      ~/.claude/.credentials.json content plus the account's
-                      email, so it survives a control-plane restart, build.sh
-                      leaves it alone, and rebuild.sh wipes it for free as part
-                      of wiping decurix-data — no script changes needed for
-                      either half of that
 internal/schedule  — recurring or one-time-future requests set up from the
                       requests page (not the chat): Store persists each one
                       (desktop, request text, either a standard 5-field cron
@@ -348,8 +361,11 @@ internal/httpapi   — the control plane's HTTP handlers and route registration 
                       it, and the paired devices and their revoke - never served
                       back over the listener that code itself gates. The Claude
                       login API (/api/claude-auth/*) and desktop's claudelogin.go
-                      were deleted on 2026-11-07: no page called them.
-                      claudeauth.Store still holds a session made before, sealed.
+                      were deleted on 2026-11-07: no page called them. The claude
+                      harness and internal/claudeauth went the same day; the
+                      claude_session table keeps its migration steps
+                      (backup.go's MigrateLegacyClaudeSession, whose appended
+                      step empties it) and the backup still scrubs it.
                       hostgui.go: the host-gui API
                       (/api/host-gui/start|ws|stop and the /host-gui/view page; the ws route uses
                       internal/wsconn, hand-written RFC 6455 - no library, to keep the binary static):
@@ -389,7 +405,7 @@ web/templates/     — theme.html (shared design tokens + icon sprite + top bar 
                       "sprite" / "topbar" / "chrome-js"; parsed alongside each page
                       by webui.templatePaths), dashboard.html, index.html,
                       requests.html, desktop.html (the per-desktop chat behind the
-                      dashboard's Chat button — one chat for every harness, and
+                      dashboard's Chat button — one chat for every desktop, and
                       nothing else on the page; the screen opens in its own tab),
                       screen.html (a desktop's screen, /desktop/<id>/: see "The screen is
                       the control plane's page" below),
@@ -410,36 +426,37 @@ web/templates/     — theme.html (shared design tokens + icon sprite + top bar 
 desktop container (decurix-desktop:{basic,developer,ai})
   ├─ base image: accetto/ubuntu-vnc-xfce-chromium-g3 (XFCE + VNC); its Chromium 112 is replaced by
   │    Google Chrome stable behind /usr/bin/chromium-browser (see "The browser is Google Chrome" below)
+  ├─ base startup run with --skip-novnc: Xvnc on 5901 and no websockify (agent/decurix-entrypoint.sh;
+  │    DECURIX_DESKTOP_NOVNC=1 at creation starts it on 6901 as before)
   ├─ XDG autostart (agent/decurix-agent.desktop) → agent/start_agent_terminal.sh
   │    → /opt/vm_server.py (detached background process, no visible terminal); it
   │    also reinstalls agent/chromium-browser.init as ~/.chromium-browser.init (the
   │    browser's launch flags) and clears core dumps Chromium left behind
   └─ decurix_agent/ (Python package, imported by vm_server.py; :8081 inside the container)
-        ├─ config.py       — env vars (incl. AGENT_HARNESS), /home/headless/.decurix/
+        ├─ config.py       — env vars (AGENT_HARNESS kept as CREATED_HARNESS), /home/headless/.decurix/
         │                     {command,querytext,final,memory} dirs and /home/headless/work
         ├─ state.py        — shared mutable state (current_task, waiting_for_query, ...) as
         │                     plain module attributes; every other module does
         │                     `from decurix_agent import state` and reads/writes
         │                     state.current_task etc. (module singleton = shared globals)
         ├─ identity.py     — get_identity_context(engine): who this desktop is (name, ID,
-        │                     user, work dir), as facts for the system prompt. Shared by all
-        │                     three harnesses - without it "what's your desktop name?" was
+        │                     user, work dir), as facts for the standing context - without
+        │                     it "what's your desktop name?" was
         │                     unanswerable and came back as a query
-        ├─ memory_context.py — get_memory_context: reads ~/.decurix/memory/*.txt; shared
-        │                     by all three harnesses below
+        ├─ memory_context.py — get_memory_context: reads ~/.decurix/memory/*.txt
         ├─ messaging.py    — save_request (intake), send_query/ask_for_query/write_final_reply
         │                     and backend_failure_note (turns a raw engine error into a note
         │                     that says what to do about it)
         │                     (POSTs to control plane /api/querytext, with kind+reply so the
-        │                     chat needn't re-parse the note) — shared by all three harnesses
+        │                     chat needn't re-parse the note)
         ├─ readiness.py    — wait_for_http_ok(url, label): the one "is it up yet" probe,
-        │                     shared by every harness that has a backend to wait for. Never
+        │                     what the engine's wait_for_backend uses. Never
         │                     raises and never gives up - "not up yet" is a state to sit in
         ├─ task_context.py — the control plane's task ID for the request being worked on:
         │                     carried in the command file's name (<stem>.t<16 hex>.txt), set
         │                     by watchers.py, and written to /tmp/decurix-current-task so the
-        │                     `gui` command and the MCP server (other processes) report it too
-        ├─ usage.py        — per-task model/tokens/cost totals each harness adds to, sent by
+        │                     `gui` command (another process) reports it too
+        ├─ usage.py        — per-task model/tokens/cost totals the engine adds to, sent by
         │                     messaging.send_query with every reply (llm_client.chat adds every hosted
         │                     call itself; TheBot's own calls come back with each soul job)
         ├─ playbooks.py    — what a worker keeps from a task it worked out itself, once its result was
@@ -452,34 +469,19 @@ desktop container (decurix-desktop:{basic,developer,ai})
         ├─ progress.py     — emit(): POSTs one live activity line to the control plane's
         │                     /api/agent/events, on a single background sender thread with a
         │                     bounded queue. Best-effort and harness-agnostic: this is what
-        │                     makes the chat's step-by-step view identical for all three
-        ├─ harness.py      — the ONLY place that branches on AGENT_HARNESS; re-exports
-        │                     perform_task/continue_after_query from whichever harness below
-        │                     is active, with identical signatures, plus wait_for_backend()
-        │                     which blocks until that harness's engine is reachable and then
-        │                     sets state.backend_ready - the flag watchers.py gates on
-        ├─ ollama_client.py + parser.py + commands.py + task_runner.py
-        │                   — the "ollama" harness: hand-rolled COMMAND:/DONE:/HELP: loop
-        │                     driving a local Ollama model
-        ├─ claude_harness.py
-        │                   — the "claude" harness: shells out to the `claude` CLI in
-        │                     non-interactive mode per task; Claude Code runs its own
-        │                     agentic loop internally, so this just streams its events to
-        │                     progress.emit and maps the final "result" event to
-        │                     write_final_reply/ask_for_query, and tracks a session_id
-        │                     (module-private state) to --resume across
-        │                     ask_for_query ⇄ human-response round trips
-        ├─ azure_harness.py + llm_client.py
-        │                   — the "azure" harness ("Office (GPT)" in the create dialog): a
-        │                     tool-calling loop on the hosted model, reached through the
-        │                     control plane (llm_client -> /api/llm/chat). Tools: shell (the
-        │                     dangerous ones wait for a yes), the MCP server's own screen /
-        │                     recording / skill tools (so the approval gate and the audit trail
-        │                     apply as for Claude), tools/office.py (read_document, read/create/
-        │                     update_workbook, combine_pdf), draft_email (to the Outbox - it can
-        │                     never send), ask_human, finish. A pause keeps the conversation in
-        │                     module state; continue_after_query answers the paused tool call.
-        │                     llm_client also answers every harness's ask_model when DECURIX_LLM=1
+        │                     makes the chat's step-by-step view the same for every task kind
+        ├─ harness.py      — the ONLY place that knows the engine (TheBot since the ollama,
+        │                     claude and azure harnesses were removed, 2026-11-07; a desktop
+        │                     created with one runs TheBot and logs so); re-exports
+        │                     perform_task/continue_after_query from thebot_harness, plus
+        │                     wait_for_backend() which blocks until the engine is reachable
+        │                     and then sets state.backend_ready - the flag watchers.py gates on
+        ├─ ollama_client.py — the local model: kept resident (ensure_model_resident) and
+        │                     asked one-off questions (ask_once, harness.ask_model's fallback)
+        ├─ llm_client.py   — the control plane's hosted model (/api/llm/chat): answers
+        │                     harness.ask_model and the agent's own judging calls when set up
+        ├─ commands.py     — run_command and dangerous_reason, the shell check long_task and
+        │                     workflow_task hold commands with (gated_command: the gate's yes)
         ├─ study.py        — /learn with a hosted model: the model studies the demonstration (steps, notes,
         │                     key screens) into an `understanding`, asks only what it could not work out, one
         │                     at a time, folds each answer in (see "A worker learns with the brain" below)
@@ -504,7 +506,7 @@ desktop container (decurix-desktop:{basic,developer,ai})
         │                   — `/workflow`: durable multi-stage runs whose stages are ordinary engine or
         │                     taught-skill tasks, advanced only by artifact checks (bench/workflows/README.md)
         ├─ thebot_harness.py
-        │                   — the "thebot" harness: TheBot's `soul` binary (agent/thebot/,
+        │                   — the engine: TheBot's `soul` binary (agent/thebot/,
         │                     its own Go module, built into all three images and started as a
         │                     daemon by start_agent_terminal.sh) is a persistent HTTP server
         │                     with its own atomizer/scheduler/skills loop. This submits the
@@ -514,7 +516,7 @@ desktop container (decurix-desktop:{basic,developer,ai})
         │                     progress.emit; polling is the fallback), and maps the job's
         │                     structured `outcome` to write_final_reply/ask_for_query. A
         │                     reply goes back with reply=true, which resumes the paused job
-        ├─ computer/       — computer use: the ONE action layer all three engines share to see
+        ├─ computer/       — computer use: the ONE action layer the engine and the replays use to see
         │                     and work the screen (see "Computer use" below). core.py has
         │                     observe/act/verify/open; screen.py (python3-xlib: framebuffer ->
         │                     PNG, window list), atspi.py (GTK/XFCE/LibreOffice widgets),
@@ -522,8 +524,7 @@ desktop container (decurix-desktop:{basic,developer,ai})
         │                     (xdotool), elements.py (one element shape, stable refs, the text
         │                     rendering), approval.py (the gate + pending/grant file store),
         │                     audit.py (every action into recordings + progress.emit_action),
-        │                     cli.py (the `gui` shell command, agent/gui -> /usr/local/bin/gui),
-        │                     mcp_server.py (the same as MCP tools for Claude Code), and the
+        │                     cli.py (the `gui` shell command, agent/gui -> /usr/local/bin/gui), and the
         │                     recordings (see "Recordings" below): recording.py (the store),
         │                     privacy.py (what is never kept), volatility.py (text a replay
         │                     must not check), processing.py (raw input -> actions),
@@ -552,7 +553,7 @@ desktop container (decurix-desktop:{basic,developer,ai})
         │                     harness, reports as engines "learn" / "skill", pauses through
         │                     state.paused_skill the way replay_task uses state.paused_replay
         │                     (computer/skill_engine.py is the same for an *engine*: gui skills /
-        │                     gui skill / gui do and the MCP tools skills / run_skill - it refuses
+        │                     gui skill / gui do - it refuses
         │                     and says what is missing where skill_task would ask a person)
         ├─ ask_task.py     — `chatgpt "where is x"`, `ask chatgpt ...`, `google x`, `search youtube
         │                     for x`, `wiki x`: opens the service in Chromium with the question in
@@ -606,7 +607,7 @@ Desktops created before these changes have no agent token and the old screen pas
 
 The scripts also discover this machine's own LAN-facing IP (`ip route get 1.1.1.1`'s `src` field on Linux, `scripts/linux/lib/lan-address.sh`, which under WSL2 forwards Windows' own LAN address on the gated port instead, unless `DECURIX_WSL_LAN_FORWARD=0`; a UDP connect to a public IP on macOS and Windows, the same trick — no packet is sent) and `POST /api/tunnel` `lan_url` (the gated port) built from it — stored on the same `tunnel.Store` as the gated tunnel's `lan_tunnel_url` and shown together in the Mobile menu (tunnel link first since it works off-network), so a phone on the same network can skip the tunnel round-trip entirely. They no longer report `admin_url` (the primary listener is not reachable from the LAN) or `url` (nothing tunnels it); `tunnelHandler` and the store still accept both, only so an older script's report does not error, and the Mobile menu shows them under a clearly-labelled unauthenticated heading if one arrives. `httpapi.tunnelHandler`'s POST only ever sets the fields present in that call's body, since the LAN report (once, right after startup) and each tunnel-URL report (once per line the `cloudflared` process prints) are separate calls that must never blank out each other's fields.
 
-Go package dependency direction (no cycles; checked against the imports on 2026-11-07): `httpapi` → nearly every internal package (the stores, `desktop`, `ollama`, `llm`, `llmrec`, `runs`, `practice`, `eval`, `concierge`, `dag`, `idlepause`, `resourcemon`, `keepawake`, `lanaccess`, `devices`, `tunnel`, `cftunnel`, `phonehost`, `wsconn`, `winhost`, `withhold`, `webui`, and the workforce packages `skillhub`, `knowledge`, `handoff`, `access`, `workqueue`: docs/skillhub.md, docs/handoff.md, docs/access.md, docs/workqueue.md); `webui` → `dag`, `desktop`, `memory`, `querynotes`, `tasks`, `web`; `desktop` → `ollama` (`DesktopURL`/`DesktopModel`, the model a new desktop is given), `winhost` (`Token`, `ExecToken`, `OpenToken`, `Target`, `Manager`), `sqlitedb` (`DataDir`, `InstanceID`), `withhold` (the screen passwords it holds), `qualification` (readiness case files), `decurix` (the root package, for the embedded build context); `idlepause` → `desktop` (the `desktop.Desktop` struct and the `DesktopLister` interface `*desktop.Manager` satisfies, so it can be tested with a fake instead of a real Docker client), `tasks` (`gone.go`: `Worker`, `CloseOpen`); `resourcemon` → `desktop` (through its own `DesktopManager` interface); `schedule` → `sqlitedb`, `tasks` (the `Origin` constants only) - its `Runner` reaches `httpapi` only through the `Submitter` interface `*httpapi.Server` satisfies (`Submit`), the same narrowing `idlepause` uses for `desktop`; `suggest` → `desktop` (the `desktop.Desktop` struct), `memory`, `sqlitedb`, with the embedder (`ollama.Embed`) and the tasks store handed in by `main` through interfaces; `claudeauth` → `sqlitedb`, `sealed`; `stepimages`, `devices`, `outbox`, `skillhub`, `knowledge`, `access` → `sqlitedb` only; `querynotes`, `memory`, `conversation`, `tasks` → `sqlitedb`, `withhold`; `workqueue`, `handoff` → `sqlitedb`, `tasks` (`workqueue` reads the tasks component's `executions` table for spend; `handoff` uses status constants only) - each reaches desktops, task submission and worker lookup only through interfaces `httpapi` backs (`internal/httpapi/handoffs.go`); `mailtrigger` → `sqlitedb`, `sealed`, `schedule`, `tasks`; `cftunnel`, `llm` → `sqlitedb`, `sealed`; `purge` → the stores it rewrites and `sqlitedb`; `codemap` → nothing internal; `practice` → `desktop`, `llm`, `llmrec`, `qualification`, `sqlitedb`, `tasks`, `withhold` (Simulate: docs/simulation.md); `phonehost` → `wsconn`; `phoneagent` → `wsconn`, `phonehost`; `ollama`, `sqlitedb`, `sealed`, `blobstore`, `wsconn`, `tunnel`, `lanaccess`, `winhost`, `keepawake`, `web`, `decurix` depend on nothing internal. Note that `desktop` does *not* depend on `claudeauth`: `BeginProvisioning` takes a Claude session's credentials as plain bytes (`PersistClaudeCredentials`, `claudecreds.go`), and `httpapi.createDesktopHandler` passes none today, since TheBot is every new desktop's harness.
+Go package dependency direction (no cycles; checked against the imports on 2026-11-07): `httpapi` → nearly every internal package (the stores, `desktop`, `ollama`, `llm`, `llmrec`, `runs`, `practice`, `eval`, `concierge`, `dag`, `idlepause`, `resourcemon`, `keepawake`, `lanaccess`, `devices`, `tunnel`, `cftunnel`, `phonehost`, `wsconn`, `winhost`, `withhold`, `webui`, and the workforce packages `skillhub`, `knowledge`, `handoff`, `access`, `workqueue`: docs/skillhub.md, docs/handoff.md, docs/access.md, docs/workqueue.md); `webui` → `dag`, `desktop`, `memory`, `querynotes`, `tasks`, `web`; `desktop` → `ollama` (`DesktopURL`/`DesktopModel`, the model a new desktop is given), `winhost` (`Token`, `ExecToken`, `OpenToken`, `Target`, `Manager`), `sqlitedb` (`DataDir`, `InstanceID`), `withhold` (the screen passwords it holds), `qualification` (readiness case files), `decurix` (the root package, for the embedded build context); `idlepause` → `desktop` (the `desktop.Desktop` struct and the `DesktopLister` interface `*desktop.Manager` satisfies, so it can be tested with a fake instead of a real Docker client), `tasks` (`gone.go`: `Worker`, `CloseOpen`); `resourcemon` → `desktop` (through its own `DesktopManager` interface); `schedule` → `sqlitedb`, `tasks` (the `Origin` constants only) - its `Runner` reaches `httpapi` only through the `Submitter` interface `*httpapi.Server` satisfies (`Submit`), the same narrowing `idlepause` uses for `desktop`; `suggest` → `desktop` (the `desktop.Desktop` struct), `memory`, `sqlitedb`, with the embedder (`ollama.Embed`) and the tasks store handed in by `main` through interfaces; `stepimages`, `devices`, `outbox`, `skillhub`, `knowledge`, `access` → `sqlitedb` only; `querynotes`, `memory`, `conversation`, `tasks` → `sqlitedb`, `withhold`; `workqueue`, `handoff` → `sqlitedb`, `tasks` (`workqueue` reads the tasks component's `executions` table for spend; `handoff` uses status constants only) - each reaches desktops, task submission and worker lookup only through interfaces `httpapi` backs (`internal/httpapi/handoffs.go`); `mailtrigger` → `sqlitedb`, `sealed`, `schedule`, `tasks`; `cftunnel`, `llm` → `sqlitedb`, `sealed`; `purge` → the stores it rewrites and `sqlitedb`; `codemap` → nothing internal; `practice` → `desktop`, `llm`, `llmrec`, `qualification`, `sqlitedb`, `tasks`, `withhold` (Simulate: docs/simulation.md); `phonehost` → `wsconn`; `phoneagent` → `wsconn`, `phonehost`; `ollama`, `sqlitedb`, `sealed`, `blobstore`, `wsconn`, `tunnel`, `lanaccess`, `winhost`, `keepawake`, `web`, `decurix` depend on nothing internal. `BeginProvisioning` takes no harness: every new desktop runs TheBot (`HarnessTheBot`).
 
 One desktop image is built, `docker/desktop.basic.Dockerfile` (`decurix-desktop:basic`), plus the shared tools image `docker/tools.Dockerfile` (`internal/desktop/images.go`). `BuildImages` also tags the basic image as `decurix-desktop:developer` and `decurix-desktop:ai`, so a desktop created with one of those older profile names still starts on the same image. The separate developer and ai Dockerfiles were never built and have been removed.
 
@@ -656,6 +657,8 @@ Docker's `CopyFromContainer`/`CopyToContainer` run as root and resolve parent fo
 **Volumes.** A desktop mounts its home (`desktop_<id>_home`), its own package cache (`desktop_<id>_cache` at `/var/cache/decurix`, where `PIP_CACHE_DIR`, `NPM_CONFIG_CACHE`, `GOMODCACHE` and `HF_HOME` live), the tools (`decurix-tools`, read-only) and the shared model cache (`decurix-models`, read-only, at `/var/cache/decurix-models`, named in `DECURIX_SHARED_MODELS`). No writable volume is shared between desktops (B-02, owner decision O-2). Home and cache volumes carry `decurix=true`, `decurix.desktop=<id>` and `decurix.creation=<id of the creation>`. A creation refuses a home volume another creation made, and reuses only an unlabelled one (made before 2026-11-03). A creation that fails removes only what it made.
 
 **The image.** Desktops run with `no-new-privileges`, and the image strips every setuid and setgid bit, so nothing in the desktop can gain privileges (Chromium uses its namespace sandbox, not the setuid helper). The seccomp profile allows ptrace (upstream's default on kernels 4.8 and later). Xvnc is told `-nolisten tcp` through TigerVNC's mandatory config (`/etc/tigervnc/vncserver-config-mandatory`), so nothing on the Docker network can reach X. The agent terminal no longer runs `xhost +`: X access control stays on, with only the worker's local user allowed. KSM is off unless `DECURIX_ENABLE_KSM=1`, because it shares memory pages across desktops that do not trust each other. All of this is fixed at creation: **recreate desktops** after rebuilding the image. Check a running one with `DECURIX_X11_LIVE_DESKTOP=desktop_<id> go test ./internal/desktop -run XServerHasNoTCPLive -v`.
+
+**What a desktop does not run (2026-11-07, docs/lightweight.md).** No websockify: the control plane bridges the screen's WebSocket to Xvnc on 5901 itself (`internal/httpapi/screenbridge.go`), so `agent/decurix-entrypoint.sh` hands the base image's `startup.sh` `--skip-novnc` (VNC and the startup's wait on it are unchanged; about 22 MB a desktop). A desktop created with `DECURIX_DESKTOP_NOVNC=1` in its environment starts websockify on 6901 as before (the `scripts/*/test-vm` desktops, reached on 6901 directly, set it), and only such a desktop serves noVNC's own `/desktop/<id>/vnc.html`. `DECURIX_VNC_BRIDGE=0` on the control plane still proxies the stream to a desktop's websockify when one answers, and bridges it anyway, saying so in the log, when none does. Creation waits for Xvnc (5901), not 6901 (`Manager.WaitForGUIReady`). Session services a worker's desktop has no use for are switched off by a `Hidden=true` entry of the same name in `~/.config/autostart` (`agent/decurix-autostart-off.desktop`, harmless where the package is absent): xfce4-notifyd (D-Bus starts it on the first notification), xfce4-power-manager, light-locker, xscreensaver, xfce4-screensaver (a lock screen on a desktop whose user has no password locks everyone out) and update-notifier. at-spi (what `gui` reads), the clipboard manager, gnome-keyring (Chrome's cookie key), xdg-user-dirs, Thunar's daemon and tumbler stay. Chrome's Memory Saver is on by policy at its moderate level (`HighEfficiencyModeEnabled`, `MemorySaverModeSavings: 0` in `agent/chrome-policies.json`): a background tab left long enough is discarded and reloads when opened; the tab on screen never is. All of it is image state: new or recreated desktops only.
 
 **Lifecycle.** `Manager.LockDesktop(id)` is the per-desktop lifecycle lock; the idle sweep re-checks Busy under it. `DECURIX_IDLE_ACTION` other than exactly `stop` pauses. Docker's one-shot stats carry no previous CPU sample, so a CPU % needs the previous reading.
 

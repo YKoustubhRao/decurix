@@ -13,13 +13,14 @@ This file holds only what must be in your head for every change. The detail live
 | Area | Read |
 |---|---|
 | Go packages, desktop container, the two listeners, package dependency direction | [docs/architecture.md](docs/architecture.md) |
-| The three agent harnesses (TheBot, Claude, Ollama) and how TheBot adapts to its brain | [docs/harnesses.md](docs/harnesses.md) |
+| TheBot, the one agent harness, its brains (Ollama, Claude, Azure, OpenAI-compatible) and how it adapts to each | [docs/harnesses.md](docs/harnesses.md) |
 | Chat page, task records, query rail | [docs/chat.md](docs/chat.md) |
 | `gui`, observe/act/verify, approval gate | [docs/computer-use.md](docs/computer-use.md) |
 | Recordings, replay, visual anchors, imports | [docs/recordings.md](docs/recordings.md) |
 | Skills: learn, ask, run | [docs/skills.md](docs/skills.md) |
 | Maturity, final check, "no unseen success", token savings | [docs/learning-and-verification.md](docs/learning-and-verification.md) |
 | Healing ladder, experience | [docs/healing.md](docs/healing.md) |
+| Making Decurix light: what a desktop and a `gui` command cost, the gui daemon, memory given back from idle desktops, measured before/after | [docs/lightweight.md](docs/lightweight.md) |
 | What a run costs, where the tokens go, why a worker gets cheaper with practice (cache, turns, replay per document) | [docs/token-economy.md](docs/token-economy.md) |
 | Long requests: planned runs, ledger, amendments, parked questions, cross-check | [docs/long-requests.md](docs/long-requests.md) |
 | Build, run, env vars, `--cli`, releases | [docs/running.md](docs/running.md) |

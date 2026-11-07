@@ -46,7 +46,7 @@ gate (`check`), never grant.
 
 ## What stays a filter (and is said so)
 
-`claude_guard.py` stays as a guard rail for the Claude harness. It is not part of the boundary.
+`claude_guard.py` was a guard rail for the Claude harness, removed with it on 2026-11-07. It was never part of the boundary.
 
 ## Questions settled while building
 
@@ -160,7 +160,10 @@ the worker's note.
 Guard rails, not the boundary, but each closed a hole the recheck found:
 - **The shell checks read words, not text.** `commands._rm_wipe_reason` (agent) and `safety.wipeConcern` (TheBot) split
   a command as the shell does, unquote it, follow `sh -c`, `env -S` and shell-fed here-documents, track `cd`, and resolve
-  each path rm is given. The Python side also steps over wrappers (sudo, env, nohup, timeout N, xargs...) to the program.
+  each path rm is given. The Python side also steps over wrappers (sudo, env, nohup, timeout N, xargs...) to the program;
+  TheBot's program rules read each command word's base name past the wrappers `wipeConcern`'s examples name (O-1.a.1),
+  read past the folder and config options before a git, publish or docker subcommand (O-1.a.2), and a recursive
+  delete's path or a request's target decided at run time waits for a person (O-1.a.5, all 2026-11-07).
 - **A request is local only when every target is.** `safety.onlyLocalTargets` reads each curl and wget's targets, and a
   proxy, `--resolve`, `--connect-to`, `-K`, a proxy variable or a curl/wget rc file in the home means not local.
   Each target is judged by the host `net/url` reads from it (`Hostname()`), not a pattern over its text (O-1.a.4,
@@ -290,7 +293,7 @@ phone or the tunnel cannot drive the worker through soul.
   characters is refused. A desktop cannot call it, so a worker cannot erase what it was seen doing.
   (docs/trajectory.md, "Purging a leaked secret".)
 
-## Next: the input broker (proposed, not built)
+## Next: the input broker (partly built, behind a switch that is off)
 
 The gate decides whether a yes exists; nothing yet stands between the worker and the screen. The worker's Linux user
 owns everything that can act on the screen or as the person, so each of these is a click on Pay without asking:
@@ -318,12 +321,82 @@ Order: (1) a probe row in `boundary.sh` for each of the six paths, failing today
 cookie, with the desktop's apps checked live; (3) the broker and `gui` through it; (4) CDP by pipe and the
 accessibility bus under the screen user; (5) the agent's own user; every row passes.
 
+What a reading of the code found (2026-11-07), which shapes the build:
+- **Not only `gui` reaches the screen.** The agent process itself (`skill_task`, `replay_task`, `record_task`,
+  `ask_task`, `host_documents`, `ledger_checks`, the browser warm in `watchers`) calls `computer.core`, `cdp` and
+  `recording` in-process, as the worker. With an untrusted cookie and no CDP these stop working, so they must become
+  clients of the broker too; routing only `gui` is not enough.
+- **Only the browser may be launched as the screen user.** Every app launch goes through `session.launch`. A program
+  the broker opened would run as `decurixscreen`, and a terminal opened that way would be a way round the gate (typing
+  into a terminal is not a gated action). The broker starts the browser only; any other app is started by a helper on
+  the worker's side that is given the program and its arguments, never the screen side's environment.
+- **Which processes are the screen user's** (to be checked live): Xvnc, the window manager and the browser; the panel,
+  the desktop, the terminal and office apps run as the worker with the untrusted cookie. The worker's own apps and its
+  own accessibility bus are not part of the boundary. The XFCE autostart that starts the agent is then started directly
+  as the worker.
+- **CDP needs a relay, not a port.** `cdp.py` uses `/json/version`, `/json/list`, `PUT /json/new` and per-page
+  WebSockets; a relay serving those over a Unix socket only the screen user reaches is contained. A loopback TCP port
+  cannot be limited to one uid without NET_ADMIN.
+- **The VNC password** stays in the container's config for the control plane's readers (`screenshot.go`, `viewer.go`,
+  `HoldScreenPasswords`); the entrypoint moves it into a file only the screen user reads before anything else starts.
+  A `docker exec` without `env -i` still inherits it.
+- **In broker mode `gui` never falls back in-process**: a refused command fails with an error.
+
+Build order from here: the creation switch (`DECURIX_SCREEN_BROKER` on the control plane gives a desktop
+`DECURIX_SCREEN_USER=1`); the probe rows; the daemon's peer-uid check and the screen/worker split in the entrypoint;
+the CDP relay; the worker-side launch helper; then the agent's in-process screen paths as broker clients.
+
+Built so far (2026-11-07, behind `DECURIX_SCREEN_BROKER`, off; code and unit tests, no live run yet):
+- **The creation switch.** `DECURIX_SCREEN_BROKER=1` on the control plane gives each new desktop
+  `DECURIX_SCREEN_USER=1` (`internal/desktop/screenbroker.go`). The image has the `decurixscreen` system user (no
+  login shell, no password, no sudo); the entrypoint makes `/run/decurix-screen` (that user's, 0711) in broker mode
+  only. Nothing else in the entrypoint changed.
+- **The broker's socket identity** (`computer/daemon.py`, `gui_client.py`, `broker.py`). The gui daemon serves as the
+  broker when the switch is on and its uid is not the worker's (`DECURIX_SCREEN_WORKER_UID`, default 1001). A daemon
+  in the worker's own uid on such a desktop exits 3. The socket is `/run/decurix-screen/gui.sock`, mode 0666. Every
+  caller is checked by SO_PEERCRED, and only the worker's uid is served. The client trusts it only when the folder is
+  the screen user's and not writable by others, and the peer is that user. The child takes the caller's argv, stdio,
+  umask and niceness, and only those variables of the caller that the package's code reads (scanned from every
+  module's source). Of those it refuses any that change the interpreter, the loader, identity, session, a path, an
+  address, the gate, the stage or the caller name (`Broker.caller_may_set`). The caller's folder is never put on
+  `sys.path`. A screenshot a command writes for its caller (`observe --screenshot`, `DECURIX_GUI_SCREENSHOT`,
+  `skill --look`) goes back as bytes over the connection and the client writes it as the worker
+  (`broker.deliver_to_caller`, `gui_client.save_output`), and only at a path the caller named. The client never
+  runs a command in-process; a broker that is missing, refusing or untrusted is "cannot reach the screen", exit 1.
+- **The DevTools relay** (`computer/cdp_relay.py`). It starts the browser with `--remote-debugging-pipe`
+  (`agent/chromium-browser` drops the port when `DECURIX_BROWSER_DEBUG=pipe`). It serves `/json/version`,
+  `/json/list`, `PUT /json/new`, `/json/activate|close` and per-page WebSockets on
+  `/run/decurix-screen/cdp/cdp.sock` (folder 0700). Each WebSocket is a flattened `Target.attachToTarget` session,
+  and the relay sets its `sessionId`. There is no browser-wide socket. In broker mode `cdp.py` uses this socket and
+  nothing else.
+- **The worker-side launch helper** (`computer/launch_helper.py`, started by `start_agent_terminal.sh` in broker
+  mode). On the screen side, `session.launch` starts only the browser (through the relay, and with pages for its
+  arguments; `--app=URL`, `--new-window` and `--no-startup-window` are the only flags allowed). Every other program
+  goes to the helper as argv only. The helper serves the screen user's uid only and starts the program with its own
+  (the worker's) environment. The broker checks that the helper's folder and peer are the worker's.
+
+What remains, in order:
+1. **The entrypoint split.** Start Xvnc, the window manager and the broker as `decurixscreen`, the browser and
+   relay through the broker, and the panel, desktop, terminal and the agent as the worker with an untrusted cookie.
+2. **The screen side's own state.** In broker mode the child keeps the screen side's `DECURIX_DIR`,
+   `DECURIX_TASK_FILE` and log folder. The evidence, audit, records ledger, form-check notes and recordings that a
+   command writes therefore do not reach the worker's `~/.decurix`, and the screen side does not know the task. One
+   way, through the broker or a worker-side writer, has to be chosen.
+3. **Input files.** Files the browser or a command reads from the worker (`gui upload`, `record --from`,
+   `do --source-file`, `file://` pages) must come through the shared folder (group `decurix-share`).
+4. **The browser launcher run as the worker** (an icon, `exo-open`, a host app's script) must hand its URL to the
+   broker instead of starting a browser of its own.
+5. **The probe rows** in `boundary.sh`.
+6. **The agent's in-process screen paths** (`skill_task`, `replay_task`, `host_documents`' `/json/activate` on port
+   9222, the browser warm-up) as broker clients.
+7. **A live check** of Chrome's pipe mode: target order in `/json/list` and that events arrive.
+
 ## What this does not cover (said plainly)
 
 - **Direct input.** The gate decides whether a *yes* exists. It does not stand between the worker and the screen: a
   worker that runs `xdotool` or drives Chrome's DevTools port can click Pay without asking anyone. Closing that needs the
   X server and the browser behind the gate's user, with `gui` going through a broker. Until then the guard rails
-  (`claude_guard.py` for Claude, the shell checks for the others) are filters.
+  (TheBot's command guard and the shell checks) are filters.
 - **What the gate is told.** The gate does not see the screen: the action's description comes from the worker's side.
   A lying caller can only get a grant for the action it described, but with direct input it needs none.
 - **The agent token** is still in the agent's environment and readable by the worker (`/proc/<agent>/environ`). With it
@@ -449,8 +522,8 @@ too.
 **Guard rails, frozen.** The shell guards are filters, not the boundary (owner decision O-1). After this review:
 - `commands.py`: a change of folder the guard cannot follow makes the folder unknown, and a recursive delete of a
   relative path or pattern then waits for a person. No new words are added after this.
-- TheBot's `internal/safety` carries a FROZEN note. Its last five structural fixes are written by input class in
-  [follow-ups.md](follow-ups.md), O-1.a.
+- TheBot's `internal/safety` carries a FROZEN note. Its last five structural fixes, written by input class in
+  [follow-ups.md](follow-ups.md), O-1.a, all landed on 2026-11-07; nothing more is added to it.
 - The Claude harness's PreToolUse guard runs for `mcp__computer__.*` too. `open` may not name an input program, a local
   port or the gate's state, and a call the guard cannot read is refused.
 - Commands soul runs start without `DECURIX_AGENT_TOKEN`, `*_TOKEN` and `*_API_KEY` (`OPENAI_API_KEY` and

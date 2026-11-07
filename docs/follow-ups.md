@@ -7,10 +7,10 @@ The deep review of 2026-11-03 fixed about 300 findings on the `review-fixes` bra
 | ID | Decision | State |
 |---|---|---|
 | O-1 | Input broker and OS boundary: direct input around the gate (XTEST, VNC, CDP, AT-SPI, host-app and phone viewers), a gate-owned evidence store, `checked` set by the worker, the script sandbox's filesystem | **Open, do next.** The word guards are frozen. Order: the evidence store under the gate user first (it makes "observed" real), then the input broker ([gate-boundary.md](gate-boundary.md), "Next: the input broker"). Also: a per-task `$HOME` snapshot, read-only binds outside `~/work`, an egress proxy |
-| O-1.a | TheBot command guard: five structural fixes before the final freeze | **Open: .1, .2, .5.** .3 and .4 landed 2026-11-07. Table below |
+| O-1.a | TheBot command guard: five structural fixes before the final freeze | **Done** 2026-11-07: all five landed and the guard is frozen (`safety.go`'s FROZEN note). Table below |
 | O-2 | Per-desktop cache volume (B-02) | Done as recommended: a cache volume per desktop, the model cache shared read-only |
 | O-3 | Brainiac appliance: model user, AppArmor, signed catalog, uploader list | **Open; required before any box ships.** Table below |
-| O-4 | Legacy harnesses (Azure, `task_runner`) | This loop: their dangerous-command yes goes through the gate's `kind: "command"` or fails closed. **Open:** delete them |
+| O-4 | Legacy harnesses (Azure, `task_runner`, Claude Code) | **Done** 2026-11-07: deleted (`azure_harness`, `task_runner`, `claude_harness` with `claude_guard` and the MCP server, `internal/claudeauth`, the Claude Code CLI in the tools image). A desktop created with one runs TheBot; the `claude_session` table keeps its migration steps, emptied (harnesses.md) |
 | O-5 | Public tunnel off by default (B-08) | Done: off by default, one switch in the Mobile menu, `DECURIX_PUBLIC_LINK=1` for the scripts. Veto if you disagree |
 | O-6 | A typed "yes" in the desktop chat as an approval (W-07) | Kept, with `seen_at` frozen at the first keystroke and buttons bound to the note id. **Open:** buttons-only is safer if the UX is acceptable |
 | O-7 | Org knowledge and skill writes from the gated listener (A-08) | Done: host-operator only |
@@ -28,9 +28,9 @@ The deep review of 2026-11-03 fixed about 300 findings on the `review-fixes` bra
 |---|---|---|---|
 | O-1.a.3 (**done** 2026-11-07: `AssessCommand(command, dir)`, the operator and terminal pass `rc.Dir()`) | (no shape) The folder a command runs in | Pass the real working folder from the operator, terminal and coding callers into `AssessCommand`, and resolve paths against it instead of assuming `~/work` | A relative recursive delete with a working folder of `$HOME` is flagged |
 | O-1.a.4 (**done** 2026-11-07: `localTarget()` judges `url.Parse(...).Hostname()`, refusing what it cannot parse) | (no shape) A URL whose authority carries a user-info part | The fetch tools' "local only" exemption judges each target by `net/url`'s `Hostname()`, not a regex over the raw text | An existing remote target, rewritten with a user-info part, is not exempted |
-| O-1.a.1 | A program named by its absolute path, or behind a wrapper program | Every program rule identifies the program by the base name of the command word, after skipping the wrappers `wipeConcern` already models (reuse its parser) | Every existing flagged example, with its program given by absolute path or behind a wrapper, is still flagged |
-| O-1.a.2 | Global options placed before a subcommand | The version-control and publish rules accept the folder and config options before the subcommand | Every existing flagged version-control or publish example, with such an option inserted, is still flagged |
-| O-1.a.5 | An operand decided at run time (a variable or a command substitution) | A recursive delete's operand, or a fetch tool's target, that is decided at run time waits for a person | An existing flagged recursive delete with its path replaced by a variable is flagged |
+| O-1.a.1 (**done** 2026-11-07: `programLines()` reads each command word's base name past `commandWords()`'s wrappers, the ones `wipeConcern`'s examples name, and every rule list is matched on those lines too; `blankHeredocs` finds the program a body is fed to the same way; the word reader is `eachCommand()`, shared with `wipeConcern`) | A program named by its absolute path, or behind a wrapper program | Every program rule identifies the program by the base name of the command word, after skipping the wrappers `wipeConcern` already models (reuse its parser) | Every existing flagged example, with its program given by absolute path or behind a wrapper, is still flagged |
+| O-1.a.2 (**done** 2026-11-07: `beforeSubcommand()` in the git, npm/yarn/pnpm/cargo/twine/gem and docker rules reads past folder and config options, with their values, and other lone options) | Global options placed before a subcommand | The version-control and publish rules accept the folder and config options before the subcommand | Every existing flagged version-control or publish example, with such an option inserted, is still flagged |
+| O-1.a.5 (**done** 2026-11-07: `deleteConcern()` with `runTimeName()` for rm and find (`recursiveDeleteConcern()`), a cd to a run-time folder makes it `runTimeDir`, `splitCommands()` keeps a substitution's place in its word, and `localTarget()` refuses a run-time target) | An operand decided at run time (a variable or a command substitution) | A recursive delete's operand, or a fetch tool's target, that is decided at run time waits for a person | An existing flagged recursive delete with its path replaced by a variable is flagged |
 
 **Not to be done** (the freeze): new verbs, new power-management verbs, heredoc body scanning, a shared Go/Python corpus. After O-1.a, `safety.go`'s FROZEN note says these five were the last changes. Related: the Python guard's "a folder it cannot follow waits" (F-10) is done in `commands.py`; anything further there belongs in this list too.
 
@@ -52,7 +52,7 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 - **Dead bridge verbs** (B-27): about 1,500 lines of `bridge.ps1` verbs Go never sends. First item for the next loop with a live Windows run.
 - **B-19:** clean up host browser profiles when a VM is forgotten (needs a new bridge verb). The launch-time quarantine covers the dangerous case.
 - **W-14:** one aggregated endpoint per dashboard tab (performance only).
-- **C-25:** the practice broker trusts `desktop_id` in the body. Fix it with the O-1 evidence store, identifying callers by container address from the practice network's map.
+- **Done: C-25.** The practice broker knows its desktop by the address a callback comes from, never by `desktop_id` in the body: `Broker.Caller` = `desktop.Manager.PracticeDesktopAt` (labelled `practice-<run>` containers on `decurix-practice`, never the mock), answers kept per address (`Broker.fromRunDesktop`), a body naming another desktop refused, no `Caller` refuses all (simulation.md).
 - **A-07:** no `knownHost` list on the gated listener (accepted: the gated listener is reached under changing host names; the session cookie and same-origin rule answer rebinding).
 - **Done: B-37.** Each schedule and DAG cron has its own IANA zone (`schedule.Expr.NextIn`, `zone`/`cron_zone`, appended Migrate steps; old rows read UTC), picked on the forms from the browser's zone.
 - **B-29:** a restart loop for the Windows tunnel (`Lan-Tunnel.ps1`); the tunnel is opt-in now.
@@ -60,11 +60,11 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 - **W-20 rest:** the `rfb.js` hash (served immutable at a versioned path, not a content hash). Done: the in-flight guards (`loadNotes` and `pollResourceAlerts` go through `Decurix.poll`, one call at a time) and a bounded `/api/desktops/memory` (`?limit=`, default 200, max 1000, `truncated`).
 - **Done: RW1-G-04 rest.** A start or a resume waits for a tools refresh in progress, at most 5 min and never past the request (`holdToolsForStart`, `ErrToolsRefreshing`).
 - **Done: orphan home volume.** Create answers 409 `leftover_home`, and the form offers to delete the old volume (`POST /api/desktops/home-volume/delete`, primary listener, humansOnly; refused while any container mounts it or it is not that desktop's labelled home).
-- **RW1-D-01:** a container the daemon made while `ContainerCreate` returned an error is leaked until a later Delete of that name; at most a log line.
+- **Done: RW1-D-01.** A desktop container carries its creation's id (`decurix.creation`, as its home does); after a `ContainerCreate` error, `Manager.removeHalfCreated` removes a container of exactly that name with that creation's id, never another's.
 - **Decided: the default local model stays `devstral-small-2:24b`** (correctness before speed; `auto` still picks per machine). Soul, `start_agent_terminal.sh` and `config.py` now fall back to the same model.
 - **Done: mail jobs.** A finished job with no request no longer shows "Run again" / "Send anyway".
 - **No-echo walker limits** (RW1-G-06 is done): an error variable not named like one, or a helper that returns the text, still gets past it.
-- **Two control planes on one data folder** are unsupported; after a crash, two starting at once could each remove the other's fresh `instance-id`.
+- **Done: two control planes on one data folder.** Start takes the data directory's exclusive lock (`sqlitedb.LockDataDir`, `decurix.lock`: flock, or LockFileEx on Windows) before the database, and a second start refuses with the holder's pid and start time (`ErrDataDirInUse`).
 - **P3s not done:** B-02 (a panic path leaves only `last_error`), C-06 (a live test positive control; walk all packages), C-07 (a main-level Docker-down test; the watcher is tested), F-05 (owner's call), A-02 to A-06 (Electron details), F-08, F-10, F-11 (notes).
 
 ### Python agent (W2)
@@ -86,7 +86,7 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 - **A second note on the same value** overwrites `OTHER_SIGN`.
 - **Done: `false_sums`** skips a range of numbered things and its count ("Rows 2 - 10 = 9.", `values.range_count`, by structure); "200 - 350 = 150" is still a wrong sum.
 - **X-6 for TheBot:** an optional structured secret marker on HELP.
-- **The legacy harnesses:** delete (O-4).
+- **Done 2026-11-07: the legacy harnesses** are deleted (O-4).
 
 ### TheBot (W3)
 
@@ -102,6 +102,25 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 - **G-17:** re-derive the workflow bench's results from artifacts (the name now says what is checked).
 - **G-09:** hash-locked requirements (O-3.5).
 - **FIX-BR-1:** a managed (non-system) python for the worker. `isolate.ForProgram` (`brainiac/internal/isolate/elflibs.go`, called from `brainiac/internal/engine/engine.go` `New`) grants its binary and the shared libraries it links, but not its standard library (`../lib/python3.x`), so it may not start in the mount view. A system python is unaffected (`/usr` is read). Check it live, and grant that tree read-only if it fails.
+
+## Live checks done on 2026-11-07 (image built from this tree, a dev control plane beside the app's)
+
+- **The gate starts with a cleared environment:** its process holds only `CONTROL_PLANE_URL`, `DECURIX_DIR`,
+  `DECURIX_WORK_DIR`, `HOME`, `LANG`, `PATH` (read as the gate's own user; root in the container cannot, by design).
+- **No websockify** runs in a new desktop; the screen reads through the control plane's own bridge.
+- **Chrome's Memory Saver policy** is installed; the switched-off session services do not run; soul starts.
+- **Memory given back** (docs/lightweight.md L2): a desktop paused 30 minutes is stopped (`rest_reason: idle`); with
+  the memory held elsewhere, a start stops the longest-idle paused desktop first (`rest_reason: memory`); with nothing
+  to stop, the start is refused in the person's words (the wording was fixed after this check: it blamed "0 busy
+  desktops" for memory another program held).
+- **The resource bench, before and after** (docs/lightweight.md): idle anonymous memory 162 to 140 MB, gui observe p50
+  3.5 to 1.6 s, p95 of all gui commands 3.5 to 1.6 s.
+- **`bench/skills/e2e.py` and `bench/recordings/e2e.py`** pass on that image with this tree's agent.
+- **The gui daemon and screen broker tests** pass on Linux (74 tests; two code bugs fixed: the idle clock started
+  before the daemon served, and a socket's inode compared with sockfs's).
+- **Still owed:** the sign-in refusal on a real gated listener (needs a worker with an open question; the integration
+  test covers it with the real stores and routes), the field-unit question's round trip with a hosted brain, the
+  screen broker's live round (its entrypoint split is not built), and every item below.
 
 ## Live checks after the next build
 
@@ -169,16 +188,16 @@ What the SOUL lane left for later (PLAN-P2 §9; schema and limits in [trajectory
 
 What the PY lane left for later (lane-PY.md; PLAN-P2 §9).
 
-- **Legacy verdicts.** Two paths still send `checked=True` with no verdict of their own and so get a `legacy` done
-  (no checks, no basis; it never counts towards trust): `tool_task.perform` (a learned tool's run) and
-  `workflow_task._report` (a workflow stage's report). `agent/tests/test_verdict.py` (`LEGACY`) lists them; the list
-  may only shrink. The control plane accepts `by: "legacy"` with no checks and no basis (H-PY-1, done in 7f2c26d and
-  754cd9c).
+- **Done: legacy verdicts.** `tool_task.perform` sends `tool_task._verdict` (by `verify`: exit code and file facts in
+  code, the judge by model) and `workflow_task._report` sends `workflow_task._run_verdict` (by `workflow`: stage file
+  checks in code, the judgement against the request not made, so never done). `verdict.derive` never makes a done
+  (checked=True alone goes out unchecked), `test_verdict.NoReportReliesOnADerivedDone` keeps the list empty, and
+  `legacy` is no gate on either side (`verdict.BY`, `tasks.verdictBy`); stored legacy rows are still read.
 - **Python's model calls, still to move behind soul** (plan rule 3; every one is tagged `py.*` or `legacy.*`, so the
   proxy's stats show the share): `py.judge`, `py.judge.spot`, `py.skill.ask`, `py.skill.calls_off`, `py.stage`,
   `py.binding.fill`, `py.approval.read`, `py.approval.choice`, `py.ground`, `py.escalation.ground`, `.judge`,
   `.detour`, `.point`, `py.mimic`, `py.skill_engine.fits`, `py.kept_facts`, `py.playbook`, `py.study`,
-  `py.tool.args`, `legacy.azure.turn`. `agent/tests/test_purpose_tags.py` holds the set.
+  `py.tool.args`. `agent/tests/test_purpose_tags.py` holds the set (`legacy.azure.turn` went with the azure harness, O-4).
 - **Spot judgement of trusted replays** is built (`skill_task._spot`, purpose `py.judge.spot`; a `not_done` records a
   failure) and samples 1 in 5 task ids by default (`DECURIX_SPOT_JUDGE_EVERY`; 0 never, 1 always). Open: measure the
   judge's cost and its catch rate on the L3 matrix before changing it; its eval case waits for `learn-v1`.
@@ -273,9 +292,8 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
   `gatedAgentRoutes` with a reason, never `/api/chat` (it would drive the worker with no task record or author).
 - **The tools image is re-checked by its ID**, not its sentinel: a tools image rebuilt with the same tree but a new
   ID is applied again (a cheap no-op copy, since the tools CMD compares sentinels).
-- **A checked-only final with no verdict still records as checked** (an image from before R6, D5's one release).
-  After this build every desktop sends a verdict: switch it to fail closed (checked-without-verdict stored unchecked)
-  at the next release.
+- **Done: a checked-only final with no verdict fails closed.** `tasks.checkedFrom` stores checked=True with no
+  verdict as not checked, logged as a disagreement.
 - **A judgement id is chosen before delivery** (C6). If delivery errs after the desktop accepted the request, the
   desktop holds an id never committed, and what it keeps from that reply answers 409 (fails closed).
 - **Done: tools not ready.** A failed populate sets `Manager.ToolsNotReady()` (`volume`, `start` or `copy`); `/api/docker/status` returns `tools_not_ready`, and the dashboard shows a banner until a fill succeeds.

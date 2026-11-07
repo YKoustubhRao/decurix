@@ -101,9 +101,9 @@ What is built, grouped by area. Each line links the doc that explains it; [`docs
 * Beyond its own desktop, a worker can be shown Windows apps running on the host (`internal/winhost`) and apps on a linked Android phone ([architecture.md](docs/architecture.md))
 
 **One engine, the model you choose**
-* Every new worker runs **TheBot** (`agent/thebot`, a Go agent with a planner, scheduler and operator loop). You choose its brain when you create the worker: Ollama (local), Claude, Azure OpenAI, or any OpenAI-compatible server. Hosted keys stay in the control plane; a desktop reaches the model only through the control plane's proxy ([harnesses.md](docs/harnesses.md))
+* Every worker runs **TheBot** (`agent/thebot`, a Go agent with a planner, scheduler and operator loop). You choose its brain when you create the worker: Ollama (local), Claude, Azure OpenAI, or any OpenAI-compatible server. Hosted keys stay in the control plane; a desktop reaches the model only through the control plane's proxy ([harnesses.md](docs/harnesses.md))
 * TheBot adapts to the model: a model that reads images is shown the screen and scanned pages, a text-only one gets the screen's element list and OCR
-* Desktops created on the older Ollama and Claude Code harnesses keep running on them
+* Desktops created on the older Ollama, Office (GPT) and Claude Code harnesses, removed on 2026-11-07, run TheBot now
 * Every hosted model call is recorded with its purpose, task and token use ([token-economy.md](docs/token-economy.md))
 * [Brainiac](brainiac/README.md), a separate Go module in this repo, serves many open models behind one OpenAI-compatible endpoint, chosen to fit the machine; a worker can use it as its OpenAI-compatible brain
 

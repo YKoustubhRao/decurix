@@ -178,3 +178,18 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   the Docker banner that explains it never showed. They now render with no desktops (`httpapi.pageDesktops`,
   `TestPagesRenderWhenDockerIsDown`); a JSON route may still fail, a page may not. Found only by running a freshly
   built control plane with no Docker, which unit tests with a fake daemon never do.
+- **A process that imports once reads its settings once** (gui daemon, 2026-11-07). `cli.TEXT_BUDGET` was read from
+  `DECURIX_GUI_TEXT_CHARS` at import, and TheBot sets it on every command: a daemon that imported `cli` once would
+  have printed every command at the daemon's own budget. It is read per command now (`cli.text_budget`), and the daemon
+  finds every other import-time read in the imported sources (`daemon.import_time_reads`) and re-imports the agent's
+  modules in a child whose command differs. Also: a daemon started with `&` from a non-interactive shell has SIGINT
+  ignored, and Python then installs no KeyboardInterrupt handler, so each forked child sets
+  `signal.default_int_handler` back, as a `gui` process has it.
+- **A Unix socket's file is not the socket's inode** (gui daemon, DevTools relay, 2026-11-07). "Unlink the socket only
+  if it is still mine" compared `os.stat(path).st_ino` with `os.fstat(listener.fileno()).st_ino`; on Linux the fstat is
+  the socket's inode in sockfs, never the file's, so the two never matched and an idle daemon left its `gui.sock`
+  behind (Windows, where these tests skip, never showed it). The file's (st_dev, st_ino) is kept at bind now
+  (`Server.bound`, `cdp_relay._BOUND`). Found with it, also Linux only: the daemon's idle time counted from before its
+  imports (`last_call` now starts in `serve`); a test that wrote 300 KB into a socketpair before reading it blocked
+  forever (Linux buffers about 200 KB); and a send on a DevTools connection the relay had closed raised a raw
+  BrokenPipeError instead of the ComputerError a read gives (`cdp._Socket.send`).

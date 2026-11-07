@@ -142,6 +142,15 @@ The practice desktop is created by a new `desktop.Manager.CreatePractice`, not b
 - `/api/outbox`: stored as a **practice draft** in SQLite, never in the real outbox and never sendable.
 - `/api/desktops/memory`: accepted and dropped.
 
+**Who is calling.** The mock app shares the practice network, so a `desktop_id` in a body proves nothing (C-25). Every
+callback (`querytext`, `events`, `outbox`, `memory`) is the run's desktop's only when it comes from that desktop's
+address on the practice network: `Broker.Caller` is `desktop.Manager.PracticeDesktopAt`, which lists the containers
+labelled `decurix-practice`, named `practice-<run>` and not the mock, and answers by their address on
+`decurix-practice`. A body that names another desktop is refused (403); one that names none is taken by its address. The
+broker keeps an answer 15 s for the desktop's address and 2 s for any other, per address, so a mock posting in a loop
+never holds up the desktop. With no `Caller` every callback is refused (fail closed). Tests:
+`internal/practice/broker_caller_test.go`, `internal/desktop/practicecaller_test.go`.
+
 There are no host-bridge, host-gui, mail, skills or desktop routes. Callback handlers on the primary listener already refuse `readiness-` identities; `practice-` is added to that refusal.
 
 **Between cases** the runner restores what a run could have changed, so case 3's lesson cannot help case 4 (`ResetPractice`). It stops every process of the worker, clears all of `~/.decurix`, the whole work folder, the browser profiles, the agent's task files in `/tmp` and soul's job log, then, as root, the gate's own store (a pending request, a grant, the last reply; its key stays). It kills the container, restores `~/.decurix/{skills,experience,playbooks,memory}` from the pinned snapshot while it is stopped, and starts it. Corrections a practice run writes into a skill stay in the practice desktop and are discarded.

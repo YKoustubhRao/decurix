@@ -197,7 +197,7 @@ plane as `executions.verdict`).
 ```jsonc
 {"schema": "decurix.verdict/v1",
  "verdict": "done",               // done | not_done | unchecked | stopped
- "by": "verify",                  // verify | skill_gate | long_task | replay | workflow | worker | none | legacy,
+ "by": "verify",                  // verify | skill_gate | long_task | replay | workflow | worker | none,
                                   // or the control plane's own graders: readiness | practice | eval
  "why": "...",                    // at most 600 characters, withheld
  "basis": ["code", "model"],      // the kinds of check that passed: code | ledger | screen | model | person
@@ -208,11 +208,17 @@ plane as `executions.verdict`).
 `done` needs at least one check that passed and none that failed or was not made. `stopped` (the person said no and
 the work stopped) is never done. At most 64 checks, 16 refs a check, 64 evidence lines, 600 characters a string
 (counted in characters, never bytes), 64 KB in all; the desktop keeps its own under 12,000 bytes (`verdict.bound`),
-since a callback body is read up to 32 KB. A `legacy` done (a final path that sends only a checked flag,
-`tool_task` and `workflow_task`) carries no checks and no basis and never counts towards trust. The control plane
-stores `checked` as the verdict says (done); a callback whose own flag disagrees is stored not checked. A verdict
-that does not validate is stored as `unchecked` by `none`. A final with no verdict (an image from before R6) is still
-stored by its checked flag.
+since a callback body is read up to 32 KB. Every path that reports checked says what it checked: a learned tool's run
+(`tool_task._verdict`, by `verify`: the tool's exit code and the code-decided file facts as code checks, the judge's
+reading as the model's) and a workflow's report (`workflow_task._run_verdict`, by `workflow`: each completed stage's
+spec file checks passed in code, each failed stage a failed check, and `request.judged` not made, so a completed run is
+`unchecked`, a failed one `not_done`). A report sent with no verdict is given one on the desktop (`verdict.derive`),
+never a done: checked=True alone goes out `unchecked` (`test_verdict.NoReportReliesOnADerivedDone` keeps every caller
+giving its own). The `legacy` gate (a done with no checks, H-PY-1) is gone: the control plane refuses it as an unknown
+gate, and rows stored with one are still read. The control plane stores `checked` as the verdict says (done); a
+callback whose own flag disagrees is stored not checked. A verdict that does not validate is stored as `unchecked` by
+`none`. A final with no verdict (an image from before R6) that says checked is stored **not checked** (fail closed,
+`tasks.checkedFrom`, logged as a disagreement); one that says not checked, or nothing, is stored as it says.
 
 The control plane's graders write the same document: a readiness run, a Simulate case and an eval case each record
 their grade on the case's task record (`by: readiness | practice | eval`, one check, basis `code`; `not_made` when the
