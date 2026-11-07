@@ -194,7 +194,7 @@ Bench scripts exercise real applications and teaching flows, while unit/regressi
 | Why did a request or reply route this way? | `internal/httpapi/requests.go`, `internal/tasks`, `agent/decurix_agent/watchers.py`, `state.py` |
 | How did the worker decide and act? | `agent/thebot/internal/skills/operator.go`, atomizer/scheduler packages, `computer/core.py` |
 | Where did a value come from, and what was saved? | `computer/evidence.py`, `records.py`, `resolve.py`, `sources.py`, `produced.py` |
-| Why was “done” accepted, repaired, or questioned? | `skill_task.py`, `verify.py`, `source_guard.py`, `long_task.stage_code_findings`, TheBot review modules |
+| Why was “done” accepted, repaired, or questioned? | `skill_task.py`, `verify.py`, `source_guard.py`, `stage_checks.stage_code_findings`, TheBot review modules |
 | What did it retain for next time? | `learning.py`, `study.py`, `experience.py`, `playbooks.py`, `lessons.py`, `methods.py`, `internal/knowledge` |
 | How do workers cooperate? | `internal/dag`, `internal/handoff`, `internal/workqueue`, `internal/skillhub`, `web/templates/workforce.html` |
 | What grants unattended authority? | `internal/access`, `internal/qualification`, `internal/practice`, `internal/httpapi/qualification*.go`, `docs/readiness.md` |

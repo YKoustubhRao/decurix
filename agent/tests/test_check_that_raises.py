@@ -3,7 +3,7 @@ A code check that raises is a check NOT made - never a pass (E-01, review 2026-1
 
 Each check had its own `except Exception: return []`, so a blocking check that raised (an unreadable manifest, a file
 that could not be opened) counted as passed, and the run said "Done - every stage was made and checked", checked=True.
-Every check now runs through long_task._checked. This table makes each blocking or ask-the-person check raise in turn
+Every check now runs through stage_checks._checked. This table makes each blocking or ask-the-person check raise in turn
 (a new such check with no row here fails the coverage test), and the run must not be reported checked.
 """
 
@@ -16,18 +16,18 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from test_long_requests import LONG, TASK, LongRunBase
 
-from decurix_agent import long_task, stage_facts, verify
+from decurix_agent import long_task, stage_checks, stage_facts, verify
 
 # The function each check of CHECK_MATURITY is made by, as stage_code_findings calls it.
 MADE_BY = {
-    "file_facts": (long_task, "code_problems"),
-    "source_guard": (long_task, "source_guard_problems"),
-    "filler_values": (long_task, "invented_typing"),
-    "draft_facts": (long_task, "draft_checks"),
-    "app_emptied": (long_task, "app_emptied"),
-    "payee_approval": (long_task, "_payee_approvals"),
-    "files_open": (long_task, "files_open"),
-    "system_entry": (long_task, "system_entry_findings"),
+    "file_facts": (stage_checks, "code_problems"),
+    "source_guard": (stage_checks, "source_guard_problems"),
+    "filler_values": (stage_checks, "invented_typing"),
+    "draft_facts": (stage_checks, "draft_checks"),
+    "app_emptied": (stage_checks, "app_emptied"),
+    "payee_approval": (stage_checks, "_payee_approvals"),
+    "files_open": (stage_checks, "files_open"),
+    "system_entry": (stage_checks, "system_entry_findings"),
     "working": (stage_facts, "formula_contradictions"),
 }
 

@@ -39,7 +39,7 @@ from unittest import mock
 import test_recordings  # noqa: F401
 import fixture_paths  # noqa: E402 - live-run fixtures live outside the repo
 
-from decurix_agent import config, long_task, workflow_runner, workflow_task
+from decurix_agent import config, long_task, stage_checks, workflow_runner, workflow_task
 from decurix_agent.tools import office, table_quality
 from decurix_agent.workflow_runner import WorkflowRunner
 
@@ -161,24 +161,24 @@ def replay(fixture, root, crosscheck=(), seen=None):
                 kept = json.loads(tools.read_text(encoding="utf-8"))
                 record = (kept.get("actions") or [], kept.get("read") or "", kept.get("stage_read", kept.get("read") or ""))
             number = str(saved["stages"].index(said) + 1)
-            with mock.patch.object(long_task, "_stage_tool_record", lambda *a, **k: record), \
-                    mock.patch.object(long_task, "_entered", lambda values=typed.get(number) or []: list(values)), \
+            with mock.patch.object(stage_checks, "_stage_tool_record", lambda *a, **k: record), \
+                    mock.patch.object(stage_checks, "_entered", lambda values=typed.get(number) or []: list(values)), \
                     mock.patch("decurix_agent.source_guard.changed_sources",
                                lambda task_id, request, facts=changes.get(number) or []: [dict(f) for f in facts]):
-                for problem in long_task.stage_code_problems(run_id, run_state, step, made, mine, request, reply,
-                                                             {"entered": 0}):
+                for problem in stage_checks.stage_code_problems(run_id, run_state, step, made, mine, request, reply,
+                                                                {"entered": 0}):
                     found.append((said["title"], problem))
             after = runner.complete(run_id, step["id"], result={"drafts": mine}, report=reply)
             if after["steps"][step["id"]]["status"] != "completed":
                 found.append((said["title"], "not handed in: " + str(after["steps"][step["id"]].get("error"))))
-        outputs = long_task._outputs(runner.status(run_id))
-        for item in long_task.code_disagreements(outputs)[0]:
+        outputs = stage_checks._outputs(runner.status(run_id))
+        for item in stage_checks.code_disagreements(outputs)[0]:
             found.append(("cross-check", f"Figures that do not agree - {item['figure']}: {item['values']}"))
         # The live cross-check's model pointed at these places (expected.json "crosscheck"); code decides on them.
         points = list(crosscheck)
         if points:
-            for item in long_task.model_disagreements(outputs, ask=lambda system, shown: {"figures": points},
-                                                      request=request)[0]:
+            for item in stage_checks.model_disagreements(outputs, ask=lambda system, shown: {"figures": points},
+                                                         request=request)[0]:
                 found.append(("cross-check", f"Figures that do not agree - {item['figure']}: {item['values']}"))
     return found
 
@@ -231,7 +231,7 @@ class ReplayGate(unittest.TestCase):
         # A check made BLOCKING must have met correct work here (CLAUDE.md, docs/long-requests.md): one the replay
         # never ran would be blocking unproven.
         ran = set()
-        real = long_task._checked
+        real = stage_checks._checked
 
         def recorded(check, unmade, fn, *args, **kwargs):
             ran.add(check)
@@ -239,9 +239,11 @@ class ReplayGate(unittest.TestCase):
         for fixture in sorted(p for p in CORPUS.iterdir() if (p / "stages.json").is_file()):
             root = Path(self.tmp.name) / ("coverage-" + fixture.name)
             root.mkdir()
-            with mock.patch.object(config, "WORK_DIR", root / "work"), mock.patch.object(long_task, "_checked", recorded):
+            with mock.patch.object(config, "WORK_DIR", root / "work"), \
+                    mock.patch.object(stage_checks, "_checked", recorded):
                 replay(fixture, root)
-        blocking = {c for c in long_task.CHECK_MATURITY if long_task.is_blocking(c) or long_task.asks_person(c)}
+        blocking = {c for c in stage_checks.CHECK_MATURITY
+                    if stage_checks.is_blocking(c) or stage_checks.asks_person(c)}
         self.assertEqual(blocking - ran, set(), "blocking checks the replay never evaluated")
 
     def test_the_gate_sees_a_check_that_flags_correct_work(self):
@@ -251,7 +253,7 @@ class ReplayGate(unittest.TestCase):
         root = Path(self.tmp.name) / "planted"
         root.mkdir()
         with mock.patch.object(config, "WORK_DIR", root / "work"), \
-                mock.patch.object(long_task, "_summary_totals", lambda made: ["planted finding"] if made else []):
+                mock.patch.object(stage_checks, "_summary_totals", lambda made: ["planted finding"] if made else []):
             found = replay(fixture, root)
         self.assertIn("planted finding", [text for _, text in found])
 

@@ -19,7 +19,7 @@ from unittest import mock
 
 import test_long_requests as base  # noqa: F401 - stubs config first
 
-from decurix_agent import config, long_task, workflow_task
+from decurix_agent import config, long_task, stage_checks, workflow_task
 from decurix_agent.workflow_runner import WorkflowRunner
 
 
@@ -66,9 +66,9 @@ def run_checks(stage, files, request="", reply="Done.", drafts=(), amendments=()
         runner = WorkflowRunner(root / "workflows")
         patches = [mock.patch.object(workflow_task, "runner", return_value=runner),
                    mock.patch.object(config, "WORK_DIR", work),
-                   mock.patch.object(long_task, "_page_notes", lambda *a, **k: list(page_notes)),
-                   mock.patch.object(long_task, "_entered", lambda: list(typed)),
-                   mock.patch.object(long_task, "_stage_tool_record", lambda *a, **k: tool_record)]
+                   mock.patch.object(stage_checks, "_page_notes", lambda *a, **k: list(page_notes)),
+                   mock.patch.object(stage_checks, "_entered", lambda: list(typed)),
+                   mock.patch.object(stage_checks, "_stage_tool_record", lambda *a, **k: tool_record)]
         for patch in patches:
             patch.start()
         try:

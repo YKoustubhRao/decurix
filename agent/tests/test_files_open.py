@@ -107,7 +107,7 @@ class TheRunsFiles(unittest.TestCase):
 
     def test_an_earlier_stages_workbook_a_later_stage_broke_is_found(self):
         from unittest import mock
-        from decurix_agent import long_task
+        from decurix_agent import long_task, stage_checks
         self.assertTrue(long_task.is_blocking("files_open"))
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             work = Path(tmp)
@@ -119,7 +119,7 @@ class TheRunsFiles(unittest.TestCase):
             runner = mock.Mock()
             runner.context.return_value = {"work_dir": str(work)}
             with mock.patch.object(long_task, "_runner", lambda: runner), \
-                    mock.patch.object(long_task, "_steps", lambda state: state["spec"]["steps"]):
+                    mock.patch.object(stage_checks, "_steps", lambda state: state["spec"]["steps"]):
                 self.assertEqual(long_task.files_open(run_state, [str(work / "s5.csv")]), [])
                 break_shared_strings(book)
                 found = long_task.files_open(run_state, [str(work / "s5.csv")])

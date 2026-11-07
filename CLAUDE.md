@@ -68,7 +68,7 @@ Live benches (Docker, minutes each) are listed in [docs/running.md](docs/running
 - `jsonError` never echoes `err.Error()` to a client.
 - Tests that need bash or a real browser skip on Windows or use a stand-in; never launch the real browser in a test.
 - A new page template goes into `internal/webui/render_test.go`.
-- A new stage code check goes into `long_task.stage_code_findings` as ADVISORY (`CHECK_MATURITY`) and must pass the replay gate (`agent/tests/test_replay_gate.py`); it becomes blocking only by its own entry after a clean live round (docs/long-requests.md).
+- A new stage code check goes into `stage_checks.stage_code_findings` as ADVISORY (`CHECK_MATURITY`) and must pass the replay gate (`agent/tests/test_replay_gate.py`); it becomes blocking only by its own entry after a clean live round (docs/long-requests.md).
 - Add a new lesson to the matching `docs/` file (gotchas go in the newest `docs/gotchas/part-N.md` and a line in `docs/gotchas.md`), not here. Keep this file short.
 
 ## Working agreements with the person who runs this

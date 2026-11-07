@@ -17,7 +17,7 @@ from unittest import mock
 
 import test_long_requests as base  # noqa: F401 - stubs config first
 
-from decurix_agent import config, long_task, produced, provenance, source_guard, stage_facts
+from decurix_agent import config, long_task, produced, provenance, source_guard, stage_checks, stage_facts
 from decurix_agent.tools import office, table_quality
 
 
@@ -36,7 +36,7 @@ class World(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.dir = Path(tmp.name)
         for patch in (mock.patch.object(config, "WORK_DIR", self.dir), mock.patch.object(config, "DECURIX_DIR", self.dir),
-                      mock.patch.object(long_task, "_page_notes", lambda *a: [])):
+                      mock.patch.object(stage_checks, "_page_notes", lambda *a: [])):
             patch.start()
             self.addCleanup(patch.stop)
 
