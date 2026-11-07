@@ -3,7 +3,7 @@ import os
 import threading
 import time
 
-from decurix_agent.computer import browser, session, visual
+from decurix_agent.computer import browser, screen_call, session, visual
 from decurix_agent.computer.errors import ComputerError
 
 
@@ -385,6 +385,71 @@ def _connect():
     return _display
 
 
+def _client_window_at(display, x, y):
+    """The window a person sees at (x, y): the topmost viewable top-level window there, and inside a window manager's
+    frame the client window it holds (the one with WM_STATE). None when nothing but the root is there."""
+
+    from Xlib import X
+
+    wm_state = display.intern_atom("WM_STATE")
+    window, origin = display.screen().root, (0, 0)
+    for _ in range(8):
+        found = None
+        for child in reversed(window.query_tree().children):
+            try:
+                if child.get_attributes().map_state != X.IsViewable:
+                    continue
+                g = child.get_geometry()
+            except Exception:  # noqa: BLE001 - a window that went away
+                continue
+            left, top = origin[0] + g.x, origin[1] + g.y
+            if left <= x < left + g.width + 2 * g.border_width and top <= y < top + g.height + 2 * g.border_width:
+                found, inner = child, (left + g.border_width, top + g.border_width)
+                break
+        if found is None:
+            return None if window == display.screen().root else window
+        try:
+            if found.get_full_property(wm_state, X.AnyPropertyType) is not None:
+                return found
+        except Exception:  # noqa: BLE001
+            return None
+        if found.get_attributes().override_redirect:
+            return found  # a menu or a tooltip: a top-level window of its own, with no frame
+        window, origin = found, inner
+    return None
+
+
+def owner_uid_at(x, y, display=None):
+    """
+    Broker mode, the screen side: the user whose process drew the window shown at (x, y), or None when it cannot be
+    told. Told by the window's _NET_WM_PID, which only the window's own client can set: the worker cannot put a pid on
+    a window of the screen user's, and a pid it puts on its own is believed only to make it someone else's (the
+    action is then refused). The process's real uid is read from /proc.
+    """
+
+    from Xlib import X
+
+    d = display or _connect()
+    window = _client_window_at(d, int(x), int(y))
+    if window is None:
+        return None
+    try:
+        pid = window.get_full_property(d.intern_atom("_NET_WM_PID"), X.AnyPropertyType)
+    except Exception:  # noqa: BLE001
+        return None
+    if pid is None or not pid.value:
+        return None
+    try:
+        with open(f"/proc/{int(pid.value[0])}/status", encoding="ascii", errors="replace") as f:
+            for line in f:
+                if line.startswith("Uid:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+@screen_call.routed("screen.grab")
 def grab(display=None):
     """
     Capture the whole screen as a Frame. `display` is an Xlib connection of

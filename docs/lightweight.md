@@ -55,6 +55,25 @@ Swapping desktops stays off (`MemorySwap` equals `Memory`): a swapped desktop is
 stops instead, which is honest about the cost: a stopped desktop takes a few seconds to come back and its open windows
 are gone, so it is only done to a desktop nobody is using.
 
+## Result after the second speed round (measured 2026-11-07 20:40, same host, image of this tree, default mode)
+
+The settle wait now listens for X DAMAGE instead of comparing screenshots; typing sends a line's keys in one batch
+and reads the field back once, after the settle; a browser click hears whether a download began instead of waiting a
+quiet second, and a download that begins late is reported by the next command instead of being lost.
+
+| gui p50 | start of the day (image of 2026-11-05) | after L8 (16:00) | now |
+|---|---|---|---|
+| all 21 commands | 1621 ms | 1496 ms | **1088 ms** (-33%) |
+| click | 2235 ms | 1601 ms | **1117 ms** (-50%) |
+| type | 1683 ms | 1513 ms | **1089 ms** (-35%) |
+| observe (a small page) | 3477 ms | 1553 ms | **1571 ms** (-55%) |
+| p95, all commands | 3488 ms | 1617 ms | **1581 ms** (-55%) |
+| read / verify | 350 / 345 ms | 234 / 210 ms | 213 / 222 ms |
+
+Still above the 0.8 s target for click and type: what remains is the settle floor (0.15 s plus a 0.35 s quiet window,
+kept because a dialog or page that appears late must be waited for), `_commit_check` after a Save (250-500 ms) and the
+looks before and after an action.
+
 ## Result after L8 (measured 2026-11-07 16:00, same host, the final image of this tree)
 
 | | before (image of 2026-11-05) | after |

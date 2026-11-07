@@ -177,6 +177,8 @@ SERVED = {
     "core.act": ("decurix_agent.computer.core", "act", {"kind": lambda v: v in ("click", "key"),
                                                         "ref": _optional(lambda v: _text(64)(v) or _number(v)), "keys": _optional(_keys)}),
     "core.open_target": ("decurix_agent.computer.core", "open_target", {"target": _text(8192), "new_tab": _flag}),
+    "core.forget_failed_search": ("decurix_agent.computer.core", "forget_failed_search", {}),
+    "screen.grab": ("decurix_agent.computer.screen", "grab", {}),
     "cdp.page_list": ("decurix_agent.computer.cdp", "page_list", {}),
     "cdp.activate_page": ("decurix_agent.computer.cdp", "activate_page", {"target_id": _target_id}),
     "browser.warm": ("decurix_agent.computer.browser", "warm", {}),
@@ -215,6 +217,11 @@ def bound(name, args, kwargs):
     return fn, arguments
 
 
+# The parameters of a call that may name a file of the caller's: the file is handed to the broker as a descriptor,
+# as `gui` hands the files its command names (gui_client.input_files) - the screen user may not open the worker's.
+FILE_PARAMETERS = {"core.open_target": ("target",)}
+
+
 # ------------------------------------------------------------
 # The caller's side
 # ------------------------------------------------------------
@@ -235,27 +242,60 @@ def routed(name):
     return wrap
 
 
-def command(name):
-    """The command a call runs as: the `gui` thin client, as agent/gui runs it in broker mode."""
+def command(name, files=()):
+    """The command a call runs as: the `gui` thin client, as agent/gui runs it in broker mode. `files`: the paths it
+    names, after the call's name, so the client hands them over (they are not the call's arguments)."""
 
     from decurix_agent.computer import gui_client
-    return [sys.executable, "-I", "-S", os.path.abspath(gui_client.__file__), CALL_COMMAND, name]
+    return [sys.executable, "-I", "-S", os.path.abspath(gui_client.__file__), CALL_COMMAND, name] + \
+        [str(f) for f in files if isinstance(f, str) and f]
+
+
+def named_files(name, args, kwargs):
+    """The values of a call's FILE_PARAMETERS, by name or position."""
+
+    wanted = FILE_PARAMETERS.get(name, ())
+    if not wanted:
+        return []
+    module_name, attr, _ = SERVED[name]
+    import importlib
+    fn = getattr(importlib.import_module(module_name), attr)
+    try:
+        bound_args = inspect.signature(getattr(fn, "local", fn)).bind_partial(*args, **kwargs).arguments
+    except TypeError:
+        return []
+    return [bound_args[p] for p in wanted if isinstance(bound_args.get(p), str)]
+
+
+def wait_for_broker(seconds=120.0, pause=0.5):
+    """Broker mode, the worker's side: wait until the screen broker serves (the agent starts beside the screen's
+    session, and its first screen call at boot came before the broker was up). Returns whether it does."""
+
+    import time
+    from decurix_agent.computer import gui_client
+    deadline = time.monotonic() + seconds
+    while True:
+        if gui_client.broker_ready():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(pause)
 
 
 def call(name, *args, **kwargs):
     """Run a SERVED call through the broker; its result, or the error it ended with raised here."""
 
-    return exchange(name, {"args": list(args), "kwargs": kwargs})["result"]
+    return exchange(name, {"args": list(args), "kwargs": kwargs}, files=named_files(name, args, kwargs))["result"]
 
 
-def exchange(name, request, on_ask=None, on_report=None):
+def exchange(name, request, on_ask=None, on_report=None, files=()):
     """
     One call: `request` to the broker's child, the messages it sends answered (on_ask) or passed on (on_report),
     and the last message returned: {"result": ...} and, for a replay, the ladder's state.
     """
 
     try:
-        process = subprocess.Popen(command(name), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        process = subprocess.Popen(command(name, files), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, cwd="/")
     except OSError as exc:
         raise ScreenCallError(f"could not reach the screen broker: {exc.strerror or exc}") from exc
@@ -434,10 +474,10 @@ def serve(argv):
     """`gui __screen_call NAME`: read the call, run it here, answer. Exit 0 once an answer was sent."""
 
     channel = _isolate_stdio()
-    if len(argv) != 1:
+    if len(argv) < 1:
         channel.send({"error": _error(ScreenCallError("a screen call names one function"))})
         return 0
-    name = argv[0]
+    name = argv[0]  # (what follows it are files the caller handed over, command())
     try:
         request = channel.receive()
     except (EOFError, OSError, ValueError) as exc:

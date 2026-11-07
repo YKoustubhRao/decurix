@@ -305,7 +305,9 @@ owns everything that can act on the screen or as the person, so each of these is
 6. `ptrace` and `/proc` of the browser and the agent (same user): the agent token is one such read.
 
 In broker mode (DECURIX_SCREEN_USER=1), as of 2026-11-07, checked live on a throwaway container (`boundary.sh --layer
---broker --screen-only`: every screen row PASS; the same rows in the default mode say OPEN):
+--broker --screen-only`: every screen row PASS; the same rows in the default mode say OPEN), and again on a desktop the
+real control plane made with `DECURIX_SCREEN_BROKER=1`, under its own seccomp profile and security options (the five
+screen rows PASS there too):
 1. **Closed.** The worker's X clients have an untrusted cookie: the display offers them BIG-REQUESTS and XC-MISC only
    (no XTEST, no RECORD, no XInput), and the SECURITY extension denies them events to and reads of the screen
    user's windows (not probed: a probe never sends input).
@@ -315,7 +317,9 @@ In broker mode (DECURIX_SCREEN_USER=1), as of 2026-11-07, checked live on a thro
 3. **Closed.** No port: the browser runs with `--remote-debugging-pipe`, and the relay's socket is in a folder only the
    screen user may enter. Nothing of the screen user listens but VNC (5901).
 4. **Closed for the screen side, not probed.** The screen user's accessibility bus is its own (D-Bus checks the uid);
-   the worker's apps and their bus are the worker's and not part of the boundary.
+   the worker's apps and their bus are the worker's and not part of the boundary. The screen side is the more
+   privileged reader of the worker's bus (to see the worker's apps' widgets), never the other way, and acts on a widget
+   read there only over a window of the worker's (below, "the worker's apps as untrusted clients").
 5. **Closed.** The browser's profile is `/var/lib/decurix-screen/.config/chromium`, the screen user's alone.
 6. **Closed for the screen side**: the X server, the window manager, the browser and the broker are the screen user's,
    and their `/proc` environments cannot be read by the worker. **Open for the agent**: it still runs as the worker,
@@ -363,8 +367,8 @@ Build order from here: the creation switch (`DECURIX_SCREEN_BROKER` on the contr
 `DECURIX_SCREEN_USER=1`); the probe rows; the daemon's peer-uid check and the screen/worker split in the entrypoint;
 the CDP relay; the worker-side launch helper; then the agent's in-process screen paths as broker clients.
 
-Built so far (2026-11-07, behind `DECURIX_SCREEN_BROKER`, off; code, unit tests, and a live run on a throwaway
-container of a layer over `decurix-desktop:next`, not yet a desktop the control plane made):
+Built so far (2026-11-07, behind `DECURIX_SCREEN_BROKER`, off; code, unit tests, live runs on throwaway containers,
+and a desktop the real control plane made - see "Checked on a desktop the control plane made" below):
 - **The creation switch.** `DECURIX_SCREEN_BROKER=1` on the control plane gives each new desktop
   `DECURIX_SCREEN_USER=1` (`internal/desktop/screenbroker.go`). The image has the `decurixscreen` system user (no
   login shell, no password, no sudo).
@@ -409,8 +413,8 @@ container of a layer over `decurix-desktop:next`, not yet a desktop the control 
   - The screen side's `DECURIX_DIR`, `DECURIX_WORK_DIR` and `DECURIX_LOG_DIR` are its own folder's (a command first
     failed live on `~/.decurix/computer`, which it may not write).
   - The worker session copies the cookie to `~/.Xauthority`, starts its own session bus, `xfsettingsd`,
-    `xfce4-panel`, `xfdesktop`, `Thunar --daemon`, and `start_agent_terminal.sh` directly (no XFCE session, no
-    autostart). `start_agent_terminal.sh` no longer runs `xhost` or pre-warms the browser in broker mode.
+    `xfce4-panel`, `Thunar --daemon` (no longer `xfdesktop`, below), and `start_agent_terminal.sh` directly (no XFCE
+    session, no autostart). `start_agent_terminal.sh` no longer runs `xhost` or pre-warms the browser in broker mode.
   - Seen live: Xtigervnc, xfwm4, the broker and Chrome (profile in `/var/lib/decurix-screen`) as `decurixscreen`;
     the panel, Thunar, the agent, soul and the launch helper as `headless`. `gui observe`, `gui open` of a
     `file:///tmp` page, `observe --screenshot` (written as the worker) and `gui open mousepad` (started by the launch
@@ -437,27 +441,120 @@ container of a layer over `decurix-desktop:next`, not yet a desktop the control 
   profile's cookie store, the screen side's `/proc` environ. All five PASS in broker mode; all five are OPEN in the
   default mode.
 
+- **The screen side's own state** (`computer/broker.py`, `gui_client.py`; the route chosen: the worker's state stays
+  the worker's, and the screen side never opens a path of the worker's). Two ways were weighed: a folder the screen
+  user writes and the worker reads, and the writes handed back through the caller. A shared folder in the worker's
+  home is a folder the worker can swap or fill with links, and a reader as the screen user that follows one reads the
+  screen user's own files (the trusted cookie, the profile) on the worker's behalf; so the caller route was built.
+  - *In*: with every command the client sends, as data it read as the worker, what the screen side must know of the
+    worker's state (`gui_client.caller_context`): the task file's parts (the task, its stage, request, files, the task's
+    secret values and resume copies), `withheld-secrets`, a few state files a screen command reads (`active-task.json`,
+    `filled-documents.json`, `opened-files.json`, the worker mode, the guided run), the current task's evidence so far
+    (`computer/evidence/<task>.*`) and its recording's `meta.json`, and the worker's launchers (its desktop's and menu's
+    `.desktop` files). The broker's child writes them into the screen user's own folders before the command runs
+    (`broker.take_context`: the task file's parts in `/run/decurix-screen/caller`, 0700, tmpfs like the worker's own;
+    the rest under its `DECURIX_DIR`; the launchers under `~/caller-launchers`, the screen side's `launchers.PLACES`),
+    and removes a part the worker no longer has. So the screen side knows the task (evidence is keyed by it; the
+    recording is `task-<id>`) and withholds the task's own secret values: checked live, a typed secret came back as
+    `[withheld]` in the recording and the evidence.
+  - *Out*: every write the child makes under `recordings/` or `computer/evidence/` (through `privacy.write_scrubbed`,
+    so already withheld; a recording's frames and an observation's blob) is written in its own folder as before and
+    also handed back over the command's connection (`broker.mirror`, an O frame flagged STATE, appends as appends);
+    the client writes it as the worker under the worker's own `DECURIX_DIR` (`gui_client.save_state`: a relative path
+    of plain parts, in those two roots only, 0644/0755 at most whatever the caller's umask). A demonstration's recorder
+    has no caller of its own, so at its stop (or `recover`) the whole recording is handed back (`broker.mirror_tree`).
+    Every reader (the agent's checks, the run record, the control plane's puller) finds them where it does today.
+    Checked live: a task's recording (meta, events, frames, observations), its evidence notes and a demonstration
+    recorded through the agent's routed calls all appeared in the worker's `~/.decurix`.
+  - The commands that only read and write the worker's own stores run on the worker's side, as the worker
+    (`gui_client.WORKER_COMMANDS`: `skills`, `skill`, `do`, `replay`, `recordings`, `recording`, `record`, `records`,
+    `recall`, `guide`), and reach the screen only through the broker's screen calls (`replay.run`, `core.observe`,
+    and now `screen.grab`, routed for a vision engine's picture after `replay`/`do` and the final check's look,
+    `evidence.live`). `record` reads its `--from` and `--fields` files as the worker; its ledger is then told to the
+    screen side with the next command, where `core.act`'s pre-save checks read it.
+  - `core.forget_failed_search` is routed (the agent cleared its own copy while the screen side kept the stale one).
+  - At boot the agent's `demonstration.recover` waits for the broker to serve (`screen_call.wait_for_broker`, up to 2
+    minutes) instead of failing before it is up; checked live: no "not reached" at boot.
+- **The worker's apps as untrusted clients.** Found: the SECURITY extension gives an untrusted client no write to the
+  root window and none of its events. So xfdesktop exits (BadAccess on its first root property), the panel's window
+  list never fills (it never hears `_NET_CLIENT_LIST` change), and the worker's accessibility bus launcher died the
+  same way (it names its bus on the root window when it has a display), so none of the worker's apps had an
+  accessibility bus at all.
+  - xfdesktop is **not** run in broker mode, on either side: as the screen user its menus ("Open With", "Open
+    Terminal Here", the applications menu) start any program as that user, past the gate. The screen user draws the
+    wallpaper on the root window instead (`computer/wallpaper.py`, redrawn when the screen's size changes); there are
+    no desktop icons in this mode. The worker's launchers are still opened by name (`gui open "Excel (Host)"`, a replay
+    bringing a window forward) from the copies the screen side was sent, and started by the launch helper as the
+    worker. Checked live.
+  - The accessibility bus: the worker's session starts its bus without DISPLAY (the launcher then names nothing on the
+    display; apps ask the session bus for the address) and with the launch helper's folder (0711) as its runtime
+    folder, so the bus socket can be reached; it publishes the address there (`a11y-bus`). The image's
+    `accessibility.conf` admits `decurixscreen` besides root and the bus's own user, so the screen broker reads the
+    worker's bus (`atspi._broker_bus`: only a `unix:path=`/`unix:abstract=` address from a regular file of the
+    worker's in a folder nobody else writes; a `unixexec:` address would run a program). The screen user's own bus
+    admits root and itself only. The browser is never given the worker's bus address (`session.launch`,
+    `cdp_relay.main`): its widgets on it would be the worker's to press. Checked live: `gui observe` lists mousepad's
+    and LibreOffice Writer's menus, toolbars and document, and the panel's buttons; a click and typing in Writer work,
+    including on Writer behind the browser (its window is brought forward first).
+  - What the worker's bus says is the worker's word, so a widget read there is acted on only where a window of the
+    worker's own apps is shown (`core._worker_point`, `screen.owner_uid_at`: the client window at the point, its
+    `_NET_WM_PID`, which only that window's own client can set, and that process's uid). Otherwise a widget the worker
+    made up and laid over the browser would have the gate asked about "Cancel" while the press landed on "Pay".
+    Checked live: a made-up widget over the browser was refused, one over the panel was not. A window the worker maps
+    and unmaps between the check and the press is a race this does not close (a few milliseconds).
+  - LibreOffice (soffice, GTK3) and mousepad open, draw and take input as untrusted clients; the panel draws and its
+    launchers work (a person's click on its Web Browser icon), but its window list stays empty (open, below).
+- **The browser launcher run as the worker** (`agent/chromium-browser`): started as the worker in broker mode (the
+  panel's Web Browser icon through `exo-open`, `xdg-open`, a link in an app, a host app's script), it hands each page
+  to the broker as `gui open` (a local file handed over and opened as a copy) and with none brings the browser up; it
+  never starts a browser itself. Checked live: a person's click on the panel's icon and `xdg-open` of a local page
+  brought up the screen user's browser, and no browser process of the worker's existed.
+- **Input files** (`gui_client.input_files`, `broker.read_input`, `broker.local_copy`): the files a command names (its
+  arguments, `--option=value` values, `file://` URLs; regular files the worker can read, at most 16) are opened by the
+  client as the worker and handed over as descriptors with the request, like its stdio; the agent's `open_target`
+  hands its target the same way (`screen_call.FILE_PARAMETERS`); the current task's documents (the task file's
+  `.files`, at most 4) go with every command for `core._in_documents`. The screen side reads them only from those
+  descriptors, and gives the browser a copy (same name, 0600, in `~/inputs`, kept a day). A file the caller did not
+  hand over is never opened by its name in a broker's child (`broker.NotHanded`): checked live, a link in `~/work` to
+  the screen user's `vnc.passwd` was refused without being read. Which commands need it: `upload` (checked live: a
+  0600 file of the worker's reached the page, name and size), `open` of a local page or `file://` URL (checked live),
+  the agent's `core.open_target`, and the task's documents for the search guard. `record --from/--fields` and `do
+  --source-file` need none: they run as the worker. An upload's "may this leave the desktop" check now knows the
+  worker's work folders (`privacy._send_roots`) and the worker's state as never leaving.
+
+Checked on a desktop the control plane made (2026-11-07): the control plane binary built from this tree (with a build
+overlay pointing its basic image at `decurix-desktop:broker`, so no product tag was touched), run beside the app's
+with `DECURIX_SCREEN_BROKER=1`; a desktop created through `/api/desktops/create`, then deleted. Under its seccomp
+profile and security options: Chrome runs as `decurixscreen` with its sandbox (no `--no-sandbox`, the namespace sandbox
+probe passes; renderers in their own pid namespaces) and the DevTools pipe; the control plane's thumbnail
+(`/api/desktops/screenshot`, full RFB authentication against Xtigervnc) and its screen bridge (`/desktop/<id>/websockify`:
+the RFB banner, security types and the VncAuth challenge relayed both ways) work; `gui` through the broker (open,
+observe, click, type, an upload, LibreOffice's widgets, the agent's routed calls); the worker's state as above; and the
+five screen probes PASS (`bench/security/screen_probes.sh` against that desktop, with its own screen password).
+
 What remains, in order:
-1. **The screen side's own state.** In broker mode the child keeps the screen side's `DECURIX_DIR`
-   (`/var/lib/decurix-screen/.decurix`),
-   `DECURIX_TASK_FILE` and log folder. The evidence, audit, records ledger, form-check notes and recordings that a
-   command writes therefore do not reach the worker's `~/.decurix`, and the screen side does not know the task. One
-   way, through the broker or a worker-side writer, has to be chosen. The same holds for the agent's routed calls:
-   a demonstration recorded through the broker, its references for the next action, `core.forget_failed_search`
-   (which the agent still clears in its own folder) and a warmed browser's "close if unused" check (its thread ends
-   with the call) are the screen side's. At boot the agent's `demonstration.recover` ran before the broker served and
-   was logged as not reached.
-2. **Input files.** Files the browser or a command reads from the worker (`gui upload`, `record --from`,
-   `do --source-file`, `file://` pages) must come through the shared folder (group `decurix-share`).
-3. **The browser launcher run as the worker** (an icon, `exo-open`, a host app's script) must hand its URL to the
-   broker instead of starting a browser of its own.
-4. **The worker's apps as untrusted clients**: the desktop (`xfdesktop` exits), the panel's window list, and the
-   office apps (LibreOffice, GIMP) are still to be checked; the broker reads AT-SPI on the screen user's bus only, so
-   `gui observe` sees no widget of a worker's GTK or LibreOffice window (only its picture and title).
-5. **A live check on a real desktop**: one made by the control plane with `DECURIX_SCREEN_BROKER=1` and its seccomp
-   profile (the throwaway ran Chrome with `--no-sandbox`), the screen bridge and thumbnails against Xtigervnc 1.13.1,
-   a whole skill replay with ladder questions, and Chrome's pipe mode under load (target order, events).
-6. **The agent's own user** (path 6's open half), and `VNC_PW` out of a `docker exec`'s environment.
+1. **The panel's window list.** As an untrusted client the panel never hears the root window change, so its
+   tasklist stays empty; windows are switched with the window manager's keys (alt-tab) or `gui front`. A tasklist
+   drawn by the screen user would have to be one with no way to start a program (the panel's own menus and
+   preferences start programs); not built.
+2. **What the screen side still does not see of the worker's state**: the worker's learned app guides
+   (`_guide_hint` after `gui open` names only the built-in ones), and anything a screen command reads that is not in
+   the context it is sent (it reads its own, older or empty copy). A new reader of worker state on the screen side
+   must be added to the context (`gui_client.caller_context`) or run on the worker's side.
+3. **The browser's own dialogs over accessibility**: the screen broker reads the worker's bus, so the browser's own
+   GTK dialogs (a native file chooser) are not listed; page content comes through DevTools as before.
+4. **Load and long runs**: a whole skill replay with ladder questions on a broker-mode desktop, Chrome's pipe mode
+   under load (target order, events), and the per-command cost of the context (a few small files read and written;
+   observe stayed well under a second live).
+5. **The agent's own user** (path 6's open half), and `VNC_PW` out of a `docker exec`'s environment.
+
+**Making broker mode the default** (decision for the owner, O-1): every path of the six that the screen side holds is
+closed and checked on a control-plane desktop, the worker's state reaches every reader, and the worker's apps work.
+What a person loses in this mode is the desktop's icons and the panel's window list; what is still open is path 6's
+agent half. The recommendation is to turn it on for new desktops after (4) - one live series of real tasks (a taught
+skill with a ladder question, a long request, a demonstration recorded by a person) on a broker-mode desktop - since
+until then the gate's boundary is only as good as the filters in front of it. A desktop keeps the mode it was created
+with, so turning it on changes nothing for existing desktops.
 
 ## What this does not cover (said plainly)
 

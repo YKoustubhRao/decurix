@@ -200,3 +200,20 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   imports (`last_call` now starts in `serve`); a test that wrote 300 KB into a socketpair before reading it blocked
   forever (Linux buffers about 200 KB); and a send on a DevTools connection the relay had closed raised a raw
   BrokenPipeError instead of the ComputerError a read gives (`cdp._Socket.send`).
+- **The browser's download bubble moves the next action's time** (typing and download waits, 2026-11-07). A bench that
+  clicked a download link and then, at once, typed and clicked Save measured Save slower with a change that took 0.25 s
+  out of it: after a download Chrome's toolbar animates and its bubble closes by itself seconds later, and wherever that
+  lands the settle wait (screen unchanged for 0.35 s) is longer. Making the earlier actions faster moved the animation
+  into a later one. Time actions after a download with an untimed pause of several seconds, or in their own block.
+- **An untrusted X client gets nothing of the root window: no property write, no event** (broker mode, 2026-11-07).
+  The SECURITY extension lets an untrusted client read the root's properties but not change them (BadAccess) and
+  delivers it no event on a window of a trusted client, the root included. So xfdesktop exits at its first root
+  property, the panel's window list never fills (it reads `_NET_CLIENT_LIST` once and never hears it change), and
+  at-spi-bus-launcher, which names its bus on the root window when it has a DISPLAY, died - leaving none of the
+  worker's apps an accessibility bus, with only a "NoReply" warning per app in the log. Start the worker's session bus
+  without DISPLAY and start the accessibility bus on it before giving DISPLAY to its activations; do not run a desktop
+  manager as the screen user instead (its menus start programs as that user, past the gate).
+- **A widget on the worker's accessibility bus is the worker's word, box included** (broker mode, 2026-11-07). Once
+  the screen broker reads the worker's bus, the worker can lay a made-up "Cancel" over the browser's "Pay"; a press by
+  its box lands on the browser while the gate is asked about "Cancel". Act on such a widget only where the window shown
+  at that point is the worker's own (its `_NET_WM_PID`, which only the window's client can set, and that process's uid).

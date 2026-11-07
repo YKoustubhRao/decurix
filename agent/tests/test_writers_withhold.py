@@ -48,6 +48,18 @@ ALLOWED = {
                                           "encoded",
     "computer/broker.py:deliver_to_caller": "a screenshot file the command was asked for (pixels; password fields "
                                             "painted over), written here or handed to the caller in broker mode",
+    "computer/broker.py:_keep_copy": "broker mode: the caller's own state as the caller sent it (its task file, its "
+                                     "secrets, its evidence: already withheld where the worker wrote it), or a file "
+                                     "it handed over, kept 0600 in the screen user's private folders",
+    "computer/broker.py:worker_a11y_bus": "opens the worker's published accessibility bus address read-only "
+                                          "(writes nothing)",
+    "computer/gui_client.py:_read_own": "opens the worker's own state read-only, to tell the screen broker (writes "
+                                        "nothing)",
+    "computer/gui_client.py:input_files": "opens the files a command names read-only, to hand them to the screen "
+                                          "broker (writes nothing)",
+    "computer/gui_client.py:save_state": "broker mode: a write of the worker's state the screen side made through "
+                                         "privacy.write_scrubbed (or a recording's pixels) and handed back, written "
+                                         "as the worker under its own state folder",
     "computer/gui_client.py:save_output": "a screenshot the screen broker handed back, written as the caller at a "
                                           "path the caller named; and a fixed line to its own stderr",
     "computer/recording.py:write_bytes_whole": "a recording's frames (pixels; password fields painted over)",
@@ -127,6 +139,11 @@ FORMS = {
     "computer/audit.py:keep_observation": {"os.replace", "write_bytes"},
     "computer/broker.py:deliver_to_caller": {"open", "os.replace"},
     "computer/gui_client.py:save_output": {"os.open", "os.write", "os.replace"},
+    "computer/broker.py:_keep_copy": {"os.open", "os.write", "os.replace"},
+    "computer/gui_client.py:save_state": {"os.open", "os.write", "os.replace"},
+    "computer/gui_client.py:_read_own": {"os.open"},
+    "computer/broker.py:worker_a11y_bus": {"os.open"},
+    "computer/gui_client.py:input_files": {"os.open"},
     "computer/recording.py:write_bytes_whole": {"path.replace", "write_bytes"},
     "computer/cli.py:main": {"open"},
     "computer/demonstration.py:start": {"open"},
@@ -182,6 +199,8 @@ RAW_HELPERS = {
     "write_bytes_whole": {"computer/recording.py:write_whole"},
     "_hold": {"long_task.py:_take_message", "long_task.py:_take_new_request"},
     "_write_private": {"gate_server.py:end_task", "gate_server.py:keep_request", "gate_server.py:keep_secrets"},
+    "_keep_copy": {"computer/broker.py:take_context", "computer/broker.py:local_copy",
+                   "computer/broker.py:_take_launchers"},
     "save_request": {"http_api.py:_learn", "http_api.py:_replay", "http_api.py:_request", "http_api.py:_run_skill"},
     "_write_literals": {"computer/privacy.py:_with_literals"},
     "_with_literals": {"computer/privacy.py:clear_literals", "computer/privacy.py:remember_literals"},

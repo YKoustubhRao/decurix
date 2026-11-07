@@ -71,6 +71,11 @@ MAX_CALLS = 8
 
 # The largest request: argv and environment together are bounded by the kernel's ARG_MAX (2 MB on Linux).
 MAX_REQUEST = 8 * 1024 * 1024
+# In broker mode a request also carries the caller's state (gui_client.caller_context: the task's evidence so far,
+# a few MB at most) and the files it hands over: the broker takes more.
+MAX_BROKER_REQUEST = 64 * 1024 * 1024
+# Descriptors a request may come with: 0-2, the working folder, and the files handed over (gui_client.MAX_INPUTS).
+MAX_FDS = 4 + gui_client.MAX_INPUTS + gui_client.MAX_TASK_DOCUMENTS
 
 # Exit code of a daemon that cannot serve here (or another daemon serves or is starting).
 EXIT_DO_NOT_RESTART = 3
@@ -361,11 +366,14 @@ class Broker:
 # ------------------------------------------------------------
 
 class Request:
-    """One command as its client handed it over."""
+    """One command as its client handed it over. In broker mode also: `context`, the parts of the caller's state it
+    sent ({name: bytes, or None for one it does not have}; gui_client.caller_context), and `inputs`, the files it
+    handed over to be read ([(given, absolute path, fd)]; gui_client.input_files)."""
 
-    def __init__(self, umask, nice, fd_mask, argv, env, fds, cwd_fd):
+    def __init__(self, umask, nice, fd_mask, argv, env, fds, cwd_fd, context=None, inputs=()):
         self.umask, self.nice, self.fd_mask, self.argv, self.env = umask, nice, fd_mask, argv, env
         self.fds, self.cwd_fd = fds, cwd_fd
+        self.context, self.inputs = dict(context or {}), list(inputs)
 
 
 def _unpack(body):
@@ -392,21 +400,38 @@ def parse_request(data, fds):
     argv = fields[4:4 + argc]
     if len(argv) != argc:
         raise ValueError("argv cut short")
-    env = {}
+    env, context, given = {}, {}, []
     for item in fields[4 + argc:]:
+        if item[:1] == b"\0":
+            # Broker mode's own fields (no environment entry starts with a NUL).
+            kind, rest = item[1:2], item[2:]
+            if kind == b"c":
+                name, sep, value = rest.partition(b"\0")
+                if sep:
+                    context[name] = value
+            elif kind == b"x":
+                context[rest] = None
+            elif kind == b"f":
+                shown, sep, path = rest.partition(b"\0")
+                if not sep:
+                    raise ValueError("a handed file without its path")
+                given.append((shown, path))
+            continue
         key, sep, value = item.partition(b"=")
         if sep:
             env[key] = value
     standard = [fd for fd in (0, 1, 2) if fd_mask & (1 << fd)]
-    if len(fds) != len(standard) + 1:
+    if len(fds) != len(standard) + 1 + len(given):
         raise ValueError("descriptors do not match the request")
-    return Request(umask, nice, fd_mask, argv, env, dict(zip(standard, fds[:-1])), fds[-1])
+    cwd_at = len(standard)
+    inputs = [(shown, path, fd) for (shown, path), fd in zip(given, fds[cwd_at + 1:])]
+    return Request(umask, nice, fd_mask, argv, env, dict(zip(standard, fds[:cwd_at])), fds[cwd_at], context, inputs)
 
 
-def read_request(conn):
+def read_request(conn, broker=False):
     """Read one request and its descriptors from `conn`. Returns (bytes, [fds])."""
 
-    space = socket.CMSG_SPACE(4 * struct.calcsize("i"))
+    space = socket.CMSG_SPACE(MAX_FDS * struct.calcsize("i"))
     data, ancdata, flags, _ = conn.recvmsg(65536, space)
     fds = []
     for level, kind, payload in ancdata:
@@ -422,7 +447,7 @@ def read_request(conn):
                 raise ValueError("request cut short")
             data += chunk
         total = 8 + int.from_bytes(data[4:8], "big")
-        if total > MAX_REQUEST:
+        if total > (MAX_BROKER_REQUEST if broker else MAX_REQUEST):
             raise ValueError("request too large")
         while len(data) < total:
             chunk = conn.recv(min(1 << 20, total - len(data)))
@@ -587,11 +612,19 @@ class Child:
             forget_own_modules()
 
         if broker is not None:
-            # Where deliver_to_caller sends a file the command writes for its caller (broker.py).
+            # Where deliver_to_caller sends a file the command writes for its caller, and broker.mirror a write of
+            # the caller's state (broker.py); the files the caller handed over, by descriptor (broker.read_input).
             import types
             holder = types.ModuleType(screen_broker.CALLER_MODULE)
             holder.conn = self.conn
+            holder.inputs = {}
+            for shown, path, fd in req.inputs:
+                os.set_inheritable(fd, False)
+                holder.inputs.setdefault(os.fsdecode(shown), fd)
+                holder.inputs.setdefault(os.fsdecode(path), fd)
             sys.modules[holder.__name__] = holder
+            # What the screen side is told of the caller's state, put where this command's code reads it.
+            screen_broker.take_context(req.context)
         elif self.server.path0_is_cwd and sys.path:
             # `python3 -m` puts the working folder first on sys.path. Never in broker mode: a module the caller left
             # in its folder would run as the screen user.
@@ -883,8 +916,10 @@ class Server:
                 conn.sendall(b"R" + bytes([REFUSE_USER]))
                 return
             try:
-                data, fds = read_request(conn)
+                data, fds = read_request(conn, broker=self.broker is not None)
                 req = parse_request(data, fds)
+                if self.broker is None and (req.context or req.inputs):
+                    raise ValueError("broker fields sent to a daemon that is not the broker")
             except (ValueError, OSError):
                 try:
                     conn.sendall(b"R" + bytes([REFUSE_PROTOCOL]))

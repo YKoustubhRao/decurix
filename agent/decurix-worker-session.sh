@@ -45,12 +45,41 @@ if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
     export XDG_RUNTIME_DIR
 fi
 
-# This user's own session bus: its apps' settings (xfconf), its accessibility bus, the panel's plugins.
-eval "$(dbus-launch --sh-syntax)"
+# This user's own session bus: its apps' settings (xfconf), its accessibility bus, the panel's plugins. Started
+# without DISPLAY, and the accessibility bus started on it before DISPLAY is given to what the bus starts: the
+# accessibility bus's launcher names its bus on the display's root window when it has a display, which an untrusted
+# client may not (BadAccess), and it died there - so no app of this user's had an accessibility bus at all (found
+# live 2026-11-07). The apps ask the session bus for its address instead (org.a11y.Bus). And with the launch helper's
+# folder for its runtime folder (this user's, 0711, launch_helper.bind makes it the same way), where the launcher puts
+# its socket (at-spi/bus): the screen broker can pass through to it, as it cannot into this user's own runtime folder
+# or ~/.cache (0700).
+LAUNCH_DIR=${DECURIX_LAUNCH_DIR:-/tmp/decurix-launch-$(id -u)}
+mkdir -p "$LAUNCH_DIR/at-spi" && chmod 711 "$LAUNCH_DIR" "$LAUNCH_DIR/at-spi"
+eval "$(env -u DISPLAY -u XAUTHORITY XDG_RUNTIME_DIR="$LAUNCH_DIR" dbus-launch --sh-syntax)"
 export DBUS_SESSION_BUS_ADDRESS
+a11y=$(env -u DISPLAY dbus-send --session --print-reply=literal --dest=org.a11y.Bus /org/a11y/bus \
+    org.a11y.Bus.GetAddress 2>/dev/null | tr -d ' \n')
+dbus-update-activation-environment DISPLAY XAUTHORITY XDG_RUNTIME_DIR XDG_CURRENT_DESKTOP XDG_SESSION_TYPE \
+    >/dev/null 2>&1
 
+# The accessibility bus's address, for the screen broker: it reads this user's apps' widgets there (`gui observe` of a
+# LibreOffice window; computer/atspi.py, broker.worker_a11y_bus). In the launch helper's folder (this user's, which
+# others may only pass through; launch_helper.bind makes it the same way). The bus admits the screen user (the image's
+# accessibility.conf); the screen user's own bus never admits this one.
+case "$a11y" in
+    unix:*)
+        printf '%s\n' "$a11y" > "$LAUNCH_DIR/a11y-bus.new" && chmod 644 "$LAUNCH_DIR/a11y-bus.new" \
+            && mv -f "$LAUNCH_DIR/a11y-bus.new" "$LAUNCH_DIR/a11y-bus"
+        echo "[$(date)] accessibility bus at $a11y"
+        ;;
+    *) echo "[$(date)] no accessibility bus: the screen broker sees no widget of this user's apps" ;;
+esac
+
+# Not xfdesktop: an untrusted client may not set the root window's properties or see its events, and it exits at
+# its first (BadAccess). The screen user draws the wallpaper (computer/wallpaper.py); there are no desktop icons in
+# this mode - run as the screen user, xfdesktop's menus would start programs as that user, past the gate.
 which xdg-user-dirs-update >/dev/null 2>&1 && xdg-user-dirs-update
-for part in xfsettingsd xfce4-panel xfdesktop "Thunar --daemon"; do
+for part in xfsettingsd xfce4-panel "Thunar --daemon"; do
     # shellcheck disable=SC2086 # a part is a program and its arguments
     setsid $part < /dev/null >> "$LOG" 2>&1 &
     echo "[$(date)] started $part (pid $!)"

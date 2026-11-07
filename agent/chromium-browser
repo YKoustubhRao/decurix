@@ -12,6 +12,25 @@
 # The name stays chromium-browser because launchers already written into
 # desktops' home folders call it.
 
+# Broker mode (DECURIX_SCREEN_USER=1; docs/gate-boundary.md), started as the worker - the panel's Web Browser
+# launcher (exo-open), xdg-open, a link in an app, a host app's script: the desktop has one browser, the screen
+# user's, which the worker cannot start or reach. Each page named goes to it through the screen broker, as `gui open`
+# (a local file is handed over and opened as a copy the browser may read); with none, the browser is brought up.
+# Flags are not passed on: the screen side takes none from the worker but a new window.
+if [ "${DECURIX_SCREEN_USER:-}" = "1" ] && [ "$(/usr/bin/id -u)" = "${DECURIX_SCREEN_WORKER_UID:-1001}" ]; then
+    status=0 opened=0
+    for arg in "$@"; do
+        case "$arg" in
+            -*|"") ;;
+            *) opened=1; /usr/local/bin/gui open "$arg" >/dev/null || status=$? ;;
+        esac
+    done
+    if [ "$opened" = 0 ]; then
+        /usr/local/bin/gui open browser >/dev/null || status=$?
+    fi
+    exit "$status"
+fi
+
 CHROMIUM_FLAGS=""
 if [ -f "$HOME/.chromium-browser.init" ]; then
     . "$HOME/.chromium-browser.init"

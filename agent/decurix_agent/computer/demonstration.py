@@ -380,8 +380,20 @@ def stop():
 
     _close(active["session"], "interrupted", "the recorder stopped before it finished")
     _clear_active()
+    _hand_back(active["session"])
 
     return recording.meta(active["session"])
+
+
+def _hand_back(session_id):
+    """Broker mode: the recorder ran as the screen user and wrote the recording in that user's folder; at its end the
+    caller's copy (the worker's recordings, where the agent learns from it) becomes the whole of it."""
+
+    from decurix_agent.computer import broker
+    try:
+        broker.mirror_tree(recording._dir(session_id))
+    except (OSError, ValueError) as exc:
+        log(f"Could not hand demonstration {session_id} back: {exc}")
 
 
 @screen_call.routed("demonstration.recover")
@@ -401,6 +413,7 @@ def recover():
         if found.get("kind") == "demonstration" and found.get("status") == "recording":
             if not active or active.get("session") != found["id"]:
                 _close(found["id"], "interrupted", "the desktop restarted while it was being recorded")
+                _hand_back(found["id"])
 
 
 # ============================================================

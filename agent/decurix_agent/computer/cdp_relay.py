@@ -614,7 +614,8 @@ def main(argv=None):
     listener = bind(path)
     if listener is None:
         return 1
-    env = dict(os.environ)
+    # Never the worker's accessibility bus (atspi._broker_bus): the browser's widgets on it would be the worker's to press.
+    env = {k: v for k, v in os.environ.items() if k != "AT_SPI_BUS_ADDRESS"}
     env[PIPE_ENV[0]] = PIPE_ENV[1]
     try:
         pid, write_fd, read_fd = spawn_browser(command, env)

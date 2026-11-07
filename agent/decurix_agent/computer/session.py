@@ -159,10 +159,13 @@ def launch(argv):
     if broker.screen_side():
         if browser_command(argv):
             import sys
+            # Never the worker's accessibility bus (atspi._broker_bus): the browser's own widgets on it would be the
+            # worker's to press.
+            env = {k: v for k, v in app_env().items() if k != "AT_SPI_BUS_ADDRESS"}
             return subprocess.Popen(
                 [sys.executable, "-m", "decurix_agent.computer.cdp_relay", "--", str(argv[0])]
                 + browser_arguments(argv[1:]),
-                env=app_env(),
+                env=env,
                 cwd=str(Path.home()),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,

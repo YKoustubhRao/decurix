@@ -93,8 +93,11 @@ class TheTwoSessions(unittest.TestCase):
     def test_the_worker_session_starts_its_parts_and_the_agent_but_no_x_server_or_window_manager(self):
         worker = code(WORKER.read_text(encoding="utf-8"))
         self.assertIn("/opt/start_agent_terminal.sh", worker)
-        for part in ("xfce4-panel", "xfdesktop", "xfsettingsd"):
+        for part in ("xfce4-panel", "xfsettingsd"):
             self.assertIn(part, worker)
+        # Not xfdesktop: as an untrusted client it cannot run, and as the screen user its menus would start programs
+        # past the gate; the screen user draws the wallpaper (computer/wallpaper.py).
+        self.assertNotIn("xfdesktop", worker)
         for screen_part in ("Xtigervnc", "Xvnc", "vncserver", "xfwm4", "chromium-browser", "xhost"):
             self.assertNotIn(screen_part, worker)
         self.assertIn('XAUTHORITY="$HOME/.Xauthority"', worker)

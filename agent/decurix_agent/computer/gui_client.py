@@ -23,13 +23,24 @@ Frames (2 bytes each, kind + one byte):
                     E+code / K+signal (how the child ended, from the daemon)
   and one frame of its own length, from the child, in broker mode only:
                     O + 4-byte length + fields (flags, path, bytes): a file the command writes for its caller
-                    (a screenshot), which this client writes as the caller (deliver_to_caller in broker.py)
+                    (a screenshot), which this client writes as the caller (deliver_to_caller in broker.py), or
+                    (OUTPUT_STATE) a write of the worker's own state - a recording, an evidence note - at a path
+                    under the caller's state folder (broker.mirror, save_state)
 
 Broker mode (DECURIX_SCREEN_USER=1; docs/gate-boundary.md, "Next: the input broker"): the screen is another user's,
 `decurixscreen`, and its daemon - the screen broker - listens in a shared folder (/run/decurix-screen, the screen
 user's, 0711). This client then trusts the socket only when the folder is the screen user's and nobody else may write
-in it, and the process that answers is the screen user's (SO_PEERCRED). It never runs a command in its own process:
+in it, and the process that answers is the screen user's (SO_PEERCRED). It never runs a screen command in its own process:
 the worker's user cannot reach the screen, so a command the broker did not take is an error, said as such.
+
+What is the worker's and what is the screen's, in broker mode (docs/gate-boundary.md, "the screen side's own
+state"): the worker's state (~/.decurix, the task file in /tmp) stays the worker's, written only by the worker. The
+screen side never opens a path of the worker's: what it must know of that state comes with each request
+(caller_context: the task, its secrets, its evidence so far), the files a command was given to read come as
+descriptors (input_files: an upload, a local page), and what it writes of the worker's state comes back over the
+connection for this client to write (save_state). The commands that read or write only the worker's own stores
+(WORKER_COMMANDS: its skills, recordings, records and guides) run here, as the worker, and reach the screen only
+through the broker (screen_call.py), like the agent's own calls.
 """
 
 import os
@@ -50,8 +61,42 @@ UNREACHABLE_EXIT = 1
 # The largest file a command hands its caller to write (a screenshot is a few MB).
 MAX_OUTPUT = 64 * 1024 * 1024
 
-# Flags of an O frame.
-OUTPUT_REQUIRED, OUTPUT_ATOMIC = 1, 2
+# Flags of an O frame. STATE: the path is relative to the caller's state folder (save_state), APPEND: add to it.
+OUTPUT_REQUIRED, OUTPUT_ATOMIC, OUTPUT_STATE, OUTPUT_APPEND = 1, 2, 4, 8
+
+# Broker mode: the commands that read and write only the worker's own stores - its skills, recordings, record ledger,
+# memory and app guides - and reach the screen, where they do at all (replay, do), through the broker's screen calls
+# (screen_call.py). They run in this process, as the worker, which is whose stores those are: run by the screen user
+# they would read none of them (the screen user may not open the worker's files, and must not: a file the worker
+# planted there could point at the screen user's own).
+WORKER_COMMANDS = frozenset({"recordings", "recording", "records", "record", "skills", "recall", "skill", "do",
+                             "replay", "guide"})
+
+# What of the worker's state the screen side is told with every command (caller_context), as the worker holds it:
+# the task file's parts (task_context.py, privacy's secret values beside it), state files a screen command reads,
+# and the current task's evidence so far and its recording's meta. Each is read here, as the worker, and written by
+# the broker's child into the screen user's own folders (broker.take_context); nothing of it is a path the screen
+# side opens. A name is "t" + a task-file suffix or "s" + a path under the state folder (broker.CONTEXT_NAME).
+TASK_SUFFIXES = ("", ".stage", ".request", ".files", ".since", ".continues", ".secrets", ".secrets.resume")
+STATE_FILES = ("withheld-secrets", "active-task.json", "filled-documents.json", "opened-files.json",
+               "computer/worker_mode.json", "computer/guided-run.json")
+TASK_STATE = ("computer/evidence/%s.jsonl", "computer/evidence/%s.records.json", "computer/evidence/%s.files",
+              "computer/evidence/%s.outputs", "computer/evidence/%s.said", "recordings/task-%s/meta.json")
+MAX_CONTEXT_FILE = 8 * 1024 * 1024
+# The worker's launchers (its desktop's icons and its menu's apps, launchers.PLACES), sent the same way: "l" + the
+# place + "/" + the file's name. The screen side lists and opens them by name (`gui open "Excel (Host)"`, a replay
+# bringing a window forward) and starts what one runs through the worker's launch helper, as the worker.
+LAUNCHER_PLACES = (("Desktop", "Desktop"), ("applications", ".local/share/applications"))
+MAX_LAUNCHERS, MAX_LAUNCHER_FILE = 200, 64 * 1024
+# The files the task's request brought (the task file's .files), handed over as descriptors with every command: the
+# screen side reads them to check a chosen record against them (core._in_documents). At most this many.
+MAX_TASK_DOCUMENTS = 4
+
+# The parts of the caller's state folder the screen side writes into (save_state): recordings and evidence.
+MIRRORED_ROOTS = ((b"recordings",), (b"computer", b"evidence"))
+
+# At most this many files a command names are handed over as descriptors (input_files).
+MAX_INPUTS = 16
 
 # How long the daemon has to accept a command before it is run here instead.
 HANDSHAKE_SECONDS = 2.0
@@ -213,6 +258,127 @@ def unpack(body):
     return fields
 
 
+def state_dir():
+    """The worker's state folder (config.DECURIX_DIR)."""
+
+    return os.environ.get("DECURIX_DIR") or os.path.join(os.path.expanduser("~"), ".decurix")
+
+
+def task_file():
+    """The worker's task file (task_context.CURRENT_FILE)."""
+
+    return os.environ.get("DECURIX_TASK_FILE") or "/tmp/decurix-current-task"
+
+
+def _read_own(path, limit=MAX_CONTEXT_FILE):
+    """A regular file's bytes, read as this user, or None (absent, not a regular file, larger than `limit`)."""
+
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0))
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if (st.st_mode & 0o170000) != 0o100000 or st.st_size > limit:
+            return None
+        chunks, left = [], limit + 1
+        while left > 0:
+            chunk = os.read(fd, min(1 << 20, left))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            left -= len(chunk)
+        data = b"".join(chunks)
+        return data if len(data) <= limit else None
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def _valid_task(raw):
+    task = (raw or b"").strip()
+    return task if len(task) == 17 and task[:1] == b"t" and all(c in b"0123456789abcdef" for c in task[1:]) else b""
+
+
+def caller_context():
+    r"""The request's context fields (broker mode): b"\0c" + name + b"\0" + bytes for each part of the worker's state
+    the screen side is told (TASK_SUFFIXES, STATE_FILES, TASK_STATE of the current task), b"\0x" + name for one that
+    is not there (the screen side's copy is removed)."""
+
+    fields, base, root = [], task_file(), state_dir()
+    items = [(b"t" + suffix.encode(), base + suffix) for suffix in TASK_SUFFIXES]
+    items += [(b"s" + rel.encode(), os.path.join(root, rel)) for rel in STATE_FILES]
+    task = _valid_task(_read_own(base, 64))
+    if task:
+        items += [(b"s" + (rel % task.decode()).encode(), os.path.join(root, rel % task.decode())) for rel in TASK_STATE]
+    for name, path in items:
+        data = _read_own(path)
+        fields.append(b"\0x" + name if data is None else b"\0c" + name + b"\0" + data)
+    fields.append(b"\0cl\0")  # (the whole set of launchers follows: one the screen side has and is not in it goes)
+    home, sent = os.path.expanduser("~"), 0
+    for place, folder in LAUNCHER_PLACES:
+        try:
+            names = sorted(n for n in os.listdir(os.path.join(home, folder)) if n.endswith(".desktop"))
+        except OSError:
+            continue
+        for file_name in names:
+            if sent >= MAX_LAUNCHERS or "/" in file_name or file_name.startswith("."):
+                continue
+            data = _read_own(os.path.join(home, folder, file_name), MAX_LAUNCHER_FILE)
+            if data is not None:
+                fields.append(b"\0cl" + os.fsencode(place + "/" + file_name) + b"\0" + data)
+                sent += 1
+    return fields
+
+
+def task_documents():
+    """The files the current task's request brought, as the task file lists them (at most MAX_TASK_DOCUMENTS)."""
+
+    listed = _read_own(task_file() + ".files", 1 << 20) or b""
+    return [os.fsdecode(line.strip()) for line in listed.splitlines() if line.strip()][:MAX_TASK_DOCUMENTS]
+
+
+def _file_argument(arg):
+    """The local path an argument names (a path, or a file:// URL's), or None."""
+
+    if arg.startswith("file://"):
+        arg = arg[len("file://"):]
+        if "%" in arg:
+            import urllib.parse
+            arg = urllib.parse.unquote(arg)
+    if not arg or "\0" in arg or len(arg) > 4096:
+        return None
+    return arg
+
+
+def input_files(argv):
+    """The files a command names that this user can read (broker mode): [(given, absolute path, descriptor)], read
+    only and at most MAX_INPUTS. The screen side reads them only from these descriptors - an upload, a local page the
+    browser opens - never by their paths, which the screen user may not open."""
+
+    found, seen = [], set()
+    for arg in list(argv[1:]):
+        for candidate in (arg, arg.split("=", 1)[1] if arg.startswith("--") and "=" in arg else None):
+            path = _file_argument(candidate) if candidate else None
+            if path is None or path in seen or len(found) >= MAX_INPUTS:
+                continue
+            seen.add(path)
+            try:
+                fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0))
+            except OSError:
+                continue
+            try:
+                regular = (os.fstat(fd).st_mode & 0o170000) == 0o100000
+            except OSError:
+                regular = False
+            if not regular:
+                os.close(fd)
+                continue
+            found.append((os.fsencode(candidate), os.fsencode(os.path.abspath(path)), fd))
+    return found
+
+
 def caller_paths(argv):
     """The paths a command was given (bytes) - its arguments, the value of each `--option=value`, and
     DECURIX_GUI_SCREENSHOT. A file the broker hands back is written only at one of these: the screen side fills in
@@ -230,15 +396,69 @@ def caller_paths(argv):
     return paths
 
 
+def state_target(rel):
+    """Where a state write the screen side handed back goes (bytes), or None: a relative path of plain parts, in one
+    of MIRRORED_ROOTS, under this user's state folder."""
+
+    parts = rel.split(b"/")
+    if not rel or rel.startswith(b"/") or any(p in (b"", b".", b"..") or b"\0" in p for p in parts):
+        return None
+    if not any(tuple(parts[:len(root)]) == root and len(parts) > len(root) for root in MIRRORED_ROOTS):
+        return None
+    return os.path.join(os.fsencode(state_dir()), rel)
+
+
+def save_state(flags, rel, data):
+    """Write a state write the screen side handed back (OUTPUT_STATE), as this user: added to the file (APPEND) or
+    put in its place whole. Returns whether it was written; one that was not is said on stderr, the command's own
+    result stands (a lost note is a lost note, as in-process)."""
+
+    target = state_target(rel)
+    shown = os.fsdecode(rel)
+    if target is None:
+        os.write(2, ("gui: the screen broker sent a state file for %r, which is not one it may write; not written\n"
+                     % shown).encode("utf-8", "replace"))
+        return False
+    try:
+        # Nobody else's to write, whatever this command's umask (a `docker exec` has 0000): 0755 and 0644 at most.
+        mask = os.umask(0o022)
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+        finally:
+            os.umask(mask)
+        if flags & OUTPUT_APPEND:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_CLOEXEC", 0)
+                         | getattr(os, "O_BINARY", 0), 0o644)
+            part = None
+        else:
+            part = target + b".%d.part" % os.getpid()
+            fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_CLOEXEC", 0)
+                         | getattr(os, "O_BINARY", 0), 0o644)
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+        finally:
+            os.close(fd)
+        if part is not None:
+            os.replace(part, target)
+    except OSError as exc:
+        os.write(2, ("gui: could not keep %s: %s\n" % (shown, exc.strerror or exc)).encode("utf-8", "replace"))
+        return False
+    return True
+
+
 def save_output(payload, allowed):
     """Write one O frame's file as this process's user, in its working folder: (written, required). A path the
-    caller did not give is not written."""
+    caller did not give is not written. A state write (OUTPUT_STATE) goes to save_state."""
 
     try:
         flags, path, data = unpack(payload)
         flags = int(flags)
     except ValueError:
         return False, True
+    if flags & OUTPUT_STATE:
+        return save_state(flags, path, data), False
     required = bool(flags & OUTPUT_REQUIRED)
     shown = os.fsdecode(path)
     if path not in allowed:
@@ -263,8 +483,10 @@ def save_output(payload, allowed):
     return True, required
 
 
-def request(argv, fd_mask):
-    """The request's bytes: protocol, length, then umask, niceness, which of 0-2 are sent, argc, argv, environment."""
+def request(argv, fd_mask, extra=()):
+    """The request's bytes: protocol, length, then umask, niceness, which of 0-2 are sent, argc, argv, environment,
+    and (broker mode) the `extra` fields: the caller's context and the files handed over (each starts with a NUL,
+    which no environment entry can)."""
 
     mask = os.umask(0)
     os.umask(mask)
@@ -275,6 +497,7 @@ def request(argv, fd_mask):
     fields = [b"%d" % mask, b"%d" % nice, b"%d" % fd_mask, b"%d" % len(argv)]
     fields += [os.fsencode(a) for a in argv]
     fields += [k + b"=" + v for k, v in os.environb.items()]
+    fields += list(extra)
     body = _pack(fields)
     return PROTOCOL + len(body).to_bytes(4, "big") + body
 
@@ -283,6 +506,28 @@ def in_process(argv):
     """Run the command here, as `gui` always did. Never returns."""
 
     os.execvp("python3", ["python3", "-m", "decurix_agent.computer"] + list(argv))
+
+
+def broker_ready():
+    """Whether the screen broker serves now: its folder is the screen user's and the screen user answers at its socket
+    (nothing is sent; the broker reads no request and lets the connection go)."""
+
+    try:
+        import _socket
+    except ImportError:
+        return False
+    owner = screen_uid()
+    if owner is None or not shared_dir(screen_dir(), owner):
+        return False
+    conn = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    try:
+        conn.settimeout(HANDSHAKE_SECONDS)
+        conn.connect(broker_socket_path())
+        return peer_uid(conn) == owner
+    except OSError:
+        return False
+    finally:
+        conn.close()
 
 
 def _recv_exact(conn, n):
@@ -351,6 +596,14 @@ def hand_over(argv, broker=False):
     if handed is None:
         return "absent", NOT_HANDED
     fds, mask, cwd = handed
+    inputs, extra = [], []
+    if broker:
+        inputs = input_files(argv)
+        named = {path for _, path, _ in inputs}
+        inputs += [i for i in input_files([""] + task_documents()) if i[1] not in named][:MAX_TASK_DOCUMENTS]
+        inputs = inputs[:MAX_INPUTS + MAX_TASK_DOCUMENTS]
+        fds = fds + [fd for _, _, fd in inputs]
+        extra = caller_context() + [b"\0f" + given + b"\0" + path for given, path, _ in inputs]
 
     conn = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     try:
@@ -360,7 +613,7 @@ def hand_over(argv, broker=False):
             if broker and peer_uid(conn) != owner:
                 # Not the screen user answering: nothing is handed to it, not even the command.
                 return "untrusted", "the process at %s is not the screen user's" % path
-            data = request(argv, mask)
+            data = request(argv, mask, extra)
             rights = [(_socket.SOL_SOCKET, _socket.SCM_RIGHTS, b"".join(fd.to_bytes(4, sys.byteorder, signed=True)
                                                                          for fd in fds))]
             try:
@@ -383,6 +636,8 @@ def hand_over(argv, broker=False):
             return "absent", None
         finally:
             os.close(cwd)
+            for _, _, fd in inputs:
+                os.close(fd)
         if reply[:1] == b"R":
             return "refused", reply[1] if len(reply) == 2 else 0
         if reply != b"A\0":
@@ -590,6 +845,9 @@ def main(argv=None):
 
     argv = sys.argv[1:] if argv is None else argv
     if broker_requested():
+        if argv and argv[0] in WORKER_COMMANDS:
+            # The worker's own stores, read and written as the worker; the screen only through the broker.
+            in_process(argv)
         status, detail = hand_over(argv, broker=True)
         if status == "ran" and detail[0] != "absent":
             _end(detail)

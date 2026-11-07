@@ -830,6 +830,16 @@ def run(argv):
 
     command = args.command
 
+    # A download a page began after the last action's note had ended is said now, once (core._unreported_downloads):
+    # never lost, at most one command late.
+    try:
+        late = core.downloads_since_last()
+    except Exception as exc:  # noqa: BLE001 - a note; the command runs whatever it says
+        logging_utils.log(f"gui: could not compare the download folder with its record: {exc}")
+        late = ""
+    if late:
+        print(late)
+
     if command == "observe":
         observation, loading = settled_look(core.observe())
         core.report_observation(observation)

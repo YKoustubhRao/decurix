@@ -976,3 +976,6 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A process that imports once reads its settings once
 - [part-6.md](gotchas/part-6.md): A Unix socket's file is not the socket's inode
 - [part-6.md](gotchas/part-6.md): The base image's Xvnc has no SECURITY extension, so it cannot give out an untrusted X cookie
+- [part-6.md](gotchas/part-6.md): The browser's download bubble moves the next action's time
+- [part-6.md](gotchas/part-6.md): An untrusted X client gets nothing of the root window: no property write, no event
+- [part-6.md](gotchas/part-6.md): A widget on the worker's accessibility bus is the worker's word, box included

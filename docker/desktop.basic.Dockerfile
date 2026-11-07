@@ -367,6 +367,14 @@ COPY agent/decurix-worker-session.sh /opt/decurix-worker-session.sh
 COPY agent/decurix-xfwm4.xml /etc/xdg/decurix-screen/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
 RUN chmod 755 /opt/decurix-screen-session.sh /opt/decurix-worker-session.sh \
     && chmod 644 /etc/xdg/decurix-screen/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
+# Broker mode: the screen broker reads the worker's apps' widgets on the worker's accessibility bus (computer/atspi.py,
+# _broker_bus), so that bus admits the screen user as well as its own user and root. The other way it does not: the
+# screen user's own bus admits root and the screen user only. The screen user exists on every desktop but runs nothing
+# in the default mode, so this changes nothing there.
+RUN grep -q '<allow user="root"/>' /usr/share/defaults/at-spi2/accessibility.conf \
+    && sed -i 's|<allow user="root"/>|<allow user="root"/>\n    <allow user="decurixscreen"/>|' \
+        /usr/share/defaults/at-spi2/accessibility.conf \
+    && grep -q '<allow user="decurixscreen"/>' /usr/share/defaults/at-spi2/accessibility.conf
 # The agent compiled once, here, after its last COPY and before it is made root's (resource plan P1 #1): every `gui`
 # call and every start of the agent and the gate imported it from source, about a second each, because the worker
 # cannot write __pycache__ into a root-owned tree (and PYTHONDONTWRITEBYTECODE=1 says not to). The .pyc are root's,

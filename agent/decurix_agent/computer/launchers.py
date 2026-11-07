@@ -6,7 +6,7 @@ import shlex
 import time
 from pathlib import Path
 
-from decurix_agent.computer import browser, screen, screen_call, session, xinput
+from decurix_agent.computer import broker, browser, screen, screen_call, session, xinput
 from decurix_agent.logging_utils import log
 
 
@@ -29,6 +29,10 @@ from decurix_agent.logging_utils import log
 
 HOME = Path(os.environ.get("HOME", "/home/headless"))
 PLACES = [HOME / "Desktop", HOME / ".local" / "share" / "applications"]
+if broker.screen_side():
+    # Broker mode, the screen side: the worker's own launchers, as its caller sent them (broker.take_context) - never
+    # read from the worker's folders, and never run here (session.launch hands what one runs to the worker).
+    PLACES = [Path(p) for p in broker.launcher_places(str(HOME))]
 
 # How long an app may take to show its window: a Chromium --app window cold
 # on a 1-vCPU desktop took 11-15 s, a host app's viewer a few more.

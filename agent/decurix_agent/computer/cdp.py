@@ -4,6 +4,7 @@ import os
 import re
 import socket
 import struct
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -244,6 +245,35 @@ class Page:
                 raise ComputerError(f"{method}: {message['error'].get('message')}")
 
             return message.get("result", {})
+
+    def call_all(self, calls, timeout=CALL_TIMEOUT):
+        """
+        call_all does `calls` ([(method, params)]) in one go: all are sent, then all answers read. The browser runs a
+        session's commands in the order they came, so this is the same as calling them one after another, without a
+        round trip between them. Raises the first one's error once every answer is in (so the session stays in step).
+        """
+
+        first, answers = self.seq + 1, {}
+        self.ws.sock.settimeout(timeout)
+        for method, params in calls:
+            self.seq += 1
+            self.ws.send(json.dumps({"id": self.seq, "method": method, "params": params or {}}))
+        last = self.seq
+        while len(answers) < last - first + 1:
+            try:
+                message = json.loads(self.ws.receive())
+            except socket.timeout:
+                raise ComputerError(f"Chromium did not answer {len(calls)} calls within {timeout}s")
+            mine = message.get("id")
+            if isinstance(mine, int) and first <= mine <= last:
+                answers[mine] = message
+            elif "method" in message and "id" not in message:
+                self.events.append(message)
+                del self.events[:-MAX_EVENTS]
+        for n in range(first, last + 1):
+            if "error" in answers[n]:
+                raise ComputerError(f"{calls[n - first][0]}: {answers[n]['error'].get('message')}")
+        return [answers[n].get("result", {}) for n in range(first, last + 1)]
 
     def wait_event(self, method, timeout):
         """The params of the first `method` event, waiting up to `timeout` seconds; None if none came."""
@@ -1611,6 +1641,151 @@ def click(element, button="left", count=1):
         page.close()
 
 
+# ------------------------------------------------------------
+# Downloads an action starts (core._downloads_note)
+# ------------------------------------------------------------
+
+# A watch ends by itself this long after it began, closed or not.
+WATCH_SECONDS = 60
+# How long the browser may take to list its tabs or enable a watch's domains; slower, and the folder alone decides.
+WATCH_START_SECONDS = 2
+
+
+class DownloadWatch:
+    """
+    What the browser says about downloads while one action runs, heard on a DevTools session of its own on the page
+    the action goes to (a page's session, not the browser's: broker mode's relay serves pages only). With Page enabled
+    that session hears the page's downloads begin and end (Page.downloadWillBegin, Page.downloadProgress); it also
+    hears a window being opened (Page.windowOpen: a download in a new tab is that tab's, not heard here), the page's
+    loads (frameRequestedNavigation, frameStartedLoading/frameStoppedLoading) and, with Network enabled, the requests
+    it began after the watch did - a click whose answer is still on its way may yet start a download.
+
+    The download folder stays what says what arrived and what it is (core._downloads_note); this only says when there
+    is no more to wait for. A reader thread takes every event as it comes, so a page that sends many never fills the
+    socket (in broker mode the relay's one pipe would wait on it).
+    """
+
+    def __init__(self, page, page_ids):
+        self.page, self.page_ids = page, set(page_ids)
+        self.lock = threading.Lock()
+        self.began, self.ended = {}, {}      # guid -> suggested file name; guid -> "completed" / "canceled"
+        self.requests, self.loading = set(), set()
+        self.opened = False
+        self.quiet_since = time.time()       # when the page last had nothing in flight
+        self.alive = True
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._read, name="cdp-download-watch", daemon=True)
+        self._thread.start()
+
+    def _read(self):
+        import select
+
+        deadline = time.monotonic() + WATCH_SECONDS
+        ws = self.page.ws
+        try:
+            for message in self.page.events:
+                self._take(message)
+            self.page.events = []
+            while not self._stop.is_set() and time.monotonic() < deadline:
+                # Read only once something is there: a timeout in the middle of a message would lose its start.
+                if not ws.buffer and not select.select([ws.sock], [], [], 0.1)[0]:
+                    continue
+                ws.sock.settimeout(CALL_TIMEOUT)
+                self._take(json.loads(ws.receive()))
+        except (ComputerError, OSError, ValueError):
+            pass
+        finally:
+            with self.lock:
+                self.alive = False
+            self.page.close()
+
+    def _take(self, message):
+        method, params = message.get("method"), message.get("params") or {}
+        with self.lock:
+            if method == "Page.downloadWillBegin":
+                self.began[params.get("guid") or ""] = params.get("suggestedFilename") or ""
+            elif method == "Page.downloadProgress":
+                guid = params.get("guid") or ""
+                self.began.setdefault(guid, "")
+                if params.get("state") in ("completed", "canceled"):
+                    self.ended[guid] = params["state"]
+            elif method == "Page.windowOpen":
+                self.opened = True
+            elif method in ("Page.frameRequestedNavigation", "Page.frameStartedLoading"):
+                self.loading.add(params.get("frameId"))
+            elif method == "Page.frameStoppedLoading":
+                self.loading.discard(params.get("frameId"))
+            elif method == "Network.requestWillBeSent":
+                self.requests.add(params.get("requestId"))
+            elif method in ("Network.loadingFinished", "Network.loadingFailed"):
+                self.requests.discard(params.get("requestId"))
+            else:
+                return
+            if not self.requests and not self.loading:
+                self.quiet_since = time.time()
+
+    def status(self):
+        """status gives what was heard so far: alive (still hearing), opened (a window was opened), began {guid: name},
+        ended {guid: state}, busy (a load or a request begun since the watch is still in flight), quiet_since."""
+
+        with self.lock:
+            return {"alive": self.alive, "opened": self.opened, "began": dict(self.began), "ended": dict(self.ended),
+                    "busy": bool(self.requests or self.loading), "quiet_since": self.quiet_since}
+
+    def alone(self):
+        """
+        alone says whether nothing this session cannot hear may have started a download: no frame of another site
+        anywhere (it is a target of its own, and its downloads are its own), and no tab that was not there when the
+        watch began.
+        """
+
+        try:
+            targets = _get("/json/list", timeout=WATCH_START_SECONDS)
+        except (OSError, ValueError):
+            return False
+        if any(t.get("type") == "iframe" for t in targets):
+            return False
+        return {t.get("id") for t in targets if t.get("type") == "page"} <= self.page_ids
+
+    def close(self):
+        """close stops hearing; the reader thread closes the session."""
+
+        self._stop.set()
+
+
+def watch_downloads(target_id=None):
+    """
+    watch_downloads gives a DownloadWatch on the page an action goes to - the tab `target_id`, or with none the
+    browser's only tab - or None when there is none to be had: no browser, a frame of another site anywhere, the tab
+    not found, or no tab named and more than one open. None leaves the download folder alone to decide, as before.
+    """
+
+    try:
+        targets = _get("/json/list", timeout=WATCH_START_SECONDS)
+    except (OSError, ValueError):
+        return None
+    if any(t.get("type") == "iframe" for t in targets):
+        return None
+    pages = [t for t in targets if t.get("type") == "page" and t.get("webSocketDebuggerUrl")]
+    if target_id is None:
+        target = pages[0] if len(pages) == 1 else None
+    else:
+        target = next((t for t in pages if t.get("id") == target_id), None)
+    if target is None:
+        return None
+    try:
+        page = Page(target)
+    except (OSError, ComputerError):
+        return None
+    try:
+        page.call("Page.enable", timeout=WATCH_START_SECONDS)
+        page.call("Network.enable", timeout=WATCH_START_SECONDS)
+    except (OSError, ComputerError):
+        page.close()
+        return None
+    return DownloadWatch(page, [t.get("id") for t in targets if t.get("type") == "page"])
+
+
 def _object(page, backend_id):
     resolved = page.call("DOM.resolveNode", {"backendNodeId": backend_id})
     return resolved["object"]["objectId"]
@@ -1672,6 +1847,8 @@ def set_in_app(element, text, append=False):
 # A line longer than this is pasted (insertText) rather than typed key by key: nothing a form field takes is that long,
 # and a key event per character would take a while.
 KEYS_UP_TO = 500
+# Key events sent before their answers are read (Page.call_all): two a character.
+KEY_BATCH = 64
 
 
 def _type_line(page, object_id, line):
@@ -1688,6 +1865,7 @@ def _type_line(page, object_id, line):
         return
 
     before = _field_value(page, object_id)
+    keys = []
     for char in line:
         down = {"type": "keyDown", "key": char, "text": char, "unmodifiedText": char}
         up = {"type": "keyUp", "key": char}
@@ -1697,13 +1875,23 @@ def _type_line(page, object_id, line):
         if code:
             for event in (down, up):
                 event["code"], event["windowsVirtualKeyCode"], event["nativeVirtualKeyCode"] = code
-        page.call("Input.dispatchKeyEvent", down)
-        page.call("Input.dispatchKeyEvent", up)
+        keys += [("Input.dispatchKeyEvent", down), ("Input.dispatchKeyEvent", up)]
     # A viewer of an app running elsewhere (a host app, a phone app) passes each key on to that app and its stand-in
     # field does not change: found live (2026-10-15), every line typed into real Excel was inserted a second time here
     # ("TotalTotal"), corrupting the sheet. Its keys arrived; nothing is inserted after them.
-    if any(v in ((getattr(page, "target", None) or {}).get("url") or "") for v in RELAYED_VIEWER_PATHS):
-        return
+    relayed = any(v in ((getattr(page, "target", None) or {}).get("url") or "") for v in RELAYED_VIEWER_PATHS)
+    if relayed or not isinstance(page, Page):
+        # A viewer's keys go on to its app one at a time, each once the viewer has taken the last.
+        for method, params in keys:
+            page.call(method, params)
+        if relayed:
+            return
+    else:
+        # The same key events, in the same order, sent in batches rather than each after the last one's answer: the
+        # page handles them one by one either way (its main thread takes one input event at a time), and a round trip
+        # a key was most of the time a long line took.
+        for start in range(0, len(keys), KEY_BATCH):
+            page.call_all(keys[start:start + KEY_BATCH])
     after = _field_value(page, object_id)
     if after is not None and line not in after and after == (before or ""):
         page.call("Input.insertText", {"text": line})
@@ -1739,10 +1927,14 @@ def _field_value(page, object_id):
     return value
 
 
-def type_text(element, text, replace=True):
+def type_text(element, text, replace=True, check_later=False):
     """
     Type into an element. Returns False when the field took the text and then
     threw it away (the caller types it again with real keys), else True.
+
+    With check_later, whether the field kept the text is not waited for here: a function is returned instead (truthy),
+    which the caller calls once the screen has settled after the typing - a longer wait than this one's, spent on the
+    settle wait the caller makes anyway - and which answers the same question (False: thrown away).
     """
 
     page = _page_for(element)
@@ -1804,11 +1996,50 @@ def type_text(element, text, replace=True):
         # field empty, so the order could not be saved). The same text typed
         # key by key on the real keyboard stays. A field that formats what it
         # is given ("12" shown as "12.000") counts as having kept it.
-        _settle_frame(page, 400)
-        value = _value_of(page, object_id)
-        return value is None or text in value or _formatted(text, value)
+        if check_later:
+            return _kept_later(element, text)
+        _settle_frame(page, KEPT_WAIT_MS)
+        return _kept(_value_of(page, object_id), text)
     finally:
         page.close()
+
+
+# How long after typing a field is read back to see that it kept the text (type_text).
+KEPT_WAIT_MS = 400
+
+
+def _kept(value, text):
+    """Whether a field reading `value` kept `text` (no value to read counts as kept, as a formatted number does)."""
+
+    return value is None or text in value or _formatted(text, value)
+
+
+def _kept_later(element, text):
+    """
+    type_text's read-back, made later by the caller: called after the screen settled (at least KEPT_WAIT_MS after the
+    typing ended), on a session of its own. True when the field kept the text or cannot be read any more (the page
+    went on: the caller's own look judges the field then, as it does after every typing).
+    """
+
+    started = time.monotonic()
+
+    def kept():
+        wait = KEPT_WAIT_MS / 1000 - (time.monotonic() - started)
+        if wait > 0:
+            time.sleep(wait)  # never read sooner than type_text itself would have
+        try:
+            page = _page_for(element)
+        except (ComputerError, OSError):
+            return True
+        try:
+            value = _value_of(page, _object(page, element["handle"]["backend_id"]))
+        except (ComputerError, OSError):
+            return True
+        finally:
+            page.close()
+        return _kept(value, text)
+
+    return kept
 
 
 def _settle_frame(page, ms=120):

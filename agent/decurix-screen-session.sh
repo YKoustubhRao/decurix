@@ -28,15 +28,20 @@ XDG_CONFIG_DIRS=/etc/xdg/decurix-screen:/etc/xdg
 export DISPLAY XAUTHORITY XDG_RUNTIME_DIR XDG_CONFIG_DIRS
 # What a command the broker runs keeps (its references for the next action, the audit, the evidence, recordings) and
 # its logs: in this user's own folder, never the worker's ~/.decurix, which this user cannot write and must not.
-# A caller cannot change them (daemon.caller_may_set: a *_DIR is the screen side's). That the worker's side does not
-# see them is the open item "the screen side's own state" (docs/gate-boundary.md).
+# A caller cannot change them (daemon.caller_may_set: a *_DIR or *_FILE is the screen side's). What of it is the
+# worker's (its recordings and evidence) is handed back to the caller and written by it (broker.mirror), and what the
+# command must know of the worker's state - its task, the task's secrets, its evidence so far - comes with each
+# request and is put here (broker.take_context): the task file's parts in a folder of this user's on tmpfs, like
+# the worker's own in /tmp.
 DECURIX_DIR="$SCREEN_HOME/.decurix"
 DECURIX_WORK_DIR="$SCREEN_HOME/work"
 DECURIX_LOG_DIR="$SCREEN_HOME/logs"
-export DECURIX_DIR DECURIX_WORK_DIR DECURIX_LOG_DIR
+DECURIX_TASK_FILE="$SHARED/caller/task"
+export DECURIX_DIR DECURIX_WORK_DIR DECURIX_LOG_DIR DECURIX_TASK_FILE
 umask 077
 cd "$SCREEN_HOME" || exit 1
-mkdir -p "$XDG_RUNTIME_DIR" "$DECURIX_DIR" "$DECURIX_WORK_DIR" "$DECURIX_LOG_DIR"
+mkdir -p "$XDG_RUNTIME_DIR" "$DECURIX_DIR" "$DECURIX_WORK_DIR" "$DECURIX_LOG_DIR" "$SHARED/caller"
+chmod 700 "$SHARED/caller"
 exec >> "$LOG" 2>&1 < /dev/null
 echo "[$(date)] screen session starting (uid $(id -u))"
 
@@ -94,6 +99,10 @@ export DBUS_SESSION_BUS_ADDRESS
 # their own (found live 2026-11-07: "Couldn't connect to accessibility bus ... Permission denied").
 NO_AT_BRIDGE=1 /usr/bin/xfwm4 &
 echo "[$(date)] window manager started (pid $!)"
+
+# The wallpaper, drawn on the root window by this user: xfdesktop cannot run as the worker's untrusted client, and run
+# as this user its menus would start programs past the gate (computer/wallpaper.py). A picture only - no icons.
+(cd / && PYTHONPATH=/opt /usr/bin/python3 -m decurix_agent.computer.wallpaper /opt/decurix-wallpaper.svg) &
 
 # The screen broker, run again when it ends (its code changed on disk, a dev loop's docker cp) and not when it says
 # it cannot serve here (3). In /, the agent's code from /opt, nothing of anyone else's on sys.path.

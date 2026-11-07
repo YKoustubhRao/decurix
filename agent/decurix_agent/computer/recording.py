@@ -170,6 +170,8 @@ def write_bytes_whole(path, data):
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_bytes(data)
     tmp.replace(path)
+    from decurix_agent.computer import broker
+    broker.mirror(path, data)  # (broker mode: the caller's copy too)
 
 
 def _write_meta(directory, meta):

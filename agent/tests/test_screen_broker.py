@@ -775,7 +775,7 @@ sys.exit(screen_call.serve(sys.argv[1:]))
 """ % AGENT
 
 
-def _child_command(name):
+def _child_command(name, files=()):
     return [sys.executable, "-c", CHILD, name]
 
 
