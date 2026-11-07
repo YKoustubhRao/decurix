@@ -36,7 +36,15 @@ EXIT_ERROR = 1
 EXIT_NEEDS_APPROVAL = approval.EXIT_NEEDS_APPROVAL
 EXIT_VERIFY_FAILED = 4
 
-TEXT_BUDGET = int(os.environ.get("DECURIX_GUI_TEXT_CHARS", "3500"))
+
+def text_budget():
+    """How many characters of the screen a command prints (DECURIX_GUI_TEXT_CHARS, 3500). Read per command, not at
+    import: an engine sets it on each command it runs, and the gui daemon (daemon.py) imported this module once."""
+
+    try:
+        return int(os.environ.get("DECURIX_GUI_TEXT_CHARS", "3500"))
+    except ValueError:
+        return 3500
 
 # The commands that look at or act on the screen: after these, a vision
 # engine is shown the screen (save_screenshot).
@@ -647,7 +655,7 @@ def _print_act(result):
 
     if moved and observation.get("groups"):
         print()
-        print(el.render(observation, budget=TEXT_BUDGET - 500, only_group=observation["groups"][0]["title"]))
+        print(el.render(observation, budget=text_budget() - 500, only_group=observation["groups"][0]["title"]))
 
 
 def read_text(args):
@@ -685,7 +693,7 @@ def read_text(args):
     if not value:
         return f"{el.describe(element)} holds no text."
 
-    budget = TEXT_BUDGET * 3
+    budget = text_budget() * 3
     lines = str(value).split("\n")
     out = [f"{el.describe(element)} holds {len(value)} characters in {len(lines)} line{'s' if len(lines) != 1 else ''}:"]
     used = 0
@@ -745,7 +753,7 @@ def run(argv):
             time.sleep(EMPTY_PAGE_PAUSE)
             observation = core.observe()
         core.report_observation(observation)
-        budget = TEXT_BUDGET * 3 if args.window else TEXT_BUDGET
+        budget = text_budget() * 3 if args.window else text_budget()
         shown = el.render(observation, budget=budget, coords=args.coords, only_group=args.window)
         print(shown)
         if loading:
@@ -828,7 +836,7 @@ def run(argv):
 
     if command == "recording":
         meta, program = _load_program(args.session)
-        print(replay.render_text(meta, program, budget=TEXT_BUDGET))
+        print(replay.render_text(meta, program, budget=text_budget()))
         return EXIT_OK
 
     if command == "replay":
@@ -914,7 +922,7 @@ def run(argv):
             return _look(skill, args.look)
 
         if command == "skill":
-            print(skill_engine.render_text(skill, budget=TEXT_BUDGET))
+            print(skill_engine.render_text(skill, budget=text_budget()))
             return EXIT_OK
 
         from decurix_agent import guidance

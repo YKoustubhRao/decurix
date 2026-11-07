@@ -47,6 +47,14 @@ func jsonError(w http.ResponseWriter, err error) {
 		return
 	}
 
+	// No room to start a desktop: the text is the control plane's own ("not enough memory: N desktops are busy"),
+	// never Docker's (idlepause.MakeRoom, docs/lightweight.md L2).
+	var noRoom *desktop.NoRoomError
+	if errors.As(err, &noRoom) {
+		jsonStatusError(w, http.StatusServiceUnavailable, refusal(noRoom))
+		return
+	}
+
 	if errors.Is(err, memory.ErrInvalid) {
 		jsonStatusError(w, http.StatusBadRequest, "invalid request")
 		return

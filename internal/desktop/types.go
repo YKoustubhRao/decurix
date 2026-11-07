@@ -57,6 +57,15 @@ type Desktop struct {
 	// MissingApps are the host apps someone asked this desktop to have that it does not, each with why in plain
 	// words; Pending ones are still being tried. Kept by the Manager (see missingapps.go), not by Docker.
 	MissingApps []MissingApp `json:"missing_apps,omitempty"`
+
+	// RestReason is set on a stopped desktop the control plane stopped to save memory, never on one a person
+	// stopped: RestIdle ("idle", it stayed paused past DECURIX_IDLE_STOP_AFTER_MINUTES) or RestRoom ("memory", stopped
+	// to make room for another desktop's start). Its home is kept and it starts again by itself when given work, so a
+	// card says "Resting to save memory - starts when given work". RestNote is one line saying which, RestedAt when
+	// (RFC3339). Kept in memory: a restarted control plane shows such a desktop as plainly stopped.
+	RestReason string `json:"rest_reason,omitempty"`
+	RestNote   string `json:"rest_note,omitempty"`
+	RestedAt   string `json:"rested_at,omitempty"`
 }
 
 // MissingApp is a host app someone asked a desktop to have that is not on it, and why.

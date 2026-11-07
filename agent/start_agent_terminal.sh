@@ -124,7 +124,7 @@ fi
 # has them at the top level: move them in before anything that uses them
 # starts, so worker memory, the audit trail and TheBot's stores carry over.
 legacy_dirs="command helptext final memory audit"
-[ "$AGENT_HARNESS" = "thebot" ] && legacy_dirs="$legacy_dirs ai"
+legacy_dirs="$legacy_dirs ai"
 has_legacy=0
 for d in $legacy_dirs; do
     if [ -d "$HOME/$d" ] && [ ! -L "$HOME/$d" ]; then
@@ -191,12 +191,28 @@ setsid nice -n 10 python3 -I /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
 
 echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"
 
-# TheBot harness only - its soul binary is a persistent HTTP server
-# thebot_harness.py talks to (see decurix_agent/thebot_harness.py), not a
-# per-task CLI like claude, so it needs to already be running before any
-# task arrives. Harmless to skip entirely for the other two harnesses -
-# no point paying its startup cost when nothing will ever talk to it.
-if [ "$AGENT_HARNESS" = "thebot" ] && [ -x /opt/soul ]; then
+# The gui daemon (decurix_agent/computer/daemon.py): the screen stack imported once, so a `gui` command - TheBot's,
+# the agent's, a person's - does not start Python and import it again. Started the way `gui` starts Python (the same
+# PYTHONPATH, not -I), so what it imported is what a `gui` process would have. Restarted when it ends (it ends by
+# itself when its code changed on disk); exit 3 means it cannot serve here, and `gui` runs in-process as before.
+# Niceness 0: each command's child takes on its caller's niceness (an engine's 10).
+setsid sh -c '
+    cd / || exit 0
+    while :; do
+        PYTHONPATH="/opt${PYTHONPATH:+:$PYTHONPATH}" python3 -m decurix_agent.computer.daemon
+        [ $? -eq 3 ] && break
+        sleep 1
+    done
+' < /dev/null >> "$LOG" 2>&1 &
+echo "[$(date)] gui daemon started (loop pid $!)" >> "$LOG"
+
+# TheBot's soul is a persistent HTTP server thebot_harness.py talks to (see
+# decurix_agent/thebot_harness.py), so it must be running before any task
+# arrives. TheBot is the only engine since 2026-11-07 (O-4): a desktop made
+# with an old AGENT_HARNESS (ollama, claude, azure) runs it too, so soul
+# starts whatever that variable says - without it such a desktop's agent
+# would wait for a backend that never comes.
+if [ -x /opt/soul ]; then
     # /home/headless/.decurix/ai is TheBot's fixed default AI workdirectory -
     # every agent run cds here and works here, regardless of which real
     # folder a task happens to be scoped to; L1/L2/the Data RAG stay global.

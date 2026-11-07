@@ -15,6 +15,9 @@
 // (a stop runs tasks.CloseOpen exactly as a manual stop does, since it is
 // the same desktop.Manager.Stop call) - Decurix desktops are otherwise
 // entirely user-managed.
+//
+// A desktop left paused for StopAfter (30 minutes by default) is then stopped, and before a desktop starts MakeRoom
+// stops the longest-idle paused desktops when the Docker host's memory would not hold it (room.go, lightweight L2).
 package idlepause
 
 import (
@@ -47,13 +50,25 @@ type ActivityStore interface {
 }
 
 // Checker sweeps running desktops on an interval and stops or pauses the ones that
-// have been idle past Threshold.
+// have been idle past Threshold, and stops paused ones past StopAfter.
 type Checker struct {
 	Desktops  DesktopLister
 	Tasks     ActivityStore
 	Threshold time.Duration
 	Interval  time.Duration // defaultInterval if zero
 	Action    string        // "stop", or anything else: "pause" (freeze at 0% CPU, the default)
+
+	// StopAfter is how long a desktop stays paused before the sweep stops it to give its memory back (room.go,
+	// DECURIX_IDLE_STOP_AFTER_MINUTES); zero or less never does.
+	StopAfter time.Duration
+	// Memory reads the Docker host's available memory for MakeRoom; nil makes no room (desktops start as before).
+	Memory MemoryReader
+	// FloorMB is the memory MakeRoom keeps free after a start; DefaultFloorMB if zero.
+	FloorMB int64
+
+	// roomMu makes room for one start at a time; reserved is what starts let through lately are taken to use.
+	roomMu   sync.Mutex
+	reserved []reservation
 
 	// now is the test seam - defaults to time.Now.
 	now func() time.Time
@@ -113,7 +128,12 @@ func (c *Checker) sweep(ctx context.Context) {
 	var wg sync.WaitGroup
 
 	for _, d := range desktops {
-		if d.Status != "running" {
+		check := c.checkOne
+		switch {
+		case d.Status == "running":
+		case d.Status == "paused" && c.StopAfter > 0:
+			check = c.checkPaused // paused long enough: stopped to give its memory back (room.go)
+		default:
 			continue
 		}
 
@@ -124,7 +144,7 @@ func (c *Checker) sweep(ctx context.Context) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			c.checkOne(ctx, d)
+			check(ctx, d)
 		}(d)
 	}
 

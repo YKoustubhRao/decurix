@@ -108,8 +108,9 @@
   transition:width .4s ease;
 }
 
-.dcard-paused-overlay[hidden]{display:none}
-.dcard-paused-overlay{
+.dcard-paused-overlay[hidden],.dcard-rest-overlay[hidden]{display:none}
+/* A desktop the control plane stopped to save memory says so (rest_reason, from the overview poll). */
+.dcard-paused-overlay,.dcard-rest-overlay{
   position:absolute;
   bottom:8px;
   right:8px;
@@ -157,7 +158,7 @@
 .dcard-tags{display:flex;flex-wrap:wrap;gap:5px}
 
 /* ---------- what the desktop is doing right now ----------
-   Filled from /api/desktops/activity (pollActivity below): the request its
+   Filled from /api/desktops/overview (pollOverview below): the request its
    running turn was opened for and the latest step its chat shows. */
 .dcard-activity{
   display:flex;
@@ -957,6 +958,9 @@
             {{if .Crash}}Desktop crashed: {{.Crash}}. Start it again to carry on.{{else}}Desktop is {{.Status}}{{end}}
           </div>
         {{end}}
+        <div class="dcard-rest-overlay" data-rest-note hidden>
+          <span class="dcard-paused-badge"><span class="dot"></span> Resting to save memory — starts when given work</span>
+        </div>
       </div>
 
       <div class="dcard-resource-alert" data-resource-alert="{{.ID}}" style="display:none;">
@@ -981,7 +985,7 @@
             </span>
 
             <span class="chip">
-              {{if eq .Harness "claude"}}Claude Code{{else if eq .Harness "azure"}}Office (GPT){{else if eq .Harness "thebot"}}TheBot · {{if eq .Brain "claude"}}Claude{{else if eq .Brain "azure"}}Azure{{else if eq .Brain "openai"}}OpenAI{{else}}Ollama{{end}}{{else}}Ollama{{end}}
+              TheBot · {{if eq .Brain "claude"}}Claude{{else if eq .Brain "azure"}}Azure{{else if eq .Brain "openai"}}OpenAI{{else}}Ollama{{end}}
             </span>
           </div>
         </div>
@@ -1063,7 +1067,7 @@
       </div>
 
       {{/* What the desktop is doing right now - a task an agent is working,
-           or a ticket a person is recording - filled in by pollActivity from
+           or a ticket a person is recording - filled in by pollOverview from
            the same transcript the chat shows. A link to that chat. */}}
       <a class="dcard-activity" data-activity="{{.ID}}" href="/view/{{.ID}}" hidden>
         <span class="act-dot"></span>
@@ -1077,7 +1081,7 @@
         </span>
       </a>
 
-      {{/* Kept current by pollMemory below: what an agent learns (a taught
+      {{/* Kept current by pollOverview below: what an agent learns (a taught
            skill, a lesson from a reply) arrives while the page is open. */}}
       <details class="mem" data-mem-list="{{.ID}}" data-mem-sig="{{range index $.MemoryByDesktop .ID}}{{.ID}},{{end}}"{{if index $.MemoryByDesktop .ID}} open{{end}}>
         <summary class="mem-summary">
@@ -1181,7 +1185,7 @@
       {{end}}
 
       {{/* Every task this desktop was given, newest first, and the full trace of
-           the one picked (/tasks/<id>/trace). Kept current by pollTaskPicks
+           the one picked (/tasks/<id>/trace). Kept current by pollOverview
            below, like the rest of the card: a new task appears here without a
            reload. The worker's history outlives its container (the task
            store keeps it), so a stopped desktop lists its tasks too. */}}
@@ -2796,30 +2800,8 @@
     if(!had){ details.open = true; }
   }
 
-  var memoryPolling = false;
-  async function pollMemory(){
-    if(memoryPolling || document.visibilityState !== "visible"){ return; }
-    var lists = document.querySelectorAll("[data-mem-list]");
-    if(!lists.length){ return; }
-
-    memoryPolling = true;
-    try{
-      // The newest entries of every worker, as many as the route gives (httpapi/memory.go: at most 1000).
-      var response = await fetch("/api/desktops/memory?limit=1000", {cache: "no-store"});
-      if(!response.ok){ return; }
-
-      var byDesktop = {};
-      var listed = await response.json() || {};
-      (listed.entries || []).forEach(function(entry){
-        (byDesktop[entry.desktop_id] = byDesktop[entry.desktop_id] || []).push(entry);
-      });
-
-      lists.forEach(function(details){ paintMemory(details, byDesktop[details.dataset.memList] || []); });
-    }catch(e){ /* keep what the cards show */ }
-    finally{ memoryPolling = false; }
-  }
-
-  Decurix.poll(pollMemory, 4000);
+  /* Each card's memory comes with the rest of the card (pollOverview below): the newest entries of every worker, as
+     many as /api/desktops/memory?limit=1000 gives, grouped by desktop on the server. */
 
   /* ---------------- task trace picker ----------------
      Each card's dropdown lists the desktop's tasks newest first; the Trace
@@ -2898,26 +2880,7 @@
     return [t.title, t.status_label, when].filter(Boolean).join(" · ");
   }
 
-  var taskPicksPolling = false;
-  async function pollTaskPicks(){
-    if(taskPicksPolling){ return; }
-    var picks = document.querySelectorAll("[data-task-pick]");
-    if(!picks.length){ return; }
-    var ids = Array.prototype.map.call(picks, function(el){ return el.dataset.taskPick; });
-
-    taskPicksPolling = true;
-    try{
-      var response = await fetch("/api/desktops/tasks?" + new URLSearchParams({ids: ids.join(",")}), {cache: "no-store"});
-      if(!response.ok){ return; }
-      var byDesktop = await response.json() || {};
-      picks.forEach(function(pick){ paintTaskPicks(pick, byDesktop[pick.dataset.taskPick] || []); });
-    }catch(e){ /* keep what the cards show */ }
-    finally{ taskPicksPolling = false; }
-  }
-
   document.querySelectorAll("[data-task-pick]").forEach(traceHref);
-  pollTaskPicks();
-  Decurix.poll(pollTaskPicks, 4000);
 
   memoryForm("[data-link-memory-form]", "/api/desktops/memory/link", "Sharing…", "Share memory");
 
@@ -3199,97 +3162,52 @@
     paintCreated();
   }
 
-  var activityPolling = false;
-  async function pollActivity(){
-    if(activityPolling){ return; }
-    var ids = Array.prototype.map.call(document.querySelectorAll("[data-activity]"), function(el){ return el.dataset.activity; });
-    if(!ids.length){ return; }
-
-    activityPolling = true;
-    try{
-      var response = await fetch("/api/desktops/activity?" + new URLSearchParams({ids: ids.join(",")}), {cache: "no-store"});
-      if(!response.ok){ return; }
-      activity = await response.json() || {};
-      paintCardDetails();
-      paintActivity();
-      paintPills();
-    }catch(e){ /* keep what the cards show */ }
-    finally{ activityPolling = false; }
-  }
-
-  pollActivity();
-  Decurix.poll(pollActivity, 2500);
   document.addEventListener("visibilitychange", function(){
     if(document.visibilityState === "visible"){ paintCreated(); }
   });
   setInterval(paintActivity, 1000);
 
-  async function loadNotes(){
-    try{
-      var response = await fetch("/api/querynotes", {cache: "no-store"});
-      if(!response.ok){ return; }
-
-      var notes = await response.json();
-      notes = Array.isArray(notes) ? notes : [];
-      renderNotes(notes);
-      Decurix.notifyNewQueries(notes);
-    }catch(e){ /* keep the current rail contents */ }
-  }
-
   async function resolveNote(id){
     try{
       await post("/api/querynotes/close", {id: id});
-      loadNotes();
+      pollOverview().catch(function(){ /* the next tick shows it */ });
     }catch(e){
       toast(e.message, "error");
     }
   }
 
-  /* The rail also feeds the notifications of a tab in the background (data-query-poll="own"), so it keeps a slow
-     pace while hidden. */
-  loadNotes();
-  Decurix.poll(loadNotes, 2500, {hidden: 30000});
-
   /* ---------------- resource autoscaling alerts ---------------- */
   var activeAlerts = new Map();
   var dismissedAlerts = new Set();
 
-  async function pollResourceAlerts(){
-    try{
-      var response = await fetch("/api/desktops/resource-alerts", {cache: "no-store"});
-      if(!response.ok){ return; }
-      var data = await response.json();
-      var alerts = data.alerts || [];
-      var alertMap = new Map();
-      alerts.forEach(function(a){ alertMap.set(a.desktop_id, a); });
+  /* cards is the overview's desktops (pollOverview): a card it does not answer keeps what it shows. */
+  function paintResourceAlerts(cards){
+    document.querySelectorAll(".dcard[data-desktop-id]").forEach(function(card){
+      var id = card.dataset.desktopId;
+      var alertBox = card.querySelector('[data-resource-alert="' + id + '"]');
+      if(!alertBox || !cards[id]){ return; }
 
-      document.querySelectorAll(".dcard[data-desktop-id]").forEach(function(card){
-        var id = card.dataset.desktopId;
-        var alertBox = card.querySelector('[data-resource-alert="' + id + '"]');
-        if(!alertBox){ return; }
+      if(dismissedAlerts.has(id)){
+        alertBox.style.display = "none";
+        return;
+      }
 
-        if(dismissedAlerts.has(id)){
-          alertBox.style.display = "none";
-          return;
+      var alert = cards[id].alert;
+      if(alert){
+        activeAlerts.set(id, alert);
+        var msg = card.querySelector('[data-resource-msg="' + id + '"]');
+        if(msg){
+          msg.textContent = alert.message || (
+            "CPU: " + Math.round(alert.cpu_percent) + "%, RAM: " + Math.round(alert.memory_percent) +
+            "%. Increase to " + alert.predicted_cpus + " CPUs & " + alert.predicted_memory_mb + " MB RAM?"
+          );
         }
-
-        var alert = alertMap.get(id);
-        if(alert){
-          activeAlerts.set(id, alert);
-          var msg = card.querySelector('[data-resource-msg="' + id + '"]');
-          if(msg){
-            msg.textContent = alert.message || (
-              "CPU: " + Math.round(alert.cpu_percent) + "%, RAM: " + Math.round(alert.memory_percent) +
-              "%. Increase to " + alert.predicted_cpus + " CPUs & " + alert.predicted_memory_mb + " MB RAM?"
-            );
-          }
-          alertBox.style.display = "block";
-        }else{
-          activeAlerts.delete(id);
-          alertBox.style.display = "none";
-        }
-      });
-    }catch(e){}
+        alertBox.style.display = "block";
+      }else{
+        activeAlerts.delete(id);
+        alertBox.style.display = "none";
+      }
+    });
   }
 
   document.addEventListener("click", async function(e){
@@ -3354,8 +3272,73 @@
     }
   });
 
-  pollResourceAlerts();
-  Decurix.poll(pollResourceAlerts, 4000);
+  /* A desktop the control plane stopped to save memory (its rest_reason) says so on its card while it is stopped:
+     it starts again when it is given work. */
+  function paintRest(cards){
+    document.querySelectorAll(".dcard[data-desktop-id]").forEach(function(card){
+      var note = card.querySelector("[data-rest-note]");
+      var id = card.dataset.desktopId;
+      if(!note || !cards[id]){ return; }
+      var reason = cards[id].rest_reason || "";
+      var now = activity[id] || {};
+      note.hidden = !(reason && now.status === "stopped" && !now.running && !now.crash);
+      // Which it was, in one line ("Stopped after 30 minutes paused, to save memory"), on hover.
+      note.title = cards[id].rest_note || "";
+    });
+  }
+
+  /* ---------------- one poll for every card ----------------
+     Everything on a card that changes - its status and what it is doing, its
+     task dropdown, its memory, its resource alert, a rest reason - and the
+     Needs-you rail come from one request, built from one desktop list however
+     many cards the page holds and one read of each store (W-14: it was five
+     requests a sweep and a task query per card). Each part is painted by its own painter
+     above, which keeps what a person is using: a picked task stays picked,
+     a list redraws only when it changed, a dismissed alert stays dismissed.
+     The rail also feeds the notifications of a tab in the background
+     (data-query-poll="own"), so a hidden tab asks for the notes alone, every
+     30 s. A failed ask keeps what the cards show, and Decurix.poll backs off
+     until one succeeds. */
+  var overviewPolling = false;
+  async function pollOverview(){
+    if(overviewPolling){ return; }
+    var visible = document.visibilityState === "visible";
+    var ids = Array.prototype.map.call(document.querySelectorAll(".dcard[data-desktop-id]"), function(card){ return card.dataset.desktopId; });
+    var query = visible && ids.length ? {ids: ids.join(",")} : {parts: "notes"};
+
+    overviewPolling = true;
+    try{
+      var response = await fetch("/api/desktops/overview?" + new URLSearchParams(query), {cache: "no-store"});
+      if(!response.ok){ throw new Error("the overview answered " + response.status); }
+      var data = await response.json() || {};
+      var cards = data.desktops || {};
+      if(query.ids){
+        var next = {};
+        Object.keys(cards).forEach(function(id){ next[id] = cards[id].activity || {}; });
+        activity = next;
+        paintCardDetails();
+        paintActivity();
+        paintPills();
+        document.querySelectorAll("[data-task-pick]").forEach(function(pick){
+          var card = cards[pick.dataset.taskPick];
+          if(card && card.tasks){ paintTaskPicks(pick, card.tasks); }
+        });
+        document.querySelectorAll("[data-mem-list]").forEach(function(details){
+          var card = cards[details.dataset.memList];
+          if(card && card.memory){ paintMemory(details, card.memory); }
+        });
+        paintResourceAlerts(cards);
+        paintRest(cards);
+      }
+      if(Array.isArray(data.notes)){
+        renderNotes(data.notes);
+        Decurix.notifyNewQueries(data.notes);
+      }
+    }finally{ overviewPolling = false; }
+  }
+
+  pollOverview().catch(function(){ /* the poll asks again */ });
+  Decurix.poll(pollOverview, 2500, {hidden: 30000});
 
   /* ---------------- provisioning desktop poller ---------------- */
 

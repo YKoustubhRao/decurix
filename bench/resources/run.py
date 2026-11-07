@@ -19,6 +19,14 @@ measures it, and deletes it at the end. Sections (--only to pick some):
   host       host RAM with 0 desktops and with the desktop up (and a second one when it fits): Windows' available
              memory and the WSL VM's share, or MemAvailable on a Linux host; and the docker host's own MemAvailable
   tokens     input tokens per task and the cached share, from /api/llm/calls, for --task ids or an eval run's model rows
+  density    only when named (never in the default run): desktops made one at a time until the docker host's available
+             memory (and, on Windows, the host's own) would fall under --floor MB or --max are up, each with Chrome
+             open when --browser; per desktop its start time (create to ready, and to its agent answering), its
+             memory, and how long it takes to wake from paused; then how many fit and why it stopped. Every desktop
+             it made is deleted at the end. Any other section named with it runs first, and its desktop is deleted
+             before the count starts.
+
+    py -3 bench/resources/run.py --only density --max 8 --browser --settle 20 --host-shell "wsl -d Decurix -u root --"
 
 Output: one JSON row appended to bench/resources/results/rows.jsonl (git-ignored), and a markdown table printed and
 written beside it. Before each desktop it checks the host's available memory: under 1 GB it drops the docker host's
@@ -51,6 +59,8 @@ SCHEMA = "decurix.resource-bench/v1"
 RESULTS = HERE / "results"
 MIN_FREE_MB = 1024
 SECTIONS = ("idle", "gui", "dashboard", "host", "tokens")
+# Sections that run only when --only names them: density makes and deletes as many desktops as fit.
+EXTRA_SECTIONS = ("density",)
 
 # Process groups, by what the process runs: the first rule a process matches names its group. A rule is
 # (group, executable basenames, words of its command line). The executables are the desktop image's own programs.
@@ -263,13 +273,13 @@ def container_of(desktop_id):
     return "desktop_" + desktop_id
 
 
-def wait_agent(host, container, timeout=300):
+def wait_agent(host, container, timeout=300, interval=3):
     probe = "import socket,os,sys; socket.create_connection(('127.0.0.1', 8081), 2).close(); sys.exit(0 if os.path.exists('/tmp/.X11-unix/X1') else 1)"
     deadline = time.time() + timeout
     while time.time() < deadline:
         if host.docker("exec", "-u", "headless", container, "python3", "-c", probe, timeout=30).returncode == 0:
             return
-        time.sleep(3)
+        time.sleep(interval)
     raise RuntimeError(f"{container}: the agent did not come up")
 
 
@@ -367,6 +377,99 @@ def gui_bench(host, container, log):
             "by_kind": {k: summary(v) for k, v in by_kind.items()}}
 
 
+# ------------------------------------------------------------------ density
+
+def density_room(host, floor_mb, log, waits=2, pause=15):
+    """(fits, memory): whether one more desktop may start - the docker host's MemAvailable, and on Windows the host's
+    own available memory, each at or above floor_mb - after dropping the docker host's page cache and waiting when
+    not. memory is the last reading (host_memory)."""
+
+    mem = host_memory(host)
+    for attempt in range(waits + 1):
+        low = [k for k in ("docker_host_available_mb", "available_mb") if mem.get(k) is not None and mem[k] < floor_mb]
+        if not low:
+            return True, mem
+        if attempt == waits:
+            break
+        log(f"  {', '.join(f'{k} {mem[k]}' for k in low)} MB, under {floor_mb}: dropping the docker host's page cache and waiting")
+        host.sh("sync; echo 3 > /proc/sys/vm/drop_caches", timeout=60)
+        time.sleep(pause)
+        mem = host_memory(host)
+    return False, mem
+
+
+def density_bench(host, cp, made, log, max_desktops=20, floor_mb=MIN_FREE_MB, browser=False, settle=60, window=5):
+    """Desktops one at a time, as the dashboard makes them, until the next would not fit or max_desktops are up:
+    each one's start, memory and wake from paused, and the reason the count stopped. Every desktop made is added to
+    made, for the caller to delete."""
+
+    desktops, stopped = [], f"--max {max_desktops} reached"
+    before = host_memory(host)
+    for n in range(1, max_desktops + 1):
+        fits, mem = density_room(host, floor_mb, log)
+        if not fits:
+            stopped = f"memory floor: {mem.get('docker_host_available_mb')} MB available on the docker host" + (
+                f", {mem['available_mb']} MB on this machine" if mem.get("available_mb") is not None else "") + f", floor {floor_mb} MB"
+            break
+        name = f"resbench-d{n}-{uuid.uuid4().hex[:4]}"
+        log(f"density: creating desktop {n}, {name} ({mem.get('docker_host_available_mb')} MB available on the docker host)")
+        d = {"n": n, "available_before_mb": mem.get("docker_host_available_mb")}
+        t0 = time.time()
+        try:
+            created = cp.create(name)
+            desktop_id = created.get("id") or name
+            made.append(desktop_id)
+            d["id"] = desktop_id
+            cp.wait_ready(desktop_id)
+            d["ready_s"] = round(time.time() - t0, 1)
+            container = container_of(desktop_id)
+            wait_agent(host, container, interval=1)
+            d["agent_s"] = round(time.time() - t0, 1)
+            if browser:
+                put_form(host, container)
+                b0 = time.time()
+                opened = host.docker("exec", "-u", "headless", container, "bash", "-lc",
+                                     "gui open file:///home/headless/work/form.html", timeout=180)
+                d["browser_s"] = round(time.time() - b0, 1)
+                if opened.returncode:
+                    d["browser_error"] = (opened.stdout + opened.stderr).strip()[-200:]
+            time.sleep(settle)
+            m = measure(host, container, window)
+            d["memory_mb"], d["anon_mb"], d["cpu_pct"] = m.get("memory_mb"), m.get("anon_mb"), m.get("cpu_pct")
+            cp.post("/api/desktops/pause", {"id": desktop_id})
+            time.sleep(3)
+            w0 = time.time()
+            cp.post("/api/desktops/unpause", {"id": desktop_id})
+            wait_agent(host, container, timeout=120, interval=0.25)
+            d["wake_s"] = round(time.time() - w0, 2)
+        except (RuntimeError, urllib.error.URLError, OSError, ValueError) as exc:
+            d["error"] = str(exc)[-300:]
+            desktops.append(d)
+            stopped = f"desktop {n} did not start: {d['error']}"
+            break
+        desktops.append(d)
+    # A desktop the control plane stopped or paused meanwhile (to make room for a later one) did not stay up: only
+    # the ones still running count as fitting.
+    running = []
+    for d in desktops:
+        if d.get("id") and "error" not in d:
+            st = host.docker("inspect", "-f", "{{.State.Status}}", container_of(d["id"]), timeout=60).stdout.strip()
+            d["status_at_end"] = st
+            if st == "running":
+                running.append(d)
+    ok = [d for d in desktops if "error" not in d]
+
+    def med(key):
+        vals = [d[key] for d in ok if d.get(key) is not None]
+        return round(statistics.median(vals), 2) if vals else None
+
+    return {"browser": browser, "floor_mb": floor_mb, "max": max_desktops, "made": len(ok), "fit": len(running),
+            "stopped": stopped, "available_before_mb": before.get("docker_host_available_mb"),
+            "available_after_mb": host_memory(host).get("docker_host_available_mb"),
+            "ready_s_median": med("ready_s"), "agent_s_median": med("agent_s"), "wake_s_median": med("wake_s"),
+            "memory_mb_median": med("memory_mb"), "anon_mb_median": med("anon_mb"), "desktops": desktops}
+
+
 # ------------------------------------------------------------------ tokens
 
 def tokens(cp, task_ids):
@@ -452,6 +555,20 @@ def table(row):
         for k, v in tok["by_purpose"].items():
             lines.append(f"| {k} | {v['input']} | {v['cached_share']} |")
         lines.append("")
+    dens = row.get("density")
+    if dens:
+        lines += [f"## Density ({'Chrome open in each' if dens['browser'] else 'idle, no browser'})", "",
+                  f"**{dens['fit']} desktops fit** ({dens['made']} made); stopped: {dens['stopped']}. Docker host available "
+                  f"{dens['available_before_mb']} MB before, {dens['available_after_mb']} MB with them up. Medians: ready "
+                  f"{dens['ready_s_median']} s, agent {dens['agent_s_median']} s, wake {dens['wake_s_median']} s, memory "
+                  f"{dens['memory_mb_median']} MB (anon {dens['anon_mb_median']}).", "",
+                  "| # | available before MB | ready s | agent s | browser s | memory MB | anon MB | wake s | at the end |",
+                  "|---|---|---|---|---|---|---|---|---|"]
+        for d in dens["desktops"]:
+            end = d.get("status_at_end") or ("failed: " + d["error"][-80:] if d.get("error") else "-")
+            lines.append(f"| {d['n']} | {d.get('available_before_mb', '-')} | {d.get('ready_s', '-')} | {d.get('agent_s', '-')} | "
+                         f"{d.get('browser_s', '-')} | {d.get('memory_mb', '-')} | {d.get('anon_mb', '-')} | {d.get('wake_s', '-')} | {end} |")
+        lines.append("")
     for note in row.get("notes") or []:
         lines.append(f"- {note}")
     return "\n".join(lines) + "\n"
@@ -463,7 +580,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cp", default=os.environ.get("DECURIX_URL", "http://127.0.0.1:8080"), help="the control plane's primary listener")
     ap.add_argument("--host-shell", default=os.environ.get("DECURIX_BENCH_HOST", ""), help="prefix that runs a command on the docker host")
-    ap.add_argument("--only", default=",".join(SECTIONS), help="comma-separated sections: " + ", ".join(SECTIONS))
+    ap.add_argument("--only", default=",".join(SECTIONS),
+                    help="comma-separated sections: " + ", ".join(SECTIONS + EXTRA_SECTIONS) + " (density only when named)")
+    ap.add_argument("--max", type=int, default=20, help="density: at most this many desktops")
+    ap.add_argument("--floor", type=int, default=MIN_FREE_MB, help="density: MB of available memory the next desktop must leave")
+    ap.add_argument("--browser", action="store_true", help="density: open Chrome in each desktop")
     ap.add_argument("--settle", type=int, default=60, help="seconds a desktop idles before it is measured")
     ap.add_argument("--window", type=int, default=30, help="seconds each idle measurement lasts")
     ap.add_argument("--viewer-seconds", type=int, default=60)
@@ -477,7 +598,7 @@ def main(argv=None):
     ap.add_argument("--out", default=str(RESULTS))
     args = ap.parse_args(argv)
     only = {s.strip() for s in args.only.split(",") if s.strip()}
-    unknown = only - set(SECTIONS)
+    unknown = only - set(SECTIONS) - set(EXTRA_SECTIONS)
     if unknown:
         ap.error("unknown sections: " + ", ".join(sorted(unknown)))
 
@@ -502,6 +623,16 @@ def main(argv=None):
         cp.wait_ready(desktop_id)
         wait_agent(host, container_of(desktop_id))
         return desktop_id
+
+    def delete_all():
+        while made:
+            desktop_id = made.pop(0)
+            try:
+                cp.post("/api/desktops/delete", {"id": desktop_id}, timeout=180)
+                log(f"deleted {desktop_id}")
+            except (urllib.error.URLError, OSError) as exc:
+                log(f"could not delete {desktop_id}: {exc}")
+                row["notes"].append(f"{desktop_id} could not be deleted: delete it by hand")
 
     try:
         needs_desktop = bool(only & {"idle", "gui", "dashboard", "host"})
@@ -576,14 +707,15 @@ def main(argv=None):
                 row["tokens"] = tokens(cp, ids)
             else:
                 row["notes"].append("tokens: no task named (--task or --eval-run)")
+        if "density" in only:
+            delete_all()  # the other sections' desktop would count against the room
+            row["density"] = density_bench(host, cp, made, log, max_desktops=args.max, floor_mb=args.floor,
+                                           browser=args.browser, settle=args.settle)
+            if row.get("image") is None and row["density"]["desktops"] and row["density"]["desktops"][0].get("id"):
+                row["image"] = host.docker("inspect", "-f", "{{.Config.Image}} {{.Image}}",
+                                           container_of(row["density"]["desktops"][0]["id"])).stdout.strip()
     finally:
-        for desktop_id in made:
-            try:
-                cp.post("/api/desktops/delete", {"id": desktop_id}, timeout=180)
-                log(f"deleted {desktop_id}")
-            except (urllib.error.URLError, OSError) as exc:
-                log(f"could not delete {desktop_id}: {exc}")
-                row["notes"].append(f"{desktop_id} could not be deleted: delete it by hand")
+        delete_all()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)

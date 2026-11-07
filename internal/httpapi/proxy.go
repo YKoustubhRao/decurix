@@ -50,16 +50,17 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The screen itself is the control plane's page (screen.go); everything
-	// under it - the WebSocket, and noVNC's own vnc.html for anyone who wants
-	// it - is still the desktop's, proxied below.
+	// The screen itself is the control plane's page (screen.go); its WebSocket
+	// is bridged to Xvnc (screenbridge.go); everything else under it - noVNC's
+	// own vnc.html, on a desktop that still runs websockify - is the
+	// desktop's, proxied below.
 	if (len(parts) == 1 || parts[1] == "") && !isWebSocket && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		s.screenViewerHandler(w, r, parts[0])
 		return
 	}
 
 	// The screen's WebSocket: bridged to the desktop's Xvnc by the control plane (screenbridge.go).
-	if len(parts) == 2 && isScreenStream(parts[1], isWebSocket) && screenBridgeOn() {
+	if len(parts) == 2 && isScreenStream(parts[1], isWebSocket) && s.screenStreamBridged(r.Context(), parts[0]) {
 		answered, err := s.bridgeScreen(w, r, parts[0])
 		if answered || (err != nil && provisioning()) {
 			return

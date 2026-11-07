@@ -287,7 +287,8 @@ docker volume rm "$VOL-nokey" >/dev/null 2>&1
 
 # ---- network: the product's own networks (resource plan R3, c4d8fa0: a decurix-vm-<id> /28 per desktop). Two real
 # desktops, as the control plane makes them; from inside A, as A's worker (where an attacker in A stands), B's agent
-# (8081), VNC (5901) and screen (6901) at B's address on its own network are unreachable. Two controls make the check
+# (8081), VNC (5901) and screen (6901, websockify, which only a desktop made with DECURIX_DESKTOP_NOVNC=1 runs) at
+# B's address on its own network are unreachable. Two controls make the check
 # mean something: B's screen is up (from inside B), and A reaches the control plane by its name (decurix:8080).
 cp_get() { wget -qO- "$CP$1" 2>/dev/null; }
 cp_post() { wget -qO- --post-data "$2" "$CP$1" 2>/dev/null; }
@@ -304,12 +305,12 @@ in_desktop() { # in_desktop NAME: a shell script on stdin, run as that desktop's
     docker exec -i -u 1001:1001 "desktop_$1" /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash -s 2>/dev/null
 }
 i=0
-while [ $i -lt 100 ] && ! echo 'timeout 3 bash -c "</dev/tcp/127.0.0.1/6901"' | in_desktop "$NB"; do sleep 3; i=$((i + 1)); done
+while [ $i -lt 100 ] && ! echo 'timeout 3 bash -c "</dev/tcp/127.0.0.1/5901"' | in_desktop "$NB"; do sleep 3; i=$((i + 1)); done
 B_IP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"decurix-vm-$NB\").IPAddress}}" "desktop_$NB" 2>/dev/null)
 A_OWN=$(docker inspect -f "{{(index .NetworkSettings.Networks \"decurix-vm-$NA\").IPAddress}}" "desktop_$NA" 2>/dev/null)
 check "network: from inside desktop A, desktop B's 8081, 5901 and 6901 are unreachable; A reaches decurix:8080" "$(
     if [ -z "$B_IP" ] || [ -z "$A_OWN" ]; then echo "inconclusive: $NA or $NB has no network of its own (made before desktops had one?)"
-    elif ! echo 'timeout 3 bash -c "</dev/tcp/127.0.0.1/6901"' | in_desktop "$NB"; then echo "inconclusive: $NB's screen is not up"
+    elif ! echo 'timeout 3 bash -c "</dev/tcp/127.0.0.1/5901"' | in_desktop "$NB"; then echo "inconclusive: $NB's screen (Xvnc) is not up"
     elif ! echo 'timeout 5 bash -c "</dev/tcp/decurix/8080"' | in_desktop "$NA"; then echo "$NA cannot reach the control plane (decurix:8080): the control failed"
     else
         open=$(printf 'for p in 8081 5901 6901; do timeout 3 bash -c "</dev/tcp/%s/$p" 2>/dev/null && echo "open $p"; done; true\n' "$B_IP" | in_desktop "$NA")

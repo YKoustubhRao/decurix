@@ -135,10 +135,14 @@ RUN chmod 644 /etc/opt/chrome/policies/managed/decurix.json \
 # also drops the second copy of python-pptx and of numpy. Pinned, like everything here, but for requests and
 # python-dateutil, which Ubuntu's own packages may already hold: those are floors (with a ceiling), so pip keeps an apt
 # copy that satisfies them instead of replacing a package apt owns. --break-system-packages is this image's norm for
-# worker installs (PIP_BREAK_SYSTEM_PACKAGES below). It must never shadow or replace an apt-owned package: pip writes
-# what it installed (--report), and the build stops if any of it is a package apt installed too.
-RUN for try in 1 2 3; do /usr/bin/python3 -m pip install --no-cache-dir --timeout 60 --retries 5 --break-system-packages \
-        --report /tmp/pip-report.json \
+# worker installs (PIP_BREAK_SYSTEM_PACKAGES below). It must never shadow or replace an apt-owned package. Every
+# apt-owned Python package is held at its installed version as a pip constraint (-c), so when a new upstream release of a
+# dependency wants a newer numpy, pip picks an older release of that dependency instead of failing to uninstall apt's
+# numpy (found live 2026-11-05: contourpy). pip also writes what it installed (--report), and the build stops if any of
+# it is a package apt installed too.
+RUN /usr/bin/python3 -c "import importlib.metadata as md; print(*sorted(d.metadata['Name'] + '==' + d.version for d in md.distributions(path=['/usr/lib/python3/dist-packages']) if d.metadata['Name']), sep=chr(10))" > /tmp/apt-constraints.txt \
+    && for try in 1 2 3; do /usr/bin/python3 -m pip install --no-cache-dir --timeout 60 --retries 5 --break-system-packages \
+        -c /tmp/apt-constraints.txt --report /tmp/pip-report.json \
         python-pptx==1.0.2 \
         pandas==2.2.3 \
         "requests>=2.31,<3" \
@@ -152,7 +156,7 @@ RUN for try in 1 2 3; do /usr/bin/python3 -m pip install --no-cache-dir --timeou
         reportlab==4.2.5 && break; \
     [ "$try" = 3 ] && exit 1; echo "pip3: try $try failed; trying again"; sleep $((try * 20 - 10)); done \
     && /usr/bin/python3 -c "import json, re, sys, importlib.metadata as md; norm = lambda n: re.sub(r'[-_.]+', '-', n).lower(); apt = {norm(d.metadata['Name']) for d in md.distributions(path=['/usr/lib/python3/dist-packages']) if d.metadata['Name']}; got = {norm(i['metadata']['name']) for i in json.load(open('/tmp/pip-report.json'))['install']}; both = sorted(apt & got); print('pip installed over apt-owned packages: ' + ', '.join(both)) if both else None; sys.exit(1 if both else 0)" \
-    && rm -f /tmp/pip-report.json
+    && rm -f /tmp/pip-report.json /tmp/apt-constraints.txt
 
 # Every worker library imports in the python3 a desktop runs, under exactly the PATH a desktop gets
 # (desktop.desktopPath, pinned by internal/desktop/onepython_test.go): the build fails here, not a task later, if any
@@ -211,6 +215,22 @@ RUN mkdir -p /home/headless/.config/autostart \
     && chown -R headless:headless /home/headless/.config
 
 COPY agent/decurix-agent.desktop /home/headless/.config/autostart/decurix-agent.desktop
+# Session services a worker's desktop has no use for, kept from starting (idle memory, docs/lightweight.md): a file of the same
+# name in ~/.config/autostart with Hidden=true is the XDG way to switch a system autostart entry off, and is harmless
+# where the package is not installed. Each one's absence changes nothing a person or the worker sees or can do:
+#   xfce4-notifyd       D-Bus starts it on the first notification (its .service file), so it stops costing memory on
+#                       a desktop nothing has notified; notifications still show.
+#   xfce4-power-manager nothing to manage in a container (no battery, backlight, lid or suspend).
+#   light-locker, xscreensaver, xfce4-screensaver
+#                       a lock screen on a desktop whose user has no password would lock the person and the worker out.
+#   update-notifier     the image is updated by rebuilding it, never from inside a desktop.
+# Kept, on purpose: at-spi (the accessibility tree `gui` reads), the clipboard manager (a copy outlives the window it
+# came from), gnome-keyring (Chrome keeps its cookie key there: changing the store loses sign-ins), xdg-user-dirs
+# (the folders a person expects), Thunar's daemon and tumbler (the Files window and its thumbnails).
+COPY agent/decurix-autostart-off.desktop /tmp/decurix-autostart-off.desktop
+RUN for name in xfce4-notifyd xfce4-power-manager light-locker xscreensaver xfce4-screensaver update-notifier; do \
+        install -m 644 -o headless -g headless /tmp/decurix-autostart-off.desktop "/home/headless/.config/autostart/$name.desktop"; \
+    done && rm -f /tmp/decurix-autostart-off.desktop
 # Pre-seeds four xfconf channels so XFCE starts already looking like
 # Decurix instead of generating the base image's own defaults on first
 # launch: the wallpaper (decurix-desktop-wallpaper.xml), the GTK

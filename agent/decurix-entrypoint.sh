@@ -28,6 +28,15 @@ HOME_DIR=/home/headless
 KEY_DROP=/etc/decurix-gate/key       # where the control plane puts the key before the first start (root, 0400)
 GATE_DIR=/var/lib/decurix-gate       # the gate's own directory (decurixgate, 0700)
 
+# No websockify (noVNC's proxy, about 22 MB a desktop): the control plane bridges the screen's WebSocket to Xvnc on 5901
+# itself (internal/httpapi/screenbridge.go), so the base image's startup is told to skip it (its --skip-novnc; VNC
+# itself and the startup's wait on it are unchanged). A desktop created with DECURIX_DESKTOP_NOVNC=1 starts it as before:
+# for a test desktop reached on 6901 directly (scripts/*/test-vm), or noVNC's own vnc.html. The variable is the
+# container's, fixed at creation; only the option it adds is passed on, never its value.
+if [ "${DECURIX_DESKTOP_NOVNC:-0}" != "1" ]; then
+    set -- --skip-novnc "$@"
+fi
+
 if [ "$(/usr/bin/id -u)" != "0" ]; then
     # Started as the desktop user (an old setup, a test): there is no gate boundary, but the desktop still starts.
     exec /dockerstartup/startup.sh "$@"

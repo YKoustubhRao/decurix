@@ -18,8 +18,9 @@
 
   The RFB client is noVNC's own core (web/novnc), served by the control plane
   once for every desktop. The WebSocket still goes through /desktop/<id>/
-  websockify, the same proxy as before; noVNC's full page stays reachable at
-  /desktop/<id>/vnc.html.
+  websockify, which the control plane bridges to the desktop's VNC itself;
+  noVNC's full page (/desktop/<id>/vnc.html) answers only on a desktop created
+  with DECURIX_DESKTOP_NOVNC=1, since desktops no longer run websockify.
 */}}
 <style>
 :root{

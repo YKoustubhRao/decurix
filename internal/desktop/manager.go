@@ -129,6 +129,10 @@ type Manager struct {
 	lifecycleMu sync.Mutex
 	lifecycle   map[string]*sync.Mutex
 
+	// room is making room for a start: the RoomMaker, why stopped desktops rest, when each was paused or woken
+	// (room.go).
+	room roomState
+
 	// httpClient pools persistent HTTP connections (Keep-Alive) to desktop
 	// agent APIs on port 8081, eliminating TCP handshake overhead on every
 	// command dispatch.
@@ -207,11 +211,9 @@ func newManagerWith(api client.APIClient) *Manager {
 func (m *Manager) BeginProvisioning(
 	name string,
 	profile string,
-	harness string,
 	brain Brain,
 	cpus int64,
 	memoryMB int64,
-	claudeCredentialsJSON string,
 	specialization string,
 	parentID string,
 	selectedApps []string,
@@ -269,7 +271,7 @@ func (m *Manager) BeginProvisioning(
 		ID:             sanitizedID,
 		Name:           name,
 		Profile:        profile,
-		Harness:        harness,
+		Harness:        HarnessTheBot,
 		Brain:          brain.kind(),
 		Model:          brain.Model,
 		CPUs:           cpus,
@@ -306,7 +308,7 @@ func (m *Manager) BeginProvisioning(
 	snapshot := *prov
 	m.provisioningMu.Unlock()
 
-	go m.runProvisioning(prov, brain, claudeCredentialsJSON, selectedApps, onStarted, sharedFolder)
+	go m.runProvisioning(prov, brain, selectedApps, onStarted, sharedFolder)
 
 	return &snapshot, nil
 }
@@ -314,7 +316,6 @@ func (m *Manager) BeginProvisioning(
 func (m *Manager) runProvisioning(
 	prov *ProvisioningDesktop,
 	brain Brain,
-	claudeCredentialsJSON string,
 	selectedApps []string,
 	onStarted func(d *Desktop) error,
 	shared *SharedFolder,
@@ -449,8 +450,12 @@ func (m *Manager) runProvisioning(
 		shared,
 	)
 
+	// The container carries its creation's id, as its home does: what lets a create that answered an error remove the
+	// container the daemon made anyway, and only that one (removeHalfCreated, RW1-D-01).
+	config.Labels[homeCreationLabel] = prov.creation
 	resp, err := m.client.ContainerCreate(ctx, config, hostConfig, networkingConfig, nil, containerName)
 	if err != nil {
+		m.removeHalfCreated(containerName, prov.creation)
 		fail(fmt.Errorf("create container: %w", err))
 		return
 	}
@@ -480,13 +485,6 @@ func (m *Manager) runProvisioning(
 		return
 	}
 
-	// Claude session persistence
-	if prov.Harness == HarnessClaude && claudeCredentialsJSON != "" {
-		if err := m.PersistClaudeCredentials(ctx, sanitizedID, claudeCredentialsJSON); err != nil {
-			log.Printf("seed claude credentials into %s: %v", containerName, err)
-		}
-	}
-
 	// Desktop struct for callbacks
 	createdDesktop := prov.ToDesktop()
 	createdDesktop.ContainerID = resp.ID
@@ -498,7 +496,7 @@ func (m *Manager) runProvisioning(
 		}
 	}
 
-	// 6. Readiness Probe (Wait for VNC / websockify to listen)
+	// 6. Readiness Probe (wait for Xvnc to listen)
 	updateStage("readiness", "Waiting for desktop GUI to initialize...", 90)
 	ready := m.WaitForGUIReady(ctx, sanitizedID, 25*time.Second)
 	if ctx.Err() == context.Canceled {
@@ -556,8 +554,9 @@ func (m *Manager) GetProvisioning(rawID string) (*ProvisioningDesktop, bool) {
 	return &copyProv, true
 }
 
-// WaitForGUIReady waits until the desktop container's VNC/websockify port is
-// accepting TCP connections, meaning the GUI is initialized and ready for user interaction.
+// WaitForGUIReady waits until the desktop container's Xvnc (5901) is accepting TCP connections, meaning the GUI is
+// initialized and ready for user interaction. Xvnc, not websockify's 6901: what the screen bridge dials, and the only
+// one a desktop since L3 runs (docs/lightweight.md).
 func (m *Manager) WaitForGUIReady(ctx context.Context, rawID string, timeout time.Duration) bool {
 
 	deadline := time.Now().Add(timeout)
@@ -568,9 +567,8 @@ func (m *Manager) WaitForGUIReady(ctx context.Context, rawID string, timeout tim
 		default:
 		}
 
-		proxyURL, _, err := m.ProxyTarget(ctx, rawID)
-		if err == nil && proxyURL != nil {
-			host := proxyURL.Host
+		host, _, err := m.ScreenStreamAddress(ctx, rawID)
+		if err == nil && host != "" {
 			conn, dialErr := net.DialTimeout("tcp", host, 500*time.Millisecond)
 			if dialErr == nil {
 				conn.Close()
@@ -946,7 +944,7 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 	}
 	m.resourceMu.Unlock()
 
-	return Desktop{
+	d := Desktop{
 		ID:             id,
 		Name:           id,
 		Profile:        profile,
@@ -968,6 +966,8 @@ func (m *Manager) desktopFromContainer(ctx context.Context, c container.Summary)
 		ParentID:       parentID,
 		MissingApps:    m.MissingApps(id),
 	}
+	m.withRest(&d)
+	return d
 }
 
 // notFound turns Docker's "no such container" into ErrNotFound, so a request
@@ -1014,17 +1014,27 @@ func (m *Manager) Start(
 }
 
 // startDesktopContainer starts a desktop's container, never while a tools refresh replaces /opt/tools (toolsRW), and
-// never on the Windows app's WSL host while the fence between desktops is not in place (requireFence). With
+// never on the Windows app's WSL host while the fence between desktops is not in place (requireFence). It first asks
+// for room in memory (makeRoomFor, room.go): longest-paused desktops nobody uses may be stopped, or the start refused
+// with a NoRoomError. With
 // wakeDesktop, the one way a desktop is made to run.
 func (m *Manager) startDesktopContainer(ctx context.Context, name string) error {
 	if err := requireFence(); err != nil {
+		return err
+	}
+	// Room is made before the tools lock is taken: making it stops desktops, and a stop may start a waiting refresh.
+	if err := m.makeRoomFor(ctx, name); err != nil {
 		return err
 	}
 	if err := m.holdToolsForStart(ctx); err != nil {
 		return err
 	}
 	defer m.toolsRW.RUnlock()
-	return m.client.ContainerStart(ctx, name, container.StartOptions{})
+	if err := m.client.ContainerStart(ctx, name, container.StartOptions{}); err != nil {
+		return err
+	}
+	m.markRunning(name)
+	return nil
 }
 
 // toolsStartWait bounds how long a desktop start waits for a tools refresh that is copying /opt/tools (a var: tests).
@@ -1087,6 +1097,9 @@ func (m *Manager) Pause(
 	err := m.client.ContainerPause(ctx, name)
 	// The capture above cached the screen's address; a frozen screen answers nothing, so it goes.
 	m.forgetShotTarget(sanitizedID)
+	if err == nil {
+		m.markPaused(sanitizedID)
+	}
 	return notFound(id, err)
 }
 
@@ -1112,7 +1125,11 @@ func (m *Manager) wakeDesktop(ctx context.Context, ref string) error {
 	if err := requireFence(); err != nil {
 		return err
 	}
-	return m.client.ContainerUnpause(ctx, ref)
+	if err := m.client.ContainerUnpause(ctx, ref); err != nil {
+		return err
+	}
+	m.markRunning(ref)
+	return nil
 }
 
 // Stop stops the Docker container backing the given desktop ID.
@@ -1134,6 +1151,9 @@ func (m *Manager) Stop(
 	}
 
 	err := m.stopContainer(ctx, "desktop_"+sanitizedID, timeout)
+	if err == nil {
+		m.markStopped(sanitizedID)
+	}
 	// A tools refresh that waited for running desktops applies once the last of them has stopped (F-T). Only a stop
 	// starts it; a restart's start, or any other, waits for it (toolsRW).
 	if err == nil {
@@ -1383,6 +1403,7 @@ func (m *Manager) Get(ctx context.Context, id string) (Desktop, error) {
 	}
 	m.provisioningMu.RUnlock()
 
+	m.withRest(&found)
 	return found, nil
 }
 

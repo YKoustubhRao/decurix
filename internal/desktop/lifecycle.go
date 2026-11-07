@@ -21,3 +21,24 @@ func (m *Manager) LockDesktop(id string) (unlock func()) {
 	mu.Lock()
 	return mu.Unlock
 }
+
+// TryLockDesktop takes desktop id's lifecycle lock only if nobody holds it, and says whether it did. Making room for a
+// start uses it: a desktop whose lock is held is being acted on (a request delivered to it, a person's Resume), and
+// that wins - it is passed over, never waited for, so two starts making room at once can never wait on each other.
+func (m *Manager) TryLockDesktop(id string) (unlock func(), ok bool) {
+	key := sanitizeName(id)
+	m.lifecycleMu.Lock()
+	if m.lifecycle == nil {
+		m.lifecycle = map[string]*sync.Mutex{}
+	}
+	mu, found := m.lifecycle[key]
+	if !found {
+		mu = &sync.Mutex{}
+		m.lifecycle[key] = mu
+	}
+	m.lifecycleMu.Unlock()
+	if !mu.TryLock() {
+		return nil, false
+	}
+	return mu.Unlock, true
+}
