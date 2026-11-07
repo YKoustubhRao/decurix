@@ -18,8 +18,9 @@ const maxLearnedBytes = 32 << 10
 // The row is a derived judgement. Its author is the person who said it, taken from the judgement it cites
 // (derived_from), never from the desktop: that judgement must be a person's, on this task, of this desktop (409
 // otherwise). A desktop posts only for its own tasks (403), and only a desktop posts here (primary listener). A
-// field_answer (H-PY-18) is kept only when its option stands in that judgement's text; GET ?kind=field_answer reads
-// the desktop's own such rows back (desktopLearnedList).
+// field_answer (H-PY-18) is kept only when its option stands in that judgement's text, and a field_unit only when that
+// judgement is the person's numbered reply to the save's unit question for that very field (checkFieldUnit); GET
+// ?kind=field_answer or ?kind=field_unit reads the desktop's own such rows back (desktopLearnedList).
 func (s *Server) desktopLearnedHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && !allowMethod(w, r, http.MethodPost) {
 		return
@@ -48,9 +49,10 @@ func (s *Server) desktopLearnedHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch body.Kind {
-	case tasks.JudgementCorrection, tasks.JudgementRunAnswer, tasks.JudgementLesson, tasks.JudgementFieldAnswer:
+	case tasks.JudgementCorrection, tasks.JudgementRunAnswer, tasks.JudgementLesson, tasks.JudgementFieldAnswer,
+		tasks.JudgementFieldUnit:
 	default:
-		jsonStatusError(w, http.StatusBadRequest, "kind must be correction, run_answer, lesson or field_answer")
+		jsonStatusError(w, http.StatusBadRequest, "kind must be correction, run_answer, lesson, field_answer or field_unit")
 		return
 	}
 	text := strings.TrimSpace(body.Text)
@@ -82,12 +84,16 @@ func (s *Server) desktopLearnedHandler(w http.ResponseWriter, r *http.Request) {
 		jsonStatusError(w, http.StatusConflict, "cite the person's own judgement, not one derived from it")
 		return
 	}
-	if body.Kind == tasks.JudgementFieldAnswer {
+	if body.Kind == tasks.JudgementFieldAnswer || body.Kind == tasks.JudgementFieldUnit {
 		if source.Secret {
 			jsonStatusError(w, http.StatusConflict, "nothing is kept from a secret answer")
 			return
 		}
-		if ok, why := checkFieldAnswer(text, source.Text, s.Tasks.InterventionRequest(source.InterventionID)); !ok {
+		check := checkFieldAnswer
+		if body.Kind == tasks.JudgementFieldUnit {
+			check = checkFieldUnit
+		}
+		if ok, why := check(text, source.Text, s.Tasks.InterventionRequest(source.InterventionID)); !ok {
 			jsonStatusError(w, http.StatusConflict, why)
 			return
 		}

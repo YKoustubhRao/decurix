@@ -1,17 +1,20 @@
-// Package idlepause periodically stops desktops that have sat idle - no task
+// Package idlepause periodically pauses desktops that have sat idle - no task
 // running, queued or waiting on a human, and no sign anyone has a screen or
-// thumbnail open - for longer than a configured threshold. AO's cloud product
-// does the same for its sandboxes, for the same reason: a full desktop VM
-// costs real CPU and memory whether or not anyone is using it.
+// thumbnail open - for longer than a configured threshold, and once more a
+// short while after a task finishes (FastPauseAfter). AO's cloud product does
+// the same for its sandboxes, for the same reason: a full desktop VM costs
+// real CPU and memory whether or not anyone is using it.
 //
 // On by default at a 5-minute threshold (see cmd/decurix/main.go's
 // idleStopThreshold, DECURIX_IDLE_STOP_MINUTES); a non-positive Threshold -
-// the explicit opt-out - makes Run a no-op. Even on, this package only ever
-// takes the same Stop a human could click themselves - never delete, never
-// anything a manual Stop does not already do (tasks.CloseOpen runs exactly
-// as it would for a manual stop, since it is the same desktop.Manager.Stop
-// call) - Decurix desktops are otherwise entirely user-managed
-// (start/stop/restart/delete are the only other lifecycle transitions).
+// the explicit opt-out - makes Run a no-op. The default action is a pause
+// (desktop.Manager.Pause: the cgroup freezer, 0% CPU, memory kept, resumed
+// on the next request); DECURIX_IDLE_ACTION=stop stops instead. Either way
+// this package only ever takes the same Pause or Stop a human could click
+// themselves - never delete, never anything a manual one does not already do
+// (a stop runs tasks.CloseOpen exactly as a manual stop does, since it is
+// the same desktop.Manager.Stop call) - Decurix desktops are otherwise
+// entirely user-managed.
 package idlepause
 
 import (

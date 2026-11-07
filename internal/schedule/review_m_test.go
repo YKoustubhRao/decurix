@@ -54,7 +54,7 @@ func (f *failingSubmitter) Submit(_ context.Context, _, content string, _ tasks.
 // it carried is its own occurrence, not the tick that noticed it (B-28).
 func TestAFailedRunLeavesATraceAndTimeIsTheOccurrence(t *testing.T) {
 	store := newTestStore(t, time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC))
-	sch, err := store.Create("bordu", "file the return", "0 13 30 9 *")
+	sch, err := store.Create("bordu", "file the return", "0 13 30 9 *", "UTC")
 	if err != nil {
 		t.Fatal(err)
 	}

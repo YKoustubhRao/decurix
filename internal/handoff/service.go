@@ -73,9 +73,10 @@ type Workers interface {
 	Resolve(ctx context.Context, raw string) (id string, ok bool)
 }
 
-// WorkerFinder lists the workers that hold a role or a skill, best first.
-// Exactly one of role and skill is non-empty. Backed by the skill registry;
-// this package does not import it.
+// WorkerFinder lists the workers that hold a role or a skill, sorted by worker
+// id (the service takes the first free one). Exactly one of role and skill is
+// non-empty; names match ignoring case. Backed by the skill registry; this
+// package does not import it.
 type WorkerFinder interface {
 	Holders(ctx context.Context, role, skill string) ([]string, error)
 }
@@ -95,14 +96,14 @@ const (
 
 // Default times; a zero field on Service uses these.
 const (
-	defaultQueueTimeout   = 30 * time.Minute
-	defaultAskTimeout     = 15 * time.Minute
+	defaultQueueTimeout = 30 * time.Minute
+	defaultAskTimeout   = 15 * time.Minute
 	// defaultDelegateTimeout bounds a handed-on piece of work: a receiver that never reports (its desktop gone, a
 	// question nobody answers) must not keep the sender waiting for good (C-07).
 	defaultDelegateTimeout = 24 * time.Hour
 	// sendingLease is how long a handoff may stay "sending" before it is taken as a send the control plane never
 	// finished (it stopped mid-send): failed with a reason, never sent a second time.
-	sendingLease = 15 * time.Minute
+	sendingLease          = 15 * time.Minute
 	defaultRecordGrace    = 10 * time.Minute
 	defaultTickInterval   = 15 * time.Second
 	defaultAskWaitCeiling = 60 * time.Second
@@ -143,8 +144,8 @@ type Service struct {
 	QueueTimeout    time.Duration // a handoff no worker took in this long fails
 	AskTimeout      time.Duration // a question not answered in this long fails
 	DelegateTimeout time.Duration // handed-on work not finished in this long fails
-	RecordGrace  time.Duration // a sent task with no record after this long fails
-	Interval     time.Duration // how often Run advances open handoffs
+	RecordGrace     time.Duration // a sent task with no record after this long fails
+	Interval        time.Duration // how often Run advances open handoffs
 
 	// mu makes each read-then-write of a handoff one step: the runner, a
 	// status read and a cancel never advance the same row at once. It is let go

@@ -22,10 +22,14 @@ import (
 // future run (RunOnce), which fires exactly once and then disables itself
 // rather than computing a next occurrence.
 type Schedule struct {
-	ID        string    `json:"id"`
-	DesktopID string    `json:"desktop_id"`
-	Content   string    `json:"content"`
-	CronExpr  string    `json:"cron_expr"`
+	ID        string `json:"id"`
+	DesktopID string `json:"desktop_id"`
+	Content   string `json:"content"`
+	CronExpr  string `json:"cron_expr"`
+	// Zone is the IANA time zone the cron is read in ("Asia/Kolkata"), and
+	// the zone NextRunAt and LastRunAt are given in, so their JSON carries
+	// its offset. Schedules made before zones existed read "UTC".
+	Zone      string    `json:"zone"`
 	RunOnce   bool      `json:"run_once"`
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
@@ -59,6 +63,9 @@ var schema = []string{
 	`ALTER TABLE schedules ADD COLUMN waiting_since_ns INTEGER NOT NULL DEFAULT 0`,
 	// Why the last run did not reach its desktop (review 2026-11-03, B-28).
 	`ALTER TABLE schedules ADD COLUMN last_error TEXT NOT NULL DEFAULT ''`,
+	// The IANA zone the cron is read in (B-37). Existing rows keep UTC, the
+	// zone they were made in, so nothing already scheduled moves.
+	`ALTER TABLE schedules ADD COLUMN zone TEXT NOT NULL DEFAULT 'UTC'`,
 }
 
 // InputError is a mistake in what a person gave (a cron expression that does
@@ -98,10 +105,11 @@ func NewStore(db *sql.DB) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
-// Create validates cronExpr and persists a new schedule. Its first run is the
-// next time the expression matches, never immediately - the same way cron
-// itself never runs a job the instant it is added.
-func (s *Store) Create(desktopID, content, cronExpr string) (Schedule, error) {
+// Create validates cronExpr and zone (an IANA name; "" is DefaultZone) and
+// persists a new schedule whose cron is read in that zone. Its first run is
+// the next time the expression matches, never immediately - the same way
+// cron itself never runs a job the instant it is added.
+func (s *Store) Create(desktopID, content, cronExpr, zone string) (Schedule, error) {
 	desktopID, err := checkRequest(desktopID, content)
 	if err != nil {
 		return Schedule{}, err
@@ -114,9 +122,14 @@ func (s *Store) Create(desktopID, content, cronExpr string) (Schedule, error) {
 		return Schedule{}, invalid("%v", err)
 	}
 
+	zone, loc, err := LoadZone(zone)
+	if err != nil {
+		return Schedule{}, err
+	}
+
 	now := s.clock()
 
-	next, ok := expr.Next(now)
+	next, ok := expr.NextIn(now, loc)
 	if !ok {
 		return Schedule{}, invalid("cron expression %q never matches", cronExpr)
 	}
@@ -126,6 +139,7 @@ func (s *Store) Create(desktopID, content, cronExpr string) (Schedule, error) {
 		DesktopID: desktopID,
 		Content:   content,
 		CronExpr:  cronExpr,
+		Zone:      zone,
 		Enabled:   true,
 		CreatedAt: now,
 		NextRunAt: next,
@@ -135,9 +149,15 @@ func (s *Store) Create(desktopID, content, cronExpr string) (Schedule, error) {
 // CreateOnce persists a request held for a single future run at runAt, rather
 // than a recurring cron expression. It fires exactly once (see MarkRun) - the
 // same "never immediately" rule as Create applies here too: runAt must be
-// strictly after now.
-func (s *Store) CreateOnce(desktopID, content string, runAt time.Time) (Schedule, error) {
+// strictly after now. runAt is an instant, so zone ("" is DefaultZone) only
+// says how the run's TIME field and its times are given.
+func (s *Store) CreateOnce(desktopID, content string, runAt time.Time, zone string) (Schedule, error) {
 	desktopID, err := checkRequest(desktopID, content)
+	if err != nil {
+		return Schedule{}, err
+	}
+
+	zone, loc, err := LoadZone(zone)
 	if err != nil {
 		return Schedule{}, err
 	}
@@ -153,10 +173,11 @@ func (s *Store) CreateOnce(desktopID, content string, runAt time.Time) (Schedule
 		ID:        sqlitedb.NewID("sched-", 8),
 		DesktopID: desktopID,
 		Content:   content,
+		Zone:      zone,
 		RunOnce:   true,
 		Enabled:   true,
 		CreatedAt: now,
-		NextRunAt: runAt,
+		NextRunAt: runAt.In(loc),
 	})
 }
 
@@ -179,10 +200,10 @@ func checkRequest(desktopID, content string) (string, error) {
 // caller in an error.
 func (s *Store) insert(what string, sch Schedule) (Schedule, error) {
 	if _, err := s.db.Exec(
-		`INSERT INTO schedules (id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once)
-		 VALUES (?, ?, ?, ?, 1, ?, 0, ?, ?)`,
+		`INSERT INTO schedules (id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once, zone)
+		 VALUES (?, ?, ?, ?, 1, ?, 0, ?, ?, ?)`,
 		sch.ID, sch.DesktopID, sch.Content, sch.CronExpr,
-		sqlitedb.ToNS(sch.CreatedAt), sqlitedb.ToNS(sch.NextRunAt), sch.RunOnce,
+		sqlitedb.ToNS(sch.CreatedAt), sqlitedb.ToNS(sch.NextRunAt), sch.RunOnce, sch.Zone,
 	); err != nil {
 		return Schedule{}, fmt.Errorf("schedule: %s: %w", what, err)
 	}
@@ -264,10 +285,10 @@ func (s *Store) markRun(id string, ranAt time.Time, failure string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var cronExpr string
+	var cronExpr, zone string
 	var runOnce int
 
-	if err := s.db.QueryRow(`SELECT cron_expr, run_once FROM schedules WHERE id = ?`, id).Scan(&cronExpr, &runOnce); err != nil {
+	if err := s.db.QueryRow(`SELECT cron_expr, run_once, zone FROM schedules WHERE id = ?`, id).Scan(&cronExpr, &runOnce, &zone); err != nil {
 		if err == sql.ErrNoRows {
 			return nil
 		}
@@ -284,7 +305,7 @@ func (s *Store) markRun(id string, ranAt time.Time, failure string) error {
 			return fmt.Errorf("schedule: mark run %s: %w", id, err)
 		}
 
-		next, ok = expr.Next(ranAt)
+		next, ok = expr.NextIn(ranAt, ZoneLocation(zone))
 	}
 
 	var err error
@@ -339,11 +360,11 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 		return nil
 	}
 
-	var cronExpr string
+	var cronExpr, zone string
 	var runOnce int
 	var lastRunNS int64
 
-	if err := s.db.QueryRow(`SELECT cron_expr, run_once, last_run_ns FROM schedules WHERE id = ?`, id).Scan(&cronExpr, &runOnce, &lastRunNS); err != nil {
+	if err := s.db.QueryRow(`SELECT cron_expr, run_once, last_run_ns, zone FROM schedules WHERE id = ?`, id).Scan(&cronExpr, &runOnce, &lastRunNS, &zone); err != nil {
 		if err == sql.ErrNoRows {
 			return invalid("schedule not found")
 		}
@@ -368,7 +389,7 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 		return fmt.Errorf("schedule: enable %s: %w", id, err)
 	}
 
-	next, ok := expr.Next(s.clock())
+	next, ok := expr.NextIn(s.clock(), ZoneLocation(zone))
 	if !ok {
 		return invalid("cron expression %q never matches", cronExpr)
 	}
@@ -416,25 +437,38 @@ func (s *Store) DeleteForDesktop(desktopID string) {
 	}
 }
 
-const scheduleColumns = `id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once, waiting, waiting_since_ns, last_error`
+const scheduleColumns = `id, desktop_id, content, cron_expr, enabled, created_ns, last_run_ns, next_run_ns, run_once, waiting, waiting_since_ns, last_error, zone`
 
+// scanSchedule reads one row of scheduleColumns, giving its run times in the
+// schedule's own zone.
 func scanSchedule(rows sqlitedb.Scanner) (Schedule, error) {
 	var sch Schedule
 	var enabled, runOnce int
 	var created, lastRun, nextRun, waitingSince int64
 
-	if err := rows.Scan(&sch.ID, &sch.DesktopID, &sch.Content, &sch.CronExpr, &enabled, &created, &lastRun, &nextRun, &runOnce, &sch.Waiting, &waitingSince, &sch.LastError); err != nil {
+	if err := rows.Scan(&sch.ID, &sch.DesktopID, &sch.Content, &sch.CronExpr, &enabled, &created, &lastRun, &nextRun, &runOnce, &sch.Waiting, &waitingSince, &sch.LastError, &sch.Zone); err != nil {
 		return Schedule{}, err
 	}
+
+	loc := ZoneLocation(sch.Zone)
 
 	sch.Enabled = enabled != 0
 	sch.RunOnce = runOnce != 0
 	sch.CreatedAt = sqlitedb.FromNS(created)
-	sch.LastRunAt = sqlitedb.FromNS(lastRun)
-	sch.NextRunAt = sqlitedb.FromNS(nextRun)
+	sch.LastRunAt = InZone(sqlitedb.FromNS(lastRun), loc)
+	sch.NextRunAt = InZone(sqlitedb.FromNS(nextRun), loc)
 	sch.WaitingSince = sqlitedb.FromNS(waitingSince)
 
 	return sch, nil
+}
+
+// InZone gives t in loc, leaving Go's zero time ("never") as it is.
+func InZone(t time.Time, loc *time.Location) time.Time {
+	if t.IsZero() {
+		return t
+	}
+
+	return t.In(loc)
 }
 
 func (s *Store) clock() time.Time {

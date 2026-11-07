@@ -52,12 +52,7 @@ func (s *Server) dagPageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	desktops, err := s.Desktops.List(r.Context())
-	if err != nil {
-		log.Printf("dag page: listing desktops: %v", err)
-		http.Error(w, "could not list the desktops", http.StatusInternalServerError)
-		return
-	}
+	desktops := s.pageDesktops(r, "dag page")
 
 	if err := s.Web.RenderDag(w, webui.DagPageData{DAG: d, Desktops: desktops, Gated: isGated(r)}); err != nil {
 		log.Printf("dag page: render: %v", err)
@@ -218,14 +213,15 @@ func (s *Server) deleteDagEdgeHandler(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]string{"status": "deleted"})
 }
 
-// setDagCronHandler sets or clears a DAG's cron trigger - an empty
-// cron_expr clears it, since a DAG has no separate enabled/disabled flag.
+// setDagCronHandler sets or clears a DAG's cron trigger, read in the IANA
+// zone given as zone ("" is the control plane's) - an empty cron_expr
+// clears it, since a DAG has no separate enabled/disabled flag.
 func (s *Server) setDagCronHandler(w http.ResponseWriter, r *http.Request) {
 	if !requirePost(w, r) {
 		return
 	}
 
-	d, err := s.Dags.SetCron(r.FormValue("dag_id"), r.FormValue("cron_expr"))
+	d, err := s.Dags.SetCron(r.FormValue("dag_id"), r.FormValue("cron_expr"), r.FormValue("zone"))
 	dagReply(w, d, err, "no such DAG")
 }
 

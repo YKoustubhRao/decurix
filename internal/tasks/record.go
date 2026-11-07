@@ -82,6 +82,13 @@ const (
 	// JudgementFieldAnswer is what a desktop kept of a person's answer for one field of an application's list: JSON
 	// {"label", "host", "option"}, derived from that person's judgement, whose text names the option (H-PY-18).
 	JudgementFieldAnswer = "field_answer"
+	// JudgementFieldUnit is what a desktop kept of a person's answer to a save's unit question: JSON {"label", "host",
+	// "form", "unit", "takes"}, derived from their reply ("1" takes, "2" does not) to the question whose sentence names
+	// that field, form, application and unit (agent/decurix_agent/unit_answers.py).
+	JudgementFieldUnit = "field_unit"
+	// JudgementPurge is a person purging a leaked secret from the stores (internal/purge): its text is their reason,
+	// its payload the counts per store; never the value.
+	JudgementPurge = "purge"
 )
 
 // Judgement is one human input, stored append-only with its author: an answer to a question, an approval, a verdict

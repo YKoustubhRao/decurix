@@ -17,6 +17,7 @@ import (
 
 	"github.com/YKoustubhRao/decurix/internal/desktop"
 	"github.com/YKoustubhRao/decurix/internal/qualification"
+	"github.com/YKoustubhRao/decurix/internal/runs"
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
@@ -529,10 +530,13 @@ func (s *Service) runCase(ctx context.Context, run qualification.PracticeRun, su
 	ev := qualification.PracticeEvidence{}
 	var problems []string
 	route := tasks.NewRoute()
+	opened := false
 	if s.Tasks != nil {
 		if _, err := s.Tasks.CommitTyped(route, tasks.Worker{ID: workerID, Name: su.Source.Title, Engine: "practice", Profile: "practice"}, "Practice ("+c.Category+"): "+clip(c.Request, 200), tasks.TypePractice,
 			tasks.Origin{Kind: tasks.OriginPractice, Ref: run.ID + "/" + c.ID}); err != nil {
 			problems = append(problems, "The case's task record could not be opened.")
+		} else {
+			opened = true
 		}
 	}
 	var mockID string
@@ -600,8 +604,19 @@ func (s *Service) runCase(ctx context.Context, run qualification.PracticeRun, su
 		_ = s.Sandbox.RemovePractice(clean, mockID)
 	}
 	done()
+	// The case's run bundle (recording, ledger, notes, soul's trace) leaves the desktop before the next case's reset
+	// wipes it, so the case's task has a trajectory with steps, as an eval case's does.
+	var pulled string
+	if opened {
+		pullCtx, pullDone := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+		pulled = s.pullBundle(pullCtx, d, route)
+		pullDone()
+	}
 	f := qualification.VerifyPractice(c, ev)
 	f.TaskID = route.TaskID
+	if pulled != "" {
+		f.Problems = append(f.Problems, pulled)
+	}
 	files := evidenceFiles(c, ev, state, attachments)
 	if s.Tasks != nil {
 		kind := tasks.OutcomeError
@@ -622,6 +637,31 @@ func (s *Service) runCase(ctx context.Context, run qualification.PracticeRun, su
 			Verdict: graderVerdict(tasks.ByPractice, f.Passed, graded, "practice.checks", "Practice case "+c.ID+" "+verdict+".", "case:"+c.ID)})
 	}
 	return f, files
+}
+
+// Bundles pulls a case's run bundle off the practice desktop (*runs.Puller over desktop.PracticeHome); the worker is
+// the practice container's id.
+type Bundles interface {
+	Pull(ctx context.Context, ref runs.ExecutionRef) (runs.Bundle, error)
+}
+
+// pullBundle pulls a case's bundle before the next case resets the desktop. It returns "" when the bundle was saved
+// (or nothing pulls bundles here), else a sentence of this file's own for the finding's problems: never a reason to
+// fail the case, which its checks decide, and never silent.
+func (s *Service) pullBundle(ctx context.Context, d desktop.PracticeDesktop, route tasks.Route) string {
+	if s.Bundles == nil || route.ExecutionID == "" {
+		return ""
+	}
+	_, err := s.Bundles.Pull(ctx, runs.ExecutionRef{ExecID: route.ExecutionID, TaskID: route.TaskID, Worker: d.ContainerID})
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, runs.ErrNothingFound):
+		return "The practice desktop held no part of the case's run, so its task record has no steps."
+	default:
+		log.Printf("practice: pulling the bundle of %s: %v", route.TaskID, err)
+		return "The case's run bundle could not be pulled, so its task record has no steps."
+	}
 }
 
 // graderVerdict is a practice or eval grade as a verdict: pass, fail, or not made when the evidence could not be

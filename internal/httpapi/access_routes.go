@@ -15,17 +15,36 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/tasks"
 )
 
-// accessHandlers holds each Server's access handler. It lives here rather
-// than as a Server field only so this pillar did not touch server.go; moving
-// it to a field (Server.Access *access.Handler) later changes nothing else.
-// SetAccess wires users, roles and approval policies into the server. Without
-// it every reply settles an approval as before.
+// SetAccess wires users, roles and approval policies into the server (Server.Access). Without it every reply settles
+// an approval as before. The policy dry run reads a worker's roles as the gate does (Server.workerRoles).
 func (s *Server) SetAccess(store *access.Store) {
 	if store == nil {
 		s.Access = nil
 		return
 	}
-	s.Access = &access.Handler{Store: store, Middleware: access.Middleware{Store: store, Gated: isGated}}
+	s.Access = &access.Handler{Store: store, Middleware: access.Middleware{Store: store, Gated: isGated},
+		WorkerRoles: s.workerRoles}
+}
+
+// signInRefusal refuses a reply sent through the gated listener by someone who has not signed in, once the access
+// store holds a user account: from then on the access code alone no longer lets anyone answer a worker. With no user
+// yet, or for any other replier, it is nil. A store that cannot be read refuses (fails closed).
+func (s *Server) signInRefusal(a tasks.Actor) error {
+	h := s.access()
+	if h == nil || a.ID != accessCodeHolder.ID {
+		return nil
+	}
+	has, err := h.Store.HasUsers()
+	if err != nil {
+		log.Printf("sign-in check for a reply: %v", err)
+		return &ApprovalRefusedError{Status: http.StatusServiceUnavailable,
+			Message: "Who may reply could not be checked, so this reply was not sent. Try again."}
+	}
+	if !has {
+		return nil
+	}
+	return &ApprovalRefusedError{Status: http.StatusUnauthorized,
+		Message: "Sign in to reply: this Decurix has user accounts, so a reply needs your name and password, not only the access code. Nothing was sent."}
 }
 
 // access returns the server's access handler, or nil when none is wired.

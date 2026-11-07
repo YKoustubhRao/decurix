@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/YKoustubhRao/decurix/internal/runs"
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
 
@@ -66,6 +67,11 @@ var schema = []string{
 	ALTER TABLE eval_rows ADD COLUMN infra INTEGER NOT NULL DEFAULT 0;`,
 	// The run record of a row's case: its execution id, once the case's bundle was pulled (O-6).
 	`ALTER TABLE eval_rows ADD COLUMN trajectory_id TEXT NOT NULL DEFAULT '';`,
+	// A run that kept the desktop's state from case to case (a suite's carry_state, a learning curve), so a table says
+	// which mode ran; and the run record's labels.eval reads a row back by its trajectory or its task.
+	`ALTER TABLE eval_runs ADD COLUMN carry_state INTEGER NOT NULL DEFAULT 0;
+	CREATE INDEX eval_rows_trajectory ON eval_rows(trajectory_id);
+	CREATE INDEX eval_rows_task ON eval_rows(task_id);`,
 }
 
 // Blobs keeps a run's suite tar by content (*blobstore.Store), so a run can be read again later.
@@ -88,6 +94,9 @@ type Run struct {
 	Note      string    `json:"note,omitempty"`
 	StartedAt time.Time `json:"started_at"`
 	EndedAt   time.Time `json:"ended_at,omitempty"`
+	// CarryState is a run that cleared nothing between a repeat's cases (the suite's carry_state, asked for by the
+	// run): its cases are a sequence, not independent samples. false: every case started from the snapshot.
+	CarryState bool `json:"carry_state"`
 }
 
 // Row is one case × arm × repeat. Rows are only ever inserted (plan rule 4).
@@ -192,10 +201,10 @@ func (s *Store) Create(r Run) error {
 		return err
 	}
 	cases, _ := json.Marshal(r.Cases)
-	_, err = s.db.Exec(`INSERT INTO eval_runs (id, created_ns, suite_name, suite_sha, suite_blob, arms, cases, repeats, status, note, started_ns, ended_ns)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+	_, err = s.db.Exec(`INSERT INTO eval_runs (id, created_ns, suite_name, suite_sha, suite_blob, arms, cases, repeats, status, note, started_ns, ended_ns, carry_state)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
 		r.ID, sqlitedb.ToNS(r.CreatedAt), r.SuiteName, r.SuiteSHA, r.SuiteBlob, string(arms), string(cases), r.Repeats, RunRunning, r.Note,
-		sqlitedb.ToNS(r.StartedAt))
+		sqlitedb.ToNS(r.StartedAt), r.CarryState)
 	return err
 }
 
@@ -271,7 +280,8 @@ func (s *Store) List(limit int) ([]Run, error) {
 }
 
 func (s *Store) query(where string, args ...any) ([]Run, error) {
-	rows, err := s.db.Query(`SELECT id, created_ns, suite_name, suite_sha, suite_blob, arms, cases, repeats, status, note, started_ns, ended_ns
+	rows, err := s.db.Query(`SELECT id, created_ns, suite_name, suite_sha, suite_blob, arms, cases, repeats, status, note, started_ns, ended_ns,
+		carry_state
 		FROM eval_runs `+where, args...)
 	if err != nil {
 		return nil, err
@@ -282,7 +292,8 @@ func (s *Store) query(where string, args ...any) ([]Run, error) {
 		var r Run
 		var created, started, ended int64
 		var arms, cases string
-		if err := rows.Scan(&r.ID, &created, &r.SuiteName, &r.SuiteSHA, &r.SuiteBlob, &arms, &cases, &r.Repeats, &r.Status, &r.Note, &started, &ended); err != nil {
+		if err := rows.Scan(&r.ID, &created, &r.SuiteName, &r.SuiteSHA, &r.SuiteBlob, &arms, &cases, &r.Repeats, &r.Status, &r.Note, &started, &ended,
+			&r.CarryState); err != nil {
 			return nil, err
 		}
 		r.CreatedAt, r.StartedAt = sqlitedb.FromNS(created), sqlitedb.FromNS(started)
@@ -323,4 +334,28 @@ func (s *Store) Rows(runID string) ([]Row, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// EvalLabel is labels.eval of a run record (runs.EvalSource): the row that names execID as its trajectory, else the
+// row of taskID that names no trajectory (a case whose bundle could not be pulled is still the eval's run). ok is
+// false when no eval row made the run.
+func (s *Store) EvalLabel(execID, taskID string) (runs.EvalLabel, bool, error) {
+	if execID == "" && taskID == "" {
+		return runs.EvalLabel{}, false, nil
+	}
+	var l runs.EvalLabel
+	err := s.db.QueryRow(`SELECT r.run_id, u.suite_name, u.suite_sha, u.carry_state, r.case_id, r.arm, r.repeat, r.observed,
+		r.passed, r.false_done, r.invalid, r.infra
+		FROM eval_rows r JOIN eval_runs u ON u.id = r.run_id
+		WHERE (? <> '' AND r.trajectory_id = ?) OR (? <> '' AND r.trajectory_id = '' AND r.task_id = ?)
+		ORDER BY CASE WHEN r.trajectory_id = ? THEN 0 ELSE 1 END, r.rowid LIMIT 1`,
+		execID, execID, taskID, taskID, execID).Scan(&l.RunID, &l.Suite, &l.SuiteSHA, &l.CarryState, &l.Case, &l.Arm, &l.Repeat,
+		&l.Observed, &l.Passed, &l.FalseDone, &l.Invalid, &l.Infra)
+	if errors.Is(err, sql.ErrNoRows) {
+		return runs.EvalLabel{}, false, nil
+	}
+	if err != nil {
+		return runs.EvalLabel{}, false, err
+	}
+	return l, true, nil
 }

@@ -31,7 +31,7 @@ func tenMinuteSchedule(t *testing.T) (*Store, Schedule) {
 
 	store := newTestStore(t, time.Date(2026, 9, 15, 12, 30, 0, 0, time.UTC))
 
-	sch, err := store.Create("bordu", "check the mail", "*/10 * * * *")
+	sch, err := store.Create("bordu", "check the mail", "*/10 * * * *", "UTC")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,7 +14,11 @@ finds it.
 | `PlannedRun.tla`, `PlannedRun.cfg`, `PlannedRunLive.cfg` | A planned run (long request) waiting on the person's answer: `long_task._take_message`, `classify`, held requests, `confirming`, `last_heard`. |
 | `check.sh` | Runs TLC once per property (and per variant), so every violation gets its own shortest trace. |
 
-RESULTS_GO_HERE
+No TLC results are kept in the repository: `check.sh` writes them to `out/` (git-ignored), and none were written into
+this file. Run it (below) to see which properties hold on the model.
+
+**The model is of the code of 2026-10-23.** The code has moved on since, and the specs have not been brought along;
+see "Where the code has moved on" at the end before reading a counterexample as today's bug.
 
 ## What is modelled, and from where
 
@@ -25,7 +29,7 @@ RESULTS_GO_HERE
 `AskedUntraced`, the loop's local `repeats` counter and the try count of the model call.
 
 - One step of the spec is one model reply, handled as `loop()` handles it: first the `AwaitingJudge == "approval"` block
-  (`operator.go` 1293-1321), then the switch on DONE / HELP / COMMAND.
+  (in `operator.go`'s `loop`), then the switch on DONE / HELP / COMMAND.
 - Also modelled: `judgementsDue` with both caps; `weighJudgements` with the send-back once per round, the `PersonAsks`
   cap and approval folding (no question at an approval); `openPointsNote`; `reviewInProgress`; `review()`'s two tries; and
   `verifyCommit`, folded into the review's outcome.
@@ -78,7 +82,7 @@ transitions are `_take_message`, `_pending_request_reply` with `_choice`, `_take
 - **One task, at most two irreversible actions:** `G`, a click the on-screen gate stops, and `S`, a shell command
   `internal/safety` stops. A grant always matches a re-click of the same button (the fingerprint is stable, and the
   15-minute expiry is not modelled).
-- **The worker model's budget** (`MaxCmds`, `MaxHelps`) stands in for `Turns`, continuations and the job's 25-minute
+- **The worker model's budget** (`MaxCmds`, `MaxHelps`) stands in for `Turns`, continuations and the job's time
   limit, none of which are modelled. It is an assumption about the environment, not the code.
 - **Caps are smaller than in the code** in some configs (they are listed in each `.cfg`). This removes no path, it
   only makes counterexamples shorter.
@@ -116,3 +120,33 @@ checks every invariant in `Interaction.cfg` and stops at the first violation. `c
 (`sh check.sh Interaction ApprovalIntegrity`) and writes `out/<run>.txt`. Each Interaction run uses a VIEW: the
 control state plus the ghost fields that property reads. No step reads a ghost field except `g.committed`, which the
 view keeps, so this is sound for each invariant and cuts the state space by orders of magnitude.
+
+## Where the code has moved on (state on 2026-11-07)
+
+The specs still describe the code of 2026-10-23. What has changed since, and is not in them:
+
+- **Approval replies.** `read_reply` is `approval.reading`: code settles only a reply that is wholly a plain yes or a
+  plain no; every other reply is the model's reading (yes / if / no / unclear). With no model it is "unclear" and asked
+  again, never a guess (review 2026-11-03, F-02). The three-word split the spec models is gone.
+- **The gate process.** On a gated desktop `resolve_reply` asks the gate (a separate Linux user) what it did with the
+  reply the control plane signed; nothing in the worker's user makes a yes ([gate-boundary.md](../gate-boundary.md)).
+  The spec's `approval.json` stands for the gate's state.
+- **The soul's scheduler** takes the host's reading of the reply (`Request.Reading`) when the host sends one;
+  `safety.IsApproval` decides only without it.
+- **A yes given before the gate asks.** `approval.note_reply` / `_reply_grants`: the latest reply that plainly says yes to
+  the very action the gate stops next, fresh and unused, is that action's one-shot yes. Not modelled.
+- **A no that asks for something first** (`guidance.not_yet`) stops that action, never the task; the soul then asks
+  for what the rest of the task needs (`declinedAdvice`). Not modelled.
+- **Replies and stop.** Only a message saved as the reply to the open question (`watchers.is_reply_file`) answers it.
+  A stop is `guidance.calls_off`: a plain stop always; "never mind" / "leave it" only with no question open, or when
+  the reading against the open question says so.
+- **Caps.** `maxModelTries` is 8 in `operator.go` (the spec's comment and `Interaction.cfg` say 3). The other caps in
+  `Interaction.cfg` still match the code.
+- **Review points.** Points that are the worker's to do (`workPoints`, `AnsweredKeys`) go back to it up to
+  `maxWorkSendBacks` (3) times; points in work done after the round's send-back go back at most `maxExtraSendBacks`
+  (2) more times; verifier points on a screen the work did not type into are advisory. None is modelled.
+- **Planned runs.** `_choice` is a model reading with plain phrases first (`approval.read_choice`), except a reply
+  that opens with "it was my answer". A reply to an approval is read once (`read_reply`); one that decides nothing is
+  classified like any message. After a restart the run asks "carry on or stop" (`resume_choice`). A "keep it" on a
+  parked finding needs the gate's one-shot yes on a gated desktop (`_keep_allowed`). None of these is in
+  `PlannedRun.tla`.

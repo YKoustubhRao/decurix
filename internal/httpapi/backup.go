@@ -33,7 +33,8 @@ import (
 // the saved secrets (llm.key, mail.key, cloudflare.key, hostgui.key, the
 // qualification owner token: every *.key, *.token and *.pem) are left out, so
 // the sealed values in the snapshot stay sealed; a secret saved unsealed (a key
-// file that could not be written) and the Claude Code login (kept as it is)
+// file that could not be written) and the Claude Code login (sealed under
+// claude-session.key, and still taken out: it carries a live refresh token)
 // are taken out of the snapshot itself (scrubSnapshot). Restored on the same
 // install, whose key files are still in place, the sealed secrets open again;
 // anywhere else they are entered again, and the restore says so.
@@ -216,8 +217,8 @@ func snapshotDB(ctx context.Context, db *sql.DB) (string, error) {
 
 // backupScrub is what scrubSnapshot runs on the snapshot, per table: a
 // secret that was saved unsealed (sealed.Seal with no key file) would open
-// for anyone holding the backup, and the Claude Code login is always kept as
-// it is. A sealed value ("enc1:...") stays: without its key file, which the
+// for anyone holding the backup, and the Claude Code login is taken out even
+// sealed (a live refresh token is not worth carrying). A sealed value ("enc1:...") stays: without its key file, which the
 // backup leaves out, it is noise, and on the same install it opens again.
 var backupScrub = map[string][]string{
 	"llm_providers":   {`DELETE FROM llm_providers WHERE api_key NOT LIKE 'enc1:%'`},

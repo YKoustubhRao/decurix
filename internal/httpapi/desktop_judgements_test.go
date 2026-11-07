@@ -209,3 +209,52 @@ func TestAFieldAnswersLabelMustBeInTheQuestion(t *testing.T) {
 		}
 	}
 }
+
+// A desktop keeps a field_unit only from the person's numbered reply to the save's unit question for that very field:
+// the question holds the field's sentence and the reply is the option the row says; it reads its own rows back.
+func TestAFieldUnitStandsOnThePersonsNumberedReply(t *testing.T) {
+	s := chatServer(t)
+	host, form := "erp.example.test", "/app/tax-template"
+	asked := `Before I save: the field "Rate" on ` + host + form + ` holds 18 and the record says 18%, and the ` +
+		`field's label does not say its unit. ` + fieldUnitSentence("Rate", host, form, "%")
+	task, answer := personsAnswer(t, s, asked, " 1. ", false)
+	yes, no := true, false
+	unit := func(label, unitName string, takes *bool) map[string]any {
+		text, _ := json.Marshal(fieldUnit{Label: label, Host: host, Form: form, Unit: unitName, Takes: takes})
+		return map[string]any{"task_id": task, "kind": "field_unit", "derived_from": answer, "text": string(text)}
+	}
+	rec := postLearned(t, s, "box", unit("Rate", "%", &yes))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("a field_unit the person answered: %d %s", rec.Code, rec.Body)
+	}
+	for name, c := range map[string]struct {
+		body map[string]any
+		want int
+	}{
+		"the other option":             {unit("Rate", "%", &no), http.StatusConflict},
+		"another field":                {unit("Amount", "%", &yes), http.StatusConflict},
+		"another unit":                 {unit("Rate", "kg", &yes), http.StatusConflict},
+		"no option at all":             {unit("Rate", "%", nil), http.StatusConflict},
+		"a text that is no field_unit": {map[string]any{"task_id": task, "kind": "field_unit", "derived_from": answer, "text": "1"}, http.StatusConflict},
+	} {
+		if rec := postLearned(t, s, "box", c.body); rec.Code != c.want {
+			t.Errorf("%s: %d %s, want %d", name, rec.Code, rec.Body, c.want)
+		}
+	}
+	// A reply in words (not an option's number) to the same question keeps nothing.
+	wordsTask, wordsAnswer := personsAnswer(t, s, asked, "yes, it is in percent", false)
+	text, _ := json.Marshal(fieldUnit{Label: "Rate", Host: host, Form: form, Unit: "%", Takes: &yes})
+	if rec := postLearned(t, s, "box", map[string]any{"task_id": wordsTask, "kind": "field_unit", "derived_from": wordsAnswer, "text": string(text)}); rec.Code != http.StatusConflict {
+		t.Errorf("a reply in words: %d %s", rec.Code, rec.Body)
+	}
+	rec = getAsDesktop(s, s.desktopLearnedHandler, "box", "/api/desktops/learned?kind=field_unit")
+	var learned struct{ Learned []desktopLearnedRow }
+	_ = json.Unmarshal(rec.Body.Bytes(), &learned)
+	if rec.Code != http.StatusOK || len(learned.Learned) != 1 || learned.Learned[0].Source.Text != " 1. " ||
+		learned.Learned[0].Source.Asked != asked || !strings.Contains(learned.Learned[0].Text, `"takes":true`) {
+		t.Fatalf("read back: %d %s", rec.Code, rec.Body)
+	}
+	if rec := getAsDesktop(s, s.desktopLearnedHandler, "eve", "/api/desktops/learned?kind=field_unit"); !strings.Contains(rec.Body.String(), `"learned":[]`) {
+		t.Fatalf("another desktop read box's rows: %s", rec.Body)
+	}
+}

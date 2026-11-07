@@ -17,7 +17,7 @@ var hostTouchingRoutes = []string{
 	"/api/host-paths/browse",
 	"/api/host-apps/detect",        // the host's apps and where their sign-ins are kept (A-02)
 	"/api/desktops/host-apps/copy", // the host's programs into a desktop (N-B2)
-	"/api/claude-auth/status",      // the owner's Claude account (A-04)
+	"/api/claude-auth/status",      // deleted: the owner's Claude account (A-04); no page signed in through it any more
 	"/api/claude-auth/login/start",
 	"/api/claude-auth/login/code",
 	"/api/claude-auth/login/cancel",

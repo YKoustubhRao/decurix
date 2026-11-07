@@ -9,12 +9,14 @@ import (
 	"strings"
 )
 
-// A desktop's agent listens on ports of its own (8081, soul's 4900, the browser extension's 8092) for what the
-// control plane sends it: requests, a person's replies, approvals. Every desktop shares the Docker network and every
-// page in a desktop's browser can send to localhost, so without a check another desktop or a web page could answer
-// an approval in a person's name (review 2026-11-02). AgentToken is the check: a secret per desktop, derived from the
-// control plane's own secret so nothing new is stored, handed to the desktop at creation (DECURIX_AGENT_TOKEN) and
-// sent by the control plane as a bearer token on every call to it. A desktop created before this has no token, and
+// A desktop's agent listens on ports of its own (8081, soul's 4900) for what the control plane sends it: requests, a
+// person's replies, approvals. Every page in a desktop's browser can send to localhost, and a desktop made before
+// desktops had networks of their own (desknet.go) still shares decurix-network with the others, so without a check a
+// web page or another desktop could answer an approval in a person's name (review 2026-11-02). The gate's own :8083
+// has a check of its own (a reply is signed with the desktop's gate key, GateKey). AgentToken is the check for the
+// agent's ports: a secret per desktop, derived from the control plane's own secret so nothing new is stored, handed
+// to the desktop at creation (DECURIX_AGENT_TOKEN) and sent by the control plane as a bearer token on every call to
+// it. A desktop created before this has no token, and
 // its agent accepts calls as before until it is recreated (desktop state is fixed at creation).
 
 // AgentTokenEnv is the environment variable a desktop's agent reads its token from.

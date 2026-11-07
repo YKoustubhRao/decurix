@@ -51,6 +51,7 @@
 .wf-note.error{color:var(--danger)}
 .wf-muted{color:var(--text-3)}
 .wf-over{color:var(--danger);font-weight:600}
+.wf-editing td{background:var(--accent-soft)}
 .wf-mono{font-family:var(--mono);font-size:12px}
 .wf-text{white-space:pre-wrap;overflow-wrap:anywhere}
 .wf-result{font-size:13px;line-height:1.5;padding:10px 12px;border-radius:var(--r-md);background:var(--surface-2)}
@@ -154,9 +155,9 @@ td.actions{white-space:nowrap;text-align:right}
     <div class="wf-forms">
       <form class="panel wf-form" id="publishForm">
         <h3>Publish from a worker</h3>
-        <p class="hint">Reads a confirmed skill off the worker and stores it as a new version when it changed.</p>
+        <p class="hint">Reads a confirmed skill off the worker and stores it as a new version when it changed. Only the worker's confirmed skills are offered: a draft still has questions open.</p>
         <div class="field"><label for="pubWorker">Worker</label><select class="select" id="pubWorker" data-workers required></select></div>
-        <div class="field"><label for="pubName">Skill name</label><input class="input" id="pubName" autocomplete="off" required placeholder="skill-name"></div>
+        <div class="field"><label for="pubName">Skill</label><select class="select" id="pubName" required><option value="">Pick a worker first</option></select></div>
         <div class="field"><label for="pubNote">Note</label><input class="input" id="pubNote" autocomplete="off" placeholder="What changed"></div>
         <div><button type="submit" class="btn btn-primary btn-sm">Publish</button></div>
       </form>
@@ -312,7 +313,7 @@ td.actions{white-space:nowrap;text-align:right}
     </div>
     <div class="wf-forms" style="margin-top:12px">
       <form class="panel wf-form" id="policyForm">
-        <h3>Add a policy</h3>
+        <h3 id="policyFormTitle">Add a policy</h3>
         <div class="wf-form-row">
           <div class="field"><label for="pWorker">Worker</label><select class="select" id="pWorker" data-workers data-all="Every worker"></select></div>
           <div class="field"><label for="pWorkerRole">Worker role</label><input class="input" id="pWorkerRole" autocomplete="off" placeholder="Any"></div>
@@ -324,7 +325,7 @@ td.actions{white-space:nowrap;text-align:right}
           <div class="field"><label for="pMin">Approvers</label><select class="select" id="pMin"><option value="1">One</option><option value="2">Two, different</option></select></div>
         </div>
         <div class="field"><label for="pNote">Note</label><input class="input" id="pNote" autocomplete="off"></div>
-        <div><button type="submit" class="btn btn-primary btn-sm">Add policy</button></div>
+        <div><button type="submit" class="btn btn-primary btn-sm" id="policySubmit">Add policy</button> <button type="button" class="btn btn-quiet btn-sm" id="policyCancel" hidden>Cancel</button></div>
       </form>
 
       <form class="panel wf-form" id="checkForm">
@@ -627,6 +628,7 @@ td.actions{white-space:nowrap;text-align:right}
   };
 
   loaders.skills = async function(){
+    loadPublishSkills(false);
     var tbody = $("skillsRows");
     if(editing(tbody)){ return; }
     clear(tbody);
@@ -674,8 +676,37 @@ td.actions{white-space:nowrap;text-align:right}
     });
   };
 
+  /* The skills Publish offers: the chosen worker's confirmed ones, read off its desktop (GET /api/desktops/skills).
+     Read again when the worker changes, and at most every 30 s while the tab is open, not on every poll. */
+  var pubSkills = {worker: null, at: 0};
+  async function loadPublishSkills(force){
+    var worker = $("pubWorker").value;
+    var sel = $("pubName");
+    if(!force && worker === pubSkills.worker && Date.now() - pubSkills.at < 30000){ return; }
+    if(editing(sel) && worker === pubSkills.worker){ return; }
+    pubSkills = {worker: worker, at: Date.now()};
+    var keep = sel.value;
+    function only(text){ clear(sel); var o = new Option(text, ""); o.disabled = true; sel.appendChild(o); sel.value = ""; }
+    if(!worker){ only("Pick a worker first"); return; }
+    try{
+      var data = await getJSON("/api/desktops/skills?id=" + enc(worker));
+      if(worker !== $("pubWorker").value){ return; }
+      var ready = ((data && data.skills) || []).filter(function(sk){ return sk.status === "ready"; });
+      if(!ready.length){ only("No confirmed skill on this worker"); return; }
+      clear(sel);
+      ready.sort(function(a, b){ return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; }).forEach(function(sk){
+        sel.appendChild(new Option(sk.title && sk.title !== sk.name ? sk.name + " (" + sk.title + ")" : sk.name, sk.name));
+      });
+      if(keep && Array.prototype.some.call(sel.options, function(o){ return o.value === keep; })){ sel.value = keep; }
+    }catch(e){
+      if(worker === $("pubWorker").value){ only("Could not read this worker's skills (is it running?)"); pubSkills.at = 0; }
+    }
+  }
+  $("pubWorker").addEventListener("change", function(){ loadPublishSkills(true); });
+
   onSubmit($("publishForm"), async function(){
-    var r = await send("/api/skillhub/publish", {worker: $("pubWorker").value, name: $("pubName").value.trim(), note: $("pubNote").value.trim()});
+    if(!$("pubName").value){ throw new Error("Pick one of the worker's confirmed skills."); }
+    var r = await send("/api/skillhub/publish", {worker: $("pubWorker").value, name: $("pubName").value, note: $("pubNote").value.trim()});
     $("pubNote").value = "";
     return r.created ? "Published " + r.version.name + " v" + r.version.version + "." : "Unchanged: v" + r.version.version + " is already the latest.";
   });
@@ -693,9 +724,21 @@ td.actions{white-space:nowrap;text-align:right}
 
 {{if .HasQueue}}
   function money(n){ return "$" + (Number(n) || 0).toFixed(2); }
-  function spendText(period){
+  /* Whether a worker's model calls pass the control plane's proxy, which meters them (docs/workqueue.md): a TheBot
+     desktop on a hosted brain does; one on the local model, and a legacy Claude (the owner's Claude account) or
+     Ollama desktop, do not - only the desktop's own report counts their tokens, and nothing prices them. */
+  function metered(d){
+    var harness = (d && d.harness) || "thebot";
+    if(harness === "claude" || harness === "ollama"){ return false; }
+    if(harness === "thebot"){ return !!d.brain && d.brain !== "ollama"; }
+    return true;
+  }
+  function spendText(period, d){
     if(!period){ return "—"; }
     var text = money(period.usd) + " · " + (period.tokens || 0).toLocaleString() + " tok";
+    if(d && !metered(d)){
+      text = "not metered" + (period.tokens ? " · " + period.tokens.toLocaleString() + " tok reported" : "");
+    }
     if(period.limit){
       var caps = [];
       if(period.limit.max_usd){ caps.push(money(period.limit.max_usd)); }
@@ -788,8 +831,9 @@ td.actions{white-space:nowrap;text-align:right}
         label.appendChild(document.createTextNode("Paused"));
         cell(tr, label);
         var s = spend[d.id];
-        cell(tr, s ? spendText(s.day) : "—", "num" + (s && overLimit(s.day) ? " wf-over" : ""));
-        cell(tr, s ? spendText(s.month) : "—", "num" + (s && overLimit(s.month) ? " wf-over" : ""));
+        var day = cell(tr, s ? spendText(s.day, d) : "—", "num" + (s && overLimit(s.day) ? " wf-over" : ""));
+        cell(tr, s ? spendText(s.month, d) : "—", "num" + (s && overLimit(s.month) ? " wf-over" : ""));
+        if(!metered(d)){ day.title = "This worker's model calls do not pass the control plane, so they are not metered or priced: only what the desktop reports is counted."; }
         cell(tr, null, "actions").appendChild(action("Save", "btn-default", async function(){
           await send("/api/queue/capacity", {worker: d.id, max_concurrent: parseInt(n.value, 10) || 1, paused: p.checked});
           return "Saved.";
@@ -1054,13 +1098,6 @@ td.actions{white-space:nowrap;text-align:right}
       all.forEach(function(u){
         var tr = node("tr");
         cell(tr, u.name);
-        if(u.local){
-          cell(tr, (u.roles || []).join(", "));
-          cell(tr, chip("this computer"));
-          cell(tr, "");
-          users.appendChild(tr);
-          return;
-        }
         var roles = node("input", "input");
         roles.value = (u.roles || []).join(", ");
         roles.placeholder = "No roles";
@@ -1071,6 +1108,16 @@ td.actions{white-space:nowrap;text-align:right}
         acts.appendChild(action("Save roles", "btn-default", async function(){
           await send("/api/access/users/update", {id: u.id, roles: list(roles.value)});
           return "Roles saved.";
+        }));
+        var pw = node("input", "input");
+        pw.type = "password"; pw.autocomplete = "new-password"; pw.placeholder = "New password"; pw.style.width = "140px";
+        pw.setAttribute("aria-label", "New password for " + u.name);
+        acts.appendChild(pw);
+        acts.appendChild(action("Set password", "btn-default", async function(){
+          if(!pw.value){ throw new Error("Type the new password first."); }
+          await send("/api/access/users/update", {id: u.id, password: pw.value});
+          pw.value = "";
+          return "Password changed; their sessions ended.";
         }));
         acts.appendChild(action(u.disabled ? "Enable" : "Disable", "btn-quiet", async function(){
           await send("/api/access/users/update", {id: u.id, disabled: !u.disabled});
@@ -1100,9 +1147,15 @@ td.actions{white-space:nowrap;text-align:right}
       cell(tr, p.amount_over !== undefined && p.amount_over !== null ? String(p.amount_over) : "—");
       cell(tr, (p.approver_roles || []).join(" or "));
       cell(tr, String(p.min_approvers || 1), "num");
-      cell(tr, null, "actions").appendChild(action("Delete", "btn-quiet btn-danger", async function(){
+      var pacts = cell(tr, null, "actions");
+      if(p.id === editingPolicy){ tr.className = "wf-editing"; }
+      var edit = D.button("Edit", "btn-default");
+      edit.addEventListener("click", function(){ editPolicy(p); });
+      pacts.appendChild(edit);
+      pacts.appendChild(action("Delete", "btn-quiet btn-danger", async function(){
         if(!window.confirm("Delete this policy?")){ return; }
         await send("/api/access/policies/delete", {id: p.id});
+        if(p.id === editingPolicy){ endPolicyEdit(); }
         return "Deleted.";
       }));
       policies.appendChild(tr);
@@ -1152,6 +1205,34 @@ td.actions{white-space:nowrap;text-align:right}
     $("uName").value = ""; $("uPassword").value = ""; $("uRoles").value = "";
     return "Added.";
   });
+  /* Editing a policy fills the form with it; saving sends its id, which replaces it (POST /api/access/policies/save). */
+  var editingPolicy = "";
+  var policyFields = ["pWorkerRole", "pMatch", "pAmount", "pRoles", "pNote"];
+  function editPolicy(p){
+    editingPolicy = p.id;
+    $("pWorker").value = p.worker || "*";
+    $("pWorkerRole").value = p.worker_role || "";
+    $("pMatch").value = p.action_match || "";
+    $("pAmount").value = p.amount_over !== undefined && p.amount_over !== null ? String(p.amount_over) : "";
+    $("pRoles").value = (p.approver_roles || []).join(", ");
+    $("pMin").value = String(p.min_approvers || 1);
+    $("pNote").value = p.note || "";
+    $("policyFormTitle").textContent = "Edit the policy";
+    $("policySubmit").textContent = "Save changes";
+    $("policyCancel").hidden = false;
+    ["pWorker", "pMin"].concat(policyFields).forEach(function(id){ $(id).dataset.dirty = "1"; });
+    $("pMatch").focus();
+  }
+  function endPolicyEdit(){
+    editingPolicy = "";
+    policyFields.forEach(function(id){ $(id).value = ""; delete $(id).dataset.dirty; });
+    $("pMin").value = "1";
+    delete $("pWorker").dataset.dirty; delete $("pMin").dataset.dirty;
+    $("policyFormTitle").textContent = "Add a policy";
+    $("policySubmit").textContent = "Add policy";
+    $("policyCancel").hidden = true;
+  }
+  $("policyCancel").addEventListener("click", endPolicyEdit);
   onSubmit($("policyForm"), async function(){
     var amount = $("pAmount").value.trim();
     var policy = {
@@ -1163,9 +1244,11 @@ td.actions{white-space:nowrap;text-align:right}
       note: $("pNote").value.trim()
     };
     if(amount !== ""){ policy.amount_over = parseFloat(amount); }
+    var replacing = editingPolicy;
+    if(replacing){ policy.id = replacing; }
     await send("/api/access/policies/save", policy);
-    ["pWorkerRole", "pMatch", "pAmount", "pRoles", "pNote"].forEach(function(id){ $(id).value = ""; });
-    return "Policy added.";
+    endPolicyEdit();
+    return replacing ? "Policy saved." : "Policy added.";
   });
   $("checkForm").addEventListener("submit", async function(event){
     event.preventDefault();

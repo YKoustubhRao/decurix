@@ -184,7 +184,13 @@ func (s *Server) recordingDeleteHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	s.callAgent(w, r, id, http.MethodPost, "/recordings/"+session+"/delete", map[string]string{}, true)
+	// A held run's recording (not yet in the run record) is answered 409 with held: true by the desktop, and goes
+	// only when the person, told so, sends it again with force (the recordings page and the card's drawer ask).
+	payload := map[string]any{}
+	if force := r.FormValue("force"); force == "1" || strings.EqualFold(force, "true") {
+		payload["force"] = true
+	}
+	s.callAgent(w, r, id, http.MethodPost, "/recordings/"+session+"/delete", payload, true)
 }
 
 // demonstrationHandler reads (GET) or starts, pauses, resumes or stops (POST)
@@ -285,8 +291,13 @@ func (s *Server) recordTaskHandler(w http.ResponseWriter, r *http.Request) {
 	recorder, _ := actorFrom(ctx)
 	route := s.routeRequest(worker, content, tasks.Origin{Kind: tasks.OriginRecording, ActorID: recorder.ID})
 	if route.Kind == tasks.RouteReply {
-		if _, ok := actorFrom(ctx); !ok {
+		replier, ok := actorFrom(ctx)
+		if !ok {
 			uploadError(w, errNoReplier)
+			return
+		}
+		if err := s.signInRefusal(replier); err != nil { // a gated reply needs a sign-in once users exist
+			uploadError(w, err)
 			return
 		}
 		route.JudgementID = tasks.NewJudgementID()
@@ -585,7 +596,13 @@ func (s *Server) askAgent(ctx context.Context, w http.ResponseWriter, id, method
 		body = bytes.NewReader(encoded)
 	}
 
-	resp, err := s.Desktops.AgentRequest(ctx, id, method, path, body)
+	var resp *http.Response
+	var err error
+	if s.agentRequest != nil {
+		resp, err = s.agentRequest(ctx, id, method, path, body)
+	} else {
+		resp, err = s.Desktops.AgentRequest(ctx, id, method, path, body)
+	}
 	if err != nil {
 		recordingsError(w, err)
 		return nil, false

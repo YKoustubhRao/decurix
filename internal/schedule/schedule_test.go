@@ -31,7 +31,7 @@ func newTestStore(t *testing.T, now time.Time) *Store {
 func TestCreateRejectsBadCron(t *testing.T) {
 	store := newTestStore(t, time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC))
 
-	if _, err := store.Create("bordu", "check the mail", "not a cron"); err == nil {
+	if _, err := store.Create("bordu", "check the mail", "not a cron", "UTC"); err == nil {
 		t.Fatal("expected an error for an invalid cron expression")
 	}
 }
@@ -40,7 +40,7 @@ func TestCreateSchedulesTheNextOccurrenceNotNow(t *testing.T) {
 	now := time.Date(2026, 9, 15, 12, 30, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 
-	sch, err := store.Create("bordu", "check the mail", "*/10 * * * *")
+	sch, err := store.Create("bordu", "check the mail", "*/10 * * * *", "UTC")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestDueAndMarkRunAdvances(t *testing.T) {
 	now := time.Date(2026, 9, 15, 12, 30, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 
-	sch, err := store.Create("bordu", "check the mail", "*/10 * * * *")
+	sch, err := store.Create("bordu", "check the mail", "*/10 * * * *", "UTC")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestMarkRunOfImpossibleCronDisablesTheSchedule(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 
-	sch, err := store.Create("bordu", "check the mail", "0 0 * * *")
+	sch, err := store.Create("bordu", "check the mail", "0 0 * * *", "UTC")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestSetEnabledRecomputesNextRun(t *testing.T) {
 	now := time.Date(2026, 9, 15, 12, 30, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 
-	sch, err := store.Create("bordu", "check the mail", "0 0 * * *")
+	sch, err := store.Create("bordu", "check the mail", "0 0 * * *", "UTC")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,11 +182,11 @@ func TestCreateOnceRejectsAPastTime(t *testing.T) {
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
 	store := newTestStore(t, now)
 
-	if _, err := store.CreateOnce("bordu", "check the mail", now.Add(-time.Minute)); err == nil {
+	if _, err := store.CreateOnce("bordu", "check the mail", now.Add(-time.Minute), "UTC"); err == nil {
 		t.Fatal("expected an error for a run time in the past")
 	}
 
-	if _, err := store.CreateOnce("bordu", "check the mail", now); err == nil {
+	if _, err := store.CreateOnce("bordu", "check the mail", now, "UTC"); err == nil {
 		t.Fatal("expected an error for a run time equal to now")
 	}
 }
@@ -197,7 +197,7 @@ func TestCreateOnceAndMarkRunDisablesRatherThanRecurring(t *testing.T) {
 
 	runAt := now.Add(time.Hour)
 
-	sch, err := store.CreateOnce("bordu", "check the mail", runAt)
+	sch, err := store.CreateOnce("bordu", "check the mail", runAt, "UTC")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestSetEnabledOnAFiredOnceScheduleErrors(t *testing.T) {
 
 	runAt := now.Add(time.Hour)
 
-	sch, err := store.CreateOnce("bordu", "check the mail", runAt)
+	sch, err := store.CreateOnce("bordu", "check the mail", runAt, "UTC")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestSetEnabledOnAPendingOnceScheduleKeepsItsRunTime(t *testing.T) {
 
 	runAt := now.Add(time.Hour)
 
-	sch, err := store.CreateOnce("bordu", "check the mail", runAt)
+	sch, err := store.CreateOnce("bordu", "check the mail", runAt, "UTC")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +321,7 @@ func TestSetEnabledOnAPendingOnceScheduleKeepsItsRunTime(t *testing.T) {
 func TestDeleteRemovesSchedule(t *testing.T) {
 	store := newTestStore(t, time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC))
 
-	sch, err := store.Create("bordu", "check the mail", "* * * * *")
+	sch, err := store.Create("bordu", "check the mail", "* * * * *", "UTC")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,15 +336,15 @@ func TestDeleteRemovesSchedule(t *testing.T) {
 func TestDeleteForDesktopRemovesOnlyThatDesktopsSchedules(t *testing.T) {
 	store := newTestStore(t, time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC))
 
-	if _, err := store.Create("bordu", "check the mail", "* * * * *"); err != nil {
+	if _, err := store.Create("bordu", "check the mail", "* * * * *", "UTC"); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := store.Create("bordu", "water the plants", "0 9 * * *"); err != nil {
+	if _, err := store.Create("bordu", "water the plants", "0 9 * * *", "UTC"); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := store.Create("tanager", "check the mail", "* * * * *"); err != nil {
+	if _, err := store.Create("tanager", "check the mail", "* * * * *", "UTC"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -362,11 +362,11 @@ func TestDeleteForDesktopRemovesOnlyThatDesktopsSchedules(t *testing.T) {
 func TestListFiltersByDesktop(t *testing.T) {
 	store := newTestStore(t, time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC))
 
-	if _, err := store.Create("bordu", "check the mail", "* * * * *"); err != nil {
+	if _, err := store.Create("bordu", "check the mail", "* * * * *", "UTC"); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := store.Create("tanager", "check the mail", "* * * * *"); err != nil {
+	if _, err := store.Create("tanager", "check the mail", "* * * * *", "UTC"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -411,7 +411,7 @@ func TestConcurrentMarkRunAndSetEnabledDoNotLoseAnUpdate(t *testing.T) {
 	}
 	store.now = func() time.Time { return now }
 
-	sch, err := store.CreateOnce("bordu", "check the mail", runAt)
+	sch, err := store.CreateOnce("bordu", "check the mail", runAt, "UTC")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -81,11 +81,7 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	desktops, err := s.Desktops.List(r.Context())
-	if err != nil {
-		internalError(w, "dashboard: listing desktops", err)
-		return
-	}
+	desktops := s.pageDesktops(r, "dashboard")
 
 	memories := s.Memory.List("")
 	memoryByDesktop := map[string][]memory.WorkerMemoryEntry{}
@@ -265,6 +261,12 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A home folder an earlier desktop of this name left is said now, while the form is still open to offer
+	// deleting it, rather than after the creation has started (leftoverhome.go).
+	if s.refuseLeftoverHome(w, r, name) {
+		return
+	}
+
 	// The chat model is baked into a desktop when it is created. With no
 	// desktop yet, choose it against the machine as it is now; with any,
 	// keep the model they already run (see ollama.Reselect).
@@ -414,18 +416,22 @@ func (s *Server) thenClose(act func(context.Context, string) error, why string) 
 
 // dockerStatusHandler answers GET /api/docker/status: whether the control plane has asked Docker yet, and whether it
 // answered - what the "Docker is not running" banner reads (W-08) - whether a tools update waits for running
-// desktops to stop (tools_waiting), and, on the Windows app's WSL host, whether the fence between desktops holds
-// (fence; fence_missing is the one bit a banner needs). Never a round trip to Docker itself.
+// desktops to stop (tools_waiting), whether the last fill of the shared tools volume failed (tools_not_ready, with
+// tools_not_ready_why a class - volume, start or copy - never the error's text: the fill empties the volume first, so
+// desktops may have no tools until one succeeds), and, on the Windows app's WSL host, whether the fence between
+// desktops holds (fence; fence_missing is the one bit a banner needs). Never a round trip to Docker itself.
 func (s *Server) dockerStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
-	checked, reachable, toolsWaiting := false, false, false
+	checked, reachable, toolsWaiting, toolsWhy := false, false, false, ""
 	if s.Desktops != nil {
 		checked, reachable, toolsWaiting = s.Desktops.DockerChecked(), s.Desktops.DockerReachable(), s.Desktops.ToolsRefreshWaiting(r.Context())
+		toolsWhy = s.Desktops.ToolsNotReady()
 	}
 	fence := desktop.HostFence()
 	jsonResponse(w, map[string]any{"checked": checked, "reachable": reachable, "tools_waiting": toolsWaiting,
+		"tools_not_ready": toolsWhy != "", "tools_not_ready_why": toolsWhy,
 		"fence": fence, "fence_missing": fence.Required && !fence.Holds})
 }
 

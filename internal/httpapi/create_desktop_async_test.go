@@ -14,14 +14,18 @@ import (
 
 // TestCreateDesktopAsyncAndStatusPoll pins that creating a desktop answers 202 while the creation itself is still
 // running. It used to time the handler against 500ms, which a loaded machine broke with nothing wrong; now the stand-in
-// Docker daemon holds every request the creation makes (everything but the handler's own listing and "does it exist"
-// inspect) until the test lets go, so a handler that waited for the creation would never answer at all.
+// Docker daemon holds every request the creation makes (everything but the handler's own listing, its "does it exist"
+// inspect and its look for a leftover home) until the test lets go, so a handler that waited for the creation would never answer at all.
 func TestCreateDesktopAsyncAndStatusPoll(t *testing.T) {
 	release := make(chan struct{})
 	held := make(chan string, 64)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// What the handler itself asks before it answers: the desktops there are (none), and whether this one exists
-		// (no such container yet).
+		// What the handler itself asks before it answers: the desktops there are (none), whether this one exists (no
+		// such container yet), and whether an earlier desktop of its name left a home (none: leftoverhome.go).
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/volumes/desktop_async-desk-1_home") {
+			http.NotFound(w, r)
+			return
+		}
 		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/containers/json") {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte("[]"))

@@ -35,11 +35,7 @@ func (s *Server) triggersPageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	desktops, err := s.Desktops.List(r.Context())
-	if err != nil {
-		jsonError(w, err)
-		return
-	}
+	desktops := s.pageDesktops(r, "triggers page")
 
 	if err := s.Web.RenderTriggers(w, webui.PageData{Desktops: desktops}); err != nil {
 		log.Printf("triggers page: %v", err)

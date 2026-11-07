@@ -31,10 +31,38 @@
 .test-subject{color:var(--text);word-break:break-word}
 .test-from{color:var(--text-3);font-size:11.5px;word-break:break-word}
 
+.cron-zone{display:grid;grid-template-columns:3fr 2fr;gap:12px}
+.cron-zone > div{display:grid;gap:6px;min-width:0}
+.cron-zone .input{font-family:var(--mono)}
+
 @media (max-width:720px){
   .email-fields .grid-2{grid-template-columns:1fr}
+  .cron-zone{grid-template-columns:1fr}
 }
 </style>
+{{end}}
+
+{{/* The cron expression and the time zone it is read in (B-37), shared by the
+     requests and triggers pages; Triggers.fillZone prefills the zone with the
+     browser's and offers the rest. */}}
+{{define "cron-zone-fields"}}
+<div class="cron-zone">
+  <div>
+    <label class="field-label" for="cron">Cron schedule <span class="mono">(minute hour day month weekday)</span></label>
+    <input class="input" id="cron" name="cron" placeholder="*/30 * * * *" autocomplete="off">
+  </div>
+  <div>
+    <label class="field-label" for="cronZone">Time zone</label>
+    <input class="input" id="cronZone" name="zone" list="zoneList" placeholder="Asia/Kolkata" autocomplete="off" spellcheck="false">
+    <datalist id="zoneList"></datalist>
+  </div>
+</div>
+<div class="hint">
+  Runs the request every time the schedule matches on the clock of that time zone, with
+  <span class="mono">TIME:{&hellip;}</span> appended saying when that run triggered.
+  <span class="mono">0 * * * *</span> hourly, <span class="mono">0 9 * * *</span> daily at 09:00,
+  <span class="mono">0 9 * * 1</span> every Monday at 09:00.
+</div>
 {{end}}
 
 {{define "email-rule-fields"}}
@@ -216,6 +244,39 @@ window.Triggers = (function(){
     });
   }
 
+  /* ---------------- time zones (B-37) ---------------- */
+
+  /* The browser's IANA zone, or "" when it does not say (the control plane then uses its own, then UTC). */
+  function browserZone(){
+    try{ return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; }catch(e){ return ""; }
+  }
+
+  /* Prefills the cron's zone field with the browser's zone and offers every zone the browser knows. */
+  function fillZone(){
+    var input = $("cronZone"), list = $("zoneList");
+    if(!input){ return; }
+    if(!input.value){ input.value = browserZone(); }
+    if(!list || list.options.length){ return; }
+    var names = [];
+    try{ names = Intl.supportedValuesOf("timeZone"); }catch(e){ /* an older browser: typed by hand */ }
+    if(names.indexOf("UTC") < 0){ names = ["UTC"].concat(names); }
+    names.forEach(function(n){ var o = document.createElement("option"); o.value = n; list.appendChild(o); });
+  }
+
+  /* The zone a new cron schedule is read in: the field's, else the browser's. */
+  function zone(){
+    var input = $("cronZone");
+    var v = input ? input.value.trim() : "";
+    return v || browserZone();
+  }
+
+  /* t as it reads in zone, or null if the browser cannot say. */
+  function timeIn(d, zoneName){
+    try{
+      return d.toLocaleString(undefined, {timeZone: zoneName, month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+    }catch(e){ return null; }
+  }
+
   /* Go's zero time means "never". */
   function when(iso){
     if(!iso){ return null; }
@@ -272,7 +333,10 @@ window.Triggers = (function(){
 
     var meta = el("div", "trig-meta");
     meta.appendChild(el("span", "trig-kind", sch.run_once ? "Once" : "Repeat"));
-    if(!sch.run_once){ meta.appendChild(el("span", "mono", sch.cron_expr)); }
+    if(!sch.run_once){
+      meta.appendChild(el("span", "mono", sch.cron_expr));
+      meta.appendChild(el("span", "", sch.zone || "UTC"));
+    }
     meta.appendChild(el("span", "", "→ " + desktopName(sch.desktop_id)));
 
     var lastRun = shortTime(sch.last_run_at);
@@ -282,8 +346,12 @@ window.Triggers = (function(){
     }else if(!sch.enabled){
       meta.appendChild(el("span", "", "Paused"));
     }else{
-      var next = shortTime(sch.next_run_at);
-      meta.appendChild(el("span", "", next ? "Next " + next : "Next run pending"));
+      /* In the viewer's own time; a schedule read in another zone also says how it reads there. */
+      var next = shortTime(sch.next_run_at), there = null;
+      if(next && !sch.run_once && sch.zone && sch.zone !== browserZone()){
+        there = timeIn(when(sch.next_run_at), sch.zone);
+      }
+      meta.appendChild(el("span", "", next ? "Next " + next + (there ? " your time (" + there + " " + sch.zone + ")" : "") : "Next run pending"));
     }
     if(sch.waiting){
       var since = shortTime(sch.waiting_since);
@@ -360,6 +428,7 @@ window.Triggers = (function(){
     loadAccounts: loadAccounts, setAccounts: setAccounts,
     show: show, create: create, wireTest: wireTest,
     scheduleRow: scheduleRow, ruleRow: ruleRow,
+    browserZone: browserZone, fillZone: fillZone, zone: zone,
     el: el, ago: ago, when: when, textButton: textButton, iconButton: iconButton
   };
 })();

@@ -96,6 +96,9 @@ type TasksPageData struct {
 	Report  tasks.Report
 	Tasks   []tasks.Summary
 	Filter  tasks.Filter
+	// Purge shows the "Purge a leaked secret" control (POST /api/privacy/purge): on the primary listener only, where
+	// that route is served.
+	Purge bool
 }
 
 // TaskPageData is the template data for one task record.

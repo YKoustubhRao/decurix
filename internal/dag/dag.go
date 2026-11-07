@@ -68,14 +68,17 @@ var nodeNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 // DAG is a user-authored template: a set of nodes and edges, one of which
 // (HeadNodeID) is where every run of it begins.
 type DAG struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	HeadNodeID string    `json:"head_node_id"`
-	CronExpr   string    `json:"cron_expr"`
-	NextRunAt  time.Time `json:"next_run_at"`
-	LastRunAt  time.Time `json:"last_run_at"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	HeadNodeID string `json:"head_node_id"`
+	CronExpr   string `json:"cron_expr"`
+	// CronZone is the IANA zone CronExpr is read in, and the zone NextRunAt
+	// and LastRunAt are given in; DAGs set before zones existed read "UTC".
+	CronZone  string    `json:"cron_zone"`
+	NextRunAt time.Time `json:"next_run_at"`
+	LastRunAt time.Time `json:"last_run_at"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Node is one step: a desktop to send a request to, and the request text
@@ -220,6 +223,9 @@ var schema = []string{
 	// dag_run_nodes_run_node above can't seek on that (run_id, its leading
 	// column, isn't part of the WHERE clause there).
 	`CREATE INDEX dag_run_nodes_node ON dag_run_nodes (node_id)`,
+	// The IANA zone the cron trigger is read in (B-37). Existing DAGs keep
+	// UTC, the zone their cron was set in, so nothing already set moves.
+	`ALTER TABLE dags ADD COLUMN cron_zone TEXT NOT NULL DEFAULT 'UTC'`,
 }
 
 // Store is the SQLite-backed collection of DAGs, their nodes/edges, and the
@@ -258,23 +264,26 @@ func validateNodeName(name string) (string, error) {
 	return name, nil
 }
 
+// scanDAG reads one row of dagColumns, giving its cron's run times in the
+// cron's own zone.
 func scanDAG(scanner interface{ Scan(...any) error }) (DAG, error) {
 	var d DAG
 	var nextRun, lastRun, created, updated int64
 
-	if err := scanner.Scan(&d.ID, &d.Name, &d.HeadNodeID, &d.CronExpr, &nextRun, &lastRun, &created, &updated); err != nil {
+	if err := scanner.Scan(&d.ID, &d.Name, &d.HeadNodeID, &d.CronExpr, &nextRun, &lastRun, &created, &updated, &d.CronZone); err != nil {
 		return DAG{}, err
 	}
 
-	d.NextRunAt = sqlitedb.FromNS(nextRun)
-	d.LastRunAt = sqlitedb.FromNS(lastRun)
+	loc := schedule.ZoneLocation(d.CronZone)
+	d.NextRunAt = schedule.InZone(sqlitedb.FromNS(nextRun), loc)
+	d.LastRunAt = schedule.InZone(sqlitedb.FromNS(lastRun), loc)
 	d.CreatedAt = sqlitedb.FromNS(created)
 	d.UpdatedAt = sqlitedb.FromNS(updated)
 
 	return d, nil
 }
 
-const dagColumns = `id, name, head_node_id, cron_expr, next_run_ns, last_run_ns, created_ns, updated_ns`
+const dagColumns = `id, name, head_node_id, cron_expr, next_run_ns, last_run_ns, created_ns, updated_ns, cron_zone`
 
 // ---------------------------------------------------------------------------
 // DAG
@@ -849,11 +858,12 @@ func (s *Store) Active() bool {
 	return n > 0
 }
 
-// SetCron sets or clears a DAG's cron trigger. An empty cronExpr clears it -
-// a DAG has no separate enabled/disabled flag, so this is what disables it.
-// A schedule never fires immediately: the first run is the next time the
-// expression matches, same as internal/schedule.Store.Create.
-func (s *Store) SetCron(dagID, cronExpr string) (DAG, error) {
+// SetCron sets or clears a DAG's cron trigger, read in zone (an IANA name;
+// "" is schedule.DefaultZone). An empty cronExpr clears it - a DAG has no
+// separate enabled/disabled flag, so this is what disables it. A schedule
+// never fires immediately: the first run is the next time the expression
+// matches, same as internal/schedule.Store.Create.
+func (s *Store) SetCron(dagID, cronExpr, zone string) (DAG, error) {
 	cronExpr = strings.TrimSpace(cronExpr)
 
 	if _, err := s.Get(dagID); err != nil {
@@ -877,14 +887,19 @@ func (s *Store) SetCron(dagID, cronExpr string) (DAG, error) {
 		return DAG{}, refuse("%v", err) // the parser's reason is the person's to read
 	}
 
-	next, ok := expr.Next(now)
+	zone, loc, err := schedule.LoadZone(zone)
+	if err != nil {
+		return DAG{}, refuse("%v", err) // the zone's reason is the person's to read
+	}
+
+	next, ok := expr.NextIn(now, loc)
 	if !ok {
-		return DAG{}, fmt.Errorf("cron expression %q never matches", cronExpr)
+		return DAG{}, refuse("cron expression %q never matches", cronExpr)
 	}
 
 	if _, err := s.db.Exec(
-		`UPDATE dags SET cron_expr = ?, next_run_ns = ?, updated_ns = ? WHERE id = ?`,
-		cronExpr, sqlitedb.ToNS(next), sqlitedb.ToNS(now), dagID,
+		`UPDATE dags SET cron_expr = ?, cron_zone = ?, next_run_ns = ?, updated_ns = ? WHERE id = ?`,
+		cronExpr, zone, sqlitedb.ToNS(next), sqlitedb.ToNS(now), dagID,
 	); err != nil {
 		return DAG{}, fmt.Errorf("dag: set cron: %w", err)
 	}
@@ -911,9 +926,9 @@ func (s *Store) DueCron(now time.Time) ([]DAG, error) {
 // will never come - the same self-disabling behavior
 // internal/schedule.Store.MarkRun already has.
 func (s *Store) MarkCronRun(dagID string, ranAt time.Time) error {
-	var cronExpr string
+	var cronExpr, zone string
 
-	if err := s.db.QueryRow(`SELECT cron_expr FROM dags WHERE id = ?`, dagID).Scan(&cronExpr); err != nil {
+	if err := s.db.QueryRow(`SELECT cron_expr, cron_zone FROM dags WHERE id = ?`, dagID).Scan(&cronExpr, &zone); err != nil {
 		if err == sql.ErrNoRows {
 			return nil
 		}
@@ -929,7 +944,7 @@ func (s *Store) MarkCronRun(dagID string, ranAt time.Time) error {
 		return fmt.Errorf("dag: mark cron run %s: %w", dagID, err)
 	}
 
-	next, ok := expr.Next(ranAt)
+	next, ok := expr.NextIn(ranAt, schedule.ZoneLocation(zone))
 
 	if !ok {
 		_, err = s.db.Exec(

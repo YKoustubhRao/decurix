@@ -1,6 +1,8 @@
 <#
 .SYNOPSIS
-    Builds the three Decurix desktop images (basic / developer / ai).
+    Builds the two Decurix images: the desktop (decurix-desktop:basic) and
+    the shared tools runtime (decurix-tools:latest); developer and ai are
+    only tags of basic.
 .DESCRIPTION
     Called by scripts/windows/build.ps1 and scripts/windows/rebuild.ps1. This
     is the repo-checkout path; a downloaded release executable does not need

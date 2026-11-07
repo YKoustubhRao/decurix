@@ -70,14 +70,6 @@ type Manager struct {
 	shotMu sync.Mutex
 	shots  map[string]*shotEntry
 
-	// claudeLogin is the one in-progress "claude auth login" attempt (see
-	// claudelogin.go) - there is one shared Claude session for the whole
-	// app, so only one login attempt is ever in flight. Guarded by its own
-	// mutex, separate from shotMu/viewedMu since a login attempt has
-	// nothing to do with either of those.
-	claudeLoginMu sync.Mutex
-	claudeLogin   *claudeLoginSession
-
 	// viewed is the last time each desktop's thumbnail was fetched or its
 	// screen was actually proxied to, keyed by sanitized desktop ID. Guarded
 	// by its own mutex for the same reason shots is. internal/idlepause
@@ -106,6 +98,9 @@ type Manager struct {
 	// toolsWaiting: the last populate found a newer tools image but left the volume as it was, because desktops
 	// were running (tools.go); the status banner says so until a later populate applies it.
 	toolsWaiting atomic.Bool
+	// toolsFailed: the last populate failed, and why as a class (toolsNotReady*), never an error's text: the tools
+	// image empties the volume before it copies, so desktops may find no /opt/tools until a populate succeeds.
+	toolsFailed atomic.Pointer[string]
 
 	// startedMu/startedCache cache Docker's StartedAt timestamp for running
 	// containers, eliminating redundant ContainerInspect RPCs during List.
@@ -995,6 +990,12 @@ func (m *Manager) Start(
 
 	inspect, err := m.client.ContainerInspect(ctx, name)
 	if err == nil && inspect.State != nil && inspect.State.Paused {
+		// A paused desktop is counted as running by a refresh, which then leaves /opt/tools as it is; the resume still
+		// waits for one in progress, as a start does (RW1-G-04), so it never comes back while the copy runs.
+		if err := m.holdToolsForStart(ctx); err != nil {
+			return err
+		}
+		defer m.toolsRW.RUnlock()
 		return notFound(id, m.wakeDesktop(ctx, name))
 	}
 	if err == nil && inspect.NetworkSettings != nil {
@@ -1019,9 +1020,47 @@ func (m *Manager) startDesktopContainer(ctx context.Context, name string) error 
 	if err := requireFence(); err != nil {
 		return err
 	}
-	m.toolsRW.RLock()
+	if err := m.holdToolsForStart(ctx); err != nil {
+		return err
+	}
 	defer m.toolsRW.RUnlock()
 	return m.client.ContainerStart(ctx, name, container.StartOptions{})
+}
+
+// toolsStartWait bounds how long a desktop start waits for a tools refresh that is copying /opt/tools (a var: tests).
+var toolsStartWait = 5 * time.Minute
+
+// toolsStartPoll is how often a waiting start tries the tools lock again.
+const toolsStartPoll = 20 * time.Millisecond
+
+// ErrToolsRefreshing is a desktop start that gave up waiting for a tools refresh still copying /opt/tools.
+var ErrToolsRefreshing = errors.New("a tools refresh is still replacing /opt/tools; the desktop was not started - try again in a minute")
+
+// holdToolsForStart takes toolsRW shared for a desktop start or resume: it waits for a tools refresh in progress (a
+// populate holds toolsRW alone while it counts the running desktops and copies), at most toolsStartWait and never past
+// ctx, so a desktop never boots or resumes while its tools are replaced and a request that gave up does not start
+// one later (RW1-G-04). On nil the caller holds toolsRW.RLock and must RUnlock it.
+func (m *Manager) holdToolsForStart(ctx context.Context) error {
+	if m.toolsRW.TryRLock() {
+		return nil
+	}
+	deadline := time.NewTimer(toolsStartWait)
+	defer deadline.Stop()
+	tick := time.NewTicker(toolsStartPoll)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for a tools refresh to finish: %w", ctx.Err())
+		case <-deadline.C:
+			log.Printf("desktop start: a tools refresh still held /opt/tools after %s; the start was refused", toolsStartWait)
+			return ErrToolsRefreshing
+		case <-tick.C:
+			if m.toolsRW.TryRLock() {
+				return nil
+			}
+		}
+	}
 }
 
 // Pause pauses the Docker container processes backing the given desktop ID using the cgroup freezer.

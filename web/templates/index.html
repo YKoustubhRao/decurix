@@ -601,6 +601,7 @@
 .rec-name:focus{outline:none;border-color:var(--accent);background:var(--surface)}
 .rec-meta{font-size:11.5px;color:var(--text-3)}
 .rec-actions{display:flex;flex-wrap:wrap;gap:6px}
+.rec-all{display:inline-block;margin:8px 2px 2px;font-size:12px;color:var(--accent)}
 
 .dcard-actions{
   display:flex;
@@ -1161,9 +1162,11 @@
 
       {{if eq .Status "running"}}
       {{/* What a person recorded on this desktop, oldest first, each with
-           Replay / Learn / Download. Filled in when the list is opened
-           (initRecordings below) - the recordings live on the desktop, so
-           rendering the page never has to wait on each one. */}}
+           Replay / Learn / Download / Steps / Delete, and a link to the full
+           Recordings page (every recording, its steps, Import, Record).
+           Filled in when the list is opened and kept current while it is
+           open (loadRecordings below) - the recordings live on the desktop,
+           so rendering the page never has to wait on each one. */}}
       <details class="mem rec" data-rec-list data-id="{{.ID}}">
         <summary class="mem-summary">
           <svg class="mem-chevron" width="15" height="15"><use href="#i-chevron"/></svg>
@@ -1173,6 +1176,7 @@
         <div class="mem-body" data-rec-body>
           <div class="mem-none">Loading…</div>
         </div>
+        <a class="rec-all" href="/recordings/{{.ID}}">All recordings, steps and import →</a>
       </details>
       {{end}}
 
@@ -1199,16 +1203,13 @@
           Chat
         </a>
         {{if not $.Gated}}<a class="btn btn-default btn-sm" href="/readiness/{{.ID}}#simulate" title="Practise what this worker was taught, to earn running it unattended">Simulate</a>{{end}}
-        {{/* resize=remote&ui=touch is what asks the desktop's Xvnc to fit the
-             viewport and splices the touch keyboard/pinch-zoom into noVNC (see
-             httpapi.injectMobileEnhancements). This button is the only place
-             that full-size screen is opened from, so the marker lives here -
-             deliberately not on the dcard-preview iframe above, which is a
-             small non-interactive thumbnail. */}}
-        {{/* Recordings (record a demonstration, replay, export) live inside the
-             desktop screen itself now - the ticket toolbar injectTicketToolbar
-             splices into every open screen - rather than as a second entry
-             point on the card; see proxy.go's ticketToolbar. */}}
+        {{/* The screen opens as the control plane's own page (/desktop/<id>/,
+             screen.html): resize=remote fits the desktop to the window; it has
+             its own touch keyboard and ignores ui=touch, which only noVNC's own
+             vnc.html reads (proxy.go, mobileViewerEnhancements). Recording a
+             demonstration lives on that screen (its ticket toolbar, proxy.go's
+             ticketToolbar) and on the Recordings page, which the card's
+             Recordings drawer links to. */}}
         <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}?autoconnect=true&resize=remote&ui=touch" title="Open the screen in a new tab" aria-label="Open the desktop screen in a new tab">
           <svg width="14" height="14"><use href="#i-external"/></svg>
         </button>
@@ -1281,7 +1282,7 @@
   <div class="rail-head">
     <svg width="15" height="15" style="color:var(--accent)"><use href="#i-inbox"/></svg>
     <span class="eyebrow">Needs you · <span id="railCount">0</span></span>
-    <a href="/dashboard">Reply →</a>
+    <a href="/dashboard">All queries →</a>
   </div>
   <div class="rail-list" id="railList"></div>
 </aside>
@@ -2287,7 +2288,7 @@
     toast("Desktop '" + sanitizedID + "' accepted. Spinning up in background…", "info");
 
     try{
-      await post("/api/desktops/create", {
+      await postCreate({
         name: sanitizedID,
         profile: profile,
         brain: brain,
@@ -2318,8 +2319,57 @@
           if(empty){ empty.style.display = ""; }
         }
       }
+      if(e.leftoverHome){
+        offerLeftoverHome(sanitizedID, e.message);
+        return;
+      }
       toast(e.message, "error");
     }
+  }
+
+  /* POST /api/desktops/create, keeping what a refusal says beyond its words:
+     a 409 with leftover_home is a home folder an earlier desktop of this name
+     left (httpapi/leftoverhome.go), which the form can offer to delete. */
+  async function postCreate(fields){
+    var response = await fetch("/api/desktops/create", {
+      method: "POST",
+      headers: {"Content-Type": "application/x-www-form-urlencoded"},
+      body: new URLSearchParams(fields)
+    });
+    var data = await response.json().catch(function(){ return {}; });
+    if(!response.ok){
+      var error = new Error(data.error || "Request failed");
+      error.leftoverHome = response.status === 409 && data.leftover_home === true;
+      throw error;
+    }
+    return data;
+  }
+
+  /* An earlier desktop of this name left its home folder: offer to delete it
+     (its files are lost for good, so the confirm says so) and, on a yes,
+     create the desktop again from the same form. */
+  async function offerLeftoverHome(id, why){
+    var confirmed = await askConfirm(
+      "Delete the old volume and try again?",
+      why + " Deleting it loses everything in it for good: the earlier desktop's files, what it learned and its sign-ins. This cannot be undone.",
+      "Delete the old volume and try again",
+      true
+    );
+    if(!confirmed){
+      toast("Nothing was deleted. Choose another name to create the desktop.", "info");
+      return;
+    }
+    busy(true);
+    try{
+      await post("/api/desktops/home-volume/delete", {name: id});
+    }catch(e){
+      busy(false);
+      toast(e.message, "error");
+      return;
+    }
+    busy(false);
+    toast("The old home folder of " + id + " was deleted.");
+    await performCreate();
   }
 
   createForm.addEventListener("submit", async function(event){
@@ -2402,9 +2452,36 @@
 
   /* ---------------- recordings dropdown ----------------
    Each running card lists the demonstrations recorded on that desktop, oldest
-   first, with Replay / Learn / Download. Read from the desktop when the list
-   is opened, so what is shown is what is there now. Built from text nodes
+   first, with Replay / Learn / Download / Steps / Delete, and links to the
+   full Recordings page. Read from the desktop when the list is opened and
+   every few seconds while it stays open, so what is shown is what is there
+   now; nothing is redrawn while the person is in it. Built from text nodes
    only: a title is whatever a person typed. */
+
+  /* A person's Delete of a recording, asked first. A run's recording the run
+     record has not taken yet (the desktop answers 409 with held) is asked
+     about again in those words, and sent with force only on a yes. Returns
+     whether it was deleted. */
+  async function deleteRecording(desktopID, session){
+    var fields = {id: desktopID, session: session};
+    for(;;){
+      var response = await fetch("/api/desktops/recordings/delete", {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: new URLSearchParams(fields)
+      });
+      var data = await response.json().catch(function(){ return {}; });
+      if(response.ok){ return true; }
+      if(response.status === 409 && data.held && !fields.force){
+        if(!(await askConfirm("Delete anyway?",
+          "This run is not saved to the run record yet; delete it anyway? Its steps and screenshots are lost for good.",
+          "Delete anyway", true))){ return false; }
+        fields.force = "1";
+        continue;
+      }
+      throw new Error(data.error || "Request failed");
+    }
+  }
   function recWhen(seconds){
     if(!seconds){ return ""; }
     return new Date(seconds * 1000).toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
@@ -2465,6 +2542,27 @@
       var learn = recButton("Learn", "btn-default");
       var download = node("a", "btn btn-sm btn-default", "Download");
       download.href = "/api/desktops/recordings/export?" + new URLSearchParams({id: desktopID, session: r.id});
+      var steps = node("a", "btn btn-sm btn-quiet", "Steps");
+      steps.href = "/recordings/" + encodeURIComponent(desktopID) + "?" + new URLSearchParams({session: r.id});
+      steps.title = "Open it on the Recordings page: its steps, readiness, Replay with values, Teach";
+      var remove = recButton("Delete", "btn-danger");
+      remove.title = "Delete this recording and its screenshots from the desktop";
+      remove.addEventListener("click", async function(){
+        if(!(await askConfirm("Delete " + (name.value.trim() || "this recording") + "?",
+          "The recording and all its screenshots are removed from the desktop. This cannot be undone.",
+          "Delete recording", true))){ return; }
+        actions.querySelectorAll("button").forEach(function(b){ b.disabled = true; });
+        try{
+          if(await deleteRecording(desktopID, r.id)){
+            toast("Deleted.");
+            loadRecordings(details);
+            return;
+          }
+        }catch(e){
+          toast(e.message, "error");
+        }
+        actions.querySelectorAll("button").forEach(function(b){ b.disabled = false; });
+      });
 
       function start(button, url, started, fields){
         button.addEventListener("click", async function(){
@@ -2485,7 +2583,7 @@
         function(){ return {name: name.value.trim()}; });
       learn.title = "Teach a skill from this recording, named as above";
 
-      actions.append(replay, learn, download);
+      actions.append(replay, learn, download, steps, remove);
       item.appendChild(actions);
       list.appendChild(item);
     });
@@ -2493,16 +2591,30 @@
     body.appendChild(list);
   }
 
-  async function loadRecordings(details){
+  /* What the drawer last drew, per desktop: a poll that reads the same list
+     changes nothing on screen. */
+  var recShown = {};
+
+  async function loadRecordings(details, polling){
     var desktopID = details.dataset.id;
     var body = details.querySelector("[data-rec-body]");
+    if(details.dataset.recLoading){ return; }
+    details.dataset.recLoading = "1";
 
     try{
       var data = await Decurix.getJSON("/api/desktops/recordings?" + new URLSearchParams({id: desktopID}));
-      renderRecordings(details, desktopID, data.recordings || []);
+      var recordings = data.recordings || [];
+      var signature = JSON.stringify(recordings.map(function(r){ return [r.id, r.title, r.status, r.event_count]; }));
+      // A poll never redraws under the person's hand: a name being typed, a button they are on.
+      if(polling && (signature === recShown[desktopID] || details.contains(document.activeElement))){ return; }
+      recShown[desktopID] = signature;
+      renderRecordings(details, desktopID, recordings);
     }catch(e){
+      if(polling){ return; }
       body.textContent = "";
       body.appendChild(node("div", "mem-none", "Couldn't read this desktop's recordings: " + e.message));
+    }finally{
+      delete details.dataset.recLoading;
     }
   }
 
@@ -2511,6 +2623,13 @@
       if(details.open){ loadRecordings(details); }
     });
   });
+
+  /* Only an open drawer asks its desktop: a page sitting with every drawer
+     closed asks nothing (bench/resources/viewer.py names it silent). */
+  function pollOpenRecordings(){
+    document.querySelectorAll("[data-rec-list][open]").forEach(function(details){ loadRecordings(details, true); });
+  }
+  Decurix.poll(pollOpenRecordings, 5000);
 
   /* ---------------- desktop info popovers ----------------
    Hover the info button/card to keep it open.
@@ -2685,11 +2804,13 @@
 
     memoryPolling = true;
     try{
-      var response = await fetch("/api/desktops/memory", {cache: "no-store"});
+      // The newest entries of every worker, as many as the route gives (httpapi/memory.go: at most 1000).
+      var response = await fetch("/api/desktops/memory?limit=1000", {cache: "no-store"});
       if(!response.ok){ return; }
 
       var byDesktop = {};
-      (await response.json() || []).forEach(function(entry){
+      var listed = await response.json() || {};
+      (listed.entries || []).forEach(function(entry){
         (byDesktop[entry.desktop_id] = byDesktop[entry.desktop_id] || []).push(entry);
       });
 
@@ -2875,8 +2996,9 @@
 
     var actions = node("div", "note-actions");
 
+    // Straight to this note's card on the Queries page, which scrolls to it and opens its reply box.
     var reply = node("a", "btn btn-default btn-sm");
-    reply.href = "/dashboard";
+    reply.href = "/dashboard?" + new URLSearchParams({note: note.id}) + "#req-" + encodeURIComponent(note.id);
     reply.textContent = "Reply";
 
     var resolve = node("button", "btn btn-quiet btn-sm", "Resolve");

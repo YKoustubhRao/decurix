@@ -159,13 +159,7 @@ details.adv[open] summary{margin-bottom:10px}
         </div>
 
         <div class="kind-pane" data-pane="cron">
-          <label for="cron">Cron schedule <span class="mono">(minute hour day month weekday, UTC)</span></label>
-          <input class="input mono" id="cron" placeholder="*/30 * * * *">
-          <div class="hint">
-            Runs the request every time the schedule matches, with <span class="mono">TIME:{&hellip;}</span> appended.
-            <span class="mono">0 * * * *</span> hourly, <span class="mono">0 9 * * *</span> daily at 09:00 UTC,
-            <span class="mono">0 9 * * 1</span> every Monday at 09:00 UTC.
-          </div>
+          {{template "cron-zone-fields"}}
         </div>
 
         <div class="kind-pane" data-pane="once">
@@ -553,7 +547,8 @@ details.adv[open] summary{margin-bottom:10px}
       /* Being handed to the desktop right now: nothing to cancel or retry. */
     }else if(j.status === "pending"){
       actions.appendChild(T.textButton("Cancel", function(){ act("/api/mail/jobs", {id: j.id, action: "cancel"}); }));
-    }else{
+    }else if(j.content){
+      /* Only a job that kept its request can be sent again; the server answers 409 for one without. */
       actions.appendChild(T.textButton(j.status === "skipped" ? "Send anyway" : "Run again", function(){
         act("/api/mail/jobs", {id: j.id, action: "retry"}, "Queued");
       }));
@@ -779,7 +774,7 @@ details.adv[open] summary{margin-bottom:10px}
       create: async function(desktop, text){
         var cron = document.getElementById("cron").value.trim();
         if(!cron){ throw new Error("Enter a cron schedule first."); }
-        await post("/api/schedules/create", {id: desktop, content: text, cron: cron});
+        await post("/api/schedules/create", {id: desktop, content: text, cron: cron, zone: T.zone()});
         document.getElementById("cron").value = "";
         return "Schedule created";
       }
@@ -791,7 +786,7 @@ details.adv[open] summary{margin-bottom:10px}
         var at = local ? new Date(local) : null;
         if(!at || isNaN(at.getTime())){ throw new Error("Pick a time to run this at."); }
         if(at.getTime() <= Date.now()){ throw new Error("Pick a time in the future."); }
-        await post("/api/schedules/create", {id: desktop, content: text, run_at: at.toISOString()});
+        await post("/api/schedules/create", {id: desktop, content: text, run_at: at.toISOString(), zone: T.browserZone()});
         document.getElementById("runAt").value = "";
         return "Run scheduled";
       }
@@ -825,6 +820,8 @@ details.adv[open] summary{margin-bottom:10px}
   if(form){
     form.querySelectorAll('input[name="kind"]').forEach(function(r){ r.addEventListener("change", syncKind); });
     syncKind();
+    /* A schedule is read in the person's own zone unless they pick another (B-37). */
+    T.fillZone();
 
     T.wireTest(function(){ return desktopSelect.value; }, function(){ return content.value; });
 

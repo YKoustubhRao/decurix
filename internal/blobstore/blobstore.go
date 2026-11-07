@@ -1,7 +1,8 @@
 // Package blobstore is a content-addressed file store: every blob is kept once, under the SHA-256 of its bytes, at
 // <root>/sha256/<first two hex digits>/<64 hex digits>. A blob is written to a temp file, synced and renamed into
-// place, so a reader never sees half a blob; one already there is never rewritten. Nothing here deletes a blob (plan
-// rule 4: nothing that labels a run is deleted).
+// place, so a reader never sees half a blob; one already there is never rewritten, except by a purge of a leaked
+// secret, which overwrites the value in place and keeps the name (purge.go). Nothing here deletes a blob (plan rule 4:
+// nothing that labels a run is deleted).
 //
 // The control plane keeps its blobs under sqlitedb.DataDir()/blobs: model-call messages and answers (llmrec) and the
 // files of run bundles (runs). The store is host-only; no route serves it without humansOnly.

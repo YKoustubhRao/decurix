@@ -121,8 +121,13 @@
 
   <div class="dag-toolbar">
     <div class="field">
-      <label for="cronInput">Cron trigger <span class="mono">(UTC, optional)</span></label>
+      <label for="cronInput">Cron trigger <span class="mono">(optional)</span></label>
       <input class="input mono" id="cronInput" placeholder="*/30 * * * *" value="{{.DAG.CronExpr}}" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="cronZone">Time zone</label>
+      <input class="input mono" id="cronZone" list="zoneList" placeholder="Asia/Kolkata" value="{{if .DAG.CronExpr}}{{.DAG.CronZone}}{{end}}" autocomplete="off" spellcheck="false">
+      <datalist id="zoneList"></datalist>
     </div>
     <button type="button" class="btn btn-default" id="saveCronBtn">Save cron</button>
     <button type="button" class="btn btn-primary" id="runNowBtn">
@@ -130,6 +135,7 @@
       Run now
     </button>
   </div>
+  <div class="hint" id="cronNext" hidden></div>
 
   <div class="dag-editor">
     <div class="panel dag-canvas-wrap">
@@ -273,6 +279,7 @@
     edges = detail.edges || [];
 
     document.getElementById("cronInput").value = (detail.dag && detail.dag.cron_expr) || "";
+    showCron(detail.dag);
 
     renderCanvas();
     closeInspector();
@@ -578,11 +585,36 @@
 
   /* ---------------- cron + manual run ---------------- */
 
+  /* The cron is read in a time zone (B-37): the DAG's own once set, else the browser's. */
+  function browserZone(){
+    try{ return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; }catch(e){ return ""; }
+  }
+
+  (function fillZones(){
+    var input = document.getElementById("cronZone"), list = document.getElementById("zoneList");
+    if(!input.value){ input.value = browserZone(); }
+    var names = [];
+    try{ names = Intl.supportedValuesOf("timeZone"); }catch(e){ /* an older browser: typed by hand */ }
+    if(names.indexOf("UTC") < 0){ names = ["UTC"].concat(names); }
+    names.forEach(function(n){ var o = document.createElement("option"); o.value = n; list.appendChild(o); });
+  })();
+
+  /* The next cron run, in the viewer's own time. */
+  function showCron(d){
+    var line = document.getElementById("cronNext");
+    var next = d && d.cron_expr ? formatWhen(d.next_run_at) : "";
+    if(d && d.cron_expr && d.cron_zone){ document.getElementById("cronZone").value = d.cron_zone; }
+    line.hidden = !next;
+    line.textContent = next ? "Next run " + next + " your time (cron read in " + (d.cron_zone || "UTC") + ")" : "";
+  }
+
   document.getElementById("saveCronBtn").addEventListener("click", async function(){
     var expr = document.getElementById("cronInput").value.trim();
+    var zone = document.getElementById("cronZone").value.trim() || browserZone();
 
     try{
-      await post("/api/dags/cron/set", {dag_id: dagID, cron_expr: expr});
+      var saved = await post("/api/dags/cron/set", {dag_id: dagID, cron_expr: expr, zone: zone});
+      showCron(saved);
       toast(expr ? "Cron saved" : "Cron cleared");
     }catch(e){
       toast(e.message, "error");

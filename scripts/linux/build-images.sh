@@ -1,8 +1,9 @@
 #!/bin/bash
 #
-# Builds the three desktop images (basic / developer / ai) from the
-# docker/desktop.*.Dockerfile build contexts. Called by scripts/linux/build.sh
-# and scripts/linux/rebuild.sh.
+# Builds the two images, the desktop (decurix-desktop:basic) and the shared
+# tools runtime (decurix-tools:latest), from docker/desktop.basic.Dockerfile
+# and docker/tools.Dockerfile; developer and ai are only tags of basic. Called
+# by scripts/linux/build.sh and scripts/linux/rebuild.sh.
 #
 # This is the repo-checkout path. A downloaded release binary does not need it:
 # it embeds the same build context and builds the images itself via

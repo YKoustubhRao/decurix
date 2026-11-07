@@ -494,11 +494,35 @@
     return Array.isArray(notes) ? notes : [];
   }
 
+  /* ---------------- the note a link names ----------------
+     The Desktops page's "Needs you" rail links each Reply to
+     /dashboard?note=<id>#req-<id>: that card is scrolled to, lit and its
+     reply box focused once it is on the page (a note newer than this page
+     arrives with the first poll). One answered or resolved meanwhile is
+     said so, never silently missing. */
+
+  var wantedNote = new URLSearchParams(location.search).get("note") || "";
+
+  function showWanted(checked){
+    if(!wantedNote){ return; }
+    var card = document.getElementById("req-" + wantedNote);
+    if(!card && !checked){ return; }
+    wantedNote = "";
+    if(!card){
+      toast("That question was answered or resolved already.", "info");
+      return;
+    }
+    card.scrollIntoView({block: "center"});
+    flash(card);
+    var box = card.querySelector("[data-reply] textarea");
+    if(box && !card.classList.contains("is-stale")){ box.focus({preventScroll: true}); }
+  }
+
   var syncing = false;
   async function syncOpen(){
     if(!syncing){
       syncing = true;
-      try{ render(await fetchOpen()); }
+      try{ render(await fetchOpen()); showWanted(true); }
       catch(e){ /* try again next time */ }
       finally{ syncing = false; }
     }
@@ -678,6 +702,7 @@
     }catch(e){ /* keep what is showing */ }
   }
 
+  showWanted(false);
   syncOpen();
   Decurix.poll(syncOpen, 3000);
 })();

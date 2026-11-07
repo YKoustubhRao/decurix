@@ -296,11 +296,11 @@ func TestSetCronClearsOnEmptyString(t *testing.T) {
 	store := newTestStore(t, now)
 	d, _ := store.Create("pipeline")
 
-	if _, err := store.SetCron(d.ID, "*/10 * * * *"); err != nil {
+	if _, err := store.SetCron(d.ID, "*/10 * * * *", "UTC"); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := store.SetCron(d.ID, "")
+	got, err := store.SetCron(d.ID, "", "UTC")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func TestSetCronSchedulesNextOccurrenceNotNow(t *testing.T) {
 	store := newTestStore(t, now)
 	d, _ := store.Create("pipeline")
 
-	got, err := store.SetCron(d.ID, "*/10 * * * *")
+	got, err := store.SetCron(d.ID, "*/10 * * * *", "UTC")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestSetCronRejectsBadCron(t *testing.T) {
 	store := newTestStore(t, time.Now())
 	d, _ := store.Create("pipeline")
 
-	if _, err := store.SetCron(d.ID, "not a cron"); err == nil {
+	if _, err := store.SetCron(d.ID, "not a cron", "UTC"); err == nil {
 		t.Fatal("expected an invalid cron expression to be rejected")
 	}
 }
@@ -340,12 +340,12 @@ func TestDueCronReturnsOnlyDueOnes(t *testing.T) {
 	store := newTestStore(t, now)
 
 	due, _ := store.Create("due")
-	if _, err := store.SetCron(due.ID, "*/10 * * * *"); err != nil {
+	if _, err := store.SetCron(due.ID, "*/10 * * * *", "UTC"); err != nil {
 		t.Fatal(err)
 	}
 
 	notDue, _ := store.Create("not due")
-	if _, err := store.SetCron(notDue.ID, "0 0 1 1 *"); err != nil {
+	if _, err := store.SetCron(notDue.ID, "0 0 1 1 *", "UTC"); err != nil {
 		t.Fatal(err)
 	}
 

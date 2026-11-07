@@ -17,6 +17,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	// The tz database built in, so a schedule's IANA zone (internal/schedule)
+	// loads on Windows or in a minimal container with no zoneinfo of its own.
+	_ "time/tzdata"
 
 	"github.com/docker/docker/client"
 	"github.com/joho/godotenv"
@@ -280,6 +283,8 @@ func main() {
 	restoreBackup := flag.String("restore-backup", "", "put a backup's database and key files back into the data dir (the control plane must be stopped), then exit")
 	restoreForce := flag.Bool("force", false, "with -restore-backup, restore even though a control plane answers at -url")
 	phoneSetup := flag.Bool("phone-setup", false, "set up this phone's link (what the phone link page's command runs): decurix --phone-setup BASE TOKEN")
+	purgeSecret := flag.Bool("purge-secret", false, "purge a leaked secret, read from stdin, from the stores of the control plane at -url, then exit")
+	purgeReason := flag.String("reason", "", "with -purge-secret, why it is purged (kept with who purged it, never the value)")
 	flag.Parse()
 
 	if *showVersion {
@@ -292,6 +297,10 @@ func main() {
 	// else, reached over the same HTTP API the dashboard uses.
 	if *cliMode {
 		os.Exit(runCLI(*cliURL))
+	}
+	// -purge-secret is a thin client too: the running control plane does the purge (cmd/decurix/purge.go).
+	if *purgeSecret {
+		os.Exit(runPurgeSecret(*cliURL, *purgeReason, os.Stdin, os.Stdout, os.Stderr))
 	}
 
 	// -phone is the same kind of thin client, on a phone: no Docker, no
@@ -338,7 +347,7 @@ func main() {
 	// Chooses the chat model for this machine unless OLLAMA_MODEL names one.
 	ollama.EnableAutoSelect()
 
-	// Building all three images takes a long time and a lot of disk, so it is
+	// Building both images (desktop and tools) takes a long time and a lot of disk, so it is
 	// an explicit request rather than something startup does on its own.
 	if *buildImages {
 		if err := desktops.BuildImages(ctx, os.Stdout, !*rebuild, *imagesWhich); err != nil {
@@ -387,6 +396,15 @@ func main() {
 	// A suggestion never evicts the chat model from a one-model Ollama to embed (C-10).
 	suggestions.WouldEvict = ollama.EmbedWouldEvict
 
+	// The shared Claude login holds a refresh token: sealed like the other secrets, under its own key file. A login an
+	// older build kept unsealed is sealed in place here.
+	claudeLogin := must(claudeauth.NewStore(db))
+	if claudeKey, err := sealed.LoadKey(sqlitedb.DataDir(), claudeauth.KeyFile); err != nil {
+		log.Printf("warning: %s: %v; the shared Claude login is kept unencrypted until it can be written", claudeauth.KeyFile, err)
+	} else if err := claudeLogin.UseKey(claudeKey); err != nil {
+		log.Printf("warning: sealing the stored Claude login: %v", err)
+	}
+
 	server := httpapi.NewServer(
 		desktops,
 		must(querynotes.NewStore(db)),
@@ -395,7 +413,7 @@ func main() {
 		must(stepimages.NewStore(db, stepImagesMaxBytes())),
 		tasksStore,
 		tunnel.NewStore(),
-		must(claudeauth.NewStore(db)),
+		claudeLogin,
 		lanAccess,
 		schedules,
 		dags,
@@ -463,6 +481,8 @@ func main() {
 		Vision:     func(p string) bool { return server.LLM.Status()[p].Vision },
 		FreeMemory: func() (uint64, error) { _, avail, err := ollama.AvailableMemory(); return avail, err },
 		MaxTokens:  practice.MaxTokensFromEnv(),
+		// Each Simulate case's bundle, pulled off its practice desktop before the next case resets it.
+		Bundles: &runs.Puller{Home: desktop.PracticeHome{M: desktops}, Store: runStore, Blobs: blobs},
 	}
 	brokerLn := &practice.BrokerListener{Network: desktops.PracticeBrokerEndpoint, Port: "8091", Handler: practiceSvc.Broker.Handler()}
 	defer brokerLn.Close()
@@ -481,6 +501,8 @@ func main() {
 	}
 	var evalSvc *eval.Service
 	if evalStore != nil {
+		// A run record an eval case made carries the case's grade (labels.eval).
+		server.RunEvals = evalStore
 		evalSvc = &eval.Service{
 			Store:     evalStore,
 			Sandbox:   desktops,

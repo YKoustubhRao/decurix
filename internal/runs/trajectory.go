@@ -283,12 +283,38 @@ type ExecutionLookup interface {
 	TaskOfExecution(execID string) (string, error)
 }
 
+// EvalSource is the eval rows Build reads for labels.eval (*eval.Store): the row that names execID as its
+// trajectory, else a row of taskID that names none (its bundle was never pulled). ok is false when no eval made the
+// run.
+type EvalSource interface {
+	EvalLabel(execID, taskID string) (label EvalLabel, ok bool, err error)
+}
+
+// EvalLabel is labels.eval: the eval run, suite, case, arm and repeat that made the run, and what its graders
+// decided. Invalid and infrastructure rows are said, never left out: a reader decides what to count.
+type EvalLabel struct {
+	RunID      string `json:"run_id"`
+	Suite      string `json:"suite"`
+	SuiteSHA   string `json:"suite_sha"`
+	Case       string `json:"case"`
+	Arm        string `json:"arm"`
+	Repeat     int    `json:"repeat"`
+	Observed   string `json:"observed"`
+	Passed     bool   `json:"passed"`
+	FalseDone  bool   `json:"false_done"`
+	Invalid    bool   `json:"invalid"`
+	Infra      bool   `json:"infra"`
+	CarryState bool   `json:"carry_state"`
+}
+
 // Sources is everything Build joins.
 type Sources struct {
 	Tasks TaskSource
 	Calls CallSource
 	Store *Store
 	Blobs Blobs
+	// Evals labels a run an eval case made (nil: labels.eval stays null).
+	Evals EvalSource
 }
 
 // ErrUnknownExecution is an execution Build cannot find.

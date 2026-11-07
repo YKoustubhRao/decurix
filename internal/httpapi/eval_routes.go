@@ -122,7 +122,10 @@ func (h *evalRoutes) start(w http.ResponseWriter, r *http.Request) {
 			cases = append(cases, c)
 		}
 	}
-	run, err := h.e.Start(r.Context(), eval.MatrixRequest{SuiteTar: suite, Arms: arms, Repeats: repeats, Cases: cases})
+	// carry_state asks for the mode that keeps the desktop's state from case to case; the suite must say so too.
+	carry := strings.TrimSpace(r.FormValue("carry_state"))
+	run, err := h.e.Start(r.Context(), eval.MatrixRequest{SuiteTar: suite, Arms: arms, Repeats: repeats, Cases: cases,
+		CarryState: carry == "1" || carry == "true"})
 	if err != nil {
 		h.refuse(w, err)
 		return

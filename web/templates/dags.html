@@ -82,7 +82,12 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
           </td>
           <td class="num">{{.NodeCount}}</td>
           <td class="num">{{.EdgeCount}}</td>
-          <td>{{if .DAG.CronExpr}}<span class="mono">{{.DAG.CronExpr}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+          <td>
+            {{if .DAG.CronExpr}}
+            <span class="mono">{{.DAG.CronExpr}}</span>
+            <div class="row-sub">{{.DAG.CronZone}}{{if not .DAG.NextRunAt.IsZero}} · next <time data-local="{{iso .DAG.NextRunAt}}">{{clock .DAG.NextRunAt}}</time>{{end}}</div>
+            {{else}}<span class="muted">—</span>{{end}}
+          </td>
           <td>
             {{if .LastRun}}
             <span class="dstatus {{.LastRun.Status}}">{{.LastRun.Status}}</span>
@@ -146,6 +151,14 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
   var toast = Decurix.toast, post = Decurix.post, busy = Decurix.busy;
 
   Decurix.relativeTimes();
+
+  /* A cron's next run, drawn on the server in the cron's own zone, read here in the viewer's (B-37). */
+  document.querySelectorAll("time[data-local]").forEach(function(t){
+    var d = new Date(t.dataset.local);
+    if(!isNaN(d.getTime())){
+      t.textContent = d.toLocaleString(undefined, {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+    }
+  });
 
   /* The list is drawn on the server; it stays current by redrawing once what /api/dags says has changed (a run that
      ended, one a cron started) - never while the person is typing or a dialog is open (W-20). */

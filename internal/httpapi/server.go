@@ -134,6 +134,8 @@ type Server struct {
 	runPulls   runPulls
 	// RunStore keeps the bundles and serves the run records (runs_routes.go); assigned by main.
 	RunStore *runs.Store
+	// RunEvals labels a run record an eval case made (labels.eval, *eval.Store); assigned by main, nil labels none.
+	RunEvals runs.EvalSource
 	// buildRun stands in for runs.Build in tests.
 	buildRun func(ctx context.Context, execID string) (runs.Trajectory, error)
 	// agentTarget stands in for Desktops.AgentProxyTarget in agentProxyHandler, in tests.
@@ -458,11 +460,6 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	// machine - never a phone or tunnel visitor, never a desktop's agent (review 2026-11-03, A-02, W-05, N-B2).
 	mux.HandleFunc("/api/host-apps/detect", s.humansOnly(s.detectHostAppsHandler))
 	mux.HandleFunc("/api/desktops/host-apps/copy", s.humansOnly(s.copyHostAppsHandler))
-	// The owner's Claude account (its email, its sign-in flow) is this machine's, not the tunnel's (A-04).
-	mux.HandleFunc("/api/claude-auth/status", s.humansOnly(s.claudeAuthStatusHandler))
-	mux.HandleFunc("/api/claude-auth/login/start", s.humansOnly(s.claudeAuthLoginStartHandler))
-	mux.HandleFunc("/api/claude-auth/login/code", s.humansOnly(s.claudeAuthLoginCodeHandler))
-	mux.HandleFunc("/api/claude-auth/login/cancel", s.humansOnly(s.claudeAuthLoginCancelHandler))
 	// Giving up on a DAG run is a person's call, at this machine (dag.Runner.Cancel).
 	mux.HandleFunc("/api/dags/runs/cancel", s.humansOnly(s.cancelDagRunHandler))
 	// Whether a file a task was asked to save on this computer is there - for the check of that task.
@@ -478,6 +475,8 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	// A backup holds the keys to the saved secrets: a person's, here only.
 	mux.HandleFunc("/api/backup", s.humansOnly(s.backupHandler))
 	mux.HandleFunc("/api/desktops/restore", s.humansOnly(s.restoreDesktopHandler))
+	// Deleting the home folder an earlier desktop left (its files, memory and sign-ins) is the person's, here only.
+	mux.HandleFunc("/api/desktops/home-volume/delete", s.humansOnly(s.deleteLeftoverHomeHandler))
 	mux.HandleFunc("/api/cftunnel", s.humansOnly(s.cfTunnelStatusHandler))
 	mux.HandleFunc("/api/cftunnel/configure", s.humansOnly(s.cfTunnelConfigureHandler))
 	mux.HandleFunc("/api/cftunnel/disable", s.humansOnly(s.cfTunnelDisableHandler))
@@ -492,6 +491,9 @@ func (s *Server) RegisterLocalRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/llm/blobs/", s.humansOnly(s.llmBlobHandler))
 	// Every human input with its author (plan R5): a person's to read, at this machine (judgements.go).
 	mux.HandleFunc("/api/judgements", s.humansOnly(s.judgementsHandler))
+	// Purging a leaked secret, by value, from the stores nothing else deletes from (privacy_purge.go): a person's, at
+	// this machine, never a phone's, a tunnel's or a desktop's.
+	mux.HandleFunc("/api/privacy/purge", s.humansOnly(s.privacyPurgeHandler))
 	// What each skill version did on each model (plan R7, ran.go).
 	mux.HandleFunc("/api/tasks/pass-rates", s.humansOnly(s.passRatesHandler))
 	// What a desktop keeps from a person's reply, kept here too when it is made (plan R8, learned.go): a desktop's

@@ -40,7 +40,8 @@ var schema = []string{
 	`CREATE INDEX llm_calls_desktop ON llm_calls (desktop_id, at_ns)`,
 }
 
-// Store keeps the call rows in SQLite and their bodies in a blob store. It never updates or deletes a row.
+// Store keeps the call rows in SQLite and their bodies in a blob store. It never updates or deletes a row, except to
+// purge a leaked secret (purge.go).
 type Store struct {
 	db       *sql.DB
 	blobs    *blobstore.Store

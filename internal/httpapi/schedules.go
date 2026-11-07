@@ -26,8 +26,9 @@ func (s *Server) schedulesHandler(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, s.Schedules.List(id))
 }
 
-// createScheduleHandler sets up a recurring request (cron) or a one-time
-// request held for a single future run (run_at, an RFC3339 timestamp) - both
+// createScheduleHandler sets up a recurring request (cron, read in the IANA
+// zone given as zone) or a one-time request held for a single future run
+// (run_at, an RFC3339 timestamp) - both
 // resubmit the same content through the same path a one-off Send takes (see
 // requests.go's submitLocked and internal/schedule's Runner), differing only
 // in whether there is a next occurrence after the first.
@@ -40,6 +41,9 @@ func (s *Server) createScheduleHandler(w http.ResponseWriter, r *http.Request) {
 	content := r.FormValue("content")
 	cronExpr := strings.TrimSpace(r.FormValue("cron"))
 	runAtStr := strings.TrimSpace(r.FormValue("run_at"))
+	// The person's own zone (the page sends the browser's); "" falls back
+	// to the control plane's, then UTC. An unknown name is a 400.
+	zone := r.FormValue("zone")
 
 	if desktopID == "" {
 		http.Error(w, "missing desktop id", http.StatusBadRequest)
@@ -76,9 +80,9 @@ func (s *Server) createScheduleHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		sch, err = s.Schedules.CreateOnce(desktopID, content, runAt)
+		sch, err = s.Schedules.CreateOnce(desktopID, content, runAt, zone)
 	case cronExpr != "":
-		sch, err = s.Schedules.Create(desktopID, content, cronExpr)
+		sch, err = s.Schedules.Create(desktopID, content, cronExpr, zone)
 	default:
 		http.Error(w, "missing cron expression or run time", http.StatusBadRequest)
 		return

@@ -165,10 +165,26 @@
   </div>
 
   {{if ne .Desktop.Status "running"}}
-  <div class="empty">
+  {{/* Wake (paused) or Start (stopped) here, then the recordings load (desktopWake below): never a dead end. */}}
+  <div class="empty" id="desktopAsleep" data-status="{{.Desktop.Status}}">
     <div class="empty-mark"><svg width="18" height="18"><use href="#i-record"/></svg></div>
-    <h3>This desktop is stopped</h3>
-    <p>Its recordings are kept on the desktop itself. <strong>Start it</strong> from the dashboard to see them.</p>
+    <h3>This desktop is {{.Desktop.Status}}</h3>
+    {{if eq .Desktop.Status "provisioning"}}
+    <p>It is still being made. Its recordings show here when it is ready.</p>
+    {{else}}
+    <p>Its recordings are kept on the desktop itself. {{if eq .Desktop.Status "paused"}}Wake{{else}}Start{{end}} it to see them.</p>
+    <div class="head-actions" style="justify-content:center;margin-top:13px">
+      {{if eq .Desktop.Status "paused"}}
+      <button type="button" class="btn btn-primary btn-sm" data-wake="unpause">
+        <svg width="14" height="14"><use href="#i-play"/></svg><span data-wake-label>Wake</span>
+      </button>
+      {{else}}
+      <button type="button" class="btn btn-primary btn-sm" data-wake="start">
+        <svg width="14" height="14"><use href="#i-play"/></svg><span data-wake-label>Start</span>
+      </button>
+      {{end}}
+    </div>
+    {{end}}
   </div>
   {{else}}
 
@@ -225,6 +241,63 @@
 {{template "chrome-js"}}
 
 <script>
+/* A paused or stopped desktop: Wake or Start it here (the card's routes),
+   then its recordings load. Its state is polled too, so a desktop woken or
+   started elsewhere shows its recordings here without a click. */
+(function(){
+  "use strict";
+
+  var box = document.getElementById("desktopAsleep");
+  if(!box){ return; }
+
+  var id = document.body.dataset.desktop;
+  var ROUTES = {
+    unpause: {url: "/api/desktops/unpause", pending: "Waking…"},
+    start:   {url: "/api/desktops/start",   pending: "Starting…"}
+  };
+  var opening = false;
+
+  function openRecordings(){
+    if(opening){ return; }
+    opening = true;
+    location.reload();
+  }
+
+  box.addEventListener("click", async function(event){
+    var button = event.target.closest("[data-wake]");
+    var route = button && ROUTES[button.dataset.wake];
+    if(!route || button.disabled){ return; }
+
+    var label = button.querySelector("[data-wake-label]");
+    var was = label.textContent;
+    button.disabled = true;
+    label.textContent = route.pending;
+    Decurix.busy(true);
+    try{
+      await Decurix.post(route.url, {id: id});
+      openRecordings();
+    }catch(e){
+      Decurix.toast(e.message, "error");
+      button.disabled = false;
+      label.textContent = was;
+    }finally{
+      Decurix.busy(false);
+    }
+  });
+
+  Decurix.poll(async function(){
+    if(opening){ return; }
+    try{
+      var response = await fetch("/api/desktops/status?id=" + encodeURIComponent(id), {cache: "no-store"});
+      if(!response.ok){ return; }
+      var now = await response.json();
+      if(now.status === "running" && now.status !== box.dataset.status && now.ready !== false){ openRecordings(); }
+    }catch(e){ /* asked again next time */ }
+  }, 4000);
+})();
+</script>
+
+<script>
 (function(){
   "use strict";
 
@@ -243,6 +316,29 @@
   var ACTOR = {human: "Person", agent: "Agent"};
 
   /* ---- helpers ---- */
+
+  /* A person's Delete of a recording (already confirmed). A run's recording
+     the run record has not taken yet - the desktop answers 409 with held - is
+     asked about again in those words, and sent with force only on a yes.
+     Returns whether it was deleted. */
+  async function deleteRecording(session){
+    var fields = {id: desktopID, session: session};
+    for(;;){
+      var response = await fetch("/api/desktops/recordings/delete", {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: new URLSearchParams(fields)
+      });
+      var data = await response.json().catch(function(){ return {}; });
+      if(response.ok){ return true; }
+      if(response.status === 409 && data.held && !fields.force){
+        if(!window.confirm("This run is not saved to the run record yet; delete it anyway?")){ return false; }
+        fields.force = "1";
+        continue;
+      }
+      throw new Error(data.error || "Request failed");
+    }
+  }
 
   function query(params){
     var q = new URLSearchParams(Object.assign({id: desktopID}, params));
@@ -564,7 +660,7 @@
     deleteBtn.addEventListener("click", async function(){
       if(!window.confirm("Delete this recording and all its screenshots from the desktop? This cannot be undone.")){ return; }
       try{
-        await post("/api/desktops/recordings/delete", {id: desktopID, session: meta.id});
+        if(!(await deleteRecording(meta.id))){ return; }
         toast("Deleted.");
         state.selected = "";
         detail.replaceChildren(node("div", "placeholder", "Choose a recording to see its steps."));

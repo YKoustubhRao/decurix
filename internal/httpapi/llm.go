@@ -46,7 +46,7 @@ func (s *Server) llmSettingsHandler(w http.ResponseWriter, r *http.Request) {
 
 	provider := strings.TrimSpace(r.FormValue("provider"))
 	if !llm.ValidProvider(provider) {
-		jsonStatusError(w, http.StatusBadRequest, "provider must be claude or azure")
+		jsonStatusError(w, http.StatusBadRequest, "provider must be claude, azure or openai")
 		return
 	}
 
@@ -89,7 +89,7 @@ func (s *Server) llmForgetHandler(w http.ResponseWriter, r *http.Request) {
 
 	provider := strings.TrimSpace(r.FormValue("provider"))
 	if !llm.ValidProvider(provider) {
-		http.Error(w, "provider must be claude or azure", http.StatusBadRequest)
+		http.Error(w, "provider must be claude, azure or openai", http.StatusBadRequest)
 		return
 	}
 
@@ -307,8 +307,8 @@ func (e errBrain) Error() string { return string(e) }
 
 // desktopBrain checks what a create request asked to reason with. Every new
 // desktop runs TheBot ("" or "thebot" for harness; the others are kept only
-// for desktops created before); brain is "ollama" (the default), "claude" or
-// "azure", and a hosted one must have been set up first - a desktop made
+// for desktops created before); brain is "ollama" (the default), "claude",
+// "azure" or "openai", and a hosted one must have been set up first - a desktop made
 // with a brain nobody configured would fail its first request instead.
 func (s *Server) desktopBrain(harness, brain string) (desktop.Brain, error) {
 	switch strings.TrimSpace(harness) {

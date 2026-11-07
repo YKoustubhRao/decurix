@@ -15,7 +15,8 @@ import (
 
 // The judgements table (plan R5) holds every human input with its author, append-only. Nothing in this package (or
 // any other) updates or deletes a row: what an input changed is a later row citing it, and deleting a worker leaves
-// its judgements served. insertJudgement is the one statement that writes the table.
+// its judgements served. insertJudgement is the one statement that writes the table, but for a purge of a leaked
+// secret (purge.go), which replaces the value in place and is itself a judgement.
 
 // ErrNoActor is a judgement offered without an author: no human input is stored without one (plan rule 5).
 var ErrNoActor = errors.New("tasks: a judgement needs its actor")
@@ -33,7 +34,7 @@ func ValidJudgementID(id string) bool { return judgementIDPattern.MatchString(id
 func validJudgementKind(k string) bool {
 	switch k {
 	case JudgementAnswer, JudgementApproval, JudgementVerdict, JudgementCorrection, JudgementRunAnswer,
-		JudgementLesson, JudgementKnowledge, JudgementFieldAnswer:
+		JudgementLesson, JudgementKnowledge, JudgementFieldAnswer, JudgementFieldUnit, JudgementPurge:
 		return true
 	}
 	return false
