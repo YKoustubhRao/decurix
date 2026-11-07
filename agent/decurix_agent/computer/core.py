@@ -17,10 +17,9 @@ from decurix_agent.computer.errors import ActedError, ComputerError
 # ============================================================
 # observe / act / verify
 #
-# The one action layer every engine shares. Claude Code reaches it as MCP
-# tools (mcp_server.py) and sees the screenshots; the Ollama loop and TheBot's
-# operator reach it as the `gui` shell command (cli.py) and read the element
-# list as text. Whichever door an action comes through, it passes the same
+# The one action layer the engine and the agent share. TheBot's operator
+# reaches it as the `gui` shell command (cli.py) and reads the element list as
+# text; the agent's own tasks (replays, skills) call it directly. Whichever door an action comes through, it passes the same
 # approval gate and lands in the same audit trail, because both live here and
 # not in any engine.
 #

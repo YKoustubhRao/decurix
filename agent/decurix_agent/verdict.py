@@ -12,10 +12,11 @@ stop by its first word, the evidence by its headings. A verdict says it as data:
      "checks": [{"id", "result": pass | fail | not_made, "basis", "detail", "refs": [...]}],
      "evidence": ["Checked on the screen: ..."]}
 
-Rules: `done` needs at least one check that passed and none that failed or was not made - except a `legacy` verdict,
-derived from a report's checked=True by a path that has not said yet what it checked (messaging.write_final_reply): it
-has no checks and no basis, so it never counts towards trust (experience.INDEPENDENT), and the list of paths that
-still make one may only shrink (agent/tests/test_verdict.py). `stopped` means the person said no and the work stopped
+Rules: `done` needs at least one check that passed and none that failed or was not made, under every gate. A report
+whose sender gave no verdict (messaging.write_final_reply) is given one by derive(), which never makes a done: its
+checked=True is not evidence of anything (fail closed). The `legacy` done such a report once got (no checks, no basis)
+is gone - every path that sends checked=True says what it checked (agent/tests/test_verdict.py keeps it so) - and the
+control plane refuses one; rows stored with it are still read. `stopped` means the person said no and the work stopped
 there: never `done`. `checked` on the callback is always `verdict == "done"`.
 
 Every string goes through privacy.scrub and is cut to MAX_TEXT; at most MAX_CHECKS checks and MAX_REFS refs each.
@@ -26,7 +27,7 @@ from decurix_agent.computer import privacy
 SCHEMA = "decurix.verdict/v1"
 DONE, NOT_DONE, UNCHECKED, STOPPED = "done", "not_done", "unchecked", "stopped"
 VERDICTS = (DONE, NOT_DONE, UNCHECKED, STOPPED)
-BY = ("verify", "skill_gate", "long_task", "replay", "workflow", "worker", "none", "legacy",
+BY = ("verify", "skill_gate", "long_task", "replay", "workflow", "worker", "none",
       "readiness", "practice", "eval")  # (the last three: the control plane's own graders, H-CP-1)
 PASS, FAIL, NOT_MADE = "pass", "fail", "not_made"
 RESULTS = (PASS, FAIL, NOT_MADE)
@@ -185,14 +186,12 @@ def validate(v):
     if not isinstance(evidence, list) or len(evidence) > MAX_EVIDENCE or any(
             not isinstance(e, str) or len(e) > MAX_TEXT for e in evidence):
         out.append(f"evidence must be a list of at most {MAX_EVIDENCE} strings of at most {MAX_TEXT}")
-    if v.get("verdict") == DONE and v.get("by") != "legacy":
+    if v.get("verdict") == DONE:
         results = [c.get("result") for c in checks if isinstance(c, dict)]
         if PASS not in results:
             out.append("a done verdict needs at least one check that passed")
         if FAIL in results or NOT_MADE in results:
             out.append("a done verdict has no check that failed or was not made")
-    if v.get("verdict") == DONE and v.get("by") == "legacy" and (checks or basis):
-        out.append("a legacy done carries no checks and no basis")
     return out
 
 
@@ -205,18 +204,17 @@ def is_done(v):
 def derive(checked, kind, gated=False, stopped=False, why=""):
     """
     The verdict of a report whose sender gave none (messaging.write_final_reply), so that no outcome goes without one:
-    a stop is `stopped`; an error is `not_done` - by `legacy` when a check found it so (checked=True on an error is
-    verify.outcome's "a check saw it not done"), else by the worker; a final with checked=True is a `legacy` done (no
-    checks, no basis: it never counts towards trust); anything else - gated and not checked, or never gated - is
-    `unchecked`.
+    a stop is `stopped`; an error is `not_done` by the worker; anything else is `unchecked` - by the worker when it was
+    gated or said checked, else by none. Never a done: a checked=True with no checks behind it is not evidence (fail
+    closed; every path that checks says what it checked, test_verdict.NoReportReliesOnADerivedDone).
     """
 
     if stopped:
         return make(STOPPED, "worker", why=why)
     if kind == "error":
-        return make(NOT_DONE, "legacy" if checked else "worker", why=why)
+        return make(NOT_DONE, "worker", why=why)
     if checked:
-        return make(DONE, "legacy", why=why)
+        return make(UNCHECKED, "worker", why=("said checked, but gave no verdict of what it checked: " + why).strip())
     return make(UNCHECKED, "worker" if gated else "none", why=why)
 
 

@@ -10,12 +10,12 @@
 
 <style>
 /* ------------------------------------------------------------------ *
- * One chat for every harness.
+ * One chat for every desktop.
  *
- * Ollama, Claude Code and TheBot all reach this same page: the desktop's
- * agent is addressed the same way (a request through the control plane)
- * and reports back the same way (answers plus live steps), so nothing
- * below branches on which engine is running.
+ * Every desktop's agent runs TheBot, on whichever brain, and is addressed
+ * the same way (a request through the control plane) and reports back the
+ * same way (answers plus live steps), so nothing below branches on the
+ * brain or on the harness an older desktop was created with.
  *
  * This page is only the chat. The desktop's own screen is a separate
  * thing you open in its own tab, from the dashboard - it is not embedded
@@ -521,7 +521,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     <div class="view-title">
       <h1 class="trunc" title="{{.Desktop.Name}}">{{.Desktop.Name}}</h1>
       <span class="status {{.Desktop.Status}}"><span class="dot"></span>{{.Desktop.Status}}</span>
-      <span class="chip">{{if eq .Desktop.Harness "claude"}}Claude Code{{else if eq .Desktop.Harness "thebot"}}TheBot{{else}}Ollama{{end}}</span>
+      <span class="chip">TheBot · {{if eq .Desktop.Brain "claude"}}Claude{{else if eq .Desktop.Brain "azure"}}Azure{{else if eq .Desktop.Brain "openai"}}OpenAI{{else}}Ollama{{end}}</span>
     </div>
 
     {{if eq .Desktop.Status "running"}}

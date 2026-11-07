@@ -103,9 +103,9 @@ func (m *Manager) CopyOut(ctx context.Context, desktopID, p string) (io.ReadClos
 }
 
 // UsesLocalModel reports whether any desktop reasons with the local Ollama
-// model: the ollama harness, or TheBot on the Ollama brain (a hosted brain
-// only embeds through Ollama, which never needs the chat model loaded). A
-// desktop list that cannot be read
+// model: TheBot on the Ollama brain, which is also what a desktop created with
+// a removed harness runs (a hosted brain only embeds through Ollama, which
+// never needs the chat model loaded). A desktop list that cannot be read
 // counts as yes: warming a model nobody needs is cheaper than a cold one
 // somebody does.
 func (m *Manager) UsesLocalModel(ctx context.Context) bool {
@@ -115,7 +115,7 @@ func (m *Manager) UsesLocalModel(ctx context.Context) bool {
 	}
 
 	for _, d := range list {
-		if d.Harness == HarnessOllama || (d.Harness == HarnessTheBot && !(Brain{Kind: d.Brain}).Hosted()) {
+		if !(Brain{Kind: d.Brain}).Hosted() {
 			return true
 		}
 	}

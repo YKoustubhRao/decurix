@@ -21,12 +21,13 @@ const (
 	maxVerdictBytes = 64 << 10
 )
 
-// verdictBy are the gates a verdict may come from; "legacy" is a final path that gave no verdict of its own and was
-// derived from its checked flag on the desktop (H-PY-1): its done carries no checks and no basis. "readiness",
-// "practice" and "eval" are the control plane's own graders (a readiness run, a Simulate case, an eval case), which
-// record their grade as a verdict like any gate.
+// verdictBy are the gates a verdict may come from. "readiness", "practice" and "eval" are the control plane's own
+// graders (a readiness run, a Simulate case, an eval case), which record their grade as a verdict like any gate.
+// "legacy" (a final path that gave no verdict of its own, derived from its checked flag on the desktop, H-PY-1) is no
+// longer accepted: every desktop path now says what it checked. A row stored with one is still read (record.go reads
+// the stored verdict as data, never through Problems).
 var verdictBy = map[string]bool{"verify": true, "skill_gate": true, "long_task": true, "replay": true, "workflow": true,
-	"worker": true, "none": true, "legacy": true, ByReadiness: true, ByPractice: true, ByEval: true}
+	"worker": true, "none": true, ByReadiness: true, ByPractice: true, ByEval: true}
 
 // The control plane's own graders, as a verdict's by.
 const (
@@ -120,7 +121,7 @@ func (v *GateVerdict) clipStrings() []string {
 
 // Problems is what makes v not a valid decurix.verdict/v1: an unknown schema, verdict, gate, result or basis, a
 // count limit passed, a string over the limit (in characters), a done with a failed or unmade check (under any gate),
-// a done with no passing check, or a legacy done that carries checks or a basis.
+// or a done with no passing check (a "legacy" gate is unknown now, so its done is refused too).
 func (v GateVerdict) Problems() []string {
 	var out []string
 	add := func(format string, args ...any) { out = append(out, fmt.Sprintf(format, args...)) }
@@ -180,9 +181,7 @@ func (v GateVerdict) Problems() []string {
 		switch {
 		case failed > 0:
 			add("done with a check failed or not made")
-		case v.By == "legacy" && (len(v.Checks) > 0 || len(v.Basis) > 0):
-			add("a legacy done carries no checks and no basis")
-		case v.By != "legacy" && passed == 0:
+		case passed == 0:
 			add("done needs at least one passing check")
 		}
 	}
@@ -223,9 +222,14 @@ func (e Execution) WorkDone() bool {
 }
 
 // checkedFrom is the checked flag an outcome is stored with: what its verdict says (done), never true when the
-// callback's own flag disagrees; the callback's flag alone when there is no verdict (an older image).
+// callback's own flag disagrees. With no verdict (an image from before R6) it fails closed: a checked=True with nothing
+// to show what was checked is stored not checked, and reported as a disagreement; a false or absent flag is kept.
 func checkedFrom(v *GateVerdict, claimed *bool) (*bool, bool) {
 	if v == nil {
+		if claimed != nil && *claimed {
+			unchecked := false
+			return &unchecked, true
+		}
 		return claimed, false
 	}
 	checked := v.Verdict == GateDone

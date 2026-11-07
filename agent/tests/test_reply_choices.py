@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from decurix_agent import skill_task, task_runner
+from decurix_agent import skill_task
 from decurix_agent.computer import approval
 
 
@@ -113,21 +113,6 @@ class ADoneThatIsNotDone(unittest.TestCase):
             skill_task._confirm_reply(paused, "correct except the total, fix that")
         final.assert_not_called()
         self.assertIn("correct except the total, fix that", retry.call_args[0][1])
-
-
-class ACommandThatCannotBeUndone(unittest.TestCase):
-    def test_only_a_yes_with_no_condition_releases_it(self):
-        for reply, reading, runs in (
-                ("yes", {"decision": "yes", "condition": ""}, True),
-                ("yes, after you take a backup of the folder", {"decision": "if", "condition": "take a backup"}, False),
-                ("ok if the folder is empty", {"decision": "if", "condition": "the folder is empty"}, False),
-                ("go ahead", {"decision": "yes", "condition": ""}, True)):
-            task_runner._pending_dangerous_command = "rm -rf /tmp/build"
-            with mock.patch.object(task_runner.approval, "reading", return_value=reading), \
-                    mock.patch.object(task_runner, "_run", return_value=("ran", "ok")) as run:
-                command, _ = task_runner.resume_approved_dangerous_command([], reply)
-            self.assertEqual(run.called, runs, reply)
-            self.assertEqual(command is not None, runs, reply)
 
 
 if __name__ == "__main__":

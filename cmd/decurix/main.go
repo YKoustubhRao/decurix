@@ -27,7 +27,6 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/access"
 	"github.com/YKoustubhRao/decurix/internal/blobstore"
 	"github.com/YKoustubhRao/decurix/internal/cftunnel"
-	"github.com/YKoustubhRao/decurix/internal/claudeauth"
 	"github.com/YKoustubhRao/decurix/internal/concierge"
 	"github.com/YKoustubhRao/decurix/internal/conversation"
 	"github.com/YKoustubhRao/decurix/internal/dag"
@@ -247,6 +246,24 @@ func idleStopThreshold() time.Duration {
 	return time.Duration(minutes) * time.Minute
 }
 
+// idleStopAfter reads DECURIX_IDLE_STOP_AFTER_MINUTES: how long a desktop stays paused before idlepause stops it to
+// give its memory back. Unset or invalid means idlepause.DefaultStopAfter (30 minutes); 0 or less never stops one.
+func idleStopAfter() time.Duration {
+	raw := os.Getenv("DECURIX_IDLE_STOP_AFTER_MINUTES")
+	if raw == "" {
+		return idlepause.DefaultStopAfter
+	}
+	minutes, err := strconv.Atoi(raw)
+	if err != nil {
+		log.Printf("warning: DECURIX_IDLE_STOP_AFTER_MINUTES=%q is not a number; using the default of %s", raw, idlepause.DefaultStopAfter)
+		return idlepause.DefaultStopAfter
+	}
+	if minutes <= 0 {
+		return 0
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
 // mailPollInterval is how often each connected mailbox is checked:
 // DECURIX_MAIL_POLL_SECONDS, at least 15 (a provider rate-limits logins), else
 // mailtrigger.DefaultPollInterval.
@@ -359,6 +376,13 @@ func main() {
 		return
 	}
 
+	// One control plane per data directory: a second one start refuses, naming the first (sqlitedb.LockDataDir).
+	dataLock, err := sqlitedb.LockDataDir(sqlitedb.DataDir())
+	if err != nil {
+		log.Fatalf("Decurix cannot start: %v", err)
+	}
+	defer dataLock.Release()
+
 	dbPath := filepath.Join(sqlitedb.DataDir(), sqlitedb.FileName)
 
 	db, err := sqlitedb.Open(dbPath)
@@ -396,13 +420,9 @@ func main() {
 	// A suggestion never evicts the chat model from a one-model Ollama to embed (C-10).
 	suggestions.WouldEvict = ollama.EmbedWouldEvict
 
-	// The shared Claude login holds a refresh token: sealed like the other secrets, under its own key file. A login an
-	// older build kept unsealed is sealed in place here.
-	claudeLogin := must(claudeauth.NewStore(db))
-	if claudeKey, err := sealed.LoadKey(sqlitedb.DataDir(), claudeauth.KeyFile); err != nil {
-		log.Printf("warning: %s: %v; the shared Claude login is kept unencrypted until it can be written", claudeauth.KeyFile, err)
-	} else if err := claudeLogin.UseKey(claudeKey); err != nil {
-		log.Printf("warning: sealing the stored Claude login: %v", err)
+	// The shared Claude Code login went with the claude harness (2026-11-07): its table stays, emptied.
+	if err := httpapi.MigrateLegacyClaudeSession(db); err != nil {
+		log.Fatalf("database: %v", err)
 	}
 
 	server := httpapi.NewServer(
@@ -413,7 +433,6 @@ func main() {
 		must(stepimages.NewStore(db, stepImagesMaxBytes())),
 		tasksStore,
 		tunnel.NewStore(),
-		claudeLogin,
 		lanAccess,
 		schedules,
 		dags,
@@ -490,6 +509,9 @@ func main() {
 	// Practice and eval desktops' calls go through the broker, which records them (caller practice), and a changed
 	// hosted deployment sends every suite that pins it back to needs-retesting (E4).
 	practiceSvc.Broker.Recorder = llmrecStore
+	// A callback is the practice desktop's only from its address on the practice network, never by the desktop_id in
+	// its body (C-25): the mock app shares that network.
+	practiceSvc.Broker.Caller = desktops.PracticeDesktopAt
 	server.LLM.OnChange(practiceSvc.BrainChanged)
 	// The eval matrix runner (E3, docs/evals.md): one suite x arms x repeats on the practice sandbox, one run at a
 	// time, sharing Simulate's slot. Its routes are the owner's, primary listener only. A run that was running when
@@ -666,7 +688,14 @@ func main() {
 		log.Println("Idle-pause: disabled (DECURIX_IDLE_STOP_MINUTES=0).")
 	}
 
-	checker := &idlepause.Checker{Desktops: desktops, Tasks: tasksStore, Threshold: idleThreshold, Action: idleAction}
+	checker := &idlepause.Checker{Desktops: desktops, Tasks: tasksStore, Threshold: idleThreshold, Action: idleAction,
+		StopAfter: idleStopAfter(), Memory: &resourcemon.HostMemory{DockerTotalMB: desktops.HostMemTotalMB}}
+	if idleThreshold > 0 && checker.StopAfter > 0 && idleAction != "stop" {
+		log.Printf("Idle-pause: desktops paused for %s are stopped to give their memory back. Set DECURIX_IDLE_STOP_AFTER_MINUTES=0 to keep them paused.", checker.StopAfter)
+	}
+	// Before a desktop starts, the longest-idle paused desktops are stopped when the Docker host's memory would not
+	// hold it (lightweight L2); a start that cannot fit is refused with desktop.NoRoomError.
+	desktops.SetRoomMaker(checker.MakeRoom)
 	server.IdleChecker = checker
 	go checker.Run(ctx)
 

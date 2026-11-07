@@ -78,11 +78,15 @@ func TestTheVerdictDecidesHandoffAndQueueOutcomes(t *testing.T) {
 		t.Fatalf("stored = %+v", d.Executions[0])
 	}
 
-	// An older image's checked-only final records exactly as before.
+	// An older image's checked-only final (no verdict) fails closed: stored not checked, since nothing shows what was
+	// checked.
 	old := open()
 	finalWithVerdict(t, s, old, "Done.", `null`, true)
-	if o, _ := ha.TaskOutcome(old); o.Checked == nil || !*o.Checked || o.Evidence != nil {
+	if o, _ := ha.TaskOutcome(old); o.Checked == nil || *o.Checked || o.Evidence != nil {
 		t.Fatalf("an old image's checked done = %+v", o)
+	}
+	if st, _ := qa.TaskState(old); st.Checked != nil && *st.Checked {
+		t.Fatalf("queue state of an old image's checked done = %+v", st)
 	}
 }
 

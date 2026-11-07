@@ -724,14 +724,11 @@ td.actions{white-space:nowrap;text-align:right}
 
 {{if .HasQueue}}
   function money(n){ return "$" + (Number(n) || 0).toFixed(2); }
-  /* Whether a worker's model calls pass the control plane's proxy, which meters them (docs/workqueue.md): a TheBot
-     desktop on a hosted brain does; one on the local model, and a legacy Claude (the owner's Claude account) or
-     Ollama desktop, do not - only the desktop's own report counts their tokens, and nothing prices them. */
+  /* Whether a worker's model calls pass the control plane's proxy, which meters them (docs/workqueue.md): a desktop
+     on a hosted brain does; one on the local model does not - only the desktop's own report counts its tokens, and
+     nothing prices them. Every desktop runs TheBot, also one made with a harness removed on 2026-11-07. */
   function metered(d){
-    var harness = (d && d.harness) || "thebot";
-    if(harness === "claude" || harness === "ollama"){ return false; }
-    if(harness === "thebot"){ return !!d.brain && d.brain !== "ollama"; }
-    return true;
+    return !!(d && d.brain) && d.brain !== "ollama";
   }
   function spendText(period, d){
     if(!period){ return "—"; }

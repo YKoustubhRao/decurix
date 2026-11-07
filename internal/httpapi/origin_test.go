@@ -221,7 +221,10 @@ func TestResolvedModelAndPassRates(t *testing.T) {
 	// A local brain's run (no recorded call) is named by the engine and the model the desktop said.
 	local, _ := s.Tasks.Commit(tasks.NewRoute(), w, "count again", tasks.Origin{Kind: tasks.OriginPerson})
 	body := `{"desktop_id":"box","kind":"final","content":"12","task_id":"` + local.TaskID + `","engine":"thebot","model":"qwen3:8b","checked":true,` +
-		`"skill":{"name":"bill-count","version":3}}`
+		`"skill":{"name":"bill-count","version":3},` +
+		// Checked by a model only: a checked done, not an independent one.
+		`"verdict":{"schema":"decurix.verdict/v1","verdict":"done","by":"verify","why":"","basis":["model"],` +
+		`"checks":[{"id":"judge","result":"pass","basis":"model","detail":"","refs":[]}],"evidence":[]}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/querytext", strings.NewReader(body))
 	req = req.WithContext(context.WithValue(req.Context(), callerKey{}, "box"))
 	rr := httptest.NewRecorder()

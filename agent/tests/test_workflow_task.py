@@ -66,6 +66,16 @@ class WorkflowHarnessIntegration(unittest.TestCase):
         self.assertEqual(kwargs["kind"], "final")
         self.assertIs(kwargs["checked"], False)
         self.assertTrue(kwargs["gated"])
+        # Its own verdict says what was checked: each stage's file checks passed in code, and no judgement against the
+        # request was made - so unchecked, never done.
+        from decurix_agent import verdict
+        v = kwargs["verdict"]
+        self.assertEqual(verdict.validate(v), [])
+        self.assertEqual((v["verdict"], v["by"]), ("unchecked", "workflow"))
+        self.assertEqual([(c["id"], c["result"], c["basis"]) for c in v["checks"]],
+                         [("stage.extract.files", "pass", "code"), ("stage.calculate.files", "pass", "code"),
+                          ("stage.present.files", "pass", "code"), ("request.judged", "not_made", "model")])
+        self.assertEqual(v["checks"][0]["refs"], ["extract.txt"])
 
     def test_each_stages_own_report_reaches_the_one_final_reply(self):
         # Found in review (2026-10-14): final_gate consumed every stage's report
@@ -84,6 +94,13 @@ class WorkflowHarnessIntegration(unittest.TestCase):
         self.assertEqual(len(self.reports), 1)
         self.assertIn(": failed", self.reports[0][0])
         self.assertIn("missing/confined artifact", self.reports[0][0])
+        # A stage its checks failed: the run is not done, by the workflow, with that stage's check failed.
+        from decurix_agent import verdict
+        kwargs = self.reports[0][1]
+        v = kwargs["verdict"]
+        self.assertEqual(verdict.validate(v), [])
+        self.assertEqual((v["verdict"], v["by"], kwargs["kind"]), ("not_done", "workflow", "error"))
+        self.assertIn(("stage.extract", "fail"), [(c["id"], c["result"]) for c in v["checks"]])
 
     def test_resume_uses_completed_stages_after_restart(self):
         state = self.runner.create(self.spec())

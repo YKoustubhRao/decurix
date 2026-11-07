@@ -144,7 +144,6 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.FormValue("name"))
 	profile := strings.TrimSpace(r.FormValue("profile"))
 	brain, brainErr := s.desktopBrain(r.FormValue("harness"), r.FormValue("brain"))
-	harness := desktop.HarnessTheBot
 	// One line: a textarea's newlines would otherwise land in a Docker env
 	// var and, later, in identity.py's plain fact list.
 	specialization := strings.Join(strings.Fields(r.FormValue("specialization")), " ")
@@ -276,11 +275,9 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	prov, err := s.Desktops.BeginProvisioning(
 		name,
 		profile,
-		harness,
 		brain,
 		cpus,
 		memoryMB,
-		"",
 		specialization,
 		parentID,
 		selectedApps,

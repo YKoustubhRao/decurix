@@ -20,7 +20,6 @@ import (
 
 	"github.com/YKoustubhRao/decurix/internal/access"
 	"github.com/YKoustubhRao/decurix/internal/cftunnel"
-	"github.com/YKoustubhRao/decurix/internal/claudeauth"
 	"github.com/YKoustubhRao/decurix/internal/conversation"
 	"github.com/YKoustubhRao/decurix/internal/dag"
 	"github.com/YKoustubhRao/decurix/internal/desktop"
@@ -78,7 +77,6 @@ type Server struct {
 	qualificationAuth qualificationAuth
 	qualificationRuns qualificationRuns
 	Tunnel            *tunnel.Store
-	ClaudeAuth        *claudeauth.Store
 	LANAccess         *lanaccess.Store
 	// Devices is the phones and laptops paired with the gated listener
 	// (internal/devices), listed and revoked from the Mobile menu. Assigned
@@ -214,7 +212,7 @@ func mustMemoryHub() *llm.Hub {
 }
 
 // NewServer creates a Server from its component stores/managers.
-func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, claudeAuth *claudeauth.Store, lanAccess *lanaccess.Store, schedules *schedule.Store, dags *dag.Store, suggestions *suggest.Store, web *webui.Renderer) *Server {
+func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memoryStore *memory.Store, chat *conversation.Store, stepImages *stepimages.Store, taskRecords *tasks.Store, tunnelStore *tunnel.Store, lanAccess *lanaccess.Store, schedules *schedule.Store, dags *dag.Store, suggestions *suggest.Store, web *webui.Renderer) *Server {
 	srv := &Server{
 		Desktops:         desktops,
 		QueryNotes:       queryNotes,
@@ -223,7 +221,6 @@ func NewServer(desktops *desktop.Manager, queryNotes *querynotes.Store, memorySt
 		StepImages:       stepImages,
 		Tasks:            taskRecords,
 		Tunnel:           tunnelStore,
-		ClaudeAuth:       claudeAuth,
 		LANAccess:        lanAccess,
 		Schedules:        schedules,
 		Dags:             dags,
@@ -338,6 +335,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/desktops/chat", s.chatHandler)
 	mux.HandleFunc("/api/desktops/chat/stream", s.chatStreamHandler)
 	mux.HandleFunc("/api/desktops/activity", s.activityHandler)
+	mux.HandleFunc("/api/desktops/overview", s.overviewHandler)
 	mux.HandleFunc("/api/desktops/tasks", s.desktopTasksHandler)
 	mux.HandleFunc("/api/desktops/chat/clear", s.clearChatHandler)
 	mux.HandleFunc(stepImagePath, s.stepImageHandler)

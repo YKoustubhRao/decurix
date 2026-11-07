@@ -445,8 +445,8 @@ def taught_for(service):
     query and you query them one by one", and this shortcut, which reads no
     one's words, answered the next list before any model saw it. A small
     local model is still better served by the shortcut; a hosted one is given
-    the person's words (thebot_harness.taught_context, azure_harness's
-    procedures) and `gui ask` to do the asking.
+    the person's words (thebot_harness.taught_context) and `gui ask` to do
+    the asking.
     """
 
     if not llm_client.available():

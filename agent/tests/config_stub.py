@@ -49,7 +49,8 @@ except OSError:
     stub.DESKTOP_ID = "test-box"
     stub.DESKTOP_NAME = "test-box"
     stub.CONTROL_PLANE_URL = "http://127.0.0.1:9"
-    stub.AGENT_HARNESS = "ollama"
+    stub.AGENT_HARNESS = "thebot"
+    stub.CREATED_HARNESS = "thebot"
     # The agent token (config.agent_token): read from the environment each time, as the real one is.
     stub.AGENT_TOKEN_ENV = "DECURIX_AGENT_TOKEN"
     stub.agent_token = lambda: os.environ.get(stub.AGENT_TOKEN_ENV, "").strip()

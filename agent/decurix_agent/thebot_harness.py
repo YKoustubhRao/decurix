@@ -28,15 +28,13 @@ EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 # ============================================================
 # TheBot harness
 #
-# Unlike task_runner.py's hand-rolled loop and claude_harness.py's
-# CLI-per-task model, TheBot's `soul` binary is a persistent HTTP server
-# (started once as a background daemon by start_agent_terminal.sh, not
-# shelled out to per task) with its own atomizer/scheduler/skills loop
-# inside it. This harness only ever submits a request over HTTP and follows
-# the real job to completion - it does not reimplement any of TheBot's
-# reasoning. Exposes the same perform_task/continue_after_query signatures
-# so harness.py can dispatch to it interchangeably with the other harnesses
-# (claude, azure, ollama; new desktops all run this one).
+# TheBot's `soul` binary is a persistent HTTP server (started once as a
+# background daemon by start_agent_terminal.sh, not shelled out to per task)
+# with its own atomizer/scheduler/skills loop inside it. This harness only
+# ever submits a request over HTTP and follows the real job to completion -
+# it does not reimplement any of TheBot's reasoning. harness.py exports its
+# perform_task/continue_after_query; it is the only engine since the ollama,
+# claude and azure harnesses were removed (2026-11-07).
 #
 # The job is followed over soul's own SSE stream rather than polled, so
 # every reasoning step it emits reaches the Decurix chat live through

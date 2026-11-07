@@ -767,7 +767,7 @@ def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted
 
     `verdict` is the structured verdict of the checks that settled it (verdict.py, R6), sent as given; `checked` then
     follows it, and a caller's `checked` that disagrees makes it not checked (fail closed, logged). Without one the
-    verdict is derived (verdict.derive): checked=True is a `legacy` done, which never counts towards trust.
+    verdict is derived (verdict.derive), never a done: checked=True with no verdict goes out not checked (fail closed).
     `stopped`: the person said no and the work stopped there (write_stopped) - never done.
     """
 

@@ -33,9 +33,9 @@ import (
 // the saved secrets (llm.key, mail.key, cloudflare.key, hostgui.key, the
 // qualification owner token: every *.key, *.token and *.pem) are left out, so
 // the sealed values in the snapshot stay sealed; a secret saved unsealed (a key
-// file that could not be written) and the Claude Code login (sealed under
-// claude-session.key, and still taken out: it carries a live refresh token)
-// are taken out of the snapshot itself (scrubSnapshot). Restored on the same
+// file that could not be written) and any Claude Code login an older build kept
+// (claude_session, emptied since the claude harness was removed: it carried a
+// live refresh token) are taken out of the snapshot itself (scrubSnapshot). Restored on the same
 // install, whose key files are still in place, the sealed secrets open again;
 // anywhere else they are entered again, and the restore says so.
 //
@@ -217,7 +217,7 @@ func snapshotDB(ctx context.Context, db *sql.DB) (string, error) {
 
 // backupScrub is what scrubSnapshot runs on the snapshot, per table: a
 // secret that was saved unsealed (sealed.Seal with no key file) would open
-// for anyone holding the backup, and the Claude Code login is taken out even
+// for anyone holding the backup, and a Claude Code login is taken out even
 // sealed (a live refresh token is not worth carrying). A sealed value ("enc1:...") stays: without its key file, which the
 // backup leaves out, it is noise, and on the same install it opens again.
 var backupScrub = map[string][]string{
@@ -226,6 +226,28 @@ var backupScrub = map[string][]string{
 	"mail_accounts": {`UPDATE mail_accounts SET password = '', needs_password = 1,
 		last_error = 'The password was not in the backup: enter it again.' WHERE password NOT LIKE 'enc1:%'`},
 	"claude_session": {`DELETE FROM claude_session`},
+}
+
+// legacyClaudeSession is the migration of the claude_session table, the shared
+// Claude Code login that claude-harness desktops were seeded from. The harness
+// and its login store (internal/claudeauth) were removed on 2026-11-07; the
+// steps stay, append-only, under the store's component name, and the one
+// appended then empties the table, so an old database keeps no refresh token
+// nothing reads any more.
+var legacyClaudeSession = []string{
+	`CREATE TABLE claude_session (
+		id               INTEGER PRIMARY KEY CHECK (id = 1),
+		credentials_json TEXT NOT NULL,
+		email            TEXT NOT NULL DEFAULT '',
+		updated_ns       INTEGER NOT NULL
+	)`,
+	`DELETE FROM claude_session`,
+}
+
+// MigrateLegacyClaudeSession brings the old claude_session table to its last step (legacyClaudeSession): made, and
+// emptied of any login an older build kept.
+func MigrateLegacyClaudeSession(db *sql.DB) error {
+	return sqlitedb.Migrate(db, "claudeauth", legacyClaudeSession)
 }
 
 // scrubSnapshot takes the secrets that would open without a key file out of

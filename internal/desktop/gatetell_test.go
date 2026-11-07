@@ -287,7 +287,7 @@ func TestPracticeAndReadinessNamesAreRefusedAtCreate(t *testing.T) {
 	m := newManagerWith(&fakeAPI{})
 	m.HostGUISecret = []byte("secret")
 	for _, name := range []string{"practice-e0123456789abcdef", "Readiness-x", "readiness-e01"} {
-		if _, err := m.BeginProvisioning(name, "basic", "thebot", Brain{}, 1, 2048, "", "", "", nil, nil, nil); !errors.Is(err, ErrReservedName) {
+		if _, err := m.BeginProvisioning(name, "basic", Brain{}, 1, 2048, "", "", nil, nil, nil); !errors.Is(err, ErrReservedName) {
 			t.Errorf("%q: %v, want ErrReservedName", name, err)
 		}
 	}

@@ -157,11 +157,9 @@ func (s *Server) createPersonaDesktopHandler(w http.ResponseWriter, r *http.Requ
 	prov, err := s.Desktops.BeginProvisioning(
 		name,
 		req.Profile,
-		desktop.HarnessTheBot,
 		brain,
 		req.CPUs,
 		req.MemoryMB,
-		"",
 		p.Specialization,
 		"",
 		nil,
@@ -234,11 +232,9 @@ func (s *Server) deployTeamHandler(w http.ResponseWriter, r *http.Request) {
 		prov, err := s.Desktops.BeginProvisioning(
 			workerName,
 			req.Profile,
-			desktop.HarnessTheBot,
 			brain,
 			req.CPUs,
 			req.MemoryMB,
-			"",
 			p.Specialization,
 			parentID,
 			nil,

@@ -78,9 +78,6 @@ class AStepLineNeverQuotesTypedText(unittest.TestCase):
                                ('gui type --enter e7 "x"', "gui type --enter e7 [text]"),
                                ("gui click e3", "gui click e3")):
             self.assertEqual(privacy.step_command(command), shown)
-        from decurix_agent import azure_harness
-        self.assertEqual(azure_harness._describe("shell", {"command": 'gui type e3 "Zebra-42-quiet"'}),
-                         "Running: gui type e3 [text]")
 
 
 class AWithheldMarkIsNeverTyped(unittest.TestCase):

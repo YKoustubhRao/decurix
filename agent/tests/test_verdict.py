@@ -34,11 +34,11 @@ class TheBuilders(unittest.TestCase):
             self.assertTrue(verdict.validate(v), bad)
             self.assertFalse(verdict.is_done(v))
 
-    def test_a_legacy_done_has_no_checks_and_no_basis(self):
-        v = verdict.make("done", "legacy")
-        self.assertEqual(verdict.validate(v), [])
-        self.assertEqual(v["basis"], [])
-        self.assertTrue(verdict.validate(dict(v, basis=["code"])))
+    def test_there_is_no_legacy_done(self):
+        # The legacy done (no checks, no basis) is gone: "legacy" is no gate, and a done with no check is no done.
+        self.assertNotIn("legacy", verdict.BY)
+        self.assertTrue(verdict.validate(verdict.make("done", "legacy")))
+        self.assertTrue(verdict.validate(verdict.make("done", "worker")))
 
     def test_enums_and_limits(self):
         v = verdict.make("done", "verify", checks=[verdict.check("j", "pass", "model")])
@@ -66,11 +66,11 @@ class TheBuilders(unittest.TestCase):
 class TheDeriveTable(unittest.TestCase):
     def test_the_table(self):
         for (checked, kind, gated, stopped), (want, by) in (
-                ((True, "final", False, False), ("done", "legacy")),
+                ((True, "final", False, False), ("unchecked", "worker")),
                 ((False, "final", True, False), ("unchecked", "worker")),
                 ((False, "error", True, False), ("not_done", "worker")),
                 ((False, "error", False, False), ("not_done", "worker")),
-                ((True, "error", True, False), ("not_done", "legacy")),
+                ((True, "error", True, False), ("not_done", "worker")),
                 ((False, "final", False, False), ("unchecked", "none")),
                 ((True, "error", True, True), ("stopped", "worker"))):
             v = verdict.derive(checked, kind, gated=gated, stopped=stopped)
@@ -131,8 +131,10 @@ class TheCallback(unittest.TestCase):
         return payload
 
     def test_derived_when_not_given(self):
+        # checked=True with no verdict is no evidence: it goes out not checked (fail closed).
         messaging.write_final_reply("Done.", kind="final", checked=True)
-        self.assertEqual(self.last()["verdict"]["by"], "legacy")
+        self.assertEqual(self.last()["verdict"]["verdict"], "unchecked")
+        self.assertFalse(self.last()["checked"])
         messaging.write_final_reply("Not checked.", kind="final", gated=True)
         self.assertEqual(self.last()["verdict"]["verdict"], "unchecked")
         messaging.write_final_reply("It broke.", kind="error", gated=True)
@@ -249,16 +251,11 @@ class EveryStopGoesThroughWriteStopped(unittest.TestCase):
         self.assertEqual(found, [])
 
 
-# The paths that still send checked=True with no verdict of their own, and so get a `legacy` done (no basis, never
-# counted towards trust). This list may only shrink: a new path says what it checked (verdict=...).
-LEGACY = {
-    "tool_task.py:perform",      # a learned tool's run, checked by its own checks (tool_task._draft_once)
-    "workflow_task.py:_report",  # a workflow's stage report, checked by the run's artifact checks
-}
-
-
-class TheLegacyCallersOnlyShrink(unittest.TestCase):
-    def test_the_list(self):
+# No path sends checked=True with no verdict of its own: one would go out not checked (verdict.derive never makes a
+# done). The list of such paths was LEGACY (tool_task.perform and workflow_task._report, both now give their own) and
+# stays empty: a new path says what it checked (verdict=...).
+class NoReportReliesOnADerivedDone(unittest.TestCase):
+    def test_none(self):
         found = set()
         for where, func, node in _calls_of("write_final_reply"):
             kw = {k.arg: k.value for k in node.keywords}
@@ -268,8 +265,7 @@ class TheLegacyCallersOnlyShrink(unittest.TestCase):
             if isinstance(checked, ast.Constant) and checked.value is False:
                 continue
             found.add(f"{where}:{func}")
-        self.assertEqual(sorted(found - set(LEGACY)), [], "a new caller relies on the legacy verdict")
-        self.assertEqual(sorted(set(LEGACY) - found), [], "a caller left the list: take it out of LEGACY")
+        self.assertEqual(sorted(found), [], "a caller sends checked=True with no verdict of what it checked")
 
 
 if __name__ == "__main__":

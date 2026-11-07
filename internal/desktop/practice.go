@@ -179,7 +179,7 @@ func (m *Manager) PracticeBrokerEndpoint(ctx context.Context) (netip.Prefix, net
 	if err != nil {
 		return subnet, netip.Addr{}, fmt.Errorf("find the control plane's own container: %w", err)
 	}
-	if ep := practiceEndpoint(inspect); ep == nil || ep.IPAddress == "" {
+	if ep := practiceEndpoint(inspectNetworks(inspect)); ep == nil || ep.IPAddress == "" {
 		if err := m.client.NetworkConnect(ctx, PracticeNetworkName, inspect.ID, nil); err != nil {
 			return subnet, netip.Addr{}, fmt.Errorf("join the practice network: %w", err)
 		}
@@ -187,7 +187,7 @@ func (m *Manager) PracticeBrokerEndpoint(ctx context.Context) (netip.Prefix, net
 			return subnet, netip.Addr{}, err
 		}
 	}
-	ep := practiceEndpoint(inspect)
+	ep := practiceEndpoint(inspectNetworks(inspect))
 	if ep == nil {
 		return subnet, netip.Addr{}, errors.New("the control plane did not join the practice network")
 	}
@@ -210,11 +210,16 @@ func (m *Manager) leavePracticeNetwork(ctx context.Context) {
 }
 
 // practiceEndpoint is a container's endpoint on the practice network, or nil.
-func practiceEndpoint(inspect container.InspectResponse) *network.EndpointSettings {
+func practiceEndpoint(networks map[string]*network.EndpointSettings) *network.EndpointSettings {
+	return networks[PracticeNetworkName]
+}
+
+// inspectNetworks is an inspected container's networks, nil when it has none.
+func inspectNetworks(inspect container.InspectResponse) map[string]*network.EndpointSettings {
 	if inspect.NetworkSettings == nil {
 		return nil
 	}
-	return inspect.NetworkSettings.Networks[PracticeNetworkName]
+	return inspect.NetworkSettings.Networks
 }
 
 // controlPlaneInContainer reports whether this process runs in a container.
@@ -397,7 +402,9 @@ func practiceEnvironment(inherited []string, spec PracticeSpec, vncPassword stri
 		"VNC_PW="+vncPassword, "VNC_RESOLUTION=1280x720",
 		"DESKTOP_ID="+name, "DESKTOP_NAME="+name,
 		"CONTROL_PLANE_URL="+broker,
-		"AGENT_HARNESS="+spec.Harness,
+		// TheBot whatever the pin says: a suite pinned from a desktop made with a removed harness (2026-11-07)
+		// still names it, and its agent runs TheBot, which needs soul started (AGENT_HARNESS=thebot).
+		"AGENT_HARNESS="+HarnessTheBot,
 		"DECURIX_BRAIN="+spec.Brain,
 		"DECURIX_PRACTICE=1",
 		GateRequiredEnv+"=1",
@@ -660,7 +667,7 @@ func (m *Manager) practiceIP(ctx context.Context, id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if ep := practiceEndpoint(inspect); ep != nil && ep.IPAddress != "" {
+	if ep := practiceEndpoint(inspectNetworks(inspect)); ep != nil && ep.IPAddress != "" {
 		return ep.IPAddress, nil
 	}
 	return "", errors.New("the practice desktop has no address on the practice network")

@@ -122,27 +122,5 @@ class WithNoModel(unittest.TestCase):
         self.assertIsNotNone(approval.pending())
 
 
-class ClaudesOwnPause(unittest.TestCase):
-    """Claude ending its turn with NEEDS_APPROVAL in its own words while the gate holds an action: the person is asked
-    in the gate's words, so their yes is that action's (approval.asked_about)."""
-
-    def test_the_gates_words_lead_the_question(self):
-        from decurix_agent import claude_harness
-
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        d = pathlib.Path(tmp.name)
-        asked = []
-        with mock.patch.object(approval, "STATE_DIR", d), mock.patch.object(approval, "STATE_FILE", d / "approval.json"), \
-                mock.patch.object(approval, "assess", lambda *a, **k: "it sends something"), \
-                mock.patch.object(claude_harness, "ask_for_query", lambda text, **kw: asked.append((text, kw))):
-            approval.reset()
-            approval.check("click", SEND)
-            claude_harness._handle_result({"result": "NEEDS_APPROVAL: may I send the reply to the client?"})
-            self.assertEqual(asked[0][1].get("kind"), "approval")
-            self.assertTrue(approval.asked_about(approval.pending(), asked[0][0]))
-            self.assertIn("may I send the reply to the client?", asked[0][0])
-
-
 if __name__ == "__main__":
     unittest.main()

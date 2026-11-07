@@ -2,7 +2,7 @@
 Every action that commits what a form or a page holds goes through the same pre-save checks (core._commit_check ->
 _form_check: a record entered twice, a placeholder, an invented value, the declared record's ledger, the listing of a
 full form), whichever way it is pressed. Found in review (2026-11-02): they ran only for a single `gui click` on a CDP
-<form type=submit>, so a double-click, --see, the act tool, an AT-SPI press, an Enter on a filled form and every button
+<form type=submit>, so a double-click, --see, the act tool (the MCP server, removed 2026-11-07), an AT-SPI press, an Enter on a filled form and every button
 an application draws with divs went past them.
 """
 
@@ -13,7 +13,7 @@ from unittest import mock
 
 import test_long_requests as base  # noqa: F401 - stubs config first
 
-from decurix_agent.computer import cdp, cli, core, mcp_server
+from decurix_agent.computer import cdp, cli, core
 
 PLACEHOLDER = [["Customer", "Cafe Bloom"], ["Customer PO number", "TEST"], ["Quantity", "2"]]
 FULL = [["Customer", "Cafe Bloom"], ["Customer PO number", "WA-1810"], ["Quantity", "2"], ["Rate", "149"]]
@@ -102,7 +102,7 @@ class EveryPressThatCommits(Base):
 
 
 class EveryWayOfPressing(unittest.TestCase):
-    """The gui command and the act tool ask for the checks on every press but a right-click."""
+    """The gui command asks for the checks on every press but a right-click."""
 
     def run_cli(self, argv):
         with mock.patch.object(cli.core, "act", return_value={"status": "done", "text": "ok"}) as act, \
@@ -117,18 +117,6 @@ class EveryWayOfPressing(unittest.TestCase):
         self.assertIs(self.run_cli(["key", "Return"])["check_form"], True)
         self.assertIs(self.run_cli(["type", "e5", "hello"])["check_form"], True)
         self.assertIs(self.run_cli(["right-click", "e5"])["check_form"], False)
-
-    def test_the_act_tool(self):
-        result = {"status": "done", "text": "ok", "observation": {"elements": [], "frame": None}}
-        with mock.patch.object(mcp_server.core, "act", return_value=result) as act, \
-                mock.patch.object(mcp_server.el, "render", return_value=""), \
-                mock.patch.object(mcp_server, "_image", return_value={}):
-            mcp_server.call_tool("act", {"action": "double_click", "ref": "e5"})
-            self.assertIs(act.call_args.kwargs["check_form"], True)
-            mcp_server.call_tool("act", {"action": "click", "ref": "e5", "checked": True})
-            self.assertEqual(act.call_args.kwargs["check_form"], "checked")
-            mcp_server.call_tool("act", {"action": "right_click", "ref": "e5"})
-            self.assertIs(act.call_args.kwargs["check_form"], False)
 
 
 if __name__ == "__main__":

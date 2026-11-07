@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from decurix_agent import messaging
+from decurix_agent import messaging, verdict
 
 
 class _Response:
@@ -49,8 +49,13 @@ class CheckedReports(unittest.TestCase):
         self.assertTrue(self.sent, "nothing was reported")
 
     def test_a_checked_report_says_so(self):
-        messaging.write_final_reply("Filed INV-7.", checked=True)
+        # Checked means a verdict of done with a check that passed behind it; a bare checked=True is a claim and goes
+        # out not checked (fail closed, verdict.derive; 2026-11-07).
+        done = verdict.make("done", "skill_gate", checks=[verdict.check("files.read_back", "pass", "code")])
+        messaging.write_final_reply("Filed INV-7.", checked=True, verdict=done)
         self.assertIs(self.sent[-1]["checked"], True)
+        messaging.write_final_reply("Filed INV-7.", checked=True)
+        self.assertIs(self.sent[-1]["checked"], False)
 
     def test_an_unchecked_report_says_so(self):
         messaging.write_final_reply("6.6")

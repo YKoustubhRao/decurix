@@ -45,7 +45,7 @@ func TestEveryReadCarriesTheCheckedOutcome(t *testing.T) {
 
 	yes := true
 	checked := send(t, s, box, "count the rows")
-	outcome(t, s, "box", checked.TaskID, Outcome{Kind: OutcomeDone, Reply: "12", Checked: &yes})
+	outcome(t, s, "box", checked.TaskID, Outcome{Kind: OutcomeDone, Reply: "12", Checked: &yes, Verdict: codeDone()})
 
 	silent := send(t, s, box, "say hi")
 	outcome(t, s, "box", silent.TaskID, Outcome{Kind: OutcomeDone, Reply: "hi"})

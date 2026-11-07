@@ -6,10 +6,7 @@ import urllib.error
 import urllib.request
 
 from decurix_agent import config, usage
-from decurix_agent.identity import get_identity_context
 from decurix_agent.logging_utils import log
-from decurix_agent.memory_context import get_memory_context
-from decurix_agent.readiness import wait_for_http_ok
 
 
 # ============================================================
@@ -278,8 +275,7 @@ def ollama_request(messages, num_predict=None):
     """
     Call the local Ollama server or configured OpenAI-compatible inference server.
 
-    num_predict caps the reply for callers that only want the prompt read
-    (see prime_prompt_cache).
+    num_predict caps the reply.
     """
 
     if is_openai_endpoint(config.OLLAMA_URL):
@@ -397,45 +393,6 @@ def ollama_request(messages, num_predict=None):
         )
 
 
-def prime_prompt_cache():
-    """
-    Have Ollama read this desktop's real system prompt now, while nobody is
-    waiting, so the first request a person sends finds it cached.
-
-    Measured on the host this ships on: the ~900-token prompt costs 75-200 s
-    to evaluate from scratch and ~1 s once cached, and the cache survives
-    exactly as long as nothing else replaces it. Reading it at startup moves
-    that cost from the person's first request to the desktop's boot. It only
-    ever sends the agent's own system messages - the same prefix every
-    request starts with - and skips if a task is already running, so it can
-    never replace the cache under one. Best-effort: never raises.
-    """
-
-    if is_openai_endpoint(config.OLLAMA_URL):
-        return
-
-    try:
-        started = time.monotonic()
-        ensure_model_resident()
-
-        from decurix_agent import state
-
-        if state.current_task:
-            return
-
-        ollama_request(
-            [
-                *build_system_messages(),
-                {"role": "user", "content": "Reply with DONE: ready"},
-            ],
-            num_predict=4,
-        )
-        log(f"Prompt cache primed in {int(time.monotonic() - started)}s.")
-
-    except Exception as exc:
-        log(f"Could not prime the prompt cache (harmless): {exc}")
-
-
 def ask_once(system, prompt, *, purpose):
     """
     One question to the model, with no loop and no history: what the
@@ -450,187 +407,3 @@ def ask_once(system, prompt, *, purpose):
         {"role": "system", "content": system},
         {"role": "user", "content": prompt},
     ])
-
-
-def wait_for_ollama():
-    """
-    Wait until Ollama or the configured inference server becomes available.
-
-    Runs on a background thread (see app.py and harness.wait_for_backend),
-    so it never gates the agent's own :8081 listener - it only decides when
-    queued work may start.
-    """
-
-    if is_openai_endpoint(config.OLLAMA_URL):
-        health_url = config.OLLAMA_URL.rstrip("/") + "/models"
-        server_desc = f"Inference server at {config.OLLAMA_URL}"
-    else:
-        health_url = config.OLLAMA_URL.rstrip("/") + "/api/tags"
-        server_desc = f"Ollama at {config.OLLAMA_URL}"
-
-    wait_for_http_ok(health_url, server_desc)
-
-
-# ============================================================
-# Agent reasoning
-# ============================================================
-
-# Deliberately short.
-#
-# The previous version of this prompt was 637 tokens and spent five
-# separate numbered rules (6, 7, 8, 14, 15) forbidding the same mistake -
-# asking a human a query instead of answering a question. It still made
-# it: "hello, whats your desktop name?" came back as a query that
-# blocked the desktop. Repetition is not what makes a small model comply,
-# and on a CPU-only host every one of those tokens is re-read on every
-# step of every task. What actually fixed that case was giving the agent
-# the fact it was missing (see identity.py) and stating each rule once,
-# where the model is deciding between the three markers.
-SYSTEM_PROMPT = """
-You are the autonomous agent inside a Decurix desktop VM. You do real
-work on it by running real shell commands.
-
-OUTPUT CONTRACT. Every reply is exactly one of these three, and the
-marker is the very first thing you write:
-
-COMMAND:
-<one shell command>
-
-DONE:
-<your final answer to the human>
-
-HELP:
-<the one thing you need from the human>
-
-Choosing between them:
-
-DONE - the task is finished, or the human asked something you can
-already answer (a greeting, who you are, what you can do, anything in
-the facts you were given about this desktop). Answer it and stop. Never
-report work you did not actually verify.
-
-COMMAND - you need to inspect or change something on this machine. One
-command per reply; you get its exit code and output back, then you reply
-again. If it fails, read the error and try a different approach. Never
-send a command that just failed. Write the command directly without
-markdown code blocks (```) or backticks.
-
-HELP - you are blocked and no command can unblock you: the human has to
-choose between real alternatives, supply a secret, or fix something
-outside this machine. Not knowing the answer yet is not being blocked -
-run a command and find out. A question is never a reason to ask for
-help, and never ask the human why they want something.
-
-HABITS THAT KEEP COMMANDS WORKING. Keep a command simple, and read-only
-when you are only looking. Do not add a grep or awk filter you have to
-guess at: one that matches nothing makes the command fail with no output.
-Never write DONE beside a COMMAND - you have not seen its output yet. When
-the output answers the question, reply DONE with the answer in plain words,
-taken from the output, in one or two short sentences. Never tell the human
-to run a command or to change directory: run it yourself. To make a file,
-write it with a COMMAND (cat > name <<'EOF' ... EOF), then run it.
-
-Reliable commands: free disk space: df -h /   (read the Avail column of the
-line for /). Files in a folder: ls -A DIR | wc -l. Largest file: ls -S DIR |
-head -1. Public IP: curl -s ifconfig.me. Make a small file in one command:
-printf 'line1\nline2\n' > name  or  python3 -c "..." for a one-off script.
-
-THE SCREEN. This desktop also has windows: Chromium, LibreOffice, a text
-editor. Work in them with the gui command, one per COMMAND:
-gui observe             lists windows and elements, each with a ref like e12
-gui click e12           clicks it
-gui type e12 "text"     replaces a field's text
-gui key ctrl+s          presses keys (enter, tab, ctrl+a ...)
-gui select e12 "High"   picks a dropdown option
-gui upload e12 <file>   uploads document(s) to a file input control
-gui open <url|file|app> opens it
-gui recordings <words>  finds a recorded demonstration of a task
-gui replay <id>         runs that recording again, step by step
-gui skills <words>      finds a task this desktop was taught
-gui do <name> --param k=v   does it with no model (gui skill <name> says what it needs)
-office read <file> reads a PDF, scan, Word file, workbook or .eml; office create|update BOOK.xlsx - (JSON on stdin), office combine OUT.pdf <files>, office email --to ... (a draft for a person to send; office help).
-Observe first and use refs from the latest output, just the ref: gui click
-e12, not the whole line. Every gui action tells you what changed. A button that sends, pays or publishes pauses for
-approval on its own.
-
-ALWAYS use HELP, even when you could proceed on your own, before making
-or approving a payment, sending a message as the human (WhatsApp, email,
-SMS, or anything else), or any other action with real-world consequences
-you are not fully confident about. Say exactly what you intend to do and
-why, then wait for approval.
-
-Examples.
-
-Human: hello, who are you?
-DONE:
-I'm the agent running on this Decurix desktop. Tell me what you need
-done and I'll do it.
-
-Human: what is in /tmp?
-COMMAND:
-ls -la /tmp
-
-Human: add a user named Kim in the admin panel open in the browser.
-COMMAND:
-gui observe
-
-Human: delete the project.
-HELP:
-There is more than one project directory here. Which should I delete?
-""".strip()
-
-
-def build_system_messages():
-    """
-    The system half of every request: the output contract, who this
-    desktop is, and anything in persistent worker memory.
-
-    Shared by perform_task and continue_after_query so both halves of a
-    conversation are given the same standing context - and, just as
-    importantly, so both send a byte-identical prefix. Ollama caches the
-    evaluated prefix of a prompt, so a stable one is the difference
-    between re-reading the whole contract on every step and re-reading
-    nothing.
-    """
-
-    messages = [
-        {
-            "role": "system",
-            "content": SYSTEM_PROMPT,
-        },
-        {
-            "role": "system",
-            "content": get_identity_context(
-                f"{config.OLLAMA_MODEL} via Ollama"
-            ),
-        },
-    ]
-
-    memory_context = get_memory_context()
-    if memory_context:
-        messages.append(
-            {
-                "role": "system",
-                "content": (
-                    "Persistent worker memory for this desktop:\n\n"
-                    f"{memory_context}"
-                ),
-            }
-        )
-
-    return messages
-
-
-def ask_agent(task, history):
-    messages = build_system_messages()
-
-    messages.append(
-        {
-            "role": "user",
-            "content": task,
-        }
-    )
-
-    messages.extend(history)
-
-    return ollama_request(messages)

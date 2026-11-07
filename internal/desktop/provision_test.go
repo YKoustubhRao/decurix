@@ -52,7 +52,7 @@ func TestAnInspectThatTimesOutRemovesNothing(t *testing.T) {
 		return container.InspectResponse{}, context.DeadlineExceeded
 	}}
 	m := provisioningManager(fake)
-	_, err := m.BeginProvisioning("box", "basic", "thebot", Brain{}, 1, 2048, "", "", "", nil, nil, nil)
+	_, err := m.BeginProvisioning("box", "basic", Brain{}, 1, 2048, "", "", nil, nil, nil)
 	if err == nil {
 		t.Fatal("a creation must not go on when Docker did not say the desktop is absent")
 	}
@@ -81,7 +81,7 @@ func TestANameConflictRemovesNothingThatWasThere(t *testing.T) {
 		},
 	}
 	m := provisioningManager(fake)
-	prov, err := m.BeginProvisioning("box", "basic", "thebot", Brain{}, 1, 2048, "", "", "", nil, nil, nil)
+	prov, err := m.BeginProvisioning("box", "basic", Brain{}, 1, 2048, "", "", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestAFailedCreationRemovesTheHomeItMade(t *testing.T) {
 		return container.CreateResponse{}, errors.New("no space left")
 	}}
 	m := provisioningManager(fake)
-	prov, err := m.BeginProvisioning("box", "basic", "thebot", Brain{}, 1, 2048, "", "", "", nil, nil, nil)
+	prov, err := m.BeginProvisioning("box", "basic", Brain{}, 1, 2048, "", "", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestAnEarlierDesktopsHomeIsNotAdopted(t *testing.T) {
 		return volume.Volume{Name: name, Labels: map[string]string{homeCreationLabel: "someone-else"}}, nil
 	}}
 	m := provisioningManager(fake)
-	prov, err := m.BeginProvisioning("box", "basic", "thebot", Brain{}, 1, 2048, "", "", "", nil, nil, nil)
+	prov, err := m.BeginProvisioning("box", "basic", Brain{}, 1, 2048, "", "", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,8 +5,8 @@
 # got stuck, the engine does the task with the skill as its guide
 # (skill_task._by_model). What it is told - the procedure, this run's
 # values, how to look at the demonstration - is kept here for the life of the
-# task, and every harness puts it into what its model reads (thebot_harness's
-# standing context, azure_harness's system message). The same record is what
+# task, and the engine puts it into what its model reads (thebot_harness's
+# standing context). The same record is what
 # messaging's final gate checks the engine's "done" against before anyone is
 # told it succeeded (skill_task._gate).
 #

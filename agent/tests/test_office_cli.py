@@ -195,12 +195,6 @@ class AnEmailIsDraftedNeverSent(unittest.TestCase):
             self.assertIn(why, text)
         self.assertEqual(self.posted, [])
 
-    def test_the_older_harness_drafts_through_the_same_code(self):
-        with mock.patch.object(outbox, "draft", return_value="Drafted (id 9)") as draft:
-            from decurix_agent import azure_harness
-            self.assertEqual(azure_harness._draft_email({"to": ["a@b.c"], "subject": "s", "body": "b"}), "Drafted (id 9)")
-        draft.assert_called_once()
-
 
 if __name__ == "__main__":
     unittest.main()

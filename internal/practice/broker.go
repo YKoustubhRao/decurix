@@ -77,9 +77,28 @@ type Broker struct {
 	// Recorder, when set, keeps every model call a practice desktop makes (C11), as the caller "practice", with the
 	// desktop's own purpose and turn headers. Recording never holds up or fails a call.
 	Recorder llmrec.Recorder
+	// Caller says which practice desktop has an address on the practice network (desktop.Manager.PracticeDesktopAt).
+	// A callback is the run's desktop's only when it comes from that desktop's address: a desktop_id in the body
+	// proves nothing, since the mock app shares the network (C-25). Nil refuses every callback (fail closed).
+	Caller func(ctx context.Context, addr netip.Addr) (string, bool)
 
 	mu  sync.Mutex
 	run *brokerRun
+}
+
+// callerTTL is how long the broker trusts an address it found to be the run's desktop's; callerNotTTL how long it
+// keeps an address found not to be (a mock posting in a loop cannot make every request ask Docker, and never holds up
+// the desktop's own address, which is asked about on its own).
+const (
+	callerTTL    = 15 * time.Second
+	callerNotTTL = 2 * time.Second
+	callerKept   = 64 // addresses remembered per run at most
+)
+
+// callerSeen is what Caller said about one address, and when.
+type callerSeen struct {
+	desktop bool
+	at      time.Time
 }
 
 type brokerRun struct {
@@ -99,6 +118,8 @@ type brokerRun struct {
 	caseUsage  CaseUsage
 	caseOver   chan struct{}
 	caseClosed bool
+	// seen is what Caller said about each address that called, for callerTTL (the desktop's) or callerNotTTL (any other).
+	seen map[netip.Addr]callerSeen
 }
 
 type brokerDraft struct {
@@ -418,7 +439,8 @@ func (b *Broker) record(r *http.Request, run *brokerRun, provider string, body [
 	})
 }
 
-// identify decodes a callback and checks it comes from the run's practice desktop.
+// identify decodes a callback and checks it comes from the run's practice desktop: by the address it comes from
+// (fromRunDesktop), and a body that names a desktop must name that one.
 func (b *Broker) identify(w http.ResponseWriter, r *http.Request, v any, desktopID func() string) (*brokerRun, bool) {
 	run := b.active()
 	if run == nil {
@@ -433,11 +455,47 @@ func (b *Broker) identify(w http.ResponseWriter, r *http.Request, v any, desktop
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return nil, false
 	}
-	if desktopID() != run.desktopID {
+	if named := desktopID(); (named != "" && named != run.desktopID) || !b.fromRunDesktop(r, run) {
 		http.Error(w, "unknown practice desktop", http.StatusForbidden)
 		return nil, false
 	}
 	return run, true
+}
+
+// fromRunDesktop reports whether r comes from the address of the run's practice desktop, as Caller says (its answer
+// kept for callerTTL when yes, callerNotTTL when no).
+func (b *Broker) fromRunDesktop(r *http.Request, run *brokerRun) bool {
+	if b.Caller == nil {
+		return false
+	}
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	addr := ap.Addr().Unmap()
+	now := time.Now()
+	b.mu.Lock()
+	if seen, ok := run.seen[addr]; ok {
+		ttl := callerNotTTL
+		if seen.desktop {
+			ttl = callerTTL
+		}
+		if now.Sub(seen.at) < ttl {
+			b.mu.Unlock()
+			return seen.desktop
+		}
+	}
+	b.mu.Unlock()
+
+	id, ok := b.Caller(r.Context(), addr)
+	desktop := ok && id == run.desktopID
+	b.mu.Lock()
+	if run.seen == nil || len(run.seen) >= callerKept {
+		run.seen = map[netip.Addr]callerSeen{}
+	}
+	run.seen[addr] = callerSeen{desktop: desktop, at: time.Now()}
+	b.mu.Unlock()
+	return desktop
 }
 
 // ObservedKind maps an agent's reported kind to an observation, "" when it ends nothing.

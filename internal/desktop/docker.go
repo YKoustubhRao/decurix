@@ -48,21 +48,14 @@ const (
 	// still attached here.
 	NetworkName = "decurix-network"
 
-	// Agent harnesses: which reasoning engine drives a desktop's tasks. New
-	// desktops always run TheBot (with a Brain of their own); the others
-	// remain only so desktops created before that keep working.
-	HarnessOllama = "ollama"
-	HarnessClaude = "claude"
-	// HarnessTheBot runs the same OLLAMA_URL/OLLAMA_MODEL every desktop
-	// already gets (see buildDesktopEnv) through TheBot's own atomizer/
-	// scheduler/skills loop instead of the hand-rolled Ollama loop -
-	// needs no new env var of its own for the Ollama case.
+	// HarnessTheBot is the engine every desktop's tasks run on: TheBot, with a
+	// Brain of its own. The ollama, claude and azure harnesses were removed on
+	// 2026-11-07; a desktop created with one keeps its stored harness (the
+	// desktop-harness label, AGENT_HARNESS) and its agent runs TheBot.
 	HarnessTheBot = "thebot"
-	// HarnessAzure is a tool-calling loop on the hosted model the control
-	// plane forwards to (internal/llm, /api/llm/chat): the engine for back-
-	// office work that has to read documents and screens a 3B local model
-	// cannot. The desktop never holds the model's key.
-	HarnessAzure = "azure"
+	// HarnessOllama is the harness a container from before the desktop-harness
+	// label is listed with: what it ran then (it runs TheBot now).
+	HarnessOllama = "ollama"
 
 	// Brains: which model TheBot reasons with (Desktop.Brain). The hosted
 	// ones name an internal/llm provider; the desktop is given the proxy's

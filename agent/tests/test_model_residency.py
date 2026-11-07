@@ -112,42 +112,6 @@ class TestModelResidency(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 ollama_client.ensure_model_resident()
 
-    def test_priming_sends_the_real_system_prompt_once_and_only_that(self):
-        from decurix_agent import state
-
-        fake = FakeOllama(resident=True)
-        self.addCleanup(fake.close)
-        state.current_task = None
-
-        with patch.object(config, "OLLAMA_URL", fake.url):
-            ollama_client.prime_prompt_cache()
-
-        chats = [g for g in fake.generates if g["_path"] == "/api/chat"]
-        self.assertEqual(len(chats), 1)
-        self.assertEqual(chats[0]["messages"][0]["content"], ollama_client.SYSTEM_PROMPT)
-        self.assertEqual(chats[0]["options"]["num_predict"], 4)
-        # same runner options as a real request, so it cannot trigger a reload
-        real = ollama_client.model_options()
-        for key in ("num_ctx", "num_thread", "num_batch"):
-            self.assertEqual(chats[0]["options"][key], real[key])
-
-    def test_priming_never_replaces_the_cache_under_a_running_task(self):
-        from decurix_agent import state
-
-        fake = FakeOllama(resident=True)
-        self.addCleanup(fake.close)
-        state.current_task = "something in progress"
-        self.addCleanup(setattr, state, "current_task", None)
-
-        with patch.object(config, "OLLAMA_URL", fake.url):
-            ollama_client.prime_prompt_cache()
-
-        self.assertEqual([g for g in fake.generates if g["_path"] == "/api/chat"], [])
-
-    def test_priming_never_raises(self):
-        with patch.object(config, "OLLAMA_URL", "http://127.0.0.1:9"):
-            ollama_client.prime_prompt_cache()
-
     def test_openai_style_endpoint_is_never_probed(self):
         with patch.object(config, "OLLAMA_URL", "http://127.0.0.1:9/v1"):
             ollama_client.ensure_model_resident()

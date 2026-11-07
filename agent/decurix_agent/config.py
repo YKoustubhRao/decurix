@@ -33,10 +33,12 @@ OLLAMA_MODEL = os.environ.get(
     "devstral-small-2:24b"
 )
 
-AGENT_HARNESS = os.environ.get(
-    "AGENT_HARNESS",
-    "ollama"
-).strip().lower()
+# The engine that drives tasks: TheBot, the only one since 2026-11-07. A
+# desktop created before then may carry another AGENT_HARNESS (ollama, claude,
+# azure); that is kept as CREATED_HARNESS, for harness.py to say so in the log,
+# and the desktop runs TheBot all the same.
+CREATED_HARNESS = os.environ.get("AGENT_HARNESS", "thebot").strip().lower() or "thebot"
+AGENT_HARNESS = "thebot"
 
 # The model TheBot reasons with (desktop.Brain on the control plane): "ollama"
 # (the shared local model), or a hosted one - "claude", "azure" or "openai"
@@ -53,7 +55,7 @@ HOSTED_BRAIN = BRAIN in ("claude", "azure", "openai")
 DESKTOP_SPECIALIZATION = os.environ.get("DESKTOP_SPECIALIZATION", "").strip()
 DESKTOP_PARENT_ID = os.environ.get("DESKTOP_PARENT_ID", "").strip()
 
-# TheBot harness only: the soul binary (/opt/soul, built from agent/thebot; started as a
+# The soul binary (/opt/soul, built from agent/thebot; started as a
 # background daemon by start_agent_terminal.sh when AGENT_HARNESS=thebot)
 # listens on this port inside the container - not exposed outside it, same
 # as vm_server.py's own :8081.
@@ -106,13 +108,13 @@ WORK_DIR = Path(os.environ.get("DECURIX_WORK_DIR", _default_base / "work"))
 
 # How much persisted worker memory (every *.txt file under MEMORY_DIR,
 # concatenated - see memory_context.get_memory_context) is worth injecting
-# into every harness's system prompt. Nothing prunes MEMORY_DIR, and a
+# into the engine's standing context. Nothing prunes MEMORY_DIR, and a
 # linked/shared desktop or a specialized child spawned from a parent can
 # copy another desktop's whole memory history in at once, so this is what
 # keeps that system prefix from growing without bound as memory
-# accumulates - unlike SYSTEM_PROMPT/identity, whose byte length is fixed.
-# Ollama's num_ctx is a fixed 8192 everywhere (see ollama_client's
-# build_system_messages) and prompt evaluation, not generation, is what
+# accumulates - unlike identity, whose byte length is fixed.
+# Ollama's num_ctx is a fixed 8192 everywhere (ollama_client.NUM_CTX) and
+# prompt evaluation, not generation, is what
 # makes a CPU-only desktop feel slow, so this budget matters the same way
 # DECURIX_GUI_TEXT_CHARS does for a `gui` command's output.
 MEMORY_CONTEXT_CHARS = int(os.environ.get("DECURIX_MEMORY_CONTEXT_CHARS", "6000"))

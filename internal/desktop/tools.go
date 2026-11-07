@@ -2,6 +2,8 @@ package desktop
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"time"
@@ -146,6 +148,14 @@ func (m *Manager) appliedTools() string {
 		return *p
 	}
 	return ""
+}
+
+// randomHex returns n random bytes hex-encoded, for container name suffixes.
+func randomHex(n int) string {
+	buf := make([]byte, n)
+	_, _ = rand.Read(buf)
+
+	return hex.EncodeToString(buf)
 }
 
 // PopulateToolsVolume populates the decurix-tools volume using the tools image. No desktop starts while it runs

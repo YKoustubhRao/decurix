@@ -53,7 +53,6 @@ PURPOSES = {
     "py.playbook",            # playbooks: a proven way of doing a kind of task
     "py.study",               # study: what a demonstration teaches
     "py.tool.args",           # tool_task: a learned tool's arguments
-    "legacy.azure.turn",      # the Office engine's turn (azure_harness)
 }
 
 

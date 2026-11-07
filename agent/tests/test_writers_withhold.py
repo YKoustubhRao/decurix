@@ -53,6 +53,11 @@ ALLOWED = {
     # Not a file this code writes content to.
     "computer/cli.py:main": "stdout pointed at os.devnull",
     "computer/demonstration.py:start": "the recorder subprocess's own output handle",
+    # The gui daemon (computer/daemon.py, gui_client.py): transport, not a file this code writes content to.
+    "computer/daemon.py:bind": "renames the daemon's own freshly bound socket into place (no content)",
+    "computer/gui_client.py:_descriptors": "opens the working folder O_PATH, to hand it to the daemon (writes nothing)",
+    "computer/gui_client.py:_end": "a fixed line to the command's own stderr (fd 2): 'what it did was not seen'",
+    "computer/gui_client.py:main": "a fixed line to the command's own stderr (fd 2): why the daemon did not take it",
     "http_api.py:_frame": "a recording frame streamed to the HTTP client, not a file",
     "logging_utils.py:log": "the log itself: every line is withheld by _withheld first (write_scrubbed logs, so it "
                             "cannot be its own writer)",
@@ -112,6 +117,10 @@ FORMS = {
     "computer/recording.py:write_bytes_whole": {"path.replace", "write_bytes"},
     "computer/cli.py:main": {"open"},
     "computer/demonstration.py:start": {"open"},
+    "computer/daemon.py:bind": {"os.rename"},
+    "computer/gui_client.py:_descriptors": {"os.open"},
+    "computer/gui_client.py:_end": {"os.write"},
+    "computer/gui_client.py:main": {"os.write"},
     "http_api.py:_frame": {"shutil.copyfileobj"},
     "logging_utils.py:log": {"open"},
     "attachments.py:keep_originals": {"shutil.copy2"},
