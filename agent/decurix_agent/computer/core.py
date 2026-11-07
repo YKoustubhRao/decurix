@@ -10,6 +10,7 @@ from pathlib import Path
 
 from decurix_agent import config, filelock, progress
 from decurix_agent.computer import approval, atspi, audit, browser, cdp, grounder, identity, launchers, privacy, screen, session, volatility, xinput
+from decurix_agent.computer import screen_call
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ActedError, ComputerError
 
@@ -126,6 +127,7 @@ def _dead_page_note(frame):
     return CRASHED_PAGE_NOTE if _CRASHED_PAGE.search(shown or "") else None
 
 
+@screen_call.routed("core.observe")
 def observe(remember=True, frame=None):
     """
     Look at the screen: a screenshot, the open windows, and every accessible
@@ -329,14 +331,42 @@ def _keyboard_field(observation):
     return None
 
 
+# The settle wait (tuned live; docs/computer-use.md, "Waits"): settled when the screen has not changed by more than
+# SETTLE_CHANGE (changed_fraction) for SETTLE_QUIET seconds, looked at every SETTLE_POLL seconds at most.
+SETTLE_QUIET = 0.35
+SETTLE_POLL = 0.15
+SETTLE_CHANGE = 0.002
+# How often the drawing reports are read (screen.damage_watch): a local read, no picture.
+DAMAGE_POLL = 0.05
+
+
 def _wait_for_settle(reference):
     """
-    Wait until the screen stops changing, for at most SETTLE_SECONDS.
+    Wait until the screen stops changing, for at most SETTLE_SECONDS, and return a frame of it.
 
     A click that opens a dialog or loads a page is not finished when the
     event is delivered; reading the screen straight away would report
     "nothing changed" about an action that worked.
+
+    The X server says what was drawn (screen.damage_watch), so a screen that is not changing costs no pictures: one is
+    taken only when the drawing could amount to a change, and once at the end. Without the reports, or when they stop,
+    screenshots are taken and compared as before (_settle_by_frames).
     """
+
+    watch = screen.damage_watch()
+    if watch is None:
+        return _settle_by_frames()
+    try:
+        return _settle_by_damage(watch)
+    except screen.DamageLost:
+        pass
+    finally:
+        watch.close()
+    return _settle_by_frames()
+
+
+def _settle_by_frames():
+    """The settle wait by pictures: a screenshot every SETTLE_POLL seconds, compared with the last that differed."""
 
     deadline = time.monotonic() + SETTLE_SECONDS
     time.sleep(0.15)
@@ -344,15 +374,75 @@ def _wait_for_settle(reference):
     stable_since = time.monotonic()
 
     while time.monotonic() < deadline:
-        time.sleep(0.15)
+        time.sleep(SETTLE_POLL)
         current = screen.grab()
-        if screen.changed_fraction(last, current) > 0.002:
+        if screen.changed_fraction(last, current) > SETTLE_CHANGE:
             last = current
             stable_since = time.monotonic()
-        elif time.monotonic() - stable_since >= 0.35:
+        elif time.monotonic() - stable_since >= SETTLE_QUIET:
             break
 
     return last
+
+
+def _settle_by_damage(watch):
+    """
+    The settle wait by drawing reports, deciding what _settle_by_frames decides with fewer pictures.
+
+    `hits` holds every point of the comparison grid (screen.grid_points) that may differ now from `last`, the picture
+    the next one is compared with: the points drawn on since `last` was taken, and the points where the latest picture
+    already differed from it. changed_fraction counts at most three channels per point, so while `hits` has no more
+    than SETTLE_CHANGE of the grid's points the screen provably has not changed by more than SETTLE_CHANGE - nothing is
+    taken. A caret's blink or the panel's clock is a point or two. When more was drawn a picture is taken (at most one
+    each SETTLE_POLL seconds) and compared exactly as before; a screen that was redrawn the same is still quiet. The
+    quiet time counts from the last drawing seen before a change. Raises screen.DamageLost when the reports stop.
+    """
+
+    deadline = time.monotonic() + SETTLE_SECONDS
+    time.sleep(0.15)
+    watch.take()  # what was drawn before the first look counts for nothing, as before
+    width, height = reported = tuple(watch.size)
+    limit = SETTLE_CHANGE * screen.grid_size(width, height)
+
+    last = newest = None        # the picture compared with, and the latest picture taken
+    hits = set()
+    drawn_since_newest = False
+    quiet_since = drawn_at = time.monotonic()
+    grabbed_at = None
+    resized = False             # the screen's size changed since the latest picture
+
+    while time.monotonic() < deadline:
+        time.sleep(DAMAGE_POLL)
+        rects, size = watch.take()
+        now = time.monotonic()
+        if size is not None and tuple(size) != reported:
+            resized, reported = True, tuple(size)
+        if rects:
+            drawn_since_newest, drawn_at = True, now
+            hits |= screen.grid_points(width, height, rects)
+        if resized or len(hits) > limit:
+            if grabbed_at is not None and now - grabbed_at < SETTLE_POLL:
+                continue        # may be changing: not quiet, and the next picture is due shortly
+            current = screen.grab()
+            grabbed_at = time.monotonic()
+            newest, drawn_since_newest, was_resized, resized = current, False, resized, False
+            if last is None or was_resized or (current.width, current.height) != (width, height) \
+                    or screen.changed_fraction(last, current) > SETTLE_CHANGE:
+                last, hits, quiet_since = current, set(), drawn_at
+                if (current.width, current.height) != (width, height):
+                    width, height = current.width, current.height
+                    limit = SETTLE_CHANGE * screen.grid_size(width, height)
+            else:
+                hits = screen.differing_points(last, current)
+                if grabbed_at - quiet_since >= SETTLE_QUIET:
+                    break       # still drawing, but the same for long enough (as the pictures alone would decide)
+            continue
+        if now - quiet_since >= SETTLE_QUIET:
+            break
+
+    if newest is not None and not drawn_since_newest:
+        return newest
+    return screen.grab()
 
 
 def _window_id_for(element):
@@ -1218,7 +1308,8 @@ def _downloads_note(before, wait=DOWNLOAD_WAIT_SECONDS, since=None):
         clock = time.time()
         if (new and not partial) or (not new and clock - quiet_from >= DOWNLOAD_QUIET_SECONDS) or clock - start >= wait:
             break
-        time.sleep(0.25 if not new else 0.5)
+        # Looked at again every 0.25 s, and once more just as the quiet second ends rather than up to 0.25 s past it.
+        time.sleep(0.5 if new else min(0.25, max(0.01, quiet_from + DOWNLOAD_QUIET_SECONDS - clock)))
     done = sorted(n for n in new if not n.endswith(PARTIAL_DOWNLOAD))
     if not done:
         # A download the browser holds for a yes ("Unconfirmed 123.crdownload": a file from a site without https) never
@@ -3954,6 +4045,7 @@ def _refuse_files_that_may_not_leave(files):
     return named
 
 
+@screen_call.routed("core.act")
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
         text=None, keys=None, direction=None, amount=None, option=None, append=False, end=None, files=None,
         see=None, replace_all=False, named=False, keys_from_task=False, cell=None, check_form=False, ids=None):
@@ -5054,6 +5146,7 @@ def _human_check(found, page_group):
     return any(HUMAN_CHECK.search(text) for text in texts)
 
 
+@screen_call.routed("core.open_target")
 def open_target(target, new_tab=False):
     """
     Open a web page, a document or an app, and wait for it to be on screen.

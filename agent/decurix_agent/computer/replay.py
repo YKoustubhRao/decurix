@@ -7,7 +7,7 @@ from datetime import date
 
 from decurix_agent import progress
 from decurix_agent.computer import approval, audit, browser, constraints, core, launchers, privacy, recording, screen, visual, volatility
-from decurix_agent.computer import detour, identity
+from decurix_agent.computer import detour, identity, screen_call
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ActedError, ComputerError
 from decurix_agent.logging_utils import log
@@ -1636,8 +1636,14 @@ def run(program, params=None, start=1, report=None, ladder=None):
     _run_program, with the values this run types from the person's demonstration (a parameter today's request gives
     nothing for keeps the value it was recorded with) known to the pre-save checks as the person's own
     (core.TAUGHT_VALUES): a replay's save is refused only for a value that is in no source and is not theirs.
+
+    In broker mode, on the worker's side (the agent's own replays: skill_task, replay_task), the whole run goes to the
+    screen broker (screen_call.run_replay): the ladder's questions to the engine are asked here, and what the ladder
+    learned comes back onto `ladder`.
     """
 
+    if screen_call.remote():
+        return screen_call.run_replay(program, params=params, start=start, report=report, ladder=ladder)
     given = {name for name in (params or {})}
     taught = {" ".join(str(p.get("default") or "").split()).lower() for p in program.get("params") or []
               if p.get("name") not in given and not p.get("secret") and str(p.get("default") or "").strip()}

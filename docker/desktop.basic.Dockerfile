@@ -108,6 +108,19 @@ RUN for try in 1 2 3; do apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Broker mode's X server (DECURIX_SCREEN_USER=1; agent/decurix-screen-session.sh): Ubuntu's Xtigervnc, which has the
+# SECURITY extension the worker's untrusted cookie needs; the base image's /usr/bin/Xvnc is built without it. Its own
+# step, so the large one above keeps its cache. The base image's TigerVNC stays what the default mode runs: its
+# config files are kept (--force-confold; otherwise dpkg stops at a prompt), /usr/bin/Xvnc and vncpasswd are its files
+# and are not replaced, and the vncserver link the package's alternatives take over is put back as it was.
+RUN for try in 1 2 3; do apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 \
+        -o Dpkg::Options::=--force-confold install -y --no-install-recommends tigervnc-standalone-server && break; \
+    [ "$try" = 3 ] && exit 1; echo "apt-get: try $try failed; trying again"; sleep $((try * 20 - 10)); done && \
+    update-alternatives --remove-all vncserver && ln -sfn /usr/libexec/vncserver /usr/bin/vncserver && \
+    test -x /usr/bin/Xtigervnc && test "$(readlink /usr/bin/vncserver)" = /usr/libexec/vncserver && test ! -L /usr/bin/Xvnc && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # The base image sets NO_AT_BRIDGE=1, which stops every GTK app - the XFCE
 # panel, Thunar, mousepad, LibreOffice's GTK front end - from publishing its
 # widgets over AT-SPI at all. Without this the accessibility tree is empty.
@@ -346,6 +359,14 @@ RUN rm -f /etc/sudoers.d/headless /dockerstartup/.initial_sudo_password \
 # reaching one another's ports at all is a network decision (docs/follow-ups.md, resource plan B7).
 RUN mkdir -p /etc/tigervnc && echo 'nolisten=tcp' >> /etc/tigervnc/vncserver-config-mandatory
 COPY agent/decurix-entrypoint.sh /opt/decurix-entrypoint.sh
+# Broker mode only (DECURIX_SCREEN_USER=1; docs/gate-boundary.md): the screen user's session (Xtigervnc, xfwm4, the
+# screen broker) and the worker's (its panel, desktop and the agent, as untrusted X clients), both started by the
+# entrypoint; and the window manager's look for the screen user, who has no XFCE configuration of its own.
+COPY agent/decurix-screen-session.sh /opt/decurix-screen-session.sh
+COPY agent/decurix-worker-session.sh /opt/decurix-worker-session.sh
+COPY agent/decurix-xfwm4.xml /etc/xdg/decurix-screen/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
+RUN chmod 755 /opt/decurix-screen-session.sh /opt/decurix-worker-session.sh \
+    && chmod 644 /etc/xdg/decurix-screen/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
 # The agent compiled once, here, after its last COPY and before it is made root's (resource plan P1 #1): every `gui`
 # call and every start of the agent and the gate imported it from source, about a second each, because the worker
 # cannot write __pycache__ into a root-owned tree (and PYTHONDONTWRITEBYTECODE=1 says not to). The .pyc are root's,

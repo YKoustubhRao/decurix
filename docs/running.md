@@ -84,7 +84,12 @@ sh bench/security/boundary.sh [--image decurix-desktop:basic] [--layer]   # the 
                                                   # desktop, ~2 min. Its network row needs the control plane (--cp,
                                                   # default http://127.0.0.1:8080): it makes two desktops there, probes
                                                   # B's 8081/5901/6901 from inside A on their own networks, and deletes
-                                                  # them (--desktops A,B uses two that exist instead)
+                                                  # them (--desktops A,B uses two that exist instead). Its screen rows
+                                                  # probe the input broker's paths read-only (XTEST, the VNC password,
+                                                  # DevTools, the cookie store, the screen side's /proc environ):
+                                                  # --broker makes the desktop in broker mode, where each must PASS;
+                                                  # without it they say OPEN (open by design). --screen-only stops
+                                                  # after them (no restarts, no network row, no control plane)
 DECURIX_PRACTICE_IMAGE=decurix-desktop:basic go test ./internal/desktop -run TestPracticeResetLive -count=1 -v
                                                   # the practice reset on a throwaway container of the real image:
                                                   # planted state is gone, the gate key kept, /health 200 after. Run
@@ -147,7 +152,7 @@ See [README.md](README.md#-getting-started-running-it-locally) for full step-by-
 | `DECURIX_HOST_HOME` | `desktop` (host apps), `docker-compose.yaml` | unset; compose mounts the host's `${DECURIX_HOST_HOME:-/home}` read-only at `/host-home` and sets it to that | Where the control plane looks for host users' homes, for host-app discovery. |
 | `DECURIX_HOST_KIND` | `desktop.HostFence` | empty | `wsl` (set by the Windows app): no desktop is made or started unless `/tmp/decurix-wsl/fence` says the fence holds. |
 | `DECURIX_VNC_BRIDGE` | `httpapi.screenBridgeOn` | on | `0`/`off` sends screen streams to the desktop's websockify again instead of the control plane's own RFB bridge. |
-| `DECURIX_SCREEN_BROKER` | `desktop.screenBrokerOn` | off | `1` (exactly) gives every desktop created from then on `DECURIX_SCREEN_USER=1`: its screen is the `decurixscreen` user's and `gui` reaches it only through the screen broker (gate-boundary.md, "Next: the input broker"). A desktop keeps what it was created with. Not ready to turn on yet: the entrypoint does not yet start the screen as that user, so on such a desktop every `gui` command fails with "cannot reach the screen" (by design: broker mode never falls back to running in-process). |
+| `DECURIX_SCREEN_BROKER` | `desktop.screenBrokerOn` | off | `1` (exactly) gives every desktop created from then on `DECURIX_SCREEN_USER=1`: its screen is the `decurixscreen` user's and `gui` reaches it only through the screen broker (gate-boundary.md, "Next: the input broker"). A desktop keeps what it was created with. The entrypoint then runs the X server (Ubuntu's `Xtigervnc`, which has the SECURITY extension), the window manager and the broker as that user, the panel, desktop and agent as the worker with an untrusted X cookie, and the agent's own screen calls go through the broker too (`computer/screen_call.py`). Checked live on a throwaway container (2026-11-07), not yet on a desktop the control plane made; not ready to turn on: see gate-boundary.md for what remains (the screen side's own state, input files, the worker's own browser launcher, the desktop icons). |
 | `DECURIX_MODEL_MAX_CTX` | `httpapi.maxModelCtx` | `32768` | The one context size above 8192 a desktop may ask the model proxy for. |
 | `DECURIX_RESOURCE_CPU_THRESHOLD` / `DECURIX_RESOURCE_MEM_THRESHOLD` | `resourcemon.NewMonitor` | `80` | Percent of a desktop's CPU / memory that raises a resource alert. |
 | `DECURIX_LLM_REQUIRE_PURPOSE` | `cmd/decurix` | off | `1` refuses hosted-model calls that carry no purpose header (follow-ups.md, "Phase 2: control plane"). |

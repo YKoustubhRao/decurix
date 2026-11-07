@@ -6,7 +6,7 @@ import shlex
 import time
 from pathlib import Path
 
-from decurix_agent.computer import browser, screen, session, xinput
+from decurix_agent.computer import browser, screen, screen_call, session, xinput
 from decurix_agent.logging_utils import log
 
 
@@ -284,6 +284,15 @@ def bring_forward(title, matches, places=None, wait=None):
 
     log(f"Started {entry['path']}, but no window {title!r} appeared within {wait} s")
     return None
+
+
+@screen_call.routed("launchers.close")
+def close_recorded(title):
+    """close() of a window recorded as `title`, matched the way a replay matches titles (replay.title_matches): what
+    a skill's restart closes. In broker mode it is asked of the screen broker (screen_call)."""
+
+    from decurix_agent.computer import replay
+    return close(title, replay.title_matches)
 
 
 def close(title, matches, wait=15):

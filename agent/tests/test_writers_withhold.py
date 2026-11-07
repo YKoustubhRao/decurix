@@ -64,6 +64,10 @@ ALLOWED = {
     "computer/gui_client.py:start_daemon": "/dev/null, a started daemon's stdin (writes nothing)",
     "computer/cdp_relay.py:bind": "renames the DevTools relay's own freshly bound socket into place (no content)",
     "computer/cdp_relay.py:send": "a DevTools command to the browser's pipe (a transport, not a file)",
+    "computer/screen_call.py:send": "one protocol line of an agent's screen call to its caller's pipe, in the broker's "
+                                    "child (a transport, not a file: the caller holds what it says as it would have "
+                                    "in-process)",
+    "computer/screen_call.py:_isolate_stdio": "opens /dev/null as the call's stdin (writes nothing)",
     "computer/launch_helper.py:bind": "renames the launch helper's own freshly bound socket into place (no content)",
     "computer/gui_client.py:_descriptors": "opens the working folder O_PATH, to hand it to the daemon (writes nothing)",
     "computer/gui_client.py:_end": "a fixed line to the command's own stderr (fd 2): 'what it did was not seen'",
@@ -133,6 +137,8 @@ FORMS = {
     "computer/gui_client.py:start_daemon": {"os.open"},
     "computer/cdp_relay.py:bind": {"os.rename"},
     "computer/cdp_relay.py:send": {"os.write"},
+    "computer/screen_call.py:send": {"os.write"},
+    "computer/screen_call.py:_isolate_stdio": {"os.open"},
     "computer/launch_helper.py:bind": {"os.rename"},
     "computer/gui_client.py:_descriptors": {"os.open"},
     "computer/gui_client.py:_end": {"os.write"},

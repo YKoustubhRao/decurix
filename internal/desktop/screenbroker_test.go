@@ -72,13 +72,23 @@ func TestScreenBrokerImageHasTheScreenUser(t *testing.T) {
 		t.Fatalf("the desktop image does not make %s as a system user with no login shell", ScreenUser)
 	}
 	entrypoint := readRepoFile(t, "agent/decurix-entrypoint.sh")
-	guard := `if [ "${` + ScreenUserEnv + `:-0}" = "1" ] && /usr/bin/getent passwd ` + ScreenUser + ` >/dev/null 2>&1; then
-    /usr/bin/install -d -m 711 -o ` + ScreenUser + ` -g ` + ScreenUser + ` /run/decurix-screen
-fi`
-	if !strings.Contains(entrypoint, guard) {
-		t.Fatal("the entrypoint does not make /run/decurix-screen (the screen user's, 0711) in broker mode only")
+	guard := `if [ "${` + ScreenUserEnv + `:-0}" = "1" ] && /usr/bin/getent passwd ` + ScreenUser + ` >/dev/null 2>&1; then`
+	start := strings.Index(entrypoint, guard)
+	if start < 0 {
+		t.Fatal("the entrypoint has no broker-mode block")
 	}
-	if strings.Count(entrypoint, "/run/decurix-screen") != strings.Count(guard, "/run/decurix-screen") {
+	end := strings.Index(entrypoint[start:], "\nfi\n")
+	if end < 0 {
+		t.Fatal("the entrypoint's broker-mode block does not end")
+	}
+	block := entrypoint[start : start+end]
+	if !strings.Contains(block, "/usr/bin/install -d -m 711 -o "+ScreenUser+" -g "+ScreenUser+" /run/decurix-screen") {
+		t.Fatal("the entrypoint does not make /run/decurix-screen (the screen user's, 0711) in broker mode")
+	}
+	if strings.Count(entrypoint, "/run/decurix-screen") != strings.Count(block, "/run/decurix-screen") {
 		t.Fatal("the entrypoint names /run/decurix-screen outside its broker-mode block")
+	}
+	if !strings.Contains(block, "exec /usr/bin/setpriv") || strings.Contains(block, "/dockerstartup/startup.sh") {
+		t.Fatal("the broker-mode block must end in its own exec and never run the default mode's startup")
 	}
 }

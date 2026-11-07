@@ -16,6 +16,13 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
 - **A paused desktop is a running desktop for the tools refresh** (RW1-G-02). The check listed only `status=running`, and idle-paused is the commonest state, so a refresh emptied `/opt/tools` under desktops that later resumed mid-task. Any state but exited, created or dead counts, and a failed listing counts as running.
 - **Docker's `--filter name=X` matches substrings (and regex).** Select Decurix resources by label, or anchor the name (`^desktop_`).
 - **A whole-`/dev` bind carries the host's `/dev/shm` and `/dev/mqueue` into a sandbox.** Bind device nodes one by one, and give the view its own `/dev/shm`.
+- **The base image's Xvnc has no SECURITY extension, so it cannot give out an untrusted X cookie** (broker mode,
+  2026-11-07). `xauth generate :1 . untrusted` said "couldn't query Security extension" against accetto's TigerVNC
+  1.16.2 `/usr/bin/Xvnc`; Ubuntu's `Xtigervnc` 1.13.1 (`tigervnc-standalone-server`) has it, and an untrusted client
+  of it sees only BIG-REQUESTS and XC-MISC. Installing that package stops at a dpkg conffile prompt (the base image's
+  `/etc/tigervnc` differs; `--force-confold` keeps it) and takes over `/usr/bin/vncserver` by alternatives, which the
+  default mode's startup runs: the link is put back (`/usr/libexec/vncserver`). As untrusted clients, `xfdesktop`
+  exits (BadAccess on a root window property) and the panel's window list is empty; mousepad and the panel draw.
 
 ## Scripts and the Windows app
 

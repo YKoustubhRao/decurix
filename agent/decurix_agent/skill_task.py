@@ -1898,7 +1898,7 @@ def _stuck_reply(paused, reply):
         reopen = paused.get("reopen")
         if reopen and choice == "restart":
             progress.emit(f"Closing {el._quote(reopen['window'], 60)} to open it fresh")
-            if not launchers.close(reopen["window"], replay.title_matches):
+            if not launchers.close_recorded(reopen["window"]):
                 return _ask_stuck(run, {"step": step_n, "resume_from": paused["resume_from"], "text": paused["why"],
                                         "options": paused.get("options"), "trail": paused.get("trail")},
                                   f"{el._quote(reopen['window'], 60)} did not close (it may be asking something - "

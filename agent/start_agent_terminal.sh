@@ -23,7 +23,11 @@ unset VNC_PW VNC_PASSWORD VNC_VIEW_ONLY_PW
 # reach the X server - another container on the Docker network, if Xvnc listens on TCP - could drive this screen
 # around the approval gate (review 2026-11-03, N-F2). Every process that drives the screen (the agent, the gui
 # command, soul, the control plane's docker exec) runs as the desktop's user, headless.
-which xhost >/dev/null 2>&1 && { xhost - >/dev/null 2>&1; xhost +SI:localuser:headless >/dev/null 2>&1; } || true
+# Broker mode (DECURIX_SCREEN_USER=1): the display is the screen user's and this user's cookie is untrusted, which may
+# not change who may connect; nothing is asked of it (agent/decurix-screen-session.sh decides).
+if [ "${DECURIX_SCREEN_USER:-}" != "1" ]; then
+    which xhost >/dev/null 2>&1 && { xhost - >/dev/null 2>&1; xhost +SI:localuser:headless >/dev/null 2>&1; } || true
+fi
 
 if [ -z "$XDG_RUNTIME_DIR" ]; then
     export XDG_RUNTIME_DIR="/tmp/runtime-headless"
@@ -52,7 +56,8 @@ fi
 # the model's first call, and closes it again if nothing opened a page. A person
 # clicking a web app's icon first waits the cold start once (a few seconds).
 # DECURIX_PREWARM_CHROMIUM=1 still starts it at boot.
-if [ "${DECURIX_PREWARM_CHROMIUM:-}" = "1" ] && which chromium-browser >/dev/null 2>&1; then
+# (Not in broker mode: the browser is the screen user's there, and the screen broker starts it.)
+if [ "${DECURIX_PREWARM_CHROMIUM:-}" = "1" ] && [ "${DECURIX_SCREEN_USER:-}" != "1" ] && which chromium-browser >/dev/null 2>&1; then
     setsid chromium-browser --no-startup-window >> /tmp/chromium-prewarm.log 2>&1 < /dev/null &
     echo "[$(date)] Chromium pre-warmed in background (pid $!)" >> "$LOG"
 fi

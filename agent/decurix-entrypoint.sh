@@ -111,11 +111,65 @@ if [ -s "$GATE_DIR/key" ]; then
 fi
 
 # Broker mode (DECURIX_SCREEN_USER=1, set at creation when the control plane runs with DECURIX_SCREEN_BROKER=1;
-# docs/gate-boundary.md, "Next: the input broker"): the screen broker's shared folder, the screen user's, which every
-# user may pass through and nobody else may write in. Its socket's callers are checked by uid. Which processes run as
-# the screen user is the next round's; nothing else changes here yet.
+# docs/gate-boundary.md, "Next: the input broker"). The screen is the screen user's (decurixscreen): the X server, the
+# window manager and the screen broker run as that user (/opt/decurix-screen-session.sh), and the broker starts the
+# browser. The worker gets an untrusted X cookie for its own X clients (no XTEST, nothing of the screen user's
+# windows), and starts its session's parts and the agent itself (/opt/decurix-worker-session.sh), not through the base
+# image's startup or an XFCE autostart. Nothing of this branch runs in the default mode below it.
+#
+# What root does here, and only here: the screen user's folders (/run is a new tmpfs on every start, so nothing in
+# it is left from before), the X server's socket folder made root's before any user runs, the VNC password turned
+# into a file only the screen user reads (over a pipe, never an argument or an environment of the screen user's), and
+# the two starts. Nothing it touches is a path the worker can write into, and it reads nothing of the worker's.
 if [ "${DECURIX_SCREEN_USER:-0}" = "1" ] && /usr/bin/getent passwd decurixscreen >/dev/null 2>&1; then
+    SCREEN_UID=$(/usr/bin/id -u decurixscreen)
+    SCREEN_GID=$(/usr/bin/id -g decurixscreen)
+    SCREEN_HOME=/var/lib/decurix-screen
+    # The broker's shared folder: every user may pass through it, nobody else may write in it. Its sockets' callers
+    # are checked by uid (computer/daemon.py, gui_client.py).
     /usr/bin/install -d -m 711 -o decurixscreen -g decurixscreen /run/decurix-screen
+    /usr/bin/install -d -m 700 -o decurixscreen -g decurixscreen "$SCREEN_HOME"
+    /usr/bin/install -d -m 1777 -o root -g root /tmp/.X11-unix
+    if [ -z "${VNC_PW:-}" ]; then
+        echo "decurix-entrypoint: VNC_PW is not set; the screen cannot start" >&2
+        exit 1
+    fi
+    cd "$SCREEN_HOME" || exit 1
+    printf '%s\n' "$VNC_PW" | /usr/bin/setpriv --reuid="$SCREEN_UID" --regid="$SCREEN_GID" --clear-groups \
+        --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs \
+        /usr/bin/env -i PATH=/usr/bin:/bin \
+        /bin/sh -c 'umask 077; /usr/bin/vncpasswd -f > vnc.passwd.new && /usr/bin/mv -f vnc.passwd.new vnc.passwd' \
+        || exit 1
+    unset VNC_PW VNC_PASSWORD VNC_VIEW_ONLY_PW
+
+    # The worker's side, in the background: it waits for its cookie (the screen session makes it once the display is
+    # up) and starts its panel, desktop, settings daemon and the agent. The container's environment as in the default
+    # mode, without the screen's password; its output is its own (the script opens the startup log as the worker).
+    (
+        cd "$HOME_DIR" 2>/dev/null || cd /
+        exec /usr/bin/setpriv --reuid="$UID_WORKER" --regid="$GID_WORKER" --init-groups \
+            --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs \
+            /usr/bin/env PATH="$WORKER_PATH" HOME="$HOME_DIR" USER=headless LOGNAME=headless \
+            /opt/decurix-worker-session.sh
+    ) < /dev/null > /dev/null 2>&1 &
+
+    # The screen user's side, which the container waits on (its X server). A cleared environment: fixed, its own
+    # identity and folders, and passed from the container only the desktop's own settings (DECURIX_*, DESKTOP_*, the
+    # control plane's address, the screen's size), never a secret (the first case below; the broker also drops
+    # anything secret-looking from its own environment when it starts, daemon.secret_looking).
+    set -- PATH=/usr/local/bin:/usr/bin:/bin HOME="$SCREEN_HOME" USER=decurixscreen LOGNAME=decurixscreen SHELL=/bin/sh \
+        LANG="${LANG:-C.UTF-8}" PYTHONDONTWRITEBYTECODE=1
+    for name in $(/usr/bin/env | /usr/bin/sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
+        case "$name" in
+            DECURIX_AGENT_TOKEN|DECURIX_GATE_KEY|VNC_PW|VNC_PASSWORD|VNC_VIEW_ONLY_PW|*_TOKEN|*_KEY|*PASSWORD*|*SECRET*) continue ;;
+            DECURIX_*|DESKTOP_*|CONTROL_PLANE_URL|AGENT_HARNESS|VNC_RESOLUTION|VNC_COL_DEPTH|VNC_PORT|TZ|NO_AT_BRIDGE|GTK2_MODULES) ;;
+            *) continue ;;
+        esac
+        value=$(/usr/bin/printenv "$name") && set -- "$@" "$name=$value"
+    done
+    exec /usr/bin/setpriv --reuid="$SCREEN_UID" --regid="$SCREEN_GID" --clear-groups \
+        --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs \
+        /usr/bin/env -i "$@" /opt/decurix-screen-session.sh
 fi
 
 # From here on: the desktop user, no capabilities (in any set, and none can be gained), no setuid effect, and the

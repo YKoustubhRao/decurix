@@ -293,7 +293,7 @@ phone or the tunnel cannot drive the worker through soul.
   characters is refused. A desktop cannot call it, so a worker cannot erase what it was seen doing.
   (docs/trajectory.md, "Purging a leaked secret".)
 
-## Next: the input broker (partly built, behind a switch that is off)
+## Next: the input broker (built behind a switch that is off; checked live on a throwaway container)
 
 The gate decides whether a yes exists; nothing yet stands between the worker and the screen. The worker's Linux user
 owns everything that can act on the screen or as the person, so each of these is a click on Pay without asking:
@@ -303,6 +303,23 @@ owns everything that can act on the screen or as the person, so each of these is
 4. AT-SPI: the accessibility bus offers `doAction` on any button of any app.
 5. The browser's profile: its cookies are the worker's files, so `curl` can act with the person's session directly.
 6. `ptrace` and `/proc` of the browser and the agent (same user): the agent token is one such read.
+
+In broker mode (DECURIX_SCREEN_USER=1), as of 2026-11-07, checked live on a throwaway container (`boundary.sh --layer
+--broker --screen-only`: every screen row PASS; the same rows in the default mode say OPEN):
+1. **Closed.** The worker's X clients have an untrusted cookie: the display offers them BIG-REQUESTS and XC-MISC only
+   (no XTEST, no RECORD, no XInput), and the SECURITY extension denies them events to and reads of the screen
+   user's windows (not probed: a probe never sends input).
+2. **Closed for files and processes.** The password file is the screen user's (0600 in `/var/lib/decurix-screen`),
+   no process the worker can read holds it, and the worker's session starts without it. Still open: a `docker exec`
+   without `env -i` inherits `VNC_PW` from the container's config.
+3. **Closed.** No port: the browser runs with `--remote-debugging-pipe`, and the relay's socket is in a folder only the
+   screen user may enter. Nothing of the screen user listens but VNC (5901).
+4. **Closed for the screen side, not probed.** The screen user's accessibility bus is its own (D-Bus checks the uid);
+   the worker's apps and their bus are the worker's and not part of the boundary.
+5. **Closed.** The browser's profile is `/var/lib/decurix-screen/.config/chromium`, the screen user's alone.
+6. **Closed for the screen side**: the X server, the window manager, the browser and the broker are the screen user's,
+   and their `/proc` environments cannot be read by the worker. **Open for the agent**: it still runs as the worker,
+   with its token in its environment (step 5 of the order below).
 
 Proposed shape:
 - A screen user (`decurixscreen`) runs Xvnc, the window manager, the browser and the accessibility bus. The VNC
@@ -346,11 +363,11 @@ Build order from here: the creation switch (`DECURIX_SCREEN_BROKER` on the contr
 `DECURIX_SCREEN_USER=1`); the probe rows; the daemon's peer-uid check and the screen/worker split in the entrypoint;
 the CDP relay; the worker-side launch helper; then the agent's in-process screen paths as broker clients.
 
-Built so far (2026-11-07, behind `DECURIX_SCREEN_BROKER`, off; code and unit tests, no live run yet):
+Built so far (2026-11-07, behind `DECURIX_SCREEN_BROKER`, off; code, unit tests, and a live run on a throwaway
+container of a layer over `decurix-desktop:next`, not yet a desktop the control plane made):
 - **The creation switch.** `DECURIX_SCREEN_BROKER=1` on the control plane gives each new desktop
   `DECURIX_SCREEN_USER=1` (`internal/desktop/screenbroker.go`). The image has the `decurixscreen` system user (no
-  login shell, no password, no sudo); the entrypoint makes `/run/decurix-screen` (that user's, 0711) in broker mode
-  only. Nothing else in the entrypoint changed.
+  login shell, no password, no sudo).
 - **The broker's socket identity** (`computer/daemon.py`, `gui_client.py`, `broker.py`). The gui daemon serves as the
   broker when the switch is on and its uid is not the worker's (`DECURIX_SCREEN_WORKER_UID`, default 1001). A daemon
   in the worker's own uid on such a desktop exits 3. The socket is `/run/decurix-screen/gui.sock`, mode 0666. Every
@@ -374,22 +391,73 @@ Built so far (2026-11-07, behind `DECURIX_SCREEN_BROKER`, off; code and unit tes
   arguments; `--app=URL`, `--new-window` and `--no-startup-window` are the only flags allowed). Every other program
   goes to the helper as argv only. The helper serves the screen user's uid only and starts the program with its own
   (the worker's) environment. The broker checks that the helper's folder and peer are the worker's.
+- **The startup split** (`agent/decurix-entrypoint.sh`'s broker branch; the default path after it is unchanged). As
+  root: `/run/decurix-screen` (0711) and `/var/lib/decurix-screen` (0700, the screen user's home), `/tmp/.X11-unix`
+  made root's and sticky before any user runs, and the VNC password made into `vnc.passwd` by the screen user from a
+  pipe (never an argument or an environment of its), then unset. Then the worker's session in the background
+  (`agent/decurix-worker-session.sh`, the container's environment less the password) and an exec into the screen
+  user's (`agent/decurix-screen-session.sh`, a cleared environment: fixed identity and folders, and only `DECURIX_*`,
+  `DESKTOP_*`, `CONTROL_PLANE_URL`, `AGENT_HARNESS`, the screen's size and a few display settings from the container,
+  never a `*_TOKEN`, `*_KEY`, `*PASSWORD*`, `*SECRET*` or `VNC_PW`).
+  - The screen session makes a new display cookie (given to `xauth` on stdin), starts **Ubuntu's `Xtigervnc`** (the
+    base image's `/usr/bin/Xvnc` is built without the SECURITY extension: `xauth generate` failed with "couldn't query
+    Security extension"; the image now installs `tigervnc-standalone-server` in its own step and keeps the base
+    image's `vncserver` link and `Xvnc`, which the default mode runs), with `-nolisten tcp`, `-rfbauth` and
+    `-SecurityTypes VncAuth`; then writes the worker's **untrusted** cookie (`xauth generate :1 . untrusted timeout
+    0`) to `/run/decurix-screen/worker.xauth` (0644), starts its own session bus, `xfwm4` (its look from
+    `/etc/xdg/decurix-screen`, without the accessibility bridge) and the broker loop, and waits on the X server.
+  - The screen side's `DECURIX_DIR`, `DECURIX_WORK_DIR` and `DECURIX_LOG_DIR` are its own folder's (a command first
+    failed live on `~/.decurix/computer`, which it may not write).
+  - The worker session copies the cookie to `~/.Xauthority`, starts its own session bus, `xfsettingsd`,
+    `xfce4-panel`, `xfdesktop`, `Thunar --daemon`, and `start_agent_terminal.sh` directly (no XFCE session, no
+    autostart). `start_agent_terminal.sh` no longer runs `xhost` or pre-warms the browser in broker mode.
+  - Seen live: Xtigervnc, xfwm4, the broker and Chrome (profile in `/var/lib/decurix-screen`) as `decurixscreen`;
+    the panel, Thunar, the agent, soul and the launch helper as `headless`. `gui observe`, `gui open` of a
+    `file:///tmp` page, `observe --screenshot` (written as the worker) and `gui open mousepad` (started by the launch
+    helper, as the worker, drawn and managed as an untrusted client) work through the broker.
+  - Untrusted apps, seen live: the panel draws, but its window list shows nothing (it cannot read the screen user's
+    windows); **`xfdesktop` exits** (BadAccess setting a root window property), so there are no desktop icons;
+    mousepad works.
+- **The agent's in-process screen paths through the broker** (`computer/screen_call.py`). In broker mode, on the
+  worker's side, a routed function sends its call as `gui __screen_call NAME` through the same thin client and broker
+  `gui` uses; the broker's child runs it as the screen user and answers in JSON lines (a screenshot Frame, sets,
+  tuples and non-text keys are tagged so they come back as themselves; the agent's own error classes come back as
+  themselves). It never runs one in the worker's process. The broker takes only what each call site needs
+  (`SERVED`): `core.observe(remember)`, `core.act` as a click on a ref or keys only, `core.open_target`,
+  `cdp.page_list`, `cdp.activate_page(id)`, `browser.warm`, `launchers.close` (a recorded window, by the replay's
+  title rule), `ask_task.read_service(key)` (the screen side's own script for that service, never the caller's),
+  the demonstration recorder's start, pause, resume, note, stop, status and recover, and `replay.run` with a plain
+  program: the escalation ladder's questions to the engine come back to the caller as `ask` messages and are answered
+  there, its reports as `report` messages, and the ladder's state comes back onto the caller's ladder. Outside broker
+  mode every one runs in its caller's process as before. Checked live from the worker's side: observe (0.17 s with
+  its 1280x720 frame), page_list, activate_page, demonstration.status, `host_documents._viewers` and `_buttons`, a
+  refused `core.act` "type", `ask_task.read_service`, and an empty-program replay.
+- **The probe rows** (`bench/security/screen_probes.sh`, `.py`; `boundary.sh --broker`, `--screen-only`), read-only
+  as the worker: XTEST on the display, the VNC password in a readable file or environment, a DevTools endpoint, the
+  profile's cookie store, the screen side's `/proc` environ. All five PASS in broker mode; all five are OPEN in the
+  default mode.
 
 What remains, in order:
-1. **The entrypoint split.** Start Xvnc, the window manager and the broker as `decurixscreen`, the browser and
-   relay through the broker, and the panel, desktop, terminal and the agent as the worker with an untrusted cookie.
-2. **The screen side's own state.** In broker mode the child keeps the screen side's `DECURIX_DIR`,
+1. **The screen side's own state.** In broker mode the child keeps the screen side's `DECURIX_DIR`
+   (`/var/lib/decurix-screen/.decurix`),
    `DECURIX_TASK_FILE` and log folder. The evidence, audit, records ledger, form-check notes and recordings that a
    command writes therefore do not reach the worker's `~/.decurix`, and the screen side does not know the task. One
-   way, through the broker or a worker-side writer, has to be chosen.
-3. **Input files.** Files the browser or a command reads from the worker (`gui upload`, `record --from`,
+   way, through the broker or a worker-side writer, has to be chosen. The same holds for the agent's routed calls:
+   a demonstration recorded through the broker, its references for the next action, `core.forget_failed_search`
+   (which the agent still clears in its own folder) and a warmed browser's "close if unused" check (its thread ends
+   with the call) are the screen side's. At boot the agent's `demonstration.recover` ran before the broker served and
+   was logged as not reached.
+2. **Input files.** Files the browser or a command reads from the worker (`gui upload`, `record --from`,
    `do --source-file`, `file://` pages) must come through the shared folder (group `decurix-share`).
-4. **The browser launcher run as the worker** (an icon, `exo-open`, a host app's script) must hand its URL to the
+3. **The browser launcher run as the worker** (an icon, `exo-open`, a host app's script) must hand its URL to the
    broker instead of starting a browser of its own.
-5. **The probe rows** in `boundary.sh`.
-6. **The agent's in-process screen paths** (`skill_task`, `replay_task`, `host_documents`' `/json/activate` on port
-   9222, the browser warm-up) as broker clients.
-7. **A live check** of Chrome's pipe mode: target order in `/json/list` and that events arrive.
+4. **The worker's apps as untrusted clients**: the desktop (`xfdesktop` exits), the panel's window list, and the
+   office apps (LibreOffice, GIMP) are still to be checked; the broker reads AT-SPI on the screen user's bus only, so
+   `gui observe` sees no widget of a worker's GTK or LibreOffice window (only its picture and title).
+5. **A live check on a real desktop**: one made by the control plane with `DECURIX_SCREEN_BROKER=1` and its seccomp
+   profile (the throwaway ran Chrome with `--no-sandbox`), the screen bridge and thumbnails against Xtigervnc 1.13.1,
+   a whole skill replay with ladder questions, and Chrome's pipe mode under load (target order, events).
+6. **The agent's own user** (path 6's open half), and `VNC_PW` out of a `docker exec`'s environment.
 
 ## What this does not cover (said plainly)
 

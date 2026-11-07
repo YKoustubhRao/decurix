@@ -19,6 +19,7 @@ import signal
 import threading
 import time
 
+from decurix_agent.computer import screen_call
 from decurix_agent.logging_utils import log
 
 # The name every title, recording and check uses for the browser.
@@ -100,6 +101,7 @@ def warm_soon():
     threading.Thread(target=warm, daemon=True, name="browser-warm").start()
 
 
+@screen_call.routed("browser.warm")
 def warm():
     """
     Start the browser with no window when it is not running, so a page the

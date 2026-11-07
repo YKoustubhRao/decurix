@@ -736,5 +736,230 @@ class TheLaunchHelperOnItsSocket(unittest.TestCase):
         self.assertIn("not the worker's", str(raised.exception))
 
 
+
+# ------------------------------------------------------------
+# The agent's own screen calls through the broker (screen_call.py)
+# ------------------------------------------------------------
+
+from decurix_agent.computer import escalation, screen, screen_call  # noqa: E402
+
+# The broker's child as a plain process: the call's fakes installed, then screen_call.serve as `gui __screen_call`
+# runs it. What crosses is the real protocol over real pipes; only the broker's hand-over is left out (it has its own
+# tests above).
+CHILD = r"""
+import sys
+sys.path.insert(0, %r)
+from decurix_agent.computer import cdp, replay, screen_call
+
+def page_list():
+    return [{"id": "T1", "title": "Viewer", "url": "http://x/host-gui/view"}]
+cdp.page_list = page_list
+
+def run(program, params=None, start=1, report=None, ladder=None):
+    said = ladder.ask_model("the system", "which one?", purpose="py.escalation.ground")
+    report("step 1 done")
+    ladder.healed.append({"id": "s1", "n": 1, "how": said})
+    ladder.seen[3] = {"box": (1, 2, 3, 4)}
+    ladder.confirmed.add(3)
+    ladder.calls_left -= 1
+    return {"outcome": "verified", "text": program["title"], "start": start, "params": params}
+replay.run = run
+
+def boom():
+    from decurix_agent.computer.errors import ActedError
+    raise ActedError("it was done and then the page went away")
+cdp.page_list_boom = boom
+screen_call.SERVED["test.boom"] = ("decurix_agent.computer.cdp", "page_list_boom", {})
+
+sys.exit(screen_call.serve(sys.argv[1:]))
+""" % AGENT
+
+
+def _child_command(name):
+    return [sys.executable, "-c", CHILD, name]
+
+
+class ValuesCrossAsThemselves(unittest.TestCase):
+    def test_tagged_values_come_back_as_they_went(self):
+        frame = screen.Frame(2, 1, b"\x01\x02\x03\x04\x05\x06")
+        value = {"set": {1, 2}, "tuple": (1, "a"), "pairs": {3: "three", "x": [1]}, "bytes": b"\x00\xff",
+                 "frame": frame, "nested": [{"k": (2,)}], "tag": {screen_call.TAG: "not mine"}}
+        back = screen_call.loads(screen_call.dumps(value).rstrip(b"\n"))
+        self.assertEqual(back["set"], {1, 2})
+        self.assertEqual(back["tuple"], (1, "a"))
+        self.assertEqual(back["pairs"], {3: "three", "x": [1]})
+        self.assertEqual(back["bytes"], b"\x00\xff")
+        self.assertEqual(back["nested"], [{"k": (2,)}])
+        self.assertEqual(back["tag"], {screen_call.TAG: "not mine"})
+        self.assertIsInstance(back["frame"], screen.Frame)
+        self.assertEqual((back["frame"].width, back["frame"].height, bytes(back["frame"].rgb)),
+                         (2, 1, b"\x01\x02\x03\x04\x05\x06"))
+
+    def test_a_value_json_has_no_form_for_is_said_as_text(self):
+        self.assertEqual(screen_call.decode(screen_call.encode(ValueError("x"))), "x")
+
+
+class WhatTheBrokerTakes(unittest.TestCase):
+    def test_a_name_it_does_not_serve_is_refused(self):
+        with self.assertRaises(screen_call.ScreenCallError):
+            screen_call.bound("core.anything", [], {})
+
+    def test_core_act_takes_a_click_on_a_ref_or_keys_only(self):
+        fn, args = screen_call.bound("core.act", ["click"], {"ref": "e2"})
+        self.assertEqual(args, {"kind": "click", "ref": "e2"})
+        screen_call.bound("core.act", ["key"], {"keys": ["ctrl+w"]})
+        for args, kwargs in ((["type"], {"text": "x"}), (["click"], {"ref": "e2", "check_form": False}),
+                             (["click"], {"point": [1, 2]}), (["key"], {"keys": "ctrl+w"})):
+            with self.subTest(args=args, kwargs=kwargs), self.assertRaises(screen_call.ScreenCallError):
+                screen_call.bound("core.act", args, kwargs)
+
+    def test_a_page_id_and_a_service_are_names_not_code(self):
+        screen_call.bound("cdp.activate_page", ["ABC-123"], {})
+        with self.assertRaises(screen_call.ScreenCallError):
+            screen_call.bound("cdp.activate_page", ["../json/close/x"], {})
+        with self.assertRaises(screen_call.ScreenCallError):
+            screen_call.bound("ask_task.read_service", [], {"key": "wikipedia", "js": "document.cookie"})
+
+    def test_a_replay_takes_a_plain_program_and_no_callables(self):
+        screen_call.bound("replay.run", [{"steps": [], "title": "t"}], {"params": {"a": "1"}, "start": 2})
+        with self.assertRaises(screen_call.ScreenCallError):
+            screen_call.bound("replay.run", [{"steps": []}], {"report": print})
+        with self.assertRaises(screen_call.ScreenCallError):
+            screen_call.bound("replay.run", [{"steps": [], "f": screen.Frame(1, 1, b"\0\0\0")}], {})
+
+
+class RoutedFunctions(unittest.TestCase):
+    def test_outside_broker_mode_they_run_here_unchanged(self):
+        with mock.patch.dict(os.environ, {"DECURIX_SCREEN_USER": ""}), \
+                mock.patch.object(screen_call, "call") as call:
+            self.assertFalse(screen_call.remote())
+            self.assertEqual(screen_call.routed("x")(lambda a, b=2: (a, b))(1, b=3), (1, 3))
+        call.assert_not_called()
+
+    def test_on_the_workers_side_of_broker_mode_they_go_to_the_broker(self):
+        with mock.patch.object(screen_call, "remote", return_value=True), \
+                mock.patch.object(screen_call, "call", return_value="from the broker") as call:
+            self.assertEqual(screen_call.routed("x.y")(lambda a: "here")(1), "from the broker")
+        call.assert_called_once_with("x.y", 1)
+
+    def test_the_routed_functions_and_their_names(self):
+        from decurix_agent.computer import browser, core, demonstration, launchers
+        for fn, name in ((core.observe, "core.observe"), (core.act, "core.act"), (core.open_target, "core.open_target"),
+                         (cdp.page_list, "cdp.page_list"), (cdp.activate_page, "cdp.activate_page"),
+                         (browser.warm, "browser.warm"), (launchers.close_recorded, "launchers.close"),
+                         (demonstration.start, "demonstration.start"), (demonstration.status, "demonstration.status"),
+                         (demonstration.stop, "demonstration.stop")):
+            with self.subTest(name=name), mock.patch.object(screen_call, "remote", return_value=True), \
+                    mock.patch.object(screen_call, "call", return_value="R") as call:
+                self.assertEqual(fn(), "R")
+                self.assertEqual(call.call_args[0][0], name)
+                self.assertIn(name, screen_call.SERVED)
+
+    def test_in_broker_mode_the_worker_is_remote_and_the_screen_side_is_not(self):
+        env = {"DECURIX_SCREEN_USER": "1", "DECURIX_SCREEN_WORKER_UID": "1001"}
+        with mock.patch.dict(os.environ, env), mock.patch.object(broker.os, "getuid", create=True, return_value=1001):
+            self.assertTrue(screen_call.remote())
+        with mock.patch.dict(os.environ, env), mock.patch.object(broker.os, "getuid", create=True, return_value=998):
+            self.assertFalse(screen_call.remote())
+
+    def test_a_replay_on_the_workers_side_goes_whole_to_the_broker(self):
+        from decurix_agent.computer import replay
+        ladder = escalation.Ladder(goal="g")
+        with mock.patch.object(screen_call, "remote", return_value=True), \
+                mock.patch.object(screen_call, "run_replay", return_value={"outcome": "x"}) as run:
+            self.assertEqual(replay.run({"steps": []}, params={"a": 1}, start=2, ladder=ladder), {"outcome": "x"})
+        run.assert_called_once_with({"steps": []}, params={"a": 1}, start=2, report=None, ladder=ladder)
+
+
+class TheCallOverItsPipes(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.object(screen_call, "command", side_effect=_child_command)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_call_returns_the_screen_sides_result(self):
+        self.assertEqual(screen_call.call("cdp.page_list"),
+                         [{"id": "T1", "title": "Viewer", "url": "http://x/host-gui/view"}])
+
+    def test_a_refused_call_is_an_error_here(self):
+        with self.assertRaises(screen_call.ScreenCallError) as raised:
+            screen_call.call("core.act", "type", text="x")
+        self.assertIn("does not take", str(raised.exception))
+
+    def test_the_agents_own_errors_come_back_as_themselves(self):
+        from decurix_agent.computer.errors import ActedError
+        with self.assertRaises(ActedError) as raised:
+            screen_call.call("test.boom")
+        self.assertIn("page went away", str(raised.exception))
+
+    def test_a_replay_asks_the_engine_here_and_its_ladder_comes_back(self):
+        asked, reports = [], []
+
+        def ask_model(system, prompt, purpose="py.skill.ask"):
+            asked.append((system, prompt, purpose))
+            return "by its label"
+
+        ladder = escalation.Ladder(ask_model=ask_model, goal="Pay the bill", total=4)
+        ladder.seen[1] = {"box": (0, 0, 1, 1)}
+        left = ladder.calls_left
+        result = screen_call.run_replay({"title": "bill", "steps": []}, params={"amount": "10"}, start=2,
+                                        report=reports.append, ladder=ladder)
+        self.assertEqual(result, {"outcome": "verified", "text": "bill", "start": 2, "params": {"amount": "10"}})
+        self.assertEqual(asked, [("the system", "which one?", "py.escalation.ground")])
+        self.assertEqual(reports, ["step 1 done"])
+        self.assertEqual(ladder.healed, [{"id": "s1", "n": 1, "how": "by its label"}])
+        self.assertEqual(ladder.seen, {1: {"box": (0, 0, 1, 1)}, 3: {"box": (1, 2, 3, 4)}})
+        self.assertEqual(ladder.confirmed, {3})
+        self.assertEqual(ladder.calls_left, left - 1)
+        self.assertIs(ladder.ask_model, ask_model)
+
+    def test_a_broker_that_does_not_answer_is_an_error_never_a_run_here(self):
+        failing = [sys.executable, "-c", "import sys; sys.stderr.write('gui: cannot reach the screen'); sys.exit(1)"]
+        with mock.patch.object(screen_call, "command", return_value=failing):
+            with self.assertRaises(screen_call.ScreenCallError) as raised:
+                screen_call.call("core.observe")
+        self.assertIn("cannot reach the screen", str(raised.exception))
+
+
+class TheCallSitesInBrokerMode(unittest.TestCase):
+    def test_host_documents_lists_and_brings_forward_viewers_through_the_broker(self):
+        from decurix_agent import host_documents
+        host_documents._no_browser_until[0] = 0.0
+        pages = [{"id": "A", "title": "MIS.pptx - PowerPoint", "url": "http://cp/host-gui/view?x=1"},
+                 {"id": "B", "title": "Other", "url": "https://example.com"}]
+        with mock.patch.object(screen_call, "remote", return_value=True), \
+                mock.patch.object(cdp, "page_list", return_value=pages), \
+                mock.patch.object(cdp, "activate_page", return_value=True) as activate, \
+                mock.patch("socket.create_connection") as connect:
+            self.assertEqual(host_documents._viewers(), {"A": "MIS.pptx - PowerPoint"})
+            self.assertTrue(host_documents._activate("A"))
+        connect.assert_not_called()
+        activate.assert_called_once_with("A")
+
+    def test_no_browser_through_the_broker_is_no_viewers_for_a_while(self):
+        from decurix_agent import host_documents
+        host_documents._no_browser_until[0] = 0.0
+        with mock.patch.object(screen_call, "remote", return_value=True), \
+                mock.patch.object(cdp, "page_list", side_effect=screen_call.ScreenCallError("no browser")):
+            self.assertEqual(host_documents._viewers(), {})
+        self.assertGreater(host_documents._no_browser_until[0], time.time())
+        host_documents._no_browser_until[0] = 0.0
+
+    def test_a_web_service_is_read_by_the_broker_with_its_own_script(self):
+        from decurix_agent import ask_task
+        service = next(s for s in ask_task.SERVICES if s["key"] == "wikipedia")
+        with mock.patch.object(screen_call, "remote", return_value=True), \
+                mock.patch.object(screen_call, "call", return_value='{"state": "answer"}') as call:
+            page = ask_task._page_for(service)
+            self.assertEqual(page.evaluate("anything the caller wrote"), '{"state": "answer"}')
+        call.assert_called_once_with("ask_task.read_service", "wikipedia")
+
+    def test_a_skills_restart_closes_the_recorded_window_as_before(self):
+        from decurix_agent.computer import launchers, replay
+        with mock.patch.object(launchers, "close", return_value=True) as close:
+            self.assertTrue(launchers.close_recorded("Koustubh - Chrome"))
+        close.assert_called_once_with("Koustubh - Chrome", replay.title_matches)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,7 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from decurix_agent.computer import broker, browser
+from decurix_agent.computer import broker, browser, screen_call
 from decurix_agent.logging_utils import log
 from decurix_agent.computer import elements as el
 from decurix_agent.computer import datefields
@@ -315,6 +315,28 @@ def available():
     except (OSError, ValueError) as exc:
         log(f"cdp: the DevTools port did not answer: {exc}")
         return False
+
+
+@screen_call.routed("cdp.page_list")
+def page_list():
+    """
+    [{id, title, url}] of the browser's pages, opening no session on any: what the agent's own process needs to know
+    which tab shows what (host_documents, ask_task). In broker mode it is asked of the screen broker (screen_call).
+    """
+
+    return [{"id": t.get("id") or "", "title": t.get("title") or "", "url": t.get("url") or ""}
+            for t in _page_targets()]
+
+
+@screen_call.routed("cdp.activate_page")
+def activate_page(target_id):
+    """Bring the page `target_id` to the front. Raises OSError when the browser does not do it."""
+
+    try:
+        _get(f"/json/activate/{urllib.parse.quote(target_id, safe='')}")
+    except ValueError:
+        pass  # the browser answers in words ("Target activated"), not JSON: it was done
+    return True
 
 
 def _page_targets():
