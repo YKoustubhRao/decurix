@@ -363,9 +363,21 @@ def hand_over(argv, broker=False):
             data = request(argv, mask)
             rights = [(_socket.SOL_SOCKET, _socket.SCM_RIGHTS, b"".join(fd.to_bytes(4, sys.byteorder, signed=True)
                                                                          for fd in fds))]
-            sent = conn.sendmsg([data], rights)
-            if sent < len(data):
-                conn.sendall(data[sent:])
+            try:
+                sent = conn.sendmsg([data], rights)
+                if sent < len(data):
+                    conn.sendall(data[sent:])
+            except OSError:
+                # A daemon that refuses a caller at once (another user, too many commands) sends its refusal and
+                # closes; our send may then fail first. Its refusal is still waiting to be read: read it, so the
+                # command says why (found on CI, 2026-11-07: "not running" instead of "serves another user").
+                try:
+                    early = _recv_exact(conn, 2)
+                except OSError:
+                    early = b""
+                if early[:1] == b"R":
+                    return "refused", early[1] if len(early) == 2 else 0
+                return "absent", None
             reply = _recv_exact(conn, 2)
         except OSError:
             return "absent", None
