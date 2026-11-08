@@ -801,8 +801,11 @@ worker's user has the token in its environment; reading `/proc/<pid>/environ` of
 the worker; both files are gone; neither planted program ran in the holders' place (the planted `python3` ran as the
 launch helper, the worker's own program, after both tokens were taken, as before); :8081 and soul answer 401 without
 the token and serve with it; `gui observe` and `gui open` work. The same probe on the image's previous scripts showed
-the token in 14 environments and both planted programs running. Tests: `agent/tests/test_agent_token_holders.py`,
-soul's `agenttoken_test.go`.
+the token in 14 environments and both planted programs running. The same probe in the default mode (no
+`DECURIX_SCREEN_USER`): both holders took their files, no environment held the token, their `/proc/<pid>/environ` was
+refused, the APIs behaved the same; the planted bus service ran there (XFCE's own session bus, below). Tests:
+`agent/tests/test_agent_token_holders.py` (with an older agent package, as a pinned eval arm copies one, getting the
+token in its environment), soul's `agenttoken_test.go`.
 
 What is left: the default mode (a desktop made with `DECURIX_SCREEN_BROKER=0`) gets the same files and holders, but
 there the agent is started by XFCE's autostart, after a session that reads the worker's own settings, so a program the
