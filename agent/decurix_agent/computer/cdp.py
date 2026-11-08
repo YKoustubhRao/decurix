@@ -1079,6 +1079,9 @@ def observe():
     stack = [(root, [f"site {site}"], False, None)] if root else []
     visits = 0
     relayed = any(viewer in url for viewer in RELAYED_VIEWER_PATHS)
+    # The names the page's controls carry: a label whose words are one of them is that control's name, listed with it.
+    control_names = {" ".join(((n.get("name") or {}).get("value", "") or "").split()).lower()
+                     for n in nodes if _ax_role(n) in INTERACTIVE} - {""}
 
     while stack:
         node, segments, inside_row, bar = stack.pop()
@@ -1120,6 +1123,12 @@ def observe():
                 parent = by_id.get(node.get("parentId"))
                 parent_role = ((parent or {}).get("role") or {}).get("value", "").lower()
                 include = parent_role not in NAMED_BY_CONTENT
+                if not include and parent_role in ("labeltext", "label"):
+                    # A label that names no control - the caption of a figure shown read-only ("Grand Total" over
+                    # its amount) - is the only thing that says what that figure is. Found live (2026-11-08): a saved
+                    # form's totals were listed as bare amounts, and the independent check set them against the wrong
+                    # lines of the document and put eight false disagreements to the person.
+                    include = " ".join(text_of(parent).split()).lower() not in control_names
 
         if include:
             box, on_screen = screen_box(backend_id)

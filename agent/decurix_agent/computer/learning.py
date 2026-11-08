@@ -1772,7 +1772,11 @@ def _apply_loop(skill, loop, choice):
         if step.get("param"):
             examples = [s["samples"][0] for s in _aligned(blocks, position, loop["length"])]
             param = next(p for p in skill["params"] if p["name"] == step["param"])
-            if len(set(examples)) == 1:
+            # Seen in one repetition only (a step of the way to the next item, which the first item reached another
+            # way) is not seen to be the same in every one: it stays a value per item. Found live (2026-11-08): a form
+            # of two lines, the second line's product and quantity typed before its price, kept those two as "typed
+            # the same every time" from that one sample, so every line of every later run would get them.
+            if len(examples) > 1 and len(set(examples)) == 1:
                 # Typed the same into every repetition (the income account on
                 # every line of an order): part of the procedure, not of the
                 # data - kept as typed, the way a `same` answer keeps it, so a

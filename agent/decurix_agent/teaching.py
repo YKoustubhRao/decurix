@@ -103,6 +103,12 @@ def _learn(ids, name):
         if understanding is not None:
             skill["understanding"] = understanding
             _settle_from_study(skill)
+        else:
+            # Said, not passed over: the lesson that follows has no brief of the work's rules and asks only what the
+            # recording itself leaves open. Found live (2026-11-08): a reasoning model spent both its budgets thinking,
+            # the study was dropped in silence and the person could not tell why the lesson asked so little.
+            progress.emit("I could not study the recording with the model (it gave no usable answer), so I am asking "
+                          "only what the recording itself leaves open.")
 
     _ask(skill)
 

@@ -830,6 +830,29 @@ func (o *OperatorSkill) commandTimeout() time.Duration {
 	return time.Duration(llm.EnvInt("OPERATOR_COMMAND_TIMEOUT_SECONDS", int(defaultCommandTimeout/time.Second))) * time.Second
 }
 
+// defaultReplayTimeout bounds one command that replays a taught task or a recording (gui do, gui replay). A replay
+// is many screen steps, each already bounded by its own waits for its control and its result, so the whole needs
+// more than one command's three minutes. Found live (2026-11-08): a 52-step taught task on a busy 2-vCPU desktop was
+// killed at step 19 of 52, leaving a form half filled for the model to finish by hand.
+const defaultReplayTimeout = 20 * time.Minute
+
+// replayCommandRe is a command that replays a taught task or a recording (also after `cd ... &&` or `;`).
+var replayCommandRe = regexp.MustCompile(`(?m)(?:^|&&|;|\|\|)\s*gui\s+(?:do|replay)\s+\S`)
+
+// timeoutFor is how long command may run: commandTimeout, or for a replay (replayCommandRe) at least
+// OPERATOR_REPLAY_TIMEOUT_SECONDS (defaultReplayTimeout).
+func (o *OperatorSkill) timeoutFor(command string) time.Duration {
+	limit := o.commandTimeout()
+	if !replayCommandRe.MatchString(command) {
+		return limit
+	}
+	replay := time.Duration(llm.EnvInt("OPERATOR_REPLAY_TIMEOUT_SECONDS", int(defaultReplayTimeout/time.Second))) * time.Second
+	if replay > limit {
+		return replay
+	}
+	return limit
+}
+
 func (o *OperatorSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	st, resumed := rc.Resume.(*operatorState)
 	if resumed && st != nil {
@@ -1159,7 +1182,7 @@ func (o *OperatorSkill) execute(rc RunContext, st *operatorState, command string
 			run = inside
 		}
 	}
-	res := runShell(rc.Ctx, rc.Dir(), run, o.commandTimeout(), st.guiEnv()...)
+	res := runShell(rc.Ctx, rc.Dir(), run, o.timeoutFor(run), st.guiEnv()...)
 	st.Step = st.at() + 1
 	if touchesScreen(run) {
 		st.ScreenStep = st.Step

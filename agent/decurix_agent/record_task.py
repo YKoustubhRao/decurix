@@ -208,12 +208,18 @@ def end():
         if ticket is None:
             raise ComputerError("no ticket is open")
         recording_now = bool(ticket.get("session_id"))
+        session_id, given = ticket.get("session_id"), list(ticket.get("files") or [])
 
     if recording_now:
         try:
             demonstration.stop()
         except ComputerError:
             pass  # already stopped - e.g. the recorder had already finished on its own
+        # Written again once the recording is whole: in broker mode the recorder writes the recording as the screen's
+        # user and stop() hands the whole of it back, replacing the worker's meta.json - and with it the files that
+        # begin() and attach() wrote there. Found live (2026-11-08): a ticket opened with a document was taught with
+        # no document, so the study never read what the person worked from.
+        _keep_files(session_id, given)
 
     progress.emit("Ending the ticket and saving the recording..." if recording_now
                   else "Ending the ticket - recording was never started.")

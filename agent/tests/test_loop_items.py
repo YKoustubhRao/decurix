@@ -98,6 +98,34 @@ class ARepeatedBlockWithStepsBetween(unittest.TestCase):
         self.assertTrue(any("New ledger" in s for s in loop["between_summaries"][1]))
         self.assertNotIn("mail.test", str([s.get("samples") for s in skill["steps"]]))
 
+    def test_a_value_typed_in_one_repetition_only_is_not_taken_for_the_same_every_time(self):
+        # Found live (2026-11-08): a form of two lines. The first line's price, then a new line, its product, then its
+        # price. Only the price repeats, the steps before the second price became the way to the next item - and the
+        # product typed there once was kept as "typed the same into every repetition", a fixed value for every line.
+        events = [event(0, "click", field("textbox", "Price")),
+                  event(1, "type", field("textbox", "Price"), text="120"),
+                  event(2, "click", field("button", "New line")),
+                  event(3, "click", field("combobox", "Product")),
+                  event(4, "type", field("combobox", "Product"), text="Blue widget"),
+                  event(5, "click", field("textbox", "Price")),
+                  event(6, "type", field("textbox", "Price"), text="75")]
+        meta = {"id": SESSION, "title": "Enter an order", "kind": "demonstration", "status": "complete",
+                "started_at": 1789380000, "screen": [1280, 720]}
+        skill = learning.build([(meta, events)])
+        (loop,) = skill["loops"]
+        self.assertEqual([len(b) for b in loop["blocks"]], [2, 5])
+        learning.answer(skill, learning.next_question(skill), "x")
+        learning.answer(skill, learning.next_question(skill), "yes")
+        self.assertTrue(learning.answer(skill, learning.next_question(skill), "each")["understood"])
+
+        params = {p["name"]: p for p in skill["params"]}
+        item = next(p for p in params.values() if p.get("example") == "Blue widget")
+        self.assertTrue(item["varies"])
+        self.assertIsNone(item["default"])
+        self.assertTrue(item["list"])
+        rate = next(p for p in params.values() if p.get("example") == "120")
+        self.assertEqual(rate["examples"], ["120", "75"])
+
     def test_a_run_writes_the_item_out_once_per_document(self):
         skill = learning.build([bills()])
         learning.answer(skill, learning.next_question(skill), "x")
