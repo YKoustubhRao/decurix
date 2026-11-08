@@ -10,6 +10,9 @@ Run an eval suite on the control plane's matrix runner, and read its results (do
     py -3 evals/run.py status <run-id>
     py -3 evals/run.py table  <run-id>      # prints the markdown and writes evals/results/<id>/table.md
     py -3 evals/run.py rows   <run-id>      # writes evals/results/<id>/rows.jsonl
+    py -3 evals/run.py curve  <run-id> --suite evals/suites/learn-v1 [--rows rows.jsonl]
+                              # the learning curve: per case in order, tokens in/out, calls, cached share, questions
+                              # and pass; per kind, the later cases against the first. Writes evals/results/<id>/curve.md
 
 An arm is <model>[+expert][@<git-rev>], or oracle, nothing or ask:
   - <model> is default or fast (the hub's two deployments), on azure; claude:default (or claude:fast) uses claude;
@@ -233,6 +236,159 @@ def write_rows(cp, run_id, out=None):
     return rows, path
 
 
+def _median(values):
+    values = sorted(values)
+    if not values:
+        return 0
+    mid = len(values) // 2
+    return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
+
+
+def _tokens(n):
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.2f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f}k"
+    return f"{n:.0f}"
+
+
+def suite_kinds(suite_dir):
+    """A suite's case order and each case's kind, from its folder (rows do not carry a case's kind)."""
+
+    suite_dir = Path(suite_dir)
+    doc = json.loads((suite_dir / "suite.json").read_text(encoding="utf-8"))
+    kinds = {}
+    for case_id in doc.get("cases") or []:
+        case = json.loads((suite_dir / "cases" / case_id / "case.json").read_text(encoding="utf-8"))
+        kinds[case_id] = case.get("kind") or ""
+    return list(doc.get("cases") or []), kinds
+
+
+def curve_cell(rows):
+    """One case's point on the curve for one arm: medians over its valid rows, and how many rows were left out."""
+
+    valid = [r for r in rows if not r.get("invalid") and not r.get("infra")]
+    n = len(valid)
+    tokens_in = sum(r.get("tokens_in") or 0 for r in valid)
+    return {
+        "n": n, "left_out": len(rows) - n,
+        "pass": sum(1 for r in valid if r.get("passed")),
+        "false_done": sum(1 for r in valid if r.get("false_done")),
+        "q_required": sum(r.get("q_required") or 0 for r in valid) / n if n else 0,
+        "q_other": sum(r.get("q_other") or 0 for r in valid) / n if n else 0,
+        "tokens_in": _median([r.get("tokens_in") or 0 for r in valid]),
+        "tokens_out": _median([r.get("tokens_out") or 0 for r in valid]),
+        "tokens": _median([(r.get("tokens_in") or 0) + (r.get("tokens_out") or 0) for r in valid]),
+        "calls": _median([r.get("calls") or 0 for r in valid]),
+        "cached_share": (sum(r.get("tokens_cached") or 0 for r in valid) / tokens_in) if tokens_in else 0.0,
+    }
+
+
+def curve(rows, order=None, kinds=None):
+    """The learning curve of a run's rows: {arm: [(case, cell)]} in case order (the suite's when given, else the order
+    the rows first name them), and {arm: {kind: verdict}}, each kind's later cases against its first: the bar is a pass
+    rate no lower, fewer tokens (median), no more questions that are not required, and no false done."""
+
+    order = list(order or [])
+    arms = []
+    for r in rows:
+        if r.get("case_id") not in order:
+            order.append(r.get("case_id"))
+        if r.get("arm") not in arms:
+            arms.append(r.get("arm"))
+    points = {a: [(c, curve_cell([r for r in rows if r.get("arm") == a and r.get("case_id") == c])) for c in order]
+              for a in arms}
+    verdicts = {}
+    for a in arms:
+        verdicts[a] = {}
+        by_kind = {}
+        for c, cell in points[a]:
+            if kinds and kinds.get(c) and cell["n"]:
+                by_kind.setdefault(kinds[c], []).append((c, cell))
+        for kind, series in by_kind.items():
+            if len(series) < 2:
+                continue
+            first, later = series[0][1], [cell for _, cell in series[1:]]
+            n_later = sum(c["n"] for c in later)
+            first_rate, later_rate = first["pass"] / first["n"], sum(c["pass"] for c in later) / n_later
+            later_tokens = _median([c["tokens"] for c in later])
+            later_other = sum(c["q_other"] * c["n"] for c in later) / n_later
+            later_false = sum(c["false_done"] for c in later)
+            missed = []
+            if later_rate < first_rate:
+                missed.append(f"later cases pass {later_rate:.0%}, the first {first_rate:.0%}")
+            if later_tokens >= first["tokens"]:
+                missed.append(f"later cases' median tokens {_tokens(later_tokens)} are not below the first's "
+                              f"{_tokens(first['tokens'])}")
+            if later_other > first["q_other"]:
+                missed.append(f"later cases ask {later_other:.1f} questions that are not required, the first "
+                              f"{first['q_other']:.1f}")
+            if later_false:
+                missed.append(f"{later_false} false done in later cases")
+            verdicts[a][kind] = {"first": series[0][0], "first_pass": first_rate, "later_pass": later_rate,
+                                 "first_tokens": first["tokens"], "later_tokens": later_tokens,
+                                 "first_other": first["q_other"], "later_other": later_other,
+                                 "later_false_done": later_false, "met": not missed, "missed": missed}
+    return points, verdicts
+
+
+def curve_markdown(run_id, rows, order=None, kinds=None, run=None):
+    """The curve for people: per arm, one line per case in order; then, per kind, whether the later cases met the bar."""
+
+    points, verdicts = curve(rows, order, kinds)
+    out = [f"# Learning curve {run_id}", ""]
+    if run:
+        out.append(f"- Suite: `{run.get('suite_name', '')}`; repeats: {run.get('repeats', '')}")
+        if not run.get("carry_state"):
+            out.append("- **State was reset before every case: this run is not a learning curve** (run a carry_state "
+                       "suite with --carry-state).")
+        if (run.get("repeats") or 0) < 5:
+            out.append(f"- **n={run.get('repeats')}: not a result.** Fewer than 5 repeats show what happened, not a rate.")
+        out.append("")
+    out += ["Each point is a case's median over its repeats, invalid and infrastructure rows left out; the cached share "
+            "is of the input tokens.", ""]
+    for arm, series in points.items():
+        out += [f"## {arm}", "",
+                "| # | case | kind | pass | false done | questions req / other | tokens in | tokens out | calls | cached | left out |",
+                "|---|---|---|---|---|---|---|---|---|---|---|"]
+        for i, (case, c) in enumerate(series, 1):
+            kind = (kinds or {}).get(case, "")
+            if not c["n"]:
+                out.append(f"| {i} | {case} | {kind} | - | - | - | - | - | - | - | {c['left_out']} |")
+                continue
+            out.append(f"| {i} | {case} | {kind} | {c['pass']}/{c['n']} | {c['false_done']}/{c['n']} | "
+                       f"{c['q_required']:.1f} / {c['q_other']:.1f} | {_tokens(c['tokens_in'])} | "
+                       f"{_tokens(c['tokens_out'])} | {c['calls']:g} | {c['cached_share']:.0%} | {c['left_out']} |")
+        out.append("")
+        for kind, v in verdicts[arm].items():
+            said = "met" if v["met"] else "not met: " + "; ".join(v["missed"])
+            out.append(f"- `{kind}` (first `{v['first']}`): pass {v['first_pass']:.0%} then {v['later_pass']:.0%}; "
+                       f"tokens {_tokens(v['first_tokens'])} then {_tokens(v['later_tokens'])}; questions not required "
+                       f"{v['first_other']:.1f} then {v['later_other']:.1f}; false done later {v['later_false_done']}. "
+                       f"Cheaper at the same correctness: **{said}**.")
+        if verdicts[arm]:
+            out.append("")
+    if not kinds:
+        out += ["(Give --suite to group the cases by kind and compare each kind's later cases with its first.)", ""]
+    return "\n".join(out)
+
+
+def write_curve(cp, run_id, suite=None, rows_file=None, out=None):
+    out = RESULTS if out is None else out
+    order, kinds = suite_kinds(suite) if suite else (None, None)
+    run = None
+    if rows_file:
+        rows = [json.loads(line) for line in Path(rows_file).read_text(encoding="utf-8").splitlines() if line.strip()]
+    else:
+        run = cp.json(f"/api/evals/runs/{run_id}").get("run") or {}
+        rows = cp.json(f"/api/evals/runs/{run_id}/rows").get("rows") or []
+    md = curve_markdown(run_id, rows, order, kinds, run)
+    folder = Path(out) / run_id
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "curve.md").write_text(md, encoding="utf-8")
+    return md, folder / "curve.md"
+
+
 def wait(cp, run_id, poll=POLL_SECONDS, sleep=time.sleep):
     while True:
         status = cp.json(f"/api/evals/runs/{run_id}")
@@ -255,10 +411,13 @@ def main(argv=None):
     r.add_argument("--carry-state", action="store_true",
                    help="keep the desktop's state between a repeat's cases (only for a suite that says carry_state)")
     r.add_argument("--cp", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
-    for name in ("status", "table", "rows"):
+    for name in ("status", "table", "rows", "curve"):
         p = sub.add_parser(name)
         p.add_argument("run_id")
         p.add_argument("--cp", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+        if name == "curve":
+            p.add_argument("--suite", default="", help="the suite folder, for its case order and each case's kind")
+            p.add_argument("--rows", default="", help="read the rows from this rows.jsonl, not the control plane")
     args = parser.parse_args(argv)
     cp = ControlPlane(getattr(args, "cp", None) or DEFAULT_CP)
 
@@ -305,6 +464,11 @@ def main(argv=None):
         if args.command == "rows":
             rows, path = write_rows(cp, args.run_id)
             print(f"{len(rows)} rows written: {path}")
+            return 0
+        if args.command == "curve":
+            md, path = write_curve(cp, args.run_id, suite=args.suite or None, rows_file=args.rows or None)
+            print(md)
+            print(f"written: {path}")
             return 0
     except Usage as u:
         print(u.message, file=sys.stderr)

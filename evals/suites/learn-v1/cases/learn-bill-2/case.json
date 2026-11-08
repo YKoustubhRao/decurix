@@ -1,0 +1,81 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "learn-bill-2",
+  "category": "ordinary",
+  "kind": "doc_to_record",
+  "request": "Enter the bill in ~/work/practice/learn-bill-2/bill.pdf into the Records app (http://records.example.test/bills/new).",
+  "start": {
+    "files": [
+      "bill.pdf"
+    ],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [
+    {
+      "id": "cost-centre-rule",
+      "about": "which cost centre a supplier bill is charged to",
+      "refers_to": [
+        "centre",
+        "center",
+        "centres",
+        "centers",
+        "charge",
+        "charged",
+        "charging",
+        "allocate",
+        "allocated",
+        "allocation",
+        "cost code",
+        "department",
+        "logistics",
+        "ledger",
+        "expense head",
+        "account head"
+      ],
+      "answer": "From now on, for every bill you enter: courier and freight bills are charged to the cost centre Logistics, and every other bill to General.",
+      "required": false
+    }
+  ],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "mock_records",
+        "collection": "bills",
+        "exact_count": true,
+        "records": [
+          {
+            "number": {
+              "id": "IP-0782"
+            },
+            "vendor": {
+              "text": "Inkhaven Printers"
+            },
+            "date": {
+              "date": "2026-04-09"
+            },
+            "due": {
+              "date": "2026-05-09"
+            },
+            "total": {
+              "number": "5074.00"
+            },
+            "cost_centre": "General"
+          }
+        ]
+      },
+      {
+        "kind": "ledger_readback",
+        "records": 1
+      }
+    ]
+  },
+  "oracle": [
+    "office read bill.pdf | grep -q IP-0782",
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode number=IP-0782 --data-urlencode 'vendor=Inkhaven Printers' --data-urlencode date=2026-04-09 --data-urlencode due=2026-05-09 --data-urlencode total=5,074.00 --data-urlencode cost_centre=General --data-urlencode notes= http://records.example.test/bills/new"
+  ],
+  "tags": [
+    "recall"
+  ]
+}

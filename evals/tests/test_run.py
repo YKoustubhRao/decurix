@@ -251,6 +251,72 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("an arm is", said)
 
+    def test_the_curve_from_the_control_plane_says_a_reset_run_is_no_curve(self):
+        code, said = self.main("curve", "e1")
+        self.assertEqual(code, 0, said)
+        self.assertIn("not a learning curve", said)
+        self.assertTrue((self.out / "e1" / "curve.md").exists())
+
+
+def _row(case, arm="default+expert", passed=True, tokens_in=100_000, tokens_out=5_000, cached=50_000, calls=20,
+         q_other=0, false_done=False, **kw):
+    return dict(case_id=case, arm=arm, passed=passed, tokens_in=tokens_in, tokens_out=tokens_out, tokens_cached=cached,
+                calls=calls, q_required=0, q_other=q_other, false_done=false_done, **kw)
+
+
+class CurveTest(unittest.TestCase):
+    ORDER = ["b1", "r1", "b2", "r2", "b3"]
+    KINDS = {"b1": "doc_to_record", "b2": "doc_to_record", "b3": "doc_to_record", "r1": "reconcile", "r2": "reconcile"}
+
+    def test_a_point_is_the_median_of_its_valid_rows(self):
+        cell = run.curve_cell([_row("b1", tokens_in=100_000, calls=10), _row("b1", tokens_in=300_000, calls=30),
+                               _row("b1", tokens_in=200_000, calls=20, passed=False),
+                               _row("b1", tokens_in=9_000_000, calls=900, infra=True)])
+        self.assertEqual((cell["n"], cell["left_out"], cell["pass"]), (3, 1, 2))
+        self.assertEqual((cell["tokens_in"], cell["calls"]), (200_000, 20))
+        self.assertAlmostEqual(cell["cached_share"], 150_000 / 600_000)
+
+    def test_later_cases_cheaper_at_the_same_correctness_meet_the_bar(self):
+        rows = [_row("b1", tokens_in=400_000, q_other=0), _row("r1", tokens_in=300_000),
+                _row("b2", tokens_in=200_000), _row("r2", tokens_in=310_000), _row("b3", tokens_in=150_000)]
+        points, verdicts = run.curve(rows, self.ORDER, self.KINDS)
+        self.assertEqual([c for c, _ in points["default+expert"]], self.ORDER)
+        self.assertTrue(verdicts["default+expert"]["doc_to_record"]["met"])
+        rec = verdicts["default+expert"]["reconcile"]
+        self.assertFalse(rec["met"])
+        self.assertIn("not below", rec["missed"][0])
+
+    def test_cheaper_by_skipping_a_question_or_a_false_done_does_not(self):
+        rows = [_row("b1", tokens_in=400_000), _row("b2", tokens_in=100_000, passed=False),
+                _row("b3", tokens_in=100_000, false_done=True, passed=False)]
+        v = run.curve(rows, self.ORDER, self.KINDS)[1]["default+expert"]["doc_to_record"]
+        self.assertFalse(v["met"])
+        self.assertEqual(v["later_false_done"], 1)
+        self.assertTrue(any("pass" in m for m in v["missed"]))
+        rows = [_row("b1", tokens_in=400_000), _row("b2", tokens_in=100_000, q_other=2), _row("b3", tokens_in=100_000)]
+        v = run.curve(rows, self.ORDER, self.KINDS)[1]["default+expert"]["doc_to_record"]
+        self.assertFalse(v["met"])
+        self.assertTrue(any("not required" in m for m in v["missed"]))
+
+    def test_the_curve_command_reads_rows_and_the_suite(self):
+        suite = EVALS / "suites" / "learn-v1"
+        order, kinds = run.suite_kinds(suite)
+        self.assertEqual(len(order), 10)
+        self.assertEqual(sorted(set(kinds.values())), ["doc_to_record", "reconcile"])
+        with tempfile.TemporaryDirectory() as d:
+            rows_file = Path(d) / "rows.jsonl"
+            rows = [_row(c, tokens_in=500_000 - 40_000 * i, calls=40 - 3 * i) for i, c in enumerate(order)]
+            rows_file.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), unittest.mock.patch.object(run, "RESULTS", Path(d)):
+                code = run.main(["curve", "e7", "--suite", str(suite), "--rows", str(rows_file)])
+            said = out.getvalue()
+            self.assertEqual(code, 0, said)
+            self.assertIn("| 1 | " + order[0] + " | doc_to_record | 1/1 |", said)
+            self.assertIn("| 40 |", said)  # calls
+            self.assertIn("Cheaper at the same correctness: **met**", said)
+            self.assertTrue((Path(d) / "e7" / "curve.md").exists())
+
 
 
 if __name__ == "__main__":

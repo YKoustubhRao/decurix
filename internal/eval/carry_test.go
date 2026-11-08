@@ -158,3 +158,25 @@ func TestEvalLabelReadsARowBackByTrajectoryOrTask(t *testing.T) {
 		t.Fatalf("no row: ok %v err %v", ok, err)
 	}
 }
+
+// A row keeps its case's model calls beside its tokens, so a learning curve reads calls per case from the rows.
+func TestARowKeepsItsModelCalls(t *testing.T) {
+	db, err := sqlitedb.Open(filepath.Join(t.TempDir(), "eval.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	store, err := NewStore(db, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := store.AddRow(Row{RunID: "e_calls", Arm: "default", Repeat: 1, CaseID: "a", Observed: "complete", Passed: true,
+		TokensIn: 90000, TokensCached: 60000, TokensOut: 4000, Calls: 17, At: now}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.Rows("e_calls")
+	if err != nil || len(rows) != 1 || rows[0].Calls != 17 || rows[0].TokensIn != 90000 {
+		t.Fatalf("rows: %+v %v", rows, err)
+	}
+}

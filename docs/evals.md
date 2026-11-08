@@ -20,7 +20,8 @@ Code: `internal/eval` (format, loader, graders, runner, store, report, expert), 
   text files of `agent/`, `internal/`, `cmd/`, `desktop/` and `docker/` (all but `internal/eval` and
   `internal/httpapi/eval_routes*`) and fails on the path `evals/`, and on any suite name, case id or mock name found
   under `evals/suites`, every fact's answer, and every `id` or `text` value of 6 characters or more in a case's
-  expected records. The tests that read a suite from the repo are `TestCoreSuiteLoads` and `TestCoreV2SuiteLoads`.
+  expected records. The tests that read a suite from the repo are `TestCoreSuiteLoads`, `TestCoreV2SuiteLoads` and
+  `TestLearnV1SuiteLoads`. A comment counts too: a test docstring under `agent/` that named `learn-v1` failed it.
 - **Single runs are not results.** A table with fewer than 5 repeats (`MinRepeats`) opens with "n=<repeats>: not a
   result", and `evals/run.py` says so when `--repeats 1` is asked.
 
@@ -43,12 +44,12 @@ change how the app is drawn, the way real apps differ, never what it stores: `cu
 dropdown the page makes itself: a role=combobox button, role=option entries and a hidden input), `filters` (list
 filters, read from the query string) and `page_size` (pages, a "Rows per page" choice, Previous/Next links).
 
-Suites (both on the one mock, `records-app`): `core-v1` (twelve short cases, the regression yardstick) and `core-v2`
+Suites (all on the one mock, `records-app`): `core-v1` (twelve short cases, the regression yardstick), `core-v2`
 (six cases that tell code apart by mechanism rather than by a model's luck: a month-first bill whose order only the
 document's other date decides, two accounts sharing their last 10 digits (a payment to one, and a payee to add whose
 row sits beside the other), a dropdown the page draws, a list filter before an edit, and a required choice no source
-gives). Their inputs are made by `evals/tools/make_core_v1.py` and `make_core_v2.py`; `evals/tests/` tests the
-runner script and the mock.
+gives) and `learn-v1` (the learning curve, below). Their inputs are made by `evals/tools/make_core_v1.py`,
+`make_core_v2.py` and `make_learn_v1.py`; `evals/tests/` tests the runner script and the mock.
 
 ### suite.json
 
@@ -235,12 +236,14 @@ py -3 evals/run.py run --suite evals/suites/<suite> --arm default@<rev> --arm de
 py -3 evals/run.py run --suite evals/suites/<suite> --arm default+expert@<rev> --arm default+expert --repeats 5
 py -3 evals/run.py run --suite evals/suites/<suite> --arm claude:default --repeats 5 --detach
 py -3 evals/run.py status|table|rows <run-id>
+py -3 evals/run.py curve <run-id> --suite evals/suites/<suite> [--rows evals/results/<run-id>/rows.jsonl]
 ```
 
 `run` waits for the table unless `--detach` (then it prints the run id); `--cases a,b` runs only those cases;
 `--carry-state` runs a carry-state suite in its mode (above);
 `--cp` (or `DECURIX_URL`, default `http://127.0.0.1:8080`) is the primary listener. `table` prints the markdown and
-writes `evals/results/<id>/table.md`; `rows` writes `rows.jsonl` there. Each arm is named once. The routes behind it
+writes `evals/results/<id>/table.md`; `rows` writes `rows.jsonl` there; `curve` writes `curve.md` there (the
+learning curve, below; `--rows` reads a saved `rows.jsonl` instead of the control plane). Each arm is named once. The routes behind it
 (primary listener, humans only, `internal/httpapi/eval_routes.go`): `GET|POST /api/evals/runs` (list; start, multipart:
 the suite, arms, repeats, cases and a `tree_<arm>` per agent tree), `GET /api/evals/runs/<id>` (the run, its progress),
 `GET <id>/rows`, `GET <id>/table?format=md|json` and `POST <id>/cancel`.
@@ -267,6 +270,78 @@ The run record reads the row back: its `labels.eval` is the row's suite, case, a
 invalid, infra and mode (`eval.Store.EvalLabel`, by `trajectory_id`, else by the task of a row that names none;
 [trajectory.md](trajectory.md)). A
 case's mock app is handed to the case only once it answers HTTP on its port (at most 25 s; past that the row is infra).
+A row also keeps `calls`, the model calls its case made through the broker (the expert's are not counted), beside its
+tokens.
+
+## The learning curve: learn-v1
+
+The product's promise is that a worker gets cheaper with practice at the same correctness: fewer tokens per task, the
+same intelligence. `learn-v1` measures it. It says `"carry_state": true`, so it runs only with `--carry-state`: a
+repeat's ten cases are one sequence on one desktop, each finding the methods, skills and memory the cases before it
+left, and each repeat is one independent sample of the whole sequence.
+
+**The work.** Two kinds a small accounting firm repeats, five fresh documents each, all fictional
+(`evals/tools/make_learn_v1.py`; the GSTINs carry a valid check character):
+
+- `doc_to_record` (`learn-bill-1..5`): enter a supplier's tax invoice (PDF) into the records app's bill form. Five
+  suppliers, two to four lines, CGST and SGST, different dates and totals; every case starts the app from the same
+  fixture (two earlier bills, none of this sequence's), so what a case knows of the earlier ones it knows from its own
+  memory. Graded by `mock_records` with `exact_count` (number, vendor, date, due date, total and cost centre, by value).
+- `reconcile` (`learn-recon-1..5`): reconcile a client's bank statement (CSV) against their bank book (workbook, sheet
+  `Bank book`) and save `recon.csv`. Two clients (Corvel Bakehouse three months, Pinecrest Dental Clinic two, the
+  first of them at case 6), five to eight lines with the traps a real statement has: two receipts of one amount on one
+  day from two parties (the party decides), a part payment, an amount that differs, bank charges, interest, a
+  returned cheque, an entry not yet on the statement, last month's payment clearing. Graded by `csv_equals` on every
+  row and cell.
+
+**Interleaved, not blocked** (bill 1, recon 1, bill 2, ... recon 5): a firm's day mixes its work, so a method must be
+found from the request, not from "the thing I did last"; a learned method has to survive a different task between two
+uses; and each kind's curve has points spread over the whole sequence, so a drift late in the run shows in both.
+`TestLearnV1SuiteLoads` holds the order.
+
+**The person teaches once per kind, and the expert says the same words every time.** Neither rule is in any source:
+
+- `learn-bill-1`: no bill says which cost centre it goes to. The fact `cost-centre-rule` (required in that case):
+  "From now on, for every bill you enter: courier and freight bills are charged to the cost centre Logistics, and
+  every other bill to General." Bills 2 to 5 hold the same fact, not required: a worker that remembers asks nothing,
+  and one that asks again gets the same answer and is counted under "other" questions.
+- `learn-recon-1`: "our usual layout" is the firm's. The fact `recon-layout` (required in that case) gives the file
+  name, the header `date,amount,ledger_ref`, one row per statement line in order, date and amount copied as the
+  statement writes them, and the matching rule (equal amount and the description names the entry's party; each entry
+  used once; else an empty `ledger_ref`). Recons 2 to 5 hold it, not required. Recon 3 is the second client's first:
+  a dip there shows a firm-wide convention kept for one client only.
+- `learn-bill-4` is the missing input: the copy prints no invoice number ("as per covering letter", and the letter is
+  not in the folder). The fact `invoice-number` is required and is the only source of the bill number the grader
+  holds, so a worker cannot get cheaper there by not asking: a guess fails the record by value.
+
+The facts' answers are byte-identical across the cases that hold them (`TestLearnV1SuiteLoads` checks), so whatever a
+worker learns, it learns from the same words.
+
+**Run it** with a model arm that has the expert (without it a question ends the case, and a later case's lesson is
+then never repeated), calibrated first as every suite is:
+
+```
+py -3 evals/run.py run --suite evals/suites/learn-v1 --arm oracle --arm nothing --arm ask --carry-state --repeats 1
+py -3 evals/run.py run --suite evals/suites/learn-v1 --arm default+expert --carry-state --repeats 5
+py -3 evals/run.py curve <run-id> --suite evals/suites/learn-v1
+```
+
+Run the whole sequence: `--cases` with a later case and not its kind's first runs a lesson nobody taught. Two arms in
+one run (old code against new, `default+expert@<rev>` against `default+expert`) compare two curves on the same SHA.
+
+**Read the curve.** `curve` prints, per arm, one line per case in run order: pass k/n, false done, questions (required /
+other), tokens in and tokens out (medians over the repeats), model calls (median), the cached share of the input, and
+the rows left out (invalid, infrastructure). Then, per kind, the later four cases against the first: their pass rate,
+median tokens (in + out), questions that are not required, and false done. **Success** is all four at once: the later
+cases pass at the first case's rate or better, with fewer tokens, no more questions that are not required, and no false
+done; the line says "met" or which of them was not. Tokens alone never count: a later case that is cheaper and wrong,
+or cheaper because it skipped `learn-bill-4`'s question, fails the bar by its pass rate. At fewer than 5 repeats the
+curve says "not a result", and a run that did not carry state says it is not a learning curve.
+
+Offline, `TestLearnV1SuiteLoads` passes the oracle on all ten cases (form posts to the real mock; the recon's
+`python3 -c` writes the expected `recon.csv`); the `office read ... | grep -q` line before each is skipped there and is
+proved only by the live oracle arm, with the carry-state run's own mechanics (nothing cleared between cases, a fresh
+mock per case).
 
 ## Adding a case (fails before, passes after)
 

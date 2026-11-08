@@ -72,6 +72,8 @@ var schema = []string{
 	`ALTER TABLE eval_runs ADD COLUMN carry_state INTEGER NOT NULL DEFAULT 0;
 	CREATE INDEX eval_rows_trajectory ON eval_rows(trajectory_id);
 	CREATE INDEX eval_rows_task ON eval_rows(task_id);`,
+	// How many model calls a row's case made (the broker counts them), so a learning curve shows calls beside tokens.
+	`ALTER TABLE eval_rows ADD COLUMN calls INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // Blobs keeps a run's suite tar by content (*blobstore.Store), so a run can be read again later.
@@ -130,6 +132,9 @@ type Row struct {
 	// TrajectoryID is the case's execution id, which /api/runs/<id>/trajectory serves: set once the case's bundle was
 	// pulled off the practice desktop. "" for a calibration arm (no worker ran) or a pull that failed (said in problems).
 	TrajectoryID string `json:"trajectory_id"`
+	// Calls is how many model calls the case made through the broker (the expert's are not the worker's): a learning
+	// curve shows them beside the tokens.
+	Calls int `json:"calls"`
 }
 
 // Store keeps eval runs and their rows in SQLite.
@@ -244,11 +249,11 @@ func (s *Store) AddRow(r Row) error {
 	}
 	_, err := s.db.Exec(`INSERT INTO eval_rows (run_id, arm, repeat, case_id, task_id, observed, checked, passed, false_done,
 		done_unchecked_wrong, q_required, q_other, tokens_in, tokens_cached, tokens_out, minutes, deployments, checks, problems, at_ns,
-		invalid, infra, trajectory_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		invalid, infra, trajectory_id, calls)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.RunID, r.Arm, r.Repeat, r.CaseID, r.TaskID, r.Observed, r.Checked, r.Passed, r.FalseDone, r.DoneUncheckedWrong,
 		r.QRequired, r.QOther, r.TokensIn, r.TokensCached, r.TokensOut, r.Minutes, string(deps), string(checks), string(probs),
-		sqlitedb.ToNS(r.At), r.Invalid, r.Infra, r.TrajectoryID)
+		sqlitedb.ToNS(r.At), r.Invalid, r.Infra, r.TrajectoryID, r.Calls)
 	return err
 }
 
@@ -311,7 +316,7 @@ func (s *Store) query(where string, args ...any) ([]Run, error) {
 func (s *Store) Rows(runID string) ([]Row, error) {
 	rows, err := s.db.Query(`SELECT run_id, arm, repeat, case_id, task_id, observed, checked, passed, false_done, done_unchecked_wrong,
 		q_required, q_other, tokens_in, tokens_cached, tokens_out, minutes, deployments, checks, problems, at_ns, invalid, infra,
-		trajectory_id
+		trajectory_id, calls
 		FROM eval_rows WHERE run_id=? ORDER BY rowid`, runID)
 	if err != nil {
 		return nil, err
@@ -324,7 +329,7 @@ func (s *Store) Rows(runID string) ([]Row, error) {
 		var at int64
 		if err := rows.Scan(&r.RunID, &r.Arm, &r.Repeat, &r.CaseID, &r.TaskID, &r.Observed, &r.Checked, &r.Passed, &r.FalseDone,
 			&r.DoneUncheckedWrong, &r.QRequired, &r.QOther, &r.TokensIn, &r.TokensCached, &r.TokensOut, &r.Minutes, &deps, &checks, &probs, &at,
-			&r.Invalid, &r.Infra, &r.TrajectoryID); err != nil {
+			&r.Invalid, &r.Infra, &r.TrajectoryID, &r.Calls); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(deps), &r.Deployments)
