@@ -492,6 +492,29 @@ and passes 3/3. Repeat 1 is the closest comparison: 10/10, bills 608k then 326k 
 - No way to back a value with the reply (b797a0f): bill 1 in repeat 2 (868k; it wrote the rule to a file and declared
   from it).
 
+**Validation on fc3cd32: partial, host-contended** (2026-11-08, run `e53e9a9df7f70755a`, `default+expert
+--carry-state`, image a8f4ebfcc2c5 and a dev control plane from a `git archive` of fc3cd32, same brain). Started 14:24
+UTC. Cancelled by the owner at 15:35 after 6 rows (repeat 1, cases 1-6). It ran beside the owner's ERPNext work in
+the same WSL VM: ERPNext's start-up, then a teaching desktop (`desktop_erpbills`, 128% CPU and 688 MiB at 15:36,
+against the practice desktop's 108%). Load averages on 6 CPUs, logged each minute: 20-25 at 14:37; the 1-minute
+figure reached 57.3 at 15:02 and stayed at 15-37 from 15:25 to 15:33. Docker went unreachable for 10 s at 14:37, and
+`wsl.exe` timed out at 15:06. These rows measure contention, not the harness:
+
+| case | correctness (graders) | ended | min | tokens in | tag |
+|---|---|---|---|---|---|
+| bill-1 | right: `mock_records`, `ledger_readback`, others-unchanged pass | timeout | 16.7 | 297k | host. No trajectory (the bundle pull hit its deadline). Reviews took 35-55 s and calls had 1-2 min gaps. |
+| recon-1 | right: `csv_equals` pass | pass | 11.0 | 282k | slow (baseline r1: 2.3 min) |
+| bill-2 | record right (`mock_records` pass); `ledger_readback` fails | timeout | 15.6 | 519k | model, plus about 3 min of host (one 126 s call at load 57). Sent back for an undeclared CC-27; the new job typed into /bills/new against the hint and its plan (`x19d1e3554629eed8`). |
+| recon-2 | right | pass | 5.8 | 86k | |
+| bill-3 | record right (`mock_records` pass); `ledger_readback` fails | timeout | 15.7 | 356k | host. Calls took 460 of the 862 s; 13 gaps of 46-92 s. Sent back for an undeclared CC-14, and the new job ran out of time (`x9a02e6064b9e3ded`). |
+| recon-3 | right | pass | 1.4 | 68k | |
+
+No false done in the six rows, and every record and file the graders read was right. Bills 2 and 3 show one pattern.
+A value set from the person's answer (the cost centre) was cited in JUDGEMENTS but never declared. The code check
+sent the task back, and the sent-back job started again from the request. The owner is fixing it in code: an
+undeclared value is adopted into the declaration when it stands in the record's document or in the person's
+confirmed words. The run is to be repeated on a quiet machine.
+
 **Read:** the lesson does carry across tasks. Later bills mostly asked nothing required, and the rule reached the
 record. The cost and the misses came from how the person's words were kept and shown to the checks. The next run on
 HEAD is the validation.

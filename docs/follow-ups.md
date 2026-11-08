@@ -533,6 +533,17 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
     per-failure evidence: [evals.md](evals.md), "Baseline for 9038515". Rows in
     `evals/results/eaa791e6bd0cff5fa/rows.jsonl`. Next: the validation on HEAD, as two runs one after the other
     (`default+expert`, then `default+expert+soul`), never two practice desktops at once.
+  - **Validation run 1 on fc3cd32: partial, host-contended** (`e53e9a9df7f70755a`, 14:24 to 15:35 UTC, cancelled by
+    the owner after 6 rows while the owner's ERPNext work and its teaching desktop shared the WSL VM, at load 15-57 on
+    6 CPUs). Rows, correctness and tags: [evals.md](evals.md), "Validation on fc3cd32". Every graded record and file
+    was right and there was no false done; the three bills timed out. Owed:
+    - The re-run on a quiet machine, `default+expert`, then the `+soul` run. Both wait for the owner's "go: rerun".
+    - The fix the owner is making: a value set from the person's answer but not declared is adopted into the
+      declaration when it stands in the record's document or the person's confirmed words. Bills 2 and 3 were sent
+      back for it, and the sent-back job started again from the request (`x19d1e3554629eed8`, `x9a02e6064b9e3ded`).
+    - The dev stack is still up (decurix-dev and the dev volume; images a8f4ebfcc2c5 on `:basic`/`:next`). The
+      cleanup list (`cp-dev.sh stop`, the dev volume, the app's `before-1107` tags) is owed after the runs; the buildx
+      builder is stopped.
   - **Fixed 2026-11-08: the expert's "don't know" to bill 2's cost-centre question.** Matching was right (the question
     named `cost-centre-rule` by `refers_to`); the expert's model chose null because the fact gives a rule, not "which"
     ("it explains how, not which"; the question held no GSTIN). `ExpertPrompt` now says a fact gives what is asked when

@@ -81,6 +81,10 @@ def findings(task_id=None, reports=(), events=None, picks=True):
                                             "same record saved twice"))
         # (A record saved twice is said as that, not again as a record no declaration covers.)
         created = core.records_created(events) - sum(n - 1 for n in twice.values())
+        # A value set and not declared that its record's document or the person's words back is taken onto the record
+        # first, as its declaration would have; only what nothing backs is held (records.adopt_backed).
+        for line in records.adopt_backed(task_id):
+            log(f"Ledger: took onto the saved record a value its source or the person's words back: {line}")
         out += [f if isinstance(f, Finding) else finding(UNDECLARED, f)
                 for f in records.gate_faults(task_id, created=created)]
         if picks:

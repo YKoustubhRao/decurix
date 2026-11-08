@@ -314,3 +314,9 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   the next task of the kind wrote the workbook, asked nothing, and was passed. A method keeps every answer of the run
   with its question, and offers them as holding over its plan where they differ (`methods.keep`,
   `guidance.exchanges_this_task`).
+- **A formality the worker skipped cost the whole case** (2026-11-08, validation run e53e9a9df7f70755a, bills 2 and 3).
+  The worker saved the cost centre the person's answer gave without declaring it on the record; the final check
+  rightly held a value no declaration covers and sent the task back, and the attempt sent back started over and ran
+  out of time. Where code can establish what a declaration would (the value stands in the record's document or the
+  person's confirmed words), it takes the value onto the record itself (`records.adopt_backed`); only what nothing
+  backs is sent back.

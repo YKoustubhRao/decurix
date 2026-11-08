@@ -1731,6 +1731,64 @@ def undeclared_task_fields(rec, form_fields, task_set):
     return out
 
 
+def adopt_backed(task_id=None):
+    """
+    Take onto each saved record the fields its task set without declaring them that a declaration would have settled
+    anyway: a value that stands in the record's own document (never a record declared from the screen, whose source
+    is the application itself), or in what was given - the request, the person's words the control plane keeps, the
+    organisation's knowledge (_free_text). Each is kept as declared would keep it ("source", or "seen" with what backs
+    it) and marked `adopted`; read back where the page looked at last shows it, absent otherwise. A value standing in
+    none of them stays undeclared, for the final check to hold (gate_faults). Found live (2026-11-08, bills in an eval
+    run, twice): the cost centre the person's answer gave was typed and saved without being declared, the final check
+    sent the task back, and the attempt sent back ran out of time - for a formality code can settle itself. Returns
+    the "KEY: Label=value" lines adopted.
+    """
+
+    task_id = task_id or task_context.current()
+    records = load(task_id)
+    adopted, given = [], None
+    for r in records:
+        if not r.get("saved_at") or not r.get("undeclared"):
+            continue
+        order = _source_order(r)
+        source_text = None
+        left = []
+        for item in r["undeclared"]:
+            label, _, value = str(item).partition("=")
+            label, value = label.strip(), value.strip()
+            if not label or not value or label in (r.get("fields") or {}):
+                left.append(item)
+                continue
+            if source_text is None:
+                source_text = ""
+                if r.get("source") and r.get("source") != "screen":
+                    try:
+                        source_text = _source_text(r["source"])
+                    except ComputerError:
+                        source_text = ""
+            if source_text and stands_in(value, source_text, order):
+                f = {"intent": value, "from": "source", "adopted": True}
+            else:
+                if given is None:
+                    given = _free_text(task_id)
+                if not (given and stands_in(value, given, order)):
+                    left.append(item)
+                    continue
+                f = {"intent": value, "from": "seen", "adopted": True}
+                _backings({label: f}, task_id, order)
+            r.setdefault("fields", {})[label] = f
+            rb = r.setdefault("readback", {})
+            if stands_in(value, _shown_now(task_id), order):
+                rb["seen"] = list(dict.fromkeys(list(rb.get("seen") or []) + [label]))
+            else:
+                rb["absent"] = list(dict.fromkeys(list(rb.get("absent") or []) + [label]))
+            adopted.append(f"{r.get('key')}: {label}={value}")
+        r["undeclared"] = left
+    if adopted:
+        _save(task_id, records)
+    return adopted
+
+
 def gate_faults(task_id=None, created=None):
     """
     What the final check holds against the task's saved records, decided in code (review round 9): a field this task

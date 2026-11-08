@@ -64,7 +64,13 @@ Every restore keeps the version there now beside the original (`<name> (changed 
   (`records._backings`: "the person's words", "the organisation's knowledge" or "the request", shown as `[seen; backed
   by the person's words; read back: seen]`): found live the same run (bill 1, repeat 3), the ledger said only "from
   bill.pdf" and three reviews in a row held the cost centre the person's rule gave as cited from the PDF until the
-  case timed out.
+  case timed out. A value a task set on a saved record's form without declaring it is taken onto the record by
+  code before the final check holds it, when it stands in the record's own document (never a record declared from the
+  screen) or in what was given - the request, the person's confirmed words, the organisation's knowledge
+  (`records.adopt_backed`, run by `ledger_checks` before `gate_faults`; kept as a declaration would keep it, marked
+  `adopted`, read back where the last page shows it): found live in validation run e53e9a9df7f70755a, twice the cost
+  centre the person gave was saved undeclared, the check sent the bill back, and the attempt sent back ran out of time.
+  A value nothing backs is still held.
 - A declaration keyed by a saved record's own number is that record (2026-11-08, learn-v1 bill 3; `records.saved_by_number`). A bill saved under the key "bill" was declared again under its bill number to add the field its save left undeclared; taken as a new record, the edit's save made the ledger hold two records for the application's one, and the declaration was first stopped as "may be entered already" by the task's own saved record. The added field now joins the saved record (`_add_to_saved`) with its own source, and the same fields given again are refused as a second save.
 
 **TheBot's operator.**

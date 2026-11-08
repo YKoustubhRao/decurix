@@ -209,6 +209,37 @@ class ASavedRecordDeclaredUnderItsNumber(Ledger):
         self.assertIn(f'gui record "invoice" --from "{self.bill}" --fields -', faults.replace("\\\\", "\\"))
         self.assertIn("never a new form", faults)
 
+    def saved_with_undeclared(self, value, page="Invoice INV-0001 Total 3,540.00 Fund FND-3"):
+        rec, _ = records.declare("invoice", str(self.bill), {"Invoice no.": "INV-0001", "Total": "3,540.00"})
+        self.save(rec, page)
+        ledger = records.load(TASK)
+        ledger[0]["undeclared"] = [value]
+        records._save(TASK, ledger)
+
+    def test_a_value_the_persons_words_back_is_taken_onto_the_record(self):
+        # Found live (2026-11-08, bills in an eval run, twice): the person's cost centre was saved undeclared, the
+        # final check sent the task back, and the attempt ran out of time.
+        self.saved_with_undeclared("Fund=FND-3")
+        with mock.patch.object(records, "_free_text", lambda task_id=None: RULE), \
+                mock.patch.object(records, "_worker_words_text", lambda task_id=None: RULE):
+            self.assertEqual(records.adopt_backed(TASK), ["invoice: Fund=FND-3"])
+        f = records.load(TASK)[0]["fields"]["Fund"]
+        self.assertEqual((f["from"], f["adopted"], f.get("backed_by")), ("seen", True, "the person's words"))
+        self.assertIn("Fund", records.load(TASK)[0]["readback"]["seen"])
+        self.assertEqual(records.gate_faults(TASK, created=1), [])
+
+    def test_a_value_in_the_records_own_document_is_taken_as_from_it(self):
+        self.saved_with_undeclared("Vendor=Example Vendor Ltd", page="Invoice INV-0001 Example Vendor Ltd")
+        with mock.patch.object(records, "_free_text", lambda task_id=None: ""):
+            self.assertEqual(records.adopt_backed(TASK), ["invoice: Vendor=Example Vendor Ltd"])
+        self.assertEqual(records.load(TASK)[0]["fields"]["Vendor"]["from"], "source")
+
+    def test_a_value_nothing_backs_stays_held(self):
+        self.saved_with_undeclared("Fund=FND-9")
+        with mock.patch.object(records, "_free_text", lambda task_id=None: RULE):
+            self.assertEqual(records.adopt_backed(TASK), [])
+        self.assertIn("Fund=FND-9", " ".join(str(f) for f in records.gate_faults(TASK, created=1)))
+
     def test_a_field_the_last_page_did_not_show_says_how_to_read_it_back(self):
         # Found live (2026-11-08, a bill in an eval run): told only "declare those again", the worker tried a page's title and
         # URL as --from and then misdescribed its own declaration; four reviews held it until the case timed out.
