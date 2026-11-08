@@ -125,8 +125,21 @@ class ATypedValueThePersonGave(WorkerWords):
     def test_it_is_declared_from_the_document_and_backed_by_their_words(self):
         self.words("box", [said(RULE)])
         self.events = []
-        rec, _ = records.declare("INV-0001", str(self.bill), {"Invoice no.": "INV-0001", "Fund": "FND-3"})
+        rec, lines = records.declare("INV-0001", str(self.bill), {"Invoice no.": "INV-0001", "Fund": "FND-3"})
         self.assertEqual(rec["fields"]["Fund"]["from"], "seen")
+        # The ledger says which given place backs it (found live: three reviews held it as cited from the document).
+        self.assertEqual(rec["fields"]["Fund"]["backed_by"], "the person's words")
+        self.assertIn("Fund (the person's words)", "\n".join(lines))
+        listing = "\n".join(records.listing(records.task_context.current()))
+        self.assertIn("    Fund: FND-3 [seen; backed by the person's words; read back: -]", listing)
+        self.assertNotIn("backed by", listing.split("Fund:")[0])   # a field from the document names no other place
+
+    def test_a_picked_entry_their_rule_gives_says_so_too(self):
+        self.words("box", [said(RULE)])
+        self.events = [pick("FND-3")]
+        rec, _ = records.declare("INV-0001", str(self.bill), {"Invoice no.": "INV-0001", "Fund": "FND-3"})
+        self.assertEqual((rec["fields"]["Fund"]["from"], rec["fields"]["Fund"].get("backed_by")),
+                         ("chosen", "the person's words"))
 
     def test_without_their_words_it_stands_in_nothing(self):
         self.events = []

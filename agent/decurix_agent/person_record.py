@@ -52,6 +52,8 @@ MAX_ANSWER_BYTES = 2 * 1024 * 1024
 PERSON_KINDS = frozenset({"person", "scripted"})
 # How many of the worker's earlier answers are read (newest first): the control plane's default for the read.
 WORKER_WORDS_LIMIT = 100
+# The earlier tasks' answers the final check is shown (worker_said), newest first.
+WORKER_SAID_LIMIT = 12
 
 _cache = {}
 _lock = threading.Lock()
@@ -167,13 +169,40 @@ def worker_words(task_id=None):
     what an earlier one was told. Only the control plane's record: never a file or note the worker's user can write.
     """
 
+    return [row["text"] for row in _worker_rows(task_id)]
+
+
+def _worker_rows(task_id=None):
+    """The rows worker_words reads (the person's own answers on any task of this worker, newest first, bounded)."""
+
     task = task_id or task_context.current() or ""
     query = {"scope": "worker", "kind": "answer", "limit": str(WORKER_WORDS_LIMIT)}
     with _lock:
         fresh, _worker_read["task"] = _worker_read["task"] != task, task
     answer = _get(JUDGEMENTS_PATH, query, fresh=True) if fresh else _get(JUDGEMENTS_PATH, query)
     rows = _persons((answer or {}).get("judgements") if isinstance(answer, dict) else None)
-    return [row["text"] for row in rows[:WORKER_WORDS_LIMIT]]
+    return rows[:WORKER_WORDS_LIMIT]
+
+
+def worker_said(task_id=None, limit=WORKER_SAID_LIMIT):
+    """
+    [{"asked", "text", "task_id"}]: the person's answers on this worker's EARLIER tasks (never this one's: the task's
+    own are said_this_task's), each with the question it answered, newest first, at most `limit`. For the final check:
+    a rule the person taught on an earlier task holds on this one, and an answer is read with its question. Found
+    live (2026-11-08): the check, shown none of them, failed a reconciliation laid out as the person had taught ("one
+    row per statement line") for lacking a row they never asked for; the worker added it, and the second check passed
+    the wrong file.
+    """
+
+    task = task_id or task_context.current() or ""
+    out = []
+    for row in _worker_rows(task_id):
+        if row.get("task_id") == task:
+            continue
+        out.append({"asked": str(row.get("asked") or ""), "text": row["text"], "task_id": str(row.get("task_id") or "")})
+        if len(out) >= limit:
+            break
+    return out
 
 
 def field_answers():

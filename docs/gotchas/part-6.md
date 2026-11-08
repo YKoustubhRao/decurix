@@ -296,3 +296,9 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   answered (`methods.keep` keeps `{asked, said}`), and every job carries the task's confirmed replies (`earlierSaid`).
   The worker also had no way to back a typed value with a reply: it wrote the reply into a file of its own to declare
   from. The person's confirmed words are now among what a declared value may stand in (`records._elsewhere_text`).
+- **The final check imposed its own idea of the work over the person's taught rule, and the worker obeyed it: a false
+  done** (2026-11-08, learn-v1 recon 5, repeat 2, trajectory `xcb425599da9f1c9e`). The person had taught "one row per
+  statement line" on an earlier task; the judge was shown only this task's words, said not_done for a book entry with
+  no row, the worker added that row citing the check, and the second judge - shown the rule only through the worker's
+  citation - passed the seven-row file. The check is shown the person's words on the worker's earlier tasks with
+  their questions, and the worker sent back is told the person's words hold over the check's finding.

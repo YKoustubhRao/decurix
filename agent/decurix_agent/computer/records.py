@@ -1128,6 +1128,28 @@ def _elsewhere_text(task_id=None):
     return "\n".join(parts)
 
 
+def _backings(kept, task_id, order):
+    """Note on each field not taken from the record's source which given place its value stands in - the person's
+    words (this task's replies, what they taught, their answers on the worker's earlier tasks), the organisation's
+    knowledge, or the request - as `backed_by`, for the ledger to show. Found live (2026-11-08, learn-v1 bill 1): the
+    ledger said only "from bill.pdf", and three reviews in a row held a cost centre the person's rule gave as cited
+    from the PDF, until the case ran out of time. A value standing in none of them (a page read, an entry of the
+    application's list) gets none."""
+
+    texts = None
+    for f in kept.values():
+        if f.get("from") not in ("seen", "chosen") or not f.get("intent"):
+            continue
+        if texts is None:
+            person = "\n".join(p for p in (_answers_text(task_id), _taught_text(), _worker_words_text(task_id)) if p)
+            texts = (("the person's words", person), ("the organisation's knowledge", _org_text(task_id)),
+                     ("the request", task_context.current_request() or ""))
+        for name, text in texts:
+            if text and stands_in(f["intent"], text, order):
+                f["backed_by"] = name
+                break
+
+
 def _source_units(key, kept, text, task_id):
     """
     A figure declared bare keeps the unit what backs it writes it with (owner decision, 2026-11-08). Found live: a note
@@ -1288,6 +1310,7 @@ def declare(key, source, fields, scope="", task_id=None):
                             "document names it): the application's own wording of an option or an entry chosen from "
                             "its list is accepted at the save. A value the document does not give at all is not typed.")
     united, unit_forms = _source_units(key, kept, text, task_id)
+    _backings(kept, task_id, source_order)
     if unit_forms:
         raise ComputerError("not declared - a figure is declared bare where what backs it writes it with a unit: "
                             + "; ".join(unit_forms) + ". Declare each as the source writes it for this field (with its "
@@ -1307,7 +1330,8 @@ def declare(key, source, fields, scope="", task_id=None):
     _save(task_id, records)
     lines = [f"Record {key} declared from {source}" + (f" in {rec['scope']}" if rec["scope"] else "")
              + f": {len(kept)} field(s)"]
-    seen = [l for l, f in kept.items() if f["from"] in ("seen", "chosen")]
+    seen = [l + (f" ({f['backed_by']})" if f.get("backed_by") else "") for l, f in kept.items()
+            if f["from"] in ("seen", "chosen")]
     if seen:
         lines.append("(from the screen, the application's own lists, the request or the person rather than the source: "
                      + ", ".join(seen) + ")")
@@ -1649,7 +1673,10 @@ def listing(task_id=None):
             if not f.get("intent"):
                 continue
             mark = "seen" if label in rb.get("seen", []) else ("ABSENT" if label in rb.get("absent", []) else "-")
-            out.append(f"    {label}: {f['intent']} [{f.get('from')}; read back: {mark}]")
+            # Which given place a value not taken from the source stands in (_backings): the record's "from" names
+            # only its document. (Never a "]" in it: soul reads the bracket as one part, record_ledger.go.)
+            backing = f"; backed by {f['backed_by']}" if f.get("backed_by") else ""
+            out.append(f"    {label}: {f['intent']} [{f.get('from')}{backing}; read back: {mark}]")
         if rec.get("unset"):
             # (No ": " in this line: the soul reads "    Label: value" lines as declared fields - record_ledger.go.)
             out.append("    (left unset at the last save check and not declared - " + ", ".join(rec["unset"][:8])

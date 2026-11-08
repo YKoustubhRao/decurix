@@ -205,6 +205,42 @@ def said_this_task():
                                                             for q, a in _exchanges["said"]))
 
 
+# What the final check is shown of each earlier answer (characters), and of them all.
+_EARLIER_ANSWER_CHARS = 800
+_EARLIER_ALL_CHARS = 6000
+
+
+def said_on_earlier_tasks():
+    """
+    What the person told this worker on its earlier tasks, for the final check's judge (person_record.worker_said:
+    the control plane's record, never a file or note of the worker's), each answer with the question it answered: a
+    rule they gave there holds here, over the check's own idea of how the work should be laid out. "" when none or
+    unread.
+    """
+
+    try:
+        from decurix_agent import person_record
+        rows = person_record.worker_said()
+    except Exception:  # noqa: BLE001 - what cannot be confirmed is not shown
+        return ""
+    lines, size = [], 0
+    for row in rows:
+        asked = " ".join(str(row.get("asked") or "").split())[:400]
+        said = " ".join(str(row.get("text") or "").split())[:_EARLIER_ANSWER_CHARS]
+        if not said:
+            continue
+        line = f"- asked: {asked} - they answered: {said}" if asked else f"- they said: {said}"
+        if size + len(line) > _EARLIER_ALL_CHARS:
+            break
+        lines.append(line)
+        size += len(line)
+    if not lines:
+        return ""
+    return ("What the person told this worker on its earlier tasks (newest first; each answer is to its own question "
+            "there; a rule or way of laying out the work they gave holds on this task too, over your own idea of how "
+            "it should be done - judge the work against it):\n" + "\n".join(lines))
+
+
 # A no that is "not yet": the person asks for something first and says to come back. Found live (2026-10-27): "No -
 # do the serial check first ... Once you have told me that, ask again" - the worker did the check and asked again,
 # and the harness closed the task as "Stopped, as you said" with the return unfiled.

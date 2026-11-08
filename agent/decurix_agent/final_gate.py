@@ -179,7 +179,10 @@ NOT_YOURS_TO_FORCE = ("Correct only what was entered from this request. A figure
                       "template, a rate or a tick box that the task never touched or that the person said to leave, "
                       "in order to make such a figure match a document. When the values are entered as the document "
                       "has them and what the application computes still differs from the document, that is a finding "
-                      "to report, not a fault to repair: say both figures, say what you entered, and ask (HELP).")
+                      "to report, not a fault to repair: say both figures, say what you entered, and ask (HELP). "
+                      "Where the check's finding goes against what the person told you - on this task or an earlier "
+                      "one, a rule or how the work is to be laid out - the person's words hold: do not change the work "
+                      "against them; say which of their words the work follows, and ask (HELP) if you are unsure.")
 
 
 REPORT_CHARS = 4000
@@ -344,10 +347,13 @@ def _commands_text():
 
 
 def _with_said(task):
-    """The task as the final check judges it: the request, and what the person said during it (guidance)."""
+    """The task as the final check judges it: the request, what the person said during it, and what they told this
+    worker on its earlier tasks, each answer with its question (guidance)."""
 
-    said = guidance.said_this_task()
-    return task + "\n\n" + said if said and said not in task else task
+    for said in (guidance.said_this_task(), guidance.said_on_earlier_tasks()):
+        if said and said not in task:
+            task = task + "\n\n" + said
+    return task
 
 
 # The first line of an answer nothing could check: it touched no screen, wrote no file and read nothing the tools saw.

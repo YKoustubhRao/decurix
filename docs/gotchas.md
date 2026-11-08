@@ -991,3 +991,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A saved record declared again under its own number became a second record
 - [part-6.md](gotchas/part-6.md): The agent's start scripts ran the worker's own `python3` in the agent's place, and every program had the token
 - [part-6.md](gotchas/part-6.md): A reply carried without its question read as the person's standing word, and a sent-back job lost every reply
+- [part-6.md](gotchas/part-6.md): The final check imposed its own idea of the work over the person's taught rule, and the worker obeyed it: a false done
