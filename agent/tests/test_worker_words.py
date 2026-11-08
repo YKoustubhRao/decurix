@@ -118,6 +118,30 @@ class TaughtOnAnEarlierTask(WorkerWords):
         self.assertIn(RULE, person_record.worker_words("t00000000000000a2"))
 
 
+class ATypedValueThePersonGave(WorkerWords):
+    """Found live (2026-11-08): a value the person's reply gave, typed into the form rather than picked from a list,
+    stood in nothing a declaration read, so the worker wrote the reply into a file of its own to declare from."""
+
+    def test_it_is_declared_from_the_document_and_backed_by_their_words(self):
+        self.words("box", [said(RULE)])
+        self.events = []
+        rec, _ = records.declare("INV-0001", str(self.bill), {"Invoice no.": "INV-0001", "Fund": "FND-3"})
+        self.assertEqual(rec["fields"]["Fund"]["from"], "seen")
+
+    def test_without_their_words_it_stands_in_nothing(self):
+        self.events = []
+        with self.assertRaises(ComputerError) as caught:
+            records.declare("INV-0001", str(self.bill), {"Invoice no.": "INV-0001", "Fund": "FND-3"})
+        self.assertIn("Fund: FND-3", str(caught.exception))
+
+    def test_a_reply_named_as_the_source_says_how_to_declare(self):
+        self.words("box", [said(RULE)])
+        with self.assertRaises(ComputerError) as caught:
+            records.declare("INV-0001", "human reply", {"Fund": "FND-3"})
+        self.assertIn("needs no file", str(caught.exception))
+        self.assertIn("backs nothing", str(caught.exception))
+
+
 class FailClosed(Ledger):
     def test_an_unreadable_control_plane_backs_nothing(self):
         self.events = [NEW, pick("FND-3"), SAVE]

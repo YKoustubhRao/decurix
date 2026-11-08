@@ -419,7 +419,10 @@ def _source_text(source):
             return office._ocr_file(office._path(source))
         return office.read_document(source)["text"]
     except Exception as exc:  # noqa: BLE001 - what cannot be read is said
-        raise ComputerError(f"cannot read the record's source {source}: {exc}")
+        raise ComputerError(f"cannot read the record's source {source}: {exc}. --from names the document the record "
+                            "comes from (a file) or screen. A value the person gave you in a reply needs no file: "
+                            "declare the record from its document, and their reply backs that value. A file you write "
+                            "their words into backs nothing.")
 
 
 _FIELDS_PART = "What every field of the page held (in view or not):\n"
@@ -1104,10 +1107,14 @@ def chosen_values(task_id=None):
     return list(dict.fromkeys(picked_options(task_id) + resolved_names(task_id)))
 
 
-def _elsewhere_text():
-    """What else a value may legitimately come from: the request, the person's words and what the task read."""
+def _elsewhere_text(task_id=None):
+    """What else a value may legitimately come from: the request, the person's words and what the task read. The
+    person's words are the control plane's record of them (_free_text: their replies on this task, what they taught and
+    answered on this worker's earlier tasks, the organisation's knowledge), never a file the worker wrote them into.
+    Found live (2026-11-08): a cost centre the person's reply gave, typed rather than picked from a list, stood in
+    nothing read here, so the worker wrote the reply into a file of its own to declare from."""
 
-    parts = [task_context.current_request() or ""]
+    parts = [_free_text(task_id)]
     try:
         from decurix_agent.computer import evidence
         parts.append(evidence.read()[-MAX_PAGE_TEXT:])
@@ -1255,7 +1262,7 @@ def declare(key, source, fields, scope="", task_id=None):
             unbacked.append(f"{label}: {value}")
             continue
         if elsewhere is None:
-            elsewhere = _elsewhere_text()
+            elsewhere = _elsewhere_text(task_id)
         if stands_in(value, elsewhere, source_order):
             kept[label] = {"intent": value, "from": "seen"}
         elif picture:
