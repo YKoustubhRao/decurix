@@ -79,9 +79,10 @@ On the screen - in an app or a web page - you never ask for 1 or 2 yourself,
 neither before you start nor before the final click. Do all the work (open
 the page, find the record, fill in what is needed) and make the click: the
 gui command is what decides. It refuses a click that pays, sends, buys or
-publishes and asks the human at that moment, with the details in front of
-them; a click it lets through (submitting a form or a support ticket the
-request asked for, saving, deleting the named record) needed no yes.
+publishes, or one the plan the human agreed makes with their OK first, and
+asks the human at that moment, with the details in front of them; a click it
+lets through (submitting a form or a support ticket the request asked for,
+saving, deleting the named record) needed no yes.
 Away from the screen (a shell command, a script), ask with HELP, or begin
 your reply with exactly "{APPROVAL_MARKER}" followed by what you want to do
 and why; a human will review it on the Decurix dashboard.

@@ -470,3 +470,15 @@ func TestTwoPausedStepsAreBothAsked(t *testing.T) {
 		t.Errorf("paid %d time(s), want once", got)
 	}
 }
+
+// An approval a step's skill says the gate stopped on the screen carries that into the checkpoint, for soul's gate.go.
+func TestAnOnScreenApprovalIsMarkedOnTheCheckpoint(t *testing.T) {
+	for _, onScreen := range []bool{true, false} {
+		n := &node{result: skills.Result{Meta: map[string]any{"needsApproval": true, "action": "gui click e6",
+			"approvalReason": "on screen it would click", "onScreen": onScreen}}}
+		e := &execution{req: Request{Prompt: "submit the bill"}, pause: pauseFor(n, nil)}
+		if cp := e.checkpoint(); cp.OnScreen != onScreen || cp.Action != "gui click e6" {
+			t.Fatalf("onScreen %v: checkpoint %+v", onScreen, cp)
+		}
+	}
+}

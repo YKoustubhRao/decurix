@@ -643,6 +643,56 @@ for new desktops:
 
 The losses already known stay as stated above: no desktop icons, an empty panel window list, and path 6's agent half.
 
+### Live pass on the rebuilt image (2026-11-08)
+
+The desktop image rebuilt from this tree (`decurix-desktop:next` = `:broker`, 5beb149276ff; the product tags left on
+the old images), this tree's control plane beside the app's (`decurix-dev`), a hosted brain (Azure, Kimi-K2.6,
+gpt-5.4-mini fast). All data fictional.
+- **Benches**: `bench/skills/e2e.py` and `bench/recordings/e2e.py` pass on `:next`, each with and without `--broker`
+  (four runs, END TO END: OK).
+- **Broker mode, a control-plane desktop** (`DECURIX_SCREEN_BROKER=1`): a person's click on the panel's Web Browser
+  icon (VNC input) brought up a visible Chromium window, run by `decurixscreen`. A taught skill whose first step opens
+  `~/work/form.html` (a Chrome Recorder export imported, `/learn`ed) replayed all six steps through the broker and the
+  page showed "Saved Birch Ltd in York", its address the worker's path (task t1c2d9185a8adb8fa). A **long request**
+  (`~/.decurix/long-requests` = on; two invoices, a summary workbook then a memo) was planned in two stages, each done
+  and checked, the cross-check's five shared figures agreeing, the workbook's figures right (7,080 + 8,260, a `=SUM`
+  Total) (t31da076b68b7038f; stages carry `planAgreed` from structure, so no plan question was put). A **replay whose
+  ladder asks the hosted model**: an untaught demonstration, mimicked for a matching request, with its Save button
+  renamed: the ladder's `py.escalation.ground` call went from the screen side back through `screen_call` to the
+  worker's model (t6facc27e9f4cc57c); the replay then stopped, and the model took over and pressed the renamed button
+  (as in the first trial: the person is not asked about a rename once the engine has the run). Every recorded call
+  was tagged (183 calls, `untagged: 0`).
+- **The plan's "OK first", default mode on a gated desktop**: found asking twice for one press, fixed (below), and
+  checked again: a plan reading "Then, each with your OK first: Submit the filled supplier bill", agreed; the press
+  held (`_plan_hold`); one yes; the press made once ("submission 1"), the task done and checked (t291d1531fdfcf44e).
+  A no: settled "declined" by the gate, Submit not pressed, the task reported "Stopped, as you said", not done
+  (t949a50d5326115a5).
+
+**Fixed: one press asked about twice on a gated desktop** (any held gui action under TheBot, not only the plan's):
+1. soul made a second gate request of its own for the paused command (`gateAsk`, kind "command"), which replaced the
+   gate's pending request for the action. The person's yes granted the command; soul took that grant; the gui
+   command it then ran was the action again, with no grant, so the person was asked again. Now the operator marks a
+   pause the gate made on the screen (`PendingOnScreen` -> Meta `onScreen` -> `Checkpoint.OnScreen`) and soul adopts
+   the gate's own pending request for it (`gateAdopt`): the person is asked once, in the gate's words for the action,
+   and the grant is left for the gui command TheBot runs on the yes (no fingerprint kept). A command the guard stopped
+   is asked about as before.
+2. The agent's watcher, which reads every reply first, took the gate's record of it (`take` by text, "taken once by
+   whoever asks first"); soul's take by request id then waited out its 45 seconds and resumed on "unclear". Now each
+   kind of take is once of its own (`taken_id`, `taken_text`); neither makes or moves a grant.
+Tests: `cmd/soul/gate_test.go` (adopts the screen request; falls back when none is pending; never for a guard's
+pause), `internal/scheduler/graph_test.go` (`OnScreen` on the checkpoint), `internal/skills/operator_test.go`
+(`onScreen` set for a screen stop only), `agent/tests/test_gate_server.py` (the agent's look never takes TheBot's yes;
+each take still once; one grant).
+
+Also changed: the operator's safety preamble now says the gui command also asks for "one the plan the human agreed
+makes with their OK first" - the review had told the person a held Save was a needless question.
+
+**Verdict: broker mode can be the default for new desktops.** What the first trial asked for is done: the image
+rebuilt with its fixes, the browser icon and a taught skill opening a local page checked on it, a long request, and a
+replay whose ladder asked the hosted model through the broker - with no unseen success and no failure specific to
+broker mode. The losses stay as stated (no desktop icons, an empty panel window list, path 6's agent half). The owner
+decides (O-1); a desktop keeps the mode it was created with.
+
 ## What this does not cover (said plainly)
 
 - **Direct input.** The gate decides whether a *yes* exists. It does not stand between the worker and the screen: a

@@ -144,3 +144,45 @@ func TestADesktopThatMustHaveAGateNeverBelievesTheRequest(t *testing.T) {
 		t.Fatal("the flag can only turn the gate on")
 	}
 }
+
+// A gui command the gate stopped on the screen is asked about once, as the gate's own request for that action: found
+// live (2026-11-08), a second request of soul's for the command replaced the action's, the yes granted the command, and
+// the gui command run on it was asked about again.
+func TestGateAskAdoptsTheGatesRequestForAnActionItStoppedOnTheScreen(t *testing.T) {
+	calls := fakeGate(t, `{"pending": {"id": "req-act", "fingerprint": "fp-act", "question": "Approval needed before I click"}}`)
+	cp := &scheduler.Checkpoint{Kind: "approval", Action: "gui click e6 --checked", WorkDir: "/work", OnScreen: true}
+	if gateAsk(cp) {
+		t.Fatal("an adopted request is no refusal")
+	}
+	if cp.GateRequest != "req-act" || cp.GateFingerprint != "" {
+		t.Fatalf("request %q fingerprint %q: the action's request, its grant left for the gui command", cp.GateRequest, cp.GateFingerprint)
+	}
+	got := calls()
+	if len(got) != 1 || got[0]["op"] != "pending" {
+		t.Fatalf("calls %v: no second request of soul's may replace the action's", got)
+	}
+}
+
+func TestGateAskAsksAboutTheCommandWhenTheGateHoldsNoScreenRequest(t *testing.T) {
+	calls := fakeGate(t, `{"pending": null, "allowed": false, "request": {"id": "req-9", "fingerprint": "fp-9", "question": "Approval needed"}}`)
+	cp := &scheduler.Checkpoint{Kind: "approval", Action: "gui click e6", WorkDir: "/work", OnScreen: true}
+	gateAsk(cp)
+	if cp.GateRequest != "req-9" || cp.GateFingerprint != "fp-9" {
+		t.Fatalf("request %q fingerprint %q", cp.GateRequest, cp.GateFingerprint)
+	}
+	if got := calls(); len(got) != 2 || got[0]["op"] != "pending" || got[1]["op"] != "check" {
+		t.Fatalf("calls %v", got)
+	}
+}
+
+func TestGateAskNeverAdoptsForACommandTheGuardStopped(t *testing.T) {
+	calls := fakeGate(t, `{"pending": {"id": "req-act", "fingerprint": "fp-act"}, "allowed": false, "request": {"id": "req-9", "fingerprint": "fp-9"}}`)
+	cp := &scheduler.Checkpoint{Kind: "approval", Action: "rm -rf build", WorkDir: "/work"}
+	gateAsk(cp)
+	if cp.GateRequest != "req-9" {
+		t.Fatalf("a guard's pause took the gate's pending screen request %q", cp.GateRequest)
+	}
+	if got := calls(); len(got) != 1 || got[0]["op"] != "check" {
+		t.Fatalf("calls %v", got)
+	}
+}

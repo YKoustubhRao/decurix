@@ -124,8 +124,29 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 - **The gui daemon and screen broker tests** pass on Linux (74 tests; two code bugs fixed: the idle clock started
   before the daemon served, and a socket's inode compared with sockfs's).
 - **Still owed:** the sign-in refusal on a real gated listener (needs a worker with an open question; the integration
-  test covers it with the real stores and routes), the field-unit question's round trip with a hosted brain, the
-  screen broker's live round (its entrypoint split is not built), and every item below.
+  test covers it with the real stores and routes; not reached on 2026-11-08), the field-unit question's round trip
+  with a hosted brain (see below), and every item below.
+
+## Live checks done on 2026-11-08 (image rebuilt from this tree, a dev control plane beside the app's)
+
+- **Benches**: `bench/skills/e2e.py` and `bench/recordings/e2e.py` pass on `decurix-desktop:next`, with and without
+  `--broker`.
+- **The screen broker's live round** on a control-plane desktop: the panel's browser icon, a taught skill opening a
+  local page, a long request (two stages, done and checked), and a replay whose ladder asked the hosted model through
+  the broker (`py.escalation.ground`); all calls tagged. Details and the broker-default verdict: gate-boundary.md,
+  "Live pass on the rebuilt image".
+- **The plan's "OK first"** on a gated default-mode desktop: one yes, one press; a no, no press and not done. It asked
+  twice before two fixes made in this pass (soul adopts the gate's own request for an action it stopped on the screen;
+  the agent's watcher no longer takes TheBot's yes from the gate) - gate-boundary.md, same section.
+- **Not reached, still owed:**
+  - The field-unit question with a hosted brain: twice the worker never put a one-sided unit to the save - it declared
+    the record's Rate as "18" (the note says "18%"), then, told to declare 18%, typed "18%" into the field - so the
+    question never came. Owed: a run that reaches it, and a decision on whether `gui record` should keep a document's
+    unit when the worker drops it (declaring "18" from "18%" settles the unit silently, the case the question exists
+    for).
+  - The sign-in refusal on the gated listener (step prepared, not run).
+  - The review's "Still open" lines on a held press read screenshots as empty fields that `gui observe` showed filled
+    (seen twice on the tax-code form); not investigated.
 
 ## Live checks after the next build
 

@@ -235,6 +235,9 @@ func TestOperatorPausesForApprovalAndResumes(t *testing.T) {
 	if cmds, _ := res.Meta["commands"].([]string); len(cmds) != 0 {
 		t.Fatalf("commands = %v - the gated command ran before approval", cmds)
 	}
+	if res.Meta["onScreen"] == true {
+		t.Error("a command the guard stopped was marked as stopped on the screen: soul would ask the gate's screen request")
+	}
 
 	rc.Resume = res.Checkpoint
 	rc.HumanReply = "yes"
@@ -280,6 +283,9 @@ func TestOperatorPausesWhenTheScreenGateStopsAGuiAction(t *testing.T) {
 	}
 	if cmds, _ := res.Meta["commands"].([]string); len(cmds) != 0 {
 		t.Fatalf("commands = %v - a stopped action was recorded as run", cmds)
+	}
+	if res.Meta["onScreen"] != true {
+		t.Error("the gate's on-screen stop was not marked onScreen: soul would ask a second request of its own (found live 2026-11-08)")
 	}
 
 	if err := os.WriteFile(grant, nil, 0o644); err != nil {

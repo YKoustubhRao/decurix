@@ -631,6 +631,10 @@ type operatorState struct {
 	CommitsDone []string `json:",omitempty"`
 	// PendingWhat is what the gate said the paused action does ("click button Send in ..."), kept for CommitsDone.
 	PendingWhat string `json:",omitempty"`
+	// PendingOnScreen says st.Pending was stopped by the approval gate on the screen (gui's own exit code and marker,
+	// screenApprovalReason), not by the command guard: the gate already holds that action's request, worded by
+	// itself, and that request is the one the person is asked (soul's gate.go adopts it).
+	PendingOnScreen bool `json:",omitempty"`
 	// replyRead is the last reading of a person's reply (replies.go), so one reply is read once.
 	replyRead struct {
 		reply, does, wants, refers string
@@ -835,6 +839,9 @@ func (o *OperatorSkill) pause(subtask Subtask, st *operatorState, reason string)
 	// approval to match it).
 	shown := st.withholdFor(st.Pending)(st.Pending)
 	res.Meta["actionShown"] = shown
+	if st.PendingOnScreen {
+		res.Meta["onScreen"] = true
+	}
 	res.Output = fmt.Sprintf("Paused before `%s` - %s. Waiting for approval.", shown, reason)
 	return res
 }
@@ -939,7 +946,7 @@ func (o *OperatorSkill) resume(rc RunContext, subtask Subtask, st *operatorState
 			blocked := o.execute(rc, st, pending)
 			st.approvedRun = ""
 			if blocked != "" {
-				st.Pending = pausedRest(pending, blocked)
+				st.Pending, st.PendingOnScreen = pausedRest(pending, blocked), true
 				return st, blocked
 			}
 			return st, ""
@@ -2068,11 +2075,11 @@ func (o *OperatorSkill) loop(rc RunContext, subtask Subtask, st *operatorState) 
 			if concern := safety.AssessCommand(value, rc.Dir()); concern != nil && !rc.IsApproved(value) {
 				rc.Logf("operator", "approval needed before `%s` - %s", st.withholdFor(value)(value), concern.Reason)
 				trace.From(rc.Ctx).CommandRun(rc.Ctx, value, trace.GuardAsked, nil, 0, "", st.withholdFor(value))
-				st.Pending, st.PendingWhat = value, value+" - "+concern.Reason
+				st.Pending, st.PendingWhat, st.PendingOnScreen = value, value+" - "+concern.Reason, false
 				return o.pause(subtask, st, concern.Reason+st.reviewInProgress()), nil
 			}
 			if blocked := o.execute(rc, st, value); blocked != "" {
-				st.Pending, st.PendingWhat = pausedRest(value, blocked), blocked
+				st.Pending, st.PendingWhat, st.PendingOnScreen = pausedRest(value, blocked), blocked, true
 				if st.judgementsDue("approval") {
 					// What it rests on comes first, then the person is asked with it (judgements.go).
 					st.AwaitingJudge, st.PendingReason = "approval", blocked
