@@ -12,7 +12,7 @@ from decurix_agent import ledger_checks
 from decurix_agent import (attachments, binding, config, guidance, llm_client, messaging, playbooks, produced, progress,
                            request_reading, source_guard, state, task_context, usage, verify)
 from decurix_agent.computer import (approval, constraints, core, escalation, evidence, experience, launchers, learning,
-                                    mimic, replay, skills)
+                                    mimic, records, replay, skills)
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
@@ -530,6 +530,11 @@ def _prepare(run):
     # documents itself: a value the request and its documents do not have is no reason to stop. One demonstration
     # fixes the task's shape to what it showed - a bill of two lines - and the next bill had one: found live, the run
     # asked for the "second item" before anything else, and "there is no second line" could not answer that question.
+    # The record this run makes is declared by code from what the documents gave, before anything is typed - by the
+    # replay or by the model alike (_declare_taught_record).
+    if run["start"] == 1 and run.get("filled") and not run.get("gathered") and not run.get("one_off"):
+        _declare_taught_record(run)
+
     if missing and not problem and run.get("filled") and run["start"] == 1 and _learning_by_model(run):
         if _start_pause(run):
             return
@@ -548,6 +553,14 @@ def _prepare(run):
 
     if run["start"] == 1 and _learning_by_model(run):
         _by_model(run)
+        return
+
+    # A run still being learned that replays (its record declared from its documents, every value read from them) puts
+    # its plan to the person first, as a gathered run does (_after_phase): trust decides that, never what is checked.
+    if run["start"] == 1 and run.get("declared") and not run.get("gathered") and not run.get("plan_ok") \
+            and _stage(run) == experience.APPRENTICE:
+        text = _record_plan_text(run)
+        _pause(run, "plan", text, plan_text=text)
         return
 
     if run["start"] == 1 and not run["checked"]:
@@ -823,6 +836,98 @@ def _plan_text(run):
         lines.append(f"- Item {n + 1}: {shown}")
     lines.append(f"- Then your steps from step {run['start']}, once per item, each value checked against its document "
                  "before the save.")
+    lines.append("Reply `yes` to go ahead, or say what to change.")
+    return "\n".join(lines)
+
+
+# The roles of a control a value is typed or chosen into: a field of a form (cdp's _FIELD_ROLES).
+FIELD_ROLES = ("textbox", "combobox", "searchbox", "spinbutton")
+# A declaration this small says too little to stand for the record: its number and at least one other field.
+MIN_DECLARED_FIELDS = 2
+
+
+def _taught_fields(run):
+    """
+    {label: value} of the record a taught run makes, as far as its documents give it: each value the fill read for a
+    step that types into a labelled field of a form (the label is the field's own, as the demonstration found it),
+    once per label. Left out: a row of a repeated part (the ledger's record is flat), an address, a secret, a list,
+    and a label given two different values (which one stands is not code's to say).
+    """
+
+    skill = run["skill"]
+    group = skills.repeated_rows(skill)
+    in_rows = {name for row in (group or {"rows": []})["rows"] for name in row}
+    steps = {s.get("n"): s for s in skill.get("steps") or []}
+    fields, clash = {}, set()
+    for param in skill.get("params") or []:
+        name = param["name"]
+        value = " ".join(str(run["values"].get(name) or "").split())
+        if not value or name in in_rows or param.get("secret") or param.get("list") or learning._is_address(value):
+            continue
+        if not param.get("varies", True) and value == " ".join(str(param.get("default") or "").split()):
+            continue  # the demonstration's own value, kept because it never changes: no fact of this run's document
+        target = (steps.get(param.get("step")) or {}).get("target") or {}
+        label = " ".join(str(target.get("name") or "").split())
+        if not label or target.get("role") not in FIELD_ROLES:
+            continue
+        if label in fields and not records.same_value(fields[label], value):
+            clash.add(label)
+        fields.setdefault(label, value)
+    return {label: value for label, value in fields.items() if label not in clash}
+
+
+def _declare_taught_record(run):
+    """
+    Declare the record this run makes from its document, in code, before anything is typed (records.declare): its
+    number is the field whose label names one (records.identifier_field), its source the one document the request
+    came with. From here the save is compared with the document and the page read back after - whether the replay or
+    the model types it - so a good run is checked independently of the worker (experience.INDEPENDENT) and counts.
+    Found live (2026-11-08): told to declare its record before typing it, the model never did on any of four bills;
+    every check was the model's own, so no run counted and the skill could never be trusted, however well it did.
+    Sets run["declared"] to the key ("" when nothing could be declared: then nothing changes). Never raises.
+    """
+
+    run["declared"] = ""
+    try:
+        files = [str(p) for p in (task_context.current_files() or [])
+                 if Path(str(p)).suffix.lower() in DOCUMENT_SUFFIXES]
+        if len(files) != 1:
+            return ""  # which document a record comes from is not code's to choose among several
+        # Only what stands in the document or the request: a declaration refuses whole over one value nothing backs.
+        given = records._source_text(files[0]) + "\n" + str(run.get("context") or "")
+        fields = {label: v for label, v in _taught_fields(run).items() if records.stands_in(v, given)}
+        key = next((v for label, v in fields.items() if records.identifier_field(label)), "")
+        if not key or len(fields) < MIN_DECLARED_FIELDS:
+            return ""
+        _rec, lines = records.declare(key, files[0], fields)
+    except Exception as exc:  # noqa: BLE001 - not declared: the run goes on as it would have, and says why in the log
+        log(f"Skill {run['skill']['name']}: the record was not declared from its document: {exc}")
+        return ""
+    run["declared"] = key
+    progress.emit("Declared the record from its document before typing it - its form is compared with the document "
+                  "before the save and read back after:\n" + "\n".join(f"- {label} = {el._quote(v, 60)}"
+                                                                     for label, v in fields.items()))
+    log(f"Skill {run['skill']['name']}: declared record {key} from {files[0]}: {' | '.join(lines)}")
+    return key
+
+
+def _record_plan_text(run):
+    """The plan put to the person before the first replays of a run still being learned, its documents in hand: the
+    record as declared from its document, and every other value the steps will type."""
+
+    from decurix_agent.thebot_harness import PLAN_QUESTION
+
+    skill = run["skill"]
+    declared = _taught_fields(run)
+    lines = [PLAN_QUESTION, f"- The record, read from its document and checked against it before the save: "
+             + "; ".join(f"{label} = {el._quote(v, 60)}" for label, v in declared.items())]
+    for param in skills.required(skill):
+        value = run["values"].get(param["name"])
+        label = param.get("label") or param["name"]
+        if value and label not in declared:
+            lines.append(f"- {label}: {el._quote(str(value), 80)}")
+    lines.append(f"- Then your {len(skill.get('steps') or [])} taught steps, replayed with these values; where a step "
+                 "does not fit what the screen shows, I take over from there.")
     lines.append("Reply `yes` to go ahead, or say what to change.")
     return "\n".join(lines)
 
@@ -1458,8 +1563,13 @@ def _run_reply(paused, reply, approval_outcome):
         if said["choice"] == "stop":
             return _stopped("before entering anything. The documents are collected and nothing was entered.")
         run["asked_person"], run["start"] = True, 1
-        return _by_model(run, note=f"You put this plan to the person:\n{_plan_text(run)[:1200]}\nThe person answered: "
-                                   f"{reply}\nThe documents are already collected. Do the rest with their words.")
+        shown = paused.get("plan_text") or _plan_text(run)
+        return _by_model(run, note=f"You put this plan to the person:\n{shown[:1200]}\nThe person answered: "
+                                   f"{reply}\n" + ("The documents are already collected. " if run.get("gathered") else "")
+                                   + (f"Record {run['declared']} is declared from its document (gui records); a value "
+                                      "the person changed is declared again with their value before it is typed. "
+                                      if run.get("declared") else "")
+                                   + "Do the rest with their words.")
 
     if kind in ("go", "start"):
         # The reply's one reading (approval.reading). A word list OR'd with it read "check the amount first, it should
@@ -1754,6 +1864,13 @@ def _learning_by_model(run):
     # or not: the model did the part that varies (the gather), and takes over where the replay stops. Its trust decides
     # whether the plan is put to the person first (_after_phase), never what is checked. See "The per-document part".
     if run.get("gathered") == "done":
+        return False
+    # The same for a run whose documents came with the request: every value it needs was read from them and its record
+    # is declared from them (_declare_taught_record), so the save is compared with the document and read back in code
+    # whoever types it. The replay types it; the model takes over where a step stops. Measured live (2026-11-08): left
+    # to the model while "still learning", each bill took 48-98 turns and 1.3-4.2M tokens, and the skill could never
+    # graduate - nothing it did was read back, so no run counted.
+    if run.get("declared") and run.get("start") == 1 and not any(not run["values"].get(p["name"]) for p in _needed(run)):
         return False
     if _stage(run) == experience.APPRENTICE:
         return True

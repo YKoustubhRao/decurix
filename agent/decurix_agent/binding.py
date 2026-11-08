@@ -558,7 +558,40 @@ def held_by(value, texts):
         # and a discount the field takes as 500 is the document's "-500". Review 2026-11-03 (E-45): the minus was
         # dropped from the texts only, so a negative value was never held, and strict fill dropped every one.
         return any(_plain(n) == plain.lstrip("-") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", joined))
-    return re.search(r"(?<!\w)" + re.escape(plain) + r"(?!\w)", joined) is not None
+    if re.search(r"(?<!\w)" + re.escape(plain) + r"(?!\w)", joined) is not None:
+        return True
+    return wrapped_in(plain, joined)
+
+
+# How far apart a wrapped value's words may stand: its own length this many times, plus the slack below. A table cell
+# wrapped over four lines, with the row's other columns read in between, spans about three times its own length.
+WRAP_SPAN, WRAP_SLACK = 4, 120
+
+
+def wrapped_in(plain, joined):
+    """
+    Whether a value of several words stands in a text as a table cell wrapped over lines does: each of its words, whole
+    and in order, within WRAP_SPAN times its length (+ WRAP_SLACK) of the first. Found live (2026-11-08): a bill's item
+    "Executive A4 Printing Paper 75 GSM (Box of 10 Reams)" is read from its PDF as "Executive A4 / Printing Paper 75 /
+    1 4802 20 Reams 350.00 7,000.00 / GSM (Box of 10 / Reams)" - the row's other columns between the lines of the cell.
+    Held whole by nothing, every bill's item was dropped from the fill, and the model entered every bill by hand.
+    """
+
+    words = re.findall(r"\w+", plain)
+    if len(words) < 2:
+        return False
+    limit = WRAP_SPAN * len(plain) + WRAP_SLACK
+    first = re.compile(r"(?<!\w)" + re.escape(words[0]) + r"(?!\w)")
+    for start in first.finditer(joined):
+        at, end = start.end(), start.start() + limit
+        for word in words[1:]:
+            found = re.compile(r"(?<!\w)" + re.escape(word) + r"(?!\w)").search(joined, at, end)
+            if found is None:
+                break
+            at = found.end()
+        else:
+            return True
+    return False
 
 
 OTHER_SIGN = "this run's documents show this amount only with the other sign"

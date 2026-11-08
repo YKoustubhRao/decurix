@@ -87,6 +87,16 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   unnumbered question, whose reply backs nothing. Any state the screen side writes for the worker must be in the
   caller route both ways (`gui_client.TASK_STATE`, `gui_client.mirrored`); a new kind of it needs its entry there.
 
+- **A demonstration's corrections were learned as part of the procedure** (2026-11-08, ERPNext bill taught once).
+  The person typed the bill number and date, then typed both again, and typed a line's item, then chose it again
+  after Ctrl+A. Learned as recorded, the retyped pair read as two "rows" of a repeated part (`skills.repeated_rows`)
+  and the line rows were not found, so a replay would enter every bill with the demonstration's lines. An entry
+  superseded by a later one into the same field instance (role, name, page, table row, recorded box within 8 px) is
+  dropped before generalising, and the later entry takes its place (`learning._drop_corrections`). The trap the other
+  way: a loop types into the same field once per item. So only field presses and keys may come between the two (a
+  button, link, commit or page change makes it a repetition), the later entry must overwrite (select-all) or repeat
+  the value, and another field re-entered with another value in between marks a register's next line.
+
 ## TheBot
 
 - **Raw nomic-embed-text cosine does not separate relevant from unrelated facts** (T-19), as soul calls it, with no query or document prefix. Measured on 2026-11-03: relevant facts scored 0.44-0.69 and unrelated ones 0.28-0.56. A 0.6 floor dropped a real fact. No fixed floor works, so frames say "may be relevant". A real fix needs nomic's prefixes (re-embedding the stores) or a judge.
@@ -326,3 +336,12 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
   field twice; and a `curl` line with no data was skipped offline as a read, though live it is a GET that a
   button's form refuses. `offlineOracle` now sends the URL's host, keeps a cookie jar and adds repeated fields, and a
   scripted solution's bare button post sends one field (`make_office_suites.curl`).
+
+### A taught task could never be trusted, so it never got cheaper
+
+Since independent checks became the only ones that count towards trust (2026-11-03), a taught form task needed its
+record read back from the application - and only the model declared records (`gui record`). On four ERPNext bills
+Kimi never declared one, so every verdict rested on the model, no run counted, and the worker stayed an apprentice
+doing every field by hand (48-98 turns, 1.3-4.2M tokens a bill). An instruction in the prompt is not a guarantee:
+what the harness needs for correctness, code does (`skill_task._declare_taught_record`). And a PDF table cell wrapped
+over lines is still the document's value (`binding.wrapped_in`); the exact-text check dropped every bill's item.

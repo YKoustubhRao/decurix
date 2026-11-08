@@ -142,6 +142,26 @@ What this makes cheaper, and when:
   history (`needed`, `alternates`, `locate`), which feeds healing and the "fragile step" advice, not trust.
 - The final check's code side reads the record ledger on every route that can say done (`ledger_checks.findings`:
   undeclared fields, records no declaration covers, a record saved twice, an unbacked pick).
+- Found 2026-11-08 (ERPNext bills, taught once on one bill, Kimi-K2.6): bills 02-05 cost 48-98 turns and 1.3-4.2M
+  input tokens each (59-77% from the cache), 86-96% of it the model's own turns at 24-38k tokens each, about three
+  turns per field (click, select all, type). The replay ran once (bill 02, cut at step 19 by the 3-minute command
+  limit) and never again. Three reasons, all fixed:
+  1. **Trust could not be earned.** Since 2026-11-03 a run counts only when checked independently, and for form
+     work that is the ledger's read-back; but only the model declared records, and it never did on any bill. Every
+     verdict's basis was `model`, so the skill was an apprentice for life. Now code declares the record a taught run
+     makes, from the values the fill read from its one document, before anything is typed
+     (`skill_task._declare_taught_record`: the fields the demonstration typed into, by their own labels; the key is
+     the field whose label names a number; only values that stand in the document or request). The save is compared
+     with it and the page read back whoever types it.
+  2. **A run with its document in hand never replayed while being learned.** Only a gathered run did. Now a run whose
+     every value was read from its document and whose record is declared replays too (`_learning_by_model`), its
+     plan put to the person first while it is still learned (`_record_plan_text`), the model taking over where a step
+     stops - the same policy as a gathered run: trust decides whether the plan is shown, never what is checked.
+  3. **The fill dropped every bill's item.** A description its PDF wraps over four lines, the row's other columns read
+     in between, was "in nothing this run was given" (`binding.wrapped_in`: the words whole and in order, within four
+     times the value's length).
+  Also found: the demonstration's own corrections (a field typed twice, a row added and deleted) were learned as
+  steps, and its retyped header fields were taken for the rows (learning, "A demonstration's corrections").
 - Not yet: trust per step (rungs, promotion), the judge reading the ledger instead of screenshots, each document's
   extraction kept by content hash.
 

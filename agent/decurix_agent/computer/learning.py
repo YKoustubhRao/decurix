@@ -117,7 +117,7 @@ def build(sources, name=None):
     tidied = []
     for meta, events in sources:
         program = replay.compile_program(meta, events)
-        for note in _tidy(program, events):
+        for note in _tidy(program, events) + _drop_corrections(program):
             if note not in tidied:
                 tidied.append(note)
         if program["steps"]:
@@ -336,12 +336,233 @@ def _tidy(program, events):
     return notes
 
 
+# How far apart two recorded boxes of one field may be (px, each of x, y, width, height) and still be that field: a
+# page that re-lays out by a pixel or two between two looks. A field of the next row is a row's height away.
+SAME_FIELD_PIXELS = 8
+ROW_SEGMENT = re.compile(r"^row \d+$")
+
+
+def _path_segments(target):
+    path = (target or {}).get("path") or ()
+    if isinstance(path, str):
+        path = path.split(" > ")
+    return [" ".join(str(s).split()) for s in path]
+
+
+def _same_field(a, b):
+    """
+    Whether two entries were made into one field instance on one page: the same control (role and name), in the same
+    window and page, in the same row of a table (the path's `row N`, or none in both), at the same place on the screen
+    (or, with no place recorded, by the same path). The same label in another row, or drawn somewhere else, is another
+    field - a second line of a document, not a correction.
+    """
+
+    ta, tb = a.get("target") or {}, b.get("target") or {}
+    if not ta or not tb or (ta.get("role"), replay._norm(ta.get("name"))) != (tb.get("role"), replay._norm(tb.get("name"))):
+        return False
+    if (a.get("window") or "") != (b.get("window") or ""):
+        return False
+    page_a, page_b = (a.get("url") or "").split("#")[0].split("?")[0], (b.get("url") or "").split("#")[0].split("?")[0]
+    if page_a and page_b and page_a != page_b:
+        return False
+    pa, pb = _path_segments(ta), _path_segments(tb)
+    if [s for s in pa if ROW_SEGMENT.match(s)] != [s for s in pb if ROW_SEGMENT.match(s)]:
+        return False
+    la, lb = a.get("locate") or {}, b.get("locate") or {}
+    box_a, box_b = la.get("box"), lb.get("box")
+    if box_a and box_b and len(box_a) == 4 and len(box_b) == 4:
+        if la.get("screen") and lb.get("screen") and list(la["screen"]) != list(lb["screen"]):
+            return False
+        return all(abs(x - y) <= SAME_FIELD_PIXELS for x, y in zip(box_a, box_b))
+    return bool(pa) and pa == pb
+
+
+def _entry(step):
+    return step["kind"] in ("type", "select") and bool(step.get("param")) and bool(step.get("target"))
+
+
+# Controls a value is entered into (and an option of a list one, picked to fill it): pressing one moves between fields
+# of one record. Any other press (a button, a link, a tab, a checkbox, a bare place on the screen) may make a new row,
+# submit the form or move to another record, so the same field after it holds another entry, not a correction.
+FIELD_ROLES = frozenset({"textbox", "combobox", "searchbox", "spinbutton", "textarea", "option", "listbox", "entry",
+                         "text", "editable text", "spin button", "combo box", "list item"})
+
+
+def _within_one_entry(steps, k, first):
+    """Whether step `k`, between two entries into a field, keeps to filling the same record on the same page: an entry,
+    or a press or key (not a commit) on a field, in `first`'s window and page. A press kept only as a place on the
+    screen counts as on the field the next step entered into when that field's box holds it (_pressed_on_next)."""
+
+    step = steps[k]
+
+    if (step.get("window") or "") != (first.get("window") or ""):
+        return False
+    page, mine = (first.get("url") or "").split("#")[0], (step.get("url") or "").split("#")[0]
+    if page and mine and page != mine:
+        return False
+    if replay._step_commits(step):
+        return False
+    if _entry(step):
+        return True
+    role = ((step.get("target") or {}).get("role") or "").lower()
+    if step["kind"] in ("click", "double_click"):
+        following = steps[k + 1] if k + 1 < len(steps) else None
+        if _pressed_on_next(step, following):
+            role = ((following.get("target") or {}).get("role") or "").lower()
+        if not step.get("target") and not step.get("expect"):
+            # A press on no control that changed nothing the recorder saw (a click on the page's blank space, closing
+            # a drop-down): a press that makes a row or submits a form shows something appear or the page change.
+            return True
+        return role in FIELD_ROLES
+    if step["kind"] == "key":
+        return not role or role in FIELD_ROLES
+    return step["kind"] == "scroll"
+
+
+def _entry_span(steps, i, floor):
+    """The steps that make entry `i` (from no earlier than `floor`): the presses and keys straight before it on the same
+    field (putting the cursor there, selecting what it held) and the option it picked straight after. (first, last)."""
+
+    first = i
+    while first - 1 >= floor and steps[first - 1]["kind"] in ("click", "double_click", "key") \
+            and steps[first - 1].get("target") and _same_field(steps[first - 1], steps[i]):
+        first -= 1
+    last = i
+    following = steps[i + 1] if i + 1 < len(steps) else None
+    if following is not None and following["kind"] == "click" and not following.get("param") \
+            and ((following.get("target") or {}).get("role") or "") == "option":
+        last = i + 1
+    return first, last
+
+
+def _entered(step, params):
+    """What an entry put into its field: the typed text or the option chosen, spaces and case aside."""
+
+    param = params.get(step.get("param")) or {}
+    value = param.get("default") if param else None
+    if value is None:
+        value = step.get("option")
+    return " ".join(str(value or "").split()).lower()
+
+
+def _new_line_between(steps, i, j, params):
+    """Whether an entry between steps i and j goes into a field already entered before it with another value."""
+
+    for k in range(i + 1, j):
+        if not _entry(steps[k]):
+            continue
+        for m in range(k):
+            if _entry(steps[m]) and _same_field(steps[m], steps[k]) \
+                    and _entered(steps[m], params) != _entered(steps[k], params):
+                return True
+    return False
+
+
+def _first_correction(steps, params):
+    """The first entry a later one supersedes (see _drop_corrections), as (its span, the later entry's span), or None."""
+
+    for i, step in enumerate(steps):
+        if not _entry(step) or (params.get(step["param"]) or {}).get("secret"):
+            continue
+        for j in range(i + 1, len(steps)):
+            later = steps[j]
+            if not _within_one_entry(steps, j, step):
+                break  # a new row, a submit, another page: the same field after it is another entry
+            if not _entry(later) or not _same_field(step, later):
+                continue
+            if (params.get(later["param"]) or {}).get("secret"):
+                break
+            replaced = later["kind"] == "type" and replay._replaces_selection(steps[j - 1], later)
+            if later["kind"] == "type" and later.get("append") and not replaced:
+                break  # added to what the field held: both entries make its text
+            # A correction overwrites what the field held (everything selected first) or makes the same entry again. A
+            # different value simply entered again may be the next line of a register, so both stay.
+            if not replaced and _entered(later, params) != _entered(step, params):
+                break
+            # Another field entered again in between with another value: the person moved on to a new line of the
+            # same fields (a register's next row), and this is that line's own entry.
+            if _new_line_between(steps, i, j, params):
+                break
+            earlier = _entry_span(steps, i, 0)
+            if earlier[1] >= j:
+                earlier = (earlier[0], i)
+            return earlier, _entry_span(steps, j, earlier[1] + 1)
+    return None
+
+
+def _drop_corrections(program):
+    """
+    Take a person's own corrections out of a program, in place, before anything is learned from it; returns what was
+    changed, in words. An entry into a field that the person later made again into the same field instance (_same_field),
+    with nothing committed in between (replay._step_commits), was superseded: the later entry is what the field held.
+    The earlier one goes, with the press that put the cursor there and the option it picked from a list. A later entry
+    that only added to the field's text (typed at its end, without selecting what was there) supersedes nothing. Never
+    a secret. The recording itself is untouched.
+
+    Found live (2026-11-08): a person typed the bill number and date, then typed both again, and typed a line's item,
+    then went back and chose it again. Learned as they were, the retyped pair read as two "rows" of a repeated part and
+    the real line rows were not found, so every later bill was entered with the demonstration's lines.
+    """
+
+    params = {p["name"]: p for p in program["params"]}
+    notes, gone = [], set()
+
+    # One correction at a time, until none is left: each changes the steps' places.
+    while True:
+        steps = program["steps"]
+        found = _first_correction(steps, params)
+        if found is None:
+            break
+        earlier, later = found
+        step = steps[earlier[1]]
+        gone.add(step["param"])
+        # The later entry's own steps (the press into the field, a select-all, the entry, the option it picked) take
+        # the earlier entry's place: where the field comes in the procedure is where the person first filled it, so a
+        # table's rows keep one order of fields (a row whose item was chosen again last would read as another shape).
+        moved = steps[later[0]:later[1] + 1]
+        rest = [s for k, s in enumerate(steps) if not (earlier[0] <= k <= earlier[1] or later[0] <= k <= later[1])]
+        at_index = sum(1 for k in range(earlier[0]) if not (later[0] <= k <= later[1]))
+        program["steps"] = rest[:at_index] + moved + rest[at_index:]
+        label = (step.get("target") or {}).get("name") or (params.get(step["param"]) or {}).get("label") or "a field"
+        note = f"you made an entry into {el._quote(label, 40)} twice; the last entry is kept"
+        if note not in notes:
+            notes.append(note)
+
+    if not notes:
+        return []
+
+    kept = program["steps"]
+    for n, step in enumerate(kept, 1):
+        step["n"] = n
+        if step.get("param") in params:
+            params[step["param"]]["step"] = n
+        if step.get("expect"):
+            # A check that the field holds a value that is no longer typed anywhere.
+            step["expect"] = [c for c in step["expect"] if c.get("param") not in gone]
+    program["steps"] = kept
+    program["params"] = [p for p in program["params"] if p["name"] not in gone]
+    return notes
+
+
 NAMED_BY_NEXT = ("type", "key", "select", "upload")
 
 
 def _inside(point, box, slack=4):
     return (box and len(box) == 4 and box[0] - slack <= point[0] <= box[0] + box[2] + slack
             and box[1] - slack <= point[1] <= box[1] + box[3] + slack)
+
+
+def _pressed_on_next(step, following):
+    """Whether a press kept only as a place on the screen was on the control the next step typed into (or pressed a
+    key in, chose in, uploaded to): that control's recorded box holds the press point, in the same window."""
+
+    if step["kind"] not in ("click", "double_click") or step.get("target") or not step.get("point"):
+        return False
+    locate = (following or {}).get("locate") or {}
+    return bool(following and following.get("target") and following["kind"] in NAMED_BY_NEXT
+                and (following.get("window") or "") == (step.get("window") or "")
+                and (not step.get("screen") or not locate.get("screen") or list(step["screen"]) == list(locate["screen"]))
+                and _inside(step["point"], locate.get("box")))
 
 
 def _name_points(steps):
@@ -367,10 +588,7 @@ def _name_points(steps):
             continue
         following = steps[index + 1] if index + 1 < len(steps) else None
         locate = (following or {}).get("locate") or {}
-        if (following and following.get("target") and following["kind"] in NAMED_BY_NEXT
-                and (following.get("window") or "") == (step.get("window") or "")
-                and (not step.get("screen") or not locate.get("screen") or list(step["screen"]) == list(locate["screen"]))
-                and _inside(step["point"], locate.get("box"))):
+        if _pressed_on_next(step, following):
             step["target"] = copy.deepcopy(following["target"])
             step["locate"] = copy.deepcopy(locate)
             step.pop("look", None)
