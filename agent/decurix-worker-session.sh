@@ -79,6 +79,18 @@ esac
 # its first (BadAccess). The screen user draws the wallpaper (computer/wallpaper.py); there are no desktop icons in
 # this mode - run as the screen user, xfdesktop's menus would start programs as that user, past the gate.
 which xdg-user-dirs-update >/dev/null 2>&1 && xdg-user-dirs-update
+
+# The panel without its window list: as an untrusted client it cannot see the windows, so the list stayed empty. The
+# screen user's window list (decurix_agent/computer/windowlist.py, started by the screen session) sits between this
+# layout's two bars instead. Put in place of the image's layout while that one still holds a window list (a panel a
+# person changed otherwise is left alone), before anything starts the settings daemon that reads it.
+PANEL_XML="$HOME/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml"
+if [ -f /opt/decurix-panel-broker.xml ] && { [ ! -e "$PANEL_XML" ] || grep -q 'value="tasklist"' "$PANEL_XML"; }; then
+    mkdir -p "$(dirname "$PANEL_XML")" \
+        && cp /opt/decurix-panel-broker.xml "$PANEL_XML.new" && mv -f "$PANEL_XML.new" "$PANEL_XML" \
+        && echo "[$(date)] the panel's layout is broker mode's (no window list)"
+fi
+
 for part in xfsettingsd xfce4-panel "Thunar --daemon"; do
     # shellcheck disable=SC2086 # a part is a program and its arguments
     setsid $part < /dev/null >> "$LOG" 2>&1 &

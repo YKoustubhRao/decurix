@@ -982,3 +982,5 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A widget on the worker's accessibility bus is the worker's word, box included
 - [part-6.md](gotchas/part-6.md): A command the gate held still did what came before the held press
 - [part-6.md](gotchas/part-6.md): A bare figure declared from a source that writes it with a unit settles the unit silently
+- [part-6.md](gotchas/part-6.md): A carry-state eval sent the next case's request into the earlier case's open question
+- [part-6.md](gotchas/part-6.md): A locked xfce4-panel still starts programs

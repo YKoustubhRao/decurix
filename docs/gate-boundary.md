@@ -3,7 +3,8 @@
 Status (2026-11-07): the gate, its key, the image's root removal, the signed inputs of phase 2 and the network per
 desktop are built. Round 3 was checked live on a layered image of this checkout with `bench/security/boundary.sh`; the
 live checks owed on the next image are listed in [follow-ups.md](follow-ups.md). Existing desktops keep the old setup
-until recreated. The input broker ("Next" below) is not built.
+until recreated. The input broker ("Next" below) is built and, since 2026-11-08 (owner decision O-1), on by default
+for new desktops (`DECURIX_SCREEN_BROKER=0` on the control plane turns it off for desktops made from then on).
 
 Found while checking step 1: the worker could already become root. `headless` had `sudo` for everything and the base image's
 default password (`headless`) works (`echo headless | sudo -S id -u` printed 0). Step 1 removes that: see
@@ -293,7 +294,7 @@ phone or the tunnel cannot drive the worker through soul.
   characters is refused. A desktop cannot call it, so a worker cannot erase what it was seen doing.
   (docs/trajectory.md, "Purging a leaked secret".)
 
-## Next: the input broker (built behind a switch that is off; checked live on a throwaway container)
+## Next: the input broker (built; on by default for new desktops since 2026-11-08)
 
 The gate decides whether a yes exists; nothing yet stands between the worker and the screen. The worker's Linux user
 owns everything that can act on the screen or as the person, so each of these is a click on Pay without asking:
@@ -367,10 +368,11 @@ Build order from here: the creation switch (`DECURIX_SCREEN_BROKER` on the contr
 `DECURIX_SCREEN_USER=1`); the probe rows; the daemon's peer-uid check and the screen/worker split in the entrypoint;
 the CDP relay; the worker-side launch helper; then the agent's in-process screen paths as broker clients.
 
-Built so far (2026-11-07, behind `DECURIX_SCREEN_BROKER`, off; code, unit tests, live runs on throwaway containers,
-and a desktop the real control plane made - see "Checked on a desktop the control plane made" below):
-- **The creation switch.** `DECURIX_SCREEN_BROKER=1` on the control plane gives each new desktop
-  `DECURIX_SCREEN_USER=1` (`internal/desktop/screenbroker.go`). The image has the `decurixscreen` system user (no
+Built so far (2026-11-07, behind `DECURIX_SCREEN_BROKER`, then off; code, unit tests, live runs on throwaway
+containers, and a desktop the real control plane made - see "Checked on a desktop the control plane made" below):
+- **The creation switch.** `DECURIX_SCREEN_BROKER` on the control plane gives each new desktop
+  `DECURIX_SCREEN_USER=1` (`internal/desktop/screenbroker.go`): on when unset since 2026-11-08; `0` (or
+  `false`/`off`/`no`) turns it off. The image has the `decurixscreen` system user (no
   login shell, no password, no sudo).
 - **The broker's socket identity** (`computer/daemon.py`, `gui_client.py`, `broker.py`). The gui daemon serves as the
   broker when the switch is on and its uid is not the worker's (`DECURIX_SCREEN_WORKER_UID`, default 1001). A daemon
@@ -503,7 +505,8 @@ and a desktop the real control plane made - see "Checked on a desktop the contro
     Checked live: a made-up widget over the browser was refused, one over the panel was not. A window the worker maps
     and unmaps between the check and the press is a race this does not close (a few milliseconds).
   - LibreOffice (soffice, GTK3) and mousepad open, draw and take input as untrusted clients; the panel draws and its
-    launchers work (a person's click on its Web Browser icon), but its window list stays empty (open, below).
+    launchers work (a person's click on its Web Browser icon), but its own window list stayed empty; the screen
+    user's window list replaces it (below, "The panel's window list").
 - **The browser launcher run as the worker** (`agent/chromium-browser`): started as the worker in broker mode (the
   panel's Web Browser icon through `exo-open`, `xdg-open`, a link in an app, a host app's script), it hands each page
   to the broker as `gui open` (a local file handed over and opened as a copy) and with none brings the browser up; it
@@ -533,10 +536,7 @@ observe, click, type, an upload, LibreOffice's widgets, the agent's routed calls
 five screen probes PASS (`bench/security/screen_probes.sh` against that desktop, with its own screen password).
 
 What remains, in order:
-1. **The panel's window list.** As an untrusted client the panel never hears the root window change, so its
-   tasklist stays empty; windows are switched with the window manager's keys (alt-tab) or `gui front`. A tasklist
-   drawn by the screen user would have to be one with no way to start a program (the panel's own menus and
-   preferences start programs); not built.
+1. ~~**The panel's window list.**~~ Built 2026-11-08: see "The panel's window list" below.
 2. **What the screen side still does not see of the worker's state**: the worker's learned app guides
    (`_guide_hint` after `gui open` names only the built-in ones), and anything a screen command reads that is not in
    the context it is sent (it reads its own, older or empty copy). A new reader of worker state on the screen side
@@ -548,7 +548,8 @@ What remains, in order:
    observe stayed well under a second live).
 5. **The agent's own user** (path 6's open half), and `VNC_PW` out of a `docker exec`'s environment.
 
-**Making broker mode the default** (decision for the owner, O-1): every path of the six that the screen side holds is
+**Making broker mode the default** (decision for the owner, O-1; taken 2026-11-08, see "Broker mode is the default"
+below): every path of the six that the screen side holds is
 closed and checked on a control-plane desktop, the worker's state reaches every reader, and the worker's apps work.
 What a person loses in this mode is the desktop's icons and the panel's window list; what is still open is path 6's
 agent half. The recommendation is to turn it on for new desktops after (4) - one live series of real tasks (a taught
@@ -692,6 +693,69 @@ rebuilt with its fixes, the browser icon and a taught skill opening a local page
 replay whose ladder asked the hosted model through the broker - with no unseen success and no failure specific to
 broker mode. The losses stay as stated (no desktop icons, an empty panel window list, path 6's agent half). The owner
 decides (O-1); a desktop keeps the mode it was created with.
+
+### The panel's window list (2026-11-08)
+
+The cost a person felt most in broker mode: the panel is the worker's, an untrusted X client, so its window list
+never filled (the SECURITY extension gives it none of the root window's events) and windows could be switched only
+with alt-tab. Now:
+- **The screen user runs a window list** (`computer/windowlist.py`, started by `decurix-screen-session.sh` in a loop
+  that stops on exit 3): a dock window on the bottom edge with one button per window in the window manager's list
+  (normal windows and dialogs with no parent, not docks, not `SKIP_TASKBAR`), each with its icon and title; the
+  active one is lit. A left click brings that window forward (`_NET_ACTIVE_WINDOW`, source "pager"), or minimizes
+  it when it is the active one (`WM_CHANGE_STATE` Iconic). That is window management, done by the window manager for
+  any window, not input into an app, so it does not go to the gate.
+- **The worker's panel has no window list in broker mode**: `decurix-worker-session.sh` puts
+  `agent/decurix-panel-broker.xml` in place of the image's layout while that one still holds a tasklist (a panel a
+  person changed is left alone). It is two bars, each as long as what it holds: the Start menu and the three pinned
+  launchers at the bottom left (the same plugin ids, so `launcher-3/4/5` still match), the tray, clock and
+  show-desktop at the bottom right. The window list places itself between them (read from the worker's dock windows;
+  a bar across the middle, a person's own layout, leaves fixed margins instead) and reserves its strip (`_NET_WM_STRUT_PARTIAL`).
+- **Why nothing in it can start a program.** It acts on one input, a left-button release on a button, and sends one
+  of the two messages above about a window already in the window manager's list. It never takes the keyboard
+  (`WM_HINTS` input false, no key events), has no menu, dialog, tooltip or drop target, reads no settings (its look
+  and place are its code's; fonts from `/usr/share/fonts`), and imports no way to start a process
+  (`agent/tests/test_windowlist.py` reads its code: imports only `os`, `select`, `struct`, `sys`, `unicodedata`,
+  python-xlib and PIL; no `os.system`/`exec*`/`spawn*`/`fork`/`popen`, no `subprocess`, Gio, GTK or ctypes). It uses
+  no toolkit on purpose: a GTK client reads the XSETTINGS manager, which in broker mode is the worker's
+  `xfsettingsd`, and GTK loads the libraries its `Gtk/Modules` setting names (a path as it is). What it reads of the
+  worker's windows (titles, icons, the bars' places) is drawn as pixels, read with bounds (4 kB a title, 1 MB of
+  icons, 512 px a side).
+- **Why not a second xfce4-panel as the screen user**, locked (the first design): xfce4-panel 4.18 cannot be locked
+  far enough. With its panels locked (xfconf's locked properties; it no longer reads `kioskrc` for this) its
+  right-click menu still offers Log Out (runs `xfce4-session-logout`), Help (opens a browser) and About, and the
+  tasklist plugin's own button menu has "Launch New Instance", which runs `/proc/<pid>/exe` of the pid in the
+  window's `_NET_WM_PID` - a property each window's own client sets, so a window of the worker's could name a
+  process of the screen user's and a person's click would start it as that user.
+- What a person still cannot do from it: close a window (its title bar does that), or reach the worker's
+  show-desktop button for the screen user's windows (the button is the worker's, untrusted, and its message to the
+  root window is refused).
+- **Checked live** (2026-11-08, `decurix-desktop:broker` = `:next` rebuilt from this tree, 4f5f96c36273; a throwaway
+  broker-mode container, no control plane): the worker's two bars at the bottom corners and the list between them
+  (177..1166 of 1280, the bars' own height), showing the screen user's Chrome and the worker's mousepad with their
+  icons and titles; a person's click (pointer input) on mousepad's button brought it forward, a click on the active
+  one minimized it, a further click restored it. Every other input on a button and on the empty part (middle, right
+  and scroll buttons, buttons 6-9, ctrl/shift/alt/super with a click, keys) started no process of the screen user's.
+  The five screen probes pass (`boundary.sh --image decurix-desktop:broker --layer --broker --screen-only`), and
+  `bench/skills/e2e.py --broker` ends "END TO END: OK".
+
+### Broker mode is the default (2026-11-08, owner decision O-1)
+
+The owner took O-1: `DECURIX_SCREEN_BROKER` is on unless set to `0` (or `false`/`off`/`no`), so every desktop the
+control plane creates from now on is made in broker mode. A desktop keeps the mode it was created with (its
+environment is fixed at creation): nothing re-creates existing desktops, and a desktop made before this stays in
+the default mode until a person recreates it. The dashboard's create dialog has no control for it; to make desktops
+in the default mode again, start the control plane with `DECURIX_SCREEN_BROKER=0` (docs/running.md).
+
+The costs that remain in broker mode:
+- **No desktop icons.** xfdesktop cannot run as the worker's untrusted client, and as the screen user its menus
+  would start programs past the gate; the screen user draws the wallpaper only. Apps are reached from the panel's
+  Start menu and launchers, and `gui open`.
+- **The agent token is readable by the worker** (path 6's agent half): the agent still runs as the worker with
+  `DECURIX_AGENT_TOKEN` in its environment, so the worker can read it from `/proc` and start tasks as a "person". It
+  cannot make a yes. Closing it is the agent's own user (step 5 of the order above).
+- `VNC_PW` is still in a `docker exec`'s environment (path 2's last part), and the screen user can read the
+  worker's home by path (`/home/headless` is 0755; above, "Seen, not fixed").
 
 ## What this does not cover (said plainly)
 

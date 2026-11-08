@@ -232,3 +232,15 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
 - **A bare figure declared from a source that writes it with a unit settles the unit silently** (2026-11-08). "18" from
   "18%" matched a unit-less field's 18, and the unit question never came. A declaration keeps the unit its backing
   writes (`records._source_units`).
+- **A carry-state eval sent the next case's request into the earlier case's open question** (2026-11-08, first
+  learn-v1 run). A case that ended at an approval left it pending; the next request, saved a second later, was neither
+  its reply nor "after" it by the agent's one-second stale-question rule, so it queued until its case timed out. Between
+  a learning curve's cases the runner now settles the desktop (`desktop.SettlePractice`: the open task cleared, the
+  learned state kept, restarted), and a desktop's restart no longer counts its own earlier memory reservation.
+- **A locked xfce4-panel still starts programs** (2026-11-08, broker mode's window list). Run as the screen user, a
+  second panel holding only the window list looked safe once locked, but xfce4-panel 4.18 keeps Log Out, Help and
+  About in its menu whatever is locked, and the window list's own button menu has "Launch New Instance", which runs
+  `/proc/<pid>/exe` of the window's `_NET_WM_PID` - a property the window's own client (the worker) sets. The screen
+  side's window list is its own small program instead (`computer/windowlist.py`): no toolkit (GTK loads the modules
+  the XSETTINGS manager names, and that is the worker's xfsettingsd), no menu, no keyboard, nothing it can start. Its
+  window must select button presses too, or the window manager's grab takes the release and a click does nothing.

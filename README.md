@@ -116,6 +116,7 @@ What is built, grouped by area. Each line links the doc that explains it; [`docs
 * One shared action layer (`observe` / `act` / `verify` / `open`) that every engine drives (TheBot through the `gui` shell command), so screen access, approval and auditing cannot be bypassed ([computer-use.md](docs/computer-use.md))
 * Screen understanding via AT-SPI (GTK/XFCE/LibreOffice), the Chrome DevTools Protocol (Chromium) and `xdotool` input
 * Consequential actions (Send/Pay/Publish-style controls) stop for a person's yes. A yes covers one action, and only the gate process can turn a signed reply into one ([gate-boundary.md](docs/gate-boundary.md))
+* The screen is not the worker's: on a new desktop the X server, window manager, browser and a screen broker run as their own Linux user, and the worker's programs reach the screen only through that broker (no direct input, DevTools port or browser profile of the person's). Set `DECURIX_SCREEN_BROKER=0` to create desktops without it; a desktop keeps the mode it was created with ([gate-boundary.md](docs/gate-boundary.md), "Broker mode is the default")
 * Every action recorded with before/after screenshots, shown inline in the chat
 
 **Recordings, teaching & replay**
@@ -498,6 +499,7 @@ Set these in your own `.env` (copied from `.env.example`) — the control plane 
 | `DECURIX_DATA_DIR` | No | your user config dir + `/decurix` (`/data` in the Docker image) | Where `decurix.db` lives: task records, chats, queries, worker memory, action screenshots, and the hosted brains' keys, encrypted (see [Setting up a hosted brain](#-setting-up-a-hosted-brain)). `docker compose` keeps it on the `decurix-data` volume. |
 | `DECURIX_STEP_IMAGES_MB` | No | `1024` | Disk budget for the before/after screenshots of on-screen actions. The oldest are dropped first. A desktop keeps its full-size originals regardless. |
 | `DECURIX_LAN_PORT` | No | `8090` | Port of the second, access-code-gated listener — the **LAN access URL**, reachable directly on your own network. Changes which host port `docker compose` publishes it on too. With `DECURIX_PUBLIC_LINK=1`, `build.sh`/`rebuild.sh` open one tunnel, to this port only; nothing tunnels `:8080`. |
+| `DECURIX_SCREEN_BROKER` | No | on | `0` creates new desktops without the screen broker (the worker's user then owns the screen, and can act on it without asking). Existing desktops keep the mode they were created with. See [gate-boundary.md](docs/gate-boundary.md). |
 | `DECURIX_IDLE_STOP_MINUTES` | No | `5` (on) | Stop a desktop automatically once it's sat idle — no task running, queued, or waiting on a reply, and no screen/thumbnail open — for this many minutes. Set to `0` to turn it off. It only ever does what the dashboard's own Stop button does. |
 
 Every other setting (the worker's model, the control-plane URL a desktop calls home to, etc.) is set up for each desktop when you create it. See [`docs/architecture.md`](docs/architecture.md) if you're changing that wiring.

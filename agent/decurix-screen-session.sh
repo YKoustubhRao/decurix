@@ -5,9 +5,10 @@
 # waits on this script, and it waits on the X server.
 #
 # What runs here, as the screen user: the X server with its VNC port (Xtigervnc), the window manager (xfwm4), a
-# session bus of this user's own, and the screen broker (the gui daemon as the broker, computer/daemon.py), which
-# starts the browser when a command opens a page. Nothing else: the panel, the desktop, the terminal and the office
-# apps are the worker's (agent/decurix-worker-session.sh), as untrusted X clients.
+# session bus of this user's own, the wallpaper, the window list on the bottom bar (computer/windowlist.py: lists and
+# raises windows, starts nothing), and the screen broker (the gui daemon as the broker, computer/daemon.py), which
+# starts the browser when a command opens a page. Nothing else: the panel, the terminal and the office apps are the
+# worker's (agent/decurix-worker-session.sh), as untrusted X clients.
 #
 # The X server is Ubuntu's Xtigervnc, not the base image's /usr/bin/Xvnc: that one is built without the SECURITY
 # extension, so it cannot give the worker an untrusted cookie (found 2026-11-07: `xauth generate` says "couldn't
@@ -103,6 +104,22 @@ echo "[$(date)] window manager started (pid $!)"
 # The wallpaper, drawn on the root window by this user: xfdesktop cannot run as the worker's untrusted client, and run
 # as this user its menus would start programs past the gate (computer/wallpaper.py). A picture only - no icons.
 (cd / && PYTHONPATH=/opt /usr/bin/python3 -m decurix_agent.computer.wallpaper /opt/decurix-wallpaper.svg) &
+
+# The window list on the bottom bar: the worker's panel cannot see the windows (an untrusted client), so a person
+# could not switch windows from it. This is the screen user's, and it cannot start a program: a left click on a button
+# sends the window manager "bring this window forward" (or "minimize" for the active one) about a window in the window
+# manager's own list, and nothing else; no menu, no keyboard, no toolkit, no settings, and it imports no way to start a
+# process (computer/windowlist.py says why, and why not a second xfce4-panel: even locked, its menus and its window
+# list's "Launch New Instance" start programs). Run again if it ends, not when it says it cannot run here (3).
+(
+    cd / || exit 0
+    while :; do
+        NO_AT_BRIDGE=1 PYTHONPATH=/opt /usr/bin/python3 -m decurix_agent.computer.windowlist
+        [ $? -eq 3 ] && break
+        sleep 2
+    done
+) &
+echo "[$(date)] window list started (loop pid $!)"
 
 # The screen broker, run again when it ends (its code changed on disk, a dev loop's docker cp) and not when it says
 # it cannot serve here (3). In /, the agent's code from /opt, nothing of anyone else's on sys.path.

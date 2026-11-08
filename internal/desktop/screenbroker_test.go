@@ -17,37 +17,62 @@ func readRepoFile(t *testing.T, path string) string {
 	return strings.ReplaceAll(string(raw), "\r\n", "\n")
 }
 
-// TestScreenBrokerSwitchSetsTheScreenUserEnv checks both ways of the creation switch: with DECURIX_SCREEN_BROKER=1 on
-// the control plane a new desktop gets DECURIX_SCREEN_USER=1, and without it (unset, empty, or anything but "1") the
-// desktop's environment has no such variable at all - the default is byte-for-byte what it was.
-func TestScreenBrokerSwitchSetsTheScreenUserEnv(t *testing.T) {
-	count := func(env []string) int {
-		n := 0
-		for _, kv := range env {
-			if strings.HasPrefix(kv, ScreenUserEnv+"=") {
-				n++
-			}
+// countScreenUserEnv is how many times env sets ScreenUserEnv.
+func countScreenUserEnv(env []string) int {
+	n := 0
+	for _, kv := range env {
+		if strings.HasPrefix(kv, ScreenUserEnv+"=") {
+			n++
 		}
-		return n
 	}
+	return n
+}
 
-	t.Setenv(ScreenBrokerEnv, "")
-	off := buildDesktopEnv("box", HarnessTheBot, "", "", Brain{})
-	if count(off) != 0 {
-		t.Fatalf("with the switch off a desktop got %s: %v", ScreenUserEnv, off)
-	}
-	for _, value := range []string{"0", "true", "yes", "2"} {
+// TestScreenBrokerIsOnByDefault checks owner decision O-1 (2026-11-08): with DECURIX_SCREEN_BROKER unset or empty on
+// the control plane, a new desktop is made in broker mode (DECURIX_SCREEN_USER=1, once).
+func TestScreenBrokerIsOnByDefault(t *testing.T) {
+	for _, value := range []string{"", "  "} {
 		t.Setenv(ScreenBrokerEnv, value)
-		if env := buildDesktopEnv("box", HarnessTheBot, "", "", Brain{}); count(env) != 0 {
-			t.Fatalf("%s=%q turned broker mode on; only \"1\" does", ScreenBrokerEnv, value)
+		env := buildDesktopEnv("box", HarnessTheBot, "", "", Brain{})
+		if countScreenUserEnv(env) != 1 || envValue(env, ScreenUserEnv) != "1" {
+			t.Fatalf("with %s=%q a desktop's %s is %q (%d times), want \"1\" once: broker mode is the default",
+				ScreenBrokerEnv, value, ScreenUserEnv, envValue(env, ScreenUserEnv), countScreenUserEnv(env))
+		}
+	}
+	os.Unsetenv(ScreenBrokerEnv) // t.Setenv above restores the old value at the end
+	if !screenBrokerOn() {
+		t.Fatalf("with %s unset broker mode is off; it is the default", ScreenBrokerEnv)
+	}
+}
+
+// TestScreenBrokerSwitchSetsTheScreenUserEnv checks both ways of the creation switch: with DECURIX_SCREEN_BROKER=0 (or
+// false/off/no) on the control plane a new desktop's environment has no DECURIX_SCREEN_USER at all - the default
+// mode's environment byte for byte - and with "1" (or anything else) it gets DECURIX_SCREEN_USER=1, once, and nothing
+// else changes.
+func TestScreenBrokerSwitchSetsTheScreenUserEnv(t *testing.T) {
+	t.Setenv(ScreenBrokerEnv, "0")
+	off := buildDesktopEnv("box", HarnessTheBot, "", "", Brain{})
+	if countScreenUserEnv(off) != 0 {
+		t.Fatalf("with %s=0 a desktop got %s: %v", ScreenBrokerEnv, ScreenUserEnv, off)
+	}
+	for _, value := range []string{"false", "OFF", " no "} {
+		t.Setenv(ScreenBrokerEnv, value)
+		if env := buildDesktopEnv("box", HarnessTheBot, "", "", Brain{}); countScreenUserEnv(env) != 0 {
+			t.Fatalf("%s=%q left broker mode on; it says off", ScreenBrokerEnv, value)
+		}
+	}
+	for _, value := range []string{"true", "yes", "2"} {
+		t.Setenv(ScreenBrokerEnv, value)
+		if env := buildDesktopEnv("box", HarnessTheBot, "", "", Brain{}); countScreenUserEnv(env) != 1 {
+			t.Fatalf("%s=%q turned broker mode off; only 0/false/off/no do", ScreenBrokerEnv, value)
 		}
 	}
 
 	t.Setenv(ScreenBrokerEnv, "1")
 	on := buildDesktopEnv("box", HarnessTheBot, "", "", Brain{})
-	if count(on) != 1 || envValue(on, ScreenUserEnv) != "1" {
+	if countScreenUserEnv(on) != 1 || envValue(on, ScreenUserEnv) != "1" {
 		t.Fatalf("with %s=1 a desktop's %s is %q (%d times), want \"1\" once", ScreenBrokerEnv, ScreenUserEnv,
-			envValue(on, ScreenUserEnv), count(on))
+			envValue(on, ScreenUserEnv), countScreenUserEnv(on))
 	}
 	// Nothing else changes: the same environment plus the one variable.
 	if len(on) != len(off)+1 {
