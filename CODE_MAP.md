@@ -883,7 +883,7 @@ Package skills is the "limbs" - every real capability the agent has (terminal to
 - `reviewer.go`: maxReviewPictures bounds the pictures the reviewer is shown.
 - `reviewer_test.go`
 - `screen_answer.go`: quotedRe is a run of words in quotes inside a question.
-- `screen_answer_test.go`: Whose a review point is comes from the reviewer's settle, never from words in the point (review T-18): "recheck" is the worker's, "person" the person's, however it is worded.
+- `screen_answer_test.go`: A question for names the application lists is held once when a listed window shows that list - a fact of the listing, never of the question's words (N-W3-3): the same question goe…
 - `screen_digest.go`: screenVerbRe is a gui command whose output describes the screen as it was: looking at it or acting on it.
 - `screen_digest_test.go`: TestMeasureAGUIStage prints what a GUI stage re-sends with and without shortened listings (MEASURE=1): 30 turns, a 6,000-character listing every third turn, 300-character action o…
 - `second_read.go`: secondRead is the values typed or written that only a picture showed which an independent transcription of the document pictures does not hold, as recheck points; nil when there i…
@@ -1204,7 +1204,7 @@ Package hub fetches model files from Hugging Face and runtime binaries from GitH
 Package install gets what a plan chose onto this machine - Hugging Face files pinned to a commit and checked by sha256, GitHub release archives unpacked safely, Ollama pulls, the…
 
 - `install.go`: Package install gets what a plan chose onto this machine - Hugging Face files pinned to a commit and checked by sha256, GitHub release archives unpacked safely, Ollama pulls, the…
-- `supply_test.go`: A GitHub asset is downloaded only when something vouches for its bytes: the catalog's pin, else GitHub's digest; the two must agree.
+- `supply_test.go`: A GitHub asset is downloaded only when the catalog pins its bytes; GitHub's digest, when there is one, must agree, and alone is not enough.
 - `templates.go`: TemplatesFile is the record of each model's chat template, under the store root.
 - `templates_test.go`: The whole path a changed upstream takes, against a stand-in for the Hub.
 
