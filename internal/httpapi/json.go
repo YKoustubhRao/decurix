@@ -55,6 +55,19 @@ func jsonError(w http.ResponseWriter, err error) {
 		return
 	}
 
+	// A delete refused while runs of the desktop are not in the run record yet: the person may try again, or send it
+	// again with force (held marks the case the dashboard offers "Delete anyway" on).
+	var unsaved *unsavedRunsError
+	if errors.As(err, &unsaved) {
+		jsonResponseStatus(w, http.StatusConflict, map[string]any{"error": refusal(unsaved), "held": true, "unsaved_runs": unsaved.n})
+		return
+	}
+
+	if errors.Is(err, errForceNeedsPerson) {
+		jsonStatusError(w, http.StatusForbidden, refusal(errForceNeedsPerson))
+		return
+	}
+
 	if errors.Is(err, memory.ErrInvalid) {
 		jsonStatusError(w, http.StatusBadRequest, "invalid request")
 		return
@@ -88,6 +101,10 @@ func badForm(w http.ResponseWriter, err error) {
 // way forward (an InputError, errBrain, a shared folder's or a backup's reason) - never one a store, Docker or the
 // network returned. The name is the review point: only such an error may be passed to it.
 func refusal(err error) string { return err.Error() }
+
+// refusalLines is the lines of a refusal made of several reasons this server's own code wrote for the person (a
+// suite's problems, eval.Problems), each one theirs to read. The same review point as refusal.
+func refusalLines(lines []string) []string { return lines }
 
 // providerSaid is what the person's own account (a model provider, a mail server) answered when they set it up -
 // "invalid x-api-key", "deployment not found" - which is what they need to fix the form.

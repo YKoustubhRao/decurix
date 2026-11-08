@@ -141,7 +141,7 @@ func (h *evalRoutes) refuse(w http.ResponseWriter, err error) {
 	var low practice.LowMemoryError
 	switch {
 	case errors.As(err, &problems):
-		jsonResponseStatus(w, http.StatusBadRequest, map[string]any{"error": "the suite has problems", "problems": []string(problems)})
+		jsonResponseStatus(w, http.StatusBadRequest, map[string]any{"error": "the suite has problems", "problems": refusalLines(problems)})
 	case errors.As(err, &bad):
 		jsonStatusError(w, http.StatusBadRequest, refusal(bad))
 	case errors.Is(err, eval.ErrBusy):

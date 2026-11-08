@@ -495,10 +495,32 @@ func (s *Server) deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	// one lifecycle lock desktopAction holds: every run with no bundle, the open ones included, is pulled, then the
 	// desktop goes, and only once it has gone are its open runs closed (a delete that fails leaves them as they are,
 	// still running). Neither the flush nor the delete is cut short by the browser going away (review CP-A B3, N9,
-	// N10).
+	// N10). Runs the flush could not pull refuse the delete (409, unsavedRunsError) unless the person chose to delete
+	// anyway (force): that choice is recorded first, with who made it and which runs were given up (rule 5).
+	force := r.FormValue("force") == "1" || strings.EqualFold(r.FormValue("force"), "true")
+	actor, person := s.actorOf(r)
+	door := "card"
+	if isGated(r) {
+		door = "phone"
+	}
 	closeFlushDelete := func(ctx context.Context, id string) error {
 		ctx = context.WithoutCancel(ctx)
-		s.flushRuns(ctx, desktop.SanitizeID(id))
+		sid := desktop.SanitizeID(id)
+		if left := s.flushRuns(ctx, sid); len(left) > 0 {
+			if !force {
+				return &unsavedRunsError{n: len(left)}
+			}
+			if !person {
+				return errForceNeedsPerson
+			}
+			judgement, err := s.recordDeleteAnyway(sid, actor, door, left)
+			if err != nil {
+				return fmt.Errorf("deleteDesktop: recording the choice to delete %s anyway: %w", sid, err)
+			}
+			for _, ref := range left {
+				log.Printf("runs: %s deleted anyway by %s (%s) before the bundle of %s was pulled: that run's recording, ledger and notes are lost", sid, actor.ID, judgement, ref.ExecID)
+			}
+		}
 		del := s.Desktops.Delete
 		if s.deleteDesktop != nil {
 			del = s.deleteDesktop

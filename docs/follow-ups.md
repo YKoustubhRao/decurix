@@ -41,8 +41,8 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 2. **An AppArmor profile** for Ubuntu 24.04+ (`apparmor_restrict_unprivileged_userns=1`) that permits the user namespace for the Brainiac binary only, so the mount view works there instead of falling back.
 3. **A signed catalog.** **Built 2026-11-08, uncommitted:** `pull` refuses any HF source without `revision` and per-file `sha256`, and any GitHub asset or llama.cpp build without `sha256` (`install.CheckPins`, fail closed, every gap named); `brainiac catalog pin|sign|verify|keygen` (ed25519, detached `.sig`); an overlay is used only when its signature verifies, and on an appliance only a signed one (`scout adopt`/`scout pin`/updater adoptions refused there). `catalog pin` filled the shipped catalog from metadata (28 HF sources, 4 sherpa-onnx assets, 36 llama.cpp b11541 assets), left in the tree for review. **Open:** the owner makes the key (`catalog keygen`), compiles the public half into `internal/catalog/sign.go` (`releaseKeyHex`), reviews and signs; `whisper-turbo`, `whisper-small`, `whisper-tiny.en` have no GitHub digest and stay unpinned (refused) until someone hashes them; Ollama tags are not pinned (Ollama fetches them).
 4. **A shorter trusted-uploader list.** **Done 2026-11-08, uncommitted:** `scout.TrustedUploader` holds first parties only (labs that make what they publish); quantisers (`ggml-org`, `unsloth`, `bartowski`, `mradermacher`, `lmstudio-community`), `openai-community` and `meta-models` left it, so their copies go through `brainiac scout adopt` (tests: the updater skips them, adopt still works and pins).
-5. **Hash-locked worker requirements** (G-09). On a networked machine, `pip-compile --generate-hashes` for Python 3.11-3.14 on each OS, for `requirements-ocr.txt` and `requirements-asr.txt`. numpy is still a range.
-6. **Signed-release promotion.** `update.Promote` is the one place a staged plan becomes served. A signed release can call it once there is a local parity eval: the corrected `Proven` on the request shapes the box serves.
+5. **Hash-locked worker requirements** (G-09). **Built 2026-11-08, uncommitted:** `brainiac/scripts/lock_worker.py` resolves `requirements-ocr.txt` and `requirements-asr.txt` together from PyPI's JSON index alone (Simple API sha256s, PEP 658 metadata, markers evaluated per target, wheels only) and wrote `workers/python/locks/<group>-cp3N-<target>.txt` for CPython 3.11-3.14 on `win_amd64`, `linux_x86_64`, `linux_aarch64`, `macos_arm64`: all 16 combinations, both groups. The installer takes only the lock for its Python and system (`install.WorkerLock`), refuses an unlocked file (`worker.CheckLocked`) and runs pip with `--require-hashes --only-binary=:all:`; no lock, no install. numpy is pinned (2.4.6 below 3.12, 2.5.4 from 3.12). **Open:** a live `brainiac pull` of the worker groups from a lock on Linux (no install was run here); macOS x86_64 and Windows arm64 have no lock (refused).
+6. **Signed-release promotion.** `update.Promote` is the one place a staged plan becomes served. **Built 2026-11-08, uncommitted:** `Promote(st, now, PromoteOptions{ByHand})`: on an appliance only a `release.json` signed with the release key (ed25519, `catalog.Verify`; kind `brainiac.release/v1`, so a signed overlay cannot pose as one) naming the staged lock's sha256 promotes, and only with a `parity.json` of that lock, measured after staging, in which `evals.Results.Proven` holds for every changed model against the one it replaces (every served field for the brain, its own role for other roles); off an appliance a person may still promote by hand, but a present release is always checked. `brainiac update sign-release <lock> --key k` makes the release. Tests: unsigned, untrusted key, non-release, other lock, no/failed/stale/other-lock parity refused; signed and passed promoted. **Open:** the box-side parity run that writes `parity.json` from cases of the request shapes the box serves (trace shapes, `likeEvalCases`) on the staged plan's models; the owner's release key (shared with O-3.3).
 
 ## Deferred items
 
@@ -50,12 +50,12 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 
 - **Digest pins** (B-24): `accetto/ubuntu-vnc-xfce-chromium-g3` (still `:latest`), `alpine:3.24` and `ollama/ollama:0.40.1` are pinned by tag only. Pin digests on the next build (needs a pull).
 - **Dead bridge verbs** (B-27): removed 2026-11-08 (3,804 -> 2,258 lines). Gone: the native-worker screen verbs Go never sends (`open`, `openr`, `click`, `count`, `shortcuts`, `tasks`, `start`, `shell`, `win`, `over`, `screen`, `focus`, `windows`) with the painted wallpaper, taskbar, Start menu and window manager behind them, the AppContainer terminal (`Confined`), and the compiled-program mode (`-Build`, `-Resolve`, `Main`/`Starting`; Go stopped using it on 2026-10-06). The C# compiles, the script parses, `go test ./internal/winhost` and the real-helper check pass. Owed: one live host-app run on Windows (open, click, type, close).
-- **B-19:** clean up host browser profiles when a VM is forgotten (needs a new bridge verb). The launch-time quarantine covers the dangerous case.
+- **Done: B-19** (2026-11-08, uncommitted). A deleted VM's private app profiles on the host go with it: `forgetHostApps` (delete only; a stop keeps them, they hold the worker's sign-ins) calls `winhost.Manager.DeleteDesktop`, which ends the apps and sends the bridge verb `dropprofiles` with the apps' private desktop names (shape-checked in Go); the bridge removes only folders directly under its own profile root whose name is exactly one of those, never follows a link, and counts files still held open (Go retries 3 times). Tests: the Go side with the stand-in, the real bridge against a temporary LOCALAPPDATA. Owed: one live delete on Windows.
 - **W-14:** one aggregated endpoint per dashboard tab (performance only).
 - **Done: C-25.** The practice broker knows its desktop by the address a callback comes from, never by `desktop_id` in the body: `Broker.Caller` = `desktop.Manager.PracticeDesktopAt` (labelled `practice-<run>` containers on `decurix-practice`, never the mock), answers kept per address (`Broker.fromRunDesktop`), a body naming another desktop refused, no `Caller` refuses all (simulation.md).
 - **A-07:** no `knownHost` list on the gated listener (accepted: the gated listener is reached under changing host names; the session cookie and same-origin rule answer rebinding).
 - **Done: B-37.** Each schedule and DAG cron has its own IANA zone (`schedule.Expr.NextIn`, `zone`/`cron_zone`, appended Migrate steps; old rows read UTC), picked on the forms from the browser's zone.
-- **B-29:** a restart loop for the Windows tunnel (`Lan-Tunnel.ps1`); the tunnel is opt-in now.
+- **Done: B-29** (2026-11-08, uncommitted). `Watch-LanTunnel` (`Lan-Tunnel.ps1`, used by `build.ps1`/`rebuild.ps1`) and `supervise_lan_tunnel` (`lan-tunnel.sh`, Linux and Mac) start the tunnel again when it exits: 1 s doubling to 60 s, reset after 10 minutes up, the switch read again before each restart (off ends the loop), the new address reported. Tests: `scripts/testing/lan-tunnel.test.{sh,ps1}`.
 - **Done: B-10.** Desktops reach the native Ollama only through an allow-listed proxy (`internal/httpapi/native_ollama.go`, `modelRequestPolicy`; d25d201).
 - **Done: W-20.** The viewer's script is served at a path naming its own bytes (`noVNCPath`, `rfb-1.6.0-<sha256 12>.js`), so a changed file is never a stale cached copy. Also done: the in-flight guards (`loadNotes` and `pollResourceAlerts` go through `Decurix.poll`, one call at a time) and a bounded `/api/desktops/memory` (`?limit=`, default 200, max 1000, `truncated`).
 - **Done: RW1-G-04 rest.** A start or a resume waits for a tools refresh in progress, at most 5 min and never past the request (`holdToolsForStart`, `ErrToolsRefreshing`).
@@ -63,7 +63,7 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 - **Done: RW1-D-01.** A desktop container carries its creation's id (`decurix.creation`, as its home does); after a `ContainerCreate` error, `Manager.removeHalfCreated` removes a container of exactly that name with that creation's id, never another's.
 - **Decided: the default local model stays `devstral-small-2:24b`** (correctness before speed; `auto` still picks per machine). Soul, `start_agent_terminal.sh` and `config.py` now fall back to the same model.
 - **Done: mail jobs.** A finished job with no request no longer shows "Run again" / "Send anyway".
-- **No-echo walker limits** (RW1-G-06 is done): an error variable not named like one, or a helper that returns the text, still gets past it.
+- **Done: no-echo walker by type** (2026-11-08, uncommitted). `TestNoResponseEchoesAnErrorByType` type-checks the package (go list -export) and fails on any error value, error text, or result of a package helper derived from one reaching anything that implements `http.ResponseWriter`; sentinels and the named doors (`refusal`, `refusalLines`, `providerSaid`, `viewerReason`, `practice.Public`) pass. It found one real leak, fixed: `/api/host-bridge/exec` sent `cmd.Run`'s words (`hostExecReason` now). Two sentence conversions now go through `refusal`/`refusalLines`.
 - **Done: two control planes on one data folder.** Start takes the data directory's exclusive lock (`sqlitedb.LockDataDir`, `decurix.lock`: flock, or LockFileEx on Windows) before the database, and a second start refuses with the holder's pid and start time (`ErrDataDirInUse`).
 - **P3s not done:** B-02 (a panic path leaves only `last_error`), C-06 (a live test positive control; walk all packages), C-07 (a main-level Docker-down test; the watcher is tested), F-05 (owner's call), A-02 to A-06 (Electron details), F-08, F-10, F-11 (notes).
 
@@ -103,10 +103,10 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 
 ### Brainiac and bench (W4)
 
-- **G-11:** carrying unchanged units into the new engine. The right shape is one Residency per Server, outliving engines.
+- **G-11:** carrying unchanged units into the new engine. **Built 2026-11-08, uncommitted:** one Residency per server (`engine.NewServerResidency`, `api.Server.Residency`, `engine.Options.Residency`); residents are known by key and recipe, model servers and the worker are shared by recipe, a new engine adopts the unchanged running units and the retired one stops only its own. Tests with the fake llama-server (kept process, changed one stopped, late load passes forward, held model waits for its request, shared worker). **Open:** a live plan change under `serve`.
 - **G-17:** re-derive the workflow bench's results from artifacts (the name now says what is checked).
-- **G-09:** hash-locked requirements (O-3.5).
-- **FIX-BR-1:** a managed (non-system) python for the worker. `isolate.ForProgram` (`brainiac/internal/isolate/elflibs.go`, called from `brainiac/internal/engine/engine.go` `New`) grants its binary and the shared libraries it links, but not its standard library (`../lib/python3.x`), so it may not start in the mount view. A system python is unaffected (`/usr` is read). Check it live, and grant that tree read-only if it fails.
+- **G-09:** hash-locked requirements (O-3.5). Built 2026-11-08; see O-3.5.
+- **FIX-BR-1:** a managed (non-system) python for the worker. `isolate.ForProgram` (`brainiac/internal/isolate/elflibs.go`, called from `brainiac/internal/engine/engine.go` `New`) grants its binary and the shared libraries it links, but not its standard library (`../lib/python3.x`), so it may not start in the mount view. A system python is unaffected (`/usr` is read). Check it live, and grant that tree read-only if it fails. **Built 2026-11-08, uncommitted:** `isolate.ForProgram` grants a managed Python's `lib/python3.N` read-only, found structurally (`<prefix>/bin/python*` by real path, `os.py` landmark, not under the system read set, real path inside the prefix; a versioned name claims only its version). Tests with a fake tree. **Open:** the live start of a uv/pyenv Python worker in the mount view.
 
 ## Live checks done on 2026-11-07 (image built from this tree, a dev control plane beside the app's)
 
@@ -173,8 +173,8 @@ What the SOUL lane left for later (PLAN-P2 §9; schema and limits in [trajectory
   `computer/records.py` would stamp the save's record id (the event's `id`) on the record it marks saved.
 - **A local brain's calls have no bodies.** Soul's trace keeps their model, prompt hash and usage only. Bodies need a
   recording proxy in front of Ollama or soul writing them; measure the size and the `num_ctx`/prefix effect first.
-- **The bundle limit is a fixed 64 MB a run** (`runs.DefaultLimit`); past it frames go, oldest first, and are named
-  in `integrity.missing`. Make it a setting once real runs show their sizes.
+- **Done: the bundle limit is a setting** (2026-11-08, uncommitted): `DECURIX_RUN_BUNDLE_MB` (default 64, 8 to 1024, read
+  once at start, every puller; running.md). Open: choose the default from real runs' sizes.
 - **Done: bundles of practice and eval desktops are pulled** through `desktop.PracticeHome` before each reset: the eval
   runner's `pullBundle` and Simulate's `practice.Service.Bundles`. A failed pull is a problem on the finding, never a
   grade. `labels.eval` is filled from the eval row (`eval.Store.EvalLabel`).
@@ -205,7 +205,8 @@ What the PY lane left for later (lane-PY.md; PLAN-P2 §9).
   `py.tool.args`. `agent/tests/test_purpose_tags.py` holds the set (`legacy.azure.turn` went with the azure harness, O-4).
 - **Spot judgement of trusted replays** is built (`skill_task._spot`, purpose `py.judge.spot`; a `not_done` records a
   failure) and samples 1 in 5 task ids by default (`DECURIX_SPOT_JUDGE_EVERY`; 0 never, 1 always). Open: measure the
-  judge's cost and its catch rate on the L3 matrix before changing it; its eval case waits for `learn-v1`.
+  judge's cost and its catch rate on the L3 matrix before changing it. `learn-v1` exists now (2026-11-08) and holds
+  no case of its own for it: a spot judgement needs a trusted replay, which five cases of a kind may not reach.
 - **Dates.** With no order known (no `DECURIX_DATE_ORDER` on the control plane, no DD/MM marker, no unambiguous date
   in the request or its files' text layer), an ambiguous digit date never matches an ISO one: the save waits and asks
   which order. Set `DECURIX_DATE_ORDER` for each org (read in `cmd/decurix/main.go`). A digit date against the known
@@ -254,9 +255,11 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
 - **Done: untagged model calls are refused by default** (D3). The live round of 2026-11-08 (a broker-mode desktop with a
   hosted brain: tasks, a demonstration, teaching, a replay) showed 58 calls, 0 untagged and 0 invalid (soul 41, the agent
   17). `DECURIX_LLM_REQUIRE_PURPOSE=0` lets them through for desktops made before.
-- **The delete flush can time out** (90 s). A run not pulled by then is named in the log ("... that run's recording,
-  ledger and notes are lost") and the delete goes on: the one case where a label can be lost. Measure live how long a
-  flush takes; consider refusing the delete instead while unpulled runs remain.
+- **Done: a delete no longer loses runs silently** (2026-11-08, uncommitted). After the 90 s flush, runs still not pulled
+  refuse the delete (409 `held`, `unsaved_runs`, "N runs of this desktop are not saved to the run record yet; try again
+  in a minute, or delete anyway"); the dashboard's confirm shows that reason and offers "Delete anyway" (`force=1`),
+  recorded first as a `delete_anyway` judgement (actor, door, the runs given up); a desktop's own call cannot force it.
+  Open: measure live how long a flush takes; `decurix --cli` shows the refusal but has no "delete anyway".
 - **`resolved_model` for a local brain** is `"<engine>:<model the desktop said>"`, not a deployment the proxy saw
   (Ollama calls never pass it). Local-brain call bodies are a later phase (PLAN-P2 §9).
 - **Pass rates** (`/api/tasks/pass-rates`) count every ended attempt under its own skill version x model x origin
@@ -330,8 +333,11 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
 - **E5: local brains.** Practice and evals refuse Ollama and Brainiac brains (`practice.ErrHostedOnly`); the broker would
   proxy an OpenAI-compatible local endpoint, and soul's trace is then the only record of a call.
 - **Bundles from practice and eval desktops:** see "Phase 2: soul and run record" above.
-- **More suites:** `docs-v1` (documents becoming records), `gst-v1` (a returns portal and a client chat mock, written by
-  someone who does not tune the harness) and `learn-v1` (memory kept between cases; its runner mode is below).
+- **More suites:** `docs-v1` (documents becoming records) and `gst-v1` (a returns portal and a client chat mock,
+  written by someone who does not tune the harness). **Done: `learn-v1`** (2026-11-08): ten interleaved cases, bills
+  and bank reconciliations, a lesson taught once per kind and a missing input; `py -3 evals/run.py curve` reads it
+  ([evals.md](evals.md), "The learning curve"). Owed: its first live run (calibration with `--carry-state`, then
+  `default+expert --repeats 5`).
 - **Done: D7.** CLAUDE.md now says dev eval suites with fictional data live in `evals/` and the sealed held-out set stays
   outside the repo.
 - **Calibration L2 needs the live stack.** Offline, `TestCoreSuiteLoads` passes the oracle on 10 of 12 core-v1 cases,
@@ -349,7 +355,8 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   snapshot (`ResetPractice` clears all of `~/.decurix`, the work folder, the browser profiles and `/tmp/decurix-*`). A
   suite that carries state between cases must say so explicitly. **Done:** suite `carry_state` and `evals/run.py
   --carry-state` must agree (else 400); the desktop is reset only before each repeat's first case, and the run row and
-  the table's "State:" line say which mode ran.
+  the table's "State:" line say which mode ran. Rows keep `calls` beside the tokens (2026-11-08), so the curve shows
+  model calls per case.
 - **Practice and eval desktops are reset by stopping the worker's processes and clearing its home's agent state**, then
   restarting ([evals.md](evals.md); `TestPracticeResetLive` passed on the real image, a9609b3). L2 should check `ls -A ~/.decurix` after a reset holds only the snapshot.
 - **Done: `approval.site_known` no longer reads the worker's task file.** On a gated desktop it reads the gate's own

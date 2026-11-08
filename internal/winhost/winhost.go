@@ -645,10 +645,157 @@ func (m *Manager) KeptFor(desktop string) []string {
 	return ids
 }
 
-// ForgetDesktop forgets every app kept ready for one VM, for when it is deleted or stopped.
+// ForgetDesktop forgets every app kept ready for one VM, for when it is deleted or stopped. The apps' private profiles
+// on the host stay (a stopped worker is still signed in when it starts again); DeleteDesktop also removes them.
 func (m *Manager) ForgetDesktop(desktop string) {
 	for _, id := range m.KeptFor(desktop) {
 		m.Forget(id)
+	}
+}
+
+// vmIDShape is a VM id DeleteDesktop accepts, and sessionIDShape a session id whose profiles it may remove: letters,
+// digits, '_' and '-' only - no path separator, no dot, nothing a folder name could be steered with. A session id is at
+// most 40 characters, so desktopName keeps it whole: a longer one is cut, and its cut name could be another app's.
+var (
+	vmIDShape      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+	sessionIDShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$`)
+	// profileOwner is a private desktop name bridge.ps1's dropprofiles accepts (Remove-DesktopProfiles checks the same).
+	profileOwner = regexp.MustCompile(`^decurix_[A-Za-z0-9_]{1,40}$`)
+	// profileAnswer is dropprofiles' answer.
+	profileAnswer = regexp.MustCompile(`^OK removed=(\d+) left=(\d+) locked=(\d+)$`)
+)
+
+// Timings of DeleteDesktop, variables so tests can shorten them.
+var (
+	// profileTries is how many times a profile something still holds open is asked for again, profileRetry apart: a
+	// browser's own child processes can hold a file for a moment after the app was ended.
+	profileTries = 3
+	profileRetry = 3 * time.Second
+	// profileTimeout bounds one dropprofiles: a browser profile can be thousands of files.
+	profileTimeout = 5 * time.Minute
+	// settleTimeout bounds the wait for a VM's apps to end before their profiles are removed.
+	settleTimeout = 2 * time.Minute
+)
+
+// profileNames is the private desktop names whose app profiles belong to session ids (desktopName), sorted and without
+// repeats, and the ids refused for their shape. A refused id is never sent to the host.
+func profileNames(ids []string) (names, refused []string) {
+	seen := map[string]bool{}
+	for _, id := range ids {
+		name := desktopName(id)
+		if !sessionIDShape.MatchString(id) || !profileOwner.MatchString(name) {
+			refused = append(refused, id)
+			continue
+		}
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names, refused
+}
+
+// DeleteDesktop is ForgetDesktop for a VM deleted for good (B-19): its apps are ended, and then the private profiles
+// they kept on the host - a browser's sign-ins, an Electron app's data - are removed with them. ids are the session ids
+// of the VM's apps the caller knows (its saved kept apps, which outlive a stop that has already let the apps go here);
+// the ones still kept here are added. A stop must never call it: the profile is what keeps a worker signed in from one
+// start to the next. It answers how many profile folders were removed, and an error says what was not; both are logged
+// here, and the error is for a log only (it can carry the host's own words).
+func (m *Manager) DeleteDesktop(desktop string, ids []string) (removed int, err error) {
+	defer func() {
+		if removed > 0 {
+			log.Printf("host apps: removed %d private app profile(s) of deleted VM %s", removed, truncate(desktop, 80))
+		}
+		if err != nil {
+			log.Printf("host apps: the private app profiles of deleted VM %s were not all removed: %v", truncate(desktop, 80), err)
+		}
+	}()
+	if !vmIDShape.MatchString(desktop) {
+		return 0, fmt.Errorf("not a VM id: %q", truncate(desktop, 80))
+	}
+	all := append(append([]string(nil), ids...), m.KeptFor(desktop)...)
+	m.ForgetDesktop(desktop)
+	names, refused := profileNames(all)
+
+	// Nothing may hold a profile while it is removed: a kept app being started again as it was forgotten is let finish
+	// and ended too.
+	ctx, cancel := context.WithTimeout(context.Background(), settleTimeout)
+	for _, id := range all {
+		m.settle(ctx, id)
+	}
+	cancel()
+
+	if len(refused) > 0 {
+		err = fmt.Errorf("%d session id(s) of the wrong shape were not sent to the host", len(refused))
+	}
+	if len(names) == 0 {
+		return 0, err
+	}
+	line := "dropprofiles\t" + strings.Join(names, "\t")
+	for try := 1; ; try++ {
+		gone, left, locked, dropErr := m.dropProfiles(line)
+		removed += gone
+		if dropErr != nil {
+			return removed, errors.Join(err, dropErr)
+		}
+		if left == 0 {
+			return removed, err
+		}
+		if try >= profileTries {
+			return removed, errors.Join(err, fmt.Errorf("%d profile folder(s) of %s were left on the host: %d file(s) still held open", left, desktop, locked))
+		}
+		time.Sleep(profileRetry)
+	}
+}
+
+// dropProfiles sends one dropprofiles line to a helper with no app (the warm one, or a new one) and reads its answer.
+func (m *Manager) dropProfiles(line string) (removed, left, locked int, err error) {
+	h, err := m.helper(context.Background())
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	resp, err := h.DoTimeout(line, profileTimeout)
+	if err != nil {
+		h.Stop()
+		return 0, 0, 0, err
+	}
+	m.keepWarm(h)
+	f := profileAnswer.FindStringSubmatch(resp)
+	if f == nil {
+		return 0, 0, 0, fmt.Errorf("the host did not remove the profiles: %s", truncate(strings.TrimSpace(strings.TrimPrefix(resp, "ERR")), 200))
+	}
+	removed, _ = strconv.Atoi(f[1])
+	left, _ = strconv.Atoi(f[2])
+	locked, _ = strconv.Atoi(f[3])
+	return removed, left, locked, nil
+}
+
+// settle returns once nothing runs under session id: a start in flight is let finish, then the session is stopped and
+// one already being stopped is waited for - or ctx ends.
+func (m *Manager) settle(ctx context.Context, id string) {
+	for {
+		m.mu.Lock()
+		c := m.starting[id]
+		m.mu.Unlock()
+		if c == nil {
+			break
+		}
+		select {
+		case <-c.done:
+		case <-ctx.Done():
+			return
+		}
+	}
+	m.Stop(id)
+	m.mu.Lock()
+	s := m.stopping[id]
+	m.mu.Unlock()
+	if s != nil {
+		select {
+		case <-s.Done():
+		case <-ctx.Done():
+		}
 	}
 }
 

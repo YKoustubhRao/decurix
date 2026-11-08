@@ -34,7 +34,8 @@ func ValidJudgementID(id string) bool { return judgementIDPattern.MatchString(id
 func validJudgementKind(k string) bool {
 	switch k {
 	case JudgementAnswer, JudgementApproval, JudgementVerdict, JudgementCorrection, JudgementRunAnswer,
-		JudgementLesson, JudgementKnowledge, JudgementFieldAnswer, JudgementFieldUnit, JudgementPurge:
+		JudgementLesson, JudgementKnowledge, JudgementFieldAnswer, JudgementFieldUnit, JudgementPurge,
+		JudgementDeleteAnyway:
 		return true
 	}
 	return false

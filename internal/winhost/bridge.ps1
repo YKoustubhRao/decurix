@@ -21,6 +21,8 @@
 #   tree                     "TREE <fresh 0|1> <base64 JSON>": the app's controls read through UI Automation, in the
 #                            picture's pixels ({w, h, title, nodes: [{role, name, box, value, password, checked, ...}]}),
 #                            from the last read; fresh says that read began after the latest input. Starts the next read.
+#   dropprofiles <name>...   remove the private app profiles kept for these private desktop names (TAB-separated), for a
+#                            VM deleted for good: "OK removed=<n> left=<n> locked=<n>" or "ERR <reason>"
 #   quit                     end the app and exit (also happens when stdin closes)
 #
 # Between answers the helper also says, on its own:
@@ -2200,6 +2202,75 @@ function Complete-Launch($p) {
     return @{ Target = $p.Target; Args = $argLine; WorkDir = $p.WorkDir }
 }
 
+# Remove-TreeNoFollow deletes folder $dir and everything in it without ever entering a link: a junction or symbolic link
+# inside is removed as a link, and what it points at is left alone (Remove-Item -Recurse in Windows PowerShell 5.1 walks
+# into a junction and empties its target). Answers how many entries it had to leave - a file an app still holds open, an
+# entry it may not delete - so 0 means the folder is gone. Never throws.
+function Remove-TreeNoFollow([string]$dir) {
+    $left = 0
+    $link = [IO.FileAttributes]::ReparsePoint
+    $readOnly = [IO.FileAttributes]::ReadOnly
+    try { $entries = ([IO.DirectoryInfo]$dir).GetFileSystemInfos() } catch { return 1 }
+    foreach ($e in $entries) {
+        $isLink = ($e.Attributes -band $link) -ne 0
+        $isDir = $e -is [IO.DirectoryInfo]
+        if ($isDir -and -not $isLink) {
+            $left += Remove-TreeNoFollow $e.FullName
+            continue
+        }
+        try {
+            if (-not $isLink -and ($e.Attributes -band $readOnly) -ne 0) { $e.Attributes = $e.Attributes -bxor $readOnly }
+            if ($isDir) { [IO.Directory]::Delete($e.FullName, $false) } else { [IO.File]::Delete($e.FullName) }
+        } catch { $left++ }
+    }
+    if ($left -eq 0) {
+        try {
+            $d = [IO.DirectoryInfo]$dir
+            if (($d.Attributes -band $readOnly) -ne 0) { $d.Attributes = $d.Attributes -bxor $readOnly }
+            [IO.Directory]::Delete($dir, $false)
+        } catch { $left++ }
+    }
+    return $left
+}
+
+# Remove-DesktopProfiles is "dropprofiles": a VM deleted for good takes the private profiles its apps kept here with it
+# (B-19) - a sign-in made in a hidden browser must not outlive the worker it was made for. A stop never asks: the profile
+# is what keeps a worker signed in from one start to the next. $names are private desktop names (what "desktop" is told);
+# an app's profile is "<name>-<app>" directly under $ProfileRoot (Complete-Launch), and a name never holds a '-', so
+# "decurix_vm1" owns decurix_vm1-chrome and never decurix_vm10-chrome. Nothing else is touched: no folder that is not a
+# direct child of the root, no root that is itself a link, and no link followed (a profile folder that is a junction has
+# just the junction removed). Every name is checked before anything is removed. A file still held open (an app that has
+# not quite ended) is left and counted, and the control plane asks again.
+function Remove-DesktopProfiles([string[]]$names) {
+    $wanted = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($n in $names) {
+        if ($n -cnotmatch '^decurix_[A-Za-z0-9_]{1,40}$') { return 'ERR invalid desktop name' }
+        [void]$wanted.Add($n)
+    }
+    if ($wanted.Count -eq 0) { return 'ERR no desktop name' }
+    $root = [IO.Path]::GetFullPath($ProfileRoot).TrimEnd('\')
+    if (-not [IO.Directory]::Exists($root)) { return 'OK removed=0 left=0 locked=0' }
+    if (([IO.File]::GetAttributes($root) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        return 'ERR the profile folder is a link; nothing was removed'
+    }
+    $removed = 0; $left = 0; $locked = 0
+    foreach ($d in ([IO.DirectoryInfo]$root).GetDirectories()) {
+        $cut = $d.Name.IndexOf('-')
+        if ($cut -lt 1 -or $cut -ge $d.Name.Length - 1) { continue }
+        if (-not $wanted.Contains($d.Name.Substring(0, $cut))) { continue }
+        $full = [IO.Path]::GetFullPath($d.FullName)
+        if (-not [string]::Equals([IO.Path]::GetDirectoryName($full), $root, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        if (($d.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            # A link where a profile should be: the link goes, what it points at stays.
+            try { [IO.Directory]::Delete($full, $false); $removed++ } catch { $left++; $locked++ }
+            continue
+        }
+        $n = Remove-TreeNoFollow $full
+        if ($n -eq 0) { $removed++ } else { $left++; $locked += $n }
+    }
+    return "OK removed=$removed left=$left locked=$locked"
+}
+
 # A check's answer: the program a target resolved to (for launchr), or why it cannot run hidden.
 function Format-Check($r) {
     if ($r.Error) { return "ERR $($r.Error)" }
@@ -2245,6 +2316,10 @@ $Commands = [Action[string, string]] {
         "pid" {
             # Which process this helper is on the host: the control plane ends exactly this tree when it stops it.
             Reply "OK $PID"
+        }
+        "dropprofiles" {
+            # Asked of a helper with no app of its own, after the VM's apps were ended (Manager.DeleteDesktop).
+            Reply (Remove-DesktopProfiles $rest.Split("`t"))
         }
         default { Reply "ERR unknown command" }
     }

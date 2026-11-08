@@ -2408,6 +2408,33 @@
     delete:  {url: "/api/desktops/delete",  pending: "Deleting…"}
   };
 
+  /* A desktop's delete, after the person's yes. While runs of it are not in
+     the run record yet the control plane refuses it (409 with held, its
+     reason saying how many); the person is shown that reason and may delete
+     anyway, which is sent with force and recorded as their choice. Returns
+     whether it was deleted. */
+  async function deleteDesktop(id){
+    var fields = {id: id};
+    for(;;){
+      var response = await fetch(ACTIONS["delete"].url, {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: new URLSearchParams(fields)
+      });
+      var data = await response.json().catch(function(){ return {}; });
+      if(response.ok){ return true; }
+      if(response.status === 409 && data.held && !fields.force){
+        if(!(await askConfirm("Delete anyway?",
+          (data.error || "Runs of this desktop are not saved to the run record yet.") +
+            " Deleting anyway loses their steps and screenshots for good.",
+          "Delete anyway", true))){ return false; }
+        fields.force = "1";
+        continue;
+      }
+      throw new Error(data.error || "Request failed");
+    }
+  }
+
   document.addEventListener("click", async function(event){
     var button = event.target.closest("[data-act]");
     if(!button){ return; }
@@ -2434,7 +2461,17 @@
     busy(true);
 
     try{
-      await post(action.url, {id: button.dataset.id});
+      if(button.dataset.act === "delete"){
+        if(!(await deleteDesktop(button.dataset.id))){
+          busy(false);
+          if(card){
+            card.querySelectorAll("button").forEach(function(b){ b.disabled = false; });
+          }
+          return;
+        }
+      }else{
+        await post(action.url, {id: button.dataset.id});
+      }
       location.reload();
     }catch(e){
       busy(false);

@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -131,19 +133,66 @@ func (s *Server) unpulledRuns(worker string, since time.Time, open bool) []runs.
 }
 
 // flushRuns pulls every run of a desktop about to be deleted that has no bundle yet (an open one too), within
-// runFlushWithin. What it
-// could not pull is named in the log: the one way a run's labels can be lost, said, never silent.
-func (s *Server) flushRuns(ctx context.Context, worker string) {
+// runFlushWithin, and returns the runs it could not pull. The delete is refused while any remain, unless a person
+// chose to delete anyway (deleteDesktopHandler): a run's labels are never lost silently.
+func (s *Server) flushRuns(ctx context.Context, worker string) []runs.ExecutionRef {
 	if s.Runs == nil {
-		return
+		return nil
 	}
 	refs := s.unpulledRuns(worker, time.Time{}, true)
 	if len(refs) == 0 {
-		return
+		return nil
 	}
+	byID := make(map[string]runs.ExecutionRef, len(refs))
+	for _, ref := range refs {
+		byID[ref.ExecID] = ref
+	}
+	var left []runs.ExecutionRef
 	for _, id := range s.Runs.FlushDesktop(ctx, worker, refs, runFlushWithin) {
-		log.Printf("runs: %s was deleted before the bundle of %s was pulled: that run's recording, ledger and notes are lost", worker, id)
+		ref, ok := byID[id]
+		if !ok {
+			ref = runs.ExecutionRef{ExecID: id, Worker: worker}
+		}
+		left = append(left, ref)
 	}
+	return left
+}
+
+// unsavedRunsError refuses a desktop's delete while runs of it are not in the run record yet (the flush did not get
+// them in time). Its text is the person's to read; the dashboard offers "Delete anyway" on it (force).
+type unsavedRunsError struct{ n int }
+
+// Error says how many runs are not saved and what the person can do.
+func (e *unsavedRunsError) Error() string {
+	if e.n == 1 {
+		return "1 run of this desktop is not saved to the run record yet; try again in a minute, or delete anyway."
+	}
+	return fmt.Sprintf("%d runs of this desktop are not saved to the run record yet; try again in a minute, or delete anyway.", e.n)
+}
+
+// errForceNeedsPerson refuses a "delete anyway" with nobody to author it: giving up runs is a person's choice.
+var errForceNeedsPerson = errors.New("only a person can choose to delete a desktop whose runs are not saved")
+
+// recordDeleteAnyway keeps a person's choice to delete worker although the runs left are not saved (rule 5): who,
+// through which door, and which runs were given up. The delete goes on only once this is recorded.
+func (s *Server) recordDeleteAnyway(worker string, actor tasks.Actor, door string, left []runs.ExecutionRef) (string, error) {
+	type givenUp struct {
+		ExecutionID string `json:"execution_id"`
+		TaskID      string `json:"task_id"`
+	}
+	list := make([]givenUp, 0, len(left))
+	for _, ref := range left {
+		list = append(list, givenUp{ExecutionID: ref.ExecID, TaskID: ref.TaskID})
+	}
+	payload, err := json.Marshal(map[string]any{"runs": list, "flush_seconds": int(runFlushWithin / time.Second)})
+	if err != nil {
+		return "", err
+	}
+	return s.Tasks.AddJudgement(tasks.Judgement{
+		Actor: actor, Door: door, Kind: tasks.JudgementDeleteAnyway, WorkerID: worker,
+		Text:    fmt.Sprintf("Deleted %s with %d runs not saved to the run record", worker, len(left)),
+		Payload: payload,
+	})
 }
 
 // CatchUpRunPulls enqueues the runs of the last week that ended with no bundle, on desktops that still exist: what

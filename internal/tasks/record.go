@@ -89,6 +89,10 @@ const (
 	// JudgementPurge is a person purging a leaked secret from the stores (internal/purge): its text is their reason,
 	// its payload the counts per store; never the value.
 	JudgementPurge = "purge"
+	// JudgementDeleteAnyway is a person deleting a desktop although runs of it were not saved to the run record yet
+	// (the delete's flush did not get them in time): its payload names the runs given up, {"runs": [{"execution_id",
+	// "task_id"}], "flush_seconds"}.
+	JudgementDeleteAnyway = "delete_anyway"
 )
 
 // Judgement is one human input, stored append-only with its author: an answer to a question, an approval, a verdict

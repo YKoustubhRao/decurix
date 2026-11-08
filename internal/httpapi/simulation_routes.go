@@ -131,7 +131,7 @@ func practiceError(w http.ResponseWriter, err error) {
 	default:
 		var sentence practice.Sentence
 		if errors.As(err, &sentence) {
-			jsonStatusError(w, 409, string(sentence))
+			jsonStatusError(w, 409, refusal(sentence))
 			return
 		}
 		jsonError(w, err)

@@ -176,6 +176,8 @@ type Server struct {
 	// hostGUI runs Windows apps on a private desktop of the host and streams them to a VM; created on first use.
 	hostGUIOnce sync.Once
 	hostGUIMgr  *winhost.Manager
+	// deleteHostProfiles stands in for hostGUI().DeleteDesktop in tests (forgetHostApps).
+	deleteHostProfiles func(desktopID string, ids []string)
 	// HostGUISecret signs the launch tokens a launcher carries (winhost.Token); main.go loads it from the data
 	// directory so tokens survive a restart. hostGUIAuth holds, per running session, the token it was started with.
 	HostGUISecret []byte

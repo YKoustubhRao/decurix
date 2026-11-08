@@ -324,23 +324,28 @@ func (s *Server) hostAppGaveUp(desktopID, id, reason string) {
 }
 
 // forgetHostApps ends the apps kept ready for a VM that is being deleted: nobody can open them any more, and an app on a
-// private desktop is invisible to the person who would otherwise close it.
+// private desktop is invisible to the person who would otherwise close it. Their private profiles on the host (a
+// browser's sign-ins, an app's data) go with them (B-19; winhost.DeleteDesktop, in the background: it waits for the
+// apps to close). A stop keeps them (releaseHostApps): they are what keeps the worker signed in.
 func (s *Server) forgetHostApps(desktopID string) {
-	if hostGUISupported() {
-		s.hostGUI().ForgetDesktop(desktopID)
-	}
 	s.keptHostAppsMu.Lock()
-	defer s.keptHostAppsMu.Unlock()
 	delete(s.keptHostAppsLive, desktopID)
-	changed := false
+	var ids []string
 	for id, app := range s.keptHostApps {
 		if app.Desktop == desktopID {
 			delete(s.keptHostApps, id)
-			changed = true
+			ids = append(ids, id)
 		}
 	}
-	if changed {
+	if len(ids) > 0 {
 		s.saveKeptHostAppsLocked()
+	}
+	s.keptHostAppsMu.Unlock()
+	switch {
+	case s.deleteHostProfiles != nil:
+		s.deleteHostProfiles(desktopID, ids)
+	case hostGUISupported():
+		go func() { _, _ = s.hostGUI().DeleteDesktop(desktopID, ids) }()
 	}
 }
 

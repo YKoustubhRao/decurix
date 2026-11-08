@@ -18,6 +18,7 @@ type fakeOpts struct {
 	noWin  bool   // launch succeeds but no window ever shows, and status says the app exited
 	moved  bool   // a launchr of an already-resolved program says it is no longer there
 	slow   string // seconds a launch takes to answer (a first browser start importing the profile), "" for none
+	held   bool   // dropprofiles answers that a profile is still held open
 }
 
 // requireBash skips a test that stands a bash script in for the Windows helper. The protocol is the same on every OS, but
@@ -51,6 +52,10 @@ func fakeHelper(t *testing.T, o fakeOpts) (Starter, *int32) {
 	if o.moved {
 		moved = "1"
 	}
+	held := "0"
+	if o.held {
+		held = "1"
+	}
 	script := `
 dolaunch() { [ -n "` + o.slow + `" ] && sleep ` + o.slow + `; echo "` + o.launch + `"; if [ "` + noWin + `" = 0 ] && [[ "` + o.launch + `" == OK* ]]; then send 1 0 0 20 10 ABC; fi; }
 send() { printf 'FRAME 20 10 %s %s %s %s %s %s\n%s' "$2" "$3" "$4" "$5" "$1" "${#6}" "$6"; }
@@ -71,6 +76,7 @@ XYZ'; else echo "THUMB same"; fi;;
     check*webapp*) printf 'OK\tC:\\Edge\\msedge.exe\t--app=http://localhost:8000\t\t1\tmsedge\tC:\\webapp.exe\n';;
     check*)   IFS=$'\t' read -r _ t a <<< "$l"; printf 'OK\t%s\t%s\t\t0\tx\n' "$t" "$a";;
     pid)      echo "OK 4242";;
+    dropprofiles*) if [ "` + held + `" = 1 ]; then echo "OK removed=0 left=1 locked=2"; else echo "OK removed=1 left=0 locked=0"; fi;;
     quit)     exit 0;;
     *)        echo OK;;
   esac

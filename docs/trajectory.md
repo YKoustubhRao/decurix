@@ -35,8 +35,12 @@ expert loop and training-set exports read (plan R1).
 What `runs.Puller` reads off the desktop, as the worker (`desktop.Manager.ReadTar`, never Docker as root), when an
 execution ends and before a desktop is deleted. When (`internal/httpapi/runpull.go`): the final or error callback
 queues a pull (128 deep; a full queue drops it, and says so), tried 5 s later and up to 3 times with a growing wait; a
-delete first pulls every run of that desktop not yet pulled, for at most 90 s, then goes on and logs each run it lost;
-a restart catches up on the last 7 days' runs. An eval case's bundle, and a Simulate case's, is pulled off its practice
+delete first pulls every run of that desktop not yet pulled, for at most 90 s, and while any is still not pulled the
+delete is refused (409, `held`, `unsaved_runs`: "N runs of this desktop are not saved to the run record yet; try again
+in a minute, or delete anyway"); the dashboard then offers "Delete anyway", which sends it again with `force=1`. A forced
+delete is a person's choice, recorded before the desktop goes as a judgement of kind `delete_anyway` (rule 5: the
+actor, the door `card` or `phone`, the worker, and in its payload `runs: [{execution_id, task_id}]` given up and
+`flush_seconds`); no actor (a desktop's own call) cannot force it (403), and each run given up is logged; a restart catches up on the last 7 days' runs. An eval case's bundle, and a Simulate case's, is pulled off its practice
 desktop before the next case's reset (`desktop.PracticeHome`, [evals.md](evals.md), [simulation.md](simulation.md)).
 Paths are under the worker's home:
 
@@ -57,7 +61,8 @@ Paths are under the worker's home:
 - **The labels come first and are kept whole.** The run folder, ledger, notes, files, outputs and soul's trace, then
   the recording's `meta.json` and `events.jsonl`, are each read on their own (up to 64 MB a part; one past that is
   cut, and said). Nothing the recording holds can crowd them out.
-- **The recording's observations, `program.json` and frames share one limit** (64 MB a run), each folder read as its
+- **The recording's observations, `program.json` and frames share one limit** (64 MB a run by default;
+  `DECURIX_RUN_BUNDLE_MB`, 8 to 1024, read once at start: [running.md](running.md)), each folder read as its
   own bounded tar. Over the limit, frames are dropped first, then observations, oldest first by the events, each
   named in `missing`. A tar cut at its read bound keeps what was read before the cut, and says so.
 - **At most 2000 files a label part and 20000 of the recording** are kept, each part counted on its own; `missing`
@@ -314,7 +319,7 @@ anything still on a desktop's own disk.
 - **`request.files` is `[]`** and **`worker.image` is `""`**: neither is kept per execution yet.
 - **`worker.rules_sha` covers soul's operator rules only**: the worker's business rules (its memory entries, which
   Simulate pins as `Pins.RulesSHA`) and the organisation's knowledge are not in it.
-- **The bundle limit is fixed at 64 MB a run** (`runs.DefaultLimit`; `Puller.Limit` exists but nothing sets it); past it
-  frames are dropped, oldest first, and said.
+- **The bundle limit is one setting for every run** (`DECURIX_RUN_BUNDLE_MB`, default 64; `runs.BundleLimit`), not per
+  kind of work; past it frames are dropped, oldest first, and said.
 - **A pruned trace's task that runs again** (a reply days after the export) starts a new trace file, but soul, if it
   did not restart, still counts the old file's size against the 32 MB cap.

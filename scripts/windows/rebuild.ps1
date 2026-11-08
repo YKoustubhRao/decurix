@@ -253,8 +253,8 @@ try {
 
     # A second tunnel, to the access-code-gated listener - so the
     # code-protected URL works from anywhere, not just $lanUrl above on this
-    # machine's own network. Backgrounded (see lib/Lan-Tunnel.ps1), so it
-    # the loop below only keeps this script in the foreground.
+    # machine's own network. Backgrounded (see lib/Lan-Tunnel.ps1); the loop
+    # below keeps this script in the foreground and the tunnel up.
     Start-LanTunnel -LanPort $lanPort
 
     Write-Host ""
@@ -262,11 +262,10 @@ try {
     # The primary listener (:8080) is deliberately never tunnelled: it has no
     # login and can create desktops and run commands on this machine. Only
     # the access-code-gated listener is reachable from off this machine. Its
-    # tunnel runs in the background (lib/Lan-Tunnel.ps1); this just keeps the
-    # script - and so its Ctrl+C handling - in the foreground.
-    while ($true) {
-        Start-Sleep -Seconds 5
-    }
+    # tunnel runs in the background (lib/Lan-Tunnel.ps1); this keeps the
+    # script - and so its Ctrl+C handling - in the foreground, and starts the
+    # tunnel again, with backoff, if it exits (Watch-LanTunnel).
+    Watch-LanTunnel -LanPort $lanPort
 }
 finally {
     Stop-KeepAwake

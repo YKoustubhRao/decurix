@@ -486,7 +486,13 @@ func main() {
 	server.ForgetSecretsAtStart()
 	runStore := must(runs.NewStore(db, blobs))
 	server.RunStore, server.RunBundles = runStore, runStore
-	server.Runs = &runs.Puller{Home: desktops, Store: runStore, Blobs: blobs}
+	// The recording's share of one run's bundle (frames, observations, program; the labels are never cut for it):
+	// DECURIX_RUN_BUNDLE_MB, read once here, for every puller below.
+	bundleLimit, bundleNote := runs.BundleLimit(os.Getenv(runs.BundleLimitEnv))
+	if bundleNote != "" {
+		log.Printf("warning: %s", bundleNote)
+	}
+	server.Runs = &runs.Puller{Home: desktops, Store: runStore, Blobs: blobs, Limit: bundleLimit}
 	// Simulate: practice runs of what a worker was taught, on a practice desktop that reaches only its broker
 	// (docs/simulation.md). Its routes are the owner's, primary listener only.
 	practiceSvc := &practice.Service{
@@ -503,7 +509,7 @@ func main() {
 		FreeMemory: func() (uint64, error) { _, avail, err := ollama.AvailableMemory(); return avail, err },
 		MaxTokens:  practice.MaxTokensFromEnv(),
 		// Each Simulate case's bundle, pulled off its practice desktop before the next case resets it.
-		Bundles: &runs.Puller{Home: desktop.PracticeHome{M: desktops}, Store: runStore, Blobs: blobs},
+		Bundles: &runs.Puller{Home: desktop.PracticeHome{M: desktops}, Store: runStore, Blobs: blobs, Limit: bundleLimit},
 	}
 	brokerLn := &practice.BrokerListener{Network: desktops.PracticeBrokerEndpoint, Port: "8091", Handler: practiceSvc.Broker.Handler()}
 	defer brokerLn.Close()
@@ -536,7 +542,7 @@ func main() {
 			Recorder:  llmrecStore,
 			Tasks:     tasksStore,
 			// Each model case's bundle, pulled off its practice desktop before the next case resets it (O-6).
-			Bundles:    &runs.Puller{Home: desktop.PracticeHome{M: desktops}, Store: runStore, Blobs: blobs},
+			Bundles:    &runs.Puller{Home: desktop.PracticeHome{M: desktops}, Store: runStore, Blobs: blobs, Limit: bundleLimit},
 			Practice:   practiceSvc,
 			Vision:     practiceSvc.Vision,
 			FreeMemory: practiceSvc.FreeMemory,

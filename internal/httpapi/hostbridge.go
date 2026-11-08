@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -258,7 +259,7 @@ func (s *Server) hostBridgeExecHandler(w http.ResponseWriter, r *http.Request) {
 		Stdout:   stdout.String(),
 		Stderr:   stderr.String(),
 		ExitCode: exitCode,
-		Error:    errString(err),
+		Error:    hostExecReason(ctx, req.Cmd, err),
 	})
 }
 
@@ -500,9 +501,19 @@ func startAndWatch(cmd *exec.Cmd, wait time.Duration) error {
 // credential the worker holds could not stop a prompt-injected worker from putting a command there for the person to
 // paste, and the clipboard stays the person's (winhost.Session.Paste keeps it so on purpose).
 
-func errString(err error) string {
+// hostExecReason is why a host command did not succeed, in words this package chose: the exit code, the time limit,
+// or that it could not be started (the detail, which may name host paths, is logged). "" when it succeeded.
+func hostExecReason(ctx context.Context, cmd string, err error) string {
 	if err == nil {
 		return ""
 	}
-	return err.Error()
+	var exitErr *exec.ExitError
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return "the program did not finish within 30 seconds"
+	case errors.As(err, &exitErr) && exitErr.ExitCode() >= 0:
+		return fmt.Sprintf("the program exited with code %d", exitErr.ExitCode())
+	}
+	log.Printf("host-bridge: %s: %v", cmd, err)
+	return "the program could not be run on this computer"
 }
