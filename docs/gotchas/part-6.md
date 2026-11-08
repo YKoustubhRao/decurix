@@ -376,3 +376,11 @@ document writes, and the record declares the document's own token (`binding.date
 Residency" / "12 Kunjibettu, Udupi" read "Hampi Residency12 Kunjibettu", so the name the worker typed stood in no source
 as a whole word and soul's provenance guard sent it back four times. A cell's paragraphs are now joined by a space
 (`office.docx_structure`).
+
+### A month's vouchers were learned as two blocks of two and a half
+
+The loop finder takes the candidate that covers the most steps. A stray scroll after every second voucher made pairs of
+vouchers match exactly, and two big blocks covered more steps than five single-voucher blocks: the fill could not give
+the third voucher's values and the model entered the month by hand (60-minute timeout, every grader passing). A block
+holding two whole repetitions of a shorter candidate is now several items (`learning._holds_two_items`), and a click on
+a list right before choosing from it is part of the choosing (`learning._drop_clicks_before_select`).

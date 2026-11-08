@@ -118,7 +118,7 @@ def build(sources, name=None):
     for meta, events in sources:
         program = replay.compile_program(meta, events)
         for note in (_tidy(program, events) + _drop_corrections(program) + _drop_empty_rows(program)
-                     + _drop_retried_commits(program)):
+                     + _drop_retried_commits(program) + _drop_clicks_before_select(program)):
             if note not in tidied:
                 tidied.append(note)
         if program["steps"]:
@@ -639,6 +639,33 @@ def _drop_empty_rows(program):
     return notes
 
 
+def _drop_clicks_before_select(program):
+    """
+    Take out, in place, a click on a list control straight before choosing from that same control: the choosing opens
+    the list itself, so the click is part of it. Found live (2026-11-08): before one voucher of five the person clicked
+    the voucher-type list and then chose from it, before the others only chose; the extra click broke the way every
+    voucher began, the step that brings up each new voucher was left out of the loop, and a replay would have entered
+    every voucher after the first over the last one's form. Only a click before a choice: a click before typing stays.
+    """
+
+    steps = program["steps"]
+    drop = {i for i in range(len(steps) - 1)
+            if steps[i]["kind"] == "click" and not steps[i].get("param") and steps[i].get("target")
+            and steps[i + 1]["kind"] == "select" and steps[i + 1].get("target")
+            and _target_key(steps[i]) == _target_key(steps[i + 1])
+            and (steps[i].get("window") or "") == (steps[i + 1].get("window") or "")}
+    if not drop:
+        return []
+    params = {p["name"]: p for p in program["params"]}
+    kept = [s for i, s in enumerate(steps) if i not in drop]
+    for n, s in enumerate(kept, 1):
+        s["n"] = n
+        if s.get("param") in params:
+            params[s["param"]]["step"] = n
+    program["steps"] = kept
+    return [f"{len(drop)} click(s) on a list straight before choosing from it are part of the choosing and left out"]
+
+
 def _same_commit(a, b):
     """Whether two commit steps are the same press: the same keys, or a press on the same named control."""
 
@@ -990,6 +1017,20 @@ def _rows_of_a_table(steps, span):
     return len(set(rows)) == len(rows)
 
 
+def _holds_two_items(candidate, others):
+    """Whether one block of a loop candidate holds two whole repetitions of a shorter candidate (see _find_loops)."""
+
+    _covered, reps, length, _gaps, _prefix = candidate
+    blocks = [(start, start + length) for start in reps]
+    for _c, other_reps, other_length, _g, _p in others:
+        if other_length >= length or len(other_reps) < 3:
+            continue
+        for lo, hi in blocks:
+            if sum(1 for r in other_reps if lo <= r and r + other_length <= hi) >= 2:
+                return True
+    return False
+
+
 def _find_loops(steps, demos):
     """
     Blocks of steps repeated, with different text typed each time: [{"id", "length", "reps", "blocks": [[step ids] per
@@ -1051,6 +1092,12 @@ def _find_loops(steps, demos):
     # bill's block, was taken for the loop, and the five 41-step bill blocks became "steps between" and were dropped.
     # A loop that overlaps one already taken is cut to the repetitions before the overlap, and tried again as that.
     loops, taken = [], set()
+    # A block that holds two whole repetitions of a shorter loop is several items, not one: found live (2026-11-08), a
+    # month's five vouchers were taken as two blocks of two-and-a-half, because a stray scroll after every second one
+    # made pairs match exactly and two big blocks covered more steps than five small ones. The fill could not give the
+    # third voucher's values, and the model entered the month by hand.
+    every = list(candidates)
+    candidates = [c for c in candidates if not _holds_two_items(c, every)]
     candidates.sort(key=lambda c: (-c[0], c[1][0]))
     while candidates:
         covered, reps, length, gaps, prefix = candidates.pop(0)

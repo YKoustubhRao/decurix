@@ -1002,3 +1002,4 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): A save the person had to repeat was learned as two saves and a press on a notice
 - [part-6.md](gotchas/part-6.md): A bill's table lines were folded as a loop, and its dates were never the document's
 - [part-6.md](gotchas/part-6.md): A Word table cell's lines were read run together
+- [part-6.md](gotchas/part-6.md): A month's vouchers were learned as two blocks of two and a half
