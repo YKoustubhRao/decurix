@@ -33,7 +33,13 @@ class ArmTest(unittest.TestCase):
         self.assertEqual(run.parse_arm("oracle"), {"name": "oracle", "kind": "oracle", "expert": False})
         self.assertEqual(run.parse_arm("nothing")["kind"], "nothing")
         self.assertEqual(run.parse_arm("ask")["kind"], "ask")
-        for bad in ("gpt-5", "default+expert+expert", "openai:default", "default@", "fast@a b", ""):
+        a = run.parse_arm("default+expert+soul")
+        self.assertEqual((a["name"], a["expert"], a.get("soul")), ("default+expert+soul", True, True))
+        self.assertNotIn("soul", run.parse_arm("default+expert"))
+        a = run.parse_arm("default+soul@eb15981")
+        self.assertEqual((a["expert"], a["soul"], a["agent_tree_rev"]), (False, True, "eb15981"))
+        for bad in ("gpt-5", "default+expert+expert", "openai:default", "default@", "fast@a b", "", "default+soul+expert",
+                    "default+soul+soul", "oracle+soul"):
             with self.assertRaises(run.Usage, msg=bad):
                 run.parse_arm(bad)
 

@@ -127,7 +127,15 @@ type PracticeSpec struct {
 	// LegacyGate is pinned old code in AgentTree, whose gate may predate /secrets and /request: a 404 from those is
 	// then passed (TellGate). Only an eval arm with its own agent tree sets it; the practice runner never does.
 	LegacyGate bool
+	// SoulDecisions turns on every decision soul words and reads in place of Python (plan rule 3, phase 2:
+	// SoulDecisionSwitches) on this desktop: only an eval arm sets it (+soul), to measure them before they default on.
+	SoulDecisions bool
 }
+
+// SoulDecisionSwitches are the agent's switches for the decisions moved into soul (plan rule 3, phase 2), each off by
+// default until an eval with it on shows no regression (plan rule 1): the final check's judge, the escalation ladder's
+// questions.
+var SoulDecisionSwitches = []string{"DECURIX_SOUL_JUDGE", "DECURIX_SOUL_ESCALATION"}
 
 // PracticeDesktop is a created practice desktop.
 type PracticeDesktop struct {
@@ -444,6 +452,11 @@ func practiceEnvironment(inherited []string, spec PracticeSpec, vncPassword stri
 			"DECURIX_BRAIN_MODEL="+spec.Model,
 			"DECURIX_BRAIN_VISION="+vision,
 		)
+	}
+	if spec.SoulDecisions {
+		for _, name := range SoulDecisionSwitches {
+			out = append(out, name+"=1")
+		}
 	}
 	return out
 }

@@ -181,12 +181,15 @@ approvals and secret questions count as required too; every other question is `o
 An arm pins everything that changes behaviour: `provider` (`azure` or `claude`), `model` (`default` or `fast`, the hub's
 two deployments), `expert` (on or off), and the agent tree (the image's, or a `git archive` of
 `agent/decurix_agent` at a rev, resolved to its commit id, copied into the practice desktop as Simulate copies a
-worker's). On the command line an arm is `[claude:]<model>[+expert][@<rev>]` (no prefix is azure), or `oracle`,
+worker's). On the command line an arm is `[claude:]<model>[+expert][+soul][@<rev>]` (no prefix is azure), or `oracle`,
 `oracle@<rev>`, `nothing` or `ask`; an arm whose rev is not lower case (`HEAD`, a branch) is renamed
 `<model>[+expert]@<first 12 of its commit id>`. Each arm gets one practice desktop of its own (2 GiB, the `basic`
 image, the `thebot` harness), made before its first case and removed after its last. An arm with its own agent
 tree is made with `LegacyGate`: old code's gate may predate the gate's `/secrets` and `/request`, so a 404 from those
-is let through. The deployments every model arm and the expert resolve to, and the endpoint each provider is reached at,
+is let through. A model arm with `+soul` (`Arm.Soul`) runs its desktop with every decision soul words and reads in
+place of Python turned on (`desktop.SoulDecisionSwitches`: `DECURIX_SOUL_JUDGE`, `DECURIX_SOUL_ESCALATION`; plan rule
+3, phase 2): each is off by default until `default+expert` against `default+expert+soul`, 5 repeats on one image,
+shows no regression (plan rule 1). A calibration arm never has it. The deployments every model arm and the expert resolve to, and the endpoint each provider is reached at,
 are pinned once, when the run starts, and so is the model each upstream answer says served it (its `model` field, the
 first seen in the run for each deployment; only a successful answer names one, so a throttled or failed call
 changes nothing). An arm whose desktop is ready to work and finds another resolution or

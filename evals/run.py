@@ -14,9 +14,11 @@ Run an eval suite on the control plane's matrix runner, and read its results (do
                               # the learning curve: per case in order, tokens in/out, calls, cached share, questions
                               # and pass; per kind, the later cases against the first. Writes evals/results/<id>/curve.md
 
-An arm is <model>[+expert][@<git-rev>], or oracle, nothing or ask:
+An arm is <model>[+expert][+soul][@<git-rev>], or oracle, nothing or ask:
   - <model> is default or fast (the hub's two deployments), on azure; claude:default (or claude:fast) uses claude;
   - +expert answers the worker's questions with the scripted expert;
+  - +soul turns on every decision soul words and reads in place of Python (plan rule 3, phase 2: the final check's
+    judge, the escalation ladder), so default+expert and default+expert+soul measure them before they default on;
   - @<rev> runs the agent tree of that git revision (git archive of agent/decurix_agent), not the image's; it combines
     with +expert (default+expert@<rev>). An arm whose rev is not lower-case (HEAD, a branch) is named
     <model>[+expert]@<first 12 of its commit id>, which the control plane accepts and the table shows;
@@ -57,7 +59,7 @@ ORACLE_AT = re.compile(r"^oracle@(?P<rev>[A-Za-z0-9._/~^-]{1,80})$")
 
 # The control plane's own rule for an arm's name (eval.armName).
 ARM_NAME = re.compile(r"^[a-z0-9][a-z0-9+@._:-]{0,63}$")
-ARM = re.compile(r"^(?:(?P<provider>azure|claude):)?(?P<model>default|fast)(?P<expert>\+expert)?(?:@(?P<rev>[A-Za-z0-9._/~^-]{1,80}))?$")
+ARM = re.compile(r"^(?:(?P<provider>azure|claude):)?(?P<model>default|fast)(?P<expert>\+expert)?(?P<soul>\+soul)?(?:@(?P<rev>[A-Za-z0-9._/~^-]{1,80}))?$")
 
 
 class Usage(SystemExit):
@@ -82,10 +84,13 @@ def parse_arm(text):
         return {"name": text, "kind": "oracle", "expert": False, "agent_tree_rev": m.group("rev")}
     m = ARM.match(text)
     if not m:
-        raise Usage(f"--arm {text!r}: an arm is <model>[+expert][@<git-rev>] (model default or fast, optionally "
+        raise Usage(f"--arm {text!r}: an arm is <model>[+expert][+soul][@<git-rev>] (model default or fast, optionally "
                     "claude: before it), or oracle, nothing or ask")
     arm = {"name": text, "kind": "model", "provider": m.group("provider") or "azure", "model": m.group("model"),
            "expert": bool(m.group("expert"))}
+    if m.group("soul"):
+        # Every decision soul words and reads in place of Python (plan rule 3, phase 2), on for this arm only.
+        arm["soul"] = True
     if m.group("rev"):
         arm["agent_tree_rev"] = m.group("rev")
     return arm

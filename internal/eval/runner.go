@@ -55,6 +55,9 @@ type Arm struct {
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model,omitempty"`
 	Expert   bool   `json:"expert"`
+	// Soul runs the arm with every decision soul words and reads in place of Python (desktop.SoulDecisionSwitches,
+	// plan rule 3 phase 2), to measure them against the same arm without: a model arm's only.
+	Soul bool `json:"soul,omitempty"`
 	// AgentTreeRev names the agent tree ("" is the image's own); AgentTree is its tar, rooted at decurix_agent/.
 	AgentTreeRev string `json:"agent_tree_rev,omitempty"`
 	AgentTree    []byte `json:"-"`
@@ -364,7 +367,7 @@ func (s *Service) checkArms(arms []Arm) ([]Arm, error) {
 				return nil, BadRequest("The scripted expert needs the Azure model set up.")
 			}
 		case ArmOracle, ArmNothing, ArmAsk:
-			a.Provider, a.Model, a.Expert = ExpertProvider, "", false
+			a.Provider, a.Model, a.Expert, a.Soul = ExpertProvider, "", false, false
 		default:
 			return nil, BadRequest(fmt.Sprintf("Arm %s: the kind is model, oracle, nothing or ask.", a.Name))
 		}
@@ -578,7 +581,8 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 	armRun := fmt.Sprintf("%s-a%d", run.ID, index+1)
 	desktopID := desktop.PracticeDesktopID(armRun)
 	spec := desktop.PracticeSpec{RunID: armRun, Image: image, Harness: "thebot", Brain: arm.Provider, Model: arm.Model,
-		MemoryMB: 2048, BrokerURL: broker, Hosts: suite.Hosts(), AgentTree: arm.AgentTree, Snapshot: emptySnapshot, LegacyGate: arm.AgentTreeRev != ""}
+		MemoryMB: 2048, BrokerURL: broker, Hosts: suite.Hosts(), AgentTree: arm.AgentTree, Snapshot: emptySnapshot, LegacyGate: arm.AgentTreeRev != "",
+		SoulDecisions: arm.Soul}
 	if spec.Model == "" {
 		spec.Model = "default"
 	}
