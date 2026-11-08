@@ -65,6 +65,19 @@ CUSTOM_OPTIONS_SECONDS = 6.0
 # The least a list is given to answer a search before two equal readings of it count as its answer.
 MIN_LIST_ANSWER = 2.0
 CUSTOM_OPEN_SECONDS = 1.5
+# How many of the screen's own looks a list is given to answer on a slow host, on top of MIN_LIST_ANSWER.
+SLOW_LOOKS = 3
+
+
+def list_answer_wait(look_took):
+    """
+    The least a list is given to answer a search before two equal readings count as its answer: MIN_LIST_ANSWER, or
+    SLOW_LOOKS times what one look at the screen took, whichever is longer. Found live (2026-11-08, a host at load 24,
+    a look ~8 s): two readings of a list that had not yet answered read the same, every search - "Developer
+    Workstation" among them - was taken to have found nothing, and a replay stood on a bill's line it could have entered.
+    """
+
+    return max(MIN_LIST_ANSWER, SLOW_LOOKS * max(0.0, look_took))
 
 # What a dropdown's list shows: its options, and in many kits (the web app) plain links.
 _SUGGESTION_ROLES = ("option", "menuitem", "listitem", "link")
@@ -787,8 +800,11 @@ def _select_in_list(element, option, ids, track):
             track["answered"] = True
         return True
 
+    look_took = 0.0
     while True:
+        looked_at = time.monotonic()
         now = observe()["elements"]
+        look_took = time.monotonic() - looked_at
         refresh(now)
         fresh = [e for e in now if e["path"] not in known and e.get("source") == "cdp" and e.get("box")]
         if track is not None and fresh and not submitted:
@@ -825,7 +841,7 @@ def _select_in_list(element, option, ids, track):
         # A list that reads the same twice running has answered the search: no need to wait it out.
         names = tuple(e.get("name") for e in candidates)
         # (Not before the list has had time to answer at all: on a slow host the old list reads the same twice.)
-        settled = typed is not None and names == last_names and time.monotonic() - typed_at >= MIN_LIST_ANSWER
+        settled = typed is not None and names == last_names and time.monotonic() - typed_at >= list_answer_wait(look_took)
         last_names = names
         if time.monotonic() > deadline or settled:
             if can_send and typed is not None and not fresh and not submitted:
@@ -840,7 +856,8 @@ def _select_in_list(element, option, ids, track):
                     by_name = [s for s in searches if not s[1]]
                     searches = ([s for s in searches if s[1]]
                                 + list(dict.fromkeys(by_name[:MAX_SENT_NAME_SEARCHES - 1] + by_name[-1:])))
-                    deadline, last_names, typed_at = time.monotonic() + CUSTOM_OPTIONS_SECONDS, None, time.monotonic()
+                    deadline, last_names, typed_at = (time.monotonic() + max(CUSTOM_OPTIONS_SECONDS, 2 * list_answer_wait(look_took)),
+                                                       None, time.monotonic())
                     continue
             if not searches:
                 break
@@ -851,7 +868,7 @@ def _select_in_list(element, option, ids, track):
             if submitted:
                 send(now)
             typed_at = time.monotonic()
-            deadline, last_names = typed_at + CUSTOM_OPTIONS_SECONDS, None
+            deadline, last_names = typed_at + max(CUSTOM_OPTIONS_SECONDS, 2 * list_answer_wait(look_took)), None
         time.sleep(0.3)
 
     # No entry is spelt as the value is - but exactly one entry of all the
