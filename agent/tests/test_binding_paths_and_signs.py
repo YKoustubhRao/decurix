@@ -60,6 +60,16 @@ class NegativeFigures(unittest.TestCase):
         self.assertEqual(values, {"amount": "-500"})
         self.assertEqual(evidence["amount"], binding.OTHER_SIGN)
 
+    def test_a_second_note_on_the_same_value_keeps_the_first(self):
+        # (follow-ups: a value both sign-flipped and numbered like the taught example lost OTHER_SIGN to NUMBERED)
+        with mock.patch.object(binding, "sign_differs", return_value=True), \
+                mock.patch.object(binding, "numbered_like_example", return_value=True):
+            _, evidence = binding._clean([{"name": "amount", "example": "100"}],
+                                         {"values": {"amount": "-500"}, "evidence": {"amount": "x" * 400}},
+                                         ["Credit note amount 500"], strict=True)
+        self.assertIn(binding.OTHER_SIGN, evidence["amount"])
+        self.assertIn(binding.NUMBERED, evidence["amount"], "the final check's mark is kept whole, never cut")
+
     def test_another_amount_is_still_not_held(self):
         self.assertFalse(binding.held_by("-500", ["Amount 5000"]))
         self.assertFalse(binding.held_by("-1,250.50", ["Balance 125.05"]))

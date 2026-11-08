@@ -1031,8 +1031,10 @@ def post_learned(kind, skill, version, question, text, task_id=None, derived_fro
         log(f"Kept on this desktop only: no reply to cite for the {kind}.")
         return None
     # Withheld whole, then cut (review round 2, B4): a secret across the cut leaves nothing of itself.
+    # client_id: this line's own id, the same on every try, so the control plane keeps it once however often it is
+    # sent (a post whose answer was lost, a restart before the line was settled).
     body = {"task_id": task_id, "kind": kind, "skill": str(skill or ""), "skill_version": int(version or 0),
-            "derived_from": derived_from,
+            "derived_from": derived_from, "client_id": uuid.uuid4().hex,
             "question": cut_text(_withheld(" ".join(str(question or "").split())), 2000),
             "text": cut_text(_withheld(" ".join(str(text or "").split())), 4000)}
     try:
@@ -1085,9 +1087,28 @@ def _post_learned(body):
         return "later"
 
 
-def resend_learned():
-    """Try every unposted line of every run folder once; keep what could not be posted yet. Never raises."""
+_resend_running = threading.Lock()
+_resend_wanted = threading.Event()
 
+
+def resend_learned():
+    """Try every unposted line of every run folder once; keep what could not be posted yet. Never raises. One at a
+    time: a call while another runs asks that one for one more pass and returns, so two threads never read and post
+    the same line (follow-ups, review round 2)."""
+
+    _resend_wanted.set()
+    while _resend_wanted.is_set():
+        if not _resend_running.acquire(blocking=False):
+            return  # (the one running sees the wish: it checks after each pass, and again after it lets go)
+        try:
+            while _resend_wanted.is_set():
+                _resend_wanted.clear()
+                _resend_once()
+        finally:
+            _resend_running.release()
+
+
+def _resend_once():
     try:
         root = config.DECURIX_DIR / "runs"
         paths = sorted(root.glob("*/" + LEARNED_FILE)) if root.is_dir() else []

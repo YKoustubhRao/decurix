@@ -360,6 +360,7 @@ def _clean(params, answer, texts=(), strict=False):
         else:
             if isinstance(value, (list, dict)):
                 continue
+            notes = []  # what the harness says of this value, each whole
             written = as_written(str(value).strip(), param.get("example"), texts)
             if drops_number(written, param.get("example")):
                 log(f"binding: {name} = {written!r} has no number where the taught {param.get('example')!r} had; "
@@ -372,26 +373,30 @@ def _clean(params, answer, texts=(), strict=False):
                 # Held by its amount (held_by is sign-blind on purpose), but this run's documents write it only with
                 # the other sign: said to the check, never decided here (review 2026-11-03 rework, E-45).
                 log(f"binding: {name} = {written!r} - the documents show this amount only with the other sign; kept, and said")
-                evidence[name] = OTHER_SIGN
+                notes.append(OTHER_SIGN)
             if numbered_like_example(written, param, texts):
                 log(f"binding: {name} = {written!r} numbers this run's words the way the taught "
                     f"{param.get('example')!r} did, and nothing of this run says it - kept, and said")
-                old = why.get(name) if isinstance(why, dict) else None
-                evidence[name] = (f"{str(old)[:120]} ({NUMBERED})" if old else NUMBERED)[:240]
+                notes.append(NUMBERED)
             if is_example(written, param.get("example")) and not held_by(written, texts) and not (
                     re.search(r"[^\W\d_]{3,}", written) and words_held(written, texts)):
                 # The person's own value from when they taught it, which nothing of this run says.
                 log(f"binding: {name} = {written!r} is the taught example and this run's documents do not hold it - left out")
                 continue
-            if not words_held(written, texts) and name not in evidence:
+            if not words_held(written, texts) and not notes:
                 # Said, never dropped (independent review, 2026-10-22): a value worked out from the documents is
                 # written otherwise than they write it (28-Sep-2026 from 28/09/2026, "Private Limited" from "Pvt Ltd")
                 # and is right. Found live (2026-10-22) the other way: a portal username made up from the
                 # client's name, "srilakshmielev" - so the person and the check see that it is not the documents' own.
                 log(f"binding: {name} = {written!r} is not written so in this run's documents - kept, and said")
-                note = WORKED
+                notes.append(WORKED)
+            if notes:
+                # Every note the harness makes on a value is kept whole, beside the model's own words (cut short): a
+                # second note never overwrites the first (OTHER_SIGN was lost to NUMBERED), and no cut takes the end
+                # of a mark the final check looks for (skill_task._assumed_note).
                 old = why.get(name) if isinstance(why, dict) else None
-                evidence[name] = (f"{str(old)[:150]} ({note})" if old else note)[:200]
+                said = "; ".join(notes)
+                evidence[name] = f"{str(old)[:150]} ({said})" if old else said
             values[name] = written
 
         if isinstance(why, dict) and why.get(name) and name not in evidence:

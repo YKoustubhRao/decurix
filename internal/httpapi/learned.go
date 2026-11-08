@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/YKoustubhRao/decurix/internal/llmrec"
@@ -42,6 +43,9 @@ func (s *Server) desktopLearnedHandler(w http.ResponseWriter, r *http.Request) {
 		DerivedFrom  string `json:"derived_from"`
 		Question     string `json:"question"`
 		Text         string `json:"text"`
+		// ClientID is the desktop's own id for the line, the same on every try: a line already kept under it is
+		// answered with that row, not kept twice. Optional (a desktop from before it posts none).
+		ClientID string `json:"client_id"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxLearnedBytes)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -57,7 +61,8 @@ func (s *Server) desktopLearnedHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	text := strings.TrimSpace(body.Text)
 	if !tasks.ValidID(body.TaskID) || !tasks.ValidJudgementID(body.DerivedFrom) || text == "" ||
-		len(body.Skill) > 128 || body.SkillVersion < 0 || len(body.Question) > 4000 || len(text) > 8000 {
+		len(body.Skill) > 128 || body.SkillVersion < 0 || len(body.Question) > 4000 || len(text) > 8000 ||
+		(body.ClientID != "" && !learnedClientID.MatchString(body.ClientID)) {
 		jsonStatusError(w, http.StatusBadRequest, "say the task, the judgement it came from and what was kept")
 		return
 	}
@@ -102,7 +107,25 @@ func (s *Server) desktopLearnedHandler(w http.ResponseWriter, r *http.Request) {
 	// the table is append-only, so a value that got in could never be taken out.
 	held := s.heldFor(worker)
 	text = llmrec.WithholdValues(text, held)
-	payload, _ := json.Marshal(map[string]string{"question": llmrec.WithholdValues(body.Question, held)})
+	fields := map[string]string{"question": llmrec.WithholdValues(body.Question, held)}
+	if body.ClientID != "" {
+		fields["client_id"] = body.ClientID
+	}
+	payload, _ := json.Marshal(fields)
+	// The read of what is kept and the write are one step: two tries of one line at once keep it once.
+	s.learnedMu.Lock()
+	defer s.learnedMu.Unlock()
+	if body.ClientID != "" {
+		kept, err := keptLearned(s.Tasks, body.TaskID, worker, source.ID, body.Kind, body.ClientID)
+		if err != nil {
+			internalError(w, "learned: reading what is kept", err)
+			return
+		}
+		if kept != "" {
+			jsonResponseStatus(w, http.StatusOK, map[string]string{"id": kept})
+			return
+		}
+	}
 	id, err := s.Tasks.AddJudgement(tasks.Judgement{
 		Actor: source.Actor, Door: "derived", Kind: body.Kind, WorkerID: worker, TaskID: body.TaskID,
 		ExecutionID: source.ExecutionID, InterventionID: source.InterventionID, SkillName: body.Skill,
@@ -113,4 +136,28 @@ func (s *Server) desktopLearnedHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponseStatus(w, http.StatusCreated, map[string]string{"id": id})
+}
+
+// learnedClientID is the shape of a desktop's id for a learned line (a uuid's 32 hex digits).
+var learnedClientID = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// keptLearned is the id of the row this desktop already kept for the task under clientID (the same citation and
+// kind), "" when there is none.
+func keptLearned(store *tasks.Store, taskID, worker, derivedFrom, kind, clientID string) (string, error) {
+	rows, err := store.JudgementsForTask(taskID)
+	if err != nil {
+		return "", err
+	}
+	for _, j := range rows {
+		if j.WorkerID != worker || j.DerivedFrom != derivedFrom || j.Kind != kind || j.Door != "derived" {
+			continue
+		}
+		var p struct {
+			ClientID string `json:"client_id"`
+		}
+		if json.Unmarshal(j.Payload, &p) == nil && p.ClientID == clientID {
+			return j.ID, nil
+		}
+	}
+	return "", nil
 }

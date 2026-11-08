@@ -96,3 +96,50 @@ func TestALearnedRowIsKeptUnderThePersonWhoSaidIt(t *testing.T) {
 		t.Fatalf("after the desktop was recreated: %s", w.Body)
 	}
 }
+
+// A line a desktop sends again under its own client id (an answer lost, a restart before the line was settled) is kept
+// once, and the second try is answered with the row kept; a line with no id is kept as before.
+func TestALearnedLineSentTwiceIsKeptOnce(t *testing.T) {
+	s := chatServer(t)
+	route, _ := s.Tasks.Commit(tasks.NewRoute(), tasks.Worker{ID: "box", Name: "box"}, "enter the bills", tasks.Origin{Kind: tasks.OriginPerson})
+	_, _ = s.Tasks.RecordOutcome("box", route.TaskID, tasks.Outcome{Kind: tasks.OutcomeQuery, Reply: "Which ledger?"})
+	reply, _ := s.Tasks.Plan("box", "purchases, always")
+	asha := tasks.Actor{ID: "u_asha", Name: "Asha", Roles: []string{"operator"}, Kind: tasks.ActorPerson}
+	reply, _, err := s.Tasks.CommitReply(reply, tasks.Worker{ID: "box", Name: "box"}, "purchases, always", false,
+		tasks.ReplyBy{Actor: asha, Door: "chat"}, tasks.Origin{Kind: tasks.OriginPerson})
+	if err != nil || reply.JudgementID == "" {
+		t.Fatalf("reply = %+v, %v", reply, err)
+	}
+	body := func(clientID string) map[string]any {
+		b := map[string]any{"task_id": route.TaskID, "kind": "correction", "skill": "bill-entry", "skill_version": 2,
+			"derived_from": reply.JudgementID, "question": "Which ledger?", "text": "Bills go to the purchases ledger."}
+		if clientID != "" {
+			b["client_id"] = clientID
+		}
+		return b
+	}
+	const line = "0123456789abcdef0123456789abcdef"
+	first := postLearned(t, s, "box", body(line))
+	again := postLearned(t, s, "box", body(line))
+	if first.Code != http.StatusCreated || again.Code != http.StatusOK {
+		t.Fatalf("first %d %s, again %d %s", first.Code, first.Body, again.Code, again.Body)
+	}
+	var a, b struct{ ID string }
+	_ = json.Unmarshal(first.Body.Bytes(), &a)
+	_ = json.Unmarshal(again.Body.Bytes(), &b)
+	if a.ID == "" || a.ID != b.ID {
+		t.Fatalf("the second try answered %q, the row is %q", b.ID, a.ID)
+	}
+	if rec := postLearned(t, s, "box", body("not-an-id")); rec.Code != http.StatusBadRequest {
+		t.Fatalf("a client id of another shape: %d", rec.Code)
+	}
+	other := postLearned(t, s, "box", body("fedcba9876543210fedcba9876543210"))
+	plain := postLearned(t, s, "box", body(""))
+	if other.Code != http.StatusCreated || plain.Code != http.StatusCreated {
+		t.Fatalf("another line %d, a line with no id %d", other.Code, plain.Code)
+	}
+	rows, _ := s.Tasks.JudgementsOfKind("box", tasks.JudgementCorrection)
+	if len(rows) != 3 {
+		t.Fatalf("kept %d rows, want 3 (the line once, another line, the line with no id)", len(rows))
+	}
+}

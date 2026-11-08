@@ -126,6 +126,12 @@ def names_whole(name, text):
     for i in range(len(tokens) - n + 1):
         if low[i:i + n] != want:
             continue
+        # A capital says something only where the writing has case: a line written wholly in capitals ("PLEASE FILE
+        # FOR ABC TRADERS") capitalises every word, so there no capital continues a name, as in a line written all in
+        # small letters (found in review: an all-capitals request hid the client's own facts).
+        line = text[text.rfind("\n", 0, tokens[i][1]) + 1:(text.find("\n", tokens[i][2]) + 1 or len(text) + 1) - 1]
+        if not any(ch.islower() for ch in line):
+            return True
         if i + n < len(tokens):
             after = tokens[i + n]
             if after[0][:1].isupper() and not text[tokens[i + n - 1][2]:after[1]].strip():

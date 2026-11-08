@@ -10,6 +10,8 @@ Nothing here knows an application, a product or a business rule: values, texts a
 import re
 from decimal import Decimal, InvalidOperation
 
+from decurix_agent import values
+
 _NUMBER = re.compile(r"(?<![\w.])(\()?(-)?\s?(?:(?:Rs\.?|INR|USD|EUR|GBP|₹|\$|€|£)\s?)?"
                      r"(\d{1,3}(?:,\d{2,3})+(?:\.\d+)?|\d+(?:\.\d+)?)(\))?"
                      r"\s?(lakhs?|lacs?|crores?|cr|bn|billions?|mn|millions?|thousands?|k|m|l)?(?![\w])", re.I)
@@ -39,61 +41,35 @@ def parse_number(text):
 
 
 def same_figure(a, b):
-    """Two written figures agree when they are equal at the coarser of the two precisions."""
+    """Two written figures agree when they are equal at the coarser of the two precisions (values.within_precision: the
+    one rule; review round 2 - this one's own 0.005 slack made 10.00 and 10.01 one figure)."""
 
     (va, sa), (vb, sb) = a, b
-    return abs(va - vb) <= max(sa, sb) / 2 + Decimal("0.005")
+    return values.within_precision(va, sa, vb, sb)
 
 
-_MONTHS = {m: n for n, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov",
-                                       "dec"), 1)}
-_NAMED_DATE = re.compile(r"(?i)^\s*(\d{1,2})(?:st|nd|rd|th)?[\s\-./]+([a-z]{3})[a-z]*\.?[\s\-./,]+(\d{4})\s*$")
-_NAMED_DATE_US = re.compile(r"(?i)^\s*([a-z]{3})[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\s*$")
-_ISO_DATE = re.compile(r"^\s*(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T][\d:.]+)?\s*$")
-_NUM_DATE = re.compile(r"^\s*(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})\s*$")
 _MONEY_WORDS = re.compile(r"(?i)\b(?:rs|inr|usd|eur|gbp|rupees?)\b\.?|[₹$€£]")
 
 
 def fact_value(text, day_first=None, unit=1):
     """A figure as what it stands for: ("date", (y, m, d)), ("number", Decimal), or ("text", folded text)."""
 
-    import datetime
     raw = " ".join(str(text or "").split())
-    for pattern, order in ((_NAMED_DATE, "dmy"), (_NAMED_DATE_US, "mdy")):
-        m = pattern.match(raw)
-        if m:
-            parts = dict(zip(order, m.groups()))
-            month = _MONTHS.get(parts["m"][:3].lower())
-            if month:
-                try:
-                    return ("date", datetime.date(int(parts["y"]), month, int(parts["d"])).timetuple()[:3])
-                except ValueError:
-                    pass
-    m = _ISO_DATE.match(raw)
-    if m:
-        try:
-            return ("date", datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3))).timetuple()[:3])
-        except ValueError:
-            pass
-    m = _NUM_DATE.match(raw)
-    if m:
-        a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if a > 12 or (a <= 12 and b <= 12 and day_first is True):
-            d, mo = a, b
-        elif b > 12 or day_first is False:
-            d, mo = b, a
-        else:
-            return ("text", raw.lower())  # 02/11/2026 with no convention: compared as written
-        try:
-            return ("date", datetime.date(y, mo, d).timetuple()[:3])
-        except ValueError:
-            return ("text", raw.lower())
+    # A date is read by values.parse_date under the known order (`day_first`: True DD/MM, False MM/DD, None not said):
+    # one that order cannot read (13/04/2026 under MM/DD), or an ambiguous one with no order (02/11/2026), is compared
+    # as written (review round 2: a first part over 12 was read day first even under MM/DD).
+    day = values.parse_date(raw, "day" if day_first is True else "month" if day_first is False else None)
+    if day:
+        return ("date", tuple(day.parts)) if day.kind == "date" else ("text", raw.lower())
     bare = _MONEY_WORDS.sub(" ", raw).strip().replace("−", "-")
     # A percentage, however written: 11.55%, "11.55 percent", "11.55 per cent", "11.55 pct" (round 5 P5, 2026-10-20:
     # "F4=11.55" in a Variance % column against "(+11.55%)" was reported as not agreeing).
     pct = bool(re.search(r"(?i)%|\bper ?cent\b|\bpct\b", bare))
     if pct:
         bare = re.sub(r"(?i)\s*(?:%|\bper ?cent\b|\bpct\b\.?)", "", bare).strip()
+    scale = r"(?i)[\s(]*(?:lakhs?|lacs?|l|crores?|cr|thousands?|k|mn|bn|millions?|billions?)?\.?\)?$"
+    if values.parse_amount(re.sub(scale, "", bare).lstrip("+(")) == values.UNDECIDED:
+        return ("text", raw.lower().strip(" .,:;"))  # 1.250,00 or 12,5: separators that read two ways (values)
     found = parse_number(bare) if re.fullmatch(r"[+(]{0,2}-?\s?[\d,]+(?:\.\d+)?\)?\s*(?:lakhs?|lacs?|l|crores?|cr|"
                                                r"thousands?|k|mn|bn|millions?|billions?)?\.?", bare, re.I) else None
     if found:
@@ -161,8 +137,7 @@ def same_fact(a, b, percent=False):
                 # One the other rounded is the same figure: within half the coarser one's last place. A variance
                 # written as "+5.3 lakh" in one place and "an adverse/favourable variance of 531,169" in another
                 # carries its sign in words: the amounts are compared (the signs are figure_sign's).
-                tolerance = max(sa, sb) / 2 + Decimal("0.005")
-                if abs(va - vb) <= tolerance or abs(abs(va) - abs(vb)) <= tolerance:
+                if values.within_precision(va, sa, vb, sb) or values.within_precision(abs(va), sa, abs(vb), sb):
                     return True
         return False
     return a[1] == b[1]

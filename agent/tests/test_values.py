@@ -111,6 +111,16 @@ class TheUnitASourceWritesBesideAFigure(unittest.TestCase):
         self.assertEqual(values.units_beside("18", "Due 18/09/2026 at 10:18, rate 18.5%, bill 1188, INV-18"), [])
         self.assertEqual(values.units_beside("INV-18", "INV-18 at 18%"), [])
 
+    def test_a_one_digit_figure_with_its_unit_stands_where_the_source_writes_it_so(self):
+        # (found live 2026-11-08: "Rate": "5%" from "rate 5%." was refused every time by gui record)
+        self.assertEqual(values.parse_amount("5%"), values.Amount(1, Decimal("5"), "%", ""))
+        self.assertTrue(records.stands_in("5%", "Freight at rate 5%."))
+        self.assertTrue(records.stands_in("5 kg", "Weight: 5 kg\nPacked by: Asha"))
+        self.assertFalse(records.stands_in("5%", "Freight at rate 15%, 50 units, 5 kg"), "only that figure, that unit")
+        self.assertFalse(records.stands_in("5", "Freight 12.50 for 1500 units"), "no 5 in the text")
+        # A bare digit is still never found inside other figures.
+        self.assertFalse(records.stands_in("5", "Paid 15% of 2025.50 on 1500"))
+
 
 class ARangeAndItsCount(unittest.TestCase):
     """Review round 2 leftover: false_sums read "Rows 2 - 10 = 9." as a wrong subtraction. A range of numbered things
@@ -510,3 +520,59 @@ class TheTypingPathToo(unittest.TestCase):
         self.assertFalse(cdp._formatted("12345678901234567", "12345678901234568"))
         self.assertTrue(cdp.same_number("24", "24.0"))
         self.assertTrue(cdp._formatted("1200", "1,200"))
+
+
+class TheComparatorsOutsideValuesAgree(unittest.TestCase):
+    """Review round 2: a kept cell (stage_checks._same_value), a fact (provenance.fact_value / same_figure) and a
+    working row's arithmetic (stage_facts) each had their own date and number rules; they ask values now."""
+
+    def test_a_first_part_over_12_is_no_date_under_month_first(self):
+        from decurix_agent import provenance, stage_checks
+        # Under MM/DD "13/04/2026" cannot be read: values does not decide it, so no one calls it 13 April.
+        self.assertIsNot(values.compare("13/04/2026", "2026-04-13", "month", "month").same, True)
+        self.assertFalse(stage_checks.same_cell("13/04/2026", "2026-04-13", day_first=False))
+        self.assertEqual(provenance.fact_value("13/04/2026", day_first=False)[0], "text")
+        # Under DD/MM, or with no order said, its own figures decide it - as values reads it.
+        self.assertIs(values.compare("13/04/2026", "2026-04-13", "day", "day").same, True)
+        self.assertTrue(stage_checks.same_cell("13/04/2026", "2026-04-13", day_first=True))
+        self.assertTrue(stage_checks.same_cell("13/04/2026", "2026-04-13"))
+        self.assertEqual(provenance.fact_value("13/04/2026"), ("date", (2026, 4, 13)))
+
+    def test_a_date_under_the_known_order(self):
+        from decurix_agent import provenance, stage_checks
+        self.assertIs(values.compare("03/04/2026", "2026-03-04", "month", "month").same, True)
+        self.assertTrue(stage_checks.same_cell("03/04/2026", "2026-03-04", day_first=False))
+        self.assertFalse(stage_checks.same_cell("03/04/2026", "2026-03-04", day_first=True))
+        self.assertEqual(provenance.fact_value("03/04/2026", day_first=False), ("date", (2026, 3, 4)))
+        # No order: ambiguous - the same only as written.
+        self.assertIsNone(values.compare("03/04/2026", "2026-03-04").same)
+        self.assertFalse(stage_checks.same_cell("03/04/2026", "2026-03-04"))
+        self.assertTrue(stage_checks.same_cell("03/04/2026", "03/04/2026"))
+        self.assertEqual(provenance.fact_value("03/04/2026")[0], "text")
+
+    def test_one_precision_rule(self):
+        from decurix_agent import provenance, stage_checks, stage_facts
+        # A figure written rounded is the precise one, within half the coarser one's last place: the parameter.
+        self.assertIs(values.compare("1234.5678", "1234.57", precision=True).same, True)
+        self.assertIs(values.compare("1234.5678", "1234.57").same, False, "without it, equal only")
+        self.assertTrue(stage_checks.same_cell(["=B2*C2", 1234.5678], "1234.57"))
+        # A computed value claims no precision: only the written side's counts, and two computed values are equal.
+        self.assertFalse(stage_checks.same_cell(["=B2*C2", 1000.0], "1000.4"))
+        self.assertFalse(stage_checks.same_cell(["=B2*C2", 1000.0], ["=B2*C3", 1000.4]))
+        self.assertTrue(stage_checks.same_cell(["=B2*C2", 0.1 + 0.2], ["=B2*C3", 0.3]))
+        self.assertFalse(stage_checks.same_cell("Rs 500", "$500"), "a currency still counts")
+        # Two figures written to the cent that differ by one are two figures, everywhere.
+        self.assertIs(values.compare("10.00", "10.01", precision=True).same, False)
+        self.assertFalse(stage_checks.same_cell("10.00", "10.01"))
+        self.assertFalse(provenance.same_figure(provenance.parse_number("10.00"), provenance.parse_number("10.01")))
+        self.assertFalse(stage_facts._matches(10.00, 10.01))
+        # A whole result is the computed value rounded to the unit; a float's noise is no difference.
+        self.assertTrue(stage_facts._matches(1392.4, 1392.0))
+        self.assertTrue(stage_facts._matches(1180 * 1.18, 1392.4))
+        self.assertFalse(stage_facts._matches(1234.565, 1234.58))
+
+    def test_separators_that_read_two_ways_are_no_figure(self):
+        from decurix_agent import provenance
+        self.assertEqual(values.parse_amount("12,5"), values.UNDECIDED)
+        self.assertEqual(provenance.fact_value("12,5")[0], "text")
+        self.assertEqual(provenance.fact_value("1,250.00")[1][0], Decimal("1250.00"))

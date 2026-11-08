@@ -41,6 +41,44 @@ class SignatureTests(unittest.TestCase):
         self.assertEqual(gate.verify(KEY, signed()), "")
         self.assertEqual(gate.verify(KEY, signed()), "replayed")
 
+    def restart(self, path, now=None):
+        """The gate process starting again: its memory gone, its own directory kept."""
+        gate._nonces.clear()
+        gate.use_nonce_store(path, now)
+
+    def test_a_nonce_seen_before_a_restart_is_refused_after_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d, gate.NONCES_FILE)
+            self.addCleanup(lambda: gate._nonce_store.update(path=None, floor=0.0))
+            gate.use_nonce_store(path)
+            body = signed(nonce="before-restart")
+            self.assertEqual(gate.verify(KEY, body), "")
+            if os.name != "nt":
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.restart(path)
+            self.assertEqual(gate.verify(KEY, body), "replayed", "a signed body still in its window replayed")
+            self.assertEqual(gate.verify(KEY, signed(nonce="after-restart")), "")
+
+    def test_kept_nonces_past_their_expiry_are_let_go(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d, gate.NONCES_FILE)
+            self.addCleanup(lambda: gate._nonce_store.update(path=None, floor=0.0))
+            gate.use_nonce_store(path)
+            self.assertEqual(gate.verify(KEY, signed(nonce="old")), "")
+            self.restart(path, now=time.time() + 3 * gate.SKEW_SECONDS)
+            self.assertNotIn("old", gate._nonces)
+
+    def test_an_unreadable_nonce_store_refuses_what_was_signed_before_the_start(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d, gate.NONCES_FILE)
+            path.write_text("{not json", encoding="utf-8")
+            self.addCleanup(lambda: gate._nonce_store.update(path=None, floor=0.0))
+            start = time.time()
+            self.restart(path, now=start)
+            self.assertEqual(gate.verify(KEY, signed(ts=start - 5, nonce="unknown")), "replayed")
+            self.assertEqual(gate.verify(KEY, signed(ts=start + 1, nonce="new"), now=start + 2), "")
+            self.assertIn("new", path.read_text(encoding="utf-8"))
+
     def test_a_forged_or_altered_reply_is_refused(self):
         self.assertEqual(gate.verify(KEY, signed(key="another")), "bad signature")
         for field, value in (("text", "yes, and pay twice"), ("task_id", "t2"), ("request_id", "other")):
