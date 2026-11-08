@@ -75,6 +75,34 @@ class ALauncherThatBringsItsAppForward(unittest.TestCase):
         self.assertNotIn("no new window", said)
 
 
+class OpeningTheBrowserWhenItRunsWithNoWindow(unittest.TestCase):
+    """Found live (2026-11-07, broker mode): the browser warmed for a task has no window, and a person's click on the
+    panel's Web Browser icon was told "brought to the front" with nothing on the screen."""
+
+    def _open(self, windows, available):
+        with mock.patch.object(core.screen, "windows", lambda: windows), \
+                mock.patch.object(core.cdp, "available", lambda: available), \
+                mock.patch.object(core.cdp, "navigate", return_value="") as navigate, \
+                mock.patch.object(core, "_raise_browser", lambda: None), \
+                mock.patch.object(core, "_task_windows", lambda before: None), \
+                mock.patch.object(core.session, "launch") as launch:
+            said = core._open("browser", False)
+        return said, navigate, launch
+
+    def test_a_running_browser_with_no_window_gets_one(self):
+        said, navigate, launch = self._open([], True)
+        navigate.assert_called_once_with("about:blank", new_tab=True)
+        launch.assert_not_called()
+        self.assertEqual(said, "Opened a Chromium window.")
+
+    def test_a_browser_window_on_the_screen_is_brought_forward(self):
+        window = {"id": 1, "title": "Bill entry - Chromium", "active": False, "box": (0, 0, 10, 10)}
+        said, navigate, launch = self._open([window], True)
+        navigate.assert_not_called()
+        launch.assert_not_called()
+        self.assertEqual(said, "Brought Chromium to the front.")
+
+
 class SearchingAListForWhatADocumentDescribes(unittest.TestCase):
     def test_a_plural_is_searched_in_the_singular_with_its_own_punctuation_and_in_its_phrase(self):
         # An order's lines, against the application's own items "T-shirt" and "Coffee Mug" (found live, 2026-10-13).

@@ -419,7 +419,54 @@ def local_copy(path):
     os.mkdir(folder, 0o700)
     target = os.path.join(folder, os.path.basename(os.fsdecode(path).rstrip("/")) or "file")
     _keep_copy(target, data)
+    original = os.fsdecode(path)
+    if os.path.isabs(original) and "\n" not in original:
+        _keep_copy(os.path.join(folder, ORIGIN_FILE), original.encode("utf-8", "surrogateescape"))
     return target
+
+
+# Beside each copy, the worker's path it was made from (local_copy): what shown_url gives back for the copy.
+ORIGIN_FILE = ".origin"
+
+
+def shown_url(url):
+    """
+    A page's address as the worker knows it. The browser shows a local page the worker opened as this side's copy
+    (local_copy: file://<home>/inputs/<id>/<name>); every reading of the page that goes back to the worker (the
+    observation's page_url and groups, a recording's context, a replay's page check) names the worker's own file it
+    was made from instead. Found live (2026-11-07): an imported recording's check "the page file:///home/headless/
+    work/form.html" never matched the copy's address, and a recorded address held the copy's random folder. Any other
+    address, and any outside broker mode, is itself.
+    """
+
+    if not url or not url.startswith("file://") or not requested():
+        return url
+    home = os.environ.get("HOME", "")
+    if not home:
+        return url
+    import urllib.parse
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return url
+    path = urllib.parse.unquote(parts.path)
+    base = os.path.join(home, COPIES_DIR)
+    folder, name = os.path.split(path)
+    if os.path.dirname(folder) != base or not name or name == ORIGIN_FILE or not _private_dir(folder):
+        return url
+    try:
+        with open(os.path.join(folder, ORIGIN_FILE), "rb") as f:
+            original = f.read(8192).decode("utf-8", "surrogateescape")
+    except OSError:
+        return url
+    if not os.path.isabs(original) or "\n" in original:
+        return url
+    shown = "file://" + urllib.parse.quote(original)
+    if parts.query:
+        shown += "?" + parts.query
+    if parts.fragment:
+        shown += "#" + parts.fragment
+    return shown
 
 
 def _own_copy(path):

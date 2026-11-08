@@ -377,6 +377,28 @@ class TheFilesACommandNames(Tmp):
             self.assertEqual(f.read(), b"Customer: Acme\n")
         self.assertEqual(os.stat(copy).st_mode & 0o777, 0o600)
 
+    @unittest.skipUnless(POSIX, "needs a private home folder (Unix modes)")
+    def test_a_copys_address_reads_back_as_the_workers_own_file(self):
+        home = self.path("screen-home")
+        os.mkdir(home, 0o700)
+        page = self.write("work/my form.html", b"<title>Customers</title>")
+        fd = os.open(page, os.O_RDONLY)
+        self.addCleanup(os.close, fd)
+        with mock.patch.dict(os.environ, {"HOME": home, "DECURIX_SCREEN_USER": "1"}), _Child({page: fd}):
+            copy = broker.local_copy(page)
+            import urllib.parse
+            url = "file://" + urllib.parse.quote(copy)
+            mine = "file://" + urllib.parse.quote(page)
+            self.assertEqual(broker.shown_url(url), mine)
+            self.assertEqual(broker.shown_url(url + "#top"), mine + "#top")
+            self.assertEqual(broker.shown_url("https://example.com/a"), "https://example.com/a")
+            other = "file://" + urllib.parse.quote(os.path.join(home, broker.COPIES_DIR, "abc", "x.html"))
+            self.assertEqual(broker.shown_url(other), other, "a folder that is no copy of ours stays as it is")
+            origin = "file://" + urllib.parse.quote(os.path.join(os.path.dirname(copy), broker.ORIGIN_FILE))
+            self.assertEqual(broker.shown_url(origin), origin)
+            with mock.patch.dict(os.environ, {"DECURIX_SCREEN_USER": "0"}):
+                self.assertEqual(broker.shown_url(url), url, "outside broker mode an address is itself")
+
     def test_outside_a_brokers_child_a_path_is_itself(self):
         self.assertEqual(broker.local_copy("/some/file.html"), "/some/file.html")
 
@@ -388,6 +410,29 @@ class TheFilesACommandNames(Tmp):
         self.assertEqual(screen_call.named_files("cdp.page_list", (), {}), [])
         command = screen_call.command("core.open_target", ["/w/a.html"])
         self.assertEqual(command[-3:], [screen_call.CALL_COMMAND, "core.open_target", "/w/a.html"])
+
+    def test_a_replay_hands_over_the_files_its_steps_open_and_upload(self):
+        program = {"steps": [
+            {"n": 1, "kind": "open", "open": "file:///home/headless/work/old.html"},
+            {"n": 2, "kind": "open", "open": "file:///home/headless/work/form.html"},
+            {"n": 3, "kind": "type", "param": "name", "target": {"name": "Name"}},
+            {"n": 4, "kind": "upload", "files": ["/home/headless/work/recorded.pdf"]},
+            {"n": 5, "kind": "upload", "param": "scan", "files": ["/home/headless/work/demo.pdf"]},
+            {"n": 6, "kind": "open", "open": "file:///home/headless/work/form.html"},
+        ]}
+        self.assertEqual(screen_call.program_files(program, {"scan": "/w/a.pdf; /w/b.pdf", "name": "x"}, start=2),
+                         ["file:///home/headless/work/form.html", "/home/headless/work/recorded.pdf",
+                          "/w/a.pdf", "/w/b.pdf"])
+        self.assertEqual(screen_call.program_files(program, {"scan": ["/w/c.pdf"]}, start=5),
+                         ["/w/c.pdf", "file:///home/headless/work/form.html"])
+        self.assertEqual(screen_call.program_files({"steps": "nonsense"}), [])
+        self.assertEqual(screen_call.program_files(None), [])
+
+    def test_a_replay_through_the_broker_names_those_files_to_the_client(self):
+        program = {"title": "t", "steps": [{"n": 1, "kind": "open", "open": "file:///w/form.html"}]}
+        with mock.patch.object(screen_call, "exchange", return_value={"result": {"outcome": "verified"}}) as sent:
+            screen_call.run_replay(program, params={}, start=1)
+        self.assertEqual(sent.call_args.kwargs["files"], ["file:///w/form.html"])
 
 
 # ------------------------------------------------------------

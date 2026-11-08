@@ -416,13 +416,47 @@ def new_ladder(state, ask_model):
     return ladder
 
 
+def program_files(program, params=None, start=1):
+    """
+    The files of the caller's that a replay of `program` from step `start` may open or upload: each open step's
+    target and each upload's files (this run's value for an upload that takes one, as replay._run_step reads it).
+    They are handed over as `gui` hands the files its command names (gui_client.input_files keeps only regular files
+    the worker can read, at most MAX_INPUTS); the screen side reads none by its name. Found live (2026-11-07): a
+    taught skill whose first step opens ~/work/form.html stopped at that step in broker mode.
+    """
+
+    found = []
+    for step in (program or {}).get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        n = step.get("n")
+        if isinstance(n, int) and isinstance(start, int) and n < start:
+            continue
+        kind = step.get("kind")
+        if kind == "open":
+            named = [step.get("open")]
+        elif kind == "upload":
+            named = step.get("files") or []
+            if step.get("param"):
+                value = (params or {}).get(step["param"])
+                named = value if isinstance(value, list) else [f.strip() for f in str(value or "").split(";")]
+        else:
+            continue
+        for path in named if isinstance(named, list) else []:
+            if isinstance(path, str) and path and path not in found:
+                found.append(path)
+    return found
+
+
 def run_replay(program, params=None, start=1, report=None, ladder=None):
-    """replay.run through the broker: the ladder's questions to the engine are asked here, its state comes back."""
+    """replay.run through the broker: the ladder's questions to the engine are asked here, its state comes back.
+    The files its steps open or upload are handed over with it (program_files)."""
 
     request = {"args": [program], "kwargs": {"params": params, "start": start}, "report": report is not None,
                "ladder": ladder_state(ladder) if ladder is not None else None}
     ask = ladder.ask_model if ladder is not None else None
-    final = exchange("replay.run", request, on_ask=ask, on_report=report)
+    final = exchange("replay.run", request, on_ask=ask, on_report=report,
+                     files=program_files(program, params, start))
     if ladder is not None:
         apply_state(ladder, final.get("ladder"))
     return final.get("result")

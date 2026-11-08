@@ -1015,7 +1015,7 @@ def observe():
     by_id = {n["nodeId"]: n for n in nodes}
     group_id = f"cdp:{page.target.get('id')}"
     title = metrics.get("title") or page.target.get("title") or ""
-    url = metrics.get("url") or ""
+    url = broker.shown_url(metrics.get("url") or "")
 
     group = {
         "behind": behind,
@@ -1267,7 +1267,7 @@ def _context(page, metrics):
 
     return {
         "title": browser.page_window_title(metrics.get("title") or page.target.get("title") or ""),
-        "url": metrics.get("url") or "",
+        "url": broker.shown_url(metrics.get("url") or ""),
     }
 
 

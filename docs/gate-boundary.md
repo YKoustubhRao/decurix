@@ -556,6 +556,86 @@ skill with a ladder question, a long request, a demonstration recorded by a pers
 until then the gate's boundary is only as good as the filters in front of it. A desktop keeps the mode it was created
 with, so turning it on changes nothing for existing desktops.
 
+### Live trial (2026-11-07, finished 2026-11-08)
+
+What ran:
+- **The deterministic benches in broker mode.** `bench/skills/e2e.py` and `bench/recordings/e2e.py` take `--broker`
+  (`bench/brain.py`, `screen_env`: exactly what `desktop.screenBrokerEnv` adds, `DECURIX_SCREEN_USER=1`). The
+  recordings bench now reads `DECURIX_TEST_IMAGE` like the skills bench (it was fixed to `:basic`), and in broker mode
+  takes its own viewport measurement as the screen user (the DevTools relay is that user's alone). On
+  `decurix-desktop:next` with this tree's agent, all four runs pass (each bench with and without `--broker`). The
+  skills bench's output is the same in both modes apart from element refs, including the heal question D-09 puts to
+  the person and the "is not on the screen" question.
+- **A desktop the real control plane made**: this tree's control plane with `DECURIX_SCREEN_BROKER=1` (a build overlay
+  pointing its image at `:broker`; no product tag touched), a hosted brain (Azure, Kimi-K2.6 with vision, gpt-5.4-mini
+  fast), `/api/desktops/create`, under its seccomp profile. The trial's agent fixes (below) were copied into the
+  desktop, owned by root and not writable by others, then the desktop restarted. Everything went through the routes a
+  person uses: `/api/desktops/send` (replies with `note_id`), `/api/desktops/record`, `/api/desktops/ticket/action`,
+  `/api/desktops/tasks`, `/tasks/<id>/trace.txt`. All data fictional.
+  1. "Open invoice.pdf in ~/work and enter its total into totals.xlsx cell B2, then save": the plan was put to the
+     person, agreed, done with `office`, and checked (B2 = 18880). Done, checked, on both days.
+  2. "Open the bill entry page ~/work/bills.html in the browser and enter the bill from ~/work/invoice.pdf ...":
+     `gui open` of the worker's page (handed over, opened as a copy), observe, three fields typed, the pre-save check
+     refused the first press and showed the values, `--checked` pressed it. The final check looked at the screen
+     through the broker. Done, checked.
+  3. **A demonstration recorded by a person** through a ticket: VNC input (`bench/screen/person.py`, the input a
+     viewer sends): a click on the panel's Web Browser icon, ctrl+L, the page's address, three fields, Save bill. All
+     11 events were recorded on the screen side, handed back to the worker's store, and listed by the control plane.
+     `/learn` through the chat asked 8 questions, each answered as a reply, and saved the skill.
+  4. **The taught skill with its button renamed**, twice ("Record bill" through a plain request, "Go" through
+     `/skill`): the replay ran through the broker (the browser brought forward for the icon step, the address bar,
+     three fields) and stopped at step 11, "button "Save bill" is not on the screen", naming the worker's page. The
+     skill is still learning, so it runs model-guided, and the engine settled the renamed control itself (it observed
+     the page, once it read the page's source) and pressed it. The final check confirmed on the screen. Done, checked.
+
+Failures found and fixed (with tests; the benches pass with them in both modes):
+1. **A replay through the broker could not open a local page.** A taught skill whose first step opens
+   `~/work/form.html` stopped there ("not handed over by the command that named it"): `replay.run` went to the
+   broker without the files its steps name. Now `screen_call.program_files` hands over each open step's target and
+   each upload's files (this run's value for an upload that takes one) from the starting step on, the way `gui` hands
+   over the files its command names.
+2. **The screen side's copy's address leaked into everything it reported.** The browser shows a handed-over page as
+   `/var/lib/decurix-screen/inputs/<random>/name`. So an imported recording's check "the page
+   file:///home/headless/work/form.html" never matched, and a recording's addresses held the random folder. They
+   matched again only because `url_shape` stars a segment with two digits. Now `broker.local_copy` keeps the worker's
+   path beside each copy (`.origin`), and `broker.shown_url` gives it back wherever a page's address leaves the screen
+   side: the DevTools group and context (`cdp.py`), and `gui open`'s message. Outside broker mode an address is itself.
+3. **A person's click on the panel's Web Browser icon showed nothing.** A task had warmed the browser windowless
+   (`--no-startup-window`). The launcher's `gui open browser` answered "Brought Chromium to the front", with no window
+   on the screen, so the person's typing went nowhere. Now a running browser with no window gets one
+   (`core._open`). This was latent in the default mode too, for `gui open browser`.
+
+Seen, not fixed (none is specific to broker mode; they belong in follow-ups):
+- **The hosted brain never reached the replay's own question.** The heal question to the person, and the ladder's
+  model questions sent back through `screen_call` as `ask` messages, were covered only by the model-free bench and the
+  unit tests. The live run made no `py.escalation` call (the operator's `gui do` runs its ladder without a model).
+- **A plan's "each with your OK first: Press Save bill" was not kept.** The press went through on the pre-save self
+  check, without the person. The review raised it, and the final gate took the worker's screen evidence. The approval
+  gate does not count a local form's save as consequential; the same holds in the default mode.
+- **soul's coverage check does not credit a halted `gui do`** for the values its earlier steps typed (it credits a
+  failed command only for `Typed "..."` in its output). So "invoice2.pdf (read; none of its figures went into what was
+  entered)" was left open for the person on a run that had entered them.
+- **The screen user can read the worker's home by path** (`/home/headless` is 0755). A person typing
+  `file:///home/headless/work/bills.html` into the browser opened it directly. This is no way in for the worker:
+  handed files are still read only from descriptors, and nothing the worker names is opened by its name. But the
+  proposed shape ("the browser cannot read the rest of `$HOME`") does not hold.
+- A ticket opened about 13 s after `/record` while the previous task finished its post-run work; a `begin` sent
+  before then got 409 "no ticket is open". A person's screen bar polls the ticket, so nobody is stranded.
+- **No long request was run.**
+
+**Verdict: not yet.** Broker mode held up for real work: a hosted brain's tasks on files and on the screen, a
+person's demonstration, teaching, and a taught skill's replay, with no unseen success. But the trial found three
+failures that would have broken real use: a taught skill that opens a local page, an imported recording, and the
+browser icon. They are fixed in the working tree, and `decurix-desktop:broker`/`:next` predate the fixes. To turn it on
+for new desktops:
+1. Rebuild the desktop image with these fixes.
+2. Run one more short live pass on a desktop made from that image (the browser icon, a taught skill opening a local
+   page).
+3. Run the part of the series this trial did not reach: a long request, and a run where a replay's ladder asks the
+   hosted model through the broker (a skill past learning, or the healing ladder on a recorded replay).
+
+The losses already known stay as stated above: no desktop icons, an empty panel window list, and path 6's agent half.
+
 ## What this does not cover (said plainly)
 
 - **Direct input.** The gate decides whether a *yes* exists. It does not stand between the worker and the screen: a

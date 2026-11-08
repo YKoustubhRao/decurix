@@ -5431,7 +5431,7 @@ def _open(target, new_tab):
         if cdp.available():
             title = cdp.navigate(url, new_tab=new_tab)
             _raise_browser()
-            return f"Opened {url} in Chromium (tab title {el._quote(title, 60)})."
+            return f"Opened {broker.shown_url(url)} in Chromium (tab title {el._quote(title, 60)})."
 
         if any(browser.is_browser_title(t) for t in before_titles):
             raise ComputerError(
@@ -5443,15 +5443,22 @@ def _open(target, new_tab):
         _wait_until(cdp.available, BROWSER_START_SECONDS, "Chromium did not start")
         title = cdp.wait_ready(timeout=15, default_title=url)
         _raise_browser()
-        return f"Started Chromium on {url} (tab title {el._quote(title, 60)})."
+        return f"Started Chromium on {broker.shown_url(url)} (tab title {el._quote(title, 60)})."
 
     path = Path(target).expanduser()
     lower = target.lower().strip()
 
     if lower in CHROMIUM_APPS:
-        if any(browser.is_browser_title(t) for t in before_titles) or cdp.available():
+        if any(browser.is_browser_title(t) for t in before_titles):
             _raise_browser()
             return "Brought Chromium to the front."
+        if cdp.available():
+            # Running with no window: warmed for a task (browser.warm, --no-startup-window). Found live
+            # (2026-11-07, broker mode): a person's click on the panel's Web Browser icon became this open, was told
+            # "brought to the front", and nothing was on the screen. A window is opened instead.
+            cdp.navigate("about:blank", new_tab=True)
+            _raise_browser()
+            return "Opened a Chromium window."
         session.launch(browser.launch_argv("about:blank"))
         _wait_until(cdp.available, BROWSER_START_SECONDS, "Chromium did not start")
         _raise_browser()
