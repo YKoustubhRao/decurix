@@ -1,11 +1,14 @@
-// Package tunnel holds the in-memory record of the addresses a host-side
-// script (scripts/*/build.sh, rebuild.sh) discovers and reports back for the
-// dashboard's Mobile menu to display: the current Cloudflare quick tunnel
-// URL for each of the two listeners cmd/decurix/main.go starts - the primary
-// one (full, unauthenticated control) and the internal/lanaccess-gated one -
-// and the machine's own LAN address for each of them too. All four are "how
-// do I reach this control plane from somewhere else", discovered outside the
-// Go process and reported in, not computed here.
+// Package tunnel holds the in-memory record of the addresses this computer's
+// own scripts (scripts/*/lib/lan-tunnel.sh, Lan-Tunnel.ps1) and Electron
+// shell discover and report back for the dashboard's Mobile menu to display:
+// the Cloudflare quick tunnel URL and the LAN address of the
+// internal/lanaccess-gated listener, the only listener that is ever
+// tunnelled or offered off this machine. The two primary-listener fields
+// (the quick tunnel URL and the admin LAN URL) are legacy: nothing reports
+// them any more, and they stay only so an old script's POST is still
+// accepted. All of these are "how do I reach this control plane from
+// somewhere else", discovered outside the Go process and reported in, not
+// computed here.
 package tunnel
 
 import "sync"

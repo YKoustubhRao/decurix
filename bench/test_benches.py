@@ -412,17 +412,19 @@ class ResourceBenchTest(unittest.TestCase):
         self.assertEqual(got["desktops"], 2)
         shots = [p for p in seen if p.startswith("/api/desktops/screenshot")]
         self.assertEqual({p.split("id=")[1].split("&")[0] for p in shots}, {"a", "b"})
-        self.assertIn("/api/desktops/activity?ids=a", seen)
-        self.assertIn("/api/desktops/tasks?ids=a", seen)
-        self.assertNotIn("/api/desktops/memory", seen, "pollMemory is not called at load, only on its timer")
-        for path in ("/api/querynotes", "/api/desktops/resource-alerts", "/api/model", "/api/docker/status", "/api/tasks/finished"):
+        # One poll for every card's parts and the rail, asked at load for every card the page holds.
+        self.assertIn("/api/desktops/overview?ids=a%2Cb", seen)
+        for path in ("/api/desktops/activity", "/api/desktops/tasks", "/api/desktops/memory", "/api/querynotes",
+                     "/api/desktops/resource-alerts"):
+            self.assertFalse([p for p in seen if p.startswith(path)], f"{path}: the overview asks it now")
+        for path in ("/api/model", "/api/docker/status", "/api/tasks/finished"):
             self.assertIn(path, seen)
         self.assertEqual(got["requests"], len(seen) - 1)
         self.assertGreater(got["bytes"], 0)
 
     def test_a_hidden_tab_keeps_only_its_slow_polls(self):
         hidden = {name for name, ms, hidden_ms, *_ in self.viewer.POLLS if hidden_ms}
-        self.assertEqual(hidden, {"loadNotes", "refreshDocker", "refreshFinished"})
+        self.assertEqual(hidden, {"pollOverview", "refreshDocker", "refreshFinished"})
 
     def test_processes_are_grouped_by_what_they_run(self):
         g = self.run.group_of
@@ -458,6 +460,75 @@ class ResourceBenchTest(unittest.TestCase):
                              "by_kind": {}}})
         self.assertIn("| 2 | 500 |", md)
         self.assertIn("## gui", md)
+
+    def density(self, start_mb=3000, per_desktop_mb=600, fail_at=None, stop_ids=(), **kw):
+        """The density count against a stand-in host whose available memory falls by per_desktop_mb a desktop."""
+        made_by_cp, calls = [], []
+
+        class Plane:
+            def create(self, name):
+                if fail_at is not None and len(made_by_cp) + 1 == fail_at:
+                    raise RuntimeError("Docker refused: not enough memory")
+                made_by_cp.append(name)
+                return {"id": name}
+
+            def wait_ready(self, desktop_id):
+                return {"ready": True}
+
+            def post(self, path, form, timeout=300):
+                calls.append((path, form["id"]))
+                return {}
+
+        class Host:
+            def docker(self, *args, timeout=300):
+                status = "exited" if args[0] == "inspect" and any(s in args[-1] for s in stop_ids) else "running"
+                return subprocess.CompletedProcess(args, 0, status + "\n", "")
+
+            def sh(self, script, *args, timeout=300):
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+        def memory(host):
+            return {"docker_host_available_mb": start_mb - per_desktop_mb * len(made_by_cp)}
+
+        made = []
+        with unittest.mock.patch.object(self.run, "host_memory", memory), \
+                unittest.mock.patch.object(self.run, "measure", lambda h, c, s: {"memory_mb": 400.0, "anon_mb": 180.0, "cpu_pct": 1.0}), \
+                unittest.mock.patch.object(self.run, "wait_agent", lambda *a, **k: None), \
+                unittest.mock.patch.object(self.run, "put_form", lambda *a: None), \
+                unittest.mock.patch.object(self.run.time, "sleep", lambda s: None):
+            got = self.run.density_bench(Host(), Plane(), made, lambda m: None, settle=0, **kw)
+        return got, made, calls
+
+    def test_density_counts_desktops_until_the_memory_floor(self):
+        got, made, calls = self.density(floor_mb=1024)
+        # 3000, 2400, 1800 and 1200 MB before each: four start; at 600 the fifth would go under the floor.
+        self.assertEqual((got["made"], got["fit"]), (4, 4))
+        self.assertIn("memory floor", got["stopped"])
+        self.assertEqual(len(made), 4, "every desktop made is handed back to be deleted")
+        self.assertEqual([d["available_before_mb"] for d in got["desktops"]], [3000, 2400, 1800, 1200])
+        # Each one is paused and woken, and its wake is timed.
+        self.assertEqual([p for p, _ in calls].count("/api/desktops/pause"), 4)
+        self.assertEqual([p for p, _ in calls].count("/api/desktops/unpause"), 4)
+        self.assertTrue(all(d.get("wake_s") is not None for d in got["desktops"]))
+        self.assertEqual(got["memory_mb_median"], 400.0)
+        md = self.run.table({"at": "now", "density": got})
+        self.assertIn("**4 desktops fit**", md)
+        self.assertIn("idle, no browser", md)
+
+    def test_density_stops_at_its_cap_and_on_a_refused_start(self):
+        got, made, _ = self.density(max_desktops=2)
+        self.assertEqual((got["fit"], got["stopped"]), (2, "--max 2 reached"))
+        got, made, _ = self.density(fail_at=3)
+        self.assertEqual(got["made"], 2)
+        self.assertIn("desktop 3 did not start", got["stopped"])
+        self.assertEqual(len(made), 2)
+        # A desktop the control plane stopped to make room for a later one does not count as fitting.
+        got, _, _ = self.density(max_desktops=3, stop_ids=("resbench-d1-",))
+        self.assertEqual((got["made"], got["fit"]), (3, 2))
+
+    def test_density_runs_only_when_named(self):
+        self.assertNotIn("density", self.run.SECTIONS)
+        self.assertIn("density", self.run.EXTRA_SECTIONS)
 
     def test_percentiles(self):
         self.assertEqual(self.run.pct([1, 2, 3, 4], 0.5), 2.5)

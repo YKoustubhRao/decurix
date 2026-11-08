@@ -1058,10 +1058,26 @@ def _locked():
             privacy.write_scrubbed(STATE_FILE, state, atomic=True, exempt=("fingerprint", "id", "grants"))
         else:
             # The gate keeps it as its own user, which cannot read the worker's secret values; what it holds is
-            # fingerprints and the gate's own words, withheld by shown_by_gate.
-            tmp = STATE_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(state), encoding="utf-8")
-            tmp.replace(STATE_FILE)
+            # fingerprints and the gate's own words, withheld by shown_by_gate. Written like the gate's other files
+            # (gate_server._write_private): a temporary file of this writer's, 0600, flushed, then put in place.
+            import tempfile
+            fd, tmp = tempfile.mkstemp(prefix=STATE_FILE.name + ".", suffix=".tmp", dir=str(STATE_FILE.parent))
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(state))
+                    f.flush()
+                    os.fsync(f.fileno())
+                try:
+                    os.chmod(tmp, 0o600)
+                except OSError:
+                    pass
+                os.replace(tmp, STATE_FILE)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
 
 
 class Decision:

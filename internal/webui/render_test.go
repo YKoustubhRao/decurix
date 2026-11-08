@@ -277,7 +277,7 @@ func TestRenderEveryPage(t *testing.T) {
 	}
 	for _, want := range []string{
 		`data-task-pick="research-box"`, `href="/tasks/t1111111111111111/trace"`, `<option value="t2222222222222222">older task · Done, not checked · `,
-		`data-task-pick="spare-box"`, `<option value="">No tasks yet</option>`, "/api/desktops/tasks?",
+		`data-task-pick="spare-box"`, `<option value="">No tasks yet</option>`, "/api/desktops/overview?", `data-rest-note`,
 	} {
 		if !strings.Contains(index.String(), want) {
 			t.Errorf("the dashboard lacks %q", want)

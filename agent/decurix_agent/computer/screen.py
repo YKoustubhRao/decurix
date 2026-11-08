@@ -1,8 +1,9 @@
 import hashlib
 import os
+import threading
 import time
 
-from decurix_agent.computer import browser, session, visual
+from decurix_agent.computer import browser, screen_call, session, visual
 from decurix_agent.computer.errors import ComputerError
 
 
@@ -157,6 +158,206 @@ def changed_in(before, after, box, tolerance=24, step=2):
     return changed / seen if seen else 1.0
 
 
+def _grid(width, height, columns=64, rows=36):
+    """(step_x, step_y, columns, rows) of Frame.sample's grid on a width x height screen."""
+
+    step_x = max(1, width // columns)
+    step_y = max(1, height // rows)
+    return step_x, step_y, -(-width // step_x), -(-height // step_y)
+
+
+def grid_size(width, height):
+    """How many points Frame.sample's grid has on a width x height screen."""
+
+    _, _, n, m = _grid(width, height)
+    return n * m
+
+
+def grid_points(width, height, rects):
+    """
+    The points of Frame.sample's grid (row * columns + column) that lie inside any of `rects` (x, y, w, h). A pixel
+    drawn nowhere near a grid point cannot change changed_fraction, so these are every point a drawing can change.
+    """
+
+    step_x, step_y, n, m = _grid(width, height)
+    points = set()
+    for x, y, w, h in rects:
+        c0, c1 = max(0, -(-x // step_x)), min(n, -(-(x + w) // step_x))
+        r0, r1 = max(0, -(-y // step_y)), min(m, -(-(y + h) // step_y))
+        for r in range(r0, r1):
+            points.update(range(r * n + c0, r * n + c1))
+    return points
+
+
+def differing_points(before, after, tolerance=24):
+    """The points of the sample grid at which two frames of one size differ (a channel by more than `tolerance`),
+    as grid_points numbers them."""
+
+    a, b = before.sample(), after.sample()
+    _, _, n, _ = _grid(before.width, before.height)
+    points = set()
+    for k, (x, y) in enumerate(zip(a, b)):
+        if abs(x - y) > tolerance:
+            row, within = divmod(k, 3 * n)
+            points.add(row * n + within % n)
+    return points
+
+
+# ============================================================
+# What was drawn, without a picture: the X DAMAGE extension
+#
+# Every change to the screen's pixels is drawing, and with DAMAGE on the root
+# window the X server says where each drawing went (one event per rectangle,
+# drawing into any window included). Reading those events is a local read of
+# what the server already sent: the settle loop (core._wait_for_settle) learns
+# that nothing was drawn without taking and comparing 1280x720 screenshots.
+# One connection of its own per process, so its events never mix with the
+# screen connection's; one watch at a time (a second caller compares pictures).
+# ============================================================
+
+# A connection that could not be made (no X server, no DAMAGE, no python-xlib) is tried again after this long.
+DAMAGE_RETRY_SECONDS = 60.0
+
+_damage = {"display": None, "pid": None, "code": None, "failed_at": None}
+_damage_lock = threading.Lock()
+
+
+class DamageLost(ComputerError):
+    """The drawing reports stopped (the connection broke, the server refused a request): compare pictures instead."""
+
+
+def _forget_damage(failed):
+    d = _damage["display"]
+    if d is not None and _damage["pid"] == os.getpid():
+        try:
+            d.close()
+        except Exception:  # noqa: BLE001 - a broken connection is dropped either way
+            pass
+    _damage.update(display=None, pid=None, code=None, failed_at=time.monotonic() if failed else None)
+
+
+def _damage_connection():
+    """(display, DamageNotify's event code) of this process's damage connection, or (None, None) when there is none."""
+
+    if _damage["display"] is not None and _damage["pid"] == os.getpid():
+        return _damage["display"], _damage["code"]
+    if _damage["pid"] != os.getpid():
+        # A forked child (the gui daemon's) never uses its parent's connection: the socket is shared.
+        _damage.update(display=None, pid=None, code=None)
+    failed_at = _damage["failed_at"]
+    if failed_at is not None and time.monotonic() - failed_at < DAMAGE_RETRY_SECONDS:
+        return None, None
+
+    try:
+        session.ensure()
+        from Xlib import display as xdisplay
+        d = xdisplay.Display()
+    except Exception:  # noqa: BLE001 - ImportError (no python-xlib), no X server: pictures are compared
+        _damage["failed_at"] = time.monotonic()
+        return None, None
+    try:
+        if not d.has_extension("DAMAGE"):
+            raise ComputerError("the X server has no DAMAGE extension")
+        d.damage_query_version()  # the server takes no other DAMAGE request before it
+        code = d.query_extension("DAMAGE").first_event
+    except Exception:  # noqa: BLE001
+        try:
+            d.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _damage["failed_at"] = time.monotonic()
+        return None, None
+    _damage.update(display=d, pid=os.getpid(), code=code, failed_at=None)
+    return d, code
+
+
+class DamageWatch:
+    """
+    What was drawn on the screen since the watch began: take() returns the rectangles reported since its last call.
+    Always closed (close()): it holds the process's one damage connection.
+    """
+
+    def __init__(self, display, code, damage_id, size, errors):
+        self._display = display
+        self._code = code
+        self._id = damage_id
+        self._errors = errors
+        self.size = size
+        self._closed = False
+
+    def take(self):
+        """
+        ([(x, y, w, h), ...] drawn since the last call, the screen's size as the latest report gives it or None).
+        Raises DamageLost when the reports cannot be read.
+        """
+
+        rects, size = [], None
+        try:
+            for _ in range(self._display.pending_events()):
+                event = self._display.next_event()
+                if (getattr(event, "type", 0) & 0x7F) != self._code or getattr(event, "damage", None) != self._id:
+                    continue
+                area = event.area
+                rects.append((int(area.x), int(area.y), int(area.width), int(area.height)))
+                geometry = event.drawable_geometry
+                size = (int(geometry.width), int(geometry.height))
+        except Exception as exc:  # noqa: BLE001
+            raise DamageLost(f"the screen's drawing could not be read: {exc}") from exc
+        if self._errors:
+            raise DamageLost(f"the screen refused a drawing report: {self._errors[0]}")
+        return rects, size
+
+    def close(self):
+        """End the watch: the server stops reporting, and what it had sent is read and dropped."""
+
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._display.damage_destroy(self._id)
+            self._display.sync()
+            while self._display.pending_events():
+                self._display.next_event()
+            if self._errors:
+                raise DamageLost(str(self._errors[0]))
+        except Exception:  # noqa: BLE001 - the next watch opens a new connection
+            _forget_damage(failed=False)
+        finally:
+            _damage_lock.release()
+
+
+def damage_watch():
+    """
+    A DamageWatch on the whole screen, or None when drawing cannot be reported here (no python-xlib DAMAGE module, no
+    extension on the server, any error, another watch running): the caller then compares screenshots, as before.
+    """
+
+    if not _damage_lock.acquire(blocking=False):
+        return None
+    try:
+        d, code = _damage_connection()
+        if d is None:
+            _damage_lock.release()
+            return None
+        from Xlib.ext import damage
+        errors = []
+        d.set_error_handler(lambda err, *rest: errors.append(err))
+        root = d.screen().root
+        geometry = root.get_geometry()
+        damage_id = root.damage_create(damage.DamageReportRawRectangles)
+        d.sync()
+        # A new damage reports its whole window at once (the server's own start): that is no drawing.
+        while d.pending_events():
+            d.next_event()
+        if errors:
+            raise DamageLost(str(errors[0]))
+        return DamageWatch(d, code, damage_id, (int(geometry.width), int(geometry.height)), errors)
+    except Exception:  # noqa: BLE001
+        _forget_damage(failed=True)
+        _damage_lock.release()
+        return None
+
+
 _display = None
 
 
@@ -184,6 +385,71 @@ def _connect():
     return _display
 
 
+def _client_window_at(display, x, y):
+    """The window a person sees at (x, y): the topmost viewable top-level window there, and inside a window manager's
+    frame the client window it holds (the one with WM_STATE). None when nothing but the root is there."""
+
+    from Xlib import X
+
+    wm_state = display.intern_atom("WM_STATE")
+    window, origin = display.screen().root, (0, 0)
+    for _ in range(8):
+        found = None
+        for child in reversed(window.query_tree().children):
+            try:
+                if child.get_attributes().map_state != X.IsViewable:
+                    continue
+                g = child.get_geometry()
+            except Exception:  # noqa: BLE001 - a window that went away
+                continue
+            left, top = origin[0] + g.x, origin[1] + g.y
+            if left <= x < left + g.width + 2 * g.border_width and top <= y < top + g.height + 2 * g.border_width:
+                found, inner = child, (left + g.border_width, top + g.border_width)
+                break
+        if found is None:
+            return None if window == display.screen().root else window
+        try:
+            if found.get_full_property(wm_state, X.AnyPropertyType) is not None:
+                return found
+        except Exception:  # noqa: BLE001
+            return None
+        if found.get_attributes().override_redirect:
+            return found  # a menu or a tooltip: a top-level window of its own, with no frame
+        window, origin = found, inner
+    return None
+
+
+def owner_uid_at(x, y, display=None):
+    """
+    Broker mode, the screen side: the user whose process drew the window shown at (x, y), or None when it cannot be
+    told. Told by the window's _NET_WM_PID, which only the window's own client can set: the worker cannot put a pid on
+    a window of the screen user's, and a pid it puts on its own is believed only to make it someone else's (the
+    action is then refused). The process's real uid is read from /proc.
+    """
+
+    from Xlib import X
+
+    d = display or _connect()
+    window = _client_window_at(d, int(x), int(y))
+    if window is None:
+        return None
+    try:
+        pid = window.get_full_property(d.intern_atom("_NET_WM_PID"), X.AnyPropertyType)
+    except Exception:  # noqa: BLE001
+        return None
+    if pid is None or not pid.value:
+        return None
+    try:
+        with open(f"/proc/{int(pid.value[0])}/status", encoding="ascii", errors="replace") as f:
+            for line in f:
+                if line.startswith("Uid:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+@screen_call.routed("screen.grab")
 def grab(display=None):
     """
     Capture the whole screen as a Frame. `display` is an Xlib connection of

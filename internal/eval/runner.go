@@ -139,6 +139,10 @@ type MatrixRequest struct {
 	Repeats  int
 	// Cases limits the run to these case ids, in the suite's order (empty: every case).
 	Cases []string
+	// CarryState asks for the run mode that keeps the desktop's state from case to case: the desktop is reset before
+	// each repeat's first case only. Refused unless the suite says carry_state, and a carry_state suite is refused
+	// without it: the two must agree, so neither mode is ever run by accident.
+	CarryState bool
 }
 
 // ErrBusy is a second practice or eval run while one is active.
@@ -161,6 +165,9 @@ func (s *Service) Start(ctx context.Context, req MatrixRequest) (Run, error) {
 	}
 	cases, err := selectCases(suite, req.Cases)
 	if err != nil {
+		return Run{}, err
+	}
+	if err := checkCarry(suite, req.CarryState); err != nil {
 		return Run{}, err
 	}
 	if req.Repeats < 1 || req.Repeats > MaxRepeats {
@@ -192,7 +199,7 @@ func (s *Service) Start(ctx context.Context, req MatrixRequest) (Run, error) {
 	}
 	now := s.Store.now()
 	run := Run{ID: sqlitedb.NewID("e", 8), CreatedAt: now, StartedAt: now, SuiteName: suite.Name, SuiteSHA: suite.SHA, SuiteBlob: blob,
-		Arms: arms, Cases: caseIDs(cases), Repeats: req.Repeats, Status: RunRunning, Note: graderNote()}
+		Arms: arms, Cases: caseIDs(cases), Repeats: req.Repeats, Status: RunRunning, Note: graderNote(), CarryState: req.CarryState}
 	if err := s.Store.Create(run); err != nil {
 		return Run{}, err
 	}
@@ -206,6 +213,18 @@ func (s *Service) Start(ctx context.Context, req MatrixRequest) (Run, error) {
 	ok = true
 	go s.execute(runCtx, run, suite, cases, arms, release)
 	return run, nil
+}
+
+// checkCarry refuses a run whose mode the suite was not written for: carrying state needs a suite that says
+// carry_state, and such a suite needs the run to ask for it.
+func checkCarry(suite Suite, carry bool) error {
+	switch {
+	case carry && !suite.CarryState:
+		return BadRequest("The suite does not carry state from case to case: only a suite whose suite.json says \"carry_state\": true runs that way.")
+	case !carry && suite.CarryState:
+		return BadRequest("The suite carries state from case to case (carry_state): run it with --carry-state, or its later cases miss what the earlier ones left.")
+	}
+	return nil
 }
 
 // pinDeployments resolves, once for the whole matrix, the deployment every model arm and the expert are served by: an
@@ -615,12 +634,14 @@ func (s *Service) runArm(ctx context.Context, run Run, suite Suite, cases []Case
 	invalid := false
 	first := true
 	for rep := 1; rep <= run.Repeats; rep++ {
-		for _, c := range cases {
+		for i, c := range cases {
 			if ctx.Err() != nil {
 				return invalid, nil
 			}
 			s.setProgress(run.ID, func(p *Progress) { p.Arm, p.Repeat, p.Case = arm.Name, rep, c.ID })
-			if !first {
+			// Every case starts from the snapshot (its desktop is new for the first), unless the run carries state:
+			// then only a repeat's first case does, and its later cases find what the earlier ones left.
+			if !first && (!run.CarryState || i == 0) {
 				err := s.Sandbox.ResetPractice(ctx, d.ContainerID, emptySnapshot)
 				if err == nil {
 					err = s.waitAgent(ctx, d)
@@ -814,7 +835,7 @@ func (s *Service) runCase(ctx context.Context, run Run, suite Suite, arm Arm, ar
 	row := Row{RunID: run.ID, Arm: arm.Name, Repeat: rep, CaseID: c.ID, TaskID: route.TaskID, Observed: res.Observed,
 		Checked: ev.Checked != nil && *ev.Checked, Passed: res.Passed, FalseDone: res.FalseDone, DoneUncheckedWrong: res.DoneUncheckedWrong,
 		QRequired: res.Questions.Required, QOther: res.Questions.Other, TokensIn: usage.Input, TokensCached: usage.Cached, TokensOut: usage.Output,
-		Minutes: ev.Minutes, Deployments: usage.Deployments, At: s.Store.now(), Infra: res.Infra}
+		Calls: usage.Calls, Minutes: ev.Minutes, Deployments: usage.Deployments, At: s.Store.now(), Infra: res.Infra}
 	row.Problems = append(append([]string{}, res.Problems...), problems...)
 	row.Served = usage.Served
 	row.TrajectoryID = trajectory

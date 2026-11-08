@@ -31,6 +31,9 @@ func (s *Server) runSources() runs.Sources {
 	if s.RunStore != nil {
 		src.Blobs = s.RunStore.Blobs()
 	}
+	if s.RunEvals != nil {
+		src.Evals = s.RunEvals
+	}
 	return src
 }
 

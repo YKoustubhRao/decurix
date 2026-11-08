@@ -1,0 +1,92 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "learn-bill-1",
+  "category": "missing_input",
+  "kind": "doc_to_record",
+  "request": "Enter the bill in ~/work/practice/learn-bill-1/bill.pdf into the Records app (http://records.example.test/bills/new).",
+  "start": {
+    "files": [
+      "bill.pdf"
+    ],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [
+    {
+      "id": "cost-centre-rule",
+      "about": "which cost centre a supplier bill is charged to",
+      "refers_to": [
+        "centre",
+        "center",
+        "centres",
+        "centers",
+        "charge",
+        "charged",
+        "charging",
+        "allocate",
+        "allocated",
+        "allocation",
+        "cost code",
+        "department",
+        "logistics",
+        "ledger",
+        "expense head",
+        "account head"
+      ],
+      "answer": "From now on, for every bill you enter: courier and freight bills are charged to the cost centre Logistics, and every other bill to General.",
+      "required": true
+    }
+  ],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "mock_records",
+        "collection": "bills",
+        "exact_count": true,
+        "records": [
+          {
+            "number": {
+              "id": "SC-24117"
+            },
+            "vendor": {
+              "text": "Swiftlark Couriers"
+            },
+            "date": {
+              "date": "2026-04-03"
+            },
+            "due": {
+              "date": "2026-05-03"
+            },
+            "total": {
+              "number": "4248.00"
+            },
+            "cost_centre": "Logistics"
+          }
+        ]
+      },
+      {
+        "kind": "asked",
+        "facts": [
+          "cost-centre-rule"
+        ]
+      },
+      {
+        "kind": "absent",
+        "collection": "bills",
+        "when": "asked"
+      },
+      {
+        "kind": "ledger_readback",
+        "records": 1
+      }
+    ]
+  },
+  "oracle": [
+    "office read bill.pdf | grep -q SC-24117",
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode number=SC-24117 --data-urlencode 'vendor=Swiftlark Couriers' --data-urlencode date=2026-04-03 --data-urlencode due=2026-05-03 --data-urlencode total=4,248.00 --data-urlencode cost_centre=Logistics --data-urlencode notes= http://records.example.test/bills/new"
+  ],
+  "tags": [
+    "teaching"
+  ]
+}

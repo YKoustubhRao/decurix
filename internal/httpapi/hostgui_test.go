@@ -516,8 +516,15 @@ func TestDeletingADesktopForgetsTheHostAppsKeptReadyForIt(t *testing.T) {
 	s.keptHostAppsMu.Lock()
 	s.saveKeptHostAppsLocked()
 	s.keptHostAppsMu.Unlock()
+	// Its apps' private profiles on the host are removed with it (B-19), named by its apps' session ids.
+	var profilesOf string
+	var profileIDs []string
+	s.deleteHostProfiles = func(desktopID string, ids []string) { profilesOf, profileIDs = desktopID, ids }
 
 	s.forgetHostApps("vm1")
+	if profilesOf != "vm1" || len(profileIDs) != 1 || profileIDs[0] != "vm1-paint" {
+		t.Fatalf("profiles removed for %q %v, want vm1's one app", profilesOf, profileIDs)
+	}
 
 	data, err := os.ReadFile(s.HostGUIDataDir + "/" + keptHostAppsFile)
 	if err != nil {

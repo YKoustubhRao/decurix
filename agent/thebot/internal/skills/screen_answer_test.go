@@ -1,24 +1,54 @@
 package skills
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-func TestAQuestionForNamesTheApplicationListsIsPushedBack(t *testing.T) {
-	for _, q := range []string{
+// A question for names the application lists is held once when a listed window shows that list - a fact of the
+// listing, never of the question's words (N-W3-3): the same question goes to the person when no listed screen shows it.
+func TestAQuestionForNamesAListOnTheScreenShowsIsPushedBack(t *testing.T) {
+	asks := []string{
 		"Please confirm the exact ledger names to use for 5% sales and tax in this client's books.",
 		"What are the correct account names for the two tax lines?",
 		"Can you confirm which categories the system uses for these?",
-	} {
-		if !asksAppNamesRe.MatchString(q) {
-			t.Errorf("not pushed back: %q", q)
-		}
 	}
-	for _, q := range []string{
+	others := []string{
 		"Is this invoice cancelled? The chat says the customer returned it.",
 		"The bill shows two rates - which rule applies to the service line?",
-	} {
-		if asksAppNamesRe.MatchString(q) {
-			t.Errorf("pushed back wrongly: %q", q)
+	}
+	answers := "Screen 1280x720. Active window: \"Ledgers | Books\"\n" +
+		`e1 heading "Chart of Accounts"` + "\n" +
+		`e2 row "Ledger | Account | Category"` + "\n" +
+		`e3 row "Sales 5% | Sales Accounts | Income"` + "\n" +
+		`e4 row "Output Tax 5% | Duties and Taxes | Liability"`
+	silent := "Screen 1280x720. Active window: \"Invoice 4417 | Books\"\n" +
+		`e1 heading "Invoice 4417"` + "\n" +
+		`e2 row "Item | Qty | Rate | Amount"` + "\n" +
+		`e3 row "Ceramic mug | 4 | 250.00 | 1,000.00"`
+	for _, q := range asks {
+		if got := listOnScreen(q, []string{silent, answers}); !strings.Contains(got, "Sales 5% | Sales Accounts | Income") {
+			t.Errorf("not pushed back with the list that answers it: %q got %q", q, got)
 		}
+		if got := listOnScreen(q, []string{silent}); got != "" {
+			t.Errorf("pushed back with no list that answers it: %q got %q", q, got)
+		}
+		if got := listOnScreen(q, nil); got != "" {
+			t.Errorf("pushed back with nothing listed: %q got %q", q, got)
+		}
+	}
+	for _, q := range others {
+		if got := listOnScreen(q, []string{silent, answers}); got != "" {
+			t.Errorf("pushed back wrongly: %q got %q", q, got)
+		}
+	}
+	// A field's own drop-down, open on the screen, answers too; a column of figures or dates names nothing.
+	dropdown := `e9 combobox "Category" [expanded]` + "\n" + `e10 option "Income"` + "\n" + `e11 option "Liability"` + "\n" + `e12 button "Save"`
+	if got := listOnScreen(asks[2], []string{dropdown}); got != dropdown[:strings.LastIndex(dropdown, "\n")] {
+		t.Errorf("drop-down not quoted: %q", got)
+	}
+	if got := listOnScreen("Which rate is correct for the third line?", []string{silent}); got != "" {
+		t.Errorf("a column of figures held a question: %q", got)
 	}
 }
 

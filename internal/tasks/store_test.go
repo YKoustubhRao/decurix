@@ -477,7 +477,7 @@ func TestReportAnswersWhichEngineAndWhy(t *testing.T) {
 	for _, text := range []string{"what is the kernel version?", "list files in /work"} {
 		route := send(t, s, claude, text)
 		c.advance(20 * time.Second)
-		outcome(t, s, "claude-box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "ok", CostUSD: ptrFloat(0.05), Checked: &checkedTrue})
+		outcome(t, s, "claude-box", route.TaskID, Outcome{Kind: OutcomeDone, Reply: "ok", CostUSD: ptrFloat(0.05), Checked: &checkedTrue, Verdict: codeDone()})
 	}
 
 	paid := send(t, s, claude, "pay invoice INV-7")
@@ -499,7 +499,7 @@ func TestReportAnswersWhichEngineAndWhy(t *testing.T) {
 	outcome(t, s, "ollama-box", slow.TaskID, Outcome{Kind: OutcomeError, Reply: "Ollama accepted the request but did not finish answering in time. context deadline exceeded"})
 
 	right := send(t, s, ollama, "uname -r")
-	outcome(t, s, "ollama-box", right.TaskID, Outcome{Kind: OutcomeDone, Reply: "6.6.87.2", Checked: &checkedTrue})
+	outcome(t, s, "ollama-box", right.TaskID, Outcome{Kind: OutcomeDone, Reply: "6.6.87.2", Checked: &checkedTrue, Verdict: codeDone()})
 	s.SetVerdict(right.TaskID, VerdictCorrect, "", LocalOwner)
 
 	// A person recording themselves doing a task is not Ollama being autonomous,
@@ -597,7 +597,7 @@ func TestTaskResult(t *testing.T) {
 
 	send(t, s, box, "Hello,  whats your name?")
 	yes := true
-	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeDone, Reply: "I'm box.", Checked: &yes})
+	outcome(t, s, "box", first.TaskID, Outcome{Kind: OutcomeDone, Reply: "I'm box.", Checked: &yes, Verdict: codeDone()})
 
 	status, checked, reply, ok := s.TaskResult(first.TaskID)
 	if !ok {
@@ -687,7 +687,7 @@ func TestUncheckedDoneIsNotAutonomous(t *testing.T) {
 	failedCheck := send(t, s, box, "file the return")
 	outcome(t, s, "box", failedCheck.TaskID, Outcome{Kind: OutcomeDone, Reply: "Filed", Checked: &notChecked})
 	checked := send(t, s, box, "list the files")
-	outcome(t, s, "box", checked.TaskID, Outcome{Kind: OutcomeDone, Reply: "3 files", Checked: &checkedTrue})
+	outcome(t, s, "box", checked.TaskID, Outcome{Kind: OutcomeDone, Reply: "3 files", Checked: &checkedTrue, Verdict: codeDone()})
 
 	report, err := s.Report(since)
 	if err != nil {

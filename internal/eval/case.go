@@ -64,6 +64,10 @@ type Suite struct {
 	Mocks       map[string]MockSpec `json:"mocks"`
 	Budget      Budget              `json:"budget"`
 	CaseIDs     []string            `json:"cases"`
+	// CarryState is a suite whose cases are a sequence on one desktop (a learning curve): a case builds on what the
+	// cases before it left. Such a suite runs only when the run asks for it too (MatrixRequest.CarryState), and then
+	// nothing is cleared between a repeat's cases; never the default.
+	CarryState bool `json:"carry_state,omitempty"`
 
 	// Filled by Load.
 	Cases       []Case            `json:"-"`

@@ -10,6 +10,13 @@ be running from this tree (127.0.0.1:8080 by default, BENCH_CONTROL_PLANE to
 change it) with the brain set up in its New desktop dialog.
 
     from brain import chosen, docker_env, forward_llm
+
+`--broker` starts the desktop in broker mode, as a control plane run with
+DECURIX_SCREEN_BROKER=1 creates one (internal/desktop/screenbroker.go): the
+screen is the screen user's and the worker reaches it only through the screen
+broker (docs/gate-boundary.md, "Next: the input broker").
+
+    from brain import broker, screen_env
 """
 
 import json
@@ -37,6 +44,21 @@ def chosen(argv=None):
         if arg.startswith("--brain="):
             return arg.split("=", 1)[1].strip().lower()
     return None
+
+
+def broker(argv=None):
+    """True when --broker was given: the desktop is started in broker mode."""
+
+    return "--broker" in (sys.argv if argv is None else argv)
+
+
+def screen_env(argv=None):
+    """
+    `docker run -e` arguments for the screen mode: in broker mode exactly what the control plane adds to a new
+    desktop's environment (desktop.screenBrokerEnv: DECURIX_SCREEN_USER=1), nothing otherwise.
+    """
+
+    return ["-e", "DECURIX_SCREEN_USER=1"] if broker(argv) else []
 
 
 def status(brain):

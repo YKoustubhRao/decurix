@@ -26,34 +26,54 @@ recorded run, a structural review of the harness, and an audit of the test infra
 
 ## What is built today (in order; each generic, nothing names a product or a suite)
 
-1. **Party resolution by identifier** - `gui select REF "<name>" --id "<identifier>"`. The list is searched by the
+State on 2026-11-07: items 1 to 4 are built and in the code named below; item 5 was built outside the repository and is
+gone with that folder.
+
+1. **Party resolution by identifier** (built: `computer/resolve.py`, `core._select_custom`, `core._unsearched_record`)
+   - `gui select REF "<name>" --id "<identifier>"`. The list is searched by the
    identifier first (whole, then its tail, then digits), then by name; an entry whose text holds the identifier is the
    match whatever its name; the result is printed and noted as a *resolution fact* ("matched by identifier", "no record
-   holds it (searched: ...)", "ambiguous"). A new party record holding an identifier is refused in code unless this
-   task holds a "no record" resolution for that identifier; when a resolution found one, the refusal names it.
-   Replaces the prose rule and the shape heuristics of `unsearched_identifier`.
-2. **Record Intent Ledger** - `gui record "<key>" --from FILE|screen --fields -` declares, before a record is typed,
-   each field's intended value; code span-checks every value against the source's own text (a value not in the source
-   is refused with its field named). Before a save, the form's fields are matched to the intent by label words and
-   compared (`_same_value`): a typed field that differs blocks the click; a missing or extra field is advisory; a clean
-   diff skips the form listing (one click, not two). After a save the page is read back and each field marked
-   confirmed / differs / absent; the ledger is a file per task (`evidence/<task>.records.jsonl`), printed by
-   `gui records`, shown to the reviewer as a table, and read by the host's final gate as code facts (a typed field that
-   differs is NOT_DONE with no model asked). Coverage becomes "a document with no record declared from it".
-3. **Scope on the record** - the intent's `scope` words (the entity/book/period the request names) must appear in the
-   window title or page words at the save and at the read-back; absent, the save is refused once with what the page
-   shows instead.
-4. **Questions that the screen answers** - a HELP whose quoted words or values stand in the newest listing of an open
-   window, a document read, or the ledger is sent back once with the passage.
-5. **Runner that never loses a run to itself** - preflight (ports, worker ready, mock state, folder manifest, memory,
-   no other runner, code hash in the worker), infra failures classified and retried once on a recreated worker, result
-   rows tagged with iteration/build/code hash, one log per iteration, leak checks between tasks (no lesson, skill or
-   method from a run the checks failed; mock DB and folder reset verified).
+   holds it (searched: ...)", "ambiguous", "unanswered"). A new party record holding an identifier is refused in code
+   unless this task holds a "no record" resolution for that identifier; when a resolution found one, the refusal names
+   it. Each refusal is made once per identifier and reason; a save over a match stays refused until the person's word
+   comes back through `gui select --id`. This replaces the prose rule. `unsearched_identifier` still tells, by the
+   form's shape, that a save makes a new party record; whether the identifier was resolved is read from the facts only.
+2. **Record Intent Ledger** (built: `computer/records.py`, the save check in `core.py`, `gui record` / `gui records` in
+   `computer/cli.py`) - `gui record "<key>" --from FILE|screen [--scope ...] --fields -` declares, before a record is
+   typed, each field's intended value; code span-checks every value against the source's own text (a value not in the
+   source is refused with its field named). Before a save, the form's fields are matched to the intent by label words
+   and compared (`records.presave`, with the one comparator in `values.py`): a typed field that differs blocks the
+   click; a missing or extra field is advisory; a clean diff skips the form listing (one click, not two). A field the
+   task set that no declaration covers is advisory at the save (`records.UNDECLARED_FIELD_BLOCKS = False`) and held
+   against the saved record at the final check. After a save the page is read back and each field marked
+   confirmed / differs / absent; the ledger is a file per task (`~/.decurix/computer/evidence/<task>.records.json`),
+   printed by `gui records`. The soul reads it before a review: a record declared and never saved, or not read back,
+   is a point in code (`record_ledger.go`). The host's final checks hold `ledger_checks.findings` against the saved
+   records in code (a field no declaration covers, a save outside the ledger, a record saved twice, a list pick nothing
+   given backs), on every route that can say done, planned runs included; a run whose every declared record was read
+   back earns the "ledger" trust basis (`records.all_read_back`). Coverage is "a document read with no record declared
+   from it" (the soul's `coverageGaps`). The eval grader `ledger_readback` reads the same file.
+3. **Scope on the record** (built: `records.scope_missing`, checked at the save in `core.py`) - the intent's `scope`
+   words (the entity/book/period the request names) must appear in the window title or page words at the save; absent,
+   the save is refused once per scope with what the window shows instead, then let through with an advisory line.
+4. **Questions that the screen answers** (built: soul `screen_answer.go`, `answeredOnScreen`) - a HELP whose quoted
+   words or codes stand in the newest listing of an open window is sent back once with the lines that show them. A
+   document read or the ledger is not searched. A question naming a list a listed window shows (a field's options, a
+   table's column) whose entries are names is sent back once with that list (`listOnScreen`, a fact of the listing,
+   never the question's words; 2026-11-08). Asks to be allowed to continue are pushed back too (`asksToContinueRe`).
+5. **Runner that never loses a run to itself** (built outside the repository, in `decurix-tests/wide/iteration.py`;
+   that folder is lost, and nothing in the repository does this today) - preflight (ports, worker ready, mock state,
+   folder manifest, memory, no other runner, code hash in the worker), infra failures classified and retried once on a
+   recreated worker, result rows tagged with iteration/build/code hash, one log per iteration, leak checks between
+   tasks (no lesson, skill or method from a run the checks failed; mock DB and folder reset verified). The in-repo eval
+   runner (`internal/eval`, docs/evals.md) has none of the preflight or leak checks.
 
 ## Not built today, deliberately
 
 The interaction FSM, the shared evidence store, retiring the word lists, cutting the host judge. Each is right and each
-is a day. What is built today is the smallest set that turns the three recurrent outcome errors (wrong party, wrong
+is a day. None of the four is built as of 2026-11-07: the protocol is still spread over the soul's `operatorState` and
+the host's flags (modelled, not replaced, in [docs/spec](spec/README.md)); the evidence store under the gate user is
+O-1 in [follow-ups.md](follow-ups.md). Some word lists went one by one (the review of 2026-11-03), and the rest stay. What is built today is the smallest set that turns the three recurrent outcome errors (wrong party, wrong
 scope, wrong field value) into facts code checks before and after the save, and stops the loop paying for its own
 infrastructure.
 
@@ -70,9 +90,11 @@ Every item below came from a run that failed or burnt questions on the day's har
 night, has a test, and names no product or suite. Lessons in `docs/gotchas/part-5.md`.
 
 **Work is the worker's, judgement is the person's.** A review point that is work (a record declared and never saved,
-a document read and never named, a listed message never opened, a point whose words say "not entered / not
-completed", a point the person already answered) goes back to the worker up to three times, then is carried open -
-never put to the person as "a choice I made" (soul `workPoints`, `saysNotDone`, `AnsweredKeys`). Verifier
+a document read and never named, a listed message never opened, a point the reviewer marks "recheck", a point the
+person already answered) goes back to the worker up to three times (`maxWorkSendBacks`), then is carried open - never
+put to the person as "a choice I made" (soul `workPoints`, `AnsweredKeys`). Whose a point is comes from the
+reviewer's `settle`, not from its words: the "not entered / not completed" word pattern (`saysNotDone`) is gone
+(review T-18). Verifier
 disagreements on a screen the work did not type into are advisory, told once; the "typed but not looked at" point is
 told once a goal; a window the work typed only prose into (a chat message) is not verified at all, before a report or
 before a gated action (`Advisory`, `UnseenTold`, `typedFigureIn`).
@@ -99,8 +121,8 @@ the task needs is asked for directly (`declinedAdvice`). A reply that opens with
 held while a listed form is unconfirmed; an approved click whose ref is gone finds its element again by role and
 name (`_same_named`).
 
-**Questions the harness answers itself.** A question for names the application lists, and a HELP asking to be
-allowed to continue, are pushed back (`asksAppNamesRe`, `asksToContinueRe`). A written-out sum is checked only when
+**Questions the harness answers itself.** A question naming a list a listed window shows (`listOnScreen`, since
+2026-11-08 a fact of the listing), and a HELP asking to be allowed to continue (`asksToContinueRe`), are pushed back. A written-out sum is checked only when
 its operator stands on the terms' line - a bullet dash is not a minus (`verify.false_sums`).
 
 **The trace.** Each command's output is kept bounded, a failed command's head and tail; a review's points are listed.

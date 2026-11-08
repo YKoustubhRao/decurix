@@ -12,7 +12,7 @@ from unittest import mock
 
 import test_long_requests as base  # noqa: F401 - stubs config first
 
-from decurix_agent import long_task
+from decurix_agent import long_task, stage_checks
 
 REQUEST = ("Go through the inbox folder. Log every email in a tracker, and put reply drafts (Outbox) for every email "
            "that needs one. Never send anything.")
@@ -73,7 +73,7 @@ class Coverage(unittest.TestCase):
 
     def test_a_folder_input_is_its_emails(self):
         folder = str(Path(self.emails[0]).parent)
-        with mock.patch.object(long_task, "run_inputs", return_value=[folder]):
+        with mock.patch.object(stage_checks, "run_inputs", return_value=[folder]):
             self.assertEqual(len(long_task.input_emails(REQUEST)), 22)
 
 

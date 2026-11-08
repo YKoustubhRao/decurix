@@ -80,17 +80,11 @@ RUN (for try in 1 2 3; do curl -fsSL --connect-timeout 30 --speed-limit 1024 --s
 RUN (for try in 1 2 3; do curl -fsSL --connect-timeout 30 --speed-limit 1024 --speed-time 120 --retry 3 --retry-delay 5 https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64 -o /opt/tools/bin/jq && break; [ "$try" = 3 ] && exit 1; echo "curl: try $try failed; trying again"; sleep $((try * 20 - 10)); done && \
      chmod +x /opt/tools/bin/jq)
 
-# 6. Claude Code CLI
-RUN (for try in 1 2 3; do HOME=/tmp/claude-installer timeout 900 bash -c 'curl -fsSL --connect-timeout 30 --speed-limit 1024 --speed-time 120 --retry 3 --retry-delay 5 https://claude.ai/install.sh | bash' && break; \
-        [ "$try" = 3 ] && exit 1; echo "claude installer: try $try failed or stalled"; sleep $((try * 20 - 10)); done && \
-     mv /tmp/claude-installer/.local/bin/claude /opt/tools/bin/claude && \
-     rm -rf /tmp/claude-installer)
-
-# 7. AI CLIs: @openai/codex
+# 6. AI CLIs: @openai/codex
 RUN (for try in 1 2 3; do PATH="/opt/tools/bin:$PATH" npm install -g --fetch-timeout=60000 --fetch-retries=5 --prefix /opt/tools/node @openai/codex && break; [ "$try" = 3 ] && exit 1; echo "npm: try $try failed; trying again"; sleep $((try * 20 - 10)); done && \
      ln -s /opt/tools/node/bin/codex /opt/tools/bin/codex)
 
-# 8. Environment setup script & sentinel marker. The sentinel holds a hash of the whole tree, so a rebuilt tools
+# 7. Environment setup script & sentinel marker. The sentinel holds a hash of the whole tree, so a rebuilt tools
 # image (a new toolchain) replaces what an existing volume holds instead of being skipped for good (B-24).
 RUN echo '#!/bin/sh' > /opt/tools/env.sh && \
     echo 'export PATH="/opt/tools/bin:/opt/tools/go/bin:/opt/tools/node/bin:/opt/tools/rust/bin:$PATH"' >> /opt/tools/env.sh && \

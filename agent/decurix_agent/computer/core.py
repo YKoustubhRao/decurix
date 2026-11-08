@@ -10,6 +10,7 @@ from pathlib import Path
 
 from decurix_agent import config, filelock, progress
 from decurix_agent.computer import approval, atspi, audit, browser, cdp, grounder, identity, launchers, privacy, screen, session, volatility, xinput
+from decurix_agent.computer import screen_call
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ActedError, ComputerError
 
@@ -17,10 +18,9 @@ from decurix_agent.computer.errors import ActedError, ComputerError
 # ============================================================
 # observe / act / verify
 #
-# The one action layer every engine shares. Claude Code reaches it as MCP
-# tools (mcp_server.py) and sees the screenshots; the Ollama loop and TheBot's
-# operator reach it as the `gui` shell command (cli.py) and read the element
-# list as text. Whichever door an action comes through, it passes the same
+# The one action layer the engine and the agent share. TheBot's operator
+# reaches it as the `gui` shell command (cli.py) and reads the element list as
+# text; the agent's own tasks (replays, skills) call it directly. Whichever door an action comes through, it passes the same
 # approval gate and lands in the same audit trail, because both live here and
 # not in any engine.
 #
@@ -127,6 +127,7 @@ def _dead_page_note(frame):
     return CRASHED_PAGE_NOTE if _CRASHED_PAGE.search(shown or "") else None
 
 
+@screen_call.routed("core.observe")
 def observe(remember=True, frame=None):
     """
     Look at the screen: a screenshot, the open windows, and every accessible
@@ -330,14 +331,42 @@ def _keyboard_field(observation):
     return None
 
 
+# The settle wait (tuned live; docs/computer-use.md, "Waits"): settled when the screen has not changed by more than
+# SETTLE_CHANGE (changed_fraction) for SETTLE_QUIET seconds, looked at every SETTLE_POLL seconds at most.
+SETTLE_QUIET = 0.35
+SETTLE_POLL = 0.15
+SETTLE_CHANGE = 0.002
+# How often the drawing reports are read (screen.damage_watch): a local read, no picture.
+DAMAGE_POLL = 0.05
+
+
 def _wait_for_settle(reference):
     """
-    Wait until the screen stops changing, for at most SETTLE_SECONDS.
+    Wait until the screen stops changing, for at most SETTLE_SECONDS, and return a frame of it.
 
     A click that opens a dialog or loads a page is not finished when the
     event is delivered; reading the screen straight away would report
     "nothing changed" about an action that worked.
+
+    The X server says what was drawn (screen.damage_watch), so a screen that is not changing costs no pictures: one is
+    taken only when the drawing could amount to a change, and once at the end. Without the reports, or when they stop,
+    screenshots are taken and compared as before (_settle_by_frames).
     """
+
+    watch = screen.damage_watch()
+    if watch is None:
+        return _settle_by_frames()
+    try:
+        return _settle_by_damage(watch)
+    except screen.DamageLost:
+        pass
+    finally:
+        watch.close()
+    return _settle_by_frames()
+
+
+def _settle_by_frames():
+    """The settle wait by pictures: a screenshot every SETTLE_POLL seconds, compared with the last that differed."""
 
     deadline = time.monotonic() + SETTLE_SECONDS
     time.sleep(0.15)
@@ -345,15 +374,75 @@ def _wait_for_settle(reference):
     stable_since = time.monotonic()
 
     while time.monotonic() < deadline:
-        time.sleep(0.15)
+        time.sleep(SETTLE_POLL)
         current = screen.grab()
-        if screen.changed_fraction(last, current) > 0.002:
+        if screen.changed_fraction(last, current) > SETTLE_CHANGE:
             last = current
             stable_since = time.monotonic()
-        elif time.monotonic() - stable_since >= 0.35:
+        elif time.monotonic() - stable_since >= SETTLE_QUIET:
             break
 
     return last
+
+
+def _settle_by_damage(watch):
+    """
+    The settle wait by drawing reports, deciding what _settle_by_frames decides with fewer pictures.
+
+    `hits` holds every point of the comparison grid (screen.grid_points) that may differ now from `last`, the picture
+    the next one is compared with: the points drawn on since `last` was taken, and the points where the latest picture
+    already differed from it. changed_fraction counts at most three channels per point, so while `hits` has no more
+    than SETTLE_CHANGE of the grid's points the screen provably has not changed by more than SETTLE_CHANGE - nothing is
+    taken. A caret's blink or the panel's clock is a point or two. When more was drawn a picture is taken (at most one
+    each SETTLE_POLL seconds) and compared exactly as before; a screen that was redrawn the same is still quiet. The
+    quiet time counts from the last drawing seen before a change. Raises screen.DamageLost when the reports stop.
+    """
+
+    deadline = time.monotonic() + SETTLE_SECONDS
+    time.sleep(0.15)
+    watch.take()  # what was drawn before the first look counts for nothing, as before
+    width, height = reported = tuple(watch.size)
+    limit = SETTLE_CHANGE * screen.grid_size(width, height)
+
+    last = newest = None        # the picture compared with, and the latest picture taken
+    hits = set()
+    drawn_since_newest = False
+    quiet_since = drawn_at = time.monotonic()
+    grabbed_at = None
+    resized = False             # the screen's size changed since the latest picture
+
+    while time.monotonic() < deadline:
+        time.sleep(DAMAGE_POLL)
+        rects, size = watch.take()
+        now = time.monotonic()
+        if size is not None and tuple(size) != reported:
+            resized, reported = True, tuple(size)
+        if rects:
+            drawn_since_newest, drawn_at = True, now
+            hits |= screen.grid_points(width, height, rects)
+        if resized or len(hits) > limit:
+            if grabbed_at is not None and now - grabbed_at < SETTLE_POLL:
+                continue        # may be changing: not quiet, and the next picture is due shortly
+            current = screen.grab()
+            grabbed_at = time.monotonic()
+            newest, drawn_since_newest, was_resized, resized = current, False, resized, False
+            if last is None or was_resized or (current.width, current.height) != (width, height) \
+                    or screen.changed_fraction(last, current) > SETTLE_CHANGE:
+                last, hits, quiet_since = current, set(), drawn_at
+                if (current.width, current.height) != (width, height):
+                    width, height = current.width, current.height
+                    limit = SETTLE_CHANGE * screen.grid_size(width, height)
+            else:
+                hits = screen.differing_points(last, current)
+                if grabbed_at - quiet_since >= SETTLE_QUIET:
+                    break       # still drawing, but the same for long enough (as the pictures alone would decide)
+            continue
+        if now - quiet_since >= SETTLE_QUIET:
+            break
+
+    if newest is not None and not drawn_since_newest:
+        return newest
+    return screen.grab()
 
 
 def _window_id_for(element):
@@ -1137,7 +1226,16 @@ def _shared_save_note(since, wait=SAVE_SETTLE_SECONDS):
 
 
 DOWNLOAD_WAIT_SECONDS = 6
+# Nothing new in the download folder this long after an action in the browser: it downloaded nothing (_downloads_note).
+DOWNLOAD_QUIET_SECONDS = 1.0
 PARTIAL_DOWNLOAD = (".crdownload", ".part", ".download")
+# With the browser heard (cdp.DownloadWatch): no download begun, nothing loading or fetched, this long after the action
+# and after the page's last fetch, means the action downloaded nothing. The settle wait and the look after the action
+# take longer than this, so it is over by the time the note is made.
+DOWNLOAD_SIGNAL_QUIET = 0.3
+DOWNLOAD_SIGNAL_POLL = 0.05
+# A download the browser says ended is in the folder within this (the browser renames its .crdownload as it ends).
+DOWNLOAD_ARRIVE_SECONDS = 1.0
 
 
 def _downloads_dir():
@@ -1164,26 +1262,118 @@ def _same_bytes(a, b):
         return False
 
 
-def _downloads_note(before, wait=DOWNLOAD_WAIT_SECONDS):
+def _may_download(kind, element, point, before):
+    """
+    Whether this action can start a download: only the browser downloads, so only an action whose target is in the
+    browser can. Decided by structure: the element's own source and application, else the window the click lands in
+    or the keys go to. Unknown is in the browser (the folder is watched as before).
+    """
+
+    def in_browser(title):
+        return browser.is_browser_title(title or "")
+
+    if element is not None:
+        if element.get("source") == "cdp":
+            return True
+        app = str(element.get("app") or "").lower()
+        return app in browser.APP_NAMES or in_browser(element.get("window_title"))
+    windows = (before or {}).get("windows") or []
+    if kind in ("click", "double_click") and point is not None:
+        try:
+            under = [w for w in windows
+                     if w["box"][0] <= point[0] < w["box"][0] + w["box"][2]
+                     and w["box"][1] <= point[1] < w["box"][1] + w["box"][3]]
+        except (KeyError, IndexError, TypeError):
+            return True
+        if under:
+            return in_browser(under[-1].get("title"))   # topmost last (screen.windows)
+        return bool((before or {}).get("page_url")) or any(in_browser(w.get("title")) for w in windows)
+    # Keys with no target go to the window in front.
+    active = (before or {}).get("active_title")
+    return in_browser(active) if active else True
+
+
+def _downloads_note(before, wait=DOWNLOAD_WAIT_SECONDS, since=None, watch=None, acted=None, remember=False):
+    """
+    _downloads_note says what an action downloaded (_downloads_waited). With `remember` (an action's own note), a file
+    that arrived in the folder since the last report and is not this action's - a download a page began after the last
+    action's note had ended - is said too (_unreported_downloads), and the folder as it is now is the new record.
+    """
+
+    note, now, reported = _downloads_waited(before, wait=wait, since=since, watch=watch, acted=acted)
+    if remember:
+        late = _unreported_downloads(now, reported)
+        if late:
+            note += "\n" + LATE_DOWNLOADS + _arrived_text(late, now) + "."
+    return note
+
+
+def _downloads_waited(before, wait=DOWNLOAD_WAIT_SECONDS, since=None, watch=None, acted=None):
     """
     What an action downloaded: the file that arrived in the download folder, its size, and - when the browser named it
     "x (1).pdf" because "x.pdf" was already there - whether it is the same file again. Found live
     (2026-10-21): a click on a chat attachment's Download link said only that the link was focused; the engine went
     looking in the browser's download history and a file manager, had clicked the first attachment twice without
     knowing, and saved the second copy of invoice 197 under invoice 198's name.
+
+    `watch` (cdp.DownloadWatch, started before the action; closed here): what the browser said meanwhile. It only
+    decides when to stop looking - the folder says what arrived. A download it heard begin is waited for until the
+    browser says it ended and the file is in the folder (at most `wait`). With none heard, nothing loading or fetched
+    since the action, the page alone (no new window, no frame of another site) and DOWNLOAD_SIGNAL_QUIET gone since
+    the action (`acted`) and the page's last fetch, nothing was downloaded - without the quiet second. Whenever it
+    cannot say (no watch, it stopped hearing, a window was opened, a fetch still on its way) the rules are the
+    folder's alone, as they were.
     """
 
-    # The screen has already settled: nothing new within a second means nothing was downloaded; a file still being
-    # written is waited for up to `wait`.
+    # Nothing new within DOWNLOAD_QUIET_SECONDS of `since` (the action, when the caller gives it: the window then ran
+    # while the screen settled and was looked at, instead of after it) means nothing was downloaded; with no `since`
+    # the second starts now. A file still being written - the browser has begun the download - is waited for up to
+    # `wait` from now, however slow the server.
     start = time.time()
-    while True:
-        now = _downloads_snapshot()
-        new = [n for n, v in now.items() if before.get(n) != v]
-        partial = [n for n in new if n.endswith(PARTIAL_DOWNLOAD)]
-        waited = time.time() - start
-        if (new and not partial) or (not new and waited >= 1) or waited >= wait:
-            break
-        time.sleep(0.5)
+    quiet_from = start if since is None else min(since, start)
+    acted = quiet_from if acted is None else min(acted, start)
+    heard, seen, ended_at = watch, None, None
+    try:
+        while True:
+            now = _downloads_snapshot()
+            new = [n for n, v in now.items() if before.get(n) != v]
+            partial = [n for n in new if n.endswith(PARTIAL_DOWNLOAD)]
+            clock = time.time()
+            seen = heard.status() if heard is not None else None
+            if seen is not None and not seen["began"] and (not seen["alive"] or seen["opened"]):
+                # It may have missed what it did not hear (a download in a window just opened is that window's).
+                heard = seen = None
+            if seen is not None and seen["began"]:
+                # The browser began one: waited for until it says it ended and the file is in the folder.
+                if all(g in seen["ended"] for g in seen["began"]):
+                    if new and not partial:
+                        break
+                    # Ended and not (yet) in the folder: renamed a moment later, or canceled.
+                    ended_at = ended_at or clock
+                    if clock - ended_at >= DOWNLOAD_ARRIVE_SECONDS:
+                        break
+                elif not seen["alive"] and new and not partial:
+                    break  # no longer heard, and the folder has it
+                if clock - start >= wait:
+                    break
+            elif seen is not None and not new and not seen["busy"] \
+                    and clock - max(acted, seen["quiet_since"]) >= DOWNLOAD_SIGNAL_QUIET:
+                if heard.alone():
+                    break
+                heard = seen = None  # another tab, or a frame of another site: the folder alone
+                continue
+            elif (new and not partial) or (not new and clock - quiet_from >= DOWNLOAD_QUIET_SECONDS) \
+                    or clock - start >= wait:
+                break
+            if seen is not None:
+                time.sleep(DOWNLOAD_SIGNAL_POLL)
+            else:
+                # Looked at again every 0.25 s, and once more just as the quiet second ends rather than up to 0.25 s
+                # past it.
+                time.sleep(0.5 if new else min(0.25, max(0.01, quiet_from + DOWNLOAD_QUIET_SECONDS - clock)))
+    finally:
+        if watch is not None:
+            watch.close()
     done = sorted(n for n in new if not n.endswith(PARTIAL_DOWNLOAD))
     if not done:
         # A download the browser holds for a yes ("Unconfirmed 123.crdownload": a file from a site without https) never
@@ -1196,8 +1386,32 @@ def _downloads_note(before, wait=DOWNLOAD_WAIT_SECONDS):
         if held:
             return ("\nThe browser is holding this download until it is confirmed (" + ", ".join(held[:3]) + "): open "
                     "chrome://downloads with gui open, open the menu (three dots) on its card and choose \"Download "
-                    "insecure file\"; it then arrives in " + str(_downloads_dir()) + ".")
-        return "\nStill downloading: " + ", ".join(partial[:3]) + "." if partial else ""
+                    "insecure file\"; it then arrives in " + str(_downloads_dir()) + ".", now, [])
+        if partial:
+            return "\nStill downloading: " + ", ".join(partial[:3]) + ".", now, []
+        if seen is not None and seen["began"]:
+            # The browser said it began one, and nothing arrived in the folder: said, not taken for nothing.
+            names = ", ".join(sorted(n or "a file" for n in seen["began"].values())[:3])
+            canceled = len(seen["ended"]) == len(seen["began"]) and all(v == "canceled" for v in seen["ended"].values())
+            return (f"\nThe browser began downloading {names}, and it is not in {_downloads_dir()}"
+                    + (": the browser canceled it." if canceled else " (yet)."), now, [])
+        return "", now, []
+    return "\nDownloaded: " + _arrived_text(done, now) + ".", now, done
+
+
+# What a file that arrived after the last report is said with, by the next action or command (_unreported_downloads).
+LATE_DOWNLOADS = "Downloaded since the last action: "
+# The record of the download folder as last reported (names hashed: nothing of a name is kept).
+DOWNLOADS_SEEN_FILE = STATE_DIR / "downloads-seen.json"
+
+
+def _arrived_text(done, now):
+    """
+    _arrived_text says each file that arrived in the download folder: its path and size, and - when the browser named it
+    "x (1).pdf" because "x.pdf" was already there - whether it is the same file again; a file that is not what its name
+    says is said at once, not first at the final check.
+    """
+
     lines = []
     folder = _downloads_dir()
     for name in done[:4]:
@@ -1212,16 +1426,56 @@ def _downloads_note(before, wait=DOWNLOAD_WAIT_SECONDS):
                          + ("; it is byte for byte the same file, so this downloaded that one again" if same else
                             "; its content differs from that file"))
         lines.append(line)
-    note = "\nDownloaded: " + "; ".join(lines) + "."
-    # A file that is not what its name says (a web page saved as .pdf) is said at once, not first at the final check.
+    text = "; ".join(lines) + (f" (and {len(done) - 4} more)" if len(done) > 4 else "")
     try:
         from decurix_agent import produced
         faults = produced.named_kind_faults([folder / n for n in done[:4]])
     except Exception:  # noqa: BLE001 - a note, never a reason for the action to fail
         faults = []
     if faults:
-        note += " But " + "; ".join(faults) + "."
-    return note
+        text += ". But " + "; ".join(faults)
+    return text
+
+
+def _seen_key(name):
+    import hashlib
+    return hashlib.sha256(name.encode("utf-8", "surrogateescape")).hexdigest()[:24]
+
+
+def _unreported_downloads(now, reported=()):
+    """
+    _unreported_downloads gives the files in the download folder snapshot `now` that arrived (or changed) since the
+    folder was last recorded and are not in `reported` (said by this action's own note), and records `now` - complete
+    files only, so a download still being written (.crdownload) is said once it has arrived. Nothing is said the first
+    time (the folder as it is becomes the record). Every gui command begins with it (downloads_since_last) and every
+    action's note ends with it, so a download a page began after an action's note had ended is said by the next one,
+    once: none is lost, and none is said twice.
+    """
+
+    done = {n: [v[0], v[1]] for n, v in now.items() if not n.endswith(PARTIAL_DOWNLOAD)}
+    try:
+        with _state_lock():  # the read and the write of the record, one command at a time
+            try:
+                recorded = json.loads(DOWNLOADS_SEEN_FILE.read_text(encoding="utf-8")).get("files")
+                recorded = {k: [size, mtime] for k, size, mtime in recorded}
+            except (OSError, ValueError, TypeError, AttributeError):
+                recorded = None
+            privacy.write_scrubbed(DOWNLOADS_SEEN_FILE, {"files": [[_seen_key(n), v[0], v[1]] for n, v in done.items()]},
+                                   atomic=True, exempt=("files",))
+    except OSError:
+        return []  # no record could be kept: nothing is said that could be said again
+    if recorded is None:
+        return []
+    return sorted(n for n, v in done.items() if n not in reported and recorded.get(_seen_key(n)) != v)
+
+
+def downloads_since_last():
+    """downloads_since_last says the files that arrived in the download folder since the last action or command said
+    what it had (_unreported_downloads): a line for the start of a gui command's output, or ""."""
+
+    now = _downloads_snapshot()
+    late = _unreported_downloads(now)
+    return LATE_DOWNLOADS + _arrived_text(late, now) + "." if late else ""
 
 
 def _shared_lock_files():
@@ -1317,6 +1571,51 @@ class AskFirst(str):
 # The values a replay running in this process types from the person's demonstration because today's request gives
 # none for them (replay.run sets it for the run): the person's own, never "in no source".
 TAUGHT_VALUES = set()
+
+# The steps the plan of the work, as it was put to the person, makes "with your OK first" (TheBot's operator sets it
+# on every gui command of a goal whose plan said so: plan.go, guiEnv): a JSON list with one entry per such step, the
+# words of the control it is made with, or "" when the plan did not know them.
+PLAN_ASK_FIRST_ENV = "DECURIX_PLAN_ASK_FIRST"
+
+
+def _plan_ask_first():
+    """The controls the agreed plan makes with the person's OK first (PLAN_ASK_FIRST_ENV); [] when none. A value that
+    cannot be read stands for a step whose control is not known: every committing press is held (unsure is asked)."""
+
+    # (Read by its literal name: the screen broker passes a caller's variable only when the agent's code names it.)
+    raw = os.environ.get("DECURIX_PLAN_ASK_FIRST", "").strip()
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return [""]
+    if not isinstance(value, list):
+        return [""]
+    return [" ".join(v.split()) if isinstance(v, str) else "" for v in value]
+
+
+def _plan_hold(control):
+    """
+    Why a committing press (control: what _commit_check found it commits with, or None) is put to the person: the
+    plan of the work they were shown says its step is made with their OK first, and the gate does not ask for it on its
+    own (a local form's Save). Found live (2026-11-08): a plan read "Then, each with your OK first: Press Save bill",
+    and the worker pressed Save bill after its own pre-save check, never asking - the person was told one thing and
+    the worker did another. Held when a step's control names this one or this one names it as a whole phrase
+    (approval.names_control), or a step's control is not known, or this control has no name. None otherwise.
+    """
+
+    if control is None:
+        return None
+    steps = _plan_ask_first()
+    if not steps:
+        return None
+    label = " ".join(str(control.get("name") or "").split())[:60]
+    if not label or any(not step or approval.names_control(step, control) or approval.names_control(label, {"name": step})
+                        for step in steps):
+        return (f'the plan of the work you agreed to makes "{label}" with your OK first' if label
+                else "the plan of the work you agreed to makes this press with your OK first")
+    return None
 
 
 def _taught_value(value):
@@ -2210,7 +2509,7 @@ def _commit_keys(keys):
     return (any(c in ("return", "enter", "kp_enter") for c in combos), any(c == "ctrl+s" for c in combos))
 
 
-def _commit_check(kind, element, keys, before, checked=False, text=None, listing=True):
+def _commit_check(kind, element, keys, before, checked=False, text=None, listing=True, pressed=None):
     """
     The pre-save checks (_form_check: a record entered twice, a placeholder, an invented or unsourced value, the
     declared record's ledger, the listing of a full form) for every action that commits what a form or a page holds,
@@ -2220,7 +2519,14 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
     action, or "" to go on. Found in review (2026-11-02): the checks ran only for a single `gui click` on a CDP
     <form type=submit>, so a double-click, --see, the act tool, an AT-SPI press, an Enter and every button an
     application draws with divs (the `gui record` ledger among them) went past them.
+
+    pressed: a list the control this action commits with is appended to (the element, or the form's submit control an
+    Enter or a Ctrl+S stands for), whatever the checks decide - the press the plan of the work may hold (_plan_hold).
     """
+
+    def committing(control):
+        if pressed is not None:
+            pressed.append(control)
 
     if kind in ("click", "double_click") and element is not None:
         form = cdp.submit_form_fields(element, min_fields=1, unreadable=cdp.UNREADABLE) \
@@ -2231,6 +2537,7 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
             else:
                 # A button whose form could not be read may submit one: the checks cannot be made, so a person looks
                 # first (review 2026-11-03, D-26 - "no form" and "could not read" were the same None).
+                committing(element)
                 label = " ".join(str(element.get("name") or "").split())[:60]
                 return AskFirst(f'the form "{label}" may submit could not be read, so the checks made before a save '
                                 "could not be made - look at what it holds before it goes")
@@ -2241,6 +2548,7 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
                 and not approval.DIALOG_IN_PATH.search(element.get("path") or "") \
                 and approval.press_effect(element) != "asks":
             return ""
+        committing(element)
         return _form_check(element, checked=checked, found=form or _page_fields(before, element), listing=listing)
     typed_enter = kind == "type" and bool(text) and "\n" in text and element is not None
     if kind != "key" and not typed_enter:
@@ -2258,6 +2566,7 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
             form = dict(form, fields=[f for f in form.get("fields") or [] if f[0] != label]
                         + ([[label, line[:80]]] if line.strip() and not privacy.secret_field(field) else []))
         submit = {"name": form.get("submit") or "Submit", "ref": "", "path": field.get("path") or ""}
+        committing(submit)
         return _form_check(submit, found=form, listing=listing, confirm=(
             "Enter would send it, and an Enter is not how a full form is sent: press the form's own submit control "
             "(gui click REF), which lists the form once more and is confirmed with --checked."))
@@ -2266,6 +2575,7 @@ def _commit_check(kind, element, keys, before, checked=False, text=None, listing
         # form is the Save control's, since a page saved only by its keys has no control to confirm it on.)
         save_control = {"name": "Save", "ref": "", "path": (field or {}).get("path") or "",
                         "group": (field or {}).get("group")}
+        committing(save_control)
         return _form_check(save_control, found=_page_fields(before, field), listing=False)
     return ""
 
@@ -2430,8 +2740,71 @@ def _ledger_readback(after, change_text):
         return f"\n(the record could not be read back: {exc})"
 
 
-def _perform(kind, element, point, text, keys, direction, amount, option, append, end=None, files=None, ids=None):
-    """Carry out one action; return which backend did it. `ids`: the identifiers a select resolves the option by first."""
+def _type_with_keys(element, text, append):
+    """The page threw typed text away (cdp.type_text): type it the way a person does - click into the field, then real
+    keys. Returns the backend."""
+
+    _focus_window(element)
+    cdp.click(element)
+    time.sleep(0.3)
+    if not append:
+        xinput.key("ctrl+a")
+    xinput.type_text(text)
+    return "xdotool"
+
+
+def _watch_downloads(element):
+    """What the browser says of downloads while this action runs (cdp.watch_downloads), on the element's own tab when
+    it is a page's element; None when it cannot say, and the download folder alone decides."""
+
+    try:
+        handle = (element or {}).get("handle") or {}
+        target = handle.get("target_id") if (element or {}).get("source") == "cdp" else None
+        return cdp.watch_downloads(target)
+    except Exception as exc:  # noqa: BLE001 - only a quicker end to the wait; the folder decides without it
+        from decurix_agent.logging_utils import log
+        log(f"Could not watch for downloads: {exc}")
+        return None
+
+
+def _worker_point(kind, element, point):
+    """
+    Broker mode, the screen side: a widget read off the worker's accessibility bus (atspi._broker_bus) is the worker's
+    word - its name, its role, its box. An action on one is done only where a window of the worker's own apps is shown:
+    otherwise a widget the worker made up, laid over the browser, would have the gate asked about "Cancel" while the
+    press landed on the browser's "Pay". Raises ComputerError, nothing done, when the point shows any other window.
+    """
+
+    from decurix_agent.computer import broker
+    if element is None or element.get("source") != "atspi" or not broker.screen_side():
+        return
+    target = point or el.center(element)
+    if target is None:
+        return  # nothing is pressed at a point; the action says so itself
+    worker = broker.worker_uid()
+    if screen.owner_uid_at(*target) != worker and point is None:
+        # Its window may be behind another: brought forward as an action on it would be, then looked at again.
+        try:
+            _focus_window(element)
+            time.sleep(0.3)
+        except ComputerError:
+            pass
+    if screen.owner_uid_at(*target) != worker:
+        raise ComputerError(f"{el.describe(element)} is a control of an app of this desktop's worker, and the screen "
+                            f"at {target[0]},{target[1]} shows a window that is not that app's - nothing was done. "
+                            "gui observe again: the window may have moved or be behind another.")
+
+
+def _perform(kind, element, point, text, keys, direction, amount, option, append, end=None, files=None, ids=None,
+             later=None):
+    """
+    Carry out one action; return which backend did it. `ids`: the identifiers a select resolves the option by first.
+    `later`, a list: typing into a browser field leaves in it the read-back of whether the field kept the text
+    (cdp.type_text's check_later), for the caller to make once the screen has settled - and, when it was thrown away,
+    to type it again with real keys (_type_with_keys). With no list the read-back is waited for here.
+    """
+
+    _worker_point(kind, element, point)
 
     if element is not None and element.get("handle", {}).get("sheet_cell"):
         if kind == "type":
@@ -2528,17 +2901,12 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
                     if not NOT_SET.search(str(exc)):
                         raise ComputerError(f"{exc} - the text may already be in the field: observe it before typing "
                                             "again") from None
-            if cdp.type_text(element, text, replace=not append) is not False:
+            typed = cdp.type_text(element, text, replace=not append, check_later=later is not None)
+            if typed is not False:
+                if later is not None and callable(typed):
+                    later.append(typed)
                 return "cdp"
-            # The page threw the text away (cdp.type_text): type it the way
-            # a person does - click into the field, then real keys.
-            _focus_window(element)
-            cdp.click(element)
-            time.sleep(0.3)
-            if not append:
-                xinput.key("ctrl+a")
-            xinput.type_text(text)
-            return "xdotool"
+            return _type_with_keys(element, text, append)
 
         if element is not None:
             _focus_window(element)
@@ -2722,6 +3090,13 @@ def _perform(kind, element, point, text, keys, direction, amount, option, append
         if element is None or not files:
             raise ComputerError("upload needs a target element and one or more file paths")
         if element.get("source") == "cdp":
+            # Broker mode: the browser is the screen user's and may not open the worker's files; it is given a copy
+            # of each one the caller handed over (broker.local_copy), under its own name.
+            from decurix_agent.computer import broker
+            try:
+                files = [broker.local_copy(f) for f in files]
+            except broker.NotHanded as exc:
+                raise ComputerError(f"nothing was uploaded: {exc}") from None
             cdp.set_file_input_files(element, files)
             return "cdp"
         raise ComputerError("upload is currently supported for browser elements")
@@ -2932,6 +3307,7 @@ def _note_failed_search(element, wanted):
         pass
 
 
+@screen_call.routed("core.forget_failed_search")
 def forget_failed_search():
     """A person has answered, or the search has since found its entry: what failed before no longer binds."""
 
@@ -2993,10 +3369,12 @@ def _in_documents(entry_name):
         paths = task_context.current_files()[:4]
     except Exception:
         return False
+    from decurix_agent.computer import broker
     for path in paths:
         if path not in _DOCUMENT_WORDS:
             try:
-                _DOCUMENT_WORDS[path] = _telling_words(office.read_document(path).get("text") or "")
+                # Broker mode: read from what the caller handed over (gui_client.task_documents), never by its name.
+                _DOCUMENT_WORDS[path] = _telling_words(office.read_document(broker.local_copy(path)).get("text") or "")
             except Exception:
                 _DOCUMENT_WORDS[path] = set()
         if words <= _DOCUMENT_WORDS[path]:
@@ -3919,6 +4297,7 @@ def _refuse_files_that_may_not_leave(files):
     return named
 
 
+@screen_call.routed("core.act")
 def act(kind, ref=None, role=None, name=None, path=None, point=None,
         text=None, keys=None, direction=None, amount=None, option=None, append=False, end=None, files=None,
         see=None, replace_all=False, named=False, keys_from_task=False, cell=None, check_form=False, ids=None):
@@ -4177,18 +4556,26 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         files = _refuse_files_that_may_not_leave(files)
     except ComputerError as exc:
         refused("action_rules", exc)
-    downloads_before = _downloads_snapshot() if kind in ("click", "double_click", "key") else None
+    # Only an action in the browser can download (_may_download): any other is not followed by a wait for one.
+    downloads_before = _downloads_snapshot() if kind in ("click", "double_click", "key") \
+        and _may_download(kind, element, point, before) else None
     acted_at = time.time()
     require = None
     if check_form:
         # Every committing action an engine or a replay takes, however it is pressed (_commit_check). A replay's
         # (check_form="replay") listing of today's values is put to the person instead (AskFirst).
+        pressed = []
         held = _commit_check(kind, element, keys, before, checked=check_form == "checked", text=text,
-                             listing="ask" if check_form == "replay" else True)
+                             listing="ask" if check_form == "replay" else True, pressed=pressed)
         if isinstance(held, AskFirst):
             require = str(held)
         elif held:
             refused("pre_save", held)
+        # A press the plan of the work told the person is made with their OK first is put to them, as the gate puts
+        # its own (_plan_hold).
+        promised = _plan_hold(pressed[0] if pressed else None)
+        if promised:
+            require = f"{promised}; {require}" if require else promised
 
     # Enter that submits a form is a press on its submit control, and is asked for when that press would be
     # (_enter_submits).
@@ -4275,6 +4662,9 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
                 "otherwise bring forward the window you are working in (gui open FILE brings an open document "
                 "forward).")
 
+    # Heard from the browser while the action runs: whether it began a download (_downloads_note).
+    download_watch = _watch_downloads(element) if downloads_before is not None else None
+    typing_later = []
     try:
         if relayed_block:
             if relayed_cell:
@@ -4290,7 +4680,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
             backend = "relayed:block"
         else:
             try:
-                backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files, ids=ids)
+                backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files, ids=ids,
+                                   later=typing_later)
             except ComputerError as exc:
                 again, fresh = _redrawn(exc, element, ref, role, name, path)
                 if again is None:
@@ -4306,8 +4697,11 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
                     if held:
                         raise ComputerError(str(held)) from exc
                 element = again
-                backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files, ids=ids)
+                backend = _perform(kind, element, point, text, keys, direction, amount, option, append, end, files=files, ids=ids,
+                                   later=typing_later)
     except ComputerError as exc:
+        if download_watch is not None:
+            download_watch.close()
         entry.update({
             "outcome": "failed",
             "reason": str(exc),
@@ -4316,6 +4710,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         audit.record(entry, before=before["frame"], masks=masks, observation=before)
         raise
     except OSError as exc:
+        if download_watch is not None:
+            download_watch.close()
         # A connection that broke mid-action (a browser tab that crashed: BrokenPipeError on its DevTools socket) is a
         # failed action, recorded like any other - it may have half happened. Found in review (2026-11-02): it left
         # `gui` with exit 0 and no audit step.
@@ -4325,7 +4721,13 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         audit.record(entry, before=before["frame"], masks=masks, observation=before)
         raise ActedError(reason) from exc
 
+    performed_at = time.time()
     settled = _wait_for_settle(before["frame"])
+    if typing_later and not typing_later[0]():
+        # The field threw the text away (cdp.type_text's read-back, made now that the screen has settled - a longer
+        # wait than its own): typed again with real keys, as type_text's caller always did.
+        backend = _type_with_keys(element, text, append)
+        settled = _wait_for_settle(before["frame"])
     # The settled frame is the after-look's picture: the screen stopped changing on it, and a second full grab at once
     # is the same screen again (resource plan P1 #5: one full grab an action fewer).
     after = observe(frame=settled)
@@ -4362,6 +4764,8 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
         if retained is not None and _typing_lost(retained, text):
             reason = (f"{target} did not retain the requested text after retrying. Observe the field again and "
                       "commit it or use its picker; do not assume the value was entered.")
+            if download_watch is not None:
+                download_watch.close()
             entry.update({"outcome": "failed", "backend": backend, "reason": reason,
                           "summary": described + " - failed: " + reason})
             audit.record(entry, before=before["frame"], after=after["frame"] or settled,
@@ -4550,7 +4954,12 @@ def act(kind, ref=None, role=None, name=None, path=None, point=None,
     if kind in ("click", "key") and _saved(change_text):
         note += _ledger_readback(after, change_text)
     if downloads_before is not None:
-        note += _downloads_note(downloads_before)
+        # The second in which a download must show starts at the action and runs while the screen settles and is looked
+        # at - except when the action showed no result at all: that is the click whose answer may still be on its way
+        # from a slow server, and it is given its second after the look, as before.
+        nothing_seen = change_text.startswith("nothing visible changed")
+        note += _downloads_note(downloads_before, since=None if nothing_seen else performed_at, watch=download_watch,
+                                acted=performed_at, remember=True)
 
     return {
         "status": "done",
@@ -5012,6 +5421,7 @@ def _human_check(found, page_group):
     return any(HUMAN_CHECK.search(text) for text in texts)
 
 
+@screen_call.routed("core.open_target")
 def open_target(target, new_tab=False):
     """
     Open a web page, a document or an app, and wait for it to be on screen.
@@ -5061,6 +5471,14 @@ def _open(target, new_tab):
     target = (target or "").strip()
     if not target:
         raise ComputerError("say what to open: a URL, a file, or an app name")
+    from decurix_agent.computer import broker
+    if target.lower().startswith("file://"):
+        # Broker mode: a local page of the worker's opens as a copy the browser (the screen user's) may read
+        # (broker.local_copy); a file the caller did not hand over is not opened at all.
+        try:
+            target = "file://" + urllib.parse.quote(broker.local_copy(urllib.parse.unquote(target[len("file://"):])))
+        except broker.NotHanded as exc:
+            raise ComputerError(f"nothing was opened: {exc}") from None
 
     before = screen.windows()
     _task_windows(before)
@@ -5075,7 +5493,7 @@ def _open(target, new_tab):
         if cdp.available():
             title = cdp.navigate(url, new_tab=new_tab)
             _raise_browser()
-            return f"Opened {url} in Chromium (tab title {el._quote(title, 60)})."
+            return f"Opened {broker.shown_url(url)} in Chromium (tab title {el._quote(title, 60)})."
 
         if any(browser.is_browser_title(t) for t in before_titles):
             raise ComputerError(
@@ -5087,21 +5505,29 @@ def _open(target, new_tab):
         _wait_until(cdp.available, BROWSER_START_SECONDS, "Chromium did not start")
         title = cdp.wait_ready(timeout=15, default_title=url)
         _raise_browser()
-        return f"Started Chromium on {url} (tab title {el._quote(title, 60)})."
+        return f"Started Chromium on {broker.shown_url(url)} (tab title {el._quote(title, 60)})."
 
     path = Path(target).expanduser()
     lower = target.lower().strip()
 
     if lower in CHROMIUM_APPS:
-        if any(browser.is_browser_title(t) for t in before_titles) or cdp.available():
+        if any(browser.is_browser_title(t) for t in before_titles):
             _raise_browser()
             return "Brought Chromium to the front."
+        if cdp.available():
+            # Running with no window: warmed for a task (browser.warm, --no-startup-window). Found live
+            # (2026-11-07, broker mode): a person's click on the panel's Web Browser icon became this open, was told
+            # "brought to the front", and nothing was on the screen. A window is opened instead.
+            cdp.navigate("about:blank", new_tab=True)
+            _raise_browser()
+            return "Opened a Chromium window."
         session.launch(browser.launch_argv("about:blank"))
         _wait_until(cdp.available, BROWSER_START_SECONDS, "Chromium did not start")
         _raise_browser()
         return "Started Chromium."
 
-    if path.exists():
+    # Broker mode: a file of the worker's may not be one the screen user can see; one the caller handed over is there.
+    if path.exists() or broker.handed(str(path)):
         if path.suffix.lower() in OFFICE_EXTENSIONS:
             argv = ["soffice", "--nologo", "--norestore", str(path)]
         elif path.suffix.lower() in IMAGE_EXTENSIONS and shutil.which("gimp"):
@@ -5111,6 +5537,8 @@ def _open(target, new_tab):
         elif path.is_dir():
             argv = ["thunar", str(path)]
         elif path.suffix.lower() in (".html", ".htm", ".pdf", ".eml"):
+            if broker.handed(str(path)):
+                return _open("file://" + str(path), new_tab)  # (the copy is made there, from what was handed over)
             return _open("file://" + str(path.resolve()), new_tab)
         else:
             argv = ["mousepad", str(path)]

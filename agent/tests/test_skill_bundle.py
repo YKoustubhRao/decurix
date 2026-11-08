@@ -241,6 +241,60 @@ class OrgKnowledgeTest(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", lambda url, timeout=None: _Answer(many)):
             self.assertEqual(len(org_knowledge.fetch("w-1")), org_knowledge.MAX_LINES)
 
+    def test_cached_asks_for_the_tasks_items_and_keeps_each_task_apart(self):
+        # The store and route kept task-scoped items, but cached() took no task, so none ever reached a worker.
+        org_knowledge._cache.clear()
+        self.addCleanup(org_knowledge._cache.clear)
+        asked = []
+
+        def fake(url, timeout=None):
+            task = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get("task", [""])[0]
+            asked.append(task)
+            lines = ["Rule (org): never pay without a PO"] + ([f"Fact (task): for {task}"] if task else [])
+            return _Answer({"lines": lines})
+
+        with mock.patch("urllib.request.urlopen", fake):
+            self.assertEqual(org_knowledge.cached("w-1", task_id="t0000000000000001"),
+                             ["Rule (org): never pay without a PO", "Fact (task): for t0000000000000001"])
+            self.assertEqual(org_knowledge.cached("w-1", task_id="t0000000000000002")[-1],
+                             "Fact (task): for t0000000000000002")
+            self.assertEqual(org_knowledge.cached("w-1"), ["Rule (org): never pay without a PO"])
+            org_knowledge.cached("w-1", task_id="t0000000000000001")
+        self.assertEqual(asked, ["t0000000000000001", "t0000000000000002", ""])
+
+    def test_skill_run_and_record_ledger_read_the_tasks_items(self):
+        from decurix_agent import skill_task, task_context
+        from decurix_agent.computer import records
+        seen = []
+        records._org_read.update(at=None, task=None, text="")
+        self.addCleanup(records._org_read.update, at=None, task=None, text="")
+        with mock.patch.object(org_knowledge, "cached", lambda worker_id=None, max_age=0, task_id=None:
+                               seen.append(task_id) or [f"Rule (task): only for {task_id}"]), \
+                mock.patch.object(task_context, "current", lambda: "t0000000000000009"), \
+                mock.patch("decurix_agent.computer.skills.explanation", lambda skill: ""):
+            taught = skill_task._taught({"name": "x"})
+            ledger = records._org_text()
+        self.assertIn("Rule (task): only for t0000000000000009", taught)
+        self.assertEqual(ledger, "Rule (task): only for t0000000000000009")
+        self.assertEqual(seen, ["t0000000000000009", "t0000000000000009"])
+
+    def test_standing_context_withholds_skips_and_bounds(self):
+        lines = ["Rule (org): never pay without a PO", "Fact (org): the portal password: hunter22secret",
+                 "Rule (role clerk): bills go to General"] + [f"Lesson (worker): {'x' * 90} {n}" for n in range(100)]
+        text = org_knowledge.standing_context(lines, skip="Rule (role clerk): bills go to General")
+        self.assertTrue(text.startswith(org_knowledge.CONTEXT_HEADER))
+        self.assertIn("- Rule (org): never pay without a PO", text)
+        self.assertNotIn("hunter22secret", text)
+        self.assertNotIn("bills go to General", text)  # a taught procedure already says it
+        self.assertLessEqual(len(text), len(org_knowledge.CONTEXT_HEADER) + org_knowledge.MAX_CONTEXT_CHARS + 200)
+        self.assertIn("more of the organisation's lines were left out", text)
+        self.assertEqual(org_knowledge.standing_context([]), "")
+        self.assertEqual(org_knowledge.standing_context(lines[:1]), org_knowledge.standing_context(lines[:1]))
+
+    def test_standing_context_fails_closed(self):
+        with mock.patch("decurix_agent.computer.privacy.withhold_known", side_effect=RuntimeError("boom")):
+            self.assertEqual(org_knowledge.standing_context(["Rule (org): a"]), "")
+
 
 if __name__ == "__main__":
     unittest.main()

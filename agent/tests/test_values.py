@@ -93,6 +93,28 @@ class SignsUnitsAndFormats(unittest.TestCase):
         self.assertIsNone(values.parse_number("INV-1234"))
 
 
+class ARangeAndItsCount(unittest.TestCase):
+    """Review round 2 leftover: false_sums read "Rows 2 - 10 = 9." as a wrong subtraction. A range of numbered things
+    and how many it holds is no sum - decided by its structure, never by which word names the things."""
+
+    def test_a_range_named_in_its_clause_and_its_count(self):
+        self.assertTrue(values.range_count("Rows ", "2 - 10", "9"))
+        self.assertTrue(values.range_count("I checked pages ", "3-7", "5"))
+        self.assertTrue(values.range_count("Zeilen ", "2 – 10", "9"))  # any script's word, an en dash
+
+    def test_a_sum_stays_a_sum(self):
+        self.assertFalse(values.range_count("Balance ", "200 - 350", "150"))  # a reversed difference is no count
+        self.assertFalse(values.range_count("Rows ", "2 - 10", "8"))         # not its count
+        self.assertFalse(values.range_count("Rows ", "10 - 2", "9"))         # not ascending
+        self.assertFalse(values.range_count("", "2 - 10", "9"))              # nothing named
+        self.assertFalse(values.range_count("Rows: ", "2 - 10", "9"))        # another clause names it
+        self.assertFalse(values.range_count("Total 4 + ", "2 - 10", "9"))    # an operator, not a word, before it
+        self.assertFalse(values.range_count("Rows ", "2.5 - 10", "9"))
+        self.assertFalse(values.range_count("Rows ", "2 - 10", "9.0"))
+        self.assertFalse(values.range_count("Rows ", "2 + 10", "11"))
+        self.assertFalse(values.range_count("Rows ", "02 - 10", "9"))
+
+
 class TextOfEveryScript(unittest.TestCase):
     """Review round 2, B2: every letter outside a-z was dropped."""
 

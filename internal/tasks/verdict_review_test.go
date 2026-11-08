@@ -19,8 +19,8 @@ func TestAVerdictPythonSendsIsRead(t *testing.T) {
 	}
 }
 
-// Review CP-B B4 (H-PY-1): a legacy done carries no checks and no basis (Python's verdict.validate refuses one that does); a
-// "legacy" done with a failed check must never be stored checked.
+// Review CP-B B4 (H-PY-1): a "legacy" done with a failed check must never be stored checked (and since every desktop path
+// gives its own verdict, "legacy" is no gate at all: any legacy done is refused).
 func TestALegacyDoneWithAFailedCheckIsNotDone(t *testing.T) {
 	b, _ := json.Marshal(map[string]any{"schema": VerdictSchema, "verdict": "done", "by": "legacy", "why": "",
 		"basis": []string{"code"}, "checks": []map[string]any{{"id": "files.read_back", "result": "fail", "basis": "code",

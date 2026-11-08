@@ -123,14 +123,15 @@ type desktopLearnedRow struct {
 	} `json:"source"`
 }
 
-// desktopLearnedList answers GET /api/desktops/learned?kind=field_answer: the calling desktop's rows of that kind,
-// each with its source judgement (a secret one's text never). Only its own rows: per worker, not the org's.
+// desktopLearnedList answers GET /api/desktops/learned?kind=field_answer (or field_unit): the calling desktop's rows of
+// that kind, each with its source judgement (a secret one's text never). Only its own rows: per worker, not the org's.
 func (s *Server) desktopLearnedList(w http.ResponseWriter, r *http.Request, worker string) {
-	if kind := r.URL.Query().Get("kind"); kind != tasks.JudgementFieldAnswer {
-		jsonStatusError(w, http.StatusBadRequest, "kind must be field_answer")
+	kind := r.URL.Query().Get("kind")
+	if kind != tasks.JudgementFieldAnswer && kind != tasks.JudgementFieldUnit {
+		jsonStatusError(w, http.StatusBadRequest, "kind must be field_answer or field_unit")
 		return
 	}
-	rows, err := s.Tasks.JudgementsOfKind(worker, tasks.JudgementFieldAnswer)
+	rows, err := s.Tasks.JudgementsOfKind(worker, kind)
 	if err != nil {
 		internalError(w, "learned: reading them", err)
 		return
@@ -221,6 +222,47 @@ func checkFieldAnswer(text, source, asked string) (ok bool, why string) {
 		return false, "the option is not in what the person said"
 	}
 	if !labelInQuestion(fa.Label, asked) {
+		return false, "the field is not one the person was asked about"
+	}
+	return true, ""
+}
+
+// fieldUnit is a field_unit row's text: the field (its label, on a form of an application) and whether the person said
+// it takes its figures in the unit.
+type fieldUnit struct {
+	Label string `json:"label"`
+	Host  string `json:"host"`
+	Form  string `json:"form"`
+	Unit  string `json:"unit"`
+	Takes *bool  `json:"takes"`
+}
+
+// fieldUnitSentence is the sentence of the save's unit question whose option the person's reply is; the agent writes
+// the same words (agent/decurix_agent/unit_answers.py sentence), spacing collapsed.
+func fieldUnitSentence(label, host, form, unit string) string {
+	return `Reply 1 if the field "` + strings.Join(strings.Fields(label), " ") + `" on ` + host + form +
+		` takes its figures in ` + unit + `, or 2 if it does not.`
+}
+
+// checkFieldUnit reports whether text is a field_unit that stands on what the person was asked and said: the question
+// they answered (asked) holds that field's unit sentence, and their reply (source) is the number of the option the
+// row says ("1": it takes the unit, "2": it does not). Anything else is refused: a row never says more than the reply.
+func checkFieldUnit(text, source, asked string) (ok bool, why string) {
+	var fu fieldUnit
+	if err := json.Unmarshal([]byte(text), &fu); err != nil || fu.Takes == nil || strings.TrimSpace(fu.Label) == "" ||
+		strings.TrimSpace(fu.Host) == "" || strings.ContainsAny(fu.Host, " /") || strings.TrimSpace(fu.Unit) == "" ||
+		strings.ContainsAny(fu.Unit, " \t\n") || len(fu.Label) > 120 || len(fu.Host) > 255 || len(fu.Form) > 500 ||
+		len(fu.Unit) > 16 || (fu.Form != "" && !strings.HasPrefix(fu.Form, "/")) || strings.ContainsAny(fu.Form, " ") {
+		return false, "a field_unit's text is {\"label\", \"host\", \"form\", \"unit\", \"takes\"}"
+	}
+	reply := strings.Trim(strings.Join(strings.Fields(source), " "), " .")
+	if reply != "1" && reply != "2" {
+		return false, "what the person said is not an option's number"
+	}
+	if *fu.Takes != (reply == "1") {
+		return false, "the person's reply is not the option the row says"
+	}
+	if !strings.Contains(strings.Join(strings.Fields(asked), " "), fieldUnitSentence(fu.Label, fu.Host, fu.Form, fu.Unit)) {
 		return false, "the field is not one the person was asked about"
 	}
 	return true, ""

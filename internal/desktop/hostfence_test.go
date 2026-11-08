@@ -46,7 +46,7 @@ func TestNoDesktopRunsOnTheWSLHostWithoutItsFence(t *testing.T) {
 		if err := requireFence(); !errors.Is(err, ErrNoFence) {
 			t.Errorf("status %q: %v", status, err)
 		}
-		if _, err := newManagerWith(&fakeAPI{}).BeginProvisioning("box", "basic", "thebot", Brain{}, 1, 1024, "", "", "", nil, nil, nil); !errors.Is(err, ErrNoFence) {
+		if _, err := newManagerWith(&fakeAPI{}).BeginProvisioning("box", "basic", Brain{}, 1, 1024, "", "", nil, nil, nil); !errors.Is(err, ErrNoFence) {
 			t.Errorf("status %q: a desktop was made: %v", status, err)
 		}
 		fake := &fakeAPI{}

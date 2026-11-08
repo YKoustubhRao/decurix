@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -213,9 +214,19 @@ type fakeSandbox struct {
 }
 
 func newSandbox(t *testing.T, b *practice.Broker, w worker) *fakeSandbox {
-	return &fakeSandbox{t: t, broker: b, work: w, live: map[string]bool{}, mocks: map[string]map[string][]map[string]any{},
+	f := &fakeSandbox{t: t, broker: b, work: w, live: map[string]bool{}, mocks: map[string]map[string][]map[string]any{},
 		outputs: map[string]map[string][]byte{}, perCase: map[string]int{}, paused: map[string]bool{}, home: map[string]bool{}}
+	// The broker knows the practice desktop by its address on the practice network (C-25): the one CreatePractice gave.
+	b.Caller = func(_ context.Context, a netip.Addr) (string, bool) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.desktopID, f.desktopID != "" && a == netip.MustParseAddr(fakePracticeIP)
+	}
+	return f
 }
+
+// fakePracticeIP is the fake practice desktop's address on the practice network.
+const fakePracticeIP = "172.30.0.5"
 
 func (f *fakeSandbox) CreatePractice(_ context.Context, spec desktop.PracticeSpec) (desktop.PracticeDesktop, error) {
 	if f.hold != nil {
@@ -235,7 +246,7 @@ func (f *fakeSandbox) CreatePractice(_ context.Context, spec desktop.PracticeSpe
 	}
 	id := "c-" + spec.RunID
 	f.live[id] = true
-	return desktop.PracticeDesktop{ContainerID: id, Name: f.desktopID, IP: "172.30.0.5"}, nil
+	return desktop.PracticeDesktop{ContainerID: id, Name: f.desktopID, IP: fakePracticeIP}, nil
 }
 
 // ResetPractice is a stand-in: it drops from the fake home the paths the real reset is given
@@ -394,7 +405,9 @@ func (f *fakeSandbox) callback(path string, body map[string]any) {
 	f.mu.Unlock()
 	b, _ := json.Marshal(body)
 	w := httptest.NewRecorder()
-	f.broker.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodPost, path, bytes.NewReader(b)))
+	r := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(b))
+	r.RemoteAddr = fakePracticeIP + ":40000"
+	f.broker.Handler().ServeHTTP(w, r)
 }
 
 func (f *fakeSandbox) think(maxTokens int) {

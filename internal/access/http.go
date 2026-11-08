@@ -57,6 +57,18 @@ func ActorFrom(ctx context.Context) (User, bool) {
 type Handler struct {
 	Store      *Store
 	Middleware Middleware
+	// WorkerRoles, when set, is every role a worker carries as the approval gate reads them (the control plane's
+	// union of the skill registry's and this store's), so the dry run judges with the same roles as the gate. Nil
+	// reads this store's only.
+	WorkerRoles func(worker string) []string
+}
+
+// workerRoles is the roles the gate would match worker against (Handler.WorkerRoles, else this store's).
+func (h *Handler) workerRoles(worker string) []string {
+	if h.WorkerRoles != nil {
+		return h.WorkerRoles(worker)
+	}
+	return h.Store.WorkerRoles(worker)
 }
 
 // RegisterAuth registers /api/auth/login, /api/auth/logout and /api/auth/me
@@ -357,7 +369,7 @@ func (h *Handler) checkPolicy(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &body) {
 		return
 	}
-	roles := h.Store.WorkerRoles(body.Worker)
+	roles := h.workerRoles(body.Worker)
 	if body.WorkerRoles != nil {
 		roles = *body.WorkerRoles
 	}

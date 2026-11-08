@@ -7,7 +7,7 @@
 # and prints them live, so you can watch the agent work.
 #
 # Usage:
-#   ./scripts/linux/test-vm.sh [--profile basic|developer|ai] [--harness thebot|ollama|claude]
+#   ./scripts/linux/test-vm.sh [--profile basic|developer|ai] [--harness thebot]
 #                               [--name test-vm] [--task "do something"] [--down]
 #
 # --down removes this script's own test containers (desktop_<name> and, if
@@ -75,8 +75,8 @@ case "$PROFILE" in
 esac
 
 case "$HARNESS" in
-    thebot|ollama|claude) ;;
-    *) echo "ERROR: --harness must be thebot, ollama, or claude" >&2; exit 1 ;;
+    thebot) ;;
+    *) echo "ERROR: --harness must be thebot (the ollama and claude harnesses were removed on 2026-11-07)" >&2; exit 1 ;;
 esac
 
 echo "========================================"
@@ -135,6 +135,7 @@ docker run -d \
     -e VNC_PW="$VNC_PASSWORD" \
     -e DECURIX_AGENT_TOKEN="$AGENT_TOKEN" \
     -e VNC_RESOLUTION=1280x720 \
+    -e DECURIX_DESKTOP_NOVNC=1 \
     -e DESKTOP_ID="$NAME" \
     -e DESKTOP_NAME="$NAME" \
     -e CONTROL_PLANE_URL="http://${DUMMY_CP}:8080" \

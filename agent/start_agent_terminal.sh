@@ -23,7 +23,11 @@ unset VNC_PW VNC_PASSWORD VNC_VIEW_ONLY_PW
 # reach the X server - another container on the Docker network, if Xvnc listens on TCP - could drive this screen
 # around the approval gate (review 2026-11-03, N-F2). Every process that drives the screen (the agent, the gui
 # command, soul, the control plane's docker exec) runs as the desktop's user, headless.
-which xhost >/dev/null 2>&1 && { xhost - >/dev/null 2>&1; xhost +SI:localuser:headless >/dev/null 2>&1; } || true
+# Broker mode (DECURIX_SCREEN_USER=1): the display is the screen user's and this user's cookie is untrusted, which may
+# not change who may connect; nothing is asked of it (agent/decurix-screen-session.sh decides).
+if [ "${DECURIX_SCREEN_USER:-}" != "1" ]; then
+    which xhost >/dev/null 2>&1 && { xhost - >/dev/null 2>&1; xhost +SI:localuser:headless >/dev/null 2>&1; } || true
+fi
 
 if [ -z "$XDG_RUNTIME_DIR" ]; then
     export XDG_RUNTIME_DIR="/tmp/runtime-headless"
@@ -52,7 +56,8 @@ fi
 # the model's first call, and closes it again if nothing opened a page. A person
 # clicking a web app's icon first waits the cold start once (a few seconds).
 # DECURIX_PREWARM_CHROMIUM=1 still starts it at boot.
-if [ "${DECURIX_PREWARM_CHROMIUM:-}" = "1" ] && which chromium-browser >/dev/null 2>&1; then
+# (Not in broker mode: the browser is the screen user's there, and the screen broker starts it.)
+if [ "${DECURIX_PREWARM_CHROMIUM:-}" = "1" ] && [ "${DECURIX_SCREEN_USER:-}" != "1" ] && which chromium-browser >/dev/null 2>&1; then
     setsid chromium-browser --no-startup-window >> /tmp/chromium-prewarm.log 2>&1 < /dev/null &
     echo "[$(date)] Chromium pre-warmed in background (pid $!)" >> "$LOG"
 fi
@@ -124,7 +129,7 @@ fi
 # has them at the top level: move them in before anything that uses them
 # starts, so worker memory, the audit trail and TheBot's stores carry over.
 legacy_dirs="command helptext final memory audit"
-[ "$AGENT_HARNESS" = "thebot" ] && legacy_dirs="$legacy_dirs ai"
+legacy_dirs="$legacy_dirs ai"
 has_legacy=0
 for d in $legacy_dirs; do
     if [ -d "$HOME/$d" ] && [ ! -L "$HOME/$d" ]; then
@@ -191,12 +196,33 @@ setsid nice -n 10 python3 -I /opt/vm_server.py >> "$LOG" 2>&1 < /dev/null &
 
 echo "[$(date)] vm_server.py started as background daemon (pid $!)" >> "$LOG"
 
-# TheBot harness only - its soul binary is a persistent HTTP server
-# thebot_harness.py talks to (see decurix_agent/thebot_harness.py), not a
-# per-task CLI like claude, so it needs to already be running before any
-# task arrives. Harmless to skip entirely for the other two harnesses -
-# no point paying its startup cost when nothing will ever talk to it.
-if [ "$AGENT_HARNESS" = "thebot" ] && [ -x /opt/soul ]; then
+# The gui daemon (decurix_agent/computer/daemon.py) is not started here: the first `gui` command that finds none
+# starts it (gui_client.start_daemon, the way `gui` starts Python: the same PYTHONPATH, not -I, in /, its output to
+# this log) and runs in its own process meanwhile; the daemon exits after DECURIX_GUI_DAEMON_IDLE_MINUTES (10) with no
+# command, so an idle desktop carries none (docs/computer-use.md, "The gui daemon").
+
+# Broker mode (DECURIX_SCREEN_USER=1; docs/gate-boundary.md): the screen broker runs as the screen user and starts no
+# program but the browser; every other program a `gui` command opens is started here, as the worker, by the launch
+# helper (decurix_agent/computer/launch_helper.py), with this user's own environment. Exit 3: it cannot serve here.
+if [ "${DECURIX_SCREEN_USER:-}" = "1" ]; then
+    setsid sh -c '
+        cd / || exit 0
+        while :; do
+            PYTHONPATH="/opt${PYTHONPATH:+:$PYTHONPATH}" python3 -m decurix_agent.computer.launch_helper
+            [ $? -eq 3 ] && break
+            sleep 1
+        done
+    ' < /dev/null >> "$LOG" 2>&1 &
+    echo "[$(date)] launch helper started (loop pid $!)" >> "$LOG"
+fi
+
+# TheBot's soul is a persistent HTTP server thebot_harness.py talks to (see
+# decurix_agent/thebot_harness.py), so it must be running before any task
+# arrives. TheBot is the only engine since 2026-11-07 (O-4): a desktop made
+# with an old AGENT_HARNESS (ollama, claude, azure) runs it too, so soul
+# starts whatever that variable says - without it such a desktop's agent
+# would wait for a backend that never comes.
+if [ -x /opt/soul ]; then
     # /home/headless/.decurix/ai is TheBot's fixed default AI workdirectory -
     # every agent run cds here and works here, regardless of which real
     # folder a task happens to be scoped to; L1/L2/the Data RAG stay global.
@@ -210,6 +236,8 @@ if [ "$AGENT_HARNESS" = "thebot" ] && [ -x /opt/soul ]; then
     # one; it replaced a hardcoded Cloudflare quick-tunnel URL that stopped
     # resolving as soon as that tunnel was restarted.
     export OLLAMA_HOST="${OLLAMA_URL:-http://host.docker.internal:11434}"
+    # The control plane always passes OLLAMA_MODEL; the fallback is its own default (internal/ollama.Model), as
+    # soul's (CHAT_MODEL in agent/thebot/internal/config) and the Python agent's (config.py) are.
     export CHAT_MODEL="${OLLAMA_MODEL:-devstral-small-2:24b}"
     # Coding builds can run on their own model (see TheBot's internal/llm
     # Models.ForTaskType): a build sends the longest prompts the agent ever

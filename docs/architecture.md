@@ -1,25 +1,50 @@
 # Architecture: packages, desktop container, listeners
 
+Sections this tree calls "below" that are not in this file live in [gotchas.md](gotchas.md) (grep the title),
+[computer-use.md](computer-use.md), [recordings.md](recordings.md), [skills.md](skills.md) and [healing.md](healing.md);
+"The --cli terminal client" is in [running.md](running.md).
+
 ```
 cmd/decurix/main.go — entrypoint: loads .env, builds the Docker client, wires
-                       the packages below, registers routes, ListenAndServe(:8080)
-                       plus a second, access-code-gated ListenAndServe (:8090 by
-                       default - see "Two listeners, one process, one set of
-                       routes" below); --version, and --build-images/--rebuild
-                       which build the
-                       desktop images from the embedded context and exit;
-                       --cli, which skips all of the above and hands off to
-                       cli.go instead (see "The --cli terminal client" below)
+                       the packages below, registers routes, and serves the
+                       primary listener (:8080) plus a second, access-code-gated
+                       one (:8090 by default - see "Two listeners, one process"
+                       below); the practice broker listens on :8091 of the
+                       practice network (docs/simulation.md). Flags that exit
+                       instead: --version; --build-images (--rebuild, --images
+                       desktop|tools|all) builds the images from the embedded
+                       context; --cli (--url) hands off to cli.go; --phone and
+                       --phone-setup run the phone link (phone.go); and
+                       --restore-backup <file> (--force) puts a backup's data
+                       files back (restore.go)
+dockerstartup.go   — dockerStartup: what needs Docker, run by
+                       Manager.WatchDocker once Docker answers: the network, the
+                       per-desktop networks (sweep and join), the screen
+                       passwords held again, the sweeps of hops, home-copy and
+                       host-app helpers, images and the tools volume, and the
+                       cleanup of practice and readiness containers
 cli.go             — runCLI: an interactive REPL that is the same binary's
                        --cli mode, a text alternative to the dashboard/chat
                        page for a control plane already running somewhere -
                        reached purely over internal/httpapi's existing JSON
                        API (GET/POST /api/desktops*, /api/querynotes), so it
                        needs no Docker client and no database of its own
+restore.go         — runRestore: a backup's database (and, in an old backup,
+                       key files) into the data dir; never deletes (replaced
+                       files go to before-restore-<time>/), refuses while a
+                       control plane answers at --url unless --force
+cmd/decurix-model-selector — the Windows app's companion (127.0.0.1:11436 by
+                       default): measures the Windows machine and chooses the
+                       model for the native Ollama (DECURIX_WINDOWS_SELECTOR_URL;
+                       built by scripts/windows/build-electron.ps1)
 embed.go           — package decurix at the MODULE ROOT: //go:embed of
-                       docker/desktop.*.Dockerfile + agent/ → DesktopBuildContext.
-                       It has to live at the root because go:embed cannot reach
-                       above its own directory and the context spans two dirs.
+                       docker/desktop.basic.Dockerfile, docker/tools.Dockerfile
+                       and the agent files the images COPY (not agent/tests)
+                       → DesktopBuildContext. agent/thebot is its own module, so
+                       `go generate .` packs it as agent/thebot.tar.gz (and may
+                       prebuild agent/thebot-soul); a binary built without that
+                       step cannot build the images. It has to live at the root
+                       because go:embed cannot reach above its own directory.
 
 internal/desktop   — owns the Docker client; desktop image build
                       (images.go: MissingImages/BuildImages, tars
@@ -40,25 +65,29 @@ internal/desktop   — owns the Docker client; desktop image build
                       AgentRequest (recordings.go: one call to a desktop's :8081 API,
                       how recordings are read off the desktop rather than copied),
                       PersistMemoryFile (docker-exec write into a desktop),
-                      claudelogin.go: the interactive half of the shared Claude
-                      Code login (StartClaudeLogin/SubmitClaudeLoginCode/
-                      CancelClaudeLogin, driving `claude auth login` in a
-                      throwaway container so the dashboard's popup can hand a
-                      human its sign-in URL and feed back the verification
-                      code) and PersistClaudeCredentials (PersistMemoryFile's
-                      write-into-a-desktop pattern, seeding a new claude-harness
-                      desktop with the session internal/claudeauth stored),
                       Screenshot (screenshot.go: a minimal RFB client that reads
                       a desktop's framebuffer straight off Xvnc:5901 and returns
                       a cached JPEG thumbnail — what the dashboard cards show),
                       sandbox.go (the seccomp profile + core-dump ulimit every new
                       desktop is created with — what lets Chromium run sandboxed;
-                      the profile itself is seccomp-desktop.json, go:embed'ed)
-internal/ollama    — DesktopURL/DesktopModel (the Ollama every desktop is given) and
-                      preloading the model there at startup, plus WarmAsync (debounced
-                      background warm-up called when a desktop starts, a chat opens or a
-                      request is sent - see the memory-starved-host gotcha at the end); also the lifecycle of the
-                      bundled "decurix-ollama" container, used only when OLLAMA_URL names it
+                      the profile itself is seccomp-desktop.json, go:embed'ed),
+                      desknet.go (each new desktop's own bridge network,
+                      decurix-vm-<id>, a /28 of DECURIX_DESKTOP_SUBNETS; the
+                      control plane joins each with the lowest gateway priority),
+                      hostfence.go (on the Windows app's WSL host, no desktop is
+                      made or started while the fence between desktop networks is
+                      missing), DesktopModelURL (the OLLAMA_URL a desktop gets: the
+                      control plane's /api/native-ollama proxy, never the model
+                      server itself), agenttoken.go (the agent token, the gate's
+                      key and the per-desktop screen password), homefs.go / hop.go /
+                      practice.go (see the sections at the end and docs/simulation.md)
+internal/ollama    — DesktopURL/DesktopModel (the model server the control plane uses and
+                      the model every desktop is given). EnsureReady at startup chooses the
+                      model and, for the bundled "decurix-ollama" container (used only when
+                      OLLAMA_URL names it), provisions it and pulls; it loads nothing.
+                      WarmAsync (debounced) loads the model when a desktop starts, a chat
+                      opens or a request is sent, and only when some desktop uses the local
+                      model or no hosted one is set up (SetWarmNeeded)
                       select.go/autoselect.go/resources.go (+ mem_<os>.go): the model
                       chooser - probes RAM/CPU/GPU and picks the smartest chat model that
                       fits 50% of what is free (see "The chat model is chosen for this
@@ -68,7 +97,9 @@ internal/ollama    — DesktopURL/DesktopModel (the Ollama every desktop is give
 internal/sqlitedb  — opens the one embedded SQLite database (modernc.org/sqlite, pure Go,
                       so releases stay CGO_ENABLED=0) at DECURIX_DATA_DIR/decurix.db, and
                       Migrate(db, component, steps): each store below owns its own tables
-                      and appends schema steps, never edits an applied one
+                      and appends schema steps, never edits an applied one. Also InstanceID
+                      (the random instance tag, see the end) and KeepVacuumed (freed pages
+                      returned to the disk, a batch an hour)
 internal/querynotes — queries submitted by agents (SQLite). A note is resolved, never deleted: List is the open
                       ones (the rail, the badge, the Queries tab), ListResolved the history
 internal/memory    — worker-memory entries (SQLite); deleted with the desktop they were learned on (DeleteForDesktop)
@@ -101,7 +132,12 @@ internal/winhost   — runs a Windows app on a PRIVATE WIN32 DESKTOP of the host
                       the helper pushes pictures (Watch/Viewer: a whole picture first, then
                       only the rectangle that changed), Do/Mouse/Wheel/Type/Key, Copy/Paste,
                       Check (which programs can run hidden, from the same helper), Stop/StopAll;
-                      token.go signs and checks the launch tokens (LoadSecret keeps the key in the data dir). Takes its host
+                      Keep/Forget/ForgetDesktop (an app kept running, ready to show), DeleteDesktop
+                      (a deleted desktop's host browser profiles removed by the bridge's dropprofiles
+                      verb: exact folder names under its own profile root, links never followed; a
+                      stop keeps them, they hold the worker's sign-ins), controls.go
+                      (Controls: the app's controls from UI Automation, and Picture);
+                      token.go signs and checks the launch, exec and open tokens (LoadSecret keeps the key in the data dir). Takes its host
                       command as a Starter, so it depends on nothing internal and is tested
                       against a bash fake speaking the same line protocol
 internal/tunnel    — in-memory store of the addresses scripts/linux/build.sh
@@ -111,13 +147,48 @@ internal/tunnel    — in-memory store of the addresses scripts/linux/build.sh
                       machine's own LAN address for it (LANURL), surfaced in
                       the dashboard's Mobile menu; Get/AdminURL (the primary
                       listener's) are legacy - no current script reports them
-internal/idlepause — Checker.Run: a ticker that stops a desktop once it has sat
-                      idle (tasks.Store.Busy empty, and past Threshold since the
+internal/idlepause — Checker.Run: a ticker (every 2 min) that pauses a desktop once it
+                      has sat idle (tasks.Store.Busy empty, and past Threshold since the
                       later of its container's own start time, its last task
-                      activity, and desktop.Manager.LastViewed) - on by default
-                      at 5 minutes (cmd/decurix.defaultIdleStopMinutes),
-                      DECURIX_IDLE_STOP_MINUTES=0 opts out, and it never does
-                      more than the same Stop a human's own button does
+                      activity, and desktop.Manager.LastViewed), or stops it when
+                      DECURIX_IDLE_ACTION=stop - on by default at 5 minutes
+                      (cmd/decurix.defaultIdleStopMinutes), DECURIX_IDLE_STOP_MINUTES=0
+                      opts out, and it never does more than the Pause/Stop a human's
+                      own button does; Busy is asked again under LockDesktop.
+                      FastPauseAfter checks a desktop again soon after its task ends.
+                      room.go (lightweight L2): a desktop paused for StopAfter
+                      (DECURIX_IDLE_STOP_AFTER_MINUTES, 30) is stopped; and MakeRoom,
+                      desktop.Manager's RoomMaker, runs before every start (not a wake:
+                      a paused desktop still holds its memory) and stops the longest-idle
+                      paused desktops, only as many as needed, until the Docker host's
+                      MemAvailable covers the start (min(its limit, 700 MB)) plus a
+                      512 MB floor; with nothing to stop it starts one that fits without
+                      the floor and refuses the rest (desktop.NoRoomError, "not enough
+                      memory: N desktops are busy"). Starts let through count 90 s
+                      against free memory, so two at once do not share it. Never stopped:
+                      not paused, Busy (task, ticket, open question or approval), a
+                      practice/eval/readiness desktop, or started, woken, looked at before
+                      its pause or worked on in the last 10 min (a paused desktop's frozen
+                      thumbnail does not count: opening its screen wakes it). Each stop is
+                      under the lifecycle lock with Busy asked again; MakeRoom only
+                      TryLockDesktop's, so a request holding the lock wins. The stopped
+                      desktop's Desktop.rest_reason ("idle" | "memory"), rest_note and
+                      rested_at say why until it runs again (in memory only).
+                      gone.go: the live tasks of a desktop whose container is gone are
+                      closed at start and on each sweep (never the control plane's own
+                      practice/readiness workers on a sweep)
+internal/resourcemon — Monitor.Run: every 5 s, a running desktop's CPU and memory
+                      (Docker stats) against DECURIX_RESOURCE_CPU_THRESHOLD /
+                      DECURIX_RESOURCE_MEM_THRESHOLD (80%); above either, an alert with a
+                      predicted size, shown on the screen page and the dashboard
+                      (/api/desktops/resource-alerts|increase|dismiss|report); Increase
+                      applies it and cools that desktop down for 5 min.
+                      hostmem.go: HostMemory.AvailableMB, the Docker host's MemAvailable
+                      (what idlepause.MakeRoom measures), read from the control plane's own
+                      /proc/meminfo and trusted only when its MemTotal is within 5% of the
+                      daemon's (desktop.Manager.HostMemTotalMB): true in a container on the
+                      Docker host or a binary on Linux; elsewhere (a binary on macOS) it is
+                      "not known" and desktops start without making room
 internal/lanaccess — Store: the rotating access code gating the second,
                       LAN-facing listener main.go starts alongside the
                       primary one (see "Two listeners, one process, one set of
@@ -128,7 +199,10 @@ internal/lanaccess — Store: the rotating access code gating the second,
                       AutoRotateInterval (48h) so a leaked code doesn't stay
                       valid indefinitely - always started (see idlepause's
                       "always started" precedent), same non-positive-disables
-                      contract. Depends on nothing internal by design, same
+                      contract. SetOpenPaths lets the phone-setup paths past the
+                      gate (each checks a token of its own); CloseDevice ends a
+                      revoked device's open screens and streams (streams.go).
+                      Depends on nothing internal by design, same
                       tier as tunnel/sqlitedb: it must never be able to
                       reach, and must never be reached by, the primary
                       listener's own routing
@@ -154,14 +228,30 @@ internal/llm       — the hosted models a desktop's brain can be: Claude (claud
                       /api/llm/settings{,/forget} humansOnly. Resolve allows only
                       "default"/"fast". /api/llm (both listeners) is the status, never a key.
                       Depends on sqlitedb and sealed
-internal/outbox    — emails agents drafted (the azure harness's draft_email, POST /api/outbox
+internal/outbox    — emails agents drafted (`office email`, POST /api/outbox
                       from a desktop), waiting for a person: the Triggers page's Outbox lists
                       them with their attachments, and only a person's Send (humansOnly)
                       hands one to mailtrigger.Store.SendMail. Claim (draft -> sending) makes
                       a double click send once; a send interrupted by a restart is marked
                       failed, never resent on its own. Depends on nothing internal but sqlitedb
 internal/sealed    — AES-256-GCM for the few secrets kept in SQLite, key in a file of its
-                      own in the data dir (mailtrigger's mail.key, cftunnel's cloudflare.key)
+                      own in the data dir (mailtrigger's mail.key, cftunnel's cloudflare.key, llm's llm.key;
+                      an old claude-session.key is left unread since the Claude login went, 2026-11-07)
+internal/runs      — the run record (docs/trajectory.md): Puller takes a run's bundle off its desktop when the
+                      run ends (limit DECURIX_RUN_BUNDLE_MB, default 64, runs.BundleLimit) and Build
+                      assembles decurix.trajectory/v1. A desktop delete first pulls what is missing; runs it
+                      still could not save make the delete answer 409 unless a person forces it (a
+                      delete_anyway judgement names who and which runs were given up)
+internal/purge     — purges a leaked secret by value from the never-delete stores (blobs,
+                      llm_calls, judgements, task records, chat, concierge, query notes, run
+                      bundles): each copy becomes `[purged]` in place through a small
+                      PurgeValue/PurgeForms method each store owns, keeping blob names, row ids
+                      and lengths so records still join, and records a `purge` judgement (who,
+                      why, counts; never the value). Served by httpapi/privacy_purge.go
+                      (RegisterLocalRoutes, humansOnly, owner role) and `decurix --purge-secret`
+                      (docs/trajectory.md, "Purging a leaked secret")
+internal/codemap   — writes CODE_MAP.md from every tracked file's own header comment
+                      (`go run codemap_gen.go`); TestCodeMapIsCurrent fails when it is stale
 internal/cftunnel  — "Your own link": a named Cloudflare Tunnel giving the gated listener a
                       fixed https://<name>.<domain> instead of a quick tunnel's changing URL.
                       Configure does the Cloudflare side once through the API (zone, a
@@ -184,14 +274,6 @@ internal/phoneagent — the phone's end, run by `decurix --phone` in Termux on a
                       against the release's SHA-256): list_apps for the app list, and per opened
                       app one server with new_display=WxH/dpi plus a START_APP control message.
                       Depends on nothing internal but wsconn and phonehost (the protocol)
-internal/claudeauth — the one shared Claude Code login every claude-harness
-                      desktop is seeded from (in place of an ANTHROPIC_API_KEY):
-                      a single-row SQLite table holding the raw
-                      ~/.claude/.credentials.json content plus the account's
-                      email, so it survives a control-plane restart, build.sh
-                      leaves it alone, and rebuild.sh wipes it for free as part
-                      of wiping decurix-data — no script changes needed for
-                      either half of that
 internal/schedule  — recurring or one-time-future requests set up from the
                       requests page (not the chat): Store persists each one
                       (desktop, request text, either a standard 5-field cron
@@ -199,10 +281,17 @@ internal/schedule  — recurring or one-time-future requests set up from the
                       last run) in SQLite; cron.go is a small pure-Go
                       parser/matcher (no external dependency, matching the
                       sqlitedb/modernc.org choice to stay CGO_ENABLED=0) with
-                      the standard day-of-month/day-of-week OR rule, run in
-                      UTC. Runner ticks (20s default) and fires a schedule
+                      the standard day-of-month/day-of-week OR rule, matched
+                      on the wall clock of the schedule's own IANA zone
+                      (`zone`: the browser's at creation, else the control
+                      plane's TZ or /etc/localtime, else UTC; rows from
+                      before zones read UTC). Daylight saving follows vixie
+                      cron: a fixed-time job in the skipped hour runs at the
+                      jump, and once in a repeated hour. The binary embeds
+                      time/tzdata. A DAG's cron trigger has its own zone
+                      (`cron_zone`) under the same rule. Runner ticks (20s default) and fires a schedule
                       through the Submitter interface once its next-run time
-                      has arrived, appending "\n\nTIME:{<RFC3339>}" to the
+                      has arrived, appending "\n\nTIME:{<RFC3339 in its zone>}" to the
                       request text so the agent knows when that run
                       triggered; a recurring schedule always advances to its
                       next occurrence after firing (success or not), so a
@@ -231,8 +320,9 @@ internal/mailtrigger — email triggers (set up on the Triggers page, /triggers,
                       internal but sqlitedb (Submitter is a narrowed
                       interface over *httpapi.Server)
 internal/keepawake — keeps the machine from idle-sleeping while something
-                      needs it awake (Keeper.Wanted: a watched mailbox, a
-                      waiting schedule or DAG cron) and releases it the moment
+                      needs it awake (Keeper.Wanted: a watched mailbox, an
+                      email-triggered job waiting to be sent, a waiting schedule
+                      or DAG cron, a desktop working on a task) and releases it the moment
                       nothing does: SetThreadExecutionState on Windows (a
                       locked OS thread), a powershell.exe helper fed on/off over
                       stdin under WSL, systemd-inhibit on Linux, caffeinate on
@@ -261,22 +351,30 @@ internal/suggest   — picks a desktop for a request before it is sent, for the
                       takes. Depends on desktop (narrow interface), tasks
                       (narrow interface), memory (narrow interface), ollama,
                       sqlitedb
-internal/httpapi   — the only package touching net/http; all HTTP handlers,
-                      composes desktop+querynotes+memory+conversation+stepimages+tasks+
-                      tunnel+claudeauth+lanaccess+schedule+suggest+webui. schedules.go: the
+internal/httpapi   — the control plane's HTTP handlers and route registration (RegisterRoutes,
+                      RegisterLocalRoutes, RegisterSimulationRoutes, RegisterEvalRoutes,
+                      RegisterAccessRoutes, RegisterAccessLocalRoutes) and the middleware both
+                      listeners are wrapped in (guard.go, proxied.go, bodylimit.go); composes
+                      every store above. Other packages use net/http too (lanaccess's gate,
+                      cftunnel's API client, wsconn, the skillhub/knowledge/handoff/workqueue
+                      handlers httpapi mounts). schedules.go: the
                       requests page's recurring-request CRUD (/api/schedules,
                       .../create, .../delete, .../toggle) and Server.Submit, which
                       implements schedule.Submitter by calling the same submitLocked
                       every human-typed request already goes through - a schedule's
                       fired request is a fourth door onto Plan/deliver/Commit, after
-                      the chat, the requests page and a query reply. lanaccess.go: the two routes
+                      the chat, the requests page and a query reply. lanaccess.go: the routes
                       RegisterLocalRoutes registers only on the primary listener -
-                      the current LAN/tunnel access code and the button that rotates
-                      it - never served back over the listener that code itself
-                      gates. claudeauth.go: the dashboard's Claude
-                      login popup (/api/claude-auth/status + login/start + login/code
-                      + login/cancel), backed by desktop.Manager's claudelogin.go and
-                      saved through claudeauth.Store. hostgui.go: the host-gui API
+                      the current LAN/tunnel access code, the button that rotates
+                      it, and the paired devices and their revoke - never served
+                      back over the listener that code itself gates. The Claude
+                      login API (/api/claude-auth/*) and desktop's claudelogin.go
+                      were deleted on 2026-11-07: no page called them. The claude
+                      harness and internal/claudeauth went the same day; the
+                      claude_session table keeps its migration steps
+                      (backup.go's MigrateLegacyClaudeSession, whose appended
+                      step empties it) and the backup still scrubs it.
+                      hostgui.go: the host-gui API
                       (/api/host-gui/start|ws|stop and the /host-gui/view page; the ws route uses
                       internal/wsconn, hand-written RFC 6455 - no library, to keep the binary static):
                       a copied Windows app's launcher in a VM opens that page in the VM's own
@@ -286,8 +384,9 @@ internal/httpapi   — the only package touching net/http; all HTTP handlers,
                       /api/desktops/recordings* + /api/desktops/demonstration proxy, replay
                       as a task (Busy check, Plan/Commit, parameters never recorded), and the
                       ticket API (/api/desktops/record opens one, /api/desktops/ticket* drives
-                      it - the GUI screen's own toolbar). proxy.go: desktopProxyHandler's
-                      injectTicketToolbar splices that toolbar into every load of the screen.
+                      it - the GUI screen's own toolbar). screen.go puts that toolbar (ticketToolbar)
+                      on the control plane's screen page; proxy.go's rewriteDesktopHTML splices it,
+                      and the resource-alert popup, into noVNC's own page.
                       activity.go: GET /api/desktops/activity, what each dashboard card
                       says its desktop is doing (read off the chat snapshot).
                       skills.go: the skills page and its API (/skills/<id>, /api/desktops/skills*,
@@ -314,7 +413,7 @@ web/templates/     — theme.html (shared design tokens + icon sprite + top bar 
                       "sprite" / "topbar" / "chrome-js"; parsed alongside each page
                       by webui.templatePaths), dashboard.html, index.html,
                       requests.html, desktop.html (the per-desktop chat behind the
-                      dashboard's Chat button — one chat for every harness, and
+                      dashboard's Chat button — one chat for every desktop, and
                       nothing else on the page; the screen opens in its own tab),
                       screen.html (a desktop's screen, /desktop/<id>/: see "The screen is
                       the control plane's page" below),
@@ -335,36 +434,37 @@ web/templates/     — theme.html (shared design tokens + icon sprite + top bar 
 desktop container (decurix-desktop:{basic,developer,ai})
   ├─ base image: accetto/ubuntu-vnc-xfce-chromium-g3 (XFCE + VNC); its Chromium 112 is replaced by
   │    Google Chrome stable behind /usr/bin/chromium-browser (see "The browser is Google Chrome" below)
+  ├─ base startup run with --skip-novnc: Xvnc on 5901 and no websockify (agent/decurix-entrypoint.sh;
+  │    DECURIX_DESKTOP_NOVNC=1 at creation starts it on 6901 as before)
   ├─ XDG autostart (agent/decurix-agent.desktop) → agent/start_agent_terminal.sh
   │    → /opt/vm_server.py (detached background process, no visible terminal); it
   │    also reinstalls agent/chromium-browser.init as ~/.chromium-browser.init (the
   │    browser's launch flags) and clears core dumps Chromium left behind
   └─ decurix_agent/ (Python package, imported by vm_server.py; :8081 inside the container)
-        ├─ config.py       — env vars (incl. AGENT_HARNESS), /home/headless/.decurix/
+        ├─ config.py       — env vars (AGENT_HARNESS kept as CREATED_HARNESS), /home/headless/.decurix/
         │                     {command,querytext,final,memory} dirs and /home/headless/work
         ├─ state.py        — shared mutable state (current_task, waiting_for_query, ...) as
         │                     plain module attributes; every other module does
         │                     `from decurix_agent import state` and reads/writes
         │                     state.current_task etc. (module singleton = shared globals)
         ├─ identity.py     — get_identity_context(engine): who this desktop is (name, ID,
-        │                     user, work dir), as facts for the system prompt. Shared by all
-        │                     three harnesses - without it "what's your desktop name?" was
+        │                     user, work dir), as facts for the standing context - without
+        │                     it "what's your desktop name?" was
         │                     unanswerable and came back as a query
-        ├─ memory_context.py — get_memory_context: reads ~/.decurix/memory/*.txt; shared
-        │                     by all three harnesses below
+        ├─ memory_context.py — get_memory_context: reads ~/.decurix/memory/*.txt
         ├─ messaging.py    — save_request (intake), send_query/ask_for_query/write_final_reply
         │                     and backend_failure_note (turns a raw engine error into a note
         │                     that says what to do about it)
         │                     (POSTs to control plane /api/querytext, with kind+reply so the
-        │                     chat needn't re-parse the note) — shared by all three harnesses
+        │                     chat needn't re-parse the note)
         ├─ readiness.py    — wait_for_http_ok(url, label): the one "is it up yet" probe,
-        │                     shared by every harness that has a backend to wait for. Never
+        │                     what the engine's wait_for_backend uses. Never
         │                     raises and never gives up - "not up yet" is a state to sit in
         ├─ task_context.py — the control plane's task ID for the request being worked on:
         │                     carried in the command file's name (<stem>.t<16 hex>.txt), set
         │                     by watchers.py, and written to /tmp/decurix-current-task so the
-        │                     `gui` command and the MCP server (other processes) report it too
-        ├─ usage.py        — per-task model/tokens/cost totals each harness adds to, sent by
+        │                     `gui` command (another process) reports it too
+        ├─ usage.py        — per-task model/tokens/cost totals the engine adds to, sent by
         │                     messaging.send_query with every reply (llm_client.chat adds every hosted
         │                     call itself; TheBot's own calls come back with each soul job)
         ├─ playbooks.py    — what a worker keeps from a task it worked out itself, once its result was
@@ -377,34 +477,19 @@ desktop container (decurix-desktop:{basic,developer,ai})
         ├─ progress.py     — emit(): POSTs one live activity line to the control plane's
         │                     /api/agent/events, on a single background sender thread with a
         │                     bounded queue. Best-effort and harness-agnostic: this is what
-        │                     makes the chat's step-by-step view identical for all three
-        ├─ harness.py      — the ONLY place that branches on AGENT_HARNESS; re-exports
-        │                     perform_task/continue_after_query from whichever harness below
-        │                     is active, with identical signatures, plus wait_for_backend()
-        │                     which blocks until that harness's engine is reachable and then
-        │                     sets state.backend_ready - the flag watchers.py gates on
-        ├─ ollama_client.py + parser.py + commands.py + task_runner.py
-        │                   — the "ollama" harness: hand-rolled COMMAND:/DONE:/HELP: loop
-        │                     driving a local Ollama model
-        ├─ claude_harness.py
-        │                   — the "claude" harness: shells out to the `claude` CLI in
-        │                     non-interactive mode per task; Claude Code runs its own
-        │                     agentic loop internally, so this just streams its events to
-        │                     progress.emit and maps the final "result" event to
-        │                     write_final_reply/ask_for_query, and tracks a session_id
-        │                     (module-private state) to --resume across
-        │                     ask_for_query ⇄ human-response round trips
-        ├─ azure_harness.py + llm_client.py
-        │                   — the "azure" harness ("Office (GPT)" in the create dialog): a
-        │                     tool-calling loop on the hosted model, reached through the
-        │                     control plane (llm_client -> /api/llm/chat). Tools: shell (the
-        │                     dangerous ones wait for a yes), the MCP server's own screen /
-        │                     recording / skill tools (so the approval gate and the audit trail
-        │                     apply as for Claude), tools/office.py (read_document, read/create/
-        │                     update_workbook, combine_pdf), draft_email (to the Outbox - it can
-        │                     never send), ask_human, finish. A pause keeps the conversation in
-        │                     module state; continue_after_query answers the paused tool call.
-        │                     llm_client also answers every harness's ask_model when DECURIX_LLM=1
+        │                     makes the chat's step-by-step view the same for every task kind
+        ├─ harness.py      — the ONLY place that knows the engine (TheBot since the ollama,
+        │                     claude and azure harnesses were removed, 2026-11-07; a desktop
+        │                     created with one runs TheBot and logs so); re-exports
+        │                     perform_task/continue_after_query from thebot_harness, plus
+        │                     wait_for_backend() which blocks until the engine is reachable
+        │                     and then sets state.backend_ready - the flag watchers.py gates on
+        ├─ ollama_client.py — the local model: kept resident (ensure_model_resident) and
+        │                     asked one-off questions (ask_once, harness.ask_model's fallback)
+        ├─ llm_client.py   — the control plane's hosted model (/api/llm/chat): answers
+        │                     harness.ask_model and the agent's own judging calls when set up
+        ├─ commands.py     — run_command and dangerous_reason, the shell check long_task and
+        │                     workflow_task hold commands with (gated_command: the gate's yes)
         ├─ study.py        — /learn with a hosted model: the model studies the demonstration (steps, notes,
         │                     key screens) into an `understanding`, asks only what it could not work out, one
         │                     at a time, folds each answer in (see "A worker learns with the brain" below)
@@ -429,7 +514,7 @@ desktop container (decurix-desktop:{basic,developer,ai})
         │                   — `/workflow`: durable multi-stage runs whose stages are ordinary engine or
         │                     taught-skill tasks, advanced only by artifact checks (bench/workflows/README.md)
         ├─ thebot_harness.py
-        │                   — the "thebot" harness: TheBot's `soul` binary (agent/thebot/,
+        │                   — the engine: TheBot's `soul` binary (agent/thebot/,
         │                     its own Go module, built into all three images and started as a
         │                     daemon by start_agent_terminal.sh) is a persistent HTTP server
         │                     with its own atomizer/scheduler/skills loop. This submits the
@@ -439,7 +524,7 @@ desktop container (decurix-desktop:{basic,developer,ai})
         │                     progress.emit; polling is the fallback), and maps the job's
         │                     structured `outcome` to write_final_reply/ask_for_query. A
         │                     reply goes back with reply=true, which resumes the paused job
-        ├─ computer/       — computer use: the ONE action layer all three engines share to see
+        ├─ computer/       — computer use: the ONE action layer the engine and the replays use to see
         │                     and work the screen (see "Computer use" below). core.py has
         │                     observe/act/verify/open; screen.py (python3-xlib: framebuffer ->
         │                     PNG, window list), atspi.py (GTK/XFCE/LibreOffice widgets),
@@ -447,8 +532,7 @@ desktop container (decurix-desktop:{basic,developer,ai})
         │                     (xdotool), elements.py (one element shape, stable refs, the text
         │                     rendering), approval.py (the gate + pending/grant file store),
         │                     audit.py (every action into recordings + progress.emit_action),
-        │                     cli.py (the `gui` shell command, agent/gui -> /usr/local/bin/gui),
-        │                     mcp_server.py (the same as MCP tools for Claude Code), and the
+        │                     cli.py (the `gui` shell command, agent/gui -> /usr/local/bin/gui), and the
         │                     recordings (see "Recordings" below): recording.py (the store),
         │                     privacy.py (what is never kept), volatility.py (text a replay
         │                     must not check), processing.py (raw input -> actions),
@@ -477,7 +561,7 @@ desktop container (decurix-desktop:{basic,developer,ai})
         │                     harness, reports as engines "learn" / "skill", pauses through
         │                     state.paused_skill the way replay_task uses state.paused_replay
         │                     (computer/skill_engine.py is the same for an *engine*: gui skills /
-        │                     gui skill / gui do and the MCP tools skills / run_skill - it refuses
+        │                     gui skill / gui do - it refuses
         │                     and says what is missing where skill_task would ask a person)
         ├─ ask_task.py     — `chatgpt "where is x"`, `ask chatgpt ...`, `google x`, `search youtube
         │                     for x`, `wiki x`: opens the service in Chromium with the question in
@@ -495,21 +579,21 @@ desktop container (decurix-desktop:{basic,developer,ai})
                               ThreadingHTTPServer.serve_forever
 ```
 
-Control plane → desktop communication happens over the Docker bridge network `decurix-network` (container name `desktop_<id>`, not published ports). Desktop → control plane communication uses `CONTROL_PLANE_URL` (`http://decurix:8080` over `decurix-network` when the control plane runs from `docker-compose.yaml`, which sets `DECURIX_CONTROL_PLANE_URL`; `http://host.docker.internal:8080` for the released binary on the host, see `desktop.controlPlaneURL`) — always the primary listener below, never the gated one, since an agent's own callbacks must never depend on a human having typed an access code anywhere.
+Control plane → desktop communication happens over Docker bridge networks, never published ports. Each desktop made since 2026-11-05 is on a network of its own, `decurix-vm-<id>` (`desknet.go`, a /28 of `DECURIX_DESKTOP_SUBNETS`, default `10.213.0.0/16`), which the control plane's container joins with the lowest gateway priority, so its default route and published ports stay on `decurix-network`; no desktop reaches another's 5901, 6901 or 8081. A desktop made before that stays on the shared `decurix-network` until it is recreated, and its card says so. Every lookup of a desktop's address goes through `desktopEndpoint`. Desktop → control plane communication uses `CONTROL_PLANE_URL` (`http://decurix:8080` by container name when the control plane runs from `docker-compose.yaml`, which sets `DECURIX_CONTROL_PLANE_URL`; `http://host.docker.internal:8080` for the released binary on the host, see `desktop.controlPlaneURL`) — always the primary listener below, never the gated one, since an agent's own callbacks must never depend on a human having typed an access code anywhere. The desktop's model server is `CONTROL_PLANE_URL/api/native-ollama` (an allow-listed proxy: no pull, delete or create, no unload or reload of the shared model). Details: [gate-boundary.md](gate-boundary.md), "Between desktops".
 
-**Two listeners, one process, one set of routes.** `cmd/decurix/main.go` builds two `*http.ServeMux`s from the same `Server` and calls `RegisterRoutes` on both, so they serve identical behavior; only `RegisterLocalRoutes` (the LAN access code + rotate button, see `internal/httpapi`'s `lanaccess.go` above) is added to one of them. The primary listener (`:8080`) has no login, and what it serves is host-level power: it creates desktops (Docker socket) and `/api/host-bridge/*` runs commands on the host. So it is **never exposed beyond this machine and its own desktops**, by four independent layers: (1) `docker-compose.yaml` publishes it on `${DECURIX_ADMIN_BIND:-127.0.0.1}` only, so the LAN cannot reach it; desktops call back over `decurix-network` instead of through the published port (`DECURIX_CONTROL_PLANE_URL=http://decurix:8080`); (2) no script tunnels it - `scripts/*/build.sh`/`rebuild.sh` open at most one Cloudflare quick tunnel, to the gated listener (`lan_tunnel_url`), only when `DECURIX_PUBLIC_LINK=1`, and only to a port that is not 8080 and is seen serving the access-code page (`gated_port_ok`); the Electron app does the same through `desktop/electron/gated-port.js`; (3) `httpapi.RefuseForwarded` wraps it and answers 403 to any request carrying `Cf-Connecting-Ip`/`Cf-Ray`/`X-Forwarded-*`/`Forwarded`/`X-Real-Ip`, so a stale script or a hand-run `cloudflared` pointed at `127.0.0.1:8080` gets nothing (a safety net, not the boundary - headers are a deny-list); (4) `RegisterLocalRoutes` puts everything that runs or shows something on the host (`/api/host-bridge/{exec,open}`, `/api/host-gui/*`, `/host-gui/view`) and the access code itself on the primary mux only, so the gated listener - reachable by anyone holding the code - has no route to host code execution (`TestHostRoutesAreOnlyOnThePrimaryListener` pins the split; a test that needs those routes must call `RegisterLocalRoutes` too). The second listener (`:8090` by default, `DECURIX_LAN_PORT`) is wrapped in `internal/lanaccess.Store.Middleware` and gives out a rotating access code (shown in the dashboard's Mobile menu) before granting a session cookie - published on all interfaces by compose (`DECURIX_LAN_BIND`; the Windows app publishes it on the WSL distro's 127.0.0.1, since its LAN link and tunnel come in through Windows' own loopback), reachable on the local network as `lan_url` and off it through its own tunnel; see the lockout note on `lanaccess.Store.recordFailure` below for what changes once real tunnel traffic reaches it. **Consequence:** a desktop created before this change has `CONTROL_PLANE_URL=http://host.docker.internal:8080` baked in, and on a native-Linux host that address (the docker0 gateway) no longer reaches a port published on loopback - recreate such desktops. **The host bridge only runs what a launcher was signed for.** Anything running in a desktop (an agent that browses the web and runs shell commands) can reach the primary listener over `decurix-network`, so `/api/host-bridge/exec` requires `desktop` + `token`, where `token` is `winhost.ExecToken` (HMAC over the desktop ID, program and the JSON-encoded arguments, keyed by the same `hostgui.key` as launch tokens; `ValidExecToken` in `hostBridgeExecHandler`). A launcher gets its token from `hostFallback` when the app is copied; the arguments must match exactly, so a launcher's own `"$@"` is no longer passed on. `host-run` has two modes only - `open <token> <https link>` (a web app's launcher, `winhost.OpenToken`) and `signed <token> <cmd> args` - and the generic `host-run <anything>`, `win-run`/`mac-run` and the reverse-SSH fallbacks (an unsigned path around the check) are gone. `/api/host-bridge/open` opens only the link a launcher was signed for, from that desktop, and only a `safeOpenURL` link (plain https to a public name on port 443: no address in any spelling, no localhost/`.internal`/`.local`/single-label name, no other port, no user name - a GET from the person's browser to `127.0.0.1:8080` arrives as the person). There is no clipboard route: a credential the worker holds could not stop a prompt-injected worker from putting a command there for the person to paste. A desktop can still ask for exactly the commands and links its launchers carry; it cannot run or open anything else. Launchers written before this stop working (403, and `host-run` says to copy the app again: `POST /api/desktops/host-apps/copy`). **Still true:** the control plane holds the Docker socket, which is root on the host - it is what creates desktops and, on a WSL host, runs the privileged `nsenter` hop behind a signed Windows command. Removing it means a narrower Docker access path (a rootless/remote daemon or a proxy that filters `--privileged`, host mounts and `pid=host`), not a network fix. `desktop.Manager.StaleControlPlane` logs, once at startup, the desktops still carrying the old callback URL. The released binary binds the primary listener to loopback plus the Docker bridge gateways (`primaryListenAddrs`, `Manager.GatewayIPs`: `decurix-network`'s and `bridge`'s IPv4 gateway - what `host.docker.internal` resolves to on Linux), so desktops still call back through `host.docker.internal` and the LAN cannot reach it (checked live: `127.0.0.1` and a container answer, the LAN address refuses). Inside a container it binds every interface, since compose decides what is published. `DECURIX_ADMIN_ADDR` (comma-separated `host:port`) overrides it. A gateway address that cannot be bound (Docker Desktop, where `host.docker.internal` reaches host loopback anyway) is skipped with a warning.
+**Two listeners, one process.** `cmd/decurix/main.go` builds two `*http.ServeMux`s from the same `Server`. Both get `RegisterRoutes` and `RegisterAccessRoutes`. Only the primary one also gets `RegisterLocalRoutes` (the access code and its devices, the host bridge and host-GUI views, host files, backup and restore, the Cloudflare and hosted-model settings, the model proxies `/api/llm/` and `/api/native-ollama/`, the grounder, handoffs, the work queue, readiness, run records), `RegisterSimulationRoutes`, `RegisterEvalRoutes` and `RegisterAccessLocalRoutes`. The primary handler is `practice.RefuseSubnets(RefuseForwarded(GuardPrimary(BodyLimit(GzipMiddleware(mux)))))`; the gated one is `practice.RefuseSubnets(GuardGated(BodyLimit(lanAccess.Middleware(GzipMiddleware(MarkGated(lanMux))))))`. The primary listener (`:8080`) has no login, and what it serves is host-level power: it creates desktops (Docker socket) and `/api/host-bridge/*` runs commands on the host. So it is **never exposed beyond this machine and its own desktops**, by four independent layers: (1) `docker-compose.yaml` publishes it on `${DECURIX_ADMIN_BIND:-127.0.0.1}` only, so the LAN cannot reach it; desktops call back over `decurix-network` instead of through the published port (`DECURIX_CONTROL_PLANE_URL=http://decurix:8080`); (2) no script tunnels it - `scripts/*/build.sh`/`rebuild.sh` open at most one Cloudflare quick tunnel, to the gated listener (`lan_tunnel_url`), only when `DECURIX_PUBLIC_LINK=1`, and only to a port that is not 8080 and is seen serving the access-code page (`gated_port_ok`); the Electron app does the same through `desktop/electron/gated-port.js`; (3) `httpapi.RefuseForwarded` wraps it and answers 403 to any request carrying `Cf-Connecting-Ip`/`Cf-Ray`/`X-Forwarded-For`/`X-Forwarded-Host`/`Forwarded`/`X-Real-Ip`, so a stale script or a hand-run `cloudflared` pointed at `127.0.0.1:8080` gets nothing (a safety net, not the boundary - headers are a deny-list); (4) `RegisterLocalRoutes` puts everything that runs or shows something on the host (`/api/host-bridge/{exec,open}`, `/api/host-gui/*`, `/host-gui/view`) and the access code itself on the primary mux only, so the gated listener - reachable by anyone holding the code - has no route to host code execution (`TestHostRoutesAreOnlyOnThePrimaryListener` pins the split; a test that needs those routes must call `RegisterLocalRoutes` too). The second listener (`:8090` by default, `DECURIX_LAN_PORT`) is wrapped in `internal/lanaccess.Store.Middleware` and gives out a rotating access code (shown in the dashboard's Mobile menu) before granting a session cookie - published on all interfaces by compose (`DECURIX_LAN_BIND`; the Windows app publishes it on the WSL distro's 127.0.0.1, since its LAN link and tunnel come in through Windows' own loopback), reachable on the local network as `lan_url` and off it through its own tunnel; the comment on `lanaccess.Store.recordFailure` says what changes once real tunnel traffic reaches it (every tunnel visitor shares one lockout bucket: 5 wrong codes in 5 minutes lock it for 5 minutes). **Consequence:** a desktop created before this change has `CONTROL_PLANE_URL=http://host.docker.internal:8080` baked in, and on a native-Linux host that address (the docker0 gateway) no longer reaches a port published on loopback - recreate such desktops. **The host bridge only runs what a launcher was signed for.** Anything running in a desktop (an agent that browses the web and runs shell commands) can reach the primary listener over `decurix-network`, so `/api/host-bridge/exec` requires `desktop` + `token`, where `token` is `winhost.ExecToken` (HMAC over the desktop ID, program and the JSON-encoded arguments, keyed by the same `hostgui.key` as launch tokens; `ValidExecToken` in `hostBridgeExecHandler`). A launcher gets its token from `hostFallback` when the app is copied; the arguments must match exactly, so a launcher's own `"$@"` is no longer passed on. `host-run` has two modes only - `open <token> <https link>` (a web app's launcher, `winhost.OpenToken`) and `signed <token> <cmd> args` - and the generic `host-run <anything>`, `win-run`/`mac-run` and the reverse-SSH fallbacks (an unsigned path around the check) are gone. `/api/host-bridge/open` opens only the link a launcher was signed for, from that desktop, and only a `safeOpenURL` link (plain https to a public name on port 443: no address in any spelling, no localhost/`.internal`/`.local`/single-label name, no other port, no user name - a GET from the person's browser to `127.0.0.1:8080` arrives as the person). There is no clipboard route: a credential the worker holds could not stop a prompt-injected worker from putting a command there for the person to paste. A desktop can still ask for exactly the commands and links its launchers carry; it cannot run or open anything else. Launchers written before this stop working (403, and `host-run` says to copy the app again: `POST /api/desktops/host-apps/copy`). **Still true:** the control plane holds the Docker socket, which is root on the host - it is what creates desktops and, on a WSL host, runs the privileged `nsenter` hop behind a signed Windows command. Removing it means a narrower Docker access path (a rootless/remote daemon or a proxy that filters `--privileged`, host mounts and `pid=host`), not a network fix. `desktop.Manager.StaleControlPlane` logs, once at startup, the desktops still carrying the old callback URL. The released binary binds the primary listener to loopback, and on Linux also to the Docker bridge gateways once Docker answers (`primaryListenAddrs`, `Manager.GatewayIPs`: `decurix-network`'s and `bridge`'s IPv4 gateway - what `host.docker.internal` resolves to on Linux), so desktops still call back through `host.docker.internal` and the LAN cannot reach it (checked live: `127.0.0.1` and a container answer, the LAN address refuses). On macOS and Windows only loopback is bound: Docker runs in a VM there and `host.docker.internal` reaches host loopback. Inside a container it binds every interface, since compose decides what is published. `DECURIX_ADMIN_ADDR` (comma-separated `host:port`) overrides it. A gateway address that cannot be bound is logged as a warning.
 
 **Who may call what, since the review of 2026-11-02** (`internal/httpapi/guard.go`). The review created a desktop and queued a task from a page on another site, so both listeners now sit behind a guard, and each check is code, not a convention:
 
 - **No cross-site writes.** `GuardPrimary` and `GuardGated` refuse any method but GET/HEAD/OPTIONS, and any WebSocket, unless it is same-origin (`Origin` equals the `Host`, or the tunnel's `X-Forwarded-Host` on the gated listener) or carries no `Origin` at all (a script, the Electron main process, an agent's urllib). `Sec-Fetch-Site: cross-site`/`same-site` and `Origin: null` are refused.
 - **No DNS rebinding.** The primary listener serves only Host names it is known by: an IP address, `localhost`/`*.localhost`, `host.docker.internal`, a single-label name (`decurix`, a container name), or one listed in `DECURIX_ALLOWED_HOSTS` (comma-separated). Anything else gets 421.
-- **On the primary listener only the host is a person** (third round, 2026-11-03; `desktop.NetView`, `Manager.Networks`, `httpapi.origin`). A person is loopback or a gateway the host comes in through: decurix-network's and the default bridge's (from Docker), and in compose the control plane's own network's default-route gateway (`/proc/net/route`, no Docker needed), which is where a port compose publishes is handed over from. Every bridge network's range is a container range, and an address in no known range is unknown. On the primary listener, anything that is not the host is held to the desktops' callbacks below and must be a desktop's own address there: verified live in the second round, a container on a network someone else made read the access code and the backup, and created a DAG and a desktop. The gated listener has a login of its own and refuses only a known container address, so a phone or a LAN laptop reaches the login even while Docker answers nothing. What the interfaces say (the control plane's own network in compose; the Docker bridges docker0/br-* on a Linux host) keeps a desktop refused there too. The network view and the address-to-desktop map are each fetched by one call at a time and shared (`desktop.refreshed`). A known address is answered without waiting for Docker. An unknown one makes Docker be asked again at most every 2 s, and the address map is dropped whenever a desktop is made or removed here.
+- **On the primary listener only the host is a person** (third round, 2026-11-03; `desktop.NetView`, `Manager.Networks`, `httpapi.origin`). A person is loopback or the gateway the host comes in through: decurix-network's, from Docker (`dockerNetworks`), since the ports compose publishes are on decurix-network and Docker's proxy hands them over from its gateway. Not the default bridge's, not a desktop network's, never the practice network's. Only while Docker has named none does the control plane's own network's default-route gateway count (`/proc/net/route`, no Docker needed). Every bridge network's range is a container range, and an address in no known range is unknown. On the primary listener, anything that is not the host is held to the desktops' callbacks below and must be a desktop's own address there: verified live in the second round, a container on a network someone else made read the access code and the backup, and created a DAG and a desktop. The gated listener has a login of its own and refuses only a known container address, so a phone or a LAN laptop reaches the login even while Docker answers nothing. What the interfaces say (the control plane's own network in compose; the Docker bridges docker0/br-* on a Linux host) keeps a desktop refused there too. The network view and the address-to-desktop map are each fetched by one call at a time and shared (`desktop.refreshed`). A known address is answered without waiting for Docker. An unknown one makes Docker be asked again at most every 2 s, and the address map is dropped whenever a desktop is made or removed here.
 - **A desktop gets its callbacks and nothing else.** A request from anyone but the host (`fromContainer`) may use only the routes in `containerRoutes` (the model proxy, grounder, agent events, query notes, its own memory, outbox drafts, org knowledge and skills read-only, handoffs, host-file checks, the signed host bridge and host-GUI views). Everything else is 403: sending requests (a worker answering its own approval), creating desktops, the LAN access code, verdicts, DAG/cron jobs, the tunnel link, Claude login, settings. Adding a callback means adding it to that list on purpose; `TestContainerRoutesAreServed` checks each entry is a real route.
-- **A desktop is who its address says.** `Manager.DesktopAt` maps a container's address on `decurix-network` to its desktop ID, and the guard puts it in the request (`requestDesktop`). `actingAs` makes every callback act as that desktop and refuses a body naming another one (memory, agent events, query text, outbox, host files, the host bridge's token desktop); the handoff routes do the same through `handoff.Handler.Caller`. An address in the network that is no desktop's gets nothing.
+- **A desktop is who its address says.** `Manager.DesktopAt` maps a container's address on its desktop network (its own, or `decurix-network` for an older desktop; `desktopEndpoint`) to its desktop ID, and the guard puts it in the request (`requestDesktop`). `actingAs` makes every callback act as that desktop and refuses a body naming another one (memory, agent events, query text, outbox, host files, the host bridge's token desktop); the handoff routes do the same through `handoff.Handler.Caller`. An address in the network that is no desktop's gets nothing.
 - **The gated listener serves no container at all.** It refuses every address inside a known Docker network. A desktop that hairpins through Docker's proxy on a port published on every address arrives from the gateway, indistinguishable from the host, and the Windows app publishes the port on loopback only for that reason. A checkout's compose still publishes it everywhere for the LAN; there the hairpin shares the gateway's lockout bucket.
 - **What a desktop serves through the control plane is sandboxed.** `/desktop/<id>/...` (noVNC's own page) and `/agent/<id>/...` (TheBot's page) come from inside a container but would run as the control plane's origin; they now carry `Content-Security-Policy: sandbox ...`, so their scripts have an opaque origin the guard refuses. The screen a person uses is the control plane's own page with its own noVNC (`screen.go`) and is unaffected.
 - **A reply answers its own card.** `/api/desktops/send` takes `note_id`; when the desktop has asked something newer, or the note is closed, it answers 409 (`replyStillAnswers`), so a "yes" under an old card cannot approve a newer action.
-- **Per-desktop secrets.** A new desktop gets `DECURIX_AGENT_TOKEN` (HMAC of its ID under `hostgui.key`, `Manager.AgentToken`), which the control plane sends as `Authorization: Bearer` on every call to its agent (:8081, and soul :4900 through `/agent/<id>/`), and a VNC password of its own (`screenPassword`, 8 characters, VNC's limit) instead of the shared "admin". Both protect a desktop from other desktops and from web pages; the worker's own shell runs as the same user as its agent and can read them. **The desktop's side:** `http_api.refusal` checks the token (constant-time) on every :8081 route but `GET /health`, and, with or without a token, refuses a request carrying `Origin` or `Sec-Fetch-*` (a web page in the desktop's Chrome), a Host that is a DNS name (rebinding; the control plane calls by IP or container name) and a write with a non-JSON body; a desktop without a token is otherwise served as before until it is recreated. In-container callers send it through `config.agent_auth_headers()` (the TheBot bridge's calls to soul). A reply is a reply only when its `task_id` is the waiting task's (`messaging.save_request`, docs/chat.md). The browser extension and its backend (`agent/browser-agent`, `ext_server.py`) were deleted on 2026-11-03; the image no longer installs them. Soul's browser skill is still in the tree, off unless `THEBOT_BROWSER_EXTENSION=1`, and has nothing to talk to (docs/follow-ups.md).
+- **Per-desktop secrets.** A new desktop gets `DECURIX_AGENT_TOKEN` (HMAC of its ID under `hostgui.key`, `Manager.AgentToken`), which the control plane sends as `Authorization: Bearer` on every call to its agent (:8081, and soul :4900 through `/agent/<id>/`), and a VNC password of its own (`screenPassword`, 8 characters, VNC's limit) instead of the shared "admin". Both protect a desktop from other desktops and from web pages; the worker's own shell runs as the same user as its agent and can read them. **The desktop's side:** `http_api.refusal` checks the token (constant-time) on every :8081 route but `GET /health`, and, with or without a token, refuses a request carrying `Origin` or `Sec-Fetch-*` (a web page in the desktop's Chrome), a Host that is a DNS name (rebinding; the control plane calls by IP or container name) and a write with a non-JSON body; a desktop without a token is otherwise served as before until it is recreated. In-container callers send it through `config.agent_auth_headers()` (the TheBot bridge's calls to soul). A reply is a reply only when its `task_id` is the waiting task's (`messaging.save_request`, docs/chat.md). The browser extension and its backend (`agent/browser-agent`, `ext_server.py`) were deleted on 2026-11-03; the image no longer installs them. Soul's browser skill was removed too (4d24556).
 - **Nothing of the person's computer is copied into a desktop at creation.** `host_paths` is refused (it reached `/data`: the keys and the database); the host-app list packs launchers only, never a browser profile, SSH keys, tokens, keyrings or dotfiles; the Windows bridge no longer seeds its private browser from the person's own profile (`DECURIX_IMPORT_HOST_BROWSER_PROFILE=1` opts back in). The shared folder is the one way to give a worker files.
 
 - **Fail closed** (second round, same day). A desktop's agent (:8081) and soul (:4900) serve nothing but their health check without a token, so a desktop created before tokens must be recreated. No desktop is created when the control plane could not load its secret (`hostgui.key`): it would get no token. That includes a practice desktop (`CreatePractice` answers `ErrNoSecret`, and the run's note says why). `DEFAULT_PASSWORD` is no longer read; every desktop gets its own screen password. `fromContainer` takes an address that is not loopback, not a gateway and in no known range as a reason to ask Docker again in the background (at most every 2 s). On the primary listener that address is never a person (third round). The practice network is one of the container ranges and never one of the addresses the control plane listens on (`GatewayIPs`); its subnet cache asks again every second while it knows no range.
@@ -518,7 +602,7 @@ Control plane → desktop communication happens over the Docker bridge network `
 - **Host files are decided on as they resolve** (`resolveHostFile`). Each part of the path must be a name its folder lists, which excludes an 8.3 alias, a trailing dot or space, and a different case (the listed name is used). Every symlink and junction is followed and checked again from the drive's root, and anything under AppData (or its old junction names), ProgramData, Windows or a dot-folder, or that cannot be resolved, is refused. `/api/host-files/read` serves only documents (`readableHostDocument`).
 - **Deleting a desktop while it is being created** stops the creation and waits for it to clean up before anything is removed; its name stays claimed until then, and a creation only ever removes its own entry, so a re-created desktop of the same name is never touched.
 
-- **The gated listener's surface is smaller** (review 2026-11-03). It no longer serves `/api/host-apps/detect`, `/api/desktops/host-apps/copy`, `/api/claude-auth/*` or `POST /api/tunnel`. `/api/host-paths/validate` and `/api/channels/inbound` are deleted. A desktop create there refuses host apps, as it refuses `shared_folder`. Org skill and knowledge writes are host-operator only (O-7). `gated_surface_test.go` names each of these.
+- **The gated listener's surface is smaller** (review 2026-11-03). It no longer serves `/api/host-apps/detect`, `/api/desktops/host-apps/copy` or `POST /api/tunnel`; `/api/claude-auth/*` is deleted everywhere (2026-11-07). `/api/host-paths/validate` and `/api/channels/inbound` are deleted. A desktop create there refuses host apps, as it refuses `shared_folder`. Org skill and knowledge writes are host-operator only (O-7). `gated_surface_test.go` names each of these.
 - **Every request body has an outer cap** (`httpapi.BodyLimit`), on both listeners and the gated sign-in form included: 1 MiB by default, and `bodyLimits` names the routes built for more.
 - **Every desktop-callable route says whose data it serves.** `desktop_reads_test.go` fails on a route in `containerRoutes` that does not bind its reads to the calling desktop.
 - **No handler sends `err.Error()` to a client.** `internalError`, `badForm`, `badJSON` and the named `refusal`, `providerSaid` and `viewerReason` helpers (`json.go`) are the only ways to answer with an error. `TestNoResponseEchoesAnError` (`noecho_test.go`) walks every httpapi file. It is a net, not a proof: it catches error text kept in a variable, `fmt.Sprint*`/`Errorf` of an error-named variable, writes to any `http.ResponseWriter` parameter and `json.NewEncoder(w).Encode`. A package sentinel's `.Error()` is exempt only when its qualifier is one of the file's imports. DAG store refusals are `dag.InputError`; mail-trigger and schedule validation errors are `InputError`, shown in their own words.
@@ -527,13 +611,26 @@ Control plane → desktop communication happens over the Docker bridge network `
 
 Desktops created before these changes have no agent token and the old screen password: they must be recreated.
 
-**What is still not a boundary.** The worker's shell runs as the same Linux user as the agent that holds the approval gate, its state, its reply channel and its token. It can write a reply file, read the token, edit `approval.json`, or click with `xdotool` directly. Everything above keeps out other desktops and web pages, not the worker itself. Closing that needs the gate in a separate user or process (see the 2026-11-02 recheck).
+**What is still not a boundary.** The approval gate now runs as a Linux user of its own (`decurixgate`), and a yes is made only from a reply the control plane signed ([gate-boundary.md](gate-boundary.md)). The worker's shell still runs as the same user as the agent: it can read the agent token and its own screen password, report its own task's outcome ("The gap" in gate-boundary.md), and give input around the gate (owner decision O-1, the input broker, is open). Everything above keeps out other desktops and web pages, not the worker itself.
 
-The scripts also discover this machine's own LAN-facing IP (`ip route get 1.1.1.1`'s `src` field on Linux/macOS — asks the kernel which address it would use, no packet actually sent; a UDP `Connect` to a public IP on Windows, the same trick) and `POST /api/tunnel` `lan_url` (the gated port) built from it — stored on the same `tunnel.Store` as the gated tunnel's `lan_tunnel_url` and shown together in the Mobile menu (tunnel link first since it works off-network), so a phone on the same network can skip the tunnel round-trip entirely. They no longer report `admin_url` (the primary listener is not reachable from the LAN) or `url` (nothing tunnels it); `tunnelHandler` and the store still accept both, only so an older script's report does not error, and the Mobile menu shows them under a clearly-labelled unauthenticated heading if one arrives. `httpapi.tunnelHandler`'s POST only ever sets the fields present in that call's body, since the LAN report (once, right after startup) and each tunnel-URL report (once per line the `cloudflared` process prints) are separate calls that must never blank out each other's fields.
+The scripts also discover this machine's own LAN-facing IP (`ip route get 1.1.1.1`'s `src` field on Linux, `scripts/linux/lib/lan-address.sh`, which under WSL2 forwards Windows' own LAN address on the gated port instead, unless `DECURIX_WSL_LAN_FORWARD=0`; a UDP connect to a public IP on macOS and Windows, the same trick — no packet is sent) and `POST /api/tunnel` `lan_url` (the gated port) built from it — stored on the same `tunnel.Store` as the gated tunnel's `lan_tunnel_url` and shown together in the Mobile menu (tunnel link first since it works off-network), so a phone on the same network can skip the tunnel round-trip entirely. They no longer report `admin_url` (the primary listener is not reachable from the LAN) or `url` (nothing tunnels it); `tunnelHandler` and the store still accept both, only so an older script's report does not error, and the Mobile menu shows them under a clearly-labelled unauthenticated heading if one arrives. `httpapi.tunnelHandler`'s POST only ever sets the fields present in that call's body, since the LAN report (once, right after startup) and each tunnel-URL report (once per line the `cloudflared` process prints) are separate calls that must never blank out each other's fields.
 
-Go package dependency direction (no cycles): `httpapi` → `llm`, `outbox`, `desktop`, `querynotes`, `memory`, `conversation`, `stepimages`, `tasks`, `tunnel`, `claudeauth`, `lanaccess`, `schedule`, `mailtrigger`, `keepawake`, `suggest`, `webui`, `winhost`; `webui` → `desktop`, `querynotes`, `memory`, `tasks`, `web`; `desktop` → `ollama` (only for `ollama.DesktopURL`/`DesktopModel`, the Ollama a new desktop is given), `winhost` (only `winhost.Token`, to sign a launcher's token), `decurix` (the root package, for the embedded build context); `idlepause` → `desktop` (only for the `desktop.Desktop` struct and the `DesktopLister` interface `*desktop.Manager` satisfies) via a narrow interface, so it can be tested with a fake instead of a real Docker client; `schedule` has no internal dependency of its own - its `Runner` reaches `httpapi` only through the `Submitter` interface `*httpapi.Server` satisfies (`Submit`), the same narrowing `idlepause` uses for `desktop`; `suggest` → `memory`, `ollama` (only for `ollama.Embed`), `desktop` (only for the `desktop.Desktop` struct and its own `DesktopLister`, the same narrowing `idlepause` uses), `tasks` (only for its own `ActivityStore`, narrowing `tasks.Store.LastActivity`), `sqlitedb`; `querynotes`, `memory`, `conversation`, `stepimages`, `tasks`, `claudeauth`, `schedule`, `suggest`, `devices`, `outbox` → `sqlitedb` only; `mailtrigger`, `cftunnel`, `llm` → `sqlitedb`, `sealed`; `phonehost` → `wsconn`; `phoneagent` → `wsconn`, `phonehost`; `httpapi` → `skillhub`, `knowledge`, `handoff`, `access`, `workqueue` (the workforce: docs/skillhub.md, docs/handoff.md, docs/access.md, docs/workqueue.md); `httpapi` → `practice` (Simulate: docs/simulation.md; `practice` → `qualification`, `llm`, and the desktop manager through interfaces); `skillhub`, `knowledge`, `access`, `workqueue` → `sqlitedb` only (`workqueue` reads the tasks component's `executions` table for spend); `handoff` → `sqlitedb`, `tasks` (status constants only) - each reaches desktops, task submission and worker lookup only through interfaces `httpapi` backs (`internal/httpapi/handoffs.go`); `ollama`, `sqlitedb`, `sealed`, `wsconn`, `tunnel`, `lanaccess`, `winhost`, `keepawake`, `web`, `decurix` depend on nothing internal. Note that `desktop` does *not* depend on `claudeauth`: `httpapi.createDesktopHandler` reads the stored session and hands `BeginProvisioning` its raw credentials JSON as a plain string, and `claudelogin.go`'s login flow hands the same shape back to `httpapi` to save — `desktop` only ever sees bytes, never the store.
+Go package dependency direction (no cycles; checked against the imports on 2026-11-07): `httpapi` → nearly every internal package (the stores, `desktop`, `ollama`, `llm`, `llmrec`, `runs`, `practice`, `eval`, `concierge`, `dag`, `idlepause`, `resourcemon`, `keepawake`, `lanaccess`, `devices`, `tunnel`, `cftunnel`, `phonehost`, `wsconn`, `winhost`, `withhold`, `webui`, and the workforce packages `skillhub`, `knowledge`, `handoff`, `access`, `workqueue`: docs/skillhub.md, docs/handoff.md, docs/access.md, docs/workqueue.md); `webui` → `dag`, `desktop`, `memory`, `querynotes`, `tasks`, `web`; `desktop` → `ollama` (`DesktopURL`/`DesktopModel`, the model a new desktop is given), `winhost` (`Token`, `ExecToken`, `OpenToken`, `Target`, `Manager`), `sqlitedb` (`DataDir`, `InstanceID`), `withhold` (the screen passwords it holds), `qualification` (readiness case files), `decurix` (the root package, for the embedded build context); `idlepause` → `desktop` (the `desktop.Desktop` struct and the `DesktopLister` interface `*desktop.Manager` satisfies, so it can be tested with a fake instead of a real Docker client), `tasks` (`gone.go`: `Worker`, `CloseOpen`); `resourcemon` → `desktop` (through its own `DesktopManager` interface); `schedule` → `sqlitedb`, `tasks` (the `Origin` constants only) - its `Runner` reaches `httpapi` only through the `Submitter` interface `*httpapi.Server` satisfies (`Submit`), the same narrowing `idlepause` uses for `desktop`; `suggest` → `desktop` (the `desktop.Desktop` struct), `memory`, `sqlitedb`, with the embedder (`ollama.Embed`) and the tasks store handed in by `main` through interfaces; `stepimages`, `devices`, `outbox`, `skillhub`, `knowledge`, `access` → `sqlitedb` only; `querynotes`, `memory`, `conversation`, `tasks` → `sqlitedb`, `withhold`; `workqueue`, `handoff` → `sqlitedb`, `tasks` (`workqueue` reads the tasks component's `executions` table for spend; `handoff` uses status constants only) - each reaches desktops, task submission and worker lookup only through interfaces `httpapi` backs (`internal/httpapi/handoffs.go`); `mailtrigger` → `sqlitedb`, `sealed`, `schedule`, `tasks`; `cftunnel`, `llm` → `sqlitedb`, `sealed`; `purge` → the stores it rewrites and `sqlitedb`; `codemap` → nothing internal; `practice` → `desktop`, `llm`, `llmrec`, `qualification`, `sqlitedb`, `tasks`, `withhold` (Simulate: docs/simulation.md); `phonehost` → `wsconn`; `phoneagent` → `wsconn`, `phonehost`; `ollama`, `sqlitedb`, `sealed`, `blobstore`, `wsconn`, `tunnel`, `lanaccess`, `winhost`, `keepawake`, `web`, `decurix` depend on nothing internal. `BeginProvisioning` takes no harness: every new desktop runs TheBot (`HarnessTheBot`).
 
 One desktop image is built, `docker/desktop.basic.Dockerfile` (`decurix-desktop:basic`), plus the shared tools image `docker/tools.Dockerfile` (`internal/desktop/images.go`). `BuildImages` also tags the basic image as `decurix-desktop:developer` and `decurix-desktop:ai`, so a desktop created with one of those older profile names still starts on the same image. The separate developer and ai Dockerfiles were never built and have been removed.
+
+## The app (`desktop/electron`)
+
+The Windows, Mac and Linux app is an Electron shell around the same stack: the control plane in Docker (`stack/Dockerfile`, the runtime stage of `docker/Dockerfile` with the binary built by `scripts/*/build_app.*`) and the dashboard at `http://127.0.0.1:8080` in its window.
+- `main.js`: start-up (`start`, `startStack`, `waitForDashboard`, `watchBackend`), the keep-awake hold, the LAN address report and the public link. On Windows it also picks the runtime (`selectWindowsRuntime`: the app's own WSL distro "Decurix", or, when the person agrees, an existing distro's Docker Engine), installs WSL when Windows lacks it, imports the distro and prepares it (`wsl/setup.sh`, `wsl/dockerd.sh`).
+- The stack's environment on Windows: `main.js` runs compose with `DECURIX_HOST_KIND=wsl` and `DECURIX_LAN_BIND=127.0.0.1`; `windows-runtime.js` writes the model settings for the native model server (`OLLAMA_URL`, `DECURIX_WINDOWS_OLLAMA_URL`, `DECURIX_WINDOWS_SELECTOR_URL`). `windows-runtime.json` in the data folder records what a shared engine already held (`preexisting`).
+- `local-models.js` and `wsl/native-ollama.ps1`: the model server on Windows itself, outside WSL's memory limit (port 11435), with `decurix-model-selector.exe` beside it.
+- `gated-port.js`: the one check before any LAN forward or tunnel (never 8080, and the port must serve the access-code page). `windows-lan.js`: the Windows LAN link (netsh portproxy to 127.0.0.1 and a Private-profile firewall rule). `mobile-access.js`: the public link's tunnel (cloudflared by default; `DECURIX_TUNNEL_PROVIDER=localhost-run` or `auto` uses or falls back to localhost.run over ssh) and its health probe.
+- `preload.js`: the start screen's status and the dashboard's Electron-only "Public link" switch (`public-link.json`).
+- `build-watchdog.js`: a build that prints nothing for a while is cancelled and tried once more.
+- `wsl/`: `setup.sh`, `dockerd.sh` (the daemon and the fence between desktop networks), `reset.sh`, `apk-safe.sh`, and for a shared engine `stage-existing.sh`, `maintain-existing.sh`, `cleanup-existing.ps1`.
+
+Tests: `npm test` in `desktop/electron` (`node --test`, the files named in `package.json`).
 
 ## The shared folder: one folder of the person's computer, opt-in
 
@@ -568,6 +665,8 @@ Docker's `CopyFromContainer`/`CopyToContainer` run as root and resolve parent fo
 **Volumes.** A desktop mounts its home (`desktop_<id>_home`), its own package cache (`desktop_<id>_cache` at `/var/cache/decurix`, where `PIP_CACHE_DIR`, `NPM_CONFIG_CACHE`, `GOMODCACHE` and `HF_HOME` live), the tools (`decurix-tools`, read-only) and the shared model cache (`decurix-models`, read-only, at `/var/cache/decurix-models`, named in `DECURIX_SHARED_MODELS`). No writable volume is shared between desktops (B-02, owner decision O-2). Home and cache volumes carry `decurix=true`, `decurix.desktop=<id>` and `decurix.creation=<id of the creation>`. A creation refuses a home volume another creation made, and reuses only an unlabelled one (made before 2026-11-03). A creation that fails removes only what it made.
 
 **The image.** Desktops run with `no-new-privileges`, and the image strips every setuid and setgid bit, so nothing in the desktop can gain privileges (Chromium uses its namespace sandbox, not the setuid helper). The seccomp profile allows ptrace (upstream's default on kernels 4.8 and later). Xvnc is told `-nolisten tcp` through TigerVNC's mandatory config (`/etc/tigervnc/vncserver-config-mandatory`), so nothing on the Docker network can reach X. The agent terminal no longer runs `xhost +`: X access control stays on, with only the worker's local user allowed. KSM is off unless `DECURIX_ENABLE_KSM=1`, because it shares memory pages across desktops that do not trust each other. All of this is fixed at creation: **recreate desktops** after rebuilding the image. Check a running one with `DECURIX_X11_LIVE_DESKTOP=desktop_<id> go test ./internal/desktop -run XServerHasNoTCPLive -v`.
+
+**What a desktop does not run (2026-11-07, docs/lightweight.md).** No websockify: the control plane bridges the screen's WebSocket to Xvnc on 5901 itself (`internal/httpapi/screenbridge.go`), so `agent/decurix-entrypoint.sh` hands the base image's `startup.sh` `--skip-novnc` (VNC and the startup's wait on it are unchanged; about 22 MB a desktop). A desktop created with `DECURIX_DESKTOP_NOVNC=1` in its environment starts websockify on 6901 as before (the `scripts/*/test-vm` desktops, reached on 6901 directly, set it), and only such a desktop serves noVNC's own `/desktop/<id>/vnc.html`. `DECURIX_VNC_BRIDGE=0` on the control plane still proxies the stream to a desktop's websockify when one answers, and bridges it anyway, saying so in the log, when none does. Creation waits for Xvnc (5901), not 6901 (`Manager.WaitForGUIReady`). Session services a worker's desktop has no use for are switched off by a `Hidden=true` entry of the same name in `~/.config/autostart` (`agent/decurix-autostart-off.desktop`, harmless where the package is absent): xfce4-notifyd (D-Bus starts it on the first notification), xfce4-power-manager, light-locker, xscreensaver, xfce4-screensaver (a lock screen on a desktop whose user has no password locks everyone out) and update-notifier. at-spi (what `gui` reads), the clipboard manager, gnome-keyring (Chrome's cookie key), xdg-user-dirs, Thunar's daemon and tumbler stay. Chrome's Memory Saver is on by policy at its moderate level (`HighEfficiencyModeEnabled`, `MemorySaverModeSavings: 0` in `agent/chrome-policies.json`): a background tab left long enough is discarded and reloads when opened; the tab on screen never is. All of it is image state: new or recreated desktops only.
 
 **Lifecycle.** `Manager.LockDesktop(id)` is the per-desktop lifecycle lock; the idle sweep re-checks Busy under it. `DECURIX_IDLE_ACTION` other than exactly `stop` pauses. Docker's one-shot stats carry no previous CPU sample, so a CPU % needs the previous reading.
 

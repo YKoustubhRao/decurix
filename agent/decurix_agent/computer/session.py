@@ -2,6 +2,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from decurix_agent.computer.errors import ComputerError
+
 
 # ============================================================
 # The desktop's graphical session
@@ -91,6 +93,53 @@ def app_env():
     return env
 
 
+# Broker mode (broker.py): the only program the screen side starts as itself. The desktop's launcher, which every way
+# of starting the browser goes through (agent/chromium-browser).
+BROWSER_COMMANDS = {"chromium-browser", "google-chrome", "google-chrome-stable", "chromium", "chrome"}
+
+# What the screen side lets a browser start take besides its pages: nothing that names a program, a folder, an
+# extension or a port (--renderer-cmd-prefix, --user-data-dir, --load-extension, --remote-debugging-port would each be
+# the screen user's power handed to whoever wrote the command).
+BROWSER_FLAGS = {"--no-startup-window", "--new-window"}
+BROWSER_SCHEMES = ("http://", "https://", "file://", "about:")
+
+
+class RefusedLaunch(ComputerError, ValueError):
+    """A program the screen side will not start as asked (broker mode): said to the engine as a gui error, and a
+    ValueError to the launchers that catch one."""
+
+
+def browser_command(argv):
+    """Whether `argv` starts the desktop's browser."""
+
+    return bool(argv) and os.path.basename(str(argv[0])) in BROWSER_COMMANDS
+
+
+def browser_arguments(args):
+    """The browser's arguments when the screen side may start it with them; RefusedLaunch otherwise."""
+
+    for arg in args:
+        arg = str(arg)
+        if arg in BROWSER_FLAGS:
+            continue
+        page = arg[len("--app="):] if arg.startswith("--app=") else arg
+        if not page.lower().startswith(BROWSER_SCHEMES) or any(c in page for c in "\0\n\r"):
+            raise RefusedLaunch(f"the browser is started with pages only, not {arg!r}")
+    return [str(a) for a in args]
+
+
+class Started:
+    """A program the worker's launch helper started (broker mode): not this process's child, so there is nothing to
+    wait for here - only its pid."""
+
+    def __init__(self, pid):
+        self.pid = pid
+        self.returncode = None
+
+    def poll(self):
+        return None
+
+
 def launch(argv):
     """
     Start a GUI program detached from the caller.
@@ -98,7 +147,33 @@ def launch(argv):
     Detached for the same reason the agent itself is (start_agent_terminal.sh):
     a program started inside a shell command whose output is being captured
     holds that pipe open, and the command then never returns.
+
+    In broker mode, on the screen side, only the browser is started here (with its DevTools relay, cdp_relay.py, and
+    pages for arguments); every other program is started as the worker by its launch helper (launch_helper.py), which
+    is given the program and its arguments and nothing of this side's environment. A program the screen user started
+    would be the screen user's: a terminal opened that way is typing that no gate sees.
     """
+
+    from decurix_agent.computer import broker
+
+    if broker.screen_side():
+        if browser_command(argv):
+            import sys
+            # Never the worker's accessibility bus (atspi._broker_bus): the browser's own widgets on it would be the
+            # worker's to press.
+            env = {k: v for k, v in app_env().items() if k != "AT_SPI_BUS_ADDRESS"}
+            return subprocess.Popen(
+                [sys.executable, "-m", "decurix_agent.computer.cdp_relay", "--", str(argv[0])]
+                + browser_arguments(argv[1:]),
+                env=env,
+                cwd=str(Path.home()),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        from decurix_agent.computer import launch_helper
+        return Started(launch_helper.request(argv))
 
     return subprocess.Popen(
         argv,

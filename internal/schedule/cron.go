@@ -8,10 +8,12 @@ import (
 )
 
 // Expr is a parsed standard 5-field cron expression: minute hour
-// day-of-month month day-of-week. Matching runs in UTC, so a schedule fires
-// at the same wall-clock instant regardless of the host's own timezone.
+// day-of-month month day-of-week. It is matched against the wall clock of
+// the zone NextIn is given (Next is UTC), never the host's own zone, so a
+// schedule fires at the same instant wherever the control plane runs.
 type Expr struct {
 	minute, hour, dom, month, dow map[int]bool
+	minuteAny, hourAny            bool
 	domAny, dowAny                bool
 }
 
@@ -27,12 +29,12 @@ func Parse(spec string) (Expr, error) {
 		return Expr{}, fmt.Errorf("cron expression needs 5 fields (minute hour day month weekday), got %d", len(fields))
 	}
 
-	minute, _, err := parseField(fields[0], 0, 59)
+	minute, minuteAny, err := parseField(fields[0], 0, 59)
 	if err != nil {
 		return Expr{}, fmt.Errorf("minute field: %w", err)
 	}
 
-	hour, _, err := parseField(fields[1], 0, 23)
+	hour, hourAny, err := parseField(fields[1], 0, 23)
 	if err != nil {
 		return Expr{}, fmt.Errorf("hour field: %w", err)
 	}
@@ -58,13 +60,15 @@ func Parse(spec string) (Expr, error) {
 	}
 
 	return Expr{
-		minute: minute,
-		hour:   hour,
-		dom:    dom,
-		month:  month,
-		dow:    dow,
-		domAny: domAny,
-		dowAny: dowAny,
+		minute:    minute,
+		hour:      hour,
+		dom:       dom,
+		month:     month,
+		dow:       dow,
+		minuteAny: minuteAny,
+		hourAny:   hourAny,
+		domAny:    domAny,
+		dowAny:    dowAny,
 	}, nil
 }
 
@@ -139,23 +143,97 @@ func parseField(spec string, min, max int) (map[int]bool, bool, error) {
 const maxSearch = 4 * 366 * 24 * 60
 
 // Next returns, in UTC, the first minute strictly after after that e
-// matches. ok is false only when nothing within maxSearch minutes matches.
+// matches on the UTC clock. ok is false only when nothing within maxSearch
+// minutes matches.
 func (e Expr) Next(after time.Time) (t time.Time, ok bool) {
-	t = after.UTC().Truncate(time.Minute).Add(time.Minute)
+	return e.NextIn(after, time.UTC)
+}
+
+// NextIn returns, in loc, the first minute strictly after after that e
+// matches on loc's wall clock. ok is false only when nothing within
+// maxSearch minutes matches.
+//
+// A daylight-saving change is read the way vixie cron reads it. A job at a
+// fixed time (neither its minute nor its hour starts with "*") whose time
+// falls in the hour skipped when clocks go forward fires at the first minute
+// after the jump, so a daily 02:30 still runs that day; and when clocks go
+// back it fires only at the first of the two moments that read the same,
+// not twice. A wildcard job (every 15 minutes, every hour) runs by the
+// clock as it is: no run for minutes that never happen, a run for each
+// minute that happens twice.
+func (e Expr) NextIn(after time.Time, loc *time.Location) (t time.Time, ok bool) {
+	if loc == nil {
+		loc = time.UTC
+	}
+
+	fixed := !e.minuteAny && !e.hourAny
+
+	t = after.Truncate(time.Minute).Add(time.Minute)
+	_, prevOffset := t.Add(-time.Minute).In(loc).Zone()
 
 	for i := 0; i < maxSearch; i++ {
-		if e.matches(t) {
-			return t, true
+		local := t.In(loc)
+		_, offset := local.Zone()
+
+		switch {
+		case e.matches(local):
+			if !fixed || !repeatedWallTime(t, local, loc) {
+				return local, true
+			}
+		case fixed && offset > prevOffset && e.matchesSkipped(local, offset-prevOffset):
+			return local, true
 		}
 
+		prevOffset = offset
 		t = t.Add(time.Minute)
 	}
 
 	return time.Time{}, false
 }
 
+// maxOffsetShift bounds how far back repeatedWallTime looks for clocks
+// having gone back: every daylight-saving change in the tz database is two
+// hours or less.
+const maxOffsetShift = 3 * time.Hour
+
+// repeatedWallTime reports whether the wall-clock minute local (the instant
+// t in loc) already happened earlier, because clocks went back within the
+// last few hours.
+func repeatedWallTime(t, local time.Time, loc *time.Location) bool {
+	_, offset := local.Zone()
+	_, before := t.Add(-maxOffsetShift).In(loc).Zone()
+
+	if before <= offset {
+		return false
+	}
+
+	earlier := t.Add(-time.Duration(before-offset) * time.Second).In(loc)
+
+	return sameWallMinute(earlier, local)
+}
+
+// matchesSkipped reports whether any wall-clock minute skipped just before
+// local, because clocks went forward by jump seconds at local, matches e.
+func (e Expr) matchesSkipped(local time.Time, jump int) bool {
+	wall := time.Date(local.Year(), local.Month(), local.Day(), local.Hour(), local.Minute(), 0, 0, time.UTC)
+
+	for m := 1; m <= jump/60; m++ {
+		if e.matches(wall.Add(-time.Duration(m) * time.Minute)) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// sameWallMinute reports whether a and b read the same on their own clocks,
+// to the minute.
+func sameWallMinute(a, b time.Time) bool {
+	return a.Year() == b.Year() && a.YearDay() == b.YearDay() && a.Hour() == b.Hour() && a.Minute() == b.Minute()
+}
+
 // matches reports whether t (already truncated to the minute) falls on this
-// expression. Standard cron semantics: when both day-of-month and day-of-week
+// expression, read on t's own clock. Standard cron semantics: when both day-of-month and day-of-week
 // are restricted (neither is "*"), a match needs only one of the two.
 func (e Expr) matches(t time.Time) bool {
 	if !e.minute[t.Minute()] || !e.hour[t.Hour()] || !e.month[int(t.Month())] {

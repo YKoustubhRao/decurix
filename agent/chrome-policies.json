@@ -16,5 +16,7 @@
   "InsecureContentAllowedForUrls": [
     "http://*"
   ],
-  "GenAILocalFoundationalModelSettings": 1
+  "GenAILocalFoundationalModelSettings": 1,
+  "HighEfficiencyModeEnabled": true,
+  "MemorySaverModeSavings": 0
 }

@@ -3,6 +3,8 @@ package httpapi
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strings"
 	"sync"
@@ -18,9 +20,17 @@ func (s *Server) faviconHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(webui.FaviconSVG)
 }
 
-// noVNCPath is where the screen viewer's RFB client is served. The version is
-// in the path, so the file can be cached for good: a new noVNC is a new path.
-const noVNCPath = "/static/novnc/rfb-1.6.0.js"
+// noVNCPath is where the screen viewer's RFB client is served. The version and
+// a hash of the file's own bytes are in the path, so the file can be cached for
+// good: a changed file is a new path even if the version was not bumped
+// (follow-up W-20: a version-only path kept a stale copy in every browser).
+var noVNCPath = "/static/novnc/rfb-1.6.0-" + contentTag(webui.NoVNC) + ".js"
+
+// contentTag is the first 12 hex digits of data's SHA-256.
+func contentTag(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:6])
+}
 
 var (
 	noVNCGzipOnce sync.Once

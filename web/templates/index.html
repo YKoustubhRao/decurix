@@ -108,8 +108,9 @@
   transition:width .4s ease;
 }
 
-.dcard-paused-overlay[hidden]{display:none}
-.dcard-paused-overlay{
+.dcard-paused-overlay[hidden],.dcard-rest-overlay[hidden]{display:none}
+/* A desktop the control plane stopped to save memory says so (rest_reason, from the overview poll). */
+.dcard-paused-overlay,.dcard-rest-overlay{
   position:absolute;
   bottom:8px;
   right:8px;
@@ -157,7 +158,7 @@
 .dcard-tags{display:flex;flex-wrap:wrap;gap:5px}
 
 /* ---------- what the desktop is doing right now ----------
-   Filled from /api/desktops/activity (pollActivity below): the request its
+   Filled from /api/desktops/overview (pollOverview below): the request its
    running turn was opened for and the latest step its chat shows. */
 .dcard-activity{
   display:flex;
@@ -601,6 +602,7 @@
 .rec-name:focus{outline:none;border-color:var(--accent);background:var(--surface)}
 .rec-meta{font-size:11.5px;color:var(--text-3)}
 .rec-actions{display:flex;flex-wrap:wrap;gap:6px}
+.rec-all{display:inline-block;margin:8px 2px 2px;font-size:12px;color:var(--accent)}
 
 .dcard-actions{
   display:flex;
@@ -956,6 +958,9 @@
             {{if .Crash}}Desktop crashed: {{.Crash}}. Start it again to carry on.{{else}}Desktop is {{.Status}}{{end}}
           </div>
         {{end}}
+        <div class="dcard-rest-overlay" data-rest-note hidden>
+          <span class="dcard-paused-badge"><span class="dot"></span> Resting to save memory — starts when given work</span>
+        </div>
       </div>
 
       <div class="dcard-resource-alert" data-resource-alert="{{.ID}}" style="display:none;">
@@ -980,7 +985,7 @@
             </span>
 
             <span class="chip">
-              {{if eq .Harness "claude"}}Claude Code{{else if eq .Harness "azure"}}Office (GPT){{else if eq .Harness "thebot"}}TheBot · {{if eq .Brain "claude"}}Claude{{else if eq .Brain "azure"}}Azure{{else if eq .Brain "openai"}}OpenAI{{else}}Ollama{{end}}{{else}}Ollama{{end}}
+              TheBot · {{if eq .Brain "claude"}}Claude{{else if eq .Brain "azure"}}Azure{{else if eq .Brain "openai"}}OpenAI{{else}}Ollama{{end}}
             </span>
           </div>
         </div>
@@ -1062,7 +1067,7 @@
       </div>
 
       {{/* What the desktop is doing right now - a task an agent is working,
-           or a ticket a person is recording - filled in by pollActivity from
+           or a ticket a person is recording - filled in by pollOverview from
            the same transcript the chat shows. A link to that chat. */}}
       <a class="dcard-activity" data-activity="{{.ID}}" href="/view/{{.ID}}" hidden>
         <span class="act-dot"></span>
@@ -1076,7 +1081,7 @@
         </span>
       </a>
 
-      {{/* Kept current by pollMemory below: what an agent learns (a taught
+      {{/* Kept current by pollOverview below: what an agent learns (a taught
            skill, a lesson from a reply) arrives while the page is open. */}}
       <details class="mem" data-mem-list="{{.ID}}" data-mem-sig="{{range index $.MemoryByDesktop .ID}}{{.ID}},{{end}}"{{if index $.MemoryByDesktop .ID}} open{{end}}>
         <summary class="mem-summary">
@@ -1161,9 +1166,11 @@
 
       {{if eq .Status "running"}}
       {{/* What a person recorded on this desktop, oldest first, each with
-           Replay / Learn / Download. Filled in when the list is opened
-           (initRecordings below) - the recordings live on the desktop, so
-           rendering the page never has to wait on each one. */}}
+           Replay / Learn / Download / Steps / Delete, and a link to the full
+           Recordings page (every recording, its steps, Import, Record).
+           Filled in when the list is opened and kept current while it is
+           open (loadRecordings below) - the recordings live on the desktop,
+           so rendering the page never has to wait on each one. */}}
       <details class="mem rec" data-rec-list data-id="{{.ID}}">
         <summary class="mem-summary">
           <svg class="mem-chevron" width="15" height="15"><use href="#i-chevron"/></svg>
@@ -1173,11 +1180,12 @@
         <div class="mem-body" data-rec-body>
           <div class="mem-none">Loading…</div>
         </div>
+        <a class="rec-all" href="/recordings/{{.ID}}">All recordings, steps and import →</a>
       </details>
       {{end}}
 
       {{/* Every task this desktop was given, newest first, and the full trace of
-           the one picked (/tasks/<id>/trace). Kept current by pollTaskPicks
+           the one picked (/tasks/<id>/trace). Kept current by pollOverview
            below, like the rest of the card: a new task appears here without a
            reload. The worker's history outlives its container (the task
            store keeps it), so a stopped desktop lists its tasks too. */}}
@@ -1199,16 +1207,13 @@
           Chat
         </a>
         {{if not $.Gated}}<a class="btn btn-default btn-sm" href="/readiness/{{.ID}}#simulate" title="Practise what this worker was taught, to earn running it unattended">Simulate</a>{{end}}
-        {{/* resize=remote&ui=touch is what asks the desktop's Xvnc to fit the
-             viewport and splices the touch keyboard/pinch-zoom into noVNC (see
-             httpapi.injectMobileEnhancements). This button is the only place
-             that full-size screen is opened from, so the marker lives here -
-             deliberately not on the dcard-preview iframe above, which is a
-             small non-interactive thumbnail. */}}
-        {{/* Recordings (record a demonstration, replay, export) live inside the
-             desktop screen itself now - the ticket toolbar injectTicketToolbar
-             splices into every open screen - rather than as a second entry
-             point on the card; see proxy.go's ticketToolbar. */}}
+        {{/* The screen opens as the control plane's own page (/desktop/<id>/,
+             screen.html): resize=remote fits the desktop to the window; it has
+             its own touch keyboard and ignores ui=touch, which only noVNC's own
+             vnc.html reads (proxy.go, mobileViewerEnhancements). Recording a
+             demonstration lives on that screen (its ticket toolbar, proxy.go's
+             ticketToolbar) and on the Recordings page, which the card's
+             Recordings drawer links to. */}}
         <button class="btn btn-default btn-sm action-icon" data-open="{{.URL}}?autoconnect=true&resize=remote&ui=touch" title="Open the screen in a new tab" aria-label="Open the desktop screen in a new tab">
           <svg width="14" height="14"><use href="#i-external"/></svg>
         </button>
@@ -1281,7 +1286,7 @@
   <div class="rail-head">
     <svg width="15" height="15" style="color:var(--accent)"><use href="#i-inbox"/></svg>
     <span class="eyebrow">Needs you · <span id="railCount">0</span></span>
-    <a href="/dashboard">Reply →</a>
+    <a href="/dashboard">All queries →</a>
   </div>
   <div class="rail-list" id="railList"></div>
 </aside>
@@ -2287,7 +2292,7 @@
     toast("Desktop '" + sanitizedID + "' accepted. Spinning up in background…", "info");
 
     try{
-      await post("/api/desktops/create", {
+      await postCreate({
         name: sanitizedID,
         profile: profile,
         brain: brain,
@@ -2318,8 +2323,57 @@
           if(empty){ empty.style.display = ""; }
         }
       }
+      if(e.leftoverHome){
+        offerLeftoverHome(sanitizedID, e.message);
+        return;
+      }
       toast(e.message, "error");
     }
+  }
+
+  /* POST /api/desktops/create, keeping what a refusal says beyond its words:
+     a 409 with leftover_home is a home folder an earlier desktop of this name
+     left (httpapi/leftoverhome.go), which the form can offer to delete. */
+  async function postCreate(fields){
+    var response = await fetch("/api/desktops/create", {
+      method: "POST",
+      headers: {"Content-Type": "application/x-www-form-urlencoded"},
+      body: new URLSearchParams(fields)
+    });
+    var data = await response.json().catch(function(){ return {}; });
+    if(!response.ok){
+      var error = new Error(data.error || "Request failed");
+      error.leftoverHome = response.status === 409 && data.leftover_home === true;
+      throw error;
+    }
+    return data;
+  }
+
+  /* An earlier desktop of this name left its home folder: offer to delete it
+     (its files are lost for good, so the confirm says so) and, on a yes,
+     create the desktop again from the same form. */
+  async function offerLeftoverHome(id, why){
+    var confirmed = await askConfirm(
+      "Delete the old volume and try again?",
+      why + " Deleting it loses everything in it for good: the earlier desktop's files, what it learned and its sign-ins. This cannot be undone.",
+      "Delete the old volume and try again",
+      true
+    );
+    if(!confirmed){
+      toast("Nothing was deleted. Choose another name to create the desktop.", "info");
+      return;
+    }
+    busy(true);
+    try{
+      await post("/api/desktops/home-volume/delete", {name: id});
+    }catch(e){
+      busy(false);
+      toast(e.message, "error");
+      return;
+    }
+    busy(false);
+    toast("The old home folder of " + id + " was deleted.");
+    await performCreate();
   }
 
   createForm.addEventListener("submit", async function(event){
@@ -2354,6 +2408,33 @@
     delete:  {url: "/api/desktops/delete",  pending: "Deleting…"}
   };
 
+  /* A desktop's delete, after the person's yes. While runs of it are not in
+     the run record yet the control plane refuses it (409 with held, its
+     reason saying how many); the person is shown that reason and may delete
+     anyway, which is sent with force and recorded as their choice. Returns
+     whether it was deleted. */
+  async function deleteDesktop(id){
+    var fields = {id: id};
+    for(;;){
+      var response = await fetch(ACTIONS["delete"].url, {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: new URLSearchParams(fields)
+      });
+      var data = await response.json().catch(function(){ return {}; });
+      if(response.ok){ return true; }
+      if(response.status === 409 && data.held && !fields.force){
+        if(!(await askConfirm("Delete anyway?",
+          (data.error || "Runs of this desktop are not saved to the run record yet.") +
+            " Deleting anyway loses their steps and screenshots for good.",
+          "Delete anyway", true))){ return false; }
+        fields.force = "1";
+        continue;
+      }
+      throw new Error(data.error || "Request failed");
+    }
+  }
+
   document.addEventListener("click", async function(event){
     var button = event.target.closest("[data-act]");
     if(!button){ return; }
@@ -2380,7 +2461,17 @@
     busy(true);
 
     try{
-      await post(action.url, {id: button.dataset.id});
+      if(button.dataset.act === "delete"){
+        if(!(await deleteDesktop(button.dataset.id))){
+          busy(false);
+          if(card){
+            card.querySelectorAll("button").forEach(function(b){ b.disabled = false; });
+          }
+          return;
+        }
+      }else{
+        await post(action.url, {id: button.dataset.id});
+      }
       location.reload();
     }catch(e){
       busy(false);
@@ -2402,9 +2493,36 @@
 
   /* ---------------- recordings dropdown ----------------
    Each running card lists the demonstrations recorded on that desktop, oldest
-   first, with Replay / Learn / Download. Read from the desktop when the list
-   is opened, so what is shown is what is there now. Built from text nodes
+   first, with Replay / Learn / Download / Steps / Delete, and links to the
+   full Recordings page. Read from the desktop when the list is opened and
+   every few seconds while it stays open, so what is shown is what is there
+   now; nothing is redrawn while the person is in it. Built from text nodes
    only: a title is whatever a person typed. */
+
+  /* A person's Delete of a recording, asked first. A run's recording the run
+     record has not taken yet (the desktop answers 409 with held) is asked
+     about again in those words, and sent with force only on a yes. Returns
+     whether it was deleted. */
+  async function deleteRecording(desktopID, session){
+    var fields = {id: desktopID, session: session};
+    for(;;){
+      var response = await fetch("/api/desktops/recordings/delete", {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: new URLSearchParams(fields)
+      });
+      var data = await response.json().catch(function(){ return {}; });
+      if(response.ok){ return true; }
+      if(response.status === 409 && data.held && !fields.force){
+        if(!(await askConfirm("Delete anyway?",
+          "This run is not saved to the run record yet; delete it anyway? Its steps and screenshots are lost for good.",
+          "Delete anyway", true))){ return false; }
+        fields.force = "1";
+        continue;
+      }
+      throw new Error(data.error || "Request failed");
+    }
+  }
   function recWhen(seconds){
     if(!seconds){ return ""; }
     return new Date(seconds * 1000).toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
@@ -2465,6 +2583,27 @@
       var learn = recButton("Learn", "btn-default");
       var download = node("a", "btn btn-sm btn-default", "Download");
       download.href = "/api/desktops/recordings/export?" + new URLSearchParams({id: desktopID, session: r.id});
+      var steps = node("a", "btn btn-sm btn-quiet", "Steps");
+      steps.href = "/recordings/" + encodeURIComponent(desktopID) + "?" + new URLSearchParams({session: r.id});
+      steps.title = "Open it on the Recordings page: its steps, readiness, Replay with values, Teach";
+      var remove = recButton("Delete", "btn-danger");
+      remove.title = "Delete this recording and its screenshots from the desktop";
+      remove.addEventListener("click", async function(){
+        if(!(await askConfirm("Delete " + (name.value.trim() || "this recording") + "?",
+          "The recording and all its screenshots are removed from the desktop. This cannot be undone.",
+          "Delete recording", true))){ return; }
+        actions.querySelectorAll("button").forEach(function(b){ b.disabled = true; });
+        try{
+          if(await deleteRecording(desktopID, r.id)){
+            toast("Deleted.");
+            loadRecordings(details);
+            return;
+          }
+        }catch(e){
+          toast(e.message, "error");
+        }
+        actions.querySelectorAll("button").forEach(function(b){ b.disabled = false; });
+      });
 
       function start(button, url, started, fields){
         button.addEventListener("click", async function(){
@@ -2485,7 +2624,7 @@
         function(){ return {name: name.value.trim()}; });
       learn.title = "Teach a skill from this recording, named as above";
 
-      actions.append(replay, learn, download);
+      actions.append(replay, learn, download, steps, remove);
       item.appendChild(actions);
       list.appendChild(item);
     });
@@ -2493,16 +2632,30 @@
     body.appendChild(list);
   }
 
-  async function loadRecordings(details){
+  /* What the drawer last drew, per desktop: a poll that reads the same list
+     changes nothing on screen. */
+  var recShown = {};
+
+  async function loadRecordings(details, polling){
     var desktopID = details.dataset.id;
     var body = details.querySelector("[data-rec-body]");
+    if(details.dataset.recLoading){ return; }
+    details.dataset.recLoading = "1";
 
     try{
       var data = await Decurix.getJSON("/api/desktops/recordings?" + new URLSearchParams({id: desktopID}));
-      renderRecordings(details, desktopID, data.recordings || []);
+      var recordings = data.recordings || [];
+      var signature = JSON.stringify(recordings.map(function(r){ return [r.id, r.title, r.status, r.event_count]; }));
+      // A poll never redraws under the person's hand: a name being typed, a button they are on.
+      if(polling && (signature === recShown[desktopID] || details.contains(document.activeElement))){ return; }
+      recShown[desktopID] = signature;
+      renderRecordings(details, desktopID, recordings);
     }catch(e){
+      if(polling){ return; }
       body.textContent = "";
       body.appendChild(node("div", "mem-none", "Couldn't read this desktop's recordings: " + e.message));
+    }finally{
+      delete details.dataset.recLoading;
     }
   }
 
@@ -2511,6 +2664,13 @@
       if(details.open){ loadRecordings(details); }
     });
   });
+
+  /* Only an open drawer asks its desktop: a page sitting with every drawer
+     closed asks nothing (bench/resources/viewer.py names it silent). */
+  function pollOpenRecordings(){
+    document.querySelectorAll("[data-rec-list][open]").forEach(function(details){ loadRecordings(details, true); });
+  }
+  Decurix.poll(pollOpenRecordings, 5000);
 
   /* ---------------- desktop info popovers ----------------
    Hover the info button/card to keep it open.
@@ -2677,28 +2837,8 @@
     if(!had){ details.open = true; }
   }
 
-  var memoryPolling = false;
-  async function pollMemory(){
-    if(memoryPolling || document.visibilityState !== "visible"){ return; }
-    var lists = document.querySelectorAll("[data-mem-list]");
-    if(!lists.length){ return; }
-
-    memoryPolling = true;
-    try{
-      var response = await fetch("/api/desktops/memory", {cache: "no-store"});
-      if(!response.ok){ return; }
-
-      var byDesktop = {};
-      (await response.json() || []).forEach(function(entry){
-        (byDesktop[entry.desktop_id] = byDesktop[entry.desktop_id] || []).push(entry);
-      });
-
-      lists.forEach(function(details){ paintMemory(details, byDesktop[details.dataset.memList] || []); });
-    }catch(e){ /* keep what the cards show */ }
-    finally{ memoryPolling = false; }
-  }
-
-  Decurix.poll(pollMemory, 4000);
+  /* Each card's memory comes with the rest of the card (pollOverview below): the newest entries of every worker, as
+     many as /api/desktops/memory?limit=1000 gives, grouped by desktop on the server. */
 
   /* ---------------- task trace picker ----------------
      Each card's dropdown lists the desktop's tasks newest first; the Trace
@@ -2777,26 +2917,7 @@
     return [t.title, t.status_label, when].filter(Boolean).join(" · ");
   }
 
-  var taskPicksPolling = false;
-  async function pollTaskPicks(){
-    if(taskPicksPolling){ return; }
-    var picks = document.querySelectorAll("[data-task-pick]");
-    if(!picks.length){ return; }
-    var ids = Array.prototype.map.call(picks, function(el){ return el.dataset.taskPick; });
-
-    taskPicksPolling = true;
-    try{
-      var response = await fetch("/api/desktops/tasks?" + new URLSearchParams({ids: ids.join(",")}), {cache: "no-store"});
-      if(!response.ok){ return; }
-      var byDesktop = await response.json() || {};
-      picks.forEach(function(pick){ paintTaskPicks(pick, byDesktop[pick.dataset.taskPick] || []); });
-    }catch(e){ /* keep what the cards show */ }
-    finally{ taskPicksPolling = false; }
-  }
-
   document.querySelectorAll("[data-task-pick]").forEach(traceHref);
-  pollTaskPicks();
-  Decurix.poll(pollTaskPicks, 4000);
 
   memoryForm("[data-link-memory-form]", "/api/desktops/memory/link", "Sharing…", "Share memory");
 
@@ -2875,8 +2996,9 @@
 
     var actions = node("div", "note-actions");
 
+    // Straight to this note's card on the Queries page, which scrolls to it and opens its reply box.
     var reply = node("a", "btn btn-default btn-sm");
-    reply.href = "/dashboard";
+    reply.href = "/dashboard?" + new URLSearchParams({note: note.id}) + "#req-" + encodeURIComponent(note.id);
     reply.textContent = "Reply";
 
     var resolve = node("button", "btn btn-quiet btn-sm", "Resolve");
@@ -3077,97 +3199,52 @@
     paintCreated();
   }
 
-  var activityPolling = false;
-  async function pollActivity(){
-    if(activityPolling){ return; }
-    var ids = Array.prototype.map.call(document.querySelectorAll("[data-activity]"), function(el){ return el.dataset.activity; });
-    if(!ids.length){ return; }
-
-    activityPolling = true;
-    try{
-      var response = await fetch("/api/desktops/activity?" + new URLSearchParams({ids: ids.join(",")}), {cache: "no-store"});
-      if(!response.ok){ return; }
-      activity = await response.json() || {};
-      paintCardDetails();
-      paintActivity();
-      paintPills();
-    }catch(e){ /* keep what the cards show */ }
-    finally{ activityPolling = false; }
-  }
-
-  pollActivity();
-  Decurix.poll(pollActivity, 2500);
   document.addEventListener("visibilitychange", function(){
     if(document.visibilityState === "visible"){ paintCreated(); }
   });
   setInterval(paintActivity, 1000);
 
-  async function loadNotes(){
-    try{
-      var response = await fetch("/api/querynotes", {cache: "no-store"});
-      if(!response.ok){ return; }
-
-      var notes = await response.json();
-      notes = Array.isArray(notes) ? notes : [];
-      renderNotes(notes);
-      Decurix.notifyNewQueries(notes);
-    }catch(e){ /* keep the current rail contents */ }
-  }
-
   async function resolveNote(id){
     try{
       await post("/api/querynotes/close", {id: id});
-      loadNotes();
+      pollOverview().catch(function(){ /* the next tick shows it */ });
     }catch(e){
       toast(e.message, "error");
     }
   }
 
-  /* The rail also feeds the notifications of a tab in the background (data-query-poll="own"), so it keeps a slow
-     pace while hidden. */
-  loadNotes();
-  Decurix.poll(loadNotes, 2500, {hidden: 30000});
-
   /* ---------------- resource autoscaling alerts ---------------- */
   var activeAlerts = new Map();
   var dismissedAlerts = new Set();
 
-  async function pollResourceAlerts(){
-    try{
-      var response = await fetch("/api/desktops/resource-alerts", {cache: "no-store"});
-      if(!response.ok){ return; }
-      var data = await response.json();
-      var alerts = data.alerts || [];
-      var alertMap = new Map();
-      alerts.forEach(function(a){ alertMap.set(a.desktop_id, a); });
+  /* cards is the overview's desktops (pollOverview): a card it does not answer keeps what it shows. */
+  function paintResourceAlerts(cards){
+    document.querySelectorAll(".dcard[data-desktop-id]").forEach(function(card){
+      var id = card.dataset.desktopId;
+      var alertBox = card.querySelector('[data-resource-alert="' + id + '"]');
+      if(!alertBox || !cards[id]){ return; }
 
-      document.querySelectorAll(".dcard[data-desktop-id]").forEach(function(card){
-        var id = card.dataset.desktopId;
-        var alertBox = card.querySelector('[data-resource-alert="' + id + '"]');
-        if(!alertBox){ return; }
+      if(dismissedAlerts.has(id)){
+        alertBox.style.display = "none";
+        return;
+      }
 
-        if(dismissedAlerts.has(id)){
-          alertBox.style.display = "none";
-          return;
+      var alert = cards[id].alert;
+      if(alert){
+        activeAlerts.set(id, alert);
+        var msg = card.querySelector('[data-resource-msg="' + id + '"]');
+        if(msg){
+          msg.textContent = alert.message || (
+            "CPU: " + Math.round(alert.cpu_percent) + "%, RAM: " + Math.round(alert.memory_percent) +
+            "%. Increase to " + alert.predicted_cpus + " CPUs & " + alert.predicted_memory_mb + " MB RAM?"
+          );
         }
-
-        var alert = alertMap.get(id);
-        if(alert){
-          activeAlerts.set(id, alert);
-          var msg = card.querySelector('[data-resource-msg="' + id + '"]');
-          if(msg){
-            msg.textContent = alert.message || (
-              "CPU: " + Math.round(alert.cpu_percent) + "%, RAM: " + Math.round(alert.memory_percent) +
-              "%. Increase to " + alert.predicted_cpus + " CPUs & " + alert.predicted_memory_mb + " MB RAM?"
-            );
-          }
-          alertBox.style.display = "block";
-        }else{
-          activeAlerts.delete(id);
-          alertBox.style.display = "none";
-        }
-      });
-    }catch(e){}
+        alertBox.style.display = "block";
+      }else{
+        activeAlerts.delete(id);
+        alertBox.style.display = "none";
+      }
+    });
   }
 
   document.addEventListener("click", async function(e){
@@ -3232,8 +3309,73 @@
     }
   });
 
-  pollResourceAlerts();
-  Decurix.poll(pollResourceAlerts, 4000);
+  /* A desktop the control plane stopped to save memory (its rest_reason) says so on its card while it is stopped:
+     it starts again when it is given work. */
+  function paintRest(cards){
+    document.querySelectorAll(".dcard[data-desktop-id]").forEach(function(card){
+      var note = card.querySelector("[data-rest-note]");
+      var id = card.dataset.desktopId;
+      if(!note || !cards[id]){ return; }
+      var reason = cards[id].rest_reason || "";
+      var now = activity[id] || {};
+      note.hidden = !(reason && now.status === "stopped" && !now.running && !now.crash);
+      // Which it was, in one line ("Stopped after 30 minutes paused, to save memory"), on hover.
+      note.title = cards[id].rest_note || "";
+    });
+  }
+
+  /* ---------------- one poll for every card ----------------
+     Everything on a card that changes - its status and what it is doing, its
+     task dropdown, its memory, its resource alert, a rest reason - and the
+     Needs-you rail come from one request, built from one desktop list however
+     many cards the page holds and one read of each store (W-14: it was five
+     requests a sweep and a task query per card). Each part is painted by its own painter
+     above, which keeps what a person is using: a picked task stays picked,
+     a list redraws only when it changed, a dismissed alert stays dismissed.
+     The rail also feeds the notifications of a tab in the background
+     (data-query-poll="own"), so a hidden tab asks for the notes alone, every
+     30 s. A failed ask keeps what the cards show, and Decurix.poll backs off
+     until one succeeds. */
+  var overviewPolling = false;
+  async function pollOverview(){
+    if(overviewPolling){ return; }
+    var visible = document.visibilityState === "visible";
+    var ids = Array.prototype.map.call(document.querySelectorAll(".dcard[data-desktop-id]"), function(card){ return card.dataset.desktopId; });
+    var query = visible && ids.length ? {ids: ids.join(",")} : {parts: "notes"};
+
+    overviewPolling = true;
+    try{
+      var response = await fetch("/api/desktops/overview?" + new URLSearchParams(query), {cache: "no-store"});
+      if(!response.ok){ throw new Error("the overview answered " + response.status); }
+      var data = await response.json() || {};
+      var cards = data.desktops || {};
+      if(query.ids){
+        var next = {};
+        Object.keys(cards).forEach(function(id){ next[id] = cards[id].activity || {}; });
+        activity = next;
+        paintCardDetails();
+        paintActivity();
+        paintPills();
+        document.querySelectorAll("[data-task-pick]").forEach(function(pick){
+          var card = cards[pick.dataset.taskPick];
+          if(card && card.tasks){ paintTaskPicks(pick, card.tasks); }
+        });
+        document.querySelectorAll("[data-mem-list]").forEach(function(details){
+          var card = cards[details.dataset.memList];
+          if(card && card.memory){ paintMemory(details, card.memory); }
+        });
+        paintResourceAlerts(cards);
+        paintRest(cards);
+      }
+      if(Array.isArray(data.notes)){
+        renderNotes(data.notes);
+        Decurix.notifyNewQueries(data.notes);
+      }
+    }finally{ overviewPolling = false; }
+  }
+
+  pollOverview().catch(function(){ /* the poll asks again */ });
+  Decurix.poll(pollOverview, 2500, {hidden: 30000});
 
   /* ---------------- provisioning desktop poller ---------------- */
 

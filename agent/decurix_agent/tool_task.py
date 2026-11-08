@@ -316,6 +316,27 @@ def _to_engine(content, task_file, said, note=""):
     perform_task(content, task_file)
 
 
+def _verdict(settled, code, made, drafted):
+    """
+    The verdict of a tool's run that the check settled as done (decurix.verdict/v1, by "verify"): the final check's
+    own checks (verify.outcome: the judge's reading of the files), and what code saw - the tool's exit code, the
+    code-decided facts of the files it wrote (produced.file_facts: none blocking) when it wrote any, and the email
+    drafts made once. Only what was checked is listed: no file read back is no file check.
+    """
+
+    from decurix_agent import verdict as verdicts
+    checks = [verdicts.check("tool.exit", verdicts.PASS if code == 0 else verdicts.FAIL, "code",
+                             f"the tool exited {code}, run shut off in a copy of the work folder")]
+    if made:
+        checks.append(verdicts.check("files.facts", verdicts.PASS, "code",
+                                     f"{len(made)} file(s) it wrote read back in code: nothing blocking",
+                                     refs=[Path(p).name for p in made]))
+    if drafted:
+        checks.append(verdicts.check("drafts.made", verdicts.PASS, "code",
+                                     f"{len(drafted)} email draft(s) checked dry, then put in the Outbox once"))
+    return verdicts.from_outcome(dict(settled, checks=checks + list(settled.get("checks") or [])), "verify")
+
+
 def perform(content, task_file=None):
     """Do the request with the worker's own tool; the engine only when that cannot be done or did not work."""
 
@@ -414,7 +435,8 @@ def perform(content, task_file=None):
             seen = f"\n\nChecked against the files it wrote: {verdict['seen']}" if verdict.get("seen") else ""
             told = ("\n\nPlease check:\n" + "\n".join(f"- {line}" for line in changed_for_person)
                     if changed_for_person else "")
-            return write_final_reply(reply + seen + told, kind="final", engine=ENGINE, checked=True)
+            return write_final_reply(reply + seen + told, kind="final", engine=ENGINE, checked=True,
+                                     verdict=_verdict(settled, code, made, dry))
 
         if settled["status"] == verify.NOT_DONE:
             wrong = " ".join(x for x in (verdict.get("seen"), verdict.get("why")) if x)

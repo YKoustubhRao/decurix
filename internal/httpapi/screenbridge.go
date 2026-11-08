@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"context"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -15,9 +17,11 @@ import (
 // itself to the desktop's Xvnc (5901): RFB as it is, in binary WebSocket messages, both ways (Phase 2 C). It used to
 // be reverse-proxied to websockify inside the desktop, a Python process (25-37 MB) per desktop doing only this. The
 // path, the listeners it is on and their guards (origin, device sessions, a desktop never reaching another's) are
-// unchanged: only what answers behind the path is. DECURIX_VNC_BRIDGE=0 goes back to websockify, which desktops still
-// start until the bridge has its live check (docs-notes-CP); its own page (/desktop/<id>/vnc.html) is still served by
-// it.
+// unchanged: only what answers behind the path is. Desktops no longer start websockify (L3, docs/lightweight.md: the
+// entrypoint passes the base startup --skip-novnc), so noVNC's own page (/desktop/<id>/vnc.html) answers only on a
+// desktop created with DECURIX_DESKTOP_NOVNC=1. DECURIX_VNC_BRIDGE=0 still sends the stream to a desktop's websockify
+// when one answers on 6901; a desktop that runs none is bridged all the same and the log says so (screenStreamBridged),
+// so turning the bridge off never leaves a screen that cannot connect.
 
 // Keepalive and idle for a bridged screen: the browser answers each ping, so a screen someone has open never idles
 // out, and one whose browser went away is found within the idle time.
@@ -35,6 +39,32 @@ func screenBridgeOn() bool {
 	case "0", "off", "false", "no":
 		return false
 	}
+	return true
+}
+
+// screenStreamBridged reports whether desktop rawID's screen stream goes through the bridge: always, unless
+// DECURIX_VNC_BRIDGE is off; then only when the desktop has no websockify answering (websockifyMissing).
+func (s *Server) screenStreamBridged(ctx context.Context, rawID string) bool {
+	if screenBridgeOn() {
+		return true
+	}
+	return websockifyMissing(ctx, s.Desktops.ProxyTarget, rawID)
+}
+
+// websockifyMissing reports whether desktop rawID resolves but nothing answers on its websockify port (6901), and logs
+// that its stream is bridged anyway. A desktop that does not resolve is not "missing": the reverse proxy reports why,
+// as it did before.
+func websockifyMissing(ctx context.Context, target func(context.Context, string) (*url.URL, string, error), rawID string) bool {
+	u, id, err := target(ctx, rawID)
+	if err != nil || u == nil {
+		return false
+	}
+	c, err := net.DialTimeout("tcp", u.Host, time.Second)
+	if err == nil {
+		c.Close()
+		return false
+	}
+	log.Printf("screen stream for %s: DECURIX_VNC_BRIDGE is off but the desktop runs no websockify (created without DECURIX_DESKTOP_NOVNC=1); bridging it", id)
 	return true
 }
 

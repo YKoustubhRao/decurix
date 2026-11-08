@@ -6,7 +6,12 @@
 //	POST /v1/audio/transcriptions  multipart file -> text
 //	POST /v1/embeddings            text -> vectors
 //	POST /v1/brainiac/ocr          a picture -> text lines with boxes
-//	GET  /v1/models  /healthz  /v1/brainiac/status  /v1/brainiac/traces[/{id}]
+//	POST /v1/brainiac/search       a web search through Brainiac's browser
+//	POST /v1/brainiac/fetch        a page's text ("render": true for a headless browser)
+//	POST /v1/brainiac/route        which field the router would send a text to; no model runs
+//	POST /v1/brainiac/outcomes     a client's verdict on a traced answer
+//	GET  /v1/models  /healthz  /v1/brainiac/status  /v1/brainiac/paths
+//	GET  /v1/brainiac/traces[/{id}]  /v1/brainiac/scout  /v1/brainiac/update
 //
 // Every answer carries a "brainiac" object (mode, brain, the atoms that ran,
 // what the checks found) and a trace id. Pictures are taken only inline: a
@@ -46,6 +51,11 @@ type Server struct {
 	// WorkSlots is how many work requests run at once (0 means 4); the rest
 	// wait their turn, so parallel large requests cannot exhaust memory.
 	WorkSlots int
+	// Residency is the server's model residency, which outlives its engines:
+	// every engine it serves is built on it (engine.Options.Residency), so
+	// an engine for a changed plan keeps the unchanged models running and
+	// the one it replaces stops only its own (G-11).
+	Residency *engine.Residency
 
 	cur    atomic.Pointer[engine.Engine]
 	hold   sync.RWMutex // work requests share it; Hold takes it alone
@@ -817,7 +827,7 @@ func (s *Server) outcome(w http.ResponseWriter, r *http.Request) {
 func (s *Server) scoutReport(w http.ResponseWriter, r *http.Request) {
 	var rep json.RawMessage
 	if err := s.engine().Store().ReadJSON("scout.json", &rep); err != nil {
-		writeError(w, http.StatusNotFound, "not_found", "no scouting report yet: run `brainiac scout`, or wait for serve's daily scout")
+		writeError(w, http.StatusNotFound, "not_found", "no scouting report yet: run `brainiac scout` (serve scouts on its own only when update_every is set)")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

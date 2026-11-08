@@ -59,7 +59,7 @@ func brokerPost(b *Broker, path, body string, headers map[string]string) *httpte
 }
 
 func TestTheBrokerPassesOnEveryTurnOfACase(t *testing.T) {
-	b := &Broker{LLM: &deployingChat{}}
+	b := &Broker{LLM: &deployingChat{}, Caller: desktopAt("practice-r1")}
 	b.Begin("practice-r1", 0)
 	obs := b.StartCase("t1")
 	brokerPost(b, "/api/querytext", `{"desktop_id":"practice-r1","kind":"query","reply":"Which ledger?"}`, nil)

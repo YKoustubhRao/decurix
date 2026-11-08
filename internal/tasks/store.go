@@ -1226,11 +1226,16 @@ func (s *Store) RecordOutcomeExec(workerID, taskID string, outcome Outcome) (str
 		return "", "", fmt.Errorf("tasks: recording outcome: %w", err)
 	}
 
-	// The structured verdict decides checked; a callback whose own flag disagrees is stored not checked (fail closed).
+	// The structured verdict decides checked; a callback whose own flag disagrees, or that says checked with no
+	// verdict at all, is stored not checked (fail closed).
 	checked, disagree := checkedFrom(outcome.Verdict, outcome.Checked)
 	if disagree {
+		said := "none"
+		if outcome.Verdict != nil {
+			said = outcome.Verdict.Verdict
+		}
 		log.Printf("tasks: verdict and checked disagree for %s (verdict %s, checked %v): stored as not checked",
-			ref.id, outcome.Verdict.Verdict, *outcome.Checked)
+			ref.id, said, *outcome.Checked)
 	}
 	skillName, skillVersion := "", 0
 	if outcome.Skill != nil && strings.TrimSpace(outcome.Skill.Name) != "" {

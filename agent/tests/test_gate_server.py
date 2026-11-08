@@ -90,6 +90,13 @@ class GateStateTests(unittest.TestCase):
             gate.settle(text, request["question"], "approval", request["id"])
         return reading
 
+    @unittest.skipIf(os.name == "nt", "file modes are POSIX")
+    def test_the_gates_approval_store_is_written_0600_and_whole(self):
+        self.ask()
+        path = approval.STATE_FILE
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(sorted(p.name for p in path.parent.iterdir() if p.name.endswith(".tmp")), [])
+
     def test_an_unapproved_action_is_stopped_and_stays_pending(self):
         first = self.ask()
         self.assertFalse(first["allowed"])
@@ -166,12 +173,20 @@ class GateStateTests(unittest.TestCase):
         self.assertNotIn("draft", request["question"])
         self.assertIn(gate.GATE_REASON, request["question"])
 
-    def test_one_signed_yes_is_taken_once_between_the_agent_and_thebot(self):
+    def test_the_agents_look_at_a_reply_never_takes_thebots_own_yes(self):
+        # Found live (2026-11-08): the agent's watcher reads every reply first; when its take hid the outcome, TheBot's
+        # paused job waited out its 45 seconds, resumed on "unclear", and the person was asked again for the same press.
         request = self.ask()["request"]
         self.reply("yes", request)
         self.assertEqual(gate.handle({"op": "outcome", "reply": "yes", "wait": 0})["outcome"], "granted")
-        self.assertFalse(gate.handle({"op": "settled", "request_id": request["id"], "wait": 0})["seen"],
-                         "a yes taken by the agent is no second yes for a paused TheBot job")
+        said = gate.handle({"op": "settled", "request_id": request["id"], "wait": 0})
+        self.assertEqual((said["seen"], said["outcome"]), (True, "granted"))
+        # Each kind of take is still once: no second yes by id, none by text.
+        self.assertFalse(gate.handle({"op": "settled", "request_id": request["id"], "wait": 0})["seen"], "taken once")
+        self.assertFalse(gate.handle({"op": "outcome", "reply": "yes", "wait": 0})["seen"], "taken once")
+        # And neither take made a second grant: the one action is allowed once.
+        self.assertTrue(self.ask()["allowed"])
+        self.assertFalse(self.ask()["allowed"])
 
     def test_a_reply_settles_only_the_request_it_was_signed_for(self):
         request = self.ask()["request"]

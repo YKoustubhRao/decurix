@@ -4,12 +4,13 @@ import os
 import re
 import socket
 import struct
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-from decurix_agent.computer import browser
+from decurix_agent.computer import broker, browser, screen_call
 from decurix_agent.logging_utils import log
 from decurix_agent.computer import elements as el
 from decurix_agent.computer import datefields
@@ -69,12 +70,59 @@ RELAYED_VIEWER_PATHS = ("/host-gui/view", "/phone-app/view")
 CONTAINERS = {"form", "dialog", "alertdialog", "navigation", "main", "region", "table", "row", "list", "group", "tabpanel", "menu", "toolbar", "search", "banner", "complementary"}
 
 
+def _relay_connect(path, timeout):
+    """A connection to the DevTools relay's Unix socket (broker mode, cdp_relay.py). No relay there is a refused
+    connection, as a browser with no port is."""
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect(path)
+    except (FileNotFoundError, ConnectionRefusedError) as exc:
+        sock.close()
+        raise ConnectionRefusedError(f"the browser's DevTools relay is not running ({path})") from exc
+    except BaseException:
+        sock.close()
+        raise
+    return sock
+
+
+def _relay_get(relay, path, method, timeout):
+    """_get through the relay: the same requests, on its Unix socket. A relay whose browser is gone answers 503,
+    which is a browser that is not running."""
+
+    import http.client
+
+    class _Connection(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = _relay_connect(relay, self.timeout)
+
+    conn = _Connection("localhost", timeout=timeout)
+    try:
+        conn.request(method, path)
+        response = conn.getresponse()
+        body = response.read()
+    finally:
+        conn.close()
+    if response.status == 503:
+        raise ConnectionRefusedError("the browser is not running")
+    if response.status != 200:
+        raise OSError(f"the DevTools relay answered {response.status} to {path}: "
+                      f"{body[:200].decode('utf-8', 'replace').strip()}")
+    return json.loads(body.decode("utf-8"))
+
+
 class _Socket:
     """A minimal RFC 6455 client: text frames out, whole messages in."""
 
     def __init__(self, url, timeout=CALL_TIMEOUT):
         parsed = urllib.parse.urlparse(url)
-        self.sock = socket.create_connection((parsed.hostname, parsed.port), timeout=timeout)
+        relay = broker.relay_socket()
+        if relay:
+            # Broker mode: the page's WebSocket is the relay's, by the same path (cdp_relay.Relay.page).
+            self.sock = _relay_connect(relay, timeout)
+        else:
+            self.sock = socket.create_connection((parsed.hostname, parsed.port), timeout=timeout)
         key = base64.b64encode(os.urandom(16)).decode()
         path = parsed.path + (("?" + parsed.query) if parsed.query else "")
 
@@ -114,7 +162,14 @@ class _Socket:
         for i in range(length):
             masked[i] ^= mask[i % 4]
 
-        self.sock.sendall(header + mask + bytes(masked))
+        try:
+            self.sock.sendall(header + mask + bytes(masked))
+        except socket.timeout:
+            raise
+        except OSError:
+            # A tab closed (or the browser gone) under this session: on Linux the send sees it first, as a broken
+            # pipe or reset; the same as the end of file a read would see.
+            raise ComputerError("Chromium closed the DevTools connection")
 
     def _need(self, n):
         while len(self.buffer) < n:
@@ -191,6 +246,35 @@ class Page:
 
             return message.get("result", {})
 
+    def call_all(self, calls, timeout=CALL_TIMEOUT):
+        """
+        call_all does `calls` ([(method, params)]) in one go: all are sent, then all answers read. The browser runs a
+        session's commands in the order they came, so this is the same as calling them one after another, without a
+        round trip between them. Raises the first one's error once every answer is in (so the session stays in step).
+        """
+
+        first, answers = self.seq + 1, {}
+        self.ws.sock.settimeout(timeout)
+        for method, params in calls:
+            self.seq += 1
+            self.ws.send(json.dumps({"id": self.seq, "method": method, "params": params or {}}))
+        last = self.seq
+        while len(answers) < last - first + 1:
+            try:
+                message = json.loads(self.ws.receive())
+            except socket.timeout:
+                raise ComputerError(f"Chromium did not answer {len(calls)} calls within {timeout}s")
+            mine = message.get("id")
+            if isinstance(mine, int) and first <= mine <= last:
+                answers[mine] = message
+            elif "method" in message and "id" not in message:
+                self.events.append(message)
+                del self.events[:-MAX_EVENTS]
+        for n in range(first, last + 1):
+            if "error" in answers[n]:
+                raise ComputerError(f"{calls[n - first][0]}: {answers[n]['error'].get('message')}")
+        return [answers[n].get("result", {}) for n in range(first, last + 1)]
+
     def wait_event(self, method, timeout):
         """The params of the first `method` event, waiting up to `timeout` seconds; None if none came."""
 
@@ -225,6 +309,10 @@ class Page:
 def _get(path, method="GET", timeout=None):
     # A busy browser answers late (BUSY_ANSWER_SECONDS); a missing one refuses at once.
     timeout = BUSY_ANSWER_SECONDS if timeout is None else timeout
+    relay = broker.relay_socket()
+    if relay:
+        # Broker mode: the browser has no port; its relay answers the same requests (cdp_relay.py).
+        return _relay_get(relay, path, method, timeout)
     request = urllib.request.Request(BASE + path, method=method)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -257,6 +345,28 @@ def available():
     except (OSError, ValueError) as exc:
         log(f"cdp: the DevTools port did not answer: {exc}")
         return False
+
+
+@screen_call.routed("cdp.page_list")
+def page_list():
+    """
+    [{id, title, url}] of the browser's pages, opening no session on any: what the agent's own process needs to know
+    which tab shows what (host_documents, ask_task). In broker mode it is asked of the screen broker (screen_call).
+    """
+
+    return [{"id": t.get("id") or "", "title": t.get("title") or "", "url": t.get("url") or ""}
+            for t in _page_targets()]
+
+
+@screen_call.routed("cdp.activate_page")
+def activate_page(target_id):
+    """Bring the page `target_id` to the front. Raises OSError when the browser does not do it."""
+
+    try:
+        _get(f"/json/activate/{urllib.parse.quote(target_id, safe='')}")
+    except ValueError:
+        pass  # the browser answers in words ("Target activated"), not JSON: it was done
+    return True
 
 
 def _page_targets():
@@ -905,7 +1015,7 @@ def observe():
     by_id = {n["nodeId"]: n for n in nodes}
     group_id = f"cdp:{page.target.get('id')}"
     title = metrics.get("title") or page.target.get("title") or ""
-    url = metrics.get("url") or ""
+    url = broker.shown_url(metrics.get("url") or "")
 
     group = {
         "behind": behind,
@@ -1157,7 +1267,7 @@ def _context(page, metrics):
 
     return {
         "title": browser.page_window_title(metrics.get("title") or page.target.get("title") or ""),
-        "url": metrics.get("url") or "",
+        "url": broker.shown_url(metrics.get("url") or ""),
     }
 
 
@@ -1531,6 +1641,151 @@ def click(element, button="left", count=1):
         page.close()
 
 
+# ------------------------------------------------------------
+# Downloads an action starts (core._downloads_note)
+# ------------------------------------------------------------
+
+# A watch ends by itself this long after it began, closed or not.
+WATCH_SECONDS = 60
+# How long the browser may take to list its tabs or enable a watch's domains; slower, and the folder alone decides.
+WATCH_START_SECONDS = 2
+
+
+class DownloadWatch:
+    """
+    What the browser says about downloads while one action runs, heard on a DevTools session of its own on the page
+    the action goes to (a page's session, not the browser's: broker mode's relay serves pages only). With Page enabled
+    that session hears the page's downloads begin and end (Page.downloadWillBegin, Page.downloadProgress); it also
+    hears a window being opened (Page.windowOpen: a download in a new tab is that tab's, not heard here), the page's
+    loads (frameRequestedNavigation, frameStartedLoading/frameStoppedLoading) and, with Network enabled, the requests
+    it began after the watch did - a click whose answer is still on its way may yet start a download.
+
+    The download folder stays what says what arrived and what it is (core._downloads_note); this only says when there
+    is no more to wait for. A reader thread takes every event as it comes, so a page that sends many never fills the
+    socket (in broker mode the relay's one pipe would wait on it).
+    """
+
+    def __init__(self, page, page_ids):
+        self.page, self.page_ids = page, set(page_ids)
+        self.lock = threading.Lock()
+        self.began, self.ended = {}, {}      # guid -> suggested file name; guid -> "completed" / "canceled"
+        self.requests, self.loading = set(), set()
+        self.opened = False
+        self.quiet_since = time.time()       # when the page last had nothing in flight
+        self.alive = True
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._read, name="cdp-download-watch", daemon=True)
+        self._thread.start()
+
+    def _read(self):
+        import select
+
+        deadline = time.monotonic() + WATCH_SECONDS
+        ws = self.page.ws
+        try:
+            for message in self.page.events:
+                self._take(message)
+            self.page.events = []
+            while not self._stop.is_set() and time.monotonic() < deadline:
+                # Read only once something is there: a timeout in the middle of a message would lose its start.
+                if not ws.buffer and not select.select([ws.sock], [], [], 0.1)[0]:
+                    continue
+                ws.sock.settimeout(CALL_TIMEOUT)
+                self._take(json.loads(ws.receive()))
+        except (ComputerError, OSError, ValueError):
+            pass
+        finally:
+            with self.lock:
+                self.alive = False
+            self.page.close()
+
+    def _take(self, message):
+        method, params = message.get("method"), message.get("params") or {}
+        with self.lock:
+            if method == "Page.downloadWillBegin":
+                self.began[params.get("guid") or ""] = params.get("suggestedFilename") or ""
+            elif method == "Page.downloadProgress":
+                guid = params.get("guid") or ""
+                self.began.setdefault(guid, "")
+                if params.get("state") in ("completed", "canceled"):
+                    self.ended[guid] = params["state"]
+            elif method == "Page.windowOpen":
+                self.opened = True
+            elif method in ("Page.frameRequestedNavigation", "Page.frameStartedLoading"):
+                self.loading.add(params.get("frameId"))
+            elif method == "Page.frameStoppedLoading":
+                self.loading.discard(params.get("frameId"))
+            elif method == "Network.requestWillBeSent":
+                self.requests.add(params.get("requestId"))
+            elif method in ("Network.loadingFinished", "Network.loadingFailed"):
+                self.requests.discard(params.get("requestId"))
+            else:
+                return
+            if not self.requests and not self.loading:
+                self.quiet_since = time.time()
+
+    def status(self):
+        """status gives what was heard so far: alive (still hearing), opened (a window was opened), began {guid: name},
+        ended {guid: state}, busy (a load or a request begun since the watch is still in flight), quiet_since."""
+
+        with self.lock:
+            return {"alive": self.alive, "opened": self.opened, "began": dict(self.began), "ended": dict(self.ended),
+                    "busy": bool(self.requests or self.loading), "quiet_since": self.quiet_since}
+
+    def alone(self):
+        """
+        alone says whether nothing this session cannot hear may have started a download: no frame of another site
+        anywhere (it is a target of its own, and its downloads are its own), and no tab that was not there when the
+        watch began.
+        """
+
+        try:
+            targets = _get("/json/list", timeout=WATCH_START_SECONDS)
+        except (OSError, ValueError):
+            return False
+        if any(t.get("type") == "iframe" for t in targets):
+            return False
+        return {t.get("id") for t in targets if t.get("type") == "page"} <= self.page_ids
+
+    def close(self):
+        """close stops hearing; the reader thread closes the session."""
+
+        self._stop.set()
+
+
+def watch_downloads(target_id=None):
+    """
+    watch_downloads gives a DownloadWatch on the page an action goes to - the tab `target_id`, or with none the
+    browser's only tab - or None when there is none to be had: no browser, a frame of another site anywhere, the tab
+    not found, or no tab named and more than one open. None leaves the download folder alone to decide, as before.
+    """
+
+    try:
+        targets = _get("/json/list", timeout=WATCH_START_SECONDS)
+    except (OSError, ValueError):
+        return None
+    if any(t.get("type") == "iframe" for t in targets):
+        return None
+    pages = [t for t in targets if t.get("type") == "page" and t.get("webSocketDebuggerUrl")]
+    if target_id is None:
+        target = pages[0] if len(pages) == 1 else None
+    else:
+        target = next((t for t in pages if t.get("id") == target_id), None)
+    if target is None:
+        return None
+    try:
+        page = Page(target)
+    except (OSError, ComputerError):
+        return None
+    try:
+        page.call("Page.enable", timeout=WATCH_START_SECONDS)
+        page.call("Network.enable", timeout=WATCH_START_SECONDS)
+    except (OSError, ComputerError):
+        page.close()
+        return None
+    return DownloadWatch(page, [t.get("id") for t in targets if t.get("type") == "page"])
+
+
 def _object(page, backend_id):
     resolved = page.call("DOM.resolveNode", {"backendNodeId": backend_id})
     return resolved["object"]["objectId"]
@@ -1592,6 +1847,8 @@ def set_in_app(element, text, append=False):
 # A line longer than this is pasted (insertText) rather than typed key by key: nothing a form field takes is that long,
 # and a key event per character would take a while.
 KEYS_UP_TO = 500
+# Key events sent before their answers are read (Page.call_all): two a character.
+KEY_BATCH = 64
 
 
 def _type_line(page, object_id, line):
@@ -1608,6 +1865,7 @@ def _type_line(page, object_id, line):
         return
 
     before = _field_value(page, object_id)
+    keys = []
     for char in line:
         down = {"type": "keyDown", "key": char, "text": char, "unmodifiedText": char}
         up = {"type": "keyUp", "key": char}
@@ -1617,13 +1875,23 @@ def _type_line(page, object_id, line):
         if code:
             for event in (down, up):
                 event["code"], event["windowsVirtualKeyCode"], event["nativeVirtualKeyCode"] = code
-        page.call("Input.dispatchKeyEvent", down)
-        page.call("Input.dispatchKeyEvent", up)
+        keys += [("Input.dispatchKeyEvent", down), ("Input.dispatchKeyEvent", up)]
     # A viewer of an app running elsewhere (a host app, a phone app) passes each key on to that app and its stand-in
     # field does not change: found live (2026-10-15), every line typed into real Excel was inserted a second time here
     # ("TotalTotal"), corrupting the sheet. Its keys arrived; nothing is inserted after them.
-    if any(v in ((getattr(page, "target", None) or {}).get("url") or "") for v in RELAYED_VIEWER_PATHS):
-        return
+    relayed = any(v in ((getattr(page, "target", None) or {}).get("url") or "") for v in RELAYED_VIEWER_PATHS)
+    if relayed or not isinstance(page, Page):
+        # A viewer's keys go on to its app one at a time, each once the viewer has taken the last.
+        for method, params in keys:
+            page.call(method, params)
+        if relayed:
+            return
+    else:
+        # The same key events, in the same order, sent in batches rather than each after the last one's answer: the
+        # page handles them one by one either way (its main thread takes one input event at a time), and a round trip
+        # a key was most of the time a long line took.
+        for start in range(0, len(keys), KEY_BATCH):
+            page.call_all(keys[start:start + KEY_BATCH])
     after = _field_value(page, object_id)
     if after is not None and line not in after and after == (before or ""):
         page.call("Input.insertText", {"text": line})
@@ -1659,10 +1927,14 @@ def _field_value(page, object_id):
     return value
 
 
-def type_text(element, text, replace=True):
+def type_text(element, text, replace=True, check_later=False):
     """
     Type into an element. Returns False when the field took the text and then
     threw it away (the caller types it again with real keys), else True.
+
+    With check_later, whether the field kept the text is not waited for here: a function is returned instead (truthy),
+    which the caller calls once the screen has settled after the typing - a longer wait than this one's, spent on the
+    settle wait the caller makes anyway - and which answers the same question (False: thrown away).
     """
 
     page = _page_for(element)
@@ -1724,11 +1996,50 @@ def type_text(element, text, replace=True):
         # field empty, so the order could not be saved). The same text typed
         # key by key on the real keyboard stays. A field that formats what it
         # is given ("12" shown as "12.000") counts as having kept it.
-        _settle_frame(page, 400)
-        value = _value_of(page, object_id)
-        return value is None or text in value or _formatted(text, value)
+        if check_later:
+            return _kept_later(element, text)
+        _settle_frame(page, KEPT_WAIT_MS)
+        return _kept(_value_of(page, object_id), text)
     finally:
         page.close()
+
+
+# How long after typing a field is read back to see that it kept the text (type_text).
+KEPT_WAIT_MS = 400
+
+
+def _kept(value, text):
+    """Whether a field reading `value` kept `text` (no value to read counts as kept, as a formatted number does)."""
+
+    return value is None or text in value or _formatted(text, value)
+
+
+def _kept_later(element, text):
+    """
+    type_text's read-back, made later by the caller: called after the screen settled (at least KEPT_WAIT_MS after the
+    typing ended), on a session of its own. True when the field kept the text or cannot be read any more (the page
+    went on: the caller's own look judges the field then, as it does after every typing).
+    """
+
+    started = time.monotonic()
+
+    def kept():
+        wait = KEPT_WAIT_MS / 1000 - (time.monotonic() - started)
+        if wait > 0:
+            time.sleep(wait)  # never read sooner than type_text itself would have
+        try:
+            page = _page_for(element)
+        except (ComputerError, OSError):
+            return True
+        try:
+            value = _value_of(page, _object(page, element["handle"]["backend_id"]))
+        except (ComputerError, OSError):
+            return True
+        finally:
+            page.close()
+        return _kept(value, text)
+
+    return kept
 
 
 def _settle_frame(page, ms=120):
@@ -2614,3 +2925,40 @@ def wait_ready(timeout=15, default_title=""):
     finally:
         page.close()
 
+
+
+# What the active tab says about whether it is still drawing (drawing_state): its load state, whether it marks itself
+# busy (the relayed viewer's data-decurix-busy, or any element's aria-busy), and how long ago its last fetched resource
+# finished arriving (data a page fetched is drawn next).
+_DRAWING = """JSON.stringify((() => {
+  const d = document;
+  const busy = d.documentElement.hasAttribute('data-decurix-busy') || !!d.querySelector('[aria-busy="true"]');
+  let last = 0;
+  try { for (const e of performance.getEntriesByType('resource')) last = Math.max(last, e.responseEnd || 0); }
+  catch (e) {}
+  return {state: d.readyState, busy: busy, fetched_ms_ago: last ? performance.now() - last : null};
+})())"""
+
+
+def drawing_state():
+    """
+    What the active tab says about whether it is still drawing itself: {"complete": the document has loaded,
+    "busy": it marks itself busy, "fetched_ago": seconds since its last fetched resource arrived (None: none)}.
+    None when the browser cannot be asked (no DevTools, no tab, no answer): the caller then judges by looking alone.
+    """
+
+    try:
+        page = active_page()
+    except (ComputerError, OSError):
+        return None
+    try:
+        found = json.loads(page.evaluate(_DRAWING) or "null")
+    except (ComputerError, OSError, ValueError):
+        return None
+    finally:
+        page.close()
+    if not isinstance(found, dict):
+        return None
+    ago = found.get("fetched_ms_ago")
+    return {"complete": found.get("state") == "complete", "busy": bool(found.get("busy")),
+            "fetched_ago": ago / 1000.0 if isinstance(ago, (int, float)) else None}

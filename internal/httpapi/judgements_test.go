@@ -88,11 +88,11 @@ func TestAChatReplyIsTheLocalOwnersJudgement(t *testing.T) {
 	}
 }
 
-// A reply through the gated listener is the signed-in person's, with their role; without a sign-in it is someone
-// holding the access code's, with no role.
+// A reply through the gated listener is the signed-in person's, with their role. Once a user account exists, a
+// reply without a sign-in is refused (401) and nothing reaches the desktop or the records.
 func TestAGatedReplyIsTheSignedInPersonsJudgement(t *testing.T) {
 	s, store := accessServer(t)
-	fakeAgentDesktop(t, s)
+	bodies := fakeAgentDesktop(t, s)
 	asha, err := store.CreateUser("asha", "password-1", []string{"operator"})
 	if err != nil {
 		t.Fatal(err)
@@ -110,16 +110,65 @@ func TestAGatedReplyIsTheSignedInPersonsJudgement(t *testing.T) {
 		t.Fatalf("judgement = %+v", j)
 	}
 
-	// Answered, so the task runs again; a second question is answered by someone not signed in.
+	// Answered, so the task runs again; a second question is answered by someone not signed in: refused.
 	if _, err := s.Tasks.RecordOutcome("box", task, tasks.Outcome{Kind: tasks.OutcomeQuery, Reply: "Which month?"}); err != nil {
 		t.Fatal(err)
 	}
+	sent := len(requestsWith(bodies(), "content"))
+	rec := sendAs(t, s, url.Values{"id": {"box"}, "content": {"October"}}, true, "")
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "Sign in to reply") {
+		t.Fatalf("unsigned gated reply with a user account: %d %s", rec.Code, rec.Body)
+	}
+	if got := len(requestsWith(bodies(), "content")); got != sent {
+		t.Fatalf("the refused reply reached the desktop: %d requests, was %d", got, sent)
+	}
+	if list, _ := s.Tasks.JudgementsForTask(task); len(list) != 1 {
+		t.Fatalf("the refused reply was recorded: %+v", list)
+	}
+
+	// The primary listener is this computer's owner: no sign-in, whatever accounts exist.
+	if rec := sendAs(t, s, url.Values{"id": {"box"}, "content": {"October"}}, false, ""); rec.Code != http.StatusOK {
+		t.Fatalf("primary-listener reply: %d %s", rec.Code, rec.Body)
+	}
+	if list, _ := s.Tasks.JudgementsForTask(task); len(list) != 2 || list[1].Actor.ID != tasks.LocalOwner.ID {
+		t.Fatalf("judgements = %+v", list)
+	}
+}
+
+// With no user account yet, a reply through the gated listener without a sign-in is taken, as someone holding the
+// access code, with no role.
+func TestAnUnsignedGatedReplyIsTakenUntilAUserExists(t *testing.T) {
+	s, _ := accessServer(t)
+	fakeAgentDesktop(t, s)
+	task := askedQuestion(t, s, tasks.OutcomeQuery, "Which month?")
 	if rec := sendAs(t, s, url.Values{"id": {"box"}, "content": {"October"}}, true, ""); rec.Code != http.StatusOK {
 		t.Fatalf("reply: %d %s", rec.Code, rec.Body)
 	}
-	list, _ := s.Tasks.JudgementsForTask(task)
-	if len(list) != 2 || list[1].Actor.ID != accessCodeHolder.ID || len(list[1].Actor.Roles) != 0 {
-		t.Fatalf("judgements = %+v", list)
+	j := onlyJudgement(t, s, task)
+	if j.Actor.ID != accessCodeHolder.ID || len(j.Actor.Roles) != 0 {
+		t.Fatalf("judgement = %+v", j)
+	}
+}
+
+// signInRefusal refuses only the access-code holder, only once a user exists, and fails closed on a store error.
+func TestSignInRefusal(t *testing.T) {
+	s, store := accessServer(t)
+	if err := s.signInRefusal(accessCodeHolder); err != nil {
+		t.Fatalf("no users yet: %v", err)
+	}
+	if _, err := store.CreateUser("ravi", "password-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	var refused *ApprovalRefusedError
+	if err := s.signInRefusal(accessCodeHolder); !errors.As(err, &refused) || refused.Status != http.StatusUnauthorized {
+		t.Fatalf("with a user: %v", err)
+	}
+	if err := s.signInRefusal(tasks.LocalOwner); err != nil {
+		t.Fatalf("the local owner: %v", err)
+	}
+	s.SetAccess(nil)
+	if err := s.signInRefusal(accessCodeHolder); err != nil {
+		t.Fatalf("no access store: %v", err)
 	}
 }
 

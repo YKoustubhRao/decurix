@@ -260,3 +260,75 @@ class TheManifestIsWrittenWhole(Base):
             retention.mark_labelled(A, "final")
         self.assertEqual((folder / "run.json").read_text(encoding="utf-8"), before)
         self.assertEqual([p.name for p in folder.iterdir() if p.name.endswith(".tmp")], [])
+
+
+class TheRulesHash(Base):
+    """worker.rules_sha: soul notes the rules' hash beside its trace (trace.Rules); the manifest copies it."""
+
+    def test_the_manifest_names_the_rules_soul_noted(self):
+        traces = self.root / "ai" / "traces"
+        traces.mkdir(parents=True)
+        sha = "sha256:" + "ab" * 32
+        (traces / f"{A}.rules").write_text(sha + "\n", encoding="utf-8")
+        data = retention.write_manifest(A)
+        self.assertEqual(data["rules_sha"], sha)
+        stored = json.loads((self.root / "runs" / A / "run.json").read_text(encoding="utf-8"))
+        self.assertEqual(stored["rules_sha"], sha)
+
+    def test_no_note_or_a_malformed_one_is_empty(self):
+        self.assertEqual(retention.write_manifest(A)["rules_sha"], "")
+        traces = self.root / "ai" / "traces"
+        traces.mkdir(parents=True)
+        (traces / f"{B}.rules").write_text("Rule one: never pay without an order.\n", encoding="utf-8")
+        self.assertEqual(retention.rules_sha(B), "")
+
+
+class TheTraces(Base):
+    """Soul's traces (up to 32 MB a task) are pruned once their run is exported and a few days old; never before."""
+
+    def trace(self, task, age):
+        traces = self.root / "ai" / "traces"
+        traces.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for suffix in (".jsonl", ".rules"):
+            path = traces / f"{task}{suffix}"
+            path.write_text("x\n", encoding="utf-8")
+            then = time.time() - age
+            os.utime(path, (then, then))
+            paths.append(path)
+        return paths
+
+    def test_only_an_exported_old_trace_goes(self):
+        old = retention.TRACE_KEEP_SECONDS + 60
+        exported_old = self.trace(A, old)
+        unexported_old = self.trace(B, old)
+        exported_new = self.trace(C, 60)
+        for task in (A, B, C):
+            retention.mark_labelled(task, "final")
+        self.export(A)
+        self.export(C)
+        self.assertEqual(retention.prune_traces(), 2)
+        self.assertFalse(any(p.exists() for p in exported_old))
+        self.assertTrue(all(p.exists() for p in unexported_old))
+        self.assertTrue(all(p.exists() for p in exported_new))
+
+    def test_a_label_after_the_export_holds_it_again(self):
+        paths = self.trace(A, retention.TRACE_KEEP_SECONDS + 60)
+        retention.mark_labelled(A, "final")
+        self.export(A)
+        retention.mark_labelled(A, "reply")
+        self.assertEqual(retention.prune_traces(), 0)
+        self.assertTrue(all(p.exists() for p in paths))
+
+    def test_an_unlabelled_never_exported_trace_is_kept(self):
+        paths = self.trace(A, retention.TRACE_KEEP_SECONDS + 60)
+        self.assertEqual(retention.prune_traces(), 0)
+        self.assertTrue(all(p.exists() for p in paths))
+
+    def test_the_end_of_a_run_prunes_and_no_folder_raises_nothing(self):
+        self.assertEqual(retention.prune_traces(), 0)
+        paths = self.trace(A, retention.TRACE_KEEP_SECONDS + 60)
+        retention.mark_labelled(A, "final")
+        self.export(A)
+        retention.write_manifest(B)
+        self.assertFalse(any(p.exists() for p in paths))

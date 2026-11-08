@@ -173,7 +173,7 @@ func TestAnApprovedFixThatWorkedIsAskedAgainWithTheEarlierYesShown(t *testing.T)
 	h2.L1 = l1
 	h2.Workspace, r2.Dir, h2.project = h.Workspace, r.Dir, h.project // the same project
 	got := h2.Diagnose(ctx, failure, &Design{}, &EnvFacts{}, &Toolchain{})
-	if got.Action() != diag.Action() || !got.proven || !strings.Contains(got.Cause, "you approved this command for it on") {
+	if got.Action() != diag.Action() || !got.proven || !strings.Contains(got.Cause, "a record on this machine says this command was approved for it on") {
 		t.Fatalf("Diagnose = %+v, want the earlier fix with the earlier yes shown", got)
 	}
 	if h2.applyFix(ctx, r2, got, &BuildReport{}) || h2.pending == nil {

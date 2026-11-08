@@ -38,6 +38,12 @@ class WhatAScriptMayDo(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertIn("acts beyond the work folder", playbooks._sound(script, language))
 
+    def test_the_desktops_own_control_ports_are_not_a_scripts(self):
+        # The agent's, soul's and the approval gate's ports (8081, 4900, 8083), named like the other local ports.
+        for port in ("8081", "4900", "8083"):
+            with self.subTest(port=port):
+                self.assertEqual(playbooks.ungated_effect(f"print('http://127.0.0.1:{port}/x')\n"), f":{port}")
+
     def test_a_proof_has_no_screen_no_network_and_a_store_of_its_own(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = playbooks.proof_env(Path(tmp))

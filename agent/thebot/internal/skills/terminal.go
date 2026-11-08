@@ -213,7 +213,9 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	// one a model chose mid-loop.
 	// Everything this skill emits about the command goes through the operator's one filter (withholdFor).
 	clean := withholdIn(rc, subtask.Step, command)
-	if concern := safety.AssessCommand(command); concern != nil && !rc.IsApproved(command) {
+	cwd := rc.Dir()
+	// Read against the folder it runs in: a relative path means what it means there.
+	if concern := safety.AssessCommand(command, cwd); concern != nil && !rc.IsApproved(command) {
 		rc.Logf("terminal", "approval needed before `%s` - %s", clean(command), concern.Reason)
 		res := NeedsApproval(subtask, t.Name(), command, concern.Reason, nil)
 		res.Meta["actionShown"] = clean(command)
@@ -222,7 +224,6 @@ func (t *TerminalSkill) Run(rc RunContext, subtask Subtask) (Result, error) {
 	}
 
 	rc.Logf("terminal", "command (%s): %s", source, clean(command))
-	cwd := rc.Dir()
 	rc.Logf("terminal", "cwd: %s", cwd)
 
 	ctx, cancel := context.WithTimeout(rc.Ctx, terminalTimeout)

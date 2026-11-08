@@ -106,3 +106,35 @@ jobs:
       - name: Ollama setup .env handling (PowerShell twin)
         shell: pwsh
         run: ./scripts/testing/ollama-env.test.ps1
+      # The public link's tunnel is started again when it exits, with backoff, and never once it is turned off (B-29).
+      # The PowerShell twin's stub is a .cmd file, so it runs where Windows PowerShell does: by hand on Windows.
+      - name: Tunnel restart loop
+        run: bash scripts/testing/lan-tunnel.test.sh
+
+  # A red main is said where the owner sees it: an open issue labelled ci-red, updated on every red run and closed by
+  # the next green one (CI on main was red for two days unseen, 2026-11-05 to 2026-11-07; branch protection needs a
+  # paid plan for a private repository). Pushes to other branches and pull requests are left to their own checks.
+  main-health:
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [go, thebot, python, javascript, scripts]
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      RESULTS: go=${{ needs.go.result }} thebot=${{ needs.thebot.result }} python=${{ needs.python.result }} javascript=${{ needs.javascript.result }} scripts=${{ needs.scripts.result }}
+      RED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+    steps:
+      - name: Open, update or close the ci-red issue
+        run: |
+          gh label create ci-red --color B60205 --description "CI on main is failing" 2>/dev/null || true
+          open=$(gh issue list --label ci-red --state open --json number --jq '.[0].number')
+          if [ "$RED" = "true" ]; then
+            body="CI on main failed at ${GITHUB_SHA::7}: $RESULTS"$'\n\n'"$RUN_URL"
+            if [ -n "$open" ]; then gh issue comment "$open" --body "$body"
+            else gh issue create --label ci-red --title "main is red" --body "$body"; fi
+          elif [ -n "$open" ]; then
+            gh issue close "$open" --comment "Green again at ${GITHUB_SHA::7}: $RUN_URL"
+          fi

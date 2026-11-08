@@ -383,7 +383,8 @@ func (h *Harness) fixScope() string {
 }
 
 // provenFix is the proven fix recorded for the failure signature sig in this project, as a proposal to ask about
-// again, with when the person approved it. None when NoProvenFixes.
+// again, with when the record says it was approved. The record is an L1 row the worker's own user can write, so the
+// person is told what the record says, never that they approved it. None when NoProvenFixes.
 func (h *Harness) provenFix(ctx context.Context, sig string) (Diagnosis, bool) {
 	if h.NoProvenFixes || h.L1 == nil || sig == "" {
 		return Diagnosis{}, false
@@ -394,8 +395,8 @@ func (h *Harness) provenFix(ctx context.Context, sig string) (Diagnosis, bool) {
 	}
 	return Diagnosis{
 		Kind: DiagEnvironment,
-		Cause: "the same failure as before; you approved this command for it on " + at.UTC().Format("2006-01-02") +
-			", and the check passed after it",
+		Cause: "the same failure as before; a record on this machine says this command was approved for it on " +
+			at.UTC().Format("2006-01-02") + " and the check passed after it",
 		FixCommands: []string{command},
 		Source:      "memory:approved",
 		Signature:   sig,

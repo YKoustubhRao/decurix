@@ -21,18 +21,93 @@ const planSystem = `A computer worker is about to start changing things for a ta
 - "scope": the records the work covers - what kind, and how their set is found (a serial range, the rows of a period, the files of a folder).
 - "sources": every place facts about those records may be kept, read so far or not (files, folders, sheets, chats, mail, web apps, portals, the person).
 - "outputs": what it will write or enter, and where.
-- "commits": the actions that cannot be taken back once done - filing, paying, sending a message, submitting to another system - in order; empty when there are none. Saving or changing files on this computer is not one: it can be put back.
+- "commits": the actions that cannot be taken back once done - filing, paying, sending a message, submitting to another system - in order; empty when there are none. Saving or changing files on this computer is not one: it can be put back. Each is done only after the person's OK, asked when the work reaches it. For each: "what" it does, and "control": the words on the button or control that does it, as the screen shows them ("" when not known yet).
 - "ask": one short question for the person, only about what the request and what was read leave open about the scope and the sources (anywhere else facts are kept, which period, which records) - or empty.
-Reply with JSON only: {"scope": "...", "sources": ["..."], "outputs": ["..."], "commits": ["..."], "ask": "..."}`
+Reply with JSON only: {"scope": "...", "sources": ["..."], "outputs": ["..."], "commits": [{"what": "...", "control": "..."}], "ask": "..."}`
 
-// workPlan is the plan of a goal's work, as the model wrote it, and the person's answer to it.
+// workPlan is the plan of a goal's work, as the model wrote it, and the person's answer to it. Commits are its steps
+// made with the person's OK first; Controls[i] is the words of the control Commits[i] is made with ("" when the plan
+// did not know them, or past the end). Promised is set when the plan was put to the person with its commits - "each
+// with your OK first" - and from then on every gui command of the goal is told to hold those presses for the gate
+// (guiEnv, planAskFirst): the person was told it, so it is kept, whether or not the gate would ask on its own.
 type workPlan struct {
 	Scope      string   `json:"scope"`
 	Sources    []string `json:"sources"`
 	Outputs    []string `json:"outputs"`
 	Commits    []string `json:"commits"`
+	Controls   []string `json:"controls,omitempty"`
 	Ask        string   `json:"ask"`
 	PersonSaid string   `json:"personSaid,omitempty"`
+	Promised   bool     `json:"promised,omitempty"`
+}
+
+// planReply is the plan as the model writes it: a commit is {"what", "control"}, or (an older shape, or a model that
+// did not follow it) a plain string, whose control is then not known.
+type planReply struct {
+	Scope   string            `json:"scope"`
+	Sources []string          `json:"sources"`
+	Outputs []string          `json:"outputs"`
+	Commits []json.RawMessage `json:"commits"`
+	Ask     string            `json:"ask"`
+}
+
+// parsePlan reads the model's plan; ok is false when it is not one (no JSON, or no scope).
+func parsePlan(text string) (workPlan, bool) {
+	if i, j := strings.Index(text, "{"), strings.LastIndex(text, "}"); i >= 0 && j > i {
+		text = text[i : j+1]
+	}
+	var r planReply
+	if json.Unmarshal([]byte(text), &r) != nil || strings.TrimSpace(r.Scope) == "" {
+		return workPlan{}, false
+	}
+	plan := workPlan{Scope: r.Scope, Sources: r.Sources, Outputs: r.Outputs, Ask: r.Ask}
+	for _, raw := range r.Commits {
+		var what string
+		var step struct {
+			What    string `json:"what"`
+			Control string `json:"control"`
+		}
+		switch {
+		case json.Unmarshal(raw, &what) == nil:
+		case json.Unmarshal(raw, &step) == nil:
+			what = step.What
+			if strings.TrimSpace(what) == "" {
+				what = step.Control
+			}
+		default:
+			continue
+		}
+		if what = strings.TrimSpace(what); what == "" {
+			continue
+		}
+		plan.Commits = append(plan.Commits, what)
+		plan.Controls = append(plan.Controls, strings.Join(strings.Fields(step.Control), " "))
+	}
+	return plan, true
+}
+
+// planAskFirstEnv names, for the gui command, the presses the plan of the work made with the person's OK first
+// (decurix_agent/computer/core.py PLAN_ASK_FIRST_ENV): the gui command puts such a press to the approval gate, as the
+// gate puts a Pay or a Send.
+const planAskFirstEnv = "DECURIX_PLAN_ASK_FIRST"
+
+// planAskFirst is the planAskFirstEnv entry for the goal's gui commands, or "" when no plan with commits was put to
+// the person. One control per commit; "" for one whose control is not known, which holds every committing press.
+func (st *operatorState) planAskFirst() string {
+	if st.Plan == nil || !st.Plan.Promised || len(st.Plan.Commits) == 0 {
+		return ""
+	}
+	controls := make([]string, len(st.Plan.Commits))
+	for i := range controls {
+		if i < len(st.Plan.Controls) {
+			controls[i] = st.Plan.Controls[i]
+		}
+	}
+	b, err := json.Marshal(controls)
+	if err != nil {
+		return planAskFirstEnv + `=[""]`
+	}
+	return planAskFirstEnv + "=" + string(b)
 }
 
 // changingToolRe is a command of the worker's tools that changes something: typing or choosing on the screen, writing
@@ -90,12 +165,8 @@ func (o *OperatorSkill) planBeforeChange(rc RunContext, st *operatorState, comma
 		rc.Logf("operator", "could not write the plan of the work: %v", err)
 		return ""
 	}
-	text := resp.Text
-	if i, j := strings.Index(text, "{"), strings.LastIndex(text, "}"); i >= 0 && j > i {
-		text = text[i : j+1]
-	}
-	var plan workPlan
-	if json.Unmarshal([]byte(text), &plan) != nil || strings.TrimSpace(plan.Scope) == "" {
+	plan, ok := parsePlan(resp.Text)
+	if !ok {
 		rc.Logf("operator", "the plan of the work could not be read")
 		return ""
 	}
@@ -108,6 +179,8 @@ func (o *OperatorSkill) planBeforeChange(rc RunContext, st *operatorState, comma
 		return ""
 	}
 	st.PlanQuestion = true
+	// Told "each with your OK first", the person is asked before each of them: the plan's word is kept in code.
+	st.Plan.Promised = len(plan.Commits) > 0
 	return planQuestion(plan)
 }
 

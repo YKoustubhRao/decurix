@@ -16,13 +16,12 @@ import (
 // child of the home, and says why where it is. Everything else that moves files in or out of a desktop's home goes
 // through homefs.go, as the worker (B-01).
 var rootSideCopies = []string{
-	"claudelogin.go:readFileFromContainer", // the login container's fixed credentials path
-	"missingapps.go:copyMissingFile",       // a direct child of the home
-	"practice.go:CreatePractice",           // a practice desktop that has never started
-	"practice.go:appendBrowserFlags",       // /opt, before the practice desktop starts
-	"practice.go:copyOut",                  // fixed root-owned paths, and the frozen practice desktop's collection
-	"practice.go:restoreSnapshot",          // a practice desktop that has never started
-	"workerexec.go:putGateKey",             // the gate key, before the first start
+	"missingapps.go:copyMissingFile", // a direct child of the home
+	"practice.go:CreatePractice",     // a practice desktop that has never started
+	"practice.go:appendBrowserFlags", // /opt, before the practice desktop starts
+	"practice.go:copyOut",            // fixed root-owned paths, and the frozen practice desktop's collection
+	"practice.go:restoreSnapshot",    // a practice desktop that has never started
+	"workerexec.go:putGateKey",       // the gate key, before the first start
 }
 
 // TestRootSideCopiesStayWhereTheyAreAllowed walks the package's sources for calls to Docker's root-side copy and

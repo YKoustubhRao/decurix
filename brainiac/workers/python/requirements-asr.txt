@@ -1,10 +1,10 @@
 # Speech for brainiac_worker.py: sherpa-onnx (VAD + offline ASR) on its own
-# bundled ONNX Runtime, no torch. numpy is left to pip: 2.5 needs Python 3.12+,
-# so a 3.11 interpreter gets the newest numpy that still supports it.
+# bundled ONNX Runtime, no torch. numpy is pinned: 2.5 needs Python 3.12+, so
+# a 3.11 interpreter gets 2.4, the last numpy line that supports it. Brainiac
+# installs only the hash-locked form of this file (locks/asr-cp3N-<target>.txt,
+# made by brainiac/scripts/lock_worker.py), transitive dependencies included,
+# with pip --require-hashes; a machine with no lock for it is refused (G-09).
+# pip runs with no API keys or tokens in its environment.
 sherpa-onnx==2.0.0
-numpy>=1.24,<3
-# TODO(supply chain): this file and requirements-ocr.txt should be fully
-# pinned, transitive dependencies included, with hashes (pip-compile
-# --generate-hashes on a networked machine, for Python 3.11-3.14 on each OS);
-# pip then checks every download. Until then only the packages above are
-# pinned. pip runs with no API keys or tokens in its environment.
+numpy==2.4.6 ; python_version < "3.12"
+numpy==2.5.4 ; python_version >= "3.12"

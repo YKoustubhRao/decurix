@@ -142,7 +142,10 @@ func TestRunFindsVerifiesAndSkipsWhatTheCatalogHas(t *testing.T) {
 }
 
 func TestOnlyListedUploadersAreTrusted(t *testing.T) {
-	for repo, want := range map[string]bool{"unsloth/Nova-GGUF": true, "ggml-org/Nova-GGUF": true, "Qwen/Qwen3.9-4B-GGUF": true,
+	// First parties only: a quantiser's or a mirror's copy is a person's choice.
+	for repo, want := range map[string]bool{"Qwen/Qwen3.9-4B-GGUF": true, "google/gemma-5-4b-it-GGUF": true, "tencent/Hy-MT3-GGUF": true,
+		"unsloth/Nova-GGUF": false, "ggml-org/Nova-GGUF": false, "bartowski/Nova-GGUF": false, "mradermacher/Nova-GGUF": false,
+		"lmstudio-community/Nova-GGUF": false, "openai-community/gpt2": false,
 		"someone/Qwen3.9-4B-GGUF": false, "qwen-official/Qwen3.9-4B-GGUF": false, "unsloth2/Nova-GGUF": false} {
 		if got := TrustedUploader(repo); got != want {
 			t.Errorf("TrustedUploader(%s) = %v", repo, got)

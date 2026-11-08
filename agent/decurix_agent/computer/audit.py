@@ -105,6 +105,8 @@ def keep_observation(session_id, observation):
             tmp = folder / f".{name}.{uuid.uuid4().hex[:6]}.tmp"
             tmp.write_bytes(data)
             os.replace(tmp, path)
+            from decurix_agent.computer import broker
+            broker.mirror(path, data)  # (broker mode: the caller's copy too)
         return name
     except Exception as exc:  # noqa: BLE001 - decoration: the action has happened, its observation is only dropped
         log(f"Could not keep the observation of an action: {exc}")

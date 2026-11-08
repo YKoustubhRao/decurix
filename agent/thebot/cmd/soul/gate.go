@@ -84,6 +84,9 @@ func gateAsk(cp *scheduler.Checkpoint) (refused bool) {
 	if !ok {
 		return false
 	}
+	if cp.OnScreen && gateAdopt(cp) {
+		return false
+	}
 	var said struct {
 		Allowed bool `json:"allowed"`
 		Refused bool `json:"refused"`
@@ -107,6 +110,27 @@ func gateAsk(cp *scheduler.Checkpoint) (refused bool) {
 		cp.GateRequest, cp.GateFingerprint = said.Request.ID, said.Request.Fingerprint
 	}
 	return false
+}
+
+// gateAdopt makes cp's request the one the gate already holds for the on-screen action the paused gui command was
+// stopped on (cp.OnScreen: gui's own exit code and marker), so the person is asked once, in the gate's words for that
+// action, and their yes is that action's grant. Found live (2026-11-08): soul asked the gate about the command as
+// well; that second request replaced the action's, the person's yes granted the command, soul took that grant, and the
+// gui command it then ran was the action again, with no grant - the person was asked twice for one press. The grant
+// is left in the gate (no fingerprint is kept): the gui command TheBot runs on the yes takes it, and it stands for
+// exactly that action (its fingerprint binds what is pressed and what the form sends). false when the gate holds no
+// pending request: the command is then asked about as before.
+func gateAdopt(cp *scheduler.Checkpoint) bool {
+	var said struct {
+		Pending *struct {
+			ID string `json:"id"`
+		} `json:"pending"`
+	}
+	if !gateCall(map[string]any{"op": "pending"}, 15*time.Second, &said) || said.Pending == nil || said.Pending.ID == "" {
+		return false
+	}
+	cp.GateRequest, cp.GateFingerprint = said.Pending.ID, ""
+	return true
 }
 
 // gateRefusalNote is what the operator is told when the gate refused to ask about its action: a no to that one

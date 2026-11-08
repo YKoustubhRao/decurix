@@ -31,12 +31,11 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Provider != "ollama" {
 		t.Errorf("Provider default = %q, want ollama", cfg.Provider)
 	}
-	// Locks in the real deployed default - qwen2.5-coder:14b, not
-	// devstral-small-2:24b (which repeatedly crashed on VRAM cold-load
-	// during testing). This test exists specifically so this value can
-	// never silently drift from what VMDockerfile actually ships again.
-	if cfg.ChatModel != "qwen2.5-coder:14b" {
-		t.Errorf("ChatModel default = %q, want qwen2.5-coder:14b", cfg.ChatModel)
+	// Locks in the control plane's default (internal/ollama.Model), which
+	// start_agent_terminal.sh and the Python agent's config.py also fall back
+	// to, so the four never silently drift apart again.
+	if cfg.ChatModel != "devstral-small-2:24b" {
+		t.Errorf("ChatModel default = %q, want devstral-small-2:24b", cfg.ChatModel)
 	}
 }
 

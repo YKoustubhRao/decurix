@@ -126,7 +126,7 @@ class B1_AForgedWordBacksNothing(ThePersonsWord):
             self.assertEqual(records.unbacked_picks(TASK), [])
 
     def test_org_knowledge_stays_a_source(self):
-        with mock.patch.object(records, "_org_text", lambda: "Rule (org): these bills go to cost centre General"):
+        with mock.patch.object(records, "_org_text", lambda task_id=None: "Rule (org): these bills go to cost centre General"):
             self.assertEqual(records.unbacked_picks(TASK), [])
 
 

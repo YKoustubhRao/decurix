@@ -28,8 +28,8 @@ It checks, in order:
      still there, and the home directory intact
 
 Steps 1-5 must pass. Step 6 measures the desktop's model and prints a
-score; it is what the numbers in task_runner.py and mailtrigger.Render
-were measured with.
+score; it is what the numbers in task_runner.py (removed 2026-11-07) and
+mailtrigger.Render were measured with.
 """
 
 import argparse

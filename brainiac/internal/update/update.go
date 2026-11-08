@@ -13,15 +13,18 @@
 //  5. check every changed role with answers code can verify (a canary) and
 //     stage the plan that passed (update-staged.json beside lock.next.json).
 //     A model that fails is set aside for 30 days and the next best is tried.
-//  6. Promote, a person's command, switches to the staged plan, keeping the
-//     old lock as lock.prev.json; a newer llama.cpp the plan needs moves with
-//     it. A running serve follows lock.json.
+//  6. Promote switches to the staged plan, keeping the old lock as
+//     lock.prev.json; a newer llama.cpp the plan needs moves with it. A
+//     person at the machine calls it, or, on an appliance only, a release
+//     signed with the release key that names the staged lock, after a local
+//     parity eval of it passed (release.go). A running serve follows lock.json.
 //
 // Ratings rest on independent leaderboards, never on a person's opinion or
 // a maker's own card alone (a card only says what the maker calls its model). The canary does not
 // judge quality - it catches a model that does not load, cannot see, or
-// answers in the wrong template - which is why a person, or in future a
-// signed release, decides whether the box's judgement model changes.
+// answers in the wrong template - which is why a person, or a signed release
+// backed by a local parity eval, decides whether the box's judgement model
+// changes.
 package update
 
 import (
@@ -107,6 +110,10 @@ type Options struct {
 	Check     func(ctx context.Context, lock *install.Lock, cat *catalog.Catalog, roles []string) error
 	WorkerDir string
 	Log       io.Writer
+	// SignedOnly is an appliance: its catalog changes only by a signed
+	// release, so a cycle reports what it found and adopts nothing, and an
+	// unsigned overlay is not used (catalog.ReadTrustedOverlay).
+	SignedOnly bool
 
 	// The rest are replaced by tests.
 	Hub     *hub.Client
@@ -116,6 +123,10 @@ type Options struct {
 	Board   func(ctx context.Context) *bench.Board
 	Cards   func(ctx context.Context, repo string) ([]bench.Score, error)
 	Install func(ctx context.Context, plan *selector.Plan, opt install.Options) (*install.Lock, error)
+	// Pin fills the commit and sha256 of what the cycle adds to the
+	// overlay, from metadata alone (default install.NewPinner().Overlay):
+	// the installer takes nothing unpinned.
+	Pin func(ctx context.Context, o *catalog.Overlay) error
 }
 
 func (o Options) withDefaults() Options {
@@ -134,6 +145,14 @@ func (o Options) withDefaults() Options {
 	w := o.Web
 	if o.Scout == nil {
 		o.Scout = scout.Run
+	}
+	if o.Pin == nil {
+		hf := o.Hub
+		o.Pin = func(ctx context.Context, ov *catalog.Overlay) error {
+			p := install.NewPinner()
+			p.HF = hf
+			return p.Overlay(ctx, ov)
+		}
 	}
 	if o.Board == nil {
 		o.Board = func(ctx context.Context) *bench.Board { return bench.Collect(ctx, w, bench.LiveBenchDate) }
@@ -264,6 +283,8 @@ type cycle struct {
 	logf    func(string, ...any)
 	// pinModels are the adopted models that need the newer llama.cpp.
 	pinModels []string
+	// pinnedRuntime is the newer llama.cpp build with its assets' sha256.
+	pinnedRuntime *catalog.Runtime
 }
 
 // Run is one cycle. It returns an error only when it could not look at all
@@ -278,8 +299,12 @@ func Run(ctx context.Context, opt Options) (*Result, error) {
 	if c.lock, err = install.ReadLock(c.st); err != nil {
 		return nil, err
 	}
-	if c.overlay, err = catalog.ReadOverlay(c.st.Path(OverlayFile)); err != nil {
+	var note string
+	if c.overlay, note, err = catalog.ReadTrustedOverlay(c.st.Path(OverlayFile), opt.SignedOnly); err != nil {
 		return nil, err
+	}
+	if note != "" {
+		c.res.Notes = append(c.res.Notes, note)
 	}
 	if c.cat, err = catalog.Merge(c.overlay); err != nil {
 		return nil, fmt.Errorf("%s: %w", OverlayFile, err)
@@ -306,9 +331,44 @@ func Run(ctx context.Context, opt Options) (*Result, error) {
 // decide plans with the new overlay and, when applying, installs, checks
 // and switches.
 func (c *cycle) decide(ctx context.Context, overlay catalog.Overlay, pin string) {
+	changing := len(c.res.Adopted) > 0 || pin != ""
+	if c.opt.Apply && changing && c.opt.SignedOnly {
+		c.set(OutcomeCurrent, "on an appliance the catalog changes only by a signed release; what this cycle found is in the report, nothing is installed")
+		return
+	}
+	if c.opt.Apply && changing {
+		// The installer takes only pinned sources: pin what is added now,
+		// from the Hub's and GitHub's metadata, before planning with it.
+		adopted := map[string]bool{}
+		for _, a := range c.res.Adopted {
+			adopted[a.Model] = true
+		}
+		var toPin catalog.Overlay
+		var at []int
+		for i, m := range overlay.Models {
+			if adopted[m.ID] {
+				toPin.Models, at = append(toPin.Models, m), append(at, i)
+			}
+		}
+		if pin != "" {
+			toPin.Runtime = &catalog.Runtime{LlamaCppRepo: c.cat.Runtime.LlamaCppRepo, LlamaCppTag: pin}
+		}
+		if err := c.opt.Pin(ctx, &toPin); err != nil {
+			c.set(OutcomeFailed, "could not pin the new models to a commit and sha256 (nothing changed): %v", err)
+			return
+		}
+		overlay.Models = append([]catalog.Model(nil), overlay.Models...)
+		for k, i := range at {
+			overlay.Models[i] = toPin.Models[k]
+		}
+		c.pinnedRuntime = toPin.Runtime
+	}
 	planned := overlay
 	if pin != "" {
 		planned.Runtime = &catalog.Runtime{LlamaCppRepo: c.cat.Runtime.LlamaCppRepo, LlamaCppTag: pin}
+		if c.pinnedRuntime != nil {
+			planned.Runtime = c.pinnedRuntime
+		}
 	}
 	if c.opt.Apply && len(c.res.Adopted) > 0 {
 		// The models are knowledge, kept even if this machine cannot switch
@@ -671,8 +731,6 @@ func (c *cycle) withoutRejected(cat *catalog.Catalog) *catalog.Catalog {
 	return &out
 }
 
-// promote makes the checked lock the running one, keeping the old as
-// lock.prev.json, and deletes the downloads neither of them uses.
 // alreadyStaged reports whether the plan with these changes is the one
 // staged now, still in lock.next.json as it was checked.
 func (c *cycle) alreadyStaged(changes []Change) bool {
@@ -692,11 +750,14 @@ func (c *cycle) alreadyStaged(changes []Change) bool {
 // ErrNothingStaged is a promote with no checked plan waiting.
 var ErrNothingStaged = errors.New("no checked plan is staged: run `brainiac update --apply` first")
 
-// Promote is a person switching to the staged plan: lock.next.json becomes
-// lock.json (the old one is kept as lock.prev.json), a newer llama.cpp the
-// plan needs becomes the pin, and downloads no kept lock uses are deleted.
-// It refuses a lock.next.json that is not the one that passed its check.
-func Promote(st *store.Store, now time.Time) (*install.Lock, Staged, error) {
+// Promote switches to the staged plan: lock.next.json becomes lock.json
+// (the old one is kept as lock.prev.json), a newer llama.cpp the plan needs
+// becomes the pin, and downloads no kept lock uses are deleted. It is the
+// only place a staged plan becomes served. It refuses a lock.next.json that
+// is not the one that passed its check, and is allowed only to a person at
+// this machine (opt.ByHand, never on an appliance) or to a signed release
+// naming that lock whose local parity eval passed (releaseGate, O-3.6).
+func Promote(st *store.Store, now time.Time, opt PromoteOptions) (*install.Lock, Staged, error) {
 	var s Staged
 	if err := st.ReadJSON(StagedFile, &s); err != nil {
 		return nil, s, ErrNothingStaged
@@ -713,6 +774,9 @@ func Promote(st *store.Store, now time.Time) (*install.Lock, Staged, error) {
 	if err != nil {
 		return nil, s, err
 	}
+	if err := releaseGate(st, s, cur, &next, opt); err != nil {
+		return nil, s, err
+	}
 	c := &cycle{st: st, now: now, lock: cur, logf: func(string, ...any) {}}
 	if err := c.promote(&next, next.Plan); err != nil {
 		return nil, s, err
@@ -727,7 +791,10 @@ func Promote(st *store.Store, now time.Time) (*install.Lock, Staged, error) {
 			return &next, s, fmt.Errorf("switched, but the llama.cpp pin could not be saved: %w", err)
 		}
 	}
-	_ = os.Remove(st.Path(StagedFile))
+	// The release and its parity eval named this lock; they are spent.
+	for _, f := range []string{StagedFile, ReleaseFile, ReleaseFile + ".sig", ParityFile} {
+		_ = os.Remove(st.Path(f))
+	}
 	state := ReadState(st)
 	state.History = append(state.History, Event{At: now.UTC(), Outcome: OutcomePromoted, Why: s.Why, Changes: s.Changes})
 	if n := len(state.History); n > 50 {
@@ -737,6 +804,8 @@ func Promote(st *store.Store, now time.Time) (*install.Lock, Staged, error) {
 	return &next, s, nil
 }
 
+// promote makes the checked lock the running one, keeping the old as
+// lock.prev.json, and deletes the downloads neither of them uses.
 func (c *cycle) promote(next *install.Lock, plan *selector.Plan) error {
 	var oldPrev install.Lock
 	hadPrev := c.st.ReadJSON(PrevLock, &oldPrev) == nil

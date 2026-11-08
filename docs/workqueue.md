@@ -14,8 +14,8 @@ adapters that connect it to desktops, task records and the skill registry live i
 | Field | Meaning |
 |---|---|
 | `id` | `q` + 16 hex |
-| `request`, `files[]` | what to do, and files written into `/home/headless/work/inbox/<id>` on the worker before the request is sent (the request then names them). At most 20 files, 25 MB together |
-| `required_skill`, `required_role` | optional: the worker must have this skill installed / carry this role (both, when both are given; case-insensitive) |
+| `request`, `files[]` | what to do (at most 64 KiB), and files written into `/home/headless/work/inbox/<id>` on the worker before the request is sent (the request then names them). At most 20 files, 25 MB together |
+| `required_skill`, `required_role` | optional: the skill registry must record the skill as installed on the worker / the worker must carry the registry role (both, when both are given; case-insensitive). Access-store roles (docs/access.md) do not count |
 | `worker` | optional pin: only this worker may take it |
 | `priority` | higher first; equal priority goes oldest first |
 | `not_before` | not sent before this moment |
@@ -51,7 +51,8 @@ Ticks never overlap. Each tick:
 2. **Releases budget-held items** for which some qualifying worker is under its limits again (a new day or month, a
    raised limit).
 3. **Assigns queued items**, highest priority first, skipping those whose `not_before` has not come:
-   - candidates: the pinned worker, else every worker; minus those lacking the skill or role, minus paused ones. None
+   - candidates: the pinned worker, else every desktop but practice and readiness ones; minus those lacking the skill
+     or role, minus paused ones. None
      left: stays `queued`, reason says why ("no worker holds skill x", "worker w is not available").
    - minus those at or over a spend limit. None left: **`held` (`budget`)** with each worker's spend and limit in the
      reason. A busy worker under budget keeps the item `queued` instead - held means "money", not "wait".
@@ -68,8 +69,11 @@ Items that cannot be placed do not block lower-priority items that can go elsewh
 
 Spend is what the task records already hold: each execution's `cost_usd` and `input_tokens + output_tokens`
 (`TaskSpend` sums them per worker since the period's start). **Tokens are metered by the control plane; dollars are
-not** (review 2026-11-03). The model proxy meters tokens per worker per day (`llm_usage`) and enforces token limits
-itself: 402 over the limit, 503 when spend cannot be read. A **dollar limit is only the desktops' self-reported cost**
+not** (review 2026-11-03). The model proxy meters tokens per worker per day (`llm_usage`, `llm.Hub.Metered`); a
+worker's tokens are the larger of that count and its tasks' own reports. The proxy refuses a desktop's hosted call
+while `Dispatcher.OverBudget` names a limit it is at or over, either kind: 402 over a limit, 503 when spend cannot be
+read. Calls that do not pass the proxy (a Claude-harness desktop on the owner's Claude account, a local model) are
+counted only by the desktop's own report. A **dollar limit is only the desktops' self-reported cost**
 (no price is in code); the API (`enforcement` in `GET /api/queue/limits`), the form and the hold reason say so.
 Done items' files are dropped after 7 days. Over budget, an item is **held with a reason, never
 dropped**; it goes back to the queue by itself when a qualifying worker is under its limits again, or a person can
@@ -79,7 +83,8 @@ since the limit is on the worker.
 
 ## HTTP API
 
-Primary listener only (`:8080`, `RegisterLocalRoutes`), writes refused from inside a desktop (`readsForAll`). The
+Primary listener only (`:8080`, `RegisterLocalRoutes`). A desktop may not call it at all, not even to read (it is not
+among the callback routes in `internal/httpapi/guard.go`), and `readsForAll` refuses a write from any container. The
 queue starts work on desktops and spends the owner's model budget: a leaked access code on the tunnelled `:8090`
 must not become a way to run work or raise limits, and a desktop's agent (which may be reading untrusted pages) must
 not queue work for others or change limits. Programs on the host (another system integrating with Decurix) reach
@@ -91,11 +96,12 @@ not queue work for others or change limits. Programs on the host (another system
 | `GET /api/queue?status=&worker=&limit=` | items, newest first (`worker` matches pinned or assigned) |
 | `POST /api/queue/cancel` | `{id, reason}`; a running item's task keeps running on its desktop, the queue stops following it |
 | `POST /api/queue/retry` | `{id}`: `failed`, `not_done`, `cancelled` or `held` back to `queued` (attempts kept); never `done` |
-| `GET/POST /api/queue/capacity` | list / set `{worker, max_concurrent, paused}` |
-| `GET/POST /api/queue/limits` | list / set `{worker or "*", period, max_usd, max_tokens}` |
+| `GET/POST /api/queue/capacity` | list (`{capacity, default_max_concurrent}`) / set `{worker, max_concurrent, paused}` |
+| `GET/POST /api/queue/limits` | list (`{limits, enforcement}`) / set `{worker or "*", period, max_usd, max_tokens}` |
 | `GET /api/queue/spend?worker=` | `{day:{since, usd, tokens, limit}, month:{...}}` |
 
-Errors are curated reasons (`{"error": ...}`), never an internal error's text.
+Bodies are JSON, unknown fields refused. Errors are curated reasons (`{"error": ...}`), never an internal error's
+text. An enqueue, retry, capacity or limit change wakes the dispatcher at once; otherwise it ticks every 10 s.
 
 ## Limits of this version
 
@@ -107,4 +113,9 @@ Errors are curated reasons (`{"error": ...}`), never an internal error's text.
 - **Eligibility is exact skill/role names** from the skill registry; no matching on what a request needs.
 - **Not done is final until a person acts**: no automatic retry of a task that ended `failed` or `not_done` (a second
   run could double an action the first one half did).
-- No page in the web UI yet; the API is the interface.
+- **The Workforce page's Queue tab** (docs/skillhub.md), primary listener only, lists the latest 100 items with
+  Cancel and Retry, adds an item (request, skill, role, pinned worker, priority), sets each worker's capacity and
+  pause, shows each worker's spend today and this month, and sets or removes limits. A worker whose model calls skip
+  the proxy (a legacy Claude or Ollama desktop, a TheBot desktop on the local model: read from the desktop's
+  `harness` and `brain`) shows "not metered", with the tokens its own reports gave, instead of $0.00. Files, `not_before` and
+  `max_attempts` are API only.

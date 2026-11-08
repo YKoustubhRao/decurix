@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/YKoustubhRao/decurix/internal/claudeauth"
 	"github.com/YKoustubhRao/decurix/internal/llm"
 	"github.com/YKoustubhRao/decurix/internal/sqlitedb"
 )
@@ -45,6 +44,45 @@ func readBackup(t *testing.T, body io.Reader) map[string][]byte {
 // manifest - and never the live WAL files, and never a key: a stolen backup
 // must not open the saved secrets (review 2026-11-02 found it asserting the
 // opposite, that llm.key was in it).
+// TestTheLegacyClaudeLoginIsEmptied checks that a database an older build left with a Claude Code login in it is
+// emptied of it by the appended migration step, and that a new database gets the table, empty.
+func TestTheLegacyClaudeLoginIsEmptied(t *testing.T) {
+	db, err := sqlitedb.Open(filepath.Join(t.TempDir(), sqlitedb.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// As the removed claudeauth store left it: its first step applied, one login kept.
+	if err := sqlitedb.Migrate(db, "claudeauth", legacyClaudeSession[:1]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO claude_session (id, credentials_json, email, updated_ns) VALUES (1, '{"t":"x"}', '', 1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 2; i++ { // and again, as every start runs it
+		if err := MigrateLegacyClaudeSession(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM claude_session`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("claude_session rows = %d, %v: the old login was kept", n, err)
+	}
+
+	fresh, err := sqlitedb.Open(filepath.Join(t.TempDir(), sqlitedb.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.Close()
+	if err := MigrateLegacyClaudeSession(fresh); err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.QueryRow(`SELECT COUNT(*) FROM claude_session`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("a new database's claude_session = %d rows, %v", n, err)
+	}
+}
+
 func TestBackupHoldsASnapshotAndNoKeys(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("DECURIX_DATA_DIR", dir)
@@ -73,7 +111,7 @@ func TestBackupHoldsASnapshotAndNoKeys(t *testing.T) {
 	}
 
 	// A model key saved sealed, one saved unsealed (a key file that could not
-	// be written), and the Claude Code login, which is always kept as it is.
+	// be written), and a Claude Code login, which is always taken out.
 	sealKey := make([]byte, 32)
 	sealedHub, err := llm.NewHub(db, sealKey)
 	if err != nil {
@@ -87,11 +125,13 @@ func TestBackupHoldsASnapshotAndNoKeys(t *testing.T) {
 		VALUES (?, ?, ?, '', '', 0, 1)`, llm.ProviderAzure, "https://mine.services.ai.azure.com/models", "azure-plain-secret"); err != nil {
 		t.Fatal(err)
 	}
-	logins, err := claudeauth.NewStore(db)
-	if err != nil {
+	// A Claude Code login an older build kept, before the claude harness was removed.
+	if _, err := db.Exec(`CREATE TABLE claude_session (id INTEGER PRIMARY KEY CHECK (id = 1),
+		credentials_json TEXT NOT NULL, email TEXT NOT NULL DEFAULT '', updated_ns INTEGER NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
-	if err := logins.Save(`{"claudeAiOauth":{"accessToken":"oauth-plain-secret"}}`, "me@example.com"); err != nil {
+	if _, err := db.Exec(`INSERT INTO claude_session (id, credentials_json, email, updated_ns) VALUES (1, ?, 'me@example.com', 1)`,
+		`{"claudeAiOauth":{"accessToken":"oauth-plain-secret"}}`); err != nil {
 		t.Fatal(err)
 	}
 

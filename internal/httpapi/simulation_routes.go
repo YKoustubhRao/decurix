@@ -131,7 +131,7 @@ func practiceError(w http.ResponseWriter, err error) {
 	default:
 		var sentence practice.Sentence
 		if errors.As(err, &sentence) {
-			jsonStatusError(w, 409, string(sentence))
+			jsonStatusError(w, 409, refusal(sentence))
 			return
 		}
 		jsonError(w, err)
@@ -368,7 +368,8 @@ func (h *simulationRoutes) list(w http.ResponseWriter, r *http.Request) {
 		qualificationError(w, err)
 		return
 	}
-	jsonResponse(w, map[string]any{"responsibilities": list, "running": h.p.Running()})
+	jsonResponse(w, map[string]any{"responsibilities": list, "running": h.p.Running(),
+		"enable_offered": practiceGrantsUsed, "enable_note": practiceEnableNote()})
 }
 
 // suites lists a responsibility's suites without their bytes.
@@ -477,7 +478,8 @@ func (h *simulationRoutes) evidence(w http.ResponseWriter, r *http.Request) {
 		qualificationError(w, err)
 		return
 	}
-	jsonResponse(w, map[string]any{"run": run, "files": files})
+	jsonResponse(w, map[string]any{"run": run, "files": files,
+		"enable_offered": practiceGrantsUsed, "enable_note": practiceEnableNote()})
 }
 
 // file downloads one evidence file, never rendered inline.
@@ -505,6 +507,16 @@ func (h *simulationRoutes) file(w http.ResponseWriter, r *http.Request) {
 // practiceGrantsUsed is whether anything consumes a practice grant (an unattended start). Until it does, enabling one
 // is refused (authorize).
 const practiceGrantsUsed = false
+
+// practiceEnableNote is what the readiness page shows in place of an "enable" action while practiceGrantsUsed is
+// false, so the person is never offered a button that can only answer 409; "" once grants are used.
+func practiceEnableNote() string {
+	if practiceGrantsUsed {
+		return ""
+	}
+	return "Enabling a practised skill is not offered yet: no worker starts unattended on it today, so there is " +
+		"nothing to enable. A clean run is kept as evidence."
+}
 
 // authorize enables the current revision after a clean run (rechecking that the
 // worker's skill and pins are unchanged), or suspends it. Enabling lets the

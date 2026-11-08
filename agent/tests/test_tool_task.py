@@ -93,6 +93,14 @@ class DoneWithNoEngine(_Worker):
         self.assertIn("wrote total_feb.txt 33.5", reply)
         self.assertIn("Checked against the files it wrote: total_feb.txt holds total 33.5", reply)
         self.assertEqual((kw["kind"], kw["engine"], kw["checked"]), ("final", "tool", True))
+        # Its own verdict says what was checked: the exit code and the files in code, the judge's reading by model.
+        from decurix_agent import verdict
+        v = kw["verdict"]
+        self.assertEqual(verdict.validate(v), [])
+        self.assertEqual((v["verdict"], v["by"], v["basis"]), ("done", "verify", ["code", "model"]))
+        self.assertEqual([(c["id"], c["result"]) for c in v["checks"]],
+                         [("tool.exit", "pass"), ("files.facts", "pass"), ("judge", "pass")])
+        self.assertEqual(v["checks"][1]["refs"], ["total_feb.txt"])
 
         # One small call read the request; the check read the file back, not the screen.
         self.assertEqual(len(self.asked), 1)

@@ -69,9 +69,51 @@ func TestCoreSuiteLoads(t *testing.T) { calibrateSuite(t, "core-v1", 12, 9) }
 // a dropdown the page draws, a list filter) need the practice desktop: the live calibration covers them.
 func TestCoreV2SuiteLoads(t *testing.T) { calibrateSuite(t, "core-v2", 6, 2) }
 
+// TestLearnV1SuiteLoads is the same for the learning-curve suite: it must say carry_state (it runs only as one sequence
+// on one desktop), its two kinds of work interleave, every case's scripted solution passes offline (form posts and a
+// Python one-liner; the office reads before them are the live run's), and the person's answers are the same words in
+// every case that holds them, so the expert teaches the same lesson each time it is asked.
+func TestLearnV1SuiteLoads(t *testing.T) {
+	s := calibrateSuite(t, "learn-v1", 10, 10)
+	if !s.CarryState {
+		t.Fatal("learn-v1 must say carry_state: a learning curve is a sequence on one desktop")
+	}
+	kinds := map[string]int{}
+	answers := map[string]string{}
+	for i, c := range s.Cases {
+		kinds[c.Kind]++
+		if i > 0 && c.Kind == s.Cases[i-1].Kind {
+			t.Errorf("%s follows a case of its own kind: the suite interleaves its two kinds", c.ID)
+		}
+		for _, f := range c.Facts {
+			if a, ok := answers[f.ID]; ok && a != f.Answer {
+				t.Errorf("%s: the fact %s answers otherwise than in an earlier case", c.ID, f.ID)
+			}
+			answers[f.ID] = f.Answer
+		}
+	}
+	if len(kinds) != 2 || kinds["doc_to_record"] != 5 || kinds["reconcile"] != 5 {
+		t.Fatalf("learn-v1 is five cases of each of two kinds: %v", kinds)
+	}
+	// Each kind's first case is where the lesson is taught (its fact is required); later cases hold it as not required,
+	// so a worker that remembers asks nothing and one that asks again is answered the same and counted "other".
+	seen := map[string]bool{}
+	for _, c := range s.Cases {
+		for _, f := range c.Facts {
+			if f.ID == "invoice-number" {
+				continue // the missing input: required wherever it is
+			}
+			if f.IsRequired() == seen[f.ID] {
+				t.Errorf("%s: the fact %s is required %v; only its first case requires it", c.ID, f.ID, f.IsRequired())
+			}
+			seen[f.ID] = true
+		}
+	}
+}
+
 // calibrateSuite loads a dev suite and calibrates it offline: nothing and ask pass no case, and at least minOffline
-// cases' scripted solutions pass their own graders on the real mock.
-func calibrateSuite(t *testing.T, name string, cases, minOffline int) {
+// cases' scripted solutions pass their own graders on the real mock. It returns the loaded suite.
+func calibrateSuite(t *testing.T, name string, cases, minOffline int) Suite {
 	root := repoRoot(t)
 	s, err := Load(packSuite(t, root, name))
 	if err != nil {
@@ -131,7 +173,7 @@ func calibrateSuite(t *testing.T, name string, cases, minOffline int) {
 	py := findPython(t)
 	if py == "" {
 		t.Log("no Python 3 here: the oracle calibration needs the mock; skipped")
-		return
+		return s
 	}
 	calibrated := 0
 	for _, c := range s.Cases {
@@ -151,6 +193,7 @@ func calibrateSuite(t *testing.T, name string, cases, minOffline int) {
 		t.Fatalf("only %d cases calibrated offline; expected at least %d", calibrated, minOffline)
 	}
 	t.Logf("oracle calibrated offline on %d of %d cases", calibrated, len(s.Cases))
+	return s
 }
 
 func boolPtr(b bool) *bool { return &b }

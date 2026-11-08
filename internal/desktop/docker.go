@@ -43,25 +43,19 @@ const (
 	// read is a way from one worker into the other (B-02). Delete never removes it.
 	CacheVolumeName = "decurix-cache"
 
-	// NetworkName is the shared Docker bridge network desktop containers
-	// (and the shared Ollama container) are attached to.
+	// NetworkName is the shared Docker bridge network the control plane and the bundled Ollama container are on.
+	// A new desktop has a network of its own (decurix-vm-<id>, desknet.go); only a desktop made before that is
+	// still attached here.
 	NetworkName = "decurix-network"
 
-	// Agent harnesses: which reasoning engine drives a desktop's tasks. New
-	// desktops always run TheBot (with a Brain of their own); the others
-	// remain only so desktops created before that keep working.
-	HarnessOllama = "ollama"
-	HarnessClaude = "claude"
-	// HarnessTheBot runs the same OLLAMA_URL/OLLAMA_MODEL every desktop
-	// already gets (see buildDesktopEnv) through TheBot's own atomizer/
-	// scheduler/skills loop instead of the hand-rolled Ollama loop -
-	// needs no new env var of its own for the Ollama case.
+	// HarnessTheBot is the engine every desktop's tasks run on: TheBot, with a
+	// Brain of its own. The ollama, claude and azure harnesses were removed on
+	// 2026-11-07; a desktop created with one keeps its stored harness (the
+	// desktop-harness label, AGENT_HARNESS) and its agent runs TheBot.
 	HarnessTheBot = "thebot"
-	// HarnessAzure is a tool-calling loop on the hosted model the control
-	// plane forwards to (internal/llm, /api/llm/chat): the engine for back-
-	// office work that has to read documents and screens a 3B local model
-	// cannot. The desktop never holds the model's key.
-	HarnessAzure = "azure"
+	// HarnessOllama is the harness a container from before the desktop-harness
+	// label is listed with: what it ran then (it runs TheBot now).
+	HarnessOllama = "ollama"
 
 	// Brains: which model TheBot reasons with (Desktop.Brain). The hosted
 	// ones name an internal/llm provider; the desktop is given the proxy's
@@ -154,7 +148,8 @@ func (m *Manager) GatewayIPs(ctx context.Context) []string {
 	return ips
 }
 
-// EnsureNetwork creates the shared Docker network used by desktops if it does not already exist.
+// EnsureNetwork creates the shared decurix-network (the control plane's and the bundled Ollama's; older desktops are on
+// it too, new ones have their own, desknet.go) if it does not already exist.
 func (m *Manager) EnsureNetwork(ctx context.Context) error {
 
 	_, err := m.client.NetworkInspect(
@@ -233,28 +228,12 @@ func DesktopModelURL() string {
 // buildDesktopEnv builds the container environment variables (VNC, desktop identity, control-plane/Ollama URLs, agent harness, brain) for a desktop by name.
 func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain, shared ...*SharedFolder) []string {
 
-	// OLLAMA_URL/OLLAMA_MODEL follow the same pattern as DEFAULT_PASSWORD:
-	// the control plane's own environment wins, with a default that has to
-	// work on a machine nobody configured.
-	//
-	// The default used to be a hardcoded Cloudflare quick-tunnel URL
-	// pointing at a developer's own Ollama. Quick-tunnel hostnames are
-	// regenerated on every cloudflared restart, so that one stopped
-	// resolving and took every unconfigured desktop's reasoning with it -
-	// and, because the agent blocked on wait_for_ollama() before binding
-	// :8081, presented as an unexplained HTTP 500 on every chat request
-	// rather than as "the model is unreachable" (see app.py).
-	//
-	// host.docker.internal is the host running the control plane, already
-	// wired up as an ExtraHosts entry in buildContainerConfigs and already
-	// how a desktop reaches CONTROL_PLANE_URL. It points at whatever real
-	// Ollama the operator runs there, needs no tunnel, and cannot go stale.
-	// It does require that Ollama to listen on more than loopback
-	// (OLLAMA_HOST=0.0.0.0); when it doesn't, the failure now arrives as a
-	// reply in the chat naming this URL.
-	//
-	// Both come from package ollama, which preloads the model on this same
-	// server at startup - the two must never disagree about which one it is.
+	// OLLAMA_URL/OLLAMA_MODEL are set by the control plane, never left to a default inside the image: the default used
+	// to be a hardcoded Cloudflare quick-tunnel URL pointing at a developer's own Ollama, whose hostname changed on
+	// every cloudflared restart and took every unconfigured desktop's reasoning with it (and, because the agent blocked
+	// on wait_for_ollama() before binding :8081, presented as an unexplained HTTP 500 on every chat request; see
+	// app.py). Both come from package ollama, which preloads the model on this same server at startup - the two must
+	// never disagree about which one it is.
 	//
 	// Every desktop reaches the local model server only through the control plane's allow-listed proxy, whatever that
 	// server is - the host's own Ollama (Linux's usual setup), the bundled container, the Windows app's native one -
@@ -300,6 +279,9 @@ func buildDesktopEnv(name, harness, specialization, parentID string, brain Brain
 	// Every desktop the control plane makes must have an approval gate: its agent and TheBot allow nothing gated
 	// rather than fall back to a store the worker can write (agenttoken.go's GateRequiredEnv).
 	env = append(env, GateRequiredEnv+"=1")
+
+	// Broker mode, only when the control plane runs with DECURIX_SCREEN_BROKER=1 (screenbroker.go).
+	env = append(env, screenBrokerEnv()...)
 
 	// The one folder of the person's computer this desktop may use, when they chose one (sharedfolder.go).
 	if len(shared) > 0 && shared[0] != nil {

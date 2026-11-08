@@ -1,17 +1,23 @@
-// Package idlepause periodically stops desktops that have sat idle - no task
+// Package idlepause periodically pauses desktops that have sat idle - no task
 // running, queued or waiting on a human, and no sign anyone has a screen or
-// thumbnail open - for longer than a configured threshold. AO's cloud product
-// does the same for its sandboxes, for the same reason: a full desktop VM
-// costs real CPU and memory whether or not anyone is using it.
+// thumbnail open - for longer than a configured threshold, and once more a
+// short while after a task finishes (FastPauseAfter). AO's cloud product does
+// the same for its sandboxes, for the same reason: a full desktop VM costs
+// real CPU and memory whether or not anyone is using it.
 //
 // On by default at a 5-minute threshold (see cmd/decurix/main.go's
 // idleStopThreshold, DECURIX_IDLE_STOP_MINUTES); a non-positive Threshold -
-// the explicit opt-out - makes Run a no-op. Even on, this package only ever
-// takes the same Stop a human could click themselves - never delete, never
-// anything a manual Stop does not already do (tasks.CloseOpen runs exactly
-// as it would for a manual stop, since it is the same desktop.Manager.Stop
-// call) - Decurix desktops are otherwise entirely user-managed
-// (start/stop/restart/delete are the only other lifecycle transitions).
+// the explicit opt-out - makes Run a no-op. The default action is a pause
+// (desktop.Manager.Pause: the cgroup freezer, 0% CPU, memory kept, resumed
+// on the next request); DECURIX_IDLE_ACTION=stop stops instead. Either way
+// this package only ever takes the same Pause or Stop a human could click
+// themselves - never delete, never anything a manual one does not already do
+// (a stop runs tasks.CloseOpen exactly as a manual stop does, since it is
+// the same desktop.Manager.Stop call) - Decurix desktops are otherwise
+// entirely user-managed.
+//
+// A desktop left paused for StopAfter (30 minutes by default) is then stopped, and before a desktop starts MakeRoom
+// stops the longest-idle paused desktops when the Docker host's memory would not hold it (room.go, lightweight L2).
 package idlepause
 
 import (
@@ -44,13 +50,25 @@ type ActivityStore interface {
 }
 
 // Checker sweeps running desktops on an interval and stops or pauses the ones that
-// have been idle past Threshold.
+// have been idle past Threshold, and stops paused ones past StopAfter.
 type Checker struct {
 	Desktops  DesktopLister
 	Tasks     ActivityStore
 	Threshold time.Duration
 	Interval  time.Duration // defaultInterval if zero
 	Action    string        // "stop", or anything else: "pause" (freeze at 0% CPU, the default)
+
+	// StopAfter is how long a desktop stays paused before the sweep stops it to give its memory back (room.go,
+	// DECURIX_IDLE_STOP_AFTER_MINUTES); zero or less never does.
+	StopAfter time.Duration
+	// Memory reads the Docker host's available memory for MakeRoom; nil makes no room (desktops start as before).
+	Memory MemoryReader
+	// FloorMB is the memory MakeRoom keeps free after a start; DefaultFloorMB if zero.
+	FloorMB int64
+
+	// roomMu makes room for one start at a time; reserved is what starts let through lately are taken to use.
+	roomMu   sync.Mutex
+	reserved []reservation
 
 	// now is the test seam - defaults to time.Now.
 	now func() time.Time
@@ -110,7 +128,12 @@ func (c *Checker) sweep(ctx context.Context) {
 	var wg sync.WaitGroup
 
 	for _, d := range desktops {
-		if d.Status != "running" {
+		check := c.checkOne
+		switch {
+		case d.Status == "running":
+		case d.Status == "paused" && c.StopAfter > 0:
+			check = c.checkPaused // paused long enough: stopped to give its memory back (room.go)
+		default:
 			continue
 		}
 
@@ -121,7 +144,7 @@ func (c *Checker) sweep(ctx context.Context) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			c.checkOne(ctx, d)
+			check(ctx, d)
 		}(d)
 	}
 

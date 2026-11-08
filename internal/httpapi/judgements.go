@@ -16,7 +16,8 @@ import (
 // policy); from a desktop, nobody: a desktop cannot author a human judgement.
 
 // accessCodeHolder is the actor of a reply through the gated listener by someone not signed in: they hold the
-// access code (or a paired device), and nothing more is known.
+// access code (or a paired device), and nothing more is known. Such a reply is taken only while the access store
+// has no user account; from the first one on it is refused with a request to sign in (signInRefusal).
 var accessCodeHolder = tasks.Actor{ID: "access-code", Name: "Someone with the access code", Roles: []string{}, Kind: tasks.ActorPerson}
 
 // actorKey carries an actor an internal door set itself (withActor).

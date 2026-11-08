@@ -10,19 +10,22 @@ output and called it a coverage gap.
 So, when a task starts on a desktop with a shared folder, every file already in the folder is noted (size, time and a
 hash) and the ones the request names - then others, within a budget - are copied into the agent's own space. When the
 work is reported, a file the request gives (attached, named, or in a folder it names: `given`) that was there before
-and is now different, and that the request did not ask to be changed, is put back from its copy and the result is not
-done, said in plain words. Any other file of the folder is the person's business, never judged or put back. The same notes tell the checks which files
-are sources, so a check of what was made never runs on them.
+and is now different is said in plain words, with where the original is kept. Any other file of the folder is the
+person's business, never judged or put back. The same notes tell the checks which files are sources, so a check of
+what was made never runs on them.
 
 Since review 2026-11-03 (E-12) the gate takes the fact only (changed_sources): which given file changed and how, for
 the judge and always for the person. Nothing is put back before a verdict, and whether the request allowed the change
-is the judge's, not a verb list's. check_and_restore is the old rule, kept until its last caller is moved.
+is the judge's, not a verb list's. Since 2026-11-07 a file is put back on one of two structured words only: the
+judge's verdict naming it (`put_back`), or the person's `/restore <offer id>`, the reply to the offer the report made
+(offer, restore_sources). Each restore is checked: the bytes written back must hash to the kept copy.
 """
 
 import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import time
 from pathlib import Path
@@ -464,39 +467,11 @@ def tidy_own_backups(request=None):
         return []
 
 
-def check_and_restore(task_id, request):
-    """
-    The gate's fact: sources the task changed, each put back from its copy. Returns a plain finding ("" when none):
-    "you changed my file X; it should have stayed as it was - I put the original back" (or why it could not be).
-    """
-
-    rels = changed(task_id, request)
-    if not rels:
-        return ""
-    kept = {}
-    done, failed = restore(task_id, rels, kept=kept)
-    host = lambda path: shared.to_host(str(path)) or str(path)  # noqa: E731
-    parts = [f"{CHANGED_SOURCE} {', '.join(host(Path(_root()) / r) for r in rels)}, which the request did not ask to "
-             "change"]
-    if done:
-        parts.append(f"the original is back from the copy taken before the task ({', '.join(Path(r).name for r in done)})")
-    for rel, beside in kept.items():
-        parts.append(f"the worker's version of {Path(rel).name} is kept beside it as {host(beside)} - if that change is "
-                     "what you wanted, use it (or say so)")
-    for rel, why in failed:
-        parts.append(f"{Path(rel).name} could not be put back: {why}")
-    return "; ".join(parts) + "."
-
-
-# How the finding of a changed source begins (a stable prefix: a repeated one becomes a question to the person).
-CHANGED_SOURCE = "The task changed your file"
-
-
 # ------------------------------------------------------------
 # The fact, without a verdict (review 2026-11-03, E-12)
 #
-# check_and_restore decided from verbs (may_change) whether the request allowed a file to change, and put the original
-# back inside the gate before anything judged the work: "Record today's payments in ledger.xlsx" or "Complete
+# The old rule (check_and_restore, removed 2026-11-07) decided from verbs (may_change) whether the request allowed a
+# file to change, and put the original back inside the gate before anything judged the work: "Record today's payments in ledger.xlsx" or "Complete
 # rates.xlsx" - the core of a CA firm's work - was reverted as "you changed my file". What code knows for certain is
 # only the mechanical fact: this given file changed, and how. That fact goes to the judge and, always, to the person;
 # the original stays kept, and it is put back only on a judge's structured verdict or the person's word.
@@ -626,13 +601,20 @@ def judge_lines(facts):
     return lines
 
 
-def report_lines(facts):
+def report_lines(facts, offer_id=""):
     """The person's line for each changed file, always shown with the result (under "Please check"). It says only
-    what is true: where the original is kept, and that they can ask for it back."""
+    what is true: where the original is kept, and how to have it back - with an `offer_id` (offer), the `/restore`
+    reply that puts it back, said first so a cut line still holds it."""
 
     out = []
+    kept = [f for f in facts or () if f.get("kept")]
     for f in facts or ():
-        if f.get("kept"):
+        if f.get("kept") and offer_id:
+            command = f"/restore {offer_id}" + (f" {_quoted(f['name'])}" if len(kept) > 1 else "")
+            out.append(f"Changed your file {f['path']} - to put the original back, send `{command}` (it is kept for "
+                       f"the next {KEEP_TASKS} tasks, and the version there now is kept beside it). What changed: "
+                       f"{f['diff']}.")
+        elif f.get("kept"):
             out.append(f"Changed your file {f['path']} ({f['diff']}) - the original is kept at {f.get('copy')} for the "
                        f"next {KEEP_TASKS} tasks; ask me to copy it back if this change was not wanted.")
         else:
@@ -641,11 +623,203 @@ def report_lines(facts):
     return out
 
 
+def _quoted(name):
+    """A file name as a `/restore` command writes it: quoted when it has a space."""
+
+    return f'"{name}"' if any(c.isspace() for c in name) else name
+
+
 def restore_sources(task_id, rels):
-    """Put the originals back over the named changed files: (done [rel], failed [(rel, why)], kept {rel: the worker's
-    version, kept beside it}). Only on a structured judge verdict that the change was not asked for, or the person's
-    request - never as part of checking."""
+    """
+    Put the originals back over the named changed files, and check each: (done [rel], failed [(rel, why)], kept {rel:
+    the worker's version, kept beside it}). A file is done only when the bytes now in its place hash (sha256) to the
+    copy kept before the task. Only on a structured word - the judge's verdict naming the file (`put_back`), or the
+    person's reply to the offer (`/restore <offer id>`) - never as part of checking.
+    """
 
     kept = {}
-    done, failed = restore(task_id, list(rels or ()), kept=kept)
+    data = manifest(task_id) or {"files": {}}
+    written, failed = restore(task_id, list(rels or ()), kept=kept)
+    done = []
+    for rel in written:
+        copy = _folder(task_id) / "files" / ((data["files"].get(rel) or {}).get("copy") or "")
+        try:
+            same = _digest(Path(_root()) / rel) == _digest(copy)
+        except OSError as exc:
+            failed.append((rel, f"it was written back but could not be read to check it ({exc.strerror or exc})"))
+            continue
+        if same:
+            done.append(rel)
+        else:
+            failed.append((rel, "what was written back does not match the copy kept before the task"))
     return done, failed, kept
+
+
+def kept_digest(task_id, rel):
+    """The sha256 of the copy of a file kept before the task, or "" when none is kept (or it cannot be read)."""
+
+    entry = ((manifest(task_id) or {}).get("files") or {}).get(rel) or {}
+    try:
+        return _digest(_folder(task_id) / "files" / entry["copy"]) if entry.get("copy") else ""
+    except OSError:
+        return ""
+
+
+# How the person's line for a file put back, or not put back, begins (skill_task's /restore report reads them).
+PUT_BACK = "Put back your file "
+NOT_PUT_BACK = "Could not put back your file "
+
+
+def put_back_lines(task_id, done, failed, kept):
+    """The person's words for what restore_sources did: each file put back and how that was checked, where the worker's
+    version is kept, and each that could not be put back and why."""
+
+    def host(path):
+        return shared.to_host(str(path)) or str(path)
+
+    lines = []
+    for rel in done:
+        line = (f"{PUT_BACK}{host(Path(_root()) / rel)}: the original from before the task is in place - "
+                f"checked, its bytes match the copy kept before the task (sha256 {kept_digest(task_id, rel)[:12]}).")
+        if rel in kept:
+            line += f" The version the task left is kept beside it as {host(kept[rel])}."
+        lines.append(line)
+    for rel, why in failed:
+        lines.append(f"{NOT_PUT_BACK}{host(Path(_root()) / rel)}: {why}.")
+    return lines
+
+
+# ------------------------------------------------------------
+# The offer to put a file back (2026-11-07)
+#
+# The report names each changed given file and how to have it back: `/restore <offer id>`, a reply that names this
+# offer by its id - a structure, never a word list over what the person writes. The offer keeps each file's hash at the
+# run's end: a file that holds anything else when the reply comes was changed after the run (by the person, or another
+# program), and is never put back over without asking them.
+# ------------------------------------------------------------
+
+OFFER_FILE = "offer.json"
+OFFER_ID = re.compile(r"[0-9a-f]{8}")
+
+
+def _read_offer(path):
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get("files"), dict) else None
+
+
+def _write_offer(task_id, data):
+    from decurix_agent.computer import privacy
+    privacy.write_scrubbed(_folder(task_id) / OFFER_FILE, data, json_kw={"indent": 1},
+                           exempt=("id", "task_id", "end_sha256"))
+
+
+def offer(task_id, facts):
+    """
+    Note, at the run's end, the changed given files whose originals are kept, so the person can have them put back:
+    the offer's id ("" when there is nothing to offer). One id per task (the same on every attempt's gate); each
+    file's hash now is kept with it (None for one that is gone). Raises OSError when it cannot be written.
+    """
+
+    files = {}
+    for f in facts or ():
+        if not f.get("kept"):
+            continue
+        local = Path(_root()) / f["rel"]
+        try:
+            end = _digest(local) if local.is_file() else None
+        except OSError as exc:
+            log(f"source_guard: could not note {f['rel']} at the run's end: {exc}")
+            continue  # (not offered: a later change could not be told from this run's)
+        files[f["rel"]] = {"name": f["name"], "path": f["path"], "end_sha256": end}
+    if not files:
+        withdraw(task_id, None)
+        return ""
+    old = _read_offer(_folder(task_id) / OFFER_FILE) or {}
+    offer_id = old.get("id") if OFFER_ID.fullmatch(str(old.get("id") or "")) else secrets.token_hex(4)
+    _write_offer(task_id, {"id": offer_id, "task_id": task_id or "", "at": time.time(), "files": files})
+    return offer_id
+
+
+def withdraw(task_id, rels):
+    """Take files out of the task's offer once they are put back (all of it when `rels` is None): a second reply never
+    writes the original over the worker's version kept beside it."""
+
+    path = _folder(task_id) / OFFER_FILE
+    data = _read_offer(path)
+    if data is None:
+        return
+    for rel in rels or ():
+        data["files"].pop(rel, None)
+    if rels is None or not data["files"]:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return
+    _write_offer(task_id, data)
+
+
+def find_offer(offer_id):
+    """(task id, offer) for an offer's id, or (None, None) when no kept task holds it (an older task's copies are
+    gone)."""
+
+    if not OFFER_ID.fullmatch(str(offer_id or "")):
+        return None, None
+    try:
+        folders = list((config.DECURIX_DIR / "snapshots").iterdir())
+    except OSError:
+        return None, None
+    for folder in folders:
+        data = _read_offer(folder / OFFER_FILE)
+        if data and data.get("id") == offer_id:
+            return data.get("task_id") or "", data
+    return None, None
+
+
+def offered_facts(offered):
+    """An offer's files in the shape changed_sources gives (rel, name, path), for named_in."""
+
+    return [dict(entry, rel=rel) for rel, entry in (offered or {}).get("files", {}).items()]
+
+
+def changed_since(offered, rels):
+    """The offered files that hold something else now than at the run's end (or cannot be read): [rel]. Never put back
+    over without the person's yes."""
+
+    out = []
+    for rel in rels:
+        end = (offered["files"].get(rel) or {}).get("end_sha256")
+        local = Path(_root()) / rel
+        try:
+            now = _digest(local) if local.is_file() else None
+        except OSError:
+            now = "(unreadable)"
+        if now != end:
+            out.append(rel)
+    return out
+
+
+def named_in(facts, names):
+    """
+    The rels of the changed files `names` points at (a judge's `put_back`, a `/restore`'s file names): by the path in
+    the folder, the path the person sees, or the file's name when only one changed file has it. A name that matches no
+    changed file points at nothing: only a file the guard saw the run change is ever put back.
+    """
+
+    def form(text):
+        return str(text or "").strip().strip("\"'`").replace("\\", "/").lower()
+
+    wanted = {form(n) for n in names or () if form(n)}
+    by_name = {}
+    for f in facts or ():
+        by_name.setdefault(form(f.get("name")), []).append(f["rel"])
+    out = []
+    for f in facts or ():
+        exact = {form(f["rel"]), form(f.get("path"))} & wanted
+        alone = form(f.get("name")) in wanted and len(by_name[form(f.get("name"))]) == 1
+        if (exact or alone) and f["rel"] not in out:
+            out.append(f["rel"])
+    return out

@@ -54,7 +54,7 @@ func TestScreenPasswordIsPerDesktop(t *testing.T) {
 // No secret, no desktop: it would have no agent token and a guessable screen.
 func TestNoDesktopWithoutTheSecret(t *testing.T) {
 	m := &Manager{}
-	if _, err := m.BeginProvisioning("box", "basic", "thebot", Brain{}, 1, 2048, "", "", "", nil, nil, nil); err == nil {
+	if _, err := m.BeginProvisioning("box", "basic", Brain{}, 1, 2048, "", "", nil, nil, nil); err == nil {
 		t.Fatal("a desktop was begun without the control plane's secret")
 	}
 }

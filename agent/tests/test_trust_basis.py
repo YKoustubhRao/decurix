@@ -7,7 +7,7 @@ counts towards trust only when a check independent of the worker passed: its fil
 declared read back matching, or a person. And a deterministic share of trusted replays is judged all the same.
 
 This only makes trust stricter - it cannot create a done - so it ships on these tests and the no-regression matrix; an
-eval case of its own waits for a suite that keeps memory between cases (PLAN-P2 §9, learn-v1).
+eval case of its own waits for a suite that keeps memory between cases (PLAN-P2 §9, the learning-curve suite).
 """
 
 import hashlib

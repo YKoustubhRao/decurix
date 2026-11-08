@@ -131,6 +131,7 @@ func (r *Runner) fire(ctx context.Context, sch Schedule, now time.Time) {
 	if occurrence.IsZero() || occurrence.After(now) {
 		occurrence = now
 	}
+	occurrence = occurrence.In(ZoneLocation(sch.Zone))
 	content := sch.Content + timeField(occurrence)
 
 	err := r.Submitter.Submit(ctx, sch.DesktopID, content, tasks.Origin{Kind: tasks.OriginSchedule, Ref: sch.ID})
@@ -149,7 +150,7 @@ func (r *Runner) fire(ctx context.Context, sch Schedule, now time.Time) {
 	if err != nil {
 		log.Printf("schedule: firing %s on %s: %v", sch.ID, sch.DesktopID, err)
 
-		why := "The run for " + occurrence.UTC().Format("2 Jan 15:04") + " UTC did not reach the desktop: " + clip(err.Error())
+		why := "The run for " + occurrence.Format("2 Jan 15:04 MST") + " did not reach the desktop: " + clip(err.Error())
 		if err := r.Store.MarkRunFailed(sch.ID, now, why); err != nil {
 			log.Printf("schedule: advancing %s: %v", sch.ID, err)
 		}
@@ -164,9 +165,11 @@ func (r *Runner) fire(ctx context.Context, sch Schedule, now time.Time) {
 
 // timeField renders the marker appended to a schedule's content on every
 // trigger, recording when it fired - the one thing the request's own text
-// cannot say for itself.
+// cannot say for itself. It is RFC3339 in t's own zone (the schedule's), so
+// a run at 00:30 in Asia/Kolkata says that day's date, not yesterday's UTC
+// one; a UTC schedule still reads "...Z".
 func timeField(t time.Time) string {
-	return "\n\nTIME:{" + t.UTC().Format(time.RFC3339) + "}"
+	return "\n\nTIME:{" + t.Format(time.RFC3339) + "}"
 }
 
 // clip bounds a reason kept on a schedule.

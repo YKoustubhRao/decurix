@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -38,6 +40,9 @@ func runUpdate(args []string) error {
 	}
 	if len(args) > 0 && args[0] == "promote" {
 		return runPromote(args[1:])
+	}
+	if len(args) > 0 && args[0] == "sign-release" {
+		return runSignRelease(args[1:])
 	}
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	home := fs.String("home", "", "Brainiac's home")
@@ -71,6 +76,41 @@ func runUpdate(args []string) error {
 	return nil
 }
 
+// runSignRelease makes a signed release for a staged lock (the release
+// pipeline's step, off the box): release.json naming the lock's sha256 and
+// its detached signature, made with the release key (the catalog's). Copied
+// into a box's store beside a passed parity eval, it lets the staged plan be
+// promoted there without a person.
+func runSignRelease(args []string) error {
+	fs := flag.NewFlagSet("update sign-release", flag.ContinueOnError)
+	keyPath := fs.String("key", os.Getenv(catalogKeyEnv), "the signing key file (default $"+catalogKeyEnv+")")
+	out := fs.String("out", ".", "directory to write release.json and release.json.sig into")
+	note := fs.String("note", "", "a line saying what the release is")
+	if err := fs.Parse(reorder(args)); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 || *keyPath == "" {
+		return errors.New("usage: brainiac update sign-release <lock.next.json> --key <keyfile> [--out dir] [--note text]")
+	}
+	priv, err := catalog.ReadPrivateKey(*keyPath)
+	if err != nil {
+		return err
+	}
+	manifest, sig, err := update.MakeRelease(fs.Arg(0), priv, *note, time.Now())
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(*out, update.ReleaseFile)
+	if err := os.WriteFile(path, manifest, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(catalog.SigPath(path), sig, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("Signed a release of %s with key %s: %s\n", fs.Arg(0), catalog.KeyID(priv.Public().(ed25519.PublicKey)), path)
+	return nil
+}
+
 // runPromote is a person switching to the staged plan. A running serve
 // notices lock.json changed and moves to it, finishing what it is answering
 // on the old models first.
@@ -84,7 +124,9 @@ func runPromote(args []string) error {
 	if err != nil {
 		return err
 	}
-	lock, staged, err := update.Promote(st, time.Now())
+	// On an appliance only a signed release (release.json, with its local
+	// parity eval) promotes; elsewhere the person running this does.
+	lock, staged, err := update.Promote(st, time.Now(), update.PromoteOptions{ByHand: !config.Appliance()})
 	if err != nil {
 		return err
 	}
@@ -93,7 +135,7 @@ func runPromote(args []string) error {
 		fmt.Printf("llama.cpp is now pinned to %s.\n", staged.Runtime.LlamaCppTag)
 	}
 	if b, ok := lock.Plan.Pick(catalog.RoleBrain); ok {
-		fmt.Printf("The brain is %s. A running serve moves to the new models within a minute; lock.prev.json is the plan before.\n", b.Model)
+		fmt.Printf("The brain is %s. A running serve checks every 30 seconds and moves to the new models once what it is answering finishes; lock.prev.json is the plan before.\n", b.Model)
 	}
 	return nil
 }
@@ -116,7 +158,7 @@ func runApproveTemplate(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Accepted the chat template of %s from %s at %s. If that model is installed, `brainiac pull --latest` moves it there.\n", fs.Arg(0), rec.Repo, rec.Commit)
+	fmt.Printf("Accepted the chat template of %s from %s at %s. If the catalog pins that commit, `brainiac pull` installs it.\n", fs.Arg(0), rec.Repo, rec.Commit)
 	return nil
 }
 
@@ -124,11 +166,12 @@ func runApproveTemplate(args []string) error {
 // running server.
 func updateOptions(st *store.Store, cfg config.Config, lg *log.Logger, apply bool, srv *api.Server) update.Options {
 	o := update.Options{
-		Store:     st,
-		Policy:    selector.Policy{ReserveGB: cfg.ReserveGB, PlannedLoadGB: cfg.PlannedLoadGB, Licenses: cfg.Licenses},
-		Apply:     apply,
-		WorkerDir: workerDir(),
-		Log:       lg.Writer(),
+		Store:      st,
+		Policy:     selector.Policy{ReserveGB: cfg.ReserveGB, PlannedLoadGB: cfg.PlannedLoadGB, Licenses: cfg.Licenses},
+		Apply:      apply,
+		SignedOnly: config.Appliance(),
+		WorkerDir:  workerDir(),
+		Log:        lg.Writer(),
 		Census: func(ctx context.Context) (census.Census, error) {
 			return census.Take(ctx, census.Options{StoreDir: st.Path("models"), OllamaURL: cfg.OllamaURL, Network: true})
 		},
@@ -238,7 +281,7 @@ func (f *lockFollower) check() bool {
 	eng, err := f.build()
 	if err != nil {
 		f.logf("lock.json changed, but its plan does not load (%v); still serving the old one", err)
-		f.seen = got // say so once, not every minute
+		f.seen = got // say so once, not at every check
 		return false
 	}
 	f.seen = got
@@ -248,7 +291,7 @@ func (f *lockFollower) check() bool {
 	return true
 }
 
-// followLock runs check every interval until ctx ends.
+// run checks the lock every interval until ctx ends.
 func (f *lockFollower) run(ctx context.Context, every time.Duration) {
 	t := time.NewTicker(every)
 	defer t.Stop()

@@ -203,12 +203,11 @@ class Declaring(unittest.TestCase):
         self.assertTrue(kept["saved_at"])
         self.assertEqual(kept["readback"]["absent"], [])
         self.assertIsNone(records.open_record(records.load()))
-        self.assertEqual(records.facts(), [])
         # A second record declared after it is the open one; its page misses a value.
         rec2, _ = records.declare("1188-again", str(self.bill), FIELDS)
         lines = records.readback(rec2, "Day Book", "Day Book | 1-Oct-26 | Sales | 1188 | 76,700.00", "saved")
         self.assertIn("NOT shown: Party A/c name=Coastal Infra Projects", lines[0])
-        self.assertIn("record 1188-again was saved but the page did not show", records.facts()[0])
+        self.assertIn("Party A/c name", records.load()[1]["readback"]["absent"])
         listing = "\n".join(records.listing())
         self.assertIn("- 1188 (from", listing)
         self.assertIn("saved and read back", listing)
@@ -310,7 +309,8 @@ class AUnitTheFieldStates(Declaring):
         rec = self._rec({"Rate": "18%", "Weight": "15 kg"})
         blocking, _, _ = records.presave(rec, [("Rate", "18"), ("Weight (lb)", "15")])
         self.assertEqual(len(blocking), 2, blocking)
-        self.assertTrue(all("declare the record's figure without the unit" in b for b in blocking), blocking)
+        # It waits on the person, who is asked once for this field (unit_answers), never told to drop the unit.
+        self.assertTrue(all("this needs the person" in b and "asked once" in b for b in blocking), blocking)
         blocking, _, _ = records.presave(rec, [("Rate (%)", "18"), ("Weight kg/lb", "15")])  # alternatives state none
         self.assertEqual(len(blocking), 1, blocking)
         self.assertIn("Weight kg/lb", blocking[0])

@@ -191,7 +191,33 @@ def _report(state):
         head = ("Not checked - each stage's output passed only its file checks (it is there, it opens, it has what the "
                 "spec names); nothing judged it against the request. Look at the outputs before relying on them.\n\n")
     write_final_reply(f"{head}Workflow {state['run_id']}: {state['status']}. {records}. {detail}",
-                      kind=decided["kind"], checked=decided["checked"], gated=True)
+                      kind=decided["kind"], checked=decided["checked"], gated=True,
+                      verdict=_run_verdict(state, decided))
+
+
+def _run_verdict(state, decided):
+    """
+    The run's verdict (decurix.verdict/v1, by "workflow"), from what the runner checked and nothing else: each completed
+    stage's spec file checks as a code check that passed (the files it names, read back and hashed by
+    workflow_runner.complete), each failed stage as one that failed, and the judgement against the request as a check
+    not made - nothing made it. So a completed run is never done here (unchecked), a failed or uncertain one is not
+    done, and any other status (waiting, running, cancelled) is unchecked.
+    """
+
+    from decurix_agent import verdict as verdicts, verify
+    checks = []
+    for key, record in state["steps"].items():
+        if record.get("status") == "completed":
+            paths = [str(item.get("path") or "") for item in record.get("evidence") or [] if item.get("path")]
+            checks.append(verdicts.check(f"stage.{key}.files", verdicts.PASS, "code",
+                                         f"stage {key} passed its spec's file checks", refs=paths))
+        elif record.get("status") == "failed":
+            checks.append(verdicts.check(f"stage.{key}", verdicts.FAIL, "code",
+                                         f"stage {key} did not complete: {record.get('error') or 'failed'}"))
+    checks.append(verdicts.check("request.judged", verdicts.NOT_MADE, "model",
+                                 "nothing judged the outputs against the request"))
+    kind = verdicts.NOT_DONE if decided["status"] == verify.NOT_DONE else verdicts.UNCHECKED
+    return verdicts.make(kind, "workflow", why=decided.get("why") or state["status"], checks=checks)
 
 
 def _dispatch_one(run_id, task_file=None, approvals=(), recover=False):

@@ -59,6 +59,12 @@ SCHEMA = "decurix.recording/v1"
 SESSION_RE = re.compile(r"^(task|adhoc|demo)-[A-Za-z0-9-]{1,64}$")
 FRAME_RE = re.compile(r"^[0-9a-f]{20}\.png$")
 
+# An observation blob as audit.keep_observation names it (the first 16 hex digits of its SHA-256), and the most one
+# may hold (audit.MAX_OBS_BYTES; audit imports this module, so the number is repeated and a test keeps them equal):
+# an export copies only those.
+OBS_RE = re.compile(r"^[0-9a-f]{16}\.json$")
+MAX_OBS_EXPORT_BYTES = 256 * 1024
+
 KINDS = {"task": "task", "adhoc": "adhoc", "demo": "demonstration"}
 
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
@@ -164,6 +170,8 @@ def write_bytes_whole(path, data):
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_bytes(data)
     tmp.replace(path)
+    from decurix_agent.computer import broker
+    broker.mirror(path, data)  # (broker mode: the caller's copy too)
 
 
 def _write_meta(directory, meta):
@@ -439,11 +447,43 @@ def frame_file(session_id, name):
     return path if path.is_file() else None
 
 
-def delete(session_id):
+class Held(Exception):
+    """A person's Delete of a run's recording the control plane has not pulled yet (held()): sent again with force,
+    it goes."""
+
+
+def _task_of(meta):
+    """The task a recording is of: its meta's task_id, else the id in a task-<id> session's name, else ""."""
+
+    session = str(meta.get("id") or "")
+    return str(meta.get("task_id") or "") or (session[5:] if session.startswith("task-") else "")
+
+
+def held(session_id):
+    """Whether a recording is of a labelled run not yet exported to the control plane (retention.held): what prune
+    keeps, and what a person's Delete asks about first. A demonstration is never a run's."""
+
+    from decurix_agent import retention
+
+    meta = _read_meta(_dir(session_id))
+    if not isinstance(meta, dict) or meta.get("kind") == "demonstration":
+        return False
+    return retention.held(_task_of({**meta, "id": session_id}))
+
+
+def delete(session_id, force=False):
+    """
+    Delete a recording - a person's explicit act. A held run's recording (held()) is refused with Held unless
+    `force`: the person was told it is not in the run record yet and said to delete it anyway.
+    """
+
     directory = _dir(session_id)
 
     if not directory.is_dir():
         raise FileNotFoundError(f"no recording {session_id}")
+
+    if not force and held(session_id):
+        raise Held("this run is not saved to the run record yet")
 
     shutil.rmtree(directory)
 
@@ -474,6 +514,20 @@ def export(session_id, stream, extra=None):
             for path in sorted(frames.glob("*.png")):
                 # PNG is already compressed; deflating it again only costs time.
                 archive.write(path, f"{session_id}/frames/{path.name}", compress_type=zipfile.ZIP_STORED)
+
+        # What each action was resolved against (README: obs/). audit.keep_observation writes it already withheld
+        # and scrubbed, so it is copied as it is - but only blobs of the shape it writes: a hash-named JSON file, a
+        # regular file (never a link out of the recording), no bigger than it lets one be.
+        obs = directory / "obs"
+        if obs.is_dir():
+            for path in sorted(obs.glob("*.json")):
+                try:
+                    if (not OBS_RE.match(path.name) or path.is_symlink() or not path.is_file()
+                            or path.stat().st_size > MAX_OBS_EXPORT_BYTES):
+                        continue
+                except OSError:
+                    continue
+                archive.write(path, f"{session_id}/obs/{path.name}")
 
 
 def _size(meta):
@@ -512,8 +566,7 @@ def prune(keep=None):
         # of request (playbooks.py) is kept like a demonstration.
         if meta.get("kind") == "demonstration" or meta.get("proven") or meta["id"] == keep:
             continue
-        task_id = str(meta.get("task_id") or "") or (meta["id"][5:] if meta["id"].startswith("task-") else "")
-        if retention.held(task_id):
+        if retention.held(_task_of(meta)):
             held += 1
             continue
 

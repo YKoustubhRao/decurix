@@ -23,6 +23,11 @@ def tidy_recordings():
         log(f"Could not move the old audit trail into recordings: {exc}")
 
     try:
+        from decurix_agent.computer import screen_call
+        if screen_call.remote() and not screen_call.wait_for_broker():
+            # Broker mode: the recordings a demonstration leaves are the screen side's to close, through the broker.
+            log("Could not close an interrupted demonstration: the screen broker did not start within 2 minutes")
+            return
         demonstration.recover()
     except Exception as exc:
         log(f"Could not close an interrupted demonstration: {exc}")

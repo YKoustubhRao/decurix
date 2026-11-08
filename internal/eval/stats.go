@@ -70,12 +70,15 @@ type Table struct {
 	Invalid int `json:"invalid"`
 	// Infra counts the rows the runner could not run as written; any makes the result INCOMPLETE.
 	Infra int `json:"infra"`
+	// CarryState is a run that kept the desktop's state between a repeat's cases (Run.CarryState).
+	CarryState bool `json:"carry_state"`
 }
 
 // Summarise builds a run's table from its rows, cases in the run's order and arms as the run named them.
 func Summarise(run Run, rows []Row) Table {
 	t := Table{RunID: run.ID, Suite: run.SuiteName, SuiteSHA: run.SuiteSHA, Repeats: run.Repeats, Status: run.Status, Note: run.Note,
-		Date: run.CreatedAt, Arms: run.Arms, Rows: []TableRow{}, Totals: map[string]Cell{}, NotResult: run.Repeats < MinRepeats}
+		Date: run.CreatedAt, Arms: run.Arms, Rows: []TableRow{}, Totals: map[string]Cell{}, NotResult: run.Repeats < MinRepeats,
+		CarryState: run.CarryState}
 	cases := append([]string{}, run.Cases...)
 	known := map[string]bool{}
 	for _, c := range cases {
@@ -194,6 +197,12 @@ func (t Table) Markdown() string {
 	}
 	fmt.Fprintf(&b, "- Suite: `%s`, SHA-256 `%s`\n", t.Suite, t.SuiteSHA)
 	fmt.Fprintf(&b, "- Date: %s; repeats: %d; status: %s\n", t.Date.UTC().Format("2006-01-02 15:04 UTC"), t.Repeats, t.Status)
+	if t.CarryState {
+		b.WriteString("- State: **carried from case to case** (carry_state): the desktop was reset before each repeat's " +
+			"first case only, so a repeat's cases are a sequence, not independent samples\n")
+	} else {
+		b.WriteString("- State: reset to the snapshot before every case (independent samples)\n")
+	}
 	if t.Note != "" {
 		fmt.Fprintf(&b, "- Note: %s\n", t.Note)
 	}

@@ -13,13 +13,14 @@ This file holds only what must be in your head for every change. The detail live
 | Area | Read |
 |---|---|
 | Go packages, desktop container, the two listeners, package dependency direction | [docs/architecture.md](docs/architecture.md) |
-| The three agent harnesses (TheBot, Claude, Ollama) and how TheBot adapts to its brain | [docs/harnesses.md](docs/harnesses.md) |
+| TheBot, the one agent harness, its brains (Ollama, Claude, Azure, OpenAI-compatible) and how it adapts to each | [docs/harnesses.md](docs/harnesses.md) |
 | Chat page, task records, query rail | [docs/chat.md](docs/chat.md) |
 | `gui`, observe/act/verify, approval gate | [docs/computer-use.md](docs/computer-use.md) |
 | Recordings, replay, visual anchors, imports | [docs/recordings.md](docs/recordings.md) |
 | Skills: learn, ask, run | [docs/skills.md](docs/skills.md) |
 | Maturity, final check, "no unseen success", token savings | [docs/learning-and-verification.md](docs/learning-and-verification.md) |
 | Healing ladder, experience | [docs/healing.md](docs/healing.md) |
+| Making Decurix light: what a desktop and a `gui` command cost, the gui daemon, memory given back from idle desktops, measured before/after | [docs/lightweight.md](docs/lightweight.md) |
 | What a run costs, where the tokens go, why a worker gets cheaper with practice (cache, turns, replay per document) | [docs/token-economy.md](docs/token-economy.md) |
 | Long requests: planned runs, ledger, amendments, parked questions, cross-check | [docs/long-requests.md](docs/long-requests.md) |
 | Build, run, env vars, `--cli`, releases | [docs/running.md](docs/running.md) |
@@ -62,12 +63,12 @@ Live benches (Docker, minutes each) are listed in [docs/running.md](docs/running
 
 ## Conventions
 
-- `CODE_MAP.md` is generated; do not hand-edit.
+- `CODE_MAP.md` is generated (`go run codemap_gen.go`, also run by `go generate .`); never hand-edit it. Give every new file a header comment; `TestCodeMapIsCurrent` fails until the map is regenerated.
 - Every exported or significant Go func gets a one-line `// Name does X` comment.
 - `jsonError` never echoes `err.Error()` to a client.
 - Tests that need bash or a real browser skip on Windows or use a stand-in; never launch the real browser in a test.
 - A new page template goes into `internal/webui/render_test.go`.
-- A new stage code check goes into `long_task.stage_code_findings` as ADVISORY (`CHECK_MATURITY`) and must pass the replay gate (`agent/tests/test_replay_gate.py`); it becomes blocking only by its own entry after a clean live round (docs/long-requests.md).
+- A new stage code check goes into `stage_checks.stage_code_findings` as ADVISORY (`CHECK_MATURITY`) and must pass the replay gate (`agent/tests/test_replay_gate.py`); it becomes blocking only by its own entry after a clean live round (docs/long-requests.md).
 - Add a new lesson to the matching `docs/` file (gotchas go in the newest `docs/gotchas/part-N.md` and a line in `docs/gotchas.md`), not here. Keep this file short.
 
 ## Working agreements with the person who runs this

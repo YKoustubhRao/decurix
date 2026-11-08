@@ -26,6 +26,7 @@ type fakePuller struct {
 	pulled  []runs.ExecutionRef
 	flushed []runs.ExecutionRef
 	stored  map[string]bool
+	left    []string // what FlushDesktop says it could not pull
 }
 
 func (f *fakePuller) Pull(_ context.Context, ref runs.ExecutionRef) (runs.Bundle, error) {
@@ -44,7 +45,7 @@ func (f *fakePuller) FlushDesktop(_ context.Context, worker string, refs []runs.
 	defer f.mu.Unlock()
 	*f.log = append(*f.log, "flush "+worker)
 	f.flushed = append(f.flushed, refs...)
-	return nil
+	return f.left
 }
 
 func (f *fakePuller) Has(execID string) (bool, error) { return f.stored[execID], nil }
@@ -197,5 +198,118 @@ func TestDeleteFlushesRunsBeforeTheDesktopGoes(t *testing.T) {
 	}
 	if d, _ := s.Tasks.Get(open.TaskID); !d.Executions[0].EndedAt.IsZero() {
 		t.Fatal("a failed delete closed the desktop's open run")
+	}
+}
+
+// A delete whose flush left runs unpulled is refused (409, held, how many) and changes nothing; sent again with force
+// by a person, the choice is recorded first (who, which runs) and the desktop goes. Nobody may force it from a
+// desktop's address.
+func TestDeleteWithUnsavedRunsIsRefusedUnlessAPersonForcesIt(t *testing.T) {
+	s := chatServer(t)
+	fakeAgentDesktop(t, s)
+	var err error
+	if s.Memory, err = memory.NewStore(testDB(t)); err != nil {
+		t.Fatal(err)
+	}
+	if s.Schedules, err = schedule.NewStore(testDB(t)); err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	f := &fakePuller{log: &order, stored: map[string]bool{}}
+	s.Runs, s.RunBundles = f, f
+	s.deleteDesktop = func(_ context.Context, id string) error {
+		order = append(order, "delete "+id)
+		return nil
+	}
+	w := tasks.Worker{ID: "box", Name: "box"}
+	a, _ := s.Tasks.Commit(tasks.NewRoute(), w, "one", tasks.Origin{Kind: tasks.OriginPerson})
+	_, _ = s.Tasks.RecordOutcome("box", a.TaskID, tasks.Outcome{Kind: tasks.OutcomeDone, Reply: "ok"})
+	open, _ := s.Tasks.Commit(tasks.NewRoute(), w, "two", tasks.Origin{Kind: tasks.OriginPerson})
+	_, _ = s.Tasks.RecordOutcome("box", open.TaskID, tasks.Outcome{Kind: tasks.OutcomeQuery, Reply: "Which month?"})
+	f.left = []string{a.ExecutionID, open.ExecutionID}
+
+	send := func(form url.Values, from string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/desktops/delete", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = from
+		rec := httptest.NewRecorder()
+		s.deleteDesktopHandler(rec, req)
+		return rec
+	}
+	deleted := func() bool {
+		for _, o := range order {
+			if o == "delete box" {
+				return true
+			}
+		}
+		return false
+	}
+	given := func() []tasks.Judgement {
+		t.Helper()
+		js, err := s.Tasks.JudgementsOfKind("box", tasks.JudgementDeleteAnyway)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return js
+	}
+
+	s.netsFor = staticNets("172.30.0.0/16", "172.30.0.1")
+	const owner = "127.0.0.1:50000"
+	rec := send(url.Values{"id": {"box"}}, owner)
+	var body struct {
+		Error       string `json:"error"`
+		Held        bool   `json:"held"`
+		UnsavedRuns int    `json:"unsaved_runs"`
+	}
+	if rec.Code != http.StatusConflict || json.Unmarshal(rec.Body.Bytes(), &body) != nil {
+		t.Fatalf("delete with unsaved runs: %d %s, want 409", rec.Code, rec.Body)
+	}
+	if !body.Held || body.UnsavedRuns != 2 || !strings.Contains(body.Error, "2 runs of this desktop are not saved to the run record yet") ||
+		!strings.Contains(body.Error, "delete anyway") {
+		t.Fatalf("refusal = %+v", body)
+	}
+	if deleted() || len(given()) != 0 {
+		t.Fatalf("a refused delete deleted (%v) or recorded a choice", order)
+	}
+	if d, _ := s.Tasks.Get(open.TaskID); !d.Executions[0].EndedAt.IsZero() {
+		t.Fatal("a refused delete closed the desktop's open run")
+	}
+
+	// From a desktop's own address there is no person to make the choice.
+	rec = send(url.Values{"id": {"box"}, "force": {"1"}}, "172.30.0.5:40000")
+	if rec.Code != http.StatusForbidden || deleted() || len(given()) != 0 {
+		t.Fatalf("forced from a desktop: %d %s, deleted %v", rec.Code, rec.Body, deleted())
+	}
+
+	rec = send(url.Values{"id": {"box"}, "force": {"1"}}, owner)
+	if rec.Code != http.StatusOK || !deleted() {
+		t.Fatalf("forced by the owner: %d %s, order %v", rec.Code, rec.Body, order)
+	}
+	js := given()
+	if len(js) != 1 {
+		t.Fatalf("%d delete_anyway judgements, want 1", len(js))
+	}
+	j := js[0]
+	if j.Actor.ID != tasks.LocalOwner.ID || j.Door != "card" || j.WorkerID != "box" {
+		t.Fatalf("judgement = %+v", j)
+	}
+	var payload struct {
+		Runs []struct {
+			ExecutionID string `json:"execution_id"`
+			TaskID      string `json:"task_id"`
+		} `json:"runs"`
+	}
+	if json.Unmarshal(j.Payload, &payload) != nil || len(payload.Runs) != 2 ||
+		payload.Runs[0].ExecutionID != a.ExecutionID || payload.Runs[0].TaskID != a.TaskID ||
+		payload.Runs[1].ExecutionID != open.ExecutionID || payload.Runs[1].TaskID != open.TaskID {
+		t.Fatalf("payload = %s", j.Payload)
+	}
+
+	// With every run saved, force changes nothing and records nothing.
+	f.left = nil
+	order = nil
+	if rec := send(url.Values{"id": {"box"}, "force": {"1"}}, owner); rec.Code != http.StatusOK || !deleted() || len(given()) != 1 {
+		t.Fatalf("a forced delete with nothing unsaved: %d, judgements %d", rec.Code, len(given()))
 	}
 }

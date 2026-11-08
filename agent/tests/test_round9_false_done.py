@@ -74,7 +74,7 @@ class Ledger(unittest.TestCase):
                   mock.patch.object(person_record, "_get", lambda path, query: None),
                   mock.patch.object(person_record, "answers", lambda task_id=None: (
                       [{"id": "j_111111111111", "asked": "", "text": self.said}] if self.said else [])),
-                  mock.patch.object(records, "_org_text", lambda: "", create=True),
+                  mock.patch.object(records, "_org_text", lambda task_id=None: "", create=True),
                   mock.patch.object(core, "_task_events_now", lambda: self.events),
                   mock.patch("decurix_agent.task_context.source_date_order", lambda task_id=None: "day"),
                   mock.patch("decurix_agent.task_context.app_date_order", lambda task_id=None: "day")):

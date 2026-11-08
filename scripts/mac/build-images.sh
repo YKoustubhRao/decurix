@@ -1,8 +1,9 @@
 #!/bin/bash
 #
-# Builds the unified desktop base image and tools runtime from the
-# docker/ build contexts using --platform linux/amd64 for seamless
-# execution under macOS (Apple Silicon / Intel).
+# Builds the two images, the desktop (decurix-desktop:basic) and the shared
+# tools runtime (decurix-tools:latest), from the docker/ build contexts using
+# --platform linux/amd64 for seamless execution under macOS (Apple Silicon /
+# Intel); developer and ai are only tags of basic.
 #
 # Flags:
 #   --only-missing   skip building an image if it already exists locally

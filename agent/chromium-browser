@@ -12,11 +12,44 @@
 # The name stays chromium-browser because launchers already written into
 # desktops' home folders call it.
 
+# Broker mode (DECURIX_SCREEN_USER=1; docs/gate-boundary.md), started as the worker - the panel's Web Browser
+# launcher (exo-open), xdg-open, a link in an app, a host app's script: the desktop has one browser, the screen
+# user's, which the worker cannot start or reach. Each page named goes to it through the screen broker, as `gui open`
+# (a local file is handed over and opened as a copy the browser may read); with none, the browser is brought up.
+# Flags are not passed on: the screen side takes none from the worker but a new window.
+if [ "${DECURIX_SCREEN_USER:-}" = "1" ] && [ "$(/usr/bin/id -u)" = "${DECURIX_SCREEN_WORKER_UID:-1001}" ]; then
+    status=0 opened=0
+    for arg in "$@"; do
+        case "$arg" in
+            -*|"") ;;
+            *) opened=1; /usr/local/bin/gui open "$arg" >/dev/null || status=$? ;;
+        esac
+    done
+    if [ "$opened" = 0 ]; then
+        /usr/local/bin/gui open browser >/dev/null || status=$?
+    fi
+    exit "$status"
+fi
+
 CHROMIUM_FLAGS=""
 if [ -f "$HOME/.chromium-browser.init" ]; then
     . "$HOME/.chromium-browser.init"
 elif [ -f /opt/decurix-chromium.init ]; then
     . /opt/decurix-chromium.init
+fi
+
+# Started by the screen broker's DevTools relay (DECURIX_BROWSER_DEBUG=pipe, decurix_agent/computer/cdp_relay.py): no
+# DevTools port, which every user of the desktop could reach, but the pipe on fds 3 and 4 the relay holds.
+if [ "${DECURIX_BROWSER_DEBUG:-}" = "pipe" ]; then
+    pipe_flags=""
+    # shellcheck disable=SC2086 # CHROMIUM_FLAGS is a list of flags
+    for flag in $CHROMIUM_FLAGS; do
+        case "$flag" in
+            --remote-debugging-port=*|--remote-debugging-address=*) ;;
+            *) pipe_flags="$pipe_flags $flag" ;;
+        esac
+    done
+    CHROMIUM_FLAGS="$pipe_flags --remote-debugging-pipe"
 fi
 
 chrome=/opt/google/chrome/google-chrome

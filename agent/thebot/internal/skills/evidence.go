@@ -484,6 +484,42 @@ func (st *operatorState) noteTypedShown(command, output string) {
 	}
 }
 
+// replayEnteredMarker opens the line a replay's output gives its own record of what its steps entered, as a JSON list
+// (decurix_agent/computer/cli.py ENTERED_MARKER, from replay.entered_value).
+const replayEnteredMarker = "ENTERED_BY_REPLAY:"
+
+// noteReplayEntered keeps, of a gui do or gui replay command, the values its replay's record says its steps entered,
+// whatever the exit code: a run that halted at step 11 had typed steps 1 to 10. Found live (2026-11-08): a taught
+// skill's replay typed a bill's figures from invoice2.pdf and halted at its Save; the coverage check, crediting a
+// failed command only for "Typed ..." in its output, said "invoice2.pdf (read; none of its figures went into what was
+// entered)" and left it open for the person. Only from a command that is one gui do or gui replay: a chain could print
+// the line from a file.
+func (st *operatorState) noteReplayEntered(command, output string) {
+	segs := shellSegments(command)
+	if len(segs) != 1 {
+		return
+	}
+	words := shellWords(segs[0].Text)
+	if len(words) < 2 || words[0] != "gui" || (words[1] != "do" && words[1] != "replay") {
+		return
+	}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, replayEnteredMarker) {
+			continue
+		}
+		var values []string
+		if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, replayEnteredMarker))), &values) != nil {
+			continue
+		}
+		for _, v := range values {
+			if v = strings.TrimSpace(v); distinctive(v) && !contains(st.Written, v) && len(st.Written) < 4000 {
+				st.Written = append(st.Written, v)
+			}
+		}
+	}
+}
+
 // maxInventedCodes bounds the invented codes kept, and the points a report gets for them.
 const (
 	maxInventedCodes      = 20

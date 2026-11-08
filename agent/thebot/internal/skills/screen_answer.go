@@ -3,6 +3,7 @@ package skills
 import (
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // A question for the person that the screen answers. Found live (2026-10-26, and 46% of ~1,150 questions over four
@@ -77,13 +78,159 @@ func isCodeWord(w string) bool {
 	return strings.ContainsAny(w, "0123456789") && strings.ContainsAny(strings.ToLower(w), "abcdefghijklmnopqrstuvwxyz")
 }
 
-// asksAppNamesRe is a question for the exact names, labels or options of something the application itself lists (its
-// accounts, ledgers, categories, codes, settings). Found live (2026-10-26): "please confirm the exact ledger names to
-// use for 5% sales and tax in this client's books" - names that stood on the chart of accounts, one click away.
-var asksAppNamesRe = regexp.MustCompile(`(?i)\b(exact|correct|precise|right|proper)\b[^.?]{0,60}\b(names?|spellings?|labels?|options?|codes?)\b|\bconfirm (the |which |what )?[^.?]{0,40}\b(names?|labels?|options?|ledgers?|accounts?|categor(y|ies))\b`)
+// A question for names the application lists, answered by a list on the screen. Found live (2026-10-26): "please
+// confirm the exact ledger names to use for 5% sales and tax in this client's books" - names that stood on the
+// application's own list. The gate rests on a fact of the listing, never on the question's wording (N-W3-3: a regex of
+// "exact/correct ... names/labels/options" decided it until 2026-11-08): the question names a list a listed window
+// shows - a field's options (a combobox, list, menu or tree and the entries under it) or a column of a table (a cell of
+// its first row, with the rows under it) - whose entries are names (they hold letters, not only figures or dates).
+// Such a HELP is sent back once with the list's lines; the next question goes through. A question naming no list on a
+// listed screen, or with no screen listed, goes to the person.
 
-// appNamesNudge is what the model is told instead of the person.
-const appNamesNudge = `Not sent: a name, label or option the application already holds is read from the application, never asked. Open the page that lists them (its master list, chart, settings or the field's own drop-down), read the entries, and take the one the documents or a rule decide. Ask only if none of its entries fits or several do - then say which entries you saw.`
+// listRoles are the roles of an element whose entries follow it in a listing.
+var listRoles = map[string]bool{"combobox": true, "listbox": true, "list": true, "menu": true, "menubar": true, "tree": true, "tablist": true, "radiogroup": true}
+
+// entryRoles are the roles of an entry of a list.
+var entryRoles = map[string]bool{"option": true, "listitem": true, "menuitem": true, "menuitemradio": true, "menuitemcheckbox": true, "treeitem": true, "tab": true, "radio": true}
+
+// maxLabelWords bounds a list's label: a column's or field's name is short; a longer first-row cell is data.
+const maxLabelWords = 4
+
+// listedEntry is one element line of a listing: its role, its quoted text and the line as listed.
+type listedEntry struct{ role, name, line string }
+
+// listedEntries is the element lines of a listing, in order (a line with no element is skipped).
+func listedEntries(listing string) []listedEntry {
+	var out []listedEntry
+	for _, line := range strings.Split(listing, "\n") {
+		if m := screenElementRe.FindStringSubmatch(line); m != nil {
+			out = append(out, listedEntry{strings.ToLower(m[1]), m[2], strings.TrimSpace(line)})
+		}
+	}
+	return out
+}
+
+// stemWord is a word with a plural ending taken off (accounts, categories), so a label and a question that names it
+// in the plural meet.
+func stemWord(w string) string {
+	switch {
+	case len(w) > 4 && strings.HasSuffix(w, "ies"):
+		return w[:len(w)-3] + "y"
+	case len(w) > 3 && strings.HasSuffix(w, "s") && !strings.HasSuffix(w, "ss"):
+		return w[:len(w)-1]
+	}
+	return w
+}
+
+// stemmedWords is a text's plain words, each stemmed.
+func stemmedWords(text string) []string {
+	words := strings.Fields(plainWords(text))
+	for i, w := range words {
+		words[i] = stemWord(w)
+	}
+	return words
+}
+
+// namesLabel reports whether the question's words hold a list's label as a run of words: a short name (at most
+// maxLabelWords words, a word of three letters or more, no figure), stemmed.
+func namesLabel(question []string, label string) bool {
+	if strings.ContainsAny(label, "0123456789") {
+		return false
+	}
+	want := stemmedWords(label)
+	if len(want) == 0 || len(want) > maxLabelWords {
+		return false
+	}
+	long := false
+	for _, w := range want {
+		long = long || len(w) >= 3
+	}
+	if !long {
+		return false
+	}
+	for i := 0; i+len(want) <= len(question); i++ {
+		match := true
+		for j, w := range want {
+			if question[i+j] != w {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+// hasLetter reports whether a text holds a letter (an entry that is a name, not only a figure or a date).
+func hasLetter(s string) bool {
+	return strings.IndexFunc(s, unicode.IsLetter) >= 0
+}
+
+// rowCells is a row's text split into its cells.
+func rowCells(name string) []string {
+	cells := strings.Split(name, " | ")
+	for i := range cells {
+		cells[i] = strings.TrimSpace(cells[i])
+	}
+	return cells
+}
+
+// listOnScreen is the lines of a list the newest listings show that the question names - the list's own line and its
+// entries, at most maxOnScreenLines - when its entries are names; "" when the question names no such list.
+func listOnScreen(question string, listings []string) string {
+	words := stemmedWords(question)
+	if len(words) == 0 {
+		return ""
+	}
+	for i := len(listings) - 1; i >= 0; i-- {
+		entries := listedEntries(listings[i])
+		for k := 0; k < len(entries); k++ {
+			e := entries[k]
+			switch {
+			case listRoles[e.role] && namesLabel(words, e.name):
+				lines, named := []string{e.line}, false
+				for _, x := range entries[k+1:] {
+					if !entryRoles[x.role] || len(lines) >= maxOnScreenLines {
+						break
+					}
+					lines = append(lines, x.line)
+					named = named || hasLetter(x.name)
+				}
+				if named {
+					return strings.Join(lines, "\n")
+				}
+			case e.role == "row" && (k == 0 || entries[k-1].role != "row"):
+				// The first row of a table names its columns.
+				for col, cell := range rowCells(e.name) {
+					if !namesLabel(words, cell) {
+						continue
+					}
+					lines, named := []string{e.line}, false
+					for _, x := range entries[k+1:] {
+						if x.role != "row" || len(lines) >= maxOnScreenLines {
+							break
+						}
+						lines = append(lines, x.line)
+						if cells := rowCells(x.name); col < len(cells) {
+							named = named || hasLetter(cells[col])
+						}
+					}
+					if named {
+						return strings.Join(lines, "\n")
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// listOnScreenNudge is what the model is told instead of the person.
+const listOnScreenNudge = `Not sent: what you ask for is a list the screen you listed shows - a name, label or option the application holds is read from the application, never asked. These lines show it:
+%s
+Read its entries and take the one the documents or a rule decide. Ask again only if none of them fits or several do - then say which entries you saw - and it goes through.`
 
 // asksToContinueRe is a HELP that asks to be allowed to go on, to run commands, or to have the task sent again.
 var asksToContinueRe = regexp.MustCompile(`(?i)\b(let me (continue|carry on|proceed|go on)|resend the task|command mode|permission to (run|continue|proceed)|i can only get (them|it|that) by running|allow me to (run|continue)|need (one|a|another) (more |new )?(command|turn|command turn)|before i can (truthfully |honestly )?report|one (more|new) (command )?turn)\b`)

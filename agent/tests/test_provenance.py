@@ -13,7 +13,7 @@ from unittest import mock
 
 import test_long_requests as base  # noqa: F401 - stubs config first
 
-from decurix_agent import config, long_task, provenance
+from decurix_agent import config, long_task, provenance, stage_checks
 
 TRACKER = ("Full name,Personal email,Mobile,Joining date,Reporting manager,Annual CTC (Rs),Order\n"
            "Ananya Deshpande,ananya@example.com,+91 90040 55318,02/11/2026,Sanjay Patel,\"4,80,000\",SO-5101\n")
@@ -68,7 +68,7 @@ class TypedIntoAForm(unittest.TestCase):
             (work / "joiners.csv").write_text(TRACKER, encoding="utf-8")
             (work / "working.csv").write_text("Order,Total\nSO-5101,\"13,456.00\"\n", encoding="utf-8")
             request = f"Onboard the joiners in {work / 'joiners.csv'} into the portal at http://localhost:8701."
-            with mock.patch.object(config, "WORK_DIR", work), mock.patch.object(long_task, "_page_notes",
+            with mock.patch.object(config, "WORK_DIR", work), mock.patch.object(stage_checks, "_page_notes",
                                                                                 lambda *a: ["Order SO-5102 saved"]):
                 self.assertEqual(long_task.invented_typing(["Ananya Deshpande", "9004055318", "02-11-2026", "13456",
                                                             "SO-5102", "clerk"], request), [])
@@ -89,7 +89,8 @@ class AStageDraft(unittest.TestCase):
             invented = {"to": ["ananya@example.com"], "subject": "Welcome",
                         "body": "Dear Ananya, you join us on 2 Nov 2026. Your reporting manager is Rakesh Menon. "
                                 "Please reply by 14 Nov 2026."}
-            with mock.patch.object(config, "WORK_DIR", work), mock.patch.object(long_task, "_page_notes", lambda *a: []):
+            with mock.patch.object(config, "WORK_DIR", work), \
+                    mock.patch.object(stage_checks, "_page_notes", lambda *a: []):
                 self.assertEqual(long_task.draft_checks([right], request), ([], []))
                 unsourced, fields = long_task.draft_checks([invented], request)
         # A date, and a name found by matching a column's words, are evidence, never a verdict (independent review,

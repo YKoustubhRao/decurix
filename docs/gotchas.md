@@ -971,3 +971,12 @@ One line per gotcha; open the named file and search for the quoted start.
 - [part-6.md](gotchas/part-6.md): "Some word of the option" is not "the words that pick it out"
 - [part-6.md](gotchas/part-6.md): A daemon started as plain `python3` reads the worker's home
 - [part-6.md](gotchas/part-6.md): A label's value is its cell, not its line
+- [part-6.md](gotchas/part-6.md): A cron in UTC is a conversion the person does in their head
+- [part-6.md](gotchas/part-6.md): A page that lists desktops must render when Docker is down
+- [part-6.md](gotchas/part-6.md): A process that imports once reads its settings once
+- [part-6.md](gotchas/part-6.md): A Unix socket's file is not the socket's inode
+- [part-6.md](gotchas/part-6.md): The base image's Xvnc has no SECURITY extension, so it cannot give out an untrusted X cookie
+- [part-6.md](gotchas/part-6.md): The browser's download bubble moves the next action's time
+- [part-6.md](gotchas/part-6.md): An untrusted X client gets nothing of the root window: no property write, no event
+- [part-6.md](gotchas/part-6.md): A plan's "with your OK first" lived only in the question's prose; a halted replay was not credited with what it typed
+- [part-6.md](gotchas/part-6.md): A widget on the worker's accessibility bus is the worker's word, box included

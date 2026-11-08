@@ -42,9 +42,17 @@ def _viewers():
 
     import socket
 
-    from decurix_agent.computer import cdp
+    from decurix_agent.computer import cdp, screen_call
     if time.time() < _no_browser_until[0]:
         return {}
+    if screen_call.remote():
+        # Broker mode: the browser is the screen user's and has no port; the broker lists its pages (screen_call).
+        try:
+            return {t["id"]: t["title"] for t in cdp.page_list() if VIEWER in t["url"]}
+        except Exception as exc:  # noqa: BLE001 - no browser: no viewers, and not asked again for a little while
+            log(f"host_documents: could not list the viewers: {exc}")
+            _no_browser_until[0] = time.time() + NO_BROWSER_SECONDS
+            return {}
     try:
         # No browser listening is the common case on a worker that shows no host app: known at once, not after the
         # browser's own wait for a busy answer - and remembered for a little while.
@@ -60,8 +68,11 @@ def _viewers():
 
 
 def _activate(target_id):
-    from decurix_agent.computer import cdp
+    from decurix_agent.computer import cdp, screen_call
     try:
+        if screen_call.remote():
+            # Broker mode: the screen broker brings the page forward (cdp.activate_page); there is no port here.
+            return cdp.activate_page(target_id)
         with urllib.request.urlopen(urllib.request.Request(cdp.BASE + f"/json/activate/{target_id}"), timeout=5):
             pass
         return True

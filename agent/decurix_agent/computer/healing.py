@@ -365,8 +365,10 @@ def retargets(step, element):
     Whether taking `element` for this step would aim it at another control where that matters: a strict step (one
     the gate stops, or that only sometimes happens) taken by anything but its own control (the same role and name);
     a control the gate stops, under another name; or one whose label commits to something the recorded one did not
-    ("Save" -> "Save and Submit", "Save" -> "Update"). Synonyms and likeness help find a plain control again ("Save" ->
-    "Save changes"); they never move a press onto a Submit, a Pay or a Delete it was not recorded on.
+    ("Save" -> "Save and Submit", "Save" -> "Update"). It never moves a press onto a Submit, a Pay or a Delete it was
+    not recorded on. Passing here is not enough to heal: decide also needs keeps_identity, which refuses a label that
+    differs in more than case, spacing and punctuation ("Save" -> "Save changes" is doubt, for the person - D-09), so
+    likeness finds a plain control again only where it moved, was redrawn or changed role or container.
     """
 
     if _same_control(step, element):

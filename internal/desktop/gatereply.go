@@ -200,7 +200,7 @@ func (m *Manager) postToGateNow(ctx context.Context, id, path string, body func(
 	if inspect.NetworkSettings != nil {
 		if ip := desktopAddress(desktopID, inspect.NetworkSettings.Networks); ip != "" {
 			host = ip
-		} else if n := practiceEndpoint(inspect); n != nil && n.IPAddress != "" {
+		} else if n := practiceEndpoint(inspectNetworks(inspect)); n != nil && n.IPAddress != "" {
 			host = n.IPAddress
 		}
 	}

@@ -108,6 +108,19 @@ RUN for try in 1 2 3; do apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Broker mode's X server (DECURIX_SCREEN_USER=1; agent/decurix-screen-session.sh): Ubuntu's Xtigervnc, which has the
+# SECURITY extension the worker's untrusted cookie needs; the base image's /usr/bin/Xvnc is built without it. Its own
+# step, so the large one above keeps its cache. The base image's TigerVNC stays what the default mode runs: its
+# config files are kept (--force-confold; otherwise dpkg stops at a prompt), /usr/bin/Xvnc and vncpasswd are its files
+# and are not replaced, and the vncserver link the package's alternatives take over is put back as it was.
+RUN for try in 1 2 3; do apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 \
+        -o Dpkg::Options::=--force-confold install -y --no-install-recommends tigervnc-standalone-server && break; \
+    [ "$try" = 3 ] && exit 1; echo "apt-get: try $try failed; trying again"; sleep $((try * 20 - 10)); done && \
+    update-alternatives --remove-all vncserver && ln -sfn /usr/libexec/vncserver /usr/bin/vncserver && \
+    test -x /usr/bin/Xtigervnc && test "$(readlink /usr/bin/vncserver)" = /usr/libexec/vncserver && test ! -L /usr/bin/Xvnc && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # The base image sets NO_AT_BRIDGE=1, which stops every GTK app - the XFCE
 # panel, Thunar, mousepad, LibreOffice's GTK front end - from publishing its
 # widgets over AT-SPI at all. Without this the accessibility tree is empty.
@@ -135,10 +148,14 @@ RUN chmod 644 /etc/opt/chrome/policies/managed/decurix.json \
 # also drops the second copy of python-pptx and of numpy. Pinned, like everything here, but for requests and
 # python-dateutil, which Ubuntu's own packages may already hold: those are floors (with a ceiling), so pip keeps an apt
 # copy that satisfies them instead of replacing a package apt owns. --break-system-packages is this image's norm for
-# worker installs (PIP_BREAK_SYSTEM_PACKAGES below). It must never shadow or replace an apt-owned package: pip writes
-# what it installed (--report), and the build stops if any of it is a package apt installed too.
-RUN for try in 1 2 3; do /usr/bin/python3 -m pip install --no-cache-dir --timeout 60 --retries 5 --break-system-packages \
-        --report /tmp/pip-report.json \
+# worker installs (PIP_BREAK_SYSTEM_PACKAGES below). It must never shadow or replace an apt-owned package. Every
+# apt-owned Python package is held at its installed version as a pip constraint (-c), so when a new upstream release of a
+# dependency wants a newer numpy, pip picks an older release of that dependency instead of failing to uninstall apt's
+# numpy (found live 2026-11-05: contourpy). pip also writes what it installed (--report), and the build stops if any of
+# it is a package apt installed too.
+RUN /usr/bin/python3 -c "import importlib.metadata as md; print(*sorted(d.metadata['Name'] + '==' + d.version for d in md.distributions(path=['/usr/lib/python3/dist-packages']) if d.metadata['Name']), sep=chr(10))" > /tmp/apt-constraints.txt \
+    && for try in 1 2 3; do /usr/bin/python3 -m pip install --no-cache-dir --timeout 60 --retries 5 --break-system-packages \
+        -c /tmp/apt-constraints.txt --report /tmp/pip-report.json \
         python-pptx==1.0.2 \
         pandas==2.2.3 \
         "requests>=2.31,<3" \
@@ -152,7 +169,7 @@ RUN for try in 1 2 3; do /usr/bin/python3 -m pip install --no-cache-dir --timeou
         reportlab==4.2.5 && break; \
     [ "$try" = 3 ] && exit 1; echo "pip3: try $try failed; trying again"; sleep $((try * 20 - 10)); done \
     && /usr/bin/python3 -c "import json, re, sys, importlib.metadata as md; norm = lambda n: re.sub(r'[-_.]+', '-', n).lower(); apt = {norm(d.metadata['Name']) for d in md.distributions(path=['/usr/lib/python3/dist-packages']) if d.metadata['Name']}; got = {norm(i['metadata']['name']) for i in json.load(open('/tmp/pip-report.json'))['install']}; both = sorted(apt & got); print('pip installed over apt-owned packages: ' + ', '.join(both)) if both else None; sys.exit(1 if both else 0)" \
-    && rm -f /tmp/pip-report.json
+    && rm -f /tmp/pip-report.json /tmp/apt-constraints.txt
 
 # Every worker library imports in the python3 a desktop runs, under exactly the PATH a desktop gets
 # (desktop.desktopPath, pinned by internal/desktop/onepython_test.go): the build fails here, not a task later, if any
@@ -211,6 +228,22 @@ RUN mkdir -p /home/headless/.config/autostart \
     && chown -R headless:headless /home/headless/.config
 
 COPY agent/decurix-agent.desktop /home/headless/.config/autostart/decurix-agent.desktop
+# Session services a worker's desktop has no use for, kept from starting (idle memory, docs/lightweight.md): a file of the same
+# name in ~/.config/autostart with Hidden=true is the XDG way to switch a system autostart entry off, and is harmless
+# where the package is not installed. Each one's absence changes nothing a person or the worker sees or can do:
+#   xfce4-notifyd       D-Bus starts it on the first notification (its .service file), so it stops costing memory on
+#                       a desktop nothing has notified; notifications still show.
+#   xfce4-power-manager nothing to manage in a container (no battery, backlight, lid or suspend).
+#   light-locker, xscreensaver, xfce4-screensaver
+#                       a lock screen on a desktop whose user has no password would lock the person and the worker out.
+#   update-notifier     the image is updated by rebuilding it, never from inside a desktop.
+# Kept, on purpose: at-spi (the accessibility tree `gui` reads), the clipboard manager (a copy outlives the window it
+# came from), gnome-keyring (Chrome keeps its cookie key there: changing the store loses sign-ins), xdg-user-dirs
+# (the folders a person expects), Thunar's daemon and tumbler (the Files window and its thumbnails).
+COPY agent/decurix-autostart-off.desktop /tmp/decurix-autostart-off.desktop
+RUN for name in xfce4-notifyd xfce4-power-manager light-locker xscreensaver xfce4-screensaver update-notifier; do \
+        install -m 644 -o headless -g headless /tmp/decurix-autostart-off.desktop "/home/headless/.config/autostart/$name.desktop"; \
+    done && rm -f /tmp/decurix-autostart-off.desktop
 # Pre-seeds four xfconf channels so XFCE starts already looking like
 # Decurix instead of generating the base image's own defaults on first
 # launch: the wallpaper (decurix-desktop-wallpaper.xml), the GTK
@@ -300,11 +333,13 @@ ENV PATH="/opt/tools/bin:/opt/tools/go/bin:/opt/tools/node/bin:/opt/tools/rust/b
 # All of that goes - every setuid and setgid bit in the image, not a list of the ones known today (B-21): a desktop
 # runs with no-new-privileges, so none could work anyway, and Chromium uses its namespace sandbox (sandbox.go). The
 # entrypoint does the one-time setup as root and then drops to the desktop user with no
-# capabilities. The gate gets a user of its own.
+# capabilities. The gate gets a user of its own, and so does the screen (decurixscreen: the screen broker's, used only
+# on a desktop created with DECURIX_SCREEN_USER=1; no login shell, no password, no sudo).
 RUN rm -f /etc/sudoers.d/headless /dockerstartup/.initial_sudo_password \
     && passwd -l root && passwd -l headless \
     && find / -xdev \( -perm -4000 -o -perm -2000 \) -type f -exec chmod ug-s {} + \
     && useradd --system --no-create-home --shell /usr/sbin/nologin decurixgate \
+    && useradd --system --no-create-home --shell /usr/sbin/nologin decurixscreen \
     && chmod 644 /etc/passwd /etc/group \
     && chown root:root /etc && chmod 755 /etc \
     && chown -R 1001:1001 /dockerstartup
@@ -324,6 +359,22 @@ RUN rm -f /etc/sudoers.d/headless /dockerstartup/.initial_sudo_password \
 # reaching one another's ports at all is a network decision (docs/follow-ups.md, resource plan B7).
 RUN mkdir -p /etc/tigervnc && echo 'nolisten=tcp' >> /etc/tigervnc/vncserver-config-mandatory
 COPY agent/decurix-entrypoint.sh /opt/decurix-entrypoint.sh
+# Broker mode only (DECURIX_SCREEN_USER=1; docs/gate-boundary.md): the screen user's session (Xtigervnc, xfwm4, the
+# screen broker) and the worker's (its panel, desktop and the agent, as untrusted X clients), both started by the
+# entrypoint; and the window manager's look for the screen user, who has no XFCE configuration of its own.
+COPY agent/decurix-screen-session.sh /opt/decurix-screen-session.sh
+COPY agent/decurix-worker-session.sh /opt/decurix-worker-session.sh
+COPY agent/decurix-xfwm4.xml /etc/xdg/decurix-screen/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
+RUN chmod 755 /opt/decurix-screen-session.sh /opt/decurix-worker-session.sh \
+    && chmod 644 /etc/xdg/decurix-screen/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
+# Broker mode: the screen broker reads the worker's apps' widgets on the worker's accessibility bus (computer/atspi.py,
+# _broker_bus), so that bus admits the screen user as well as its own user and root. The other way it does not: the
+# screen user's own bus admits root and the screen user only. The screen user exists on every desktop but runs nothing
+# in the default mode, so this changes nothing there.
+RUN grep -q '<allow user="root"/>' /usr/share/defaults/at-spi2/accessibility.conf \
+    && sed -i 's|<allow user="root"/>|<allow user="root"/>\n    <allow user="decurixscreen"/>|' \
+        /usr/share/defaults/at-spi2/accessibility.conf \
+    && grep -q '<allow user="decurixscreen"/>' /usr/share/defaults/at-spi2/accessibility.conf
 # The agent compiled once, here, after its last COPY and before it is made root's (resource plan P1 #1): every `gui`
 # call and every start of the agent and the gate imported it from source, about a second each, because the worker
 # cannot write __pycache__ into a root-owned tree (and PYTHONDONTWRITEBYTECODE=1 says not to). The .pyc are root's,

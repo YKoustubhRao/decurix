@@ -52,6 +52,8 @@ SKILL_ENGINE = "skill"
 
 LEARN_RE = re.compile(r"^/learn(?:\s+(.*))?$", re.DOTALL)
 SKILL_RE = re.compile(r"^/skills?(?:\s+(.*))?$", re.DOTALL)
+# The reply to a report's offer to put a changed file back (source_guard.offer): "/restore <offer id> [file ...]".
+RESTORE_RE = re.compile(r"^/restore(?:\s+(.*))?$", re.DOTALL)
 
 ABANDON_RE = re.compile(r"^\W*(cancel|abort|stop|quit|never ?mind)\b", re.IGNORECASE)
 RETRY_RE = re.compile(r"^\W*(retry|again|try again|look again)\b", re.IGNORECASE)
@@ -202,10 +204,27 @@ def learn_request(sessions, name=None):
     raise ValueError("the name has both kinds of quote in it")
 
 
-def handles(content):
-    """Whether a request is one of this module's ("/learn", "/skill"), which need no reasoning backend."""
+def parse_restore(content):
+    """
+    (offer id, [file names]) of a "/restore" request - the person's reply to a report's offer to put a changed file of
+    theirs back (source_guard.offer) - or None for any other request. No names means every file the offer holds.
+    """
 
-    return parse_learn(content) is not None or parse_skill(content) is not None
+    match = RESTORE_RE.match((content or "").strip().split("\n", 1)[0].strip())
+    if not match:
+        return None
+    import shlex
+    try:
+        words = shlex.split(match.group(1) or "")
+    except ValueError:
+        words = (match.group(1) or "").split()
+    return (words[0] if words else ""), words[1:]
+
+
+def handles(content):
+    """Whether a request is one of this module's ("/learn", "/skill", "/restore"), which need no reasoning backend."""
+
+    return parse_learn(content) is not None or parse_skill(content) is not None or parse_restore(content) is not None
 
 
 def mimics(content):
@@ -391,6 +410,8 @@ def perform(content, task_file=None, source_files=None):
     try:
         if parse_learn(content) is not None:
             _learn(*parse_learn(content))
+        elif parse_restore(content) is not None:
+            _restore_request(*parse_restore(content))
         else:
             _run_request(*parse_skill(content), context=skill_context(content), source_files=source_files)
     except _Refused as refusal:
@@ -422,6 +443,8 @@ def resume(reply, approval_outcome=None):
             _learn_reply(paused, reply)
         elif paused["mode"] == "confirm":
             _confirm_reply(paused, reply)
+        elif paused["mode"] == "restore":
+            _restore_reply(paused, reply)
         else:
             _run_reply(paused, reply, approval_outcome)
     except _Refused as refusal:
@@ -716,6 +739,26 @@ def _run_request(query, given, context="", source_files=None):
     _prepare(run)
 
 
+def _start_pause(run):
+    """
+    What the person chose when they taught it (the `approval` question): some tasks are theirs to start (they spend
+    money, commit them to something), and the words of a request cannot tell which. `ask` pauses a run from step 1
+    for a yes before anything starts - whichever way it would start: the replay, the model doing it while it learns,
+    or the model gathering its documents. `go` starts at once. A skill taught before this was asked has no answer and
+    runs as it always did. True when the run paused. Either way it is about starting only: every consequential step
+    still stops at the approval gate, every run.
+    """
+
+    skill = run["skill"]
+    if run["start"] != 1 or skill.get("approval") != "ask" or run.get("approved") or run.get("one_off"):
+        return False
+    shown = "; ".join(f"{k} = {el._quote(str(v), 60)}" for k, v in run["values"].items())
+    _pause(run, "go", f"You taught me to check with you before I start \"{skill.get('title') or skill['name']}\"."
+           + (f" This run would use: {shown}." if shown else "")
+           + " Reply `yes` to start, or `no` to stop.", ask_kind="approval")
+    return True
+
+
 def _pause(run, kind, text, ask_kind="query", secret=False, **extra):
     """Pause the run on a question. `secret`: the question asks for a value the skill itself marks secret (a
     parameter's own "secret"), so the person's whole reply is withheld wherever it is kept (X-6) - from structure,
@@ -789,7 +832,8 @@ def _prepare(run):
     if missing and not problem and run.get("filled") and run["start"] == 1 and not run.get("gathered") \
             and any(p.get("list") for p in missing) and _loop_start(skill) > 1 and _engine_can_drive() \
             and binding.available():
-        _gather(run)
+        if not _start_pause(run):
+            _gather(run)
         return
 
     # A task the model does while it is still learning it takes its values as guidance, and reads the run's own
@@ -797,6 +841,8 @@ def _prepare(run):
     # fixes the task's shape to what it showed - a bill of two lines - and the next bill had one: found live, the run
     # asked for the "second item" before anything else, and "there is no second line" could not answer that question.
     if missing and not problem and run.get("filled") and run["start"] == 1 and _learning_by_model(run):
+        if _start_pause(run):
+            return
         progress.emit("The documents do not give " + ", ".join(p["name"] for p in missing)
                       + " - working from the documents themselves.")
         _by_model(run)
@@ -807,14 +853,7 @@ def _prepare(run):
                secret=any(p.get("secret") for p in missing), missing=[p["name"] for p in missing])
         return
 
-    # What the person chose when they taught it: some tasks are theirs to start (they spend money, commit them to
-    # something), and the words of a request cannot tell which. A skill taught before this was asked has no answer
-    # and runs as it always did.
-    if run["start"] == 1 and skill.get("approval") == "ask" and not run.get("approved") and not run.get("one_off"):
-        shown = "; ".join(f"{k} = {el._quote(str(v), 60)}" for k, v in run["values"].items())
-        _pause(run, "go", f"You taught me to check with you before I start \"{skill.get('title') or skill['name']}\"."
-               + (f" This run would use: {shown}." if shown else "")
-               + " Reply `yes` to start, or `no` to stop.", ask_kind="approval")
+    if _start_pause(run):
         return
 
     if run["start"] == 1 and _learning_by_model(run):
@@ -1859,7 +1898,7 @@ def _stuck_reply(paused, reply):
         reopen = paused.get("reopen")
         if reopen and choice == "restart":
             progress.emit(f"Closing {el._quote(reopen['window'], 60)} to open it fresh")
-            if not launchers.close(reopen["window"], replay.title_matches):
+            if not launchers.close_recorded(reopen["window"]):
                 return _ask_stuck(run, {"step": step_n, "resume_from": paused["resume_from"], "text": paused["why"],
                                         "options": paused.get("options"), "trail": paused.get("trail")},
                                   f"{el._quote(reopen['window'], 60)} did not close (it may be asking something - "
@@ -2300,8 +2339,9 @@ def _taught(skill, since=None):
 
     parts = []
     # What the organisation holds for this worker (its role's and the org's rules and facts, org_knowledge.py) comes
-    # first; the skill's own taught lines after it read as refinements. Cached, so a run's prompt stays the same.
-    parts.extend(org_knowledge.cached())
+    # first, the task's own items last among them; the skill's own taught lines after it read as refinements. Cached
+    # per task, so a run's prompt stays the same.
+    parts.extend(org_knowledge.cached(task_id=task_context.current() or None))
     said = skills.explanation(skill)
     if said:
         parts.append(said)
@@ -2688,13 +2728,10 @@ def _by_model(run, from_step=None, note="", ran=False, phase=None):
                       "(it is still learning this task).")
     log(f"Skill {skill['name']}: handed to the engine ({'takeover at ' + str(from_step) if from_step else 'learning'})")
 
-    # A person who taught this task and said to go ahead (or said yes just now) has approved it as a kind of task;
-    # the engine's check on the request's own words is not asked of them again.
-    state.request_preapproved = skill.get("approval") == "go" or bool(run.get("approved"))
-    try:
-        _engine(request, state.current_task_file)
-    finally:
-        state.request_preapproved = False
+    # Whether the run may start without asking was settled before this (_start_pause: the teacher's `approval`
+    # answer, or the person's yes just now). The engine is told nothing of it: a yes is one action's, so every
+    # consequential action of the run still stops at the approval gate (soul takes no approval from a request).
+    _engine(request, state.current_task_file)
 
 
 def _judge(run, claim, note="", purpose="py.judge"):
@@ -3425,17 +3462,17 @@ def _gate(reply, kind, engine):
     # The code-decided facts about the files, one function for every route that reports work (produced.file_facts):
     # results stored in its workbooks, a Total row of typed numbers (wrong only when formulas were asked for, else a
     # note in the report), a file the request names that was not made, a picture's size, a document's page breaks.
-    # The person's own files in the shared folder: one the task changed without being asked is put back now, and the
-    # result is not done - in those words, never as a finding about the file's content.
     # The person's own given files that changed during the task: a fact checked in code, for the judge (with its
-    # diff) and always for the person (where the original is kept). Nothing is put back while checking, and the
-    # request's verbs decide nothing (E-12, review 2026-11-03: an in-place update the request asked for was reverted
-    # as "you changed my file"). A check that cannot be made leaves the work not checked (E-01).
-    gate_not_made, changed_for_judge, changed_for_person = list(unread), [], []
+    # diff) and always for the person (where the original is kept, and the `/restore <offer id>` that puts it back).
+    # Nothing is put back while checking, and the request's verbs decide nothing (E-12, review 2026-11-03: an in-place
+    # update the request asked for was reverted as "you changed my file"); a file is put back only on the judge's
+    # structured verdict (_settle_sources, after the verdict) or the person's reply to the offer (_restore_request).
+    # A check that cannot be made leaves the work not checked (E-01).
+    gate_not_made, changes, changed_for_judge, changed_for_person = list(unread), [], [], []
     try:
         changes = source_guard.changed_sources(task_context.current(), state.current_task or "")
         changed_for_judge = source_guard.judge_lines(changes)
-        changed_for_person = source_guard.report_lines(changes)
+        changed_for_person = source_guard.report_lines(changes, offer_id=_offer(changes))
     except Exception as exc:  # noqa: BLE001 - not made, never passed
         log(f"Could not compare the shared folder's files with their state before the task: {exc}")
         gate_not_made.append(f"whether your own files were changed could not be checked ({type(exc).__name__})")
@@ -3636,6 +3673,8 @@ def _gate(reply, kind, engine):
             deliverables=produced.asked_files(made, state.current_task or ""),
             look_up=lambda terms: produced.lines_with(list(made) + produced.named_sources(reply, state.current_task or "", made) + [p for p in evidence.files_read() if p not in made], terms))
 
+    if verdict.get("put_back") and changes:
+        notes = _settle_sources(changes, verdict["put_back"], notes, changed_for_person)
     decided = verify.outcome(verdict)
     if not on_screen and decided["status"] == verify.UNCHECKED and verdict["verdict"] == verify.UNSURE \
             and not unread_host:
@@ -3744,6 +3783,115 @@ def _gate(reply, kind, engine):
                           "task": guided["task"]}
     ask_for_query(_doubt_text(reply, verdict, on_screen=on_screen), kind="query", engine=engine)
     return True
+
+
+def _offer(changes):
+    """The offer's id for this task's changed given files (source_guard.offer), "" when there is none or it could not
+    be noted - the person is then told where the original is kept, without the `/restore` reply."""
+
+    try:
+        return source_guard.offer(task_context.current(), changes)
+    except OSError as exc:
+        log(f"Could not note the offer to put the changed files back: {exc}")
+        return ""
+
+
+def _settle_sources(changes, names, notes, told):
+    """
+    The judge's structured word that the request did not ask for a given file to change (verdict["put_back"]): each
+    file it names that the guard saw change is put back now and checked (its bytes against the copy kept before the
+    task); a name the guard did not see change puts nothing back. Returns the report's notes with the lines about
+    those files said anew: what was put back (or could not be), and the offer for the rest.
+    """
+
+    task_id = task_context.current()
+    rels = source_guard.named_in(changes, names)
+    if not rels:
+        return notes
+    done, failed, kept = source_guard.restore_sources(task_id, rels)
+    said = source_guard.put_back_lines(task_id, done, failed, kept)
+    for line in said:
+        progress.emit(line)
+    log(f"Put back on the check's word: {done} (not: {failed})")
+    rest = [c for c in changes if c["rel"] not in done]
+    return [n for n in notes if n not in told] + said + source_guard.report_lines(rest, offer_id=_offer(rest))
+
+
+def _restore_request(offer_id, names):
+    """
+    "/restore <offer id> [file ...]": the person's reply to the offer a report made (source_guard.offer). Each offered
+    file (or each one named) that still holds what the run left is put back from the copy kept before the task and
+    checked; one that changed after the run is never put back over without a yes to a question of its own.
+    """
+
+    task_id, offered = source_guard.find_offer(offer_id)
+    if offered is None:
+        raise _Refused(f"There is no offer \"{offer_id}\" to put a file back from. A report that changed a file of yours "
+                       "says the `/restore` to send; the originals are kept for the last "
+                       f"{source_guard.KEEP_TASKS} tasks only.")
+    facts = source_guard.offered_facts(offered)
+    rels = [f["rel"] for f in facts]
+    if names:
+        rels = source_guard.named_in(facts, names)
+        if not rels or len(rels) < len(names):
+            raise _Refused("That offer is for " + ", ".join(f"`{f['name']}`" for f in facts)
+                           + f" only. Send `/restore {offer_id}` for all of them, or name one of these.")
+    newer = source_guard.changed_since(offered, rels)
+    _restore_now(task_id, offer_id, [r for r in rels if r not in newer], newer, offered)
+
+
+def _restore_now(task_id, offer_id, rels, newer, offered, said=()):
+    """Put back `rels`, then ask about the `newer` ones (changed after the run), or report."""
+
+    said = list(said)
+    if rels:
+        done, failed, kept = source_guard.restore_sources(task_id, rels)
+        source_guard.withdraw(task_id, done)
+        said += source_guard.put_back_lines(task_id, done, failed, kept)
+    if newer:
+        files = offered["files"]
+        which = ", ".join(files[r].get("path") or r for r in newer)
+        state.paused_skill = {"mode": "restore", "task_id": task_id, "offer_id": offer_id, "rels": newer,
+                              "offered": offered, "said": said}
+        ask_for_query(("\n".join(said) + "\n\n" if said else "")
+                      + f"{which} changed after the task ended (you, or another program, saved it since), so I have "
+                      "not put the original back over it. Put the original back anyway? What is there now would be "
+                      "kept beside it as " + ", ".join(source_guard.kept_name(files[r].get("name") or r).name
+                                                       for r in newer)
+                      + ". Reply `yes` to put it back, or `no` to leave it as it is.", kind="query", engine=SKILL_ENGINE)
+        return
+    _restore_report(said)
+
+
+def _restore_reply(paused, reply):
+    """The reply to "it changed after the task ended - put it back anyway?": only a yes puts it back."""
+
+    said = approval.reading(reply, "put the original back over the newer version of the file, keeping that version "
+                                   "beside it")
+    if said["decision"] == "yes":
+        return _restore_now(paused["task_id"], paused["offer_id"], paused["rels"], [], paused["offered"],
+                            said=paused["said"])
+    names = ", ".join(paused["offered"]["files"][r].get("path") or r for r in paused["rels"])
+    left = f"{names} is left as it is now: nothing was put back over it."
+    if not paused["said"]:
+        return _stopped(f"before putting anything back. {left}")
+    return _restore_report(list(paused["said"]) + [f"As you said, {left}"])
+
+
+def _restore_report(said):
+    """The report of a `/restore`: what was put back, each checked in code (its bytes against the kept copy). Done
+    only when something was put back and nothing failed - a file that could not be put back, or whose bytes do not
+    match the kept copy, makes it not done."""
+
+    put = [line for line in said if line.startswith(source_guard.PUT_BACK)]
+    failed = [line for line in said if line.startswith(source_guard.NOT_PUT_BACK)]
+    checks = ([verdicts.check("source.put_back", verdicts.PASS, "code", line) for line in put]
+              + [verdicts.check("source.put_back", verdicts.FAIL, "code", line) for line in failed])
+    done = bool(put) and not failed
+    write_final_reply("\n".join(said) or "Nothing was put back.", kind="final" if done else "error",
+                      engine=SKILL_ENGINE, checked=bool(put or failed),
+                      verdict=verdicts.make(verdicts.DONE if done else verdicts.NOT_DONE, "skill_gate", checks=checks,
+                                            why="" if done else "not every file was put back"))
 
 
 # How many times one task may ask "I cannot confirm this is done" before it stops asking. Found live

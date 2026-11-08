@@ -47,15 +47,18 @@ Requests reach a specialist three ways:
   - An earned path serves only requests shaped like eval cases: one user turn, a system prompt of at most 600 characters, no pictures, recordings or web lookup.
   - In local mode, a specialist takes routed requests only once it is proven at least as good as the brain. Naming the field (`"domain"`) always reaches it.
   - A specialist measured worse than the local brain loses its field back to the brain.
+  - Among the local models that earned a field, the fastest answers. A request too long for its window, or a path slower on average than `max_local_seconds`, stays with the remote brain.
+  - A client can report its final verdict on real answers: `POST /v1/brainiac/outcomes {"ok": false, "trace": id}`, or `"since"` (RFC 3339) for every answer since then. A miss reported after a path was measured takes the field back until `brainiac eval` runs again. A pass earns nothing, because a real request has no answer key.
+  - `brainiac paths` (`GET /v1/brainiac/paths`) says, per field, which local models have earned it and why each has or has not.
   - Scores measured before 2026-11-03 have no decided counts and prove nothing until `brainiac eval` runs again.
 
 ```bash
 brainiac eval --cases ~/decurix-tests/brainiac/sample-cases.jsonl --learn
 ```
 
-A case is one JSON line: `{"domain":"math","prompt":"...","check":{"kind":"number","value":"42"}}`. The check kinds are `number` (reads `\boxed{}`, "the answer is", or the last figure), `exact`, `contains`, `regex` and `choice`. `--learn` also teaches the router the cases' fields. Cases live outside the repo.
+A case is one JSON line: `{"domain":"math","prompt":"...","check":{"kind":"number","value":"42"}}`. The check kinds are `number`, `exact`, `contains`, `regex` and `choice`. `number`, `exact` and `choice` judge only the answer's final part (the last `\boxed{}`, else what follows the last "answer is" or "answer:", else the last line), with thinking removed; two different numbers or letters there are a miss. `contains` and `regex` read the whole answer. `--learn` also teaches the router the cases' fields. Cases live outside the repo.
 
-Reasoning specialists are given room to think (up to 6,144 tokens); on a CPU that is slow.
+When the client sets no `max_tokens`, a local answer gets 2,048 tokens and a reasoning specialist gets room to think: its window less 2,048, at most 12,288 (the catalog's reasoning models have a 16,384-token window). On a CPU that is slow.
 
 ## The browser: fresh answers and a current arsenal
 
@@ -73,7 +76,7 @@ Safety:
 - What leaves the machine is that query and the page requests, nothing else of the conversation.
 - The fetcher's address check runs on the address actually dialed, so a DNS answer cannot send it inside the network.
 - Pages are size- and time-limited, and their text is evidence, never instructions.
-- The headless browser never runs on its own. `POST /v1/brainiac/fetch {"url", "render": true}` asks for it, and `web_render: false` refuses it (the default on an appliance). Chrome then reaches the web only through a proxy inside Brainiac that applies the same address guard to every connection, loopback included. The page it reads is size-bounded.
+- The headless browser never runs on its own. `POST /v1/brainiac/fetch {"url", "render": true}` asks for it, and `web_render: false` refuses it (the default on an appliance). Chrome then reaches the web only through a proxy inside Brainiac that applies the same address guard to every connection, loopback included. The page it reads is size-bounded. It runs with a model process's short environment (`isolate.Env`), never Brainiac's keys such as a remote brain's API key, and on Linux it is killed if Brainiac exits (2026-11-07). On Linux it also runs under a Landlock file policy: its throwaway profile read-write, the system's read set (`/usr`, `/lib*`, `/opt`, fonts, certificates, the loader's cache, `/sys`, its own `/proc/self`) read-only, and nothing else: not the operator's files, not Brainiac's store, not other processes' `/proc` entries. The network is kept (it goes through the guard proxy). A kernel without Landlock keeps the old behaviour and says so once in the log (2026-11-08).
 
 Agents can use the same browser directly: `POST /v1/brainiac/search {"query"}` and `POST /v1/brainiac/fetch {"url", "render", "query"}`.
 
@@ -102,13 +105,15 @@ Agents can use the same browser directly: `POST /v1/brainiac/search {"query"}` a
    - A model under a new name never inherits its parent's scores, whatever the Hub's tags say.
    - The catalog's own ratings are the only yardstick; ratings the updater made are never used to rate others.
 4. **Adopt.** A model rated at least 3 points above the current pick for a role goes into `catalog.local.json`, marked `auto`, with the comparisons as its basis.
-   Only a repo owned by a lab or quantiser on the trusted list (`internal/scout`) is adopted on its own. A repo's name and tags are its uploader's own words, so a stranger's upload under a real model's name waits for a person (`brainiac scout adopt`).
+   Only a repo owned by a first party, a lab that makes the models it publishes (the list in `internal/scout`), is adopted on its own. A repo's name and tags are its uploader's own words, so anyone else's upload waits for a person (`brainiac scout adopt`): a stranger's under a real model's name, and since 2026-11-08 also a quantiser's or mirror's copy (`unsloth`, `bartowski`, `ggml-org`...). What the updater adopts is pinned to the commit and sha256 the Hub lists when it adopts; on an appliance it adopts nothing (the catalog changes only by a signed release).
 5. **Plan again** for the machine as it was planned (today's memory pressure is not a reason to downgrade). The plan goes on only if it is better overall and no core role is lost.
 6. **Install beside the running models** (`lock.next.json`), only after 10 minutes with no requests and when the CPU is not busy.
-7. **Check every changed role** with questions code can verify: the brain must answer 17 + 25 and repeat a word, a vision model must read a number from a picture, OCR must read it too, a math model must get 12 × 13 right, a translator must write Hindi. This catches a model that does not load, cannot see, or answers in the wrong template.
+7. **Check every changed role** with questions code can verify: the brain must answer 17 + 25 and repeat a word, a vision model must read a number from a picture, OCR must read it too, a math model must get 12 × 13 right, a code model must write `def add`, a SQL model a `count`, a translator must write Hindi, embeddings must come back the same shape, and speech must transcribe a second of silence without failing. This catches a model that does not load, cannot see, or answers in the wrong template.
 8. **Stage.** The checked plan waits in `lock.next.json`, recorded in `update-staged.json` with the lock's sha256. Nothing served changes.
 
-`brainiac update promote` is a person switching to the staged plan. It refuses when `lock.next.json` is not the plan that passed its check. `lock.json` becomes the staged lock, the old one is kept as `lock.prev.json`, and a newer llama.cpp the plan needs becomes the pin. Downloads neither lock uses are deleted from Brainiac's own store (never from a shared Ollama). A running `serve` notices that `lock.json` changed (within 30 s) and moves to it; requests already running finish on the old models.
+`brainiac update promote` is a person switching to the staged plan. It refuses when `lock.next.json` is not the plan that passed its check. `lock.json` becomes the staged lock, the old one is kept as `lock.prev.json`, and a newer llama.cpp the plan needs becomes the pin. Downloads neither lock uses are deleted from Brainiac's own store (never from a shared Ollama). A running `serve` notices that `lock.json` changed (within 30 s) and moves to it; requests already running finish on the old models. The server keeps one residency for all its engines (G-11, 2026-11-08): a model whose recipe did not change (same files, context, threads, build and sandbox) keeps its running process and is not loaded again, and the old engine stops only the models that changed or left the plan, once no request holds them.
+
+On an appliance (`BRAINIAC_APPLIANCE`) no person promotes by hand: only a **signed release** does (O-3.6, 2026-11-08). The release pipeline runs `brainiac update sign-release <lock.next.json> --key <keyfile>`, which writes `release.json` (kind `brainiac.release/v1`, naming the sha256 of that lock's exact bytes) and its detached ed25519 signature, made with the catalog's release key. Copied into the box's store beside `parity.json`, the local parity eval of that lock, it lets `brainiac update promote` switch, and only when: the signature verifies against this build's key; the release names the staged lock's sha256; and the parity eval, measured after the plan was staged and on that lock, shows every changed model proven (`evals.Results.Proven`: the Wilson lower bound of its decided cases at least the old model's accuracy, 20 cases or more) at least as good as the model it replaces, in every field the box serves for the brain and in its own role for any other role. Anything else is refused with the reason. Off an appliance a person may still promote by hand, but a `release.json` that is present is checked either way and never ignored. The release and parity files are spent by the promote. What writes `parity.json` on the box (a parity run of the staged plan on cases of the request shapes the box serves) is still owed (docs/follow-ups.md, O-3.6).
 
 A canary catches a model that does not load or uses the wrong template. It does not judge quality, so the box's judgement model changes only by a person's decision.
 
@@ -122,16 +127,19 @@ The leaderboards cover the brain, code, math and pointing on a screen. No mainta
 
 A model file is untrusted input to a large native parser, and it carries a chat template that the server runs on every request.
 
-- **Where a model comes from.** Only trusted uploaders are adopted automatically (above). A sha256 only proves a file is what its uploader published.
-- **What is installed stays installed.** A model stays at the commit it was installed from; a push to its repo changes nothing here. `brainiac pull --latest` moves it on purpose.
+- **Where a model comes from.** Only first parties are adopted automatically (above). A sha256 only proves a file is what its uploader published.
+- **Pinned, or not installed.** Every Hugging Face source in the catalog names its commit (`revision`) and each file's `sha256`; every GitHub asset and llama.cpp build its `sha256`. `pull` refuses a plan that names anything without its pins, before fetching anything, and lists every gap (fail closed); a Hub listing or a GitHub digest that disagrees with a pin is refused too. A push to a repo changes nothing here: a model moves to a new commit only when the catalog does. `scout adopt` and `scout pin` pin what they add from the Hub's and GitHub's metadata. Ollama tags and system programs are fetched by those programs and carry no pin.
+- **Hash-locked worker packages** (G-09, 2026-11-08). The worker's pip groups install only from `workers/python/locks/<group>-cp3N-<target>.txt`: every package the group reaches, transitive ones included, at one version, with the sha256 of each wheel, for CPython 3.11-3.14 on `win_amd64`, `linux_x86_64`, `linux_aarch64` and `macos_arm64` (32 files). pip runs with `--require-hashes --only-binary=:all:`, so nothing unhashed and no sdist build runs. A machine with no lock for its Python and system, or a file that is not fully locked (`worker.CheckLocked`), is refused before a venv is made: there is no unlocked fallback. `python3 -I brainiac/scripts/lock_worker.py` (`py -3 -I` on Windows) makes the locks from PyPI's JSON index alone (each project's files and sha256 from the Simple API, each chosen wheel's dependencies from its PEP 658 metadata, markers evaluated for the target); it resolves the groups together so they install side by side, and needs no install and no pip-compile. Rerun it after changing a `requirements-*.txt`; numpy is pinned there per Python (2.4.6 below 3.12, 2.5.4 from 3.12).
+- **A signed catalog.** The catalog ships inside the binary. A newer one, or extra models, arrive as an overlay (`catalog.local.json`) with a detached ed25519 signature beside it (`catalog.local.json.sig`) made with the owner's key, whose public half is compiled in (`internal/catalog/sign.go`). A signed overlay is used only when its signature verifies; an unsigned one is the operator's own (`scout adopt`, the updater) and is used except on an appliance, where only a signed overlay is and `scout adopt`, `scout pin` and the updater's adoptions are refused. Writing the overlay locally removes a signature beside it. `brainiac catalog pin <file>` fills a catalog file's missing pins from metadata (no model is downloaded) without moving anything else in the file; `catalog sign <file> --key <keyfile>` (or `BRAINIAC_CATALOG_KEY`) signs it; `catalog verify <file>` checks it against this build's key and lists what stays unpinned; `catalog keygen --out <file>` makes the owner's key pair. Until the owner's public key is compiled in, a build trusts no key, so an appliance runs the shipped catalog alone.
 - **Chat templates.** The first template a model installs is recorded in `templates.json` and its text kept under `templates/`, to read. A different one later stops the install, and the updater sets that model aside, until a person reads it and runs `brainiac update approve-template <model>`. A file whose template no longer matches its lock is not served. This catches a change; code cannot judge whether a model's first template is honest.
 - **Secrets.** `llama-server` and the Python worker get a short list of environment variables, none of them Brainiac's keys. `pip` installs for the worker run without any `*_KEY` or `*_TOKEN`.
-- **Downloads.** A GitHub asset with no digest from GitHub and no sha256 in the catalog is refused (fail closed). A llama.cpp build is reused only when its install record shows it intact.
-- **Network and files.** On Linux each model process (llama-server, the Python worker) runs with no network and in its own mount namespace, reached through a Unix socket only this user can open. Its root holds only its program and the libraries it loads from its build, its model files and its socket directory (read-only except the last), so other programs' Unix sockets, this user's home and `/run` are not in its view. Its `/dev` holds only the plain devices (`null`, `zero`, `full`, `random`, `urandom`), the GPU nodes this machine has (`/dev/dri`, `/dev/kfd`, `/dev/nvidia*`, and `/dev/dxg` on WSL2) and a private `/dev/shm`. `/proc/driver/nvidia` is read-only where it exists.
+- **Downloads.** A file is checked against the catalog's sha256 before it is put in place. A llama.cpp build is reused only when its install record shows it intact. Three sherpa-onnx whisper archives (`whisper-turbo`, `whisper-small`, `whisper-tiny.en`) have no GitHub digest, so they stay unpinned and are not installed until a person hashes them.
+- **Network and files.** On Linux each model process (llama-server, the Python worker) runs with no network and in its own mount namespace, reached through a Unix socket only this user can open. Its root holds only the system's read-only directories (`/usr`, `/lib*`, `/bin`, `/sbin`, `/opt`, `/etc`, `/sys`, a few `/proc` files), its program and the libraries it loads from its build, its model files and its socket directory. Only the socket directory is writable, plus, for the worker, its venv and a temp folder in the store. A managed (non-system) Python for the worker also gets its standard library read-only: the `lib/python3.N` beside its `bin`, found by the `os.py` landmark through the venv's link to its base interpreter, and nothing else of its prefix (FIX-BR-1). Other programs' Unix sockets, this user's home and `/run` are not in its view. Its `/dev` holds only the plain devices (`null`, `zero`, `full`, `random`, `urandom`), the GPU nodes this machine has (`/dev/dri`, `/dev/kfd`, `/dev/nvidia*`, and `/dev/dxg` on WSL2) and a private `/dev/shm`. `/proc/driver/nvidia` is read-only where it exists.
 - **Where that cannot work.** Where the host refuses unprivileged namespaces (an AppArmor rule, a container), Brainiac falls back to Landlock and lists what stays reachable in `/v1/brainiac/status` under `unconfined` (`sockets`, `udp`, `network`, `files`). Windows and macOS have neither, so `unconfined` lists more there. With `sandbox: required` (the default with `BRAINIAC_APPLIANCE`) Brainiac refuses to start a process it cannot fully confine. `sandbox: off` is for a GPU driver that needs a path the sandbox does not allow; it is refused on an appliance.
-- **Lifetime.** Model processes die with Brainiac (a parent-death signal, set from a locked OS thread). `serve` kills llama-servers a crashed Brainiac left behind.
+- **Lifetime.** On Linux, model processes die with Brainiac (a parent-death signal, set from a locked OS thread), and `serve` kills llama-servers a crashed Brainiac left behind.
+- **The headless browser** is not a model process: it gets a throwaway profile, a 45-second budget, the guard proxy and, on Linux, a Landlock file policy (profile read-write, the system read set read-only, network kept; above). It gets no network or mount namespace, and Chrome's child processes do not see their own `/proc/self`.
 
-Not covered: a hostile model can still give bad answers; that is what Decurix's final gate and the approval gate are for. Where the fallback applies, a model process can reach what `unconfined` lists. The open items for an appliance (a dedicated model user, an AppArmor profile, a signed catalog) are in [docs/follow-ups.md](../docs/follow-ups.md), O-3.
+Not covered: a hostile model can still give bad answers; that is what Decurix's final gate and the approval gate are for. Where the fallback applies, a model process can reach what `unconfined` lists. The open items for an appliance (a dedicated model user, an AppArmor profile, the owner's catalog key) are in [docs/follow-ups.md](../docs/follow-ups.md), O-3.
 
 ## Commands
 
@@ -139,19 +147,24 @@ Not covered: a hostile model can still give bad answers; that is what Decurix's 
 |---|---|
 | `brainiac census` | Measures CPU and instruction sets, memory pools (cgroup and WSL aware), GPUs, disk, memory bandwidth, the local Ollama and its models, network, Python |
 | `brainiac plan [--verbose]` | Chooses a model per role and says why, and why every other candidate was not chosen |
-| `brainiac pull [--yes] [--latest]` | Downloads the plan (pinned commits, sha256-checked, resumable) and writes `lock.json`; `--latest` moves installed models to their repo's newest commit |
+| `brainiac pull [--yes]` | Downloads the plan (only what the catalog pins: commits and sha256, checked; resumable) and writes `lock.json` |
 | `brainiac serve` | Serves what is installed |
 | `brainiac up [--yes]` | All of the above; what `build.sh` runs |
-| `brainiac ask "..." --image f --audio f` | Asks a running Brainiac, streaming the answer |
+| `brainiac ask "..." --image f --audio f [--model m]` | Asks a running Brainiac, streaming the answer |
 | `brainiac status` | What a running Brainiac holds in memory |
-| `brainiac eval --cases f.jsonl [--learn]` | Measures models field by field on checked cases; the server uses the results to route |
-| `brainiac update [--apply]` | Rates new open models from public evaluations and says what would change; `--apply` installs, checks and stages it (never switches) |
-| `brainiac update promote` | A person switches to the staged plan; a running `serve` follows within 30 s |
+| `brainiac paths` | Per field: which local models have earned it, and why each has or has not |
+| `brainiac eval --cases f.jsonl [--models a,b] [--learn]` | Measures models field by field on checked cases; the server uses the results to route |
+| `brainiac update [--apply] [--json]` | Rates new open models from public evaluations and says what would change; `--apply` installs, checks and stages it (never switches) |
+| `brainiac update promote` | A person switches to the staged plan (on an appliance, only a signed release with a passed parity eval); a running `serve` follows within 30 s |
+| `brainiac update sign-release <lock.next.json> --key k [--out dir]` | Writes `release.json` and its signature, naming that lock, for an appliance to promote |
 | `brainiac update approve-template <model>` | Accepts a model's changed chat template, after a person has read it |
 | `brainiac scout [--days 120]` | Finds and checks open models newer than the catalog |
-| `brainiac scout adopt <repo> --roles r=q` / `scout pin <tag>` | Adds a scouted model to the local catalog / moves llama.cpp |
+| `brainiac scout adopt <repo> --roles r=q` / `scout pin <tag>` | Adds a scouted model to the local catalog / moves llama.cpp, pinned from metadata (refused on an appliance) |
+| `brainiac catalog pin <file> [--dry-run]` | Fills a catalog file's missing commits and sha256 from the Hub's and GitHub's metadata, nothing else changed |
+| `brainiac catalog sign <file> --key k` / `verify <file>` / `keygen --out k` | Signs a catalog file with the owner's key / checks it against this build's key / makes the key pair |
+| `brainiac version` | The build's version |
 
-Plan flags: `--offline` (only what is installed), `--licenses permissive,restricted`, `--reserve GB` (memory to keep free), `--planned-load GB` (memory desktops will need later), `--domains math,law` or `--domains none`.
+Plan flags: `--offline` (only what is installed), `--licenses permissive,restricted`, `--reserve GB` (memory to keep free), `--planned-load GB` (memory desktops will need later), `--domains math,law` or `--domains none`. Commands that read the store take `--home`; those that ask a running Brainiac take `--url`, and `ask` and `eval` take `--key-env`.
 
 ## API
 
@@ -163,12 +176,14 @@ Default address `http://127.0.0.1:8484`.
 - `POST /v1/brainiac/ocr` with `{"image": "data:image/png;base64,..."}`: text lines with boxes and confidence.
 - `GET /v1/models`, `/v1/brainiac/status`, `/v1/brainiac/traces[/{id}]`, `/v1/brainiac/scout`, `/v1/brainiac/update`, `/healthz`
 
-- `POST /v1/brainiac/route` with a text: where the router would send it (no model runs). `brainiac eval` uses it.
-- `POST /v1/brainiac/search {"query"}`, `POST /v1/brainiac/fetch {"url", "render", "query"}`: the browser (above).
+- `POST /v1/brainiac/route` with `{"text"}`: where the router would send it (no model runs). `brainiac eval` uses it.
+- `GET /v1/brainiac/paths`: per field, what could answer here and why (`brainiac paths`).
+- `POST /v1/brainiac/outcomes {"ok", "trace" | "since"}`: a client's final verdict on real answers (above).
+- `POST /v1/brainiac/search {"query", "n"}`, `POST /v1/brainiac/fetch {"url", "render", "query", "max_chars"}`: the browser (above).
 
-Model names: `brainiac` (the configured mode, with field routing), `brainiac-local`, `brainiac-hybrid`, `brainiac-remote`, `brainiac-<field>` (that field's specialist), `remote` (the remote brain alone), or an installed model id from `/v1/models` (that model alone). Brainiac's extra request fields: `"domain"` names the field directly; `"web"` and `"web_query"` ask for a web lookup with the client's own query (above).
+Model names: `brainiac` (the configured mode, with field routing), `brainiac-local`, `brainiac-hybrid`, `brainiac-remote`, `brainiac-<field>` (that field's specialist), `remote` (the remote brain alone), or an installed model id from `/v1/models` (that model alone). Brainiac's extra request fields: `"domain"` names the field directly; `"web"` and `"web_query"` ask for a web lookup with the client's own query (above); `"think"` turns a local model's thinking on or off (without it, `reasoning_effort` `medium` or `high` turns it on).
 
-Every answer carries a `brainiac` object: the trace id, the mode, the brain, every job that ran (model, time, cache hit, load time, tokens), and what the checks found. `usage` adds `local_tokens` and `remote_tokens`. A trace holds sizes and timings only, never content.
+Every answer carries a `brainiac` object: the trace id, the mode, the brain, every job that ran (model, time, cache hit, load time, tokens), the field and the router's confidence when one was chosen, what the checks found, and notes (why a web lookup did or did not happen, a fallback). `usage` adds `local_tokens` and `remote_tokens`. A trace holds sizes and timings only, never content.
 
 Tool calling is not supported yet: a request with `tools` gets a 400 that says so.
 
@@ -178,7 +193,9 @@ Tool calling is not supported yet: a request with `tools` gets a 400 that says s
 |---|---|---|
 | `local` | the local model chosen for this machine | never |
 | `hybrid` | the remote brain, given text evidence the local models found | only with `share_media: true` |
-| `remote` | the remote brain, which sees pictures itself (OCR and speech still run here) | yes |
+| `remote` | the remote brain, which sees pictures itself (OCR and speech still run here) | yes, when the remote is marked as seeing (`vision`, `BRAINIAC_REMOTE_VISION`) |
+
+A remote that is not marked as seeing gets text evidence in every mode.
 
 The remote brain is reached the way TheBot reaches its hosted brains:
 
@@ -188,7 +205,9 @@ BRAINIAC_REMOTE=azure           # Azure AI directly: AZURE_ENDPOINT, key in AZUR
 BRAINIAC_REMOTE=openai BRAINIAC_REMOTE_URL=... BRAINIAC_REMOTE_KEY_ENV=...
 ```
 
-If the remote brain fails, the request fails with the status. Set `local_fallback: true` to answer with the local brain instead; the trace says so. A weaker answer is never passed off as the remote brain's.
+`BRAINIAC_REMOTE_MODEL` names the model, and `BRAINIAC_REMOTE_URL` overrides the default address (Decurix's control plane at `http://127.0.0.1:8080`). In `config.json` the same settings live under `remote` (`kind`, `url`, `provider`, `model`, `key_env`, `api_version`, `vision`), and `usd_per_mtok_in` / `usd_per_mtok_out` let a trace report what the remote answers cost.
+
+If the remote brain fails, the request fails with the status. Set `local_fallback: true` to answer with the local brain instead; the trace says so in a fixed note (the HTTP status when there is one, never the provider's error text, which goes to the log). A weaker answer is never passed off as the remote brain's.
 
 ## Settings
 
@@ -201,9 +220,15 @@ If the remote brain fails, the request fails with the status. Set `local_fallbac
 | `mode` | `BRAINIAC_MODE` | `local`, or `hybrid` when a remote is set |
 | `ollama_url` | `OLLAMA_URL` | `http://127.0.0.1:11434` |
 | `share_media` | `BRAINIAC_SHARE_MEDIA` | false |
+| `local_fallback` | | false: when the remote brain fails, the request fails |
 | `licenses` | | permissive only |
-| `image_max_side` | | 1280 for local vision models |
+| `reserve_gb`, `planned_load_gb` | | the selector's default; the plan flags `--reserve` and `--planned-load` win |
+| `threads` | | half the logical CPUs, at least 1 (llama-server's `-t`, the worker's `OMP_NUM_THREADS`) |
+| `image_max_side` | | 1280 for local vision models (-1 never shrinks) |
+| `max_local_seconds` | `BRAINIAC_MAX_LOCAL_SECONDS` | 0 (no limit): an earned path slower than this on average leaves the field with the remote brain |
 | `web` | `BRAINIAC_WEB` | `on-request` (`auto`, not in local mode; `off` also stops updates) |
+| `searx_url` | `BRAINIAC_SEARX_URL` | none: a SearXNG instance to search first |
+| `brave_key_env` | `BRAINIAC_BRAVE_KEY_ENV` | none: the variable holding a Brave Search key |
 | `web_render` | | true (false on an appliance): whether `fetch` may use the headless browser |
 | `update_every` | `BRAINIAC_UPDATE_EVERY` | `off` (`24h`: install, check and stage a better plan daily; never switches) |
 | `sandbox` | `BRAINIAC_SANDBOX` | empty: confine as far as the system allows; `required`: start no model process that is not fully confined (the default with `BRAINIAC_APPLIANCE`); `off`: refused on an appliance |
@@ -216,7 +241,7 @@ A key is never stored in the config, only the name of the variable that holds it
 ```
 cmd/brainiac/        the command
 internal/census/     measures the machine
-internal/catalog/    the curated model list (catalog.json, embedded) with quality priors and their sources
+internal/catalog/    the curated model list (catalog.json, embedded) with quality priors, sources and their pins; the signed overlay
 internal/selector/   chooses a model per role and explains it
 internal/hub/        Hugging Face and GitHub downloads: pinned, sha256-checked, resumable, safe unpacking
 internal/install/    installs a plan, writes lock.json
@@ -237,6 +262,6 @@ internal/isolate/    what a model process can reach: its environment and, on Lin
 internal/{config,store,cache,trace}/
 ```
 
-Tests: `cd brainiac && go test ./...` and `python -m unittest discover -s workers/python`. Live tests are opt-in with `BRAINIAC_LIVE=1`.
+Tests: `cd brainiac && go test ./...` and `python -m unittest discover -s workers/python`. Live tests are opt-in with `BRAINIAC_LIVE=1`; the llama-server ones need `BRAINIAC_LIVE_LLAMA` (a llama-server) and `BRAINIAC_LIVE_GGUF` (a small model), and the browser one `BRAINIAC_LIVE_RENDER`.
 
 See [DESIGN.md](DESIGN.md) for why it is built this way and what comes next.

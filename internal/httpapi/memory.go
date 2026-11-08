@@ -5,17 +5,41 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/YKoustubhRao/decurix/internal/memory"
 )
 
-// desktopMemoryHandler stores a new worker memory entry or returns all remembered workflows.
+// memoryListDefault and memoryListMax bound GET /api/desktops/memory: the newest entries, ?limit= of them (the
+// default when absent or not a positive number, the max when above it).
+const (
+	memoryListDefault = 200
+	memoryListMax     = 1000
+)
+
+// memoryLimit is the number of entries a GET of worker memory asked for, bounded.
+func memoryLimit(raw string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n <= 0 {
+		return memoryListDefault
+	}
+	return min(n, memoryListMax)
+}
+
+// desktopMemoryHandler stores a new worker memory entry (POST) or lists remembered ones (GET), newest first: at most
+// ?limit= (default 200, at most 1000) as {"entries", "limit", "truncated"}, truncated saying older ones were left out.
 func (s *Server) desktopMemoryHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		// A desktop reads its own memory; every worker's is a person's to see.
 		own, _ := requestDesktop(r)
-		jsonResponse(w, s.Memory.List(own))
+		limit := memoryLimit(r.URL.Query().Get("limit"))
+		entries := s.Memory.List(own)
+		truncated := len(entries) > limit
+		if truncated {
+			entries = entries[:limit]
+		}
+		jsonResponse(w, map[string]any{"entries": entries, "limit": limit, "truncated": truncated})
 		return
 	}
 

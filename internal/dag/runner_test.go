@@ -405,7 +405,7 @@ func TestTickFiresDueCronDag(t *testing.T) {
 	d, _ := store.Create("pipeline")
 	store.AddNode(d.ID, "head", "box-a", "do it")
 
-	if _, err := store.SetCron(d.ID, "*/10 * * * *"); err != nil {
+	if _, err := store.SetCron(d.ID, "*/10 * * * *", "UTC"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -429,7 +429,7 @@ func TestTickAdvancesCronEvenWhenTriggerFails(t *testing.T) {
 	// cron must still advance rather than retry the same stale occurrence
 	// forever.
 	d, _ := store.Create("headless")
-	if _, err := store.SetCron(d.ID, "*/10 * * * *"); err != nil {
+	if _, err := store.SetCron(d.ID, "*/10 * * * *", "UTC"); err != nil {
 		t.Fatal(err)
 	}
 

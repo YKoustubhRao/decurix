@@ -199,8 +199,12 @@ func TestAPushNeverReachesTheRunningFileUnchecked(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("HF_ENDPOINT", srv.URL)
 	st := openStore(t)
-	plan := &selector.Plan{Picks: []selector.Pick{{Role: catalog.RoleBrain, Model: "nova", Source: catalog.Source{Kind: catalog.SourceHF,
-		Runtime: catalog.RuntimeLlamaCpp, Repo: "lab/Nova", Files: []catalog.File{{Path: "n.gguf", Role: "model"}}}}}}
+	pinned := func(commit string, content []byte) *selector.Plan {
+		return &selector.Plan{Picks: []selector.Pick{{Role: catalog.RoleBrain, Model: "nova", Source: catalog.Source{Kind: catalog.SourceHF,
+			Runtime: catalog.RuntimeLlamaCpp, Repo: "lab/Nova", Revision: commit,
+			Files: []catalog.File{{Path: "n.gguf", Role: "model", SHA256: fmt.Sprintf("%x", sha256.Sum256(content))}}}}}}
+	}
+	plan := pinned(a, first)
 	lock, err := Run(context.Background(), plan, Options{Store: st})
 	if err != nil {
 		t.Fatal(err)
@@ -211,7 +215,7 @@ func TestAPushNeverReachesTheRunningFileUnchecked(t *testing.T) {
 		t.Fatalf("%+v", lock.Units[key])
 	}
 
-	// Upstream moves. A plain install stays where it was.
+	// Upstream moves. The catalog's pin does not, so neither does the install.
 	h.commit = b
 	lock, err = Run(context.Background(), plan, Options{Store: st})
 	if err != nil {
@@ -221,8 +225,10 @@ func TestAPushNeverReachesTheRunningFileUnchecked(t *testing.T) {
 		t.Fatalf("a plain install followed the push to %s", lock.Units[key].Commit)
 	}
 
-	// --latest fetches it, finds the template changed, and leaves the running file alone.
-	_, err = Run(context.Background(), plan, Options{Store: st, Latest: true})
+	// A catalog that pins the new commit fetches it, finds the template
+	// changed, and leaves the running file alone.
+	moved := pinned(b, pushed)
+	_, err = Run(context.Background(), moved, Options{Store: st})
 	var tc *TemplateChanged
 	if !errors.As(err, &tc) {
 		t.Fatalf("%v", err)
@@ -241,7 +247,7 @@ func TestAPushNeverReachesTheRunningFileUnchecked(t *testing.T) {
 	if _, err := ApproveTemplate(st, "nova"); err != nil {
 		t.Fatal(err)
 	}
-	lock, err = Run(context.Background(), plan, Options{Store: st, Latest: true})
+	lock, err = Run(context.Background(), moved, Options{Store: st})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,6 +256,46 @@ func TestAPushNeverReachesTheRunningFileUnchecked(t *testing.T) {
 	}
 	if _, err := os.Stat(dest + ".incoming"); !os.IsNotExist(err) {
 		t.Errorf("the incoming file is still there: %v", err)
+	}
+}
+
+// A catalog entry without its pins is refused before anything is fetched,
+// naming what is missing (O-3.3); so is a pin the Hub contradicts.
+func TestAnUnpinnedEntryIsNotInstalled(t *testing.T) {
+	const a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	content := []byte("GGUF not really")
+	h := &fakeHub{commit: a, files: map[string][]byte{a: content}}
+	asked := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { asked++; h.ServeHTTP(w, r) }))
+	defer srv.Close()
+	t.Setenv("HF_ENDPOINT", srv.URL)
+	st := openStore(t)
+	src := catalog.Source{Kind: catalog.SourceHF, Runtime: catalog.RuntimeWorker, Repo: "lab/Nova", Files: []catalog.File{{Path: "n.gguf", Role: "model"}}}
+	gh := catalog.Source{Kind: catalog.SourceGitHub, Runtime: catalog.RuntimeWorker, Repo: "lab/tools", Tag: "v1", Asset: "m.tar.bz2"}
+	plan := &selector.Plan{Picks: []selector.Pick{{Model: "nova", Source: src}, {Model: "ears", Source: gh}},
+		LlamaCpp: &selector.LlamaCpp{Repo: "ggml-org/llama.cpp", Tag: "b1", Asset: "llama-b1-bin-ubuntu-x64.zip"}}
+	_, err := Run(context.Background(), plan, Options{Store: st})
+	if err == nil {
+		t.Fatal("an unpinned plan was installed")
+	}
+	for _, want := range []string{"nova", "no revision", "no sha256 for n.gguf", "ears", "no sha256 for m.tar.bz2", "llama-b1-bin-ubuntu-x64.zip"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not name %q: %v", want, err)
+		}
+	}
+	if asked != 0 {
+		t.Errorf("the Hub was asked %d times before the refusal", asked)
+	}
+
+	// Pinned, but the Hub lists other bytes at that commit.
+	src.Revision = a
+	src.Files[0].SHA256 = strings.Repeat("0", 64)
+	plan = &selector.Plan{Picks: []selector.Pick{{Model: "nova", Source: src}}}
+	if _, err := Run(context.Background(), plan, Options{Store: st}); err == nil || !strings.Contains(err.Error(), "the catalog pins") {
+		t.Fatalf("a pin the Hub contradicts: %v", err)
+	}
+	if _, err := os.Stat(st.HFFile("lab/Nova", "n.gguf")); !os.IsNotExist(err) {
+		t.Errorf("the file arrived anyway: %v", err)
 	}
 }
 

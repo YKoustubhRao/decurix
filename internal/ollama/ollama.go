@@ -70,9 +70,12 @@ const (
 	// and repeats the same failure on the next task.
 	EmbedModel = "nomic-embed-text"
 
-	// BundledURL is where the decurix-ollama container answers from
-	// anything on decurix-network. scripts/linux/build.sh writes it into
-	// OLLAMA_URL only when no other Ollama is reachable from a container.
+	// BundledURL is where the decurix-ollama container answers on
+	// decurix-network (the control plane's; desktops reach it only through
+	// the control plane's model proxy). scripts/linux/lib/ollama-setup.sh
+	// (sourced by build.sh and rebuild.sh) sets OLLAMA_URL to it for that
+	// run only, never in .env, when no other Ollama is reachable from a
+	// container.
 	BundledURL = "http://decurix-ollama:11434"
 
 	// defaultURL is the Ollama on the host running the control plane, as a

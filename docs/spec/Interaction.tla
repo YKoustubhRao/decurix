@@ -31,7 +31,7 @@ EXTENDS Naturals, FiniteSets
 CONSTANTS
     Actions,            \* irreversible actions the task needs: "G" = a click the on-screen gate stops (FILE WITH EVC),
                         \*   "S" = a shell command internal/safety stops (a script that sends)
-    MaxModelTries,      \* operator.go maxModelTries (3)
+    MaxModelTries,      \* operator.go maxModelTries (8)
     MaxReviewQuestions, \* knowledge.go maxReviewQuestions (2)
     MaxDoneRounds,      \* judgements.go maxDoneRounds (4)
     MaxApprovalRounds,  \* judgements.go maxApprovalRounds (6)

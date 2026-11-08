@@ -124,8 +124,8 @@ type Runtime struct {
 	// llama-server is used; the tag is pinned, never "latest".
 	LlamaCppRepo string `json:"llamacpp_repo"`
 	LlamaCppTag  string `json:"llamacpp_tag"`
-	// LlamaCppSHA256 are the release assets' sha256 by asset name, from a
-	// signed catalog; GitHub's own digest is used when an asset has none here.
+	// LlamaCppSHA256 are the release assets' sha256 by asset name. An asset
+	// without one here is not downloaded; GitHub's own digest must agree.
 	LlamaCppSHA256 map[string]string `json:"llamacpp_sha256,omitempty"`
 }
 
@@ -177,13 +177,14 @@ type Source struct {
 	Tag string `json:"tag,omitempty"`
 	// Repo is a Hugging Face or GitHub repository.
 	Repo string `json:"repo,omitempty"`
-	// Revision pins a Hugging Face commit; empty resolves "main" at pull time
-	// and the commit is written to the lock file.
+	// Revision pins a Hugging Face commit (40 hex). A Hugging Face source
+	// without one is not installed (Unpinned): "main" moves when anyone
+	// with write access to the repo pushes.
 	Revision string `json:"revision,omitempty"`
 	// Asset is the GitHub release asset; Unpack says it is an archive.
 	Asset string `json:"asset,omitempty"`
-	// SHA256 pins a GitHub asset's content. Without it the release's own
-	// digest is required: an asset neither vouches for is not downloaded.
+	// SHA256 pins a GitHub asset's content. An asset without it is not
+	// downloaded (Unpinned); GitHub's own digest must agree when it has one.
 	SHA256 string `json:"sha256,omitempty"`
 	Unpack bool   `json:"unpack,omitempty"`
 	// Files are the files the runtime is given, by role ("model", "mmproj",
@@ -216,6 +217,9 @@ type Source struct {
 type File struct {
 	Path string `json:"path"`
 	Role string `json:"role"`
+	// SHA256 pins a Hugging Face file's content (its LFS object id); unused
+	// for an archive's members, which the archive's own SHA256 covers.
+	SHA256 string `json:"sha256,omitempty"`
 }
 
 //go:embed catalog.json
@@ -246,33 +250,43 @@ func ReadOverlay(path string) (Overlay, error) {
 	if err != nil {
 		return o, err
 	}
+	return parseOverlay(data, path)
+}
+
+func parseOverlay(data []byte, path string) (Overlay, error) {
+	var o Overlay
 	if err := json.Unmarshal(data, &o); err != nil {
 		return o, fmt.Errorf("%s: %w", path, err)
 	}
 	return o, nil
 }
 
-// SaveOverlay writes an overlay file.
+// SaveOverlay writes an overlay file. A signature beside it is removed: what
+// is written here is the operator's, not what the signer signed.
 func SaveOverlay(path string, o Overlay) error {
 	data, err := json.MarshalIndent(o, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := os.Remove(SigPath(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o644)
 }
 
 // WithOverlay is the shipped catalog with the overlay at path merged in, and
-// checked as a whole.
-func WithOverlay(path string) (*Catalog, error) {
-	o, err := ReadOverlay(path)
+// checked as a whole. The overlay is used as ReadTrustedOverlay decides; the
+// note says why it was not, or is "".
+func WithOverlay(path string, signedOnly bool) (*Catalog, string, error) {
+	o, note, err := ReadTrustedOverlay(path, signedOnly)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	c, err := Merge(o)
 	if err != nil {
-		return nil, fmt.Errorf("with %s: %w", path, err)
+		return nil, note, fmt.Errorf("with %s: %w", path, err)
 	}
-	return c, nil
+	return c, note, nil
 }
 
 // Merge is the shipped catalog with an overlay merged in, checked as a whole.
@@ -356,6 +370,11 @@ func (c *Catalog) ForRole(role string) []Model {
 // Validate checks the catalog is internally consistent: known roles,
 // runtimes and source kinds, unique ids, sizes present, licences classed.
 func (c *Catalog) Validate() error {
+	for name, sha := range c.Runtime.LlamaCppSHA256 {
+		if !IsSHA256(sha) {
+			return fmt.Errorf("catalog: llama.cpp asset %s: sha256 %q is not 64 lower-case hex", name, sha)
+		}
+	}
 	roles := map[string]bool{}
 	for _, r := range c.Roles {
 		if r.ID == "" || roles[r.ID] {
@@ -446,6 +465,18 @@ func (s Source) validate() error {
 	}
 	if s.Runtime == RuntimeWorker && s.Worker == "" {
 		return fmt.Errorf("a worker source says which worker engine runs it")
+	}
+	// A pin that is there must be well formed; a missing one is Unpinned's.
+	if s.Revision != "" && !IsCommit(s.Revision) {
+		return fmt.Errorf("revision %q is not a 40-hex commit", s.Revision)
+	}
+	if s.SHA256 != "" && !IsSHA256(s.SHA256) {
+		return fmt.Errorf("sha256 %q is not 64 lower-case hex", s.SHA256)
+	}
+	for _, f := range s.Files {
+		if f.SHA256 != "" && !IsSHA256(f.SHA256) {
+			return fmt.Errorf("%s: sha256 %q is not 64 lower-case hex", f.Path, f.SHA256)
+		}
 	}
 	return nil
 }

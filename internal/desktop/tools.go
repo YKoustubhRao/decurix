@@ -2,6 +2,8 @@ package desktop
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"time"
@@ -27,6 +29,7 @@ func (m *Manager) EnsureToolsVolume(ctx context.Context) error {
 	_ = m.ensureSharedVolume(ctx, HFVolumeName, "model cache")
 
 	if err := m.ensureSharedVolume(ctx, ToolsVolumeName, "tools"); err != nil {
+		m.toolsFail(ToolsNotReadyVolume)
 		return err
 	}
 
@@ -80,6 +83,26 @@ func (m *Manager) refreshToolsWhenIdle() {
 	}()
 }
 
+// Why the shared tools volume is not ready, as ToolsNotReady says it: a class a page can name, never an error's text.
+const (
+	ToolsNotReadyVolume = "volume" // the shared volume could not be made
+	ToolsNotReadyStart  = "start"  // the copy could not be started (its container not made or not started)
+	ToolsNotReadyCopy   = "copy"   // the copy ran and failed, or was not waited for to its end
+)
+
+// toolsFail notes that the last populate failed, and why.
+func (m *Manager) toolsFail(why string) { m.toolsFailed.Store(&why) }
+
+// ToolsNotReady is why the last fill of the shared tools volume failed ("" when it did not, or none ran yet): the
+// tools image empties the volume before it copies, so after a failed fill the desktops' /opt/tools may be empty
+// until one succeeds (it is tried again at the next desktop's creation and the next start).
+func (m *Manager) ToolsNotReady() string {
+	if p := m.toolsFailed.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
 // toolsWaitExit is the tools image's exit status when it left the volume as it was because desktops were running
 // (docker/tools.Dockerfile).
 const toolsWaitExit = 75
@@ -127,6 +150,14 @@ func (m *Manager) appliedTools() string {
 	return ""
 }
 
+// randomHex returns n random bytes hex-encoded, for container name suffixes.
+func randomHex(n int) string {
+	buf := make([]byte, n)
+	_, _ = rand.Read(buf)
+
+	return hex.EncodeToString(buf)
+}
+
 // PopulateToolsVolume populates the decurix-tools volume using the tools image. No desktop starts while it runs
 // (toolsRW): it counts the running desktops and copies under the same exclusive hold.
 func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
@@ -155,6 +186,7 @@ func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
 		containerName,
 	)
 	if err != nil {
+		m.toolsFail(ToolsNotReadyStart)
 		return fmt.Errorf("create tools init container: %w", err)
 	}
 	defer func() {
@@ -162,6 +194,7 @@ func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
 	}()
 
 	if err := m.client.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		m.toolsFail(ToolsNotReadyStart)
 		return fmt.Errorf("start tools init container: %w", err)
 	}
 
@@ -169,20 +202,24 @@ func (m *Manager) PopulateToolsVolume(ctx context.Context) error {
 	select {
 	case err := <-errCh:
 		if err != nil {
+			m.toolsFail(ToolsNotReadyCopy)
 			return fmt.Errorf("wait for tools init: %w", err)
 		}
 	case status := <-statusCh:
 		if status.StatusCode == toolsWaitExit {
+			// The volume was left as it was: whatever it held before is still there.
 			m.toolsWaiting.Store(true)
 			log.Printf("Shared tools volume %s: a newer tools image waits for the running desktops to stop; it is applied when a desktop is next created with none running, or at the next start with none running.", ToolsVolumeName)
 			return nil
 		}
 		if status.StatusCode != 0 {
+			m.toolsFail(ToolsNotReadyCopy)
 			return fmt.Errorf("tools init container exited with status %d", status.StatusCode)
 		}
 	}
 
 	m.toolsWaiting.Store(false)
+	m.toolsFailed.Store(nil)
 	log.Printf("Shared tools volume %s populated successfully.", ToolsVolumeName)
 	return nil
 }

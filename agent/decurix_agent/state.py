@@ -16,10 +16,6 @@ state_lock = threading.Lock()
 current_task = None
 current_task_file = None
 
-# The person already said yes to the request being handed to the engine, as a kind of task (skill_task: they taught
-# it and chose to have it start without asking, or just answered yes). Read once by the engine's harness.
-request_preapproved = False
-
 # The control plane's ID for the task running now (task_context.py), which
 # every progress line and reply carries back. "" when the request had none.
 current_task_id = ""
@@ -59,10 +55,12 @@ processed_commands = set()
 
 
 def begin(task, task_file):
-    """A task starts: it is the current one, and nothing waits on a question."""
+    """A task starts: it is the current one, nothing waits on a question, and no reply is being handled (a secret
+    reply of an earlier task must not make this task keep none of the person's corrections)."""
 
-    global current_task, current_task_file, waiting_for_query
+    global current_task, current_task_file, waiting_for_query, reply_secret, reply_judgement
     current_task, current_task_file, waiting_for_query = task, task_file, False
+    reply_secret, reply_judgement = False, ""
 
 
 # What the control plane said about each message it sent, by the message's command file (http_api._request):

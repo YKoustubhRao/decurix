@@ -15,7 +15,9 @@ func TestTaskExportSaysWhatWasCheckedAndStaysText(t *testing.T) {
 
 	checked := deliver(t, s, "box", `=HYPERLINK("http://x","invoice")`)
 	postJSON(t, s.queryTextHandler, "/api/querytext",
-		`{"desktop_id":"box","task_id":"`+checked.TaskID+`","content":"DONE","kind":"final","reply":"Filed INV-7.","engine":"thebot","checked":true}`)
+		`{"desktop_id":"box","task_id":"`+checked.TaskID+`","content":"DONE","kind":"final","reply":"Filed INV-7.","engine":"thebot","checked":true,`+
+			`"verdict":{"schema":"decurix.verdict/v1","verdict":"done","by":"verify","why":"","basis":["code"],`+
+			`"checks":[{"id":"files.read_back","result":"pass","basis":"code","detail":"","refs":[]}],"evidence":[]}}`)
 
 	unsaid := deliver(t, s, "old-image", "what is the kernel version?")
 	postJSON(t, s.queryTextHandler, "/api/querytext",

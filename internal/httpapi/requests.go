@@ -40,11 +40,7 @@ func (s *Server) requestsDashboardHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	desktops, err := s.Desktops.List(r.Context())
-	if err != nil {
-		internalError(w, "requests page: listing desktops", err)
-		return
-	}
+	desktops := s.pageDesktops(r, "requests page")
 
 	data := webui.PageData{
 		Desktops: desktops,
@@ -329,8 +325,13 @@ func (s *Server) submitStored(ctx context.Context, desktopID, content string, or
 	// A reply is a person's judgement (plan R5): it needs its author, and its id is chosen now so the desktop is told
 	// it with the reply (C6). No door that sends a reply lacks an actor; a reply with none is refused before delivery.
 	if route.Kind == tasks.RouteReply {
-		if _, ok := actorFrom(ctx); !ok {
+		replier, ok := actorFrom(ctx)
+		if !ok {
 			return tasks.Route{}, "", errNoReplier
+		}
+		// Once a user account exists, a reply through the gated listener needs a sign-in (docs/access.md).
+		if err := s.signInRefusal(replier); err != nil {
+			return tasks.Route{}, "", err
 		}
 		route.JudgementID = tasks.NewJudgementID()
 	}

@@ -5,11 +5,12 @@ something the screen exposes no element for leaves in a recording, whether a
 replay finds it again where it moved, and - what matters more - that it will
 not click the wrong thing.
 
-    python3 bench/recordings/e2e.py [--keep] [--brain ollama|claude|azure]
+    python3 bench/recordings/e2e.py [--keep] [--brain ollama|claude|azure] [--broker]
 
 --brain runs the desktop as one created with that brain is (bench/brain.py),
 calling back to this tree's control plane on 127.0.0.1:8080. A replay uses no
 model, so this checks that recording and replay are the same on every brain.
+--broker starts the desktop in broker mode (bench/brain.py, screen_env).
 
 Needs Docker and a built decurix-desktop:basic (scripts/*/build-images.sh).
 Takes about three minutes and leaves nothing behind unless --keep is given.
@@ -23,6 +24,7 @@ said about itself.
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -34,7 +36,7 @@ from agent_token import PY_AGENT, docker_env as token_env  # noqa: E402
 
 REPO = str(Path(__file__).resolve().parents[2])
 NAME = "decurix-e2e-rec"
-IMAGE = "decurix-desktop:basic"
+IMAGE = os.environ.get("DECURIX_TEST_IMAGE", "decurix-desktop:basic")
 
 PAGE = """<!doctype html><meta charset=utf-8><title>Invoices</title>
 <style>body{margin:0;background:#f4f4f4;font:15px sans-serif}canvas{position:absolute;left:%(left)dpx;top:%(top)dpx}</style>
@@ -103,9 +105,14 @@ def page(rows=ROWS, left=300, top=200):
 
 
 def viewport_origin():
-    """Where the open page's top-left corner is on the screen, as the page itself reports it."""
+    """
+    Where the open page's top-left corner is on the screen, as the page itself reports it. This is the bench's own
+    measurement, not the worker's: in broker mode the browser's DevTools are the screen user's alone, so it is taken
+    as that user (as root's `docker exec` may), never by opening a way for the worker.
+    """
 
-    out = bash("""python3 - <<'EOF'
+    user = "decurixscreen" if brain.broker() else "headless"
+    out = sh("bash", "-c", """python3 - <<'EOF'
 import json
 from decurix_agent.computer import cdp
 p = cdp.active_page()
@@ -115,7 +122,7 @@ finally:
     p.close()
 sx, sy, ow, oh, iw, ih = m
 print(json.dumps([sx + (ow - iw) // 2, sy + oh - ih]))
-EOF""").stdout
+EOF""", user=user).stdout
     return json.loads(out)
 
 
@@ -179,6 +186,7 @@ def main():
         "-e", f"CONTROL_PLANE_URL={callback}",
         *token_env(),
         *brain.docker_env(chosen, callback),
+        *brain.screen_env(),
         "-e", "DECURIX_REPLAY_FIND_SECONDS=5", "-e", "DECURIX_REPLAY_EXPECT_SECONDS=3",
         "-v", f"{REPO}/agent/decurix_agent:/opt/decurix_agent:ro", IMAGE,
     ], check=True, capture_output=True)

@@ -177,8 +177,7 @@ func TestAStartWaitsForAPopulate(t *testing.T) {
 }
 
 // Every start of a container in this package goes through startDesktopContainer, which holds the tools lock: a
-// desktop's create (runProvisioning), Start or Restart, a practice desktop's create and reset, a practice mock, and
-// the Claude login container (which mounts /opt/tools). A start that called the client directly would boot under a
+// desktop's create (runProvisioning), Start or Restart, a practice desktop's create and reset, and a practice mock. A start that called the client directly would boot under a
 // copy. The starts named here are of containers that never mount the shared tools volume.
 func TestEveryDesktopStartTakesTheToolsLock(t *testing.T) {
 	allowed := map[string]string{
@@ -222,8 +221,9 @@ func TestEveryDesktopStartTakesTheToolsLock(t *testing.T) {
 			})
 		}
 	}
-	// Create, Start, Restart, a practice desktop's create and reset, a practice mock, the Claude login.
-	if found < 4 || locked < 7 {
+	// Create, Start, Restart, a practice desktop's create and reset, a practice mock (the Claude login container and
+	// its start went with claudelogin.go on 2026-11-07).
+	if found < 4 || locked < 6 {
 		t.Fatalf("%d direct and %d locked container starts found: the walk is not reading the package", found, locked)
 	}
 }

@@ -8,7 +8,7 @@ The approval gate, hardened after an independent recheck (review 2026-11-02, sec
 4. a replay goes through the pre-save checks and the gate, sees a result only when the step made it, says a run it
    did not see is not done, never redoes a step that acted, and never starts a halted run again from step 1;
 7. the form-check note is per task; a broken pipe is an error.
-(5 and 6 - the script sandbox and Claude Code's guard - are test_script_sandbox and test_claude_guard.)
+(5 - the script sandbox - is test_script_sandbox; 6, Claude Code's guard, went with the Claude harness on 2026-11-07.)
 """
 
 import json

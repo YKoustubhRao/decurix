@@ -16,6 +16,13 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
 - **A paused desktop is a running desktop for the tools refresh** (RW1-G-02). The check listed only `status=running`, and idle-paused is the commonest state, so a refresh emptied `/opt/tools` under desktops that later resumed mid-task. Any state but exited, created or dead counts, and a failed listing counts as running.
 - **Docker's `--filter name=X` matches substrings (and regex).** Select Decurix resources by label, or anchor the name (`^desktop_`).
 - **A whole-`/dev` bind carries the host's `/dev/shm` and `/dev/mqueue` into a sandbox.** Bind device nodes one by one, and give the view its own `/dev/shm`.
+- **The base image's Xvnc has no SECURITY extension, so it cannot give out an untrusted X cookie** (broker mode,
+  2026-11-07). `xauth generate :1 . untrusted` said "couldn't query Security extension" against accetto's TigerVNC
+  1.16.2 `/usr/bin/Xvnc`; Ubuntu's `Xtigervnc` 1.13.1 (`tigervnc-standalone-server`) has it, and an untrusted client
+  of it sees only BIG-REQUESTS and XC-MISC. Installing that package stops at a dpkg conffile prompt (the base image's
+  `/etc/tigervnc` differs; `--force-confold` keeps it) and takes over `/usr/bin/vncserver` by alternatives, which the
+  default mode's startup runs: the link is put back (`/usr/libexec/vncserver`). As untrusted clients, `xfdesktop`
+  exits (BadAccess on a root window property) and the panel's window list is empty; mousepad and the panel draw.
 
 ## Scripts and the Windows app
 
@@ -167,3 +174,54 @@ Lessons from the deep review and fix loop of 2026-11-03 (review IDs in brackets)
 - **A label's value is its cell, not its line.** "Cost centre: to be decided. General terms apply." held "General"
   on the label's line. A file now backs a pick only with the text after the label, up to the next sentence or column
   break (`records._value_cell`).
+- **A cron in UTC is a conversion the person does in their head** (B-37). An IST user set `0 9 * * *` and got 14:30.
+  A schedule and a DAG cron now keep an IANA zone (`zone`, `cron_zone`; old rows migrated to `UTC` so nothing moved),
+  matched on that zone's wall clock (`Expr.NextIn`); the binary embeds `time/tzdata`, since Windows and a minimal
+  image have no zoneinfo. Daylight saving goes the vixie way: a fixed-time job in the skipped hour runs at the jump, and
+  once in the repeated hour; a wildcard job follows the clock. TIME:{...} carries the zone's offset, so a 00:30 IST
+  run says that day's date, not yesterday's UTC one.
+- **A page that lists desktops must render when Docker is down** (2026-11-07). The dashboard, Requests, Triggers and
+  DAG pages answered "internal server error" while Docker was unreachable (the Windows app's distro still starting), so
+  the Docker banner that explains it never showed. They now render with no desktops (`httpapi.pageDesktops`,
+  `TestPagesRenderWhenDockerIsDown`); a JSON route may still fail, a page may not. Found only by running a freshly
+  built control plane with no Docker, which unit tests with a fake daemon never do.
+- **A process that imports once reads its settings once** (gui daemon, 2026-11-07). `cli.TEXT_BUDGET` was read from
+  `DECURIX_GUI_TEXT_CHARS` at import, and TheBot sets it on every command: a daemon that imported `cli` once would
+  have printed every command at the daemon's own budget. It is read per command now (`cli.text_budget`), and the daemon
+  finds every other import-time read in the imported sources (`daemon.import_time_reads`) and re-imports the agent's
+  modules in a child whose command differs. Also: a daemon started with `&` from a non-interactive shell has SIGINT
+  ignored, and Python then installs no KeyboardInterrupt handler, so each forked child sets
+  `signal.default_int_handler` back, as a `gui` process has it.
+- **A Unix socket's file is not the socket's inode** (gui daemon, DevTools relay, 2026-11-07). "Unlink the socket only
+  if it is still mine" compared `os.stat(path).st_ino` with `os.fstat(listener.fileno()).st_ino`; on Linux the fstat is
+  the socket's inode in sockfs, never the file's, so the two never matched and an idle daemon left its `gui.sock`
+  behind (Windows, where these tests skip, never showed it). The file's (st_dev, st_ino) is kept at bind now
+  (`Server.bound`, `cdp_relay._BOUND`). Found with it, also Linux only: the daemon's idle time counted from before its
+  imports (`last_call` now starts in `serve`); a test that wrote 300 KB into a socketpair before reading it blocked
+  forever (Linux buffers about 200 KB); and a send on a DevTools connection the relay had closed raised a raw
+  BrokenPipeError instead of the ComputerError a read gives (`cdp._Socket.send`).
+- **The browser's download bubble moves the next action's time** (typing and download waits, 2026-11-07). A bench that
+  clicked a download link and then, at once, typed and clicked Save measured Save slower with a change that took 0.25 s
+  out of it: after a download Chrome's toolbar animates and its bubble closes by itself seconds later, and wherever that
+  lands the settle wait (screen unchanged for 0.35 s) is longer. Making the earlier actions faster moved the animation
+  into a later one. Time actions after a download with an untimed pause of several seconds, or in their own block.
+- **An untrusted X client gets nothing of the root window: no property write, no event** (broker mode, 2026-11-07).
+  The SECURITY extension lets an untrusted client read the root's properties but not change them (BadAccess) and
+  delivers it no event on a window of a trusted client, the root included. So xfdesktop exits at its first root
+  property, the panel's window list never fills (it reads `_NET_CLIENT_LIST` once and never hears it change), and
+  at-spi-bus-launcher, which names its bus on the root window when it has a DISPLAY, died - leaving none of the
+  worker's apps an accessibility bus, with only a "NoReply" warning per app in the log. Start the worker's session bus
+  without DISPLAY and start the accessibility bus on it before giving DISPLAY to its activations; do not run a desktop
+  manager as the screen user instead (its menus start programs as that user, past the gate).
+- **A plan's "with your OK first" lived only in the question's prose** (live trial, 2026-11-08). The operator's plan
+  question said "Then, each with your OK first: Press Save bill"; the gate asks only for Send/Pay-like controls, so the
+  worker pressed Save bill after its own pre-save check and the person was never asked. A promise made to a person must
+  be data the executor reads: the plan's commits now carry their control and the gui command holds that press for the
+  gate (`DECURIX_PLAN_ASK_FIRST`, `core._plan_hold`). And a variable the screen side must see is read by its literal
+  name (`os.environ.get("NAME")`): the broker passes only names the agent's code names that way, so a constant would
+  have dropped it in broker mode. In the same trial a halted `gui do` was not credited with the figures it had typed
+  (soul read only "Typed ..." lines): a replay now gives back its own `entered` list however it ends.
+- **A widget on the worker's accessibility bus is the worker's word, box included** (broker mode, 2026-11-07). Once
+  the screen broker reads the worker's bus, the worker can lay a made-up "Cancel" over the browser's "Pay"; a press by
+  its box lands on the browser while the gate is asked about "Cancel". Act on such a widget only where the window shown
+  at that point is the worker's own (its `_NET_WM_PID`, which only the window's client can set, and that process's uid).

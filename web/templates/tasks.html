@@ -114,6 +114,15 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 .filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .filters a.chip:hover{background:var(--surface-3);color:var(--text)}
 
+.purge{padding:14px 18px}
+.purge summary{cursor:pointer;font-weight:600}
+.purge .hint{margin:10px 0 14px;max-width:72ch;line-height:1.55}
+.purge-form{display:grid;gap:12px;max-width:460px}
+.purge-result{margin-top:14px;font-size:13px}
+.purge-result table{border-collapse:collapse}
+.purge-result td{padding:3px 14px 3px 0}
+.purge-result td.num{text-align:right}
+
 @media (max-width:900px){
   .stats{grid-template-columns:repeat(3,minmax(0,1fr))}
   .split{grid-template-columns:minmax(0,1fr)}
@@ -419,6 +428,28 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 
 {{end}}
 
+{{if .Purge}}
+  <section id="purge">
+    <div class="rule"><span class="eyebrow">Privacy</span></div>
+    <details class="panel purge">
+      <summary>Purge a leaked secret</summary>
+      <p class="hint">If a password or key ended up in a record, paste it here. Every stored copy of it (model calls and their bodies, judgements, task records, chat, queries, run bundles) is overwritten with <code>[purged]</code>; the records themselves stay and still link up. The value is not kept, logged or shown again. Who purged and why is recorded. Backups made before now still hold it.</p>
+      <form id="purge-form" class="purge-form" autocomplete="off">
+        <div class="field">
+          <label for="purge-value">The leaked value (6 characters or more)</label>
+          <input class="input" id="purge-value" name="value" type="password" minlength="6" required autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="purge-reason">Why it is purged</label>
+          <input class="input" id="purge-reason" name="reason" type="text" maxlength="500" required placeholder="e.g. the bank password was typed into a request">
+        </div>
+        <div><button class="btn btn-danger btn-sm" type="submit">Purge</button></div>
+      </form>
+      <div id="purge-result" class="purge-result" hidden></div>
+    </details>
+  </section>
+{{end}}
+
 </main>
 
 {{template "chrome-js"}}
@@ -428,6 +459,45 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
   "use strict";
 
   Decurix.relativeTimes();
+
+  // Purge a leaked secret (POST /api/privacy/purge): the value leaves the field as soon as it is sent.
+  var form = document.getElementById("purge-form");
+  if(form){
+    var labels = {blobs: "Stored bodies and files", llm_calls: "Model calls", judgements: "Judgements",
+      task_records: "Task records", chat: "Chat", query_notes: "Queries", run_bundles: "Run bundles",
+      blobs_failed: "Bodies left (in use)"};
+    form.addEventListener("submit", async function(ev){
+      ev.preventDefault();
+      var value = form.elements.value, reason = form.elements.reason;
+      var out = document.getElementById("purge-result");
+      if(value.value.trim().length < 6){ Decurix.toast("The value must be 6 characters or more.", "error"); return; }
+      var fields = {value: value.value, reason: reason.value};
+      value.value = "";
+      Decurix.busy(true);
+      try{
+        var res = await Decurix.post("/api/privacy/purge", fields);
+        fields = null;
+        var table = Decurix.node("table");
+        Object.keys(labels).forEach(function(k){
+          var n = (res.counts || {})[k] || 0;
+          if(k === "blobs_failed" && !n){ return; }
+          var tr = Decurix.node("tr");
+          tr.appendChild(Decurix.node("td", "", labels[k]));
+          tr.appendChild(Decurix.node("td", "num", String(n)));
+          table.appendChild(tr);
+        });
+        out.replaceChildren(Decurix.node("p", "", "Purged. Recorded as " + res.judgement + "."), table);
+        (res.problems || []).forEach(function(p){ out.appendChild(Decurix.node("p", "hint", p)); });
+        out.hidden = false;
+        reason.value = "";
+      }catch(err){
+        fields = null;
+        Decurix.toast(err.message, "error");
+      }finally{
+        Decurix.busy(false);
+      }
+    });
+  }
 })();
 </script>
 

@@ -7,20 +7,39 @@ package safety
 // where relative paths point. It is still a guard rail in front of the worker, not the approval gate.
 
 import (
+	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
 
-// shellCommands splits a shell text into its simple commands, each as its unquoted words. Operators (; & | ( ) and a
-// newline) end a command, and a substitution's opening ("$(", a backquote) starts one. An unclosed quote runs to the
-// end of the text, as one word.
+// shellCommands splits a shell text into its simple commands, each as its unquoted words (splitCommands).
 func shellCommands(text string) [][]string {
-	var commands [][]string
+	var out [][]string
+	for _, c := range splitCommands(text) {
+		out = append(out, c.words)
+	}
+	return out
+}
+
+// simpleCommand is one simple command of a shell text: its unquoted words, and whether a pipe feeds it.
+type simpleCommand struct {
+	words []string
+	piped bool
+}
+
+// splitCommands splits a shell text into its simple commands, each as its unquoted words. Operators (; & | ( ) and a
+// newline) end a command, and a substitution ("$(...)", a backquoted one) is a command of its own; its opening is kept
+// at the end of the word it stood in, so that word reads as decided at run time ("rm -rf $(pwd)" keeps an operand,
+// "$(", and does not lose it), and the command it stood in goes on after it. An unclosed quote runs to the end of the
+// text, as one word.
+func splitCommands(text string) []simpleCommand {
+	var commands []simpleCommand
 	var current []string
 	var word strings.Builder
-	inWord := false
+	inWord, piped, inBackquote := false, false, false
 	endWord := func() {
 		if inWord {
 			current = append(current, word.String())
@@ -31,9 +50,34 @@ func shellCommands(text string) [][]string {
 	endCommand := func() {
 		endWord()
 		if len(current) > 0 {
-			commands = append(commands, current)
+			commands = append(commands, simpleCommand{words: current, piped: piped})
 		}
 		current = nil
+	}
+	// opens are the parentheses and substitutions not yet closed, innermost last. A substitution keeps the command it
+	// stands in, which goes on after it closes ("find $(x) -delete" is one find, with its -delete).
+	type opened struct {
+		words        []string
+		piped        bool
+		substitution bool
+	}
+	var opens []opened
+	openSubstitution := func(mark string) {
+		word.WriteString(mark)
+		inWord = true
+		endWord()
+		opens = append(opens, opened{words: current, piped: piped, substitution: true})
+		current, piped = nil, false
+	}
+	closeParen := func() {
+		endCommand()
+		piped = false
+		if n := len(opens); n > 0 {
+			if o := opens[n-1]; o.substitution {
+				current, piped = o.words, o.piped
+			}
+			opens = opens[:n-1]
+		}
 	}
 	rs := []rune(text)
 	for i := 0; i < len(rs); i++ {
@@ -67,15 +111,39 @@ func shellCommands(text string) [][]string {
 			endCommand()
 		case c == ' ' || c == '\t' || c == '\r':
 			endWord()
-		case strings.ContainsRune(";&|()\n`", c):
-			endCommand()
+		case c == '`' && !inBackquote:
+			inBackquote = true
+			openSubstitution("`")
+		case c == '`':
+			inBackquote = false
+			closeParen()
 		case c == '$' && i+1 < len(rs) && rs[i+1] == '(':
-			endCommand()
+			openSubstitution("$(")
 			i++
+		case c == '(':
+			endCommand()
+			opens = append(opens, opened{})
+			piped = false
+		case c == ')':
+			closeParen()
+		case strings.ContainsRune(";&|\n", c):
+			endCommand()
+			switch {
+			case c == '&' && i > 0 && rs[i-1] == '|':
+				// "|&" pipes, as "|" does.
+			case c == '|':
+				piped = (i+1 >= len(rs) || rs[i+1] != '|') && (i == 0 || rs[i-1] != '|')
+			default:
+				piped = false
+			}
 		default:
 			word.WriteRune(c)
 			inWord = true
 		}
+	}
+	// A substitution left open at the end still leaves the command it stood in.
+	for len(opens) > 0 {
+		closeParen()
 	}
 	endCommand()
 	return commands
@@ -101,19 +169,24 @@ var systemDirs = map[string]bool{"/": true, "/bin": true, "/boot": true, "/dev":
 	"/lib": true, "/lib32": true, "/lib64": true, "/libx32": true, "/media": true, "/mnt": true, "/opt": true,
 	"/proc": true, "/root": true, "/run": true, "/sbin": true, "/srv": true, "/sys": true, "/usr": true, "/var": true}
 
-// resolveWord is the absolute path a word names from cwd, or "" when it is decided at run time.
+// runTimeDir is the folder a command runs in after a cd to a folder decided at run time ("cd $X", "cd -"): unknown,
+// so a relative path from it names nothing that can be read.
+const runTimeDir = "$"
+
+// resolveWord is the absolute path a word names from cwd, or "" when it is decided at run time (by the word, or by a
+// cwd of runTimeDir).
 func resolveWord(word, cwd, home string) string {
 	p := homeWordRe.ReplaceAllString(word, home+"$2")
 	if strings.HasPrefix(p, "~root") && (len(p) == 5 || p[5] == '/') {
 		p = "/root" + p[5:]
 	}
 	p = otherHomeRe.ReplaceAllString(p, "/home/$1$2")
-	if strings.ContainsAny(p, "$`") || strings.HasPrefix(p, "~") {
+	if strings.ContainsAny(p, "$`") || strings.HasPrefix(p, "~") || cwd == runTimeDir && !strings.HasPrefix(p, "/") {
 		return ""
 	}
 	if cwd == "" && !strings.HasPrefix(p, "/") {
-		// Where a relative path starts is not known here: only one that climbs out of it ("..", "../..") is read,
-		// as climbing from a folder inside the home.
+		// The caller did not say where the command starts: only a relative path that climbs out of it ("..",
+		// "../..") is read, as climbing from a folder inside the home.
 		p = path.Join(home, "work", p)
 	} else if !strings.HasPrefix(p, "/") {
 		p = path.Join(cwd, p)
@@ -140,10 +213,62 @@ func protectedPath(p, home string) bool {
 	return userHomeRe.MatchString(p)
 }
 
-// rmWipes reports whether the rm at words[at] deletes, recursively, something protected.
-func rmWipes(words []string, at int, cwd, home string) bool {
-	recursive, done := false, false
-	var operands []string
+// runTimeName reports whether what a path word names is decided at run time: after its last variable, substitution
+// or "~" form resolveWord cannot read, no literal name follows ("$X", "$(pwd)", "$D/*", "$D/..", "~+"), and a variable
+// can hold "/", ".." or nothing. "$TMPDIR/x" names x, and is read as that.
+func runTimeName(w string) bool {
+	if strings.HasPrefix(w, "~") {
+		w = "$" + w[1:]
+	}
+	if !strings.ContainsAny(w, "$`") {
+		return false
+	}
+	i := strings.LastIndexAny(w, "$`)}")
+	tail := w[i+1:]
+	if w[i] == '$' {
+		n := 0
+		for n < len(tail) && (tail[n] == '_' || tail[n] >= 'a' && tail[n] <= 'z' || tail[n] >= 'A' && tail[n] <= 'Z' ||
+			tail[n] >= '0' && tail[n] <= '9') {
+			n++
+		}
+		if n == 0 && tail != "" && strings.IndexByte("@*#?$!-", tail[0]) >= 0 {
+			n = 1
+		}
+		tail = tail[n:]
+	}
+	if !strings.HasPrefix(tail, "/") {
+		return true
+	}
+	tail = strings.TrimRight(tail, "/")
+	last := tail[strings.LastIndexByte(tail, '/')+1:]
+	return last == "" || last == "." || last == ".." || globRe.MatchString(last)
+}
+
+// The reasons a recursive delete waits.
+const (
+	wipeReason    = "it recursively deletes a home, a system folder or the root directory"
+	runTimeReason = "it recursively deletes a path decided at run time (a variable, a substitution, or a relative path after a cd to such a folder), which cannot be checked before it runs"
+)
+
+// deleteConcern is why recursively deleting what a path word names, from cwd, waits, or "": it resolves to a protected
+// path, or what it names is decided at run time (follow-up O-1.a.5): a run-time name (runTimeName), or any path that
+// is not absolute from a folder decided at run time (runTimeDir).
+func deleteConcern(w, cwd, home string) string {
+	if p := resolveWord(w, cwd, home); p != "" {
+		if protectedPath(p, home) {
+			return wipeReason
+		}
+		return ""
+	}
+	if runTimeName(w) || cwd == runTimeDir && !strings.HasPrefix(w, "/") && !homeWordRe.MatchString(w) {
+		return runTimeReason
+	}
+	return ""
+}
+
+// rmOperands reads the rm at words[at]: whether it deletes recursively, and the paths it is given.
+func rmOperands(words []string, at int) (recursive bool, operands []string) {
+	done := false
 	for _, w := range words[at+1:] {
 		switch {
 		case !done && w == "--":
@@ -157,15 +282,62 @@ func rmWipes(words []string, at int, cwd, home string) bool {
 			operands = append(operands, w)
 		}
 	}
-	if !recursive {
-		return false
+	return recursive, operands
+}
+
+// findStarts reads the find at words[at]: the folders it starts from (the current one when it names none), and
+// whether it deletes what it finds (-delete, or -exec/-execdir with rm, unlink or shred, as the find rule in safety.go
+// reads it).
+func findStarts(words []string, at int) (starts []string, deletes bool) {
+	i := at + 1
+	for i < len(words) && (words[i] == "-H" || words[i] == "-L" || words[i] == "-P") {
+		i++
 	}
-	for _, w := range operands {
-		if p := resolveWord(w, cwd, home); p != "" && protectedPath(p, home) {
-			return true
+	for ; i < len(words) && !strings.HasPrefix(words[i], "-") && words[i] != "(" && words[i] != "!"; i++ {
+		starts = append(starts, words[i])
+	}
+	if len(starts) == 0 {
+		starts = []string{"."}
+	}
+	for ; i < len(words); i++ {
+		switch words[i] {
+		case "-delete":
+			deletes = true
+		case "-exec", "-execdir":
+			if i+1 < len(words) {
+				switch path.Base(words[i+1]) {
+				case "rm", "unlink", "shred":
+					deletes = true
+				}
+			}
 		}
 	}
-	return false
+	return starts, deletes
+}
+
+// recursiveDeleteConcern is why the rm or find at words[at] waits (deleteConcern of each path it deletes under), or "".
+func recursiveDeleteConcern(words []string, at int, cwd, home string) string {
+	var paths []string
+	switch path.Base(words[at]) {
+	case "rm":
+		recursive, operands := rmOperands(words, at)
+		if !recursive {
+			return ""
+		}
+		paths = operands
+	case "find":
+		starts, deletes := findStarts(words, at)
+		if !deletes {
+			return ""
+		}
+		paths = starts
+	}
+	for _, w := range paths {
+		if why := deleteConcern(w, cwd, home); why != "" {
+			return why
+		}
+	}
+	return ""
 }
 
 var shellNames = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "mksh": true,
@@ -173,16 +345,53 @@ var shellNames = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": 
 var assignRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 var dashCRe = regexp.MustCompile(`^-[a-zA-Z]*c[a-zA-Z]*$`)
 
-// wipeConcern reads a command word by word for a recursive delete of the root, a system folder or a home: rm named
-// by any path, behind any wrapper (env, nohup, timeout, sudo...), inside a "bash -c" script, or on a relative path
-// after a "cd". Here-documents fed to a program other than a shell are its data and are not read.
-func wipeConcern(command string, depth int) *Concern {
+// startDir is the folder a command starts in, as resolveWord reads it: dir (the caller's working folder) made
+// absolute, or "" when the caller did not say. A relative dir is where the caller's process runs it from.
+func startDir(dir, home string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return ""
+	}
+	if !strings.HasPrefix(dir, "/") && !homeWordRe.MatchString(dir) {
+		wd, err := os.Getwd()
+		if err != nil {
+			return ""
+		}
+		dir = path.Join(filepath.ToSlash(wd), dir)
+	}
+	return resolveWord(dir, "/", home)
+}
+
+// cdDir is the folder a cd moves to from cwd, or runTimeDir when that folder is decided at run time ("cd $X",
+// "cd -").
+func cdDir(words []string, cwd, home string) string {
+	target := "~"
+	for _, w := range words[1:] {
+		if w == "-" || w != "--" && !strings.HasPrefix(w, "-") {
+			target = w
+			break
+		}
+	}
+	if target == "-" {
+		return runTimeDir
+	}
+	if p := resolveWord(target, cwd, home); p != "" {
+		return p
+	}
+	return runTimeDir
+}
+
+// eachCommand is the word reader wipeConcern and the program rules share. It calls visit with each simple command of
+// a shell text (its leading assignments dropped) and the folder it runs in: cwd, then every cd before it. A shell's
+// -c script ("bash -c '...'", behind any wrapper) is read as commands of its own; here-documents fed to a program
+// other than a shell are its data and are not read. visit's first concern ends the walk.
+func eachCommand(command, cwd string, depth int, visit func(c simpleCommand, cwd string) *Concern) *Concern {
 	if depth > 4 {
 		return &Concern{Reason: "it nests shells too deeply to be checked before it runs"}
 	}
 	home := homeDir()
-	cwd := ""
-	for _, words := range shellCommands(blankHeredocs(command)) {
+	for _, c := range splitCommands(blankHeredocs(command)) {
+		words := c.words
 		for len(words) > 0 && assignRe.MatchString(words[0]) {
 			words = words[1:]
 		}
@@ -190,36 +399,132 @@ func wipeConcern(command string, depth int) *Concern {
 			continue
 		}
 		if words[0] == "cd" {
-			target := "~"
-			for _, w := range words[1:] {
-				if w != "--" && !strings.HasPrefix(w, "-") {
-					target = w
-					break
-				}
-			}
-			if p := resolveWord(target, cwd, home); p != "" {
-				cwd = p
-			}
+			cwd = cdDir(words, cwd, home)
 			continue
 		}
+		if r := visit(simpleCommand{words: words, piped: c.piped}, cwd); r != nil {
+			return r
+		}
 		for i, w := range words {
-			name := path.Base(w)
-			if name == "rm" && rmWipes(words, i, cwd, home) {
-				return &Concern{Reason: "it recursively deletes a home, a system folder or the root directory"}
+			if !shellNames[path.Base(w)] {
+				continue
 			}
-			if shellNames[name] {
-				for j := i + 1; j+1 < len(words); j++ {
-					if dashCRe.MatchString(words[j]) {
-						if c := wipeConcern(words[j+1], depth+1); c != nil {
-							return c
-						}
-						break
+			for j := i + 1; j+1 < len(words); j++ {
+				if dashCRe.MatchString(words[j]) {
+					if r := eachCommand(words[j+1], cwd, depth+1, visit); r != nil {
+						return r
 					}
+					break
 				}
 			}
 		}
 	}
 	return nil
+}
+
+// wipeConcern reads a command word by word for a recursive delete of the root, a system folder or a home, or of a
+// path decided at run time: rm or find named by any path, behind any wrapper (every word is read, so env, nohup,
+// timeout 5, sudo, command... need no list here), inside a "bash -c" script, or on a relative path, read from cwd (the
+// folder the command starts in; "" when not known) and every "cd" after it (eachCommand).
+func wipeConcern(command, cwd string, depth int) *Concern {
+	home := homeDir()
+	return eachCommand(command, cwd, depth, func(c simpleCommand, cwd string) *Concern {
+		for i, w := range c.words {
+			if name := path.Base(w); name == "rm" || name == "find" {
+				if why := recursiveDeleteConcern(c.words, i, cwd, home); why != "" {
+					return &Concern{Reason: why}
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// wrapperPrograms are the wrappers wipeConcern's examples read a delete behind (sudo, env, nohup, timeout 5,
+// command): each runs the program named after its own options. The program rules skip them to the command word.
+var wrapperPrograms = map[string]bool{"sudo": true, "env": true, "nohup": true, "timeout": true, "command": true}
+
+// durationRe is the duration timeout takes before the program it runs.
+var durationRe = regexp.MustCompile(`^[0-9.]+[smhd]?$`)
+
+// commandWords lists where the program of a simple command (its leading assignments dropped) may stand: its first
+// word, and, behind a wrapper (wrapperPrograms), the word after the wrapper's options, assignments and timeout's
+// duration. A word right after one of the wrapper's options may be that option's value ("sudo -u root ..."), so both
+// it and the word after it are listed. "command -v x" only names x, and lists nothing behind it.
+func commandWords(words []string) []int {
+	var at []int
+	for i := 0; i < len(words); {
+		at = append(at, i)
+		name := path.Base(words[i])
+		if !wrapperPrograms[name] {
+			return at
+		}
+		duration, maybeValue := name == "timeout", false
+		i++
+	scan:
+		for ; i < len(words); i++ {
+			w := words[i]
+			switch {
+			case name == "command" && (w == "-v" || w == "-V"):
+				return at
+			case w == "--":
+				maybeValue = false
+			case len(w) > 1 && w[0] == '-':
+				maybeValue = !strings.Contains(w, "=")
+			case assignRe.MatchString(w):
+				maybeValue = false
+			case duration && durationRe.MatchString(w):
+				duration, maybeValue = false, false
+			case maybeValue && !wrapperPrograms[path.Base(w)]:
+				at = append(at, i)
+				maybeValue = false
+			default:
+				break scan
+			}
+		}
+	}
+	return at
+}
+
+// plainWord is a word as the program rules read it: a word holding a space, a quote, an operator or a substitution
+// came from quotes (or is decided at run time) and is one argument, read as an empty pair of quotes, as blankQuoted
+// reads it.
+func plainWord(w string) string {
+	if strings.ContainsAny(w, " \t\n;&|()<>'\"$`\\") {
+		return "''"
+	}
+	return w
+}
+
+// programLines is each program a command runs, one line each: the base name of its command word (commandWords) and
+// its arguments (plainWord), with "| " before one a pipe feeds. The program rules are matched on these lines as well
+// as on the command's text, so a program named by its absolute path or behind a wrapper is read as itself (follow-up
+// O-1.a.1). A program word decided at run time ("$c") is kept as it is.
+func programLines(command string) string {
+	var b strings.Builder
+	eachCommand(command, "", 0, func(c simpleCommand, _ string) *Concern {
+		for _, at := range commandWords(c.words) {
+			if c.piped {
+				b.WriteString("| ")
+			}
+			program := c.words[at]
+			switch {
+			case strings.ContainsAny(program, "$`"):
+			case strings.ContainsAny(program, " \t\n;&|()<>'\"\\"):
+				program = "''"
+			default:
+				program = path.Base(program)
+			}
+			b.WriteString(program)
+			for _, w := range c.words[at+1:] {
+				b.WriteByte(' ')
+				b.WriteString(plainWord(w))
+			}
+			b.WriteByte('\n')
+		}
+		return nil
+	})
+	return b.String()
 }
 
 // Options of curl and wget that take a value. A value given to an option not listed is read as a target if it looks
@@ -252,8 +557,27 @@ var wgetValueShort = "OoaDPtTwlARU"
 var wgetRouteLong = map[string]bool{"input-file": true, "base": true, "execute": true, "config": true}
 var wgetRouteShort = "iBe"
 
-// localHostRe is a target that is this machine itself: the local name is the whole host.
-var localHostRe = regexp.MustCompile(`(?i)^([a-z][a-z0-9+.-]*://)?([^/@\s]*@)?(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?([/?#].*)?$`)
+// localHosts are the names of this machine itself that a target may give as its host.
+var localHosts = map[string]bool{"localhost": true, "127.0.0.1": true, "0.0.0.0": true, "::1": true}
+
+// localTarget reports whether a curl or wget target is this machine, judged by the host net/url reads from it
+// (Hostname: the authority without its user-info part or port), never by a pattern over the raw text (follow-up
+// O-1.a.4). A target with no scheme is read as http's, as curl and wget read it. A target net/url cannot read as a
+// URL with a host is not local, and neither is one decided at run time (a variable or a substitution in it).
+func localTarget(target string) bool {
+	if strings.ContainsAny(target, "$`") {
+		return false // decided at run time (follow-up O-1.a.5): a person reads where it goes
+	}
+	raw := target
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Opaque != "" || u.Host == "" {
+		return false
+	}
+	return localHosts[strings.ToLower(u.Hostname())]
+}
 
 // proxyRe finds a proxy or a config file named in a command or the environment: either can send a request somewhere
 // other than the target it names.
@@ -290,7 +614,7 @@ func onlyLocalTargets(command string) bool {
 				return false
 			}
 			for _, t := range targets {
-				if !localHostRe.MatchString(t) {
+				if !localTarget(t) {
 					return false
 				}
 				seen = true

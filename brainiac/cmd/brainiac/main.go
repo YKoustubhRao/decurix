@@ -9,8 +9,16 @@
 //	brainiac up [--yes]          census + plan + pull + serve: what build.sh runs
 //	brainiac ask "..." [--image f] [--audio f]   ask a running Brainiac
 //	brainiac status              what a running Brainiac holds
+//	brainiac paths               per field: what could answer here, and why each does or does not
+//	brainiac eval --cases f      measure models field by field on checked cases
 //	brainiac update [--apply]    a better plan from public evaluations: shown, or installed, checked and staged
-//	brainiac update promote      switch to the staged plan (a person's decision)
+//	brainiac update promote      switch to the staged plan (a person's decision, or a signed release on an appliance)
+//	brainiac update sign-release sign a release naming a staged lock (the release pipeline)
+//	brainiac update approve-template <model>   accept a model's changed chat template, after reading it
+//	brainiac scout [--days n]    open models newer than the catalog, checked
+//	brainiac scout adopt|pin     add a scouted model to the local catalog; move to a newer llama.cpp build
+//	brainiac catalog pin|sign|verify|keygen   pin a catalog file's commits and sha256; sign and check it
+//	brainiac version             this build's version
 package main
 
 import (
@@ -77,6 +85,8 @@ func main() {
 		err = runScout(args)
 	case "update":
 		err = runUpdate(args)
+	case "catalog":
+		err = runCatalog(args)
 	case "version":
 		fmt.Println("brainiac", version)
 	case "help", "-h", "--help":
@@ -97,7 +107,7 @@ func usage() {
 
   census [--json] [--no-bench] [--no-network]   measure this machine
   plan   [--json] [--verbose] [plan flags]       choose models, and say why
-  pull   [--yes] [--latest] [plan flags]         install the plan; --latest moves installed models to the newest commit
+  pull   [--yes] [plan flags]                    install the plan (only what the catalog pins: a commit and sha256)
   serve                                          serve what is installed
   up     [--yes] [plan flags]                    census, plan, pull, serve
   ask    "question" [--image file] [--audio file] [--model m] [--url u]
@@ -107,10 +117,14 @@ func usage() {
   update [--apply] [--json]                       find better open models from public evaluations; --apply
                                                  installs, checks and stages them, changing nothing served
   update promote                                  switch to the staged plan; a running serve follows
+  update sign-release <lock.next.json> --key f    sign a release that lets an appliance promote that lock
   update approve-template <model>                 accept a model's changed chat template, after reading it
   scout  [--days 120]                              find open models newer than the catalog, checked
   scout adopt <repo> --roles code=72               add a scouted model to the local catalog
   scout pin b11xxx                                 move to a newer llama.cpp build
+  catalog pin <file> [--dry-run]                   fill a catalog file's commits and sha256 from metadata (no downloads)
+  catalog sign <file> --key k | verify <file>      sign a catalog file (the owner's key) / check it against this build's key
+  catalog keygen --out <file>                      make the owner's signing key pair
 
 plan flags: --offline  --licenses permissive,restricted  --reserve GB  --planned-load GB  --domains math,law|none
 home: BRAINIAC_HOME (default ~/.brainiac)
@@ -128,7 +142,6 @@ type common struct {
 	json        bool
 	verbose     bool
 	yes         bool
-	latest      bool
 	noBench     bool
 	noNetwork   bool
 }
@@ -143,7 +156,6 @@ func flags(name string, args []string, plan bool) (*common, *flag.FlagSet, error
 	fs.BoolVar(&c.noBench, "no-bench", false, "skip the memory-bandwidth test")
 	fs.BoolVar(&c.noNetwork, "no-network", false, "skip the network checks")
 	if plan {
-		fs.BoolVar(&c.latest, "latest", false, "move installed models to their repo's newest commit")
 		fs.BoolVar(&c.offline, "offline", false, "choose only what is installed")
 		fs.StringVar(&c.licenses, "licenses", "", "licence classes to allow (permissive,restricted,noncommercial)")
 		fs.Float64Var(&c.reserve, "reserve", 0, "GB to keep free in every memory pool")
@@ -296,7 +308,7 @@ func pull(ctx context.Context, c *common, st *store.Store, cfg config.Config) (*
 			return nil, errors.New("not installed")
 		}
 	}
-	lock, err := install.Run(ctx, plan, install.Options{Store: st, Census: cs, WorkerDir: workerDir(), Log: os.Stdout, Latest: c.latest})
+	lock, err := install.Run(ctx, plan, install.Options{Store: st, Census: cs, WorkerDir: workerDir(), Log: os.Stdout})
 	if err != nil {
 		return nil, err
 	}
@@ -370,12 +382,18 @@ func serve(ctx context.Context, st *store.Store, cfg config.Config, lock *instal
 	}
 	// Model servers a crashed Brainiac left running hold memory this one plans with.
 	engine.SweepOrphans(lg.Printf)
-	eng, err := engine.New(engine.Options{Config: cfg, Store: st, Lock: lock, Logger: lg, Catalog: cat})
+	// One residency for every engine this serve runs: a changed lock.json
+	// keeps the models it did not change running (G-11).
+	res := engine.NewServerResidency(census.LiveAvailableGB)
+	eng, err := engine.New(engine.Options{Config: cfg, Store: st, Lock: lock, Logger: lg, Catalog: cat, Residency: res})
 	if err != nil {
 		return err
 	}
-	as := &api.Server{Eng: eng, APIKey: cfg.APIKey(), Log: lg, WorkSlots: workSlots(lock)}
-	defer func() { as.Current().Close() }()
+	as := &api.Server{Eng: eng, APIKey: cfg.APIKey(), Log: lg, WorkSlots: workSlots(lock), Residency: res}
+	defer func() {
+		as.Current().Close()
+		res.UnloadAll() // an engine still finishing a request on the old plan is gone with serve
+	}()
 	// The updater reads public evaluations on the web and only stages what it
 	// finds; it is off unless update_every is set, and off with the web.
 	if every, ok := updateEvery(cfg); ok {
@@ -392,7 +410,7 @@ func serve(ctx context.Context, st *store.Store, cfg config.Config, lock *instal
 			if err != nil {
 				return nil, err
 			}
-			return engine.New(engine.Options{Config: cfg, Store: st, Lock: l, Logger: lg, Catalog: c})
+			return engine.New(engine.Options{Config: cfg, Store: st, Lock: l, Logger: lg, Catalog: c, Residency: as.Residency})
 		}}
 	go follow.run(ctx, 30*time.Second)
 	// A body must arrive within minutes; an answer may stream for longer.

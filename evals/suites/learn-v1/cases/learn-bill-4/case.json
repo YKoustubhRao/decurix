@@ -1,0 +1,111 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "learn-bill-4",
+  "category": "missing_input",
+  "kind": "doc_to_record",
+  "request": "Enter the bill in ~/work/practice/learn-bill-4/bill.pdf into the Records app (http://records.example.test/bills/new).",
+  "start": {
+    "files": [
+      "bill.pdf"
+    ],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [
+    {
+      "id": "invoice-number",
+      "about": "the invoice number of this bill, which its copy does not print",
+      "refers_to": [
+        "invoice number",
+        "bill number",
+        "invoice no",
+        "bill no",
+        "number missing",
+        "covering letter",
+        "reference number",
+        "invoice reference",
+        "invoice id",
+        "bill reference"
+      ],
+      "answer": "The covering letter gives the invoice number as MC-3391.",
+      "required": true
+    },
+    {
+      "id": "cost-centre-rule",
+      "about": "which cost centre a supplier bill is charged to",
+      "refers_to": [
+        "centre",
+        "center",
+        "centres",
+        "centers",
+        "charge",
+        "charged",
+        "charging",
+        "allocate",
+        "allocated",
+        "allocation",
+        "cost code",
+        "department",
+        "logistics",
+        "ledger",
+        "expense head",
+        "account head"
+      ],
+      "answer": "From now on, for every bill you enter: courier and freight bills are charged to the cost centre Logistics, and every other bill to General.",
+      "required": false
+    }
+  ],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "mock_records",
+        "collection": "bills",
+        "exact_count": true,
+        "records": [
+          {
+            "number": {
+              "id": "MC-3391"
+            },
+            "vendor": {
+              "text": "Mossgrove Cleaning Services"
+            },
+            "date": {
+              "date": "2026-04-24"
+            },
+            "due": {
+              "date": "2026-05-08"
+            },
+            "total": {
+              "number": "5876.40"
+            },
+            "cost_centre": "General"
+          }
+        ]
+      },
+      {
+        "kind": "asked",
+        "facts": [
+          "invoice-number"
+        ]
+      },
+      {
+        "kind": "absent",
+        "collection": "bills",
+        "when": "asked"
+      },
+      {
+        "kind": "ledger_readback",
+        "records": 1
+      }
+    ]
+  },
+  "oracle": [
+    "office read bill.pdf | grep -q Mossgrove",
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode number=MC-3391 --data-urlencode 'vendor=Mossgrove Cleaning Services' --data-urlencode date=2026-04-24 --data-urlencode due=2026-05-08 --data-urlencode total=5,876.40 --data-urlencode cost_centre=General --data-urlencode notes= http://records.example.test/bills/new"
+  ],
+  "tags": [
+    "question",
+    "recall"
+  ]
+}

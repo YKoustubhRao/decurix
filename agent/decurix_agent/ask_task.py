@@ -5,7 +5,7 @@ import traceback
 import urllib.parse
 
 from decurix_agent import llm_client, progress, state, usage
-from decurix_agent.computer import cdp, core, privacy
+from decurix_agent.computer import cdp, core, privacy, screen_call
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.computer.mimic import SECOND_JOB
 from decurix_agent.logging_utils import log
@@ -445,8 +445,8 @@ def taught_for(service):
     query and you query them one by one", and this shortcut, which reads no
     one's words, answered the next list before any model saw it. A small
     local model is still better served by the shortcut; a hosted one is given
-    the person's words (thebot_harness.taught_context, azure_harness's
-    procedures) and `gui ask` to do the asking.
+    the person's words (thebot_harness.taught_context) and `gui ask` to do
+    the asking.
     """
 
     if not llm_client.available():
@@ -548,9 +548,43 @@ def _ask_each(service, questions):
     return reply, "final" if answered else "error"
 
 
+class _ScreenSidePage:
+    """
+    The service's tab in broker mode, where this process has no DevTools: each read is the screen broker's
+    (read_service), with the screen side's own script for the service - never the one this side holds.
+    """
+
+    def __init__(self, service):
+        self.key = service["key"]
+
+    def evaluate(self, js):
+        return read_service(self.key)
+
+    def close(self):
+        pass
+
+
+@screen_call.routed("ask_task.read_service")
+def read_service(key):
+    """What the service's reader script finds on its newest tab now (a JSON text), or None when no tab shows it."""
+
+    service = next((s for s in SERVICES if s["key"] == key), None)
+    if service is None:
+        raise ComputerError(f"there is no web service {key!r} to read")
+    page = _page_for(service)
+    if page is None:
+        return None
+    try:
+        return page.evaluate(service["js"])
+    finally:
+        page.close()
+
+
 def _page_for(service):
     """A DevTools session on the newest tab showing the service."""
 
+    if screen_call.remote():
+        return _ScreenSidePage(service)
     for target in cdp._page_targets():
         host = urllib.parse.urlparse(target.get("url") or "").hostname or ""
         if host == service["host"] or host.endswith("." + service["host"]):

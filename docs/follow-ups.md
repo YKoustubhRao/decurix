@@ -7,17 +7,17 @@ The deep review of 2026-11-03 fixed about 300 findings on the `review-fixes` bra
 | ID | Decision | State |
 |---|---|---|
 | O-1 | Input broker and OS boundary: direct input around the gate (XTEST, VNC, CDP, AT-SPI, host-app and phone viewers), a gate-owned evidence store, `checked` set by the worker, the script sandbox's filesystem | **Open, do next.** The word guards are frozen. Order: the evidence store under the gate user first (it makes "observed" real), then the input broker ([gate-boundary.md](gate-boundary.md), "Next: the input broker"). Also: a per-task `$HOME` snapshot, read-only binds outside `~/work`, an egress proxy |
-| O-1.a | TheBot command guard: five structural fixes before the final freeze | **Open, first, ahead of the broker.** Table below |
+| O-1.a | TheBot command guard: five structural fixes before the final freeze | **Done** 2026-11-07: all five landed and the guard is frozen (`safety.go`'s FROZEN note). Table below |
 | O-2 | Per-desktop cache volume (B-02) | Done as recommended: a cache volume per desktop, the model cache shared read-only |
 | O-3 | Brainiac appliance: model user, AppArmor, signed catalog, uploader list | **Open; required before any box ships.** Table below |
-| O-4 | Legacy harnesses (Azure, `task_runner`) | This loop: their dangerous-command yes goes through the gate's `kind: "command"` or fails closed. **Open:** delete them |
+| O-4 | Legacy harnesses (Azure, `task_runner`, Claude Code) | **Done** 2026-11-07: deleted (`azure_harness`, `task_runner`, `claude_harness` with `claude_guard` and the MCP server, `internal/claudeauth`, the Claude Code CLI in the tools image). A desktop created with one runs TheBot; the `claude_session` table keeps its migration steps, emptied (harnesses.md) |
 | O-5 | Public tunnel off by default (B-08) | Done: off by default, one switch in the Mobile menu, `DECURIX_PUBLIC_LINK=1` for the scripts. Veto if you disagree |
 | O-6 | A typed "yes" in the desktop chat as an approval (W-07) | Kept, with `seen_at` frozen at the first keystroke and buttons bound to the note id. **Open:** buttons-only is safer if the UX is acceptable |
 | O-7 | Org knowledge and skill writes from the gated listener (A-08) | Done: host-operator only |
 | O-8 | Acquired skills, proven fixes and the coding harness inside Decurix (T-07, T-08, T-21) | Done: off unless `THEBOT_STANDALONE=1`. Veto keeps them |
 | O-9 | taskRules audit to principles only (T-18) | Staged as commit `ab8cac8`. **Open:** bench it on hosted brains before keeping it |
-| O-10 | God-file splits (`core.py`, `long_task.py`, `skill_task.py`, `operator.go`, `httpapi`) and the check-registry rewrite | **Open.** One at a time, each behind the replay gate |
-| N-W4-8 | A Landlock file policy for Brainiac's headless browser (profile folder plus the system read set, network kept) | **Open.** Prove it with a live Linux run before Render may be turned on on an appliance |
+| O-10 | God-file splits (`core.py`, `long_task.py`, `skill_task.py`, `operator.go`, `httpapi`) and the check-registry rewrite | First split done (2026-11-07): `long_task.py`'s stage checks and the cross-check's code part moved to `stage_checks.py`, no behaviour change. **Open:** the other files, one at a time, each behind the replay gate |
+| N-W4-8 | A Landlock file policy for Brainiac's headless browser (profile folder plus the system read set, network kept) | **Built** 2026-11-08 (`web/render.go` `browserPolicy`, `render_linux.go`): through `isolate.Wrap`, profile read-write, system read set read-only, `HOME`/`TMPDIR`/XDG moved into the profile; no Landlock = old behaviour plus one log line. Live in a `golang:1.27` container: a child under the policy wrote its profile, read `/usr`, and got EACCES for a file outside, `/proc/1/environ` and a write outside. **Open:** a real Chrome render under the policy (`BRAINIAC_LIVE_RENDER`) before Render may be turned on on an appliance; Chrome's children lack their own `/proc/self` |
 | N-W4-8 note | Render stays off the automatic path everywhere, off by default on an appliance, behind the guard proxy, page read bounded | Done |
 
 ### O-1.a: the guard's last structural fixes
@@ -26,11 +26,11 @@ The deep review of 2026-11-03 fixed about 300 findings on the `review-fixes` bra
 
 | # | Input class the guard mishandles | Structural change | Test, built mechanically from the guard's own flagged examples |
 |---|---|---|---|
-| O-1.a.3 | (no shape) The folder a command runs in | Pass the real working folder from the operator, terminal and coding callers into `AssessCommand`, and resolve paths against it instead of assuming `~/work` | A relative recursive delete with a working folder of `$HOME` is flagged |
-| O-1.a.4 | (no shape) A URL whose authority carries a user-info part | The fetch tools' "local only" exemption judges each target by `net/url`'s `Hostname()`, not a regex over the raw text | An existing remote target, rewritten with a user-info part, is not exempted |
-| O-1.a.1 | A program named by its absolute path, or behind a wrapper program | Every program rule identifies the program by the base name of the command word, after skipping the wrappers `wipeConcern` already models (reuse its parser) | Every existing flagged example, with its program given by absolute path or behind a wrapper, is still flagged |
-| O-1.a.2 | Global options placed before a subcommand | The version-control and publish rules accept the folder and config options before the subcommand | Every existing flagged version-control or publish example, with such an option inserted, is still flagged |
-| O-1.a.5 | An operand decided at run time (a variable or a command substitution) | A recursive delete's operand, or a fetch tool's target, that is decided at run time waits for a person | An existing flagged recursive delete with its path replaced by a variable is flagged |
+| O-1.a.3 (**done** 2026-11-07: `AssessCommand(command, dir)`, the operator and terminal pass `rc.Dir()`) | (no shape) The folder a command runs in | Pass the real working folder from the operator, terminal and coding callers into `AssessCommand`, and resolve paths against it instead of assuming `~/work` | A relative recursive delete with a working folder of `$HOME` is flagged |
+| O-1.a.4 (**done** 2026-11-07: `localTarget()` judges `url.Parse(...).Hostname()`, refusing what it cannot parse) | (no shape) A URL whose authority carries a user-info part | The fetch tools' "local only" exemption judges each target by `net/url`'s `Hostname()`, not a regex over the raw text | An existing remote target, rewritten with a user-info part, is not exempted |
+| O-1.a.1 (**done** 2026-11-07: `programLines()` reads each command word's base name past `commandWords()`'s wrappers, the ones `wipeConcern`'s examples name, and every rule list is matched on those lines too; `blankHeredocs` finds the program a body is fed to the same way; the word reader is `eachCommand()`, shared with `wipeConcern`) | A program named by its absolute path, or behind a wrapper program | Every program rule identifies the program by the base name of the command word, after skipping the wrappers `wipeConcern` already models (reuse its parser) | Every existing flagged example, with its program given by absolute path or behind a wrapper, is still flagged |
+| O-1.a.2 (**done** 2026-11-07: `beforeSubcommand()` in the git, npm/yarn/pnpm/cargo/twine/gem and docker rules reads past folder and config options, with their values, and other lone options) | Global options placed before a subcommand | The version-control and publish rules accept the folder and config options before the subcommand | Every existing flagged version-control or publish example, with such an option inserted, is still flagged |
+| O-1.a.5 (**done** 2026-11-07: `deleteConcern()` with `runTimeName()` for rm and find (`recursiveDeleteConcern()`), a cd to a run-time folder makes it `runTimeDir`, `splitCommands()` keeps a substitution's place in its word, and `localTarget()` refuses a run-time target) | An operand decided at run time (a variable or a command substitution) | A recursive delete's operand, or a fetch tool's target, that is decided at run time waits for a person | An existing flagged recursive delete with its path replaced by a variable is flagged |
 
 **Not to be done** (the freeze): new verbs, new power-management verbs, heredoc body scanning, a shared Go/Python corpus. After O-1.a, `safety.go`'s FROZEN note says these five were the last changes. Related: the Python guard's "a folder it cannot follow waits" (F-10) is done in `commands.py`; anything further there belongs in this list too.
 
@@ -39,37 +39,37 @@ The deep review of 2026-11-03 fixed about 300 findings on the `review-fixes` bra
 The mount namespace, `sandbox: required` and stage-only updates landed. These need root, an image or a release pipeline:
 1. **A dedicated model user.** A `brainiac-model` system user with no supplementary groups, no login shell and no home. Brainiac starts model processes as that user through a small setuid-free launcher (a systemd service, or a root helper that only accepts "run this lock's binary with this policy"). It covers hosts that refuse user namespaces, where a model process today keeps the operator's groups (docker included). Store layout: models readable by group `brainiac-model`; the socket folder owned by `brainiac-model`, with a group the serving user is in.
 2. **An AppArmor profile** for Ubuntu 24.04+ (`apparmor_restrict_unprivileged_userns=1`) that permits the user namespace for the Brainiac binary only, so the mount view works there instead of falling back.
-3. **A signed catalog.** Every catalog file pins `revision` (a Hugging Face commit) and `sha256`; every GitHub asset pins `sha256` (`source.sha256` and `runtime.llamacpp_sha256` are ready). The catalog ships as a signed release, and the appliance checks the signature before using an overlay. Several sherpa-onnx whisper assets (`whisper-turbo`, `whisper-small`, `whisper-tiny.en`) have no GitHub digest and cannot be installed until the catalog carries their sha256 (they fail closed).
-4. **A shorter trusted-uploader list** for automatic candidates (`scout.go` holds about 55 orgs plus individuals): first parties only, everything else through `brainiac scout adopt`.
-5. **Hash-locked worker requirements** (G-09). On a networked machine, `pip-compile --generate-hashes` for Python 3.11-3.14 on each OS, for `requirements-ocr.txt` and `requirements-asr.txt`. numpy is still a range.
-6. **Signed-release promotion.** `update.Promote` is the one place a staged plan becomes served. A signed release can call it once there is a local parity eval: the corrected `Proven` on the request shapes the box serves.
+3. **A signed catalog.** **Built 2026-11-08, uncommitted:** `pull` refuses any HF source without `revision` and per-file `sha256`, and any GitHub asset or llama.cpp build without `sha256` (`install.CheckPins`, fail closed, every gap named); `brainiac catalog pin|sign|verify|keygen` (ed25519, detached `.sig`); an overlay is used only when its signature verifies, and on an appliance only a signed one (`scout adopt`/`scout pin`/updater adoptions refused there). `catalog pin` filled the shipped catalog from metadata (28 HF sources, 4 sherpa-onnx assets, 36 llama.cpp b11541 assets), left in the tree for review. **Open:** the owner makes the key (`catalog keygen`), compiles the public half into `internal/catalog/sign.go` (`releaseKeyHex`), reviews and signs; `whisper-turbo`, `whisper-small`, `whisper-tiny.en` have no GitHub digest and stay unpinned (refused) until someone hashes them; Ollama tags are not pinned (Ollama fetches them).
+4. **A shorter trusted-uploader list.** **Done 2026-11-08, uncommitted:** `scout.TrustedUploader` holds first parties only (labs that make what they publish); quantisers (`ggml-org`, `unsloth`, `bartowski`, `mradermacher`, `lmstudio-community`), `openai-community` and `meta-models` left it, so their copies go through `brainiac scout adopt` (tests: the updater skips them, adopt still works and pins).
+5. **Hash-locked worker requirements** (G-09). **Built 2026-11-08, uncommitted:** `brainiac/scripts/lock_worker.py` resolves `requirements-ocr.txt` and `requirements-asr.txt` together from PyPI's JSON index alone (Simple API sha256s, PEP 658 metadata, markers evaluated per target, wheels only) and wrote `workers/python/locks/<group>-cp3N-<target>.txt` for CPython 3.11-3.14 on `win_amd64`, `linux_x86_64`, `linux_aarch64`, `macos_arm64`: all 16 combinations, both groups. The installer takes only the lock for its Python and system (`install.WorkerLock`), refuses an unlocked file (`worker.CheckLocked`) and runs pip with `--require-hashes --only-binary=:all:`; no lock, no install. numpy is pinned (2.4.6 below 3.12, 2.5.4 from 3.12). **Open:** a live `brainiac pull` of the worker groups from a lock on Linux (no install was run here); macOS x86_64 and Windows arm64 have no lock (refused).
+6. **Signed-release promotion.** `update.Promote` is the one place a staged plan becomes served. **Built 2026-11-08, uncommitted:** `Promote(st, now, PromoteOptions{ByHand})`: on an appliance only a `release.json` signed with the release key (ed25519, `catalog.Verify`; kind `brainiac.release/v1`, so a signed overlay cannot pose as one) naming the staged lock's sha256 promotes, and only with a `parity.json` of that lock, measured after staging, in which `evals.Results.Proven` holds for every changed model against the one it replaces (every served field for the brain, its own role for other roles); off an appliance a person may still promote by hand, but a present release is always checked. `brainiac update sign-release <lock> --key k` makes the release. Tests: unsigned, untrusted key, non-release, other lock, no/failed/stale/other-lock parity refused; signed and passed promoted. **Open:** the box-side parity run that writes `parity.json` from cases of the request shapes the box serves (trace shapes, `likeEvalCases`) on the staged plan's models; the owner's release key (shared with O-3.3).
 
 ## Deferred items
 
 ### Control plane, desktops, scripts, Electron (W1)
 
 - **Digest pins** (B-24): `accetto/ubuntu-vnc-xfce-chromium-g3` (still `:latest`), `alpine:3.24` and `ollama/ollama:0.40.1` are pinned by tag only. Pin digests on the next build (needs a pull).
-- **Dead bridge verbs** (B-27): about 1,500 lines of `bridge.ps1` verbs Go never sends. First item for the next loop with a live Windows run.
-- **B-19:** clean up host browser profiles when a VM is forgotten (needs a new bridge verb). The launch-time quarantine covers the dangerous case.
+- **Dead bridge verbs** (B-27): removed 2026-11-08 (3,804 -> 2,258 lines). Gone: the native-worker screen verbs Go never sends (`open`, `openr`, `click`, `count`, `shortcuts`, `tasks`, `start`, `shell`, `win`, `over`, `screen`, `focus`, `windows`) with the painted wallpaper, taskbar, Start menu and window manager behind them, the AppContainer terminal (`Confined`), and the compiled-program mode (`-Build`, `-Resolve`, `Main`/`Starting`; Go stopped using it on 2026-10-06). The C# compiles, the script parses, `go test ./internal/winhost` and the real-helper check pass. Owed: one live host-app run on Windows (open, click, type, close).
+- **Done: B-19** (2026-11-08, uncommitted). A deleted VM's private app profiles on the host go with it: `forgetHostApps` (delete only; a stop keeps them, they hold the worker's sign-ins) calls `winhost.Manager.DeleteDesktop`, which ends the apps and sends the bridge verb `dropprofiles` with the apps' private desktop names (shape-checked in Go); the bridge removes only folders directly under its own profile root whose name is exactly one of those, never follows a link, and counts files still held open (Go retries 3 times). Tests: the Go side with the stand-in, the real bridge against a temporary LOCALAPPDATA. Owed: one live delete on Windows.
 - **W-14:** one aggregated endpoint per dashboard tab (performance only).
-- **C-25:** the practice broker trusts `desktop_id` in the body. Fix it with the O-1 evidence store, identifying callers by container address from the practice network's map.
+- **Done: C-25.** The practice broker knows its desktop by the address a callback comes from, never by `desktop_id` in the body: `Broker.Caller` = `desktop.Manager.PracticeDesktopAt` (labelled `practice-<run>` containers on `decurix-practice`, never the mock), answers kept per address (`Broker.fromRunDesktop`), a body naming another desktop refused, no `Caller` refuses all (simulation.md).
 - **A-07:** no `knownHost` list on the gated listener (accepted: the gated listener is reached under changing host names; the session cookie and same-origin rule answer rebinding).
-- **B-37:** cron is UTC only. A per-schedule zone needs a Migrate step and UI.
-- **B-29:** a restart loop for the Windows tunnel (`Lan-Tunnel.ps1`); the tunnel is opt-in now.
-- **B-10:** the native-Ollama admin API is reachable from desktops; an allowlist proxy for desktops is not built.
-- **W-20 rest:** in-flight guards for `loadNotes`/`pollResourceAlerts`, `/api/desktops/memory` unbounded, the `rfb.js` hash.
-- **RW1-G-04 rest:** starting an existing desktop does not wait for a tools refresh in progress.
-- **Orphan home volume:** after a Delete whose volume removal failed, a new desktop of that name is refused with "delete that volume", and no UI does that.
-- **RW1-D-01:** a container the daemon made while `ContainerCreate` returned an error is leaked until a later Delete of that name; at most a log line.
-- **`internal/ollama/ollama.go`:** the default model is still `devstral-small-2:24b` (its comment is corrected). Owner's call: keep it or restore the 3B default.
-- **Mail jobs:** the page may hide "Run again" on a skipped or failed job with no request (the server already answers 409).
-- **No-echo walker limits** (RW1-G-06 is done): an error variable not named like one, or a helper that returns the text, still gets past it.
-- **Two control planes on one data folder** are unsupported; after a crash, two starting at once could each remove the other's fresh `instance-id`.
+- **Done: B-37.** Each schedule and DAG cron has its own IANA zone (`schedule.Expr.NextIn`, `zone`/`cron_zone`, appended Migrate steps; old rows read UTC), picked on the forms from the browser's zone.
+- **Done: B-29** (2026-11-08, uncommitted). `Watch-LanTunnel` (`Lan-Tunnel.ps1`, used by `build.ps1`/`rebuild.ps1`) and `supervise_lan_tunnel` (`lan-tunnel.sh`, Linux and Mac) start the tunnel again when it exits: 1 s doubling to 60 s, reset after 10 minutes up, the switch read again before each restart (off ends the loop), the new address reported. Tests: `scripts/testing/lan-tunnel.test.{sh,ps1}`.
+- **Done: B-10.** Desktops reach the native Ollama only through an allow-listed proxy (`internal/httpapi/native_ollama.go`, `modelRequestPolicy`; d25d201).
+- **Done: W-20.** The viewer's script is served at a path naming its own bytes (`noVNCPath`, `rfb-1.6.0-<sha256 12>.js`), so a changed file is never a stale cached copy. Also done: the in-flight guards (`loadNotes` and `pollResourceAlerts` go through `Decurix.poll`, one call at a time) and a bounded `/api/desktops/memory` (`?limit=`, default 200, max 1000, `truncated`).
+- **Done: RW1-G-04 rest.** A start or a resume waits for a tools refresh in progress, at most 5 min and never past the request (`holdToolsForStart`, `ErrToolsRefreshing`).
+- **Done: orphan home volume.** Create answers 409 `leftover_home`, and the form offers to delete the old volume (`POST /api/desktops/home-volume/delete`, primary listener, humansOnly; refused while any container mounts it or it is not that desktop's labelled home).
+- **Done: RW1-D-01.** A desktop container carries its creation's id (`decurix.creation`, as its home does); after a `ContainerCreate` error, `Manager.removeHalfCreated` removes a container of exactly that name with that creation's id, never another's.
+- **Decided: the default local model stays `devstral-small-2:24b`** (correctness before speed; `auto` still picks per machine). Soul, `start_agent_terminal.sh` and `config.py` now fall back to the same model.
+- **Done: mail jobs.** A finished job with no request no longer shows "Run again" / "Send anyway".
+- **Done: no-echo walker by type** (2026-11-08, uncommitted). `TestNoResponseEchoesAnErrorByType` type-checks the package (go list -export) and fails on any error value, error text, or result of a package helper derived from one reaching anything that implements `http.ResponseWriter`; sentinels and the named doors (`refusal`, `refusalLines`, `providerSaid`, `viewerReason`, `practice.Public`) pass. It found one real leak, fixed: `/api/host-bridge/exec` sent `cmd.Run`'s words (`hostExecReason` now). Two sentence conversions now go through `refusal`/`refusalLines`.
+- **Done: two control planes on one data folder.** Start takes the data directory's exclusive lock (`sqlitedb.LockDataDir`, `decurix.lock`: flock, or LockFileEx on Windows) before the database, and a second start refuses with the holder's pid and start time (`ErrDataDirInUse`).
 - **P3s not done:** B-02 (a panic path leaves only `last_error`), C-06 (a live test positive control; walk all packages), C-07 (a main-level Docker-down test; the watcher is tested), F-05 (owner's call), A-02 to A-06 (Electron details), F-08, F-10, F-11 (notes).
 
 ### Python agent (W2)
 
-- **O-10:** the check-registry rewrite (step 1, the `_checked` wrapper, is done).
+- **O-10:** the check-registry rewrite (step 1, the `_checked` wrapper, is done). The first god-file split is done (2026-11-07): the stage checks (`stage_code_findings`, `CHECK_MATURITY`, `_checked`, every check and the helpers only they use) and the cross-check's code part (`code_disagreements`, `model_disagreements`, `odd_one_out`) are `stage_checks.py`; long_task keeps the prompts and the run, imports what it calls and re-exports the names other modules and tests read through it. stage_checks never imports long_task: the run's ledger, runner and model call are handed over at import (`stage_checks.use_run`), looked up in long_task at each call. A test that patches a check helper patches it on `stage_checks`. Left: `core.py`, `skill_task.py`, `operator.go`, `httpapi`.
 - **E-41:** the "PAYMENT TO " string branch only adds a prompt hint and a warning; make it a typed field when `FileFacts` reaches `code_problems`.
 - **E-42:** `claims_done` stays (its only effect is a second judge call, whose "cannot" ends "not checked"; widening its regex would be a word list).
 - **E-43:** run-folder retention is the owner's call (run folders hold the person's outputs; locks, temp files and host copies are pruned).
@@ -79,29 +79,74 @@ The mount namespace, `sandbox: required` and stage-only updates landed. These ne
 - **Replay corpus breadth:** a second synthetic run with an Office output and a payments table, so `system_entry`, `payee_approval` and `files_open` reach their cases, not only get called. Or word the assertion as "called".
 - **The cancelled-row test** checks maturity only, not `stage_code_findings` end to end.
 - **The X-6 test** calls `_pause` directly; it should drive `_prepare`/`_execute`.
-- **The ledger:** withholding runs on every save rather than once (fails closed); any `OSError`, even a transient one, moves a good ledger aside for good (prefer only a parse error).
+- **The ledger:** withholding runs on every save rather than once (fails closed); done: only a parse error moves the ledger aside; an `OSError` is retried four times with backoff, then the save fails loudly and leaves the file (`long_task._ledger_io`).
 - **A stale "filled from" note** could add a block for a reused output path (fc0849c).
 - **An all-capitals request** hides the client's own facts (fails closed).
-- **An IBAN** with an unknown country and a valid mod-97 is ignored; make it "not checked".
+- **Done: an IBAN** with an unknown country and a valid mod-97 is reported "IBAN NOT CHECKED" among the unchecked payments (`payees._is_iban` answers None).
 - **A second note on the same value** overwrites `OTHER_SIGN`.
-- **`false_sums`:** "Rows 2 - 10 = 9." now reads as a wrong sum.
+- **Done: `false_sums`** skips a range of numbered things and its count ("Rows 2 - 10 = 9.", `values.range_count`, by structure); "200 - 350 = 150" is still a wrong sum.
 - **X-6 for TheBot:** an optional structured secret marker on HELP.
-- **The legacy harnesses:** delete (O-4).
+- **Done 2026-11-07: the legacy harnesses** are deleted (O-4).
 
 ### TheBot (W3)
 
 - **O-1.a** (above).
-- **N-W3-3:** `asksAppNamesRe` suppresses a HELP to the person once, by words. It fails toward a delay, never a false success; move it into T-20's gate table as a fact.
-- **T-19:** a recall score floor needs nomic's query/document prefixes (re-embedding the stores) or a judge.
+- **Closed 2026-11-08: N-W3-3.** `asksAppNamesRe` is gone. A HELP is held once for names the application lists only on a
+  fact of the listing (`listOnScreen`, `screen_answer.go`): it names a list a listed window shows (a field's options,
+  or a column of a table's first row) whose entries hold letters; the lines go back with the nudge (`NamesNudged`).
+  With no listed screen showing that list it goes to the person (a names question for a page not yet listed is no
+  longer held). No T-20 gate table exists in the repository; the fact is recorded where the gate is
+  (`screen_answer.go`) and in harness-v3-plan.md item 4.
+- **Closed: T-19.** A recall score floor was measured and decided against (`agent/thebot/internal/memory/l1.go`, the note at ~318).
 - **T-27:** the embedded UI is the owner's decision.
 - **A planted row in `l1.db`** (worker-writable) only shows "you approved this on <date>" in a standalone coding question. Word it as "a record on this machine says ...".
 
 ### Brainiac and bench (W4)
 
-- **G-11:** carrying unchanged units into the new engine. The right shape is one Residency per Server, outliving engines.
+- **G-11:** carrying unchanged units into the new engine. **Built 2026-11-08, uncommitted:** one Residency per server (`engine.NewServerResidency`, `api.Server.Residency`, `engine.Options.Residency`); residents are known by key and recipe, model servers and the worker are shared by recipe, a new engine adopts the unchanged running units and the retired one stops only its own. Tests with the fake llama-server (kept process, changed one stopped, late load passes forward, held model waits for its request, shared worker). **Open:** a live plan change under `serve`.
 - **G-17:** re-derive the workflow bench's results from artifacts (the name now says what is checked).
-- **G-09:** hash-locked requirements (O-3.5).
-- **FIX-BR-1:** a managed (non-system) python for the worker. `isolate.ForProgram` (`brainiac/internal/isolate/elflibs.go`, called from `brainiac/internal/engine/engine.go` `New`) grants its binary and the shared libraries it links, but not its standard library (`../lib/python3.x`), so it may not start in the mount view. A system python is unaffected (`/usr` is read). Check it live, and grant that tree read-only if it fails.
+- **G-09:** hash-locked requirements (O-3.5). Built 2026-11-08; see O-3.5.
+- **FIX-BR-1:** a managed (non-system) python for the worker. `isolate.ForProgram` (`brainiac/internal/isolate/elflibs.go`, called from `brainiac/internal/engine/engine.go` `New`) grants its binary and the shared libraries it links, but not its standard library (`../lib/python3.x`), so it may not start in the mount view. A system python is unaffected (`/usr` is read). Check it live, and grant that tree read-only if it fails. **Built 2026-11-08, uncommitted:** `isolate.ForProgram` grants a managed Python's `lib/python3.N` read-only, found structurally (`<prefix>/bin/python*` by real path, `os.py` landmark, not under the system read set, real path inside the prefix; a versioned name claims only its version). Tests with a fake tree. **Open:** the live start of a uv/pyenv Python worker in the mount view.
+
+## Live checks done on 2026-11-07 (image built from this tree, a dev control plane beside the app's)
+
+- **The gate starts with a cleared environment:** its process holds only `CONTROL_PLANE_URL`, `DECURIX_DIR`,
+  `DECURIX_WORK_DIR`, `HOME`, `LANG`, `PATH` (read as the gate's own user; root in the container cannot, by design).
+- **No websockify** runs in a new desktop; the screen reads through the control plane's own bridge.
+- **Chrome's Memory Saver policy** is installed; the switched-off session services do not run; soul starts.
+- **Memory given back** (docs/lightweight.md L2): a desktop paused 30 minutes is stopped (`rest_reason: idle`); with
+  the memory held elsewhere, a start stops the longest-idle paused desktop first (`rest_reason: memory`); with nothing
+  to stop, the start is refused in the person's words (the wording was fixed after this check: it blamed "0 busy
+  desktops" for memory another program held).
+- **The resource bench, before and after** (docs/lightweight.md): idle anonymous memory 162 to 140 MB, gui observe p50
+  3.5 to 1.6 s, p95 of all gui commands 3.5 to 1.6 s.
+- **`bench/skills/e2e.py` and `bench/recordings/e2e.py`** pass on that image with this tree's agent.
+- **The gui daemon and screen broker tests** pass on Linux (74 tests; two code bugs fixed: the idle clock started
+  before the daemon served, and a socket's inode compared with sockfs's).
+- **Still owed:** the sign-in refusal on a real gated listener (needs a worker with an open question; the integration
+  test covers it with the real stores and routes; not reached on 2026-11-08), the field-unit question's round trip
+  with a hosted brain (see below), and every item below.
+
+## Live checks done on 2026-11-08 (image rebuilt from this tree, a dev control plane beside the app's)
+
+- **Benches**: `bench/skills/e2e.py` and `bench/recordings/e2e.py` pass on `decurix-desktop:next`, with and without
+  `--broker`.
+- **The screen broker's live round** on a control-plane desktop: the panel's browser icon, a taught skill opening a
+  local page, a long request (two stages, done and checked), and a replay whose ladder asked the hosted model through
+  the broker (`py.escalation.ground`); all calls tagged. Details and the broker-default verdict: gate-boundary.md,
+  "Live pass on the rebuilt image".
+- **The plan's "OK first"** on a gated default-mode desktop: one yes, one press; a no, no press and not done. It asked
+  twice before two fixes made in this pass (soul adopts the gate's own request for an action it stopped on the screen;
+  the agent's watcher no longer takes TheBot's yes from the gate) - gate-boundary.md, same section.
+- **Not reached, still owed:**
+  - The field-unit question with a hosted brain: twice the worker never put a one-sided unit to the save - it declared
+    the record's Rate as "18" (the note says "18%"), then, told to declare 18%, typed "18%" into the field - so the
+    question never came. Owed: a run that reaches it, and a decision on whether `gui record` should keep a document's
+    unit when the worker drops it (declaring "18" from "18%" settles the unit silently, the case the question exists
+    for).
+  - The sign-in refusal on the gated listener (step prepared, not run).
+  - The review's "Still open" lines on a held press read screenshots as empty fields that `gui observe` showed filled
+    (seen twice on the tax-code form); not investigated.
 
 ## Live checks after the next build
 
@@ -149,13 +194,16 @@ What the SOUL lane left for later (PLAN-P2 §9; schema and limits in [trajectory
   `computer/records.py` would stamp the save's record id (the event's `id`) on the record it marks saved.
 - **A local brain's calls have no bodies.** Soul's trace keeps their model, prompt hash and usage only. Bodies need a
   recording proxy in front of Ollama or soul writing them; measure the size and the `num_ctx`/prefix effect first.
-- **The bundle limit is a fixed 64 MB a run** (`runs.DefaultLimit`); past it frames go, oldest first, and are named
-  in `integrity.missing`. Make it a setting once real runs show their sizes.
-- **Bundles of practice and eval desktops are not pulled yet.** They have no home volume, so R9's puller does not run
-  there; collect the run folder by an exec tar before each reset, so an eval row links to its trajectory.
-- **Soul's traces are never pruned on the desktop** (`~/.decurix/ai/traces/`, at most 32 MB a task, any number of
-  tasks). Prune an exported one by the W0.8 rule (`EXPORTED` present).
-- **`request.files` and `worker.image` are empty** in v1: neither is kept per execution.
+- **Done: the bundle limit is a setting** (2026-11-08, uncommitted): `DECURIX_RUN_BUNDLE_MB` (default 64, 8 to 1024, read
+  once at start, every puller; running.md). Open: choose the default from real runs' sizes.
+- **Done: bundles of practice and eval desktops are pulled** through `desktop.PracticeHome` before each reset: the eval
+  runner's `pullBundle` and Simulate's `practice.Service.Bundles`. A failed pull is a problem on the finding, never a
+  grade. `labels.eval` is filled from the eval row (`eval.Store.EvalLabel`).
+- **Done: soul's traces are pruned** by `retention.prune_traces` at each run's end: only an exported, not re-held run's
+  `.jsonl`/`.rules`, older than 3 days. Open: soul counts a pruned trace's old size against its 32 MB cap until it
+  restarts.
+- **`request.files` and `worker.image` are empty** in v1: neither is kept per execution. `worker.rules_sha` is soul's
+  operator rules hash (`~/.decurix/ai/traces/<task>.rules`, copied into `run.json`); it is empty for a local brain.
 - **Done: Build reads an execution's verdict, origin, skill and resolved model from the task records' own fields**
   (CP-4/CP-5 landed, 7f2c26d, 22e3c3e; `TestViewReadsTheExecutionsFields`, 515091f). An execution with no bundle
   builds through `tasks.Store.TaskOfExecution` (7f2c26d).
@@ -166,24 +214,25 @@ What the SOUL lane left for later (PLAN-P2 §9; schema and limits in [trajectory
 
 What the PY lane left for later (lane-PY.md; PLAN-P2 §9).
 
-- **Legacy verdicts.** Two paths still send `checked=True` with no verdict of their own and so get a `legacy` done
-  (no checks, no basis; it never counts towards trust): `tool_task.perform` (a learned tool's run) and
-  `workflow_task._report` (a workflow stage's report). `agent/tests/test_verdict.py` (`LEGACY`) lists them; the list
-  may only shrink. The control plane accepts `by: "legacy"` with no checks and no basis (H-PY-1, done in 7f2c26d and
-  754cd9c).
+- **Done: legacy verdicts.** `tool_task.perform` sends `tool_task._verdict` (by `verify`: exit code and file facts in
+  code, the judge by model) and `workflow_task._report` sends `workflow_task._run_verdict` (by `workflow`: stage file
+  checks in code, the judgement against the request not made, so never done). `verdict.derive` never makes a done
+  (checked=True alone goes out unchecked), `test_verdict.NoReportReliesOnADerivedDone` keeps the list empty, and
+  `legacy` is no gate on either side (`verdict.BY`, `tasks.verdictBy`); stored legacy rows are still read.
 - **Python's model calls, still to move behind soul** (plan rule 3; every one is tagged `py.*` or `legacy.*`, so the
   proxy's stats show the share): `py.judge`, `py.judge.spot`, `py.skill.ask`, `py.skill.calls_off`, `py.stage`,
   `py.binding.fill`, `py.approval.read`, `py.approval.choice`, `py.ground`, `py.escalation.ground`, `.judge`,
   `.detour`, `.point`, `py.mimic`, `py.skill_engine.fits`, `py.kept_facts`, `py.playbook`, `py.study`,
-  `py.tool.args`, `legacy.azure.turn`. `agent/tests/test_purpose_tags.py` holds the set.
-- **Spot judgement of trusted replays** samples 1 in 5 task ids by default (`DECURIX_SPOT_JUDGE_EVERY`; 0 never, 1
-  always). Measure the judge's cost and its catch rate on the L3 matrix before changing it; its eval case waits for
-  `learn-v1`.
+  `py.tool.args`. `agent/tests/test_purpose_tags.py` holds the set (`legacy.azure.turn` went with the azure harness, O-4).
+- **Spot judgement of trusted replays** is built (`skill_task._spot`, purpose `py.judge.spot`; a `not_done` records a
+  failure) and samples 1 in 5 task ids by default (`DECURIX_SPOT_JUDGE_EVERY`; 0 never, 1 always). Open: measure the
+  judge's cost and its catch rate on the L3 matrix before changing it. `learn-v1` exists now (2026-11-08) and holds
+  no case of its own for it: a spot judgement needs a trusted replay, which five cases of a kind may not reach.
 - **Dates.** With no order known (no `DECURIX_DATE_ORDER` on the control plane, no DD/MM marker, no unambiguous date
   in the request or its files' text layer), an ambiguous digit date never matches an ISO one: the save waits and asks
-  which order. Set `DECURIX_DATE_ORDER` for each org. A digit date against the known order (04/13/2026 under `day`) is
-  no date, by the lane's example; the lane's other sentence ("p2 > 12 is month-first, whatever the order") was read
-  as applying when no order is known.
+  which order. Set `DECURIX_DATE_ORDER` for each org (read in `cmd/decurix/main.go`). A digit date against the known
+  order (04/13/2026 under `day`) is kind `unreadable`, and `values.compare` answers undecided (`date_order:a|b`), so the
+  save asks; with no order known, "p2 > 12 is month-first".
 - **What the worker could write itself** (O-1): the run folder's `context.json` (the date order, the reply's
   judgement id), `LABELLED` and the ledger are all in the worker's user. A worker that flipped its own date order
   could pass a wrong date. Moving them under the gate user is part of O-1.
@@ -224,11 +273,14 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
 
 ## Phase 2: control plane
 
-- **Untagged model calls are flagged, not refused** (D3). `DECURIX_LLM_REQUIRE_PURPOSE=1` refuses them; make it the
-  default only after a clean live round shows 0 `untagged` on `/api/llm/calls/stats` (L0, L3).
-- **The delete flush can time out** (90 s). A run not pulled by then is named in the log ("... that run's recording,
-  ledger and notes are lost") and the delete goes on: the one case where a label can be lost. Measure live how long a
-  flush takes; consider refusing the delete instead while unpulled runs remain.
+- **Done: untagged model calls are refused by default** (D3). The live round of 2026-11-08 (a broker-mode desktop with a
+  hosted brain: tasks, a demonstration, teaching, a replay) showed 58 calls, 0 untagged and 0 invalid (soul 41, the agent
+  17). `DECURIX_LLM_REQUIRE_PURPOSE=0` lets them through for desktops made before.
+- **Done: a delete no longer loses runs silently** (2026-11-08, uncommitted). After the 90 s flush, runs still not pulled
+  refuse the delete (409 `held`, `unsaved_runs`, "N runs of this desktop are not saved to the run record yet; try again
+  in a minute, or delete anyway"); the dashboard's confirm shows that reason and offers "Delete anyway" (`force=1`),
+  recorded first as a `delete_anyway` judgement (actor, door, the runs given up); a desktop's own call cannot force it.
+  Open: measure live how long a flush takes; `decurix --cli` shows the refusal but has no "delete anyway".
 - **`resolved_model` for a local brain** is `"<engine>:<model the desktop said>"`, not a deployment the proxy saw
   (Ollama calls never pass it). Local-brain call bodies are a later phase (PLAN-P2 §9).
 - **Pass rates** (`/api/tasks/pass-rates`) count every ended attempt under its own skill version x model x origin
@@ -257,24 +309,24 @@ synthetic fixture as its area is next touched (PLAN-P2 §9), never in bulk.
   but not the gate, so for that window the gate's question may also lack the value.
 - **A gated reply without a sign-in** is authored by "someone with the access code" (`access-code`, no roles): rule 5
   holds in that the input says who it could be, not who it was. Nothing is kept as a lesson or correction from such
-  an input (`/api/desktops/learned` answers 409). **Trigger:** when the first user account is created in the access
-  store, the gated listener must require a sign-in for replies.
-- **Open owner decision: purging a leaked secret from the never-delete stores** (the blob store, `llm_calls`,
-  `judgements`, run bundles). Rule 4 protects labels, and a secret is not a label. Recommendation: a purge-by-value
-  tool (primary listener, humansOnly) that replaces each blob holding the value with a tombstone that keeps the hash
-  (so rows and prefixes still join), and records a judgement of who purged it and why.
+  an input (`/api/desktops/learned` answers 409). **Done:** once the access store holds a user, an unsigned reply on
+  the gated listener (chat, Queries, the recording door) is refused with 401 "Sign in to reply" (503 when the store
+  cannot be read); with no users the access-code holder may still reply.
+- **Done: purging a leaked secret** (decided 2026-11-07: a secret is not a label). `internal/purge`, `POST /api/privacy/purge`
+  (primary listener, humansOnly, owner role), `decurix --purge-secret` and a control on the Tasks page rewrite every
+  copy to `[purged]` in place, keeping blob names and lengths so rows and prefixes still join, and record a `purge`
+  judgement. Not reached: backups already downloaded, gzip-compressed blobs, image pixels, anything still on a
+  desktop's disk.
 - **No control-plane page links to soul at `/agent/<id>/`.** The gated listener forwards only its health; the primary
   one forwards all of soul. If soul's own page is to be shown on a phone, add each route it needs to
   `gatedAgentRoutes` with a reason, never `/api/chat` (it would drive the worker with no task record or author).
 - **The tools image is re-checked by its ID**, not its sentinel: a tools image rebuilt with the same tree but a new
   ID is applied again (a cheap no-op copy, since the tools CMD compares sentinels).
-- **A checked-only final with no verdict still records as checked** (an image from before R6, D5's one release).
-  After this build every desktop sends a verdict: switch it to fail closed (checked-without-verdict stored unchecked)
-  at the next release.
+- **Done: a checked-only final with no verdict fails closed.** `tasks.checkedFrom` stores checked=True with no
+  verdict as not checked, logged as a disagreement.
 - **A judgement id is chosen before delivery** (C6). If delivery errs after the desktop accepted the request, the
   desktop holds an id never committed, and what it keeps from that reply answers 409 (fails closed).
-- **`tools_waiting` says nothing after a failed populate**, though the tools CMD empties the volume first: report
-  "tools not ready" too.
+- **Done: tools not ready.** A failed populate sets `Manager.ToolsNotReady()` (`volume`, `start` or `copy`); `/api/docker/status` returns `tools_not_ready`, and the dashboard shows a banner until a fill succeeds.
 
 ## Phase 2: soul and run record, review round 3
 
@@ -302,12 +354,13 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
 - **E5: local brains.** Practice and evals refuse Ollama and Brainiac brains (`practice.ErrHostedOnly`); the broker would
   proxy an OpenAI-compatible local endpoint, and soul's trace is then the only record of a call.
 - **Bundles from practice and eval desktops:** see "Phase 2: soul and run record" above.
-- **More suites:** `docs-v1` (documents becoming records), `gst-v1` (a returns portal and a client chat mock, written by
-  someone who does not tune the harness) and `learn-v1` (memory kept between cases; its runner mode is below).
-- **D7 waits on the owner.** Dev suites live in `evals/` with fictional data only. The CLAUDE.md working-agreement line
-  ("Test data and checkers live outside the repo") still says otherwise: the writer did not edit CLAUDE.md, since only
-  the owner may approve that. Proposed line: "Dev eval suites with fictional data live in `evals/`; the sealed held-out
-  set stays outside the repo and is backed up off-host."
+- **More suites:** `docs-v1` (documents becoming records) and `gst-v1` (a returns portal and a client chat mock,
+  written by someone who does not tune the harness). **Done: `learn-v1`** (2026-11-08): ten interleaved cases, bills
+  and bank reconciliations, a lesson taught once per kind and a missing input; `py -3 evals/run.py curve` reads it
+  ([evals.md](evals.md), "The learning curve"). Owed: its first live run (calibration with `--carry-state`, then
+  `default+expert --repeats 5`).
+- **Done: D7.** CLAUDE.md now says dev eval suites with fictional data live in `evals/` and the sealed held-out set stays
+  outside the repo.
 - **Calibration L2 needs the live stack.** Offline, `TestCoreSuiteLoads` passes the oracle on 10 of 12 core-v1 cases,
   and the nothing arm (false-done 12/12) and the ask arm on none. The offline oracle interprets the oracle's shell itself
   (curl posts become form posts; its read assertions are skipped), so the real lines are proved only at L2. `web-pay-approval` (the gate must stop `gui click Pay` with exit 3) and
@@ -321,8 +374,10 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   Engines cover them.
 - **Learning curves (learn-v1) need a runner mode that keeps state.** By default every case starts from the run's
   snapshot (`ResetPractice` clears all of `~/.decurix`, the work folder, the browser profiles and `/tmp/decurix-*`). A
-  suite that carries state between cases must say so explicitly (a suite or run flag that skips the clear), never by
-  default; not built.
+  suite that carries state between cases must say so explicitly. **Done:** suite `carry_state` and `evals/run.py
+  --carry-state` must agree (else 400); the desktop is reset only before each repeat's first case, and the run row and
+  the table's "State:" line say which mode ran. Rows keep `calls` beside the tokens (2026-11-08), so the curve shows
+  model calls per case.
 - **Practice and eval desktops are reset by stopping the worker's processes and clearing its home's agent state**, then
   restarting ([evals.md](evals.md); `TestPracticeResetLive` passed on the real image, a9609b3). L2 should check `ls -A ~/.decurix` after a reset holds only the snapshot.
 - **Done: `approval.site_known` no longer reads the worker's task file.** On a gated desktop it reads the gate's own
@@ -343,25 +398,22 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
 - **A declared key already shown on an application page this task read** (a page's words, not the source document)
   stops the declaration once and asks the person. A record deleted and entered again in the same task is refused as
   "saved in this task already". It has to be corrected in place, or the person removes it.
-- **The person's answers are kept for the task's other processes** in its evidence notes
-  (`<task>.said`, withheld like every store), so `gui record` can count them as a source.
+- **Superseded:** the task's `<task>.said` notes no longer back a pick (rounds 10 and 11); only the person's word as
+  the control plane recorded it does (`person_record.answers`).
 
 ## Phase 2: Python agent, the person's word and what picks an option out (rounds 10 and 11)
 
-- **CP owed (H-PY-18): desktop-scoped reads of the person's judgements.** The agent backs a pick with the person's
-  word only as the control plane recorded it (`person_record.py`). It needs `GET /api/desktops/judgements?task=` and
-  `?skill=`, a `field_answer` learned kind, and `GET /api/desktops/learned?kind=field_answer`. Until they land, a pick
-  only the person's word backs is NOT backed: the gate asks, and the answer cannot settle it (fail closed).
-  - Also not backing anything any more: `<task>.said`, the gone `field-answers.json`, and the skill file.
+- **Done: H-PY-18, desktop-scoped reads of the person's judgements.** The agent backs a pick with the person's word only
+  as the control plane recorded it (`person_record.py`), through `GET /api/desktops/judgements?task=` and `?skill=` and
+  `GET /api/desktops/learned?kind=field_answer` (`internal/httpapi/desktop_judgements.go`, `tasks.JudgementFieldAnswer`;
+  d63f89b, a4ce49c). When the control plane cannot be read, a pick only the person's word backs is not backed (fail closed).
+  - Not backing anything any more: `<task>.said`, the gone `field-answers.json`, and the skill file.
   - Org knowledge still counts.
 - **Accepted residual: a word of the option in an unrelated phrase of the request.** "the general manager approved
   it" backs a "General" entry when no other offered entry has that word (`records.option_backed`). A file is held to
   the field's own label (`option_beside_label`), so a bill's "General terms" footer backs nothing. The request and
   the person's replies are not, since they rarely name a field.
-- **The full Python suite depends on module order.**
-  `test_apprentice.WithTheModel.test_what_the_person_says_is_wrong_is_remembered_and_tried_again` fails after the
-  round-4 to round-6 secrets, per-document-run and run-evidence modules, and passes alone. It fails the same way on
-  the commit before round 10, so state leaks between modules. Find the leak.
+- **Done: the module-order leak.** A secret reply left `state.reply_secret` set, so a later correction was kept by nothing; `state.begin` now clears it (and `reply_judgement`) for each task, and the teaching tests reset it.
 
 ## Phase 2: Python agent, review round 2
 
@@ -376,8 +428,7 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   run-skill send it too (a498b96), and the agent keeps it on those doors as on `/request` (H-CP-10, cc96751).
 - **A run open or paused for days is not held** before it has a label: `evidence._prune` can take its notes after 2
   days (review round 2, non-blocking 10). Hold an open task's run as well.
-- **The person's own delete of a recording** (`recording.delete`) removes a held run's recording before its export:
-  their explicit act; say so in recordings.md or check `held` there.
+- **Done: the person's delete of a held run's recording** answers 409 `held: true` unless forced; the pages ask "This run is not saved to the run record yet; delete it anyway?" (`recording.held`).
 - **The skill a run noted on its task** (`task_context.set_skill`) stays when the skill run hands the task to the
   general harness; the outcome then names a skill that did not drive its end.
 - **The `code` basis of trust** now comes only from a comparison that could have failed (review round 4, R2): a
@@ -385,10 +436,7 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   at least one compared and none different. Most file work names no such figure and earns no `code` basis, however
   clean its files read, so watch the L3 matrix for skills that can no longer earn trust by code. Owed: a check that
   recomputes a total from source data, which would count too.
-- **Priority for the learning loop: a person's answer about a field's unit is kept for that field.** A field whose
-  label states no unit (ERPNext's tax table column `Rate`, with no `%`) makes every save of "18%" against "18" wait
-  on the person, once per task. Keep their answer as that field's unit, backed by its judgement and scoped to the
-  application and the form field, so it is asked once.
+- **Done: a person's answer about a field's unit is kept for that field.** A save that waits on a unit written on one side only asks its own numbered question ("Reply 1 if the field ... takes its figures in %, or 2 if it does not"); only the person's recorded reply backs it, in the task by its judgement and later by a learned `field_unit` row (`tasks.JudgementFieldUnit`, `unit_answers.py`), scoped to host + form + label. Open: a live check that the reply comes back with the question's text unchanged.
 - **A date the save waits on** goes out as a question of its own at the engine's next question, in place of it
   (round 3, R3). An engine that reports instead ends the task unchecked, with the question in the report. Asked
   during a taught skill's lesson, the engine's lesson question is not put to the person, and the lesson gets the
@@ -397,8 +445,8 @@ What the EVAL lane (`internal/eval`, `evals/`, docs/evals.md) left for later:
   field labelled "Rate (%)" is one figure; with no such label it still waits on the person. Owed: an eval case that
   counts the questions unit fields cost (GST rates, quantities in Nos), in a future suite.
 - **Done: EXPORTED carries LABELLED's two lines** (execution id, label number), so it is four lines, not three: the
-  agent reads everything after the second line as the copy (round 3, R1). docs/trajectory.md says so now (phase 2
-  docs integration). The Go comments in `internal/runs/puller.go` and its test still say "third line".
+  agent reads everything after the second line as the copy (round 3, R1). docs/trajectory.md, `internal/runs/puller.go`
+  and its test say four lines.
 - **Secrets, round 2 leftovers** (the security review of 2026-11-04):
   - The task's secret values as they are live in the task file's `.secrets` (tmpfs, 0600) until the task's final
     report; a container restart loses them (the interrupted task is then reported, not resumed). The word hashes stay

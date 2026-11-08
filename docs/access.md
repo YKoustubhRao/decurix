@@ -15,6 +15,18 @@ person who replies may settle that request, and logs who did.
 `access.Middleware.Actor(r)` returns the actor; `Server.ActorContext(r)` puts
 it on the request context for the code that delivers a reply.
 
+**A reply on the gated listener needs a sign-in once a user account exists.**
+From the first account in the access store on (`Store.HasUsers`, enabled or
+not), a reply sent through the gated listener by someone not signed in is
+refused before anything reaches the desktop or the records: 401, "Sign in to
+reply: ..." (`Server.signInRefusal`, called where every reply door checks its
+replier: `submitStored`, and the recording door). A store that cannot be read
+refuses too (503). While there is no account, such a person can still reply:
+the records name them `access-code` ("Someone with the access code", no roles),
+the approvals log `anonymous` ("Not signed in"), and no policy lets them
+approve; where no policy applies, their reply is delivered. The primary
+listener is the local owner's and never asks for a sign-in.
+
 Passwords: PBKDF2-SHA256 (Go stdlib `crypto/pbkdf2`), 600 000 iterations, 16-byte
 salt, stored as `pbkdf2-sha256$<iter>$<salt>$<key>`. Session tokens are stored
 only as their SHA-256. Five failed sign-ins for one name lock it for 15 minutes.
@@ -25,7 +37,9 @@ Disabling a user or changing their password ends their sessions.
 Roles are short lowercase words (`[a-z0-9_-]{1,32}`), assigned freely by the
 owner: `finance`, `lead`, `partner`. Role `owner` satisfies every approver role.
 Workers (desktops) can hold roles too (`/api/access/workers/roles`), which a
-policy's `worker_role` matches.
+policy's `worker_role` matches (ignoring case). The gate matches the union of
+these and the worker's skill-registry roles (`Server.workerRoles`,
+docs/skillhub.md), so a role means the same in both places.
 
 ## Policies
 
@@ -66,11 +80,14 @@ larger account or invoice number meets its amount policy.
 
 ## Enforcement
 
-The reply route calls `Server.gateApprovalReply` (in `internal/httpapi/access_routes.go`)
-before a request reaches a desktop as the reply to its pending approval. It
-reads what the desktop waits on from its latest query note (an approval not yet
-answered; closing the note by hand does not count as answered), and calls
-`Store.Decide(actor, worker, nil, taskID, actionText, replyText)`:
+Every door that sends a reply passes `submitStored` (`internal/httpapi/requests.go`),
+which calls `Server.decideApprovalReply` (`internal/httpapi/access_routes.go`)
+before the request reaches a desktop as the reply to its pending approval. It
+reads what the desktop waits on from the task's own record first: the latest
+attempt's open intervention of kind `approval`, recorded whether or not a note
+was shown. The desktop's latest query note is the fallback (an approval not yet
+answered; closing the note by hand does not count as answered). It then calls
+`Store.Decide(actor, worker, workerRoles, taskID, actionText, replyText)`:
 
 1. No policy applies → delivered (today's behaviour), logged with who replied.
 2. A plain no ("no", "stop", "cancel") → delivered from anyone. Stopping is never the risky direction.
@@ -87,7 +104,7 @@ A reply other than yes or no ("no, pay B instead") is an instruction and needs
 the approver role. Every decision — delivered, held or refused — is a row in
 the approvals log (`/api/access/approvals`) with the user's id and name
 (`anonymous` when nobody was signed in). A failure to read the policies refuses
-the reply (fails closed).
+the reply (fails closed, 503).
 
 The gate does not change the agent: a yes is still one action's, there is no
 "always allow", and the desktop still asks for every consequential action.
@@ -98,7 +115,7 @@ The gate does not change the agent: a yes is still one action's, there is no
 |---|---|---|
 | `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me` | both | On the primary listener they report the local owner; login sets nothing |
 | `GET /api/access/users`, `POST …/users/create`, `…/users/update`, `…/users/delete` | primary, humansOnly | update takes any of `roles`, `disabled`, `password` |
-| `GET /api/access/policies`, `POST …/policies/save`, `…/policies/delete`, `…/policies/check` | primary, humansOnly | save creates (no id) or replaces; check is a dry run |
+| `GET /api/access/policies`, `POST …/policies/save`, `…/policies/delete`, `…/policies/check` | primary, humansOnly | save creates (no id) or replaces; check `{worker, action, worker_roles?}` is a dry run that records nothing. Without `worker_roles` it reads the worker's roles as the gate does: the union of the registry's and the access store's (`Handler.WorkerRoles`, set by `SetAccess` to `Server.workerRoles`) |
 | `GET /api/access/workers`, `POST …/workers/roles` | primary, humansOnly | |
 | `GET /api/access/approvals?worker=&limit=` | primary, humansOnly | newest first |
 
@@ -106,17 +123,23 @@ POST bodies are JSON only (a cross-site form cannot send JSON without a
 preflight). Admin handlers also refuse a gated request on their own, even if
 registered on the wrong mux. Errors are fixed messages, never `err.Error()`.
 
+The Workforce page's Access tab (docs/skillhub.md), primary listener only, has
+the people (add; edit roles; set a new password, which ends their sessions;
+disable or enable; delete), the policies (add; Edit fills the form with a
+policy and Save changes replaces it by id; delete), a "Would this need
+approval?" dry run, the worker roles for policies, and the latest 50 entries of
+the approvals log.
+
 ## Limits
 
 - **Other ways to the screen.** A gated visitor who passes the access code can
   still reach the desktop's own screen (`/desktop/`, noVNC) and the agent proxy
   (`/agent/`). The policy gate covers replies through the control plane, not
   someone clicking the button themselves on the live screen.
-- **Pending text comes from the query note.** A desktop that reports an
-  approval with `quiet` (no Query rail entry) or an older image that reports no
-  kind is not recognised as an approval, and its reply is not gated. Reading the
-  open intervention's kind and request from the task records (`interventions`)
-  would close this.
+- **What is pending comes from the records.** An approval is recognised from
+  the task's open intervention of kind `approval`, or else the desktop's latest
+  approval note. A reply with no task, to a desktop whose intervention records
+  no kind and whose note is not an approval, is not gated.
 - Files attached to a refused reply are already copied into the desktop (the
   gate runs inside `submitLocked`, after attachments are written).
 - **The local owner satisfies everything**, including two-approver policies.

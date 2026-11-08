@@ -10,7 +10,7 @@
 .PARAMETER Profile
     basic, developer, or ai. Default: basic.
 .PARAMETER Harness
-    thebot, ollama, or claude. Default: thebot.
+    thebot, the only harness since 2026-11-07. Default: thebot.
 .PARAMETER Name
     Desktop id/name. Default: test-vm.
 .PARAMETER Task
@@ -24,7 +24,7 @@ param(
     [ValidateSet("basic", "developer", "ai")]
     [string]$DesktopProfile = "basic",
 
-    [ValidateSet("thebot", "ollama", "claude")]
+    [ValidateSet("thebot")]
     [string]$Harness = "thebot",
 
     [string]$Name = "test-vm",
@@ -130,6 +130,7 @@ docker run -d `
     -e VNC_PW=$VncPassword `
     -e DECURIX_AGENT_TOKEN=$AgentToken `
     -e VNC_RESOLUTION=1280x720 `
+    -e DECURIX_DESKTOP_NOVNC=1 `
     -e DESKTOP_ID=$Name `
     -e DESKTOP_NAME=$Name `
     -e CONTROL_PLANE_URL="http://${DummyCP}:8080" `

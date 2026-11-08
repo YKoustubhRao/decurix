@@ -13,12 +13,20 @@ Status (2026-10-23): approved by the owner ("full freedom, build to your best").
   - At a report it also runs (`verifyReport`), on every window the work typed into (its newest look) and on the screen the work leaves when it is of the same site. The screen is looked at again first if the work went on past its last look. At most three screens.
   - Review points found in work done after the round's one send-back go back to the worker again, at most twice more per goal, before the person is asked.
 
+Built since (state on 2026-11-07):
+
+- A second, independent read of pictures: a value read off a scan or photo that no text holds is set against a fresh transcription that never sees what the work wrote (soul `second_read.go`, `secondRead`). Agreement makes it traced; disagreement is a point to check.
+- Record integrity on the host, per record: the record ledger (`gui record`, `computer/records.py`), with a field-by-field check before the save and a read-back after it ([harness-v3-plan.md](harness-v3-plan.md), item 2). Coverage counts a document read with no record declared from it (soul `coverageGaps`).
+- Party resolution by identifier (`gui select --id`, `computer/resolve.py`).
+- A TLA+ model of the protocol as the code has it, not a replacement for it ([spec/README.md](spec/README.md)).
+
 Still to build:
 
-- the shared evidence store in the host, with one lineage service for soul and host;
+- the shared evidence store in the host, with one lineage service for soul and host (`computer/evidence.py` holds pictures and notes of what a task looked at, not this store; the gate-owned store is O-1 in [follow-ups.md](follow-ups.md));
+- `office extract` (span-checked structured extraction) and a `facts` CLI: neither exists;
 - reconciliation of mapped quantities;
 - the interaction FSM (Phase 3);
-- staged contexts (Phase 4).
+- staged contexts (Phase 4). Planned runs ([long-requests.md](long-requests.md)) carry a ledger between stages, but nothing makes a value typed late come from a store.
 
 ## Why
 
@@ -191,9 +199,9 @@ Long goals are worked in bounded stages. Each stage rehydrates from the evidence
 
 ## What changes in the code
 
-- **New:** `agent/decurix_agent/evidence/`, with the store, extractors (wrapping `office read`, `gui observe` and OCR), derivation records, accounting and the dossier. This is a Python service, because the host already owns files, screens and provenance. The soul calls it through the `office`/`gui` CLIs and a new `facts` CLI.
-- **Merged:** the soul's `groundingCheck` and the host's `provenance.py` become one lineage service, so there is one definition of "traced".
-- **Refactored:** the soul's judgement state machine (`operator.go`, `knowledge.go`, `judgements.go`) and the host's pause/approval/refusal state (`guidance.py`, `skill_task.py`, `long_task.py`) become explicit FSMs with a TLA+ spec in `docs/spec/interaction.tla`.
+- **New (not built):** `agent/decurix_agent/evidence/`, with the store, extractors (wrapping `office read`, `gui observe` and OCR), derivation records, accounting and the dossier. This is a Python service, because the host already owns files, screens and provenance. The soul calls it through the `office`/`gui` CLIs and a new `facts` CLI.
+- **Merged (not yet):** the soul's `groundingCheck` and the host's `provenance.py` become one lineage service, so there is one definition of "traced". Today they are still two; what the host shares is one value comparator (`values.py`) for the screen's checks, the record ledger and replays.
+- **Refactored:** the soul's judgement state machine (`operator.go`, `knowledge.go`, `judgements.go`) and the host's pause/approval/refusal state (`guidance.py`, `skill_task.py`, `long_task.py`) become explicit FSMs with a TLA+ spec. Not done: `docs/spec/Interaction.tla` and `PlannedRun.tla` model today's code, and no FSM replaces it yet.
 - **Retired over time, each through the replay gate:** word-list and regex classifiers of meaning (`approval.REDIRECTS`, `REFUSAL_LEAD` for task scope, `_SKIPPED_ROW`, `_STATUS_HEADER`, `PARTY_COLUMN` and the like), as the structured facts they guess at become available.
 
 ## Phases, with exit criteria

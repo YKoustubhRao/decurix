@@ -108,6 +108,9 @@ type Service struct {
 	BootTimeout  time.Duration
 	// Seed picks a generator seed; tests fix it.
 	Seed func() int64
+	// Bundles pulls each case's run bundle off the practice desktop before the next reset, so a Simulate case has a
+	// trajectory with steps (nil: its task record has none).
+	Bundles Bundles
 
 	mu     sync.Mutex
 	jobs   map[string]*DraftJob

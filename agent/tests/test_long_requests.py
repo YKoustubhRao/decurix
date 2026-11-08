@@ -21,7 +21,7 @@ from unittest import mock
 # Imported first: it stubs decurix_agent.config on a machine with no desktop.
 import test_recordings  # noqa: F401
 
-from decurix_agent import config, long_task, messaging, state, task_context, verify, workflow_task
+from decurix_agent import config, long_task, messaging, stage_checks, state, task_context, verify, workflow_task
 from decurix_agent.workflow_runner import WorkflowRunner
 # Imported now, not first inside a test: LongRun patches sys.modules with patch.dict, which drops every module first
 # imported while it is in place - and a module imported twice is two modules (found: the next test file's mocks then
@@ -1738,7 +1738,7 @@ class LongRun(LongRunBase):
             if len(attempts) > 3:
                 rows["memo"] = "1,000.00"  # the memo stage corrected its figure
             return {"verdict": "done", "confidence": 0.9, "seen": "", "why": ""}
-        with mock.patch.object(long_task, "_rows", read), mock.patch.object(verify, "judge", recorded):
+        with mock.patch.object(stage_checks, "_rows", read), mock.patch.object(verify, "judge", recorded):
             long_task.perform(LONG, None)
         memo_prompts = [p for p in self.engine.prompts if p.startswith("Stage 3 of 3")]
         self.assertEqual(len(memo_prompts), 2)
@@ -2558,7 +2558,7 @@ class LongRun(LongRunBase):
         seen = ("A figure may include rows the input repeats: 3.64 crore is the Net Amount (Rs) total including the rows "
                 "sales_export_Aug2026.csv repeats (exact copies of earlier rows); without them it is 34,040,974.")
         judged = []
-        with mock.patch.object(long_task, "repeated_rows", lambda made, reply, request="": [seen] if made else []), \
+        with mock.patch.object(stage_checks, "repeated_rows", lambda made, reply, request="": [seen] if made else []), \
                 mock.patch.object(verify, "judge", lambda task, **k: judged.append(task) or {
                     "verdict": "done", "confidence": 0.9, "seen": "", "why": ""}):
             self.assertTrue(long_task.perform(LONG, None))
@@ -2579,7 +2579,7 @@ class LongRun(LongRunBase):
         self.assertFalse(long_task.is_blocking("a check nobody listed"))
         self.assertTrue(long_task.is_blocking("file_facts"))
         seen = "register.xlsx says SO-5101 is open while the draft says approved"
-        with mock.patch.object(long_task, "_status_conflicts", lambda *a: [seen] if a[2] else []):
+        with mock.patch.object(stage_checks, "_status_conflicts", lambda *a: [seen] if a[2] else []):
             self.assertTrue(long_task.perform(LONG, None))
         report = self.finals()[-1]["reply"]
         self.assertIn("Done - every stage was made and checked.", report)
@@ -2588,7 +2588,7 @@ class LongRun(LongRunBase):
         self.assertEqual(len(self.engine.prompts), 3)  # nothing was sent back
 
     def test_a_blocking_check_still_fails_the_stage(self):
-        with mock.patch.object(long_task, "app_emptied",
+        with mock.patch.object(stage_checks, "app_emptied",
                                lambda made: ["register.xlsx: saved from the app, it keeps 0 of the 40 words"] if made else []):
             long_task.perform(LONG, None)
         self.assertGreater(len(self.engine.prompts), 3)  # sent back

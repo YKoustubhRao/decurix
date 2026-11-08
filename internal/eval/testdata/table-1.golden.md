@@ -4,6 +4,7 @@
 
 - Suite: `sample`, SHA-256 `abc123`
 - Date: 2026-11-04 09:30 UTC; repeats: 1; status: done
+- State: reset to the snapshot before every case (independent samples)
 - Arms:
   - `default`: azure default → big-1; no expert; agent tree image; image sha256:0123456789ab; served by big-1
   - `fast+expert`: azure fast → small-1; with the expert (big-1); agent tree eb15981 (feedfacecafe); image sha256:0123456789ab; served by small-1

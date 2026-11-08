@@ -160,3 +160,68 @@ class TestThePlanThePersonAnsweredIsCarriedThroughTheRequest(unittest.TestCase):
         import pathlib
         go = (pathlib.Path(__file__).resolve().parents[1] / "thebot/internal/skills/plan.go").read_text(encoding="utf-8")
         self.assertIn(thebot_harness.PLAN_QUESTION.replace("\n", ""), go)
+
+
+class TestTheOrganisationsKnowledgeReachesEveryRequest(unittest.TestCase):
+    """An org rule ("never pay without a PO") reached only skill runs and `gui record`: a request no skill covers
+    never saw it. It now goes with every job as standing context, read once per task."""
+
+    def setUp(self):
+        from decurix_agent import guidance, org_knowledge, task_context
+        thebot_harness._org_for_task.update(task=None, lines=[])
+        self.addCleanup(thebot_harness._org_for_task.update, task=None, lines=[])
+        self.task = "t0000000000000001"
+        self.lines = ["Rule (org): never pay without a purchase order", "Fact (task): the client is Ledgerly"]
+        self.asked = []
+        self.guided = ""
+        patches = [
+            patch.object(task_context, "current", side_effect=lambda: self.task),
+            patch.object(org_knowledge, "cached",
+                         side_effect=lambda worker_id=None, max_age=0, task_id=None:
+                         self.asked.append(task_id) or list(self.lines)),
+            patch.object(thebot_harness, "get_identity_context", return_value="IDENTITY"),
+            patch.object(thebot_harness, "get_memory_context", return_value=""),
+            patch.object(thebot_harness, "taught_context", return_value="TAUGHT"),
+            patch.object(thebot_harness.app_skills, "context", return_value=""),
+            patch.object(guidance, "text", side_effect=lambda: self.guided),
+            patch.object(guidance, "get", return_value={}),
+            patch.object(thebot_harness, "plan_context", return_value=""),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_the_lines_are_in_the_context_not_the_request(self):
+        context = thebot_harness._build_context()
+        self.assertIn("- Rule (org): never pay without a purchase order", context)
+        self.assertIn("- Fact (task): the client is Ledgerly", context)
+        self.assertLess(context.index("TAUGHT"), context.index("never pay without"))
+        self.assertLess(context.index("never pay without"), context.index(thebot_harness.SAFETY_PREAMBLE.strip()[:40]))
+        self.assertEqual(self.asked, [self.task])
+
+    def test_every_job_of_a_task_sends_the_same_lines(self):
+        first = thebot_harness._build_context()
+        self.lines = ["Rule (org): something added while the task ran"]
+        self.assertEqual(thebot_harness._build_context(), first)
+        self.assertEqual(self.asked, [self.task])
+        self.task = "t0000000000000002"  # the next task reads them again
+        self.assertIn("something added while the task ran", thebot_harness._build_context())
+
+    def test_a_taught_procedure_that_carries_them_does_not_get_them_twice(self):
+        self.guided = "PROCEDURE\nRule (org): never pay without a purchase order\nFact (task): the client is Ledgerly"
+        context = thebot_harness._build_context()
+        self.assertEqual(context.count("never pay without a purchase order"), 1)
+        self.assertNotIn(thebot_harness.org_knowledge.CONTEXT_HEADER, context)
+
+    def test_nothing_known_adds_nothing(self):
+        self.lines = []
+        self.assertNotIn(thebot_harness.org_knowledge.CONTEXT_HEADER, thebot_harness._build_context())
+
+    def test_a_secret_in_a_line_is_withheld(self):
+        self.lines = ["Fact (org): the portal password: Zq9-hunter22"]
+        self.assertNotIn("Zq9-hunter22", thebot_harness._build_context())
+
+    def test_the_operator_prompt_names_handoff_who(self):
+        import pathlib
+        go = (pathlib.Path(__file__).resolve().parents[1] / "thebot/internal/skills/operator.go").read_text(encoding="utf-8")
+        self.assertIn("handoff who", go)

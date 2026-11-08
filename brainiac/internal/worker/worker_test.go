@@ -221,7 +221,7 @@ func TestTranscribe(t *testing.T) {
 func TestEnsureVenvSkipsAnInstalledSet(t *testing.T) {
 	dir := t.TempDir()
 	req := filepath.Join(dir, "requirements.txt")
-	if err := os.WriteFile(req, []byte("example==1.0\n"), 0o644); err != nil {
+	if err := os.WriteFile(req, []byte("example==1.0 --hash=sha256:"+strings.Repeat("a", 64)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	venv := filepath.Join(dir, "venv")
@@ -247,7 +247,7 @@ func TestEnsureVenvSkipsAnInstalledSet(t *testing.T) {
 
 	// A changed requirement file is a different set: it must reinstall (and
 	// fails here, since the stand-in interpreter is not a real one).
-	if err := os.WriteFile(req, []byte("example==2.0\n"), 0o644); err != nil {
+	if err := os.WriteFile(req, []byte("example==2.0 --hash=sha256:"+strings.Repeat("b", 64)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := EnsureVenv(context.Background(), filepath.Join(dir, "no-python"), venv, []string{req}, nil); err == nil {

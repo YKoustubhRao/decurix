@@ -59,6 +59,7 @@ def _lib():
         return _atspi
 
     session.ensure()
+    _broker_bus()
 
     try:
         import gi
@@ -72,6 +73,27 @@ def _lib():
 
     _atspi = Atspi
     return _atspi
+
+
+def _broker_bus():
+    """
+    Broker mode, on the screen side: read the worker's accessibility bus, where the worker's apps (LibreOffice, a GTK
+    app, the panel) show their widgets - the screen user's own bus has none of them. Set before the library's first
+    connection; the screen side is the more privileged reader (the bus admits the screen user, the image's
+    accessibility.conf), and the worker never reaches the screen side's bus. What the worker's bus says is the
+    worker's: an action on one of its widgets is done only where a window of the worker's is shown
+    (core._worker_point). The browser started afterwards is not given this address (session.launch).
+    """
+
+    from decurix_agent.computer import broker
+    if not broker.screen_side():
+        return
+    import os
+    address = broker.worker_a11y_bus()
+    if address:
+        os.environ["AT_SPI_BUS_ADDRESS"] = address
+    else:
+        os.environ.pop("AT_SPI_BUS_ADDRESS", None)
 
 
 def _states(Atspi, node):

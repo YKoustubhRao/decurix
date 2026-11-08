@@ -56,14 +56,16 @@ def as_date(value, order=None):
     return values.as_iso(value, task_context.source_date_order() if order is None else order)
 
 
-def compare_shown(shown, wanted, source_order=None, label=""):
+def compare_shown(shown, wanted, source_order=None, label="", units=()):
     """values.compare of what the application shows (`shown`, read under the application's date order) against what
     the record wants (`wanted`, read under its source's order: `source_order`, else the task's) - two orders, never one
     for both (review round 2, B4). `label`: the form field's label, whose stated unit a bare figure carries
-    (values.field_units, review round 3, R5)."""
+    (values.field_units, review round 3, R5). `units`: more units the field takes, as the person said
+    (unit_answers.answered)."""
 
     return values.compare(shown, wanted, task_context.app_date_order(),
-                          source_order or task_context.source_date_order(), values.field_units(label))
+                          source_order or task_context.source_date_order(),
+                          values.field_units(label) | frozenset(units or ()))
 
 
 def same_value(a, b, order=None):
@@ -538,16 +540,19 @@ def _taught_text():
 
 
 # The organisation's knowledge as last read, kept for org_knowledge.CACHE_SECONDS whether or not it could be read: a
-# control plane that does not answer costs one wait, not one per pick.
-_org_read = {"at": None, "text": ""}
+# control plane that does not answer costs one wait, not one per pick. Kept for one task at a time: the task's own
+# items (scope task) are read with the org's, the worker's roles' and its own.
+_org_read = {"at": None, "task": None, "text": ""}
 
 
-def _org_text():
+def _org_text(task_id=None):
     try:
         from decurix_agent import org_knowledge
+        task = task_id or task_context.current() or ""
         now = time.monotonic()
-        if _org_read["at"] is None or now - _org_read["at"] > org_knowledge.CACHE_SECONDS:
-            _org_read.update(at=now, text="\n".join(org_knowledge.cached()))
+        if (_org_read["at"] is None or _org_read["task"] != task
+                or now - _org_read["at"] > org_knowledge.CACHE_SECONDS):
+            _org_read.update(at=now, task=task, text="\n".join(org_knowledge.cached(task_id=task or None)))
         return _org_read["text"]
     except Exception:  # noqa: BLE001 - knowledge that cannot be read backs nothing
         return ""
@@ -572,7 +577,7 @@ def given_sources(task_id=None):
     option list is the menu; never the worker's own memory, notes or files.
     """
 
-    free = [task_context.current_request() or "", _answers_text(task_id), _taught_text(), _org_text()]
+    free = [task_context.current_request() or "", _answers_text(task_id), _taught_text(), _org_text(task_id)]
     files = []
     try:
         from decurix_agent.tools import office
@@ -793,20 +798,21 @@ def keep_field_answers(task_id=None, events=None):
     """
 
     try:
-        from decurix_agent import person_record
+        from decurix_agent import person_record, unit_answers
         task_id = task_id or task_context.current()
+        # The person's answers about a field's unit too (unit_answers.keep): kept the same way, at the same moment.
+        posted = unit_answers.keep(task_id)
         said = person_record.answers(task_id)
         if not said:
-            return 0
+            return posted
         sources = None
-        posted = 0
         for p in picks(task_id, events=events):
             value = p["taken"] or p["option"]
             if not p["label"] or p["by_id"]:
                 continue
             if sources is None:
                 sources = given_sources(task_id)
-                without = "\n".join([task_context.current_request() or "", _taught_text(), _org_text()])
+                without = "\n".join([task_context.current_request() or "", _taught_text(), _org_text(task_id)])
             if option_backed(value, without, p["offered"]) or any(
                     option_beside_label(value, p["label"], f, p["offered"]) for f in sources["files"]):
                 continue
@@ -1067,9 +1073,57 @@ def _source_order(rec):
     return rec.get("source_order") or task_context.source_date_order()
 
 
-def _undecided(flabel, fvalue, want, why):
+def field_place(task_id=None, events=None):
+    """(host, form) of the page the task acts on now (unit_answers.place_of of its last recorded action's address):
+    where a field's unit, as the person answered it, belongs. ("", "") when nothing recorded names a page."""
+
+    from decurix_agent import unit_answers
+    try:
+        if events is None:
+            from decurix_agent.computer import evidence
+            events = evidence._task_events(task_id)
+    except Exception:  # noqa: BLE001 - an unreadable recording names no page
+        return "", ""
+    for event in reversed(events or []):
+        url = event.get("url") if isinstance(event, dict) else None
+        if url:
+            return unit_answers.place_of(url)
+    return "", ""
+
+
+def _one_sided_unit(shown, want):
+    """The unit written on one side only of two figures (values.parse_amount), or ""."""
+
+    a, b = values.parse_amount(shown), values.parse_amount(want)
+    if not isinstance(a, values.Amount) or not isinstance(b, values.Amount) or bool(a.unit) == bool(b.unit):
+        return ""
+    return a.unit or b.unit
+
+
+def _by_the_persons_unit(flabel, fvalue, want, source_order, place):
+    """
+    (result, unit) for a field compared undecided for a unit on one side only: compared again with the unit the person
+    said this field takes (unit_answers.answered: their judgement on this task, else a learned row kept from one) -
+    the same figure when they said it takes it, a different one when they said it does not, and (None, unit) when they
+    have not said or what they said cannot be read from the control plane (then the save waits and they are asked).
+    """
+
+    from decurix_agent import unit_answers
+    unit = _one_sided_unit(fvalue, want)
+    if not unit:
+        return None, ""
+    said = unit_answers.answered(flabel, place[0], place[1], unit)
+    if said is True:
+        return compare_shown(fvalue, want, source_order, flabel, units=(unit,)), unit
+    if said is False:
+        return values.Result(False, "unit"), unit
+    return None, unit
+
+
+def _undecided(flabel, fvalue, want, why, place=("", ""), unit=""):
     """The line a save waits on when a field cannot be compared - and, for a date whose order is not known, the
-    question to the person it waits on (task_context.ask_date_order: both readings, an option each)."""
+    question to the person it waits on (task_context.ask_date_order: both readings, an option each); for a unit on
+    one side only, the question whether the field takes it (unit_answers.ask: asked once for that field)."""
 
     if str(why).startswith("date_order:"):
         side, value = ("app", fvalue) if why.endswith(":a") else ("source", want)
@@ -1081,6 +1135,19 @@ def _undecided(flabel, fvalue, want, why):
                     "do not retype the field (a date written the same way is no answer).")
         return (f"{flabel} holds {fvalue!r} and the record says {want!r}: the dates cannot be compared under the date "
                 "order known for this task - this needs the person.")
+    if why == "unit" and unit:
+        from decurix_agent import unit_answers
+        task_id = task_context.current()
+        if unit_answers.asked_already(task_id, flabel, place[0], place[1], unit):
+            return (f"{flabel} holds {fvalue!r} and the record says {want!r}: the person answered whether this field "
+                    f"takes its figures in {unit}, and their answer cannot be read from the control plane now, so "
+                    "they cannot be compared - this needs the person; do not retype the field.")
+        if unit_answers.ask(task_id, flabel, place[0], place[1], unit, fvalue, want):
+            return (f"{flabel} holds {fvalue!r} and the record says {want!r}: a unit ({unit}) is written on one side "
+                    "only and the field's label does not state it - this needs the person. The agent asks them itself "
+                    "whether this field takes its figures in that unit, as a question of its own, when you next ask "
+                    "them anything (HELP: say the save waits on this field's unit) or stop; their answer is kept for "
+                    "this field, so it is asked once. Do not retype the field.")
     if why == "unit":
         return (f"{flabel} holds {fvalue!r} and the record says {want!r}: a unit is written on one side only and the "
                 "field's label does not state it, so they cannot be compared. When the field's label (or the text "
@@ -1101,7 +1168,7 @@ def presave(rec, form_fields):
     fields = {l: f for l, f in rec.get("fields", {}).items() if f.get("intent")}
     matched = match_fields(fields, [(str(l), str(v if v is not None else "")) for l, v in form_fields])
     blocking, advisory = [], []
-    chosen = None
+    chosen = place = None
     for label, flabel, fvalue in matched:
         want = fields[label]["intent"]
         if not str(fvalue).strip():
@@ -1113,6 +1180,18 @@ def presave(rec, form_fields):
             else:
                 advisory.append(f"{flabel} is empty where the record says {want}")
         elif (decided := compare_shown(fvalue, want, _source_order(rec), flabel)).same is not True:
+            unit = ""
+            if decided.same is None and decided.why == "unit":
+                # A unit on one side only: the person's recorded word about this field's unit decides it, if any.
+                if place is None:
+                    place = field_place()
+                said, unit = _by_the_persons_unit(flabel, fvalue, want, _source_order(rec), place)
+                if said is not None and said.same is True:
+                    continue
+                if said is not None:
+                    blocking.append(f"{flabel} holds {fvalue!r} where the record says {want!r}, and the person said "
+                                    f"this field does not take its figures in {unit}")
+                    continue
             if chosen is None:
                 chosen = chosen_values()
             # The rescue is tried for an undecided pair too ("1188" against "INV-1188" is undecided, not "differs"),
@@ -1125,7 +1204,7 @@ def presave(rec, form_fields):
                 fields[label]["entered"] = str(fvalue)
                 continue
             if decided.same is None:
-                blocking.append(_undecided(flabel, fvalue, want, decided.why))
+                blocking.append(_undecided(flabel, fvalue, want, decided.why, place or ("", ""), unit))
             else:
                 blocking.append(f"{flabel} holds {fvalue!r} where the record says {want!r}")
     named = {m[0] for m in matched}
@@ -1237,19 +1316,6 @@ def all_read_back(task_id=None):
         if not rec.get("saved_at") or rb.get("absent") or not wanted or set(wanted) - set(rb.get("seen") or []):
             return False
     return True
-
-
-def facts(task_id=None):
-    """What a check can hold against the task: records declared and never saved, and values not read back."""
-
-    out = []
-    for rec in load(task_id):
-        if not rec.get("saved_at"):
-            out.append(f"record {rec['key']} was declared but never saved")
-        elif (rec.get("readback") or {}).get("absent"):
-            out.append(f"record {rec['key']} was saved but the page did not show: "
-                       + ", ".join(f"{l}={rec['fields'][l]['intent']}" for l in rec["readback"]["absent"]))
-    return out
 
 
 # Whether presave blocks a save over a field the task set that no declaration covers. ADVISORY until it passes the

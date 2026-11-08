@@ -78,30 +78,5 @@ class LocalQuestionFilesWithheld(unittest.TestCase):
             self.assertNotIn("hunter2-SECRET", text)
 
 
-class GuardFailsClosed(unittest.TestCase):
-    def test_hook_command_names_the_interpreter_and_turns_failure_into_a_block(self):
-        from decurix_agent import claude_harness
-
-        command = claude_harness._GUARD_HOOK[0]["command"]
-        self.assertTrue(command.startswith("/usr/bin/python3 -I "), command)
-        self.assertTrue(command.endswith("|| exit 2"), command)
-
-    @unittest.skipUnless(os.path.exists("/usr/bin/python3") and os.name == "posix", "needs a POSIX shell")
-    def test_a_guard_that_crashes_on_import_blocks_the_call(self):
-        import subprocess
-        import tempfile
-
-        from decurix_agent import claude_harness
-
-        with tempfile.TemporaryDirectory() as d:
-            broken = os.path.join(d, "claude_guard.py")
-            with open(broken, "w") as f:
-                f.write("import no_such_module_here\n")
-            command = claude_harness._GUARD_HOOK[0]["command"].replace(
-                claude_harness.GUARD_SCRIPT.as_posix(), broken)
-            done = subprocess.run(["/bin/sh", "-c", command], input=b"{}", capture_output=True)
-            self.assertEqual(done.returncode, 2, done.stderr)
-
-
 if __name__ == "__main__":
     unittest.main()

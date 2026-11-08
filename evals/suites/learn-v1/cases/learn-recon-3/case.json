@@ -1,0 +1,88 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "learn-recon-3",
+  "category": "ordinary",
+  "kind": "reconcile",
+  "request": "Reconcile Pinecrest Dental Clinic's April bank statement (~/work/practice/learn-recon-3/statement.csv) against their bank book (~/work/practice/learn-recon-3/ledger.xlsx) and save the reconciliation in that folder in our usual layout.",
+  "start": {
+    "files": [
+      "statement.csv",
+      "ledger.xlsx"
+    ]
+  },
+  "facts": [
+    {
+      "id": "recon-layout",
+      "about": "the firm's usual layout for a bank reconciliation, and when a statement line matches a bank-book entry",
+      "refers_to": [
+        "layout",
+        "format",
+        "formatted",
+        "column",
+        "columns",
+        "header",
+        "headers",
+        "usual",
+        "template",
+        "file name",
+        "filename",
+        "structure",
+        "match",
+        "matching",
+        "matched",
+        "output"
+      ],
+      "answer": "Our usual layout, for every client: save recon.csv in the same folder as the statement, with the header row date,amount,ledger_ref and then one row per statement line, in the statement's order. Copy date and amount exactly as the statement writes them. ledger_ref is the Voucher of the bank-book entry the line matches, or empty when none matches. A line matches an entry only when the amounts are equal and the description names the entry's party, and each entry matches at most one line.",
+      "required": false
+    }
+  ],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "csv_equals",
+        "file": "recon.csv",
+        "rows": [
+          [
+            "date",
+            "amount",
+            "ledger_ref"
+          ],
+          [
+            "2026-04-03",
+            "22400.00",
+            "RV-118"
+          ],
+          [
+            "2026-04-08",
+            "-8650.00",
+            "PV-207"
+          ],
+          [
+            "2026-04-12",
+            "15325.50",
+            "RV-119"
+          ],
+          [
+            "2026-04-16",
+            "-4200.00",
+            ""
+          ],
+          [
+            "2026-04-25",
+            "-3100.00",
+            "PV-209"
+          ]
+        ]
+      }
+    ]
+  },
+  "oracle": [
+    "office read ledger.xlsx | grep -q RV-118",
+    "python3 -c 'import csv; rows = [[\"date\", \"amount\", \"ledger_ref\"], [\"2026-04-03\", \"22400.00\", \"RV-118\"], [\"2026-04-08\", \"-8650.00\", \"PV-207\"], [\"2026-04-12\", \"15325.50\", \"RV-119\"], [\"2026-04-16\", \"-4200.00\", \"\"], [\"2026-04-25\", \"-3100.00\", \"PV-209\"]]; f = open(\"recon.csv\", \"w\", newline=\"\"); csv.writer(f).writerows(rows); f.close()'"
+  ],
+  "tags": [
+    "recall",
+    "second-client"
+  ]
+}

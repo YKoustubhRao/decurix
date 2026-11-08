@@ -61,7 +61,7 @@ type Config struct {
 	EmbedModel string // Ollama's embed model name, only used if Ollama is the embedder
 
 	// Brain is what the control plane says TheBot reasons with ("ollama",
-	// "claude", "azure" - DECURIX_BRAIN), and BrainVision whether that model
+	// "claude", "azure", "openai" - DECURIX_BRAIN), and BrainVision whether that model
 	// reads images ("1"/"0" - DECURIX_BRAIN_VISION; "" means unknown, and a
 	// local model is then asked, see llm.Brain).
 	Brain       string
@@ -80,8 +80,8 @@ type Config struct {
 	// them out (cmd/soul/guard.go).
 	Port string
 	// Host is the address it listens on: every interface inside a desktop
-	// container (the control plane reaches it from outside the container),
-	// loopback for a native Windows worker.
+	// container (the control plane reaches it from outside the container).
+	// Every worker is a desktop container; there are no native workers.
 	Host string
 	// AgentToken is the desktop's agent token (DECURIX_AGENT_TOKEN): every API
 	// route but the health check needs "Authorization: Bearer <it>", and
@@ -119,12 +119,13 @@ func Load() Config {
 
 		Provider:   getenv("LLM_PROVIDER", "ollama"),
 		OllamaHost: getenv("OLLAMA_HOST", "http://127.0.0.1:11434"),
-		// qwen2.5-coder:14b, not devstral-small-2:24b - devstral repeatedly
-		// hit a real VRAM cold-load crash during this session's testing
-		// (~15.9GB, right at the edge of a 16GB card); qwen has been solid
-		// through every test. Keep this and VMDockerfile's CHAT_MODEL in
-		// sync - they silently diverged once already.
-		ChatModel: getenv("CHAT_MODEL", "qwen2.5-coder:14b"),
+		// The control plane always passes the desktop's model
+		// (start_agent_terminal.sh maps OLLAMA_MODEL to CHAT_MODEL), so this
+		// fallback matters only for soul started by hand. It is the control
+		// plane's own default (internal/ollama.Model), as
+		// start_agent_terminal.sh's and the Python agent's (config.py) are:
+		// keep the four the same - they silently diverged once already.
+		ChatModel: getenv("CHAT_MODEL", "devstral-small-2:24b"),
 		// No default: unset means "use CHAT_MODEL for coding too", which is
 		// the right behaviour for a single-model deployment. Naming a model
 		// here is an explicit choice to run two.

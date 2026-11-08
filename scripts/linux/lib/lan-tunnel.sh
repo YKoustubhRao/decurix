@@ -82,13 +82,8 @@ start_lan_tunnel() {
 
     LAN_TUNNEL_LOG="$(mktemp)"
 
-    # Run in a background supervisor loop so if cloudflared terminates or drops, it auto-reconnects
-    (
-        while true; do
-            cloudflared tunnel --protocol http2 --url "http://127.0.0.1:$lan_port" >>"$LAN_TUNNEL_LOG" 2>&1
-            sleep 2
-        done
-    ) &
+    # Run in a background supervisor loop so if cloudflared terminates or drops, it is started again (B-29).
+    supervise_lan_tunnel "$lan_port" "$LAN_TUNNEL_LOG" "$$" &
     LAN_TUNNEL_SUPERVISOR_PID=$!
     LAN_TUNNEL_PID=$LAN_TUNNEL_SUPERVISOR_PID
 
@@ -141,6 +136,59 @@ start_lan_tunnel() {
     fi
 }
 
+# The restart loop's timings (B-29): the first wait after the tunnel exits is LAN_TUNNEL_FIRST_DELAY seconds, doubling
+# up to LAN_TUNNEL_MAX_DELAY; a tunnel that stayed up LAN_TUNNEL_RESET_AFTER seconds starts again from the first wait.
+# Variables so scripts/testing/lan-tunnel.test.sh can shorten them; LAN_TUNNEL_COMMAND lets it stand in for cloudflared.
+LAN_TUNNEL_COMMAND="${LAN_TUNNEL_COMMAND:-cloudflared}"
+LAN_TUNNEL_FIRST_DELAY="${LAN_TUNNEL_FIRST_DELAY:-1}"
+LAN_TUNNEL_MAX_DELAY="${LAN_TUNNEL_MAX_DELAY:-60}"
+LAN_TUNNEL_RESET_AFTER="${LAN_TUNNEL_RESET_AFTER:-600}"
+
+# supervise_lan_tunnel runs the quick tunnel to 127.0.0.1:$1 with its output
+# appended to $2, and starts it again whenever it exits, for as long as the
+# script with pid $3 runs (start_lan_tunnel runs it in the background). Each
+# exit is logged with its code and the wait: 1 s, doubling to a 60 s cap, back
+# to 1 s once a run has stayed up 10 minutes. Before each start it checks
+# again what start_lan_tunnel checked - the public link is still on
+# (DECURIX_PUBLIC_LINK, .env read again), no fixed link has been set up since,
+# and the port still serves the access-code page, the only listener ever
+# tunnelled. Turned off, or replaced by a fixed link: it stops.
+supervise_lan_tunnel() {
+    local port="$1" log="$2" owner="$3"
+    local delay="$LAN_TUNNEL_FIRST_DELAY" started up code
+    while kill -0 "$owner" 2>/dev/null; do
+        started=$(date +%s)
+        "$LAN_TUNNEL_COMMAND" tunnel --protocol http2 --url "http://127.0.0.1:$port" >>"$log" 2>&1
+        code=$?
+        up=$(( $(date +%s) - started ))
+        if [ "$up" -ge "$LAN_TUNNEL_RESET_AFTER" ]; then
+            delay="$LAN_TUNNEL_FIRST_DELAY"
+        fi
+        echo "Public link: the tunnel exited with code $code after ${up}s; starting it again in ${delay}s."
+        while :; do
+            sleep "$delay"
+            delay=$(( delay * 2 ))
+            [ "$delay" -le "$LAN_TUNNEL_MAX_DELAY" ] || delay="$LAN_TUNNEL_MAX_DELAY"
+            kill -0 "$owner" 2>/dev/null || return 0
+            if ! public_link_enabled; then
+                echo "Public link: turned off - the tunnel is not started again."
+                return 0
+            fi
+            local named
+            named="$(named_tunnel_url)"
+            if [ -n "$named" ]; then
+                echo "Public link: your own link is set up ($named) - the quick tunnel is not started again."
+                return 0
+            fi
+            if gated_port_ok "$port"; then
+                echo "Public link: tunnel started again."
+                break
+            fi
+            echo "Public link: 127.0.0.1:$port is not serving the access-code page; trying again in ${delay}s."
+        done
+    done
+}
+
 # report_lan_access tells the control plane the LAN URL for address $1 (when
 # there is one) on the gated port $2, and prints it with the access code.
 report_lan_access() {
@@ -183,8 +231,8 @@ report_lan_access() {
     fi
 }
 
-# stop_lan_tunnel kills the background cloudflared process start_lan_tunnel
-# started, if any, and removes its log file - called from each script's own
+# stop_lan_tunnel ends the restart loop, kills the background cloudflared
+# process start_lan_tunnel started, if any, and removes its log file - called from each script's own
 # cleanup on exit/interrupt so it never outlives the script as an orphaned
 # process.
 stop_lan_tunnel() {
@@ -192,8 +240,15 @@ stop_lan_tunnel() {
         kill "$LAN_TUNNEL_WATCHER_PID" >/dev/null 2>&1 || true
     fi
     if [ -n "${LAN_TUNNEL_SUPERVISOR_PID:-}" ]; then
-        pkill -P "$LAN_TUNNEL_SUPERVISOR_PID" >/dev/null 2>&1 || true
+        # The supervisor first, so it cannot start the tunnel again once cloudflared is gone; its children are listed
+        # before, since a child whose parent has gone is no longer found by its parent's pid.
+        local children
+        children="$(pgrep -P "$LAN_TUNNEL_SUPERVISOR_PID" 2>/dev/null || true)"
         kill "$LAN_TUNNEL_SUPERVISOR_PID" >/dev/null 2>&1 || true
+        if [ -n "$children" ]; then
+            # shellcheck disable=SC2086
+            kill $children >/dev/null 2>&1 || true
+        fi
     elif [ -n "${LAN_TUNNEL_PID:-}" ]; then
         kill "$LAN_TUNNEL_PID" >/dev/null 2>&1 || true
     fi

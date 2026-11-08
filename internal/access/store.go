@@ -286,6 +286,16 @@ func (s *Store) Users() ([]User, error) {
 	return sqlitedb.QueryAll(s.db, scanUser, `SELECT `+userColumns+` FROM access_users ORDER BY name COLLATE NOCASE`)
 }
 
+// HasUsers reports whether any user account exists (enabled or not): from the first one on, a reply through the
+// gated listener needs a sign-in (docs/access.md).
+func (s *Store) HasUsers() (bool, error) {
+	var any int
+	if err := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM access_users)`).Scan(&any); err != nil {
+		return false, fmt.Errorf("access: users: %w", err)
+	}
+	return any != 0, nil
+}
+
 // SetRoles replaces a user's roles.
 func (s *Store) SetRoles(id string, roles []string) error {
 	roles, err := normalizeRoles(roles)

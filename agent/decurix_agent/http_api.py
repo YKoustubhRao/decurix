@@ -53,7 +53,9 @@ from decurix_agent.messaging import save_request
 #                                        recording (ingest.py, ingest_agents.py);
 #                                        what it skipped and any warnings come back
 #   POST /recordings/<id>/update         {title, description}
-#   POST /recordings/<id>/delete
+#   POST /recordings/<id>/delete         {force}: a person's Delete; a held run's
+#                                        recording (not yet in the run record)
+#                                        is a 409 with held: true unless force
 #   POST /recordings/<id>/replay         {task_id, from, params}: run it as a task
 #   POST /recordings/<id>/learn          {task_id, sessions, name}: teach a skill from
 #                                        it (and any others named) as a task -
@@ -86,23 +88,7 @@ from decurix_agent.messaging import save_request
 # Served by a ThreadingHTTPServer (app.py): exporting a large recording must
 # not hold up the next chat request.
 #
-# Who may call (refusal() below, before any route runs). /request carries a
-# person's replies, approvals included, so a caller that is not the control
-# plane must not get through:
-#   - the token: on a desktop created with DECURIX_AGENT_TOKEN, every route but
-#     /health needs "Authorization: Bearer <token>" (compared in constant time).
-#     That keeps out the other desktops on the shared Docker network.
-#   - a browser: a request with an Origin or Sec-Fetch-* header was made by a
-#     web page (a page in this desktop's Chrome can POST to it as text/plain,
-#     no CORS needed), and is refused; so is a write whose body is not JSON,
-#     and a Host that is a DNS name (a rebinding page reaches this port by one;
-#     the control plane calls by IP or container name).
-# Those last checks hold on a desktop without a token too (created before
-# tokens existed): it is otherwise served as before until it is recreated.
-# The honest limit: the worker's own shell runs as the same Linux user and can
-# read the token from the environment, so nothing here stops the worker itself
-# from calling this API. That is what the approval gate's own rules are for
-# (a reply must name the open question: messaging.save_request).
+# Who may call is refusal()'s to say (its comment, below).
 # ============================================================
 
 MAX_BODY = 1024 * 1024
@@ -166,6 +152,19 @@ def _host_is_ours(host):
         return "." not in name and name != ""
 
 
+# Who may call (refusal(), before any route runs). /request carries a person's replies, approvals included, so a
+# caller that is not the control plane must not get through:
+#   - the token: every route but /health needs "Authorization: Bearer <token>" (DECURIX_AGENT_TOKEN, compared in
+#     constant time). That keeps out the other desktops on the shared Docker network. A desktop created without a
+#     token (before tokens existed) refuses every such route with 401 "recreate it": it fails closed, it is not
+#     served as before.
+#   - a browser: a request with an Origin or Sec-Fetch-* header was made by a web page (a page in this desktop's
+#     Chrome can POST to it as text/plain, no CORS needed), and is refused; so is a write whose body is not JSON, and
+#     a Host that is a DNS name (a rebinding page reaches this port by one; the control plane calls by IP or
+#     container name). These hold before the token is looked at, on every desktop.
+# The honest limit: the worker's own shell runs as the same Linux user and can read the token from the environment,
+# so nothing here stops the worker itself from calling this API. That is what the approval gate's own rules are for
+# (a reply must name the open question: messaging.save_request).
 def refusal(method, parts, headers, token=None):
     """
     Why a request to this API may not be served - (status, reason) - or None when it may.
@@ -457,7 +456,12 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "delete":
                     if (demonstration.status() or {}).get("session") == session_id:
                         raise ComputerError("that demonstration is still being recorded - stop it first")
-                    recording.delete(session_id)
+                    try:
+                        recording.delete(session_id, force=data.get("force") is True)
+                    except recording.Held:
+                        # Still the person's to delete, once told what it costs: the page asks and sends force.
+                        return self._json(409, {"status": "error", "held": True, "error":
+                                                "This run is not saved to the run record yet; delete it anyway?"})
                     return self._json(200, {"status": "deleted"})
 
                 if action == "replay":

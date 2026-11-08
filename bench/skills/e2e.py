@@ -2,10 +2,11 @@
 """
 Live end-to-end check of teaching and running a skill on a real desktop.
 
-    python3 bench/skills/e2e.py [--keep] [--brain ollama|claude|azure]
+    python3 bench/skills/e2e.py [--keep] [--brain ollama|claude|azure] [--broker]
 
 --brain runs the desktop as one created with that brain is (bench/brain.py);
 its model calls go through this tree's control plane on 127.0.0.1:8080.
+--broker starts it in broker mode (bench/brain.py, screen_env).
 
 Needs Docker and a built decurix-desktop:basic (scripts/*/build-images.sh).
 Takes about two minutes and leaves nothing behind unless --keep is given.
@@ -138,6 +139,7 @@ def main():
         "-e", f"CONTROL_PLANE_URL=http://host.docker.internal:{PORT}",
         *token_env(),
         *brain.docker_env(brain.chosen(), f"http://host.docker.internal:{PORT}"),
+        *brain.screen_env(),
         "-e", "OLLAMA_URL=" + ("http://host.docker.internal:11434" if brain.chosen() == "ollama" else "http://127.0.0.1:11434"),
         "-e", "DECURIX_REPLAY_FIND_SECONDS=6",
         # This benchmark verifies deterministic healing and human correction.

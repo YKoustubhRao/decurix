@@ -152,14 +152,7 @@
       </div>
 
       <div class="field cron-field" id="cronField">
-        <label for="cron">Cron schedule <span class="mono">(minute hour day month weekday, UTC)</span></label>
-        <input class="input" id="cron" name="cron" placeholder="*/30 * * * *" autocomplete="off">
-        <div class="hint">
-          Resubmits this same request every time the schedule matches, and appends
-          <span class="mono">TIME:{&hellip;}</span> to it with when that run triggered. Examples:
-          <span class="mono">0 * * * *</span> hourly, <span class="mono">0 9 * * *</span> daily at 09:00 UTC,
-          <span class="mono">0 9 * * 1</span> every Monday at 09:00 UTC.
-        </div>
+        {{template "cron-zone-fields"}}
       </div>
 
       <div class="field">
@@ -236,6 +229,9 @@
   var runOnceField = document.getElementById("runOnceField");
   var runAtInput = document.getElementById("runAt");
   var onEmail = document.getElementById("onEmail");
+
+  /* A schedule is read in the person's own zone unless they pick another (B-37). */
+  T.fillZone();
 
   /* ---------------- destination suggestion ---------------- */
 
@@ -428,14 +424,14 @@
 
     try{
       if(repeating){
-        await post("/api/schedules/create", {id: select.value, content: text, cron: cron});
+        await post("/api/schedules/create", {id: select.value, content: text, cron: cron, zone: T.zone()});
 
         cronInput.value = "";
         repeat.checked = false;
         syncRepeatUI();
         markSent("Schedule created");
       }else if(once){
-        await post("/api/schedules/create", {id: select.value, content: text, run_at: runAtDate.toISOString()});
+        await post("/api/schedules/create", {id: select.value, content: text, run_at: runAtDate.toISOString(), zone: T.browserZone()});
 
         runAtInput.value = "";
         runOnce.checked = false;

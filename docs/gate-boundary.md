@@ -1,8 +1,9 @@
 # The approval gate as a boundary (design, round 3)
 
-Status (2026-11-03, after the round-3 recheck): built, and checked live on a layered image of this checkout with
-`bench/security/boundary.sh`. Not done: a full image build and a real task end to end; existing desktops keep the old
-setup until recreated.
+Status (2026-11-07): the gate, its key, the image's root removal, the signed inputs of phase 2 and the network per
+desktop are built. Round 3 was checked live on a layered image of this checkout with `bench/security/boundary.sh`; the
+live checks owed on the next image are listed in [follow-ups.md](follow-ups.md). Existing desktops keep the old setup
+until recreated. The input broker ("Next" below) is not built.
 
 Found while checking step 1: the worker could already become root. `headless` had `sudo` for everything and the base image's
 default password (`headless`) works (`echo headless | sudo -S id -u` printed 0). Step 1 removes that: see
@@ -17,52 +18,51 @@ worker's shell. Filters on words cannot fix that; a separate identity can.
 A yes can only be created by something the worker cannot write to or read the secrets of. The worker may ask the
 gate (`check`), never grant.
 
-## Pieces
+## Pieces (as built)
 
-1. **Gate daemon**: a small process run as its own Linux user (`decurixgate`), not the worker's `headless`.
-   - Owns the approval state (today `~/.decurix/computer/approval.json`) in a directory only it can read or write
-     (mode 700, outside `$HOME`, e.g. `/var/lib/decurix-gate`).
-   - Listens for the control plane's person replies on its own port (not :8081, not soul's :4900), checked with an
-     **approval key** that only the gate and the control plane hold. The key is derived like the agent token
-     (`internal/desktop/agenttoken.go`) with a different label, and is never in the worker's, the agent's or soul's
+1. **Gate daemon** (`agent/decurix_agent/gate_server.py`): a small process run as its own Linux user (`decurixgate`),
+   not the worker's `headless`.
+   - Owns the approval state (`computer/approval.json`: the pending request, the one-shot grants, the last reading) in
+     its own directory, `/var/lib/decurix-gate` (mode 700, outside `$HOME`).
+   - Listens for the control plane on its own TCP port, :8083 (not :8081, not soul's :4900). Each body is checked with
+     the desktop's **gate key**, which only the gate and the control plane hold. The key is derived like the agent
+     token (`desktop.GateKey`, label `decurix-gate-key`), and is never in the worker's, the agent's or soul's
      environment.
-   - Offers the agent and `gui` one call over a unix socket: `check(fingerprint, action)` -> allow / ask. A grant is
-     consumed inside the daemon. There is no call that creates a grant.
-   - Reads a reply (yes / no / if) itself, through the control plane's LLM proxy with its own credential, so a
-     lying caller cannot decide what a reply meant.
-2. **Replies bypass the worker's files.** Today a reply travels control plane -> agent :8081 -> `command/*-reply.txt`
-   -> watcher. The control plane sends an approval reply to the gate daemon as well (signed with the approval key,
-   bound to the task id and the pending request id). A file in the command folder, or a POST to :8081 with the
-   worker-readable agent token, can no longer produce a grant.
-3. **The worker cannot become the gate user.** Precondition to verify in the image before any of this counts:
-   - `headless` must not have passwordless `sudo` once startup is done (the base image uses sudo once in
-     `user_generator.rc`); drop the sudoers entry after that step, or limit it to that one command.
-   - `/etc/passwd` and `/etc/group` stay 666 today only because that startup step tests `-w /etc/passwd`. Make them
-     644 after startup finishes (a root step at the end of the entrypoint), so the worker cannot add a uid-0 user.
-   - Drop `NET_RAW` (no ARP spoofing of the control plane's identity checks) and keep `no-new-privileges` where the
-     startup allows it.
-4. **soul and Ollama harnesses** go through the same `check` over the socket; soul's localhost exemption in its
-   safety check must not let the worker reach the gate's port.
+   - Offers the agent, `gui` and TheBot a unix socket (`/run/decurix-gate/gate.sock`, mode 666). Its calls are
+     `check` (with the action's `material`), `pending`, `has_grant`, `reset`, `outcome`, `settled`, `last_reading` and
+     `site_known`. A grant is consumed inside the daemon. No call creates a grant.
+   - Reads a reply (yes / if / no / unclear) itself, through the control plane's LLM proxy, so a lying caller cannot
+     decide what a reply meant. The proxy holds the model key; the gate's calls are tagged `gate` (`DECURIX_CALLER`),
+     which is a label for the records, not a credential.
+2. **Replies bypass the worker's files.** A reply still travels control plane -> agent :8081 -> `command/*-reply.txt`
+   -> watcher, as text. The control plane sends an approval reply to the gate as well, signed with the gate key and
+   bound to the task id and the gate's request id. A file in the command folder, or a POST to :8081 with the
+   worker-readable agent token, cannot produce a grant.
+3. **The worker cannot become the gate user or root.** The image has no sudo, no setuid or setgid bit, `/etc/passwd`
+   and `/etc/group` at 644, and every desktop runs without `NET_RAW` and with `no-new-privileges` (below).
+4. **soul and the legacy harnesses** go through the same socket: soul's `gateAsk` (`cmd/soul/gate.go`) and the Ollama
+   and Azure runners' `gated_command`. The gate's port takes only signed bodies, so reaching it from the worker grants
+   nothing.
 
 ## What stays a filter (and is said so)
 
-`claude_guard.py` stays as a guard rail for the Claude harness. It is not part of the boundary.
+`claude_guard.py` was a guard rail for the Claude harness, removed with it on 2026-11-07. It was never part of the boundary.
 
-## Open questions to settle before building
+## Questions settled while building
 
-- (answered) `headless` had sudo with the public default password; now removed.
-- Can the entrypoint run a root step after startup (tini -> startup.sh), or must the image set its own entrypoint?
-- Where does the gate daemon get LLM access without a key the worker can read? (control plane proxy, per-desktop
-  token held only by the gate)
+- `headless` had sudo with the public default password: removed.
+- The root step: the image sets its own entrypoint (`tini -> /opt/decurix-entrypoint.sh`), which does the root work
+  first and then runs the base image's `startup.sh` as the worker.
+- The gate's model access: the control plane's LLM proxy, which holds the key. No key is in the desktop.
 - Existing desktops keep the old gate until recreated (desktop state is fixed at creation).
 
-## Order of work
+## Order of work (done)
 
-1. Image: gate user, sudoers trimmed, `/etc/passwd` 644 after startup, drop NET_RAW. Verify with a live desktop.
-2. Gate daemon with the unix-socket `check`; move `approval.py`'s state behind it.
-3. Control plane: approval key, send approval replies to the gate port.
-4. Remove the reply-file and :8081 paths as grant routes; keep them for ordinary requests.
-5. Live attack run: every self-approval path from the round-2 report must fail.
+1. Image: gate user, no sudo, `/etc/passwd` 644, NET_RAW dropped.
+2. Gate daemon with the unix socket; `approval.py`'s state behind it.
+3. Control plane: the gate key, signed replies to the gate's port.
+4. The reply file and :8081 are no grant routes; they still carry ordinary requests and replies as text.
+5. Live attack run: `bench/security/boundary.sh` replays the self-approval paths of the reviews.
 
 
 ## What is built (2026-11-03, after the round-3 recheck)
@@ -83,6 +83,12 @@ layered image of this checkout).
   following links and without files that have a second link.
 - The gate starts as `decurixgate` from its own directory with `python3 -I` (no cwd and no user site on `sys.path`). Its
   code is root's (`/opt/decurix_agent`, not writable by the worker).
+- The gate starts from a cleared environment (`env -i` in `decurix-entrypoint.sh`), not the container's: it never holds
+  the worker's agent token, the VNC password or a brain's settings. It gets PATH, LANG, and HOME, `DECURIX_DIR` and
+  `DECURIX_WORK_DIR` set to its own directory, and, when the container sets them, only the variables its own code path
+  reads (`GATE_ENV_PASS`): `CONTROL_PLANE_URL` and `DECURIX_LLM` for reading replies through the proxy, the model
+  call's two time limits, the worker stage, the task file and the log folder. `agent/tests/test_gate_env.py` fails
+  when the gate's modules read a variable the list does not pass (2026-11-07).
 
 **The key** (`desktop.putGateKey`, `GateKeyFile`):
 - The key is never in an environment. Every `docker exec` inherits the container's environment, and a desktop could get
@@ -128,6 +134,7 @@ arrived, so a desktop without one kept approvals in the worker's own store.
   the control plane reads the created container's `/etc/passwd` before the first start.
 - Practice desktops get a key and a gate of their own, like any desktop. The practice broker never grants an approval.
 - `boundary.sh` has a row for it: a second desktop started with no key has the directory, and a gated click is refused.
+  It also has a network row: one desktop's worker cannot reach another desktop's 8081, 5901 or 6901.
 
 Existing desktops from before round 3 keep their old agent and image until recreated; the control plane does not
 refuse to start them.
@@ -139,8 +146,9 @@ only when it is bound to that approval:
   posted) and no other question open.
 A chat reply that would land on an approval posted after what the person saw, or on one of several open questions,
 is refused with a reason. Since the review of 2026-11-03 the chat's `seen_at` is frozen at the first keystroke of a
-draft, approval bubbles carry Approve and Deny bound to the note id, and the concierge binds a reply by `note_id` only
-when the newest open question is a gate-worded approval (a bare ok, sure, go or yes never answers one there). Every
+draft, and approval bubbles carry Approve and Deny bound to the note id. In the concierge, words typed to a job never
+answer its approval: they go as a message and approve nothing. Only the job's Approve and Deny buttons answer it, bound
+by `note_id` to the desktop's newest open question when that is a gate-worded approval (`boundApprovalNote`). Every
 other door (the requests page, an API call) delivers the reply as a message bound to no request: it grants nothing.
 
 **The gate's question is the gate's words only.** With no reason of its own the gate used the caller's reason in its
@@ -152,9 +160,19 @@ the worker's note.
 Guard rails, not the boundary, but each closed a hole the recheck found:
 - **The shell checks read words, not text.** `commands._rm_wipe_reason` (agent) and `safety.wipeConcern` (TheBot) split
   a command as the shell does, unquote it, follow `sh -c`, `env -S` and shell-fed here-documents, track `cd`, and resolve
-  each path rm is given. The Python side also steps over wrappers (sudo, env, nohup, timeout N, xargs...) to the program.
+  each path rm is given. The Python side also steps over wrappers (sudo, env, nohup, timeout N, xargs...) to the program;
+  TheBot's program rules read each command word's base name past the wrappers `wipeConcern`'s examples name (O-1.a.1),
+  read past the folder and config options before a git, publish or docker subcommand (O-1.a.2), and a recursive
+  delete's path or a request's target decided at run time waits for a person (O-1.a.5, all 2026-11-07).
 - **A request is local only when every target is.** `safety.onlyLocalTargets` reads each curl and wget's targets, and a
   proxy, `--resolve`, `--connect-to`, `-K`, a proxy variable or a curl/wget rc file in the home means not local.
+  Each target is judged by the host `net/url` reads from it (`Hostname()`), not a pattern over its text (O-1.a.4,
+  2026-11-07).
+- **A command is read from the folder it runs in** (O-1.a.3, 2026-11-07): the operator and terminal skills pass their
+  working folder to `safety.AssessCommand`, and a relative path is resolved against it, not against an assumed
+  `~/work`. With no folder given, only a relative path that climbs out is read, as before.
+- **The local control ports** the Claude guard and a kept script may not name are DevTools (9222), the control plane's
+  and agent's (8080, 8081), soul's (4900) and the gate's (8083); the deleted extension's 8092 is no longer listed.
 - **The Claude guard fails closed when it cannot start**: `/usr/bin/python3 -I <guard> || exit 2`.
 - **The browser extension (:8092) took no approval on a gated desktop** (`guard.gate_required`). It has since been
   deleted with `agent/browser-agent` (review 2026-11-03); soul's browser skill remains, off by default.
@@ -169,14 +187,17 @@ carries the task id, the time and a fresh nonce, signed with the desktop's gate 
 (`request`, `secrets`, `reply`, `task-ended`), so no one of them can stand for another (`desktop.SignGate*`,
 `gate_server.sign_*`; vectors signed by the Python gate in `internal/desktop/testdata/gate-signatures.json`, which Go
 matches byte for byte). Text is signed as it is sent: a byte that is not valid UTF-8 becomes U+FFFD
-(`desktop.GateText`). Values are signed over the SHA-256 of each value's SHA-256 followed by a NUL.
+(`desktop.GateText`). Values are signed as one SHA-256 over the list of each value's SHA-256, each followed by a NUL,
+in order. A `/reply` is checked as it arrives (204) and settled just after, on a thread of its own; the agent's
+watcher waits up to 45 s for that settlement (`approval.resolve_reply`, the gate's `outcome` call).
 - **`/request`**: the gate's own copy of each new request, never of a reply. When anything of it was withheld the copy
   is the withheld form: a site's name is kept, a value never is, and a request marked secret is withheld whole, so it
   names no site. Whether a password may go to a site (`approval.site_known`) is read from this copy, never from the
   worker's task file, and only for the task the action belongs to: a copy of another task names nothing
   (`approval.gate_request_text`).
 - **`/secrets`**: the values the records withheld from a request or a reply (`httpapi.markWithheld`, the one C14
-  decision), and the secret parameters of a replay or a skill run. The gate withholds them from the questions it words.
+  decision), the secret parameters of a replay or a skill run, and the desktop's screen password (`desktop.ScreenHeld`,
+  added to every notice). The gate withholds them from the questions it words.
 - **`/reply`**: the person's reply, signed with the gate's request id when it is bound to that approval. It is the
   only way a yes is made (above).
 - **`/task-ended`**: sent on every task close (done, error, stop, restart, delete, abandon; `tasks.Store.OnTaskEnded`
@@ -187,13 +208,16 @@ matches byte for byte). Text is signed as it is sent: a byte that is not valid U
 - **A request** (`httpapi.deliverRequest`, once the desktop answers, on every try): `/secrets`, then `/request`, then
   the agent. If the gate cannot be told (no answer, or not 2xx), nothing reaches the agent and the sender gets 503. A
   desktop with no `decurix.gate` label whose gate does not answer gets "recreate this desktop" (`ErrGateMaybeMissing`).
+  One exception: when the only value is the screen password (the task has none of its own), a `/secrets` the gate
+  does not take is logged and the delivery goes on; the password is then a second wall only.
 - **Teach, replay and run-skill** (`httpapi.sendTaught`) do the same before calling their own agent endpoints. The copy
   is their request line, withheld. It names no site, so the gate asks about every password a taught skill types. A
   replay's parameters are held when its recording's program marks them secret or does not list them; when the
   program cannot be read, every value given is held.
 - **A reply** (`httpapi.deliverRequest` too, once the desktop answers): the reply's withheld values by `/secrets`,
   then `/reply`, then the agent, so the gate already holds the reply's values when it settles it. `/reply` is given
-  once, on the first try whose `/secrets` the gate took. A refused `/secrets` stops the reply (503) and nothing
+  once, on the first try whose `/secrets` the gate took. A refused `/secrets` (of the reply's own values) stops the
+  reply (503) and nothing
   reaches the gate's `/reply` or the agent. A `/reply` the gate refuses or does not answer is only logged, and **the
   reply is still delivered** to the agent: it grants nothing there (only the gate makes a yes, from a `/reply` it
   verified), so an approval fails closed, while an answer to a question still reaches the worker as the person's text.
@@ -226,8 +250,11 @@ matches byte for byte). Text is signed as it is sent: a byte that is not valid U
   to that gate, without failing that delivery. Kept notices are in memory: a control-plane restart loses the ones not
   yet taken, and the gate's own 24 h and 4 MB bounds cover them.
 
-**The gate's own state.** The request copy (`gate-request.json`, the latest request with its task) and the values
-(`gate-secrets.json`, per task) are 0600 files in the gate's directory. The nonces it has seen are kept in memory only,
+**The gate's own state.** The request copy (`gate-request.json`, the latest request with its task), the values
+(`gate-secrets.json`, per task) and `computer/approval.json` are 0600 files in the gate's directory, beside `key` and
+`gate.log`, each written whole (a temporary file of the writer's, flushed, then put in place; approval.json since
+2026-11-07, before which it was written with the process's umask). A grant there lasts at most 15 minutes. What a reply settled is kept in memory for 10
+minutes, for the agent or TheBot to take once. The nonces it has seen are kept in memory only,
 for twice the 120 s window a signed body is accepted in. So after a gate restart, a body signed less than 120 s before
 can be replayed once more. The worker cannot capture one: `NET_RAW` is dropped.
 
@@ -257,7 +284,16 @@ phone or the tunnel cannot drive the worker through soul.
   error, and soul takes it as a no to that one action and resumes (H-SOUL-8). Nothing waits on a question no reply
   could approve.
 
-## Next: the input broker (proposed, not built)
+- **A value that leaked anyway is purged by value.** Withholding decides at the source; when a value got past it into
+  the never-delete stores (blobs, `llm_calls`, judgements, task records, chat, query notes, run bundles), the owner
+  purges it at this machine: `POST /api/privacy/purge` (primary listener only, humansOnly, owner role), the Tasks
+  page's "Purge a leaked secret" control, or `decurix --purge-secret` reading the value from stdin. Every stored copy
+  becomes `[purged]` in place, names and ids kept so the records still join, and the purge is a judgement with the
+  person, their reason and the counts, never the value; the value is not logged or echoed, and one shorter than 6
+  characters is refused. A desktop cannot call it, so a worker cannot erase what it was seen doing.
+  (docs/trajectory.md, "Purging a leaked secret".)
+
+## Next: the input broker (built behind a switch that is off; checked live on a throwaway container)
 
 The gate decides whether a yes exists; nothing yet stands between the worker and the screen. The worker's Linux user
 owns everything that can act on the screen or as the person, so each of these is a click on Pay without asking:
@@ -267,6 +303,27 @@ owns everything that can act on the screen or as the person, so each of these is
 4. AT-SPI: the accessibility bus offers `doAction` on any button of any app.
 5. The browser's profile: its cookies are the worker's files, so `curl` can act with the person's session directly.
 6. `ptrace` and `/proc` of the browser and the agent (same user): the agent token is one such read.
+
+In broker mode (DECURIX_SCREEN_USER=1), as of 2026-11-07, checked live on a throwaway container (`boundary.sh --layer
+--broker --screen-only`: every screen row PASS; the same rows in the default mode say OPEN), and again on a desktop the
+real control plane made with `DECURIX_SCREEN_BROKER=1`, under its own seccomp profile and security options (the five
+screen rows PASS there too):
+1. **Closed.** The worker's X clients have an untrusted cookie: the display offers them BIG-REQUESTS and XC-MISC only
+   (no XTEST, no RECORD, no XInput), and the SECURITY extension denies them events to and reads of the screen
+   user's windows (not probed: a probe never sends input).
+2. **Closed for files and processes.** The password file is the screen user's (0600 in `/var/lib/decurix-screen`),
+   no process the worker can read holds it, and the worker's session starts without it. Still open: a `docker exec`
+   without `env -i` inherits `VNC_PW` from the container's config.
+3. **Closed.** No port: the browser runs with `--remote-debugging-pipe`, and the relay's socket is in a folder only the
+   screen user may enter. Nothing of the screen user listens but VNC (5901).
+4. **Closed for the screen side, not probed.** The screen user's accessibility bus is its own (D-Bus checks the uid);
+   the worker's apps and their bus are the worker's and not part of the boundary. The screen side is the more
+   privileged reader of the worker's bus (to see the worker's apps' widgets), never the other way, and acts on a widget
+   read there only over a window of the worker's (below, "the worker's apps as untrusted clients").
+5. **Closed.** The browser's profile is `/var/lib/decurix-screen/.config/chromium`, the screen user's alone.
+6. **Closed for the screen side**: the X server, the window manager, the browser and the broker are the screen user's,
+   and their `/proc` environments cannot be read by the worker. **Open for the agent**: it still runs as the worker,
+   with its token in its environment (step 5 of the order below).
 
 Proposed shape:
 - A screen user (`decurixscreen`) runs Xvnc, the window manager, the browser and the accessibility bus. The VNC
@@ -285,12 +342,363 @@ Order: (1) a probe row in `boundary.sh` for each of the six paths, failing today
 cookie, with the desktop's apps checked live; (3) the broker and `gui` through it; (4) CDP by pipe and the
 accessibility bus under the screen user; (5) the agent's own user; every row passes.
 
+What a reading of the code found (2026-11-07), which shapes the build:
+- **Not only `gui` reaches the screen.** The agent process itself (`skill_task`, `replay_task`, `record_task`,
+  `ask_task`, `host_documents`, `ledger_checks`, the browser warm in `watchers`) calls `computer.core`, `cdp` and
+  `recording` in-process, as the worker. With an untrusted cookie and no CDP these stop working, so they must become
+  clients of the broker too; routing only `gui` is not enough.
+- **Only the browser may be launched as the screen user.** Every app launch goes through `session.launch`. A program
+  the broker opened would run as `decurixscreen`, and a terminal opened that way would be a way round the gate (typing
+  into a terminal is not a gated action). The broker starts the browser only; any other app is started by a helper on
+  the worker's side that is given the program and its arguments, never the screen side's environment.
+- **Which processes are the screen user's** (to be checked live): Xvnc, the window manager and the browser; the panel,
+  the desktop, the terminal and office apps run as the worker with the untrusted cookie. The worker's own apps and its
+  own accessibility bus are not part of the boundary. The XFCE autostart that starts the agent is then started directly
+  as the worker.
+- **CDP needs a relay, not a port.** `cdp.py` uses `/json/version`, `/json/list`, `PUT /json/new` and per-page
+  WebSockets; a relay serving those over a Unix socket only the screen user reaches is contained. A loopback TCP port
+  cannot be limited to one uid without NET_ADMIN.
+- **The VNC password** stays in the container's config for the control plane's readers (`screenshot.go`, `viewer.go`,
+  `HoldScreenPasswords`); the entrypoint moves it into a file only the screen user reads before anything else starts.
+  A `docker exec` without `env -i` still inherits it.
+- **In broker mode `gui` never falls back in-process**: a refused command fails with an error.
+
+Build order from here: the creation switch (`DECURIX_SCREEN_BROKER` on the control plane gives a desktop
+`DECURIX_SCREEN_USER=1`); the probe rows; the daemon's peer-uid check and the screen/worker split in the entrypoint;
+the CDP relay; the worker-side launch helper; then the agent's in-process screen paths as broker clients.
+
+Built so far (2026-11-07, behind `DECURIX_SCREEN_BROKER`, off; code, unit tests, live runs on throwaway containers,
+and a desktop the real control plane made - see "Checked on a desktop the control plane made" below):
+- **The creation switch.** `DECURIX_SCREEN_BROKER=1` on the control plane gives each new desktop
+  `DECURIX_SCREEN_USER=1` (`internal/desktop/screenbroker.go`). The image has the `decurixscreen` system user (no
+  login shell, no password, no sudo).
+- **The broker's socket identity** (`computer/daemon.py`, `gui_client.py`, `broker.py`). The gui daemon serves as the
+  broker when the switch is on and its uid is not the worker's (`DECURIX_SCREEN_WORKER_UID`, default 1001). A daemon
+  in the worker's own uid on such a desktop exits 3. The socket is `/run/decurix-screen/gui.sock`, mode 0666. Every
+  caller is checked by SO_PEERCRED, and only the worker's uid is served. The client trusts it only when the folder is
+  the screen user's and not writable by others, and the peer is that user. The child takes the caller's argv, stdio,
+  umask and niceness, and only those variables of the caller that the package's code reads (scanned from every
+  module's source). Of those it refuses any that change the interpreter, the loader, identity, session, a path, an
+  address, the gate, the stage or the caller name (`Broker.caller_may_set`). The caller's folder is never put on
+  `sys.path`. A screenshot a command writes for its caller (`observe --screenshot`, `DECURIX_GUI_SCREENSHOT`,
+  `skill --look`) goes back as bytes over the connection and the client writes it as the worker
+  (`broker.deliver_to_caller`, `gui_client.save_output`), and only at a path the caller named. The client never
+  runs a command in-process; a broker that is missing, refusing or untrusted is "cannot reach the screen", exit 1.
+- **The DevTools relay** (`computer/cdp_relay.py`). It starts the browser with `--remote-debugging-pipe`
+  (`agent/chromium-browser` drops the port when `DECURIX_BROWSER_DEBUG=pipe`). It serves `/json/version`,
+  `/json/list`, `PUT /json/new`, `/json/activate|close` and per-page WebSockets on
+  `/run/decurix-screen/cdp/cdp.sock` (folder 0700). Each WebSocket is a flattened `Target.attachToTarget` session,
+  and the relay sets its `sessionId`. There is no browser-wide socket. In broker mode `cdp.py` uses this socket and
+  nothing else.
+- **The worker-side launch helper** (`computer/launch_helper.py`, started by `start_agent_terminal.sh` in broker
+  mode). On the screen side, `session.launch` starts only the browser (through the relay, and with pages for its
+  arguments; `--app=URL`, `--new-window` and `--no-startup-window` are the only flags allowed). Every other program
+  goes to the helper as argv only. The helper serves the screen user's uid only and starts the program with its own
+  (the worker's) environment. The broker checks that the helper's folder and peer are the worker's.
+- **The startup split** (`agent/decurix-entrypoint.sh`'s broker branch; the default path after it is unchanged). As
+  root: `/run/decurix-screen` (0711) and `/var/lib/decurix-screen` (0700, the screen user's home), `/tmp/.X11-unix`
+  made root's and sticky before any user runs, and the VNC password made into `vnc.passwd` by the screen user from a
+  pipe (never an argument or an environment of its), then unset. Then the worker's session in the background
+  (`agent/decurix-worker-session.sh`, the container's environment less the password) and an exec into the screen
+  user's (`agent/decurix-screen-session.sh`, a cleared environment: fixed identity and folders, and only `DECURIX_*`,
+  `DESKTOP_*`, `CONTROL_PLANE_URL`, `AGENT_HARNESS`, the screen's size and a few display settings from the container,
+  never a `*_TOKEN`, `*_KEY`, `*PASSWORD*`, `*SECRET*` or `VNC_PW`).
+  - The screen session makes a new display cookie (given to `xauth` on stdin), starts **Ubuntu's `Xtigervnc`** (the
+    base image's `/usr/bin/Xvnc` is built without the SECURITY extension: `xauth generate` failed with "couldn't query
+    Security extension"; the image now installs `tigervnc-standalone-server` in its own step and keeps the base
+    image's `vncserver` link and `Xvnc`, which the default mode runs), with `-nolisten tcp`, `-rfbauth` and
+    `-SecurityTypes VncAuth`; then writes the worker's **untrusted** cookie (`xauth generate :1 . untrusted timeout
+    0`) to `/run/decurix-screen/worker.xauth` (0644), starts its own session bus, `xfwm4` (its look from
+    `/etc/xdg/decurix-screen`, without the accessibility bridge) and the broker loop, and waits on the X server.
+  - The screen side's `DECURIX_DIR`, `DECURIX_WORK_DIR` and `DECURIX_LOG_DIR` are its own folder's (a command first
+    failed live on `~/.decurix/computer`, which it may not write).
+  - The worker session copies the cookie to `~/.Xauthority`, starts its own session bus, `xfsettingsd`,
+    `xfce4-panel`, `Thunar --daemon` (no longer `xfdesktop`, below), and `start_agent_terminal.sh` directly (no XFCE
+    session, no autostart). `start_agent_terminal.sh` no longer runs `xhost` or pre-warms the browser in broker mode.
+  - Seen live: Xtigervnc, xfwm4, the broker and Chrome (profile in `/var/lib/decurix-screen`) as `decurixscreen`;
+    the panel, Thunar, the agent, soul and the launch helper as `headless`. `gui observe`, `gui open` of a
+    `file:///tmp` page, `observe --screenshot` (written as the worker) and `gui open mousepad` (started by the launch
+    helper, as the worker, drawn and managed as an untrusted client) work through the broker.
+  - Untrusted apps, seen live: the panel draws, but its window list shows nothing (it cannot read the screen user's
+    windows); **`xfdesktop` exits** (BadAccess setting a root window property), so there are no desktop icons;
+    mousepad works.
+- **The agent's in-process screen paths through the broker** (`computer/screen_call.py`). In broker mode, on the
+  worker's side, a routed function sends its call as `gui __screen_call NAME` through the same thin client and broker
+  `gui` uses; the broker's child runs it as the screen user and answers in JSON lines (a screenshot Frame, sets,
+  tuples and non-text keys are tagged so they come back as themselves; the agent's own error classes come back as
+  themselves). It never runs one in the worker's process. The broker takes only what each call site needs
+  (`SERVED`): `core.observe(remember)`, `core.act` as a click on a ref or keys only, `core.open_target`,
+  `cdp.page_list`, `cdp.activate_page(id)`, `browser.warm`, `launchers.close` (a recorded window, by the replay's
+  title rule), `ask_task.read_service(key)` (the screen side's own script for that service, never the caller's),
+  the demonstration recorder's start, pause, resume, note, stop, status and recover, and `replay.run` with a plain
+  program: the escalation ladder's questions to the engine come back to the caller as `ask` messages and are answered
+  there, its reports as `report` messages, and the ladder's state comes back onto the caller's ladder. Outside broker
+  mode every one runs in its caller's process as before. Checked live from the worker's side: observe (0.17 s with
+  its 1280x720 frame), page_list, activate_page, demonstration.status, `host_documents._viewers` and `_buttons`, a
+  refused `core.act` "type", `ask_task.read_service`, and an empty-program replay.
+- **The probe rows** (`bench/security/screen_probes.sh`, `.py`; `boundary.sh --broker`, `--screen-only`), read-only
+  as the worker: XTEST on the display, the VNC password in a readable file or environment, a DevTools endpoint, the
+  profile's cookie store, the screen side's `/proc` environ. All five PASS in broker mode; all five are OPEN in the
+  default mode.
+
+- **The screen side's own state** (`computer/broker.py`, `gui_client.py`; the route chosen: the worker's state stays
+  the worker's, and the screen side never opens a path of the worker's). Two ways were weighed: a folder the screen
+  user writes and the worker reads, and the writes handed back through the caller. A shared folder in the worker's
+  home is a folder the worker can swap or fill with links, and a reader as the screen user that follows one reads the
+  screen user's own files (the trusted cookie, the profile) on the worker's behalf; so the caller route was built.
+  - *In*: with every command the client sends, as data it read as the worker, what the screen side must know of the
+    worker's state (`gui_client.caller_context`): the task file's parts (the task, its stage, request, files, the task's
+    secret values and resume copies), `withheld-secrets`, a few state files a screen command reads (`active-task.json`,
+    `filled-documents.json`, `opened-files.json`, the worker mode, the guided run), the current task's evidence so far
+    (`computer/evidence/<task>.*`) and its recording's `meta.json`, and the worker's launchers (its desktop's and menu's
+    `.desktop` files). The broker's child writes them into the screen user's own folders before the command runs
+    (`broker.take_context`: the task file's parts in `/run/decurix-screen/caller`, 0700, tmpfs like the worker's own;
+    the rest under its `DECURIX_DIR`; the launchers under `~/caller-launchers`, the screen side's `launchers.PLACES`),
+    and removes a part the worker no longer has. So the screen side knows the task (evidence is keyed by it; the
+    recording is `task-<id>`) and withholds the task's own secret values: checked live, a typed secret came back as
+    `[withheld]` in the recording and the evidence.
+  - *Out*: every write the child makes under `recordings/` or `computer/evidence/` (through `privacy.write_scrubbed`,
+    so already withheld; a recording's frames and an observation's blob) is written in its own folder as before and
+    also handed back over the command's connection (`broker.mirror`, an O frame flagged STATE, appends as appends);
+    the client writes it as the worker under the worker's own `DECURIX_DIR` (`gui_client.save_state`: a relative path
+    of plain parts, in those two roots only, 0644/0755 at most whatever the caller's umask). A demonstration's recorder
+    has no caller of its own, so at its stop (or `recover`) the whole recording is handed back (`broker.mirror_tree`).
+    Every reader (the agent's checks, the run record, the control plane's puller) finds them where it does today.
+    Checked live: a task's recording (meta, events, frames, observations), its evidence notes and a demonstration
+    recorded through the agent's routed calls all appeared in the worker's `~/.decurix`.
+  - The commands that only read and write the worker's own stores run on the worker's side, as the worker
+    (`gui_client.WORKER_COMMANDS`: `skills`, `skill`, `do`, `replay`, `recordings`, `recording`, `record`, `records`,
+    `recall`, `guide`), and reach the screen only through the broker's screen calls (`replay.run`, `core.observe`,
+    and now `screen.grab`, routed for a vision engine's picture after `replay`/`do` and the final check's look,
+    `evidence.live`). `record` reads its `--from` and `--fields` files as the worker; its ledger is then told to the
+    screen side with the next command, where `core.act`'s pre-save checks read it.
+  - `core.forget_failed_search` is routed (the agent cleared its own copy while the screen side kept the stale one).
+  - At boot the agent's `demonstration.recover` waits for the broker to serve (`screen_call.wait_for_broker`, up to 2
+    minutes) instead of failing before it is up; checked live: no "not reached" at boot.
+- **The worker's apps as untrusted clients.** Found: the SECURITY extension gives an untrusted client no write to the
+  root window and none of its events. So xfdesktop exits (BadAccess on its first root property), the panel's window
+  list never fills (it never hears `_NET_CLIENT_LIST` change), and the worker's accessibility bus launcher died the
+  same way (it names its bus on the root window when it has a display), so none of the worker's apps had an
+  accessibility bus at all.
+  - xfdesktop is **not** run in broker mode, on either side: as the screen user its menus ("Open With", "Open
+    Terminal Here", the applications menu) start any program as that user, past the gate. The screen user draws the
+    wallpaper on the root window instead (`computer/wallpaper.py`, redrawn when the screen's size changes); there are
+    no desktop icons in this mode. The worker's launchers are still opened by name (`gui open "Excel (Host)"`, a replay
+    bringing a window forward) from the copies the screen side was sent, and started by the launch helper as the
+    worker. Checked live.
+  - The accessibility bus: the worker's session starts its bus without DISPLAY (the launcher then names nothing on the
+    display; apps ask the session bus for the address) and with the launch helper's folder (0711) as its runtime
+    folder, so the bus socket can be reached; it publishes the address there (`a11y-bus`). The image's
+    `accessibility.conf` admits `decurixscreen` besides root and the bus's own user, so the screen broker reads the
+    worker's bus (`atspi._broker_bus`: only a `unix:path=`/`unix:abstract=` address from a regular file of the
+    worker's in a folder nobody else writes; a `unixexec:` address would run a program). The screen user's own bus
+    admits root and itself only. The browser is never given the worker's bus address (`session.launch`,
+    `cdp_relay.main`): its widgets on it would be the worker's to press. Checked live: `gui observe` lists mousepad's
+    and LibreOffice Writer's menus, toolbars and document, and the panel's buttons; a click and typing in Writer work,
+    including on Writer behind the browser (its window is brought forward first).
+  - What the worker's bus says is the worker's word, so a widget read there is acted on only where a window of the
+    worker's own apps is shown (`core._worker_point`, `screen.owner_uid_at`: the client window at the point, its
+    `_NET_WM_PID`, which only that window's own client can set, and that process's uid). Otherwise a widget the worker
+    made up and laid over the browser would have the gate asked about "Cancel" while the press landed on "Pay".
+    Checked live: a made-up widget over the browser was refused, one over the panel was not. A window the worker maps
+    and unmaps between the check and the press is a race this does not close (a few milliseconds).
+  - LibreOffice (soffice, GTK3) and mousepad open, draw and take input as untrusted clients; the panel draws and its
+    launchers work (a person's click on its Web Browser icon), but its window list stays empty (open, below).
+- **The browser launcher run as the worker** (`agent/chromium-browser`): started as the worker in broker mode (the
+  panel's Web Browser icon through `exo-open`, `xdg-open`, a link in an app, a host app's script), it hands each page
+  to the broker as `gui open` (a local file handed over and opened as a copy) and with none brings the browser up; it
+  never starts a browser itself. Checked live: a person's click on the panel's icon and `xdg-open` of a local page
+  brought up the screen user's browser, and no browser process of the worker's existed.
+- **Input files** (`gui_client.input_files`, `broker.read_input`, `broker.local_copy`): the files a command names (its
+  arguments, `--option=value` values, `file://` URLs; regular files the worker can read, at most 16) are opened by the
+  client as the worker and handed over as descriptors with the request, like its stdio; the agent's `open_target`
+  hands its target the same way (`screen_call.FILE_PARAMETERS`); the current task's documents (the task file's
+  `.files`, at most 4) go with every command for `core._in_documents`. The screen side reads them only from those
+  descriptors, and gives the browser a copy (same name, 0600, in `~/inputs`, kept a day). A file the caller did not
+  hand over is never opened by its name in a broker's child (`broker.NotHanded`): checked live, a link in `~/work` to
+  the screen user's `vnc.passwd` was refused without being read. Which commands need it: `upload` (checked live: a
+  0600 file of the worker's reached the page, name and size), `open` of a local page or `file://` URL (checked live),
+  the agent's `core.open_target`, and the task's documents for the search guard. `record --from/--fields` and `do
+  --source-file` need none: they run as the worker. An upload's "may this leave the desktop" check now knows the
+  worker's work folders (`privacy._send_roots`) and the worker's state as never leaving.
+
+Checked on a desktop the control plane made (2026-11-07): the control plane binary built from this tree (with a build
+overlay pointing its basic image at `decurix-desktop:broker`, so no product tag was touched), run beside the app's
+with `DECURIX_SCREEN_BROKER=1`; a desktop created through `/api/desktops/create`, then deleted. Under its seccomp
+profile and security options: Chrome runs as `decurixscreen` with its sandbox (no `--no-sandbox`, the namespace sandbox
+probe passes; renderers in their own pid namespaces) and the DevTools pipe; the control plane's thumbnail
+(`/api/desktops/screenshot`, full RFB authentication against Xtigervnc) and its screen bridge (`/desktop/<id>/websockify`:
+the RFB banner, security types and the VncAuth challenge relayed both ways) work; `gui` through the broker (open,
+observe, click, type, an upload, LibreOffice's widgets, the agent's routed calls); the worker's state as above; and the
+five screen probes PASS (`bench/security/screen_probes.sh` against that desktop, with its own screen password).
+
+What remains, in order:
+1. **The panel's window list.** As an untrusted client the panel never hears the root window change, so its
+   tasklist stays empty; windows are switched with the window manager's keys (alt-tab) or `gui front`. A tasklist
+   drawn by the screen user would have to be one with no way to start a program (the panel's own menus and
+   preferences start programs); not built.
+2. **What the screen side still does not see of the worker's state**: the worker's learned app guides
+   (`_guide_hint` after `gui open` names only the built-in ones), and anything a screen command reads that is not in
+   the context it is sent (it reads its own, older or empty copy). A new reader of worker state on the screen side
+   must be added to the context (`gui_client.caller_context`) or run on the worker's side.
+3. **The browser's own dialogs over accessibility**: the screen broker reads the worker's bus, so the browser's own
+   GTK dialogs (a native file chooser) are not listed; page content comes through DevTools as before.
+4. **Load and long runs**: a whole skill replay with ladder questions on a broker-mode desktop, Chrome's pipe mode
+   under load (target order, events), and the per-command cost of the context (a few small files read and written;
+   observe stayed well under a second live).
+5. **The agent's own user** (path 6's open half), and `VNC_PW` out of a `docker exec`'s environment.
+
+**Making broker mode the default** (decision for the owner, O-1): every path of the six that the screen side holds is
+closed and checked on a control-plane desktop, the worker's state reaches every reader, and the worker's apps work.
+What a person loses in this mode is the desktop's icons and the panel's window list; what is still open is path 6's
+agent half. The recommendation is to turn it on for new desktops after (4) - one live series of real tasks (a taught
+skill with a ladder question, a long request, a demonstration recorded by a person) on a broker-mode desktop - since
+until then the gate's boundary is only as good as the filters in front of it. A desktop keeps the mode it was created
+with, so turning it on changes nothing for existing desktops.
+
+### Live trial (2026-11-07, finished 2026-11-08)
+
+What ran:
+- **The deterministic benches in broker mode.** `bench/skills/e2e.py` and `bench/recordings/e2e.py` take `--broker`
+  (`bench/brain.py`, `screen_env`: exactly what `desktop.screenBrokerEnv` adds, `DECURIX_SCREEN_USER=1`). The
+  recordings bench now reads `DECURIX_TEST_IMAGE` like the skills bench (it was fixed to `:basic`), and in broker mode
+  takes its own viewport measurement as the screen user (the DevTools relay is that user's alone). On
+  `decurix-desktop:next` with this tree's agent, all four runs pass (each bench with and without `--broker`). The
+  skills bench's output is the same in both modes apart from element refs, including the heal question D-09 puts to
+  the person and the "is not on the screen" question.
+- **A desktop the real control plane made**: this tree's control plane with `DECURIX_SCREEN_BROKER=1` (a build overlay
+  pointing its image at `:broker`; no product tag touched), a hosted brain (Azure, Kimi-K2.6 with vision, gpt-5.4-mini
+  fast), `/api/desktops/create`, under its seccomp profile. The trial's agent fixes (below) were copied into the
+  desktop, owned by root and not writable by others, then the desktop restarted. Everything went through the routes a
+  person uses: `/api/desktops/send` (replies with `note_id`), `/api/desktops/record`, `/api/desktops/ticket/action`,
+  `/api/desktops/tasks`, `/tasks/<id>/trace.txt`. All data fictional.
+  1. "Open invoice.pdf in ~/work and enter its total into totals.xlsx cell B2, then save": the plan was put to the
+     person, agreed, done with `office`, and checked (B2 = 18880). Done, checked, on both days.
+  2. "Open the bill entry page ~/work/bills.html in the browser and enter the bill from ~/work/invoice.pdf ...":
+     `gui open` of the worker's page (handed over, opened as a copy), observe, three fields typed, the pre-save check
+     refused the first press and showed the values, `--checked` pressed it. The final check looked at the screen
+     through the broker. Done, checked.
+  3. **A demonstration recorded by a person** through a ticket: VNC input (`bench/screen/person.py`, the input a
+     viewer sends): a click on the panel's Web Browser icon, ctrl+L, the page's address, three fields, Save bill. All
+     11 events were recorded on the screen side, handed back to the worker's store, and listed by the control plane.
+     `/learn` through the chat asked 8 questions, each answered as a reply, and saved the skill.
+  4. **The taught skill with its button renamed**, twice ("Record bill" through a plain request, "Go" through
+     `/skill`): the replay ran through the broker (the browser brought forward for the icon step, the address bar,
+     three fields) and stopped at step 11, "button "Save bill" is not on the screen", naming the worker's page. The
+     skill is still learning, so it runs model-guided, and the engine settled the renamed control itself (it observed
+     the page, once it read the page's source) and pressed it. The final check confirmed on the screen. Done, checked.
+
+Failures found and fixed (with tests; the benches pass with them in both modes):
+1. **A replay through the broker could not open a local page.** A taught skill whose first step opens
+   `~/work/form.html` stopped there ("not handed over by the command that named it"): `replay.run` went to the
+   broker without the files its steps name. Now `screen_call.program_files` hands over each open step's target and
+   each upload's files (this run's value for an upload that takes one) from the starting step on, the way `gui` hands
+   over the files its command names.
+2. **The screen side's copy's address leaked into everything it reported.** The browser shows a handed-over page as
+   `/var/lib/decurix-screen/inputs/<random>/name`. So an imported recording's check "the page
+   file:///home/headless/work/form.html" never matched, and a recording's addresses held the random folder. They
+   matched again only because `url_shape` stars a segment with two digits. Now `broker.local_copy` keeps the worker's
+   path beside each copy (`.origin`), and `broker.shown_url` gives it back wherever a page's address leaves the screen
+   side: the DevTools group and context (`cdp.py`), and `gui open`'s message. Outside broker mode an address is itself.
+3. **A person's click on the panel's Web Browser icon showed nothing.** A task had warmed the browser windowless
+   (`--no-startup-window`). The launcher's `gui open browser` answered "Brought Chromium to the front", with no window
+   on the screen, so the person's typing went nowhere. Now a running browser with no window gets one
+   (`core._open`). This was latent in the default mode too, for `gui open browser`.
+
+Seen, not fixed (none is specific to broker mode; they belong in follow-ups):
+- **The hosted brain never reached the replay's own question.** The heal question to the person, and the ladder's
+  model questions sent back through `screen_call` as `ask` messages, were covered only by the model-free bench and the
+  unit tests. The live run made no `py.escalation` call (the operator's `gui do` runs its ladder without a model).
+- **A plan's "each with your OK first: Press Save bill" was not kept.** The press went through on the pre-save self
+  check, without the person. The review raised it, and the final gate took the worker's screen evidence. The approval
+  gate does not count a local form's save as consequential; the same holds in the default mode. *Fixed in the working
+  tree (2026-11-08):* the plan's commits carry their control, a plan put to the person sets `DECURIX_PLAN_ASK_FIRST` on
+  the goal's gui commands, and `core.act` puts such a press to the gate (`_plan_hold`); the broker passes the variable
+  (read by its literal name). It is the worker's own promise, not part of the boundary: a worker that drops the
+  variable presses unasked, as it can with direct input.
+- **soul's coverage check does not credit a halted `gui do`** for the values its earlier steps typed (it credits a
+  failed command only for `Typed "..."` in its output). So "invoice2.pdf (read; none of its figures went into what was
+  entered)" was left open for the person on a run that had entered them. *Fixed in the working tree (2026-11-08):* a
+  replay's result carries `entered` (its steps' typed and chosen values, never a secret parameter's), `gui do` /
+  `gui replay` print it as one `ENTERED_BY_REPLAY: [...]` line however the run ended, and soul credits it from a
+  command that is one `gui do` or `gui replay` (`noteReplayEntered`).
+- **The screen user can read the worker's home by path** (`/home/headless` is 0755). A person typing
+  `file:///home/headless/work/bills.html` into the browser opened it directly. This is no way in for the worker:
+  handed files are still read only from descriptors, and nothing the worker names is opened by its name. But the
+  proposed shape ("the browser cannot read the rest of `$HOME`") does not hold.
+- A ticket opened about 13 s after `/record` while the previous task finished its post-run work; a `begin` sent
+  before then got 409 "no ticket is open". A person's screen bar polls the ticket, so nobody is stranded.
+- **No long request was run.**
+
+**Verdict: not yet.** Broker mode held up for real work: a hosted brain's tasks on files and on the screen, a
+person's demonstration, teaching, and a taught skill's replay, with no unseen success. But the trial found three
+failures that would have broken real use: a taught skill that opens a local page, an imported recording, and the
+browser icon. They are fixed in the working tree, and `decurix-desktop:broker`/`:next` predate the fixes. To turn it on
+for new desktops:
+1. Rebuild the desktop image with these fixes.
+2. Run one more short live pass on a desktop made from that image (the browser icon, a taught skill opening a local
+   page).
+3. Run the part of the series this trial did not reach: a long request, and a run where a replay's ladder asks the
+   hosted model through the broker (a skill past learning, or the healing ladder on a recorded replay).
+
+The losses already known stay as stated above: no desktop icons, an empty panel window list, and path 6's agent half.
+
+### Live pass on the rebuilt image (2026-11-08)
+
+The desktop image rebuilt from this tree (`decurix-desktop:next` = `:broker`, 5beb149276ff; the product tags left on
+the old images), this tree's control plane beside the app's (`decurix-dev`), a hosted brain (Azure, Kimi-K2.6,
+gpt-5.4-mini fast). All data fictional.
+- **Benches**: `bench/skills/e2e.py` and `bench/recordings/e2e.py` pass on `:next`, each with and without `--broker`
+  (four runs, END TO END: OK).
+- **Broker mode, a control-plane desktop** (`DECURIX_SCREEN_BROKER=1`): a person's click on the panel's Web Browser
+  icon (VNC input) brought up a visible Chromium window, run by `decurixscreen`. A taught skill whose first step opens
+  `~/work/form.html` (a Chrome Recorder export imported, `/learn`ed) replayed all six steps through the broker and the
+  page showed "Saved Birch Ltd in York", its address the worker's path (task t1c2d9185a8adb8fa). A **long request**
+  (`~/.decurix/long-requests` = on; two invoices, a summary workbook then a memo) was planned in two stages, each done
+  and checked, the cross-check's five shared figures agreeing, the workbook's figures right (7,080 + 8,260, a `=SUM`
+  Total) (t31da076b68b7038f; stages carry `planAgreed` from structure, so no plan question was put). A **replay whose
+  ladder asks the hosted model**: an untaught demonstration, mimicked for a matching request, with its Save button
+  renamed: the ladder's `py.escalation.ground` call went from the screen side back through `screen_call` to the
+  worker's model (t6facc27e9f4cc57c); the replay then stopped, and the model took over and pressed the renamed button
+  (as in the first trial: the person is not asked about a rename once the engine has the run). Every recorded call
+  was tagged (183 calls, `untagged: 0`).
+- **The plan's "OK first", default mode on a gated desktop**: found asking twice for one press, fixed (below), and
+  checked again: a plan reading "Then, each with your OK first: Submit the filled supplier bill", agreed; the press
+  held (`_plan_hold`); one yes; the press made once ("submission 1"), the task done and checked (t291d1531fdfcf44e).
+  A no: settled "declined" by the gate, Submit not pressed, the task reported "Stopped, as you said", not done
+  (t949a50d5326115a5).
+
+**Fixed: one press asked about twice on a gated desktop** (any held gui action under TheBot, not only the plan's):
+1. soul made a second gate request of its own for the paused command (`gateAsk`, kind "command"), which replaced the
+   gate's pending request for the action. The person's yes granted the command; soul took that grant; the gui
+   command it then ran was the action again, with no grant, so the person was asked again. Now the operator marks a
+   pause the gate made on the screen (`PendingOnScreen` -> Meta `onScreen` -> `Checkpoint.OnScreen`) and soul adopts
+   the gate's own pending request for it (`gateAdopt`): the person is asked once, in the gate's words for the action,
+   and the grant is left for the gui command TheBot runs on the yes (no fingerprint kept). A command the guard stopped
+   is asked about as before.
+2. The agent's watcher, which reads every reply first, took the gate's record of it (`take` by text, "taken once by
+   whoever asks first"); soul's take by request id then waited out its 45 seconds and resumed on "unclear". Now each
+   kind of take is once of its own (`taken_id`, `taken_text`); neither makes or moves a grant.
+Tests: `cmd/soul/gate_test.go` (adopts the screen request; falls back when none is pending; never for a guard's
+pause), `internal/scheduler/graph_test.go` (`OnScreen` on the checkpoint), `internal/skills/operator_test.go`
+(`onScreen` set for a screen stop only), `agent/tests/test_gate_server.py` (the agent's look never takes TheBot's yes;
+each take still once; one grant).
+
+Also changed: the operator's safety preamble now says the gui command also asks for "one the plan the human agreed
+makes with their OK first" - the review had told the person a held Save was a needless question.
+
+**Verdict: broker mode can be the default for new desktops.** What the first trial asked for is done: the image
+rebuilt with its fixes, the browser icon and a taught skill opening a local page checked on it, a long request, and a
+replay whose ladder asked the hosted model through the broker - with no unseen success and no failure specific to
+broker mode. The losses stay as stated (no desktop icons, an empty panel window list, path 6's agent half). The owner
+decides (O-1); a desktop keeps the mode it was created with.
+
 ## What this does not cover (said plainly)
 
 - **Direct input.** The gate decides whether a *yes* exists. It does not stand between the worker and the screen: a
   worker that runs `xdotool` or drives Chrome's DevTools port can click Pay without asking anyone. Closing that needs the
   X server and the browser behind the gate's user, with `gui` going through a broker. Until then the guard rails
-  (`claude_guard.py` for Claude, the shell checks for the others) are filters.
+  (TheBot's command guard and the shell checks) are filters.
 - **What the gate is told.** The gate does not see the screen: the action's description comes from the worker's side.
   A lying caller can only get a grant for the action it described, but with direct input it needs none.
 - **The agent token** is still in the agent's environment and readable by the worker (`/proc/<agent>/environ`). With it
@@ -316,6 +724,7 @@ accessibility bus under the screen user; (5) the agent's own user; every row pas
 - **What `gui` describes.** `about` (what an action acts on) and the control's name come from the worker's side of
   the screen; the gate words its question from them. A misleading description gets a grant only for that description.
 - **A fixed `hostgui.key`** change (e.g. after a restore onto another machine) changes every derived key: recreate desktops.
+
 ## What the control plane takes from a desktop, by input class (2026-11-05)
 
 - **A person's reply** comes from the control plane's own door, signed when it is an approval. Its boundary is
@@ -338,8 +747,8 @@ accessibility bus under the screen user; (5) the agent's own user; every row pas
   - The caller is identified by its address on its own network (`requestDesktop`, `callerDesktop`). Each desktop is
     on a network of its own, NET_RAW is dropped and the worker is not root, so one desktop cannot speak with
     another's address.
-  - Every such route answers for the calling desktop only, whatever the request names (`desktopReads` says why for
-    each one).
+  - Every such route answers for the calling desktop only, whatever the request names (`desktopReads`, in
+    `internal/httpapi/desktop_reads_test.go`, says why for each one, and fails for a route that has no reason).
   - The address names the desktop, not the process in it. No token is asked of the agent on these calls: the agent
     token is for the control plane's calls to desktops, and the worker can read it anyway (above).
 - **The gap.** The outcome class has no boundary. A worker can report its own task "done, checked", and the queue, the
@@ -415,8 +824,8 @@ too.
 **Guard rails, frozen.** The shell guards are filters, not the boundary (owner decision O-1). After this review:
 - `commands.py`: a change of folder the guard cannot follow makes the folder unknown, and a recursive delete of a
   relative path or pattern then waits for a person. No new words are added after this.
-- TheBot's `internal/safety` carries a FROZEN note. Its last five structural fixes are written by input class in
-  [follow-ups.md](follow-ups.md), O-1.a.
+- TheBot's `internal/safety` carries a FROZEN note. Its last five structural fixes, written by input class in
+  [follow-ups.md](follow-ups.md), O-1.a, all landed on 2026-11-07; nothing more is added to it.
 - The Claude harness's PreToolUse guard runs for `mcp__computer__.*` too. `open` may not name an input program, a local
   port or the gate's state, and a call the guard cannot read is refused.
 - Commands soul runs start without `DECURIX_AGENT_TOKEN`, `*_TOKEN` and `*_API_KEY` (`OPENAI_API_KEY` and

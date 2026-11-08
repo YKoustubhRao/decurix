@@ -1,6 +1,6 @@
 """
-The guards every door to the screen applies before core.act, in one place: the `gui` command (cli.py, the door of
-TheBot and the Ollama loop) and the MCP server (mcp_server.py, Claude Code's door) both call them.
+The guards every door to the screen applies before core.act, in one place: the `gui` command (cli.py, TheBot's door)
+calls them, and so would any later door (the MCP server, Claude Code's door, went with the legacy harnesses, O-4).
 
 Found in review (2026-11-03, D-23): the guards lived in cli.py, so the MCP door - the strongest engine's - pressed a
 named control by its point, took a guessed ref, clicked a native drop-down open, walked forty Tabs and typed a lone

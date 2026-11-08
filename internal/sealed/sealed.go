@@ -1,6 +1,7 @@
 // Package sealed encrypts the few secrets the control plane keeps in its
-// database (a mailbox's app password, the Cloudflare API token) with
-// AES-256-GCM, under a key kept in a file of its own in the data directory.
+// database (a mailbox's app password, the Cloudflare tokens, the hosted
+// models' API keys, the shared Claude login) with AES-256-GCM, each under a
+// key kept in a file of its own in the data directory.
 //
 // That keeps a secret out of a copy of decurix.db made to debug something, a
 // backup of the database alone, or anything else that reads the database

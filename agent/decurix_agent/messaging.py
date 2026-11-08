@@ -524,6 +524,20 @@ def ask_for_query(problem, kind="query", engine=None, secret=False, _date_query=
                 return query_id
         except Exception as exc:  # noqa: BLE001 - the question still goes out
             log(f"Could not ask the date question: {exc}")
+        # A save waiting on a field's unit (unit_answers.ask) is asked the same way: alone, in place of this one, and
+        # settled only by the reply to its own query (watchers).
+        try:
+            from decurix_agent import unit_answers
+            pending = unit_answers.question()
+            if pending and not pending.get("query_id"):
+                log("A save waits on which unit a field takes: that is asked first, on its own; the engine's "
+                    "question is not put to the person now.")
+                query_id = ask_for_query(unit_answers.question_text(pending), kind="query", engine=engine,
+                                         _date_query=True)
+                unit_answers.mark_asked(task_context.current(), query_id)
+                return query_id
+        except Exception as exc:  # noqa: BLE001 - the question still goes out
+            log(f"Could not ask the unit question: {exc}")
 
     if _query_gate is not None and not _date_query:
         try:
@@ -753,7 +767,7 @@ def write_final_reply(reply, kind="final", engine=None, quiet=False, interrupted
 
     `verdict` is the structured verdict of the checks that settled it (verdict.py, R6), sent as given; `checked` then
     follows it, and a caller's `checked` that disagrees makes it not checked (fail closed, logged). Without one the
-    verdict is derived (verdict.derive): checked=True is a `legacy` done, which never counts towards trust.
+    verdict is derived (verdict.derive), never a done: checked=True with no verdict goes out not checked (fail closed).
     `stopped`: the person said no and the work stopped there (write_stopped) - never done.
     """
 
@@ -998,7 +1012,8 @@ def _keep_facts(task_id, quiet=False, interrupted=False):
 # ============================================================
 
 # (field_answer: which entry a field takes, as a person's judgement answered it - person_record; H-PY-18.)
-LEARNED_KINDS = ("correction", "run_answer", "lesson", "field_answer")
+# (field_unit: whether a field takes its figures in a unit, as the person answered the save's unit question - unit_answers.)
+LEARNED_KINDS = ("correction", "run_answer", "lesson", "field_answer", "field_unit")
 LEARNED_TIMEOUT = 5
 LEARNED_FILE = "learned.jsonl"
 _learned_lock = threading.Lock()

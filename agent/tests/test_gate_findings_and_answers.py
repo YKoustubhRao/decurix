@@ -155,11 +155,13 @@ class AChangedGivenFileIsTold(_Reports):
                 mock.patch.object(source_guard, "changed_sources", lambda task_id, request: [dict(change)]), \
                 mock.patch.object(source_guard, "restore", lambda *a, **k: restored.append(a) or ([], [])), \
                 mock.patch.object(source_guard, "restore_sources", lambda *a, **k: restored.append(a)), \
-                mock.patch.object(source_guard, "check_and_restore", lambda *a, **k: restored.append(a) or ""):
+                mock.patch.object(source_guard, "offer", lambda task_id, facts: "ab12cd34"):
             self.assertTrue(skill_task._gate("Recorded the payment in ledger.xlsx.", "final", "thebot"))
         self.assertEqual(restored, [])
         self.assertIn("B7: 0 -> 500", self.judged[0]["produced"])
         self.assertIn("Changed your file C:\\Books\\ledger.xlsx", self.reports[-1]["text"])
+        # The report offers the original back, by a reply that names this offer (never words read from a message).
+        self.assertIn("send `/restore ab12cd34`", self.reports[-1]["text"])
         self.assertIs(self.reports[-1].get("checked"), True)
 
     def test_a_source_check_that_cannot_be_made_leaves_the_work_not_checked(self):

@@ -47,3 +47,28 @@ func TestTheBrowserCarriesNoOnDeviceModelAndKeepsItsIsolation(t *testing.T) {
 		}
 	}
 }
+
+// Memory Saver is on by policy (L5, docs/lightweight.md): Chrome discards a tab left in the background for a while
+// and reloads it when it is opened again; it never discards the tab on screen. HighEfficiencyModeEnabled is the switch
+// (Chrome 108+; Memory Saver's old name, still the policy's); MemorySaverModeSavings 0 is the moderate level, the
+// longest wait before a tab goes, so a worker coming back to a tab it was using is the least likely to find it
+// reloaded. Nothing exempts sites: TabDiscardingExceptions would be a list of products.
+func TestTheBrowserSavesMemoryOnTabsInTheBackground(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "agent", "chrome-policies.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var policies map[string]any
+	if err := json.Unmarshal(raw, &policies); err != nil {
+		t.Fatalf("chrome-policies.json is not JSON: %v", err)
+	}
+	if policies["HighEfficiencyModeEnabled"] != true {
+		t.Errorf("HighEfficiencyModeEnabled = %v, want true (Memory Saver on)", policies["HighEfficiencyModeEnabled"])
+	}
+	if policies["MemorySaverModeSavings"] != float64(0) {
+		t.Errorf("MemorySaverModeSavings = %v, want 0 (moderate: tabs wait longest before they are discarded)", policies["MemorySaverModeSavings"])
+	}
+	if _, ok := policies["TabDiscardingExceptions"]; ok {
+		t.Error("TabDiscardingExceptions is set: a per-site list does not belong in the image's policy")
+	}
+}

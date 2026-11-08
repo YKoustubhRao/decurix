@@ -225,3 +225,32 @@ test("the screen copies the desktop's clipboard only on a click", () => {
   // The viewer is a module script, which scripts() leaves out: its source is read as it is.
   assert.doesNotMatch(fnSource(read("screen.html"), "onRemoteClipboard"), /clipboard\.writeText/);
 });
+
+// A desktop's delete refused while its runs are not saved (409 with held) shows the control plane's reason and is
+// sent again with force only on the person's "Delete anyway"; a no leaves the desktop.
+test("the dashboard's delete offers Delete anyway on the held refusal, and forces only on a yes", async () => {
+  const code = scripts(read("index.html")).join("\n");
+  for (const yes of [true, false]) {
+    const sent = [], asked = [];
+    const sandbox = {
+      URLSearchParams,
+      ACTIONS: { delete: { url: "/api/desktops/delete" } },
+      askConfirm: async (title, body, label) => { asked.push({ title, body, label }); return yes; },
+      fetch: async (url, opts) => {
+        const form = new URLSearchParams(opts.body);
+        sent.push(form.get("force") || "");
+        if (form.get("force") === "1") return { ok: true, status: 200, json: async () => ({ status: "deleted" }) };
+        return { ok: false, status: 409, json: async () => ({ held: true, unsaved_runs: 2,
+          error: "2 runs of this desktop are not saved to the run record yet; try again in a minute, or delete anyway." }) };
+      },
+    };
+    vm.createContext(sandbox);
+    vm.runInContext("async " + fnSource(code, "deleteDesktop") + "\nthis.deleteDesktop = deleteDesktop;", sandbox);
+    const deleted = await sandbox.deleteDesktop("box");
+    assert.strictEqual(deleted, yes);
+    assert.strictEqual(asked.length, 1);
+    assert.strictEqual(asked[0].label, "Delete anyway");
+    assert.match(asked[0].body, /2 runs of this desktop are not saved/);
+    assert.deepStrictEqual(sent, yes ? ["", "1"] : [""]);
+  }
+});

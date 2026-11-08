@@ -1,0 +1,29 @@
+{
+  "schema": "decurix.eval-suite/v1",
+  "name": "learn-v1",
+  "description": "A learning curve: ten cases of two kinds of work a small accounting firm repeats, entering a supplier bill from its PDF into the bill form, and reconciling a client's bank statement (CSV) against their bank book (workbook), five of each on fresh documents, interleaved, run with --carry-state so each case finds what the ones before it left. The person teaches one standing rule per kind in its first case (which cost centre a bill goes to; the firm's reconciliation layout and matching rule), and the scripted expert gives the same words whenever it is asked again; the fourth bill lacks its invoice number, so the right answer there is to ask. The curve is, per case in order: tokens in and out, model calls, the cached share of input, questions (required / other) and pass. Success: the later cases of each kind pass at the first case's rate or better, with fewer tokens and fewer questions that are not required, and no false done. Fictional data; the records app of core-v1.",
+  "mocks": {
+    "records-app": {
+      "hosts": [
+        "records.example.test"
+      ]
+    }
+  },
+  "budget": {
+    "max_tokens": 1500000,
+    "max_minutes": 15
+  },
+  "cases": [
+    "learn-bill-1",
+    "learn-recon-1",
+    "learn-bill-2",
+    "learn-recon-2",
+    "learn-bill-3",
+    "learn-recon-3",
+    "learn-bill-4",
+    "learn-recon-4",
+    "learn-bill-5",
+    "learn-recon-5"
+  ],
+  "carry_state": true
+}

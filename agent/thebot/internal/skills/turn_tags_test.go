@@ -91,7 +91,9 @@ func TestACommandSeesItsTaskAndTurn(t *testing.T) {
 		t.Skip("reads the environment with env")
 	}
 	run := func(tags llm.Tags) string {
-		chat := &scriptedChat{replies: []string{"COMMAND:\nenv", "DONE:\nlisted"}}
+		// Only the DECURIX_ variables: a CI runner's whole environment is long enough that the output kept for the
+		// model is cut before them (CI on main, 2026-11-05).
+		chat := &scriptedChat{replies: []string{"COMMAND:\nenv | grep '^DECURIX_' || true", "DONE:\nlisted"}}
 		rc := operatorContext(t, chat)
 		rc.Ctx = llm.WithTags(context.Background(), tags)
 		if _, err := NewOperator().Run(rc, Subtask{Step: "list the environment", Type: "operator"}); err != nil {

@@ -129,7 +129,8 @@ func (a handoffAdapter) Resolve(ctx context.Context, raw string) (string, bool) 
 // skillHubFinder finds the workers that hold a role or have a skill installed, from the org's skill registry.
 type skillHubFinder struct{ hub *skillhub.Store }
 
-// Holders lists the workers holding the role (or, with no role, having the skill installed).
+// Holders lists the workers holding the role (or, with no role, having the skill installed), by worker id. Names
+// are matched ignoring case, as the work queue and the approval policies match them.
 func (f skillHubFinder) Holders(_ context.Context, role, skill string) ([]string, error) {
 	var out []string
 	if role != "" {
@@ -138,7 +139,7 @@ func (f skillHubFinder) Holders(_ context.Context, role, skill string) ([]string
 			return nil, err
 		}
 		for w, rs := range all {
-			if slices.Contains(rs, role) {
+			if slices.ContainsFunc(rs, func(r string) bool { return strings.EqualFold(r, role) }) {
 				out = append(out, w)
 			}
 		}
@@ -150,7 +151,7 @@ func (f skillHubFinder) Holders(_ context.Context, role, skill string) ([]string
 		return nil, err
 	}
 	for _, e := range entries {
-		if e.Name == skill {
+		if strings.EqualFold(e.Name, skill) {
 			for _, in := range e.Installs {
 				out = append(out, in.Worker)
 			}

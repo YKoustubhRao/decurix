@@ -348,6 +348,7 @@ func service(t *testing.T) (*Service, *fakeChat, *fakeOffline, *fakeSandbox, *fa
 	off := &fakeOffline{}
 	tk := &fakeTasks{}
 	b := &Broker{LLM: chat}
+	b.Caller = runDesktopAt(b)
 	b.Steps = func(w, task, text string) { _, _ = tk.AddStep(w, task, tasks.Step{Text: text}) }
 	sb := &fakeSandbox{t: t, broker: b, act: map[string]behaviour{
 		"ordinary-1": {kind: "final", text: "Done", outputs: map[string]string{"out.txt": "total 7"}},
@@ -460,7 +461,7 @@ func TestSubnetCacheDoesNotQueueRequestsBehindDocker(t *testing.T) {
 
 func TestBrokerServesOnlyItsPaths(t *testing.T) {
 	chat := &fakeChat{usage: 60}
-	b := &Broker{LLM: chat}
+	b := &Broker{LLM: chat, Caller: desktopAt("practice-r1")}
 	h := b.Handler()
 	do := func(method, path, body string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()

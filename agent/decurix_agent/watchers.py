@@ -613,6 +613,35 @@ def answer_waiting(path, content, already_marked=False):
     except Exception as exc:  # noqa: BLE001
         log(f"Could not take the reply as the date order: {exc}")
 
+    # A save waiting on a field's unit (unit_answers.ask) is settled the same way: only the reply to its own query whose
+    # whole text is an option's number. What backs the answer is the control plane's record of this reply, read back
+    # at the save (unit_answers.answered), never this note.
+    try:
+        from decurix_agent import unit_answers
+        task_id = task_context.current()
+        if not date_answer and unit_answers.query_answered(task_id, state.asked_query_id):
+            question = unit_answers.question(task_id)
+            said = attachments.text(content or "")
+            taken = unit_answers.take_answer(task_id, said, state.asked_query_id)
+            field = f"the field \"{question['label']}\""
+            if taken is not None:
+                date_answer = True
+                log(f"The person said whether {field} takes its figures in {question['unit']}; the save can go on.")
+                content = (f"(Not your question - the agent asked the person whether {field} takes its figures in "
+                           f"{question['unit']}, since a save waited on it. They answered: "
+                           + ("yes" if taken else "no") + ". Your own question was not put to them: ask it again if "
+                           "you still need it, and save again.)")
+            else:
+                unit_answers.unmark_asked(task_id)
+                if not guidance.calls_off(said, ""):
+                    date_answer = True
+                    content = (f"(Not your question - the agent asked the person whether {field} takes its figures "
+                               f"in {question['unit']}, since a save waited on it, and their reply picked neither "
+                               "option, so the save still waits on it. Your own question was not put to them. Their "
+                               "reply: " + " ".join(said.split())[:300] + ")")
+    except Exception as exc:  # noqa: BLE001
+        log(f"Could not take the reply as the field's unit: {exc}")
+
     # If what it is waiting on is an on-screen action the
     # approval gate stopped, this reply is what settles it:
     # a yes becomes a one-shot grant for exactly that action,
@@ -665,9 +694,10 @@ def answer_waiting(path, content, already_marked=False):
                     and skill_task._check_not_made((state.paused_skill or {}).get("verdict")))
     if not teaching and not secret and not date_answer and not unmade_check:  # (a date answer is kept with its judgement, not as a lesson)
         # A replay's or a skill run's own question (a value, a
-        # stuck step); "is it done?" is not one of those.
+        # stuck step), or "put back a file you have changed since?",
+        # which is about this one file; "is it done?" is not one of those.
         mechanical = (state.paused_replay is not None
-                      or (state.paused_skill or {}).get("mode") == "run")
+                      or (state.paused_skill or {}).get("mode") in ("run", "restore"))
         try:
             lessons.note(state.last_query_text, content, kind=state.last_query_kind, outcome=outcome,
                          task=state.current_task or "", skill=skill_task.guided_skill_title(),

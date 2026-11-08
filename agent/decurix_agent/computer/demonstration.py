@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from decurix_agent import logging_utils, progress
-from decurix_agent.computer import approval, audit, browser, cdp, core, privacy, processing, recording, screen, session
+from decurix_agent.computer import approval, audit, browser, cdp, core, privacy, processing, recording, screen, screen_call, session
 from decurix_agent.computer import elements as el
 from decurix_agent.computer.errors import ComputerError
 from decurix_agent.logging_utils import log
@@ -165,6 +165,7 @@ def _close(session_id, status, reason):
         log(f"Could not close demonstration {session_id}: {exc}")
 
 
+@screen_call.routed("demonstration.status")
 def status():
     """
     The demonstration being recorded: {"session", "title", "started_at",
@@ -193,6 +194,7 @@ def status():
     }
 
 
+@screen_call.routed("demonstration.start")
 def start(title="", description="", task_id=""):
     """
     Start recording a demonstration; returns its meta once the recorder is
@@ -261,6 +263,7 @@ def _running():
     return active
 
 
+@screen_call.routed("demonstration.pause")
 def pause(reason=""):
     """Stop keeping anything - input or frames - until resume(). For a private step."""
 
@@ -271,6 +274,7 @@ def pause(reason=""):
     return recording.meta(active["session"])
 
 
+@screen_call.routed("demonstration.resume")
 def resume():
     active = _running()
     active.update(paused=False)
@@ -279,6 +283,7 @@ def resume():
     return recording.meta(active["session"])
 
 
+@screen_call.routed("demonstration.note")
 def note(text):
     """
     Add a person's written explanation of what they are doing right now to
@@ -354,6 +359,7 @@ def note(text):
     return event
 
 
+@screen_call.routed("demonstration.stop")
 def stop():
     """Stop the demonstration and wait for its last actions to be written; returns its meta."""
 
@@ -374,10 +380,23 @@ def stop():
 
     _close(active["session"], "interrupted", "the recorder stopped before it finished")
     _clear_active()
+    _hand_back(active["session"])
 
     return recording.meta(active["session"])
 
 
+def _hand_back(session_id):
+    """Broker mode: the recorder ran as the screen user and wrote the recording in that user's folder; at its end the
+    caller's copy (the worker's recordings, where the agent learns from it) becomes the whole of it."""
+
+    from decurix_agent.computer import broker
+    try:
+        broker.mirror_tree(recording._dir(session_id))
+    except (OSError, ValueError) as exc:
+        log(f"Could not hand demonstration {session_id} back: {exc}")
+
+
+@screen_call.routed("demonstration.recover")
 def recover():
     """
     At agent startup: close any demonstration left "recording" by a recorder
@@ -394,6 +413,7 @@ def recover():
         if found.get("kind") == "demonstration" and found.get("status") == "recording":
             if not active or active.get("session") != found["id"]:
                 _close(found["id"], "interrupted", "the desktop restarted while it was being recorded")
+                _hand_back(found["id"])
 
 
 # ============================================================

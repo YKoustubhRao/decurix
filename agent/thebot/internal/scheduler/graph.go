@@ -76,6 +76,9 @@ type Checkpoint struct {
 	GateFingerprint string
 	// PlanAgreed is the paused request's own (Request.PlanAgreed): the reply that resumes it does not carry it.
 	PlanAgreed bool
+	// OnScreen says the approval is for an on-screen action the approval gate itself stopped (its skill's Meta
+	// "onScreen"): the gate already holds that action's request, and soul's gate.go asks the person that one.
+	OnScreen bool
 
 	nodes []node
 	seq   int
@@ -99,6 +102,7 @@ type pause struct {
 	action   string
 	shown    string // the action as the person may be shown it (its skill's Meta "actionShown"); "" for action
 	reason   string
+	onScreen bool // the gate stopped the action on the screen (its skill's Meta "onScreen")
 	question string
 }
 
@@ -548,7 +552,8 @@ func pauseFor(n *node, secrets withheld.Values) *pause {
 		action, _ := res.Meta["action"].(string)
 		shown, _ := res.Meta["actionShown"].(string)
 		reason, _ := res.Meta["approvalReason"].(string)
-		return &pause{node: n, kind: pauseApproval, action: action, shown: shown, reason: reason}
+		onScreen, _ := res.Meta["onScreen"].(bool)
+		return &pause{node: n, kind: pauseApproval, action: action, shown: shown, reason: reason, onScreen: onScreen}
 	}
 	question, _ := res.Meta["question"].(string)
 	if question == "" {
@@ -691,6 +696,7 @@ func (e *execution) checkpoint() *Checkpoint {
 		Route: e.route, System: e.system,
 		Kind: e.pause.kind, Action: e.pause.action, Question: e.pause.question,
 		Replans: e.replans, UsedSkill: e.usedSkill, CreatedAt: time.Now(), seq: e.seq, PlanAgreed: e.req.PlanAgreed,
+		OnScreen: e.pause.onScreen,
 	}
 	if e.pause.node != nil {
 		cp.PausedID = e.pause.node.step.ID

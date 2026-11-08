@@ -36,6 +36,71 @@ class AnUnreadableLedgerIsKept(base.LongRunBase):
         self.assertEqual(aside[0].read_text(encoding="utf-8"), "{ not json")
         self.assertFalse(path.exists())
 
+    def test_a_passing_read_error_is_tried_again_and_never_moves_the_ledger(self):
+        with mock.patch.object(long_task, "drive", lambda *a, **k: None):
+            long_task.perform(base.LONG, None)
+        run_id = self.run_id()
+        long_task._update(run_id, lambda d: d["decisions"].append({"stage": "s1", "question": "q", "answer": "a"}))
+        path = long_task._ledger_path(run_id)
+        real, calls = type(path).read_text, []
+
+        def busy_twice(self_, *a, **k):
+            calls.append(1)
+            if self_ == path and len(calls) <= 2:
+                raise PermissionError("the file is in use")
+            return real(self_, *a, **k)
+        with mock.patch.object(long_task, "LEDGER_IO_BACKOFF", 0), mock.patch.object(type(path), "read_text", busy_twice):
+            self.assertEqual(long_task.ledger(run_id)["decisions"][-1]["answer"], "a")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(long_task._unreadable_copies(run_id), [])
+
+    def test_a_read_error_that_lasts_fails_loudly_and_leaves_the_file(self):
+        with mock.patch.object(long_task, "drive", lambda *a, **k: None):
+            long_task.perform(base.LONG, None)
+        run_id = self.run_id()
+        path = long_task._ledger_path(run_id)
+        before = path.read_text(encoding="utf-8")
+
+        def busy(*a, **k):
+            raise PermissionError("the file is in use")
+        with mock.patch.object(long_task, "LEDGER_IO_BACKOFF", 0), mock.patch.object(type(path), "read_text", busy):
+            with self.assertRaises(long_task.LedgerError):
+                long_task.ledger(run_id)
+            with self.assertRaises(long_task.LedgerError):
+                long_task._update(run_id, lambda d: d["facts"].append({"text": "x"}))
+        self.assertEqual(long_task._unreadable_copies(run_id), [])
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertIn("decisions", long_task.ledger(run_id))  # readable again once the file is free
+
+    def test_a_save_error_is_tried_again_then_fails_with_the_old_file_in_place(self):
+        with mock.patch.object(long_task, "drive", lambda *a, **k: None):
+            long_task.perform(base.LONG, None)
+        run_id = self.run_id()
+        path = long_task._ledger_path(run_id)
+        before = path.read_text(encoding="utf-8")
+        tries = []
+
+        def busy(*a, **k):
+            tries.append(1)
+            raise PermissionError("the file is in use")
+        with mock.patch.object(long_task, "LEDGER_IO_BACKOFF", 0), mock.patch.object(privacy, "write_scrubbed", busy):
+            with self.assertRaises(long_task.LedgerError):
+                long_task._update(run_id, lambda d: d["facts"].append({"text": "x"}))
+        self.assertEqual(len(tries), long_task.LEDGER_IO_TRIES)
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertEqual(long_task._unreadable_copies(run_id), [])
+        tries.clear()
+        flaky = privacy.write_scrubbed
+
+        def busy_once(*a, **k):
+            tries.append(1)
+            if len(tries) == 1:
+                raise PermissionError("the file is in use")
+            return flaky(*a, **k)
+        with mock.patch.object(long_task, "LEDGER_IO_BACKOFF", 0), mock.patch.object(privacy, "write_scrubbed", busy_once):
+            long_task._update(run_id, lambda d: d["facts"].append({"text": "kept"}))
+        self.assertEqual(long_task.ledger(run_id)["facts"][-1]["text"], "kept")
+
     def test_a_run_with_no_ledger_yet_has_the_empty_shape(self):
         self.assertEqual(long_task.ledger("no-such-run")["decisions"], [])
 

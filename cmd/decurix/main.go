@@ -17,6 +17,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	// The tz database built in, so a schedule's IANA zone (internal/schedule)
+	// loads on Windows or in a minimal container with no zoneinfo of its own.
+	_ "time/tzdata"
 
 	"github.com/docker/docker/client"
 	"github.com/joho/godotenv"
@@ -24,7 +27,6 @@ import (
 	"github.com/YKoustubhRao/decurix/internal/access"
 	"github.com/YKoustubhRao/decurix/internal/blobstore"
 	"github.com/YKoustubhRao/decurix/internal/cftunnel"
-	"github.com/YKoustubhRao/decurix/internal/claudeauth"
 	"github.com/YKoustubhRao/decurix/internal/concierge"
 	"github.com/YKoustubhRao/decurix/internal/conversation"
 	"github.com/YKoustubhRao/decurix/internal/dag"
@@ -244,6 +246,24 @@ func idleStopThreshold() time.Duration {
 	return time.Duration(minutes) * time.Minute
 }
 
+// idleStopAfter reads DECURIX_IDLE_STOP_AFTER_MINUTES: how long a desktop stays paused before idlepause stops it to
+// give its memory back. Unset or invalid means idlepause.DefaultStopAfter (30 minutes); 0 or less never stops one.
+func idleStopAfter() time.Duration {
+	raw := os.Getenv("DECURIX_IDLE_STOP_AFTER_MINUTES")
+	if raw == "" {
+		return idlepause.DefaultStopAfter
+	}
+	minutes, err := strconv.Atoi(raw)
+	if err != nil {
+		log.Printf("warning: DECURIX_IDLE_STOP_AFTER_MINUTES=%q is not a number; using the default of %s", raw, idlepause.DefaultStopAfter)
+		return idlepause.DefaultStopAfter
+	}
+	if minutes <= 0 {
+		return 0
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
 // mailPollInterval is how often each connected mailbox is checked:
 // DECURIX_MAIL_POLL_SECONDS, at least 15 (a provider rate-limits logins), else
 // mailtrigger.DefaultPollInterval.
@@ -280,6 +300,8 @@ func main() {
 	restoreBackup := flag.String("restore-backup", "", "put a backup's database and key files back into the data dir (the control plane must be stopped), then exit")
 	restoreForce := flag.Bool("force", false, "with -restore-backup, restore even though a control plane answers at -url")
 	phoneSetup := flag.Bool("phone-setup", false, "set up this phone's link (what the phone link page's command runs): decurix --phone-setup BASE TOKEN")
+	purgeSecret := flag.Bool("purge-secret", false, "purge a leaked secret, read from stdin, from the stores of the control plane at -url, then exit")
+	purgeReason := flag.String("reason", "", "with -purge-secret, why it is purged (kept with who purged it, never the value)")
 	flag.Parse()
 
 	if *showVersion {
@@ -292,6 +314,10 @@ func main() {
 	// else, reached over the same HTTP API the dashboard uses.
 	if *cliMode {
 		os.Exit(runCLI(*cliURL))
+	}
+	// -purge-secret is a thin client too: the running control plane does the purge (cmd/decurix/purge.go).
+	if *purgeSecret {
+		os.Exit(runPurgeSecret(*cliURL, *purgeReason, os.Stdin, os.Stdout, os.Stderr))
 	}
 
 	// -phone is the same kind of thin client, on a phone: no Docker, no
@@ -338,7 +364,7 @@ func main() {
 	// Chooses the chat model for this machine unless OLLAMA_MODEL names one.
 	ollama.EnableAutoSelect()
 
-	// Building all three images takes a long time and a lot of disk, so it is
+	// Building both images (desktop and tools) takes a long time and a lot of disk, so it is
 	// an explicit request rather than something startup does on its own.
 	if *buildImages {
 		if err := desktops.BuildImages(ctx, os.Stdout, !*rebuild, *imagesWhich); err != nil {
@@ -349,6 +375,13 @@ func main() {
 
 		return
 	}
+
+	// One control plane per data directory: a second one start refuses, naming the first (sqlitedb.LockDataDir).
+	dataLock, err := sqlitedb.LockDataDir(sqlitedb.DataDir())
+	if err != nil {
+		log.Fatalf("Decurix cannot start: %v", err)
+	}
+	defer dataLock.Release()
 
 	dbPath := filepath.Join(sqlitedb.DataDir(), sqlitedb.FileName)
 
@@ -387,6 +420,11 @@ func main() {
 	// A suggestion never evicts the chat model from a one-model Ollama to embed (C-10).
 	suggestions.WouldEvict = ollama.EmbedWouldEvict
 
+	// The shared Claude Code login went with the claude harness (2026-11-07): its table stays, emptied.
+	if err := httpapi.MigrateLegacyClaudeSession(db); err != nil {
+		log.Fatalf("database: %v", err)
+	}
+
 	server := httpapi.NewServer(
 		desktops,
 		must(querynotes.NewStore(db)),
@@ -395,7 +433,6 @@ func main() {
 		must(stepimages.NewStore(db, stepImagesMaxBytes())),
 		tasksStore,
 		tunnel.NewStore(),
-		must(claudeauth.NewStore(db)),
 		lanAccess,
 		schedules,
 		dags,
@@ -406,7 +443,9 @@ func main() {
 	server.Devices = pairedDevices
 	server.DB = db
 	server.DateOrder = dateOrderFromEnv()
-	server.RequirePurpose = os.Getenv("DECURIX_LLM_REQUIRE_PURPOSE") == "1"
+	// On by default since the live round of 2026-11-08 showed 0 untagged calls in 58 (soul, the agent, the gate);
+	// DECURIX_LLM_REQUIRE_PURPOSE=0 turns it off for desktops made before calls said what they were for.
+	server.RequirePurpose = os.Getenv("DECURIX_LLM_REQUIRE_PURPOSE") != "0"
 	server.SkillHub = must(skillhub.NewStore(db))
 	server.Knowledge = must(knowledge.NewStore(db))
 	server.Handoffs = server.NewHandoffService(must(handoff.NewStore(db)))
@@ -447,7 +486,13 @@ func main() {
 	server.ForgetSecretsAtStart()
 	runStore := must(runs.NewStore(db, blobs))
 	server.RunStore, server.RunBundles = runStore, runStore
-	server.Runs = &runs.Puller{Home: desktops, Store: runStore, Blobs: blobs}
+	// The recording's share of one run's bundle (frames, observations, program; the labels are never cut for it):
+	// DECURIX_RUN_BUNDLE_MB, read once here, for every puller below.
+	bundleLimit, bundleNote := runs.BundleLimit(os.Getenv(runs.BundleLimitEnv))
+	if bundleNote != "" {
+		log.Printf("warning: %s", bundleNote)
+	}
+	server.Runs = &runs.Puller{Home: desktops, Store: runStore, Blobs: blobs, Limit: bundleLimit}
 	// Simulate: practice runs of what a worker was taught, on a practice desktop that reaches only its broker
 	// (docs/simulation.md). Its routes are the owner's, primary listener only.
 	practiceSvc := &practice.Service{
@@ -463,6 +508,8 @@ func main() {
 		Vision:     func(p string) bool { return server.LLM.Status()[p].Vision },
 		FreeMemory: func() (uint64, error) { _, avail, err := ollama.AvailableMemory(); return avail, err },
 		MaxTokens:  practice.MaxTokensFromEnv(),
+		// Each Simulate case's bundle, pulled off its practice desktop before the next case resets it.
+		Bundles: &runs.Puller{Home: desktop.PracticeHome{M: desktops}, Store: runStore, Blobs: blobs, Limit: bundleLimit},
 	}
 	brokerLn := &practice.BrokerListener{Network: desktops.PracticeBrokerEndpoint, Port: "8091", Handler: practiceSvc.Broker.Handler()}
 	defer brokerLn.Close()
@@ -470,6 +517,9 @@ func main() {
 	// Practice and eval desktops' calls go through the broker, which records them (caller practice), and a changed
 	// hosted deployment sends every suite that pins it back to needs-retesting (E4).
 	practiceSvc.Broker.Recorder = llmrecStore
+	// A callback is the practice desktop's only from its address on the practice network, never by the desktop_id in
+	// its body (C-25): the mock app shares that network.
+	practiceSvc.Broker.Caller = desktops.PracticeDesktopAt
 	server.LLM.OnChange(practiceSvc.BrainChanged)
 	// The eval matrix runner (E3, docs/evals.md): one suite x arms x repeats on the practice sandbox, one run at a
 	// time, sharing Simulate's slot. Its routes are the owner's, primary listener only. A run that was running when
@@ -481,6 +531,8 @@ func main() {
 	}
 	var evalSvc *eval.Service
 	if evalStore != nil {
+		// A run record an eval case made carries the case's grade (labels.eval).
+		server.RunEvals = evalStore
 		evalSvc = &eval.Service{
 			Store:     evalStore,
 			Sandbox:   desktops,
@@ -490,7 +542,7 @@ func main() {
 			Recorder:  llmrecStore,
 			Tasks:     tasksStore,
 			// Each model case's bundle, pulled off its practice desktop before the next case resets it (O-6).
-			Bundles:    &runs.Puller{Home: desktop.PracticeHome{M: desktops}, Store: runStore, Blobs: blobs},
+			Bundles:    &runs.Puller{Home: desktop.PracticeHome{M: desktops}, Store: runStore, Blobs: blobs, Limit: bundleLimit},
 			Practice:   practiceSvc,
 			Vision:     practiceSvc.Vision,
 			FreeMemory: practiceSvc.FreeMemory,
@@ -644,7 +696,14 @@ func main() {
 		log.Println("Idle-pause: disabled (DECURIX_IDLE_STOP_MINUTES=0).")
 	}
 
-	checker := &idlepause.Checker{Desktops: desktops, Tasks: tasksStore, Threshold: idleThreshold, Action: idleAction}
+	checker := &idlepause.Checker{Desktops: desktops, Tasks: tasksStore, Threshold: idleThreshold, Action: idleAction,
+		StopAfter: idleStopAfter(), Memory: &resourcemon.HostMemory{DockerTotalMB: desktops.HostMemTotalMB}}
+	if idleThreshold > 0 && checker.StopAfter > 0 && idleAction != "stop" {
+		log.Printf("Idle-pause: desktops paused for %s are stopped to give their memory back. Set DECURIX_IDLE_STOP_AFTER_MINUTES=0 to keep them paused.", checker.StopAfter)
+	}
+	// Before a desktop starts, the longest-idle paused desktops are stopped when the Docker host's memory would not
+	// hold it (lightweight L2); a start that cannot fit is refused with desktop.NoRoomError.
+	desktops.SetRoomMaker(checker.MakeRoom)
 	server.IdleChecker = checker
 	go checker.Run(ctx)
 

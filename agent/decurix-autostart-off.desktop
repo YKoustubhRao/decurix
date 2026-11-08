@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Not started in a Decurix desktop
+Comment=Hides the system autostart entry of the same name (docker/desktop.basic.Dockerfile says which and why)
+Hidden=true

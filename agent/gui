@@ -2,4 +2,24 @@
 # The `gui` command: see and use this desktop's screen (decurix_agent/computer).
 # Installed as /usr/local/bin/gui by the desktop Dockerfiles, so every engine's
 # shell commands reach the same action layer the agent itself uses.
-PYTHONPATH="/opt${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m decurix_agent.computer "$@"
+#
+# The command is handed to the desktop's gui daemon (computer/daemon.py), which
+# has the screen stack imported already; gui_client.py runs it here, as
+# `python3 -m decurix_agent.computer`, when there is no daemon or it does not
+# take the command. Output and exit codes are the same either way.
+# DECURIX_GUI_DAEMON=off always runs it here.
+export PYTHONPATH="/opt${PYTHONPATH:+:$PYTHONPATH}"
+client=/opt/decurix_agent/computer/gui_client.py
+# A desktop whose screen is its own user's (DECURIX_SCREEN_USER=1, the screen broker; docs/gate-boundary.md): the
+# command goes to the broker only, never in-process here - DECURIX_GUI_DAEMON=off included.
+if [ "${DECURIX_SCREEN_USER:-}" = "1" ]; then
+    if [ ! -f "$client" ]; then
+        echo "gui: cannot reach the screen: $client is missing" >&2
+        exit 1
+    fi
+    exec python3 -I -S "$client" "$@"
+fi
+if [ -f "$client" ] && [ "${DECURIX_GUI_DAEMON:-}" != "off" ]; then
+    exec python3 -I -S "$client" "$@"
+fi
+exec python3 -m decurix_agent.computer "$@"

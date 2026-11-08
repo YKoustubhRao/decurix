@@ -24,7 +24,7 @@ from unittest import mock
 from test_recordings import FakeScreen, event, field
 
 from decurix_agent import http_api, playbooks, skill_task, state
-from decurix_agent.computer import cli, learning, mcp_server, recording, replay, skill_engine, skills
+from decurix_agent.computer import cli, learning, recording, replay, skill_engine, skills
 
 
 def demo(session, customer, banner=False, title="Add a customer"):
@@ -421,6 +421,12 @@ class TeachingBase(unittest.TestCase):
             mock.patch.object(skill_task, "ask_for_query", self._ask_for_query),
             mock.patch.object(skill_task, "write_final_reply", lambda text, kind="final", engine=None, **kw: self.finals.append((text, kind))),
             mock.patch.object(skill_task.usage, "add"),
+            # The facts of the reply being handled now (watchers.answer_waiting) are no part of this test: an earlier
+            # module's secret reply left state.reply_secret set, and skill_task._correct then kept no correction (the
+            # module-order failure of test_apprentice, rounds 10 and 11). Each test starts with no reply handled.
+            mock.patch.object(state, "reply_secret", False),
+            mock.patch.object(state, "reply_judgement", ""),
+            mock.patch.object(state, "last_query_secret", False),
         ]
         for patch in patches:
             patch.start()
@@ -1004,35 +1010,6 @@ class EngineAccess(unittest.TestCase):
         self.assertEqual(result["outcome"], replay.HALTED_BEFORE_EFFECT)
         self.assertIn("never finished being taught", result["text"])
         self.assertEqual(self.fake.acted, [])
-
-    def test_the_mcp_tools_list_show_and_run(self):
-        (listing,), error = mcp_server.call_tool("skills", {})
-        self.assertFalse(error)
-        self.assertIn("add-a-customer", listing["text"])
-
-        (shown,), _ = mcp_server.call_tool("skills", {"name": "add-a-customer"})
-        self.assertIn("gui do add-a-customer", shown["text"])
-
-        (refused,), error = mcp_server.call_tool("run_skill", {"name": "add-a-customer"})
-        self.assertTrue(error)
-        self.assertIn("needs customer_name", refused["text"])
-
-        (paused,), error = mcp_server.call_tool("run_skill", {"name": "add-a-customer", "params": {"customer_name": "Globex"}})
-        self.assertTrue(error)
-        self.assertIn("call run_skill with from=4", paused["text"])
-
-        (done,), error = mcp_server.call_tool("run_skill", {"name": "add-a-customer", "from": 4})
-        self.assertFalse(error, done["text"])
-
-    def test_the_run_skill_tool_stops_for_approval_the_way_replay_does(self):
-        save = field("button", "Save")
-        self.fake.approval_on = save["path"]
-
-        (paused,), error = mcp_server.call_tool("run_skill", {"name": "add-a-customer", "from": 4})
-
-        self.assertFalse(error)
-        self.assertTrue(paused["text"].startswith("NEEDS_APPROVAL:"))
-        self.assertIn("run_skill again with from=4", paused["text"])
 
 
 class Endpoints(unittest.TestCase):

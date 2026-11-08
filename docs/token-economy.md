@@ -3,7 +3,7 @@
 Measured on the monthly-bills and GST workflows with a hosted reasoning model (gpt-6 family), 2026-10-31 to 11-01.
 The learning loop (learning-loop.md) says what a worker learns; this file says what each run costs, where the tokens
 go, and the architecture that makes the fourth month cheaper than the first. Research behind it (two surveys, ~60
-sources): `decurix-tests/research/reports/` (outside the repo).
+sources): `decurix-tests/research/reports/` (outside the repo, and no longer on this host).
 
 ## What a task costs, and where it goes
 
@@ -21,7 +21,8 @@ One 64-minute run, probed call by call (189 calls, 6.7M input tokens, 2.65M of t
 
 Per turn the model read 37k tokens on average (56k max) for ~600 tokens of new text; 172 turns for one task. The
 first lever is therefore the cache (keep the transcript append-only; a maintenance pass only when it takes off >= 40%
-of the transcript, `skills/context.go`), the second is turns.
+of a transcript of at least 40,000 characters, `maintainShare` and `maintainMinChars` in `skills/context.go`), the
+second is turns.
 
 ## Why month four costs what month one did
 
@@ -75,8 +76,9 @@ A taught task that works from documents has three parts, and only the middle one
 3. **Finish** (code, then the judge with evidence): the per-document table from the ledger, the figures checked in
    code, the judge given the read-back facts - never the worker's claim.
 
-Trust accrues per step (`experience.steps[key]`): a step replayed with its expectation met counts a verified run; a
-heal, a halt or a takeover at it counts against. A question about the data (which customer, is this a duplicate) is
+The design (not built yet; today trust is the skill's, see "What is built"): trust accrues per step
+(`experience.steps[key]`): a step replayed with its expectation met counts a verified run; a heal, a halt or a
+takeover at it counts against. A question about the data (which customer, is this a duplicate) is
 not evidence about a step and does not reset it. Rungs per step: model (the engine does it) -> guided (the replayer
 tries it, a miss goes to the model with the step's intent and the before/after diff only) -> compiled (replayed, a miss
 drops a rung). Promotion only after N clean verified runs on different documents than the recording's; a revised step
@@ -133,16 +135,30 @@ What this makes cheaper, and when:
   books (the fill is told a thing chosen from the application's lists is the procedure's to find). Lesson for the
   measure: one curve's month-to-month swing (0.9M to 2.4M) is as large as any effect yet seen, so a curve is now run
   twice at once (a replicate on a second worker) before a fix is believed.
-- Not yet: trust per step (today a run's clean streak, `experience.clean_streak`), the judge reading the ledger instead
-  of screenshots, each document's extraction kept by content hash.
+- Trust today is the skill's: `experience.clean_streak` runs in a row (`DECURIX_SKILL_TRUST_RUNS`, 3) make it
+  `trusted` and replayed with the model on call. Since 2026-11-03 a run counts only if it needed no person and a check
+  independent of the worker passed (`experience.INDEPENDENT`: code, the ledger, a person); the screen and the model
+  judge are kept on the verdict and never advance the streak. `experience.steps[key]` holds each step's repair
+  history (`needed`, `alternates`, `locate`), which feeds healing and the "fragile step" advice, not trust.
+- The final check's code side reads the record ledger on every route that can say done (`ledger_checks.findings`:
+  undeclared fields, records no declaration covers, a record saved twice, an unbacked pick).
+- Not yet: trust per step (rungs, promotion), the judge reading the ledger instead of screenshots, each document's
+  extraction kept by content hash.
 
 ## Measuring it
 
 Per skill, per run (`experience.note_verdict` tokens, the task record's executions): tokens by phase (gather / fill /
 replay / takeovers / finish), model calls, steps replayed vs recorded, heals, halts, cache share, the read-back
 verdicts. A curve is only believed against the engine on the same months (the `ab-base` arm) and on documents the
-recording never saw. The rig: `decurix-tests/wide/erp/scorecard2.py` (tok and uncached columns), `probe_proxy.py`
-(where each call's tokens go).
+recording never saw.
+
+What is kept today: a task's totals (input, cached input, output: `usage.py`, sent with every reply into the task
+record); per skill, each verdict's tokens and the first good run's, compared by `experience.economy`; every hosted
+call the control plane forwards, with its purpose, task, turn, caller and tokens (`internal/llmrec`,
+`/api/llm/calls`; `/api/llm/calls/stats` counts calls by purpose only); and soul's own trace per task
+([harnesses.md](harnesses.md)). Tokens by phase are not kept per run; the nearest is summing the call rows by
+purpose. The rig the figures above came from (`decurix-tests/wide/erp/scorecard2.py`, `probe_proxy.py`) is no longer
+on this host; the call recorder does what the probe did.
 
 ## Handing work to a local model: earned, never assumed
 
@@ -162,7 +178,8 @@ What that means here, in order of safety:
 2. **Work whose output code checks is where a handover can start.** OCR of a scanned page (checked by the ledger's
    span check and the figures check), reading a document into text, a screen listing's digest (today done in code
    with no model at all - the cheapest handover is to no model), speech to text. Brainiac serves these as roles with
-   their own specialist models, and `brainiac eval` scores them against checked cases.
+   their own specialist models. `brainiac eval` scores only fields answered from a text prompt (a case is a field, a
+   prompt and a check, sent as a chat request), so it does not yet measure the OCR or speech roles.
 3. **The brain itself only when earned.** A kind of task that replays (above) spends its model turns on the gather and
    the exceptions. Those turns could go to a local brain only after the parity suite (Brainiac DESIGN "what comes
    next" 2) shows the same checks passing over N runs, with the heavy path still answering in shadow. The lower
@@ -170,8 +187,9 @@ What that means here, in order of safety:
 4. **Plumbing first, before any routing.** The control plane now has an `openai` provider (any OpenAI-compatible
    endpoint, Bearer auth, plain http allowed on the own network): a desktop can be created on a Brainiac box as its
    brain today, which is how the parity runs are made. Routing *within* a task (this call to the local model, that one
-   to the hosted) needs the per-call kind the probe already logs and a place to record each kind's checked results;
-   that is the next piece, and it is a measurement before it is a feature.
+   to the hosted) needs the per-call kind and a place to record each kind's checked results. The kind is now on every
+   call (soul's `llm.Options.Purpose`, Python's `py.*` tags, recorded by `internal/llmrec`); the place for each kind's
+   checked results is the next piece, and it is a measurement before it is a feature.
 
 Money is the third priority. Nothing here moves until the per-document replay is clean and measured, because the
 replay removes more model turns than any handover could cheapen.

@@ -632,6 +632,7 @@ def write_scrubbed(path, content, append=False, atomic=False, private=False, sha
     if append:
         with open(path, "a", encoding="utf-8", newline=newline) as f:
             f.write(safe)
+        _mirror(path, safe, append=True)
     elif atomic:
         fd, tmp = _mkstemp_once_more(path)
         try:
@@ -651,16 +652,29 @@ def write_scrubbed(path, content, append=False, atomic=False, private=False, sha
             except OSError:
                 pass
             raise
+        _mirror(path, safe)
         return path
     else:
         with open(path, "w", encoding="utf-8", newline=newline) as f:
             f.write(safe)
+        _mirror(path, safe)
     if private:
         try:
             os.chmod(path, 0o600)
         except OSError:
             pass
     return path
+
+
+def _mirror(path, safe, append=False):
+    """In the screen broker's child (broker mode), a write of the worker's state is also handed back to the caller,
+    already withheld (broker.mirror). Nowhere else does anything."""
+
+    import sys
+    if "decurix_gui_caller" not in sys.modules:
+        return
+    from decurix_agent.computer import broker
+    broker.mirror(path, safe.encode("utf-8"), append=append)
 
 
 def safe_text(text):
@@ -1377,9 +1391,25 @@ def _send_roots():
     home = Path(os.path.expanduser("~"))
     # (~/work as well as WORK_DIR: a script proven in a sandbox has its HOME there, and its work folder is the copy.)
     roots = [config.WORK_DIR, home / "work", home / "Downloads"]
+    worker = _worker_home()
+    if worker is not None:
+        roots += [worker / "work", worker / "Downloads"]
     if shared.folder():
         roots += [shared.mount_path(), shared.link_path()]
     return [Path(os.path.realpath(str(r))) for r in roots if r]
+
+
+def _worker_home():
+    """Broker mode, on the screen side: the worker's home, whose work a command names (its uploads); else None."""
+
+    try:
+        from decurix_agent.computer import broker
+        if not broker.screen_side():
+            return None
+        import pwd
+        return Path(pwd.getpwuid(broker.worker_uid()).pw_dir)
+    except Exception:  # noqa: BLE001 - no worker home known: only this side's own roots
+        return None
 
 
 def _under(path, root):
@@ -1404,8 +1434,11 @@ def file_may_leave(path, base=None):
             given = Path(base or config.WORK_DIR) / given
         given = Path(os.path.abspath(str(given)))
         real = Path(os.path.realpath(str(given)))
-        state = Path(os.path.realpath(str(config.DECURIX_DIR)))
-        if real == state or _under(real, state) is not None:
+        states = [Path(os.path.realpath(str(config.DECURIX_DIR)))]
+        worker = _worker_home()
+        if worker is not None:
+            states.append(Path(os.path.realpath(str(worker / ".decurix"))))
+        if any(real == state or _under(real, state) is not None for state in states):
             return None, "it is the worker's own state, which never leaves the desktop"
         roots = _send_roots()
         for candidate in (given, real):

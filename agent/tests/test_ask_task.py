@@ -305,18 +305,6 @@ class TestSourcePills(unittest.TestCase):
         self.assertEqual(ask_task.strip_source_pills("The answer is:\nB\nbecause 2+2 is 4."), "The answer is:\nB\nbecause 2+2 is 4.")
 
 
-class TestRepeatedFailure(unittest.TestCase):
-    """The Ollama loop's nudge for a command run twice."""
-
-    def test_a_failed_repeat_does_not_invite_an_answer(self):
-        from decurix_agent import task_runner
-        nudge = task_runner.repeated_command_nudge("python3 -c 'import requests'", {"exit_code": 1, "output": "ModuleNotFoundError"})
-        self.assertIn("do not answer\nfrom memory", nudge)
-        self.assertNotIn("reply now with DONE", nudge)
-        ok = task_runner.repeated_command_nudge("uname -r", {"exit_code": 0, "output": "6.6.87"})
-        self.assertIn("reply now with DONE", ok)
-
-
 class TestATaughtExplanationGoesToTheModel(unittest.TestCase):
     """Found live: a person taught "query them one by one" and no model ever read it."""
 

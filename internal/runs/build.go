@@ -94,8 +94,22 @@ func build(ctx context.Context, src Sources, execID string, view func(tasks.Exec
 	if hasBundle {
 		b = &bundle
 	}
-	return assemble(runInput{detail: detail, view: view(*exec), judgements: judgements, calls: calls,
-		bundle: b, blobs: blobs, window: w}), nil
+	t := assemble(runInput{detail: detail, view: view(*exec), judgements: judgements, calls: calls,
+		bundle: b, blobs: blobs, window: w})
+	if src.Evals != nil {
+		// An eval row names its trajectory, not the other way round: the label is read back here. A read that fails
+		// leaves labels.eval null and says so; the run's record is still served.
+		label, ok, err := src.Evals.EvalLabel(execID, taskID)
+		switch {
+		case err != nil:
+			t.Integrity.Missing = append(t.Integrity.Missing, "labels.eval: the eval rows could not be read")
+		case ok:
+			if raw, err := json.Marshal(label); err == nil {
+				t.Labels.Eval = raw
+			}
+		}
+	}
+	return t, nil
 }
 
 // window is the time an execution's own records fall in: from (inclusive) to to (exclusive; zero: open).

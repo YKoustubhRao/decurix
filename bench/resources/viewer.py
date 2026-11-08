@@ -14,6 +14,8 @@ changed there fails that test until it is changed here too):
   - Each Decurix.poll(fn, ms[, {hidden}]) is a timer of its own: fn runs every ms while the tab is visible (every
     hidden ms, or never, while it is hidden), and a run that is still waiting skips the next tick (the page's
     "...Polling" flags). Polls the page also calls once at load are called at load here too.
+  - Every card's changing parts and the Needs-you rail are one poll (pollOverview): /api/desktops/overview?ids=<every
+    card> while the tab is visible, ?parts=notes (the rail's notifications alone) while it is hidden or holds no card.
   - Requests are sent with the browser's Accept-Encoding (gzip), and bytes are counted as they come over the wire:
     the status line, the headers and the body as sent (compressed JSON stays compressed).
   - Not mirrored, because they ask nothing while the page sits open: paintCreated and paintActivity (local repaints),
@@ -36,14 +38,10 @@ import urllib.request
 SHOT_INTERVAL_MS = 5000
 
 # Every timer the dashboard keeps that asks the control plane something: (the page's function, ms while visible, ms
-# while hidden (0: never), called at load, what it asks, which card part it needs ("" for none)). The function names
+# while hidden (0: never), called at load, what it asks, which card part it needs ("" for none, "card" for every card)). The function names
 # and intervals are the templates' own (index.html, theme.html), checked by bench/test_benches.py.
 POLLS = (
-    ("pollMemory", 4000, 0, False, "/api/desktops/memory", "mem"),
-    ("pollTaskPicks", 4000, 0, True, "/api/desktops/tasks?ids={ids}", "task"),
-    ("pollActivity", 2500, 0, True, "/api/desktops/activity?ids={ids}", "activity"),
-    ("loadNotes", 2500, 30000, True, "/api/querynotes", ""),
-    ("pollResourceAlerts", 4000, 0, True, "/api/desktops/resource-alerts", ""),
+    ("pollOverview", 2500, 30000, True, "/api/desktops/overview{cards}", "card"),
     ("refreshModel", 60000, 0, True, "/api/model", ""),
     ("refreshDocker", 10000, 60000, True, "/api/docker/status", ""),
     ("refreshFinished", 5000, 30000, True, "/api/tasks/finished{after}", ""),
@@ -51,7 +49,8 @@ POLLS = (
 
 # Timers the page keeps that ask nothing while it sits open (see the module's docstring): named so the check against
 # the templates accounts for every one.
-SILENT = ("refreshTunnel", "refreshQueryBadge", "checkProvisioningDesktops")
+SILENT = ("refreshTunnel", "refreshQueryBadge", "checkProvisioningDesktops",
+          "pollOpenRecordings")  # only a card's Recordings drawer a person opened asks its desktop
 
 _CARD = re.compile(r'<article class="dcard" data-desktop-id="([^"]+)">(.*?)</article>', re.S)
 
@@ -131,10 +130,15 @@ def watch(base, seconds, shot_width=320, hidden=False, simulate=0):
     finished = {"after": None}
 
     def ids(part):
-        return ",".join(c["id"] for c in held if part in c["parts"])
+        return ",".join(c["id"] for c in held if part == "card" or part in c["parts"])
+
+    def cards_query():
+        # The page asks for every card while it is seen, and for the rail's notes alone while hidden or holding none.
+        every = ids("card")
+        return f"?ids={urllib.parse.quote(every)}" if every and not hidden else "?parts=notes"
 
     def poll_loop(name, ms, hidden_ms, at_load, path, part):
-        if part and not ids(part):
+        if part and part != "card" and not ids(part):
             return
         every = (hidden_ms if hidden else ms) / 1000.0
         if every <= 0:
@@ -143,7 +147,8 @@ def watch(base, seconds, shot_width=320, hidden=False, simulate=0):
         while next_at < stop:
             time.sleep(max(0.0, next_at - time.monotonic()))
             after = "" if finished["after"] is None else f"?after={finished['after']}"
-            body = fetch(base, path.format(ids=urllib.parse.quote(ids(part) if part else ""), after=after), counter)
+            body = fetch(base, path.format(ids=urllib.parse.quote(ids(part) if part else ""), after=after,
+                                           cards=cards_query()), counter)
             if name == "refreshFinished" and body:
                 try:
                     finished["after"] = json.loads(body).get("latest") or 0

@@ -10,12 +10,12 @@
 
 <style>
 /* ------------------------------------------------------------------ *
- * One chat for every harness.
+ * One chat for every desktop.
  *
- * Ollama, Claude Code and TheBot all reach this same page: the desktop's
- * agent is addressed the same way (a request through the control plane)
- * and reports back the same way (answers plus live steps), so nothing
- * below branches on which engine is running.
+ * Every desktop's agent runs TheBot, on whichever brain, and is addressed
+ * the same way (a request through the control plane) and reports back the
+ * same way (answers plus live steps), so nothing below branches on the
+ * brain or on the harness an older desktop was created with.
  *
  * This page is only the chat. The desktop's own screen is a separate
  * thing you open in its own tab, from the dashboard - it is not embedded
@@ -521,7 +521,7 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
     <div class="view-title">
       <h1 class="trunc" title="{{.Desktop.Name}}">{{.Desktop.Name}}</h1>
       <span class="status {{.Desktop.Status}}"><span class="dot"></span>{{.Desktop.Status}}</span>
-      <span class="chip">{{if eq .Desktop.Harness "claude"}}Claude Code{{else if eq .Desktop.Harness "thebot"}}TheBot{{else}}Ollama{{end}}</span>
+      <span class="chip">TheBot · {{if eq .Desktop.Brain "claude"}}Claude{{else if eq .Desktop.Brain "azure"}}Azure{{else if eq .Desktop.Brain "openai"}}OpenAI{{else}}Ollama{{end}}</span>
     </div>
 
     {{if eq .Desktop.Status "running"}}
@@ -536,11 +536,30 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
 
 {{if ne .Desktop.Status "running"}}
 
-  <div class="empty">
+  {{/* Wake (paused) or Start (stopped) right here, then the chat loads: the card's Chat button leads here, so this
+       page is never a dead end (desktopWake below). A desktop still being made has nothing to start yet. */}}
+  <div class="empty" id="desktopAsleep" data-desktop-id="{{.Desktop.ID}}" data-status="{{.Desktop.Status}}">
     <div class="empty-mark"><svg width="19" height="19"><use href="#i-monitor"/></svg></div>
     <h2>Desktop is {{.Desktop.Status}}</h2>
-    <p>Start it from the desktops page to talk to its agent.</p>
-    <a class="btn btn-primary" href="/" style="margin-top:13px">Back to desktops</a>
+    {{if eq .Desktop.Status "paused"}}
+    <p>It is asleep. Wake it to talk to its agent.</p>
+    {{else if eq .Desktop.Status "provisioning"}}
+    <p>It is still being made. The chat opens here when it is ready.</p>
+    {{else}}
+    <p>Start it to talk to its agent.</p>
+    {{end}}
+    <div class="view-actions" style="margin-top:13px">
+      {{if eq .Desktop.Status "paused"}}
+      <button type="button" class="btn btn-primary" data-wake="unpause">
+        <svg width="14" height="14"><use href="#i-play"/></svg><span data-wake-label>Wake</span>
+      </button>
+      {{else if ne .Desktop.Status "provisioning"}}
+      <button type="button" class="btn btn-primary" data-wake="start">
+        <svg width="14" height="14"><use href="#i-play"/></svg><span data-wake-label>Start</span>
+      </button>
+      {{end}}
+      <a class="btn btn-default" href="/">Back to desktops</a>
+    </div>
   </div>
 
 {{else}}
@@ -582,6 +601,66 @@ main.wrap{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;wid
 </main>
 
 {{template "chrome-js"}}
+
+<script>
+/* A paused or stopped desktop: Wake or Start it here (the same routes as the
+   card's buttons), then its chat loads. Its state is polled as well, so a
+   desktop woken or started elsewhere - the dashboard, a screen tab, a
+   request - opens its chat here without a click. */
+(function(){
+  "use strict";
+
+  var box = document.getElementById("desktopAsleep");
+  if(!box){ return; }
+
+  var id = box.dataset.desktopId;
+  var ROUTES = {
+    unpause: {url: "/api/desktops/unpause", pending: "Waking…"},
+    start:   {url: "/api/desktops/start",   pending: "Starting…"}
+  };
+  var opening = false;
+
+  function openChat(){
+    if(opening){ return; }
+    opening = true;
+    location.reload();
+  }
+
+  box.addEventListener("click", async function(event){
+    var button = event.target.closest("[data-wake]");
+    var route = button && ROUTES[button.dataset.wake];
+    if(!route || button.disabled){ return; }
+
+    var label = button.querySelector("[data-wake-label]");
+    var was = label.textContent;
+    button.disabled = true;
+    label.textContent = route.pending;
+    Decurix.busy(true);
+    try{
+      await Decurix.post(route.url, {id: id});
+      openChat();
+    }catch(e){
+      Decurix.toast(e.message, "error");
+      button.disabled = false;
+      label.textContent = was;
+    }finally{
+      Decurix.busy(false);
+    }
+  });
+
+  async function check(){
+    if(opening){ return; }
+    try{
+      var response = await fetch("/api/desktops/status?id=" + encodeURIComponent(id), {cache: "no-store"});
+      if(!response.ok){ return; }
+      var now = await response.json();
+      if(now.status === "running" && now.status !== box.dataset.status && now.ready !== false){ openChat(); }
+    }catch(e){ /* asked again next time */ }
+  }
+
+  Decurix.poll(check, 4000);
+})();
+</script>
 
 <script>
 /* ------------------------------------------------------------------ *

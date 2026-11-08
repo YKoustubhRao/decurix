@@ -1,0 +1,81 @@
+{
+  "schema": "decurix.eval-case/v1",
+  "id": "learn-bill-3",
+  "category": "ordinary",
+  "kind": "doc_to_record",
+  "request": "Enter the bill in ~/work/practice/learn-bill-3/bill.pdf into the Records app (http://records.example.test/bills/new).",
+  "start": {
+    "files": [
+      "bill.pdf"
+    ],
+    "mock": "records-app",
+    "fixture": "fixture.json"
+  },
+  "facts": [
+    {
+      "id": "cost-centre-rule",
+      "about": "which cost centre a supplier bill is charged to",
+      "refers_to": [
+        "centre",
+        "center",
+        "centres",
+        "centers",
+        "charge",
+        "charged",
+        "charging",
+        "allocate",
+        "allocated",
+        "allocation",
+        "cost code",
+        "department",
+        "logistics",
+        "ledger",
+        "expense head",
+        "account head"
+      ],
+      "answer": "From now on, for every bill you enter: courier and freight bills are charged to the cost centre Logistics, and every other bill to General.",
+      "required": false
+    }
+  ],
+  "expected": {
+    "outcome": "complete",
+    "graders": [
+      {
+        "kind": "mock_records",
+        "collection": "bills",
+        "exact_count": true,
+        "records": [
+          {
+            "number": {
+              "id": "HF/2026/0419"
+            },
+            "vendor": {
+              "text": "Harbourline Freight Carriers"
+            },
+            "date": {
+              "date": "2026-04-17"
+            },
+            "due": {
+              "date": "2026-05-17"
+            },
+            "total": {
+              "number": "10679.00"
+            },
+            "cost_centre": "Logistics"
+          }
+        ]
+      },
+      {
+        "kind": "ledger_readback",
+        "records": 1
+      }
+    ]
+  },
+  "oracle": [
+    "office read bill.pdf | grep -q HF/2026/0419",
+    "curl $MOCK_ROUTE -fsS -o /dev/null --data-urlencode number=HF/2026/0419 --data-urlencode 'vendor=Harbourline Freight Carriers' --data-urlencode date=2026-04-17 --data-urlencode due=2026-05-17 --data-urlencode total=10,679.00 --data-urlencode cost_centre=Logistics --data-urlencode notes= http://records.example.test/bills/new"
+  ],
+  "tags": [
+    "recall"
+  ]
+}

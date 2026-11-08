@@ -45,10 +45,17 @@ func requirementsDigest(requirements []string) (string, error) {
 // EnsureVenv makes dir a venv of basePython with the packages of the
 // requirement files installed, and returns its interpreter. It does nothing
 // when the venv exists and was installed from the same files (a stamp holds
-// their digest), so it is safe to call on every start.
+// their digest), so it is safe to call on every start. The files must be
+// hash-locked (CheckLocked): pip installs them with --require-hashes and
+// wheels only, so every byte it installs is one the lock names.
 func EnsureVenv(ctx context.Context, basePython, dir string, requirements []string, logf func(string, ...any)) (string, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
+	}
+	for _, r := range requirements {
+		if err := CheckLocked(r); err != nil {
+			return "", err
+		}
 	}
 	digest, err := requirementsDigest(requirements)
 	if err != nil {
@@ -70,7 +77,7 @@ func EnsureVenv(ctx context.Context, basePython, dir string, requirements []stri
 		}
 	}
 	if len(requirements) > 0 {
-		args := []string{"-m", "pip", "install", "--disable-pip-version-check", "--no-input"}
+		args := []string{"-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--require-hashes", "--only-binary=:all:"}
 		for _, r := range requirements {
 			args = append(args, "-r", r)
 		}
@@ -83,6 +90,42 @@ func EnsureVenv(ctx context.Context, basePython, dir string, requirements []stri
 		return "", fmt.Errorf("worker: write %s: %w", stamp, err)
 	}
 	return python, nil
+}
+
+// CheckLocked refuses a requirement file that is not fully hash-locked:
+// each requirement must be one exact version (==) with at least one
+// --hash=sha256, and nothing may pull in another file, an index or a URL.
+// pip's --require-hashes refuses the same; this says so before a venv is
+// made, and names the line.
+func CheckLocked(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("worker: read %s: %w", path, err)
+	}
+	// A requirement continues over lines ending in a backslash.
+	joined := strings.ReplaceAll(strings.ReplaceAll(string(data), "\r\n", "\n"), "\\\n", " ")
+	for _, line := range strings.Split(joined, "\n") {
+		if i := strings.Index(line, "#"); i >= 0 {
+			line = line[:i] // a comment; a hash is "--hash=sha256:", never "#"
+		}
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		bad := ""
+		switch {
+		case strings.HasPrefix(f[0], "-"):
+			bad = "an option (" + f[0] + ")"
+		case !strings.Contains(f[0], "==") || strings.Contains(f[0], "://") || strings.Contains(f[0], "@"):
+			bad = "not one exact version"
+		case !strings.Contains(line, "--hash=sha256:"):
+			bad = "no sha256"
+		}
+		if bad != "" {
+			return fmt.Errorf("worker: %s is not hash-locked (%s: %s); Brainiac installs only locked requirements (scripts/lock_worker.py)", filepath.Base(path), f[0], bad)
+		}
+	}
+	return nil
 }
 
 // baseNames is each path's last element.

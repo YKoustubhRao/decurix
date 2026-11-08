@@ -19,7 +19,10 @@ A yes is bound to one action, not to wording (round-3 recheck):
   - The gate words the question itself and signs it (`sign_question`). The control plane shows a person those words and
     signs their reply with that request's id; the reply settles that request only, read against the gate's words, never
     against text the worker wrote.
-  - What a reply settled is taken once, by whoever asks first (the agent's watcher or TheBot), never twice.
+  - What a reply settled is taken once by its request's id (TheBot, whose paused job resumes on it) and once by its
+    text (the agent's watcher, which only notes it): neither take makes or moves a grant, and neither hides the reply
+    from the other. Found live (2026-11-08): the watcher, which reads every reply first, took TheBot's own yes; TheBot
+    waited out its 45 seconds, resumed on "unclear", and the person was asked again.
 """
 
 import hashlib
@@ -53,7 +56,7 @@ REFUSED_REASON = ("the gate could not check this action's words for secrets, so 
 
 _lock = threading.Condition()
 _nonces = {}   # nonce -> expiry: one use each
-_settled = []  # [{"text", "request_id", "outcome", "reading", "at", "taken"}]
+_settled = []  # [{"text", "request_id", "outcome", "reading", "at", "taken_id", "taken_text"}]
 _key = {"value": ""}
 
 
@@ -353,7 +356,7 @@ def _record(text, request_id, outcome, reading):
         now = time.time()
         _settled[:] = [o for o in _settled if now - o["at"] < OUTCOME_KEEP_SECONDS]
         _settled.append({"text": _norm(text), "request_id": request_id, "outcome": outcome, "reading": reading,
-                         "at": now, "taken": False})
+                         "at": now, "taken_id": False, "taken_text": False})
         _lock.notify_all()
 
 
@@ -387,8 +390,9 @@ def settle(text, asked, kind, request_id=""):
 
 def take(wait, text=None, request_id=None):
     """
-    What one signed reply settled - (seen, outcome, reading) - taken once: by request id (TheBot keeps the id of the
-    request it paused on) or by the reply's text (the agent's watcher, which received the same text). Waits up to `wait`
+    What one signed reply settled - (seen, outcome, reading) - taken once by request id (TheBot keeps the id of the
+    request it paused on) and once by the reply's text (the agent's watcher, which received the same text): a take of
+    one kind never hides the reply from the other (the module's note). Waits up to `wait`
     seconds for the control plane's copy to arrive and be settled. (False, None, None) when no signed copy came: that
     reply settled nothing.
     """
@@ -400,10 +404,11 @@ def take(wait, text=None, request_id=None):
             # Newest first: the control plane signs a reply just before it delivers it, so an older "yes" (to another
             # question, never asked about) is not this one.
             for o in reversed(_settled):
-                if o["taken"] or time.time() - o["at"] >= OUTCOME_KEEP_SECONDS:
+                flag = "taken_id" if request_id else "taken_text"
+                if o[flag] or time.time() - o["at"] >= OUTCOME_KEEP_SECONDS:
                     continue
                 if (request_id and o["request_id"] == request_id) or (not request_id and text and o["text"] == text):
-                    o["taken"] = True
+                    o[flag] = True
                     return True, o["outcome"], o["reading"]
             left = deadline - time.monotonic()
             if left <= 0:

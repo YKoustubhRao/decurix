@@ -6,8 +6,10 @@
 // against a model the catalog already rates, on the same benchmark in the
 // same table or leaderboard (the same harness), and the catalog model's rating
 // is scaled by the ratio. Scores from different sources are never compared
-// with each other, and one vendor table alone is not enough: an estimate
-// needs two such comparisons, or one from an independent leaderboard.
+// with each other. An estimate's OK needs two such comparisons, or one from
+// an independent leaderboard, but only independent leaderboards rate a model
+// in an update (Estimate.Independent): a maker's card is read for the name it
+// uses, and its claims are reported as context, never rated.
 //
 // Depends on web only.
 package bench

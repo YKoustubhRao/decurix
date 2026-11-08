@@ -2,60 +2,35 @@ import threading
 
 from decurix_agent import config, state
 
-# The only place that branches on which reasoning engine drives tasks.
-# Every branch exposes perform_task(task, task_file),
-# continue_after_query(query_response) and wait_for_backend() with identical
-# signatures, so watchers.py's command_watcher() and app.py's startup
-# don't need to know which is active.
+# The only place that branches on which reasoning engine drives tasks. Since
+# 2026-11-07 there is one, TheBot (thebot_harness.py); what a desktop chooses
+# is its brain (config.BRAIN), not an engine. The ollama, claude and azure
+# harnesses were removed then: a desktop created with one of them still has
+# its old AGENT_HARNESS (config.CREATED_HARNESS), and runs TheBot.
+# watchers.py's command_watcher() and app.py's startup call only what this
+# module exports.
 
+from decurix_agent.logging_utils import log
+from decurix_agent.ollama_client import ask_once as _ask_once
+from decurix_agent.thebot_harness import (
+    perform_task,
+    continue_after_query,
+    wait_for_backend as _wait_for_backend,
+    warm_after_ready as _after_ready,
+)
 
-def _nothing():
-    """
-    No backend to wait for (the claude CLI is a local binary), or nothing to
-    do once it is up.
-    """
-    return
-
-
-if config.AGENT_HARNESS == "claude":
-    from decurix_agent.claude_harness import perform_task, continue_after_query, ask_once as _ask_once
-
-    _wait_for_backend = _after_ready = _nothing
-
-elif config.AGENT_HARNESS == "azure":
-    from decurix_agent.azure_harness import (
-        perform_task,
-        continue_after_query,
-        wait_for_backend as _wait_for_backend,
-    )
-    from decurix_agent.llm_client import ask_once as _ask_once
-
-    _after_ready = _nothing
-
-elif config.AGENT_HARNESS == "thebot":
-    from decurix_agent.thebot_harness import (
-        perform_task,
-        continue_after_query,
-        wait_for_backend as _wait_for_backend,
-        warm_after_ready as _after_ready,
-    )
-    from decurix_agent.ollama_client import ask_once as _ask_once
-
-else:
-    from decurix_agent.task_runner import perform_task, continue_after_query
-    from decurix_agent.ollama_client import ask_once as _ask_once
-    from decurix_agent.ollama_client import wait_for_ollama as _wait_for_backend
-    from decurix_agent.ollama_client import prime_prompt_cache as _after_ready
+if getattr(config, "CREATED_HARNESS", "thebot") != "thebot":
+    log(f"This desktop was created with the {config.CREATED_HARNESS!r} harness, removed on 2026-11-07: it runs TheBot.")
 
 
 def wait_for_backend():
     """
-    Block until this harness's reasoning backend is usable, then publish it.
+    Block until the engine's reasoning backend is usable, then publish it.
 
     Runs on a background thread (app.py) so it never gates the agent's own
-    :8081 listener. Setting the flag here rather than in each branch keeps
-    "what ready means" in the one file allowed to know which engine is
-    running, and gives watchers.py a single harness-agnostic thing to read.
+    :8081 listener. Setting the flag here keeps "what ready means" in the one
+    file allowed to know the engine, and gives watchers.py a single
+    harness-agnostic thing to read.
     """
 
     _wait_for_backend()
@@ -69,16 +44,19 @@ def wait_for_backend():
 
 def ask_model(system, prompt, *, purpose):
     """
-    One question to whichever engine this desktop runs - the reply text, or
-    RuntimeError. Not a task: no history, no tools, no query. It is how the
-    computer layer's grounder and judge (computer/escalation.py) get a second
-    opinion without knowing which engine is behind them. TheBot has no
-    single-question endpoint of its own, so it asks the Ollama it already uses.
+    One question, not a task - the reply text, or RuntimeError. No history,
+    no tools, no query. It is how the computer layer's grounder and judge
+    (computer/escalation.py) get a second opinion without knowing which
+    engine is behind them. The control plane's hosted model answers it when
+    one is set up for this desktop (llm_client.available); a desktop whose
+    brain is hosted raises when that fails, never loading a local model
+    nobody chose. Otherwise the local model answers it through Ollama (soul
+    has no single-question endpoint).
     `purpose` names what the question is for (llm_client.chat): required, so no call goes untagged.
     """
 
-    # A hosted model, when the control plane has one, answers these for
-    # every engine: choosing among candidates, judging a screen, placing a
+    # A hosted model, when the control plane has one, answers these:
+    # choosing among candidates, judging a screen, placing a
     # click - exactly the one-off calls a small local model gets wrong.
     from decurix_agent import llm_client
 
@@ -92,7 +70,7 @@ def ask_model(system, prompt, *, purpose):
             # "not sure", the same as any failed question.
             if config.HOSTED_BRAIN:
                 raise RuntimeError(str(exc)) from exc
-            # otherwise fall back to this desktop's own engine
+            # otherwise fall back to the local model
 
     return _ask_once(system, prompt, purpose=purpose)
 
@@ -120,24 +98,21 @@ def continue_after_query(query_response):
 
 
 def drives_screen_with_hosted_model():
-    """Whether this desktop's engine does screen work with a hosted model: TheBot on a hosted brain, or the Office
-    engine (skill_task asks, so that only this file branches on the harness)."""
+    """Whether this desktop's engine does screen work with a hosted model: TheBot on a hosted brain (skill_task asks,
+    so that only this file knows the engine)."""
 
-    return (config.AGENT_HARNESS == "thebot" and bool(config.HOSTED_BRAIN)) or config.AGENT_HARNESS == "azure"
+    return bool(config.HOSTED_BRAIN)
 
 
 def cancel_running():
     """
-    End the engine's work in progress, when the engine can be told to (a
-    person stopped a long request mid-stage). True when something was
-    cancelled; an engine that cannot be cancelled finishes its turn and the
-    stop takes effect after it.
+    End the engine's work in progress (a person stopped a long request
+    mid-stage). True when something was cancelled; otherwise the stop takes
+    effect after the engine's turn.
     """
 
-    if config.AGENT_HARNESS == "thebot":
-        from decurix_agent import thebot_harness
-        return thebot_harness.cancel_current()
-    return False
+    from decurix_agent import thebot_harness
+    return thebot_harness.cancel_current()
 
 
 __all__ = ["perform_task", "continue_after_query", "wait_for_backend", "ask_model", "cancel_running"]

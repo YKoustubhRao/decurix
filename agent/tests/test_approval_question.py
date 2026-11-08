@@ -3,12 +3,14 @@ Whether a task starts without asking is the person's decision, made once while i
 not a guess from the words of a later request ("Purchase Invoice" is a document, not a purchase).
 """
 
+import contextlib
 import unittest
 from unittest import mock
 
 from decurix_agent import skill_task, state, thebot_harness
 from decurix_agent.computer import learning, skills
 
+from test_recordings import field
 from test_skills import TeachingBase
 
 
@@ -93,39 +95,89 @@ class Running(TeachingBase):
         self.assertFalse(any(kind == "approval" for _, kind in self.asked))
 
 
+class GoAheadIsAboutStartingOnly(TeachingBase):
+    """The teacher's "go ahead" starts a run with no start-of-run pause; it approves no action of the run (a yes is one
+    action's): a step the approval gate stops still asks, every run."""
+
+    taught = Running.taught
+
+    def ready(self, **patches):
+        """The patches for _prepare on a run the model does while it learns, whose documents do not give a value."""
+
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(mock.patch.object(skill_task, "_needed", return_value=[{"name": "amount"}]))
+        stack.enter_context(mock.patch.object(skill_task, "_learning_by_model", return_value=True))
+        stack.enter_context(mock.patch.object(skill_task.task_context, "set_skill"))
+        stack.enter_context(mock.patch.object(skill_task, "progress"))
+        return stack.enter_context(mock.patch.object(skill_task, "_by_model")), \
+            stack.enter_context(mock.patch.object(skill_task, "_pause"))
+
+    def test_go_ahead_starts_at_once_and_a_consequential_step_still_asks(self):
+        self.taught("go")
+        save = field("button", "Save")
+        self.screen_fake = self.screen(approval_on=save["path"])
+        skill_task.perform('/skill add-a-customer customer_name="Globex"')
+
+        self.assertFalse(any("check with you before I start" in text for text, _ in self.asked), self.asked)
+        self.assertTrue(self.screen_fake.acted, "the run started without the start question")
+        skill_task.resume("done")  # (the private password step is the person's, by hand)
+        self.assertEqual(self.asked[-1][1], "approval", "the gated Save still stops for its own yes")
+        self.assertNotIn("check with you before I start", self.asked[-1][0])
+
+    def test_ask_first_pauses_a_run_the_model_would_start_too(self):
+        # The start pause is before every way a run from step 1 begins - here the model doing a task it is still
+        # learning, whose documents do not give a value (that path used to start without asking).
+        run = {"skill": {"name": "pay", "title": "Pay a bill", "approval": "ask", "steps": []}, "values": {},
+               "start": 1, "checked": False, "filled": True, "context": "the bill"}
+        by_model, paused = self.ready()
+        skill_task._prepare(run)
+        by_model.assert_not_called()
+        self.assertEqual(paused.call_args.args[1], "go")
+        self.assertEqual(paused.call_args.kwargs.get("ask_kind"), "approval")
+        # A yes to it is this run's start, and nothing more.
+        run["approved"] = True
+        paused.reset_mock()
+        skill_task._prepare(run)
+        by_model.assert_called_once()
+        paused.assert_not_called()
+
+    def test_go_ahead_lets_the_model_start_at_once(self):
+        run = {"skill": {"name": "pay", "title": "Pay a bill", "approval": "go", "steps": []}, "values": {},
+               "start": 1, "checked": False, "filled": True, "context": "the bill"}
+        by_model, paused = self.ready()
+        skill_task._prepare(run)
+        by_model.assert_called_once()
+        paused.assert_not_called()
+
+
 class TellingTheEngine(unittest.TestCase):
-    def preapproved(self, skill, run_extra=None):
-        seen = []
-        run = dict({"skill": dict({"name": "n", "title": "T"}, **skill), "values": {}}, **(run_extra or {}))
-        with mock.patch.object(skill_task, "_engine", side_effect=lambda c, f: seen.append(state.request_preapproved)), \
+    def test_the_engine_is_told_nothing_of_the_start_decision(self):
+        # The start is decided in skill_task (_start_pause) and nowhere else: no flag says "approved" to the engine.
+        self.assertFalse(hasattr(state, "request_preapproved"))
+        sent = []
+        run = {"skill": {"name": "n", "title": "T", "approval": "go"}, "values": {}}
+        with mock.patch.object(skill_task, "_engine", side_effect=lambda c, f: sent.append(c)), \
                 mock.patch.object(skill_task.guidance, "begin"), \
                 mock.patch.object(skill_task, "_procedure", return_value="x"), \
                 mock.patch.object(skill_task, "progress"):
             skill_task._by_model(run)
-        self.assertFalse(state.request_preapproved, "the flag is for one request only")
-        return seen[0]
-
-    def test_the_engine_is_told_only_when_the_person_said_so(self):
-        self.assertTrue(self.preapproved({"approval": "go"}))
-        self.assertTrue(self.preapproved({"approval": "ask"}, {"approved": True}))
-        self.assertFalse(self.preapproved({"approval": "ask"}))
-        self.assertFalse(self.preapproved({"approval": None}))
+        self.assertEqual(len(sent), 1)
+        self.assertFalse(hasattr(state, "request_preapproved"))
 
     def test_thebot_is_never_sent_an_approval_in_the_body(self):
         # A yes is one action's (CLAUDE.md): soul takes no approval from a request body, so none is sent - not for a
-        # preapproved request, not for a reply (review 2026-11-02 removed the field).
+        # new request, not for a reply (review 2026-11-02 removed the field).
         sent = []
 
         def post(url, body, *a, **k):
             sent.append(body)
             return {}
 
-        self.addCleanup(setattr, state, "request_preapproved", False)
-        for pre, reply in ((True, False), (True, True), (False, False)):
-            state.request_preapproved = pre
+        for reply in (False, True):
             with mock.patch.object(thebot_harness, "_post_json", post):
                 thebot_harness._run_thebot("do it", reply=reply)
-            self.assertNotIn("approved", sent[-1], (pre, reply))
+            self.assertNotIn("approved", sent[-1], reply)
 
 
 if __name__ == "__main__":

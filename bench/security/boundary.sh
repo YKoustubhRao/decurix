@@ -3,6 +3,7 @@
 # each row is an attack from a security review, and a FAIL means the worker can approve its own actions.
 #
 #   sh bench/security/boundary.sh [--image decurix-desktop:basic] [--layer] [--keep] [--cp URL] [--desktops A,B]
+#                                 [--broker] [--screen-only]
 #
 # --layer builds a throwaway image from --image with this checkout's entrypoint and agent code on top, to check a
 # change before a full image build. Needs a Linux Docker (in the Decurix WSL distro: run as root there). Starts one
@@ -26,6 +27,15 @@
 #             5901 and 6901 are unreachable, while A reaches the control plane (decurix:8080). The two desktops are
 #             made through the control plane at --cp (default http://127.0.0.1:8080) and deleted after, or --desktops
 #             names two that exist (left as they are)
+#   screen    the input broker's paths (docs/gate-boundary.md, "Next: the input broker"), read-only, as the worker:
+#             its X client has no XTEST on the display; the screen's VNC password is in no file or process environment
+#             it can read; no DevTools endpoint of the browser answers it (no port, no relay socket it can open); it
+#             cannot read the browser profile's cookie store; it cannot read the environment of the screen side's
+#             processes (the X server, the window manager, the browser, the broker), which are not its own. The bench
+#             opens a page of its own first (`gui open`, no input); nothing here clicks, types or sends a key. With
+#             --broker the desktop is made in broker mode (DECURIX_SCREEN_USER=1) and every row must pass; without it
+#             (the default mode, where these paths are open by design) a row that is open says OPEN and is not
+#             counted as a failure. --screen-only runs the screen rows and stops (no restarts, no network row).
 
 set -u
 IMAGE=decurix-desktop:basic
@@ -33,6 +43,8 @@ LAYER=0
 KEEP=0
 CP=http://127.0.0.1:8080
 DESKTOPS=
+BROKER=0
+SCREEN_ONLY=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --image) IMAGE=$2; shift 2 ;;
@@ -40,7 +52,10 @@ while [ $# -gt 0 ]; do
         --keep) KEEP=1; shift ;;
         --cp) CP=$2; shift 2 ;;
         --desktops) DESKTOPS=$2; shift 2 ;;
-        *) echo "usage: $0 [--image IMAGE] [--layer] [--keep] [--cp URL] [--desktops A,B]" >&2; exit 2 ;;
+        --broker) BROKER=1; shift ;;
+        --screen-only) SCREEN_ONLY=1; shift ;;
+        *) echo "usage: $0 [--image IMAGE] [--layer] [--keep] [--cp URL] [--desktops A,B] [--broker] [--screen-only]" >&2
+           exit 2 ;;
     esac
 done
 
@@ -79,15 +94,27 @@ trap cleanup EXIT
 
 if [ "$LAYER" = 1 ]; then
     mkdir -p "$WORK/ctx"
-    cp "$REPO/agent/decurix-entrypoint.sh" "$WORK/ctx/"
+    for f in decurix-entrypoint.sh decurix-screen-session.sh decurix-worker-session.sh start_agent_terminal.sh \
+        decurix-xfwm4.xml gui; do
+        cp "$REPO/agent/$f" "$WORK/ctx/"
+    done
     cp -r "$REPO/agent/decurix_agent" "$WORK/ctx/decurix_agent"
     find "$WORK/ctx" -name __pycache__ -prune -exec rm -rf {} +
     cat > "$WORK/ctx/Dockerfile" <<EOF
 FROM $IMAGE
 USER root
-COPY decurix-entrypoint.sh /opt/decurix-entrypoint.sh
+# An image from before broker mode has no Xtigervnc: added as docker/desktop.basic.Dockerfile adds it.
+RUN [ -x /usr/bin/Xtigervnc ] || { apt-get update >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get \
+    -o Dpkg::Options::=--force-confold install -y --no-install-recommends tigervnc-standalone-server >/dev/null \
+    && update-alternatives --remove-all vncserver && ln -sfn /usr/libexec/vncserver /usr/bin/vncserver \
+    && rm -rf /var/lib/apt/lists/*; }
+COPY decurix-entrypoint.sh decurix-screen-session.sh decurix-worker-session.sh start_agent_terminal.sh /opt/
+COPY gui /usr/local/bin/gui
+COPY decurix-xfwm4.xml /etc/xdg/decurix-screen/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml
+RUN rm -rf /opt/decurix_agent
 COPY decurix_agent /opt/decurix_agent
-RUN chmod 755 /opt/decurix-entrypoint.sh && chown -R root:root /opt/decurix_agent /opt/decurix-entrypoint.sh \
+RUN chmod 755 /opt/decurix-entrypoint.sh /opt/decurix-screen-session.sh /opt/decurix-worker-session.sh \
+    /opt/start_agent_terminal.sh /usr/local/bin/gui && chown -R root:root /opt/decurix_agent /opt/decurix-entrypoint.sh \
     && chmod -R go-w /opt/decurix_agent && chown -R 1001:1001 /dockerstartup
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/decurix-entrypoint.sh"]
 EOF
@@ -100,7 +127,10 @@ KEY=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
 KEYHASH=$(printf '%s' "$KEY" | sha256sum | cut -d' ' -f1)
 
 docker volume create "$VOL" >/dev/null
-docker create --name "$RUN" --cap-drop NET_RAW \
+SCREEN_ENV=""
+[ "$BROKER" = 1 ] && SCREEN_ENV="-e DECURIX_SCREEN_USER=1"
+# shellcheck disable=SC2086 # SCREEN_ENV is an option and its value, or nothing
+docker create --name "$RUN" --cap-drop NET_RAW $SCREEN_ENV \
     --tmpfs /run:rw,nosuid,size=64m,mode=755 --tmpfs /tmp:rw,nosuid,size=256m,mode=1777 \
     -v "$VOL:/home/headless" -e PATH="$WPATH" -e VNC_PW=benchpw1 -m 1500m "$IMAGE" >/dev/null \
     || { echo "could not create the desktop" >&2; exit 2; }
@@ -125,6 +155,19 @@ wait_gate() {
 
 docker start "$RUN" >/dev/null
 if wait_gate; then pass "gate up after the first start"; else fail "gate never came up"; exit 1; fi
+
+# ---- screen: the input broker's paths, read-only (see the header; bench/security/screen_probes.sh) ----
+. "$HERE/screen_probes.sh"
+screen_probes
+if [ "$SCREEN_ONLY" = 1 ]; then
+    echo
+    if [ "$BROKER" = 0 ] && [ "$FAILS" = 0 ]; then
+        echo "screen rows read in the default mode ($IMAGE): an OPEN row is open by design there"; exit 0
+    fi
+    if [ "$FAILS" = 0 ]; then echo "screen rows hold ($IMAGE, broker mode)"; exit 0; fi
+    echo "$FAILS check(s) failed ($IMAGE, broker mode $BROKER)"
+    exit 1
+fi
 
 # ---- key ----
 if docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$RUN" | grep -q '^DECURIX_GATE_KEY='; then
@@ -287,7 +330,8 @@ docker volume rm "$VOL-nokey" >/dev/null 2>&1
 
 # ---- network: the product's own networks (resource plan R3, c4d8fa0: a decurix-vm-<id> /28 per desktop). Two real
 # desktops, as the control plane makes them; from inside A, as A's worker (where an attacker in A stands), B's agent
-# (8081), VNC (5901) and screen (6901) at B's address on its own network are unreachable. Two controls make the check
+# (8081), VNC (5901) and screen (6901, websockify, which only a desktop made with DECURIX_DESKTOP_NOVNC=1 runs) at
+# B's address on its own network are unreachable. Two controls make the check
 # mean something: B's screen is up (from inside B), and A reaches the control plane by its name (decurix:8080).
 cp_get() { wget -qO- "$CP$1" 2>/dev/null; }
 cp_post() { wget -qO- --post-data "$2" "$CP$1" 2>/dev/null; }
@@ -304,12 +348,12 @@ in_desktop() { # in_desktop NAME: a shell script on stdin, run as that desktop's
     docker exec -i -u 1001:1001 "desktop_$1" /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash -s 2>/dev/null
 }
 i=0
-while [ $i -lt 100 ] && ! echo 'timeout 3 bash -c "</dev/tcp/127.0.0.1/6901"' | in_desktop "$NB"; do sleep 3; i=$((i + 1)); done
+while [ $i -lt 100 ] && ! echo 'timeout 3 bash -c "</dev/tcp/127.0.0.1/5901"' | in_desktop "$NB"; do sleep 3; i=$((i + 1)); done
 B_IP=$(docker inspect -f "{{(index .NetworkSettings.Networks \"decurix-vm-$NB\").IPAddress}}" "desktop_$NB" 2>/dev/null)
 A_OWN=$(docker inspect -f "{{(index .NetworkSettings.Networks \"decurix-vm-$NA\").IPAddress}}" "desktop_$NA" 2>/dev/null)
 check "network: from inside desktop A, desktop B's 8081, 5901 and 6901 are unreachable; A reaches decurix:8080" "$(
     if [ -z "$B_IP" ] || [ -z "$A_OWN" ]; then echo "inconclusive: $NA or $NB has no network of its own (made before desktops had one?)"
-    elif ! echo 'timeout 3 bash -c "</dev/tcp/127.0.0.1/6901"' | in_desktop "$NB"; then echo "inconclusive: $NB's screen is not up"
+    elif ! echo 'timeout 3 bash -c "</dev/tcp/127.0.0.1/5901"' | in_desktop "$NB"; then echo "inconclusive: $NB's screen (Xvnc) is not up"
     elif ! echo 'timeout 5 bash -c "</dev/tcp/decurix/8080"' | in_desktop "$NA"; then echo "$NA cannot reach the control plane (decurix:8080): the control failed"
     else
         open=$(printf 'for p in 8081 5901 6901; do timeout 3 bash -c "</dev/tcp/%s/$p" 2>/dev/null && echo "open $p"; done; true\n' "$B_IP" | in_desktop "$NA")

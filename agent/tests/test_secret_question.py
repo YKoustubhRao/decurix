@@ -11,7 +11,7 @@ from unittest import mock
 
 import config_stub  # noqa: F401
 
-from decurix_agent import azure_harness, messaging, replay_task, state, task_runner, thebot_harness, watchers
+from decurix_agent import messaging, replay_task, state, thebot_harness, watchers
 
 
 class TheQueryCarriesTheMark(unittest.TestCase):
@@ -111,13 +111,9 @@ class TheReplyToASecretQuestion(unittest.TestCase):
 
 class BannersAreWithheld(unittest.TestCase):
     def test_every_harness_banner_goes_through_withheld(self):
-        for module in (thebot_harness, task_runner, azure_harness):
-            with self.subTest(module=module.__name__):
-                self.assertIs(module.withheld, messaging.withheld)
+        self.assertIs(thebot_harness.withheld, messaging.withheld)
         import inspect
-        for module, names in ((thebot_harness, ("perform_task", "continue_after_query")),
-                              (task_runner, ("perform_task", "continue_after_query")),
-                              (azure_harness, ("perform_task", "continue_after_query"))):
+        for module, names in ((thebot_harness, ("perform_task", "continue_after_query")),):
             for name in names:
                 source = inspect.getsource(getattr(module, name))
                 for line in [l for l in source.splitlines() if "log_banner(" in l]:

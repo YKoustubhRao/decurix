@@ -322,6 +322,29 @@ func TestRemoteFailureIsNotPassedOffAsLocal(t *testing.T) {
 	if err != nil || !strings.Contains(res.Brain, "fallback") || len(res.Trace.Notes) == 0 {
 		t.Fatalf("fallback res %+v err %v", res, err)
 	}
+	// The fallback note reaches the client: the status, never the remote's text.
+	notes := strings.Join(res.Trace.Notes, "\n")
+	if strings.Contains(notes, "secret") || !strings.Contains(notes, "the remote brain failed (HTTP 429); the local brain answered instead") {
+		t.Fatalf("fallback notes %q", res.Trace.Notes)
+	}
+}
+
+// A remote failure's note is a fixed phrase whatever the error says.
+func TestRemoteFailureNoteIsFixed(t *testing.T) {
+	detail := errors.New("secret provider detail")
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{&RemoteError{Status: 503, Err: detail}, "the remote brain failed (HTTP 503)"},
+		{&RemoteError{Err: detail}, "the remote brain could not be reached"},
+		{fmt.Errorf("remote: %w", backend.ErrCutShort), "the remote brain stopped before its answer was whole"},
+		{detail, "the remote brain failed"},
+	} {
+		if got := remoteFailureNote(c.err); got != c.want {
+			t.Errorf("remoteFailureNote(%v) = %q, want %q", c.err, got, c.want)
+		}
+	}
 }
 
 // A remote stream that fails partway, with local_fallback on, never reaches

@@ -50,16 +50,17 @@ func (s *Server) desktopProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The screen itself is the control plane's page (screen.go); everything
-	// under it - the WebSocket, and noVNC's own vnc.html for anyone who wants
-	// it - is still the desktop's, proxied below.
+	// The screen itself is the control plane's page (screen.go); its WebSocket
+	// is bridged to Xvnc (screenbridge.go); everything else under it - noVNC's
+	// own vnc.html, on a desktop that still runs websockify - is the
+	// desktop's, proxied below.
 	if (len(parts) == 1 || parts[1] == "") && !isWebSocket && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		s.screenViewerHandler(w, r, parts[0])
 		return
 	}
 
 	// The screen's WebSocket: bridged to the desktop's Xvnc by the control plane (screenbridge.go).
-	if len(parts) == 2 && isScreenStream(parts[1], isWebSocket) && screenBridgeOn() {
+	if len(parts) == 2 && isScreenStream(parts[1], isWebSocket) && s.screenStreamBridged(r.Context(), parts[0]) {
 		answered, err := s.bridgeScreen(w, r, parts[0])
 		if answered || (err != nil && provisioning()) {
 			return
@@ -1470,18 +1471,18 @@ const resourceAlertPopup = `
 `
 
 // mobileViewerEnhancements is spliced into the noVNC vnc.html response by
-// rewriteDesktopHTML, but only for requests carrying ?ui=touch - the marker
-// index.html's "open the screen in a new tab" button puts on the full-size,
-// interactive screen URL, so this never lands in the same page's small,
-// non-interactive dcard-preview thumbnail (same vnc.html, same query-free URL
-// otherwise). The injected script itself further gates on the browser
-// actually being touch-capable, so a mouse-and-keyboard visitor opening the
-// same screen sees nothing extra either.
+// rewriteDesktopHTML, but only for requests carrying ?ui=touch, so a vnc.html
+// opened without it (a thumbnail, a script) gets nothing extra. The injected
+// script itself further gates on the browser actually being touch-capable, so
+// a mouse-and-keyboard visitor opening the same screen sees nothing extra
+// either.
 //
-// That button is now the only thing emitting ?ui=touch: the per-desktop page
-// at /view/<id> is the chat alone and embeds no screen. Anything that opens a
-// desktop screen for real use needs to carry the marker, or these affordances
-// silently stop being injected.
+// The dashboard's button and the recordings page's "Open the screen" both put
+// ?ui=touch on the URL they open, but that URL is /desktop/<id>/, the control
+// plane's own screen page (screen.html), which ignores it and has its own
+// touch keyboard. So these affordances land only when noVNC's own page,
+// /desktop/<id>/vnc.html, is opened with ?ui=touch by hand; nothing in the
+// dashboard opens that page.
 //
 // It adds two touch-only affordances on top of stock
 // noVNC, which otherwise leaves mobile visitors clicking a tiny keyboard

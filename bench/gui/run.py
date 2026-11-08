@@ -8,19 +8,16 @@ through the control plane's chat API, a wait for the agent's answer - and
 judged on the outcome inside the desktop (bench/gui/fixtures/bench.py check),
 never on what the agent says it did.
 
-    # real engines, each on a fresh desktop created through the control plane
-    python3 bench/gui/run.py --engine ollama --engine thebot --engine claude
+    # the real engine (TheBot; --brain picks its model) on a fresh desktop created through the control plane
+    python3 bench/gui/run.py --engine thebot
 
     # the scripted oracle, against an existing desktop container: proves every
     # task is solvable through the gui command and every check is correct
     python3 bench/gui/run.py --engine oracle --container desktop_bench-oracle
 
-Standard library only. Needs the `docker` CLI on this machine, and for real
-engines a running control plane (default http://localhost:8080). The claude
-engine also needs a shared Claude login already completed through the
-dashboard (see README.md "Setting up the Claude harness") and a developer or
-ai profile; the default profile here is developer, so all three engines run
-on identical desktops.
+Standard library only. Needs the `docker` CLI on this machine, and for the real
+engine a running control plane (default http://localhost:8080). The ollama and
+claude engines went with their harnesses (removed 2026-11-07).
 """
 
 import argparse
@@ -50,7 +47,7 @@ PANEL_CODE = "/opt/decurix-bench-panel"
 PANEL_STATE_DIR = "/var/lib/decurix-bench-panel"
 PANEL_STATE = f"{PANEL_STATE_DIR}/admin.json"
 
-ENGINES = ("oracle", "ollama", "claude", "thebot")
+ENGINES = ("oracle", "thebot")
 
 # Where the desktop's browser reaches the admin panel (bench.py's PANEL_HOST): a request names a site by its name.
 PANEL_SITE = "http://admin.bench.test:8765"

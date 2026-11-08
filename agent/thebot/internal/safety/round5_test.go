@@ -104,7 +104,7 @@ func TestTheCommandsRound5WasStoppedOnSendNothing(t *testing.T) {
 		t.Fatal("the real commands are missing")
 	}
 	for _, cmd := range realRound5Commands {
-		if c := AssessCommand(cmd); c != nil {
+		if c := AssessCommand(cmd, ""); c != nil {
 			t.Errorf("AssessCommand(%.120q...) = %q, want nil", cmd, c.Reason)
 		}
 	}

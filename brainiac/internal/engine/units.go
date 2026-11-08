@@ -2,6 +2,11 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -41,6 +46,53 @@ type unit struct {
 	callMu   sync.Mutex
 	wk       *worker.Worker
 	sw       *sharedProc // the worker process this unit shares with the other worker units
+	// rec is what starts its process (fingerprint); gen is the generation
+	// of the engine that built it. The residency knows a unit by key and
+	// recipe, and hands a resident to the newest engine's unit (G-11).
+	rec string
+	gen uint64
+}
+
+func (u *unit) recipe() string     { return u.rec }
+func (u *unit) generation() uint64 { return u.gen }
+
+// inherit takes over what an older engine's unit for the same running
+// model knew: whether someone else uses it in Ollama, and when Brainiac
+// last called it.
+func (u *unit) inherit(old loadable) {
+	o, ok := old.(*unit)
+	if !ok || o == u || u.ollama == nil {
+		return
+	}
+	o.callMu.Lock()
+	shared, last := o.shared, o.lastCall
+	o.callMu.Unlock()
+	u.callMu.Lock()
+	u.shared = u.shared || shared
+	if last.After(u.lastCall) {
+		u.lastCall = last
+	}
+	u.callMu.Unlock()
+}
+
+// fingerprint is a short digest of the values that start a process.
+func fingerprint(parts ...any) string {
+	b, _ := json.Marshal(parts)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:12])
+}
+
+// fileSig is a file's size and modification time ("" when it has none): a
+// file replaced in place is a new recipe, so its old process is not reused.
+func fileSig(path string) string {
+	if path == "" {
+		return ""
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d@%d", fi.Size(), fi.ModTime().UnixNano())
 }
 
 // stoppable is a process several units share (the Python worker).
@@ -95,7 +147,9 @@ func (u *unit) load(ctx context.Context) error {
 		if loaded, err := u.ollama.Loaded(lctx); err == nil {
 			for name := range loaded {
 				if sameTag(name, u.tag) {
+					u.callMu.Lock()
 					u.shared = true
+					u.callMu.Unlock()
 				}
 			}
 		}
@@ -121,13 +175,18 @@ func (u *unit) unload() {
 	case catalog.RuntimeLlamaCpp:
 		u.llama.Stop()
 	case catalog.RuntimeOllama:
-		if u.shared {
+		u.callMu.Lock()
+		shared := u.shared
+		u.callMu.Unlock()
+		if shared {
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if u.usedByOthers(ctx) {
+			u.callMu.Lock()
 			u.shared = true // a desktop started using it: never unload it from under them
+			u.callMu.Unlock()
 			return
 		}
 		_ = u.ollama.Unload(ctx, u.tag)
@@ -216,12 +275,12 @@ func sameTag(a, b string) bool {
 }
 
 // buildUnits turns the lock into units, one per installed model source.
-func buildUnits(lock *install.Lock, cat *catalog.Catalog, ollamaURL, logDir string, threads int, wk *worker.Worker) (map[string]*unit, map[string]*unit) {
+// wk and sw are the worker and the holds on it its units share.
+func buildUnits(lock *install.Lock, cat *catalog.Catalog, ollamaURL, logDir string, threads int, wk *worker.Worker, sw *sharedProc) (map[string]*unit, map[string]*unit) {
 	units := map[string]*unit{}
 	byRole := map[string]*unit{}
 	var ol *backend.Ollama
-	var sw *sharedProc
-	if wk != nil {
+	if wk != nil && sw == nil {
 		sw = &sharedProc{p: wk}
 	}
 	for _, p := range lock.Plan.Picks {

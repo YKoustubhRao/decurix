@@ -81,11 +81,7 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	desktops, err := s.Desktops.List(r.Context())
-	if err != nil {
-		internalError(w, "dashboard: listing desktops", err)
-		return
-	}
+	desktops := s.pageDesktops(r, "dashboard")
 
 	memories := s.Memory.List("")
 	memoryByDesktop := map[string][]memory.WorkerMemoryEntry{}
@@ -148,7 +144,6 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.FormValue("name"))
 	profile := strings.TrimSpace(r.FormValue("profile"))
 	brain, brainErr := s.desktopBrain(r.FormValue("harness"), r.FormValue("brain"))
-	harness := desktop.HarnessTheBot
 	// One line: a textarea's newlines would otherwise land in a Docker env
 	// var and, later, in identity.py's plain fact list.
 	specialization := strings.Join(strings.Fields(r.FormValue("specialization")), " ")
@@ -265,6 +260,12 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A home folder an earlier desktop of this name left is said now, while the form is still open to offer
+	// deleting it, rather than after the creation has started (leftoverhome.go).
+	if s.refuseLeftoverHome(w, r, name) {
+		return
+	}
+
 	// The chat model is baked into a desktop when it is created. With no
 	// desktop yet, choose it against the machine as it is now; with any,
 	// keep the model they already run (see ollama.Reselect).
@@ -274,11 +275,9 @@ func (s *Server) createDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	prov, err := s.Desktops.BeginProvisioning(
 		name,
 		profile,
-		harness,
 		brain,
 		cpus,
 		memoryMB,
-		"",
 		specialization,
 		parentID,
 		selectedApps,
@@ -414,18 +413,22 @@ func (s *Server) thenClose(act func(context.Context, string) error, why string) 
 
 // dockerStatusHandler answers GET /api/docker/status: whether the control plane has asked Docker yet, and whether it
 // answered - what the "Docker is not running" banner reads (W-08) - whether a tools update waits for running
-// desktops to stop (tools_waiting), and, on the Windows app's WSL host, whether the fence between desktops holds
-// (fence; fence_missing is the one bit a banner needs). Never a round trip to Docker itself.
+// desktops to stop (tools_waiting), whether the last fill of the shared tools volume failed (tools_not_ready, with
+// tools_not_ready_why a class - volume, start or copy - never the error's text: the fill empties the volume first, so
+// desktops may have no tools until one succeeds), and, on the Windows app's WSL host, whether the fence between
+// desktops holds (fence; fence_missing is the one bit a banner needs). Never a round trip to Docker itself.
 func (s *Server) dockerStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if !allowMethod(w, r, http.MethodGet) {
 		return
 	}
-	checked, reachable, toolsWaiting := false, false, false
+	checked, reachable, toolsWaiting, toolsWhy := false, false, false, ""
 	if s.Desktops != nil {
 		checked, reachable, toolsWaiting = s.Desktops.DockerChecked(), s.Desktops.DockerReachable(), s.Desktops.ToolsRefreshWaiting(r.Context())
+		toolsWhy = s.Desktops.ToolsNotReady()
 	}
 	fence := desktop.HostFence()
 	jsonResponse(w, map[string]any{"checked": checked, "reachable": reachable, "tools_waiting": toolsWaiting,
+		"tools_not_ready": toolsWhy != "", "tools_not_ready_why": toolsWhy,
 		"fence": fence, "fence_missing": fence.Required && !fence.Holds})
 }
 
@@ -492,10 +495,32 @@ func (s *Server) deleteDesktopHandler(w http.ResponseWriter, r *http.Request) {
 	// one lifecycle lock desktopAction holds: every run with no bundle, the open ones included, is pulled, then the
 	// desktop goes, and only once it has gone are its open runs closed (a delete that fails leaves them as they are,
 	// still running). Neither the flush nor the delete is cut short by the browser going away (review CP-A B3, N9,
-	// N10).
+	// N10). Runs the flush could not pull refuse the delete (409, unsavedRunsError) unless the person chose to delete
+	// anyway (force): that choice is recorded first, with who made it and which runs were given up (rule 5).
+	force := r.FormValue("force") == "1" || strings.EqualFold(r.FormValue("force"), "true")
+	actor, person := s.actorOf(r)
+	door := "card"
+	if isGated(r) {
+		door = "phone"
+	}
 	closeFlushDelete := func(ctx context.Context, id string) error {
 		ctx = context.WithoutCancel(ctx)
-		s.flushRuns(ctx, desktop.SanitizeID(id))
+		sid := desktop.SanitizeID(id)
+		if left := s.flushRuns(ctx, sid); len(left) > 0 {
+			if !force {
+				return &unsavedRunsError{n: len(left)}
+			}
+			if !person {
+				return errForceNeedsPerson
+			}
+			judgement, err := s.recordDeleteAnyway(sid, actor, door, left)
+			if err != nil {
+				return fmt.Errorf("deleteDesktop: recording the choice to delete %s anyway: %w", sid, err)
+			}
+			for _, ref := range left {
+				log.Printf("runs: %s deleted anyway by %s (%s) before the bundle of %s was pulled: that run's recording, ledger and notes are lost", sid, actor.ID, judgement, ref.ExecID)
+			}
+		}
 		del := s.Desktops.Delete
 		if s.deleteDesktop != nil {
 			del = s.deleteDesktop

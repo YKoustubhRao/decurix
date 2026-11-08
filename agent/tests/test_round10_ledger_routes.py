@@ -232,7 +232,7 @@ class B3_APlannedRunWithCaseA(LongRunBase):
         with mock.patch.object(records, "LEDGER_DIR", Path(tmp.name)), \
                 mock.patch.object(core, "_task_events_now", lambda: events), \
                 mock.patch.object(evidence, "_task_events", lambda task_id=None: events), \
-                mock.patch.object(records, "_org_text", lambda: ""):
+                mock.patch.object(records, "_org_text", lambda task_id=None: ""):
             records._save(TASK, [{"key": "INV-0001", "saved_at": 1.0, "declared_at": 1.0, "undeclared": ["Cost centre=General"],
                                   "fields": {"Bill no.": {"intent": "INV-0001", "from": "source"}},
                                   "readback": {"seen": ["Bill no."], "absent": []}}])
